@@ -67,8 +67,8 @@ fi
 
 # ── Check 2: Rootfs /proc/device-tree (if mounted) ───────────────────────────
 
-if mountpoint -q "$ROOTFS_MNT" 2>/dev/null; then
-    log "Rootfs is mounted — checking /proc/device-tree equivalent..."
+if mountpoint -q "$ROOTFS_MNT" 2>/dev/null || [ -f "$ROOTFS_MNT/build.prop" ]; then
+    log "Rootfs available — checking kernel modules and configs..."
 
     # Check kernel modules for MediaTek
     while IFS= read -r -d '' ko; do

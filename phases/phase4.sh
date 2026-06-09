@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Phase 4: Rootfs deep-dive — 4a through 4h.
 # Requires rootfs mounted at artifacts/rootfs_mnt (see phase2 + mount_rootfs.sh).
-set -euo pipefail
+set -eu
+# Phase 4 is purely diagnostic dumping (strings|grep|head); SIGPIPE from head
+# closing early should not abort the run, so leave pipefail off.
 
 ARTIFACTS="artifacts"
 ROOTFS="$ARTIFACTS/rootfs_mnt"
@@ -12,10 +14,10 @@ warn() { echo "[phase4] WARN: $*"; }
 
 mkdir -p "$ANALYSIS"
 
-if ! mountpoint -q "$ROOTFS" 2>/dev/null; then
-    warn "Rootfs not mounted at $ROOTFS"
-    warn "Run: sudo bash $ARTIFACTS/mount_rootfs.sh"
-    warn "Then re-run: make phase4"
+# Accept either a real mount or a 7z-extracted directory (phase2 produces the latter).
+if ! mountpoint -q "$ROOTFS" 2>/dev/null && [ ! -f "$ROOTFS/build.prop" ]; then
+    warn "Rootfs not available at $ROOTFS"
+    warn "Run phase2 first, or: sudo bash $ARTIFACTS/mount_rootfs.sh"
     exit 1
 fi
 

@@ -10,13 +10,10 @@ replace those — it wraps them with (a) Windows/WSL environment setup the phase
 don't provide, and (b) a new device-side procedure ("Phase 8") that the host-side phases
 explicitly defer.
 
-**v1.4 status note:** Two items in the existing repo carry stale framing and should be
-updated to match the v1.4 findings:
-- `CLAUDE.md` "Critical Corrections" table says *"SoC is MT8590 → Unknown."* This is now
-  **reversed**: the MT8590 is confirmed (see `docs/baseline_v1.4.md` §4.1). Phase 3 changes
-  from *discovery* to *confirmation*.
-- `phases/phase3_soc_id.sh` writes "SoC: UNRESOLVED" as its default verdict. Update its
-  expected-result text to "confirm MT8590" rather than "identify unknown SoC."
+**v1.4 status note:** The MT8590 SoC is confirmed (`docs/baseline_v1.4.md` §4.1, citing
+`unknown321/wbrt` README and Wampy `MAKING_OF.md`). Phase 3 is a *confirmation* step, not
+*discovery* — `phases/phase3_soc_id.sh` now checks for MT8590-specific markers in the
+extracted firmware and reports them as evidence.
 
 ---
 
@@ -366,4 +363,186 @@ passthrough. Keep `wbrt` and SP Flash Tool on the Windows side.
 - Queue + shuffle-by-album: pure app logic in the replacement player; no blocker. *High
   confidence.* (Both genuinely absent from stock — baseline §5.12.)
 - USB-DAC in + LDAC out: resolved at step 8. *Uncertain until then* — do not promise it as a
-  feature before E4/E5.
+  feature before E4/E5. **Host-side analysis (Part H) has narrowed this to Candidate 1
+  (app-policy enforcement) with high confidence.**
+
+---
+
+## Part H — Host-side findings (2026-05-26 run, stock NW-A50 v1.02)
+
+This section captures the concrete findings from the first end-to-end pipeline run on the
+stock firmware (`NW-A50_V1_02.exe` → `NW_WM_FW.UPG`, 112 MB). It supersedes the speculation
+in `docs/baseline_v1.4.md` §5.10 with on-firmware evidence.
+
+### H1. Pipeline state
+
+All seven host-side phases ran on stock firmware. Walkman One unpacked successfully as a
+cross-reference but is **not** the project's baseline (user runs stock).
+
+| Phase | Status | Key output |
+|---|---|---|
+| 1 | ✓ | `upgtool` built; stock + W1 unpacked with model `nw-a50` (KAS confirmed) |
+| 2 | ✓ | Boot image (sector 2) = Android `bootimg` container (kernel + ramdisk); rootfs (sector 6) = 800 MB ext4 |
+| 3 | ✓ | MT8590 **confirmed on firmware**: `ro.board.platform=mt8590` in `/build.prop`, plus `mt8590` strings in 9 `libMtkOmx*`/`libmtk_drvb` libraries. OQ1 closed on-firmware (not just by `wbrt` citation). |
+| 4 | ✓ | Full rootfs deep-dive — see H3 below. The single most important output. |
+| 5 | partial | Stock vs W1 sectors are renumbered (stock rootfs = sector 6, W1 = sector 7); a useful diff requires file-level comparison of extracted rootfs trees, not sector files. |
+| 6 | ✓ | Rust hello-walkman cross-built for `armv7-unknown-linux-musleabihf`, 506 KB static, runs under `qemu-arm-static`. C shim toolchain (`arm-linux-musleabihf-gcc`) verified. |
+| 7 | ✓ | UPG round-trip: 8/9 sectors byte-identical, sector 6 differs only because phase1 saved it `-z`-decompressed (ext4) vs the round-trip's compressed `fwpup` form — the **mechanism is sound**. |
+
+### H2. Extraction-tool notes (so the next person doesn't re-discover these)
+
+- **Sony's `NW-A50_V1_02.exe`** is a proprietary "Packman" self-extractor — 7z/binwalk/unblob
+  cannot extract the inner `NW_WM_FW.UPG`. The reliable path is to run the `.exe` on Windows
+  and copy the `.UPG` out of `%TEMP%` before clicking past the first dialog.
+- **The `1_StockRevert_Walkman_One_A50.exe`** in the Walkman One bundle contains a `.UPG`
+  named `NW_WM_FW.UPG`, but **it is not the Sony stock firmware** — it's a custom revert
+  payload built by MrWalkman that fails KAS validation against `nw-a50` (the StockRevert
+  procedure runs the genuine `2_NW-A50_V1.02.exe` afterwards to actually flash stock).
+- **`upgtool` build** requires `libcrypto++-dev` (`mg.cpp` brute-force search, unused for
+  known KAS but a hard build dep).
+- **`upgtool` flags** — the original phase scripts referenced `-x` and `-d`; the actual
+  flags are `-e` (extract) / `-c` (create), with `-m <model>` mandatory and `-o <prefix>`
+  for output. `-z <idx>` decompresses sector `<idx>` from `fwpup` framing.
+- **Mounting the rootfs** doesn't require sudo: `7z x 6.bin -o<dir>` reads ext4 natively.
+  Phase 2 was updated to do this automatically and detect sectors by `file` output rather
+  than filename pattern.
+
+### H3. USB-DAC → LDAC: the verdict (Candidate 1, high confidence)
+
+The `baseline_v1.4.md §5.10` open question — *where is USB-DAC-and-BT mutual exclusion
+enforced?* — narrows to **Candidate 1: app-policy enforcement in `HgrmMediaPlayerApp`**.
+The evidence:
+
+**1. The kernel-level candidate is dead for stock.**
+`llusbdac.ko` does not exist in the stock rootfs at all. It is a Wampy/Walkman One add-on.
+Stock USB-DAC mode is handled by `libUsbDeviceAudioPlayerService.so` (Sony-built) which
+writes PCM to ALSA via `libaudiohal-uacalsasingletrack.so`. So Candidate 3 (kernel-fixed
+sink) is ruled out for stock.
+
+**2. The USB mode manager is not the gate.**
+`libUsbMgrServiceFw.so` (the service deciding MSC/MTP/ADB/UAC) contains **zero** references
+to Bluetooth, BT, disconnect, or disable. It only manages USB power supply mode from a UAC
+host. So Candidate 2b (USB-mode manager forcing BT teardown) is ruled out.
+
+**3. The audio framework supports concurrent tracks of different types.**
+`libSoundServiceFw.so` logs *"Cannot create multiple tracks that have **same type**"* — i.e.
+the constraint is on duplicate types, not on coexistence of different types. The
+`SoundServiceImpl::CreateTrack(TrackType)` and `OpenModulesIn(TrackType)` API explicitly
+parameterizes by type. Two evidence-grade indicators that this is real multi-track
+infrastructure, not a vestige:
+- `libaudiohal-dualtrackmixalsa.so` exists — a HAL plugin that **mixes two tracks** into a
+  single ALSA sink.
+- The full HAL plugin catalogue (`vendor/sony/lib/libaudiohal-*.so`):
+  `a2dpsnksingletrack` (BT-receive sink, *Walkman as BT speaker*),
+  `adleralsa` (CXD3778GF wrapper — references `/sys/module/snd_soc_cxd3778gf/parameters`),
+  `analyzer`, `dualtrackmixalsa`, `genericalsa`, `listener`,
+  `uacalsasingletrack` (USB-DAC mode → ALSA).
+
+**4. The BT transmit path is a complete, callable service.**
+`libBtTransmitterService.so` exposes:
+- `SetCurrentSource(bool)` — declare which logical source is active
+- `SetLdac(bool)` — enable/disable LDAC codec
+- `SetLdacSoundQuality(BtLdacSoundQuality)` — Auto / 990 / 660 / 330 kbps
+- `NotifyOpenAudio()` / `NotifyCloseAudio()` — open/close the streaming pipe
+- `NotifyPcmPreferredSize(uint16_t)` — chunk size negotiation
+- `GetCapabilities(vector<BtA2dpConfiguration>)` — query peer capabilities
+
+The exported class factories `BtTransmitterServiceFactory::CreateInstance` and
+`BtTransmitterServiceClientFactory::CreateInstance` mean a replacement player can
+instantiate this service from outside.
+
+**5. The block is in the app UI flow.**
+`HgrmMediaPlayerApp` contains the embedded QML strings:
+`disconnectMsgOverlay`, `1DisconnectView`, `1DisconnectComponent`, `1DisconnectModel`,
+`1DisconnectWindowViewModel`, `GoToBluetoothSetting`, `usbDacDeviceWindow`.
+These describe an overlay dialog shown when the user enters USB-DAC mode that prompts them
+to disconnect Bluetooth, with a button that navigates to the Bluetooth settings page. The
+exclusivity is therefore implemented as a UI screen plus an explicit BT-disconnect call,
+not as a runtime constraint of the underlying services.
+
+### H4. Architecture map (concrete services and binaries)
+
+Sony bundles many services into a generic `hagodaemon` (Hagoromo daemon) host process. From
+`init.hagoromo.rc` (extracted from the boot-image ramdisk, sector 2), the services
+relevant to the USB-DAC→LDAC project are:
+
+| `hagoromoN` | Services hosted | Relevance |
+|---|---|---|
+| `hagoromo8` | `UsbHostConnectionService`, `UsbDeviceConnectionService`, `UsbDeviceAudioPlayerService` | **USB-DAC input side** — receives PCM from USB-gadget UAC |
+| `hagoromo11` | `SoundServiceFw` | **Central audio routing** — `SetSourceTypeTrack`, `CreateTrack(TrackType)` |
+| `hagoromo22` | `UsbMgrServiceFw` | USB mode selector — confirmed *not* a BT gate |
+| `hagoromo24` | `WiredHpServiceFw` | 3.5 mm headphone sink (current USB-DAC output target) |
+| `hagoromo27` | `BtCommonService`, `BtTransmitterService`, `BtBleCommonService`, `BtBleRemoteService`, `BtPlayerService` | **LDAC output side** — encodes PCM and transmits via BlueZ |
+| `hagoromo28` | `AudioInPlayerService`, `TunerPlayerService` | Audio input (line-in?) and FM tuner |
+
+USB mode switching is driven by `setprop sys.sony.config <mode>` (per
+`init.usbcfg.rc`); modes seen: `adb`, `uac` (USB Audio Class — i.e. USB DAC), `msc` (mass
+storage), `root`/`unroot`. The `uac` path sets USB function = `audio_func,adb` and USB
+product ID = `0x0B8C`. None of these toggles touch Bluetooth.
+
+`HgrmMediaPlayerApp` links against `libc++.so.1` + `libcxxrt.so.1` — confirming the
+clang/LLVM + libc++ ABI, which is what `baseline_v1.4.md §5.4` flagged as the toolchain
+boundary for the C++ shim. Default ALSA via `etc/asound.conf` = `hw:0,4` (the
+`cxd3778gf-icx-lowpower` low-power playback device per Wampy `ALSA.md`).
+
+### H5. Concrete implementation plan for USB-DAC → LDAC
+
+The goal is now an engineering problem with a clear shape, not a research one. The
+replacement player needs to:
+
+**Step 1 — Don't enforce the block.**
+In the replacement player's QML/UI, do not show `disconnectMsgOverlay` when the user enters
+USB-DAC mode, and do not call any BT-disconnect path. Sony's UI flow does both; ours
+shouldn't. This step alone, without anything else, may already give a partial result on
+device — worth verifying empirically (Phase E4/E5) before building more.
+
+**Step 2 — Bridge USB-DAC PCM into the BT transmit pipeline.**
+Two viable approaches:
+
+*Approach A — drive the existing services directly.*
+- Instantiate `BtTransmitterServiceClient` via its factory.
+- Call `NotifyOpenAudio()`, `SetLdac(true)`, `SetLdacSoundQuality(...)`.
+- Tap PCM from `UsbDeviceAudioPlayerService` (either via its existing IPC, or by replacing
+  `libaudiohal-uacalsasingletrack.so` with a build that writes to a different sink).
+- Push frames using whatever `pst::audiohal::AudioHalOutA2dpSnk`'s inverse looks like for
+  the source direction. This needs Ghidra time on `libBtTransmitterService.so` to find the
+  PCM-write entry point — symbols visible so far are notification-only.
+- This is the **clean** approach but requires the C++ ABI shim (clang/libc++) per §5.4.
+
+*Approach B — ALSA loopback bridge.*
+- Build/insmod `snd_aloop.ko` (kernel ALSA loopback module — would need a build matching
+  the device kernel, 3.10.26-mt8590).
+- Reconfigure `etc/asound.conf` so the UAC path writes to `hw:Loopback,0`.
+- Run a small userspace daemon that reads `hw:Loopback,1` and writes to BlueZ A2DP via a
+  socket interface (or via the BlueZ-ALSA bridge if shipped/buildable on this device).
+- This sidesteps the C++ ABI issue (the bridge is pure C/Rust + ALSA + sockets) at the cost
+  of a kernel module rebuild and an extra process in the audio path (~ few ms latency).
+
+Approach A is architecturally cleaner; Approach B is more conservative and avoids touching
+Sony's closed C++ surface. Pick after the device is in hand (Part E) — `strace` on
+`UsbDeviceAudioPlayerService` and `BtTransmitterService` during stock USB-DAC mode will
+make the choice obvious.
+
+**Step 3 — Latency expectation setting.**
+Stock USB-DAC mode already has noticeable latency; LDAC adds ~150-200 ms. Stacking them
+makes the feature **unusable for video/gaming** but fine for music listening, which is the
+only sensible use case. The replacement player's UI for this mode should not advertise it
+as video-capable.
+
+### H6. Open questions for Phase E (device-side, when device is in hand)
+
+These are the questions host-side analysis cannot answer. Run these on the device after
+the Phase E0 wbrt backup:
+
+1. Does `BtTransmitterService` accept `NotifyOpenAudio()` while `UsbDeviceAudioPlayerService`
+   is also open? (i.e. is there any runtime mutex inside `SoundServiceFw` we missed?)
+2. What's the actual ALSA output device that `libaudiohal-uacalsasingletrack` writes to —
+   confirm `hw:0,4` via `cat /proc/asound/card0/pcm*/sub*/status` during stock USB-DAC
+   playback.
+3. Does the BT A2DP source path have an ALSA-side entry point we can write PCM into (would
+   make Approach B trivial), or does it pull PCM from `SoundServiceFw` over IPC only?
+4. Confirm the `strace` finding from `baseline_v1.4.md §5.10`: does
+   `HgrmMediaPlayerApp` actually call `disconnect`/`bluez` paths when entering USB-DAC mode,
+   or is it purely the UI overlay that asks the user to do it?
+
+Once these four are answered, the implementation is mechanical.

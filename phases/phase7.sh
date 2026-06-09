@@ -31,17 +31,20 @@ cp -a "$UNPACKED"/. "$REPACK_DIR/sectors/"
 
 # ── Step 2: Repack using upgtool ──────────────────────────────────────────────
 
-log "repacking with upgtool"
-# upgtool usage: upgtool -c <output.upg> -d <dir_of_sectors>
-# Actual flags may differ — check upgtool --help or Rockbox docs
-"$UPGTOOL" -c "$REPACK_UPG" -d "$REPACK_DIR/sectors" 2>&1 \
-    | tee "$ANALYSIS/7_repack.log" || {
-    log "upgtool repack failed — checking alternate invocation"
-    # Try pack mode with explicit flags
-    "$UPGTOOL" pack "$REPACK_DIR/sectors" "$REPACK_UPG" 2>&1 \
-        | tee -a "$ANALYSIS/7_repack.log" || \
+log "repacking with upgtool (round-trip test uses raw sectors w/o -z decompression)"
+# Re-extract stock WITHOUT -z so sectors keep their fwpup-compressed form.
+RAW_SECTORS="$REPACK_DIR/raw_sectors"
+mkdir -p "$RAW_SECTORS"
+"$UPGTOOL" -e -m nw-a50 -o "$RAW_SECTORS/" "$STOCK_UPG" 2>&1 \
+    | tee "$ANALYSIS/7_raw_extract.log" >/dev/null
+# upgtool create form: upgtool -c -m <model> <output.upg> <sector files...>
+SECTOR_FILES=$(ls "$RAW_SECTORS"/*.bin 2>/dev/null | sort -V)
+if [ -z "$SECTOR_FILES" ]; then
+    fail "no sectors found in $RAW_SECTORS — raw extract failed"
+fi
+"$UPGTOOL" -c -m nw-a50 "$REPACK_UPG" $SECTOR_FILES 2>&1 \
+    | tee "$ANALYSIS/7_repack.log" || \
     fail "repack failed — check $ANALYSIS/7_repack.log and upgtool --help"
-}
 
 if [ ! -f "$REPACK_UPG" ]; then
     fail "repack produced no output file — check $ANALYSIS/7_repack.log"
@@ -52,8 +55,9 @@ log "repack produced: $REPACK_UPG ($(stat -c%s "$REPACK_UPG") bytes)"
 # ── Step 3: Unpack the repacked UPG ──────────────────────────────────────────
 
 log "unpacking repacked UPG to verify round-trip"
-"$UPGTOOL" -x "$REPACK_UPG" -o "$REPACK_UNPACK" 2>&1 \
-    | tee "$ANALYSIS/7_unpack_verify.log"
+mkdir -p "$REPACK_UNPACK"
+"$UPGTOOL" -e -m nw-a50 -o "$REPACK_UNPACK/" "$REPACK_UPG" 2>&1 \
+    | tee "$ANALYSIS/7_unpack_verify.log" >/dev/null
 
 # ── Step 4: Compare original unpack vs round-trip unpack ─────────────────────
 

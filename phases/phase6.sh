@@ -39,7 +39,8 @@ HW_DIR="$BUILD/hello_walkman"
 
 if [ ! -f "$HW_DIR/Cargo.toml" ]; then
     log "creating hello-walkman Rust project"
-    (cd "$BUILD" && cargo new hello_walkman --name hello_walkman 2>&1 || true)
+    # cargo init works in the pre-created dir from mkdir -p above.
+    (cd "$HW_DIR" && cargo init --name hello_walkman --bin 2>&1 || true)
 fi
 
 cat > "$HW_DIR/src/main.rs" <<'EOF'
