@@ -1,0 +1,11 @@
+[package]
+name = "cinder-sim"
+version = "0.1.0"
+edition = "2021"
+
+# Interactive desktop preview of the real cinder-ui code, in a 480x800 window
+# (displays on Windows via WSLg). Host-only.
+
+[dependencies]
+cinder-ui = { path = "../cinder-ui" }
+minifb = "0.27"

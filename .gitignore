@@ -20,6 +20,14 @@ analysis/ramdisk/
 # extracted QML, PNG assets) except the large regenerable boot animation.
 analysis/ui_assets/bootanim/
 
+# === Replacement-player Rust workspace (player/) ===
+# Source, Cargo.lock, and the bundled OFL fonts ARE tracked. Build output and
+# the rendered screen previews are regenerable, so they're not.
+player/target/
+player/out/
+# Stray Cargo build dirs anywhere else (e.g. spikes outside artifacts/).
+**/target/
+
 # === Editor ===
 .vscode/
 .idea/

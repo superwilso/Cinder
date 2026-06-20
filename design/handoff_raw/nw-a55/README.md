@@ -23,3 +23,16 @@ The design medium is **HTML/CSS/JS** — these are prototypes, not production co
 - `nw-a55/README.md` — this file
 - `nw-a55/chats/` — conversation transcripts (read these!)
 - `nw-a55/project/` — the `NW-A55` project files (HTML prototypes, assets, components)
+
+
+## Goals:
+- Faster boot time and better battery life
+- improved UI and UX
+- USB DAC mode with LDAC and 3.5mm output
+- Night mode with darkened ui and dimmer screen
+- built in battery effcient scrobbler
+- queue and shelf functionality
+- keep all audio effects (DSEE HX, ect) and try to apply them to bluetooth audio
+- keep using the built in sound card for battery effciency
+- lock screen, that turns of touch screen but leaves the buttons active
+this is not a finished list and more goals may be added

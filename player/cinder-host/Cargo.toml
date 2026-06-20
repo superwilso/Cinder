@@ -1,0 +1,8 @@
+[package]
+name = "cinder-host"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cinder-ui = { path = "../cinder-ui" }
+image = { version = "0.25", default-features = false, features = ["png"] }

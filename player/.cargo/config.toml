@@ -1,0 +1,4 @@
+# Cross-compile to the NW-A50 (armv7 musl). Only used with
+# `--target armv7-unknown-linux-musleabihf`; host builds are unaffected.
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-musleabihf-gcc"
