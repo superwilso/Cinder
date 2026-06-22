@@ -21,6 +21,7 @@
 #   tools/flash.sh --ls                    # list the device root (read-only mount)
 #   tools/flash.sh --cat <file>            # print a file from the device (e.g. a log)
 #   tools/flash.sh --log                   # shortcut: --cat cinder_install.log
+#   tools/flash.sh --push <file>           # copy a local file to the device root
 #
 # Flags:
 #   -d /dev/sdX   force the block device (skip autodetect)
@@ -50,7 +51,7 @@ warn() { printf '%swarn%s %s\n' "$C_Y" "$C_0" "$*" >&2; }
 die()  { printf '%s err %s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------- arg parsing
-DEV=""; ASSUME_YES=0; SERIES="nw-a50"; MODE="flash"; UPG=""; CATFILE=""
+DEV=""; ASSUME_YES=0; SERIES="nw-a50"; MODE="flash"; UPG=""; CATFILE=""; PUSHFILE=""
 args=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -62,6 +63,7 @@ while [ $# -gt 0 ]; do
     --ls)           MODE="ls"; shift;;
     --cat)          MODE="cat"; CATFILE="${2:-}"; shift 2;;
     --log)          MODE="cat"; CATFILE="cinder_install.log"; shift;;
+    --push)         MODE="push"; PUSHFILE="${2:-}"; shift 2;;
     -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     install)   UPG="$DOWNLOADS/cinder_probe_install.upg";   shift;;
     uninstall) UPG="$DOWNLOADS/cinder_probe_uninstall.upg"; shift;;
@@ -84,6 +86,7 @@ reexec_root() {
   [ "$MODE" = trigger ] && a+=(--trigger-only)
   [ "$MODE" = ls ] && a+=(--ls)
   [ "$MODE" = cat ] && a+=(--cat "$CATFILE")
+  [ "$MODE" = push ] && a+=(--push "$PUSHFILE")
   [ -n "$UPG" ] && a+=("$UPG")
   exec sudo -E "$0" "${a[@]}"
 }
@@ -190,6 +193,27 @@ if [ "$MODE" = "ls" ] || [ "$MODE" = "cat" ]; then
     info "==== $CATFILE ===="
     cat "$F"
   fi
+  exit 0
+fi
+
+# ---------------------------------------------------------------- --push
+# Copy a local file to the device storage root (e.g. the cinder-device binary the
+# Cinder installer expects at /contents/cinder-device).
+if [ "$MODE" = "push" ]; then
+  [ -n "$PUSHFILE" ] || die "--push needs a file path"
+  [ -f "$PUSHFILE" ] || die "file not found: $PUSHFILE"
+  PART="$(data_partition "$DEV")"
+  [ -n "$PART" ] || die "no FAT/exFAT data partition on $DEV (is it in MSC mode?)"
+  MNT="$(mktemp -d /tmp/walkman.XXXXXX)"
+  trap 'mountpoint -q "$MNT" && umount "$MNT" 2>/dev/null; rmdir "$MNT" 2>/dev/null' EXIT
+  mount "$PART" "$MNT" 2>/dev/null || mount -t exfat "$PART" "$MNT" 2>/dev/null \
+    || die "could not mount $PART"
+  base="$(basename "$PUSHFILE")"
+  info "copying $base -> device root ($(stat -c %s "$PUSHFILE") bytes)"
+  cp -f "$PUSHFILE" "$MNT/$base"
+  sync
+  umount "$MNT"; trap - EXIT
+  ok "pushed $base to device root"
   exit 0
 fi
 

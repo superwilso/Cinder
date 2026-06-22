@@ -11,9 +11,14 @@ OUT="$HERE/cinder-ldac-bridge"
 # Device libraries to link against (link stubs come straight from the extracted rootfs).
 LIBDIRS=(-L"$ROOTFS/lib" -L"$ROOTFS/vendor/sony/lib" -L"$ROOTFS/usr/lib")
 
-# ALSA headers: install with `sudo apt install libasound2-dev` (API headers are
-# arch-independent; we link the DEVICE's libasound.so at runtime).
+# ALSA headers: prefer the system libasound2-dev if installed; otherwise fall back
+# to the bundled minimal shim (include/alsa/asoundlib.h) so the build needs no apt.
+# Either way we link the DEVICE's libasound.so (from the rootfs) at link time.
 CFLAGS="-O2 -Wall -Wextra -I$HERE/src"
+if [ ! -f /usr/include/alsa/asoundlib.h ]; then
+    echo "note: libasound2-dev not found — using bundled minimal ALSA shim"
+    CFLAGS="$CFLAGS -I$HERE/include"
+fi
 
 echo "compile..."
 $CC $CFLAGS -c "$HERE/src/main.c"     -o "$HERE/main.o"

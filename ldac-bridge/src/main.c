@@ -61,23 +61,31 @@ static int write_all(int fd, const void *buf, size_t len) {
 int main(void) {
     fprintf(stderr, "ldac-bridge: starting\n");
 
-    // 1. Control plane: get the transmitter client and open its audio pipe.
+    // 1. Control plane: get the transmitter client and arm the LDAC source. Per RE
+    // (RE_findings.md): the server opens the audio socket INTERNALLY, triggered by the
+    // SetLdac/SetCurrentSource path — there is no client-side NotifyOpenAudio. So the
+    // sequence is SetLdac(true) -> SetLdacSoundQuality -> SetCurrentSource(true).
     bt_client_t *bt = btclient_create();          // factory CreateInstance + Connect
     if (!bt) { fprintf(stderr, "btclient_create failed\n"); return 1; }
     btclient_set_ldac(bt, true);                   // SetLdac(true)
     btclient_set_ldac_quality(bt, BT_LDAC_AUTO);   // SetLdacSoundQuality(Auto)
-    btclient_notify_open_audio(bt);                // NotifyOpenAudio() -> server starts listening
+    btclient_set_current_source(bt, true);         // SetCurrentSource(true) -> server opens the socket
 
-    uint16_t chunk = 0;
     char sockname[128] = {0};
     btclient_get_socket_name(bt, sockname, sizeof(sockname));  // GetSocketName()
-    chunk = btclient_pcm_preferred_size(bt);       // NotifyPcmPreferredSize / negotiated chunk
+    if (sockname[0] == '\0') { fprintf(stderr, "GetSocketName returned empty\n"); return 1; }
+    uint16_t chunk = btclient_pcm_preferred_size(bt);          // negotiated chunk, if any
     if (chunk == 0) chunk = 4096;
     fprintf(stderr, "ldac-bridge: socket='@%s' chunk=%u\n", sockname, chunk);
 
-    // 2. Connect to the audio socket the server just opened.
-    int sock = bt_audio_connect(sockname);
-    if (sock < 0) { fprintf(stderr, "bt_audio_connect failed\n"); return 1; }
+    // 2. Connect to the audio socket the server just opened. The open is async after
+    // SetCurrentSource, so retry briefly until the server's listen() is up.
+    int sock = -1;
+    for (int attempt = 0; attempt < 20 && sock < 0; attempt++) {
+        sock = bt_audio_connect(sockname);
+        if (sock < 0) usleep(100 * 1000);          // 100 ms; ~2 s total
+    }
+    if (sock < 0) { fprintf(stderr, "bt_audio_connect failed after retries\n"); return 1; }
 
     // 3. Data plane: open the USB-DAC capture (44100 S32_LE 2ch). NOTE: in stock
     // USB-DAC mode the UAC service already owns card4/pcm0c — see README; this may
@@ -105,7 +113,7 @@ int main(void) {
     free(buf);
     capture_close(cap);
     close(sock);
-    btclient_notify_close_audio(bt);
+    btclient_set_current_source(bt, false);        // release the source -> server closes the socket
     btclient_destroy(bt);
     return 0;
 }

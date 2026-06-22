@@ -93,17 +93,40 @@ fn body_label(fam: Family, w: Weight, size: f32, col: Rgb888) -> TextStyle {
     sty(fam, w, size, col, 0.0)
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, current: usize) {
+pub const SORTS: [&str; 3] = ["TITLE", "ARTIST", "LENGTH"];
+
+fn dur_secs(d: &str) -> i32 {
+    let mut it = d.split(':');
+    let m: i32 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let s: i32 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    m * 60 + s
+}
+
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, current: usize, sort: usize) {
     c.fill(t.bg);
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
-    let y0 = crate::chrome::header(c, t, f, "Library", Some(count_caption(tab)));
+    // Songs tab shows a tappable SORT chip in the header's right slot; others show the count.
+    let rc = if matches!(tab, Tab::Songs) {
+        format!("SORT \u{00b7} {}", SORTS[sort.min(2)])
+    } else {
+        count_caption(tab).to_string()
+    };
+    let y0 = crate::chrome::header(c, t, f, "Library", Some(&rc));
     let yt = tabs(c, t, f, y0, tab);
 
     match tab {
         Tab::Songs => {
             let mut y = shuffle_row(c, t, f, yt, "Shuffle all songs", "1,842 TRACKS · RANDOM ORDER") + 8;
             let rh = 62;
-            for (i, sgn) in SONGS.iter().enumerate() {
+            let mut order: Vec<usize> = (0..SONGS.len()).collect();
+            match sort {
+                0 => order.sort_by(|&a, &b| SONGS[a].t.cmp(SONGS[b].t)),
+                1 => order.sort_by(|&a, &b| SONGS[a].a.cmp(SONGS[b].a)),
+                2 => order.sort_by(|&a, &b| dur_secs(SONGS[a].d).cmp(&dur_secs(SONGS[b].d))),
+                _ => {}
+            }
+            for &i in &order {
+                let sgn = &SONGS[i];
                 let cy = y + rh / 2;
                 let now = i == current;
                 art::block(c, t, 22, y + (rh - 42) / 2, 42, 42, sgn.art, artdim(t));

@@ -57,6 +57,7 @@ struct App {
     track: usize,
     liked: bool,
     tab: Tab,
+    sort: usize,
     eq_bands: [i8; 10],
     eq_preset: usize,
     dsee: bool,
@@ -167,17 +168,17 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
             }
         }
         Screen::NowPlaying => {
-            if hit(x, y, 240, 702, 36) {
+            if hit(x, y, 240, 692, 42) {
                 app.playing = !app.playing;
-            } else if hit(x, y, 140, 702, 28) {
+            } else if hit(x, y, 130, 692, 30) {
                 app.track = (app.track + SONGS.len() - 1) % SONGS.len();
-            } else if hit(x, y, 340, 702, 28) {
+            } else if hit(x, y, 350, 692, 30) {
                 app.track = (app.track + 1) % SONGS.len();
-            } else if hit(x, y, 50, 702, 26) {
+            } else if hit(x, y, 44, 692, 28) {
                 app.shuffle = !app.shuffle;
-            } else if hit(x, y, 430, 702, 26) {
+            } else if hit(x, y, 436, 692, 28) {
                 app.repeat = (app.repeat + 1) % 3;
-            } else if y > 748 {
+            } else if y > 744 {
                 // bottom toolbar: heart · queue · eq · bt · library
                 if x < 96 {
                     app.liked = !app.liked;
@@ -203,7 +204,9 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
             }
         }
         Screen::Library => {
-            if (95..126).contains(&y) {
+            if matches!(app.tab, Tab::Songs) && (45..78).contains(&y) && x > 340 {
+                app.sort = (app.sort + 1) % 3; // tap the SORT chip in the header
+            } else if (95..126).contains(&y) {
                 app.tab = if x < 85 { Tab::Songs } else if x < 170 { Tab::Albums } else if x < 268 { Tab::Artists } else { Tab::Playlists };
             } else if (128..200).contains(&y) {
                 // the accent "shuffle …" row at the top of every tab
@@ -352,7 +355,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         }),
         Screen::Menu => menu::render(c, theme, fonts, &menu_items(app)),
         Screen::UpNext => up_next::render(c, theme, fonts, app.track),
-        Screen::Library => library::render(c, theme, fonts, app.tab, app.track),
+        Screen::Library => library::render(c, theme, fonts, app.tab, app.track, app.sort),
         Screen::Artist => library::artist(c, theme, fonts),
         Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0),
         Screen::Sound => sound::render(c, theme, fonts, &Sound {
@@ -394,6 +397,7 @@ fn main() {
         track: 0,
         liked: true,
         tab: Tab::Songs,
+        sort: 0,
         eq_bands: EQ_PRESETS[3].1,
         eq_preset: 3,
         dsee: true,

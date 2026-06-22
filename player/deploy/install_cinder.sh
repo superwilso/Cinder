@@ -48,9 +48,22 @@ fi
 cat > "$BIN/$TARGET" <<WRAP_EOF
 #!/system/bin/sh
 # cinder-device launch hook (reversible; original at $TARGET.real).
-# Escape hatch: create /contents/cinder_off to skip launching the Cinder UI.
+# Cinder OWNS the panel by FREEZING the stock player with SIGSTOP so the two UIs
+# stop fighting over the framebuffer. The stock process stays alive (so init won't
+# respawn it); SIGCONT on escape brings it straight back. Escape hatch: create
+# /contents/cinder_off to resume stock + stop Cinder, no reflash needed.
 if [ ! -f /contents/cinder_off ]; then
-    ( sleep 15; $BIN/cinder-device >/contents/cinder_device.log 2>&1 ) &
+    (
+        sleep 15
+        $BIN/cinder-device >/contents/cinder_device.log 2>&1 &
+        while [ ! -f /contents/cinder_off ]; do
+            killall -STOP HgrmMediaPlayerApp 2>/dev/null \
+                || kill -STOP \$(pidof HgrmMediaPlayerApp 2>/dev/null) 2>/dev/null
+            sleep 2
+        done
+        killall -CONT HgrmMediaPlayerApp 2>/dev/null \
+            || kill -CONT \$(pidof HgrmMediaPlayerApp 2>/dev/null) 2>/dev/null
+    ) &
 fi
 exec $BIN/$TARGET.real "\$@"
 WRAP_EOF

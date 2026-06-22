@@ -50,48 +50,48 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     } else {
         // full-bleed album art (34..514)
         art::block(c, t, 0, 34, 480, 480, np.art, 1.0);
-        // visualiser (524..546)
-        bars(c, 24, 524, 432, 22, 36, 3, seed, t.acc, t.line);
+        // visualiser pushed up onto the lower album art — frees room for bigger controls
+        bars(c, 24, 466, 432, 42, 36, 3, seed, t.acc, t.line);
         // title / artist / codec
-        text::draw(c, f, 24.0, 580.0, np.title, &s(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0));
-        text::draw(c, f, 24.0, 605.0, np.artist, &s(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0));
-        right(c, f, 456.0, 605.0, np.codec, &s(Family::Mono, Weight::Regular, 10.0, t.acc, 0.08));
+        text::draw(c, f, 24.0, 558.0, np.title, &s(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0));
+        text::draw(c, f, 24.0, 583.0, np.artist, &s(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0));
+        right(c, f, 456.0, 583.0, np.codec, &s(Family::Mono, Weight::Regular, 10.0, t.acc, 0.08));
     }
 
     // ---------- progress (shared) ----------
-    let (py, px0, pw) = (636, 24, 432);
+    let (py, px0, pw) = (612, 24, 432);
     fill_rect(c, px0, py, pw, 4, t.line);
     let fillw = (pw as f32 * np.progress.clamp(0.0, 1.0)) as i32;
     fill_rect(c, px0, py, fillw, 4, t.acc);
-    text::draw(c, f, 24.0, 660.0, np.elapsed, &s(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0));
-    right(c, f, 456.0, 660.0, np.remaining, &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
+    text::draw(c, f, 24.0, 636.0, np.elapsed, &s(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0));
+    right(c, f, 456.0, 636.0, np.remaining, &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
 
-    // ---------- transport (centre y 702) ----------
-    let ty = 702.0;
-    icons::shuffle(c, 50.0, ty, 18.0, if np.shuffle { t.acc } else { t.faint });
-    icons::prev(c, 140.0, ty, 28.0, t.ink);
-    Circle::with_center(Point::new(240, ty as i32), 68)
+    // ---------- transport (centre y 692, larger controls) ----------
+    let ty = 692.0;
+    icons::shuffle(c, 44.0, ty, 20.0, if np.shuffle { t.acc } else { t.faint });
+    icons::prev(c, 130.0, ty, 32.0, t.ink);
+    Circle::with_center(Point::new(240, ty as i32), 80)
         .into_styled(PrimitiveStyle::with_fill(t.acc))
         .draw(c)
         .ok();
     if np.playing {
-        icons::pause(c, 240.0, ty, 28.0, t.acc_ink);
+        icons::pause(c, 240.0, ty, 32.0, t.acc_ink);
     } else {
-        icons::play(c, 240.0, ty, 28.0, t.acc_ink);
+        icons::play(c, 240.0, ty, 32.0, t.acc_ink);
     }
-    icons::next(c, 340.0, ty, 28.0, t.ink);
-    icons::repeat(c, 430.0, ty, 18.0, if np.repeat > 0 { t.acc } else { t.faint });
+    icons::next(c, 350.0, ty, 32.0, t.ink);
+    icons::repeat(c, 436.0, ty, 20.0, if np.repeat > 0 { t.acc } else { t.faint });
     if np.repeat == 2 {
         // repeat-one dot
-        fill_rect(c, 429, ty as i32 - 1, 3, 3, t.acc);
+        fill_rect(c, 435, ty as i32 - 1, 3, 3, t.acc);
     }
 
-    // ---------- bottom toolbar (738..800) ----------
-    hline(c, 738, t.line);
-    let tb = 769.0;
-    icons::heart(c, 48.0, tb, 19.0, if np.liked { t.acc } else { t.dim });
-    icons::queue(c, 144.0, tb, 19.0, t.dim);
-    icons::eq(c, 240.0, tb, 19.0, t.dim);
-    icons::bt(c, 336.0, tb, 18.0, t.dim);
-    icons::library(c, 432.0, tb, 19.0, t.dim);
+    // ---------- bottom toolbar (744..800) ----------
+    hline(c, 744, t.line);
+    let tb = 774.0;
+    icons::heart(c, 48.0, tb, 22.0, if np.liked { t.acc } else { t.dim });
+    icons::queue(c, 144.0, tb, 22.0, t.dim);
+    icons::eq(c, 240.0, tb, 22.0, t.dim);
+    icons::bt(c, 336.0, tb, 21.0, t.dim);
+    icons::library(c, 432.0, tb, 22.0, t.dim);
 }

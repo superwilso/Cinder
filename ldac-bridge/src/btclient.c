@@ -20,14 +20,23 @@
 // Exported factory (mangled). Ghidra typed it void; it actually returns the client*.
 extern void *_ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv(void);
 
-// Vtable method indices into the primary vtable — PLACEHOLDERS, fill from Ghidra.
+// Vtable indices into the BtTransmitterServiceClient primary vtable, extracted via
+// analysis/E_usbdac_ldac/ghidra/DumpVtable.java (vptr = group_base+8 confirmed
+// against CreateInstance; slot 0 = first virtual after the [0,typeinfo] header).
 enum {
-    VIDX_SetLdac              = -1,
-    VIDX_SetLdacSoundQuality  = -1,
-    VIDX_NotifyOpenAudio      = -1,
-    VIDX_NotifyCloseAudio     = -1,
+    VIDX_SetCurrentSource       = 12, // SetCurrentSource(const bool&)
+    VIDX_SetLdacSoundQuality    = 18, // SetLdacSoundQuality(const enum&)
+    VIDX_SetLdac                = 20, // SetLdac(const bool&)
+    VIDX_GetCapabilities        = 25,
+    VIDX_GetSocketName          = 29, // GetSocketName() -> std::string
+    VIDX_SetEnableLowLatency    = 38,
+    // NotifyOpenAudio/CloseAudio/PcmPreferredSize are NOT client vtable methods —
+    // the server opens the audio socket internally (FUN_00019aa0). The producer
+    // just connects to GetSocketName() and writes; the open is triggered by the
+    // SetLdac/SetCurrentSource path (confirm on-device). So we no longer call them.
+    VIDX_NotifyOpenAudio        = -1,
+    VIDX_NotifyCloseAudio       = -1,
     VIDX_NotifyPcmPreferredSize = -1,
-    VIDX_GetSocketName        = -1,
 };
 
 struct bt_client { void *obj; };
@@ -36,6 +45,12 @@ struct bt_client { void *obj; };
 static inline void *vslot(void *obj, int idx) {
     void **vtbl = *(void ***)obj;
     return vtbl[idx];
+}
+
+void btclient_set_current_source(bt_client_t *c, bool on) {
+    typedef void (*fn)(void *self, const bool *arg);
+    bool v = on;
+    ((fn)vslot(c->obj, VIDX_SetCurrentSource))(c->obj, &v); // SetCurrentSource(const bool&)
 }
 
 bt_client_t *btclient_create(void) {

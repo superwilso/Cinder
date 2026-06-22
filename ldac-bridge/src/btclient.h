@@ -15,6 +15,7 @@ bt_client_t *btclient_create(void);                          // factory CreateIn
 void         btclient_destroy(bt_client_t *c);
 void         btclient_set_ldac(bt_client_t *c, bool on);              // SetLdac(const bool&)
 void         btclient_set_ldac_quality(bt_client_t *c, bt_ldac_quality_t q); // SetLdacSoundQuality
+void         btclient_set_current_source(bt_client_t *c, bool on);   // SetCurrentSource(const bool&) — opens the server audio socket
 void         btclient_notify_open_audio(bt_client_t *c);             // NotifyOpenAudio()
 void         btclient_notify_close_audio(bt_client_t *c);            // NotifyCloseAudio()
 uint16_t     btclient_pcm_preferred_size(bt_client_t *c);            // NotifyPcmPreferredSize/negotiated
