@@ -5,7 +5,7 @@ use cinder_ui::library::Tab;
 use cinder_ui::menu::MenuItem;
 use cinder_ui::sound::Sound;
 use cinder_ui::{
-    bluetooth, eq, fm, library, lock, menu, now_playing, pairing, receiver, settings, sound,
+    bluetooth, eq, fm, library, lock, menu, now_playing, pairing, receiver, settings, shelf, sound,
     up_next, usbdac, Canvas, FontSet, Theme, H, W,
 };
 
@@ -33,6 +33,8 @@ fn main() {
         art: "kind",
         liked: true,
         playing: true,
+        shuffle: false,
+        repeat: 1,
     };
     let lk = lock::Lock {
         clock: "14:32",
@@ -73,6 +75,11 @@ fn main() {
     for (name, theme) in [("day", Theme::day()), ("night", Theme::night())] {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
             ("now_playing", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts, &np)),
+            ("shelf", &|c: &mut Canvas| {
+                now_playing::render(c, &theme, &fonts, &np);
+                shelf::render(c, &theme, &fonts, "Now Playing · Atlas Hands", "1:47 / 4:32",
+                    &[Some(shelf::Pin { title: "Library · Albums", sub: "Saved 2 min ago" }), None, None]);
+            }),
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
             ("up_next", &|c: &mut Canvas| up_next::render(c, &theme, &fonts, 0)),

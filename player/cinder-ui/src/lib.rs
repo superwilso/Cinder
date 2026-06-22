@@ -17,6 +17,7 @@ pub mod widgets;
 pub mod lock;
 pub mod menu;
 pub mod now_playing;
+pub mod shelf;
 pub mod up_next;
 pub mod library;
 pub mod eq;

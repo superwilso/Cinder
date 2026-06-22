@@ -26,6 +26,8 @@ pub struct NowPlaying<'a> {
     pub art: &'a str,  // swatch name
     pub liked: bool,
     pub playing: bool,
+    pub shuffle: bool,
+    pub repeat: u8, // 0 off · 1 all · 2 one
 }
 
 fn s(fam: Family, weight: Weight, size: f32, color: embedded_graphics::pixelcolor::Rgb888, tracking: f32) -> TextStyle {
@@ -66,7 +68,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 
     // ---------- transport (centre y 702) ----------
     let ty = 702.0;
-    icons::shuffle(c, 50.0, ty, 18.0, t.faint);
+    icons::shuffle(c, 50.0, ty, 18.0, if np.shuffle { t.acc } else { t.faint });
     icons::prev(c, 140.0, ty, 28.0, t.ink);
     Circle::with_center(Point::new(240, ty as i32), 68)
         .into_styled(PrimitiveStyle::with_fill(t.acc))
@@ -78,7 +80,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         icons::play(c, 240.0, ty, 28.0, t.acc_ink);
     }
     icons::next(c, 340.0, ty, 28.0, t.ink);
-    icons::repeat(c, 430.0, ty, 18.0, t.acc);
+    icons::repeat(c, 430.0, ty, 18.0, if np.repeat > 0 { t.acc } else { t.faint });
+    if np.repeat == 2 {
+        // repeat-one dot
+        fill_rect(c, 429, ty as i32 - 1, 3, 3, t.acc);
+    }
 
     // ---------- bottom toolbar (738..800) ----------
     hline(c, 738, t.line);

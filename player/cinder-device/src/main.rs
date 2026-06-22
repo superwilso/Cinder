@@ -95,6 +95,8 @@ fn main() {
         art: "kind",
         liked: true,
         playing: true,
+        shuffle: false,
+        repeat: 1,
     };
     now_playing::render(&mut canvas, &Theme::day(), &fonts, &np);
 
@@ -132,24 +134,38 @@ fn main() {
     }
     let base = ptr as *mut u8;
 
-    // Blit the canvas to every page of the (triple-buffered) framebuffer.
+    // Continuously blit the canvas to every page of the (triple-buffered)
+    // framebuffer so Cinder stays on-screen in normal boot even as the stock
+    // compositor redraws its own pages. Exit cleanly if the escape flag
+    // /contents/cinder_off appears, so the stock UI can always be recovered
+    // without a reflash. (Static screen for now — no input wired yet.)
     let pages = (var.yres_virtual / var.yres).max(1) as usize;
     let copy_bytes = (W * 4).min(stride); // one row
-    for page in 0..pages {
-        for y in 0..H {
-            let dst_row = (page * H + y) * stride;
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    canvas.buf.as_ptr().add(y * W) as *const u8,
-                    base.add(dst_row),
-                    copy_bytes,
-                );
+    println!(
+        "cinder-device: {}x{} {}bpp, {} pages, stride {} — entering render loop",
+        var.xres, var.yres, var.bits_per_pixel, pages, stride
+    );
+    let escape = std::path::Path::new("/contents/cinder_off");
+    let mut tick: u32 = 0;
+    loop {
+        for page in 0..pages {
+            for y in 0..H {
+                let dst_row = (page * H + y) * stride;
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        canvas.buf.as_ptr().add(y * W) as *const u8,
+                        base.add(dst_row),
+                        copy_bytes,
+                    );
+                }
             }
         }
+        // Check the escape hatch a few times a second (not every frame).
+        tick = tick.wrapping_add(1);
+        if tick % 8 == 0 && escape.exists() {
+            println!("cinder-device: /contents/cinder_off present — exiting");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
     }
-    println!(
-        "rendered Now Playing to /dev/graphics/fb0 ({}x{} {}bpp, {} pages)",
-        var.xres, var.yres, var.bits_per_pixel, pages
-    );
-    std::thread::sleep(std::time::Duration::from_secs(20));
 }

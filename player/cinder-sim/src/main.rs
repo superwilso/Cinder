@@ -9,8 +9,8 @@ use cinder_ui::library::{self, Tab};
 use cinder_ui::menu::{self, MenuItem};
 use cinder_ui::sound::{self, Sound};
 use cinder_ui::{
-    eq, fm, lock, now_playing, pairing, receiver, settings, up_next, usbdac, Canvas, FontSet,
-    Theme, H, W,
+    eq, fm, lock, now_playing, pairing, receiver, settings, shelf, up_next, usbdac, Canvas,
+    FontSet, Theme, H, W,
 };
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
 
@@ -71,6 +71,11 @@ struct App {
     fm_freq: f32,
     usb_dac: bool,
     rx: bool,
+    shuffle: bool,
+    repeat: u8, // 0 off · 1 all · 2 one
+    shelf_open: bool,
+    pins: [Option<(String, String)>; 3],
+    history: Vec<Screen>,
 }
 
 fn menu_items(app: &App) -> Vec<MenuItem<'static>> {
@@ -98,9 +103,37 @@ fn header_back(x: i32, y: i32) -> bool {
 }
 
 fn handle_click(app: &mut App, x: i32, y: i32) {
-    // status-bar ≡ → Menu, on any screen (except Lock which wakes first)
-    if app.screen != Screen::Lock && y < 34 && (356..386).contains(&x) {
+    // Shelf overlay intercepts every click while open.
+    if app.shelf_open {
+        match shelf::hit(x, y) {
+            shelf::ShelfHit::Close => app.shelf_open = false,
+            shelf::ShelfHit::Undo => {
+                app.shelf_open = false;
+                if let Some(s) = app.history.pop() {
+                    app.screen = s;
+                }
+            }
+            shelf::ShelfHit::Pin => {
+                if let Some(slot) = app.pins.iter().position(|p| p.is_none()) {
+                    app.pins[slot] = Some((format!("Now Playing · {}", SONGS[app.track].t), "Just now".into()));
+                }
+            }
+            shelf::ShelfHit::Go(_) => {
+                app.shelf_open = false;
+                app.screen = Screen::NowPlaying;
+            }
+            shelf::ShelfHit::Clear(i) => app.pins[i] = None,
+            shelf::ShelfHit::None => {}
+        }
+        return;
+    }
+    // status-bar ≡ → Menu, bookmark → Shelf (except Lock which wakes first)
+    if app.screen != Screen::Lock && y < 34 && (356..384).contains(&x) {
         app.screen = Screen::Menu;
+        return;
+    }
+    if app.screen != Screen::Lock && y < 34 && (386..414).contains(&x) {
+        app.shelf_open = true;
         return;
     }
     // header back chevron → Menu on sub-screens
@@ -140,6 +173,10 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
                 app.track = (app.track + SONGS.len() - 1) % SONGS.len();
             } else if hit(x, y, 340, 702, 28) {
                 app.track = (app.track + 1) % SONGS.len();
+            } else if hit(x, y, 50, 702, 26) {
+                app.shuffle = !app.shuffle;
+            } else if hit(x, y, 430, 702, 26) {
+                app.repeat = (app.repeat + 1) % 3;
             } else if y > 748 {
                 // bottom toolbar: heart · queue · eq · bt · library
                 if x < 96 {
@@ -168,6 +205,11 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
         Screen::Library => {
             if (95..126).contains(&y) {
                 app.tab = if x < 85 { Tab::Songs } else if x < 170 { Tab::Albums } else if x < 268 { Tab::Artists } else { Tab::Playlists };
+            } else if (128..200).contains(&y) {
+                // the accent "shuffle …" row at the top of every tab
+                app.shuffle = true;
+                app.playing = true;
+                app.screen = Screen::NowPlaying;
             } else if y >= 205 {
                 match app.tab {
                     Tab::Songs => {
@@ -179,7 +221,11 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
                         }
                     }
                     Tab::Artists => app.screen = Screen::Artist,
-                    _ => {}
+                    Tab::Albums | Tab::Playlists => {
+                        // open the tapped item into Now Playing (play first track)
+                        app.playing = true;
+                        app.screen = Screen::NowPlaying;
+                    }
                 }
             }
         }
@@ -220,6 +266,13 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
                 app.bt_on = !app.bt_on;
             } else if y >= 700 && y < 752 {
                 app.screen = Screen::Pairing; // pair new device
+            } else if app.bt_on && app.bt_conn.is_some() && (188..232).contains(&y) {
+                // connected-card buttons: Disconnect (left) / Quality (right)
+                if x < 240 {
+                    app.bt_conn = None;
+                } else {
+                    app.bt_codec = (app.bt_codec + 1) % BT_CODECS.len();
+                }
             } else if app.bt_on {
                 let p0 = if app.bt_conn.is_some() { 284 } else { 210 };
                 if y >= p0 {
@@ -273,7 +326,15 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
                 }
             }
         }
-        Screen::Artist => {}
+        Screen::Artist => {
+            if (100..122).contains(&y) && x < 64 {
+                app.screen = Screen::Library; // artist page's own back chevron
+            } else if y > 180 {
+                // tap an album / top track → play in Now Playing
+                app.playing = true;
+                app.screen = Screen::NowPlaying;
+            }
+        }
     }
 }
 
@@ -287,6 +348,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         Screen::NowPlaying => now_playing::render(c, theme, fonts, &now_playing::NowPlaying {
             title: SONGS[i].t, artist: SONGS[i].a, codec, badge, clock: "14:32", battery: 78,
             elapsed: "1:47", remaining: "-2:45", progress: 0.39, art: SONGS[i].art, liked: app.liked, playing: app.playing,
+            shuffle: app.shuffle, repeat: app.repeat,
         }),
         Screen::Menu => menu::render(c, theme, fonts, &menu_items(app)),
         Screen::UpNext => up_next::render(c, theme, fonts, app.track),
@@ -308,6 +370,18 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         Screen::Receiver => receiver::render(c, theme, fonts, app.rx),
         Screen::Fm => fm::render(c, theme, fonts, app.fm_freq),
         Screen::UsbDac => usbdac::render(c, theme, fonts, app.usb_dac, EQ_PRESETS[app.eq_preset].0, app.dsee),
+    }
+
+    // Shelf is an overlay drawn on top of the current screen.
+    if app.shelf_open {
+        let this_title = format!("Now Playing · {}", SONGS[i].t);
+        let this_sub = format!("1:47 / {}", SONGS[i].d);
+        let pins = [
+            app.pins[0].as_ref().map(|(t, s)| shelf::Pin { title: t, sub: s }),
+            app.pins[1].as_ref().map(|(t, s)| shelf::Pin { title: t, sub: s }),
+            app.pins[2].as_ref().map(|(t, s)| shelf::Pin { title: t, sub: s }),
+        ];
+        shelf::render(c, theme, fonts, &this_title, &this_sub, &pins);
     }
 }
 
@@ -334,6 +408,11 @@ fn main() {
         fm_freq: 88.6,
         usb_dac: false,
         rx: false,
+        shuffle: false,
+        repeat: 1,
+        shelf_open: false,
+        pins: [None, None, None],
+        history: Vec::new(),
     };
 
     let mut window = Window::new(
@@ -346,6 +425,7 @@ fn main() {
     window.set_target_fps(30);
 
     let mut mouse_was_down = false;
+    let mut last_screen = app.screen;
     while window.is_open() && !window.is_key_down(Key::Q) {
         for k in window.get_keys_pressed(KeyRepeat::No) {
             match k {
@@ -379,6 +459,15 @@ fn main() {
             }
         }
         mouse_was_down = down;
+
+        // Track navigation history for the Shelf's Undo.
+        if app.screen != last_screen {
+            app.history.push(last_screen);
+            if app.history.len() > 64 {
+                app.history.remove(0);
+            }
+            last_screen = app.screen;
+        }
 
         let theme = if app.night { Theme::night() } else { Theme::day() };
         let mut c = Canvas::new();
