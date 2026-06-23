@@ -33,8 +33,15 @@ if [ ! -f "$SRC" ]; then
     sync; exit 0
 fi
 
-cp "$SRC" "$BIN/cinder-ldac-bridge" && chmod 0755 "$BIN/cinder-ldac-bridge"
-echo "installed binary: $BIN/cinder-ldac-bridge ($(wc -c < "$BIN/cinder-ldac-bridge" 2>/dev/null) bytes)"
+# copy + VERIFY non-empty before removing the source (busybox here has no `wc`)
+cp "$SRC" "$BIN/cinder-ldac-bridge"
+if [ ! -s "$BIN/cinder-ldac-bridge" ]; then
+    echo "ERROR: failed to install $BIN/cinder-ldac-bridge (cp failed or zero bytes)."
+    echo "       leaving staged $SRC in place. Re-push & retry."
+    sync; umount /system 2>/dev/null; exit 0
+fi
+chmod 0755 "$BIN/cinder-ldac-bridge"
+echo "installed binary: $BIN/cinder-ldac-bridge (present, non-empty)"
 
 # supervisor: prefer a staged copy; otherwise write the known-good script inline
 if [ -f "$SUP" ]; then

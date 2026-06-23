@@ -1,0 +1,82 @@
+
+==== app ApplicationBase vtable: StopBootAnimation slot @ 0089be20 ====
+vfunc -2 @ 0089bdd4 -> 0x00000000
+vfunc -1 @ 0089bdd8 -> 0x00000000
+vfunc 0 @ 0089bddc -> FUN_0013f95c
+vfunc 1 @ 0089bde0 -> FUN_0013f9c0
+vfunc 2 @ 0089bde4 -> FUN_0013fa28
+vfunc 3 @ 0089bde8 -> FUN_0013fabc
+vfunc 4 @ 0089bdec -> FUN_0013fc78
+vfunc 5 @ 0089bdf0 -> FUN_0013fca8
+vfunc 6 @ 0089bdf4 -> 0x0013fe05
+vfunc 7 @ 0089bdf8 -> FUN_0013ff1c
+vfunc 8 @ 0089bdfc -> FUN_0013ff58
+vfunc 9 @ 0089be00 -> libeaselcore.so::easel::ApplicationBase::OnSuspend
+vfunc 10 @ 0089be04 -> FUN_00140020
+vfunc 11 @ 0089be08 -> FUN_0013ff9c
+vfunc 12 @ 0089be0c -> FUN_0013ffe0
+vfunc 13 @ 0089be10 -> 0x0013fe41
+vfunc 14 @ 0089be14 -> libeaselcore.so::easel::ApplicationBase::OnPreResetSetting
+vfunc 15 @ 0089be18 -> libeaselcore.so::easel::ApplicationBase::OnResetSetting
+vfunc 16 @ 0089be1c -> FUN_00140060
+vfunc 17 @ 0089be20 -> libeaselcore.so::easel::ApplicationBase::StopBootAnimation
+vfunc 18 @ 0089be24 -> libeaselcore.so::easel::ApplicationBase::StartResumeAnimation
+vfunc 19 @ 0089be28 -> libeaselcore.so::easel::ApplicationBase::StopResumeAnimation
+vfunc 20 @ 0089be2c -> 0xc34289af
+
+----- PURE VIRTUAL impl @ 0013f95c -----
+
+void FUN_0013f95c(int *param_1)
+
+{
+  char *__s;
+  int *piVar1;
+  int iVar2;
+  
+  __s = (char *)(DAT_0013f9b8 + 0x13f976);
+  iVar2 = **(int **)(DAT_0013f9b0 + 0x13f96c);
+  *param_1 = *(int *)(DAT_0013f9b4 + 0x13f96e) + 8;
+  puts(__s);
+  piVar1 = (int *)param_1[2];
+  param_1[2] = 0;
+  if (piVar1 != (int *)0x0) {
+    (**(code **)(*piVar1 + 0x10))();
+  }
+                    /* WARNING: Subroutine does not return */
+  if (**(int **)(DAT_0013f9bc + 0x13f998) != iVar2) {
+    __stack_chk_fail();
+  }
+  (*(code *)(&UNK_003b72f4 + DAT_003b72f0))(param_1);
+  return;
+}
+
+
+
+----- PURE VIRTUAL impl @ 0013f9c0 -----
+
+void FUN_0013f9c0(ApplicationBase *param_1)
+
+{
+  char *__s;
+  int *piVar1;
+  int iVar2;
+  
+  __s = (char *)(DAT_0013fa20 + 0x13f9da);
+  iVar2 = **(int **)(DAT_0013fa18 + 0x13f9d0);
+  *(int *)param_1 = *(int *)(DAT_0013fa1c + 0x13f9d2) + 8;
+  puts(__s);
+  piVar1 = *(int **)(param_1 + 8);
+  *(undefined4 *)(param_1 + 8) = 0;
+  if (piVar1 != (int *)0x0) {
+    (**(code **)(*piVar1 + 0x10))();
+  }
+  easel::ApplicationBase::~ApplicationBase(param_1);
+                    /* WARNING: Subroutine does not return */
+  if (**(int **)(DAT_0013fa24 + 0x13fa02) != iVar2) {
+    __stack_chk_fail();
+  }
+  (*(code *)(&UNK_003b72c4 + DAT_003b72c0))(param_1);
+  return;
+}
+
+

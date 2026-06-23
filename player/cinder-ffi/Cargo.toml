@@ -1,0 +1,16 @@
+[package]
+name = "cinder-ffi"
+version = "0.1.0"
+edition = "2021"
+
+# Static C-ABI library. Built for arm-unknown-linux-gnueabihf (glibc) and linked into
+# the C++ easel shell `cinder-home`, so the whole Option-B Home app is ONE glibc process:
+#   [C++ easel/appmgr shell] + [this Rust UI] + [C/C++ Sony IPC shims].
+# The musl-static `cinder-device` (the SIGSTOP-overlay safe build) is unaffected.
+[lib]
+name = "cinder_ffi"
+crate-type = ["staticlib"]
+
+[dependencies]
+cinder-ui = { path = "../cinder-ui" }
+libc = "0.2"

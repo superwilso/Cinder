@@ -2,3 +2,9 @@
 # `--target armv7-unknown-linux-musleabihf`; host builds are unaffected.
 [target.armv7-unknown-linux-musleabihf]
 linker = "arm-linux-musleabihf-gcc"
+
+# glibc armhf target — for cinder-ffi (the C-ABI render staticlib linked into the
+# C++ easel shell `cinder-home`). Matches the device's glibc/libc++ world, unlike the
+# musl-static cinder-device. Only used with `--target arm-unknown-linux-gnueabihf`.
+[target.arm-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
