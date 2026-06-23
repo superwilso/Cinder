@@ -15,14 +15,10 @@
 #include <memory>
 #include <cstdio>
 
-// The render core. For the first bring-up this can be the existing framebuffer painter
-// (reuse player/cinder-device's fb open/ioctl/blit) exposed as C entry points, or an FFI
-// surface into the Rust cinder-ui. Kept as plain C so the renderer needn't be C++/libc++.
-extern "C" {
-    int  cinder_render_init(void);   // open /dev/graphics/fb0, query geometry; 0 = ok
-    void cinder_render_tick(void);   // draw one frame (called from the pump)
-    void cinder_render_shutdown(void);
-}
+// The render core: the Rust Cinder UI, built as a glibc C-ABI staticlib
+// (player/cinder-ffi -> libcinder_ffi.a). C ABI, so the renderer stays in Rust while
+// this shell stays C++/libc++. See player/cinder-ffi/include/cinder.h.
+#include "cinder.h"
 
 namespace {
 

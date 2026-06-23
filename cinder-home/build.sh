@@ -19,24 +19,27 @@ CXX=clang++
 TARGET=arm-linux-gnueabihf
 SYSROOT=/usr/arm-linux-gnueabihf            # g++-arm-linux-gnueabihf provides this
 
-LIBDIRS=(-L"$ROOTFS/vendor/sony/lib" -L"$ROOTFS/lib" -L"$ROOTFS/usr/lib")
+# Rust render core (glibc C-ABI staticlib). Build it first with:
+#   cd ../player && cargo build -p cinder-ffi --release --target arm-unknown-linux-gnueabihf
+RUSTLIB="$HERE/../player/target/arm-unknown-linux-gnueabihf/release"
+
+LIBDIRS=(-L"$ROOTFS/vendor/sony/lib" -L"$ROOTFS/lib" -L"$ROOTFS/usr/lib" -L"$RUSTLIB")
 # easel + appmgr + core (drag in libc++/libcxxrt transitively, present on device)
 LIBS=(-leaselcore -leaselcui -lpstcore -lappmgrservice)
+# the Rust UI + the system libs its std needs (static)
+RUSTLIBS=(-lcinder_ffi -lpthread -ldl -lm)
 
 echo "compile (clang/libc++, armhf)…"
 $CXX --target=$TARGET -stdlib=libc++ --sysroot="$SYSROOT" \
-     -fPIC -O2 -Wall -std=c++17 -I"$HERE/src" \
+     -fPIC -O2 -Wall -std=c++17 -I"$HERE/src" -I"$HERE/../player/cinder-ffi/include" \
      -c "$HERE/src/main.cpp" -o "$HERE/main.o"
-# render core (plain C — reuse the cinder-device framebuffer logic here)
-${TARGET}-gcc -fPIC -O2 -Wall -c "$HERE/src/render.c" -o "$HERE/render.o" 2>/dev/null \
-     || echo "note: src/render.c not present yet (stub the C render entry points)"
 
 echo "link…"
 $CXX --target=$TARGET -stdlib=libc++ --sysroot="$SYSROOT" \
-     "$HERE/main.o" ${render_o:-$HERE/render.o} \
+     "$HERE/main.o" \
      "${LIBDIRS[@]}" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$ROOTFS/vendor/sony/lib:$ROOTFS/lib" \
-     "${LIBS[@]}" \
+     "${LIBS[@]}" "${RUSTLIBS[@]}" \
      -o "$OUT"
 ${TARGET}-strip "$OUT" 2>/dev/null || true
 echo "built: $OUT"; file "$OUT"

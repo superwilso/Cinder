@@ -87,6 +87,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cinder-ffi"
+version = "0.1.0"
+dependencies = [
+ "cinder-ui",
+ "libc",
+]
+
+[[package]]
 name = "cinder-host"
 version = "0.1.0"
 dependencies = [
