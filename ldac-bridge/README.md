@@ -21,35 +21,36 @@ USB-DAC capture (ALSA card4/pcm0c, 44100 S32_LE 2ch)
 - `src/capture.c/.h` — USB-DAC capture via the device's `libasound.so`.
 - `build.sh` — cross-build (arm-linux-gnueabihf, links device `.so`s from the rootfs).
 
-## Status: scaffold. Two pieces need on-device completion.
+## Status: BUILDS + packaged. Two unknowns confirmed only on-device (see TEST.md).
 
-1. **Vtable indices (`btclient.c`, the `VIDX_*` are placeholders).** Extract the
-   `BtTransmitterServiceClient` primary vtable from the Ghidra `BtTx` project (the
-   client object from `CreateInstance` @0x1e840 has the `IBtTransmitterService`
-   vtable at word[0]). Map each slot to its method via the per-function log strings
-   (`BtTransmitterServiceClient::SetLdac`, …). Method signatures: `SetLdac(const
-   bool&)`, `SetLdacSoundQuality(const enum&)`, `NotifyOpenAudio()`,
-   `NotifyPcmPreferredSize(const uint16_t&)`, `GetSocketName()`→`std::string`
-   (libc++ layout handled in `btclient_get_socket_name`).
+- **Control plane — DONE.** The real `BtTransmitterServiceClient` vtable indices are
+  baked into `btclient.c` (SetCurrentSource=12, SetLdacSoundQuality=18, SetLdac=20,
+  GetSocketName=29; extracted via `analysis/E_usbdac_ldac/ghidra/DumpVtable.java`).
+  KEY RE finding: the audio socket is opened **server-internally**, triggered by the
+  `SetLdac`/`SetCurrentSource` path — there is no client `NotifyOpenAudio`. So `main.c`
+  does `SetLdac(true)` → `SetLdacSoundQuality` → `SetCurrentSource(true)` →
+  `GetSocketName()` → connect (with retry, since the open is async).
+- **Builds clean** (`build.sh`): armhf glibc-dynamic, ~10 KB stripped, NEEDED =
+  `libasound.so` + `libBtTransmitterService.so` + libc. No libasound2-dev required —
+  a minimal ALSA shim (`include/alsa/asoundlib.h`) is used if the dev package is absent.
 
-2. **Capture contention (`capture.c`).** In stock USB-DAC mode the Sony UAC service
-   already owns `card4/pcm0c` (routing it to `card0`); capture substreams are
-   exclusive so our `snd_pcm_open` will likely return `-EBUSY`. Must stop/redirect
-   that routing (e.g. stop the UAC service, or replace
-   `libaudiohal-uacalsasingletrack.so` so the UAC path feeds our socket directly).
+Two things only hardware can confirm — TEST.md drives both with logging:
+1. **Does `SetCurrentSource` actually open the server socket** (so `connect()` works)?
+2. **Capture contention** — stock UAC (`UsbDeviceAudioPlayerService`) owns `card4/pcm0c`,
+   so `snd_pcm_open` may return `-EBUSY`. If so, stop/redirect that service or replace
+   `libaudiohal-uacalsasingletrack.so` to tee PCM into our socket.
 
-Plus, on the policy side: the replacement player (or a small mode-forcer) must enter
-USB-DAC mode **without** the stock app's `disconnectMsgOverlay` / `RequestDisconnection`
-so the LDAC link survives (the daemon assumes BT/LDAC is already connected).
+Policy side (Option B): Cinder replaces `HgrmMediaPlayerApp`, so the stock
+`disconnectMsgOverlay` / `RequestDisconnection` gate is simply gone — but for the first
+test under stock, use the reverse-order trick (USB-DAC first, then connect BT). See TEST.md §2.
 
 ## Build
 ```bash
-sudo apt install -y libasound2-dev        # ALSA API headers (arch-independent)
-./build.sh                                 # → cinder-ldac-bridge (armhf, dynamic)
+./build.sh        # → cinder-ldac-bridge (armhf, dynamic). No sudo/apt needed.
 ```
 
-## Deploy / test (once the two pieces above are done)
-Install as a `/system` daemon via the same `exec_file` hook used for the probe/Cinder
-(copy binary to `/contents`, installer moves it to `/system/vendor/unknown321/bin`,
-wrap a boot binary or run on demand). Test loop: connect LDAC headphones, force
-USB-DAC mode (bypassing the app gate), run the daemon, play from the PC, listen.
+## Deploy / test
+Packaged via the same `exec_file` hook as Cinder — see `deploy/` (`install_ldac.sh`,
+`uninstall_ldac.sh`, `ldac-run.sh` supervisor) and **TEST.md** for the full procedure.
+Quick version: stage the binary, flash `ldac_install.upg`, reboot, then control via
+files — `touch /contents/ldac_on` to start, `rm` it to stop, read `/contents/ldac.log`.

@@ -48,21 +48,28 @@ fi
 cat > "$BIN/$TARGET" <<WRAP_EOF
 #!/system/bin/sh
 # cinder-device launch hook (reversible; original at $TARGET.real).
-# Cinder OWNS the panel by FREEZING the stock player with SIGSTOP so the two UIs
-# stop fighting over the framebuffer. The stock process stays alive (so init won't
-# respawn it); SIGCONT on escape brings it straight back. Escape hatch: create
-# /contents/cinder_off to resume stock + stop Cinder, no reflash needed.
+# Option B (full replacement): Cinder REPLACES the stock Qt player. We SIGKILL
+# HgrmMediaPlayerApp so it releases the framebuffer AND its RAM to Cinder; the loop
+# re-kills it in case the launcher respawns it. The hagoromo AUDIO services are
+# SEPARATE processes and keep running, so playback/DSP survive — Cinder drives them
+# over IPC. (Cinder re-blits the panel every ~40ms, so any flicker as the Qt app
+# dies is repainted immediately.)
+# Escape hatch: create /contents/cinder_off, then REBOOT — the wrapper then skips the
+# kill and the stock UI launches normally (no reflash). Unlike the old SIGSTOP hook
+# there is no instant resume; recovery from kill mode is via reboot.
+# Optional USB-DAC->LDAC bridge supervisor (no-op if the bridge isn't installed).
+[ -x $BIN/ldac-run.sh ] && $BIN/ldac-run.sh >/dev/null 2>&1 &
 if [ ! -f /contents/cinder_off ]; then
     (
         sleep 15
         $BIN/cinder-device >/contents/cinder_device.log 2>&1 &
         while [ ! -f /contents/cinder_off ]; do
-            killall -STOP HgrmMediaPlayerApp 2>/dev/null \
-                || kill -STOP \$(pidof HgrmMediaPlayerApp 2>/dev/null) 2>/dev/null
+            killall -KILL HgrmMediaPlayerApp 2>/dev/null \
+                || kill -KILL \$(pidof HgrmMediaPlayerApp 2>/dev/null) 2>/dev/null
             sleep 2
         done
-        killall -CONT HgrmMediaPlayerApp 2>/dev/null \
-            || kill -CONT \$(pidof HgrmMediaPlayerApp 2>/dev/null) 2>/dev/null
+        # escape requested: stop Cinder; the stock UI returns on the next reboot
+        killall -KILL cinder-device 2>/dev/null
     ) &
 fi
 exec $BIN/$TARGET.real "\$@"
@@ -74,5 +81,5 @@ rm -f "$SRC" && echo "removed staged $SRC"
 sync
 umount /system 2>/dev/null
 echo "== done. reboot to normal; Cinder paints ~15s after boot. =="
-echo "   escape hatch: create /contents/cinder_off to get stock UI back."
+echo "   escape hatch: create /contents/cinder_off, THEN REBOOT, to get stock UI back."
 exit 0
