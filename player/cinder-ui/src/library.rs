@@ -12,7 +12,7 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 use embedded_graphics::pixelcolor::Rgb888;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tab {
     Songs,
     Albums,

@@ -103,4 +103,24 @@ fn main() {
             save(&c, &format!("{screen}_{name}"));
         }
     }
+
+    // Navigator demo: drive the nav state machine through a press sequence and dump the
+    // resulting frames — proves the screen-aware render dispatch (cinder-ffi uses the same).
+    use cinder_ui::nav::{App, Button};
+    let mut app = App::unlocked();
+    let steps: &[(&str, Option<Button>)] = &[
+        ("nav_0_now_playing", None),
+        ("nav_1_menu", Some(Button::Up)),       // NowPlaying -> Menu
+        ("nav_2_menu_library", Some(Button::Down)), // highlight "Library"
+        ("nav_3_library", Some(Button::Select)),    // enter Library
+        ("nav_4_library_artists", Some(Button::Right)), // Albums -> Artists (then Right again)
+    ];
+    for (label, btn) in steps {
+        if let Some(b) = btn {
+            let _ = app.press(*b);
+        }
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, label);
+    }
 }

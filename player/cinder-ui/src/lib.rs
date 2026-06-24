@@ -28,6 +28,7 @@ pub mod pairing;
 pub mod receiver;
 pub mod fm;
 pub mod usbdac;
+pub mod nav;
 
 pub use canvas::{Canvas, H, W};
 pub use text::{Family, FontSet, TextStyle, Weight};

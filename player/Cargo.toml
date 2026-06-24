@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["cinder-ui", "cinder-host", "cinder-device", "cinder-sim", "cinder-ffi"]
+members = ["cinder-ui", "cinder-host", "cinder-device", "cinder-sim", "cinder-ffi", "cinder-db"]
 
 [profile.release]
 opt-level = "z"

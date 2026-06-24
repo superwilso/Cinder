@@ -81,6 +81,10 @@ cat > "$BIN/$TARGET" <<WRAP_EOF
 #     watchdog neutralised first — deferred; safety first.)
 #  3. MISSING-BINARY GUARD. If cinder-device isn't present+executable we leave the
 #     stock UI completely untouched (never freeze stock with nothing to show).
+#  4. USB MASS-STORAGE HANDOFF. cinder-device detects a PC and creates /dev/cinder_usb;
+#     while that exists we THAW stock (SIGCONT) so it can mount mass storage cleanly
+#     (only stock can release /contents — and pushing /contents/cinder_off, the manual
+#     escape, requires mass storage, so this also keeps recovery working under Cinder).
 #
 # Escape (manual): create /contents/cinder_off, then reboot -> stock UI.
 # Re-enable after an auto-disable: delete /contents/cinder_off, cinder_bootcount,
@@ -107,25 +111,48 @@ fi
 
 if [ ! -f /contents/cinder_off ] && [ -x $BIN/cinder-device ]; then
     (
-        sleep 15
+        # CRITICAL: do NOT freeze the stock app before it reaches Foreground — appmgr
+        # waits for the Home app to foreground and REBOOTS on timeout, so an early
+        # SIGSTOP causes a boot loop (observed 2026-06-24). Wait until HgrmMediaPlayerApp
+        # is up, then a grace period for it to complete the appmgr Foreground handshake,
+        # THEN freeze it and paint over it.
+        i=0
+        while [ \$i -lt 90 ] && ! pidof HgrmMediaPlayerApp >/dev/null 2>&1; do
+            sleep 1; i=\$((i + 1))
+        done
+        sleep 12   # let it reach Foreground (appmgr handshake) before we freeze it
         $BIN/cinder-device >/contents/cinder_device.log 2>&1 &
-        # FREEZE stock with SIGSTOP (alive -> no watchdog reboot, no respawn fight)
+        # FREEZE stock with SIGSTOP (alive -> no watchdog reboot, no respawn fight),
+        # EXCEPT during a USB mass-storage handoff: when cinder-device detects a PC it
+        # creates /dev/cinder_usb and stops painting; we then THAW stock so it can mount
+        # mass storage CLEANLY (only stock releases /contents — a frozen app can't, and
+        # forcing umount would corrupt the vfat volume). Cable out -> cinder-device
+        # removes the flag -> we re-freeze and Cinder resumes.
         while [ ! -f /contents/cinder_off ]; do
-            killall -STOP HgrmMediaPlayerApp 2>/dev/null \
-                || kill -STOP \$(pidof HgrmMediaPlayerApp 2>/dev/null) 2>/dev/null
+            if [ -e /dev/cinder_usb ]; then
+                killall -CONT HgrmMediaPlayerApp 2>/dev/null \
+                    || kill -CONT \$(pidof HgrmMediaPlayerApp 2>/dev/null) 2>/dev/null
+            else
+                killall -STOP HgrmMediaPlayerApp 2>/dev/null \
+                    || kill -STOP \$(pidof HgrmMediaPlayerApp 2>/dev/null) 2>/dev/null
+            fi
             sleep 2
         done
         killall -CONT HgrmMediaPlayerApp 2>/dev/null \
             || kill -CONT \$(pidof HgrmMediaPlayerApp 2>/dev/null) 2>/dev/null
     ) &
-    # heartbeat: survive 60s without a reboot -> this boot is good, clear the counter
-    ( sleep 60; echo 0 > "\$BOOTCOUNT" ) &
+    # heartbeat: survive 90s without a reboot -> this boot is good, clear the counter
+    ( sleep 90; echo 0 > "\$BOOTCOUNT" ) &
 fi
 exec $BIN/$TARGET.real "\$@"
 WRAP_EOF
 chmod 0755 "$BIN/$TARGET"
 echo "hooked via wrapper: $BIN/$TARGET (orig -> $TARGET.real)"
 
+# Fresh install = re-enable: clear any prior disable/bad-boot flags so re-flashing after an
+# auto-disable brings Cinder back without manual cleanup.
+rm -f /contents/cinder_off /contents/cinder_bootcount /contents/cinder_DISABLED_badboot 2>/dev/null
+echo "cleared prior disable flags (fresh install = enabled)"
 # Leave the staged binary in place so a re-flash needs no re-push (removing it was the
 # trap that produced a "wrapper present, binary gone" state). Delete it manually later.
 echo "left staged binary at $SRC (safe to delete once Cinder is confirmed)"

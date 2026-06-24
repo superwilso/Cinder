@@ -13,4 +13,5 @@ crate-type = ["staticlib"]
 
 [dependencies]
 cinder-ui = { path = "../cinder-ui" }
+cinder-db = { path = "../cinder-db" }
 libc = "0.2"

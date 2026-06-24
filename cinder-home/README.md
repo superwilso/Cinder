@@ -28,33 +28,53 @@ Full protocol RE: [`../analysis/F_appmgr_home/RE_findings.md`](../analysis/F_app
   open/ioctl/blit) exposed as the `cinder_render_init/tick/shutdown` C entry points, or an
   FFI surface into the Rust `cinder-ui`.
 
-## Status: BLUEPRINT — not yet buildable/runnable. Two hard prerequisites:
-1. **libc++ ABI toolchain.** The easel symbols use `std::__1::function` / `unique_ptr`
-   (libc++). Must build with **clang `-stdlib=libc++`** against a libc++ whose ABI matches
-   the device's `libc++.so.1` (host clang-18's libc++ headers are a starting point; the
-   runtime ABI must be validated on-device). g++/libstdc++ will *not* interoperate.
-2. ~~ApplicationBase's 2 pure virtuals.~~ **RESOLVED (2026-06-23).** Imported the stripped
-   `HgrmMediaPlayerApp`, found its concrete app-class `ApplicationBase` vtable (anchored on the 3
-   inherited tail slots `StopBootAnimation`/`StartResumeAnimation`/`StopResumeAnimation`), and
-   decompiled vtable slots 0,1: they are the **complete (D1) and deleting (D0) destructors** —
-   i.e. `ApplicationBase` has a **pure virtual destructor** (`virtual ~ApplicationBase() = 0`),
-   not two mystery abstract methods. A concrete subclass satisfies it just by **having a
-   destructor** (`~CinderApp()`), which it does anyway. No extra methods to implement. The
-   vtable order is confirmed: `~dtor(D1,D0), OnInitialize, OnPostInitialize, OnActivate,
-   OnForeground, OnBackground, OnInactivate, OnFinalize, OnSuspend, OnResume, …`. So the ONLY
-   remaining prerequisite is the libc++ toolchain (#1) + on-device validation.
+## Status: ABI LINK-VERIFIED against the real device libs (libc++). Only runtime libs remain.
+Compiled `src/main.cpp` with **real clang-18 `-stdlib=libc++` `-fno-rtti`** (armhf) and confirmed
+**every emitted undefined reference matches a device export exactly** — all 22 `easel::` refs
+resolve against `libeaselcore.so`/`libeaselcui.so`, with real `std::__1` mangling (e.g.
+`ApplicationBase::run(int,char**,char const*,std::__1::unique_ptr<…>)`). The companion
+`cinder-audio` shim's 11 `PlayerService`/`PlayController` refs likewise all match
+`libPlayerServiceClient.so`. So linking against the device libs is proven; the C++ ABI is
+correct. (`-fno-rtti` is required — ApplicationBase's typeinfo is a non-exported local symbol;
+see build.sh.)
 
-## Confirmed (the RE that *is* done)
-- `ApplicationBase` vtable order (slots 2–21): `OnInitialize, OnPostInitialize, OnActivate,
-  OnForeground, OnBackground, OnInactivate, OnFinalize, OnSuspend, OnResume, OnEarlySuspend,
-  OnLateResume, OnPreShutdown, OnPreResetSetting, OnResetSetting, OnPostResetSetting,
-  ReadyToSuspend, ReadyToEarlySuspend, ReadyToShutdown, StopBootAnimation, StartResumeAnimation,
-  StopResumeAnimation` (defaults exist — override as needed).
+The ABI surface was reconstructed from the **real** `libeaselcore.so`/`libeaselcui.so`
+(symbol demangle + vtable relocation dump) and `src/easel_abi.hpp` reproduces it:
+
+- ~~ApplicationBase's 2 pure virtuals.~~ **RESOLVED + verified byte-for-byte (2026-06-24).**
+  Extracted `_ZTVN5easel15ApplicationBaseE` from `libeaselcore.so` (`.rel.dyn` `R_ARM_ABS32`
+  entries): **22-word vtable** = offset-to-top, typeinfo, then **20 function slots**. Slots 0,1
+  are both `__cxa_pure_virtual` → `ApplicationBase` has a **pure virtual destructor**
+  (`virtual ~ApplicationBase() = 0`), satisfied by any concrete `~CinderApp()`. Compiling
+  `main.cpp` with the cross compiler and dumping (`-fdump-lang-class`) shows `CinderApp`'s
+  vtable is **22 entries** with `~CinderApp` in slots 0,1 and `OnForeground`/`OnBackground`
+  overriding slots 5/6 — **identical length & order to the device** (the mis-sized/reordered
+  vtable → wrong-slot-dispatch reboot class is eliminated).
+- `easel::ApplicationBase::run(int,char**,char const*,unique_ptr<ModuleBaseInterface>)` and
+  `SetPumpTriggerHandler(function<void()>)` mangle **identically** to the device exports ✓.
+- `CuiAppModule` ctor confirmed `(ApplicationBase&, int, char**, function<void()>×5,
+  function<bool()>, function<void()>)` — matches the device `_ZN5easel12CuiAppModuleC1E...` ✓.
+
+**Remaining prerequisites (all toolchain/runtime, no more RE):**
+1. **libc++ headers** to compile with `clang -stdlib=libc++` (so std types mangle `std::__1::`,
+   not libstdc++'s `std::`). Not installed here (`libc++-18-dev`, needs apt/sudo, or fetch).
+   g++/libstdc++ compiles the *structure* fine (proven above) but won't link the device libs.
+2. **Device `libc++.so.1` + `libcxxrt.so.1`** to link and to match the runtime ABI. **NOT in the
+   extracted rootfs** (`artifacts/rootfs_mnt` is missing libc++/libc.so.6 — the mount looks
+   partial). Pull them off the device (`adb pull`/MSC) or from a fuller firmware extract.
+3. **On-device validation** that host clang's libc++ `function`/`unique_ptr`/`string` *layout*
+   matches the device's libc++ version (names match; layout must be confirmed by running it).
+
+## ApplicationBase vtable — VERIFIED order (function slots 0–19, all `void` unless noted)
+`~ApplicationBase (slots 0,1, pure)`, then: `OnInitialize, OnPostInitialize, OnActivate,
+OnForeground, OnBackground, OnInactivate, OnFinalize, OnSuspend(bool&), OnResume(string const&),
+OnEarlySuspend(bool&), OnLateResume(string const&), OnPreShutdown(bool&), OnPreResetSetting,
+OnResetSetting, OnPostResetSetting, StopBootAnimation, StartResumeAnimation, StopResumeAnimation`.
+(`ReadyToSuspend`/`ReadyToShutdown`/`Exit`/`GetAppParam`/`run` are exported but **non-virtual** —
+not in the vtable. Defaults exist for all the virtuals; override only what you need.)
 - `run()` internals: builds `AppManagerModule(argc,argv,name,handler=this->LifeCycleManager)`,
   sets power/reset handlers bound to `this`, registers `[AppManagerModule, userModule]`, runs
   `LifeCycleManager::Main`.
-- `CuiAppModule` ctor (demangled): `(ApplicationBase&, int, char**, function<void()>×5,
-  function<bool()>, function<void()>)`. The `bool` one is the pump/`OnPumpTrigger` tick.
 
 ## On-device test plan (do it SAFELY)
 Do **not** repoint the `.appcfg` until cinder-home reaches Foreground reliably — a failure =

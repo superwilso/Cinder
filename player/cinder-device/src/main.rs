@@ -78,6 +78,47 @@ impl Default for FixInfo {
     }
 }
 
+/// True when a USB *data host* (a PC) is connected — not merely a dumb charger.
+/// A PC enumerates the gadget, so `android_usb/state` reaches CONFIGURED; a charger
+/// stays at CONNECTED. Falls back to the power-supply flags if that node is absent
+/// (those can't tell a charger from a PC — recalibrate on device if the primary is gone).
+fn usb_host_present() -> bool {
+    if let Ok(s) = std::fs::read_to_string("/sys/class/android_usb/android0/state") {
+        return s.trim() == "CONFIGURED";
+    }
+    for p in [
+        "/sys/class/power_supply/usb/online",
+        "/sys/class/power_supply/usb/present",
+    ] {
+        if let Ok(s) = std::fs::read_to_string(p) {
+            return s.trim() == "1";
+        }
+    }
+    false
+}
+
+/// Replace fds 1 and 2 with `path` opened using `flags`. Used to MOVE our log off
+/// /contents before a mass-storage handoff: an open write fd on /contents would make
+/// stock's `umount /contents` fail (EBUSY) and silently break mass storage; and once
+/// /contents is unmounted, writes here would hit a stale mountpoint.
+fn redirect_fds(path: &str, flags: libc::c_int) {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    if let Ok(c) = std::ffi::CString::new(path) {
+        unsafe {
+            let fd = libc::open(c.as_ptr(), flags, 0o644);
+            if fd >= 0 {
+                libc::dup2(fd, 1);
+                libc::dup2(fd, 2);
+                if fd > 2 {
+                    libc::close(fd);
+                }
+            }
+        }
+    }
+}
+
 fn main() {
     // Render the screen into our software canvas.
     let fonts = FontSet::load();
@@ -145,9 +186,40 @@ fn main() {
         "cinder-device: {}x{} {}bpp, {} pages, stride {} — entering render loop",
         var.xres, var.yres, var.bits_per_pixel, pages, stride
     );
+    // Diagnostic: record the idle USB-detect signal so the handoff trigger can be
+    // calibrated from a log read (we expect android0/state to exist and read e.g.
+    // "DISCONNECTED" when idle, "CONFIGURED" when a PC is attached).
+    println!(
+        "cinder-device: usb-detect: android0/state={:?} ps/online={:?} (host_present={})",
+        std::fs::read_to_string("/sys/class/android_usb/android0/state").map(|s| s.trim().to_string()),
+        std::fs::read_to_string("/sys/class/power_supply/usb/online").map(|s| s.trim().to_string()),
+        usb_host_present()
+    );
     let escape = std::path::Path::new("/contents/cinder_off");
+    // Flag (on devtmpfs, which is never unmounted) that tells the launch wrapper to
+    // THAW the frozen stock app for a USB mass-storage handoff. See the handoff note below.
+    let usb_flag = "/dev/cinder_usb";
+    let log_path = "/contents/cinder_device.log";
     let mut tick: u32 = 0;
+    let mut handoff = false; // true while we've yielded the screen to stock for USB-MSC
+    let mut usb_hi: u8 = 0; // debounce: consecutive "host present" samples
     loop {
+        if handoff {
+            // Stock owns the screen and is performing its own (clean) mass-storage mount;
+            // we must NOT draw to the framebuffer or touch /contents (it's being
+            // unmounted). Just watch for the cable to come out, then resume Cinder.
+            if !usb_host_present() {
+                let _ = std::fs::remove_file(usb_flag); // wrapper re-freezes stock
+                redirect_fds(log_path, libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND);
+                println!("cinder-device: USB host gone — resuming Cinder");
+                handoff = false;
+                usb_hi = 0;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            continue;
+        }
+
+        // --- normal: paint Cinder over every framebuffer page ---
         for page in 0..pages {
             for y in 0..H {
                 let dst_row = (page * H + y) * stride;
@@ -160,11 +232,31 @@ fn main() {
                 }
             }
         }
-        // Check the escape hatch a few times a second (not every frame).
         tick = tick.wrapping_add(1);
+
+        // Escape hatch (checked a few times a second, not every frame).
         if tick % 8 == 0 && escape.exists() {
             println!("cinder-device: /contents/cinder_off present — exiting");
             break;
+        }
+
+        // USB mass-storage handoff (~2x/s, debounced over ~1s so enumeration flicker
+        // doesn't bounce us in and out). When a PC is connected we hand the screen back
+        // to stock: only stock can cleanly release /contents for mass storage — a frozen
+        // app can't, and forcing the unmount would corrupt the vfat volume. We drop our
+        // own /contents log fd first so stock's `umount /contents` doesn't hit EBUSY.
+        if tick % 12 == 0 {
+            if usb_host_present() {
+                usb_hi = usb_hi.saturating_add(1);
+            } else {
+                usb_hi = 0;
+            }
+            if usb_hi >= 2 {
+                println!("cinder-device: USB host detected — yielding to stock for mass storage");
+                redirect_fds("/dev/null", libc::O_WRONLY);
+                let _ = std::fs::File::create(usb_flag); // wrapper thaws stock (SIGCONT)
+                handoff = true;
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
