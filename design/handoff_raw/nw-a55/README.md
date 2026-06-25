@@ -35,4 +35,5 @@ The design medium is **HTML/CSS/JS** — these are prototypes, not production co
 - keep all audio effects (DSEE HX, ect) and try to apply them to bluetooth audio
 - keep using the built in sound card for battery effciency
 - lock screen, that turns of touch screen but leaves the buttons active
+- fix the 32 bit time issue and prevent the 2038 crash
 this is not a finished list and more goals may be added

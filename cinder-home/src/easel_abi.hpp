@@ -17,8 +17,26 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <cstddef>
 
 namespace easel {
+
+// ── CRITICAL: object SIZING (heap/stack overflow class of bug) ───────────────────────────
+// These declarations have NO data members, so `sizeof` is just the vptr (4 bytes). But the
+// REAL device ctors (in libeaselcore/libeaselcui) write the REAL object layout — far past 4
+// bytes. `new easel::CuiAppModule(...)` would `operator new(4)` then the device ctor scribbles
+// ~0x100 bytes, corrupting the heap; `CinderApp app;` on the stack would let the device
+// ApplicationBase ctor write past the 4-byte stack slot. On 2026-06-25 this manifested as a
+// SIGSEGV at CuiAppModule::OnInitialize+0x45 reading `[this+0x18]=0x12` (malloc metadata in the
+// clobbered callback table). FIX: reserve storage sized from the ctor's HIGHEST WRITE OFFSET
+// (read out of the Ghidra decompiles) so the allocation/stack slot is big enough; the device
+// ctor owns those bytes, we never touch them. Sizes are deliberately generous (the object is
+// short-lived and freed via the device's virtual deleting dtor, which glibc frees by chunk
+// header regardless of our size). Update these if a future fw revision grows the objects.
+//   easel::ApplicationBase : real = 8 bytes  (ctor @0x13e38 writes this+0 vptr, this+4 LCM*)
+//   easel::CuiAppModule    : real ≈ 0x100     (ctor @0x11e60 writes through this[0xfa])
+inline constexpr std::size_t kApplicationBaseRealSize = 8;
+inline constexpr std::size_t kCuiAppModuleRealSize    = 0x100;
 
 // ModuleBaseInterface — the lifecycle-driven unit registered with the app. We never
 // subclass it directly; CuiAppModule (below, defined in libeaselcui) is the concrete one.

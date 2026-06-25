@@ -28,15 +28,30 @@ Full protocol RE: [`../analysis/F_appmgr_home/RE_findings.md`](../analysis/F_app
   open/ioctl/blit) exposed as the `cinder_render_init/tick/shutdown` C entry points, or an
   FFI surface into the Rust `cinder-ui`.
 
-## Status: ABI LINK-VERIFIED against the real device libs (libc++). Only runtime libs remain.
-Compiled `src/main.cpp` with **real clang-18 `-stdlib=libc++` `-fno-rtti`** (armhf) and confirmed
-**every emitted undefined reference matches a device export exactly** — all 22 `easel::` refs
-resolve against `libeaselcore.so`/`libeaselcui.so`, with real `std::__1` mangling (e.g.
-`ApplicationBase::run(int,char**,char const*,std::__1::unique_ptr<…>)`). The companion
-`cinder-audio` shim's 11 `PlayerService`/`PlayController` refs likewise all match
-`libPlayerServiceClient.so`. So linking against the device libs is proven; the C++ ABI is
-correct. (`-fno-rtti` is required — ApplicationBase's typeinfo is a non-exported local symbol;
-see build.sh.)
+## Status: BUILDS — a real, device-loadable ARM binary (glibc-2.23-clean). VERIFIED 2026-06-24.
+`build.sh` now produces a **2.5 MB ARM PIE** (`interp /lib/ld-linux-armhf.so.3`) that **needs
+only `GLIBC_2.4`** — nothing newer than the device's glibc 2.23 — and **every undefined symbol
+resolves against the device libraries** (cross-checked vs `libc/libc++/libcxxrt/libgcc_s` +
+the Sony easel/PlayerService `.so`; the two "standard" imports `__stack_chk_guard`/
+`__tls_get_addr` are imported by Sony's own working libs too, so they resolve at runtime).
+All 22 `easel::` refs + 11 `PlayerService` refs link against the device `.so` with real
+`std::__1` mangling. The device runtime libs were in the repo all along
+(`analysis/ramdisk/lib/` — full glibc 2.23 + libc++/libcxxrt/libgcc_s, from the boot ramdisk);
+NO device pull was needed. Remaining work is **on-device** only (bring-up + calibration), not
+build. (`-fno-rtti` is required — ApplicationBase's typeinfo is a non-exported local symbol.)
+
+### What it took to be glibc-2.23-clean (the hard part — see build.sh)
+The host cross-toolchain is glibc 2.39; the device is glibc **2.23** (2016), and glibc is
+backward- not forward-compatible, so a naive build emits `GLIBC_2.28..2.34` refs the device's
+`ld-2.23` refuses. Three fixes: (1) a glibc-2.23 **sysroot** (Ubuntu-16.04 "xenial" armhf
+`.debs`) for crt + libc, forced onto clang via `-B<crt>` + xenial libdirs (clang otherwise
+silently uses the gcc-13/glibc-2.39 crt + `-lc`); (2) the bundled **SQLite** recompiled against
+the 2.23 headers with **LFS off** (`-DSQLITE_DISABLE_LFS`) + **32-bit time** (`-U_TIME_BITS` —
+glibc 2.23 has no `*_time64` symbols); (3) `src/glibc223_compat.c` shims `stat/fstat/lstat/
+fstatat(+64)` → the `__xstat/__fxstat/…@GLIBC_2.4` the device actually exports (it doesn't
+export plain `stat`, and SQLite takes `&stat`). NOTE re project goal #10 (Y2038): forcing
+32-bit time here is REQUIRED for the 2.23 ABI and does NOT fix 2038 — genuine 2038-safety lives
+in the musl components + i64 timestamps (see project-walkman-goals memory).
 
 The ABI surface was reconstructed from the **real** `libeaselcore.so`/`libeaselcui.so`
 (symbol demangle + vtable relocation dump) and `src/easel_abi.hpp` reproduces it:
@@ -55,15 +70,18 @@ The ABI surface was reconstructed from the **real** `libeaselcore.so`/`libeaselc
 - `CuiAppModule` ctor confirmed `(ApplicationBase&, int, char**, function<void()>×5,
   function<bool()>, function<void()>)` — matches the device `_ZN5easel12CuiAppModuleC1E...` ✓.
 
-**Remaining prerequisites (all toolchain/runtime, no more RE):**
-1. **libc++ headers** to compile with `clang -stdlib=libc++` (so std types mangle `std::__1::`,
-   not libstdc++'s `std::`). Not installed here (`libc++-18-dev`, needs apt/sudo, or fetch).
-   g++/libstdc++ compiles the *structure* fine (proven above) but won't link the device libs.
-2. **Device `libc++.so.1` + `libcxxrt.so.1`** to link and to match the runtime ABI. **NOT in the
-   extracted rootfs** (`artifacts/rootfs_mnt` is missing libc++/libc.so.6 — the mount looks
-   partial). Pull them off the device (`adb pull`/MSC) or from a fuller firmware extract.
-3. **On-device validation** that host clang's libc++ `function`/`unique_ptr`/`string` *layout*
-   matches the device's libc++ version (names match; layout must be confirmed by running it).
+**Build prerequisites — ALL RESOLVED (offline, no device, no sudo):**
+1. ~~libc++ headers~~ ✓ `apt-get download libc++-18-dev libc++abi-18-dev` → `dpkg-deb -x`.
+2. ~~Device `libc++.so.1` + `libcxxrt.so.1`~~ ✓ already in `analysis/ramdisk/lib/` (the README
+   earlier checked the WRONG tree — `rootfs_mnt`; the libs are in the boot-ramdisk extract).
+3. ~~glibc-2.23 toolchain~~ ✓ xenial armhf `.debs` → `$DEVSYS` sysroot (build.sh PREREQUISITES).
+
+**Remaining work — ON-DEVICE only (not build):**
+1. Bring up behind the bad-boot counter; confirm it reaches appmgr **Foreground** without reboot.
+2. `getevent` the physical-button → keycode map (the nav table) — the one true device unknown.
+3. Ghidra the `PlayStatus` field offsets (position/duration; URI offset known) for live now-playing.
+4. On-device validation that host clang's libc++ `function`/`unique_ptr`/`string` *layout* matches
+   the device libc++ version (names match + the binary loads; layout confirmed by running it).
 
 ## ApplicationBase vtable — VERIFIED order (function slots 0–19, all `void` unless noted)
 `~ApplicationBase (slots 0,1, pure)`, then: `OnInitialize, OnPostInitialize, OnActivate,
