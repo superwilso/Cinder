@@ -35,8 +35,8 @@ namespace easel {
 // header regardless of our size). Update these if a future fw revision grows the objects.
 //   easel::ApplicationBase : real = 8 bytes  (ctor @0x13e38 writes this+0 vptr, this+4 LCM*)
 //   easel::CuiAppModule    : real ≈ 0x100     (ctor @0x11e60 writes through this[0xfa])
-inline constexpr std::size_t kApplicationBaseRealSize = 8;
-inline constexpr std::size_t kCuiAppModuleRealSize    = 0x100;
+constexpr std::size_t kApplicationBaseRealSize = 8;     // ctor @0x13e38 writes this+0, this+4
+constexpr std::size_t kCuiAppModuleRealSize    = 0x100; // ctor @0x11e60 writes through this[0xfa]
 
 // ModuleBaseInterface — the lifecycle-driven unit registered with the app. We never
 // subclass it directly; CuiAppModule (below, defined in libeaselcui) is the concrete one.
@@ -84,7 +84,16 @@ public:
     virtual void StopBootAnimation();                  // slot 17
     virtual void StartResumeAnimation();               // slot 18
     virtual void StopResumeAnimation();                // slot 19
+
+private:
+    // Reserve the device object's real footprint so a subclass (CinderApp) on the stack/heap
+    // is large enough for the DEVICE ApplicationBase ctor to write into. vptr is at +0, this
+    // array starts at +4 (covering the LifeCycleManager* the ctor stores at this+4). See the
+    // sizing note at the top of this file. The device ctor owns these bytes.
+    alignas(8) unsigned char _easel_base_storage[0x3c];   // total sizeof = 4 + 0x3c = 0x40
 };
+static_assert(sizeof(ApplicationBase) >= kApplicationBaseRealSize,
+              "ApplicationBase reserved storage smaller than the device object — would overflow");
 
 // CuiAppModule — the non-Qt (framebuffer) module. Ctor signature CONFIRMED by demangle
 // (libeaselcui _ZN5easel12CuiAppModuleC1E...): five void() callbacks, then a bool() pump,
@@ -104,6 +113,15 @@ public:
                  std::function<bool()> onPumpTrigger,
                  std::function<void()> cb7);
     ~CuiAppModule() override;
+
+private:
+    // Reserve the device object's real footprint. `new easel::CuiAppModule(...)` must
+    // operator-new enough room for the DEVICE ctor (libeaselcui), which writes the 7 std::function
+    // callbacks, a std::mutex, a std::condition_variable and flags through this[0xfa]. Without
+    // this we'd allocate only sizeof(vptr)=4 and corrupt the heap. vptr at +0, array at +4.
+    alignas(8) unsigned char _device_object_storage[kCuiAppModuleRealSize + 0x40];
 };
+static_assert(sizeof(CuiAppModule) >= kCuiAppModuleRealSize,
+              "CuiAppModule reserved storage smaller than the device object — would overflow the heap");
 
 } // namespace easel

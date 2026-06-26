@@ -1,5 +1,11 @@
 # cinder-home — Cinder as a valid easel "Home" app (true Option-B Qt-app removal)
 
+> **Status & flash/verify guide: [`STATUS.md`](STATUS.md)** — start there. As of 2026-06-25 the
+> OnInitialize boot crash is fixed (object-sizing overflow), cinder-home constructs cleanly
+> (proven under qemu), and the UI is data-driven & daily-usable (real library browse + scroll,
+> volume HUD, EQ, Bluetooth, scrobbler, full input pump). Build = `bash build.sh` (runs the
+> GLIBC-2.23 gate + the qemu construction preflight); flash artifacts in `dist/`.
+
 Make `appmgrservice` launch **Cinder** as the foreground `type:Home` app instead of the
 stock Qt `HgrmMediaPlayerApp`, completing the app-manager **Foreground handshake** so the
 device does **not** reboot. This is the clean way to remove the Qt app (frees its RAM, no

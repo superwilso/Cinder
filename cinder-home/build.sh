@@ -76,14 +76,22 @@ echo "[1/4] build cinder-ffi staticlib (Rust UI + SQLite vs glibc 2.23)…"
     cargo build -p cinder-ffi --release --target arm-unknown-linux-gnueabihf )
 
 echo "[2/4] compile C++ shell + audio shim (clang/libc++, -fno-rtti)…"
-# Compile against the device libc++ headers; glibc symbol VERSIONS are pinned at link time.
-LIBCXX=(-stdlib=libc++ -nostdinc++ -isystem "$LIBCXX_V1")
-$CXX --target=$TARGET "${LIBCXX[@]}" --sysroot="$DEVSYS" \
-     -fPIC -O2 -Wall -std=c++14 -fno-rtti "${INCLUDES[@]}" \
-     -c "$HERE/src/main.cpp" -o "$HERE/main.o"
-$CXX --target=$TARGET "${LIBCXX[@]}" --sysroot="$DEVSYS" \
-     -fPIC -O2 -Wall -std=c++14 -fno-rtti "${INCLUDES[@]}" \
-     -c "$AUDIO/src/player_shim.cpp" -o "$HERE/player_shim.o"
+# Compile against the device libc++ headers AND the glibc-2.23 C headers. We must force the
+# 2.23 C headers explicitly (-nostdinc + -isystem): --sysroot alone does NOT switch them, so
+# clang would otherwise use the host's glibc-2.39 stdio/stdlib whose C23 redirects pull in
+# __isoc23_scanf/__isoc23_strtol — symbols that DON'T EXIST on the device's glibc 2.23.
+# Order: libc++ 3.9 C++ headers, then clang's builtin headers (stddef/stdarg), then xenial
+# 2.23 glibc, then kernel uapi. T32 kills the forced 64-bit time/offset.
+CLANGRES="$($CXX -print-resource-dir)"
+CXXINC=(-nostdinc++ -isystem "$LIBCXX_V1" \
+        -nostdinc -isystem "$CLANGRES/include" -isystem "$GCCINC" \
+        -isystem "$DEVSYS/usr/include/arm-linux-gnueabihf" -isystem "$DEVSYS/usr/include" \
+        -isystem "$KHDR")
+for src in "$HERE/src/main.cpp:$HERE/main.o" "$AUDIO/src/player_shim.cpp:$HERE/player_shim.o"; do
+    $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
+         -fPIC -O2 -Wall -std=c++14 -fno-rtti "${INCLUDES[@]}" \
+         -c "${src%%:*}" -o "${src##*:}"
+done
 
 echo "[3/4] compile glibc-2.23 compat shim (stat/* -> __xstat/*)…"
 $CC -Os -fPIC "${T32[@]}" "${SYS223[@]}" \
@@ -110,3 +118,10 @@ if [ -n "$BAD" ]; then echo "FAIL: needs GLIBC newer than device 2.23:"; echo "$
 echo "OK: GLIBC needs = $(${TARGET}-readelf -V "$OUT" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tr '\n' ' ')"
 cp "$OUT" "$OUT.unstripped"; ${TARGET}-strip "$OUT"
 echo "built: $OUT  ($(stat -c%s "$OUT") bytes)"; file "$OUT" | cut -d, -f1-3
+
+# ── offline bring-up gate: construct the real device objects under qemu (no device needed) ──
+# Catches std::function-ABI / ctor-signature / object-SIZE regressions BEFORE flashing.
+if [ "${SKIP_PREFLIGHT:-0}" != "1" ]; then
+    echo "── preflight: qemu construction gate ──"
+    DEVSYS="$DEVSYS" LIBCXX_V1="$LIBCXX_V1" bash "$HERE/tools/preflight_qemu.sh"
+fi

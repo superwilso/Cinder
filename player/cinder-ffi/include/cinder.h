@@ -45,6 +45,14 @@ void cinder_set_now_playing(const char *title, const char *artist, const char *c
                             const char *elapsed, const char *remaining,
                             float progress, int playing, int battery);
 
+/* Enable the built-in scrobbler: appends an Audioscrobbler/1.1 `.scrobbler.log` at `path`
+ * (e.g. the storage root). `client` is the #CLIENT id. Call after cinder_db_open.
+ * 0 = ok, -2 = renderer not initialised. */
+int  cinder_scrobble_open(const char *path, const char *client);
+/* Advance the scrobbler's play clock one second (call ~1x/sec from the pump). `playing` is
+ * 0 paused / non-zero playing. No-op if the scrobbler isn't enabled. */
+void cinder_scrobble_tick(int playing);
+
 #ifdef __cplusplus
 }
 #endif

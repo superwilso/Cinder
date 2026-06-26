@@ -16,6 +16,8 @@ pub struct Theme {
     pub faint: Rgb888,
     pub acc: Rgb888,
     pub acc_ink: Rgb888,
+    /// Fill behind the highlighted list/menu row (subtle warm wash, theme-aware).
+    pub row_sel: Rgb888,
     pub night: bool,
 }
 
@@ -30,6 +32,7 @@ impl Theme {
             faint: rgb(0x5f5a52),
             acc: rgb(0xf4651f),
             acc_ink: rgb(0x1a0a02),
+            row_sel: rgb(0x1c1713),
             night: false,
         }
     }
@@ -44,6 +47,7 @@ impl Theme {
             faint: rgb(0x3b362d),
             acc: rgb(0x863810),
             acc_ink: rgb(0x000000),
+            row_sel: rgb(0x0f0c0a),
             night: true,
         }
     }

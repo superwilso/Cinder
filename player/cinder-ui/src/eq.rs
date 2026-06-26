@@ -18,7 +18,7 @@ fn disc(c: &mut Canvas, cx: i32, cy: i32, d: u32, col: embedded_graphics::pixelc
         .ok();
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: &str) {
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: &str, sel: usize) {
     c.fill(t.bg);
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     let y0 = crate::chrome::header(c, t, f, "Equalizer", None);
@@ -65,12 +65,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
         // deviation fill (mid → knob)
         let (fy, fh) = if knob_y < mid { (knob_y, mid - knob_y) } else { (mid, knob_y - mid) };
         fill_rect(c, bx - 1, fy, 2, fh, t.acc);
-        // knob: bg ring + accent core
+        let on = i == sel;
+        // knob: bg ring + accent core (selected band gets a brighter, larger highlight ring)
+        if on {
+            disc(c, bx, knob_y, 22, t.ink);
+        }
         disc(c, bx, knob_y, 16, t.bg);
-        disc(c, bx, knob_y, 10, t.acc);
-        // dB label above
+        disc(c, bx, knob_y, if on { 12 } else { 10 }, t.acc);
+        // dB label above (brighter on the selected band)
         let dbl = if db > 0 { format!("+{}", db) } else { format!("{}", db) };
-        crate::widgets::center(c, f, bx as f32, (sy - 6) as f32, &dbl, &sty(Family::Mono, Weight::Regular, 9.0, if db != 0 { t.acc } else { t.faint }, 0.0));
+        let dbcol = if on { t.ink } else if db != 0 { t.acc } else { t.faint };
+        crate::widgets::center(c, f, bx as f32, (sy - 6) as f32, &dbl, &sty(Family::Mono, Weight::Regular, if on { 10.0 } else { 9.0 }, dbcol, 0.0));
         // Hz label below
         crate::widgets::center(c, f, bx as f32, (by + 22) as f32, EQ_BANDS[i], &sty(Family::Mono, Weight::Regular, 9.0, t.dim, 0.0));
     }

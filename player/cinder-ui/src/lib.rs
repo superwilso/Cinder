@@ -11,6 +11,8 @@ pub mod canvas;
 pub mod chrome;
 pub mod data;
 pub mod icons;
+pub mod model;
+pub mod overlay;
 pub mod theme;
 pub mod text;
 pub mod widgets;
@@ -31,5 +33,6 @@ pub mod usbdac;
 pub mod nav;
 
 pub use canvas::{Canvas, H, W};
+pub use model::Library;
 pub use text::{Family, FontSet, TextStyle, Weight};
 pub use theme::Theme;

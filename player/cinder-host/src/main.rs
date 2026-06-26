@@ -6,7 +6,7 @@ use cinder_ui::menu::MenuItem;
 use cinder_ui::sound::Sound;
 use cinder_ui::{
     bluetooth, eq, fm, library, lock, menu, now_playing, pairing, receiver, settings, shelf, sound,
-    up_next, usbdac, Canvas, FontSet, Theme, H, W,
+    up_next, usbdac, Canvas, FontSet, Library, Theme, H, W,
 };
 
 fn save(c: &Canvas, name: &str) {
@@ -71,6 +71,7 @@ fn main() {
     };
     let bt = Bt { on: true, connected: Some("WH-1000XM5"), codec: "LDAC" };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
+    let lib = Library::sample();
 
     for (name, theme) in [("day", Theme::day()), ("night", Theme::night())] {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
@@ -83,12 +84,12 @@ fn main() {
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
             ("up_next", &|c: &mut Canvas| up_next::render(c, &theme, &fonts, 0)),
-            ("library_songs", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0)),
-            ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0)),
-            ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0)),
-            ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0)),
+            ("library_songs", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, &lib)),
+            ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, &lib)),
+            ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, &lib)),
+            ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, &lib)),
             ("artist", &|c: &mut Canvas| library::artist(c, &theme, &fonts)),
-            ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1")),
+            ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4)),
             ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd)),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, theme.night, false)),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
@@ -122,5 +123,121 @@ fn main() {
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, label);
+    }
+
+    // Windowing/scroll proof: a large synthetic library (240 songs / 60 albums) driven deep,
+    // to confirm list windowing + the scrollbar (real libraries are thousands of rows).
+    {
+        use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, Library, SongRow};
+        let artists_n = ["Hollow Pines", "Vesper Lane", "Glass Atlas", "Petal & Wire",
+                         "Cold Stone & Sea", "Neon Cartography", "Aurora Bay", "Slow Tide"];
+        let mut songs = Vec::new();
+        for i in 0..240 {
+            let a = artists_n[i % artists_n.len()];
+            songs.push(SongRow {
+                title: format!("Track {:03} — {}", i + 1, ["Drift", "Ember", "Lantern", "Quartz"][i % 4]),
+                artist: a.to_string(),
+                dur: format!("{}:{:02}", 2 + i % 5, i * 7 % 60),
+                art: format!("album {}", i / 4),
+                object_id: i as i64,
+            });
+        }
+        let mut album_groups = Vec::new();
+        for (gi, a) in artists_n.iter().enumerate() {
+            let albums = (0..7)
+                .map(|k| {
+                    let n = 8 + (k as u32 % 5);
+                    AlbumRow {
+                        name: format!("{} — Vol. {}", ["Nightfall", "Driftwood", "Halo", "Cinder"][k % 4], k + 1),
+                        artist: a.to_string(),
+                        year: format!("{}", 2010 + (gi + k) % 14),
+                        tracks: n,
+                        art: format!("album {}{}", a, k),
+                        album_id: (gi * 10 + k) as i64,
+                        track_list: (0..n)
+                            .map(|i| SongRow {
+                                title: format!("{} {}", ["Drift", "Ember", "Lantern", "Quartz"][i as usize % 4], i + 1),
+                                artist: a.to_string(),
+                                dur: format!("{}:{:02}", 3 + i % 3, (i * 17) % 60),
+                                art: format!("album {}{}", a, k),
+                                object_id: (gi * 100 + k * 10 + i as usize) as i64,
+                            })
+                            .collect(),
+                    }
+                })
+                .collect();
+            album_groups.push(ArtistGroup { artist: a.to_string(), albums });
+        }
+        let artists = artists_n
+            .iter()
+            .map(|a| ArtistRow { name: a.to_string(), albums: 7, tracks: 56, arts: vec![format!("{a}0"), format!("{a}1")] })
+            .collect();
+        let big = Library { songs, album_groups, artists, playlists: Vec::new() };
+
+        let mut app = App::unlocked();
+        app.press(Button::Up); // Menu
+        app.press(Button::Down); // -> Library row
+        app.press(Button::Select); // enter Library
+        app.set_library(big);
+        // Songs tab (default tab is Albums; Left → Songs), scroll down 30 rows
+        app.press(Button::Left);
+        for _ in 0..30 {
+            app.press(Button::Down);
+        }
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "scroll_library_songs");
+        // Albums tab (grouped headers), scroll down 24
+        app.press(Button::Right); // Songs → Albums
+        for _ in 0..24 {
+            app.press(Button::Down);
+        }
+        let mut c2 = Canvas::new();
+        app.render(&mut c2, &fonts, &np);
+        save(&c2, "scroll_library_albums");
+    }
+
+    // Volume HUD over Now Playing (press Vol Up a few times).
+    {
+        let mut app = App::unlocked();
+        app.press(Button::VolUp);
+        app.press(Button::VolUp);
+        app.press(Button::VolUp);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "overlay_volume");
+    }
+
+    // Album drill-in: Library → Albums → Select an album → its track list.
+    {
+        let mut app = App::unlocked();
+        app.press(Button::Up); // Menu
+        app.press(Button::Down); // Library row
+        app.press(Button::Select); // enter Library (Albums tab default)
+        app.press(Button::Down); // move to 2nd album
+        app.press(Button::Select); // drill into the album
+        app.press(Button::Down);
+        app.press(Button::Down); // highlight 3rd track
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "album_drill");
+    }
+
+    // EQ interactivity: enter EQ, move to band 4, push it up — the selected band highlights.
+    {
+        let mut app = App::unlocked();
+        app.press(Button::Up); // Menu
+        for _ in 0..4 {
+            app.press(Button::Down);
+        }
+        app.press(Button::Select); // -> Equalizer (menu idx 4)
+        for _ in 0..4 {
+            app.press(Button::Right); // select band 4
+        }
+        app.press(Button::Up);
+        app.press(Button::Up); // boost it
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "eq_interactive");
     }
 }

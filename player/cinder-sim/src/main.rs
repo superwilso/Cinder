@@ -77,6 +77,7 @@ struct App {
     shelf_open: bool,
     pins: [Option<(String, String)>; 3],
     history: Vec<Screen>,
+    lib: cinder_ui::Library,
 }
 
 fn menu_items(app: &App) -> Vec<MenuItem<'static>> {
@@ -355,9 +356,9 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         }),
         Screen::Menu => menu::render(c, theme, fonts, &menu_items(app)),
         Screen::UpNext => up_next::render(c, theme, fonts, app.track),
-        Screen::Library => library::render(c, theme, fonts, app.tab, app.track, app.sort),
+        Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, &app.lib),
         Screen::Artist => library::artist(c, theme, fonts),
-        Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0),
+        Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0, 0),
         Screen::Sound => sound::render(c, theme, fonts, &Sound {
             dsee: app.dsee, vinyl: app.vinyl, vpt: VPTS[app.vpt], dcphase: DCS[app.dc],
             normalizer: app.normalizer, clearaudio: app.clearaudio, eq_preset: EQ_PRESETS[app.eq_preset].0,
@@ -417,6 +418,7 @@ fn main() {
         shelf_open: false,
         pins: [None, None, None],
         history: Vec::new(),
+        lib: cinder_ui::Library::sample(),
     };
 
     let mut window = Window::new(

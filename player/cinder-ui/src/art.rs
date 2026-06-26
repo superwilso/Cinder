@@ -18,9 +18,47 @@ fn stops(name: &str) -> [(f32, (u8, u8, u8)); 3] {
         "prism" => [(0.0, (0x4a, 0x8a, 0xcb)), (0.5, (0xb0, 0x4e, 0x9a)), (1.0, (0xd4, 0xa9, 0x55))],
         "static" => [(0.0, (0x2a, 0x2a, 0x2a)), (0.5, (0x1f, 0x1f, 0x1f)), (1.0, (0x1a, 0x1a, 0x1a))],
         "cassette" => [(0.0, (0xc8, 0xa4, 0x5b)), (0.5, (0x5a, 0x45, 0x20)), (1.0, (0x1d, 0x16, 0x10))],
-        // "kind" (default)
-        _ => [(0.0, (0xd9, 0x77, 0x57)), (0.6, (0x8b, 0x3a, 0x1e)), (1.0, (0x2a, 0x11, 0x08))],
+        "kind" | "" => [(0.0, (0xd9, 0x77, 0x57)), (0.6, (0x8b, 0x3a, 0x1e)), (1.0, (0x2a, 0x11, 0x08))],
+        // Real library items (album/track titles) hash to a distinct, stable gradient so
+        // each looks different even before real album-art thumbnails are decoded.
+        other => hashed_stops(other),
     }
+}
+
+/// HSV→RGB (h in degrees, s/v in 0..1).
+fn hsv(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+    let c = v * s;
+    let hp = (h.rem_euclid(360.0)) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    (
+        (((r + m) * 255.0).round()).clamp(0.0, 255.0) as u8,
+        (((g + m) * 255.0).round()).clamp(0.0, 255.0) as u8,
+        (((b + m) * 255.0).round()).clamp(0.0, 255.0) as u8,
+    )
+}
+
+/// Derive a bright→mid→dark 3-stop gradient from a string hash (FNV-1a → hue).
+fn hashed_stops(name: &str) -> [(f32, (u8, u8, u8)); 3] {
+    let mut h: u32 = 2166136261;
+    for b in name.bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(16777619);
+    }
+    let hue = (h % 360) as f32;
+    [
+        (0.0, hsv(hue, 0.52, 0.80)),
+        (0.6, hsv(hue, 0.62, 0.40)),
+        (1.0, hsv((hue + 14.0) % 360.0, 0.66, 0.12)),
+    ]
 }
 
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
