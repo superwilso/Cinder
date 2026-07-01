@@ -22,6 +22,7 @@ pub mod now_playing;
 pub mod shelf;
 pub mod up_next;
 pub mod library;
+pub mod viz;
 pub mod eq;
 pub mod sound;
 pub mod settings;
@@ -30,6 +31,7 @@ pub mod pairing;
 pub mod receiver;
 pub mod fm;
 pub mod usbdac;
+pub mod onboarding;
 pub mod nav;
 
 pub use canvas::{Canvas, H, W};

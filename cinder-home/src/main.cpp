@@ -26,11 +26,20 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <ctime>
+#include <setjmp.h>
+#include <pthread.h>
+#include <sys/statvfs.h>
+#include <sys/ioctl.h>
 
 // The render core: the Rust Cinder UI, built as a glibc C-ABI staticlib
 // (player/cinder-ffi -> libcinder_ffi.a). C ABI, so the renderer stays in Rust while
 // this shell stays C++/libc++. See player/cinder-ffi/include/cinder.h.
 #include "cinder.h"
+#include "cinder_effects.h"
+#include "cinder_analyzer.h"
+#include "cinder_power.h"
+#include "discover.h"
 // The playback-control shim over Sony's PlayerService (cinder-audio/player_shim.cpp).
 #include "cinder_audio.h"
 
@@ -55,50 +64,249 @@ void dump_maps() {
     std::fclose(m);
     std::fflush(stderr);
 }
-void crash_handler(int sig, siginfo_t* si, void* uc_) {
+void log_fault(int sig, void* uc_, siginfo_t* si, const char* tag) {
     unsigned long pc = 0, lr = 0;
 #if defined(__arm__)
     ucontext_t* uc = static_cast<ucontext_t*>(uc_);
     pc = uc->uc_mcontext.arm_pc; lr = uc->uc_mcontext.arm_lr;
 #endif
-    std::fprintf(stderr, "[cinder-home] *** %s : PC=0x%08lx LR=0x%08lx addr=%p ***\n",
-                 (sig == SIGALRM ? "WATCHDOG (hung ~20s)" : "FATAL SIGNAL"),
-                 pc, lr, si ? si->si_addr : (void*)0);
+    std::fprintf(stderr, "[cinder-home] *** %s : sig=%d PC=0x%08lx LR=0x%08lx addr=%p ***\n",
+                 tag, sig, pc, lr, si ? si->si_addr : (void*)0);
     void* bt[24];
     int n = backtrace(bt, 24);
     std::fprintf(stderr, "--- backtrace (%d frames) ---\n", n);
     backtrace_symbols_fd(bt, n, 2 /*stderr*/);
     std::fflush(stderr);
     dump_maps();
+}
+
+// ── crash/hang GUARD ────────────────────────────────────────────────────────────────────
+// A crash (SIGSEGV/BUS/…) OR a watchdog timeout (SIGALRM) that happens INSIDE a guarded call
+// (run_guarded) is RECOVERED via siglongjmp — the subsystem is skipped and the UI keeps
+// running. Outside a guard it's FATAL (_exit → appmgr reboots → the launcher's bad-boot counter
+// accumulates → auto-revert to stock). This is what makes a blocking/buggy Sony service unable
+// to brick the device: worst case is "UI runs without audio/library", never a hung boot screen.
+sigjmp_buf g_guard_jb;
+volatile sig_atomic_t g_in_guard = 0;
+// The guard's sigsetjmp is thread-specific: siglongjmp is only valid on the thread that set it
+// up. Sony libraries (PlayerService/effect/analyzer) run IPC threads of their own, and a fault on
+// one of THOSE while the pump thread is inside run_guarded must NOT siglongjmp with the pump's
+// jump buffer (cross-thread longjmp = stack corruption / crash-loop). So we record the guard owner
+// and only recover when the faulting thread IS the owner; any other thread's fault is fatal (the
+// bad-boot counter then reverts — far safer than corrupting the stack).
+volatile pthread_t g_guard_owner = 0;
+
+void fault_handler(int sig, siginfo_t* si, void* uc_) {
+    if (g_in_guard && pthread_equal(pthread_self(), (pthread_t)g_guard_owner)) {
+        log_fault(sig, uc_, si, "GUARDED CALL FAULTED — skipping that subsystem, UI continues");
+        g_in_guard = 0;
+        alarm(0);
+        siglongjmp(g_guard_jb, 1);   // unwind back to run_guarded (same thread that set it up)
+    }
+    log_fault(sig, uc_, si,
+              sig == SIGALRM ? "WATCHDOG (un-guarded hang)" : "FATAL SIGNAL");
     _exit(42);  // die fast -> appmgr reboots -> bad-boot counter reverts to stock
 }
+
 void install_diagnostics() {
     struct sigaction sa; std::memset(&sa, 0, sizeof sa);
-    sa.sa_sigaction = crash_handler; sa.sa_flags = SA_SIGINFO;
+    sa.sa_sigaction = fault_handler; sa.sa_flags = SA_SIGINFO | SA_NODEFER;
     sigemptyset(&sa.sa_mask);
     for (int s : {SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE, SIGALRM}) sigaction(s, &sa, nullptr);
-    alarm(20);  // if not cancelled, fire the watchdog before appmgr's own timeout
+    alarm(20);  // construction watchdog: if we never paint, _exit before appmgr's own timeout
 }
 
-bool g_render_ready = false;   // renderer brought up? (pump must not tick before this)
+// Run `fn` under the crash+hang guard with a `timeout`-second watchdog. Returns 0 on success,
+// -1 if it crashed or hung (in which case it was skipped and the process is still alive).
+// Saves/restores any OUTER alarm so it composes when called inside the per-frame watchdog
+// (e.g. carry_out -> EQ apply, which runs inside input_pump's alarm()).
+int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
+    clog_(what);
+    unsigned prev = alarm(0);     // pause + capture the outer watchdog's remaining time
+    g_guard_owner = pthread_self();  // only THIS thread may siglongjmp back to the buffer below
+    g_in_guard = 1;
+    if (sigsetjmp(g_guard_jb, 1) == 0) {
+        alarm(timeout);
+        fn();
+        alarm(0);
+        g_in_guard = 0;
+        if (prev) alarm(prev);    // resume the outer watchdog
+        return 0;
+    }
+    // returned here via siglongjmp from fault_handler
+    g_in_guard = 0;
+    alarm(0);
+    if (prev) alarm(prev);
+    return -1;
+}
 
-// Bring up renderer + library + audio. Called from the module's onForeground callback
-// (the CUI module's foreground phase). Idempotent.
-void bring_up() {
+bool g_settings_loaded = false; // did cinder_settings_load find a saved file? (→ re-apply EQ/sound)
+void set_backlight(int night); // night=minimal/day=normal; boot forces day, toggle matches theme
+bool g_render_ready = false;   // framebuffer/renderer open? (pump must not tick before this)
+easel::CuiAppModule* g_cui = nullptr;   // the UI module — used to drive the pump (OnPumpTrigger)
+easel::ApplicationBase* g_app = nullptr; // the app — for StopBootAnimation() (stop the boot-anim overlay)
+volatile bool g_pump_ticker_run = false; // is the pump-driver ticker thread active?
+pthread_t g_pump_ticker = 0;   // the ticker thread handle (joined at finalize)
+bool g_deferred_done = false;  // slow/blocking init (DB + PlayerService) finished?
+time_t g_healthy_since = 0;    // when deferred init completed (for the proven-healthy reset)
+bool g_counter_reset = false;  // have we cleared the launcher bad-boot counter this boot?
+
+// ── watchdog summary ────────────────────────────────────────────────────────────────────
+// SIGALRM (alarm) + fault_handler give two layers: (1) `run_guarded` wraps the blocking Sony-IPC
+// calls (DB load, PlayerService connect, now-playing poll) and RECOVERS via siglongjmp (skip that
+// subsystem, keep the UI alive); (2) a per-frame `alarm(8)` around render/input + the construction
+// `alarm(20)` are FATAL on timeout (_exit → appmgr reboots → the launcher's bad-boot counter
+// accumulates → auto-revert to stock). Together: a blocking/buggy Sony service can't hang the boot
+// (the 2026-06-26 wbrt incident), and a hang/crash in our own code reverts instead of soft-bricking.
+
+// ── render driver (Option-B pivot, 2026-07-01) ──────────────────────────────────────────────
+// The non-Qt CuiAppModule's OnForeground blocks in Sony's event/JobQueue framework: its second
+// sub-module vtable call ([this+0x60]->+0x18) waits on the CuiAppModule condition_variable for a
+// flag that Sony's pst::core::JobQueue / event-muxer would drive — infrastructure that libeaselqt
+// runs for the *Qt* app but which we don't (CuiAppModule has NO other user on the device, so it's
+// unproven standalone). Driving OnPumpTrigger did NOT help (different wait). But render_up already
+// opened the framebuffer, so we DRIVE OUR OWN render loop here instead of relying on easel's pump.
+// This paints the panel from a thread we control, independent of the (blocked) easel main thread.
+// SAFETY: the launcher's per-boot bad-boot counter (cleared only when we mark healthy) still
+// auto-reverts to stock after 2 boots even if we disarm the in-process watchdog below.
+void start_pump_ticker();   // full worker defined just before main(), after the frame helpers
+
+// FAST foreground bring-up: open the framebuffer ONLY, so we can paint immediately and the
+// appmgr Foreground handshake completes promptly. No DB, no IPC here (those can be slow/block).
+void render_up() {
     if (g_render_ready) return;
-    clog_("bring_up: cinder_render_init");
-    if (cinder_render_init() != 0) { clog_("bring_up: render init FAILED"); return; }
-    clog_("bring_up: cinder_db_open(/db/MTPDB.dat)");
-    cinder_db_open("/db/MTPDB.dat");   // library reader (path: confirm on device)
-    clog_("bring_up: cinder_scrobble_open(/contents/.scrobbler.log)");
-    // Built-in scrobbler: writes the standard Audioscrobbler/1.1 log to the storage root so
-    // existing uploaders (and the unknown321/scrobbler toolchain) work unchanged.
-    cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
-    clog_("bring_up: cinder_audio_init");
-    cinder_audio_init("cinder");       // PlayerService control (poll mode)
+    clog_("render_up: cinder_render_init");
+    if (cinder_render_init() != 0) { clog_("render_up: render init FAILED"); return; }
     g_render_ready = true;
-    alarm(0);   // we reached foreground init -> cancel the hang watchdog
-    clog_("bring_up: DONE (renderer ready)");
+    // Restore persisted UI preferences (theme/visualiser/EQ/sound) so the first paint reflects them.
+    // Pure file read (no Sony service) — safe on the boot path; a missing file just leaves defaults.
+    // If a file was loaded, deferred_up re-applies the saved EQ/sound to the DSP once audio is up.
+    g_settings_loaded = (cinder_settings_load("/contents/cinder_settings.conf") != 0);
+    // Boot ALWAYS at DAY backlight, even if night theme is persisted — the night dim is NOT resumed
+    // across boots. Otherwise a daytime boot into persisted night could come up at ~3% backlight and
+    // you couldn't see the screen to turn it back up. The night dim is a deliberate per-session action
+    // (toggle Theme→night). Pure sysfs write (no Sony service); no-op if no backlight node found.
+    set_backlight(0);
+    clog_("render_up: DONE (renderer ready)");
+    // From here the render_driver worker thread owns SIGALRM (per-frame watchdog + run_guarded).
+    // Block SIGALRM on THIS (main) thread first: main is about to get stuck in easel's OnForeground
+    // (CuiAppModule's blocking pump path), so a guard alarm raised by the worker must never be
+    // delivered here (it would fail the g_guard_owner check and _exit us). The worker unblocks
+    // SIGALRM on itself. (The construction alarm(20) is a process-wide timer; once armed it will be
+    // delivered to the worker, which supersedes it with its own per-frame alarm on the first tick.)
+    sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
+    pthread_sigmask(SIG_BLOCK, &sa, nullptr);
+    // Nothing drives the easel pump for a non-Qt CuiAppModule, so run our own render+input loop.
+    start_pump_ticker();
+}
+
+// Is the optional real-spectrum visualiser enabled? Reads /contents/cinder_viz.conf for a line
+// `analyzer=1`. Absent/unset/0 => OFF (the safe default — the synthetic visualiser still runs).
+// Kept deliberately dumb (substring match) so a malformed file can't do anything but disable it.
+bool viz_analyzer_enabled() {
+    FILE* f = std::fopen("/contents/cinder_viz.conf", "r");
+    if (!f) return false;
+    char buf[256] = {0};
+    size_t got = std::fread(buf, 1, sizeof buf - 1, f);
+    std::fclose(f);
+    if (got == 0) return false;
+    return std::strstr(buf, "analyzer=1") != nullptr;
+}
+
+void report_storage();  // defined below (with the other sysfs readers); called from deferred_up
+void apply_eq_fn();      // defined below (carry_out helpers); re-applied from deferred_up on restore
+void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, before render_up)
+void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
+
+// Stop the analyzer stream (guarded — Stop() is a Sony-service call). No-op if it was never
+// started, so it's safe to call unconditionally from the lifecycle hooks.
+void stop_analyzer() {
+    if (cinder_analyzer_is_running())
+        run_guarded("analyzer stop", 6, []() { cinder_analyzer_stop(); });
+}
+
+// DEFERRED bring-up: the slow/blocking parts (library DB load + scrobbler + PlayerService
+// connect). Run from the pump AFTER the first frame is painted, each under the hang watchdog
+// so a blocking Sony-IPC can't stall the device. Idempotent, one-shot.
+void deferred_up() {
+    if (g_deferred_done) return;
+    // Each guarded: a crash/hang in the library load or the PlayerService connect is caught and
+    // that subsystem is skipped — the UI keeps running (empty library / no playback) rather than
+    // hanging the boot. (db load is slow on a big DB, so a generous 25s; the IPC connect 12s.)
+    run_guarded("deferred_up: cinder_db_open + build library", 25,
+                []() { cinder_db_open("/db/MTPDB.dat"); });   // path: confirm on device
+    clog_("deferred_up: cinder_scrobble_open(/contents/.scrobbler.log)");
+    cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
+    run_guarded("deferred_up: cinder_audio_init (PlayerService connect)", 12,
+                []() { cinder_audio_init("cinder"); });
+    // Sync the Settings "Battery care" toggle to the device's real Itawari state (guarded — the
+    // PowerMgrServiceClient ctor connects to the power service). Unavailable (-1) leaves the UI default.
+    run_guarded("deferred_up: read battery care state", 8,
+                []() { cinder_set_battery_care(cinder_power_get_battery_care()); });
+    // Re-apply the user's SAVED EQ + sound effects to the DSP (only if a settings file was restored —
+    // no point pushing defaults on a fresh install). Guarded, like every effect-shim call.
+    if (g_settings_loaded) {
+        run_guarded("deferred_up: re-apply saved EQ", 6, apply_eq_fn);
+        run_guarded("deferred_up: re-apply saved sound", 6, apply_sound_fn);
+    }
+    // Real storage usage for Settings (statvfs — read-only, no Sony service; guarded for parity).
+    run_guarded("deferred_up: report storage", 6, report_storage);
+    // Publish the device-wide BT codec preference file (consumed by normal BT + the LDAC bridge), so
+    // it reflects the persisted choice from first boot. Pure file IO; safe to call unguarded.
+    write_bt_pref();
+#ifdef CINDER_DEV
+    // DEV CHANNEL: auto-capture the read-only device discovery (volume/ALSA/sysfs/usb + PlayStatus)
+    // so the data needed to wire the device-gated features lands in /contents/cinder_discovery.txt
+    // just by flashing dev — no separate probe run. with_input=0: the pump owns the input nodes, so
+    // raw key codes are logged by input_pump instead (press buttons → cinderhome.log). Guarded.
+    clog_("deferred_up: DEV channel — capturing device discovery (read-only)");
+    run_guarded("deferred_up: discovery dump (dev)", 20,
+                []() { cinder_run_discovery("/contents/cinder_discovery.txt", 1, 0); });
+#endif
+#ifdef CINDER_DEV
+    // DEV CHANNEL ONLY (build.sh dev): best-effort enable adb for push-and-run iteration. Guarded,
+    // so a failure (no permission / different USB-config mechanism) is harmless — the player runs
+    // exactly like stable, just without adb. Touches NO boot-critical files (contrast the
+    // ramdisk-init approach scrobbler/wampy use, which we avoid — boot-image repack = brick risk).
+    // Adds adb to the USB gadget composite (keeps MTP) and starts the daemon. Exact mechanism is
+    // confirmed on first dev flash; refine here if the device wants a different property.
+    clog_("deferred_up: DEV channel — enabling adb (best-effort, guarded)");
+    run_guarded("deferred_up: enable adb (dev)", 8, []() {
+        // Add adb to the USB gadget composite (keeps MTP) + start the daemon. We trigger adbd via
+        // both `start adbd` (toolbox, if present) AND `setprop ctl.start adbd` (the init mechanism
+        // `start` wraps — always available), so it works regardless of which the device ships.
+        std::system("setprop sys.usb.config mtp,adb 2>/dev/null; "
+                    "setprop persist.sys.usb.config mtp,adb 2>/dev/null; "
+                    "start adbd 2>/dev/null; "
+                    "setprop ctl.start adbd 2>/dev/null");
+    });
+#endif
+    // OPTIONAL real-spectrum visualiser via Sony's AudioAnalyzerService. DEFAULT OFF — only started
+    // if /contents/cinder_viz.conf contains `analyzer=1`, and even then behind the guard (dlopen +
+    // a Sony-service connect is a fresh risk surface). Off, the visualiser still animates
+    // synthetically. Validate first with `cinder-probe --analyzer` on device. The shim no-ops the
+    // repaint when Now Playing isn't showing, so continuous streaming is cheap off-screen.
+    if (viz_analyzer_enabled()) {
+        run_guarded("deferred_up: analyzer start (AudioAnalyzerService spectrum)", 10,
+                    []() { cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, 20.0f, 0); });
+    }
+    g_deferred_done = true;
+    g_healthy_since = std::time(nullptr);
+    clog_("deferred_up: DONE");
+}
+
+// Clear the launcher's bad-boot counter once we've rendered cleanly for a while AFTER the risky
+// init — i.e. this boot is proven good. The launcher only INCREMENTS the counter; only we reset
+// it, so a hang (which never reaches here) leaves it climbing → auto-revert. (Replaces the old
+// launcher's blind 60s timer reset, which a hung process "survived" → soft-brick.)
+void mark_healthy_maybe() {
+    if (g_counter_reset || !g_deferred_done) return;
+    if (std::time(nullptr) - g_healthy_since >= 25) {
+        FILE* f = std::fopen("/contents/cinderhome_bootcount", "w");
+        if (f) { std::fputc('0', f); std::fclose(f); }
+        g_counter_reset = true;
+        clog_("healthy: bad-boot counter cleared");
+    }
 }
 
 // ───────────────────────── input + playback glue ──────────────────────────────────────
@@ -112,12 +320,56 @@ void bring_up() {
 // Minimal evdev event (kernel uapi, ABI-stable). On the 32-bit MT8590 kernel `time` is two
 // 32-bit longs → this struct is 16 bytes. We only read type/code/value.
 struct ev_event { long tv_sec; long tv_usec; uint16_t type; uint16_t code; int32_t value; };
+static const uint16_t EV_SYN_ = 0x00; // SYN_REPORT (code 0) delimits an input frame
 static const uint16_t EV_KEY_ = 0x01;
+static const uint16_t EV_SW_  = 0x05; // switches (Hold/lock reports here on some configs)
+static const uint16_t EV_ABS_ = 0x03;
+static const uint16_t ABS_X_  = 0x00;
+static const uint16_t ABS_Y_  = 0x01;
+static const uint16_t ABS_MT_POSITION_X_ = 0x35;
+static const uint16_t ABS_MT_POSITION_Y_ = 0x36;
+static const uint16_t BTN_TOUCH_ = 0x14a;
 
 static int  g_keymap[768];
 static int  g_evfds[16];
 static int  g_evn = 0;
 static bool g_input_started = false;
+
+// Touchscreen navigation (the NW-A55 has no d-pad). A contact is bracketed by BTN_TOUCH down/up;
+// ABS_X/Y (or the MT variants) give its position. On release we classify in UI coordinates:
+//   • left-edge → rightward swipe   = Back
+//   • little movement               = TAP  → cinder_tap(x,y)
+//   • mostly-vertical drag          = SCROLL → cinder_touch_scroll(rows)
+// The panel's reported ranges (from EVIOCGABS at open) map raw → UI (480×800), so this works
+// regardless of whether the panel reports pixels or a raw range.
+static int  g_touch_min_x = 0,  g_touch_max_x = 480;
+static int  g_touch_min_y = 0,  g_touch_max_y = 800;
+static bool g_touch_down   = false;
+static int  g_touch_start_x = -1, g_touch_start_y = -1;
+static int  g_touch_cur_x   = -1, g_touch_cur_y   = -1;
+// The actual touchscreen fd. Other input nodes report ABS_X/ABS_Y too (e.g. `m_batch_input`, a
+// sensor-batch device — ABS=13f), so we MUST only treat ABS/BTN_TOUCH from THIS fd as touch, or
+// the sensor stream overwrites the real finger coordinates and every tap lands at garbage.
+static int  g_touch_fd = -1;
+static bool g_touch_saw_pos = false;  // did the current SYN frame carry a position? (type-A lift)
+
+// EVIOCGABS(abs) ioctl number = _IOR('E', 0x40+abs, struct input_absinfo). input_absinfo is 6×int32
+// (24 bytes) on this 32-bit ABI. Defined by hand to avoid pulling linux/input.h into the 2.23 build.
+struct cinder_absinfo { int32_t value, minimum, maximum, fuzz, flat, resolution; };
+static unsigned eviocgabs(unsigned abs) {
+    return (2u << 30) | (24u << 16) | ((unsigned)'E' << 8) | (0x40u + abs);
+}
+// Map a raw touch coordinate to the UI's 0..480 / 0..800 space.
+static int touch_ui_x(int rx) {
+    int span = g_touch_max_x - g_touch_min_x; if (span <= 0) span = 1;
+    long v = (long)(rx - g_touch_min_x) * 480 / span;
+    return v < 0 ? 0 : (v > 479 ? 479 : (int)v);
+}
+static int touch_ui_y(int ry) {
+    int span = g_touch_max_y - g_touch_min_y; if (span <= 0) span = 1;
+    long v = (long)(ry - g_touch_min_y) * 800 / span;
+    return v < 0 ? 0 : (v > 799 ? 799 : (int)v);
+}
 static bool g_playing = true;   // local transport state (PlayStatus playstate offset not RE'd)
 
 static int keymap_size() { return (int)(sizeof g_keymap / sizeof *g_keymap); }
@@ -150,7 +402,7 @@ static void keymap_load_overrides() {
         long code = std::strtol(line, &end, 10);
         if (end == line) continue;
         long btn = std::strtol(end, nullptr, 10);
-        if (code >= 0 && code < keymap_size() && btn >= 0 && btn <= 11)
+        if (code >= 0 && code < keymap_size() && btn >= 0 && btn <= CINDER_BTN_HOLD)
             g_keymap[code] = (int)btn;
     }
     std::fclose(f);
@@ -169,36 +421,320 @@ static void input_open() {
         char path[64];
         std::snprintf(path, sizeof path, "/dev/input/%s", de->d_name);
         int fd = open(path, O_RDONLY | O_NONBLOCK);
-        if (fd >= 0) g_evfds[g_evn++] = fd;
+        if (fd >= 0) {
+            g_evfds[g_evn++] = fd;
+            // Identify the ACTUAL touchscreen and learn its x/y ranges (raw → UI mapping). The real
+            // panel exposes ABS_MT_POSITION (himax); other nodes carry ABS_X/Y but aren't touch
+            // (m_batch_input sensor). Prefer the MT node (it always wins); only fall back to a plain
+            // ABS_X/Y node if NO MT touchscreen exists — and gate touch reads to g_touch_fd either way.
+            struct cinder_absinfo ai, aiy;
+            if (ioctl(fd, eviocgabs(ABS_MT_POSITION_X_), &ai) == 0 && ai.maximum > ai.minimum) {
+                g_touch_fd = fd;
+                g_touch_min_x = ai.minimum; g_touch_max_x = ai.maximum;
+                if (ioctl(fd, eviocgabs(ABS_MT_POSITION_Y_), &aiy) == 0 && aiy.maximum > aiy.minimum) {
+                    g_touch_min_y = aiy.minimum; g_touch_max_y = aiy.maximum;
+                }
+            } else if (g_touch_fd < 0
+                       && ioctl(fd, eviocgabs(ABS_X_), &ai) == 0 && ai.maximum > ai.minimum
+                       && ioctl(fd, eviocgabs(ABS_Y_), &aiy) == 0 && aiy.maximum > aiy.minimum) {
+                g_touch_fd = fd;   // tentative single-touch panel (no MT node seen yet)
+                g_touch_min_x = ai.minimum;  g_touch_max_x = ai.maximum;
+                g_touch_min_y = aiy.minimum; g_touch_max_y = aiy.maximum;
+            }
+        }
     }
     closedir(d);
-    char msg[64];
-    std::snprintf(msg, sizeof msg, "input: opened %d /dev/input/event* node(s)", g_evn);
+    char msg[96];
+    std::snprintf(msg, sizeof msg, "input: opened %d node(s), touch x[%d..%d] y[%d..%d]",
+                  g_evn, g_touch_min_x, g_touch_max_x, g_touch_min_y, g_touch_max_y);
     clog_(msg);
 }
 
-// Carry out a navigator action via the audio shim. Volume + play-by-index need services we
-// haven't finished RE'ing (SoundService volume / TrackSequence) — left as TODO, harmless.
+// Read the UI's EQ bands and push them to the device DSP. Run ONLY via run_guarded (below): the
+// EffectCtrlDmp connect can crash/hang if the sound service is down → caught, UI continues.
+void apply_eq_fn() {
+    signed char bands[10];
+    cinder_get_eq_bands(bands);
+    cinder_effects_set_eq(bands, 10);
+}
+
+// Apply the Sound screen's effect toggles to the DSP. Run ONLY via run_guarded (the EffectCtrlDmp
+// connect can crash/hang). The bitmask matches cinder_get_sound_flags(): bit0 DSEE · bit1 Vinyl ·
+// bit2 VPT · bit3 DC-Phase · bit4 Normalizer · bit5 ClearAudio+. (VPT/DC-Phase apply on/off here;
+// their mode/type is a device-gated enhancement — see analysis/RE_playerservice_sound.md.)
+void apply_sound_fn() {
+    int f = cinder_get_sound_flags();
+    cinder_effects_set_dsee_hx((f >> 0) & 1);
+    cinder_effects_set_vinylizer((f >> 1) & 1);
+    cinder_effects_set_vpt((f >> 2) & 1);
+    cinder_effects_set_dc_phase((f >> 3) & 1);
+    cinder_effects_set_dynamic_normalizer((f >> 4) & 1);
+    cinder_effects_set_clearaudio_plus((f >> 5) & 1);
+}
+
+// ── Volume backend ──────────────────────────────────────────────────────────────────────────
+// Configured by /contents/cinder_volume.conf, populated from the discovery report (the amixer
+// control name / CXD3778GF sysfs node + range). Until that file exists, the volume keys stay a
+// no-op (the HUD still shows) — so dropping the config ACTIVATES hardware volume with no rebuild.
+//   backend=sysfs   path=<node>             min=<n> max=<n>   → write the scaled value to the node
+//   backend=amixer  control=<name> card=<n> min=<n> max=<n>   → amixer -c<card> cset name='<name>' <v>
+struct VolCfg { int valid = 0, amixer = 0, card = 0, min = 0, max = 0; char path[256] = {0}, control[128] = {0}; };
+VolCfg g_vol;
+bool g_vol_read = false;
+
+void load_vol_cfg() {
+    g_vol_read = true;
+    FILE* f = std::fopen("/contents/cinder_volume.conf", "r");
+    if (!f) return;
+    char line[256];
+    while (std::fgets(line, sizeof line, f)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        char* eq = std::strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        char* k = line; char* v = eq + 1;
+        char* nl = std::strpbrk(v, "\r\n"); if (nl) *nl = 0;
+        if      (!std::strcmp(k, "backend")) g_vol.amixer = !std::strcmp(v, "amixer");
+        else if (!std::strcmp(k, "path"))    std::strncpy(g_vol.path, v, sizeof g_vol.path - 1);
+        else if (!std::strcmp(k, "control")) std::strncpy(g_vol.control, v, sizeof g_vol.control - 1);
+        else if (!std::strcmp(k, "card"))    g_vol.card = (int)std::strtol(v, nullptr, 10);
+        else if (!std::strcmp(k, "min"))     g_vol.min = (int)std::strtol(v, nullptr, 10);
+        else if (!std::strcmp(k, "max"))     g_vol.max = (int)std::strtol(v, nullptr, 10);
+    }
+    std::fclose(f);
+    g_vol.valid = (g_vol.max > g_vol.min) && (g_vol.amixer ? g_vol.control[0] : g_vol.path[0]);
+}
+
+// Apply a 0..100% volume to the device via the configured backend. No-op if unconfigured. Called
+// guarded (system()/sysfs write). Read-on-first-use.
+void apply_volume() {
+    if (!g_vol_read) load_vol_cfg();
+    if (!g_vol.valid) return;
+    int pct = cinder_get_volume();
+    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+    int val = g_vol.min + (g_vol.max - g_vol.min) * pct / 100;
+    if (g_vol.amixer) {
+        char cmd[384];
+        std::snprintf(cmd, sizeof cmd, "amixer -c %d cset name='%s' %d >/dev/null 2>&1",
+                      g_vol.card, g_vol.control, val);
+        std::system(cmd);
+    } else {
+        FILE* f = std::fopen(g_vol.path, "w");
+        if (f) { std::fprintf(f, "%d", val); std::fclose(f); }
+    }
+}
+
+// ── Backlight (night = minimal light) ───────────────────────────────────────────────────────
+// The night/day theme drives the PANEL BACKLIGHT: night mode dims it to a minimal level. The node
+// is auto-detected (the common Android/MTK paths) and overridable via /contents/cinder_backlight.conf
+// (path, night, day raw values). If no node is writable, it's a no-op (the device keeps its own
+// brightness). Levels default to a tiny fraction of max_brightness for night, ~70% for day.
+struct BlCfg { int valid = 0, night = -1, day = -1, max = 255; char path[256] = {0}; };
+BlCfg g_bl;
+bool g_bl_read = false;
+
+void bl_max_sibling(const char* path, char* out, size_t cap) {
+    std::strncpy(out, path, cap - 1);
+    char* slash = std::strrchr(out, '/');
+    if (slash) std::snprintf(slash + 1, cap - (size_t)(slash + 1 - out), "max_brightness");
+}
+
+void load_bl_cfg() {
+    g_bl_read = true;
+    char cfg_path[256] = {0};
+    int cfg_night = -1, cfg_day = -1;
+    FILE* f = std::fopen("/contents/cinder_backlight.conf", "r");
+    if (f) {
+        char line[256];
+        while (std::fgets(line, sizeof line, f)) {
+            if (line[0] == '#' || line[0] == '\n') continue;
+            char* eq = std::strchr(line, '='); if (!eq) continue; *eq = 0;
+            char* k = line; char* v = eq + 1;
+            char* nl = std::strpbrk(v, "\r\n"); if (nl) *nl = 0;
+            if      (!std::strcmp(k, "path"))  std::strncpy(cfg_path, v, sizeof cfg_path - 1);
+            else if (!std::strcmp(k, "night")) cfg_night = (int)std::strtol(v, nullptr, 10);
+            else if (!std::strcmp(k, "day"))   cfg_day   = (int)std::strtol(v, nullptr, 10);
+        }
+        std::fclose(f);
+    }
+    // Resolve a writable backlight node: config path, then the common Android LED, then scan
+    // /sys/class/backlight/*. (access(W_OK) so we don't pick a read-only/stub node.)
+    if (cfg_path[0] && access(cfg_path, W_OK) == 0) {
+        std::strncpy(g_bl.path, cfg_path, sizeof g_bl.path - 1);
+    } else if (access("/sys/class/leds/lcd-backlight/brightness", W_OK) == 0) {
+        std::strncpy(g_bl.path, "/sys/class/leds/lcd-backlight/brightness", sizeof g_bl.path - 1);
+    } else {
+        DIR* d = opendir("/sys/class/backlight");
+        if (d) {
+            struct dirent* e;
+            while ((e = readdir(d)) != nullptr) {
+                if (e->d_name[0] == '.') continue;
+                char p[256];
+                std::snprintf(p, sizeof p, "/sys/class/backlight/%s/brightness", e->d_name);
+                if (access(p, W_OK) == 0) { std::strncpy(g_bl.path, p, sizeof g_bl.path - 1); break; }
+            }
+            closedir(d);
+        }
+    }
+    if (!g_bl.path[0]) return;
+    // max_brightness (for the percentage defaults)
+    char mp[280]; bl_max_sibling(g_bl.path, mp, sizeof mp);
+    FILE* mf = std::fopen(mp, "r");
+    if (mf) { char b[16] = {0}; if (std::fread(b, 1, sizeof b - 1, mf) > 0) { int m = (int)std::strtol(b, nullptr, 10); if (m > 0) g_bl.max = m; } std::fclose(mf); }
+    // Night = a tiny fraction (minimal light, floored to 1 so it's not fully off); Day ~70%.
+    g_bl.night = (cfg_night >= 0) ? cfg_night : (g_bl.max * 3 / 100 > 0 ? g_bl.max * 3 / 100 : 1);
+    g_bl.day   = (cfg_day   >= 0) ? cfg_day   : (g_bl.max * 70 / 100);
+    g_bl.valid = 1;
+}
+
+// Write the panel backlight: night → minimal, day → normal. No-op if no node / level unset.
+void set_backlight(int night) {
+    if (!g_bl_read) load_bl_cfg();
+    if (!g_bl.valid) return;
+    int level = night ? g_bl.night : g_bl.day;
+    if (level < 0) return;
+    FILE* f = std::fopen(g_bl.path, "w");
+    if (f) { std::fprintf(f, "%d", level); std::fclose(f); }
+}
+
+// For the LIVE theme toggle: match the backlight to the current theme.
+void apply_backlight() { set_backlight(cinder_get_night()); }
+
+// Power button = screen on/off. OFF writes backlight 0 (panel dark; the app keeps rendering so
+// playback/Hold-state continue); ON restores the current theme's level. Pure sysfs write, no Sony
+// service. Locking is independent (the Hold switch) — waking the screen never unlocks the touch.
+static bool g_screen_on = true;
+void screen_toggle() {
+    g_screen_on = !g_screen_on;
+    if (g_screen_on) { apply_backlight(); return; }
+    if (!g_bl_read) load_bl_cfg();
+    if (g_bl.valid) {
+        FILE* f = std::fopen(g_bl.path, "w");
+        if (f) { std::fputc('0', f); std::fclose(f); }
+    }
+}
+
+// Persist the device-wide BT transmit codec preference to /contents/cinder_bt.conf, so every BT
+// path uses the same choice: normal playback AND the USB-DAC→LDAC bridge (ldac-run.sh) read it. The
+// LIVE apply via BtTransmitterService (SetLdac/SetAptxHD/SetSbc + SetLdacSoundQuality) is device-
+// gated (the BT client shim, same boundary as ldac-bridge); this config write is the always-safe
+// half (pure file IO, no Sony service). Names mirror the cinder.h codec/quality indices.
+void write_bt_pref() {
+    static const char* codecs[] = { "ldac", "aptxhd", "aptx", "sbc" };
+    static const char* quals[]  = { "auto", "990", "660", "330" };
+    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 3) ci = 0;
+    int qi = cinder_get_bt_ldac_quality(); if (qi < 0 || qi > 3) qi = 0;
+    FILE* f = std::fopen("/contents/cinder_bt.conf", "w");
+    if (f) {
+        std::fprintf(f, "codec=%s\nldac_quality=%s\n", codecs[ci], quals[qi]);
+        std::fclose(f);
+    }
+}
+
+// USB-DAC → LDAC (the headline feature): engage USB-DAC input and route it to 3.5mm + BT/LDAC at
+// once, WITHOUT tearing down Bluetooth (we simply never call IBtTransmitterService::Request-
+// Disconnection, which is what stock does). Engaging = start the LDAC bridge supervisor (it watches
+// /contents/ldac_on; see deploy/ldac-run.sh) + switch the USB gadget to UAC. The setprop USB-mode
+// switch is device-gated (disruptive; validate live) — run_guarded + best-effort so it can't wedge
+// the UI. The codec/quality the bridge uses comes from /contents/cinder_bt.conf (write_bt_pref).
+void apply_usb_dac() {
+    if (cinder_get_usb_dac()) {
+        std::system("touch /contents/ldac_on 2>/dev/null; "
+                    "setprop sys.sony.config uac 2>/dev/null");
+        clog_("usb-dac: engaged (UAC + LDAC bridge on; Bluetooth left connected)");
+    } else {
+        std::system("rm -f /contents/ldac_on 2>/dev/null");
+        clog_("usb-dac: disengaged (LDAC bridge off)");
+    }
+}
+
+// Carry out a navigator action via the audio/effect shims. Volume is config-gated (above);
+// play-by-index needs TrackSequence RE — left as TODO until the discovery/device session.
 void carry_out(int act) {
+    // Every transport call is a PlayerService IPC call → guard it (same invariant as the EQ apply
+    // and the now-playing poll): a hung/crashing PlayerService then skips that one action and the UI
+    // keeps running, instead of tripping the per-frame watchdog into a fatal _exit/reboot. The
+    // lambdas are non-capturing (g_playing is global) so they convert to run_guarded's fn pointer.
     switch (act) {
         case CINDER_ACT_PLAYPAUSE:
             g_playing = !g_playing;
-            if (g_playing) cinder_audio_play(); else cinder_audio_pause();
+            run_guarded("carry_out: play/pause", 6,
+                        []() { if (g_playing) cinder_audio_play(); else cinder_audio_pause(); });
             break;
-        case CINDER_ACT_NEXT:          cinder_audio_next_track(); break;
-        case CINDER_ACT_PREV:          cinder_audio_prev_track(); break;
-        case CINDER_ACT_NEXT_ALBUM:    cinder_audio_next_group(); break;
-        case CINDER_ACT_PREV_ALBUM:    cinder_audio_prev_group(); break;
-        case CINDER_ACT_VOLUP:         break; // TODO: SoundService volume (RE pending)
-        case CINDER_ACT_VOLDOWN:       break; // TODO
+        case CINDER_ACT_NEXT:       run_guarded("carry_out: next",  6, []() { cinder_audio_next_track(); }); break;
+        case CINDER_ACT_PREV:       run_guarded("carry_out: prev",  6, []() { cinder_audio_prev_track(); }); break;
+        case CINDER_ACT_NEXT_ALBUM: run_guarded("carry_out: next album", 6, []() { cinder_audio_next_group(); }); break;
+        case CINDER_ACT_PREV_ALBUM: run_guarded("carry_out: prev album", 6, []() { cinder_audio_prev_group(); }); break;
+        case CINDER_ACT_VOLUP:
+        case CINDER_ACT_VOLDOWN:
+            // apply the new UI volume to the hardware via the configured backend (guarded). No-op
+            // until /contents/cinder_volume.conf is populated from the discovery report.
+            run_guarded("carry_out: volume", 4, apply_volume);
+            break;
         case CINDER_ACT_PLAY_INDEX:    break; // TODO: PlayController::SetTrackSequence (RE pending)
-        case CINDER_ACT_SLEEP:         break; // appmgr owns sleep; screen blank later
-        case CINDER_ACT_ENTER_USB_MSC: break; // TODO: setprop sys.sony.config msc
+        case CINDER_ACT_EQ_CHANGED:
+            // apply EQ to the DSP, guarded (a sound-service fault skips it, UI keeps running)
+            run_guarded("carry_out: apply EQ to DSP", 6, apply_eq_fn);
+            break;
+        case CINDER_ACT_BATTERY_CARE_CHANGED:
+            // apply the new battery-care (Itawari) state to PowerMgrServiceClient, guarded.
+            run_guarded("carry_out: apply battery care", 6,
+                        []() { cinder_power_set_battery_care(cinder_get_battery_care()); });
+            break;
+        case CINDER_ACT_SOUND_CHANGED:
+            // apply the Sound screen's effect toggles to the DSP, guarded.
+            run_guarded("carry_out: apply sound effects", 6, apply_sound_fn);
+            break;
+        case CINDER_ACT_SOUND_BYPASS:
+            // A/B compare: bypass or re-enable the whole effect chain, guarded.
+            run_guarded("carry_out: A/B bypass", 6,
+                        []() { cinder_effects_set_bypass(cinder_get_sound_bypass()); });
+            break;
+        case CINDER_ACT_THEME_CHANGED:
+            // night/day toggled -> set the panel backlight (night = minimal light), guarded.
+            run_guarded("carry_out: backlight (theme)", 4, apply_backlight);
+            break;
+        case CINDER_ACT_BT_CODEC_CHANGED:
+            // device-wide codec/quality changed → persist it for every BT path (file IO, safe).
+            write_bt_pref();
+            break;
+        case CINDER_ACT_USBDAC_LDAC:
+            run_guarded("carry_out: USB-DAC/LDAC toggle", 6, apply_usb_dac);
+            break;
+        case CINDER_ACT_SLEEP:         screen_toggle(); break; // Power = panel on/off (not lock)
+        case CINDER_ACT_ENTER_USB_MSC:
+            // device-gated USB-mode switch (hands storage to the PC; disruptive — validate live).
+            run_guarded("carry_out: enter USB MSC", 6, []() {
+                std::system("setprop sys.sony.config msc 2>/dev/null");
+            });
+            break;
         default: break;
     }
 }
 
 // Drain pending input from every node; map raw code -> logical button -> navigator -> action.
+// Classify a finished contact (finger-up), from BTN_TOUCH=0 or a type-A empty-frame lift.
+static void touch_release() {
+    if (g_touch_down && g_touch_start_x >= 0) {
+        int sx = touch_ui_x(g_touch_start_x), cx = touch_ui_x(g_touch_cur_x);
+        int sy = (g_touch_start_y >= 0) ? touch_ui_y(g_touch_start_y) : 0;
+        int cy = (g_touch_cur_y >= 0) ? touch_ui_y(g_touch_cur_y) : sy;
+        int dx = cx - sx, dy = cy - sy;
+        int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
+        if (sx <= 38 && dx >= 120) {                 // left-edge → rightward = Back
+            int act = cinder_input(CINDER_BTN_BACK);
+            if (act != CINDER_ACT_NONE) carry_out(act);
+        } else if (adx < 18 && ady < 18) {           // ~stationary = tap
+            int act = cinder_tap(cx, cy);
+            if (act != CINDER_ACT_NONE) carry_out(act);
+        } else if (ady > adx && ady >= 40) {         // vertical drag = scroll
+            int rows = -dy / 56;
+            if (rows != 0) cinder_touch_scroll(rows);
+        }
+    }
+    g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
+}
+
 void input_pump() {
     ev_event evs[32];
     for (int i = 0; i < g_evn; ++i) {
@@ -207,10 +743,75 @@ void input_pump() {
             if (n <= 0) break;
             int cnt = (int)(n / (ssize_t)sizeof(ev_event));
             for (int k = 0; k < cnt; ++k) {
-                if (evs[k].type != EV_KEY_ || evs[k].value == 0) continue; // press/repeat only
-                int code = evs[k].code;
-                if (code < 0 || code >= keymap_size()) continue;
-                int btn = g_keymap[code];
+                uint16_t type = evs[k].type, code = evs[k].code;
+                int val = evs[k].value;
+#ifdef CINDER_DEV
+                // DEV: log the first ~60 raw input events (with the touch fd marked) so the exact
+                // touchscreen protocol is visible in cinderhome.log if gestures still misbehave.
+                {
+                    static int g_evlog = 0;
+                    if (g_evlog < 60) {
+                        char m[80];
+                        std::snprintf(m, sizeof m, "input: ev fd%d%s type=0x%x code=0x%x val=%d", i,
+                                      (g_evfds[i] == g_touch_fd) ? "*TS" : "", type, code, val);
+                        clog_(m); ++g_evlog;
+                    }
+                }
+#endif
+                // ── Touchscreen navigation (no d-pad on the NW-A55) — ONLY from the real touch fd,
+                // so the sensor-batch node's ABS_X/Y can't masquerade as finger coordinates. Robust
+                // to BTN_TOUCH panels AND type-A MT (contact begins on the first position; a lift is
+                // BTN_TOUCH=0 or a SYN_REPORT frame that carried no position).
+                if (g_evfds[i] == g_touch_fd) {
+                    if (type == EV_ABS_ && (code == ABS_X_ || code == ABS_MT_POSITION_X_)) {
+                        g_touch_cur_x = val; g_touch_saw_pos = true;
+                        if (!g_touch_down) { g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1; }
+                        else if (g_touch_start_x < 0) g_touch_start_x = val;
+                        continue;
+                    }
+                    if (type == EV_ABS_ && (code == ABS_Y_ || code == ABS_MT_POSITION_Y_)) {
+                        g_touch_cur_y = val; g_touch_saw_pos = true;
+                        if (g_touch_down && g_touch_start_y < 0) g_touch_start_y = val;
+                        continue;
+                    }
+                    if (type == EV_KEY_ && code == BTN_TOUCH_) {
+                        if (val) { if (!g_touch_down) { g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1; } }
+                        else     { touch_release(); }
+                        continue;
+                    }
+                    if (type == EV_SYN_ && code == 0) {   // SYN_REPORT: empty frame while down = lift (type-A)
+                        if (g_touch_down && !g_touch_saw_pos) touch_release();
+                        g_touch_saw_pos = false;
+                        continue;
+                    }
+                }
+
+                // ── Hold/lock SWITCH ── sustained state, both edges (val 1 = locked, 0 = off).
+                // Reported as EV_KEY or EV_SW depending on the unit; we match by the code the keymap
+                // labels CINDER_BTN_HOLD. The switch is the ONLY thing that unlocks (Power just
+                // toggles the screen). Default keymap doesn't know the code — drop `<code> 12` into
+                // /contents/cinder_keymap.conf from the dev keycode log.
+                if ((type == EV_KEY_ || type == EV_SW_) && code < keymap_size()
+                        && g_keymap[code] == CINDER_BTN_HOLD) {
+                    cinder_set_hold(val ? 1 : 0);
+                    continue;
+                }
+
+                // ── Buttons ──
+                if (type != EV_KEY_ || val == 0) continue; // press/repeat only
+                int kc = code;
+#ifdef CINDER_DEV
+                // DEV CHANNEL: log every key code (mapped or not) so the physical-button → keycode map
+                // can be read straight from cinderhome.log — press each button and watch the log.
+                if (val == 1) {
+                    char m[64];
+                    std::snprintf(m, sizeof m, "input: KEY code=%d (0x%x) -> btn=%d", kc, kc,
+                                  (kc >= 0 && kc < keymap_size()) ? g_keymap[kc] : -2);
+                    clog_(m);
+                }
+#endif
+                if (kc < 0 || kc >= keymap_size()) continue;
+                int btn = g_keymap[kc];
                 if (btn < 0) continue;
                 int act = cinder_input(btn);
                 if (act != CINDER_ACT_NONE) carry_out(act);
@@ -243,6 +844,26 @@ int read_battery() {
     return 100;
 }
 
+// Real internal-storage usage for the Settings ▸ Storage row, via statvfs (read-only — no Sony
+// service). Formats "used / total GB" and pushes it. 64-bit math (f_blocks*frsize overflows 32-bit
+// at this capacity). Tries the music mount first, then sensible fallbacks.
+void report_storage() {
+    static const char* mounts[] = { "/contents", "/mnt/media0", "/data", "/" };
+    for (const char* m : mounts) {
+        struct statvfs st;
+        if (statvfs(m, &st) != 0) continue;
+        unsigned long frsize = st.f_frsize ? st.f_frsize : st.f_bsize;
+        unsigned long long total = (unsigned long long)st.f_blocks * frsize;
+        if (total == 0) continue;
+        unsigned long long used = (unsigned long long)(st.f_blocks - st.f_bfree) * frsize;
+        const double g = 1024.0 * 1024.0 * 1024.0;
+        char buf[48];
+        std::snprintf(buf, sizeof buf, "%.1f / %.0f GB", (double)used / g, (double)total / g);
+        cinder_set_storage(buf);
+        return;
+    }
+}
+
 // Poll the now-playing URI; on change, push it to the UI (cinder-ffi resolves title/artist/
 // codec from the library DB). Position/duration await PlayStatus RE → pass 0 for now.
 void poll_now_playing() {
@@ -265,12 +886,80 @@ public:
     void OnInitialize() override     { clog_("app:OnInitialize");     easel::ApplicationBase::OnInitialize(); }
     void OnPostInitialize() override { clog_("app:OnPostInitialize"); easel::ApplicationBase::OnPostInitialize(); }
     void OnActivate() override       { clog_("app:OnActivate");       easel::ApplicationBase::OnActivate(); }
-    void OnForeground() override     { clog_("app:OnForeground");     bring_up(); easel::ApplicationBase::OnForeground(); }
-    void OnBackground() override     { clog_("app:OnBackground");     easel::ApplicationBase::OnBackground(); }
+    void OnForeground() override     { clog_("app:OnForeground");     render_up(); easel::ApplicationBase::OnForeground(); }
+    void OnBackground() override     { clog_("app:OnBackground");     stop_analyzer(); easel::ApplicationBase::OnBackground(); }
     void OnInactivate() override     { clog_("app:OnInactivate");     easel::ApplicationBase::OnInactivate(); }
-    void OnFinalize() override       { clog_("app:OnFinalize");       cinder_render_shutdown(); easel::ApplicationBase::OnFinalize(); }
+    void OnFinalize() override       { clog_("app:OnFinalize");       stop_analyzer(); cinder_render_shutdown(); easel::ApplicationBase::OnFinalize(); }
     void StopBootAnimation() override{ clog_("app:StopBootAnimation");easel::ApplicationBase::StopBootAnimation(); }
 };
+
+// ── the render+input worker (Option-B) ──────────────────────────────────────────────────────
+// Runs everything the (blocked) easel pump would have: paint, stop the boot-anim overlay, the
+// deferred DB/PlayerService/adb init, touch + button input, and periodic housekeeping — at ~30fps
+// on its own thread. Mirrors the (now-dead) `pump` lambda body; SIGALRM is delivered to THIS thread.
+void* render_driver(void*) {
+    // This thread owns the watchdog now — UNBLOCK SIGALRM (render_up blocked it on the stuck main
+    // thread). The per-frame alarm(8) and run_guarded (in deferred_up / carry_out) fire here.
+    sigset_t s; sigemptyset(&s); sigaddset(&s, SIGALRM);
+    pthread_sigmask(SIG_UNBLOCK, &s, nullptr);
+    long n = 0;
+    bool first_painted = false, boot_anim_stopped = false;
+    while (g_pump_ticker_run) {
+        if (!g_render_ready) { usleep(33000); continue; }
+
+        // PER-FRAME WATCHDOG around OUR paint: a real render hang -> _exit -> launcher counter -> stock.
+        alarm(8);
+        cinder_render_tick();
+        alarm(0);
+        if (!first_painted) { first_painted = true; clog_("render_driver: first frame painted (our own loop)"); }
+        // Kill the boot-anim overlay once our frame is up (Sony's StopBootAnimation = fork+execlp,
+        // no JobQueue/framework dependency, so it can't hang like the CuiAppModule pump path).
+        if (!boot_anim_stopped && g_app) {
+            g_app->StopBootAnimation();
+            boot_anim_stopped = true;
+            clog_("render_driver: StopBootAnimation() done");
+        }
+
+        // Paint continuously for the first ~0.5s BEFORE the slow deferred init runs — this is exactly
+        // the render-only behaviour that cleared the boot-anim overlay. Only then run the multi-second
+        // DB/PlayerService/adb bring-up (which blocks this thread), and re-issue StopBootAnimation
+        // afterward as insurance against a race with init (re)starting bootanimation.
+        if (!g_deferred_done) {
+            if (n < 15) { ++n; usleep(33000); continue; }   // warm-up paints first
+            deferred_up();
+            if (g_app) g_app->StopBootAnimation();
+            ++n; usleep(33000); continue;
+        }
+
+        if (!g_input_started) { input_open(); g_input_started = true; }
+        alarm(8); input_pump(); alarm(0);     // touch + buttons -> navigator -> actions -> carry_out
+        if (n % 30 == 0) {                    // ~1x/sec housekeeping
+            cinder_clock_tick();
+            run_guarded("pump: poll now-playing", 8, poll_now_playing);
+            cinder_scrobble_tick(g_playing ? 1 : 0);
+            if (cinder_sleep_should_pause()) {
+                clog_("sleep timer expired -> pausing");
+                g_playing = false;
+                run_guarded("pump: sleep-timer pause", 6, []() { cinder_audio_pause(); });
+            }
+            mark_healthy_maybe();             // clear the bad-boot counter once proven good
+        }
+        if (n % 300 == 0) cinder_set_battery(read_battery());
+        ++n;
+        usleep(33000);   // ~30 fps
+    }
+    return nullptr;
+}
+void start_pump_ticker() {
+    if (g_pump_ticker_run) return;   // start exactly once
+    g_pump_ticker_run = true;
+    if (pthread_create(&g_pump_ticker, nullptr, render_driver, nullptr) != 0) {
+        g_pump_ticker_run = false;
+        clog_("render_up: WARN render-driver thread failed to start (UI will not paint)");
+    } else {
+        clog_("render_up: render driver started (~30fps, our own loop)");
+    }
+}
 
 } // namespace
 
@@ -284,30 +973,63 @@ int main(int argc, char** argv) {
     auto cbInit    = []() { clog_("cb:onInitialize"); };
     auto cbPostI   = []() { clog_("cb:onPostInitialize"); };
     auto cbActivate= []() { clog_("cb:onActivate"); };
-    auto cbForeg   = []() { clog_("cb:onForeground"); bring_up(); };
-    auto cbFinal   = []() { clog_("cb:onFinalize"); cinder_render_shutdown(); };
+    auto cbForeg   = []() { clog_("cb:onForeground"); render_up(); };
+    auto cbFinal   = []() {
+        clog_("cb:onFinalize");
+        // Stop the pump ticker BEFORE the module is destroyed so it can't poke a freed object.
+        g_pump_ticker_run = false;
+        if (g_pump_ticker) { pthread_join(g_pump_ticker, nullptr); g_pump_ticker = 0; }
+        cinder_render_shutdown();
+    };
     auto pump      = []() -> bool {
         static long n = -1;
+        static bool first_painted = false;
         ++n;
         if (n < 3) clog_("cb:pump");
-        if (n == 0) alarm(0);                 // first pump cancels the hang watchdog
-        if (!g_render_ready) return true;     // wait until the renderer is brought up
-        if (!g_input_started) { input_open(); g_input_started = true; }
-        cinder_render_tick();                 // paint the current navigator screen
-        input_pump();                         // buttons -> navigator -> playback actions
-        if (n % 30 == 0) {                    // ~1x/sec housekeeping
-            poll_now_playing();               //   refresh now-playing + battery
-            cinder_scrobble_tick(g_playing ? 1 : 0); // accrue listen time for the scrobbler
+        // Until the framebuffer is open we can't paint; keep the construction watchdog (armed
+        // in main) running so a pre-paint hang still _exits → reboots → reverts.
+        if (!g_render_ready) return true;
+
+        // PER-FRAME WATCHDOG: a normal frame is milliseconds; if our own render/input code ever
+        // hangs (infinite loop) the alarm fires → fatal _exit → reboot → counter → revert to
+        // stock. This closes the "unguarded steady-state hang → soft-brick" gap. (A crash here is
+        // likewise fatal → revert, which is correct: a render bug should fall back to stock.)
+        alarm(8);
+        cinder_render_tick();                 // PAINT FIRST — clears the boot screen, proves life
+        alarm(0);
+        if (!first_painted) {
+            first_painted = true;
+            clog_("pump: first frame painted");
         }
+
+        // Slow/blocking init runs AFTER the first paint, watchdog-guarded inside deferred_up().
+        if (!g_deferred_done) { deferred_up(); return true; }
+
+        if (!g_input_started) { input_open(); g_input_started = true; }
+        alarm(8); input_pump(); alarm(0);     // buttons -> navigator -> actions (frame-watchdog'd)
+        if (n % 30 == 0) {                    // ~1x/sec housekeeping
+            cinder_clock_tick();              // live clock + sleep-timer/now-playing position countdown
+            run_guarded("pump: poll now-playing", 8, poll_now_playing);  // IPC poll, guarded
+            cinder_scrobble_tick(g_playing ? 1 : 0);     // accrue scrobble listen time
+            if (cinder_sleep_should_pause()) {           // sleep timer expired -> pause playback
+                clog_("sleep timer expired -> pausing");
+                g_playing = false;
+                run_guarded("pump: sleep-timer pause", 6, []() { cinder_audio_pause(); });
+            }
+            mark_healthy_maybe();             // clear bad-boot counter once proven good
+        }
+        if (n % 300 == 0) cinder_set_battery(read_battery());  // battery moves slowly (~10s)
         return true;
     };
     auto cb7       = []() { clog_("cb:cb7"); };
 
     clog_("main: constructing CuiAppModule");
-    auto module = std::unique_ptr<easel::ModuleBaseInterface>(
-        new easel::CuiAppModule(app, argc, argv,
+    auto* cui = new easel::CuiAppModule(app, argc, argv,
             cbInit, cbPostI, cbActivate, cbForeg, cbFinal,
-            pump, cb7));
+            pump, cb7);
+    g_cui = cui;   // keep a raw handle so the ticker can drive OnPumpTrigger (see pump_ticker)
+    g_app = &app;  // for StopBootAnimation() — kill the boot-anim overlay once we paint
+    auto module = std::unique_ptr<easel::ModuleBaseInterface>(cui);
 
     clog_("main: calling app.run()");
     app.run(argc, argv, "HgrmMediaPlayerApp", std::move(module));

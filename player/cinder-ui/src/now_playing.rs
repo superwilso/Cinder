@@ -9,10 +9,11 @@ use crate::canvas::Canvas;
 use crate::icons;
 use crate::text::{self, Family, FontSet, TextStyle, Weight};
 use crate::theme::Theme;
-use crate::widgets::{bars, fill_rect, hline, right, sty};
+use crate::widgets::{fill_rect, hline, right, sty};
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{Circle, PrimitiveStyle};
 
+#[derive(Clone, Copy)]
 pub struct NowPlaying<'a> {
     pub title: &'a str,
     pub artist: &'a str,
@@ -28,16 +29,36 @@ pub struct NowPlaying<'a> {
     pub playing: bool,
     pub shuffle: bool,
     pub repeat: u8, // 0 off · 1 all · 2 one
+    pub viz_seed: f32, // visualiser animation phase (the shell advances it while playing)
+    pub viz_kind: u8,  // which visualiser type (index into viz::from_index)
+    pub viz_levels: Option<&'a [f32]>, // real per-bar spectrum (0..1) from FFT; None = synthetic
 }
 
 fn s(fam: Family, weight: Weight, size: f32, color: embedded_graphics::pixelcolor::Rgb888, tracking: f32) -> TextStyle {
     sty(fam, weight, size, color, tracking)
 }
 
+/// Small accent "SLEEP {n}M" badge, top-right under the status bar, shown while a sleep timer runs.
+/// Drawn by the navigator AFTER render() (it owns the live countdown) — kept here to share the
+/// screen's draw imports. `min` = 0 hides it.
+pub fn sleep_badge(c: &mut Canvas, t: &Theme, f: &FontSet, min: u32) {
+    if min == 0 {
+        return;
+    }
+    let label = format!("SLEEP {}M", min);
+    let st = s(Family::Mono, Weight::Bold, 10.0, t.acc_ink, 0.08);
+    let w = text::measure(f, &label, &st) as i32 + 22;
+    let h = 24;
+    let x = 458 - w;
+    let y = 44;
+    fill_rect(c, x, y, w, h, t.acc);
+    text::draw(c, f, (x + 11) as f32, (y + h / 2 + 4) as f32, &label, &st);
+}
+
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     c.fill(t.bg);
     crate::chrome::status_bar(c, t, f, np.clock, np.badge, np.battery);
-    let seed = 2.0;
+    let seed = np.viz_seed; // animated by the shell while playing; constant when paused/host
 
     if t.night {
         // compact header: 92px thumb @32% + title/artist/codec column
@@ -46,12 +67,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         text::draw(c, f, 134.0, 133.0, np.artist, &s(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0));
         text::draw(c, f, 134.0, 153.0, np.codec, &s(Family::Mono, Weight::Regular, 10.0, t.acc, 0.08));
         // viz centred in the airy negative space
-        bars(c, 24, 420, 432, 16, 36, 3, seed, t.acc, t.line);
+        crate::viz::draw(c, 24, 420, 432, 16, 36, 3, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels);
     } else {
         // full-bleed album art (34..514)
         art::block(c, t, 0, 34, 480, 480, np.art, 1.0);
         // visualiser pushed up onto the lower album art — frees room for bigger controls
-        bars(c, 24, 466, 432, 42, 36, 3, seed, t.acc, t.line);
+        crate::viz::draw(c, 24, 466, 432, 42, 36, 3, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels);
         // title / artist / codec
         text::draw(c, f, 24.0, 558.0, np.title, &s(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0));
         text::draw(c, f, 24.0, 583.0, np.artist, &s(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0));

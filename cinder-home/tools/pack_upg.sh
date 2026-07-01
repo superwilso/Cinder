@@ -16,7 +16,13 @@ REPO="$CH/.."
 UPGTOOL="$REPO/artifacts/upgtool"
 EXECFILE="$REPO/artifacts/repos/rockbox/utils/nwztools/scripts/exec_file.sh"
 MODEL=nw-a50
-DIST="$CH/dist"; mkdir -p "$DIST"
+# Channel: stable (default) | dev. Artifacts go to dist/<channel>/ so the two builds never clobber.
+# The install/uninstall .UPGs are channel-agnostic (they push whatever binary is at /contents/
+# cinder-home); only the staged binary differs (dev = "CINDER DEV" marker + self-enables adb).
+CHANNEL="${1:-stable}"
+case "$CHANNEL" in stable|dev) ;; *) echo "usage: pack_upg.sh [stable|dev]"; exit 1 ;; esac
+DIST="$CH/dist/$CHANNEL"; mkdir -p "$DIST"
+echo "[pack_upg] channel: $CHANNEL -> $DIST"
 
 [ -x "$UPGTOOL" ] || { echo "ERR: upgtool not built at $UPGTOOL (run: make phase1)"; exit 1; }
 [ -f "$EXECFILE" ] || { echo "ERR: exec_file.sh template missing at $EXECFILE"; exit 1; }
@@ -47,11 +53,12 @@ echo "[pack_upg] building install/uninstall .UPG ($MODEL)…"
 pack "$CH/deploy/install_cinderhome.sh"   "$DIST/cinder_home_install.upg"
 pack "$CH/deploy/uninstall_cinderhome.sh" "$DIST/cinder_home_uninstall.upg"
 
-# refresh the pushable binary (built by build.sh)
-if [ -f "$CH/cinder-home" ]; then
-    cp -f "$CH/cinder-home" "$DIST/cinder-home"
-    echo "  refreshed dist/cinder-home ($(stat -c%s "$DIST/cinder-home") bytes)"
+# The CHANNEL binaries are staged by `build.sh <channel>` into this same dist/<channel>/ dir, so we
+# do NOT copy from cinder-home/cinder-home here (that's whatever was built LAST — would mismatch the
+# channel). Just confirm the matching binary is present.
+if [ -f "$DIST/cinder-home" ]; then
+    echo "  $CHANNEL binary present: dist/$CHANNEL/cinder-home ($(stat -c%s "$DIST/cinder-home") bytes)"
 else
-    echo "  WARN: $CH/cinder-home not built yet (run build.sh first)"
+    echo "  WARN: dist/$CHANNEL/cinder-home missing — run: bash build.sh $CHANNEL"
 fi
 echo "[pack_upg] dist ready:"; ls -la "$DIST"

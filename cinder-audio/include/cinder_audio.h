@@ -37,6 +37,12 @@ int  cinder_audio_seek_ms(int ms);
  * until then, Cinder derives position from PlayerService elsewhere or polls less. */
 int  cinder_audio_current_uri(char *buf, int cap);
 
+/* DIAGNOSTIC (cinder-probe --discover): hex-dump the first 128 bytes of the raw PlayStatus struct
+ * after GetCurrentStatus, into `buf` (NUL-terminated hex). Used on-device to map the position/
+ * duration int offsets (play a track at a known elapsed time, then match the ms values in the dump).
+ * Returns bytes written or <0. Read-only; frees the URI std::string at +0x6c like current_uri. */
+int  cinder_audio_dump_status(char *buf, int cap);
+
 #ifdef __cplusplus
 }
 #endif

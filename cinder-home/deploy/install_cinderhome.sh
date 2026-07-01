@@ -10,18 +10,36 @@
 # and completes the Foreground handshake via easel::ApplicationBase::run() — so appmgr is
 # satisfied and does NOT reboot (see analysis/F_appmgr_home/RE_findings.md).
 #
-# SAFETY — BAD-BOOT COUNTER + AUTO-REVERT (the net for this FIRST on-device bring-up):
-#   The launcher bumps /contents/cinderhome_bootcount each boot. If cinder-home fails to
-#   reach Foreground (crash/timeout), appmgr reboots; after MAXBAD such boots the launcher
-#   auto-creates /contents/cinderhome_off and execs the REAL Qt app -> stock UI returns on
-#   its own in ~2-3 boot cycles, NO PC/wbrt needed. A boot that survives 60 s resets the
-#   counter. Manual escape: create /contents/cinderhome_off (over USB-MSC) then reboot.
-#   Full revert: flash cinder_home_uninstall.upg (restores .appcfg.real). Last resort: wbrt.
+# UPDATER TOOLING (hardened 2026-07-01 after a false-abort on the first flash): the NWZ
+#   updater's AMBIENT shell utilities are unreliable — a bare `wc -c` returned 0 (→ the
+#   size-sanity check false-aborted a GOOD copy) and `rm -f` choked on its own flag. Wampy
+#   avoids this by invoking `/xbin/busybox <cmd>` for every op; we now do the same, so the
+#   brick-critical .appcfg write no longer rides on those flaky tools. A runtime fallback
+#   (/xbin/busybox → /system/xbin/busybox → bare) covers layout variance. mount/umount/sync
+#   stay ambient — exec_file.sh already proved the updater's own mount works (it remounts
+#   /contents rw and our log lands there).
+#
+# SAFETY — BAD-BOOT COUNTER + AUTO-REVERT (hardened 2026-06-26 after a hung launch needed wbrt):
+#   The launcher increments /contents/cinderhome_bootcount each boot; the counter is reset to 0
+#   ONLY by cinder-home once it proves HEALTHY (painted + survived its risky init). So a crash OR
+#   HANG never resets it -> it accumulates and after MAXBAD=2 boots the launcher execs the stock
+#   Qt app -> stock UI returns on its own, NO PC/wbrt. (The old blind 60s-timer reset is removed:
+#   a hung process "survived" it -> the counter never accumulated -> soft-brick.) Plus a ~2s
+#   pre-launch window: connect USB (or create /contents/cinderhome_off) -> boot stock immediately.
+#   All writes here are ATOMIC (temp+verify+mv) + a FINAL SANITY GATE reverts to stock if any
+#   piece is wrong, so a partial install can't soft-brick. Full revert: cinder_home_uninstall.upg.
 # The original Qt binary is never modified; only the .appcfg (backed up to .appcfg.real).
 LOG=/contents/cinder_home_install.log
 exec >>"$LOG" 2>&1
 echo "================================================================"
 echo "== cinder-home installer  $(date 2>/dev/null)"
+
+# ── busybox anchor ─────────────────────────────────────────────────────────────────────────
+# Route every file op through the updater's known-good busybox (see UPDATER TOOLING above).
+BB=/xbin/busybox
+[ -x "$BB" ] || BB=/system/xbin/busybox
+[ -x "$BB" ] || BB=busybox      # last resort: whatever is on PATH (may be the flaky one)
+echo "busybox: $BB ($("$BB" 2>&1 | head -1 2>/dev/null))"
 
 VENDOR=/system/vendor/unknown321
 BIN=$VENDOR/bin
@@ -45,21 +63,41 @@ if [ ! -f "$APPCFG" ]; then
 fi
 
 # ensure the install dir exists (Wampy provides it; create if missing)
-[ -d "$BIN" ] || mkdir -p "$BIN"
+[ -d "$BIN" ] || "$BB" mkdir -p "$BIN"
 
-# 1) install the cinder-home binary (verified content copy; busybox cp is flaky -> use cat>)
-cat "$SRC" > "$BIN/cinder-home" 2>/dev/null
-if [ ! -s "$BIN/cinder-home" ]; then
-    echo "ERROR: failed to install $BIN/cinder-home (copy failed/zero bytes). ABORT (no .appcfg change)."
-    sync; umount /system 2>/dev/null; exit 0
+# 1) install the cinder-home binary ATOMICALLY (write temp -> verify -> mv). A truncated binary
+#    must never become the live one. (busybox cp is flaky -> use cat>.)
+"$BB" cat "$SRC" > "$BIN/cinder-home.tmp" 2>/dev/null
+if [ ! -s "$BIN/cinder-home.tmp" ]; then
+    echo "ERROR: failed to stage $BIN/cinder-home (copy failed/zero bytes). ABORT (no .appcfg change)."
+    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
 fi
-chmod 0755 "$BIN/cinder-home"
-echo "installed binary: $BIN/cinder-home (present, non-empty)"
+# size sanity: the binary is ~2.6 MB. Measure with busybox (the ambient wc returned 0 and
+# false-aborted the first flash). Compare against the SOURCE size too. Only abort on a
+# *measured* implausibly-small file; if size is genuinely unmeasurable, the -s check above
+# already proved the file is non-empty, so proceed and let the bad-boot counter be the net.
+sz=$("$BB" wc -c < "$BIN/cinder-home.tmp" 2>/dev/null | "$BB" tr -cd '0-9')
+srcsz=$("$BB" wc -c < "$SRC" 2>/dev/null | "$BB" tr -cd '0-9')
+case "$sz"    in ''|*[!0-9]*) sz=-1;;    esac
+case "$srcsz" in ''|*[!0-9]*) srcsz=-1;; esac
+echo "staged size: $sz bytes (source $srcsz bytes)"
+if [ "$sz" -ge 0 ] && [ "$sz" -lt 1000000 ]; then
+    echo "ERROR: staged binary only $sz bytes (expected ~2.6MB) — partial copy. ABORT (no .appcfg change)."
+    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
+fi
+if [ "$sz" -ge 0 ] && [ "$srcsz" -ge 0 ] && [ "$sz" != "$srcsz" ]; then
+    echo "ERROR: staged $sz != source $srcsz bytes — truncated copy. ABORT (no .appcfg change)."
+    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
+fi
+[ "$sz" -lt 0 ] && echo "WARN: size unmeasurable even via busybox; file is non-empty (-s passed) — proceeding; bad-boot counter is the net."
+"$BB" chmod 0755 "$BIN/cinder-home.tmp"
+"$BB" mv -f "$BIN/cinder-home.tmp" "$BIN/cinder-home"
+echo "installed binary: $BIN/cinder-home ($sz bytes)"
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
 #    the .appcfg (otherwise the stock launch config is lost with no .real to restore).
 if [ ! -f "$APPCFG.real" ]; then
-    cat "$APPCFG" > "$APPCFG.real" && chmod 0644 "$APPCFG.real"
+    "$BB" cat "$APPCFG" > "$APPCFG.real" && "$BB" chmod 0644 "$APPCFG.real"
     if [ ! -s "$APPCFG.real" ]; then
         echo "ERROR: failed to back up $APPCFG -> .appcfg.real. ABORT (no .appcfg change)."
         sync; umount /system 2>/dev/null; exit 0
@@ -67,73 +105,126 @@ if [ ! -f "$APPCFG.real" ]; then
     echo "backed up $APPCFG -> .appcfg.real"
 fi
 
-# 3) write the launcher (bad-boot counter + exec cinder-home, revert to stock on failure).
-#    Quoted heredoc = written verbatim (no install-time expansion).
-cat > "$LAUNCH" <<'LAUNCH_EOF'
+# 3) write the launcher ATOMICALLY (temp -> verify -> mv). A truncated launcher would fail to
+#    exec cinder-home AND never run the counter -> no auto-revert. Quoted heredoc = verbatim.
+#    (The launcher runs at NORMAL boot, where /system/bin/sh + standard tools are available.)
+"$BB" cat > "$LAUNCH.tmp" <<'LAUNCH_EOF'
 #!/system/bin/sh
-# cinder-home launcher — appmgr execs this (via the repointed .appcfg command:).
-# It execs cinder-home (the replacement Home app) behind a BAD-BOOT COUNTER so a
-# failed launch auto-reverts to the stock Qt app. Original Qt binary is untouched.
+# cinder-home launcher — appmgr execs this (via the repointed .appcfg command:). It runs
+# cinder-home behind a BAD-BOOT COUNTER + an escape window so a failed/HUNG launch reverts
+# to the stock Qt app WITHOUT a wbrt restore. The stock Qt binary is never modified.
+#
+# SAFETY MODEL (rewritten 2026-06-26 after a hung launch required wbrt):
+#  * The counter is incremented HERE every boot and persisted (sync). It is reset to 0 ONLY by
+#    cinder-home itself, after it has proven healthy (painted + survived its risky init). So a
+#    HANG — which never resets the counter — ACCUMULATES across (force-)reboots and auto-reverts
+#    after MAXBAD. (The old launcher reset the counter on a blind 60 s timer, which a hung
+#    process "survives" → it never accumulated → soft-brick. That bug is removed.)
+#  * A PRE-LAUNCH ESCAPE WINDOW lets you bail to stock fast: power the device off (hold Power
+#    ~8 s if hung), then during this window connect USB *or* leave an escape file → stock.
 BOOTCOUNT=/contents/cinderhome_bootcount
-MAXBAD=3
+MAXBAD=2
 REAL=/system/vendor/sony/bin/HgrmMediaPlayerApp           # untouched stock Qt app
 HOME_BIN=/system/vendor/unknown321/bin/cinder-home
-# cinder-home needs the Sony easel/PlayerService libs + device libc++; make sure they're found.
 export LD_LIBRARY_PATH="/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib:$LD_LIBRARY_PATH"
 
-# escape hatch / disabled / missing binary -> run stock, no counting
-if [ -f /contents/cinderhome_off ] || [ ! -x "$HOME_BIN" ]; then
-    exec "$REAL" "$@"
-fi
+run_stock() { exec "$REAL" "$@"; }
+usb_connected() {
+    for p in /sys/class/android_usb/android0/state /sys/class/power_supply/usb/online \
+             /sys/class/power_supply/usb/present /sys/class/power_supply/usb/uevent; do
+        v=$(cat "$p" 2>/dev/null) || continue
+        case "$v" in *CONFIGURED*|*POWER_SUPPLY_ONLINE=1*) return 0;; esac
+        [ "$v" = "1" ] && return 0
+    done
+    return 1
+}
 
-# RECOVERY SAFETY: if USB is connected to a PC at launch, run STOCK. This guarantees a
-# no-tools escape during this first bring-up — cinder-home doesn't manage USB-MSC yet, so
-# "plug into the PC, then reboot" ALWAYS gives you the stock UI with working mass storage
-# (to read logs or flash the uninstaller). Test cinder-home UNPLUGGED (on battery).
-if [ "$(cat /sys/class/android_usb/android0/state 2>/dev/null)" = "CONFIGURED" ]; then
-    echo "usb-connected-at-launch -> running stock for recovery" > /contents/cinderhome_usbskip 2>/dev/null
-    exec "$REAL" "$@"
-fi
+# explicit disable / missing binary -> stock, no counting
+[ -f /contents/cinderhome_off ] && run_stock "$@"
+[ ! -x "$HOME_BIN" ] && run_stock "$@"
 
-# --- bad-boot counter ---
-n=0
-[ -f "$BOOTCOUNT" ] && n=$(cat "$BOOTCOUNT" 2>/dev/null)
-[ -z "$n" ] && n=0
-n=$((n + 1))
-echo "$n" > "$BOOTCOUNT"
+# bad-boot counter: increment + persist FIRST. cinder-home resets it once healthy.
+n=0; [ -f "$BOOTCOUNT" ] && n=$(cat "$BOOTCOUNT" 2>/dev/null)
+# a partial write could leave non-numeric garbage -> treat as 0 (don't let `$(())`/`[ -ge ]` error)
+case "$n" in ''|*[!0-9]*) n=0;; esac
+n=$((n + 1)); echo "$n" > "$BOOTCOUNT"; sync
 if [ "$n" -ge "$MAXBAD" ]; then
-    # cinder-home failed to survive too many times -> disable + revert to stock.
-    touch /contents/cinderhome_off /contents/cinderhome_DISABLED_badboot
-    exec "$REAL" "$@"
+    touch /contents/cinderhome_off /contents/cinderhome_DISABLED_badboot; sync
+    run_stock "$@"
 fi
 
-# heartbeat: if this boot survives 60 s, it's good -> reset the counter.
-( sleep 60; echo 0 > "$BOOTCOUNT" ) &
+# pre-launch escape window (~3 s): connect USB or drop /contents/cinderhome_off -> stock.
+i=0
+while [ "$i" -lt 2 ]; do
+    [ -f /contents/cinderhome_off ] && run_stock "$@"
+    if usb_connected; then
+        echo "usb-at-launch -> stock for recovery" > /contents/cinderhome_escape 2>/dev/null
+        run_stock "$@"
+    fi
+    sleep 1
+    i=$((i + 1))
+done
 
 # hand over to cinder-home (replaces this process; keeps the appmgr-expected name/args).
 exec "$HOME_BIN" "$@" >/contents/cinderhome.log 2>&1
 LAUNCH_EOF
-chmod 0755 "$LAUNCH"
+# verify the launcher wrote fully (must contain its final exec line) before activating it
+if ! "$BB" grep -q 'exec "\$HOME_BIN"' "$LAUNCH.tmp" 2>/dev/null; then
+    echo "ERROR: launcher write was truncated. ABORT (no .appcfg change; stock intact)."
+    "$BB" rm -f "$LAUNCH.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
+fi
+"$BB" chmod 0755 "$LAUNCH.tmp"
+"$BB" mv -f "$LAUNCH.tmp" "$LAUNCH"
 echo "wrote launcher: $LAUNCH"
 
-# 4) repoint the .appcfg command: at the launcher (keep name/type/hidden = the Home contract).
-cat > "$APPCFG" <<'APPCFG_EOF'
+# 4) repoint the .appcfg command: at the launcher, ATOMICALLY. This is THE most brick-sensitive
+#    write: a truncated/empty .appcfg means appmgr can't launch ANY Home app, and the launcher
+#    (hence the bad-boot counter) never runs -> unrecoverable soft-brick. So: write temp, VERIFY
+#    it parses, then mv over the live one (rename is atomic on one fs). Keep name/type/hidden =
+#    the stock Home contract; matches the stock 4-line format exactly.
+"$BB" cat > "$APPCFG.tmp" <<'APPCFG_EOF'
 name: HgrmMediaPlayerApp
 command: /system/vendor/unknown321/bin/cinderhome-launch.sh
 type: Home
 hidden: false
 APPCFG_EOF
-chmod 0644 "$APPCFG"
+if ! "$BB" grep -q '^command: /system/vendor/unknown321/bin/cinderhome-launch.sh$' "$APPCFG.tmp" \
+   || ! "$BB" grep -q '^type: Home$' "$APPCFG.tmp"; then
+    echo "ERROR: new .appcfg failed verification — NOT activating (stock .appcfg untouched)."
+    "$BB" rm -f "$APPCFG.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
+fi
+"$BB" chmod 0644 "$APPCFG.tmp"
+"$BB" mv -f "$APPCFG.tmp" "$APPCFG"
 echo "repointed $APPCFG command: -> $LAUNCH"
 
+# ── FINAL SANITY GATE ─────────────────────────────────────────────────────────────────────
+# A half/broken install must boot to working STOCK, never soft-brick. Verify every piece the
+# boot path needs; if ANY is wrong, restore the stock .appcfg (revert) before rebooting.
+ok=1
+[ -x "$BIN/cinder-home" ]    || { echo "sanity: cinder-home not executable"; ok=0; }
+[ -x "$LAUNCH" ]             || { echo "sanity: launcher not executable"; ok=0; }
+"$BB" grep -q 'cinderhome-launch.sh' "$APPCFG" 2>/dev/null || { echo "sanity: .appcfg not repointed"; ok=0; }
+[ -x "$SONYBIN/HgrmMediaPlayerApp" ] || { echo "sanity: STOCK revert target missing!"; ok=0; }
+[ -s "$APPCFG.real" ]       || { echo "sanity: .appcfg.real backup missing"; ok=0; }
+if [ "$ok" != 1 ]; then
+    echo "!! SANITY FAILED — reverting .appcfg to stock so the device boots normally."
+    if [ -s "$APPCFG.real" ]; then
+        "$BB" cat "$APPCFG.real" > "$APPCFG.tmp" && "$BB" mv -f "$APPCFG.tmp" "$APPCFG"
+        echo "   restored stock .appcfg."
+    fi
+    sync; umount /system 2>/dev/null
+    echo "== install ABORTED safely; device will boot the stock UI. =="
+    exit 0
+fi
+
 # fresh install = enabled: clear any prior disable/bad-boot flags.
-rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot 2>/dev/null
+"$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot 2>/dev/null
 echo "cleared prior disable flags (fresh install = enabled)"
 echo "left staged binary at $SRC (safe to delete once cinder-home is confirmed)"
 sync
 umount /system 2>/dev/null
 echo "== done. reboot to normal; appmgr launches cinder-home as the Home app. =="
-echo "   SAFETY: if it fails to foreground 3x it AUTO-REVERTS to the stock Qt UI (~2-3 boots)."
-echo "   manual escape: create /contents/cinderhome_off, then reboot."
-echo "   logs: /contents/cinderhome.log (cinder-home stdout/stderr)."
+echo "   SAFETY: a failed/hung launch AUTO-REVERTS to stock after 2 boots (no wbrt)."
+echo "   fast escape: during the ~3s pre-launch window, connect USB (or create"
+echo "   /contents/cinderhome_off) to boot stock. logs: /contents/cinderhome.log."
 exit 0

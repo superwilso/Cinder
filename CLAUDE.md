@@ -15,6 +15,12 @@ explicitly defer.
 *discovery* — `phases/phase3_soc_id.sh` now checks for MT8590-specific markers in the
 extracted firmware and reports them as evidence.
 
+**Cinder app status (live):** the replacement player is built and daily-usable. The single
+source of truth for **which features are fully functional vs partial vs stationary** is
+**`cinder-home/STATUS.md`** ("Feature status" matrix) — read it before promising any feature.
+RE detail behind each: `analysis/RE_playerservice_sound.md`. Build = `cinder-home/build.sh
+[stable|dev]` (two channels from one tree; `dev` adds adb for fast iteration).
+
 ---
 
 ## Part A — Why Windows + WSL2 (and what stays native)

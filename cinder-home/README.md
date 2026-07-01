@@ -3,8 +3,10 @@
 > **Status & flash/verify guide: [`STATUS.md`](STATUS.md)** — start there. As of 2026-06-25 the
 > OnInitialize boot crash is fixed (object-sizing overflow), cinder-home constructs cleanly
 > (proven under qemu), and the UI is data-driven & daily-usable (real library browse + scroll,
-> volume HUD, EQ, Bluetooth, scrobbler, full input pump). Build = `bash build.sh` (runs the
-> GLIBC-2.23 gate + the qemu construction preflight); flash artifacts in `dist/`.
+> volume HUD, EQ, Bluetooth, scrobbler, full input pump). Build = `bash build.sh [stable|dev]`
+> (runs the GLIBC-2.23 gate + the qemu construction preflight); flash artifacts in `dist/<channel>/`.
+> Two channels from one tree — `stable` (daily) and `dev` (adb for fast iteration); see STATUS.md
+> "Build channels".
 
 Make `appmgrservice` launch **Cinder** as the foreground `type:Home` app instead of the
 stock Qt `HgrmMediaPlayerApp`, completing the app-manager **Foreground handshake** so the
@@ -100,17 +102,14 @@ not in the vtable. Defaults exist for all the virtuals; override only what you n
   sets power/reset handlers bound to `this`, registers `[AppManagerModule, userModule]`, runs
   `LifeCycleManager::Main`.
 
-## On-device test plan (do it SAFELY)
-Do **not** repoint the `.appcfg` until cinder-home reaches Foreground reliably — a failure =
-reboot. Bring-up order:
-1. Build cinder-home (after the two prerequisites). Stage it next to `cinder-device`.
-2. Keep the **bad-boot counter** active (the safe wrapper) as the net: install cinder-home as
-   an *alternative* launched behind the counter, so 3 failed boots auto-revert to stock in ~2 min.
-3. First milestone: cinder-home launches, **reaches Foreground without rebooting** (verify via
-   `appmgr` logs / the device staying up >60 s and the counter resetting). Painting can come after.
-4. Then wire `render.c` and confirm Cinder paints as the real foreground app.
-5. Only once stable: bake into CFW by setting `HgrmMediaPlayerApp.appcfg` `command:` →
-   `cinder-home` (or replacing the binary) and repacking the rootfs (Phase-7 round-trip).
-   Keep the wbrt backup + a revertable appcfg.
+## On-device test plan & feature status → [`STATUS.md`](STATUS.md)
+The render core, input pump, transport, EQ/Sound DSP, battery care, scrobbler and the safety nets
+are all implemented (the old "wire render.c later / run the SIGSTOP overlay meanwhile" plan is
+superseded). cinder-home installs via its **own** hardened launcher (`deploy/install_cinderhome.sh`,
+bad-boot counter `MAXBAD=2` on `/contents/cinderhome_bootcount`), not the cinder-device overlay.
 
-Until all that is proven, the **SIGSTOP safe build remains the way to run Cinder on screen.**
+`STATUS.md` is the single source of truth for:
+- **Feature status** — the functional / partial / stationary matrix.
+- **STEP 1** — the zero-risk `cinder-probe` diagnostic (run this before any Home flash).
+- **STEP 2** — the safe flash/verify procedure + the recovery model.
+- **Build channels** — `build.sh stable` (daily) vs `build.sh dev` (adds adb for iteration).

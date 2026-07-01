@@ -352,10 +352,19 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         Screen::NowPlaying => now_playing::render(c, theme, fonts, &now_playing::NowPlaying {
             title: SONGS[i].t, artist: SONGS[i].a, codec, badge, clock: "14:32", battery: 78,
             elapsed: "1:47", remaining: "-2:45", progress: 0.39, art: SONGS[i].art, liked: app.liked, playing: app.playing,
-            shuffle: app.shuffle, repeat: app.repeat,
+            shuffle: app.shuffle, repeat: app.repeat, viz_seed: 2.0, viz_kind: 0, viz_levels: None,
         }),
         Screen::Menu => menu::render(c, theme, fonts, &menu_items(app)),
-        Screen::UpNext => up_next::render(c, theme, fonts, app.track),
+        Screen::UpNext => {
+            let tracks: Vec<cinder_ui::model::SongRow> = SONGS
+                .iter()
+                .enumerate()
+                .map(|(i, s)| cinder_ui::model::SongRow {
+                    title: s.t.into(), artist: s.a.into(), dur: s.d.into(), art: s.art.into(), object_id: i as i64,
+                })
+                .collect();
+            up_next::render(c, theme, fonts, "Now Playing", &tracks, app.track)
+        }
         Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, &app.lib),
         Screen::Artist => library::artist(c, theme, fonts),
         Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0, 0),
@@ -363,17 +372,20 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             dsee: app.dsee, vinyl: app.vinyl, vpt: VPTS[app.vpt], dcphase: DCS[app.dc],
             normalizer: app.normalizer, clearaudio: app.clearaudio, eq_preset: EQ_PRESETS[app.eq_preset].0,
             bt_codec: if app.bt_on && app.bt_conn.is_some() { Some(BT_CODECS[app.bt_codec]) } else { None },
-        }),
-        Screen::Settings => settings::render(c, theme, fonts, app.night, app.usb_dac),
+        }, 0, false),
+        Screen::Settings => settings::render(c, theme, fonts, 0,
+            &settings::SettingsView { night: app.night, viz_name: "Bars", viz_on: true, usb_dac: app.usb_dac, battery_care: false, storage: "12.4 / 58 GB", sleep: "OFF" }),
         Screen::Bluetooth => bluetooth::render(c, theme, fonts, &Bt {
             on: app.bt_on,
             connected: app.bt_conn.map(|r| PAIRED[r].name),
-            codec: BT_CODECS[app.bt_codec],
+            codec_sel: app.bt_codec as u8,
+            ldac_quality: 0,
         }),
         Screen::Pairing => pairing::render(c, theme, fonts, 3, Some(1)),
         Screen::Receiver => receiver::render(c, theme, fonts, app.rx),
         Screen::Fm => fm::render(c, theme, fonts, app.fm_freq),
-        Screen::UsbDac => usbdac::render(c, theme, fonts, app.usb_dac, EQ_PRESETS[app.eq_preset].0, app.dsee),
+        Screen::UsbDac => usbdac::render(c, theme, fonts, app.usb_dac, app.usb_dac && app.bt_on,
+            BT_CODECS[app.bt_codec], app.bt_conn.map(|r| PAIRED[r].name), EQ_PRESETS[app.eq_preset].0, app.dsee),
     }
 
     // Shelf is an overlay drawn on top of the current screen.

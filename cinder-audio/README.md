@@ -1,48 +1,66 @@
-# cinder-audio — playback control via Sony's PlayerService (C ABI shim)
+# cinder-audio — Sony-service C-ABI shims (playback, effects, analyzer, power)
 
-A thin C++ shim that wraps Sony's **exported** PlayerService client
-(`libPlayerServiceClient.so`) and exposes a flat **C ABI** (`include/cinder_audio.h`) so the
-rest of Cinder (Rust `cinder-ffi` / the `cinder-home` C++ shell) drives playback without any
-libc++ types crossing the boundary. This is the playback half of Option B (the library/
-metadata half is the pure-Rust `cinder-db`; the UI is `cinder-ui`).
+Thin C++ shims that wrap Sony's **exported** service clients and expose flat **C ABIs** so the rest
+of Cinder (Rust `cinder-ffi` / the `cinder-home` C++ shell) drives the device without any libc++
+types crossing the boundary. All four shims are **compiled clang `-stdlib=libc++`, linked into
+`cinder-home`, and pass the GLIBC-2.23 gate + qemu construction preflight** (see `../cinder-home`).
 
-## What's verified (ground-truthed 2026-06-24)
-Symbols + signatures demangled from the extracted `libPlayerServiceClient.so`, and
-`src/player_shim.cpp` compiles (cross g++) emitting undefined refs that match them exactly:
+> Feature status (functional / partial / stationary) is in **`../cinder-home/STATUS.md`**; the RE
+> detail (symbols, offsets, sizes) is in **`../analysis/RE_playerservice_sound.md`**.
 
-- `PlayerService::GetInstance()` → `getPlayController(char const*)` → `Connect(PlayEventListener*)`
-  — **`Connect(NULL)` is valid → poll mode**, so we do NOT need to implement the listener vtable.
-- Transport `ChangePlayState(playstate_t)` (0/1/2 valid; 3–6 rejected by the wrapper).
-- `NextTrack()` / `PrevTrack(PrevTrackOption const*)`.
-- `NextGroup()` / `PrevGroup(PrevGroupOption const*)` — **album-level skip = the shuffle-by-album
-  primitive** the project wants.
-- `SeekTime(media_origin_t, int ms)`.
-- `GetCurrentStatus(PlayStatus&)` — one-shot now-playing snapshot (poll path).
-- `SetTrackSequence(shared_ptr<TrackSequence> const&)` — load the queue (queue model TBD).
+## The shims
 
-All PlayController/PlayerService methods are **non-virtual exported members** (called directly
-by symbol) — unlike `easel::ApplicationBase`, there is **no vtable to reproduce**, so this shim
-is lower-risk than `cinder-home`.
+| Shim | C ABI header | Wraps | Status |
+|---|---|---|---|
+| `player_shim.cpp` | `cinder_audio.h` | `libPlayerServiceClient.so` (PlayerService / PlayController) | ✅ transport + now-playing URI; ◐ progress; ▢ play-by-index |
+| `effect_shim.cpp` | `cinder_effects.h` | `libEffectCtrlDmp.so` (EffectCtrlDmp) | ✅ EQ + all Sound toggles + A/B bypass |
+| `analyzer_shim.cpp` | `cinder_analyzer.h` | `libAudioAnalyzerServiceClient.so` (AudioAnalyzerService) | ✅ built, **default-OFF**, device-validate first |
+| `power_shim.cpp` | `cinder_power.h` | `libPowerMgrServiceClient.so` (PowerMgrServiceClient) | ✅ battery care (Itawari) on/off |
 
-## Files
-- `include/cinder_audio.h` — the C ABI: init/shutdown, play/pause/stop, next/prev track,
-  next/prev group, seek_ms, current_uri.
-- `src/playerservice_abi.hpp` — hand-written declarations matching the device mangling.
-- `src/player_shim.cpp` — the implementation. **Skeleton** (ABI-correct, not yet compiled with
-  libc++ / linked / run).
+**SAFETY model (all shims):** every entry point is a Sony-service call, so the shell invokes it
+behind its crash+hang guard (`run_guarded`). Anything we **construct** (`new EffectCtrlDmp`,
+`new PowerMgrServiceClient`) reserves ≥ the RE-confirmed device object size with a `static_assert`
+(the heap-overflow brick care); factory-returned pointers (`GetInstance`/`getPlayController`) are
+Sony-allocated and need no sizing. PlayerService/Effect/Power methods are **non-virtual exported
+members** (called by symbol — no vtable to reproduce); the analyzer is the one exception (a faithful
+`IEventListener` vtable, RE-verified slot order `[~dtor, del-dtor, OnLevelUpdate, OnSpectrumUpdate]`,
+dlopen-resolved).
 
-## Open items (need RE or device)
-1. **PlayStatus field layout.** It's a plain struct with NO exported accessors. Only the track
-   **URI is known (libc++ `std::string` @ +0x6c)**. The **playstate / current-ms / total-ms**
-   offsets need a Ghidra pass on `GetCurrentStatus()` / `OnPlayStatusUpdated()`. Until then
-   `cinder_audio_current_uri` reads only the URI (and that offset read must be validated on
-   device first — wrong offset = UB).
-2. **Enum calibration.** Confirm `playstate_t` 0/1/2 ↔ stop/play/pause and `media_origin_t`
-   begin/current on device.
-3. **TrackSequence build** for `SetTrackSequence` (queue / shuffle permutation) — see
-   `../analysis/G_player_ipc/RE_findings.md` (NodeTrackSequence model).
+### player_shim (`cinder_audio.h`) — ✅ built & linked
+- `GetInstance()` → `getPlayController(char const*)` → `Connect(NULL)` = **poll mode** (no listener vtable).
+- Transport: `ChangePlayState(playstate_t)`, `NextTrack`/`PrevTrack`, `NextGroup`/`PrevGroup`
+  (**album skip = shuffle-by-album primitive**), `SeekTime`.
+- `GetCurrentStatus(PlayStatus&)` → `cinder_audio_current_uri` reads the track URI (libc++
+  `std::string` @ **+0x6c**, RE-confirmed; `PlayStatus` reserves `_opaque[256]` ≫ the ~124 B
+  `ConverPlayStatus` write-extent — no stack smash). The string is explicitly destructed each poll
+  (the freed-heap fix).
 
-## Build (same blockers as cinder-home)
-Needs **clang `-stdlib=libc++`** + the device `libc++.so.1`/`libcxxrt.so.1` (not in the extracted
-rootfs — pull from device) and `-L …/vendor/sony/lib -lPlayerServiceClient`. The shim's std types
-mangle `std::__1::` under libc++ (matching the device); cross g++ (libstdc++) only structure-checks.
+### effect_shim (`cinder_effects.h`) — ✅ EQ + Sound + A/B
+`set_eq` (10-band), `set_dsee_hx`, `set_vpt`, `set_dc_phase`, `set_dynamic_normalizer`,
+`set_vinylizer`, `set_clearaudio_plus`, `set_bt_audio_effect`, and `set_bypass` (A/B compare =
+`DisableSoundEffects` / `ReenableSoundEffects`). `EffectCtrlDmp` ≈ 8 B, reserve `0x10` + static_assert.
+
+### analyzer_shim (`cinder_analyzer.h`) — ✅ built, default-OFF
+Real audio-reactive visualiser source: registers an `IEventListener`, forwards `OnSpectrumUpdate`
+(Sony's already-FFT'd bands) → `cinder_set_spectrum`. **dlopen-based** (a missing `.so` just disables
+it — never a link dependency of the boot binary; the analyzer thread self-masks SIGALRM so it can't
+steal the shell watchdog). Gated by `/contents/cinder_viz.conf: analyzer=1`; validate with
+`cinder-probe --analyzer` before enabling.
+
+### power_shim (`cinder_power.h`) — ✅ battery care
+`get/set_battery_care` → `PowerMgrServiceClient::IsItawariChargingEnabled` /
+`EnableItawariCharging`. Itawari = Sony "considerate" charging (caps ~90%). Object 8 B, reserve `0x10`.
+
+## Open items (still need device / Ghidra)
+1. **PlayStatus position/duration** offsets (only the URI @ +0x6c is mapped). The progress bar is
+   currently a live play-through *estimate* (DB duration + a local play-clock in cinder-ffi); RE'ing
+   the real position offset would make it seek-accurate.
+2. **`SetTrackSequence` / NodeTrackSequence** — play an arbitrary selected track/album (the no-op
+   `Select` on a library row); see `../analysis/RE_playerservice_sound.md`.
+3. **Enum calibration on device**: `playstate_t` 0/1/2 ↔ stop/play/pause; analyzer `mode_t`
+   (LEVEL/SPECTRUM); VPT/DC-Phase mode/type values; effect band/gain ranges.
+
+## Build
+Driven by `../cinder-home/build.sh [stable|dev]` (clang `-stdlib=libc++` + the device
+`libc++.so.1`/`libcxxrt.so.1` — already in the repo at `../analysis/ramdisk/lib`, no device pull —
+and `-L …/vendor/sony/lib` linking the service libs). Not built standalone.

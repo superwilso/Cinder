@@ -35,6 +35,9 @@ fn main() {
         playing: true,
         shuffle: false,
         repeat: 1,
+        viz_seed: 2.0,
+        viz_kind: 0,
+        viz_levels: None,
     };
     let lk = lock::Lock {
         clock: "14:32",
@@ -57,6 +60,7 @@ fn main() {
         MenuItem { icon: "usb", label: "USB-DAC", value: "Off", active: false },
         MenuItem { icon: "rx", label: "BT Receiver", value: "Off", active: false },
         MenuItem { icon: "settings", label: "Settings", value: "System · Storage · About", active: false },
+        MenuItem { icon: "note", label: "Help & Controls", value: "Button map · features", active: false },
     ];
 
     let snd = Sound {
@@ -69,13 +73,18 @@ fn main() {
         eq_preset: "A1",
         bt_codec: Some("LDAC"),
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), codec: "LDAC" };
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), codec_sel: 0, ldac_quality: 0 };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let lib = Library::sample();
 
     for (name, theme) in [("day", Theme::day()), ("night", Theme::night())] {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
             ("now_playing", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts, &np)),
+            ("now_playing_sleep", &|c: &mut Canvas| { now_playing::render(c, &theme, &fonts, &np); now_playing::sleep_badge(c, &theme, &fonts, 23); }),
+            ("onboard_0_welcome", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 0)),
+            ("onboard_1_controls", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 1)),
+            ("onboard_2_features", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 2)),
+            ("onboard_3_done", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 3)),
             ("shelf", &|c: &mut Canvas| {
                 now_playing::render(c, &theme, &fonts, &np);
                 shelf::render(c, &theme, &fonts, "Now Playing · Atlas Hands", "1:47 / 4:32",
@@ -83,20 +92,27 @@ fn main() {
             }),
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
-            ("up_next", &|c: &mut Canvas| up_next::render(c, &theme, &fonts, 0)),
+            ("up_next", &|c: &mut Canvas| {
+                match lib.album_groups.first().and_then(|g| g.albums.iter().find(|a| !a.track_list.is_empty())) {
+                    Some(al) => up_next::render(c, &theme, &fonts, &al.name, &al.track_list, 1),
+                    None => up_next::render(c, &theme, &fonts, "", &[], 0),
+                }
+            }),
             ("library_songs", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, &lib)),
             ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, &lib)),
             ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, &lib)),
             ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, &lib)),
             ("artist", &|c: &mut Canvas| library::artist(c, &theme, &fonts)),
             ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4)),
-            ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd)),
-            ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, theme.night, false)),
+            ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, false)),
+            ("sound_bypass", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, true)),
+            ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1,
+                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_on: true, usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN" })),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
             ("pairing", &|c: &mut Canvas| pairing::render(c, &theme, &fonts, 2, Some(1))),
             ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, true)),
             ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, 88.6)),
-            ("usbdac", &|c: &mut Canvas| usbdac::render(c, &theme, &fonts, true, "A1", true)),
+            ("usbdac", &|c: &mut Canvas| usbdac::render(c, &theme, &fonts, true, true, "LDAC", Some("WH-1000XM5"), "A1", true)),
         ];
         for (screen, draw) in render_set {
             let mut c = Canvas::new();
@@ -239,5 +255,13 @@ fn main() {
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "eq_interactive");
+    }
+
+    // Visualiser TYPES: render Now Playing with each viz kind (mid-animation) so they can be diffed.
+    for k in 0..cinder_ui::viz::COUNT {
+        let np_k = now_playing::NowPlaying { viz_seed: 1.7, viz_kind: k, ..np };
+        let mut c = Canvas::new();
+        now_playing::render(&mut c, &Theme::day(), &fonts, &np_k);
+        save(&c, &format!("viz_{}_{}", k, cinder_ui::viz::name(k).to_lowercase()));
     }
 }

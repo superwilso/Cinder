@@ -5,7 +5,9 @@
 
 use crate::canvas::Canvas;
 use embedded_graphics::pixelcolor::Rgb888;
-use fontdue::{Font, FontSettings};
+use fontdue::{Font, FontSettings, Metrics};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Family {
@@ -22,6 +24,15 @@ pub enum Weight {
     ExtraBold,
 }
 
+/// Glyph cache key: which font (family<<3 | weight), the char, and the size quantised to 0.25px.
+/// (Sizes used are a small fixed set, so the cache stays small + bounded.)
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct GlyphKey {
+    font: u8,
+    ch: char,
+    size_q: u32,
+}
+
 pub struct FontSet {
     sans_regular: Font,
     sans_semibold: Font,
@@ -30,6 +41,11 @@ pub struct FontSet {
     mono_light: Font,
     mono_regular: Font,
     mono_bold: Font,
+    // Rasterising a glyph allocates + does real work; the UI re-draws the same glyphs every frame
+    // (especially while scrolling / the visualiser animates), so we cache (metrics, coverage
+    // bitmap) per glyph. Single-threaded access (render runs under the cinder-ffi mutex), so a
+    // RefCell suffices. Bounded: ~ASCII × a handful of sizes × weights.
+    glyph_cache: RefCell<HashMap<GlyphKey, (Metrics, std::sync::Arc<Vec<u8>>)>>,
 }
 
 impl FontSet {
@@ -43,7 +59,38 @@ impl FontSet {
             mono_light: f(include_bytes!("../assets/fonts/JetBrainsMono-Light.ttf")),
             mono_regular: f(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
             mono_bold: f(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf")),
+            glyph_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Stable font index for the cache key (matches `pick`'s selection).
+    fn font_index(fam: Family, w: Weight) -> u8 {
+        match fam {
+            Family::Sans => match w {
+                Weight::Light | Weight::Regular => 0,
+                Weight::SemiBold => 1,
+                Weight::Bold => 2,
+                Weight::ExtraBold => 3,
+            },
+            Family::Mono => match w {
+                Weight::Light => 4,
+                Weight::Regular | Weight::SemiBold => 5,
+                Weight::Bold | Weight::ExtraBold => 6,
+            },
+        }
+    }
+
+    /// Cached rasterisation: returns the glyph metrics + an Rc to its coverage bitmap. Misses
+    /// rasterise once and insert; hits are a hashmap lookup (no allocation/raster work).
+    fn glyph(&self, fam: Family, w: Weight, ch: char, size: f32) -> (Metrics, std::sync::Arc<Vec<u8>>) {
+        let key = GlyphKey { font: Self::font_index(fam, w), ch, size_q: (size * 4.0) as u32 };
+        if let Some(hit) = self.glyph_cache.borrow().get(&key) {
+            return (hit.0, hit.1.clone());
+        }
+        let (m, bitmap) = self.pick(fam, w).rasterize(ch, size);
+        let rc = std::sync::Arc::new(bitmap);
+        self.glyph_cache.borrow_mut().insert(key, (m, rc.clone()));
+        (m, rc)
     }
 
     fn pick(&self, fam: Family, w: Weight) -> &Font {
@@ -82,11 +129,10 @@ pub fn measure(fonts: &FontSet, s: &str, st: &TextStyle) -> f32 {
 
 /// Draw `s` with its baseline at (`x`, `baseline`). Returns the pen x after.
 pub fn draw(canvas: &mut Canvas, fonts: &FontSet, x: f32, baseline: f32, s: &str, st: &TextStyle) -> f32 {
-    let font = fonts.pick(st.fam, st.weight);
     let track = st.tracking * st.size;
     let mut pen = x;
     for ch in s.chars() {
-        let (m, bitmap) = font.rasterize(ch, st.size);
+        let (m, bitmap) = fonts.glyph(st.fam, st.weight, ch, st.size); // cached rasterise
         let gx0 = (pen + m.xmin as f32).round() as i32;
         // fontdue: bitmap top is `ymin + height` above the baseline.
         let gy0 = (baseline - (m.height as f32 + m.ymin as f32)).round() as i32;

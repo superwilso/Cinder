@@ -11,6 +11,11 @@ edition = "2021"
 name = "cinder_ffi"
 crate-type = ["staticlib"]
 
+[features]
+# Forwarded to cinder-ui: `--features dev` selects the development channel marker. build.sh passes
+# it for the dev build; the stable build omits it. Same tree, one flag.
+dev = ["cinder-ui/dev"]
+
 [dependencies]
 cinder-ui = { path = "../cinder-ui" }
 cinder-db = { path = "../cinder-db" }

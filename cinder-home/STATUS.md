@@ -1,8 +1,57 @@
-# Cinder — status & flash/verify guide (2026-06-25)
+# Cinder — status & flash/verify guide (updated 2026-06-26)
+
+> ## ⚠️ READ FIRST — a flash hung the device and required a wbrt restore (2026-06-26)
+> The first Home-app flash **soft-bricked** the device (stuck on the boot screen, no auto-revert,
+> needed wbrt). Two bugs caused it, both now fixed:
+> 1. **The launcher's bad-boot counter reset itself on a blind 60-second timer** — and a *hung*
+>    process "survives" 60 s, so the counter never accumulated and never auto-reverted. Removed;
+>    the counter is now reset **only by cinder-home after it proves healthy**, so a hang makes it
+>    climb across reboots → auto-revert after **2** bad boots.
+> 2. **The hang watchdog was cancelled once the renderer was up**, so a blocking PlayerService
+>    call *in the pump* hung forever with appmgr satisfied → no reboot → soft-brick. Now **every
+>    Sony-IPC call runs inside a crash+hang GUARD** (`run_guarded`, host-validated): a crash or
+>    hang is caught, that subsystem is skipped, and the **UI keeps running** — a bad service can
+>    no longer hang the boot.
+>
+> **Because of this, the next device step is NOT a Home-app flash.** It's the zero-risk
+> `cinder-probe` diagnostic (below), which never replaces the Home app and can't affect boot.
+> A standalone probe run under qemu already caught `getPlayController()` null-deref'ing when
+> PlayerService isn't reachable — a plausible boot-timing failure we now want to confirm on real
+> hardware before trusting a Home flash.
 
 This is the hand-off after the autonomous integration session. It tells you **what works**,
-**how to flash and verify it**, **how to tune the input keymap**, and **what still needs the
-device** (RE follow-ups). Read the "Flash it" section first.
+**how to safely diagnose**, **how to flash/verify**, **how to tune the keymap**, and **what
+still needs the device**. Read "⚠️ READ FIRST" then "STEP 1: safe diagnosis" before flashing.
+
+> **What's left & in what order: [`ROADMAP.md`](ROADMAP.md)** — the device-session critical path and
+> the prioritized backlog (this file is current state; the roadmap is the forward plan).
+
+---
+
+## STEP 1: safe diagnosis (do this first — zero brick risk)
+
+`cinder-probe` runs ONLY the suspect calls (framebuffer, library DB, PlayerService connect,
+render+poll) in isolation — no easel/appmgr lifecycle, so it does **not** become the Home app and
+**cannot** affect boot. It's watchdog-bounded: on a hang it logs the exact PC and exits. Needs a
+shell on the device in **normal boot** (stock UI up, so PlayerService is running) — adb is the
+easy path:
+
+```bash
+adb push cinder-home/dist/stable/cinder-probe /data/local/tmp/
+adb shell 'cd /data/local/tmp && \
+  LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib \
+  ./cinder-probe'
+```
+
+Read the printed trace. The **last `[N/4]` line before it stops** is the culprit:
+- stops at `[3/4] cinder_audio_init` → PlayerService connect is the problem (matches the qemu
+  finding). The fix is device-RE on the connect path / a readiness wait.
+- stops at `[2/4] cinder_db_open` → the DB path is wrong or the load is pathologically slow.
+- reaches `DONE` cleanly → none of these hang on your device, so a Home flash is much safer.
+
+If you don't have adb: the hardened Home flash (STEP 2) now **auto-reverts** a hang in ~2 forced
+reboots and leaves the hang PC in `cinderhome.log`, so it's no longer a wbrt risk — but probe-first
+is still preferred.
 
 ---
 
@@ -23,52 +72,242 @@ device** (RE follow-ups). Read the "Flash it" section first.
    real library browsing with **windowed scrolling**, a **volume HUD**, an **interactive EQ**,
    **Bluetooth on/off**, a **built-in scrobbler**, and a **complete input/now-playing pump**.
 
-## What works (once flashed)
+## Feature status — fully functional vs partial vs stationary
 
-- Boots as the Home app (replaces the stock Qt UI) and completes the easel handshake.
-- Lock screen → unlock → **Now Playing** showing the **real current track** (resolved from the
-  library DB by URI).
-- **Transport**: play/pause, next/prev track, next/prev **album** (shuffle-by-album primitive).
-- **Library browse**: Songs/Albums/Artists/Playlists, real data, **scrolls** (thousands of rows),
-  grouped album headers, distinct per-album art (hashed gradient until real thumbnails decode).
-- **Volume HUD** on Vol±, **night mode** toggle, **EQ** band editing, **Bluetooth** toggle.
-- **Scrobbler**: writes `/contents/.scrobbler.log` (Audioscrobbler/1.1) as you listen.
-- **Safety nets unchanged**: bad-boot counter auto-reverts to stock after 3 failed boots;
-  USB-connected-at-launch runs stock; `/contents/cinderhome_off` disables; uninstaller restores.
+Authoritative, code-verified (2026-06-29). Three tiers:
+**✅ Functional** = wired to the device / real data, end-to-end. **◐ Partial** = the UI works but the
+backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a placeholder / no action
+(display-only). The matrix below is the single source of truth; the per-feature RE detail lives in
+`../analysis/RE_playerservice_sound.md` (§10 audit, §11 bullet-proofing).
 
-## What does NOT work yet (needs the device + Ghidra — see "RE follow-ups")
+### ✅ Fully functional (real device / real data)
+- **Boot & shell**: launches as the easel `type:Home` app, full lifecycle, dirty-flag framebuffer
+  paint (480×800 XRGB8888, triple-buffered, blit bounded against the mapping).
+- **Input model (NW-A55 = touch + transport buttons, NO d-pad)**: the physical buttons are
+  Play/pause, ◁ rewind, ▷ skip, Vol±, Power, and the Hold switch — transport + power only.
+  **All navigation is the touchscreen**: tap to open/select, drag to scroll lists, **left-edge swipe
+  = Back**, status-bar tap = Menu. Implemented across every screen (`nav::App::tap`/`touch_scroll`);
+  the shell classifies tap vs scroll vs edge-swipe and maps raw touch → UI via the panel's reported
+  range (`EVIOCGABS`). *(Tap coordinates + the touch range want a quick on-device confirm; the
+  discovery probe dumps the input ranges.)*
+- **First-run onboarding**: a paged intro (Welcome → Controls → What's inside → Done), shown once
+  (persisted), re-openable any time from the Menu as **Help & Controls**.
+- **Lock screen = a true keylock** (matches the NW-A55 Hold switch): while locked the **touchscreen
+  is disabled** (pocket-safe — taps do nothing), but the **transport + volume buttons still control
+  playback** (skip/pause/volume without unlocking). The **Hold switch is the only thing that
+  unlocks**; **Power just toggles the screen** (backlight on/off) and never unlocks. The Lock screen
+  shows the real current track. *(The shell maps the Hold-switch evdev code via `cinder_keymap.conf`
+  → `12`; the code itself comes from the dev keycode log.)*
+- **Now Playing** shows the **real current track** (PlayStatus URI → library-DB resolve).
+- **Transport**: Play/Pause, Next, Prev, Next/Prev **Album** → PlayerService `PlayController`
+  (each call guarded). Album step = the shuffle-by-album primitive. **Shuffle + repeat are tappable**
+  on the transport row (repeat cycles off→all→one); the queue-reorder wiring is device-gated.
+- **Shelf**: a bottom-sheet overlay to **pin the current place to 3 slots and jump back**, plus Undo
+  — fully wired (open/pin/go/clear/close), session-scoped. Opened from the **bookmark glyph in the
+  top-right of the status bar** (per the prototype — it overlays wherever you are; the rest of the bar
+  opens the Menu).
+- **Library browse**: Songs / Albums / Artists tabs, **real DB data**, windowed **scrolling**
+  (thousands of rows), Songs sort chip (Title/Artist/Length), grouped album headers, **album drill-in**
+  (album → track list), hashed-gradient art until real thumbnails decode.
+- **EQ → real DSP**: 10-band edit + preset cycle → `EffectCtrlDmp` (guarded).
+- **Sound effects → real DSP**: DSEE HX, Vinyl, VPT, DC-Phase, Dynamic Normalizer, ClearAudio+ as
+  live On/Off toggles → `EffectCtrlDmp`; **A/B compare** (Option = Disable/Reenable whole chain).
+- **Battery care**: On/Off → Sony "Itawari" charging (`PowerMgrServiceClient::EnableItawariCharging`);
+  real device state read at boot.
+- **Settings (live rows)**: Theme day/night, Visualiser **type** (5), Visualiser **animation** on/off.
+- **Sleep timer** (Settings): cycles Off/15/30/45/60 min, counts down, shows a live "SLEEP {n}M"
+  badge on Now Playing, and **pauses playback on expiry** — pure app logic, no Sony service.
+- **Visualiser**: Bars / Mirror / Segments / Dots / Wave; always animates (synthetic), with an optional
+  **real audio-reactive** mode via Sony's `AudioAnalyzerService` (default OFF — `cinder-probe
+  --analyzer` to validate, then `/contents/cinder_viz.conf: analyzer=1`).
+- **Up Next**: the queue = the **current album** (resolved from the library by the now-playing
+  track), playing row highlighted, auto-scrolls to follow playback; clean empty state otherwise.
+- **Settings ▸ Storage**: real internal-storage usage ("used / total GB") from `statvfs`.
+- **Night-mode backlight (minimal light)**: toggling Settings ▸ Theme to **night dims the panel
+  backlight to minimal** (and day restores it). The backlight node is auto-detected (the standard
+  Android/MTK paths), so it works with no config on most devices; tune the exact levels/node via
+  `/contents/cinder_backlight.conf` (`deploy/cinder_backlight.conf.example`). No-op if no node found.
+  **Boot always comes up at DAY brightness** even if night theme is persisted — the dim is a
+  per-session action, never resumed on boot, so you can't get locked into an unreadable screen.
+- **Settings persistence**: theme (day/night), visualiser type/animation, the **10-band EQ**, and the
+  **Sound effects** are saved to `/contents/cinder_settings.conf` and restored at boot — the UI is
+  restored before the first paint, and the saved EQ/sound are **re-applied to the DSP** once audio is
+  up (guarded). Your full audio + display config survives a reboot.
+- **Bluetooth transmit codec selector**: choose **LDAC · aptX HD · aptX · SBC** (the codecs this
+  hardware can transmit; AAC is receive-only, excluded) from a checked list, with an **LDAC quality**
+  sub-row (Auto/990/660/330, Auto default). It's **one device-wide preference**, persisted to
+  `/contents/cinder_settings.conf` and published to `/contents/cinder_bt.conf` so **both normal BT
+  playback and the USB-DAC→LDAC bridge use the same codec**. *(The live `BtTransmitterService` apply —
+  SetLdac/SetAptxHD/SetSbc + SetLdacSoundQuality — is device-gated, same C++ boundary as `ldac-bridge`.)*
+- **USB-DAC → LDAC (the headline feature)**: the USB-DAC screen toggle **engages USB-DAC input and
+  routes it to the 3.5 mm jack AND Bluetooth/LDAC at once, without disconnecting BT** (stock forces a
+  disconnect). The shell starts the LDAC bridge (`/contents/ldac_on`) + switches the USB gadget to
+  UAC. *(The bridge daemon + the `setprop` USB-mode switch are device-gated — validate live; the UI,
+  the toggle, and the bridge-engage signalling are wired.)* Mass-storage moved to **Settings ▸ USB mode**.
+- **Status bar**: live clock (local time) + battery % (sysfs); **tap anywhere on it → Menu**.
+- **Scrobbler**: appends `/contents/.scrobbler.log` (Audioscrobbler/1.1) as you listen.
+- **Safety**: bad-boot counter → auto-revert to stock after **2** bad boots; per-frame + construction
+  watchdog; every Sony-IPC call inside `run_guarded`; USB-at-launch / `cinderhome_off` escape.
 
-- **Starting a NEW selection from the library** (tap a track/album to play it). The transport
-  works on whatever is *already* queued, but jumping to an arbitrary track needs
-  `PlayController::SetTrackSequence` RE'd. `Select` on a library row is currently a no-op.
-- **Volume keys driving the hardware** (the HUD shows, but the level may need SoundService).
-- **Now Playing progress bar** (position/duration; PlayStatus layout not RE'd → shows 0).
-- **EQ/Sound effects reaching the DSP** (the UI edits them; wiring to libSoundServiceFw pending).
+### ◐ Partial (UI works; backend/hardware leg pending — device-gated)
+- **Volume keys**: HUD + UI level work, and the hardware-set path is **scaffolded + config-gated** —
+  drop `/contents/cinder_volume.conf` (amixer control name + range, or the CXD3778GF sysfs node, from
+  the discovery report) and Vol±  drive the hardware with **no rebuild**. Until then it's a no-op
+  (HUD only). See `deploy/cinder_volume.conf.example`.
+- **Now Playing progress bar**: now a **live play-through estimate** (DB duration + a local
+  play-clock that advances 1 s/tick while playing, resets on track change) — moves the bar +
+  elapsed/remaining. It can't see seeks or a mid-track start; the exact PlayStatus position offsets
+  (only the URI @ +0x6c is mapped so far) would make it seek-accurate.
+- **VPT / DC-Phase mode**: On/Off reaches the DSP, but the **specific mode** (Studio/Club/Concert Hall,
+  Standard/Low A/B) is on/off-only — the mode enum values are device-gated (TBD).
+- **Power button**: toggles the **screen/backlight on/off** (panel dark, app keeps running); it does
+  not trigger appmgr-owned device suspend. (Locking is the Hold switch, not Power — see Functional.)
+- **Bluetooth codec apply**: the selector + device-wide preference are functional and persisted, but
+  the **live `BtTransmitterService` apply** of the chosen codec is device-gated (C++ BT client shim).
+- **USB-DAC → LDAC bridge**: the UI/toggle/signalling are wired; the **`ldac-bridge` daemon engaging
+  on device** (capture card4 → LDAC socket) + the UAC `setprop` switch need on-device validation.
+- **Playlists tab**: browses, but is **empty** — playlists aren't populated from the DB yet.
+
+### ▢ Stationary (placeholder render / no action — not wired)
+- **Play a selected track/album** (`Select` on a Songs/Playlist row, or "Play album"): currently a
+  **no-op** — needs `PlayController::SetTrackSequence` (NodeTrackSequence) RE'd into the player shim.
+  *(This is the biggest functional gap — transport only moves within the already-queued set.)*
+- **Bluetooth radio on/off**: the toggle flips **UI state only**; it doesn't power the radio
+  (BtTransmitterService not wired). *(The codec selector beneath it IS functional — see Functional.)*
+- **FM Radio** screen: static (88.6 MHz placeholder).
+- **BT Receiver** screen: static (off).
+- **Pairing** screen: static (the "Pair new device" button is inert).
+- **Settings (info/placeholder rows)**: Screen-off timer, Database "REBUILD" take no action. The
+  manual **Brightness** slider row is still static (but night-mode backlight dimming IS wired — see
+  Functional). **USB mode** row now **enters mass-storage** (device-gated `setprop`). Firmware & Model
+  are **honest static info labels** — Firmware reads `CINDER 1.0` (stable) / `CINDER DEV` (dev channel).
+- **Now Playing heart** (like) + the library **shuffle-by-album/artist** rows: decorative — no
+  on-device action yet. *(Shuffle/repeat on the transport row ARE tappable now — see Functional.)*
 
 ---
 
-## Flash it
-
-From `/home/sony/sony`, with the Walkman plugged in:
+## Build channels — `stable` (default) and `dev` (same tree, one flag)
 
 ```bash
-tools/flash.sh --push cinder-home/dist/cinder-home          # push the binary to /contents
-tools/flash.sh cinder-home/dist/cinder_home_install.upg     # install (repoints the Home app)
+cd cinder-home
+bash build.sh            # = build.sh stable  → dist/stable/   (lean player, no adb)
+bash build.sh dev        #                    → dist/dev/      ("CINDER DEV" marker + self-enables adb)
+bash tools/pack_upg.sh stable      # packs install/uninstall .UPG into dist/stable/
+bash tools/pack_upg.sh dev         #                                  dist/dev/
+```
+
+Both are built from this one source tree; the only differences:
+- **stable**: Settings ▸ Firmware reads `CINDER 1.0 · RUST`. No adb. This is the daily-use build.
+- **dev**: cargo `dev` feature flips the marker to `CINDER DEV · RUST` (so you can tell them apart
+  on the device), and `-DCINDER_DEV` makes the dev binary **enable adb at boot** (in `deferred_up`,
+  behind `run_guarded`, best-effort): `setprop sys.usb.config mtp,adb` + `persist.sys.usb.config` +
+  `start adbd`. It touches **no** boot-critical files, so a failure just means "no adb, runs like
+  stable". `persist.sys.usb.config` also brings adb up early on later boots → an independent
+  **brick-recovery channel** (`adb shell touch /contents/cinderhome_off` reverts without wbrt).
+- Artifacts never clobber: `dist/stable/` vs `dist/dev/`, each with its `cinder-home`, `cinder-probe`,
+  and the (channel-agnostic) install/uninstall `.UPG`s.
+
+**Dev iteration loop** (after the first dev flash brings up adb): push-and-run, no `.UPG` reflash —
+`adb push dist/dev/cinder-home /system/vendor/unknown321/bin/cinder-home` (remount rw first) then
+relaunch. The exact `setprop` mechanism is confirmed on that first flash; if adb doesn't appear,
+adjust the one `std::system(...)` line in `src/main.cpp` (`#ifdef CINDER_DEV`).
+
+**Device discovery — one run unblocks every device-gated feature.** A read-only dump captures, in a
+single pass, the facts that block volume / play-by-index / progress / keymap / USB-DAC: the amixer
+master-volume control name + range, ALSA topology, backlight + charge sysfs, USB-gadget config, the
+input keycodes, and a live PlayStatus byte dump. It is **roped into the dev channel two ways**:
+- **The dev player gathers it for you.** On first boot the dev `cinder-home` auto-writes
+  `/contents/cinder_discovery.txt` (read-only, guarded), and the dev input pump **logs every raw key
+  code** to `cinderhome.log` (press each button → read off the keymap). Stable does neither.
+- **The standalone probe** (`dist/<channel>/cinder-probe --discover [outfile]`) does the full run
+  *including* the interactive 12 s keymap capture — best run over adb before flashing the Home app.
+
+Then: `adb pull /contents/cinder_discovery.txt` → it has the control names/offsets to wire volume,
+play-by-index, seek-accurate progress, the keymap, and the USB-DAC path. (Built from `src/discover.cpp`,
+shared by both binaries.)
+
+> `tools/flash.sh` **is in the tree and working** (detect over MSC/usbipd → push binary / mount+read
+> logs / send `.UPG` via `scsitool do_fw_upgrade`). Use it directly; the older "not in the tree yet"
+> note was stale.
+>
+> **First-flash learning (2026-07-01): the installer must not use the updater's ambient shell
+> tools.** The very first Home flash aborted at the binary-size sanity check — the updater's bare
+> `wc -c` returned `0` on a *good* 2.6 MB copy (and `rm -f` choked on its own flag), so a healthy
+> install false-aborted (correctly making **zero** changes → clean boot to stock). Fix: `deploy/
+> install_cinderhome.sh` + `uninstall_cinderhome.sh` now route **every** updater-time op through
+> `/xbin/busybox` (the anchor Wampy relies on), with a `/system/xbin/busybox` → bare fallback; the
+> size check measures via busybox, cross-checks against the source size, and only aborts on a
+> *measured* short file (an unmeasurable size proceeds, since `-s` already proved non-empty). The
+> brick-critical `.appcfg` write no longer rides on the flaky tools. Re-`pack_upg.sh`'d both channels.
+>
+> **Second on-device learning (2026-07-01): the non-Qt CuiAppModule pump needs a driver.** With the
+> installer fixed, cinder-home installed and **launched as the Home app** (cleared the whole easel
+> lifecycle → OnForeground → `render_up` DONE), then **hung in `std::condition_variable::wait`**
+> (watchdog `sig=14`, no `cb:pump`). Cause: easel's `CuiAppModule` pump loop blocks on a CV until
+> `CuiAppModule::OnPumpTrigger()` notifies it; the stock **Qt** app drives that from Qt's event
+> loop, but our non-Qt module had no driver, so the loop waited forever (renderer up, never ticked).
+> Fix (`src/main.cpp`): a lightweight **ticker thread** pokes `OnPumpTrigger()` (exported `T` in
+> libeaselcui) at ~30 fps. Rendering still runs on the **main** thread inside the pump loop, so the
+> per-frame watchdog + `run_guarded`/siglongjmp stay single-threaded; the ticker blocks SIGALRM and
+> only does the mutex/flag/notify, and is joined at `OnFinalize` before the module is destroyed.
+>
+> **Third on-device learning (2026-07-01): the OnPumpTrigger poke wasn't enough — pivot to our own
+> render loop.** Thumb-disasm of libeaselcui showed `CuiAppModule::OnForeground`'s 2nd sub-call
+> (`[this+0x60]+0x18`) blocks on the module CV driven by Sony's `pst::core::JobQueue`/event-mux —
+> infrastructure only **libeaselqt** runs, and `CuiAppModule` has **zero other users on the device**
+> (every Sony app, incl. the stock Home app, is Qt). So we stopped fighting it: `render_up` opens the
+> framebuffer, then a **`render_driver` worker thread owns the whole frame loop** (paint + touch/button
+> input + deferred DB/audio/adb init + housekeeping) while the easel main thread stays parked in its CV.
+> **This works and is STABLE on device** — appmgr tolerates the parked main thread (no reboot). SIGALRM
+> (per-frame watchdog + `run_guarded`) is routed to the worker; `render_up` blocks it on the main thread
+> so guard alarms can't mis-fire there. **Verified on device (2026-07-01):** launches as Home, paints
+> full-screen, library loads (3746 tracks), audio connects, `mark_healthy` clears the bad-boot counter.
+>   - **Boot-anim overlay:** the stock flow never fires because we bypass the Qt path, so the worker
+>     calls Sony's `StopBootAnimation()` (fork+execlp, no framework dep) at first paint + re-issues it
+>     after the deferred init, with ~0.5 s of warm-up paints first (the render-only build cleared it that
+>     way). *(bootmode=2 is NOT the lever — that's diagnostic mode + remounts /contents.)*
+>   - **Touch:** the panel is `himax-hx8526-icx` (event1) — reports `BTN_TOUCH` **and** type-A MT
+>     (no TRACKING_ID). Critical gotcha found in the discovery dump: `m_batch_input` (event3) also emits
+>     `ABS_X/ABS_Y` (sensor), so input **must be gated to the real touchscreen fd** or the sensor stream
+>     overwrites finger coords. `input_pump` now gates to `g_touch_fd` and handles BTN_TOUCH **and**
+>     type-A empty-frame lift; the dev build logs the first ~60 raw events for confirmation.
+>   - **Still device-pending:** confirm touch responds, confirm the rectangle clears, and adb
+>     enumeration (config is `adb` but the host didn't see it — a Windows/usbipd side issue, not ours).
+
+## STEP 2: flash the Home app (only after STEP 1 looks clean)
+
+From `/home/sony/sony`, with the Walkman plugged in (paths shown for the **stable** channel; for the
+dev build swap `dist/stable/` → `dist/dev/`):
+
+```bash
+tools/flash.sh --push cinder-home/dist/stable/cinder-home          # push the binary to /contents
+tools/flash.sh cinder-home/dist/stable/cinder_home_install.upg     # install (repoints the Home app)
 # UNPLUG, power on, let it boot. (USB-connected-at-launch deliberately runs STOCK for recovery.)
 ```
 
-To read the log afterward, plug back in (it boots stock when USB-connected) and:
+**The recovery model (rebuilt 2026-06-26 — no more wbrt for a hang):**
+- The launcher increments a bad-boot counter each boot and reverts to stock after **2** boots
+  that don't reach "healthy". cinder-home clears the counter **only after rendering cleanly for
+  25 s** — a hang never clears it, so it accumulates and auto-reverts.
+- **If it ever sticks on the boot screen: force-reboot (hold Power ~8 s) twice.** The 2nd boot
+  hits the counter and you're back on stock — no PC, no wbrt.
+- **Faster manual escape:** during the ~3 s pre-launch window, **connect USB** (or have
+  `/contents/cinderhome_off` present) → it boots stock immediately.
+- Inside cinder-home, a crash/hang in the library or PlayerService is *caught* and that subsystem
+  is skipped — worst case the UI runs without audio/library, not a hung boot.
+
+To read the log (boot to stock, plug in):
 
 ```bash
 tools/flash.sh --cat cinderhome.log
 ```
 
-To revert at any time:
+To revert deliberately:
 
 ```bash
-tools/flash.sh cinder-home/dist/cinder_home_uninstall.upg   # restores the stock .appcfg
+tools/flash.sh cinder-home/dist/stable/cinder_home_uninstall.upg   # restores the stock .appcfg
 # or, no PC: create /contents/cinderhome_off over USB-MSC and reboot
-# or worst case: wbrt restore (Windows)
+# (wbrt is the last resort only — the counter + guard should make it unnecessary)
 ```
 
 ## Verify it
@@ -78,18 +317,26 @@ running. Look for, in order:
 
 ```
 [cinder-home] main: start
-[cinder-home] main: constructing CuiAppModule
 [cinder-home] main: calling app.run()
 [N| …|EASL|LifeCycleManager.cc:91] start ToInitialize
-[cinder-home] app:OnForeground            <-- NEW: we now get here (was crashing before this)
-[cinder-home] bring_up: cinder_render_init
-[cinder-home] bring_up: cinder_db_open(/db/MTPDB.dat)
+[cinder-home] app:OnForeground            <-- past the old crash point
+[cinder-home] render_up: cinder_render_init
+[cinder-home] render_up: DONE (renderer ready)
+[cinder-home] pump: first frame painted          <-- screen is alive; boot screen cleared
+[cinder-home] deferred_up: cinder_db_open + build library
 [cinder-home] cinder-ffi: library loaded — NNN tracks, MM albums, KK artists
-[cinder-home] bring_up: cinder_scrobble_open(/contents/.scrobbler.log)
-[cinder-home] bring_up: cinder_audio_init
-[cinder-home] bring_up: DONE (renderer ready)
-[cinder-home] input: opened P /dev/input/event* node(s)
+[cinder-home] deferred_up: cinder_audio_init (PlayerService connect)
+[cinder-home] deferred_up: DONE
+[cinder-home] healthy: bad-boot counter cleared  <-- proven good; won't auto-revert
 ```
+
+Key new diagnostic lines:
+- `pump: first frame painted` — render works; if you see this, cinder-home itself is fine and any
+  later problem is a *subsystem* (DB/audio), not a crash.
+- `GUARDED CALL FAULTED — skipping that subsystem, UI continues` — a DB/audio call crashed or hung
+  and was skipped; the UI stays up. The PC on that line tells us which call (send it to me).
+- If `healthy: bad-boot counter cleared` never appears, the boot didn't stabilise → it will
+  auto-revert.
 
 On the **panel** you should see the Cinder UI painting (Now Playing). If the screen paints but
 buttons do nothing, that's the **keymap** (next section), not a crash.
@@ -120,33 +367,46 @@ Linux defaults, but they probably won't match. To calibrate without a rebuild:
 
 ---
 
-## RE follow-ups (device-gated; ordered by daily-use impact)
+## RE follow-ups — mostly UNBLOCKED offline (see `analysis/RE_playerservice_sound.md`)
 
-These are the only things between "browsable + transport works" and "fully replaces stock".
-Each needs the device and a Ghidra pass on the named library. See the project memory for detail.
+The 2026-06-26 offline RE pass found the mechanism for all of these (full detail + symbols +
+offsets in `analysis/RE_playerservice_sound.md`; ABI capture in
+`cinder-audio/src/effect_abi.hpp`). What remains is wiring + small on-device confirmations:
 
-1. **`PlayController::SetTrackSequence(shared_ptr<TrackSequence>)`** in
-   `libPlayerServiceClient.so` — how to build a TrackSequence so `Select` on a library row
-   actually starts that track/album. **Highest impact.** Wire into
-   `cinder-audio/src/player_shim.cpp` + `cinder_audio_play_object(id)`, then carry out
-   `CINDER_ACT_PLAY_INDEX` in `cinder-home/src/main.cpp`.
-2. **Volume** — find the volume set/get path (SoundService or system); wire `CINDER_ACT_VOLUP/DOWN`.
-3. **`PlayStatus` field offsets** (`GetCurrentStatus`) in `libPlayerServiceClient.so` — playstate
-   / current-ms / total-ms, for a real progress bar + accurate scrobble timing. Then pass real
-   `progress`/`playing` into `cinder_set_now_playing_uri`.
-4. **EQ/DSEE → DSP** via `libSoundServiceFw.so` — make `Action::EqChanged` + the Sound screen
-   toggles reach the hardware.
+1. **Play a selected track/album** (`Action::PlayIndex`) — **reusable**: build a `Node<UriInfo>`
+   tree (`NodeJsonUtil<UriInfo>::ConvJsonStringToNode` in `libPlayerServiceClientUtil.so`), wrap in
+   `NodeTrackSequence<UriInfo>`, call `PlayController::SetTrackSequence`. Remaining: UriInfo
+   layout / JSON schema (one disasm pass).
+2. **EQ + all Sound effects → DSP** — **complete API** in `libEffectCtrlDmp.so` (`EffectCtrlDmp`,
+   default ctor): `SetEq10BandValue`, `SetDseeHx`, `SetVpt`, `SetVinylizer`, … and
+   `SetBtAudioSoundEffect(bool)` (= effects-on-Bluetooth, goal #7). Build `effect_shim.cpp` over it.
+3. **Now Playing progress + track-change** — **PlayEventListener vtable mapped** (`onPlayTimeUpdated(cur,tot)`
+   @slot+0xc gives position/duration). Implement the listener, pass it to `Connect()` (event-driven,
+   battery-efficient).  (`PlayStatus.uri@+0x6c` already confirmed.)
+4. **USB-DAC → LDAC** (headline) — entry point found: `BtPlayerServiceClient::SetLDAC` +
+   `BtPlayerService::LdacWriteSound()` (PCM write) + `BtTransmitterServiceClientFactory`. Needs the
+   USB-PCM tap + E4/E5 ALSA topology on device.
+5. **Volume** — CXD3778GF **"master volume"** (ALSA mixer on card0 / `/sys/module/snd_soc_cxd3778gf/`).
+   Confirm the exact control name with `amixer scontrols`; check `getevent` whether the vol keys
+   even reach userspace.
+
+**Wire each behind cinder-home's `run_guarded` guard + reserve object sizes; validate with
+`cinder-probe` isolation before any boot-path use.**
 
 ## Where things live
 
 | Piece | Path |
 |---|---|
-| easel shell + pump + input/keymap | `cinder-home/src/main.cpp` |
+| easel shell + pump + input/keymap + crash/hang GUARD | `cinder-home/src/main.cpp` |
+| standalone diagnostic (zero boot risk, adb) | `cinder-home/src/probe.cpp` → `dist/<channel>/cinder-probe` |
+| launcher recovery (counter + escape window) | `cinder-home/deploy/install_cinderhome.sh` |
+| guard recovery self-test (host) | `cinder-home/tools/guard_selftest.cpp` (run by build.sh) |
 | device-class ABI (sized!) | `cinder-home/src/easel_abi.hpp` |
 | build + gates | `cinder-home/build.sh`, `cinder-home/tools/{preflight_qemu,pack_upg}.sh` |
-| flashable artifacts | `cinder-home/dist/` |
+| flashable artifacts | `cinder-home/dist/<channel>/` |
 | Rust UI (screens, nav, model, overlay) | `player/cinder-ui/src/` |
 | C-ABI render/input/scrobble bridge | `player/cinder-ffi/src/` (`lib.rs`, `scrobble.rs`) |
 | library DB reader | `player/cinder-db/src/lib.rs` |
 | playback control shim | `cinder-audio/src/` |
 | host PNG preview | `cd player && cargo run -p cinder-host` → `player/out/*.png` |
+| **interactive sim** (real nav, keyboard) | `cd player && cargo run -p cinder-sim` (WSLg shows the window; arrows/Enter/Backspace/Tab/Space/`=`/`-`/H/P, Q quits) |

@@ -69,7 +69,7 @@ pub fn row_count(tab: Tab, lib: &Library) -> usize {
 }
 
 /// Thin scrollbar on the right edge showing window position over `total` rows.
-fn scrollbar(c: &mut Canvas, t: &Theme, top: i32, first: usize, shown: usize, total: usize) {
+pub(crate) fn scrollbar(c: &mut Canvas, t: &Theme, top: i32, first: usize, shown: usize, total: usize) {
     if total <= shown || shown == 0 {
         return;
     }

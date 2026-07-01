@@ -9,7 +9,7 @@
 use crate::bluetooth::Bt;
 use crate::library::{self, Tab};
 use crate::menu::MenuItem;
-use crate::model::Library;
+use crate::model::{Library, SongRow};
 use crate::now_playing::NowPlaying;
 use crate::sound::Sound;
 use crate::{data, Canvas, FontSet, Theme};
@@ -47,6 +47,10 @@ pub enum Screen {
     Fm,
     UsbDac,
     Receiver,
+    Onboarding,
+    /// Sentinel for the Menu row that opens the Shelf. The Shelf is a bottom-sheet OVERLAY (see
+    /// `shelf_open`), never pushed onto the route stack — selecting this row calls `open_shelf()`.
+    Shelf,
 }
 
 /// Side effects the shell carries out (via cinder-audio / system services). The UI emits
@@ -66,10 +70,20 @@ pub enum Action {
     EnterUsbMsc,
     EqChanged([i8; 10]), // shell applies the band gains to the sound DSP
     BtToggle(bool),      // shell turns the BT transmitter on/off
+    BatteryCareChanged(bool), // shell calls PowerMgrServiceClient::EnableItawariCharging
+    SoundChanged,             // shell reads cinder_get_sound_flags + applies via EffectCtrlDmp
+    SoundBypass(bool),        // A/B: true = bypass whole chain (B), false = re-enable (A)
+    SleepTimer(u32),          // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
+    ShuffleToggle,            // Now Playing shuffle on/off (FFI holds the state; PlayController wiring is device-gated)
+    RepeatCycle,              // Now Playing repeat: off → all → one (FFI holds the state)
+    BtCodecChanged,           // device-wide BT transmit codec / LDAC quality changed; shell reads + applies
+    UsbDacToggle(bool),       // engage/disengage USB-DAC input routed to 3.5mm + BT/LDAC (the headline feature)
 }
 
-/// The Menu rows, in display order — index ↔ destination Screen.
-const MENU: [(Screen, &str, &str, &str); 10] = [
+/// The Menu rows, in display order — index ↔ destination Screen. Matches the prototype's 10 rows;
+/// the Shelf is NOT here by design (it's opened from the status-bar bookmark glyph). "Help &
+/// Controls" is the one Cinder addition (the onboarding intro, re-openable).
+const MENU: [(Screen, &str, &str, &str); 11] = [
     (Screen::NowPlaying, "note", "Now Playing", ""),
     (Screen::Library, "library", "Library", "124 albums · 1,842 tracks"),
     (Screen::UpNext, "queue", "Up Next", "8 tracks · 41:24"),
@@ -80,7 +94,19 @@ const MENU: [(Screen, &str, &str, &str); 10] = [
     (Screen::UsbDac, "usb", "USB-DAC", "Off"),
     (Screen::Receiver, "rx", "BT Receiver", "Off"),
     (Screen::Settings, "settings", "Settings", "System · Storage · About"),
+    (Screen::Onboarding, "note", "Help & Controls", "Button map · features"),
 ];
+
+/// A pinned place on the Shelf: enough route context to jump straight back. Session-scoped (held in
+/// the navigator; persisting across boots is a later refinement).
+#[derive(Clone)]
+struct ShelfPin {
+    screen: Screen,
+    lib_tab: Tab,
+    album_view: usize,
+    title: String,
+    sub: String,
+}
 
 pub struct App {
     stack: Vec<Screen>,
@@ -105,9 +131,53 @@ pub struct App {
     eq_preset: usize,
     /// Bluetooth on/off (transmit). The shell drives the radio + codec.
     bt_on: bool,
+    /// Device-wide BT transmit codec preference + LDAC quality tier. Used for BOTH normal BT
+    /// playback and the USB-DAC→LDAC bridge. `bt_codec` indexes bluetooth::CODECS (0 = LDAC);
+    /// `bt_ldac_quality` indexes bluetooth::QUALITIES (0 = Auto). Persisted; applied by the shell.
+    bt_codec: u8,
+    bt_ldac_quality: u8,
+    /// USB-DAC mode engaged (input from a USB host → 3.5mm + BT/LDAC). Transient (not persisted).
+    usb_dac_on: bool,
+    /// Now Playing visualiser type (cinder_ui::viz index) + animation on/off (UI settings).
+    viz_kind: u8,
+    viz_on: bool,
+    /// Settings screen cursor.
+    settings_sel: usize,
+    /// Battery care (Sony "Itawari" charging, ~90% cap). Mirrors the device state; the shell reads
+    /// the real value at boot via cinder_set_battery_care and applies toggles via the action.
+    battery_care: bool,
+    /// Sound Settings effect toggles. Each maps to an EffectCtrlDmp boolean setter (the shell reads
+    /// these via cinder_get_sound_flags after a SoundChanged action). VPT/DC-Phase are on/off here;
+    /// their mode/type (Studio/Club, Standard/Low) is a device-gated enhancement (enum values TBD).
+    snd_dsee: bool,
+    snd_vinyl: bool,
+    snd_vpt: bool,
+    snd_dc: bool,
+    snd_norm: bool,
+    snd_clear: bool,
+    /// A/B compare on the Sound screen: false = A (effects active), true = B (whole chain bypassed,
+    /// "direct"). The Option button flips it for an instant listen test; the shell calls the DSP
+    /// bypass. Independent of the per-effect toggles — flipping back to A restores them.
+    snd_ab_bypass: bool,
+    /// Sound screen cursor.
+    sound_sel: usize,
+    /// Real storage usage label ("used / total GB"), pushed by the shell from statvfs. Empty until
+    /// the shell reports it (Settings then shows a neutral placeholder).
+    storage: String,
+    /// Sleep timer: `sleep_idx` cycles the presets (Off/15/30/45/60 min) in Settings; `sleep_min` is
+    /// the LIVE remaining minutes that cinder-ffi counts down and pushes back for display. 0 = off.
+    sleep_idx: usize,
+    sleep_min: u32,
+    /// First-run onboarding: which page is showing, and whether the intro has been completed (the
+    /// latter is persisted, so it only appears once; the Menu can re-open it any time).
+    onboarding_page: usize,
+    onboarding_seen: bool,
     /// The browsable library. Defaults to the design sample; the shell replaces it with the
     /// real DB contents via `set_library` after `cinder_db_open`.
     lib: Library,
+    /// Shelf bottom-sheet overlay: whether it's showing, and the three pin slots (jump-back places).
+    shelf_open: bool,
+    pins: [Option<ShelfPin>; 3],
 }
 
 impl Default for App {
@@ -131,7 +201,29 @@ impl Default for App {
             eq_sel: 0,
             eq_preset: 3,
             bt_on: true,
+            bt_codec: 0,        // LDAC
+            bt_ldac_quality: 0, // Auto
+            usb_dac_on: false,
+            viz_kind: 0,
+            viz_on: true,
+            settings_sel: 0,
+            battery_care: false,
+            snd_dsee: false,
+            snd_vinyl: false,
+            snd_vpt: false,
+            snd_dc: false,
+            snd_norm: false,
+            snd_clear: false,
+            snd_ab_bypass: false,
+            sound_sel: 0,
+            storage: String::new(),
+            sleep_idx: 0,
+            sleep_min: 0,
+            onboarding_page: 0,
+            onboarding_seen: false,
             lib: Library::sample(),
+            shelf_open: false,
+            pins: [None, None, None],
         }
     }
 }
@@ -147,9 +239,115 @@ impl App {
         App { stack: vec![Screen::NowPlaying], locked: false, ..Self::default() }
     }
 
+    /// The physical Hold/lock SWITCH changed state. `held` = the switch is now engaged: lock the
+    /// touchscreen and show the Lock screen. `!held` = the switch went off: this is the ONLY thing
+    /// that unlocks (returns to Now Playing). Power never unlocks — it just toggles the screen.
+    /// Idempotent, so the shell can call it on every reported edge without tracking state itself.
+    pub fn set_hold(&mut self, held: bool) {
+        if held == self.locked {
+            return;
+        }
+        self.locked = held;
+        self.go(if held { Screen::Lock } else { Screen::NowPlaying });
+    }
+
     /// The screen currently on top of the route stack.
     pub fn current(&self) -> Screen {
         *self.stack.last().unwrap_or(&Screen::NowPlaying)
+    }
+
+    /// Activate a Menu row: navigate to its destination, or open the Shelf overlay for the Shelf
+    /// sentinel. Shared by the Menu tap + Select handlers so they can't drift apart.
+    fn activate_menu(&mut self, row: usize) {
+        match MENU[row].0 {
+            Screen::NowPlaying => self.go(Screen::NowPlaying),
+            Screen::Onboarding => {
+                self.onboarding_page = 0; // re-open the intro from the start
+                self.push(Screen::Onboarding);
+            }
+            target => self.push(target),
+        }
+    }
+
+    /// Open the Shelf bottom-sheet over the current place. Entered from the Menu, so pop the Menu
+    /// first — the sheet should overlay the real screen beneath it, not the Menu.
+    pub fn open_shelf(&mut self) {
+        if self.current() == Screen::Menu {
+            self.pop();
+        }
+        self.shelf_open = true;
+    }
+
+    /// Whether the Shelf overlay is showing (the shell can use this, e.g. to keep painting).
+    pub fn shelf_is_open(&self) -> bool {
+        self.shelf_open
+    }
+
+    /// A short title/subtitle for the current place — used by the Shelf's "this place" row and when
+    /// pinning. Derived from the live nav state (no shell round-trip needed).
+    fn place_label(&self) -> (String, String) {
+        match self.current() {
+            Screen::NowPlaying => ("Now Playing".into(), "Current track".into()),
+            Screen::Library => ("Library".into(), tab_name(self.lib_tab).into()),
+            Screen::Album => match self.lib.albums_flat().get(self.album_view) {
+                Some(al) => (al.name.clone(), al.artist.clone()),
+                None => ("Album".into(), String::new()),
+            },
+            s => (screen_title(s).into(), String::new()),
+        }
+    }
+
+    /// Handle a tap while the Shelf overlay is open (geometry comes from `shelf::hit`).
+    fn shelf_tap(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::shelf::ShelfHit;
+        match crate::shelf::hit(x, y) {
+            ShelfHit::Close => self.shelf_open = false,
+            ShelfHit::Undo => {
+                self.shelf_open = false;
+                self.pop();
+            }
+            ShelfHit::Pin => {
+                let (title, sub) = self.place_label();
+                let pin = ShelfPin {
+                    screen: self.current(),
+                    lib_tab: self.lib_tab,
+                    album_view: self.album_view,
+                    title,
+                    sub,
+                };
+                // first empty slot, else overwrite the oldest (slot 0)
+                match self.pins.iter_mut().find(|p| p.is_none()) {
+                    Some(slot) => *slot = Some(pin),
+                    None => self.pins[0] = Some(pin),
+                }
+            }
+            ShelfHit::Go(i) => {
+                if let Some(p) = self.pins.get(i).and_then(|p| p.clone()) {
+                    self.lib_tab = p.lib_tab;
+                    self.album_view = p.album_view;
+                    self.go(p.screen);
+                }
+                self.shelf_open = false;
+            }
+            ShelfHit::Clear(i) => {
+                if let Some(slot) = self.pins.get_mut(i) {
+                    *slot = None;
+                }
+            }
+            ShelfHit::None => {}
+        }
+        vec![]
+    }
+
+    /// True when the Now Playing screen is showing (so the shell only animates the visualiser
+    /// there — animating elsewhere would waste battery under dirty-flag rendering).
+    pub fn is_now_playing(&self) -> bool {
+        self.current() == Screen::NowPlaying
+    }
+
+    /// Whether the playback state says we're playing (the visualiser animates only when playing).
+    pub fn is_playing(&self) -> bool {
+        self.playing
     }
 
     pub fn menu_index(&self) -> usize {
@@ -170,6 +368,311 @@ impl App {
     fn pop(&mut self) {
         if self.stack.len() > 1 {
             self.stack.pop();
+        }
+    }
+
+    // Activate the focused Settings row (shared by the Select button and a tap).
+    fn settings_activate(&mut self) -> Vec<Action> {
+        match self.settings_sel {
+            crate::settings::ROW_THEME => {
+                self.night = !self.night;
+                vec![Action::ThemeChanged(self.night)]
+            }
+            crate::settings::ROW_VIZ => {
+                self.cycle_viz();
+                vec![]
+            }
+            crate::settings::ROW_VIZ_ANIM => {
+                self.viz_on = !self.viz_on;
+                vec![]
+            }
+            crate::settings::ROW_SLEEP => {
+                const PRESETS: [u32; 5] = [0, 15, 30, 45, 60];
+                self.sleep_idx = (self.sleep_idx + 1) % PRESETS.len();
+                self.sleep_min = PRESETS[self.sleep_idx];
+                vec![Action::SleepTimer(self.sleep_min)]
+            }
+            crate::settings::ROW_BATTERY => {
+                self.battery_care = !self.battery_care;
+                vec![Action::BatteryCareChanged(self.battery_care)]
+            }
+            crate::settings::ROW_USB_MODE => {
+                // Enter USB mass-storage (connect to a PC as a drive). USB-DAC itself is its own
+                // screen; this row is the file-transfer mode.
+                vec![Action::EnterUsbMsc]
+            }
+            _ => vec![], // display-only / device-gated rows
+        }
+    }
+
+    // Toggle the focused Sound effect row (shared by the Select button and a tap).
+    fn sound_toggle_row(&mut self) -> Vec<Action> {
+        match self.sound_sel {
+            0 => self.snd_dsee = !self.snd_dsee,
+            1 => self.snd_vinyl = !self.snd_vinyl,
+            2 => self.snd_vpt = !self.snd_vpt,
+            3 => self.snd_dc = !self.snd_dc,
+            4 => self.snd_norm = !self.snd_norm,
+            5 => self.snd_clear = !self.snd_clear,
+            _ => {}
+        }
+        vec![Action::SoundChanged]
+    }
+
+    /// A touchscreen TAP at UI coordinates (x: 0..480, y: 0..800). The NW-A55 has no d-pad, so touch
+    /// is the primary navigation — this maps a tap to the right action for the current screen and
+    /// returns shell actions (same vocabulary as `press`). The left-edge swipe (Back) and drag-
+    /// scroll are handled by the shell, which calls `touch_scroll`/`press(Back)` for those.
+    pub fn tap(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::canvas::W;
+        // Hold/lock switch engaged → the touchscreen is dead (pocket-safe). Taps do nothing; only
+        // the physical Hold switch going off unlocks (see `set_hold`).
+        if self.locked {
+            return vec![];
+        }
+        // Shelf bottom-sheet overlay owns all taps while it's open.
+        if self.shelf_open {
+            return self.shelf_tap(x, y);
+        }
+        // Onboarding owns the screen: right ~60% = next/finish, left = previous page.
+        if matches!(self.current(), Screen::Onboarding) {
+            if x > (W as i32) * 2 / 5 {
+                if self.onboarding_page + 1 < crate::onboarding::PAGES {
+                    self.onboarding_page += 1;
+                } else {
+                    self.finish_onboarding();
+                }
+            } else {
+                self.onboarding_page = self.onboarding_page.saturating_sub(1);
+            }
+            return vec![];
+        }
+        // Global chrome (status bar, the full top strip). The bookmark glyph (top-right, drawn at
+        // x≈392) opens the **Shelf**; tapping anywhere else on the bar opens the **Menu** — the rest
+        // of the strip stays one big forgiving Menu target. Header back chevron → Back (below).
+        if y < 34 {
+            if (380..=406).contains(&x) {
+                self.open_shelf();
+            } else if self.current() != Screen::Menu {
+                self.push(Screen::Menu);
+            }
+            return vec![];
+        }
+        let has_header = !matches!(self.current(), Screen::NowPlaying | Screen::Menu | Screen::Lock);
+        if has_header && (46..82).contains(&y) && x < 64 {
+            self.pop();
+            return vec![];
+        }
+
+        match self.current() {
+            Screen::Menu => {
+                if y >= 91 {
+                    let row = ((y - 91) / 63) as usize;
+                    if row < MENU.len() {
+                        self.menu_idx = row;
+                        self.activate_menu(row);
+                    }
+                }
+                vec![]
+            }
+            Screen::NowPlaying => {
+                let hit = |cx: i32, cy: i32, r: i32| (x - cx).pow(2) + (y - cy).pow(2) <= r * r;
+                if hit(240, 692, 44) {
+                    self.playing = !self.playing;
+                    vec![Action::PlayPause]
+                } else if hit(130, 692, 34) {
+                    vec![Action::Prev]
+                } else if hit(350, 692, 34) {
+                    vec![Action::Next]
+                } else if hit(44, 692, 30) {
+                    // shuffle icon (transport row, far left)
+                    vec![Action::ShuffleToggle]
+                } else if hit(436, 692, 30) {
+                    // repeat icon (transport row, far right)
+                    vec![Action::RepeatCycle]
+                } else if y > 744 {
+                    // bottom toolbar: heart · queue · eq · bt · library
+                    if x < 96 {
+                        vec![] // like — UI-only for now
+                    } else if x < 192 {
+                        self.push(Screen::UpNext);
+                        vec![]
+                    } else if x < 288 {
+                        self.push(Screen::Eq);
+                        vec![]
+                    } else if x < 384 {
+                        self.push(Screen::Bluetooth);
+                        vec![]
+                    } else {
+                        self.push(Screen::Library);
+                        vec![]
+                    }
+                } else if y < 91 {
+                    self.push(Screen::Menu); // tap the top/art → menu
+                    vec![]
+                } else {
+                    vec![]
+                }
+            }
+            Screen::Library => self.tap_library(x, y),
+            Screen::Album => {
+                // track rows: top ≈ 296, rh 56 (library::album_view), scroll-aware
+                if y >= 296 {
+                    let row = self.album_track_scroll + ((y - 296) / 56) as usize;
+                    return self
+                        .lib
+                        .albums_flat()
+                        .get(self.album_view)
+                        .and_then(|a| a.track_list.get(row))
+                        .map(|s| vec![Action::PlayIndex(s.object_id as usize)])
+                        .unwrap_or_default();
+                }
+                vec![]
+            }
+            Screen::UpNext => {
+                // The queue window auto-scrolls to the playing track, so we can't map an exact row
+                // without `np`; a tap returns to Now Playing (the natural "done with the queue").
+                self.go(Screen::NowPlaying);
+                vec![]
+            }
+            Screen::Settings => {
+                if let Some(row) = crate::settings::row_at(y) {
+                    self.settings_sel = row;
+                    return self.settings_activate();
+                }
+                vec![]
+            }
+            Screen::Sound => {
+                // A/B compare control (top-right of the header)
+                if (44..70).contains(&y) && x > 380 {
+                    self.snd_ab_bypass = !self.snd_ab_bypass;
+                    return vec![Action::SoundBypass(self.snd_ab_bypass)];
+                }
+                if y >= 91 {
+                    let row = ((y - 91) / 64) as usize;
+                    if row < crate::sound::ROWS {
+                        self.sound_sel = row;
+                        return self.sound_toggle_row();
+                    }
+                }
+                vec![]
+            }
+            Screen::Eq => {
+                // preset pills row (py = y0+6 = 97, ~30px tall) — even split across the 5 presets
+                if (92..130).contains(&y) {
+                    let idx = (((x - 22).max(0)) / 86).min((data::EQ_PRESETS.len() - 1) as i32) as usize;
+                    self.eq_preset = idx;
+                    self.eq_bands = data::EQ_PRESETS[idx].1;
+                    return vec![Action::EqChanged(self.eq_bands)];
+                }
+                // band field: tap a column to select it; tap above mid raises, below lowers
+                if y >= 150 && y < 600 {
+                    let band = (((x - 22).max(0)) / 44).min(9) as usize;
+                    self.eq_sel = band;
+                    let g = &mut self.eq_bands[band];
+                    if y < 375 {
+                        *g = (*g + 1).min(6);
+                    } else {
+                        *g = (*g - 1).max(-6);
+                    }
+                    return vec![Action::EqChanged(self.eq_bands)];
+                }
+                vec![]
+            }
+            Screen::Bluetooth => {
+                use crate::bluetooth::BtHit;
+                match crate::bluetooth::hit(x, y, self.bt_on, self.bt_codec == crate::bluetooth::LDAC) {
+                    BtHit::Toggle | BtHit::Disconnect => {
+                        self.bt_on = !self.bt_on;
+                        vec![Action::BtToggle(self.bt_on)]
+                    }
+                    BtHit::Codec(i) => {
+                        self.bt_codec = i as u8;
+                        vec![Action::BtCodecChanged]
+                    }
+                    BtHit::Quality(i) => {
+                        self.bt_ldac_quality = i as u8;
+                        vec![Action::BtCodecChanged]
+                    }
+                    BtHit::Pair | BtHit::None => vec![],
+                }
+            }
+            Screen::UsbDac => {
+                // single-purpose screen: any tap toggles USB-DAC (→ 3.5mm + BT/LDAC). Mass storage
+                // lives on the Settings "USB mode" row, not here.
+                self.usb_dac_on = !self.usb_dac_on;
+                vec![Action::UsbDacToggle(self.usb_dac_on)]
+            }
+            _ => vec![],
+        }
+    }
+
+    // Library tap: tab bar, then the data rows (scroll-aware). Songs play the track; Albums drill
+    // in; Artists/Playlists select. (Albums has grouped headers, so the row is approximate.)
+    fn tap_library(&mut self, x: i32, y: i32) -> Vec<Action> {
+        if (91..126).contains(&y) {
+            self.lib_tab = if x < 120 {
+                Tab::Songs
+            } else if x < 220 {
+                Tab::Albums
+            } else if x < 330 {
+                Tab::Artists
+            } else {
+                Tab::Playlists
+            };
+            self.lib_idx = 0;
+            self.lib_scroll = 0;
+            return vec![];
+        }
+        if y < 205 {
+            return vec![]; // the shuffle row band — device-gated shuffle, no-op for now
+        }
+        let row = self.lib_scroll + ((y - 205) / 62) as usize;
+        match self.lib_tab {
+            Tab::Songs => self
+                .lib
+                .songs
+                .get(row)
+                .map(|s| {
+                    self.lib_idx = row;
+                    vec![Action::PlayIndex(s.object_id as usize)]
+                })
+                .unwrap_or_default(),
+            Tab::Albums => {
+                if row < self.lib.albums_flat().len() {
+                    self.album_view = row;
+                    self.album_track_idx = 0;
+                    self.album_track_scroll = 0;
+                    self.push(Screen::Album);
+                }
+                vec![]
+            }
+            _ => {
+                self.lib_idx = row;
+                vec![Action::PlayIndex(row)]
+            }
+        }
+    }
+
+    /// Drag-to-scroll the current list by `dy_rows` (positive = content moves up / show later rows).
+    /// Applies to the scrollable screens; clamped to the list length.
+    pub fn touch_scroll(&mut self, dy_rows: i32) {
+        match self.current() {
+            Screen::Library => {
+                let len = self.lib_len() as i32;
+                self.lib_scroll = (self.lib_scroll as i32 + dy_rows).clamp(0, (len - 1).max(0)) as usize;
+            }
+            Screen::Album => {
+                let len = self
+                    .lib
+                    .albums_flat()
+                    .get(self.album_view)
+                    .map(|a| a.track_list.len())
+                    .unwrap_or(0) as i32;
+                self.album_track_scroll =
+                    (self.album_track_scroll as i32 + dy_rows).clamp(0, (len - 1).max(0)) as usize;
+            }
+            _ => {}
         }
     }
     fn go(&mut self, s: Screen) {
@@ -210,23 +713,90 @@ impl App {
 
     /// Handle a button press; returns any actions for the shell to perform.
     pub fn press(&mut self, b: Button) -> Vec<Action> {
-        // Locked: any key wakes to Now Playing (except Power, which just confirms sleep).
+        // Hold/lock SWITCH engaged: the touchscreen is disabled (see `tap`), but the physical
+        // transport + volume buttons still control playback — you can skip/pause/adjust without
+        // unlocking. Power only toggles the screen (the shell blanks/wakes the backlight on Sleep);
+        // it does NOT unlock. The ONLY thing that unlocks is the Hold switch going off (`set_hold`).
         if self.locked {
             return match b {
                 Button::Power => vec![Action::Sleep],
-                _ => {
-                    self.locked = false;
-                    self.go(Screen::NowPlaying);
+                Button::Play => {
+                    self.playing = !self.playing;
+                    vec![Action::PlayPause]
+                }
+                Button::Right => vec![Action::Next],
+                Button::Left => vec![Action::Prev],
+                Button::VolUp => {
+                    self.volume = (self.volume + 1).min(crate::overlay::VOL_MAX);
+                    vec![Action::VolUp]
+                }
+                Button::VolDown => {
+                    self.volume = self.volume.saturating_sub(1);
+                    vec![Action::VolDown]
+                }
+                _ => vec![],
+            };
+        }
+
+        // Shelf overlay open: Back (incl. the left-edge swipe) closes it; Play/Vol still work as
+        // global music controls; other navigation is suppressed until it's dismissed.
+        if self.shelf_open {
+            return match b {
+                Button::Back => {
+                    self.shelf_open = false;
                     vec![]
                 }
+                Button::Power => vec![Action::Sleep],
+                Button::Play => {
+                    self.playing = !self.playing;
+                    vec![Action::PlayPause]
+                }
+                Button::VolUp => {
+                    self.volume = (self.volume + 1).min(crate::overlay::VOL_MAX);
+                    self.vol_overlay = crate::overlay::VOL_FRAMES;
+                    vec![Action::VolUp]
+                }
+                Button::VolDown => {
+                    self.volume = self.volume.saturating_sub(1);
+                    self.vol_overlay = crate::overlay::VOL_FRAMES;
+                    vec![Action::VolDown]
+                }
+                _ => vec![],
+            };
+        }
+
+        // Onboarding owns ALL input while showing, so the global Play/Vol/Home gestures don't
+        // interfere with stepping through the intro. Right/Select = next (or finish on the last
+        // page); Left = back a page; Back = skip. Finishing/skipping marks it seen (persisted) so
+        // it appears only once, and returns to where you came from (Menu, or Now Playing on boot).
+        if matches!(self.current(), Screen::Onboarding) {
+            return match b {
+                Button::Right | Button::Select => {
+                    if self.onboarding_page + 1 < crate::onboarding::PAGES {
+                        self.onboarding_page += 1;
+                        vec![]
+                    } else {
+                        self.finish_onboarding();
+                        vec![]
+                    }
+                }
+                Button::Left => {
+                    self.onboarding_page = self.onboarding_page.saturating_sub(1);
+                    vec![]
+                }
+                Button::Back => {
+                    self.finish_onboarding();
+                    vec![]
+                }
+                _ => vec![],
             };
         }
 
         // Global gestures, available on every screen.
         match b {
             Button::Power => {
-                self.locked = true;
-                self.go(Screen::Lock);
+                // Power is a screen on/off toggle (the shell blanks/wakes the backlight). It does
+                // NOT lock — locking is the physical Hold switch's job (`set_hold`).
                 return vec![Action::Sleep];
             }
             Button::Home => {
@@ -255,8 +825,12 @@ impl App {
             Screen::NowPlaying => match b {
                 Button::Right => vec![Action::Next],
                 Button::Left => vec![Action::Prev],
-                Button::Up | Button::Select | Button::Option => {
+                Button::Up | Button::Select => {
                     self.push(Screen::Menu);
+                    vec![]
+                }
+                Button::Option => {
+                    self.cycle_viz(); // cycle the visualiser type (UI state)
                     vec![]
                 }
                 Button::Down => {
@@ -277,12 +851,7 @@ impl App {
                     vec![]
                 }
                 Button::Select | Button::Right => {
-                    let target = MENU[self.menu_idx].0;
-                    if target == Screen::NowPlaying {
-                        self.go(Screen::NowPlaying);
-                    } else {
-                        self.push(target);
-                    }
+                    self.activate_menu(self.menu_idx);
                     vec![]
                 }
                 Button::Back | Button::Left => {
@@ -383,11 +952,18 @@ impl App {
                 }
             }
             Screen::Settings => match b {
-                // Minimal: Select toggles day/night (the most-used setting) for now.
-                Button::Select => {
-                    self.night = !self.night;
-                    vec![Action::ThemeChanged(self.night)]
+                Button::Up => {
+                    self.settings_sel = self.settings_sel.saturating_sub(1);
+                    vec![]
                 }
+                Button::Down => {
+                    if self.settings_sel + 1 < crate::settings::ROWS {
+                        self.settings_sel += 1;
+                    }
+                    vec![]
+                }
+                // Select (or Left/Right) acts on the focused row.
+                Button::Select | Button::Right | Button::Left => self.settings_activate(),
                 Button::Back => {
                     self.pop();
                     vec![]
@@ -395,7 +971,10 @@ impl App {
                 _ => vec![],
             },
             Screen::UsbDac => match b {
-                Button::Select => vec![Action::EnterUsbMsc],
+                Button::Select => {
+                    self.usb_dac_on = !self.usb_dac_on;
+                    vec![Action::UsbDacToggle(self.usb_dac_on)]
+                }
                 Button::Back => {
                     self.pop();
                     vec![]
@@ -446,8 +1025,32 @@ impl App {
                 }
                 _ => vec![],
             },
-            // The remaining screens (Eq/Sound/Bluetooth/Fm/Receiver/UpNext): Back pops,
-            // everything else is a no-op until their per-screen controls are wired.
+            Screen::Sound => match b {
+                Button::Up => {
+                    self.sound_sel = self.sound_sel.saturating_sub(1);
+                    vec![]
+                }
+                Button::Down => {
+                    if self.sound_sel + 1 < crate::sound::ROWS {
+                        self.sound_sel += 1;
+                    }
+                    vec![]
+                }
+                // Select/Left/Right toggles the focused effect; the shell applies it via EffectCtrlDmp.
+                Button::Select | Button::Left | Button::Right => self.sound_toggle_row(),
+                // Option = instant A/B compare: flip the whole-chain bypass to hear effects on vs off.
+                Button::Option => {
+                    self.snd_ab_bypass = !self.snd_ab_bypass;
+                    vec![Action::SoundBypass(self.snd_ab_bypass)]
+                }
+                Button::Back => {
+                    self.pop();
+                    vec![]
+                }
+                _ => vec![],
+            },
+            // The remaining screens (Fm/Receiver/UpNext/Pairing): Back pops, everything else is a
+            // no-op until their per-screen controls are wired.
             _ => match b {
                 Button::Back => {
                     self.pop();
@@ -475,7 +1078,13 @@ impl App {
                 };
                 crate::lock::render(c, &theme, fonts, &lk);
             }
-            Screen::NowPlaying => crate::now_playing::render(c, &theme, fonts, np),
+            Screen::NowPlaying => {
+                // inject the selected visualiser type (UI state) into the now-playing data
+                let np2 = NowPlaying { viz_kind: self.viz_kind, ..*np };
+                crate::now_playing::render(c, &theme, fonts, &np2);
+                // sleep-timer countdown badge (nav owns the live remaining minutes)
+                crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min);
+            }
             Screen::Menu => {
                 // The Library row's caption reflects the real library size.
                 let lib_value = if self.lib.is_empty() {
@@ -510,27 +1119,77 @@ impl App {
                     );
                 }
             }
-            Screen::UpNext => crate::up_next::render(c, &theme, fonts, 0),
+            Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
+            Screen::UpNext => match self.now_playing_queue(np.title, np.artist) {
+                Some((album, tracks, cur)) => crate::up_next::render(c, &theme, fonts, album, tracks, cur),
+                None => crate::up_next::render(c, &theme, fonts, "", &[], 0),
+            },
             Screen::Eq => crate::eq::render(
                 c, &theme, fonts, &self.eq_bands, data::EQ_PRESETS[self.eq_preset].0, self.eq_sel,
             ),
-            Screen::Sound => crate::sound::render(c, &theme, fonts, &default_sound()),
+            Screen::Sound => {
+                let snd = Sound {
+                    dsee: self.snd_dsee,
+                    vinyl: self.snd_vinyl,
+                    vpt: if self.snd_vpt { "On" } else { "Off" },
+                    dcphase: if self.snd_dc { "On" } else { "Off" },
+                    normalizer: self.snd_norm,
+                    clearaudio: self.snd_clear,
+                    eq_preset: data::EQ_PRESETS[self.eq_preset].0,
+                    bt_codec: if self.bt_on { Some(crate::bluetooth::CODECS[self.bt_codec as usize].0) } else { None },
+                };
+                crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.snd_ab_bypass)
+            }
             Screen::Bluetooth => {
                 let bt = Bt {
                     on: self.bt_on,
                     connected: if self.bt_on { Some("WH-1000XM5") } else { None },
-                    codec: "LDAC",
+                    codec_sel: self.bt_codec,
+                    ldac_quality: self.bt_ldac_quality,
                 };
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
-            Screen::Settings => crate::settings::render(c, &theme, fonts, self.night, false),
+            Screen::Settings => {
+                let sleep_lbl = self.sleep_label();
+                let view = crate::settings::SettingsView {
+                    night: self.night,
+                    viz_name: crate::viz::name(self.viz_kind),
+                    viz_on: self.viz_on,
+                    usb_dac: self.usb_dac_on,
+                    battery_care: self.battery_care,
+                    storage: self.storage_label(),
+                    sleep: &sleep_lbl,
+                };
+                crate::settings::render(c, &theme, fonts, self.settings_sel, &view)
+            }
             Screen::Fm => crate::fm::render(c, &theme, fonts, 88.6),
-            Screen::UsbDac => crate::usbdac::render(c, &theme, fonts, false, "A1", true),
+            Screen::UsbDac => {
+                let ldac = self.usb_dac_on && self.bt_on;
+                let codec = crate::bluetooth::CODECS[self.bt_codec as usize].0;
+                let dev = if self.bt_on { Some("WH-1000XM5") } else { None };
+                crate::usbdac::render(
+                    c, &theme, fonts, self.usb_dac_on, ldac, codec, dev,
+                    data::EQ_PRESETS[self.eq_preset].0, self.snd_dsee,
+                )
+            }
             Screen::Receiver => crate::receiver::render(c, &theme, fonts, false),
+            // Shelf is an overlay, never the stack top — render Now Playing as a safe fallback if
+            // it somehow becomes current (it shouldn't).
+            Screen::Shelf => crate::now_playing::render(c, &theme, fonts, np),
         }
         // Transient HUD on top of any screen (except the lock screen, which owns the panel).
         if self.vol_overlay > 0 && self.current() != Screen::Lock {
             crate::overlay::volume(c, &theme, fonts, self.volume);
+        }
+        // Shelf bottom-sheet sits above everything: dims the screen behind + draws the sheet.
+        if self.shelf_open {
+            let (title, sub) = self.place_label();
+            let pins = [
+                self.pins[0].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub }),
+                self.pins[1].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub }),
+                self.pins[2].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub }),
+            ];
+            crate::shelf::render(c, &theme, fonts, &title, &sub, &pins);
         }
     }
 
@@ -539,8 +1198,13 @@ impl App {
     pub fn tick(&mut self) -> bool {
         if self.vol_overlay > 0 {
             self.vol_overlay -= 1;
+            // Return true for EVERY counting-down frame, INCLUDING the one that reaches 0 — that
+            // frame must repaint (now without the HUD) to clear it. (With dirty-flag rendering,
+            // returning false on the 0-transition would leave the HUD stuck on screen.)
+            true
+        } else {
+            false
         }
-        self.vol_overlay > 0
     }
 
     /// Sync the UI volume to the device's real level (the shell pushes this after it reads/sets
@@ -551,6 +1215,176 @@ impl App {
 
     pub fn volume(&self) -> u8 {
         self.volume
+    }
+
+    /// Current volume as a 0..100 percentage (the HUD level is 0..VOL_MAX steps). The shell scales
+    /// this to the device's mixer range to drive the hardware volume.
+    pub fn volume_pct(&self) -> u8 {
+        (self.volume as u32 * 100 / crate::overlay::VOL_MAX as u32) as u8
+    }
+
+    /// The current 10-band EQ gains (dB), for the shell to apply to the device DSP.
+    pub fn eq_bands(&self) -> [i8; 10] {
+        self.eq_bands
+    }
+    /// Restore EQ gains (from persisted settings). Clamps each band to the editable ±6 dB range.
+    pub fn set_eq_bands(&mut self, bands: [i8; 10]) {
+        for (dst, src) in self.eq_bands.iter_mut().zip(bands.iter()) {
+            *dst = (*src).clamp(-6, 6);
+        }
+    }
+    /// Restore the Sound-effect toggles from a bitmask (see sound_flags for the bit order).
+    pub fn set_sound_flags(&mut self, f: u8) {
+        self.snd_dsee = f & 1 != 0;
+        self.snd_vinyl = f & (1 << 1) != 0;
+        self.snd_vpt = f & (1 << 2) != 0;
+        self.snd_dc = f & (1 << 3) != 0;
+        self.snd_norm = f & (1 << 4) != 0;
+        self.snd_clear = f & (1 << 5) != 0;
+    }
+
+    /// The "Up Next" queue = the album (from the library) the now-playing track belongs to, plus
+    /// the playing index within it. Matched by title (+ artist when known). `None` when nothing is
+    /// playing or the track isn't in the library. Real data, derived offline from the DB — not the
+    /// PlayerService queue (which would need TrackSequence RE'd), but the natural "rest of the album".
+    pub fn now_playing_queue<'a>(&'a self, title: &str, artist: &str) -> Option<(&'a str, &'a [SongRow], usize)> {
+        if title.is_empty() {
+            return None;
+        }
+        for g in &self.lib.album_groups {
+            for al in &g.albums {
+                if let Some(idx) = al
+                    .track_list
+                    .iter()
+                    .position(|s| s.title == title && (artist.is_empty() || s.artist == artist))
+                {
+                    return Some((al.name.as_str(), &al.track_list, idx));
+                }
+            }
+        }
+        None
+    }
+
+    /// Real storage label ("used / total GB") for the Settings Storage row; the shell pushes it from
+    /// statvfs. Returns a neutral placeholder until reported.
+    pub fn storage_label(&self) -> &str {
+        if self.storage.is_empty() {
+            "—"
+        } else {
+            &self.storage
+        }
+    }
+    pub fn set_storage(&mut self, label: &str) {
+        self.storage = label.to_string();
+    }
+
+    /// Sleep-timer live remaining (minutes; 0 = off). cinder-ffi counts down and pushes it via
+    /// set_sleep_min so the Settings row follows. `sleep_label` is what that row shows.
+    pub fn sleep_min(&self) -> u32 {
+        self.sleep_min
+    }
+    pub fn set_sleep_min(&mut self, m: u32) {
+        self.sleep_min = m;
+        if m == 0 {
+            self.sleep_idx = 0; // expired/cancelled → back to "Off" in the cycle
+        }
+    }
+    pub fn sleep_label(&self) -> String {
+        if self.sleep_min == 0 {
+            "OFF".to_string()
+        } else {
+            format!("{} MIN", self.sleep_min)
+        }
+    }
+
+    /// First-run onboarding. The shell shows it on first boot (when not yet seen); it's persisted so
+    /// it appears once. `start_onboarding` jumps straight into the intro (unlocked, page 0).
+    pub fn onboarding_seen(&self) -> bool {
+        self.onboarding_seen
+    }
+    pub fn set_onboarding_seen(&mut self, v: bool) {
+        self.onboarding_seen = v;
+    }
+    pub fn start_onboarding(&mut self) {
+        self.onboarding_page = 0;
+        self.locked = false;
+        self.go(Screen::Onboarding);
+    }
+    // Finish/skip: mark seen (persisted) + return to where we came from.
+    fn finish_onboarding(&mut self) {
+        self.onboarding_seen = true;
+        self.locked = false;
+        if self.stack.len() > 1 {
+            self.pop(); // opened from the Menu → back to Menu
+        } else {
+            self.go(Screen::NowPlaying); // first-run → start listening
+        }
+    }
+
+    /// Battery-care (Itawari) toggle state. The shell reads the device's real value at boot and
+    /// pushes it via set_battery_care; battery_care() returns the UI's current desired value so the
+    /// shell can apply a toggle to PowerMgrServiceClient.
+    pub fn battery_care(&self) -> bool {
+        self.battery_care
+    }
+    pub fn set_battery_care(&mut self, on: bool) {
+        self.battery_care = on;
+    }
+
+    /// Sound effect toggles as a bitmask for the shell to apply via EffectCtrlDmp:
+    /// bit0 DSEE · bit1 Vinyl · bit2 VPT · bit3 DC-Phase · bit4 Normalizer · bit5 ClearAudio+.
+    pub fn sound_flags(&self) -> u8 {
+        (self.snd_dsee as u8)
+            | (self.snd_vinyl as u8) << 1
+            | (self.snd_vpt as u8) << 2
+            | (self.snd_dc as u8) << 3
+            | (self.snd_norm as u8) << 4
+            | (self.snd_clear as u8) << 5
+    }
+
+    /// A/B compare state on the Sound screen: true = effect chain bypassed (B), false = active (A).
+    /// The shell applies this via cinder_effects_set_bypass after a SoundBypass action.
+    pub fn sound_bypass(&self) -> bool {
+        self.snd_ab_bypass
+    }
+
+    /// Device-wide BT codec preference (index into bluetooth::CODECS) + LDAC quality tier (index
+    /// into bluetooth::QUALITIES). The shell reads these after a BtCodecChanged action and applies
+    /// them via BtTransmitterService (and the same values feed the USB-DAC→LDAC bridge). The setters
+    /// let the shell restore the persisted values at boot.
+    pub fn bt_codec(&self) -> u8 {
+        self.bt_codec
+    }
+    pub fn bt_ldac_quality(&self) -> u8 {
+        self.bt_ldac_quality
+    }
+    pub fn set_bt_codec(&mut self, v: u8) {
+        self.bt_codec = (v as usize % crate::bluetooth::CODECS.len()) as u8;
+    }
+    pub fn set_bt_ldac_quality(&mut self, v: u8) {
+        self.bt_ldac_quality = (v as usize % crate::bluetooth::QUALITIES.len()) as u8;
+    }
+    /// USB-DAC mode engaged? The shell reads this after a UsbDacToggle action to start/stop the
+    /// LDAC bridge + switch the USB gadget to UAC (without tearing down Bluetooth).
+    pub fn usb_dac_on(&self) -> bool {
+        self.usb_dac_on
+    }
+
+    /// Visualiser settings (the shell reads these to gate/animate; the render uses viz_kind).
+    pub fn viz_kind(&self) -> u8 {
+        self.viz_kind
+    }
+    pub fn viz_on(&self) -> bool {
+        self.viz_on
+    }
+    pub fn set_viz_kind(&mut self, k: u8) {
+        self.viz_kind = k % crate::viz::COUNT;
+    }
+    pub fn set_viz_on(&mut self, on: bool) {
+        self.viz_on = on;
+    }
+    fn cycle_viz(&mut self) {
+        self.viz_kind = (self.viz_kind + 1) % crate::viz::COUNT;
     }
 }
 
@@ -570,18 +1404,17 @@ fn prev_tab(t: Tab) -> Tab {
         Tab::Playlists => Tab::Artists,
     }
 }
-
-fn default_sound() -> Sound {
-    Sound {
-        dsee: true,
-        vinyl: false,
-        vpt: "Studio",
-        dcphase: "Low A",
-        normalizer: true,
-        clearaudio: false,
-        eq_preset: "A1",
-        bt_codec: Some("LDAC"),
+fn tab_name(t: Tab) -> &'static str {
+    match t {
+        Tab::Songs => "Songs",
+        Tab::Albums => "Albums",
+        Tab::Artists => "Artists",
+        Tab::Playlists => "Playlists",
     }
+}
+/// Display title for a Screen, taken from the Menu table (falls back to the app name).
+fn screen_title(s: Screen) -> &'static str {
+    MENU.iter().find(|m| m.0 == s).map(|m| m.2).unwrap_or("Cinder")
 }
 
 #[cfg(test)]
@@ -589,29 +1422,75 @@ mod tests {
     use super::*;
 
     fn unlocked() -> App {
-        let mut a = App::new();
-        a.press(Button::Select); // wake from Lock
-        a
+        App::unlocked()
     }
 
     #[test]
-    fn boots_locked_and_any_key_wakes() {
-        let mut a = App::new();
-        assert_eq!(a.current(), Screen::Lock);
+    fn hold_switch_is_the_only_unlock() {
+        // The Hold SWITCH locks/unlocks; the touchscreen and nav buttons never do.
+        let mut a = App::unlocked();
+        a.set_hold(true);
         assert!(a.locked);
-        let acts = a.press(Button::Down);
-        assert_eq!(a.current(), Screen::NowPlaying);
+        assert_eq!(a.current(), Screen::Lock);
+        // While locked: a tap is ignored (touchscreen disabled) and stays on Lock.
+        assert!(a.tap(200, 400).is_empty());
+        assert!(a.locked);
+        // Transport buttons still control playback WITHOUT unlocking.
+        assert_eq!(a.press(Button::Right), vec![Action::Next]);
+        assert!(a.locked);
+        assert_eq!(a.press(Button::Play), vec![Action::PlayPause]);
+        assert!(a.locked);
+        // Power toggles the screen (emits Sleep) but does NOT unlock.
+        assert_eq!(a.press(Button::Power), vec![Action::Sleep]);
+        assert!(a.locked);
+        // Only the switch going off unlocks.
+        a.set_hold(false);
         assert!(!a.locked);
-        assert!(acts.is_empty());
+        assert_eq!(a.current(), Screen::NowPlaying);
     }
 
     #[test]
-    fn power_sleeps_and_locks() {
+    fn power_toggles_screen_without_locking() {
         let mut a = unlocked();
         let acts = a.press(Button::Power);
-        assert_eq!(acts, vec![Action::Sleep]);
-        assert!(a.locked);
-        assert_eq!(a.current(), Screen::Lock);
+        assert_eq!(acts, vec![Action::Sleep]); // shell blanks/wakes the backlight
+        assert!(!a.locked); // Power never locks — that's the Hold switch's job
+        assert_ne!(a.current(), Screen::Lock);
+    }
+
+    #[test]
+    fn shelf_opens_pins_and_jumps_back() {
+        let mut a = unlocked(); // Now Playing
+        // open the Shelf from the status-bar bookmark → overlay over the current place (Now Playing)
+        a.tap(392, 16);
+        assert!(a.shelf_is_open());
+        assert_eq!(a.current(), Screen::NowPlaying);
+        // Pin "this place" (the Pin button), then close and navigate away.
+        a.tap(420, 582); // PIN_BTN region
+        assert!(a.pins[0].is_some());
+        a.tap(240, 200); // dim backdrop → Close
+        assert!(!a.shelf_is_open());
+        // Go to the Library, reopen the Shelf, and tap the pin's "GO ›" → back to Now Playing.
+        a.tap(372, 16); // status bar (not the bookmark) → Menu
+        a.tap(200, 91 + 1 * 63 + 8); // Library row
+        assert_eq!(a.current(), Screen::Library);
+        a.open_shelf();
+        a.tap(380, 640 + 12); // slot 0 "GO ›" hit
+        assert!(!a.shelf_is_open());
+        assert_eq!(a.current(), Screen::NowPlaying);
+    }
+
+    #[test]
+    fn status_bar_bookmark_opens_shelf() {
+        let mut a = unlocked(); // Now Playing
+        a.tap(392, 16); // the bookmark glyph (top-right) → Shelf overlay
+        assert!(a.shelf_is_open());
+        assert_eq!(a.current(), Screen::NowPlaying); // overlays the current place
+        // tapping elsewhere on the bar still opens the Menu (after closing the shelf)
+        a.tap(240, 200); // backdrop → close
+        assert!(!a.shelf_is_open());
+        a.tap(120, 16); // mid status bar → Menu
+        assert_eq!(a.current(), Screen::Menu);
     }
 
     #[test]
@@ -701,6 +1580,39 @@ mod tests {
         assert_eq!(a.volume, 0);
     }
 
+    #[test]
+    fn visualiser_cycles_and_settings_control_it() {
+        let mut a = unlocked();
+        // Option on Now Playing cycles the visualiser type
+        let k0 = a.viz_kind();
+        a.press(Button::Option);
+        assert_eq!(a.viz_kind(), (k0 + 1) % crate::viz::COUNT);
+        // route to Settings (menu idx 9)
+        a.press(Button::Up); // Menu
+        for _ in 0..9 {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select);
+        assert_eq!(a.current(), Screen::Settings);
+        // cursor down to the Visualiser row (ROW_VIZ=1) and cycle it
+        a.press(Button::Down); // sel 0 -> 1 (Visualiser)
+        assert_eq!(a.settings_sel, crate::settings::ROW_VIZ);
+        let k1 = a.viz_kind();
+        a.press(Button::Select);
+        assert_eq!(a.viz_kind(), (k1 + 1) % crate::viz::COUNT);
+        // down to Visualiser anim (ROW_VIZ_ANIM=2) and toggle it
+        a.press(Button::Down);
+        assert_eq!(a.settings_sel, crate::settings::ROW_VIZ_ANIM);
+        let on = a.viz_on();
+        a.press(Button::Select);
+        assert_eq!(a.viz_on(), !on);
+        // cursor clamps at the last row
+        for _ in 0..30 {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.settings_sel, crate::settings::ROWS - 1);
+    }
+
     fn enter_eq() -> App {
         let mut a = unlocked();
         a.press(Button::Up); // Menu
@@ -746,10 +1658,80 @@ mod tests {
         assert_eq!(a.bt_on, !was);
     }
 
+    fn enter_bluetooth() -> App {
+        let mut a = unlocked();
+        a.press(Button::Up); // Menu
+        for _ in 0..6 {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select); // Bluetooth (idx 6)
+        assert_eq!(a.current(), Screen::Bluetooth);
+        assert!(a.bt_on);
+        a
+    }
+
+    #[test]
+    fn bluetooth_codec_and_quality_select() {
+        let mut a = enter_bluetooth();
+        // default codec = LDAC (0): the quality chips are visible. Pick 660 (chip index 2).
+        assert_eq!(a.bt_codec, 0);
+        assert_eq!(a.tap(260, 440), vec![Action::BtCodecChanged]);
+        assert_eq!(a.bt_ldac_quality, 2);
+        // select SBC (codec row 3) → device-wide codec changes; LDAC chips hide
+        assert_eq!(a.tap(200, 360), vec![Action::BtCodecChanged]);
+        assert_eq!(a.bt_codec, 3);
+        // with SBC active there are no LDAC quality chips, so that band is now inert
+        assert!(a.tap(260, 440).is_empty());
+    }
+
+    #[test]
+    fn usb_dac_toggles_ldac_routing() {
+        let mut a = unlocked();
+        a.press(Button::Up); // Menu
+        for _ in 0..7 {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select); // USB-DAC (idx 7)
+        assert_eq!(a.current(), Screen::UsbDac);
+        assert!(!a.usb_dac_on());
+        // a tap engages USB-DAC → routes to 3.5mm + BT/LDAC (no BT disconnect)
+        assert_eq!(a.tap(240, 300), vec![Action::UsbDacToggle(true)]);
+        assert!(a.usb_dac_on());
+        // tapping again disengages
+        assert_eq!(a.tap(240, 300), vec![Action::UsbDacToggle(false)]);
+        assert!(!a.usb_dac_on());
+    }
+
+    #[test]
+    fn settings_usb_mode_enters_mass_storage() {
+        let mut a = unlocked();
+        a.press(Button::Up); // Menu
+        for _ in 0..9 {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select); // Settings
+        for _ in 0..crate::settings::ROW_USB_MODE {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.settings_sel, crate::settings::ROW_USB_MODE);
+        assert_eq!(a.press(Button::Select), vec![Action::EnterUsbMsc]);
+    }
+
+    #[test]
+    fn bluetooth_codec_persists_round_trip() {
+        let mut a = unlocked();
+        a.set_bt_codec(2); // aptX
+        a.set_bt_ldac_quality(3); // 330
+        assert_eq!(a.bt_codec(), 2);
+        assert_eq!(a.bt_ldac_quality(), 3);
+        a.set_bt_codec(99); // wraps into range, never panics
+        assert!((a.bt_codec() as usize) < crate::bluetooth::CODECS.len());
+    }
+
     #[test]
     fn settings_select_toggles_theme() {
         let mut a = unlocked();
-        // route to Settings (last menu item, index 9)
+        // route to Settings (menu index 9)
         a.press(Button::Up); // Menu
         for _ in 0..9 {
             a.press(Button::Down);
@@ -761,5 +1743,160 @@ mod tests {
         let acts = a.press(Button::Select);
         assert_eq!(acts, vec![Action::ThemeChanged(!was)]);
         assert_eq!(a.night, !was);
+    }
+
+    #[test]
+    fn settings_battery_care_toggles_and_emits_action() {
+        let mut a = unlocked();
+        a.press(Button::Up); // Menu
+        for _ in 0..9 {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select); // -> Settings
+        assert_eq!(a.current(), Screen::Settings);
+        // move cursor to the Battery care row
+        for _ in 0..crate::settings::ROW_BATTERY {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.settings_sel, crate::settings::ROW_BATTERY);
+        let was = a.battery_care();
+        let acts = a.press(Button::Select);
+        assert_eq!(acts, vec![Action::BatteryCareChanged(!was)]);
+        assert_eq!(a.battery_care(), !was);
+        // shell can push the device's real state back in
+        a.set_battery_care(false);
+        assert!(!a.battery_care());
+    }
+
+    #[test]
+    fn restore_eq_and_sound_round_trip() {
+        let mut a = unlocked();
+        a.set_eq_bands([3, -2, 6, -6, 0, 1, 99, -99, 4, 5]); // 99/-99 clamp to ±6
+        assert_eq!(a.eq_bands(), [3, -2, 6, -6, 0, 1, 6, -6, 4, 5]);
+        a.set_sound_flags(0b101101); // dsee, vpt, dc, clear
+        let f = a.sound_flags();
+        assert_eq!(f, 0b101101);
+        assert_eq!(f & 1, 1); // dsee
+        assert_eq!(f & (1 << 4), 0); // normalizer off
+    }
+
+    #[test]
+    fn settings_sleep_timer_cycles_presets() {
+        let mut a = unlocked();
+        a.press(Button::Up); // Menu
+        for _ in 0..9 {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select); // Settings
+        for _ in 0..crate::settings::ROW_SLEEP {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.settings_sel, crate::settings::ROW_SLEEP);
+        assert_eq!(a.sleep_min(), 0);
+        assert_eq!(a.sleep_label(), "OFF");
+        // Off -> 15 -> 30
+        assert_eq!(a.press(Button::Select), vec![Action::SleepTimer(15)]);
+        assert_eq!(a.sleep_min(), 15);
+        assert_eq!(a.sleep_label(), "15 MIN");
+        assert_eq!(a.press(Button::Select), vec![Action::SleepTimer(30)]);
+        assert_eq!(a.sleep_min(), 30);
+        // ffi pushes the live countdown back
+        a.set_sleep_min(29);
+        assert_eq!(a.sleep_label(), "29 MIN");
+        a.set_sleep_min(0); // expired
+        assert_eq!(a.sleep_label(), "OFF");
+    }
+
+    #[test]
+    fn touch_tap_navigates() {
+        let mut a = App::unlocked();
+        assert_eq!(a.current(), Screen::NowPlaying);
+        // status bar opens the Menu from anywhere along the top strip — not just the ☰ icon.
+        a.tap(20, 16); // far-left (over the clock) used to be a dead zone
+        assert_eq!(a.current(), Screen::Menu);
+        a.tap(200, 91 + 63 + 8); // leave Menu (into Library) so the next assert is meaningful
+        a.tap(372, 16); // right side (the ☰ icon) → Menu too
+        assert_eq!(a.current(), Screen::Menu);
+        // tap the Library row (row 1: y0=91 + 1*63 + a bit)
+        a.tap(200, 91 + 63 + 8);
+        assert_eq!(a.current(), Screen::Library);
+        // tap the Albums tab, then the header-back chevron → back to Menu
+        a.tap(180, 105);
+        assert_eq!(a.lib_tab, Tab::Albums);
+        a.tap(20, 60);
+        assert_eq!(a.current(), Screen::Menu);
+    }
+
+    #[test]
+    fn touch_tap_nowplaying_transport() {
+        let mut a = unlocked(); // NowPlaying
+        let was = a.playing;
+        let acts = a.tap(240, 692); // the play circle
+        assert_eq!(acts, vec![Action::PlayPause]);
+        assert_eq!(a.playing, !was);
+        assert_eq!(a.tap(350, 692), vec![Action::Next]); // next button
+        assert_eq!(a.tap(130, 692), vec![Action::Prev]); // prev button
+        // shuffle / repeat icons are now tappable (previously dead on a touch-only device)
+        assert_eq!(a.tap(44, 692), vec![Action::ShuffleToggle]);
+        assert_eq!(a.tap(436, 692), vec![Action::RepeatCycle]);
+    }
+
+    #[test]
+    fn touch_scroll_moves_library_window() {
+        let mut a = unlocked();
+        a.tap(372, 16); // Menu
+        a.tap(200, 91 + 63 + 8); // Library
+        let before = a.lib_scroll;
+        a.touch_scroll(5); // drag → later rows
+        assert!(a.lib_scroll >= before);
+        a.touch_scroll(-100); // clamp at 0
+        assert_eq!(a.lib_scroll, 0);
+    }
+
+    #[test]
+    fn up_next_empty_when_nothing_playing() {
+        let a = unlocked();
+        assert!(a.now_playing_queue("", "").is_none());
+        assert!(a.now_playing_queue("No Such Track", "Nobody").is_none());
+    }
+
+    #[test]
+    fn now_playing_queue_finds_current_album() {
+        let a = unlocked();
+        // a real track from the sample library's first populated album
+        let (album, title, artist) = a
+            .lib
+            .album_groups
+            .iter()
+            .flat_map(|g| &g.albums)
+            .find(|al| !al.track_list.is_empty())
+            .map(|al| (al.name.clone(), al.track_list[0].title.clone(), al.track_list[0].artist.clone()))
+            .expect("sample lib has an album with tracks");
+        let (qa, tracks, idx) = a.now_playing_queue(&title, &artist).expect("resolves to the album");
+        assert_eq!(qa, album);
+        assert_eq!(idx, 0);
+        assert!(!tracks.is_empty());
+    }
+
+    #[test]
+    fn sound_screen_toggles_effects_and_emits_action() {
+        let mut a = unlocked();
+        a.press(Button::Up); // Menu
+        for _ in 0..5 {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select); // Sound Settings (menu idx 5)
+        assert_eq!(a.current(), Screen::Sound);
+        assert_eq!(a.sound_flags(), 0); // all effects off initially
+        // toggle DSEE (row 0)
+        let acts = a.press(Button::Select);
+        assert_eq!(acts, vec![Action::SoundChanged]);
+        assert_eq!(a.sound_flags() & 1, 1);
+        // move to ClearAudio+ (row 5) and toggle -> bit5 set
+        for _ in 0..5 {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select);
+        assert_eq!(a.sound_flags() & (1 << 5), 1 << 5);
     }
 }

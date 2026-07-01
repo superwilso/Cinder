@@ -40,6 +40,7 @@ fn draw_icon(c: &mut Canvas, name: &str, cx: f32, cy: f32, s: f32, col: Rgb888) 
         "usb" => icons::usb(c, cx, cy, s, col),
         "rx" => icons::rx(c, cx, cy, s, col),
         "settings" => icons::settings(c, cx, cy, s, col),
+        "bookmark" => icons::bookmark(c, cx, cy, s, col),
         _ => {}
     }
 }
@@ -49,7 +50,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, items: &[MenuItem]) {
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     let y0 = crate::chrome::header(c, t, f, "Menu", Some("NW-A55"));
 
-    let rh = 63;
+    let rh = 63; // prototype metric (11 rows fit within the 800px panel)
     fill_rect(c, 0, y0, W as i32, 1, t.line); // top border
     for (i, m) in items.iter().enumerate() {
         let yt = y0 + i as i32 * rh;

@@ -114,6 +114,12 @@ public:
                  std::function<void()> cb7);
     ~CuiAppModule() override;
 
+    // Non-virtual (does NOT touch the vtable/layout). Sets the pump flag + notify_one()s the
+    // internal condition_variable, i.e. schedules ONE render-tick pass on the pump loop. The
+    // stock Qt app drives this from Qt's event loop; our non-Qt app pokes it from a ticker
+    // thread (see main.cpp). Symbol: _ZN5easel12CuiAppModule13OnPumpTriggerEv (T in libeaselcui).
+    void OnPumpTrigger();
+
 private:
     // Reserve the device object's real footprint. `new easel::CuiAppModule(...)` must
     // operator-new enough room for the DEVICE ctor (libeaselcui), which writes the 7 std::function

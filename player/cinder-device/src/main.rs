@@ -138,6 +138,9 @@ fn main() {
         playing: true,
         shuffle: false,
         repeat: 1,
+        viz_seed: 2.0,
+        viz_kind: 0,
+        viz_levels: None,
     };
     now_playing::render(&mut canvas, &Theme::day(), &fonts, &np);
 

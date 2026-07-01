@@ -115,7 +115,7 @@ impl Scrobbler {
             // Only write the header if the file is empty (don't duplicate on an existing log).
             let empty = f.metadata().map(|m| m.len() == 0).unwrap_or(true);
             if empty {
-                write!(f, "{HEADER}#CLIENT/{}\n", self.client)?;
+                writeln!(f, "{HEADER}#CLIENT/{}", self.client)?;
             }
             self.header_done = true;
         }
