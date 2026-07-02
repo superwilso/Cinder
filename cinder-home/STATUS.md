@@ -122,6 +122,12 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   --analyzer` to validate, then `/contents/cinder_viz.conf: analyzer=1`).
 - **Up Next**: the queue = the **current album** (resolved from the library by the now-playing
   track), playing row highlighted, auto-scrolls to follow playback; clean empty state otherwise.
+  When the user queue (below) is non-empty, Up Next shows it instead, in add order.
+- **Swipe-to-queue (Spotify-style)**: rightward swipe on a Library-Songs/Album-track row adds it
+  to the user queue — "Added to queue" toast + a "+ QUEUED" chip slides off the row (~0.4 s).
+  Left-edge→right is still Back (classified first); the two rightward gestures coexist. *(Queue
+  display + intent only: PlayerService honoring it is gated on `SetTrackSequence` RE — same gate
+  as play-by-index.)*
 - **Settings ▸ Storage**: real internal-storage usage ("used / total GB") from `statvfs`.
 - **Night-mode backlight (minimal light)**: toggling Settings ▸ Theme to **night dims the panel
   backlight to minimal** (and day restores it). The backlight node is auto-detected (the standard
@@ -182,7 +188,9 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 - **Pairing** screen: static (the "Pair new device" button is inert).
 - **Settings (info/placeholder rows)**: Screen-off timer, Database "REBUILD" take no action. The
   manual **Brightness** slider row is still static (but night-mode backlight dimming IS wired — see
-  Functional). **USB mode** row now **enters mass-storage** (device-gated `setprop`). Firmware & Model
+  Functional). **USB mode** row now enters mass-storage **with a modal UsbStorage screen and a clean
+  log-fd handoff** (fds → /dev/null before `umount /contents`; Back or unplug remounts + restores
+  the log — device-gated `setprop`, validate live). Firmware & Model
   are **honest static info labels** — Firmware reads `CINDER 1.0` (stable) / `CINDER DEV` (dev channel).
 - **Now Playing heart** (like) + the library **shuffle-by-album/artist** rows: decorative — no
   on-device action yet. *(Shuffle/repeat on the transport row ARE tappable now — see Functional.)*
@@ -365,6 +373,31 @@ shared by both binaries.)
 >    sweeps kept as respawn insurance. The fb geometry + "flip-on-blit active" line and a one-time
 >    "fb flip ioctl FAILED" diagnostic are logged so a silent regression is visible in
 >    cinderhome.log. Dirty-flag gating unchanged: idle = no blit = no flip = zero cost.
+
+> **Seventh learning + feature round (2026-07-02, after the first *working* interactive boot):
+> feedback was "slow, small text, MSC bugs the device" — all three addressed offline.**
+> 1. **60 fps pump.** `render_driver` now sleeps 16 ms/frame (was 33 ms); all `n`-based cadences
+>    (housekeeping 1×/s, battery 10 s, force-dirty windows, straggler sweeps) rescaled to keep
+>    their wall-clock timing. Dirty-flag still gates the blit, so idle frames stay ~free; overlay
+>    frame budgets (volume HUD / toast / queue chip) retuned for the 60 Hz tick.
+> 2. **Text bumped +1 px across the lists** (library/up-next/menu/settings: titles 15→16, subs
+>    11→12, mono captions 10→11, tabs 11→12) for readability on the 4.4" panel.
+> 3. **USB mass storage root cause: OUR OWN LOG FD.** Stock's `sys.sony.config=msc` runs
+>    `unmount_msc1` = `umount /contents` first — and the launcher redirects our stdout/stderr to
+>    `/contents/cinderhome.log`, so the umount got EBUSY and MSC silently wedged ("mass storage
+>    bugs it"). Fix mirrors cinder-device: `enter_usb_msc()` dup2's fds 1+2 → `/dev/null` *before*
+>    the setprop; a modal **UsbStorage screen** blocks the UI while the volume belongs to the PC;
+>    Back (or cable unplug, watched 1×/s once the cable was seen) emits `ExitUsbMsc` → shell sets
+>    `sys.sony.config=adb` (stock's boot default; its init block runs `mount_msc1`), waits ≤5 s
+>    for the remount, then points the log back at `/contents/cinderhome.log`. Scrobble writes are
+>    gated off while MSC is active (stale mountpoint).
+> 4. **Spotify-style swipe-to-queue.** `cinder_swipe(dir, x, y)` now carries the gesture START
+>    point; a rightward swipe on a Library-Songs/Album-track row queues that row (same hit-test
+>    the tap uses), pops an "Added to queue — …" toast + a "+ QUEUED" chip that slides off the
+>    right edge (~0.4 s), and Up Next shows the user queue ahead of the album window. Edge-back
+>    is untouched: the shell classifies left-edge→right as Back *before* the swipe branch, so
+>    both rightward gestures coexist. (Queue is display+intent; making PlayerService honor it
+>    needs `PlayController::SetTrackSequence` RE — same gate as play-by-index.)
 
 ## STEP 2: flash the Home app (only after STEP 1 looks clean)
 

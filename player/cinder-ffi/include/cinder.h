@@ -46,7 +46,9 @@ typedef enum {
     CINDER_ACT_BT_CODEC_CHANGED = 17,
     /* USB-DAC toggled: read cinder_get_usb_dac() and start/stop the LDAC bridge + switch the USB
      * gadget to UAC, WITHOUT disconnecting Bluetooth (the headline USB-DAC→LDAC feature). */
-    CINDER_ACT_USBDAC_LDAC = 18
+    CINDER_ACT_USBDAC_LDAC = 18,
+    /* User left the USB mass-storage modal (Back): remount /contents and restore the USB mode. */
+    CINDER_ACT_EXIT_USB_MSC = 19
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -58,9 +60,11 @@ int  cinder_input(int button);
  * coordinates → UI and classifies tap vs scroll vs the left-edge Back swipe.) */
 int  cinder_tap(int x, int y);
 void cinder_touch_scroll(int dy_rows);
-/* Horizontal swipe (dir < 0 = leftward, else rightward): onboarding pages through, Now Playing
- * skips track. Returns a cinder_action_t for the shell to carry out (0 = nothing). */
-int  cinder_swipe(int dir);
+/* Horizontal swipe (dir < 0 = leftward, else rightward) with the gesture's START point in UI
+ * coordinates: onboarding pages through, Now Playing skips track, and a rightward swipe on a
+ * Library/Album song row queues that song (start y picks the row). Returns a cinder_action_t for
+ * the shell to carry out (0 = nothing). */
+int  cinder_swipe(int dir, int x, int y);
 /* The Hold/lock SWITCH changed state (held = 1 locked, 0 unlocked). When locked the touchscreen is
  * ignored but the transport/volume buttons still work; ONLY the switch going off (held=0) unlocks.
  * Power is a screen on/off toggle (CINDER_ACT_SLEEP) and does NOT unlock. Call on every edge. */

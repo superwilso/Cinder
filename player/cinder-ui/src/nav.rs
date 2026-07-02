@@ -247,6 +247,8 @@ impl Default for App {
             queue: Vec::new(),
             toast: String::new(),
             toast_frames: 0,
+            queue_anim_y: 0,
+            queue_anim_frames: 0,
         }
     }
 }
@@ -744,7 +746,7 @@ impl App {
                     {
                         if let Some(s) = library::song_at(&self.lib, self.lib_sort, rank) {
                             let s = s.clone();
-                            self.enqueue(s);
+                            self.enqueue(s, y);
                         }
                     }
                 }
@@ -757,7 +759,7 @@ impl App {
                         .and_then(|ti| al.track_list.get(ti).cloned())
                 });
                 if let Some(s) = song {
-                    self.enqueue(s);
+                    self.enqueue(s, y);
                 }
                 vec![]
             }
@@ -765,10 +767,13 @@ impl App {
         }
     }
 
-    /// Append a song to the user queue + pop the confirmation toast.
-    fn enqueue(&mut self, s: SongRow) {
+    /// Append a song to the user queue + pop the confirmation toast + start the row chip
+    /// animation (`y` = the gesture y, so the chip rides the row the user flicked).
+    fn enqueue(&mut self, s: SongRow, y: i32) {
         self.toast = format!("Added to queue — {}", s.title);
         self.toast_frames = TOAST_FRAMES;
+        self.queue_anim_y = y;
+        self.queue_anim_frames = QUEUE_ANIM_FRAMES;
         self.queue.push(s);
     }
 
@@ -1317,6 +1322,12 @@ impl App {
         if self.toast_frames > 0 && self.current() != Screen::Lock {
             crate::overlay::toast(c, &theme, fonts, &self.toast);
         }
+        // Swipe-to-queue chip riding the flicked row (list screens only — if the user navigates
+        // away mid-animation the anchor row is gone, so it just stops).
+        if self.queue_anim_frames > 0 && matches!(self.current(), Screen::Library | Screen::Album) {
+            let p = self.queue_anim_frames as f32 / QUEUE_ANIM_FRAMES as f32;
+            crate::overlay::queue_chip(c, &theme, fonts, self.queue_anim_y, p);
+        }
         // Shelf bottom-sheet sits above everything: dims the screen behind + draws the sheet.
         if self.shelf_open {
             let (title, sub) = self.place_label();
@@ -1342,6 +1353,10 @@ impl App {
         }
         if self.toast_frames > 0 {
             self.toast_frames -= 1;
+            animating = true;
+        }
+        if self.queue_anim_frames > 0 {
+            self.queue_anim_frames -= 1;
             animating = true;
         }
         animating
@@ -1987,23 +2002,57 @@ mod tests {
         a.start_onboarding();
         assert_eq!(a.current(), Screen::Onboarding);
         let p0 = a.onboarding_page;
-        assert!(a.swipe(-1).is_empty()); // leftward = next page
+        assert!(a.swipe(-1, 240, 400).is_empty()); // leftward = next page
         assert_eq!(a.onboarding_page, p0 + 1);
-        assert!(a.swipe(1).is_empty()); // rightward = back
+        assert!(a.swipe(1, 240, 400).is_empty()); // rightward = back
         assert_eq!(a.onboarding_page, p0);
         // swipe left through every page finishes onboarding
         for _ in 0..crate::onboarding::PAGES + 1 {
-            a.swipe(-1);
+            a.swipe(-1, 240, 400);
         }
         assert!(a.current() != Screen::Onboarding);
         // Now Playing: swipe = the same transport actions as the skip buttons
         let mut b = unlocked();
         assert_eq!(b.current(), Screen::NowPlaying);
-        assert_eq!(b.swipe(-1), vec![Action::Next]);
-        assert_eq!(b.swipe(1), vec![Action::Prev]);
+        assert_eq!(b.swipe(-1, 240, 400), vec![Action::Next]);
+        assert_eq!(b.swipe(1, 240, 400), vec![Action::Prev]);
         // locked → swipes dead
         b.set_hold(true);
-        assert!(b.swipe(-1).is_empty());
+        assert!(b.swipe(-1, 240, 400).is_empty());
+    }
+
+    #[test]
+    fn right_swipe_on_song_row_queues_it() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        // Rightward swipe starting on the first Songs row (rows start at y=205, 62px tall).
+        assert!(a.swipe(1, 240, 220).is_empty());
+        assert_eq!(a.queue().len(), 1);
+        let expected = library::song_at(&a.lib, a.lib_sort, 0).unwrap().title.clone();
+        assert_eq!(a.queue()[0].title, expected);
+        // Feedback started: toast + row chip animation, and tick() reports animation frames.
+        assert!(a.toast.starts_with("Added to queue"));
+        assert_eq!(a.queue_anim_frames, QUEUE_ANIM_FRAMES);
+        assert_eq!(a.queue_anim_y, 220);
+        assert!(a.tick());
+        // A LEFTWARD swipe on the list queues nothing.
+        assert!(a.swipe(-1, 240, 220).is_empty());
+        assert_eq!(a.queue().len(), 1);
+        // A rightward swipe on chrome (above the rows) queues nothing.
+        assert!(a.swipe(1, 240, 100).is_empty());
+        assert_eq!(a.queue().len(), 1);
+    }
+
+    #[test]
+    fn usb_storage_modal_back_exits() {
+        let mut a = unlocked();
+        a.push(Screen::UsbStorage);
+        // Modal: taps dead, Back pops AND emits the exit action for the shell.
+        assert!(a.tap(240, 400).is_empty());
+        assert_eq!(a.current(), Screen::UsbStorage);
+        assert_eq!(a.press(Button::Back), vec![Action::ExitUsbMsc]);
+        assert!(a.current() != Screen::UsbStorage);
     }
 
     #[test]

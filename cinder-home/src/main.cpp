@@ -840,6 +840,62 @@ void apply_usb_dac() {
     }
 }
 
+// ── USB mass storage (hand /contents to the PC) ──────────────────────────────────────────────
+// Stock init's `sys.sony.config=msc` runs `unmount_msc1` (= umount /contents) BEFORE pointing the
+// gadget LUN at the partition — and umount fails EBUSY if anything holds an fd there. OUR
+// stdout/stderr ARE /contents/cinderhome.log (the launcher's redirect), so entering MSC without
+// moving them silently breaks mass storage (this was the "mass storage bugs it" failure). So:
+// move fds 1+2 to /dev/null first (mirrors cinder-device's redirect_fds), flip the mode, and on
+// exit flip back to `adb` (the stock boot default — its init block runs `mount_msc1` to remount),
+// wait for the remount, then point the log back at /contents/cinderhome.log.
+static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
+static bool g_msc_seen_usb = false; // saw the cable while in MSC → unplug ends the session
+
+void redirect_fds(const char* path, int flags) {
+    std::fflush(stdout); std::fflush(stderr);
+    int fd = open(path, flags, 0644);
+    if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
+}
+bool contents_mounted() {
+    FILE* f = std::fopen("/proc/mounts", "r");
+    if (!f) return false;
+    char line[512]; bool found = false;
+    while (std::fgets(line, sizeof line, f))
+        if (std::strstr(line, " /contents ")) { found = true; break; }
+    std::fclose(f);
+    return found;
+}
+// Same probe as the launcher's usb_connected(): gadget state / power-supply online.
+bool usb_connected() {
+    static const char* paths[] = { "/sys/class/android_usb/android0/state",
+                                   "/sys/class/power_supply/usb/online",
+                                   "/sys/class/power_supply/usb/present" };
+    for (const char* p : paths) {
+        FILE* f = std::fopen(p, "r");
+        if (!f) continue;
+        char buf[64] = {};
+        (void)!std::fread(buf, 1, sizeof buf - 1, f);
+        std::fclose(f);
+        if (std::strstr(buf, "CONFIGURED") || buf[0] == '1') return true;
+    }
+    return false;
+}
+void enter_usb_msc() {
+    clog_("usb-msc: entering (log -> /dev/null until exit)");
+    redirect_fds("/dev/null", O_WRONLY);
+    std::system("setprop sys.sony.config msc 2>/dev/null");
+    g_msc_active = true;
+    g_msc_seen_usb = false;
+}
+void exit_usb_msc() {
+    std::system("setprop sys.sony.config adb 2>/dev/null");           // stock default; remounts
+    for (int i = 0; i < 50 && !contents_mounted(); ++i) usleep(100000); // ≤5 s for mount_msc1
+    redirect_fds("/contents/cinderhome.log", O_WRONLY | O_CREAT | O_APPEND);
+    g_msc_active = false;
+    clog_(contents_mounted() ? "usb-msc: exited (/contents remounted; log restored)"
+                             : "usb-msc: exited but /contents did NOT remount within 5 s");
+}
+
 // Carry out a navigator action via the audio/effect shims. Volume is config-gated (above);
 // play-by-index needs TrackSequence RE — left as TODO until the discovery/device session.
 void carry_out(int act) {
@@ -896,9 +952,11 @@ void carry_out(int act) {
         case CINDER_ACT_SLEEP:         screen_toggle(); break; // Power = panel on/off (not lock)
         case CINDER_ACT_ENTER_USB_MSC:
             // device-gated USB-mode switch (hands storage to the PC; disruptive — validate live).
-            run_guarded("carry_out: enter USB MSC", 6, []() {
-                std::system("setprop sys.sony.config msc 2>/dev/null");
-            });
+            run_guarded("carry_out: enter USB MSC", 10, enter_usb_msc);
+            break;
+        case CINDER_ACT_EXIT_USB_MSC:
+            // Back on the modal (or the unplug watcher) → remount /contents + restore the log.
+            run_guarded("carry_out: exit USB MSC", 10, exit_usb_msc);
             break;
         default: break;
     }
@@ -922,10 +980,11 @@ static void touch_release() {
         } else if (ady > adx && ady >= 40) {         // vertical drag = scroll
             int rows = -dy / 56;
             if (rows != 0) cinder_touch_scroll(rows);
-        } else if (adx > ady && adx >= 60) {         // horizontal swipe: onboarding pages, NP skip
-            // (observed on device: the first real gesture on the setup screen was a swipe —
-            // a paged intro invites swiping, so it must page. Edge-back already won above.)
-            int act = cinder_swipe(dx < 0 ? -1 : 1);
+        } else if (adx > ady && adx >= 60) {         // horizontal swipe: onboarding pages, NP skip,
+            // rightward-on-a-song-row = add to queue (start point picks the row). Edge-back
+            // already won above, so the two rightward gestures coexist: from the left edge it's
+            // Back, anywhere else on a list row it's queue.
+            int act = cinder_swipe(dx < 0 ? -1 : 1, sx, sy);
             if (act != CINDER_ACT_NONE) carry_out(act);
         }
     }
@@ -1117,7 +1176,7 @@ public:
 
 // ── the render+input worker (Option-B) ──────────────────────────────────────────────────────
 // Runs everything the (blocked) easel pump would have: paint, stop the boot-anim overlay, the
-// deferred DB/PlayerService/adb init, touch + button input, and periodic housekeeping — at ~30fps
+// deferred DB/PlayerService/adb init, touch + button input, and periodic housekeeping — at ~60fps
 // on its own thread. Mirrors the (now-dead) `pump` lambda body; SIGALRM is delivered to THIS thread.
 void* render_driver(void*) {
     // This thread owns the watchdog now — UNBLOCK SIGALRM (render_up blocked it on the stuck main
@@ -1127,14 +1186,14 @@ void* render_driver(void*) {
     long n = 0;
     bool first_painted = false, boot_anim_stopped = false;
     while (g_pump_ticker_run) {
-        if (!g_render_ready) { usleep(33000); continue; }
+        if (!g_render_ready) { usleep(16000); continue; }
 
         // FORCED REPAINTS: the renderer is dirty-flag gated, so once our first blit lands it would
         // never paint again until state changes — and anything an external process scribbled on the
         // framebuffer after that blit (the boot animation's last video frame survives its kill)
         // would sit on screen forever. Repaint every frame for the first ~10 s, then 1×/s for life.
-        if (n < 300) cinder_force_dirty();
-        else if (n % 30 == 0) cinder_force_dirty();
+        if (n < 600) cinder_force_dirty();
+        else if (n % 60 == 0) cinder_force_dirty();
 
         // PER-FRAME WATCHDOG around OUR paint: a real render hang -> _exit -> launcher counter -> stock.
         alarm(8);
@@ -1161,33 +1220,43 @@ void* render_driver(void*) {
         // this thread for several seconds). Re-issue StopBootAnimation afterward as insurance
         // against a race with init (re)starting bootanimation.
         if (!g_deferred_done) {
-            if (n < 15) { ++n; usleep(33000); continue; }   // warm-up paints first
+            if (n < 30) { ++n; usleep(16000); continue; }   // warm-up paints first
             deferred_up();
             if (g_app) g_app->StopBootAnimation();          // re-kill in case init respawned it
-            ++n; usleep(33000); continue;
+            ++n; usleep(16000); continue;
         }
         // Straggler sweep: if the anim somehow survived (or respawned), re-kill at ~15 s and
         // ~30 s after render start. killall on a dead process is a harmless no-op.
-        if (n == 450 || n == 900) {
+        if (n == 900 || n == 1800) {
             if (g_app) g_app->StopBootAnimation();
         }
 
         if (!g_input_started) { input_open(); g_input_started = true; }
         alarm(8); input_pump(); alarm(0);     // touch + buttons -> navigator -> actions -> carry_out
-        if (n % 30 == 0) {                    // ~1x/sec housekeeping
+        if (n % 60 == 0) {                    // ~1x/sec housekeeping
             cinder_clock_tick();
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
-            cinder_scrobble_tick(g_playing ? 1 : 0);
+            // Scrobble writes /contents — skip while it's handed to the PC (stale mountpoint).
+            if (!g_msc_active) cinder_scrobble_tick(g_playing ? 1 : 0);
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");
                 g_playing = false;
                 run_guarded("pump: sleep-timer pause", 6, []() { cinder_audio_pause(); });
             }
+            // MSC unplug watcher: once the cable was seen during the session, unplugging ends it —
+            // inject Back so the modal pops AND the navigator emits ExitUsbMsc (single exit path).
+            if (g_msc_active) {
+                if (usb_connected()) g_msc_seen_usb = true;
+                else if (g_msc_seen_usb) {
+                    int act = cinder_input(CINDER_BTN_BACK);
+                    if (act != CINDER_ACT_NONE) carry_out(act);
+                }
+            }
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
         }
-        if (n % 300 == 0) cinder_set_battery(read_battery());
+        if (n % 600 == 0) cinder_set_battery(read_battery());
         ++n;
-        usleep(33000);   // ~30 fps
+        usleep(16000);   // ~60 fps (the blit+flip is ~2 ms; dirty-flag keeps idle frames free)
     }
     return nullptr;
 }
@@ -1198,7 +1267,7 @@ void start_pump_ticker() {
         g_pump_ticker_run = false;
         clog_("render_up: WARN render-driver thread failed to start (UI will not paint)");
     } else {
-        clog_("render_up: render driver started (~30fps, our own loop)");
+        clog_("render_up: render driver started (~60fps, our own loop)");
     }
 }
 

@@ -617,6 +617,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::ThemeChanged(_) => 16, // shell also drives the backlight (night = minimal light)
         Action::Sleep => 10,
         Action::EnterUsbMsc => 11,
+        Action::ExitUsbMsc => 19,
         Action::EqChanged(_) => 12,
         Action::BtToggle(_) => return None, // UI-only (RE follow-up)
         Action::SleepTimer(m) => {
@@ -662,14 +663,15 @@ pub extern "C" fn cinder_tap(x: libc::c_int, y: libc::c_int) -> libc::c_int {
     0
 }
 
-/// A horizontal touch SWIPE (dir: negative = leftward, else rightward), classified by the shell.
-/// Onboarding pages through (left = next/finish, right = back); Now Playing skips track (the same
-/// guarded transport actions as the buttons). Returns the action code for the shell to carry out.
+/// A horizontal touch SWIPE (dir: negative = leftward, else rightward) with the gesture's START
+/// point in UI coordinates, classified by the shell. Onboarding pages through (left = next/finish,
+/// right = back); Now Playing skips track; a RIGHTWARD swipe on a Library/Album song row queues
+/// that song (the start y picks the row). Returns the action code for the shell to carry out.
 #[no_mangle]
-pub extern "C" fn cinder_swipe(dir: libc::c_int) -> libc::c_int {
+pub extern "C" fn cinder_swipe(dir: libc::c_int, x: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
-    let actions = r.app.swipe(if dir < 0 { -1 } else { 1 });
+    let actions = r.app.swipe(if dir < 0 { -1 } else { 1 }, x as i32, y as i32);
     r.dirty = true;
     r.night = r.app.night;
     save_settings(r);
