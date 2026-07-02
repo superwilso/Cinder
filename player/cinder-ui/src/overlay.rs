@@ -61,3 +61,24 @@ pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
     text::draw(c, f, bx as f32, (by + 24) as f32, &format!("{pct}%"),
         &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.1));
 }
+
+/// Confirmation toast: a bottom-centered pill with a one-line message (e.g. after swipe-to-queue).
+/// Sized to the text; long titles are clipped by the pill edge rather than wrapped.
+pub fn toast(c: &mut Canvas, t: &Theme, f: &FontSet, msg: &str) {
+    let st = sty(Family::Sans, Weight::SemiBold, 14.0, t.ink, 0.0);
+    let tw = text::measure(f, msg, &st).min((W - 64) as f32);
+    let pw = (tw as i32 + 44).min(W as i32 - 20);
+    let ph = 44;
+    let x0 = (W as i32 - pw) / 2;
+    let y0 = H as i32 - 96;
+    fill_rect(c, x0, y0, pw, ph, t.panel);
+    for (bx, by, bw, bh) in [
+        (x0, y0, pw, 1),
+        (x0, y0 + ph - 1, pw, 1),
+        (x0, y0, 1, ph),
+        (x0 + pw - 1, y0, 1, ph),
+    ] {
+        fill_rect(c, bx, by, bw, bh, t.acc);
+    }
+    text::draw(c, f, (x0 + 22) as f32, (y0 + 28) as f32, msg, &st);
+}

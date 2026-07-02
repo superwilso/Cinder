@@ -56,10 +56,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
         art::block(c, t, 46, y + (RH - 40) / 2, 40, 40, &song.art, if t.night { 0.30 } else { 1.0 });
         // title / artist
         let title_col = if now { t.acc } else { t.ink };
-        text::draw(c, f, 100.0, cy - 2.0, &song.title, &sty(Family::Sans, Weight::SemiBold, 15.0, title_col, 0.0));
-        text::draw(c, f, 100.0, cy + 16.0, &song.artist, &sty(Family::Sans, Weight::Regular, 11.0, t.dim, 0.0));
+        text::draw(c, f, 100.0, cy - 2.0, &song.title, &sty(Family::Sans, Weight::SemiBold, 16.0, title_col, 0.0));
+        text::draw(c, f, 100.0, cy + 16.0, &song.artist, &sty(Family::Sans, Weight::Regular, 12.0, t.dim, 0.0));
         // duration
-        right(c, f, 458.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.0));
+        right(c, f, 458.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
         hline(c, y + RH, t.line);
         y += RH;
         shown += 1;
@@ -68,5 +68,35 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
     // scrollbar (only if the album overflows the window)
     if tracks.len() > shown {
         crate::library::scrollbar(c, t, y0, scroll, shown, tracks.len());
+    }
+}
+
+/// Render the USER queue (songs added by the Spotify-style right-swipe), in add order. No
+/// "now playing" highlight — these are upcoming picks, not the live album window.
+pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow]) {
+    c.fill(t.bg);
+    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    let sub = format!("QUEUE · {} TRACKS", queue.len());
+    let y0 = crate::chrome::header(c, t, f, "Up Next", Some(&sub));
+
+    let mut y = y0;
+    let mut shown = 0;
+    for (i, song) in queue.iter().enumerate() {
+        if y + RH > LIST_BOTTOM {
+            break;
+        }
+        let cy = (y + RH / 2) as f32;
+        text::draw(c, f, 22.0, cy + 4.0, &format!("{:02}", i + 1),
+            &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
+        art::block(c, t, 46, y + (RH - 40) / 2, 40, 40, &song.art, if t.night { 0.30 } else { 1.0 });
+        text::draw(c, f, 100.0, cy - 2.0, &song.title, &sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0));
+        text::draw(c, f, 100.0, cy + 16.0, &song.artist, &sty(Family::Sans, Weight::Regular, 12.0, t.dim, 0.0));
+        right(c, f, 458.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
+        hline(c, y + RH, t.line);
+        y += RH;
+        shown += 1;
+    }
+    if queue.len() > shown {
+        crate::library::scrollbar(c, t, y0, 0, shown, queue.len());
     }
 }

@@ -24,7 +24,14 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FBIOGET_VSCREENINFO: libc::Ioctl = 0x4600;
+const FBIOPUT_VSCREENINFO: libc::Ioctl = 0x4601;
 const FBIOGET_FSCREENINFO: libc::Ioctl = 0x4602;
+/// fb_var_screeninfo.activate flag: force the driver to (re)apply the mode NOW. On mtkfb this is
+/// what actually pushes the framebuffer to the panel — writing pixels into the mmap does NOTHING
+/// on its own. icx_bootanimation's per-frame "flip" (disasm @0x1fae) is exactly
+/// `var.activate |= 0x80; ioctl(fd, FBIOPUT_VSCREENINFO, &var)`; without it the glass keeps showing
+/// whatever was pushed last, forever (the "frozen boot image" failure mode).
+const FB_ACTIVATE_FORCE: u32 = 0x80;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
@@ -96,6 +103,8 @@ impl Default for FixInfo {
 /// ever touch it under the global Mutex).
 struct Framebuffer {
     _file: File,
+    fd: libc::c_int,
+    var: VarInfo, // kept for the per-blit flip ioctl (offsets pinned to 0)
     base: usize,
     stride: usize,
     pages: usize,
@@ -114,6 +123,13 @@ impl Framebuffer {
         let mut fix = FixInfo::default();
         unsafe {
             libc::ioctl(fd, FBIOGET_VSCREENINFO, &mut var as *mut _);
+            // Same init sequence as icx_bootanimation: pin the visible window to page 0 and force
+            // one mode (re)apply, THEN read the fixed info. This both claims the display for us and
+            // guarantees the stride we compute below matches the applied mode.
+            var.xoffset = 0;
+            var.yoffset = 0;
+            var.activate |= FB_ACTIVATE_FORCE;
+            libc::ioctl(fd, FBIOPUT_VSCREENINFO, &mut var as *mut _);
             libc::ioctl(fd, FBIOGET_FSCREENINFO, &mut fix as *mut _);
         }
         let stride = fix.line_length as usize;
@@ -135,7 +151,11 @@ impl Framebuffer {
             return Err("mmap fb0 failed".into());
         }
         let pages = (var.yres_virtual / var.yres.max(1)).max(1) as usize;
-        Ok(Framebuffer { _file: file, base: ptr as usize, stride, pages, map_len })
+        println!(
+            "cinder-ffi: fb {}x{} {}bpp stride {} pages {} — flip-on-blit active (FBIOPUT+FORCE)",
+            var.xres, var.yres, var.bits_per_pixel, stride, pages
+        );
+        Ok(Framebuffer { _file: file, fd, var, base: ptr as usize, stride, pages, map_len })
     }
 
     /// Blit one canvas to every page (the panel is triple-buffered).
@@ -146,7 +166,7 @@ impl Framebuffer {
     /// rotated panel, or H > yres), an unchecked `(page*H+y)*stride` would write off the end of the
     /// mmap → SIGSEGV/corruption. So each row is bounded against `map_len`; an out-of-range row is
     /// skipped rather than written. Worst case is a cosmetically clipped frame, never a crash.
-    fn blit(&self, canvas: &Canvas) {
+    fn blit(&mut self, canvas: &Canvas) {
         let base = self.base as *mut u8;
         let copy_bytes = (W * 4).min(self.stride);
         for page in 0..self.pages {
@@ -162,6 +182,26 @@ impl Framebuffer {
                         copy_bytes,
                     );
                 }
+            }
+        }
+        // Push the frame to the glass. mtkfb does NOT scan the framebuffer continuously — the
+        // panel only updates on this trigger ioctl (icx_bootanimation's flip, replicated exactly).
+        // The dirty-flag gate above us means this runs only when a frame actually changed, so the
+        // idle cost stays zero. Occasionally the driver blocks >33 ms here (the anim logs it as
+        // "heavy ioctl") — harmless at our frame rate.
+        self.var.xoffset = 0;
+        self.var.yoffset = 0;
+        self.var.activate |= FB_ACTIVATE_FORCE;
+        let rc = unsafe { libc::ioctl(self.fd, FBIOPUT_VSCREENINFO, &mut self.var as *mut _) };
+        if rc != 0 {
+            // One-time diagnostic: a failing flip means an invisible UI, which is otherwise
+            // indistinguishable from the old frozen-boot-image symptom on device.
+            static FLIP_ERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !FLIP_ERR.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "cinder-ffi: fb flip ioctl FAILED (errno {}) — UI will not reach the panel",
+                    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+                );
             }
         }
     }
@@ -622,6 +662,25 @@ pub extern "C" fn cinder_tap(x: libc::c_int, y: libc::c_int) -> libc::c_int {
     0
 }
 
+/// A horizontal touch SWIPE (dir: negative = leftward, else rightward), classified by the shell.
+/// Onboarding pages through (left = next/finish, right = back); Now Playing skips track (the same
+/// guarded transport actions as the buttons). Returns the action code for the shell to carry out.
+#[no_mangle]
+pub extern "C" fn cinder_swipe(dir: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let actions = r.app.swipe(if dir < 0 { -1 } else { 1 });
+    r.dirty = true;
+    r.night = r.app.night;
+    save_settings(r);
+    for a in &actions {
+        if let Some(code) = carry_action(r, a) {
+            return code;
+        }
+    }
+    0
+}
+
 /// Drag-to-scroll the current list by `dy_rows` rows (the shell converts the touch drag distance).
 #[no_mangle]
 pub extern "C" fn cinder_touch_scroll(dy_rows: libc::c_int) {
@@ -638,6 +697,17 @@ pub extern "C" fn cinder_set_hold(held: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_hold(held != 0);
         r.night = r.app.night;
+        r.dirty = true;
+    }
+}
+
+/// Force the next `cinder_render_tick` to repaint + blit even if nothing changed. The shell calls
+/// this to overwrite anything an external process drew on the framebuffer (e.g. the boot
+/// animation's last frame, which survives its kill and would otherwise sit on screen forever
+/// because the dirty-flag renderer skips identical frames).
+#[no_mangle]
+pub extern "C" fn cinder_force_dirty() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
         r.dirty = true;
     }
 }
@@ -742,6 +812,18 @@ pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {
         Some(r) if r.app.usb_dac_on() => 1,
         _ => 0,
+    }
+}
+
+/// Seed the UI volume from the device's REAL level (0..100%), without popping the HUD. The shell
+/// calls this once at boot after reading the hardware mixer, so the first Vol± press nudges from
+/// the actual level instead of jumping the hardware to the UI's stale default.
+#[no_mangle]
+pub extern "C" fn cinder_set_volume(pct: libc::c_int) {
+    let pct = pct.clamp(0, 100) as u32;
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        let steps = (pct * cinder_ui::overlay::VOL_MAX as u32 + 50) / 100;
+        r.app.set_volume(steps as u8);
     }
 }
 

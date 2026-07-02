@@ -150,10 +150,13 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   watchdog; every Sony-IPC call inside `run_guarded`; USB-at-launch / `cinderhome_off` escape.
 
 ### ◐ Partial (UI works; backend/hardware leg pending — device-gated)
-- **Volume keys**: HUD + UI level work, and the hardware-set path is **scaffolded + config-gated** —
-  drop `/contents/cinder_volume.conf` (amixer control name + range, or the CXD3778GF sysfs node, from
-  the discovery report) and Vol±  drive the hardware with **no rebuild**. Until then it's a no-op
-  (HUD only). See `deploy/cinder_volume.conf.example`.
+- **Volume keys**: HUD + UI level work, and the hardware path now has a **built-in default from the
+  2026-07-02 discovery dump** — no conf needed: `amixer -c0 cset name='master volume' <0..120>` (the
+  CXD3778GF master, the stock 120-step range). At boot the UI level is **seeded from the real mixer**
+  (`sync_volume_from_hw` → `cinder_set_volume`), so the first Vol± nudges from the actual volume.
+  `/contents/cinder_volume.conf` still fully overrides (see `deploy/cinder_volume.conf.example`);
+  wrong-hardware safety: an unknown control name makes `amixer cset` fail → keys stay HUD-only.
+  *Pending: one on-device verify that Vol± audibly changes output.*
 - **Now Playing progress bar**: now a **live play-through estimate** (DB duration + a local
   play-clock that advances 1 s/tick while playing, resets on track change) — moves the bar +
   elapsed/remaining. It can't see seeks or a mid-track start; the exact PlayStatus position offsets
@@ -273,6 +276,95 @@ shared by both binaries.)
 >     type-A empty-frame lift; the dev build logs the first ~60 raw events for confirmation.
 >   - **Still device-pending:** confirm touch responds, confirm the rectangle clears, and adb
 >     enumeration (config is `adb` but the host didn't see it — a Windows/usbipd side issue, not ours).
+
+> **Fourth on-device learning (2026-07-02, three boots): boot-anim display layer + silent touch —
+> both cracked.**
+> 1. **Stale boot pixels have TWO distinct mechanisms.** (a) *Primary-page scribbles*: the
+>    dirty-flag renderer never repaints after its first blit (nothing is playing at boot), so any
+>    frame the boot video wrote into the fb pages after that blit persisted — fixed with
+>    `cinder_force_dirty()` forced repaints (every frame for ~10 s, then 1×/s for life). (b) *A
+>    latched OVERLAY*: `icx_bootanimation` composites on an MTK display layer ABOVE the primary
+>    fb (our blit writes all 3 pages, yet a full-screen boot logo can still cover the UI). SIGTERM
+>    in its steady video-loop state cleans the layer (stock handover timing = our first-paint
+>    `StopBootAnimation()` — verified clean); an **early kill (main() start) hits it before its
+>    cleanup handler exists → hard death → full-screen logo latched forever over a fully-working
+>    UI** (observed on device; touch events flowed underneath). **Never kill the boot animation
+>    early** — first-paint + post-deferred re-issue only.
+> 2. **Zero input events → fixed; the held EVIOCGRAB is the likely cure.** Two prior boots read
+>    nothing from 8 open nodes; the boot after `input_open` started **holding the EVIOCGRAB on
+>    the touchscreen**, real himax type-A frames flowed (`ev fd7*TS` in the dev log). Our grab
+>    succeeded and the dev /proc scan showed no other holder *at open time* — consistent with a
+>    Sony daemon grabbing the node a little later and silently diverting the stream; holding the
+>    grab locks that out. Belt+braces from the Wampy source (`artifacts/repos/wampy`,
+>    `hagoromo.cpp enableTouchscreen()`): the himax driver has a sysfs sleep switch the stock app
+>    normally drives — cinder-home now writes `0` (wake) to
+>    `/sys/devices/platform/mt-i2c.1/i2c-1/1-0048/sleep` (A50 family; `1-0020` = WM1Z) in
+>    `input_open`, and ties sleep/wake to the Power screen-toggle like stock. Node names
+>    (EVIOCGNAME), per-node grab probe, /proc holder scan (dev), read()-error logging and the
+>    "still ZERO events" heartbeat all stay in.
+> 3. **Same-day sweep while flashing:** library **tap/select hit-testing rewritten** to mirror the
+>    render exactly (`library::hit_row`/`song_at`/`album_hit_track` + regression tests): the Songs
+>    tab was tapped in **DB order while drawn in sorted order** (wrong song every time sort ≠ DB),
+>    the Albums tab ignored the 30 px artist headers (wrong album below the first group), and the
+>    album drill-in rows were offset 16 px. Hardware **volume defaults baked in** (see ◐ Volume
+>    keys), boot **seeds the UI level from the mixer**, and a screen-off mid-touch no longer leaves
+>    a stale contact (state reset in `screen_toggle`).
+> 4. **Gesture vocabulary (from the first real user session):** boot was clean and touch frames
+>    flowed, but the user "couldn't click through the set up screen" — the raw log shows the first
+>    real gesture was a **horizontal swipe** (a paged intro invites swiping) and the classifier had
+>    no horizontal-swipe gesture at all. Added `cinder_swipe(dir)`: **Onboarding pages** (left =
+>    next/finish, right = back), **Now Playing skips track**; tap tolerance loosened 18→26 UI px
+>    (sloppy thumbs read as micro-drags). Also: Wampy's himax sleep-node paths **don't exist on
+>    this fw** — added an `/sys/bus/i2c/devices/*/sleep` scan fallback, and since the controller
+>    may stay awake, `input_pump` now **drops touch events while the screen is off** (Power
+>    toggle) so taps can't navigate invisibly. Dev raw-event log cap 60→200.
+
+> **Fifth on-device learning (2026-07-02 evening): EffectCtrlDmp was 0xA8 bytes, not 8 — heap
+> corruption on the first saved-EQ re-apply; and SIGABRT must never be "recovered".**
+> 1. **The corruption:** `EffectCtrlDmp`'s ctor (@0xdd40) writes this+0/this+4 **and then
+>    `memset(this+8, 0, 0xA0)`** — the first RE pass missed the memset and sized it ~8 bytes
+>    (0x10 reserved). The first on-device construction (boot-time saved-EQ re-apply — the path
+>    had NEVER run before, EQ was untouched until touch worked) zeroed 152 bytes of neighboring
+>    heap → `malloc(): memory corruption (fast)` abort. Fixed: `kEffectCtrlDmpRealSize = 0xA8`,
+>    reserve 0x100. **PowerMgrServiceClient re-verified genuinely 8 B** (ctor disasm: writes
+>    this+0 vtable ptr, this+4 only); player shim only uses Sony-allocated objects.
+>    **The qemu preflight now constructs EffectCtrlDmp + PowerMgrServiceClient under canaries**
+>    (negative-tested: the old 0x10 size FAILS the gate; 0x100 passes) — this bug class is now
+>    caught offline, before any flash.
+> 2. **SIGABRT fail-fast:** glibc raises SIGABRT from *inside malloc with the arena lock held*;
+>    the guard's siglongjmp "recovery" left that lock held → the next allocation (the very next
+>    guarded call) deadlocked silently, the watchdog's own handler also allocates → wedged dark
+>    (observed: log ends mid "re-apply saved sound"). `fault_handler` now treats SIGABRT as
+>    always-fatal via async-signal-safe `write()` + `_exit(42)` (→ reboot → counter);
+>    `backtrace()` is pre-warmed at install so the SIGALRM path doesn't allocate either.
+> 3. **Boot-anim kill timing (the "hit and miss" freeze):** ~~first-paint (~2 s) is a coin flip on
+>    whether icx_bootanimation has installed its SIGTERM cleanup handler~~ — **superseded by the
+>    Sixth learning below** (the anim has no signal handlers at all; the freeze was never about
+>    kill timing).
+
+> **Sixth on-device learning (2026-07-02 night, disasm of `xbin/icx_bootanimation`): mtkfb never
+> shows what you write — every frame must be pushed with an ioctl. THE root cause of every
+> frozen/invisible-UI boot.**
+> 1. **The mechanism:** mtkfb does **not** scan the framebuffer continuously. Pixels reach the
+>    panel only when a process calls `FBIOPUT_VSCREENINFO` with `activate |= FB_ACTIVATE_FORCE
+>    (0x80)` — icx_bootanimation's per-frame flip (disasm @0x1fae: `orr activate,#0x80; ioctl
+>    0x4601`). Our renderer was a pure memcpy into the mmap — **our UI has never once been pushed
+>    to the glass by our own code.** Every "working" boot was the anim's own flips happening to
+>    push framebuffer pages we had just written; every "frozen boot image" was the glass latched
+>    on whatever frame was pushed last before the anim died. This also explains "touch didn't
+>    work": input events WERE flowing and the navigator WAS responding (per the logs) — the
+>    screen just never updated to show it.
+> 2. **The anim has NO signal handlers** (no `signal`/`sigaction` imports) — SIGTERM drops it
+>    dead at any point; there was never a "cleanup handler" or a safe kill window. All kill-timing
+>    tuning (first-paint vs post-deferred, Fourth/Fifth learnings) was superstition on top of the
+>    missing-flip bug.
+> 3. **The fix:** `Framebuffer::blit` (cinder-ffi) now ends every blit with the exact trigger
+>    sequence the anim uses (offsets pinned 0, `activate|=FORCE`, `FBIOPUT_VSCREENINFO`), plus the
+>    same init sequence at open. Boot-anim kill is back at **first paint** (fast takeover,
+>    deterministic — our next flip owns the glass), with the post-deferred re-kill + ~15/30 s
+>    sweeps kept as respawn insurance. The fb geometry + "flip-on-blit active" line and a one-time
+>    "fb flip ioctl FAILED" diagnostic are logged so a silent regression is visible in
+>    cinderhome.log. Dirty-flag gating unchanged: idle = no blit = no flip = zero cost.
 
 ## STEP 2: flash the Home app (only after STEP 1 looks clean)
 

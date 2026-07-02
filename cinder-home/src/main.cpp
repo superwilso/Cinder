@@ -31,6 +31,7 @@
 #include <pthread.h>
 #include <sys/statvfs.h>
 #include <sys/ioctl.h>
+#include <cerrno>
 
 // The render core: the Rust Cinder UI, built as a glibc C-ABI staticlib
 // (player/cinder-ffi -> libcinder_ffi.a). C ABI, so the renderer stays in Rust while
@@ -97,6 +98,18 @@ volatile sig_atomic_t g_in_guard = 0;
 volatile pthread_t g_guard_owner = 0;
 
 void fault_handler(int sig, siginfo_t* si, void* uc_) {
+    // SIGABRT is NEVER recoverable — not even inside a guard. glibc raises it when it detects
+    // heap corruption *inside malloc with the arena lock held*; a siglongjmp "recovery" leaves
+    // that lock held forever, so the next allocation anywhere (including this handler's own
+    // fprintf/backtrace) deadlocks silently and even the watchdog can't fire (observed on device
+    // 2026-07-02: recovered EQ-apply abort → wedged in the next guarded call, log went dark).
+    // So: async-signal-safe write() only (stderr is the log file), then die → reboot → counter.
+    if (sig == SIGABRT) {
+        static const char m[] = "[cinder-home] *** FATAL SIGABRT (heap corruption / library abort)"
+                                " — no recovery possible, exiting for a clean reboot ***\n";
+        ssize_t w = write(2, m, sizeof m - 1); (void)w;
+        _exit(42);
+    }
     if (g_in_guard && pthread_equal(pthread_self(), (pthread_t)g_guard_owner)) {
         log_fault(sig, uc_, si, "GUARDED CALL FAULTED — skipping that subsystem, UI continues");
         g_in_guard = 0;
@@ -113,6 +126,10 @@ void install_diagnostics() {
     sa.sa_sigaction = fault_handler; sa.sa_flags = SA_SIGINFO | SA_NODEFER;
     sigemptyset(&sa.sa_mask);
     for (int s : {SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE, SIGALRM}) sigaction(s, &sa, nullptr);
+    // Pre-warm backtrace(): its first call mallocs (libgcc unwinder init). Doing it here means a
+    // later in-handler backtrace after a *hang* (SIGALRM) doesn't allocate at a moment the heap
+    // lock might be held by the interrupted thread.
+    void* warm[4]; backtrace(warm, 4);
     alarm(20);  // construction watchdog: if we never paint, _exit before appmgr's own timeout
 }
 
@@ -171,6 +188,19 @@ bool g_counter_reset = false;  // have we cleared the launcher bad-boot counter 
 // auto-reverts to stock after 2 boots even if we disarm the in-process watchdog below.
 void start_pump_ticker();   // full worker defined just before main(), after the frame helpers
 
+// ── boot animation / display handover (2026-07-02, disasm of xbin/icx_bootanimation) ──────
+// The REAL mechanism, superseding all earlier "kill timing" theories: mtkfb does NOT scan the
+// framebuffer continuously — pixels only reach the panel when a process issues
+// FBIOPUT_VSCREENINFO with activate|=FB_ACTIVATE_FORCE (the anim's per-frame flip, disasm
+// @0x1fae). The anim has NO signal handlers (no signal/sigaction imports) — SIGTERM kills it
+// dead at any moment, and whatever frame was pushed last stays latched on the glass until
+// somebody else flips. Historically the anim was the ONLY flipper, so every kill timing was a
+// coin flip on whose pixels were on-glass ("hit and miss" frozen boot image), and our UI only
+// ever appeared when ITS flips happened to push OUR memory. Since cinder-ffi's blit now ends
+// with the same trigger ioctl, our first painted frame after its death always takes the panel —
+// kill at first paint, no timing sensitivity. Forced repaints (cinder_force_dirty) still cover
+// external scribbles into the fb pages themselves.
+
 // FAST foreground bring-up: open the framebuffer ONLY, so we can paint immediately and the
 // appmgr Foreground handshake completes promptly. No DB, no IPC here (those can be slow/block).
 void render_up() {
@@ -217,6 +247,7 @@ void report_storage();  // defined below (with the other sysfs readers); called 
 void apply_eq_fn();      // defined below (carry_out helpers); re-applied from deferred_up on restore
 void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, before render_up)
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
+void sync_volume_from_hw(); // defined below (volume backend); seeds the UI level from the mixer
 
 // Stop the analyzer stream (guarded — Stop() is a Sony-service call). No-op if it was never
 // started, so it's safe to call unconditionally from the lifecycle hooks.
@@ -251,6 +282,7 @@ void deferred_up() {
     }
     // Real storage usage for Settings (statvfs — read-only, no Sony service; guarded for parity).
     run_guarded("deferred_up: report storage", 6, report_storage);
+    run_guarded("deferred_up: sync volume from hw", 6, sync_volume_from_hw);
     // Publish the device-wide BT codec preference file (consumed by normal BT + the LDAC bridge), so
     // it reflects the persisted choice from first boot. Pure file IO; safe to call unguarded.
     write_bt_pref();
@@ -351,7 +383,9 @@ static int  g_touch_cur_x   = -1, g_touch_cur_y   = -1;
 // sensor-batch device — ABS=13f), so we MUST only treat ABS/BTN_TOUCH from THIS fd as touch, or
 // the sensor stream overwrites the real finger coordinates and every tap lands at garbage.
 static int  g_touch_fd = -1;
+static bool g_touch_is_mt = false;    // g_touch_fd is a real MT node (first MT node wins, keeps it)
 static bool g_touch_saw_pos = false;  // did the current SYN frame carry a position? (type-A lift)
+static char g_touch_path[64] = {0};   // /dev/input/eventN of the touch node (for the holder scan)
 
 // EVIOCGABS(abs) ioctl number = _IOR('E', 0x40+abs, struct input_absinfo). input_absinfo is 6×int32
 // (24 bytes) on this 32-bit ABI. Defined by hand to avoid pulling linux/input.h into the 2.23 build.
@@ -359,6 +393,13 @@ struct cinder_absinfo { int32_t value, minimum, maximum, fuzz, flat, resolution;
 static unsigned eviocgabs(unsigned abs) {
     return (2u << 30) | (24u << 16) | ((unsigned)'E' << 8) | (0x40u + abs);
 }
+// EVIOCGNAME(64) = _IOC(READ, 'E', 0x06, 64) — the device's human name (diagnostics).
+static const unsigned EVIOCGNAME_64 = (2u << 30) | (64u << 16) | ((unsigned)'E' << 8) | 0x06;
+// EVIOCGRAB = _IOW('E', 0x90, int). grab(1) fails EBUSY if ANOTHER process holds the grab — and a
+// foreign grab is the one condition that silently diverts ALL events away from our fd. We probe
+// every node (grab+release) to log that condition, and HOLD the grab on the touchscreen (we are
+// the Home app — the exclusive touch consumer — and holding locks out late grabbers).
+static const unsigned EVIOCGRAB_ = (1u << 30) | (4u << 16) | ((unsigned)'E' << 8) | 0x90;
 // Map a raw touch coordinate to the UI's 0..480 / 0..800 space.
 static int touch_ui_x(int rx) {
     int span = g_touch_max_x - g_touch_min_x; if (span <= 0) span = 1;
@@ -409,9 +450,15 @@ static void keymap_load_overrides() {
     clog_("input: applied /contents/cinder_keymap.conf overrides");
 }
 
+void touch_set_sleep(int slp);   // defined with screen_toggle below (himax sleep-node driver)
+
 static void input_open() {
     keymap_defaults();
     keymap_load_overrides();
+    // WAKE the himax touch controller FIRST — nothing else does in our boot (the stock Qt app is
+    // what normally writes the driver's sleep node), and asleep it produces zero events while the
+    // event node still opens and answers ioctls. See touch_set_sleep() for the full story.
+    touch_set_sleep(0);
     g_evn = 0;
     DIR* d = opendir("/dev/input");
     if (!d) { clog_("input: /dev/input missing"); return; }
@@ -425,11 +472,14 @@ static void input_open() {
             g_evfds[g_evn++] = fd;
             // Identify the ACTUAL touchscreen and learn its x/y ranges (raw → UI mapping). The real
             // panel exposes ABS_MT_POSITION (himax); other nodes carry ABS_X/Y but aren't touch
-            // (m_batch_input sensor). Prefer the MT node (it always wins); only fall back to a plain
-            // ABS_X/Y node if NO MT touchscreen exists — and gate touch reads to g_touch_fd either way.
+            // (m_batch_input sensor). The FIRST MT node wins (a later virtual/uinput MT clone must
+            // not displace the real panel); only fall back to a plain ABS_X/Y node if NO MT
+            // touchscreen exists — and gate touch reads to g_touch_fd either way.
             struct cinder_absinfo ai, aiy;
-            if (ioctl(fd, eviocgabs(ABS_MT_POSITION_X_), &ai) == 0 && ai.maximum > ai.minimum) {
-                g_touch_fd = fd;
+            if (!g_touch_is_mt
+                    && ioctl(fd, eviocgabs(ABS_MT_POSITION_X_), &ai) == 0 && ai.maximum > ai.minimum) {
+                g_touch_fd = fd; g_touch_is_mt = true;
+                std::snprintf(g_touch_path, sizeof g_touch_path, "%s", path);
                 g_touch_min_x = ai.minimum; g_touch_max_x = ai.maximum;
                 if (ioctl(fd, eviocgabs(ABS_MT_POSITION_Y_), &aiy) == 0 && aiy.maximum > aiy.minimum) {
                     g_touch_min_y = aiy.minimum; g_touch_max_y = aiy.maximum;
@@ -438,16 +488,69 @@ static void input_open() {
                        && ioctl(fd, eviocgabs(ABS_X_), &ai) == 0 && ai.maximum > ai.minimum
                        && ioctl(fd, eviocgabs(ABS_Y_), &aiy) == 0 && aiy.maximum > aiy.minimum) {
                 g_touch_fd = fd;   // tentative single-touch panel (no MT node seen yet)
+                std::snprintf(g_touch_path, sizeof g_touch_path, "%s", path);
                 g_touch_min_x = ai.minimum;  g_touch_max_x = ai.maximum;
                 g_touch_min_y = aiy.minimum; g_touch_max_y = aiy.maximum;
             }
         }
     }
     closedir(d);
-    char msg[96];
-    std::snprintf(msg, sizeof msg, "input: opened %d node(s), touch x[%d..%d] y[%d..%d]",
-                  g_evn, g_touch_min_x, g_touch_max_x, g_touch_min_y, g_touch_max_y);
+    char msg[160];
+    std::snprintf(msg, sizeof msg, "input: opened %d node(s), touch=%s x[%d..%d] y[%d..%d]",
+                  g_evn, g_touch_path[0] ? g_touch_path : "NONE",
+                  g_touch_min_x, g_touch_max_x, g_touch_min_y, g_touch_max_y);
     clog_(msg);
+
+    // ── DIAGNOSTIC PASS (zero events seen on device 2026-07-02): name every node + probe for a
+    // foreign EVIOCGRAB. A grab by ANOTHER process is the one condition that silently diverts all
+    // events away from our fds — exactly the observed symptom (8 nodes open, nothing ever read).
+    for (int i = 0; i < g_evn; ++i) {
+        char name[64] = {0};
+        if (ioctl(g_evfds[i], EVIOCGNAME_64, name) < 0) std::snprintf(name, sizeof name, "?");
+        int grab = ioctl(g_evfds[i], EVIOCGRAB_, (void*)1);
+        int gerr = (grab < 0) ? errno : 0;
+        if (grab == 0 && g_evfds[i] != g_touch_fd)
+            ioctl(g_evfds[i], EVIOCGRAB_, (void*)0);   // probe only — release non-touch nodes
+        // HOLD the grab on the touchscreen: we are the Home app (the exclusive touch consumer),
+        // and holding it locks out any late-grabbing daemon from stealing the stream.
+        std::snprintf(msg, sizeof msg, "input: node %d '%s'%s grab=%s%s", i, name,
+                      (g_evfds[i] == g_touch_fd) ? " [TOUCH]" : "",
+                      grab == 0 ? "ok" : (gerr == 16 /*EBUSY*/ ? "EBUSY(foreign grab!)" : "err"),
+                      (grab == 0 && g_evfds[i] == g_touch_fd) ? " (held)" : "");
+        clog_(msg);
+    }
+#ifdef CINDER_DEV
+    // DEV: name every process that also has the touch node open (the grab holder is among them).
+    if (g_touch_path[0]) {
+        DIR* pd = opendir("/proc");
+        struct dirent* pe;
+        while (pd && (pe = readdir(pd))) {
+            if (pe->d_name[0] < '0' || pe->d_name[0] > '9') continue;
+            char fdd[64];
+            std::snprintf(fdd, sizeof fdd, "/proc/%s/fd", pe->d_name);
+            DIR* fdir = opendir(fdd);
+            struct dirent* fe;
+            while (fdir && (fe = readdir(fdir))) {
+                char lp[96], tgt[96];
+                std::snprintf(lp, sizeof lp, "%s/%s", fdd, fe->d_name);
+                ssize_t l = readlink(lp, tgt, sizeof tgt - 1);
+                if (l <= 0) continue;
+                tgt[l] = 0;
+                if (std::strcmp(tgt, g_touch_path) != 0) continue;
+                char comm[48] = {0}, cp[64];
+                std::snprintf(cp, sizeof cp, "/proc/%s/comm", pe->d_name);
+                FILE* cf = std::fopen(cp, "r");
+                if (cf) { if (std::fgets(comm, sizeof comm, cf)) comm[std::strcspn(comm, "\n")] = 0; std::fclose(cf); }
+                std::snprintf(msg, sizeof msg, "input: %s also open in pid %s (%s)",
+                              g_touch_path, pe->d_name, comm[0] ? comm : "?");
+                clog_(msg);
+                break;   // one hit per process is enough
+            }
+            if (fdir) closedir(fdir);
+        }
+        if (pd) closedir(pd);
+    }
+#endif
 }
 
 // Read the UI's EQ bands and push them to the device DSP. Run ONLY via run_guarded (below): the
@@ -485,7 +588,18 @@ bool g_vol_read = false;
 void load_vol_cfg() {
     g_vol_read = true;
     FILE* f = std::fopen("/contents/cinder_volume.conf", "r");
-    if (!f) return;
+    if (!f) {
+        // No conf: default to the device-DISCOVERED hardware control (2026-07-02 discovery dump:
+        // card 0, numid=10 `'master volume'` INTEGER 0..120 — the CXD3778GF master, matching the
+        // stock 120-step volume; `amixer` confirmed present, it produced that dump). The conf
+        // file, when present, fully overrides this. Wrong-hardware safety: if the control name
+        // doesn't exist, `amixer cset` just fails → the keys stay HUD-only, same as before.
+        g_vol.amixer = 1; g_vol.card = 0; g_vol.min = 0; g_vol.max = 120;
+        std::snprintf(g_vol.control, sizeof g_vol.control, "master volume");
+        g_vol.valid = 1;
+        clog_("volume: using built-in default (amixer card0 'master volume' 0..120)");
+        return;
+    }
     char line[256];
     while (std::fgets(line, sizeof line, f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
@@ -503,6 +617,39 @@ void load_vol_cfg() {
     }
     std::fclose(f);
     g_vol.valid = (g_vol.max > g_vol.min) && (g_vol.amixer ? g_vol.control[0] : g_vol.path[0]);
+}
+
+// Read the device's CURRENT hardware volume and seed the UI level from it (once, at boot), so the
+// first Vol± press nudges from the real level instead of jumping the hardware to the UI default.
+// amixer backend only (cget + parse "values="); sysfs backend reads the node directly. Guarded.
+void sync_volume_from_hw() {
+    if (!g_vol_read) load_vol_cfg();
+    if (!g_vol.valid) return;
+    long val = -1;
+    if (g_vol.amixer) {
+        char cmd[384];
+        std::snprintf(cmd, sizeof cmd, "amixer -c %d cget name='%s' 2>/dev/null", g_vol.card, g_vol.control);
+        FILE* p = popen(cmd, "r");
+        if (!p) return;
+        char line[256];
+        while (std::fgets(line, sizeof line, p)) {
+            const char* v = std::strstr(line, ": values=");
+            if (v) { val = std::strtol(v + 9, nullptr, 10); break; }
+        }
+        pclose(p);
+    } else {
+        FILE* f = std::fopen(g_vol.path, "r");
+        if (!f) return;
+        char buf[32] = {0};
+        if (std::fgets(buf, sizeof buf, f)) val = std::strtol(buf, nullptr, 10);
+        std::fclose(f);
+    }
+    if (val < g_vol.min || val > g_vol.max) return;   // parse failed / out of range — keep UI default
+    int pct = (int)((val - g_vol.min) * 100 / (g_vol.max - g_vol.min));
+    cinder_set_volume(pct);
+    char m[96];
+    std::snprintf(m, sizeof m, "volume: hw level %ld -> UI %d%%", val, pct);
+    clog_(m);
 }
 
 // Apply a 0..100% volume to the device via the configured backend. No-op if unconfigured. Called
@@ -604,8 +751,53 @@ void apply_backlight() { set_backlight(cinder_get_night()); }
 // playback/Hold-state continue); ON restores the current theme's level. Pure sysfs write, no Sony
 // service. Locking is independent (the Hold switch) — waking the screen never unlocks the touch.
 static bool g_screen_on = true;
+// The himax touch controller has a driver sysfs SLEEP switch — and something must write it, or
+// the controller never scans and /dev/input/event1 stays silent forever (opens fine, EVIOCGABS
+// answers, zero events — the exact 2026-07-02 symptom). The stock Qt app is what normally wakes
+// it; with cinder-home as the Home app nothing did. Wampy has the same problem and the same fix
+// (write "0" = awake, "1" = sleep): src/connector/hagoromo.cpp enableTouchscreen(). Paths are
+// the A50-family node with the WM1Z variant as fallback (Wampy's pair, verbatim).
+void touch_set_sleep(int slp) {
+    static const char* paths[] = {
+        "/sys/devices/platform/mt-i2c.1/i2c-1/1-0048/sleep",  // nw-a50/40/30/zx300
+        "/sys/devices/platform/mt-i2c.1/i2c-1/1-0020/sleep",  // wm1z
+    };
+    auto write_node = [&](const char* p) -> bool {
+        FILE* f = std::fopen(p, "w");
+        if (!f) return false;
+        std::fputc(slp ? '1' : '0', f); std::fputc('\n', f);
+        std::fclose(f);
+        char m[128];
+        std::snprintf(m, sizeof m, "input: touch %s via %s", slp ? "SLEEP" : "WAKE", p);
+        clog_(m);
+        return true;
+    };
+    for (const char* p : paths)
+        if (write_node(p)) return;
+    // Wampy's two known paths aren't on this fw (observed 2026-07-02) — scan the i2c bus for any
+    // device exposing a `sleep` attribute (on this platform only the touch controller has one).
+    DIR* d = opendir("/sys/bus/i2c/devices");
+    if (d) {
+        struct dirent* de;
+        bool hit = false;
+        while ((de = readdir(d))) {
+            if (de->d_name[0] == '.') continue;
+            char p[160];
+            std::snprintf(p, sizeof p, "/sys/bus/i2c/devices/%s/sleep", de->d_name);
+            if (write_node(p)) hit = true;   // write every match (in practice: exactly one)
+        }
+        closedir(d);
+        if (hit) return;
+    }
+    if (!slp) clog_("input: touch WAKE — no touch sleep node found (harmless: the held evdev grab keeps events flowing; screen-off tap-drop is handled in input_pump)");
+}
+
 void screen_toggle() {
     g_screen_on = !g_screen_on;
+    touch_set_sleep(g_screen_on ? 0 : 1);   // stock behaviour: TS sleeps with the panel (battery)
+    // Drop any in-flight contact: the sleeping controller never sends its lift, and a stale
+    // "down" would make the next touch classify as a drag from the old start point.
+    g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
     if (g_screen_on) { apply_backlight(); return; }
     if (!g_bl_read) load_bl_cfg();
     if (g_bl.valid) {
@@ -724,12 +916,17 @@ static void touch_release() {
         if (sx <= 38 && dx >= 120) {                 // left-edge → rightward = Back
             int act = cinder_input(CINDER_BTN_BACK);
             if (act != CINDER_ACT_NONE) carry_out(act);
-        } else if (adx < 18 && ady < 18) {           // ~stationary = tap
+        } else if (adx < 26 && ady < 26) {           // ~stationary = tap (26: sloppy thumbs drift)
             int act = cinder_tap(cx, cy);
             if (act != CINDER_ACT_NONE) carry_out(act);
         } else if (ady > adx && ady >= 40) {         // vertical drag = scroll
             int rows = -dy / 56;
             if (rows != 0) cinder_touch_scroll(rows);
+        } else if (adx > ady && adx >= 60) {         // horizontal swipe: onboarding pages, NP skip
+            // (observed on device: the first real gesture on the setup screen was a swipe —
+            // a paged intro invites swiping, so it must page. Edge-back already won above.)
+            int act = cinder_swipe(dx < 0 ? -1 : 1);
+            if (act != CINDER_ACT_NONE) carry_out(act);
         }
     }
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
@@ -737,20 +934,37 @@ static void touch_release() {
 
 void input_pump() {
     ev_event evs[32];
+    static long g_ev_total = 0;   // events ever seen (any node) — for the silent-input heartbeat
+    static long g_pump_calls = 0;
+    // HEARTBEAT: if the input system is silent (foreign grab / dead driver), say so in the log
+    // every ~15 s instead of leaving "no events" indistinguishable from "nobody touched it".
+    if (g_ev_total == 0 && ++g_pump_calls % 450 == 0)
+        clog_("input: still ZERO events from every node (foreign grab? see node diagnostics above)");
     for (int i = 0; i < g_evn; ++i) {
         for (;;) {
             ssize_t n = read(g_evfds[i], evs, sizeof evs);
+            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                static bool logged_err[16] = {};
+                if (i < 16 && !logged_err[i]) {
+                    logged_err[i] = true;
+                    char m[80];
+                    std::snprintf(m, sizeof m, "input: read fd%d failed errno=%d%s", i, errno,
+                                  (g_evfds[i] == g_touch_fd) ? " [TOUCH]" : "");
+                    clog_(m);
+                }
+            }
             if (n <= 0) break;
             int cnt = (int)(n / (ssize_t)sizeof(ev_event));
+            g_ev_total += cnt;
             for (int k = 0; k < cnt; ++k) {
                 uint16_t type = evs[k].type, code = evs[k].code;
                 int val = evs[k].value;
 #ifdef CINDER_DEV
-                // DEV: log the first ~60 raw input events (with the touch fd marked) so the exact
+                // DEV: log the first ~200 raw input events (with the touch fd marked) so the exact
                 // touchscreen protocol is visible in cinderhome.log if gestures still misbehave.
                 {
                     static int g_evlog = 0;
-                    if (g_evlog < 60) {
+                    if (g_evlog < 200) {
                         char m[80];
                         std::snprintf(m, sizeof m, "input: ev fd%d%s type=0x%x code=0x%x val=%d", i,
                                       (g_evfds[i] == g_touch_fd) ? "*TS" : "", type, code, val);
@@ -763,6 +977,14 @@ void input_pump() {
                 // to BTN_TOUCH panels AND type-A MT (contact begins on the first position; a lift is
                 // BTN_TOUCH=0 or a SYN_REPORT frame that carried no position).
                 if (g_evfds[i] == g_touch_fd) {
+                    // Panel dark (Power toggle): taps must not navigate invisibly. Stock sleeps
+                    // the controller; this fw has no sleep node (see touch_set_sleep), so the
+                    // events keep coming — drop them and any in-flight contact until screen-on.
+                    if (!g_screen_on) {
+                        g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
+                        g_touch_saw_pos = false;
+                        continue;
+                    }
                     if (type == EV_ABS_ && (code == ABS_X_ || code == ABS_MT_POSITION_X_)) {
                         g_touch_cur_x = val; g_touch_saw_pos = true;
                         if (!g_touch_down) { g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1; }
@@ -907,28 +1129,47 @@ void* render_driver(void*) {
     while (g_pump_ticker_run) {
         if (!g_render_ready) { usleep(33000); continue; }
 
+        // FORCED REPAINTS: the renderer is dirty-flag gated, so once our first blit lands it would
+        // never paint again until state changes — and anything an external process scribbled on the
+        // framebuffer after that blit (the boot animation's last video frame survives its kill)
+        // would sit on screen forever. Repaint every frame for the first ~10 s, then 1×/s for life.
+        if (n < 300) cinder_force_dirty();
+        else if (n % 30 == 0) cinder_force_dirty();
+
         // PER-FRAME WATCHDOG around OUR paint: a real render hang -> _exit -> launcher counter -> stock.
         alarm(8);
         cinder_render_tick();
         alarm(0);
-        if (!first_painted) { first_painted = true; clog_("render_driver: first frame painted (our own loop)"); }
-        // Kill the boot-anim overlay once our frame is up (Sony's StopBootAnimation = fork+execlp,
-        // no JobQueue/framework dependency, so it can't hang like the CuiAppModule pump path).
-        if (!boot_anim_stopped && g_app) {
-            g_app->StopBootAnimation();
-            boot_anim_stopped = true;
-            clog_("render_driver: StopBootAnimation() done");
+        if (!first_painted) {
+            first_painted = true;
+            clog_("render_driver: first frame painted (our own loop)");
+            // Kill the boot animation at first paint. Timing does NOT matter (all the earlier
+            // "coin flip" theories were wrong): disasm shows icx_bootanimation installs NO signal
+            // handlers at all — SIGTERM just drops it dead at any point. The frozen-boot-image
+            // failure was never about its cleanup; mtkfb only pushes pixels to the panel on a
+            // FBIOPUT_VSCREENINFO(FB_ACTIVATE_FORCE) trigger, and the anim was the only process
+            // issuing them. Our renderer now flips after every blit (cinder-ffi Framebuffer::blit),
+            // so the instant the anim dies OUR next frame owns the glass — deterministically.
+            if (g_app && !boot_anim_stopped) {
+                g_app->StopBootAnimation();
+                boot_anim_stopped = true;
+                clog_("render_driver: StopBootAnimation() (first paint; our flips own the glass now)");
+            }
         }
 
-        // Paint continuously for the first ~0.5s BEFORE the slow deferred init runs — this is exactly
-        // the render-only behaviour that cleared the boot-anim overlay. Only then run the multi-second
-        // DB/PlayerService/adb bring-up (which blocks this thread), and re-issue StopBootAnimation
-        // afterward as insurance against a race with init (re)starting bootanimation.
+        // Paint continuously for the first ~0.5s BEFORE the slow deferred init runs (which blocks
+        // this thread for several seconds). Re-issue StopBootAnimation afterward as insurance
+        // against a race with init (re)starting bootanimation.
         if (!g_deferred_done) {
             if (n < 15) { ++n; usleep(33000); continue; }   // warm-up paints first
             deferred_up();
-            if (g_app) g_app->StopBootAnimation();
+            if (g_app) g_app->StopBootAnimation();          // re-kill in case init respawned it
             ++n; usleep(33000); continue;
+        }
+        // Straggler sweep: if the anim somehow survived (or respawned), re-kill at ~15 s and
+        // ~30 s after render start. killall on a dead process is a harmless no-op.
+        if (n == 450 || n == 900) {
+            if (g_app) g_app->StopBootAnimation();
         }
 
         if (!g_input_started) { input_open(); g_input_started = true; }
@@ -982,43 +1223,15 @@ int main(int argc, char** argv) {
         cinder_render_shutdown();
     };
     auto pump      = []() -> bool {
-        static long n = -1;
-        static bool first_painted = false;
-        ++n;
-        if (n < 3) clog_("cb:pump");
-        // Until the framebuffer is open we can't paint; keep the construction watchdog (armed
-        // in main) running so a pre-paint hang still _exits → reboots → reverts.
-        if (!g_render_ready) return true;
-
-        // PER-FRAME WATCHDOG: a normal frame is milliseconds; if our own render/input code ever
-        // hangs (infinite loop) the alarm fires → fatal _exit → reboot → counter → revert to
-        // stock. This closes the "unguarded steady-state hang → soft-brick" gap. (A crash here is
-        // likewise fatal → revert, which is correct: a render bug should fall back to stock.)
-        alarm(8);
-        cinder_render_tick();                 // PAINT FIRST — clears the boot screen, proves life
-        alarm(0);
-        if (!first_painted) {
-            first_painted = true;
-            clog_("pump: first frame painted");
-        }
-
-        // Slow/blocking init runs AFTER the first paint, watchdog-guarded inside deferred_up().
-        if (!g_deferred_done) { deferred_up(); return true; }
-
-        if (!g_input_started) { input_open(); g_input_started = true; }
-        alarm(8); input_pump(); alarm(0);     // buttons -> navigator -> actions (frame-watchdog'd)
-        if (n % 30 == 0) {                    // ~1x/sec housekeeping
-            cinder_clock_tick();              // live clock + sleep-timer/now-playing position countdown
-            run_guarded("pump: poll now-playing", 8, poll_now_playing);  // IPC poll, guarded
-            cinder_scrobble_tick(g_playing ? 1 : 0);     // accrue scrobble listen time
-            if (cinder_sleep_should_pause()) {           // sleep timer expired -> pause playback
-                clog_("sleep timer expired -> pausing");
-                g_playing = false;
-                run_guarded("pump: sleep-timer pause", 6, []() { cinder_audio_pause(); });
-            }
-            mark_healthy_maybe();             // clear bad-boot counter once proven good
-        }
-        if (n % 300 == 0) cinder_set_battery(read_battery());  // battery moves slowly (~10s)
+        // INERT BY DESIGN. The frame loop (render tick, deferred_up, input, housekeeping) lives
+        // on our own worker thread (render_driver, started by render_up) because easel's pump
+        // never runs for us: the main thread parks forever inside OnForeground's module CV wait
+        // (Sony's JobQueue only ticks under libeaselqt — see STATUS.md). If a future fw ever DID
+        // fire this callback it would run on the MAIN thread concurrently with the worker —
+        // racing g_deferred_done/g_input_started/touch state and arming alarm() on a thread with
+        // SIGALRM blocked. So this must stay a stub: log once, keep-pumping, do nothing.
+        static bool logged = false;
+        if (!logged) { logged = true; clog_("cb:pump fired (unexpected — worker owns the frame loop; staying inert)"); }
         return true;
     };
     auto cb7       = []() { clog_("cb:cb7"); };

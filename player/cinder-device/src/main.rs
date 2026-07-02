@@ -9,7 +9,11 @@ use std::fs::OpenOptions;
 use std::os::unix::io::AsRawFd;
 
 const FBIOGET_VSCREENINFO: libc::Ioctl = 0x4600;
+const FBIOPUT_VSCREENINFO: libc::Ioctl = 0x4601;
 const FBIOGET_FSCREENINFO: libc::Ioctl = 0x4602;
+// mtkfb only pushes the framebuffer to the panel on FBIOPUT_VSCREENINFO with this activate flag
+// set (icx_bootanimation's per-frame flip); writing the mmap alone never reaches the glass.
+const FB_ACTIVATE_FORCE: u32 = 0x80;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
@@ -234,6 +238,14 @@ fn main() {
                     );
                 }
             }
+        }
+        // Trigger the panel update (see FB_ACTIVATE_FORCE above) — without this the write
+        // above never becomes visible.
+        var.xoffset = 0;
+        var.yoffset = 0;
+        var.activate |= FB_ACTIVATE_FORCE;
+        unsafe {
+            libc::ioctl(fd, FBIOPUT_VSCREENINFO, &mut var as *mut _);
         }
         tick = tick.wrapping_add(1);
 

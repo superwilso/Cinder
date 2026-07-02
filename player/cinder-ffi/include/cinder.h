@@ -10,6 +10,10 @@ extern "C" {
 int  cinder_render_init(void);
 /* Render the current state to the panel; call once per frame from the pump. */
 void cinder_render_tick(void);
+/* Force the next cinder_render_tick to repaint + blit even if nothing changed. Used to overwrite
+ * anything an EXTERNAL process scribbled on the framebuffer (the boot animation's last frame
+ * survives its kill — the dirty-flag renderer would otherwise never paint over it). */
+void cinder_force_dirty(void);
 /* Unmap + tear down. */
 void cinder_render_shutdown(void);
 /* 0 = day theme, non-zero = night. */
@@ -54,6 +58,9 @@ int  cinder_input(int button);
  * coordinates → UI and classifies tap vs scroll vs the left-edge Back swipe.) */
 int  cinder_tap(int x, int y);
 void cinder_touch_scroll(int dy_rows);
+/* Horizontal swipe (dir < 0 = leftward, else rightward): onboarding pages through, Now Playing
+ * skips track. Returns a cinder_action_t for the shell to carry out (0 = nothing). */
+int  cinder_swipe(int dir);
 /* The Hold/lock SWITCH changed state (held = 1 locked, 0 unlocked). When locked the touchscreen is
  * ignored but the transport/volume buttons still work; ONLY the switch going off (held=0) unlocks.
  * Power is a screen on/off toggle (CINDER_ACT_SLEEP) and does NOT unlock. Call on every edge. */
@@ -103,6 +110,9 @@ int  cinder_get_sound_flags(void);
 /* Read the current UI volume as 0..100%. Call after a CINDER_ACT_VOLUP/VOLDOWN action, then scale to
  * the device mixer range and set the hardware volume. */
 int  cinder_get_volume(void);
+/* Seed the UI volume from the device's real level (0..100%), no HUD pop. Call once at boot after
+ * reading the hardware mixer, so the first Vol± press nudges from the actual level. */
+void cinder_set_volume(int pct);
 /* Is night theme active? (1/0). Call after a CINDER_ACT_THEME_CHANGED action (and at boot) to set
  * the panel backlight — night = minimal light. */
 int  cinder_get_night(void);

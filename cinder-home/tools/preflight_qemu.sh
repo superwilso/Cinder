@@ -52,6 +52,8 @@ cp -f "$DEVSYS/usr/lib/arm-linux-gnueabihf"/{Scrt1.o,crt1.o,crti.o,crtn.o} "$CRT
 cat > "$WORK/preflight.cpp" <<'EOF'
 // Reproduce the device construction path with guard canaries.
 #include "easel_abi.hpp"
+#include "effect_abi.hpp"
+#include "power_abi.hpp"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -120,6 +122,21 @@ int main(int argc, char** argv) {
     };
     (void)mkapp;
 
+    // ---- 3. Sony service-client sizing (the 2026-07-02 heap-corruption class) ----
+    // EffectCtrlDmp's ctor memsets this+8..this+0xA8: an undersized reservation zeroes
+    // NEIGHBORING heap chunks (malloc corruption abort on device). The canaries catch any
+    // future size regression in either client. Neither ctor needs its service reachable
+    // (both connect lazily), so this is safe under qemu.
+    std::printf("sizeof(EffectCtrlDmp)=%zu  sizeof(PowerMgrServiceClient)=%zu\n",
+                sizeof(pst::services::sound::EffectCtrlDmp),
+                sizeof(pst::services::funcarch::powermgr::PowerMgrServiceClient));
+    unsigned char* fxbase = nullptr;
+    guarded_new<pst::services::sound::EffectCtrlDmp>(fxbase,
+        [](void* mem) { return new (mem) pst::services::sound::EffectCtrlDmp(); });
+    unsigned char* pmbase = nullptr;
+    guarded_new<pst::services::funcarch::powermgr::PowerMgrServiceClient>(pmbase,
+        [](void* mem) { return new (mem) pst::services::funcarch::powermgr::PowerMgrServiceClient(); });
+
     if (g_fail) { std::printf("== PREFLIGHT FAILED ==\n"); return 1; }
     std::printf("== PREFLIGHT PASS: construction + callback dispatch verified, no overflow ==\n");
     return 0;
@@ -128,13 +145,14 @@ EOF
 
 echo "[preflight] compiling harness…"
 "$CXX" --target=$TARGET -stdlib=libc++ -nostdinc++ -isystem "$LIBCXX_V1" \
-  --sysroot="$DEVSYS" -O2 -std=c++14 -fno-rtti -I"$SRC" \
+  --sysroot="$DEVSYS" -O2 -std=c++14 -fno-rtti -I"$SRC" -I"$REPO/cinder-audio/src" \
   -c "$WORK/preflight.cpp" -o "$WORK/preflight.o" 2>&1 | grep -v 'unused' || true
 "$CXX" --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
   -L"$DEVSYS/usr/lib/arm-linux-gnueabihf" -L"$DEVSYS/lib/arm-linux-gnueabihf" \
   "$WORK/preflight.o" -L"$SONYLIB" -L"$RAMLIB" -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
   -Wl,--allow-shlib-undefined \
   -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient \
+  -lEffectCtrlDmp -lPowerMgrServiceClient \
   -l:libc++.so.1 -l:libcxxrt.so.1 -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
   -Wl,--dynamic-linker=/lib/ld-2.23.so \
   -o "$WORK/preflight" 2>&1 | grep -v 'unused' || true

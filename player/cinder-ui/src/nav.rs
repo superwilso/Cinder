@@ -48,6 +48,9 @@ pub enum Screen {
     UsbDac,
     Receiver,
     Onboarding,
+    /// USB mass-storage mode: MODAL "connected to PC" screen while the storage volume is handed
+    /// to the host. Only Back (or the shell detecting cable-unplug) leaves it.
+    UsbStorage,
     /// Sentinel for the Menu row that opens the Shelf. The Shelf is a bottom-sheet OVERLAY (see
     /// `shelf_open`), never pushed onto the route stack — selecting this row calls `open_shelf()`.
     Shelf,
@@ -68,6 +71,7 @@ pub enum Action {
     ThemeChanged(bool),
     Sleep,
     EnterUsbMsc,
+    ExitUsbMsc, // leave USB mass-storage: the shell remounts the volume + restores the USB mode
     EqChanged([i8; 10]), // shell applies the band gains to the sound DSP
     BtToggle(bool),      // shell turns the BT transmitter on/off
     BatteryCareChanged(bool), // shell calls PowerMgrServiceClient::EnableItawariCharging
@@ -178,7 +182,23 @@ pub struct App {
     /// Shelf bottom-sheet overlay: whether it's showing, and the three pin slots (jump-back places).
     shelf_open: bool,
     pins: [Option<ShelfPin>; 3],
+    /// User play-queue (Spotify-style right-swipe on a song row adds to it). Shown on Up Next in
+    /// front of the album-derived list. Display + intent today: making PlayerService actually play
+    /// this order lands with PlayController::SetTrackSequence (RE pending).
+    queue: Vec<SongRow>,
+    /// Transient bottom toast ("Added to queue — …"): text + frames left (fades via tick()).
+    toast: String,
+    toast_frames: u8,
+    /// Swipe-to-queue feedback animation: a "+ QUEUED" chip slides right from the swiped row and
+    /// fades. `queue_anim_y` = the row's y (UI coords); frames count down via tick().
+    queue_anim_y: i32,
+    queue_anim_frames: u8,
 }
+
+/// How long the toast stays up (~1.8 s at the 60 fps pump).
+const TOAST_FRAMES: u8 = 110;
+/// Queue-chip slide animation length (~0.4 s at 60 fps).
+const QUEUE_ANIM_FRAMES: u8 = 24;
 
 impl Default for App {
     fn default() -> Self {
@@ -224,6 +244,9 @@ impl Default for App {
             lib: Library::sample(),
             shelf_open: false,
             pins: [None, None, None],
+            queue: Vec::new(),
+            toast: String::new(),
+            toast_frames: 0,
         }
     }
 }
@@ -398,7 +421,9 @@ impl App {
             }
             crate::settings::ROW_USB_MODE => {
                 // Enter USB mass-storage (connect to a PC as a drive). USB-DAC itself is its own
-                // screen; this row is the file-transfer mode.
+                // screen; this row is the file-transfer mode. Modal screen up first — the shell
+                // then unmounts the volume + switches the gadget (and reverts on failure/unplug).
+                self.push(Screen::UsbStorage);
                 vec![Action::EnterUsbMsc]
             }
             _ => vec![], // display-only / device-gated rows
@@ -433,6 +458,11 @@ impl App {
         // Shelf bottom-sheet overlay owns all taps while it's open.
         if self.shelf_open {
             return self.shelf_tap(x, y);
+        }
+        // USB mass-storage is MODAL (the volume is handed to the PC): taps do nothing. Only the
+        // physical Back button (or the shell noticing the cable is gone) leaves the mode.
+        if matches!(self.current(), Screen::UsbStorage) {
+            return vec![];
         }
         // Onboarding owns the screen: right ~60% = next/finish, left = previous page.
         if matches!(self.current(), Screen::Onboarding) {
@@ -516,16 +546,17 @@ impl App {
             }
             Screen::Library => self.tap_library(x, y),
             Screen::Album => {
-                // track rows: top ≈ 296, rh 56 (library::album_view), scroll-aware
-                if y >= 296 {
-                    let row = self.album_track_scroll + ((y - 296) / 56) as usize;
-                    return self
-                        .lib
-                        .albums_flat()
-                        .get(self.album_view)
-                        .and_then(|a| a.track_list.get(row))
-                        .map(|s| vec![Action::PlayIndex(s.object_id as usize)])
-                        .unwrap_or_default();
+                // track rows via the render-mirroring hit test (rows start 312 @56 —
+                // library::album_view geometry; the Play-album band above returns None).
+                if let Some(album) = self.lib.albums_flat().get(self.album_view) {
+                    if let Some(row) = library::album_hit_track(album, self.album_track_scroll, y) {
+                        self.album_track_idx = row;
+                        return album
+                            .track_list
+                            .get(row)
+                            .map(|s| vec![Action::PlayIndex(s.object_id as usize)])
+                            .unwrap_or_default();
+                    }
                 }
                 vec![]
             }
@@ -624,27 +655,26 @@ impl App {
             self.lib_scroll = 0;
             return vec![];
         }
-        if y < 205 {
-            return vec![]; // the shuffle row band — device-gated shuffle, no-op for now
-        }
-        let row = self.lib_scroll + ((y - 205) / 62) as usize;
+        // Everything else routes through the render-mirroring hit test (library::hit_row): it
+        // knows each tab's real list top/row height, the Albums artist headers, and returns None
+        // for the shuffle band / gaps / rows that weren't drawn.
+        let Some(row) = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll, y) else {
+            return vec![];
+        };
         match self.lib_tab {
-            Tab::Songs => self
-                .lib
-                .songs
-                .get(row)
-                .map(|s| {
+            // `row` is the RANK in the drawn (sorted) order — resolve through the same order.
+            Tab::Songs => library::song_at(&self.lib, self.lib_sort, row)
+                .map(|s| s.object_id as usize)
+                .map(|id| {
                     self.lib_idx = row;
-                    vec![Action::PlayIndex(s.object_id as usize)]
+                    vec![Action::PlayIndex(id)]
                 })
                 .unwrap_or_default(),
             Tab::Albums => {
-                if row < self.lib.albums_flat().len() {
-                    self.album_view = row;
-                    self.album_track_idx = 0;
-                    self.album_track_scroll = 0;
-                    self.push(Screen::Album);
-                }
+                self.album_view = row;
+                self.album_track_idx = 0;
+                self.album_track_scroll = 0;
+                self.push(Screen::Album);
                 vec![]
             }
             _ => {
@@ -675,6 +705,78 @@ impl App {
             _ => {}
         }
     }
+
+    /// Horizontal touch SWIPE (dir −1 = leftward, +1 = rightward) at the gesture's START point
+    /// (UI coords), from the shell's classifier. Onboarding pages left=next/finish,
+    /// right=previous; Now Playing maps to the same guarded transport actions as the skip
+    /// buttons; on the Library/Album lists a RIGHTWARD swipe on a song row adds that song to the
+    /// play queue (Spotify-style) with a toast. (Edge-back is classified by the shell before
+    /// this and never reaches here.)
+    pub fn swipe(&mut self, dir: i32, _x: i32, y: i32) -> Vec<Action> {
+        if self.locked || self.shelf_open {
+            return vec![];
+        }
+        match self.current() {
+            Screen::Onboarding => {
+                if dir < 0 {
+                    if self.onboarding_page + 1 < crate::onboarding::PAGES {
+                        self.onboarding_page += 1;
+                    } else {
+                        self.finish_onboarding();
+                    }
+                } else {
+                    self.onboarding_page = self.onboarding_page.saturating_sub(1);
+                }
+                vec![]
+            }
+            Screen::NowPlaying => {
+                if dir < 0 {
+                    vec![Action::Next]
+                } else {
+                    vec![Action::Prev]
+                }
+            }
+            Screen::Library if dir > 0 => {
+                // Right-swipe a Songs-tab row → queue that song (the same render-mirroring hit
+                // test the tap uses, so the queued song is exactly the row under the finger).
+                if self.lib_tab == Tab::Songs {
+                    if let Some(rank) = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll, y)
+                    {
+                        if let Some(s) = library::song_at(&self.lib, self.lib_sort, rank) {
+                            let s = s.clone();
+                            self.enqueue(s);
+                        }
+                    }
+                }
+                vec![]
+            }
+            Screen::Album if dir > 0 => {
+                // Right-swipe a track row inside an album drill-in → queue it.
+                let song = self.lib.albums_flat().get(self.album_view).and_then(|al| {
+                    library::album_hit_track(al, self.album_track_scroll, y)
+                        .and_then(|ti| al.track_list.get(ti).cloned())
+                });
+                if let Some(s) = song {
+                    self.enqueue(s);
+                }
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Append a song to the user queue + pop the confirmation toast.
+    fn enqueue(&mut self, s: SongRow) {
+        self.toast = format!("Added to queue — {}", s.title);
+        self.toast_frames = TOAST_FRAMES;
+        self.queue.push(s);
+    }
+
+    /// The user queue (Up Next shows it in front of the album-derived list).
+    pub fn queue(&self) -> &[SongRow] {
+        &self.queue
+    }
+
     fn go(&mut self, s: Screen) {
         self.stack = vec![s];
     }
@@ -760,6 +862,18 @@ impl App {
                     self.volume = self.volume.saturating_sub(1);
                     self.vol_overlay = crate::overlay::VOL_FRAMES;
                     vec![Action::VolDown]
+                }
+                _ => vec![],
+            };
+        }
+
+        // USB mass-storage modal: Back leaves the mode (the shell remounts + restores the USB
+        // gadget); everything else is suppressed while the PC owns the storage.
+        if matches!(self.current(), Screen::UsbStorage) {
+            return match b {
+                Button::Back => {
+                    self.pop();
+                    vec![Action::ExitUsbMsc]
                 }
                 _ => vec![],
             };
@@ -899,10 +1013,8 @@ impl App {
                         self.push(Screen::Album);
                         vec![]
                     }
-                    Tab::Songs => self
-                        .lib
-                        .songs
-                        .get(self.lib_idx)
+                    // lib_idx is a RANK in the drawn (sorted) order — resolve through it.
+                    Tab::Songs => library::song_at(&self.lib, self.lib_sort, self.lib_idx)
                         .map(|s| vec![Action::PlayIndex(s.object_id as usize)])
                         .unwrap_or_default(),
                     _ => vec![Action::PlayIndex(self.lib_idx)],
@@ -1092,13 +1204,22 @@ impl App {
                 } else {
                     format!("{} albums · {} tracks", self.lib.album_count(), self.lib.songs.len())
                 };
+                let queue_value = if self.queue.is_empty() {
+                    String::from("Queue empty")
+                } else {
+                    format!("{} queued", self.queue.len())
+                };
                 let items: Vec<MenuItem> = MENU
                     .iter()
                     .enumerate()
                     .map(|(i, (screen, icon, label, value))| MenuItem {
                         icon,
                         label,
-                        value: if *screen == Screen::Library { &lib_value } else { value },
+                        value: match *screen {
+                            Screen::Library => &lib_value,
+                            Screen::UpNext => &queue_value,
+                            _ => value,
+                        },
                         active: i == self.menu_idx,
                     })
                     .collect();
@@ -1120,10 +1241,21 @@ impl App {
                 }
             }
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
-            Screen::UpNext => match self.now_playing_queue(np.title, np.artist) {
-                Some((album, tracks, cur)) => crate::up_next::render(c, &theme, fonts, album, tracks, cur),
-                None => crate::up_next::render(c, &theme, fonts, "", &[], 0),
-            },
+            Screen::UsbStorage => crate::usb_storage::render(c, &theme, fonts),
+            Screen::UpNext => {
+                if !self.queue.is_empty() {
+                    // The user's own queue (swipe-to-queue) takes precedence over the derived
+                    // current-album list.
+                    crate::up_next::render_queue(c, &theme, fonts, &self.queue);
+                } else {
+                    match self.now_playing_queue(np.title, np.artist) {
+                        Some((album, tracks, cur)) => {
+                            crate::up_next::render(c, &theme, fonts, album, tracks, cur)
+                        }
+                        None => crate::up_next::render(c, &theme, fonts, "", &[], 0),
+                    }
+                }
+            }
             Screen::Eq => crate::eq::render(
                 c, &theme, fonts, &self.eq_bands, data::EQ_PRESETS[self.eq_preset].0, self.eq_sel,
             ),
@@ -1181,6 +1313,10 @@ impl App {
         if self.vol_overlay > 0 && self.current() != Screen::Lock {
             crate::overlay::volume(c, &theme, fonts, self.volume);
         }
+        // Confirmation toast (e.g. "Added to queue — …"), same rules as the volume HUD.
+        if self.toast_frames > 0 && self.current() != Screen::Lock {
+            crate::overlay::toast(c, &theme, fonts, &self.toast);
+        }
         // Shelf bottom-sheet sits above everything: dims the screen behind + draws the sheet.
         if self.shelf_open {
             let (title, sub) = self.place_label();
@@ -1196,15 +1332,19 @@ impl App {
     /// Advance per-frame timers (overlay countdowns). The shell calls this once per pump tick
     /// before `render`. Returns true while something time-driven still needs redrawing.
     pub fn tick(&mut self) -> bool {
+        // Return true for EVERY counting-down frame, INCLUDING the one that reaches 0 — that
+        // frame must repaint (now without the HUD/toast) to clear it. (With dirty-flag rendering,
+        // returning false on the 0-transition would leave it stuck on screen.)
+        let mut animating = false;
         if self.vol_overlay > 0 {
             self.vol_overlay -= 1;
-            // Return true for EVERY counting-down frame, INCLUDING the one that reaches 0 — that
-            // frame must repaint (now without the HUD) to clear it. (With dirty-flag rendering,
-            // returning false on the 0-transition would leave the HUD stuck on screen.)
-            true
-        } else {
-            false
+            animating = true;
         }
+        if self.toast_frames > 0 {
+            self.toast_frames -= 1;
+            animating = true;
+        }
+        animating
     }
 
     /// Sync the UI volume to the device's real level (the shell pushes this after it reads/sets
@@ -1839,6 +1979,31 @@ mod tests {
         // shuffle / repeat icons are now tappable (previously dead on a touch-only device)
         assert_eq!(a.tap(44, 692), vec![Action::ShuffleToggle]);
         assert_eq!(a.tap(436, 692), vec![Action::RepeatCycle]);
+    }
+
+    #[test]
+    fn swipe_pages_onboarding_and_skips_track() {
+        let mut a = unlocked();
+        a.start_onboarding();
+        assert_eq!(a.current(), Screen::Onboarding);
+        let p0 = a.onboarding_page;
+        assert!(a.swipe(-1).is_empty()); // leftward = next page
+        assert_eq!(a.onboarding_page, p0 + 1);
+        assert!(a.swipe(1).is_empty()); // rightward = back
+        assert_eq!(a.onboarding_page, p0);
+        // swipe left through every page finishes onboarding
+        for _ in 0..crate::onboarding::PAGES + 1 {
+            a.swipe(-1);
+        }
+        assert!(a.current() != Screen::Onboarding);
+        // Now Playing: swipe = the same transport actions as the skip buttons
+        let mut b = unlocked();
+        assert_eq!(b.current(), Screen::NowPlaying);
+        assert_eq!(b.swipe(-1), vec![Action::Next]);
+        assert_eq!(b.swipe(1), vec![Action::Prev]);
+        // locked → swipes dead
+        b.set_hold(true);
+        assert!(b.swipe(-1).is_empty());
     }
 
     #[test]

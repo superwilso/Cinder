@@ -33,11 +33,13 @@ enum class DseeHxCustomMode : int { /* TBD */ };
 enum class DcPhaseFilterType : int { /* TBD (Low A/B, Standard A/B...) */ };
 enum class UserPresetNo : int { /* TBD */ };
 
-// RE-CONFIRMED size (ctor @0xdd40 disasm): EffectCtrlDmp is a small non-polymorphic PIMPL —
-// the ctor writes only this+0 (a heap impl pointer via operator new) and this+4 (a bool); no
-// vtable. Real object ≈ 8 bytes. Reserve 0x10 (comfortable margin). (Contrast the 0x100-byte
-// CuiAppModule — this one is trivially sizing-safe.)
-constexpr std::size_t kEffectCtrlDmpRealSize = 8;
+// RE-CONFIRMED size — CORRECTED 2026-07-02 after an on-device heap corruption. The ctor @0xdd40
+// writes this+0 (impl ptr), this+4 (bool), AND THEN `memset(this+8, 0, 0xA0)` (insns @0xdd5e-dd66:
+// add r0,this,#8; mov r2,#0xa0; blx memset) — the first RE pass missed the memset and called it
+// ~8 bytes. Real object = 0xA8 (168) bytes. The 0x10-byte reservation let the device ctor zero
+// 152 bytes of NEIGHBORING heap chunks → `malloc(): memory corruption (fast)` abort on the very
+// first on-device construction (2026-07-02, boot-time saved-EQ re-apply). Reserve 0x100.
+constexpr std::size_t kEffectCtrlDmpRealSize = 0xA8;
 
 class EffectCtrlDmp {
 public:
@@ -79,8 +81,8 @@ public:
     void ReenableSoundEffects();
 
 private:
-    // reserve the device object's footprint (real ≈ 8 bytes; see kEffectCtrlDmpRealSize).
-    alignas(8) unsigned char _device_storage[0x10];
+    // reserve the device object's footprint (real = 0xA8; see kEffectCtrlDmpRealSize).
+    alignas(8) unsigned char _device_storage[0x100];
 };
 static_assert(sizeof(EffectCtrlDmp) >= kEffectCtrlDmpRealSize,
               "EffectCtrlDmp reserved storage smaller than the device object");
