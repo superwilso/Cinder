@@ -880,10 +880,82 @@ bool usb_connected() {
     }
     return false;
 }
+// While /contents is away we log to tmpfs; the file is spliced back into cinderhome.log on exit,
+// so the whole MSC session (including failures) is visible afterwards.
+static const char* MSC_TMP = "/tmp/cinder_msc.log";
+
+// Log every process holding an fd under /contents — the umount-EBUSY culprits. Pure /proc walk,
+// no shell. Output goes to whatever stderr currently is (the tmpfs log during an MSC attempt).
+void log_contents_holders() {
+    DIR* pd = opendir("/proc");
+    if (!pd) return;
+    while (dirent* pe = readdir(pd)) {
+        if (pe->d_name[0] < '0' || pe->d_name[0] > '9') continue;
+        char fdp[64]; std::snprintf(fdp, sizeof fdp, "/proc/%s/fd", pe->d_name);
+        DIR* fdd = opendir(fdp);
+        if (!fdd) continue;
+        bool named = false;
+        while (dirent* fe = readdir(fdd)) {
+            char lp[128], tgt[256];
+            std::snprintf(lp, sizeof lp, "%s/%s", fdp, fe->d_name);
+            ssize_t n = readlink(lp, tgt, sizeof tgt - 1);
+            if (n <= 0) continue;
+            tgt[n] = 0;
+            if (std::strncmp(tgt, "/contents", 9) != 0) continue;
+            if (!named) {
+                char cp[64], comm[64] = {};
+                std::snprintf(cp, sizeof cp, "/proc/%s/comm", pe->d_name);
+                if (FILE* cf = std::fopen(cp, "r")) {
+                    if (std::fgets(comm, sizeof comm, cf)) comm[std::strcspn(comm, "\n")] = 0;
+                    std::fclose(cf);
+                }
+                std::fprintf(stderr, "[cinder-home]   holder pid %s (%s):\n", pe->d_name, comm);
+                named = true;
+            }
+            std::fprintf(stderr, "[cinder-home]     fd -> %s\n", tgt);
+        }
+        closedir(fdd);
+    }
+    closedir(pd);
+    std::fflush(stderr);
+}
+
 void enter_usb_msc() {
-    clog_("usb-msc: entering (log -> /dev/null until exit)");
-    redirect_fds("/dev/null", O_WRONLY);
+    clog_("usb-msc: entering (session log -> /tmp/cinder_msc.log, spliced back on exit)");
+    // 1) release OUR storage users: pause playback (PlayerService may hold the current track
+    //    open on /contents) and make sure our cwd isn't under it either.
+    g_playing = false;
+    cinder_audio_pause();
+    (void)chdir("/");
+    // 2) move our log fds (1+2 ARE /contents/cinderhome.log via the launcher redirect)
+    redirect_fds(MSC_TMP, O_WRONLY | O_CREAT | O_APPEND);
+    // 3) flip the mode: init runs unmount_msc1 (umount /contents), points the gadget LUN at
+    //    /emmc@contents, switches functions to mass_storage,adb.
     std::system("setprop sys.sony.config msc 2>/dev/null");
+    // 4) VERIFY the umount. f_mass_storage opens the backing block device EXCLUSIVELY — if the
+    //    umount failed (EBUSY) the LUN write failed too and the PC sees a reader with NO MEDIUM
+    //    (exactly "the msc screen comes up but msc doesn't turn on"). So: wait, then recover by
+    //    unmounting ourselves and re-pointing the LUN.
+    bool unmounted = false;
+    for (int i = 0; i < 20; ++i) {
+        if (!contents_mounted()) { unmounted = true; break; }
+        usleep(250000);
+    }
+    if (!unmounted) {
+        clog_("usb-msc: /contents STILL MOUNTED after 5 s (unmount_msc1 EBUSY) — fd holders:");
+        log_contents_holders();
+        std::system("umount /contents 2>&1");
+        if (!contents_mounted()) {
+            std::system("echo /emmc@contents > "
+                        "/sys/class/android_usb/android0/f_mass_storage/lun/file 2>&1");
+            clog_("usb-msc: recovery umount OK, LUN re-pointed — medium should appear now");
+        } else {
+            clog_("usb-msc: recovery umount FAILED — PC will see no medium this session");
+        }
+    }
+    // 5) record the gadget state (goes to the tmpfs log; readable after exit)
+    std::system("echo \"[cinder-home] usb-msc: state=$(getprop sys.usb.state) "
+                "lun=$(cat /sys/class/android_usb/android0/f_mass_storage/lun/file 2>/dev/null)\"");
     g_msc_active = true;
     g_msc_seen_usb = false;
 }
@@ -892,6 +964,8 @@ void exit_usb_msc() {
     for (int i = 0; i < 50 && !contents_mounted(); ++i) usleep(100000); // ≤5 s for mount_msc1
     redirect_fds("/contents/cinderhome.log", O_WRONLY | O_CREAT | O_APPEND);
     g_msc_active = false;
+    // splice the away-session log back in (cat writes to fd 1 = cinderhome.log again)
+    std::system("cat /tmp/cinder_msc.log 2>/dev/null; rm -f /tmp/cinder_msc.log 2>/dev/null");
     clog_(contents_mounted() ? "usb-msc: exited (/contents remounted; log restored)"
                              : "usb-msc: exited but /contents did NOT remount within 5 s");
 }

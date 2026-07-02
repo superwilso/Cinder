@@ -37,3 +37,12 @@ player/out/
 # === OS ===
 .DS_Store
 Thumbs.db
+
+# === C++ build intermediates + linked binaries (rebuild: bash cinder-home/build.sh) ===
+# dist/ stays tracked — those are the flashable deliverables. .crt223/*.o stay tracked —
+# they are glibc-2.23 toolchain INPUTS, not outputs.
+cinder-home/*.o
+cinder-home/cinder-home
+cinder-home/cinder-probe
+ldac-bridge/*.o
+ldac-bridge/cinder-ldac-bridge

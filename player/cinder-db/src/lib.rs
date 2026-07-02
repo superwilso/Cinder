@@ -145,6 +145,35 @@ impl Db {
         Ok(v.into_iter().next())
     }
 
+    /// The play context for a chosen track: its album's tracks in disc/track order plus the
+    /// track's index within them. Falls back to just the track itself if it has no album (or
+    /// somehow isn't in its own album's list). This is what "tap a song" hands PlayerService,
+    /// so Next/Prev then move within the album — stock behavior.
+    pub fn album_context(&self, object_id: i64) -> Result<Option<(Vec<Track>, usize)>> {
+        let album_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT album_id FROM object_body WHERE object_id = ?1",
+                [object_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(None);
+        let tracks = match album_id {
+            Some(id) => self.album_tracks(id)?,
+            None => Vec::new(),
+        };
+        if let Some(idx) = tracks.iter().position(|t| t.object_id == object_id) {
+            return Ok(Some((tracks, idx)));
+        }
+        // No album row (or the track vanished from it): play the single track.
+        let one = self.query_tracks(
+            &format!("WHERE {TRACK_WHERE} AND ob.object_id = ?1"),
+            "ob.object_id",
+            [object_id],
+        )?;
+        Ok(one.into_iter().next().map(|t| (vec![t], 0)))
+    }
+
     /// Album-art record for an object (via its othumb_id → images), if any.
     pub fn art_for_object(&self, object_id: i64) -> Result<Option<Art>> {
         let mut st = self.conn.prepare(

@@ -14,8 +14,8 @@
 #
 # Usage:
 #   tools/flash.sh <file.upg>              # detect, copy, confirm, flash
-#   tools/flash.sh install                 # shortcut: cinder_probe_install.upg
-#   tools/flash.sh uninstall               # shortcut: cinder_probe_uninstall.upg
+#   tools/flash.sh install                 # shortcut: cinder-home/dist/dev/cinder_home_install.upg
+#   tools/flash.sh uninstall               # shortcut: cinder-home/dist/dev/cinder_home_uninstall.upg
 #   tools/flash.sh --list                  # just show detected Walkman device(s)
 #   tools/flash.sh --trigger-only          # device already holds NW_WM_FW.UPG; just fire
 #   tools/flash.sh --ls                    # list the device root (read-only mount)
@@ -62,11 +62,11 @@ while [ $# -gt 0 ]; do
     --trigger-only) MODE="trigger"; shift;;
     --ls)           MODE="ls"; shift;;
     --cat)          MODE="cat"; CATFILE="${2:-}"; shift 2;;
-    --log)          MODE="cat"; CATFILE="cinder_install.log"; shift;;
+    --log)          MODE="cat"; CATFILE="cinder_home_install.log"; shift;;
     --push)         MODE="push"; PUSHFILE="${2:-}"; shift 2;;
     -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
-    install)   UPG="$DOWNLOADS/cinder_probe_install.upg";   shift;;
-    uninstall) UPG="$DOWNLOADS/cinder_probe_uninstall.upg"; shift;;
+    install)   UPG="$REPO/cinder-home/dist/dev/cinder_home_install.upg";   shift;;
+    uninstall) UPG="$REPO/cinder-home/dist/dev/cinder_home_uninstall.upg"; shift;;
     -*) die "unknown flag: $1";;
     *)  args+=("$1"); shift;;
   esac

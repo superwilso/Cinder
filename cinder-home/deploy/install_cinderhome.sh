@@ -165,6 +165,11 @@ while [ "$i" -lt 2 ]; do
     i=$((i + 1))
 done
 
+# optional USB-DAC->LDAC bridge supervisor (no-op if the bridge isn't installed). Started
+# HERE because appmgr execs only this launcher at boot — nothing else starts it.
+[ -x /system/vendor/unknown321/bin/ldac-run.sh ] && \
+    /system/vendor/unknown321/bin/ldac-run.sh >/dev/null 2>&1 &
+
 # hand over to cinder-home (replaces this process; keeps the appmgr-expected name/args).
 exec "$HOME_BIN" "$@" >/contents/cinderhome.log 2>&1
 LAUNCH_EOF

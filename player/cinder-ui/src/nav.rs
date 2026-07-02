@@ -67,7 +67,7 @@ pub enum Action {
     PrevAlbum,
     VolUp,
     VolDown,
-    PlayIndex(usize), // play the highlighted library item (meaning is tab-dependent)
+    PlayIndex(i64), // play the library track with this DB object_id (the shell resolves it to a URI)
     ThemeChanged(bool),
     Sleep,
     EnterUsbMsc,
@@ -461,9 +461,13 @@ impl App {
         if self.shelf_open {
             return self.shelf_tap(x, y);
         }
-        // USB mass-storage is MODAL (the volume is handed to the PC): taps do nothing. Only the
-        // physical Back button (or the shell noticing the cable is gone) leaves the mode.
+        // USB mass-storage is MODAL (the volume is handed to the PC): the only live tap target
+        // is the TURN OFF button (same exit as the physical Back button / cable unplug).
         if matches!(self.current(), Screen::UsbStorage) {
+            if crate::usb_storage::hit_off(x, y) {
+                self.pop();
+                return vec![Action::ExitUsbMsc];
+            }
             return vec![];
         }
         // Onboarding owns the screen: right ~60% = next/finish, left = previous page.
@@ -556,7 +560,7 @@ impl App {
                         return album
                             .track_list
                             .get(row)
-                            .map(|s| vec![Action::PlayIndex(s.object_id as usize)])
+                            .map(|s| vec![Action::PlayIndex(s.object_id)])
                             .unwrap_or_default();
                     }
                 }
@@ -666,7 +670,7 @@ impl App {
         match self.lib_tab {
             // `row` is the RANK in the drawn (sorted) order — resolve through the same order.
             Tab::Songs => library::song_at(&self.lib, self.lib_sort, row)
-                .map(|s| s.object_id as usize)
+                .map(|s| s.object_id)
                 .map(|id| {
                     self.lib_idx = row;
                     vec![Action::PlayIndex(id)]
@@ -679,9 +683,11 @@ impl App {
                 self.push(Screen::Album);
                 vec![]
             }
+            // Artists / Playlists rows aren't directly playable (no track object under the finger) —
+            // they navigate, not play. Nothing to enqueue.
             _ => {
                 self.lib_idx = row;
-                vec![Action::PlayIndex(row)]
+                vec![]
             }
         }
     }
@@ -1020,9 +1026,10 @@ impl App {
                     }
                     // lib_idx is a RANK in the drawn (sorted) order — resolve through it.
                     Tab::Songs => library::song_at(&self.lib, self.lib_sort, self.lib_idx)
-                        .map(|s| vec![Action::PlayIndex(s.object_id as usize)])
+                        .map(|s| vec![Action::PlayIndex(s.object_id)])
                         .unwrap_or_default(),
-                    _ => vec![Action::PlayIndex(self.lib_idx)],
+                    // Artists/Playlists rows navigate, not play (no track under the cursor).
+                    _ => vec![],
                 },
                 Button::Back => {
                     self.pop();
@@ -1059,7 +1066,7 @@ impl App {
                         .albums_flat()
                         .get(self.album_view)
                         .and_then(|a| a.track_list.get(self.album_track_idx))
-                        .map(|s| vec![Action::PlayIndex(s.object_id as usize)])
+                        .map(|s| vec![Action::PlayIndex(s.object_id)])
                         .unwrap_or_default(),
                     Button::Back | Button::Left => {
                         self.pop();

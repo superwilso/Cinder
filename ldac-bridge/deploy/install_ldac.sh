@@ -16,6 +16,13 @@ exec >>"$LOG" 2>&1
 echo "================================================================"
 echo "== ldac bridge installer  $(date 2>/dev/null)"
 
+# The updater's ambient cp/rm/chmod are unreliable (same failure class the cinder-home
+# installer hit) — route every file op through busybox.
+BB=/xbin/busybox
+[ -x "$BB" ] || BB=/system/xbin/busybox
+[ -x "$BB" ] || BB=busybox      # last resort: whatever is on PATH (may be the flaky one)
+echo "busybox: $BB ($("$BB" 2>&1 | head -1 2>/dev/null))"
+
 VENDOR=/system/vendor/unknown321
 BIN=$VENDOR/bin
 SRC=/contents/cinder-ldac-bridge
@@ -33,21 +40,27 @@ if [ ! -f "$SRC" ]; then
     sync; exit 0
 fi
 
-# copy + VERIFY non-empty before removing the source (busybox here has no `wc`)
-cp "$SRC" "$BIN/cinder-ldac-bridge"
+# copy ATOMICALLY (temp -> verify -> mv) + VERIFY non-empty before removing the source
+"$BB" cat "$SRC" > "$BIN/cinder-ldac-bridge.tmp" 2>/dev/null
+if [ ! -s "$BIN/cinder-ldac-bridge.tmp" ]; then
+    echo "ERROR: staged copy is empty. leaving staged $SRC in place. Re-push & retry."
+    "$BB" rm -f "$BIN/cinder-ldac-bridge.tmp" 2>/dev/null
+    sync; umount /system 2>/dev/null; exit 0
+fi
+"$BB" mv -f "$BIN/cinder-ldac-bridge.tmp" "$BIN/cinder-ldac-bridge"
 if [ ! -s "$BIN/cinder-ldac-bridge" ]; then
     echo "ERROR: failed to install $BIN/cinder-ldac-bridge (cp failed or zero bytes)."
     echo "       leaving staged $SRC in place. Re-push & retry."
     sync; umount /system 2>/dev/null; exit 0
 fi
-chmod 0755 "$BIN/cinder-ldac-bridge"
+"$BB" chmod 0755 "$BIN/cinder-ldac-bridge"
 echo "installed binary: $BIN/cinder-ldac-bridge (present, non-empty)"
 
 # supervisor: prefer a staged copy; otherwise write the known-good script inline
 if [ -f "$SUP" ]; then
-    cp "$SUP" "$BIN/ldac-run.sh"
+    "$BB" cat "$SUP" > "$BIN/ldac-run.sh"
 else
-    cat > "$BIN/ldac-run.sh" <<'SUP_EOF'
+    "$BB" cat > "$BIN/ldac-run.sh" <<'SUP_EOF'
 #!/system/bin/sh
 BIN=/system/vendor/unknown321/bin
 BRIDGE=$BIN/cinder-ldac-bridge
@@ -72,7 +85,7 @@ rm -f "$PIDF"
 exit 0
 SUP_EOF
 fi
-chmod 0755 "$BIN/ldac-run.sh"
+"$BB" chmod 0755 "$BIN/ldac-run.sh"
 echo "installed supervisor: $BIN/ldac-run.sh"
 
 if [ ! -f "$BIN/scrobbler.real" ]; then
@@ -80,7 +93,7 @@ if [ ! -f "$BIN/scrobbler.real" ]; then
     echo "      boot hook launches ldac-run.sh, or launch it by another hook."
 fi
 
-rm -f "$SRC" "$SUP" 2>/dev/null
+"$BB" rm -f "$SRC" "$SUP" 2>/dev/null
 sync
 umount /system 2>/dev/null
 echo "== done. reboot, then: create /contents/ldac_on to start; remove it to stop. =="

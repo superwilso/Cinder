@@ -1,14 +1,24 @@
 //! USB mass-storage modal screen. Shown while the storage volume is handed to the PC (the shell
 //! unmounted /contents and pointed the USB gadget's mass-storage LUN at it). Deliberately modal
-//! and quiet: the library/player must not touch storage until the mode is left, so the only ways
-//! out are the physical Back button or unplugging the cable (the shell watches for both and
-//! remounts before popping this screen).
+//! and quiet: the library/player must not touch storage until the mode is left, so the ways out
+//! are the on-screen TURN OFF button, the physical Back button, or unplugging the cable (the
+//! shell watches for these and remounts before popping this screen).
 
 use crate::canvas::{Canvas, H, W};
 use crate::icons;
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::widgets::sty;
+use crate::widgets::{fill_rect, sty};
+
+/// The TURN OFF button's hit rectangle (x, y, w, h) — shared by render() and the tap test so
+/// they can never drift apart.
+pub const OFF_BTN: (i32, i32, i32, i32) = ((W as i32 - 220) / 2, H as i32 / 2 + 150, 220, 60);
+
+/// Is a tap at (x, y) on the TURN OFF button?
+pub fn hit_off(x: i32, y: i32) -> bool {
+    let (bx, by, bw, bh) = OFF_BTN;
+    x >= bx && x < bx + bw && y >= by && y < by + bh
+}
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
     c.fill(t.bg);
@@ -26,7 +36,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
         "Storage is connected to your computer.",
         "Music and files are unavailable until you're done.",
         "",
-        "Unplug the cable (or press Back) to return.",
+        "Unplug the cable or turn off below to return.",
     ];
     let mut y = cy + 8;
     for l in lines {
@@ -37,4 +47,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
         }
         y += 28;
     }
+
+    // TURN OFF button (also reachable via the physical Back button)
+    let (bx, by, bw, bh) = OFF_BTN;
+    fill_rect(c, bx, by, bw, bh, t.acc);
+    let bst = sty(Family::Sans, Weight::ExtraBold, 17.0, t.acc_ink, 0.06);
+    let lw = text::measure(f, "TURN OFF", &bst);
+    text::draw(c, f, cx - lw / 2.0, (by + bh / 2 + 6) as f32, "TURN OFF", &bst);
 }

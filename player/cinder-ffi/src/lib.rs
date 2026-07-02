@@ -271,6 +271,12 @@ struct Render {
     last_viz: std::time::Instant, // throttle the visualiser repaint to ~20fps (battery)
     viz_levels: Vec<f32>, // real spectrum bars (0..1) from the last set_pcm/set_spectrum; empty = synthetic
     viz_peak: f32,        // slow-decaying auto-gain peak for cinder_set_spectrum's linear branch
+    // Pending play request (Action::PlayIndex resolved through the DB): the chosen track's album
+    // context — file URIs in play order + the start index. The shell drains it via
+    // cinder_pending_play_* after a CINDER_ACT_PLAY_INDEX action and hands it to PlayerService
+    // (NodeTrackSequence). Replaced wholesale on every new PlayIndex.
+    pending_play: Vec<String>,
+    pending_play_start: usize,
 }
 
 fn now_unix() -> u64 {
@@ -341,6 +347,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         last_viz: std::time::Instant::now(),
         viz_levels: Vec::new(),
         viz_peak: 0.0,
+        pending_play: Vec::new(),
+        pending_play_start: 0,
     });
     0
 }
@@ -613,7 +621,22 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::PrevAlbum => 5,
         Action::VolUp => 6,
         Action::VolDown => 7,
-        Action::PlayIndex(_) => 8,
+        Action::PlayIndex(object_id) => {
+            // Resolve the chosen track to its album context (URIs in play order + start index)
+            // so the shell can hand PlayerService a real sequence. No DB / no match -> no action.
+            let ctx = r.db.as_ref().and_then(|db| db.album_context(*object_id).ok().flatten());
+            match ctx {
+                Some((tracks, idx)) if !tracks.is_empty() => {
+                    r.pending_play = tracks.into_iter().map(|t| t.filename).collect();
+                    r.pending_play_start = idx;
+                    8
+                }
+                _ => {
+                    eprintln!("cinder-ffi: PlayIndex({object_id}): no DB context — ignored");
+                    return None;
+                }
+            }
+        }
         Action::ThemeChanged(_) => 16, // shell also drives the backlight (night = minimal light)
         Action::Sleep => 10,
         Action::EnterUsbMsc => 11,
@@ -690,6 +713,38 @@ pub extern "C" fn cinder_touch_scroll(dy_rows: libc::c_int) {
         r.app.touch_scroll(dy_rows as i32);
         r.dirty = true;
     }
+}
+
+/// Pending play request (set when a CINDER_ACT_PLAY_INDEX action was returned): how many track
+/// URIs are queued. The shell reads them with cinder_pending_play_uri and starts playback at
+/// cinder_pending_play_start. The list stays until the next PlayIndex replaces it.
+#[no_mangle]
+pub extern "C" fn cinder_pending_play_count() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.pending_play.len() as libc::c_int)
+}
+
+/// Copy pending-play URI `i` (0-based) into `buf` (NUL-terminated). Returns the byte length
+/// copied, or -1 for a bad index/args.
+#[no_mangle]
+pub extern "C" fn cinder_pending_play_uri(i: libc::c_int, buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
+    if buf.is_null() || cap <= 0 {
+        return -1;
+    }
+    let guard = cell().lock().unwrap();
+    let Some(r) = guard.as_ref() else { return -1 };
+    let Some(uri) = r.pending_play.get(i as usize) else { return -1 };
+    let n = uri.len().min(cap as usize - 1);
+    unsafe {
+        std::ptr::copy_nonoverlapping(uri.as_ptr(), buf as *mut u8, n);
+        *buf.add(n) = 0;
+    }
+    n as libc::c_int
+}
+
+/// The start index within the pending-play list (the track the user actually tapped).
+#[no_mangle]
+pub extern "C" fn cinder_pending_play_start() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.pending_play_start as libc::c_int)
 }
 
 /// The Hold/lock SWITCH changed state (held != 0 = locked). The navigator disables the touchscreen

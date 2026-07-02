@@ -20,6 +20,7 @@
 //   PlayController::SetTrackSequence(shared_ptr<TrackSequence> const&)
 #pragma once
 #include <memory>
+#include <functional>
 
 namespace pst {
 namespace playservice {
@@ -75,3 +76,44 @@ public:
 } // namespace playerservice
 } // namespace services
 } // namespace pst
+
+// ── Play-by-track: NodeTrackSequence recipe (libPlayerServiceClientUtil.so) ──────────────────
+// RE (2026-07-02): SetTrackSequence takes shared_ptr<TrackSequence>; Sony ships a concrete
+// NodeTrackSequence<UriInfo> we reuse. The ctor + JSON builder are exported. Confirmed from the
+// C1 ctor disasm @0xbcec: a SINGLE primary vtable is stored at object+0, so the TrackSequence
+// base sits at offset 0 — the shared_ptr upcast needs NO pointer adjustment (we use the aliasing
+// shared_ptr ctor with a plain reinterpret_cast). The ctor writes fields up to +0xb0 (176 B), so
+// we reserve 0x100 (256 B). The JSON node schema (from .rodata): {"uri":..,"format":ext,"children":[..]}.
+namespace pst { namespace services { namespace playerservice { namespace util {
+
+struct UriInfo;            // opaque value type (never constructed here)
+enum class UpdateReason : int;
+template <class T> class Node;   // opaque node tree (owned via unique_ptr from the JSON builder)
+
+// NodeJsonUtil<UriInfo,UriInfoPolicy>::ConvJsonStringToNode(std::string const&) -> unique_ptr<Node>
+// Its C1 ctor stores TWO adjacent vtable pointers (strd @+0/+4 in the disasm) — a small
+// multiple-inheritance object. Real footprint is those 8 bytes; we reserve 0x20 for slack and
+// let Sony's exported ctor/dtor own the layout.
+class UriInfoPolicy;
+template <class T, class P> class NodeJsonUtil {
+public:
+    NodeJsonUtil();
+    ~NodeJsonUtil();
+    std::unique_ptr<Node<T>> ConvJsonStringToNode(const std::string& json);
+private:
+    unsigned char _reserved[0x20];
+};
+
+// NodeTrackSequence<UriInfo> — reserved-size shell. We only ever construct it in a 0x100 buffer
+// and destroy it via the exported dtor (through the shared_ptr deleter). No fields modeled: the
+// real ctor lays them out; we just give it room.
+template <class T> class NodeTrackSequence {
+public:
+    NodeTrackSequence(std::unique_ptr<Node<T>> node, int startIndex,
+                      std::function<void(UpdateReason, int)> cb);
+    ~NodeTrackSequence();
+private:
+    unsigned char _reserved[0x100];
+};
+
+} } } } // namespace pst::services::playerservice::util

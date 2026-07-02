@@ -60,6 +60,12 @@ int  cinder_input(int button);
  * coordinates → UI and classifies tap vs scroll vs the left-edge Back swipe.) */
 int  cinder_tap(int x, int y);
 void cinder_touch_scroll(int dy_rows);
+/* Pending play request, populated when CINDER_ACT_PLAY_INDEX is returned: the tapped track's
+ * album context as file URIs in play order + the index to start at. The shell reads these and
+ * hands PlayerService a NodeTrackSequence (cinder_audio_play_tracks). */
+int  cinder_pending_play_count(void);
+int  cinder_pending_play_uri(int i, char* buf, int cap);
+int  cinder_pending_play_start(void);
 /* Horizontal swipe (dir < 0 = leftward, else rightward) with the gesture's START point in UI
  * coordinates: onboarding pages through, Now Playing skips track, and a rightward swipe on a
  * Library/Album song row queues that song (start y picks the row). Returns a cinder_action_t for
