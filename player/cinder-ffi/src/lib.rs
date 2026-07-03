@@ -459,6 +459,13 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, SongRow};
     use std::collections::{BTreeMap, BTreeSet};
 
+    // Resolve release-year FKs once (best-effort; empty map if the table shape differs — years
+    // then stay blank, exactly as before). Shared by the song-row builder + the album year label.
+    let years = db.release_years();
+    let year_num = |id: Option<i64>| -> i32 {
+        id.and_then(|i| years.get(&i)).and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0)
+    };
+
     let song_row = |t: &cinder_db::Track| {
         let title = if t.title.is_empty() {
             t.filename.rsplit('/').next().unwrap_or("").to_string()
@@ -472,6 +479,11 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
             dur: t.duration_raw.map(fmt_time).unwrap_or_default(),
             art,
             object_id: t.object_id,
+            album_id: t.album_id.unwrap_or(0),
+            disc: t.disc_no as i32,
+            track: t.track_no as i32,
+            added: t.added,
+            year: year_num(t.releaseyear_id),
         }
     };
 
@@ -493,10 +505,24 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
 
     // Per-album track lists keyed by album ID (names can collide across artists), in the DB's
     // disc/track order — one query, grouped in a single pass. This is what the Album screen
-    // shows under the header.
+    // shows under the header. Alongside, derive each album's "recently added" key (newest track
+    // addedtime) and its release-year label (first track that resolves one) for the ORDER chip.
     let mut album_tracks: BTreeMap<i64, Vec<SongRow>> = BTreeMap::new();
+    let mut album_added: BTreeMap<i64, i64> = BTreeMap::new();
+    let mut album_year: BTreeMap<i64, String> = BTreeMap::new();
     for t in db.tracks_album_order().unwrap_or_default() {
         if let Some(aid) = t.album_id {
+            let a = album_added.entry(aid).or_insert(0);
+            if t.added > *a {
+                *a = t.added;
+            }
+            if !album_year.contains_key(&aid) {
+                if let Some(y) = t.releaseyear_id.and_then(|i| years.get(&i)) {
+                    if !y.is_empty() {
+                        album_year.insert(aid, y.clone());
+                    }
+                }
+            }
             album_tracks.entry(aid).or_default().push(song_row(&t));
         }
     }
@@ -508,9 +534,10 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         .into_iter()
         .map(|a| AlbumRow {
             artist: album_artist.get(&a.id).cloned().unwrap_or_default(),
-            year: String::new(),
+            year: album_year.get(&a.id).cloned().unwrap_or_default(),
             tracks: a.track_count.max(0) as u32,
             art: a.name.clone(),
+            added: album_added.get(&a.id).copied().unwrap_or(0),
             track_list: album_tracks.remove(&a.id).unwrap_or_default(),
             name: a.name,
             album_id: a.id,
@@ -1385,6 +1412,8 @@ mod tests {
             is_hires: true,
             album_id: Some(10),
             othumb_id: Some(100),
+            added: 5000,
+            releaseyear_id: Some(30),
         };
         let mut np = Np::default();
         apply_track(&mut np, &t);
@@ -1407,24 +1436,27 @@ mod tests {
             CREATE TABLE schema  (prop_type INTEGER, akey INTEGER, data_type INTEGER, prop_name TEXT, PRIMARY KEY(prop_type,akey));
             CREATE TABLE object_ext_int (object_id INTEGER, akey INTEGER, value INTEGER DEFAULT 0, PRIMARY KEY(object_id,akey));
             CREATE TABLE images  (id INTEGER PRIMARY KEY, dataform INTEGER, dataoffset INTEGER, datasize INTEGER, value TEXT, digest TEXT, bmpfile TEXT, bmpwidth INTEGER, bmpheight INTEGER);
+            CREATE TABLE releaseyears (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT);
             CREATE TABLE object_body (
                 object_id INTEGER PRIMARY KEY AUTOINCREMENT, object_type INTEGER NOT NULL,
                 child_index INTEGER, media_type INTEGER DEFAULT 0, format INTEGER DEFAULT 0,
                 initial INTEGER, sort_str TEXT, search_str TEXT, title TEXT DEFAULT "",
                 addedtime INTEGER DEFAULT 0, filename TEXT, filesize INTEGER,
                 series_no INTEGER, disc_no INTEGER, is_high_resolution INTEGER,
-                album_id INTEGER, artist_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
+                album_id INTEGER, artist_id INTEGER, releaseyear_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
             INSERT INTO albums  VALUES (10,0,'last smoke','last smoke','Last Smoke');
             INSERT INTO albums  VALUES (11,0,'harvest','harvest','Harvest Moon');
             INSERT INTO artists VALUES (20,0,'leftwich','leftwich','Benjamin Francis Leftwich',NULL,0,0,0,0);
             INSERT INTO artists VALUES (21,0,'cold','cold','Cold Stone & Sea',NULL,0,0,0,0);
             INSERT INTO schema  VALUES (1,7,2,'DURATION');
-            INSERT INTO object_body (object_id,object_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,addedtime)
-              VALUES (1,1,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,5000);
-            INSERT INTO object_body (object_id,object_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,addedtime)
-              VALUES (2,1,'Box of Stones','/music/box.flac',2,1,1,10,20,5001);
-            INSERT INTO object_body (object_id,object_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,addedtime)
-              VALUES (3,1,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,4000);
+            INSERT INTO releaseyears VALUES (30,0,'2012','2012','2012');
+            INSERT INTO releaseyears VALUES (31,0,'1992','1992','1992');
+            INSERT INTO object_body (object_id,object_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
+              VALUES (1,1,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,30,5000);
+            INSERT INTO object_body (object_id,object_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
+              VALUES (2,1,'Box of Stones','/music/box.flac',2,1,1,10,20,30,5001);
+            INSERT INTO object_body (object_id,object_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
+              VALUES (3,1,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,31,4000);
             INSERT INTO object_ext_int VALUES (1,7,272000);
             "#,
             )
@@ -1448,6 +1480,13 @@ mod tests {
         assert_eq!(bfl.albums.len(), 1);
         assert_eq!(bfl.albums[0].name, "Last Smoke");
         assert_eq!(bfl.albums[0].tracks, 2);
+        // release year resolved from releaseyears + newest addedtime carried for the ORDER chip
+        assert_eq!(bfl.albums[0].year, "2012");
+        assert_eq!(bfl.albums[0].added, 5001);
+        // the song rows carry the sort keys used by the Songs SORT chip
+        let atlas_row = lib.songs.iter().find(|s| s.title == "Atlas Hands").unwrap();
+        assert_eq!(atlas_row.year, 2012);
+        assert_eq!(atlas_row.album_id, 10);
         // the resolved song carries the object_id the shell plays
         let atlas = lib.songs.iter().find(|s| s.title == "Atlas Hands").unwrap();
         assert_eq!(atlas.object_id, 1);
@@ -1474,6 +1513,8 @@ mod tests {
             is_hires: false,
             othumb_id: None,
             album_id: None,
+            added: 0,
+            releaseyear_id: None,
         };
         let mut np = Np::default();
         apply_track(&mut np, &t);

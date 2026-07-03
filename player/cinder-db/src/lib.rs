@@ -34,6 +34,8 @@ pub struct Track {
     pub is_hires: bool,
     pub othumb_id: Option<i64>, // -> images.id for album art
     pub album_id: Option<i64>,  // -> albums.id (stable key — album NAMES can collide)
+    pub added: i64,             // object_body.addedtime (scan/import time; 0 if unknown) — "recently added"
+    pub releaseyear_id: Option<i64>, // -> releaseyears.id (resolve via Db::release_years)
 }
 
 /// Album-art location for an object (from the `images` table). `value` is polymorphic in the
@@ -244,7 +246,8 @@ impl Db {
         let sql = format!(
             "SELECT ob.object_id, ob.title, COALESCE(ar.value,''), COALESCE(al.value,''), \
                     ob.filename, COALESCE(ob.disc_no,0), COALESCE(ob.series_no,0), {dur_sel}, \
-                    COALESCE(ob.is_high_resolution,0), ob.othumb_id, ob.album_id \
+                    COALESCE(ob.is_high_resolution,0), ob.othumb_id, ob.album_id, \
+                    COALESCE(ob.addedtime,0), ob.releaseyear_id \
              FROM object_body ob \
              LEFT JOIN artists ar ON ar.id = ob.artist_id \
              LEFT JOIN albums  al ON al.id = ob.album_id \
@@ -264,9 +267,46 @@ impl Db {
                 is_hires: r.get::<_, i64>(8)? != 0,
                 othumb_id: r.get(9)?,
                 album_id: r.get(10)?,
+                added: r.get(11)?,
+                releaseyear_id: r.get(12)?,
             })
         })?;
         rows.collect()
+    }
+
+    /// Resolve `releaseyear_id` → the display year string, best-effort. The MediaStore's release-year
+    /// lookup table wasn't captured verbatim in RE, but every sibling lookup (albums/artists/genres)
+    /// is `(id PK, value, sort_str, …)` and the FK stems pluralize (`album_id`→`albums`,
+    /// `genre_id`→`genres`), so `releaseyear_id` → `releaseyears(id, value)`. We try that name, then
+    /// the singular `releaseyear`, and return an EMPTY map on any error — a missing/differently-shaped
+    /// table just leaves years blank (exactly today's behavior), never fails the library build. The
+    /// count is logged once so a device DB pull tells us whether the guess held.
+    pub fn release_years(&self) -> std::collections::HashMap<i64, String> {
+        for table in ["releaseyears", "releaseyear"] {
+            let sql = format!("SELECT id, value FROM {table}");
+            let mut st = match self.conn.prepare(&sql) {
+                Ok(s) => s,
+                Err(_) => continue, // table doesn't exist under this name — try the next
+            };
+            let rows = st.query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                // `value` is normally the year TEXT ("2019"); tolerate an INTEGER column too.
+                let year = match r.get_ref(1)? {
+                    rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+                    rusqlite::types::ValueRef::Integer(n) => n.to_string(),
+                    _ => String::new(),
+                };
+                Ok((id, year))
+            });
+            if let Ok(rows) = rows {
+                let map: std::collections::HashMap<i64, String> =
+                    rows.filter_map(|r| r.ok()).filter(|(_, y)| !y.is_empty()).collect();
+                eprintln!("[cinder-db] release_years: table '{table}' -> {} entries", map.len());
+                return map;
+            }
+        }
+        eprintln!("[cinder-db] release_years: no releaseyears/releaseyear table — years left blank");
+        std::collections::HashMap::new()
     }
 }
 
@@ -284,25 +324,28 @@ mod tests {
             CREATE TABLE schema  (prop_type INTEGER, akey INTEGER, data_type INTEGER, prop_name TEXT, PRIMARY KEY(prop_type,akey));
             CREATE TABLE object_ext_int (object_id INTEGER, akey INTEGER, value INTEGER DEFAULT 0, PRIMARY KEY(object_id,akey));
             CREATE TABLE images  (id INTEGER PRIMARY KEY, dataform INTEGER, dataoffset INTEGER, datasize INTEGER, value TEXT, digest TEXT, bmpfile TEXT, bmpwidth INTEGER, bmpheight INTEGER);
+            CREATE TABLE releaseyears (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT);
             CREATE TABLE object_body (
                 object_id INTEGER PRIMARY KEY AUTOINCREMENT, object_type INTEGER NOT NULL,
                 child_index INTEGER, media_type INTEGER DEFAULT 0, format INTEGER DEFAULT 0,
                 initial INTEGER, sort_str TEXT, search_str TEXT, title TEXT DEFAULT "",
                 addedtime INTEGER DEFAULT 0, filename TEXT, filesize INTEGER,
                 series_no INTEGER, disc_no INTEGER, is_high_resolution INTEGER,
-                album_id INTEGER, artist_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
+                album_id INTEGER, artist_id INTEGER, releaseyear_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
             INSERT INTO albums  VALUES (10,0,'last smoke','last smoke','Last Smoke Before the Snowstorm');
             INSERT INTO albums  VALUES (11,0,'harvest','harvest','Harvest Moon');
             INSERT INTO artists VALUES (20,0,'leftwich','leftwich','Benjamin Francis Leftwich',NULL,0,0,0,0);
             INSERT INTO artists VALUES (21,0,'cold','cold','Cold Stone & Sea',NULL,0,0,0,0);
             INSERT INTO schema  VALUES (1,7,2,'DURATION');
             INSERT INTO images  VALUES (100,0,4096,20000,'/music/atlas.flac','d1','/db/thumb/100.bmp',92,92);
-            INSERT INTO object_body (object_id,object_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,othumb_id,addedtime)
-              VALUES (1,1,0,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,100,5000);
-            INSERT INTO object_body (object_id,object_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,othumb_id,addedtime)
-              VALUES (2,1,1,'Box of Stones','/music/box.flac',2,1,1,10,20,NULL,5001);
-            INSERT INTO object_body (object_id,object_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,othumb_id,addedtime)
-              VALUES (3,1,0,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,NULL,4000);
+            INSERT INTO releaseyears VALUES (30,0,'2012','2012','2012');
+            INSERT INTO releaseyears VALUES (31,0,'1992','1992','1992');
+            INSERT INTO object_body (object_id,object_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
+              VALUES (1,1,0,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,30,100,5000);
+            INSERT INTO object_body (object_id,object_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
+              VALUES (2,1,1,'Box of Stones','/music/box.flac',2,1,1,10,20,30,NULL,5001);
+            INSERT INTO object_body (object_id,object_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
+              VALUES (3,1,0,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,31,NULL,4000);
             INSERT INTO object_body (object_id,object_type,title,filename,album_id) VALUES (9,0,'A Folder',NULL,NULL);
             INSERT INTO object_ext_int VALUES (1,7,272000);
             INSERT INTO object_ext_int VALUES (3,7,303000);
@@ -349,6 +392,25 @@ mod tests {
         assert_eq!(t.title, "Harvest Moon");
         assert_eq!(t.album, "Harvest Moon");
         assert_eq!(t.duration_raw, Some(303000));
+    }
+
+    #[test]
+    fn addedtime_and_release_year_resolve() {
+        let d = db();
+        let t = d.album_tracks(10).unwrap();
+        assert_eq!(t[0].added, 5000);
+        assert_eq!(t[0].releaseyear_id, Some(30));
+        let years = d.release_years();
+        assert_eq!(years.get(&30).map(|s| s.as_str()), Some("2012"));
+        assert_eq!(years.get(&31).map(|s| s.as_str()), Some("1992"));
+    }
+
+    #[test]
+    fn release_years_missing_table_is_empty_not_error() {
+        // A DB without the releaseyears table must degrade to an empty map, never panic.
+        let conn = Connection::open_in_memory().unwrap();
+        let d = Db::wrap(conn);
+        assert!(d.release_years().is_empty());
     }
 
     #[test]

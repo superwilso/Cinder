@@ -100,10 +100,16 @@ fn main() {
                     None => up_next::render(c, &theme, &fonts, "", &[], 0),
                 }
             }),
-            ("library_songs", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, &lib)),
-            ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, &lib)),
-            ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, &lib)),
-            ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, &lib)),
+            ("library_songs", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib)),
+            // Songs sorted by ADDED (sort chip index 4) — shows the SORT chip label + reorder.
+            ("library_songs_added", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 4, 0, None, &lib)),
+            ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, None, &lib)),
+            // Albums with the first album's accordion expanded (tracks listed inline).
+            ("library_albums_expanded", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, Some(0), &lib)),
+            // Albums flat-ordered A-Z (ORDER chip index 1 — no artist headers).
+            ("library_albums_az", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 1, None, &lib)),
+            ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &lib)),
+            ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &lib)),
             ("artist", &|c: &mut Canvas| library::artist(c, &theme, &fonts)),
             ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4)),
             ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, false)),
@@ -158,6 +164,11 @@ fn main() {
                 dur: format!("{}:{:02}", 2 + i % 5, i * 7 % 60),
                 art: format!("album {}", i / 4),
                 object_id: i as i64,
+                album_id: (i / 4) as i64,
+                disc: 1,
+                track: (i % 4) as i32 + 1,
+                added: 100_000 - i as i64,
+                year: 2000 + (i as i32 % 20),
             });
         }
         let mut album_groups = Vec::new();
@@ -172,6 +183,7 @@ fn main() {
                         tracks: n,
                         art: format!("album {}{}", a, k),
                         album_id: (gi * 10 + k) as i64,
+                        added: (2010 + (gi + k) % 14) as i64,
                         track_list: (0..n)
                             .map(|i| SongRow {
                                 title: format!("{} {}", ["Drift", "Ember", "Lantern", "Quartz"][i as usize % 4], i + 1),
@@ -179,6 +191,11 @@ fn main() {
                                 dur: format!("{}:{:02}", 3 + i % 3, (i * 17) % 60),
                                 art: format!("album {}{}", a, k),
                                 object_id: (gi * 100 + k * 10 + i as usize) as i64,
+                                album_id: (gi * 10 + k) as i64,
+                                disc: 1,
+                                track: i as i32 + 1,
+                                year: (2010 + (gi + k) % 14) as i32,
+                                ..Default::default()
                             })
                             .collect(),
                     }

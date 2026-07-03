@@ -361,11 +361,12 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                 .enumerate()
                 .map(|(i, s)| cinder_ui::model::SongRow {
                     title: s.t.into(), artist: s.a.into(), dur: s.d.into(), art: s.art.into(), object_id: i as i64,
+                    ..Default::default()
                 })
                 .collect();
             up_next::render(c, theme, fonts, "Now Playing", &tracks, app.track)
         }
-        Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, &app.lib),
+        Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, 0, None, &app.lib),
         Screen::Artist => library::artist(c, theme, fonts),
         Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0, 0),
         Screen::Sound => sound::render(c, theme, fonts, &Sound {

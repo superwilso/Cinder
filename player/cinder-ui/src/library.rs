@@ -55,35 +55,140 @@ pub fn row_h(tab: Tab) -> i32 {
 pub const ALBUM_TRACKS_TOP: i32 = 312;
 pub const ALBUM_TRACK_RH: i32 = 56;
 
-/// Virtual y (content px, 0 = list top) of each album row in the grouped Albums layout, plus
-/// the total content height. Headers (30px) appear before the first album of each artist.
-fn albums_layout(lib: &Library) -> (Vec<i32>, i32) {
-    let flat = lib.albums_flat();
-    let mut tops = Vec::with_capacity(flat.len());
-    let mut vy = 0;
-    let mut prev_artist: Option<&str> = None;
-    for al in &flat {
-        if prev_artist != Some(al.artist.as_str()) {
-            vy += 30;
-            prev_artist = Some(al.artist.as_str());
-        }
-        tops.push(vy);
-        vy += 60;
-    }
-    (tops, vy)
+// ── Albums tab: sortable + expandable (accordion) display list ────────────────────────────
+// The Albums tab is a single flat list of variable-height rows: an artist header (grouped sort
+// only), an album row, or the track rows of the one expanded album. `albums_build` produces that
+// list (with content-space y tops) once per render/hit; layout/hit/scroll all read from it so the
+// three can never drift.
+pub const ALBUM_HDR_H: i32 = 30; // artist section header (grouped sort)
+pub const ALBUM_ROW_H: i32 = 60; // an album row
+pub const ALBUM_CHILD_H: i32 = 46; // an expanded track row (indented under its album)
+/// A tap on an album row left of this x opens the drill-in page (cover art); right of it toggles
+/// the inline accordion. Keeps both affordances on one row.
+pub const ALBUM_ART_HIT_X: i32 = 72;
+
+/// One row in the Albums tab's flat display list.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum AlbumsRow {
+    /// Artist section header (grouped sort only). `flat` = the first album under it (for its name).
+    Group { flat: usize },
+    /// An album row. `flat` = index into `lib.albums_flat()`; `expanded` = its accordion is open.
+    Album { flat: usize, expanded: bool },
+    /// A track inside the expanded album. `flat` = album index, `track` = track index in it.
+    Track { flat: usize, track: usize },
 }
 
-/// Total scrollable content height (px) of a tab's list.
-pub fn content_h(tab: Tab, lib: &Library) -> i32 {
+/// The built Albums display list: each row with its content-space top y, plus total height.
+pub struct AlbumsLayout {
+    pub rows: Vec<(i32, AlbumsRow)>,
+    pub content_h: i32,
+}
+
+/// Display order (indices into `lib.albums_flat()`) for the Albums ORDER chip. Sort 0 keeps the
+/// artist-then-name order `albums_flat()` already has; 1-3 are flat re-orders. Ties break on name.
+pub fn album_display_order(lib: &Library, sort: usize) -> Vec<usize> {
+    let flat = lib.albums_flat();
+    let mut order: Vec<usize> = (0..flat.len()).collect();
+    let year = |i: usize| flat[i].year.trim().parse::<i32>().unwrap_or(0);
+    match sort {
+        1 => order.sort_by(|&a, &b| flat[a].name.cmp(&flat[b].name)),
+        2 => order.sort_by(|&a, &b| flat[b].added.cmp(&flat[a].added).then_with(|| flat[a].name.cmp(&flat[b].name))),
+        3 => order.sort_by(|&a, &b| year(b).cmp(&year(a)).then_with(|| flat[a].name.cmp(&flat[b].name))),
+        _ => {} // 0 = ARTIST: albums_flat() is already artist-then-name
+    }
+    order
+}
+
+/// Build the Albums display list for the given ORDER + the expanded album (a `albums_flat()`
+/// index; None = all collapsed). Group headers appear only in grouped sort (0).
+pub fn albums_build(lib: &Library, sort: usize, expanded: Option<usize>) -> AlbumsLayout {
+    let flat = lib.albums_flat();
+    let order = album_display_order(lib, sort);
+    let grouped = sort == 0;
+    let mut rows: Vec<(i32, AlbumsRow)> = Vec::with_capacity(order.len());
+    let mut vy = 0;
+    let mut prev_artist: Option<&str> = None;
+    for &fi in &order {
+        let al = flat[fi];
+        if grouped && prev_artist != Some(al.artist.as_str()) {
+            rows.push((vy, AlbumsRow::Group { flat: fi }));
+            vy += ALBUM_HDR_H;
+            prev_artist = Some(al.artist.as_str());
+        }
+        let is_exp = expanded == Some(fi) && !al.track_list.is_empty();
+        rows.push((vy, AlbumsRow::Album { flat: fi, expanded: is_exp }));
+        vy += ALBUM_ROW_H;
+        if is_exp {
+            for track in 0..al.track_list.len() {
+                rows.push((vy, AlbumsRow::Track { flat: fi, track }));
+                vy += ALBUM_CHILD_H;
+            }
+        }
+    }
+    AlbumsLayout { rows, content_h: vy }
+}
+
+/// What a tap on the Albums tab hit (content mapped from screen y at the current scroll).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum AlbumsHit {
+    /// Album row body (right of the art) — toggle its accordion. `flat` index.
+    AlbumToggle(usize),
+    /// Album row art (left) — open the drill-in album page. `flat` index.
+    AlbumOpen(usize),
+    /// An expanded track row — play it. (`flat` album index, `track` index.)
+    Track(usize, usize),
+}
+
+/// Which Albums display element sits under touch `(x, y)` at the given pixel scroll? None for the
+/// shuffle band / group headers / gaps. Mirrors `render`'s layout exactly (built from the same
+/// `albums_build`).
+pub fn albums_hit(
+    lib: &Library,
+    sort: usize,
+    expanded: Option<usize>,
+    scroll_px: i32,
+    x: i32,
+    y: i32,
+) -> Option<AlbumsHit> {
+    let top = list_top(Tab::Albums);
+    if y < top || y >= LIST_BOTTOM {
+        return None;
+    }
+    let cy = y - top + scroll_px.max(0);
+    let layout = albums_build(lib, sort, expanded);
+    for (vy, row) in &layout.rows {
+        let h = match row {
+            AlbumsRow::Group { .. } => ALBUM_HDR_H,
+            AlbumsRow::Album { .. } => ALBUM_ROW_H,
+            AlbumsRow::Track { .. } => ALBUM_CHILD_H,
+        };
+        if cy >= *vy && cy < *vy + h {
+            return match *row {
+                AlbumsRow::Group { .. } => None,
+                AlbumsRow::Album { flat, .. } => Some(if x < ALBUM_ART_HIT_X {
+                    AlbumsHit::AlbumOpen(flat)
+                } else {
+                    AlbumsHit::AlbumToggle(flat)
+                }),
+                AlbumsRow::Track { flat, track } => Some(AlbumsHit::Track(flat, track)),
+            };
+        }
+    }
+    None
+}
+
+/// Total scrollable content height (px) of a tab's list. Albums depends on its ORDER + which
+/// album is expanded (variable-height accordion); the fixed tabs are `rows * row_h`.
+pub fn content_h(tab: Tab, lib: &Library, album_sort: usize, album_expanded: Option<usize>) -> i32 {
     match tab {
-        Tab::Albums => albums_layout(lib).1,
+        Tab::Albums => albums_build(lib, album_sort, album_expanded).content_h,
         _ => row_count(tab, lib) as i32 * row_h(tab),
     }
 }
 
 /// Largest useful `scroll_px` for a tab (0 when everything fits).
-pub fn max_scroll_px(tab: Tab, lib: &Library) -> i32 {
-    (content_h(tab, lib) - (LIST_BOTTOM - list_top(tab))).max(0)
+pub fn max_scroll_px(tab: Tab, lib: &Library, album_sort: usize, album_expanded: Option<usize>) -> i32 {
+    (content_h(tab, lib, album_sort, album_expanded) - (LIST_BOTTOM - list_top(tab))).max(0)
 }
 
 /// Largest useful `scroll_px` for the album drill-in track list.
@@ -91,10 +196,23 @@ pub fn album_max_scroll_px(album: &crate::model::AlbumRow) -> i32 {
     (album.track_list.len() as i32 * ALBUM_TRACK_RH - (LIST_BOTTOM - ALBUM_TRACKS_TOP)).max(0)
 }
 
-/// Virtual y (content px) of row `idx` — for the cursor-follow used by button navigation.
-pub fn row_top_px(tab: Tab, lib: &Library, idx: usize) -> i32 {
+/// Virtual y (content px) of selectable row `idx` — for the cursor-follow used by button nav. For
+/// Albums, `idx` is the ALBUM display rank (0-based over albums, ignoring headers/tracks).
+pub fn row_top_px(tab: Tab, lib: &Library, idx: usize, album_sort: usize, album_expanded: Option<usize>) -> i32 {
     match tab {
-        Tab::Albums => albums_layout(lib).0.get(idx).copied().unwrap_or(0),
+        Tab::Albums => {
+            let layout = albums_build(lib, album_sort, album_expanded);
+            let mut rank = 0;
+            for (vy, row) in &layout.rows {
+                if let AlbumsRow::Album { .. } = row {
+                    if rank == idx {
+                        return *vy;
+                    }
+                    rank += 1;
+                }
+            }
+            0
+        }
         _ => idx as i32 * row_h(tab),
     }
 }
@@ -102,6 +220,12 @@ pub fn row_top_px(tab: Tab, lib: &Library, idx: usize) -> i32 {
 /// Visible list height for a tab (px).
 pub fn view_h(tab: Tab) -> i32 {
     LIST_BOTTOM - list_top(tab)
+}
+
+/// The `albums_flat()` index of the album at ALBUM display rank `idx` under the given ORDER
+/// (button nav / drill-in resolution). None if out of range.
+pub fn album_flat_at_rank(lib: &Library, sort: usize, idx: usize) -> Option<usize> {
+    album_display_order(lib, sort).get(idx).copied()
 }
 
 const TABS: [(Tab, &str); 4] = [
@@ -147,13 +271,24 @@ pub fn row_count(tab: Tab, lib: &Library) -> usize {
 /// The Songs tab's DRAW order (indices into `lib.songs`) for the given sort chip. Shared by
 /// `render()` and every selection path (tap + button Select), so the row you act on is always
 /// the row that was drawn — indexing `lib.songs` directly with a visual rank selects the wrong
-/// song whenever the sort differs from DB order.
+/// song whenever the sort differs from DB order. Secondary key = title, so ties are stable.
 pub fn song_order(lib: &Library, sort: usize) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..lib.songs.len()).collect();
+    let s = &lib.songs;
+    let mut order: Vec<usize> = (0..s.len()).collect();
+    let by_title = |a: usize, b: usize| s[a].title.cmp(&s[b].title);
     match sort {
-        0 => order.sort_by(|&a, &b| lib.songs[a].title.cmp(&lib.songs[b].title)),
-        1 => order.sort_by(|&a, &b| lib.songs[a].artist.cmp(&lib.songs[b].artist)),
-        2 => order.sort_by(|&a, &b| dur_secs(&lib.songs[a].dur).cmp(&dur_secs(&lib.songs[b].dur))),
+        0 => order.sort_by(|&a, &b| by_title(a, b)),
+        1 => order.sort_by(|&a, &b| s[a].artist.cmp(&s[b].artist).then_with(|| by_title(a, b))),
+        2 => order.sort_by(|&a, &b| s[b].artist.cmp(&s[a].artist).then_with(|| by_title(a, b))),
+        3 => order.sort_by(|&a, &b| dur_secs(&s[a].dur).cmp(&dur_secs(&s[b].dur)).then_with(|| by_title(a, b))),
+        // Recently added: newest addedtime first.
+        4 => order.sort_by(|&a, &b| s[b].added.cmp(&s[a].added).then_with(|| by_title(a, b))),
+        // Album order: album, then disc/track within it.
+        5 => order.sort_by(|&a, &b| {
+            (s[a].album_id, s[a].disc, s[a].track).cmp(&(s[b].album_id, s[b].disc, s[b].track))
+        }),
+        // Release year: newest first (0 = unresolved years sink to the bottom).
+        6 => order.sort_by(|&a, &b| s[b].year.cmp(&s[a].year).then_with(|| by_title(a, b))),
         _ => {}
     }
     order
@@ -180,15 +315,8 @@ pub fn hit_row(tab: Tab, lib: &Library, scroll_px: i32, y: i32) -> Option<usize>
             let r = (cy / row_h(tab)) as usize;
             (r < row_count(tab, lib)).then_some(r)
         }
-        Tab::Albums => {
-            let (tops, _) = albums_layout(lib);
-            for (idx, &vy) in tops.iter().enumerate() {
-                if cy >= vy && cy < vy + 60 {
-                    return Some(idx);
-                }
-            }
-            None // an artist header band or past the end
-        }
+        // Albums is a variable-height accordion — its taps go through `albums_hit`, not here.
+        Tab::Albums => None,
     }
 }
 
@@ -276,7 +404,14 @@ fn body_label(fam: Family, w: Weight, size: f32, col: Rgb888) -> TextStyle {
     sty(fam, w, size, col, 0.0)
 }
 
-pub const SORTS: [&str; 3] = ["TITLE", "ARTIST", "LENGTH"];
+/// Songs-tab SORT chip labels (ASCII only — the mono font has no arrow glyphs). The chip cycles
+/// through these; `song_order` implements each index. Kept in lock-step with `song_order`.
+pub const SORTS: [&str; 7] =
+    ["TITLE", "ARTIST A-Z", "ARTIST Z-A", "LENGTH", "ADDED", "ALBUM", "YEAR"];
+
+/// Albums-tab ORDER chip labels. Index 0 = the classic artist-grouped view (with section
+/// headers); 1-3 are flat lists in the named order. `album_display_order` implements each.
+pub const ALBUM_SORTS: [&str; 4] = ["ARTIST", "A-Z", "ADDED", "YEAR"];
 
 fn dur_secs(d: &str) -> i32 {
     let mut it = d.split(':');
@@ -285,6 +420,7 @@ fn dur_secs(d: &str) -> i32 {
     m * 60 + s
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     c: &mut Canvas,
     t: &Theme,
@@ -293,16 +429,18 @@ pub fn render(
     current: usize,
     scroll_px: i32,
     sort: usize,
+    album_sort: usize,
+    album_expanded: Option<usize>,
     lib: &Library,
 ) {
-    let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib));
+    let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib, album_sort, album_expanded));
     c.fill(t.bg);
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
-    // Songs tab shows a tappable SORT chip in the header's right slot; others show the count.
-    let rc = if matches!(tab, Tab::Songs) {
-        format!("SORT \u{00b7} {}", SORTS[sort.min(2)])
-    } else {
-        count_caption(tab, lib)
+    // Songs shows a tappable SORT chip; Albums an ORDER chip; the others show their count.
+    let rc = match tab {
+        Tab::Songs => format!("SORT \u{00b7} {}", SORTS[sort.min(SORTS.len() - 1)]),
+        Tab::Albums => format!("ORDER \u{00b7} {}", ALBUM_SORTS[album_sort.min(ALBUM_SORTS.len() - 1)]),
+        _ => count_caption(tab, lib),
     };
     let y0 = crate::chrome::header(c, t, f, "Library", Some(&rc));
     let yt = tabs(c, t, f, y0, tab);
@@ -344,41 +482,76 @@ pub fn render(
         }
         Tab::Albums => {
             let top = shuffle_row(c, t, f, yt, "Shuffle by album", "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE") + 4;
-            let rh = 60;
             let flat = lib.albums_flat();
-            let (tops, content) = albums_layout(lib);
+            let layout = albums_build(lib, album_sort, album_expanded);
             c.set_clip_y(top, LIST_BOTTOM);
-            let mut prev_artist: Option<&str> = None;
-            for (idx, al) in flat.iter().enumerate() {
-                let need_header = prev_artist != Some(al.artist.as_str());
-                prev_artist = Some(al.artist.as_str());
-                let y = top + tops[idx] - scroll_px; // screen y of this album row
-                if y + rh <= top {
-                    continue; // fully above the window (its header is even higher)
+            let mut rank = 0; // album display rank (skips headers/tracks) — matches the button cursor
+            for (vy, row) in &layout.rows {
+                let h = match row {
+                    AlbumsRow::Group { .. } => ALBUM_HDR_H,
+                    AlbumsRow::Album { .. } => ALBUM_ROW_H,
+                    AlbumsRow::Track { .. } => ALBUM_CHILD_H,
+                };
+                let y = top + *vy - scroll_px;
+                if y + h <= top {
+                    if let AlbumsRow::Album { .. } = row {
+                        rank += 1;
+                    }
+                    continue; // fully above the window
                 }
                 if y >= LIST_BOTTOM {
                     break;
                 }
-                if need_header {
-                    let label = al.artist.to_uppercase();
-                    text::draw(c, f, 22.0, (y - 10) as f32, &label, &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.16));
+                match *row {
+                    AlbumsRow::Group { flat: fi } => {
+                        let label = flat[fi].artist.to_uppercase();
+                        text::draw(c, f, 22.0, (y + 20) as f32, &label,
+                            &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.16));
+                    }
+                    AlbumsRow::Album { flat: fi, expanded } => {
+                        let al = flat[fi];
+                        let now = rank == current;
+                        rank += 1;
+                        let cy = y + ALBUM_ROW_H / 2;
+                        if now {
+                            fill_rect(c, 0, y, W as i32, ALBUM_ROW_H, t.row_sel);
+                        }
+                        art::block(c, t, 22, y + (ALBUM_ROW_H - 44) / 2, 44, 44, &al.art, artdim(t));
+                        let tcol = if now { t.acc } else { t.ink };
+                        text::draw(c, f, 80.0, (cy - 2) as f32, &al.name,
+                            &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
+                        let sub = if al.year.is_empty() {
+                            format!("{} tracks", al.tracks)
+                        } else {
+                            format!("{} · {} tracks", al.year, al.tracks)
+                        };
+                        text::draw(c, f, 80.0, (cy + 16) as f32, &sub,
+                            &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
+                        // Accordion caret (right): points down when open, right when closed.
+                        let caret = if expanded { t.acc } else { t.faint };
+                        icons::chevron(c, 452.0, cy as f32, 13.0, caret);
+                        hline(c, y + ALBUM_ROW_H, t.line);
+                    }
+                    AlbumsRow::Track { flat: fi, track } => {
+                        let al = flat[fi];
+                        if let Some(sgn) = al.track_list.get(track) {
+                            let cy = y + ALBUM_CHILD_H / 2;
+                            // subtle inset band so tracks read as children of the album above
+                            fill_rect(c, 0, y, W as i32, ALBUM_CHILD_H, t.panel);
+                            let num = format!("{}", track + 1);
+                            text::draw(c, f, 84.0, (cy + 4) as f32, &num,
+                                &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.0));
+                            text::draw(c, f, 112.0, (cy + 4) as f32, &sgn.title,
+                                &body_label(Family::Sans, Weight::Regular, 15.0, t.ink));
+                            right(c, f, 452.0, (cy + 4) as f32, &sgn.dur,
+                                &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.0));
+                            hline(c, y + ALBUM_CHILD_H, t.line);
+                        }
+                    }
                 }
-                let now = idx == current;
-                let cy = y + rh / 2;
-                if now {
-                    fill_rect(c, 0, y, W as i32, rh, t.row_sel);
-                }
-                art::block(c, t, 22, y + (rh - 44) / 2, 44, 44, &al.art, artdim(t));
-                let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 80.0, (cy - 2) as f32, &al.name, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
-                let sub = format!("{} · {} tracks", al.year, al.tracks);
-                text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
-                stroke_rect(c, 416, cy - 19, 38, 38, t.line, 1);
-                icons::shuffle(c, 435.0, cy as f32, 14.0, t.dim);
-                hline(c, y + rh, t.line);
             }
             c.clear_clip();
-            scrollbar(c, t, top, scroll_px, content);
+            scrollbar(c, t, top, scroll_px, layout.content_h);
         }
         Tab::Artists => {
             let top = shuffle_row(c, t, f, yt, "Shuffle by artist", "RANDOM ARTIST · SHUFFLED WITHIN ARTIST") + 8;
@@ -561,8 +734,8 @@ mod tests {
             title: title.into(),
             artist: artist.into(),
             dur: dur.into(),
-            art: String::new(),
             object_id: id,
+            ..Default::default()
         }
     }
     fn album(name: &str, artist: &str, n_tracks: usize) -> AlbumRow {
@@ -571,11 +744,10 @@ mod tests {
             artist: artist.into(),
             year: "2020".into(),
             tracks: n_tracks as u32,
-            art: String::new(),
-            album_id: 0,
             track_list: (0..n_tracks)
                 .map(|i| song(&format!("t{i}"), artist, "3:00", 100 + i as i64))
                 .collect(),
+            ..Default::default()
         }
     }
     fn lib() -> Library {
@@ -596,26 +768,91 @@ mod tests {
         // sort 0 = TITLE: Alpha, Bravo, Charlie — rank 0 must be Alpha (id 2), NOT DB row 0.
         assert_eq!(song_at(&l, 0, 0).unwrap().object_id, 2);
         assert_eq!(song_at(&l, 0, 2).unwrap().object_id, 1);
-        // sort 1 = ARTIST: Aa, Mid, Zed → Bravo first.
+        // sort 1 = ARTIST A-Z: Aa, Mid, Zed → Bravo (id 3) first.
         assert_eq!(song_at(&l, 1, 0).unwrap().object_id, 3);
-        // sort 2 = LENGTH: 1:00, 5:00, 9:00 → Alpha first.
-        assert_eq!(song_at(&l, 2, 0).unwrap().object_id, 2);
+        // sort 2 = ARTIST Z-A: Zed, Mid, Aa → Charlie (id 1) first.
+        assert_eq!(song_at(&l, 2, 0).unwrap().object_id, 1);
+        // sort 3 = LENGTH: 1:00, 5:00, 9:00 → Alpha (id 2) first.
+        assert_eq!(song_at(&l, 3, 0).unwrap().object_id, 2);
         assert!(song_at(&l, 0, 3).is_none());
     }
 
     #[test]
-    fn albums_hit_row_accounts_for_artist_headers() {
+    fn albums_grouped_hit_accounts_for_headers_and_art_split() {
         let l = lib();
-        // Content layout (px, 0 = list top 201): header(One) 0..30, A1 30..90, A2 90..150
-        // (same artist, no header), header(Two) 150..180, B1 180..240.
-        assert_eq!(hit_row(Tab::Albums, &l, 0, 210), None); // artist header — not a row
-        assert_eq!(hit_row(Tab::Albums, &l, 0, 232), Some(0)); // A1
-        assert_eq!(hit_row(Tab::Albums, &l, 0, 300), Some(1)); // A2 — no second header
-        assert_eq!(hit_row(Tab::Albums, &l, 0, 360), None); // header(Two)
-        assert_eq!(hit_row(Tab::Albums, &l, 0, 400), Some(2)); // B1
-        assert_eq!(hit_row(Tab::Albums, &l, 0, 500), None); // below the content
+        // Grouped (sort 0), nothing expanded. Content (px, 0 = list top 201):
+        // header(One) 0..30, A1 30..90, A2 90..150 (same artist, no header),
+        // header(Two) 150..180, B1 180..240.
+        let hit = |x, y| albums_hit(&l, 0, None, 0, x, y);
+        assert_eq!(hit(200, 210), None); // artist header — not a row
+        assert_eq!(hit(200, 232), Some(AlbumsHit::AlbumToggle(0))); // A1 body → toggle
+        assert_eq!(hit(30, 232), Some(AlbumsHit::AlbumOpen(0))); // A1 art → drill-in
+        assert_eq!(hit(200, 300), Some(AlbumsHit::AlbumToggle(1))); // A2 — no second header
+        assert_eq!(hit(200, 360), None); // header(Two)
+        assert_eq!(hit(200, 400), Some(AlbumsHit::AlbumToggle(2))); // B1
+        assert_eq!(hit(200, 500), None); // below the content
         // Scrolled 60px (A1 off screen): the same screen y now lands on A2.
-        assert_eq!(hit_row(Tab::Albums, &l, 60, 232), Some(1));
+        assert_eq!(albums_hit(&l, 0, None, 60, 200, 232), Some(AlbumsHit::AlbumToggle(1)));
+    }
+
+    #[test]
+    fn albums_accordion_inserts_track_rows() {
+        let l = lib();
+        // Expand A1 (flat 0, 3 tracks). Layout: header(One) 0..30, A1 30..90,
+        // t0 90..136, t1 136..182, t2 182..228, A2 228..288, header(Two) 288..318, B1 318..378.
+        let exp = Some(0);
+        let hit = |y| albums_hit(&l, 0, exp, 0, 200, y);
+        assert_eq!(hit(201 + 60), Some(AlbumsHit::AlbumToggle(0))); // A1 row (content y 60)
+        assert_eq!(hit(201 + 100), Some(AlbumsHit::Track(0, 0))); // t0 (content 90..136)
+        assert_eq!(hit(201 + 160), Some(AlbumsHit::Track(0, 1))); // t1 (content 136..182)
+        assert_eq!(hit(201 + 200), Some(AlbumsHit::Track(0, 2))); // t2 (content 182..228)
+        assert_eq!(hit(201 + 250), Some(AlbumsHit::AlbumToggle(1))); // A2, pushed down by the tracks
+        // Content height grew by 3 track rows (3 * 46 = 138) vs collapsed.
+        let collapsed = albums_build(&l, 0, None).content_h;
+        let opened = albums_build(&l, 0, exp).content_h;
+        assert_eq!(opened - collapsed, 3 * ALBUM_CHILD_H);
+    }
+
+    #[test]
+    fn album_order_flat_sorts_drop_headers() {
+        let l = lib();
+        // Sort 1 (A-Z): no group headers, albums by name: A1, A2, B1 → flat order [0,1,2].
+        assert_eq!(album_display_order(&l, 1), vec![0, 1, 2]);
+        let layout = albums_build(&l, 1, None);
+        assert!(layout.rows.iter().all(|(_, r)| !matches!(r, AlbumsRow::Group { .. })));
+        // First row sits at content y 0 (no leading header) and is an album.
+        assert!(matches!(layout.rows[0], (0, AlbumsRow::Album { flat: 0, .. })));
+    }
+
+    #[test]
+    fn song_sorts_added_album_year() {
+        // Three songs with distinct sort keys.
+        let mut l = Library {
+            songs: vec![
+                song("Cee", "x", "3:00", 1),
+                song("Aay", "x", "3:00", 2),
+                song("Bee", "x", "3:00", 3),
+            ],
+            album_groups: Vec::new(),
+            artists: Vec::new(),
+            playlists: Vec::new(),
+        };
+        // added: song 1 newest, 3 oldest. album order: song 2 first. year: song 3 newest.
+        l.songs[0] = SongRow { added: 300, album_id: 5, disc: 1, track: 9, year: 2000, ..l.songs[0].clone() };
+        l.songs[1] = SongRow { added: 200, album_id: 1, disc: 1, track: 1, year: 2010, ..l.songs[1].clone() };
+        l.songs[2] = SongRow { added: 100, album_id: 5, disc: 1, track: 1, year: 2020, ..l.songs[2].clone() };
+        // ARTIST Z-A (sort 2): all same artist → tie-break by title: Aay, Bee, Cee.
+        assert_eq!(song_at(&l, 2, 0).unwrap().object_id, 2);
+        // ADDED (sort 4): newest first → 1, 2, 3.
+        assert_eq!(song_at(&l, 4, 0).unwrap().object_id, 1);
+        assert_eq!(song_at(&l, 4, 2).unwrap().object_id, 3);
+        // ALBUM (sort 5): (album_id, disc, track) → song2(1,1,1), song3(5,1,1), song1(5,1,9).
+        assert_eq!(song_at(&l, 5, 0).unwrap().object_id, 2);
+        assert_eq!(song_at(&l, 5, 1).unwrap().object_id, 3);
+        assert_eq!(song_at(&l, 5, 2).unwrap().object_id, 1);
+        // YEAR (sort 6): newest first → 2020(3), 2010(2), 2000(1).
+        assert_eq!(song_at(&l, 6, 0).unwrap().object_id, 3);
+        assert_eq!(song_at(&l, 6, 2).unwrap().object_id, 1);
     }
 
     #[test]
@@ -662,19 +899,19 @@ mod tests {
     #[test]
     fn pixel_scroll_geometry_helpers() {
         let l = lib();
-        // Albums content: 2 headers (30) + 3 rows (60) = 240 px; fits in the view → no scroll.
-        assert_eq!(content_h(Tab::Albums, &l), 240);
-        assert_eq!(max_scroll_px(Tab::Albums, &l), 0);
+        // Albums content (grouped, collapsed): 2 headers (30) + 3 rows (60) = 240 px; fits → no scroll.
+        assert_eq!(content_h(Tab::Albums, &l, 0, None), 240);
+        assert_eq!(max_scroll_px(Tab::Albums, &l, 0, None), 0);
         // Songs: 3 * 62 = 186 px, fits.
-        assert_eq!(content_h(Tab::Songs, &l), 186);
+        assert_eq!(content_h(Tab::Songs, &l, 0, None), 186);
         // 40 songs don't fit: max scroll = content - view, positive.
         let many = lib_many();
-        let max = max_scroll_px(Tab::Songs, &many);
+        let max = max_scroll_px(Tab::Songs, &many, 0, None);
         assert_eq!(max, 40 * 62 - (LIST_BOTTOM - 205));
         assert!(max > 0);
-        // Row-top helper replays the grouped Albums layout.
-        assert_eq!(row_top_px(Tab::Albums, &l, 0), 30);
-        assert_eq!(row_top_px(Tab::Albums, &l, 1), 90);
-        assert_eq!(row_top_px(Tab::Albums, &l, 2), 180);
+        // Row-top helper (grouped albums, by album display rank): A1=30, A2=90, B1=180.
+        assert_eq!(row_top_px(Tab::Albums, &l, 0, 0, None), 30);
+        assert_eq!(row_top_px(Tab::Albums, &l, 1, 0, None), 90);
+        assert_eq!(row_top_px(Tab::Albums, &l, 2, 0, None), 180);
     }
 }

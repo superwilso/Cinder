@@ -55,6 +55,32 @@ is still preferred.
 
 ---
 
+## TL;DR — tenth round (2026-07-03): library ordering + Albums accordion
+
+Library browse gained sort/order options and an inline album view (all 39 UI tests + 8 DB tests
+green; qemu preflight PASS; both channels rebuilt + packed). No FFI symbols changed (ABI intact).
+
+1. **Songs SORT chip now 7-way** — `TITLE · ARTIST A-Z · ARTIST Z-A · LENGTH · ADDED · ALBUM ·
+   YEAR` (was 3). Tap the chip (header right slot) or press Option to cycle. New keys ride on
+   `SongRow` (album_id/disc/track, addedtime, release year), populated from the DB in
+   `build_library`; `song_order` sorts client-side.
+2. **Albums ORDER chip** — `ARTIST` (artist-grouped, the classic view with section headers) ·
+   `A-Z` · `ADDED` · `YEAR`. Flat orders drop the artist headers. Header shows "ORDER · …".
+3. **Albums accordion** — tapping an album row's **body** expands its tracks inline (numbered,
+   indented, on a panel band); tapping again collapses. Tapping the album **art** (left, x<72)
+   still opens the full drill-in page (cover art). Tapping an inline track plays it in album
+   context. The Albums tab is now one variable-height display list (`albums_build` →
+   Group/Album/Track rows); layout, hit-testing, and pixel-scroll all read from it so they can't
+   drift. Single-expand (one album open at a time). Verified in host PNGs
+   (`library_albums_expanded`, `library_albums_az`, `library_songs_added`).
+4. **Release year — best-effort** — `AlbumRow.year` was always blank; now resolved via a
+   `releaseyears(id,value)` lookup (sibling of albums/artists; FK `releaseyear_id`). Table name
+   unconfirmed in RE, so `Db::release_years()` tries `releaseyears` then `releaseyear` and
+   **degrades to blank on any mismatch** (never fails the build) and logs the hit count. If the
+   guess is wrong the YEAR sorts are inert (years blank, as before) and the next `MTPDB_copy.dat`
+   pull confirms the real schema. Same DB-pull closes **playlist** detection (still deferred:
+   `PlaylistTrack` membership schema not yet RE'd — the Playlists tab remains empty by design).
+
 ## TL;DR — ninth round (2026-07-03): smooth & responsive + device-feedback fixes
 
 Every item from the device-feedback list, root-caused and fixed (63 tests green; qemu

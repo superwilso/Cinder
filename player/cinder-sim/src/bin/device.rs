@@ -116,6 +116,11 @@ fn big_library() -> Library {
                     dur: format!("{}:{:02}", 3 + (i % 4), (i * 13) % 60),
                     art: aname.clone(),
                     object_id: oid,
+                    album_id: (ai * 10 + k) as i64,
+                    disc: 1,
+                    track: i as i32 + 1,
+                    year: (2009 + (ai + k) % 15) as i32,
+                    ..Default::default()
                 };
                 oid += 1;
                 track_list.push(row.clone());
@@ -128,7 +133,9 @@ fn big_library() -> Library {
                 tracks: ntr,
                 art: aname,
                 album_id: (ai * 10 + k) as i64,
+                added: (2009 + (ai + k) % 15) as i64,
                 track_list,
+                ..Default::default()
             });
         }
         album_groups.push(ArtistGroup { artist: a.to_string(), albums: group_albums });

@@ -127,6 +127,11 @@ pub struct App {
     /// Library list scroll in PIXELS (live drag + fling; rows render at a sub-row offset).
     lib_scroll_px: i32,
     lib_sort: usize,
+    /// Albums-tab ORDER chip (index into library::ALBUM_SORTS: 0 artist-grouped, 1 A-Z, 2 added,
+    /// 3 year) + the one expanded accordion album (a lib.albums_flat() index, stable across
+    /// re-orders; None = all collapsed). Session state — not persisted.
+    album_sort: usize,
+    album_expanded: Option<usize>,
     /// Album drill-in: the flat album index being viewed + the track cursor/pixel-scroll inside it.
     album_view: usize,
     album_track_idx: usize,
@@ -219,6 +224,8 @@ impl Default for App {
             lib_idx: 0,
             lib_scroll_px: 0,
             lib_sort: 0,
+            album_sort: 0,
+            album_expanded: None,
             album_view: 0,
             album_track_idx: 0,
             album_scroll_px: 0,
@@ -666,9 +673,23 @@ impl App {
         }
     }
 
-    // Library tap: tab bar, then the data rows (scroll-aware). Songs play the track; Albums drill
-    // in; Artists/Playlists select. (Albums has grouped headers, so the row is approximate.)
+    // Library tap: SORT/ORDER chip, tab bar, then the data rows (scroll-aware). Songs play the
+    // track; Albums expand inline (accordion) / drill in via the art / play an expanded track;
+    // Artists/Playlists select.
     fn tap_library(&mut self, x: i32, y: i32) -> Vec<Action> {
+        // SORT/ORDER chip in the header's right slot (right of the back chevron's x<80 band).
+        // Songs cycles the SORT chip; Albums cycles the ORDER chip. Both reset the list position.
+        if (34..91).contains(&y) && x >= 300 {
+            match self.lib_tab {
+                Tab::Songs => self.lib_sort = (self.lib_sort + 1) % library::SORTS.len(),
+                Tab::Albums => self.cycle_album_sort(),
+                _ => return vec![],
+            }
+            self.lib_idx = 0;
+            self.lib_scroll_px = 0;
+            self.fling_v = 0.0;
+            return vec![];
+        }
         if (91..126).contains(&y) {
             self.lib_tab = if x < 120 {
                 Tab::Songs
@@ -682,11 +703,15 @@ impl App {
             self.lib_idx = 0;
             self.lib_scroll_px = 0;
             self.fling_v = 0.0;
+            self.album_expanded = None;
             return vec![];
         }
-        // Everything else routes through the render-mirroring hit test (library::hit_row): it
-        // knows each tab's real list top/row height, the Albums artist headers, and returns None
-        // for the shuffle band / gaps / rows that weren't drawn.
+        // Albums is a sortable accordion — its own hit test (expand/collapse, drill-in, play track).
+        if matches!(self.lib_tab, Tab::Albums) {
+            return self.tap_albums(x, y);
+        }
+        // The other tabs route through the render-mirroring hit test (library::hit_row): it knows
+        // each tab's list top/row height and returns None for the shuffle band / gaps / off-list.
         let Some(row) = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y) else {
             return vec![];
         };
@@ -699,14 +724,6 @@ impl App {
                     vec![Action::PlayIndex(id)]
                 })
                 .unwrap_or_default(),
-            Tab::Albums => {
-                self.album_view = row;
-                self.album_track_idx = 0;
-                self.album_scroll_px = 0;
-                self.fling_v = 0.0;
-                self.push(Screen::Album);
-                vec![]
-            }
             // Artists / Playlists rows aren't directly playable (no track object under the finger) —
             // they navigate, not play. Nothing to enqueue.
             _ => {
@@ -716,13 +733,70 @@ impl App {
         }
     }
 
+    // A tap on the Albums accordion: the art (left) drills into the album page; the row body
+    // toggles the inline track list; a track row plays that track in album context.
+    fn tap_albums(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::library::AlbumsHit;
+        match library::albums_hit(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, x, y) {
+            Some(AlbumsHit::AlbumToggle(flat)) => {
+                self.album_expanded = if self.album_expanded == Some(flat) { None } else { Some(flat) };
+                if let Some(rank) = self.album_rank_of(flat) {
+                    self.lib_idx = rank;
+                }
+                self.clamp_lib_scroll();
+                self.fling_v = 0.0;
+                vec![]
+            }
+            Some(AlbumsHit::AlbumOpen(flat)) => {
+                self.album_view = flat;
+                self.album_track_idx = 0;
+                self.album_scroll_px = 0;
+                self.fling_v = 0.0;
+                self.push(Screen::Album);
+                vec![]
+            }
+            Some(AlbumsHit::Track(flat, track)) => self
+                .lib
+                .albums_flat()
+                .get(flat)
+                .and_then(|al| al.track_list.get(track))
+                .map(|s| vec![Action::PlayIndex(s.object_id)])
+                .unwrap_or_default(),
+            None => vec![],
+        }
+    }
+
+    /// Advance the Albums ORDER chip and collapse any open accordion (its identity is still valid,
+    /// but the position shift is less confusing when it re-opens deliberately).
+    fn cycle_album_sort(&mut self) {
+        self.album_sort = (self.album_sort + 1) % library::ALBUM_SORTS.len();
+        self.album_expanded = None;
+    }
+
+    /// The album DISPLAY rank (0-based over albums, under the current ORDER) of a `albums_flat()`
+    /// index — for keeping the button cursor on a toggled row.
+    fn album_rank_of(&self, flat: usize) -> Option<usize> {
+        library::album_display_order(&self.lib, self.album_sort).iter().position(|&f| f == flat)
+    }
+
+    /// Largest useful library scroll for the current tab (Albums depends on ORDER + expansion).
+    fn lib_max_scroll(&self) -> i32 {
+        library::max_scroll_px(self.lib_tab, &self.lib, self.album_sort, self.album_expanded)
+    }
+
+    /// Re-clamp the library scroll after the content height changes (accordion open/close).
+    fn clamp_lib_scroll(&mut self) {
+        let max = self.lib_max_scroll();
+        self.lib_scroll_px = self.lib_scroll_px.clamp(0, max);
+    }
+
     /// Live drag-scroll of the current list by `dy_px` PIXELS (positive = content moves up /
     /// show later rows). Called per pump tick while a vertical drag is in progress, so the list
     /// tracks the finger; clamped to the content height.
     pub fn scroll_px(&mut self, dy_px: i32) {
         match self.current() {
             Screen::Library => {
-                let max = library::max_scroll_px(self.lib_tab, &self.lib);
+                let max = self.lib_max_scroll();
                 self.lib_scroll_px = (self.lib_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Album => {
@@ -838,12 +912,14 @@ impl App {
         self.lib_idx = 0;
         self.lib_scroll_px = 0;
         self.fling_v = 0.0;
+        self.album_expanded = None;
     }
 
     /// Keep the library cursor's row fully inside the pixel-scrolled window (button nav).
     fn lib_ensure_visible(&mut self) {
-        let row_top = library::row_top_px(self.lib_tab, &self.lib, self.lib_idx);
-        let rh = library::row_h(self.lib_tab);
+        let row_top = library::row_top_px(self.lib_tab, &self.lib, self.lib_idx, self.album_sort, self.album_expanded);
+        // Albums rows are ALBUM_ROW_H; the fixed tabs use their own row_h.
+        let rh = if matches!(self.lib_tab, Tab::Albums) { library::ALBUM_ROW_H } else { library::row_h(self.lib_tab) };
         let view = library::view_h(self.lib_tab);
         if row_top < self.lib_scroll_px {
             self.lib_scroll_px = row_top;
@@ -1044,6 +1120,7 @@ impl App {
                     self.lib_idx = 0;
                     self.lib_scroll_px = 0;
                     self.fling_v = 0.0;
+                    self.album_expanded = None;
                     vec![]
                 }
                 Button::Right => {
@@ -1051,6 +1128,7 @@ impl App {
                     self.lib_idx = 0;
                     self.lib_scroll_px = 0;
                     self.fling_v = 0.0;
+                    self.album_expanded = None;
                     vec![]
                 }
                 Button::Up => {
@@ -1065,15 +1143,25 @@ impl App {
                     }
                     vec![]
                 }
-                // Option cycles the Songs sort chip (TITLE / ARTIST / LENGTH).
+                // Option cycles the Songs SORT chip, or the Albums ORDER chip.
                 Button::Option if matches!(self.lib_tab, Tab::Songs) => {
-                    self.lib_sort = (self.lib_sort + 1) % 3;
+                    self.lib_sort = (self.lib_sort + 1) % library::SORTS.len();
+                    self.lib_idx = 0;
+                    self.lib_scroll_px = 0;
+                    vec![]
+                }
+                Button::Option if matches!(self.lib_tab, Tab::Albums) => {
+                    self.cycle_album_sort();
+                    self.lib_idx = 0;
+                    self.lib_scroll_px = 0;
                     vec![]
                 }
                 Button::Select => match self.lib_tab {
                     // Albums drill into a track list; Songs/Playlists play the row directly.
                     Tab::Albums => {
-                        self.album_view = self.lib_idx;
+                        // lib_idx is the album DISPLAY rank — resolve it to the flat album index.
+                        self.album_view =
+                            library::album_flat_at_rank(&self.lib, self.album_sort, self.lib_idx).unwrap_or(0);
                         self.album_track_idx = 0;
                         self.album_scroll_px = 0;
                         self.fling_v = 0.0;
@@ -1290,7 +1378,8 @@ impl App {
                 crate::menu::render(c, &theme, fonts, &items);
             }
             Screen::Library => crate::library::render(
-                c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort, &self.lib,
+                c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
+                self.album_sort, self.album_expanded, &self.lib,
             ),
             Screen::Album => {
                 let flat = self.lib.albums_flat();
@@ -1300,7 +1389,8 @@ impl App {
                     );
                 } else {
                     crate::library::render(
-                        c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort, &self.lib,
+                        c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
+                        self.album_sort, self.album_expanded, &self.lib,
                     );
                 }
             }
@@ -2160,7 +2250,7 @@ mod tests {
         let mut a = unlocked();
         a.tap(372, 16); // Menu
         a.tap(200, 91 + 63 + 8); // Library
-        let max = library::max_scroll_px(a.lib_tab, &a.lib);
+        let max = library::max_scroll_px(a.lib_tab, &a.lib, 0, None);
         a.scroll_px(120); // live drag → later rows (clamped to content)
         assert_eq!(a.lib_scroll_px, 120.min(max));
         a.scroll_px(-10_000); // clamp at 0
