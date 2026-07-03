@@ -112,6 +112,16 @@ int cinder_audio_play(void)  { return change_state(pl::playstate_t::Play); }
 int cinder_audio_pause(void) { return change_state(pl::playstate_t::Pause); }
 int cinder_audio_stop(void)  { return change_state(pl::playstate_t::Stop); }
 
+// Stop playback AND drop our pinned track sequence, so PlayerService releases the current
+// track's file descriptor. Needed before handing /contents to the PC over USB-MSC: a paused
+// service keeps the media file open, and any open fd under /contents makes init's
+// unmount_msc1 fail EBUSY → the LUN write fails → the PC sees a reader with no medium.
+int cinder_audio_release_sequence(void) {
+    int rc = change_state(pl::playstate_t::Stop);
+    g_seq.reset();
+    return rc;
+}
+
 int cinder_audio_next_track(void) { return g_ctrl ? g_ctrl->NextTrack() : -1; }
 int cinder_audio_prev_track(void) { return g_ctrl ? g_ctrl->PrevTrack(nullptr) : -1; }
 int cinder_audio_next_group(void) { return g_ctrl ? g_ctrl->NextGroup() : -1; }

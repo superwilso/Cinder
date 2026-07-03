@@ -117,12 +117,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         fill_rect(c, 435, ty as i32 - 1, 3, 3, t.acc);
     }
 
-    // ---------- bottom toolbar (744..800) ----------
+    // ---------- bottom toolbar (744..800): library · queue · eq · bt · settings ----------
+    // (nav::tap's five 96px slots mirror this order — keep them in sync)
     hline(c, 744, t.line);
     let tb = 774.0;
-    icons::heart(c, 48.0, tb, 22.0, if np.liked { t.acc } else { t.dim });
+    icons::library(c, 48.0, tb, 22.0, t.dim);
     icons::queue(c, 144.0, tb, 22.0, t.dim);
     icons::eq(c, 240.0, tb, 22.0, t.dim);
     icons::bt(c, 336.0, tb, 21.0, t.dim);
-    icons::library(c, 432.0, tb, 22.0, t.dim);
+    icons::settings(c, 432.0, tb, 22.0, t.dim);
 }

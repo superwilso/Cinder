@@ -27,6 +27,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <ctime>
+#include <time.h>   // clock_gettime/CLOCK_MONOTONIC (drag velocity timing)
 #include <setjmp.h>
 #include <pthread.h>
 #include <sys/statvfs.h>
@@ -137,8 +138,20 @@ void install_diagnostics() {
 // -1 if it crashed or hung (in which case it was skipped and the process is still alive).
 // Saves/restores any OUTER alarm so it composes when called inside the per-frame watchdog
 // (e.g. carry_out -> EQ apply, which runs inside input_pump's alarm()).
+//
+// Logging: each label is traced the FIRST time only (the boot sequence stays readable in
+// cinderhome.log), plus every RECOVERY. Per-tick calls ("pump: poll now-playing" ran once a
+// second) no longer flood the log. Labels are string literals → identity compare is enough.
 int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
-    clog_(what);
+    static const char* seen[64];
+    static int nseen = 0;
+    bool first = true;
+    for (int i = 0; i < nseen; ++i)
+        if (seen[i] == what) { first = false; break; }
+    if (first) {
+        if (nseen < (int)(sizeof seen / sizeof *seen)) seen[nseen++] = what;
+        clog_(what);
+    }
     unsigned prev = alarm(0);     // pause + capture the outer watchdog's remaining time
     g_guard_owner = pthread_self();  // only THIS thread may siglongjmp back to the buffer below
     g_in_guard = 1;
@@ -150,14 +163,19 @@ int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
         if (prev) alarm(prev);    // resume the outer watchdog
         return 0;
     }
-    // returned here via siglongjmp from fault_handler
+    // returned here via siglongjmp from fault_handler — always name the recovered call (the
+    // fault dump itself can't know the label)
     g_in_guard = 0;
     alarm(0);
     if (prev) alarm(prev);
+    char m[128];
+    std::snprintf(m, sizeof m, "GUARD RECOVERED: %s", what);
+    clog_(m);
     return -1;
 }
 
 bool g_settings_loaded = false; // did cinder_settings_load find a saved file? (→ re-apply EQ/sound)
+bool g_volume_restored = false; // did it restore a persisted volume level? (→ push to hw, not seed)
 void set_backlight(int night); // night=minimal/day=normal; boot forces day, toggle matches theme
 bool g_render_ready = false;   // framebuffer/renderer open? (pump must not tick before this)
 easel::CuiAppModule* g_cui = nullptr;   // the UI module — used to drive the pump (OnPumpTrigger)
@@ -211,7 +229,9 @@ void render_up() {
     // Restore persisted UI preferences (theme/visualiser/EQ/sound) so the first paint reflects them.
     // Pure file read (no Sony service) — safe on the boot path; a missing file just leaves defaults.
     // If a file was loaded, deferred_up re-applies the saved EQ/sound to the DSP once audio is up.
-    g_settings_loaded = (cinder_settings_load("/contents/cinder_settings.conf") != 0);
+    int sl = cinder_settings_load("/contents/cinder_settings.conf");
+    g_settings_loaded = (sl & 1) != 0;
+    g_volume_restored = (sl & 2) != 0;
     // Boot ALWAYS at DAY backlight, even if night theme is persisted — the night dim is NOT resumed
     // across boots. Otherwise a daytime boot into persisted night could come up at ~3% backlight and
     // you couldn't see the screen to turn it back up. The night dim is a deliberate per-session action
@@ -248,6 +268,7 @@ void apply_eq_fn();      // defined below (carry_out helpers); re-applied from d
 void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, before render_up)
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
 void sync_volume_from_hw(); // defined below (volume backend); seeds the UI level from the mixer
+void apply_volume();        // defined below (volume backend); writes the UI level to the mixer
 
 // Stop the analyzer stream (guarded — Stop() is a Sony-service call). No-op if it was never
 // started, so it's safe to call unconditionally from the lifecycle hooks.
@@ -282,11 +303,36 @@ void deferred_up() {
     }
     // Real storage usage for Settings (statvfs — read-only, no Sony service; guarded for parity).
     run_guarded("deferred_up: report storage", 6, report_storage);
-    run_guarded("deferred_up: sync volume from hw", 6, sync_volume_from_hw);
+    // Volume at boot, stock-style: a PERSISTED level wins (restore it to the hardware — fixes the
+    // "boots near-mute at hw level 1" failure); otherwise seed the UI from the mixer, and if that
+    // reads back effectively mute (< 5/120 — the boot-default case, not a deliberate user 0),
+    // apply the UI's modest audible default instead.
+    if (g_volume_restored) {
+        run_guarded("deferred_up: restore saved volume to hw", 6, apply_volume);
+    } else {
+        run_guarded("deferred_up: sync volume from hw", 6, sync_volume_from_hw);
+        if (cinder_get_volume() < 5) {
+            cinder_set_volume(15);
+            run_guarded("deferred_up: apply default volume (hw was mute)", 6, apply_volume);
+        }
+    }
     // Publish the device-wide BT codec preference file (consumed by normal BT + the LDAC bridge), so
     // it reflects the persisted choice from first boot. Pure file IO; safe to call unguarded.
     write_bt_pref();
 #ifdef CINDER_DEV
+    // DEV CHANNEL: copy the real library DB out to user-visible storage (once per boot, only if
+    // missing or the size changed — ~a few MB). Pull it via USB-MSC/flash.sh to close the
+    // album-art schema question offline (images.value TEXT-path vs inline BLOB vs bmpfile).
+    run_guarded("deferred_up: copy MTPDB.dat to /contents (dev)", 15, []() {
+        std::system("if [ -f /db/MTPDB.dat ]; then "
+                    "  a=$(stat -c %s /db/MTPDB.dat 2>/dev/null); "
+                    "  b=$(stat -c %s /contents/MTPDB_copy.dat 2>/dev/null); "
+                    "  if [ \"$a\" != \"$b\" ]; then "
+                    "    cp /db/MTPDB.dat /contents/MTPDB_copy.dat.tmp 2>/dev/null && "
+                    "    mv /contents/MTPDB_copy.dat.tmp /contents/MTPDB_copy.dat; "
+                    "  fi; "
+                    "fi 2>/dev/null");
+    });
     // DEV CHANNEL: auto-capture the read-only device discovery (volume/ALSA/sysfs/usb + PlayStatus)
     // so the data needed to wire the device-gated features lands in /contents/cinder_discovery.txt
     // just by flashing dev — no separate probe run. with_input=0: the pump owns the input nodes, so
@@ -297,20 +343,23 @@ void deferred_up() {
 #endif
 #ifdef CINDER_DEV
     // DEV CHANNEL ONLY (build.sh dev): best-effort enable adb for push-and-run iteration. Guarded,
-    // so a failure (no permission / different USB-config mechanism) is harmless — the player runs
-    // exactly like stable, just without adb. Touches NO boot-critical files (contrast the
-    // ramdisk-init approach scrobbler/wampy use, which we avoid — boot-image repack = brick risk).
-    // Adds adb to the USB gadget composite (keeps MTP) and starts the daemon. Exact mechanism is
-    // confirmed on first dev flash; refine here if the device wants a different property.
-    clog_("deferred_up: DEV channel — enabling adb (best-effort, guarded)");
-    run_guarded("deferred_up: enable adb (dev)", 8, []() {
-        // Add adb to the USB gadget composite (keeps MTP) + start the daemon. We trigger adbd via
-        // both `start adbd` (toolbox, if present) AND `setprop ctl.start adbd` (the init mechanism
-        // `start` wraps — always available), so it works regardless of which the device ships.
-        std::system("setprop sys.usb.config mtp,adb 2>/dev/null; "
-                    "setprop persist.sys.usb.config mtp,adb 2>/dev/null; "
-                    "start adbd 2>/dev/null; "
-                    "setprop ctl.start adbd 2>/dev/null");
+    // so a failure is harmless — the player runs exactly like stable, just without adb. Touches NO
+    // boot-critical files. Mechanism (RE'd from the ramdisk init.rc): the `adbd` service exists
+    // but is class-disabled; init only starts it inside the `on property:sys.sony.config=<mode>`
+    // blocks. The boot-default gadget already carries the adb function (PID 0B8B / 0B8D composite),
+    // so the ONLY missing piece is the daemon — `setprop ctl.start adbd` makes init start it
+    // directly (ctl.* works for disabled services; a plain `start` from a non-init process and
+    // `sys.usb.config` writes do nothing on this firmware — the previous approach's bug).
+    clog_("deferred_up: DEV channel — starting adbd (ctl.start, best-effort, guarded)");
+    run_guarded("deferred_up: start adbd (dev)", 10, []() {
+        std::system("setprop ctl.start adbd 2>/dev/null");
+        // Verification snapshot ~3 s later, straight into cinderhome.log: service state per init,
+        // the live process, and the gadget functions. One log pull now answers "is adb up, or is
+        // it just the Windows driver?" (docs/adb_setup.md §1.4).
+        std::system("sleep 3; echo \"[cinder-home] adb: init.svc.adbd=$(getprop init.svc.adbd) "
+                    "proc=$(ps | grep -c '[a]dbd') "
+                    "functions=$(cat /sys/class/android_usb/android0/functions 2>/dev/null) "
+                    "state=$(getprop sys.usb.state)\"");
     });
 #endif
     // OPTIONAL real-spectrum visualiser via Sony's AudioAnalyzerService. DEFAULT OFF — only started
@@ -368,10 +417,14 @@ static int  g_evn = 0;
 static bool g_input_started = false;
 
 // Touchscreen navigation (the NW-A55 has no d-pad). A contact is bracketed by BTN_TOUCH down/up;
-// ABS_X/Y (or the MT variants) give its position. On release we classify in UI coordinates:
+// ABS_X/Y (or the MT variants) give its position. A mostly-VERTICAL move past a small slop
+// becomes a LIVE DRAG: every position update streams pixel deltas into cinder_touch_drag so the
+// list tracks the finger, and the release velocity feeds cinder_touch_fling for momentum —
+// stock-smooth scrolling instead of the old one-jump-per-gesture row scroll. Everything else is
+// classified at release in UI coordinates:
 //   • left-edge → rightward swipe   = Back
 //   • little movement               = TAP  → cinder_tap(x,y)
-//   • mostly-vertical drag          = SCROLL → cinder_touch_scroll(rows)
+//   • horizontal swipe              = cinder_swipe (onboarding/NP skip/queue)
 // The panel's reported ranges (from EVIOCGABS at open) map raw → UI (480×800), so this works
 // regardless of whether the panel reports pixels or a raw range.
 static int  g_touch_min_x = 0,  g_touch_max_x = 480;
@@ -379,6 +432,18 @@ static int  g_touch_min_y = 0,  g_touch_max_y = 800;
 static bool g_touch_down   = false;
 static int  g_touch_start_x = -1, g_touch_start_y = -1;
 static int  g_touch_cur_x   = -1, g_touch_cur_y   = -1;
+// Live-drag state: active flag, last dispatched UI y, smoothed velocity (px/s, UI scroll sign:
+// positive = show later rows), and the time of the last movement (staleness check at release —
+// hold-still-then-lift must not fling).
+static bool  g_drag_active = false;
+static int   g_drag_last_uy = 0;
+static float g_drag_vel = 0.0f;
+static long  g_drag_last_ms = 0;
+static long now_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 // The actual touchscreen fd. Other input nodes report ABS_X/ABS_Y too (e.g. `m_batch_input`, a
 // sensor-batch device — ABS=13f), so we MUST only treat ABS/BTN_TOUCH from THIS fd as touch, or
 // the sensor stream overwrites the real finger coordinates and every tap lands at garbage.
@@ -415,20 +480,23 @@ static bool g_playing = true;   // local transport state (PlayStatus playstate o
 
 static int keymap_size() { return (int)(sizeof g_keymap / sizeof *g_keymap); }
 
-// Default map: standard Linux nav/media key codes. The NW-A50's actual GPIO codes differ —
-// calibrate with getevent and drop them into /contents/cinder_keymap.conf.
+// Default map: the NW-A50's REAL side-button codes (wampy glfw.patch, confirmed against the
+// icx_key driver): the transport keys report as plain keyboard codes, NOT media codes —
+// play=28 (KEY_ENTER), FF/next=106 (KEY_RIGHT), REW/prev=105 (KEY_LEFT), vol−=114, vol+=115,
+// power=116 (on event0), hold switch=35. They map to GLOBAL transport buttons (the device has
+// no d-pad, so nothing else wants these codes). Standard media codes stay mapped too for the
+// qemu/sim path. Override any of it via /contents/cinder_keymap.conf.
 static void keymap_defaults() {
     for (int i = 0; i < keymap_size(); ++i) g_keymap[i] = -1;
     auto set = [](int code, int btn) { if (code >= 0 && code < keymap_size()) g_keymap[code] = btn; };
-    set(103, CINDER_BTN_UP);     set(108, CINDER_BTN_DOWN);
-    set(105, CINDER_BTN_LEFT);   set(106, CINDER_BTN_RIGHT);
-    set(28,  CINDER_BTN_SELECT); set(96,  CINDER_BTN_SELECT);   // ENTER / KP_ENTER
-    set(158, CINDER_BTN_BACK);   set(1,   CINDER_BTN_BACK);     // BACK / ESC
-    set(139, CINDER_BTN_OPTION);                                // MENU
-    set(164, CINDER_BTN_PLAY);   set(200, CINDER_BTN_PLAY);     // PLAYPAUSE / PLAYCD
-    set(163, CINDER_BTN_RIGHT);  set(165, CINDER_BTN_LEFT);     // NEXTSONG / PREVIOUSSONG
-    set(115, CINDER_BTN_VOLUP);  set(114, CINDER_BTN_VOLDOWN);
-    set(102, CINDER_BTN_HOME);   set(116, CINDER_BTN_POWER);
+    set(28,  CINDER_BTN_PLAY);                                  // side play/pause (KEY_ENTER)
+    set(106, CINDER_BTN_NEXT);   set(105, CINDER_BTN_PREV);     // side FF / REW
+    set(115, CINDER_BTN_VOLUP);  set(114, CINDER_BTN_VOLDOWN);  // volume rocker
+    set(116, CINDER_BTN_POWER);                                 // power (event0)
+    set(35,  CINDER_BTN_HOLD);                                  // hold/lock switch
+    set(164, CINDER_BTN_PLAY);   set(200, CINDER_BTN_PLAY);     // PLAYPAUSE / PLAYCD (sim/qemu)
+    set(163, CINDER_BTN_NEXT);   set(165, CINDER_BTN_PREV);     // NEXTSONG / PREVIOUSSONG
+    set(158, CINDER_BTN_BACK);   set(1,   CINDER_BTN_BACK);     // BACK / ESC (sim/qemu)
 }
 
 static void keymap_load_overrides() {
@@ -443,7 +511,7 @@ static void keymap_load_overrides() {
         long code = std::strtol(line, &end, 10);
         if (end == line) continue;
         long btn = std::strtol(end, nullptr, 10);
-        if (code >= 0 && code < keymap_size() && btn >= 0 && btn <= CINDER_BTN_HOLD)
+        if (code >= 0 && code < keymap_size() && btn >= 0 && btn <= CINDER_BTN_PREV)
             g_keymap[code] = (int)btn;
     }
     std::fclose(f);
@@ -645,21 +713,23 @@ void sync_volume_from_hw() {
         std::fclose(f);
     }
     if (val < g_vol.min || val > g_vol.max) return;   // parse failed / out of range — keep UI default
-    int pct = (int)((val - g_vol.min) * 100 / (g_vol.max - g_vol.min));
-    cinder_set_volume(pct);
+    // UI level is the stock 0..120 scale; with the default backend (min 0, max 120) this is 1:1.
+    int level = (int)((val - g_vol.min) * 120 / (g_vol.max - g_vol.min));
+    cinder_set_volume(level);
     char m[96];
-    std::snprintf(m, sizeof m, "volume: hw level %ld -> UI %d%%", val, pct);
+    std::snprintf(m, sizeof m, "volume: hw %ld -> UI level %d/120", val, level);
     clog_(m);
 }
 
-// Apply a 0..100% volume to the device via the configured backend. No-op if unconfigured. Called
-// guarded (system()/sysfs write). Read-on-first-use.
+// Apply the UI's 0..120 volume level to the device via the configured backend (1:1 with the
+// default amixer 'master volume' 0..120; rescaled only for a conf-overridden range). No-op if
+// unconfigured. Called guarded (system()/sysfs write). Read-on-first-use.
 void apply_volume() {
     if (!g_vol_read) load_vol_cfg();
     if (!g_vol.valid) return;
-    int pct = cinder_get_volume();
-    if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-    int val = g_vol.min + (g_vol.max - g_vol.min) * pct / 100;
+    int level = cinder_get_volume();
+    if (level < 0) level = 0; if (level > 120) level = 120;
+    int val = g_vol.min + (g_vol.max - g_vol.min) * level / 120;
     if (g_vol.amixer) {
         char cmd[384];
         std::snprintf(cmd, sizeof cmd, "amixer -c %d cset name='%s' %d >/dev/null 2>&1",
@@ -922,15 +992,18 @@ void log_contents_holders() {
 
 void enter_usb_msc() {
     clog_("usb-msc: entering (session log -> /tmp/cinder_msc.log, spliced back on exit)");
-    // 1) release OUR storage users: pause playback (PlayerService may hold the current track
-    //    open on /contents) and make sure our cwd isn't under it either.
+    // 1) release OUR storage users. Pause is NOT enough: a paused PlayerService keeps the
+    //    current track's file open under /contents, which alone makes unmount_msc1 fail EBUSY.
+    //    Stop + drop the pinned sequence so the service closes the media file. Called directly
+    //    (NOT via a nested run_guarded — the guard's jmp buffer doesn't nest): this whole
+    //    function already runs under carry_out's "enter USB MSC" guard, which covers the IPC.
     g_playing = false;
-    cinder_audio_pause();
+    cinder_audio_release_sequence();
     (void)chdir("/");
     // 2) move our log fds (1+2 ARE /contents/cinderhome.log via the launcher redirect)
     redirect_fds(MSC_TMP, O_WRONLY | O_CREAT | O_APPEND);
     // 3) flip the mode: init runs unmount_msc1 (umount /contents), points the gadget LUN at
-    //    /emmc@contents, switches functions to mass_storage,adb.
+    //    /emmc@contents, switches functions to mass_storage,adb (PID 0B8D).
     std::system("setprop sys.sony.config msc 2>/dev/null");
     // 4) VERIFY the umount. f_mass_storage opens the backing block device EXCLUSIVELY — if the
     //    umount failed (EBUSY) the LUN write failed too and the PC sees a reader with NO MEDIUM
@@ -946,15 +1019,27 @@ void enter_usb_msc() {
         log_contents_holders();
         std::system("umount /contents 2>&1");
         if (!contents_mounted()) {
+            // Re-point the LUN, then bounce the gadget: Windows has already enumerated a
+            // no-medium reader by now and won't rescan it — a disable/enable cycle forces a
+            // fresh enumeration that picks up the medium.
             std::system("echo /emmc@contents > "
                         "/sys/class/android_usb/android0/f_mass_storage/lun/file 2>&1");
-            clog_("usb-msc: recovery umount OK, LUN re-pointed — medium should appear now");
+            std::system("echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null");
+            usleep(250000);
+            std::system("echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null");
+            clog_("usb-msc: recovery umount OK, LUN re-pointed + gadget re-enabled");
         } else {
             clog_("usb-msc: recovery umount FAILED — PC will see no medium this session");
+            // /contents is STILL MOUNTED here, so the main log is writable — copy the whole
+            // failed-session diagnosis (incl. the fd-holder dump above) into cinderhome.log NOW.
+            // Otherwise it lives only in tmpfs and vanishes if the user reboots out of MSC.
+            std::system("cat /tmp/cinder_msc.log >> /contents/cinderhome.log 2>/dev/null");
         }
     }
-    // 5) record the gadget state (goes to the tmpfs log; readable after exit)
-    std::system("echo \"[cinder-home] usb-msc: state=$(getprop sys.usb.state) "
+    // 5) record the gadget state (goes to the tmpfs log; readable after exit — or already
+    //    spliced above on the unrecoverable path)
+    std::system("sleep 3; echo \"[cinder-home] usb-msc: state=$(getprop sys.usb.state) "
+                "functions=$(cat /sys/class/android_usb/android0/functions 2>/dev/null) "
                 "lun=$(cat /sys/class/android_usb/android0/f_mass_storage/lun/file 2>/dev/null)\"");
     g_msc_active = true;
     g_msc_seen_usb = false;
@@ -1049,7 +1134,9 @@ void carry_out(int act) {
         case CINDER_ACT_SLEEP:         screen_toggle(); break; // Power = panel on/off (not lock)
         case CINDER_ACT_ENTER_USB_MSC:
             // device-gated USB-mode switch (hands storage to the PC; disruptive — validate live).
-            run_guarded("carry_out: enter USB MSC", 10, enter_usb_msc);
+            // 25 s budget: Stop IPC + the 5 s umount verify + recovery + the 3 s gadget-state
+            // settle all run under this ONE guard (run_guarded doesn't nest).
+            run_guarded("carry_out: enter USB MSC", 25, enter_usb_msc);
             break;
         case CINDER_ACT_EXIT_USB_MSC:
             // Back on the modal (or the unplug watcher) → remount /contents + restore the log.
@@ -1062,7 +1149,12 @@ void carry_out(int act) {
 // Drain pending input from every node; map raw code -> logical button -> navigator -> action.
 // Classify a finished contact (finger-up), from BTN_TOUCH=0 or a type-A empty-frame lift.
 static void touch_release() {
-    if (g_touch_down && g_touch_start_x >= 0) {
+    if (g_touch_down && g_drag_active) {
+        // Live drag ends: hand the measured velocity to the fling (unless the finger held
+        // still before lifting — stale velocity must not fling).
+        if (now_ms() - g_drag_last_ms <= 120 && (g_drag_vel > 220.0f || g_drag_vel < -220.0f))
+            cinder_touch_fling((int)g_drag_vel);
+    } else if (g_touch_down && g_touch_start_x >= 0) {
         int sx = touch_ui_x(g_touch_start_x), cx = touch_ui_x(g_touch_cur_x);
         int sy = (g_touch_start_y >= 0) ? touch_ui_y(g_touch_start_y) : 0;
         int cy = (g_touch_cur_y >= 0) ? touch_ui_y(g_touch_cur_y) : sy;
@@ -1074,9 +1166,6 @@ static void touch_release() {
         } else if (adx < 26 && ady < 26) {           // ~stationary = tap (26: sloppy thumbs drift)
             int act = cinder_tap(cx, cy);
             if (act != CINDER_ACT_NONE) carry_out(act);
-        } else if (ady > adx && ady >= 40) {         // vertical drag = scroll
-            int rows = -dy / 56;
-            if (rows != 0) cinder_touch_scroll(rows);
         } else if (adx > ady && adx >= 60) {         // horizontal swipe: onboarding pages, NP skip,
             // rightward-on-a-song-row = add to queue (start point picks the row). Edge-back
             // already won above, so the two rightward gestures coexist: from the left edge it's
@@ -1084,8 +1173,40 @@ static void touch_release() {
             int act = cinder_swipe(dx < 0 ? -1 : 1, sx, sy);
             if (act != CINDER_ACT_NONE) carry_out(act);
         }
+        // (vertical drags never reach here — they became a live drag at ~12px of movement)
     }
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
+    g_drag_active = false; g_drag_vel = 0.0f;
+}
+
+// Called on every touch position update while the contact is down: promote a mostly-vertical
+// move past a small slop into a LIVE DRAG, then stream pixel deltas + track velocity.
+static void touch_drag_motion() {
+    if (!g_touch_down || g_touch_start_x < 0 || g_touch_start_y < 0 || g_touch_cur_y < 0) return;
+    int uy = touch_ui_y(g_touch_cur_y);
+    if (!g_drag_active) {
+        int dyt = uy - touch_ui_y(g_touch_start_y);
+        int dxt = touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x);
+        int adyt = dyt < 0 ? -dyt : dyt, adxt = dxt < 0 ? -dxt : dxt;
+        if (adyt > 12 && adyt > adxt) {
+            g_drag_active = true;
+            g_drag_last_uy = uy;
+            g_drag_last_ms = now_ms();
+            g_drag_vel = 0.0f;
+        }
+        return;
+    }
+    int delta = uy - g_drag_last_uy;
+    if (delta == 0) return;
+    cinder_touch_drag(-delta);   // finger up (delta<0) = show later rows (positive scroll)
+    long now = now_ms();
+    long dt = now - g_drag_last_ms;
+    if (dt > 0) {
+        float inst = (float)(-delta) * 1000.0f / (float)dt;
+        g_drag_vel = 0.75f * g_drag_vel + 0.25f * inst;   // EMA smooths sensor jitter
+    }
+    g_drag_last_uy = uy;
+    g_drag_last_ms = now;
 }
 
 void input_pump() {
@@ -1139,22 +1260,32 @@ void input_pump() {
                     if (!g_screen_on) {
                         g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
                         g_touch_saw_pos = false;
+                        g_drag_active = false; g_drag_vel = 0.0f;
                         continue;
                     }
                     if (type == EV_ABS_ && (code == ABS_X_ || code == ABS_MT_POSITION_X_)) {
                         g_touch_cur_x = val; g_touch_saw_pos = true;
-                        if (!g_touch_down) { g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1; }
-                        else if (g_touch_start_x < 0) g_touch_start_x = val;
+                        if (!g_touch_down) {
+                            g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1;
+                            cinder_touch_down();   // finger down stops an in-flight fling
+                        } else if (g_touch_start_x < 0) g_touch_start_x = val;
                         continue;
                     }
                     if (type == EV_ABS_ && (code == ABS_Y_ || code == ABS_MT_POSITION_Y_)) {
                         g_touch_cur_y = val; g_touch_saw_pos = true;
                         if (g_touch_down && g_touch_start_y < 0) g_touch_start_y = val;
+                        touch_drag_motion();       // live drag: stream deltas + velocity
                         continue;
                     }
                     if (type == EV_KEY_ && code == BTN_TOUCH_) {
-                        if (val) { if (!g_touch_down) { g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1; } }
-                        else     { touch_release(); }
+                        if (val) {
+                            if (!g_touch_down) {
+                                g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1;
+                                cinder_touch_down();
+                            }
+                        } else {
+                            touch_release();
+                        }
                         continue;
                     }
                     if (type == EV_SYN_ && code == 0) {   // SYN_REPORT: empty frame while down = lift (type-A)
@@ -1176,8 +1307,13 @@ void input_pump() {
                 }
 
                 // ── Buttons ──
-                if (type != EV_KEY_ || val == 0) continue; // press/repeat only
+                if (type != EV_KEY_ || val == 0) continue; // releases never act
                 int kc = code;
+                // Key REPEATS (val=2) only ramp the volume rocker; for everything else a held
+                // button is ONE action (a held FF must not machine-gun track skips).
+                if (val == 2 && kc < keymap_size()
+                        && g_keymap[kc] != CINDER_BTN_VOLUP && g_keymap[kc] != CINDER_BTN_VOLDOWN)
+                    continue;
 #ifdef CINDER_DEV
                 // DEV CHANNEL: log every key code (mapped or not) so the physical-button → keycode map
                 // can be read straight from cinderhome.log — press each button and watch the log.

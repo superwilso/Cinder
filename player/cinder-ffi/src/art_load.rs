@@ -1,10 +1,11 @@
 //! Album-cover loading + decode — resolves a track's art through the `images` table and
 //! decodes it to a `cinder_ui::art::Image` (packed RGB).
 //!
-//! Two storage shapes (analysis/H_mediastore/RE_findings.md):
+//! Three storage shapes (analysis/H_mediastore/RE_findings.md):
 //!   1. `bmpfile` — a pre-rendered bitmap file the stock scanner wrote (BMP; fastest path).
-//!   2. `value` + `dataoffset`/`datasize` — the art blob EMBEDDED in the source music file
-//!      (ID3 APIC / FLAC PICTURE / MP4 covr) — raw JPEG or PNG bytes at that offset.
+//!   2. `value` as BLOB — the image bytes stored inline in the DB row.
+//!   3. `value` as TEXT + `dataoffset`/`datasize` — the art blob EMBEDDED in that source music
+//!      file (ID3 APIC / FLAC PICTURE / MP4 covr) — raw JPEG or PNG bytes at that offset.
 //! Everything is best-effort: any parse/IO failure returns None and the UI keeps its
 //! gradient-placeholder fallback. Decode runs once per track change, never per frame.
 
@@ -20,18 +21,51 @@ const MAX_BLOB: u64 = 16 * 1024 * 1024;
 const MAX_DIM: usize = 2048;
 
 /// Resolve + decode art for `object_id`. Returns the image at its NATIVE decoded size
-/// (caller pre-scales to draw sizes).
+/// (caller pre-scales to draw sizes). Logs ONE diagnostic line per call to stderr (→
+/// cinderhome.log on device; called once per track change, so this is cheap) — it pinpoints
+/// which shape the real DB row has and where the pipeline stops if a cover doesn't render.
 pub fn load(db: &cinder_db::Db, object_id: i64) -> Option<Image> {
-    let art = db.art_for_object(object_id).ok().flatten()?;
+    let art = match db.art_for_object(object_id) {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            eprintln!("[cinder-ffi] art: obj={object_id} no images row");
+            return None;
+        }
+        Err(e) => {
+            eprintln!("[cinder-ffi] art: obj={object_id} query error: {e}");
+            return None;
+        }
+    };
+    let bmp = art.bmpfile.as_deref().unwrap_or("");
+    let bmp_exists = !bmp.is_empty() && std::fs::metadata(bmp).is_ok();
+    let magic = if !art.source_path.is_empty() && art.data_size > 0 {
+        read_file_range(&art.source_path, art.data_offset.max(0) as u64, 4)
+            .map(|b| format!("{:02X}{:02X}{:02X}{:02X}", b[0], b[1], b[2], b[3]))
+            .unwrap_or_else(|| "unreadable".into())
+    } else {
+        "-".into()
+    };
+    eprintln!(
+        "[cinder-ffi] art: obj={object_id} bmpfile={bmp:?} exists={bmp_exists} blob_len={} \
+         src={:?} off={} size={} magic={magic}",
+        art.blob.as_ref().map_or(0, |b| b.len()),
+        art.source_path, art.data_offset, art.data_size
+    );
     // Path 1: pre-rendered bitmap file.
-    if let Some(bmp) = art.bmpfile.as_deref() {
-        if !bmp.is_empty() {
-            if let Some(img) = read_file_range(bmp, 0, 0).and_then(|b| decode(&b)) {
+    if bmp_exists {
+        if let Some(img) = read_file_range(bmp, 0, 0).and_then(|b| decode(&b)) {
+            return Some(img);
+        }
+    }
+    // Path 2: image bytes stored INLINE in the DB (images.value is a BLOB).
+    if let Some(blob) = art.blob.as_deref() {
+        if blob.len() as u64 <= MAX_BLOB {
+            if let Some(img) = decode(blob) {
                 return Some(img);
             }
         }
     }
-    // Path 2: embedded blob in the source file at (offset, size).
+    // Path 3: embedded blob in the source file at (offset, size).
     if !art.source_path.is_empty() && art.data_size > 0 {
         let bytes = read_file_range(&art.source_path, art.data_offset.max(0) as u64, art.data_size as u64)?;
         return decode(&bytes);

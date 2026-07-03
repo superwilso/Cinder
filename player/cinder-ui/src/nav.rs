@@ -29,6 +29,10 @@ pub enum Button {
     VolUp,
     VolDown,
     Power,
+    /// Dedicated side FF/REW keys: GLOBAL next/previous track on every screen (stock behavior).
+    /// Distinct from `Right`/`Left`, which stay contextual navigation for the sim/host keyboards.
+    Next,
+    Prev,
 }
 
 /// The screens the navigator can be on (the route-stack entries).
@@ -120,12 +124,15 @@ pub struct App {
     menu_idx: usize,
     lib_tab: Tab,
     lib_idx: usize,
-    lib_scroll: usize,
+    /// Library list scroll in PIXELS (live drag + fling; rows render at a sub-row offset).
+    lib_scroll_px: i32,
     lib_sort: usize,
-    /// Album drill-in: the flat album index being viewed + the track cursor/scroll inside it.
+    /// Album drill-in: the flat album index being viewed + the track cursor/pixel-scroll inside it.
     album_view: usize,
     album_track_idx: usize,
-    album_track_scroll: usize,
+    album_scroll_px: i32,
+    /// Fling (momentum) velocity in px/s for the current scrollable list; decays each tick.
+    fling_v: f32,
     /// Hardware volume (0..VOL_MAX steps) + frames the volume HUD stays visible.
     volume: u8,
     vol_overlay: u8,
@@ -210,12 +217,13 @@ impl Default for App {
             menu_idx: 0,
             lib_tab: Tab::Albums,
             lib_idx: 0,
-            lib_scroll: 0,
+            lib_scroll_px: 0,
             lib_sort: 0,
             album_view: 0,
             album_track_idx: 0,
-            album_track_scroll: 0,
-            volume: 18,
+            album_scroll_px: 0,
+            fling_v: 0.0,
+            volume: 15,
             vol_overlay: 0,
             eq_bands: data::EQ_PRESETS[3].1, // "A1"
             eq_sel: 0,
@@ -494,8 +502,10 @@ impl App {
             }
             return vec![];
         }
+        // Back chevron: a generous ≥44px target (the whole header-left block, from just under
+        // the status strip to the header rule) on every screen that draws one.
         let has_header = !matches!(self.current(), Screen::NowPlaying | Screen::Menu | Screen::Lock);
-        if has_header && (46..82).contains(&y) && x < 64 {
+        if has_header && (34..91).contains(&y) && x < 80 {
             self.pop();
             return vec![];
         }
@@ -527,9 +537,11 @@ impl App {
                     // repeat icon (transport row, far right)
                     vec![Action::RepeatCycle]
                 } else if y > 744 {
-                    // bottom toolbar: heart · queue · eq · bt · library
+                    // bottom toolbar: library · queue · eq · bt · settings (the old heart was
+                    // inert — a straight jump to the Library earns the prime slot instead)
                     if x < 96 {
-                        vec![] // like — UI-only for now
+                        self.push(Screen::Library);
+                        vec![]
                     } else if x < 192 {
                         self.push(Screen::UpNext);
                         vec![]
@@ -540,7 +552,7 @@ impl App {
                         self.push(Screen::Bluetooth);
                         vec![]
                     } else {
-                        self.push(Screen::Library);
+                        self.push(Screen::Settings);
                         vec![]
                     }
                 } else if y < 91 {
@@ -555,7 +567,7 @@ impl App {
                 // track rows via the render-mirroring hit test (rows start 312 @56 —
                 // library::album_view geometry; the Play-album band above returns None).
                 if let Some(album) = self.lib.albums_flat().get(self.album_view) {
-                    if let Some(row) = library::album_hit_track(album, self.album_track_scroll, y) {
+                    if let Some(row) = library::album_hit_track(album, self.album_scroll_px, y) {
                         self.album_track_idx = row;
                         return album
                             .track_list
@@ -668,13 +680,14 @@ impl App {
                 Tab::Playlists
             };
             self.lib_idx = 0;
-            self.lib_scroll = 0;
+            self.lib_scroll_px = 0;
+            self.fling_v = 0.0;
             return vec![];
         }
         // Everything else routes through the render-mirroring hit test (library::hit_row): it
         // knows each tab's real list top/row height, the Albums artist headers, and returns None
         // for the shuffle band / gaps / rows that weren't drawn.
-        let Some(row) = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll, y) else {
+        let Some(row) = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y) else {
             return vec![];
         };
         match self.lib_tab {
@@ -689,7 +702,8 @@ impl App {
             Tab::Albums => {
                 self.album_view = row;
                 self.album_track_idx = 0;
-                self.album_track_scroll = 0;
+                self.album_scroll_px = 0;
+                self.fling_v = 0.0;
                 self.push(Screen::Album);
                 vec![]
             }
@@ -702,26 +716,36 @@ impl App {
         }
     }
 
-    /// Drag-to-scroll the current list by `dy_rows` (positive = content moves up / show later rows).
-    /// Applies to the scrollable screens; clamped to the list length.
-    pub fn touch_scroll(&mut self, dy_rows: i32) {
+    /// Live drag-scroll of the current list by `dy_px` PIXELS (positive = content moves up /
+    /// show later rows). Called per pump tick while a vertical drag is in progress, so the list
+    /// tracks the finger; clamped to the content height.
+    pub fn scroll_px(&mut self, dy_px: i32) {
         match self.current() {
             Screen::Library => {
-                let len = self.lib_len() as i32;
-                self.lib_scroll = (self.lib_scroll as i32 + dy_rows).clamp(0, (len - 1).max(0)) as usize;
+                let max = library::max_scroll_px(self.lib_tab, &self.lib);
+                self.lib_scroll_px = (self.lib_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Album => {
-                let len = self
-                    .lib
-                    .albums_flat()
-                    .get(self.album_view)
-                    .map(|a| a.track_list.len())
-                    .unwrap_or(0) as i32;
-                self.album_track_scroll =
-                    (self.album_track_scroll as i32 + dy_rows).clamp(0, (len - 1).max(0)) as usize;
+                if let Some(al) = self.lib.albums_flat().get(self.album_view) {
+                    let max = library::album_max_scroll_px(al);
+                    self.album_scroll_px = (self.album_scroll_px + dy_px).clamp(0, max);
+                }
             }
             _ => {}
         }
+    }
+
+    /// Momentum fling: the release velocity (px/s, same sign convention as `scroll_px`). The
+    /// per-frame `tick()` integrates and decays it, keeping frames dirty until it stops.
+    pub fn fling(&mut self, velocity_px_s: f32) {
+        if matches!(self.current(), Screen::Library | Screen::Album) {
+            self.fling_v = velocity_px_s.clamp(-8000.0, 8000.0);
+        }
+    }
+
+    /// A finger touching down kills any in-flight momentum (standard scroll UX).
+    pub fn stop_fling(&mut self) {
+        self.fling_v = 0.0;
     }
 
     /// Horizontal touch SWIPE (dir −1 = leftward, +1 = rightward) at the gesture's START point
@@ -758,7 +782,7 @@ impl App {
                 // Right-swipe a Songs-tab row → queue that song (the same render-mirroring hit
                 // test the tap uses, so the queued song is exactly the row under the finger).
                 if self.lib_tab == Tab::Songs {
-                    if let Some(rank) = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll, y)
+                    if let Some(rank) = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
                     {
                         if let Some(s) = library::song_at(&self.lib, self.lib_sort, rank) {
                             let s = s.clone();
@@ -771,7 +795,7 @@ impl App {
             Screen::Album if dir > 0 => {
                 // Right-swipe a track row inside an album drill-in → queue it.
                 let song = self.lib.albums_flat().get(self.album_view).and_then(|al| {
-                    library::album_hit_track(al, self.album_track_scroll, y)
+                    library::album_hit_track(al, self.album_scroll_px, y)
                         .and_then(|ti| al.track_list.get(ti).cloned())
                 });
                 if let Some(s) = song {
@@ -812,15 +836,30 @@ impl App {
     pub fn set_library(&mut self, lib: Library) {
         self.lib = lib;
         self.lib_idx = 0;
-        self.lib_scroll = 0;
+        self.lib_scroll_px = 0;
+        self.fling_v = 0.0;
     }
 
-    /// Keep the library cursor inside the scrolled window (`library::PAGE` rows).
+    /// Keep the library cursor's row fully inside the pixel-scrolled window (button nav).
     fn lib_ensure_visible(&mut self) {
-        if self.lib_idx < self.lib_scroll {
-            self.lib_scroll = self.lib_idx;
-        } else if self.lib_idx >= self.lib_scroll + library::PAGE {
-            self.lib_scroll = self.lib_idx + 1 - library::PAGE;
+        let row_top = library::row_top_px(self.lib_tab, &self.lib, self.lib_idx);
+        let rh = library::row_h(self.lib_tab);
+        let view = library::view_h(self.lib_tab);
+        if row_top < self.lib_scroll_px {
+            self.lib_scroll_px = row_top;
+        } else if row_top + rh > self.lib_scroll_px + view {
+            self.lib_scroll_px = row_top + rh - view;
+        }
+    }
+
+    /// Keep the album drill-in cursor's row fully inside its pixel-scrolled window.
+    fn album_ensure_visible(&mut self) {
+        let row_top = self.album_track_idx as i32 * library::ALBUM_TRACK_RH;
+        let view = crate::canvas::H as i32 - 12 - library::ALBUM_TRACKS_TOP;
+        if row_top < self.album_scroll_px {
+            self.album_scroll_px = row_top;
+        } else if row_top + library::ALBUM_TRACK_RH > self.album_scroll_px + view {
+            self.album_scroll_px = row_top + library::ALBUM_TRACK_RH - view;
         }
     }
 
@@ -847,8 +886,8 @@ impl App {
                     self.playing = !self.playing;
                     vec![Action::PlayPause]
                 }
-                Button::Right => vec![Action::Next],
-                Button::Left => vec![Action::Prev],
+                Button::Right | Button::Next => vec![Action::Next],
+                Button::Left | Button::Prev => vec![Action::Prev],
                 Button::VolUp => {
                     self.volume = (self.volume + 1).min(crate::overlay::VOL_MAX);
                     vec![Action::VolUp]
@@ -874,6 +913,8 @@ impl App {
                     self.playing = !self.playing;
                     vec![Action::PlayPause]
                 }
+                Button::Next => vec![Action::Next],
+                Button::Prev => vec![Action::Prev],
                 Button::VolUp => {
                     self.volume = (self.volume + 1).min(crate::overlay::VOL_MAX);
                     self.vol_overlay = crate::overlay::VOL_FRAMES;
@@ -953,6 +994,8 @@ impl App {
                 self.playing = !self.playing;
                 return vec![Action::PlayPause];
             }
+            Button::Next => return vec![Action::Next],
+            Button::Prev => return vec![Action::Prev],
             _ => {}
         }
 
@@ -999,13 +1042,15 @@ impl App {
                 Button::Left => {
                     self.lib_tab = prev_tab(self.lib_tab);
                     self.lib_idx = 0;
-                    self.lib_scroll = 0;
+                    self.lib_scroll_px = 0;
+                    self.fling_v = 0.0;
                     vec![]
                 }
                 Button::Right => {
                     self.lib_tab = next_tab(self.lib_tab);
                     self.lib_idx = 0;
-                    self.lib_scroll = 0;
+                    self.lib_scroll_px = 0;
+                    self.fling_v = 0.0;
                     vec![]
                 }
                 Button::Up => {
@@ -1030,7 +1075,8 @@ impl App {
                     Tab::Albums => {
                         self.album_view = self.lib_idx;
                         self.album_track_idx = 0;
-                        self.album_track_scroll = 0;
+                        self.album_scroll_px = 0;
+                        self.fling_v = 0.0;
                         self.push(Screen::Album);
                         vec![]
                     }
@@ -1057,17 +1103,13 @@ impl App {
                 match b {
                     Button::Up => {
                         self.album_track_idx = self.album_track_idx.saturating_sub(1);
-                        if self.album_track_idx < self.album_track_scroll {
-                            self.album_track_scroll = self.album_track_idx;
-                        }
+                        self.album_ensure_visible();
                         vec![]
                     }
                     Button::Down => {
                         if self.album_track_idx + 1 < n {
                             self.album_track_idx += 1;
-                            if self.album_track_idx >= self.album_track_scroll + library::PAGE {
-                                self.album_track_scroll = self.album_track_idx + 1 - library::PAGE;
-                            }
+                            self.album_ensure_visible();
                         }
                         vec![]
                     }
@@ -1248,17 +1290,17 @@ impl App {
                 crate::menu::render(c, &theme, fonts, &items);
             }
             Screen::Library => crate::library::render(
-                c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll, self.lib_sort, &self.lib,
+                c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort, &self.lib,
             ),
             Screen::Album => {
                 let flat = self.lib.albums_flat();
                 if let Some(al) = flat.get(self.album_view) {
                     crate::library::album_view(
-                        c, &theme, fonts, al, self.album_track_idx, self.album_track_scroll,
+                        c, &theme, fonts, al, self.album_track_idx, self.album_scroll_px,
                     );
                 } else {
                     crate::library::render(
-                        c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll, self.lib_sort, &self.lib,
+                        c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort, &self.lib,
                     );
                 }
             }
@@ -1364,6 +1406,27 @@ impl App {
         // frame must repaint (now without the HUD/toast) to clear it. (With dirty-flag rendering,
         // returning false on the 0-transition would leave it stuck on screen.)
         let mut animating = false;
+        // Fling momentum: integrate at the ~60 fps tick, exponential decay, stop below a
+        // threshold. Hitting the clamp (top/bottom) kills it immediately.
+        if self.fling_v != 0.0 {
+            let before = match self.current() {
+                Screen::Library => self.lib_scroll_px,
+                Screen::Album => self.album_scroll_px,
+                _ => 0,
+            };
+            let step = self.fling_v / 60.0;
+            self.scroll_px(step as i32);
+            let after = match self.current() {
+                Screen::Library => self.lib_scroll_px,
+                Screen::Album => self.album_scroll_px,
+                _ => 0,
+            };
+            self.fling_v *= 0.92;
+            if self.fling_v.abs() < 30.0 || (step as i32 != 0 && after == before) {
+                self.fling_v = 0.0;
+            }
+            animating = true;
+        }
         if self.vol_overlay > 0 {
             self.vol_overlay -= 1;
             animating = true;
@@ -1389,10 +1452,10 @@ impl App {
         self.volume
     }
 
-    /// Current volume as a 0..100 percentage (the HUD level is 0..VOL_MAX steps). The shell scales
-    /// this to the device's mixer range to drive the hardware volume.
-    pub fn volume_pct(&self) -> u8 {
-        (self.volume as u32 * 100 / crate::overlay::VOL_MAX as u32) as u8
+    /// Current volume as the raw 0..VOL_MAX (=120) step level. The shell writes this 1:1 to the
+    /// device mixer ('master volume' is also 0..120) — no lossy percent round-trip.
+    pub fn volume_level(&self) -> u8 {
+        self.volume
     }
 
     /// The current 10-band EQ gains (dB), for the shell to apply to the device DSP.
@@ -2093,15 +2156,28 @@ mod tests {
     }
 
     #[test]
-    fn touch_scroll_moves_library_window() {
+    fn pixel_scroll_and_fling_move_library_window() {
         let mut a = unlocked();
         a.tap(372, 16); // Menu
         a.tap(200, 91 + 63 + 8); // Library
-        let before = a.lib_scroll;
-        a.touch_scroll(5); // drag → later rows
-        assert!(a.lib_scroll >= before);
-        a.touch_scroll(-100); // clamp at 0
-        assert_eq!(a.lib_scroll, 0);
+        let max = library::max_scroll_px(a.lib_tab, &a.lib);
+        a.scroll_px(120); // live drag → later rows (clamped to content)
+        assert_eq!(a.lib_scroll_px, 120.min(max));
+        a.scroll_px(-10_000); // clamp at 0
+        assert_eq!(a.lib_scroll_px, 0);
+        // Fling: velocity integrates over ticks, decays, and eventually stops.
+        a.fling(1200.0);
+        let mut ticks = 0;
+        while a.tick() && ticks < 600 {
+            ticks += 1;
+        }
+        assert!(ticks < 600, "fling must decay to a stop");
+        assert!(a.lib_scroll_px >= 0 && a.lib_scroll_px <= max);
+        assert_eq!(a.fling_v, 0.0);
+        // Touching down again kills momentum instantly.
+        a.fling(1200.0);
+        a.stop_fling();
+        assert_eq!(a.fling_v, 0.0);
     }
 
     #[test]

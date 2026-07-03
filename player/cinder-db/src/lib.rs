@@ -33,13 +33,18 @@ pub struct Track {
     pub duration_raw: Option<i64>, // DURATION ext-int prop; units = DB's (calibrate on device, likely ms)
     pub is_hires: bool,
     pub othumb_id: Option<i64>, // -> images.id for album art
+    pub album_id: Option<i64>,  // -> albums.id (stable key — album NAMES can collide)
 }
 
-/// Album-art location for an object (from the `images` table).
+/// Album-art location for an object (from the `images` table). `value` is polymorphic in the
+/// real MTPDB: TEXT = a source-file path (art embedded at dataoffset..+datasize), BLOB = the
+/// raw image bytes stored inline. Reading it blindly as String made every BLOB row error out
+/// of the whole query → art silently absent; the two shapes are split into separate fields.
 #[derive(Debug, Clone)]
 pub struct Art {
     pub bmpfile: Option<String>, // pre-rendered bitmap path, if present
-    pub source_path: String,     // `value` — file the art is embedded in / lives at
+    pub source_path: String,     // `value` when TEXT — file the art is embedded in / lives at
+    pub blob: Option<Vec<u8>>,   // `value` when BLOB — the image bytes themselves
     pub data_offset: i64,
     pub data_size: i64,
     pub width: i64,
@@ -124,6 +129,16 @@ impl Db {
         )
     }
 
+    /// Every track in (album, disc, track) order — one query to build all the per-album track
+    /// lists (group consecutive `album_id` runs), instead of a query per album.
+    pub fn tracks_album_order(&self) -> Result<Vec<Track>> {
+        self.query_tracks(
+            &format!("WHERE {TRACK_WHERE}"),
+            "ob.album_id, ob.disc_no, ob.series_no, ob.child_index",
+            [],
+        )
+    }
+
     /// All tracks, sorted for the Songs tab.
     pub fn tracks(&self, sort: Sort) -> Result<Vec<Track>> {
         let order = match sort {
@@ -183,14 +198,26 @@ impl Db {
         )?;
         let mut rows = st.query([object_id])?;
         match rows.next()? {
-            Some(r) => Ok(Some(Art {
-                bmpfile: r.get::<_, Option<String>>(0)?,
-                source_path: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                data_offset: r.get(2)?,
-                data_size: r.get(3)?,
-                width: r.get(4)?,
-                height: r.get(5)?,
-            })),
+            Some(r) => {
+                // `value` is TEXT (a path) or BLOB (inline image bytes) depending on how the
+                // stock scanner stored this cover — inspect the actual storage class.
+                let (source_path, blob) = match r.get_ref(1)? {
+                    rusqlite::types::ValueRef::Text(t) => {
+                        (String::from_utf8_lossy(t).into_owned(), None)
+                    }
+                    rusqlite::types::ValueRef::Blob(b) => (String::new(), Some(b.to_vec())),
+                    _ => (String::new(), None),
+                };
+                Ok(Some(Art {
+                    bmpfile: r.get::<_, Option<String>>(0)?,
+                    source_path,
+                    blob,
+                    data_offset: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    data_size: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    width: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                    height: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                }))
+            }
             None => Ok(None),
         }
     }
@@ -217,7 +244,7 @@ impl Db {
         let sql = format!(
             "SELECT ob.object_id, ob.title, COALESCE(ar.value,''), COALESCE(al.value,''), \
                     ob.filename, COALESCE(ob.disc_no,0), COALESCE(ob.series_no,0), {dur_sel}, \
-                    COALESCE(ob.is_high_resolution,0), ob.othumb_id \
+                    COALESCE(ob.is_high_resolution,0), ob.othumb_id, ob.album_id \
              FROM object_body ob \
              LEFT JOIN artists ar ON ar.id = ob.artist_id \
              LEFT JOIN albums  al ON al.id = ob.album_id \
@@ -236,6 +263,7 @@ impl Db {
                 duration_raw: r.get(7)?,
                 is_hires: r.get::<_, i64>(8)? != 0,
                 othumb_id: r.get(9)?,
+                album_id: r.get(10)?,
             })
         })?;
         rows.collect()

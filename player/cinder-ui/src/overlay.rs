@@ -1,7 +1,8 @@
 //! Transient overlays drawn on top of the current screen (volume HUD). The navigator holds a
 //! frame countdown (`vol_overlay`) decremented each `App::tick`; while it's > 0 the volume HUD
 //! is drawn over whatever screen is current — exactly the daily "press Vol± → see the level"
-//! interaction. Volume is the Sony 0..30 step scale; we also show it as a percentage.
+//! interaction. Volume is the stock 0..120 step scale (CXD3778GF 'master volume'), shown as
+//! "N / 120" like the stock player.
 
 use crate::canvas::{Canvas, H, W};
 use crate::icons;
@@ -9,8 +10,9 @@ use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
 use crate::widgets::{fill_rect, sty};
 
-/// Sony hardware volume is 0..30 steps.
-pub const VOL_MAX: u8 = 30;
+/// Stock hardware volume is 0..120 steps (HAGOROMO_DEFAULT_VOLUME_MAX; ALSA card0
+/// 'master volume' range) — the UI level maps 1:1 onto the mixer.
+pub const VOL_MAX: u8 = 120;
 
 /// How many pump frames the volume HUD stays up after the last change (~1.6 s at the 60 fps
 /// pump; the exact pump rate is the shell's, this is just "a moment").
@@ -40,11 +42,15 @@ pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
     icons::sound(c, (x0 + 34) as f32, (y0 + 34) as f32, 22.0, if muted { t.faint } else { t.acc });
     text::draw(c, f, (x0 + 58) as f32, (y0 + 30) as f32, "VOLUME",
         &sty(Family::Mono, Weight::Regular, 10.0, t.dim, 0.18));
-    // numeric step value, right-aligned
+    // numeric step value "N / 120", right-aligned (stock shows the raw 0..120 level)
     let val = format!("{level}");
     let vst = sty(Family::Mono, Weight::Bold, 22.0, t.ink, 0.0);
+    let mst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0);
+    let max_lbl = format!(" / {VOL_MAX}");
     let vw = text::measure(f, &val, &vst);
-    text::draw(c, f, (x0 + slab_w - 28) as f32 - vw, (y0 + 34) as f32, &val, &vst);
+    let mw = text::measure(f, &max_lbl, &mst);
+    text::draw(c, f, (x0 + slab_w - 28) as f32 - mw - vw, (y0 + 34) as f32, &val, &vst);
+    text::draw(c, f, (x0 + slab_w - 28) as f32 - mw, (y0 + 34) as f32, &max_lbl, &mst);
 
     // level bar
     let bx = x0 + 34;

@@ -55,6 +55,46 @@ is still preferred.
 
 ---
 
+## TL;DR — ninth round (2026-07-03): smooth & responsive + device-feedback fixes
+
+Every item from the device-feedback list, root-caused and fixed (63 tests green; qemu
+preflight PASS; both channels rebuilt + UPGs packed):
+
+1. **Side buttons fixed** — the real NW-A50 key codes are plain keyboard codes (wampy
+   glfw.patch): play=28/KEY_ENTER (was mapped to SELECT → opened the Menu), next=106, prev=105.
+   New defaults map them to GLOBAL transport (`CINDER_BTN_NEXT/PREV`, work on every screen);
+   key repeats now only ramp the volume rocker (a held FF no longer machine-guns skips).
+2. **Volume = stock 0–120, persisted** — UI level is the raw 0..120 scale (HUD shows "N / 120"),
+   written 1:1 to `amixer card0 'master volume'`; the level persists in
+   `cinder_settings.conf` and is **restored to the hardware at boot** (fixes booting at hw
+   level 1 ≈ mute). First boot with a mute mixer applies an audible 15/120 default.
+3. **Smooth scrolling** — lists scroll in PIXELS with live drag (deltas stream to the UI every
+   pump tick, list tracks the finger 1:1) + momentum fling with decay. Canvas grew a y-clip
+   band so partial rows draw cleanly. Old row-jump-per-gesture scroll is gone.
+4. **USB-MSC** — before flipping the mode we now STOP playback and release the pinned track
+   sequence (`cinder_audio_release_sequence`) — a merely-paused PlayerService keeps the track
+   file open under /contents → umount EBUSY → LUN write fails → "PC sees nothing". Recovery
+   re-points the LUN **and bounces the gadget** (Windows won't rescan an already-enumerated
+   no-medium reader). If recovery fails, the whole tmpfs diagnosis (incl. the fd-holder dump)
+   is appended to cinderhome.log immediately, so it survives a reboot out of MSC.
+5. **adb (dev)** — `setprop ctl.start adbd` (the init.rc `adbd` service exists but is
+   class-disabled; `sys.usb.config` writes and a non-init `start` did nothing on this fw).
+   3 s later the log records `init.svc.adbd` + process + gadget functions, so the next log
+   pull separates "adbd not running" from "Windows driver missing".
+6. **Album covers** — root-cause candidate found: `images.value` was read as TEXT; when the
+   real DB stores the art as an inline BLOB the whole SQL row errored → art silently None
+   (NULL `dataoffset` did the same). Both fixed (BLOB decodes directly; NULLs default), plus a
+   one-line per-track art diagnostic in the log and a dev-boot copy of `/db/MTPDB.dat` →
+   `/contents/MTPDB_copy.dat` for offline schema work.
+7. **Album page = all songs, correct order** — per-album track lists are now keyed by
+   `album_id` (names collide) and ordered by disc/track (was: title order, name-keyed).
+8. **Back chevron** — tappable target widened to the whole header-left block (y 34..91,
+   x<80 ≥44px) on every header screen.
+9. **Now Playing toolbar** — inert heart replaced: `library · queue · eq · bt · settings`
+   (slot 1 jumps straight to the Library, per request).
+10. **Log spam gone** — `run_guarded` traces each label once + on recovery only ("pump: poll
+    now-playing" no longer prints every second; recoveries now name the failed call).
+
 ## TL;DR — what changed this session
 
 1. **Root-caused & fixed the boot crash.** cinder-home was crashing in
@@ -506,21 +546,25 @@ found the sizing bug).
 
 ## Tune the input keymap (likely needed on first boot)
 
-The NW-A50 buttons are GPIO keys with **device-specific raw codes**. cinder-home ships sensible
-Linux defaults, but they probably won't match. To calibrate without a rebuild:
+The defaults now ship the **real NW-A50 codes** (ninth round; source: wampy `glfw.patch` —
+play=28, next=106, prev=105, vol+=115, vol−=114, power=116, hold=35), so out of the box the
+side buttons are global transport and no calibration should be needed. If a unit still
+disagrees, override without a rebuild:
 
 1. Get a shell (adb, or stock + a terminal) and run `getevent -lt /dev/input/event*`, pressing
-   each physical button; note the **device** and the **decimal key code** for each.
+   each physical button; note the **device** and the **decimal key code** for each. (The dev
+   channel also logs `input: KEY code=…` for every press — no shell needed.)
 2. Create `/contents/cinder_keymap.conf` (over USB-MSC) with one `rawcode button` per line, where
    `button` is: `0`=Up `1`=Down `2`=Left `3`=Right `4`=Select `5`=Back `6`=Option `7`=Play
-   `8`=Home `9`=VolUp `10`=VolDown `11`=Power. Example:
+   `8`=Home `9`=VolUp `10`=VolDown `11`=Power `12`=Hold `13`=Next `14`=Prev. Example:
    ```
    # rawcode  button
    115 9      # vol+  -> VolUp
    114 10     # vol-  -> VolDown
-   163 3      # FF    -> Right (next track on Now Playing)
-   165 2      # REW   -> Left  (prev track)
-   164 7      # play  -> Play
+   106 13     # FF    -> Next (global next track)
+   105 14     # REW   -> Prev
+   28  7      # play  -> Play
+   35  12     # hold switch
    ```
 3. Reboot. The pump logs `input: applied /contents/cinder_keymap.conf overrides`.
 

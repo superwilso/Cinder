@@ -407,7 +407,7 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     format!(
-        "night={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\n",
+        "night={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\n",
         r.app.night as u8,
         r.app.viz_kind(),
         r.app.viz_on() as u8,
@@ -416,6 +416,7 @@ fn settings_body(r: &Render) -> String {
         r.app.onboarding_seen() as u8,
         r.app.bt_codec(),
         r.app.bt_ldac_quality(),
+        r.app.volume_level(),
     )
 }
 
@@ -458,35 +459,46 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, SongRow};
     use std::collections::{BTreeMap, BTreeSet};
 
-    let tracks = db.tracks(cinder_db::Sort::Title).unwrap_or_default();
-    let mut album_artist: BTreeMap<String, String> = BTreeMap::new();
-    let mut artist_albums: BTreeMap<String, (BTreeSet<String>, u32)> = BTreeMap::new();
-    let mut album_tracks: BTreeMap<String, Vec<SongRow>> = BTreeMap::new();
-    let mut songs = Vec::with_capacity(tracks.len());
-    for t in &tracks {
+    let song_row = |t: &cinder_db::Track| {
         let title = if t.title.is_empty() {
             t.filename.rsplit('/').next().unwrap_or("").to_string()
         } else {
             t.title.clone()
         };
         let art = if t.album.is_empty() { title.clone() } else { t.album.clone() };
-        let row = SongRow {
+        SongRow {
             title,
             artist: t.artist.clone(),
             dur: t.duration_raw.map(fmt_time).unwrap_or_default(),
             art,
             object_id: t.object_id,
-        };
-        if !t.album.is_empty() {
-            album_artist.entry(t.album.clone()).or_insert_with(|| t.artist.clone());
-            album_tracks.entry(t.album.clone()).or_default().push(row.clone());
         }
-        songs.push(row);
+    };
+
+    let tracks = db.tracks(cinder_db::Sort::Title).unwrap_or_default();
+    let mut album_artist: BTreeMap<i64, String> = BTreeMap::new();
+    let mut artist_albums: BTreeMap<String, (BTreeSet<String>, u32)> = BTreeMap::new();
+    let mut songs = Vec::with_capacity(tracks.len());
+    for t in &tracks {
+        if let Some(aid) = t.album_id {
+            album_artist.entry(aid).or_insert_with(|| t.artist.clone());
+        }
+        songs.push(song_row(t));
         let e = artist_albums.entry(t.artist.clone()).or_default();
         if !t.album.is_empty() {
             e.0.insert(t.album.clone());
         }
         e.1 += 1;
+    }
+
+    // Per-album track lists keyed by album ID (names can collide across artists), in the DB's
+    // disc/track order — one query, grouped in a single pass. This is what the Album screen
+    // shows under the header.
+    let mut album_tracks: BTreeMap<i64, Vec<SongRow>> = BTreeMap::new();
+    for t in db.tracks_album_order().unwrap_or_default() {
+        if let Some(aid) = t.album_id {
+            album_tracks.entry(aid).or_default().push(song_row(&t));
+        }
     }
 
     // Album list (ordered, with track counts) → rows, grouped by artist.
@@ -495,11 +507,11 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         .unwrap_or_default()
         .into_iter()
         .map(|a| AlbumRow {
-            artist: album_artist.get(&a.name).cloned().unwrap_or_default(),
+            artist: album_artist.get(&a.id).cloned().unwrap_or_default(),
             year: String::new(),
             tracks: a.track_count.max(0) as u32,
             art: a.name.clone(),
-            track_list: album_tracks.remove(&a.name).unwrap_or_default(),
+            track_list: album_tracks.remove(&a.id).unwrap_or_default(),
             name: a.name,
             album_id: a.id,
         })
@@ -601,6 +613,8 @@ pub extern "C" fn cinder_input(button: libc::c_int) -> libc::c_int {
         9 => Button::VolUp,
         10 => Button::VolDown,
         11 => Button::Power,
+        13 => Button::Next,
+        14 => Button::Prev,
         _ => return 0,
     };
     let mut guard = cell().lock().unwrap();
@@ -718,12 +732,32 @@ pub extern "C" fn cinder_swipe(dir: libc::c_int, x: libc::c_int, y: libc::c_int)
     0
 }
 
-/// Drag-to-scroll the current list by `dy_rows` rows (the shell converts the touch drag distance).
+/// LIVE drag-scroll: move the current list by `dy_px` pixels (positive = show later rows).
+/// The shell calls this every pump tick while a vertical drag is in progress, so the list
+/// tracks the finger 1:1.
 #[no_mangle]
-pub extern "C" fn cinder_touch_scroll(dy_rows: libc::c_int) {
+pub extern "C" fn cinder_touch_drag(dy_px: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        r.app.touch_scroll(dy_rows as i32);
+        r.app.scroll_px(dy_px as i32);
         r.dirty = true;
+    }
+}
+
+/// Momentum fling at drag release: `velocity_px_s` in px/s (same sign as cinder_touch_drag).
+/// The UI integrates + decays it each frame until it stops (frames stay dirty meanwhile).
+#[no_mangle]
+pub extern "C" fn cinder_touch_fling(velocity_px_s: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.fling(velocity_px_s as f32);
+        r.dirty = true;
+    }
+}
+
+/// A new finger contact: kill any in-flight fling so the list stops under the finger.
+#[no_mangle]
+pub extern "C" fn cinder_touch_down() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.stop_fling();
     }
 }
 
@@ -884,24 +918,23 @@ pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
     }
 }
 
-/// Seed the UI volume from the device's REAL level (0..100%), without popping the HUD. The shell
-/// calls this once at boot after reading the hardware mixer, so the first Vol± press nudges from
-/// the actual level instead of jumping the hardware to the UI's stale default.
+/// Seed the UI volume from the device's REAL level (raw 0..120 steps — the stock scale, 1:1 with
+/// ALSA 'master volume'), without popping the HUD. The shell calls this at boot after restoring
+/// the saved level (or reading the mixer), so the first Vol± press nudges from the actual level.
 #[no_mangle]
-pub extern "C" fn cinder_set_volume(pct: libc::c_int) {
-    let pct = pct.clamp(0, 100) as u32;
+pub extern "C" fn cinder_set_volume(level: libc::c_int) {
+    let level = level.clamp(0, cinder_ui::overlay::VOL_MAX as libc::c_int);
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        let steps = (pct * cinder_ui::overlay::VOL_MAX as u32 + 50) / 100;
-        r.app.set_volume(steps as u8);
+        r.app.set_volume(level as u8);
     }
 }
 
-/// Read the current UI volume as a 0..100 percentage. The shell scales it to the device mixer range
-/// (configured from the discovery report) to set the hardware volume after a VOLUP/VOLDOWN action.
+/// Read the current UI volume as the raw 0..120 step level. The shell writes it 1:1 to the device
+/// mixer ('master volume', also 0..120) after a VOLUP/VOLDOWN action.
 #[no_mangle]
 pub extern "C" fn cinder_get_volume() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {
-        Some(r) => r.app.volume_pct() as libc::c_int,
+        Some(r) => r.app.volume_level() as libc::c_int,
         None => 0,
     }
 }
@@ -1105,10 +1138,12 @@ pub extern "C" fn cinder_set_theme_night(night: libc::c_int) {
     }
 }
 
-/// Load persisted UI preferences (theme + visualiser + EQ + sound effects) from `path`, apply them,
-/// and remember the path so later changes auto-save. Call once at boot after cinder_render_init.
-/// Returns 1 if a settings file was actually read (so the shell can re-apply EQ/sound to the DSP),
-/// else 0. Best-effort: a missing/garbage file is ignored (defaults stand); robust line parser.
+/// Load persisted UI preferences (theme + visualiser + EQ + sound effects + volume) from `path`,
+/// apply them, and remember the path so later changes auto-save. Call once at boot after
+/// cinder_render_init. Returns a bitmask: bit0 = a settings file was read (shell should re-apply
+/// EQ/sound to the DSP), bit1 = a persisted volume level was restored (shell should apply it to
+/// the mixer instead of seeding the UI from hardware). 0 = no file. Best-effort: a
+/// missing/garbage file is ignored (defaults stand); robust line parser.
 #[no_mangle]
 pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
     let p = unsafe { cstr(path) };
@@ -1154,6 +1189,12 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "bt_ldac_quality" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_bt_ldac_quality(n);
+                        }
+                    }
+                    "volume" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_volume(n);
+                            loaded |= 2; // bit1: a persisted volume level was restored
                         }
                     }
                     _ => {}
@@ -1342,6 +1383,7 @@ mod tests {
             track_no: 1,
             duration_raw: Some(272_000),
             is_hires: true,
+            album_id: Some(10),
             othumb_id: Some(100),
         };
         let mut np = Np::default();
@@ -1431,6 +1473,7 @@ mod tests {
             duration_raw: None,
             is_hires: false,
             othumb_id: None,
+            album_id: None,
         };
         let mut np = Np::default();
         apply_track(&mut np, &t);

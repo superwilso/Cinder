@@ -28,6 +28,82 @@ pub const PAGE: usize = 7;
 /// Bottom y of the scrollable list area (leave a hair at the panel edge).
 const LIST_BOTTOM: i32 = H as i32 - 12;
 
+// ── Pixel-scroll geometry ────────────────────────────────────────────────────────────────
+// Lists scroll in PIXELS (live drag + fling), not rows: `scroll_px` is the content offset in
+// px, rows render at `top - (scroll_px % rh)` under a clip band so partial rows are fine.
+// These helpers give nav the shared geometry: list top / row height / total content height.
+
+/// Top y of each tab's row area (below header+tabs+shuffle band).
+pub fn list_top(tab: Tab) -> i32 {
+    match tab {
+        Tab::Albums => 201,
+        _ => 205,
+    }
+}
+
+/// Fixed row height per tab (Albums rows are 60 but carry extra 30px artist headers —
+/// see `albums_layout`).
+pub fn row_h(tab: Tab) -> i32 {
+    match tab {
+        Tab::Songs => 62,
+        Tab::Albums => 60,
+        Tab::Artists | Tab::Playlists => 64,
+    }
+}
+
+/// Album drill-in track rows: top y and row height.
+pub const ALBUM_TRACKS_TOP: i32 = 312;
+pub const ALBUM_TRACK_RH: i32 = 56;
+
+/// Virtual y (content px, 0 = list top) of each album row in the grouped Albums layout, plus
+/// the total content height. Headers (30px) appear before the first album of each artist.
+fn albums_layout(lib: &Library) -> (Vec<i32>, i32) {
+    let flat = lib.albums_flat();
+    let mut tops = Vec::with_capacity(flat.len());
+    let mut vy = 0;
+    let mut prev_artist: Option<&str> = None;
+    for al in &flat {
+        if prev_artist != Some(al.artist.as_str()) {
+            vy += 30;
+            prev_artist = Some(al.artist.as_str());
+        }
+        tops.push(vy);
+        vy += 60;
+    }
+    (tops, vy)
+}
+
+/// Total scrollable content height (px) of a tab's list.
+pub fn content_h(tab: Tab, lib: &Library) -> i32 {
+    match tab {
+        Tab::Albums => albums_layout(lib).1,
+        _ => row_count(tab, lib) as i32 * row_h(tab),
+    }
+}
+
+/// Largest useful `scroll_px` for a tab (0 when everything fits).
+pub fn max_scroll_px(tab: Tab, lib: &Library) -> i32 {
+    (content_h(tab, lib) - (LIST_BOTTOM - list_top(tab))).max(0)
+}
+
+/// Largest useful `scroll_px` for the album drill-in track list.
+pub fn album_max_scroll_px(album: &crate::model::AlbumRow) -> i32 {
+    (album.track_list.len() as i32 * ALBUM_TRACK_RH - (LIST_BOTTOM - ALBUM_TRACKS_TOP)).max(0)
+}
+
+/// Virtual y (content px) of row `idx` — for the cursor-follow used by button navigation.
+pub fn row_top_px(tab: Tab, lib: &Library, idx: usize) -> i32 {
+    match tab {
+        Tab::Albums => albums_layout(lib).0.get(idx).copied().unwrap_or(0),
+        _ => idx as i32 * row_h(tab),
+    }
+}
+
+/// Visible list height for a tab (px).
+pub fn view_h(tab: Tab) -> i32 {
+    LIST_BOTTOM - list_top(tab)
+}
+
 const TABS: [(Tab, &str); 4] = [
     (Tab::Songs, "SONGS"),
     (Tab::Albums, "ALBUMS"),
@@ -89,81 +165,54 @@ pub fn song_at(lib: &Library, sort: usize, rank: usize) -> Option<&crate::model:
     song_order(lib, sort).get(rank).and_then(|&i| lib.songs.get(i))
 }
 
-/// Which list row (same index space as `scroll`/`current`) sits under touch-`y`?  Mirrors
-/// `render()`'s per-tab layout EXACTLY — header 91, tab bar to 125, shuffle band 141..197, then:
-/// Songs rows from 205 @62px · Albums from 201 @60px with a 30px artist header before the first
-/// album of each group · Artists/Playlists from 205 @64px — and only rows that were actually
-/// drawn (bottom within LIST_BOTTOM). None = chrome/gap/header/off-list.
-pub fn hit_row(tab: Tab, lib: &Library, scroll: usize, y: i32) -> Option<usize> {
-    let fixed = |top: i32, rh: i32, len: usize| -> Option<usize> {
-        if y < top {
-            return None;
-        }
-        let v = (y - top) / rh;
-        if top + (v + 1) * rh > LIST_BOTTOM {
-            return None; // this row wasn't drawn (render breaks before overflowing the list)
-        }
-        let r = scroll + v as usize;
-        (r < len).then_some(r)
-    };
+/// Which list row sits under touch-`y`, given the current pixel scroll? Mirrors `render()`'s
+/// per-tab layout EXACTLY: the tap's screen y is mapped into content space
+/// (`y - top + scroll_px`) and resolved against the same geometry the renderer used —
+/// including partially visible edge rows. None = chrome/gap/header/off-list.
+pub fn hit_row(tab: Tab, lib: &Library, scroll_px: i32, y: i32) -> Option<usize> {
+    let top = list_top(tab);
+    if y < top || y >= LIST_BOTTOM {
+        return None;
+    }
+    let cy = y - top + scroll_px.max(0); // content-space y
     match tab {
-        Tab::Songs => fixed(205, 62, lib.songs.len()),
-        Tab::Artists => fixed(205, 64, lib.artists.len()),
-        Tab::Playlists => fixed(205, 64, lib.playlists.len()),
+        Tab::Songs | Tab::Artists | Tab::Playlists => {
+            let r = (cy / row_h(tab)) as usize;
+            (r < row_count(tab, lib)).then_some(r)
+        }
         Tab::Albums => {
-            // Replay the grouped layout: same start, same header rule (prev_artist begins None
-            // at the scroll window, so the first visible album always has its header).
-            let flat = lib.albums_flat();
-            let mut yy = 201;
-            let mut prev_artist: Option<&str> = None;
-            for (idx, al) in flat.iter().enumerate().skip(scroll) {
-                let need_header = prev_artist != Some(al.artist.as_str());
-                let block_h = 60 + if need_header { 30 } else { 0 };
-                if yy + block_h > LIST_BOTTOM {
-                    return None;
-                }
-                if need_header {
-                    yy += 30;
-                    prev_artist = Some(al.artist.as_str());
-                }
-                if y >= yy && y < yy + 60 {
+            let (tops, _) = albums_layout(lib);
+            for (idx, &vy) in tops.iter().enumerate() {
+                if cy >= vy && cy < vy + 60 {
                     return Some(idx);
                 }
-                yy += 60;
             }
-            None
+            None // an artist header band or past the end
         }
     }
 }
 
-/// Which track row of the album drill-in sits under touch-`y`? Rows start at 312 (shuffle row
-/// 250..306 returns 306, +6) @56px — mirrors `album_view()`; only drawn rows hit.
-pub fn album_hit_track(album: &crate::model::AlbumRow, scroll: usize, y: i32) -> Option<usize> {
-    let (top, rh) = (312, 56);
-    if y < top {
+/// Which track row of the album drill-in sits under touch-`y`? Rows from ALBUM_TRACKS_TOP
+/// @56px in content space — mirrors `album_view()` at the given pixel scroll.
+pub fn album_hit_track(album: &crate::model::AlbumRow, scroll_px: i32, y: i32) -> Option<usize> {
+    if y < ALBUM_TRACKS_TOP || y >= LIST_BOTTOM {
         return None;
     }
-    let v = (y - top) / rh;
-    if top + (v + 1) * rh > LIST_BOTTOM {
-        return None;
-    }
-    let r = scroll + v as usize;
+    let cy = y - ALBUM_TRACKS_TOP + scroll_px.max(0);
+    let r = (cy / ALBUM_TRACK_RH) as usize;
     (r < album.track_list.len()).then_some(r)
 }
 
-/// Thin scrollbar on the right edge showing window position over `total` rows.
-pub(crate) fn scrollbar(c: &mut Canvas, t: &Theme, top: i32, first: usize, shown: usize, total: usize) {
-    if total <= shown || shown == 0 {
-        return;
-    }
+/// Thin scrollbar on the right edge: window position in PIXEL space (scroll_px over content_h).
+pub(crate) fn scrollbar(c: &mut Canvas, t: &Theme, top: i32, scroll_px: i32, content_h: i32) {
     let track_h = LIST_BOTTOM - top;
-    if track_h <= 0 {
+    if track_h <= 0 || content_h <= track_h {
         return;
     }
     let x = W as i32 - 4;
-    let thumb_h = ((shown as f32 / total as f32) * track_h as f32).max(18.0) as i32;
-    let max_off = (total - shown) as f32;
-    let pos = if max_off > 0.0 { first as f32 / max_off } else { 0.0 };
+    let thumb_h = ((track_h as f32 / content_h as f32) * track_h as f32).max(18.0) as i32;
+    let max_off = (content_h - track_h) as f32;
+    let pos = if max_off > 0.0 { (scroll_px as f32 / max_off).clamp(0.0, 1.0) } else { 0.0 };
     let thumb_y = top + ((track_h - thumb_h) as f32 * pos) as i32;
     // faint full-height track + a brighter thumb so position is readable at a glance
     fill_rect(c, x, top, 3, track_h, t.line);
@@ -242,10 +291,11 @@ pub fn render(
     f: &FontSet,
     tab: Tab,
     current: usize,
-    scroll: usize,
+    scroll_px: i32,
     sort: usize,
     lib: &Library,
 ) {
+    let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib));
     c.fill(t.bg);
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     // Songs tab shows a tappable SORT chip in the header's right slot; others show the count.
@@ -260,14 +310,15 @@ pub fn render(
 
     match tab {
         Tab::Songs => {
-            let mut y = shuffle_row(c, t, f, yt, "Shuffle all songs",
+            let top = shuffle_row(c, t, f, yt, "Shuffle all songs",
                 &format!("{} TRACKS · RANDOM ORDER", group_thousands(lib.songs.len()))) + 8;
-            let top = y;
             let rh = 62;
             let order = song_order(lib, sort); // shared with hit_row/selection — keep in sync
-            let mut shown = 0;
-            for rank in scroll..order.len() {
-                if y + rh > LIST_BOTTOM {
+            let first = (scroll_px / rh) as usize;
+            let mut y = top - (scroll_px % rh);
+            c.set_clip_y(top, LIST_BOTTOM);
+            for rank in first..order.len() {
+                if y >= LIST_BOTTOM {
                     break;
                 }
                 let i = order[rank];
@@ -287,30 +338,30 @@ pub fn render(
                 right(c, f, 452.0, (cy + 4) as f32, &sgn.dur, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
                 hline(c, y + rh, t.line);
                 y += rh;
-                shown += 1;
             }
-            scrollbar(c, t, top, scroll, shown, total);
+            c.clear_clip();
+            scrollbar(c, t, top, scroll_px, total as i32 * rh);
         }
         Tab::Albums => {
-            let y = shuffle_row(c, t, f, yt, "Shuffle by album", "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE") + 4;
-            let top = y;
-            let mut y = y;
+            let top = shuffle_row(c, t, f, yt, "Shuffle by album", "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE") + 4;
             let rh = 60;
             let flat = lib.albums_flat();
-            let mut shown = 0;
+            let (tops, content) = albums_layout(lib);
+            c.set_clip_y(top, LIST_BOTTOM);
             let mut prev_artist: Option<&str> = None;
-            for idx in scroll..flat.len() {
-                let al = flat[idx];
+            for (idx, al) in flat.iter().enumerate() {
                 let need_header = prev_artist != Some(al.artist.as_str());
-                let block_h = rh + if need_header { 30 } else { 0 };
-                if y + block_h > LIST_BOTTOM {
+                prev_artist = Some(al.artist.as_str());
+                let y = top + tops[idx] - scroll_px; // screen y of this album row
+                if y + rh <= top {
+                    continue; // fully above the window (its header is even higher)
+                }
+                if y >= LIST_BOTTOM {
                     break;
                 }
                 if need_header {
                     let label = al.artist.to_uppercase();
-                    text::draw(c, f, 22.0, (y + 20) as f32, &label, &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.16));
-                    y += 30;
-                    prev_artist = Some(al.artist.as_str());
+                    text::draw(c, f, 22.0, (y - 10) as f32, &label, &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.16));
                 }
                 let now = idx == current;
                 let cy = y + rh / 2;
@@ -325,19 +376,18 @@ pub fn render(
                 stroke_rect(c, 416, cy - 19, 38, 38, t.line, 1);
                 icons::shuffle(c, 435.0, cy as f32, 14.0, t.dim);
                 hline(c, y + rh, t.line);
-                y += rh;
-                shown += 1;
             }
-            scrollbar(c, t, top, scroll, shown, total);
+            c.clear_clip();
+            scrollbar(c, t, top, scroll_px, content);
         }
         Tab::Artists => {
-            let y = shuffle_row(c, t, f, yt, "Shuffle by artist", "RANDOM ARTIST · SHUFFLED WITHIN ARTIST") + 8;
-            let top = y;
-            let mut y = y;
+            let top = shuffle_row(c, t, f, yt, "Shuffle by artist", "RANDOM ARTIST · SHUFFLED WITHIN ARTIST") + 8;
             let rh = 64;
-            let mut shown = 0;
-            for idx in scroll..lib.artists.len() {
-                if y + rh > LIST_BOTTOM {
+            let first = (scroll_px / rh) as usize;
+            let mut y = top - (scroll_px % rh);
+            c.set_clip_y(top, LIST_BOTTOM);
+            for idx in first..lib.artists.len() {
+                if y >= LIST_BOTTOM {
                     break;
                 }
                 let ar = &lib.artists[idx];
@@ -356,18 +406,18 @@ pub fn render(
                 icons::shuffle(c, 434.0, cy as f32, 15.0, t.dim);
                 hline(c, y + rh, t.line);
                 y += rh;
-                shown += 1;
             }
-            scrollbar(c, t, top, scroll, shown, total);
+            c.clear_clip();
+            scrollbar(c, t, top, scroll_px, total as i32 * rh);
         }
         Tab::Playlists => {
-            let y = shuffle_row(c, t, f, yt, "Shuffle a playlist", "RANDOM PLAYLIST · SHUFFLED") + 8;
-            let top = y;
-            let mut y = y;
+            let top = shuffle_row(c, t, f, yt, "Shuffle a playlist", "RANDOM PLAYLIST · SHUFFLED") + 8;
             let rh = 64;
-            let mut shown = 0;
-            for idx in scroll..lib.playlists.len() {
-                if y + rh > LIST_BOTTOM {
+            let first = (scroll_px / rh) as usize;
+            let mut y = top - (scroll_px % rh);
+            c.set_clip_y(top, LIST_BOTTOM);
+            for idx in first..lib.playlists.len() {
+                if y >= LIST_BOTTOM {
                     break;
                 }
                 let pl = &lib.playlists[idx];
@@ -384,23 +434,24 @@ pub fn render(
                 icons::chevron(c, 456.0, cy as f32, 14.0, t.faint);
                 hline(c, y + rh, t.line);
                 y += rh;
-                shown += 1;
             }
-            scrollbar(c, t, top, scroll, shown, total);
+            c.clear_clip();
+            scrollbar(c, t, top, scroll_px, total as i32 * rh);
         }
     }
 }
 
-/// Album drill-in: art + title/artist header, a shuffle row, then the windowed track list.
-/// `track_idx` is the highlighted row, `scroll` the first visible row.
+/// Album drill-in: art + title/artist header, a shuffle row, then the pixel-scrolled track
+/// list. `track_idx` is the highlighted row, `scroll_px` the content offset in px.
 pub fn album_view(
     c: &mut Canvas,
     t: &Theme,
     f: &FontSet,
     album: &crate::model::AlbumRow,
     track_idx: usize,
-    scroll: usize,
+    scroll_px: i32,
 ) {
+    let scroll_px = scroll_px.clamp(0, album_max_scroll_px(album));
     c.fill(t.bg);
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     // back chevron + ALBUM eyebrow
@@ -420,13 +471,14 @@ pub fn album_view(
     };
     text::draw(c, f, 132.0, 204.0, &meta, &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.1));
 
-    let mut y = shuffle_row(c, t, f, 234, "Play album", "IN ORDER · THEN SHUFFLE") + 6;
-    let top = y;
-    let rh = 56;
+    let top = shuffle_row(c, t, f, 234, "Play album", "IN ORDER · THEN SHUFFLE") + 6;
+    let rh = ALBUM_TRACK_RH;
     let total = album.track_list.len();
-    let mut shown = 0;
-    for idx in scroll..album.track_list.len() {
-        if y + rh > LIST_BOTTOM {
+    let first = (scroll_px / rh) as usize;
+    let mut y = top - (scroll_px % rh);
+    c.set_clip_y(top, LIST_BOTTOM);
+    for idx in first..album.track_list.len() {
+        if y >= LIST_BOTTOM {
             break;
         }
         let sgn = &album.track_list[idx];
@@ -447,9 +499,9 @@ pub fn album_view(
         right(c, f, 452.0, (cy + 4) as f32, &sgn.dur, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
         hline(c, y + rh, t.line);
         y += rh;
-        shown += 1;
     }
-    scrollbar(c, t, top, scroll, shown, total);
+    c.clear_clip();
+    scrollbar(c, t, top, scroll_px, total as i32 * rh);
 }
 
 /// Artist drill-in page (`CArtist`).
@@ -554,16 +606,16 @@ mod tests {
     #[test]
     fn albums_hit_row_accounts_for_artist_headers() {
         let l = lib();
-        // Layout from scroll=0: header(One) 201..231, A1 231..291, A2 291..351 (same artist, no
-        // header), header(Two) 351..381, B1 381..441.
+        // Content layout (px, 0 = list top 201): header(One) 0..30, A1 30..90, A2 90..150
+        // (same artist, no header), header(Two) 150..180, B1 180..240.
         assert_eq!(hit_row(Tab::Albums, &l, 0, 210), None); // artist header — not a row
         assert_eq!(hit_row(Tab::Albums, &l, 0, 232), Some(0)); // A1
         assert_eq!(hit_row(Tab::Albums, &l, 0, 300), Some(1)); // A2 — no second header
         assert_eq!(hit_row(Tab::Albums, &l, 0, 360), None); // header(Two)
         assert_eq!(hit_row(Tab::Albums, &l, 0, 400), Some(2)); // B1
-        assert_eq!(hit_row(Tab::Albums, &l, 0, 500), None); // below the drawn list
-        // Scrolled to A2: it becomes the first visible block and re-gains a header.
-        assert_eq!(hit_row(Tab::Albums, &l, 1, 232), Some(1));
+        assert_eq!(hit_row(Tab::Albums, &l, 0, 500), None); // below the content
+        // Scrolled 60px (A1 off screen): the same screen y now lands on A2.
+        assert_eq!(hit_row(Tab::Albums, &l, 60, 232), Some(1));
     }
 
     #[test]
@@ -575,10 +627,14 @@ mod tests {
         assert_eq!(hit_row(Tab::Songs, &l, 0, 266), Some(0));
         assert_eq!(hit_row(Tab::Songs, &l, 0, 268), Some(1));
         assert_eq!(hit_row(Tab::Songs, &l, 0, 700), None); // past the 3-song list
-        // The last PARTIAL row slot (bottom would cross LIST_BOTTOM) is never a hit: with rows
-        // from 205 @62 and LIST_BOTTOM=788, the 10th slot (y 763+) isn't drawn.
-        assert_eq!(hit_row(Tab::Songs, &lib_many(), 0, 770), None);
+        // Pixel scroll: partially visible bottom rows ARE live (they're drawn under the clip),
+        // but nothing below LIST_BOTTOM hits.
+        assert_eq!(hit_row(Tab::Songs, &lib_many(), 0, 770), Some(9));
         assert_eq!(hit_row(Tab::Songs, &lib_many(), 0, 760), Some(8));
+        assert_eq!(hit_row(Tab::Songs, &lib_many(), 0, 792), None); // >= LIST_BOTTOM
+        // Half-row offset: screen y 206 maps into row 0's second half → still row 0 at 31px in.
+        assert_eq!(hit_row(Tab::Songs, &lib_many(), 31, 206), Some(0));
+        assert_eq!(hit_row(Tab::Songs, &lib_many(), 62, 206), Some(1));
     }
 
     fn lib_many() -> Library {
@@ -600,6 +656,25 @@ mod tests {
         assert_eq!(album_hit_track(a, 0, 420), Some(1));
         assert_eq!(album_hit_track(a, 0, 500), Some(3)); // row 3 = 480..536
         assert_eq!(album_hit_track(a, 0, 640), None); // past the 4-track list
-        assert_eq!(album_hit_track(a, 2, 313), Some(2)); // scrolled window
+        assert_eq!(album_hit_track(a, 112, 313), Some(2)); // scrolled 2 rows (112 px)
+    }
+
+    #[test]
+    fn pixel_scroll_geometry_helpers() {
+        let l = lib();
+        // Albums content: 2 headers (30) + 3 rows (60) = 240 px; fits in the view → no scroll.
+        assert_eq!(content_h(Tab::Albums, &l), 240);
+        assert_eq!(max_scroll_px(Tab::Albums, &l), 0);
+        // Songs: 3 * 62 = 186 px, fits.
+        assert_eq!(content_h(Tab::Songs, &l), 186);
+        // 40 songs don't fit: max scroll = content - view, positive.
+        let many = lib_many();
+        let max = max_scroll_px(Tab::Songs, &many);
+        assert_eq!(max, 40 * 62 - (LIST_BOTTOM - 205));
+        assert!(max > 0);
+        // Row-top helper replays the grouped Albums layout.
+        assert_eq!(row_top_px(Tab::Albums, &l, 0), 30);
+        assert_eq!(row_top_px(Tab::Albums, &l, 1), 90);
+        assert_eq!(row_top_px(Tab::Albums, &l, 2), 180);
     }
 }

@@ -21,6 +21,11 @@ void cinder_audio_shutdown(void);
 int  cinder_audio_play(void);
 int  cinder_audio_pause(void);
 int  cinder_audio_stop(void);
+/* Stop playback AND drop the shim's pinned track sequence so PlayerService closes the current
+ * media file (required before USB-MSC hands /contents to the PC — an open fd under /contents
+ * makes the umount fail EBUSY and the PC sees no medium). Playback resumes only via a fresh
+ * cinder_audio_play_tracks. */
+int  cinder_audio_release_sequence(void);
 
 /* Track / group skip. NextGroup/PrevGroup move by ALBUM (the shuffle-by-album primitive). */
 int  cinder_audio_next_track(void);

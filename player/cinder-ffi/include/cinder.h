@@ -18,9 +18,10 @@ void cinder_force_dirty(void);
 void cinder_render_shutdown(void);
 /* 0 = day theme, non-zero = night. */
 void cinder_set_theme_night(int night);
-/* Load + apply persisted UI preferences (theme + visualiser + EQ + sound effects) from `path`, and
- * remember it so later changes auto-save. Call once at boot after cinder_render_init. Returns 1 if a
- * file was read (shell should then re-apply EQ/sound to the DSP), else 0. Garbage/missing = ignored. */
+/* Load + apply persisted UI preferences (theme + visualiser + EQ + sound effects + volume) from
+ * `path`, and remember it so later changes auto-save. Call once at boot after cinder_render_init.
+ * Returns a bitmask: bit0 = file read (re-apply EQ/sound to the DSP), bit1 = a persisted volume
+ * level was restored (apply it to the mixer instead of seeding from hardware). 0 = no file. */
 int cinder_settings_load(const char *path);
 
 /* Logical buttons (the backend maps raw evdev key codes -> these). */
@@ -30,7 +31,10 @@ typedef enum {
     CINDER_BTN_HOME = 8, CINDER_BTN_VOLUP = 9, CINDER_BTN_VOLDOWN = 10, CINDER_BTN_POWER = 11,
     /* The Hold/lock SWITCH (sustained state, not a press). The shell routes its code to
      * cinder_set_hold(), NOT cinder_input(); this marker just lets the keymap config identify it. */
-    CINDER_BTN_HOLD = 12
+    CINDER_BTN_HOLD = 12,
+    /* Dedicated transport buttons (the NW-A55 side FF/REW keys). Unlike LEFT/RIGHT these are
+     * GLOBAL: next/previous track on every screen, exactly like the stock player. */
+    CINDER_BTN_NEXT = 13, CINDER_BTN_PREV = 14
 } cinder_button_t;
 
 /* Actions the shell performs (via cinder-audio etc.) in response to cinder_input(). */
@@ -56,10 +60,15 @@ typedef enum {
 int  cinder_input(int button);
 /* Touchscreen navigation (the NW-A55 has no d-pad). cinder_tap delivers a tap at UI coordinates
  * (x:0..480, y:0..800) — returns a cinder_action_t for the shell to carry out, same as cinder_input.
- * cinder_touch_scroll drag-scrolls the current list by `dy_rows` rows. (The shell maps raw touch
- * coordinates → UI and classifies tap vs scroll vs the left-edge Back swipe.) */
+ * Scrolling is PIXEL-based for smoothness: while a vertical drag is in progress the shell streams
+ * cinder_touch_drag(dy_px) per pump tick (positive = show later rows); at release it hands the
+ * measured velocity to cinder_touch_fling(px/s) for momentum, and on a new contact it calls
+ * cinder_touch_down() to stop an in-flight fling. (The shell maps raw touch coordinates → UI and
+ * classifies tap vs drag vs the left-edge Back swipe.) */
 int  cinder_tap(int x, int y);
-void cinder_touch_scroll(int dy_rows);
+void cinder_touch_drag(int dy_px);
+void cinder_touch_fling(int velocity_px_s);
+void cinder_touch_down(void);
 /* Pending play request, populated when CINDER_ACT_PLAY_INDEX is returned: the tapped track's
  * album context as file URIs in play order + the index to start at. The shell reads these and
  * hands PlayerService a NodeTrackSequence (cinder_audio_play_tracks). */
@@ -117,12 +126,12 @@ int  cinder_get_battery_care(void);
  * bit4 Dynamic Normalizer, bit5 ClearAudio+). Call after a CINDER_ACT_SOUND_CHANGED action, then
  * apply each via the effect shim. */
 int  cinder_get_sound_flags(void);
-/* Read the current UI volume as 0..100%. Call after a CINDER_ACT_VOLUP/VOLDOWN action, then scale to
- * the device mixer range and set the hardware volume. */
+/* Read the current UI volume as the raw 0..120 step level (the stock scale — 1:1 with ALSA card0
+ * 'master volume'). Call after a CINDER_ACT_VOLUP/VOLDOWN action and write it to the mixer. */
 int  cinder_get_volume(void);
-/* Seed the UI volume from the device's real level (0..100%), no HUD pop. Call once at boot after
- * reading the hardware mixer, so the first Vol± press nudges from the actual level. */
-void cinder_set_volume(int pct);
+/* Seed the UI volume from the device's real level (raw 0..120 steps), no HUD pop. Call at boot
+ * after restoring the saved level (or reading the mixer), so Vol± nudges from the actual level. */
+void cinder_set_volume(int level);
 /* Is night theme active? (1/0). Call after a CINDER_ACT_THEME_CHANGED action (and at boot) to set
  * the panel backlight — night = minimal light. */
 int  cinder_get_night(void);

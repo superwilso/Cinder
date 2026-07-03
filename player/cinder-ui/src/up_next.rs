@@ -65,9 +65,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
         shown += 1;
     }
 
-    // scrollbar (only if the album overflows the window)
+    // scrollbar (only if the album overflows the window) — px-space equivalents of the
+    // row-window this screen still scrolls by
     if tracks.len() > shown {
-        crate::library::scrollbar(c, t, y0, scroll, shown, tracks.len());
+        crate::library::scrollbar(c, t, y0, scroll as i32 * RH, tracks.len() as i32 * RH);
     }
 }
 
@@ -97,6 +98,6 @@ pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow]) {
         shown += 1;
     }
     if queue.len() > shown {
-        crate::library::scrollbar(c, t, y0, 0, shown, queue.len());
+        crate::library::scrollbar(c, t, y0, 0, queue.len() as i32 * RH);
     }
 }

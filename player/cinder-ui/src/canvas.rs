@@ -12,6 +12,11 @@ pub const H: usize = 800;
 
 pub struct Canvas {
     pub buf: Vec<u32>, // W*H, 0x00RRGGBB
+    /// Vertical clip band [clip_top, clip_bot) enforced by every pixel write. Lists set this
+    /// around their scroll area so pixel-offset (partially visible) rows can't paint over the
+    /// chrome above or below; everything else draws with the full-screen default.
+    clip_top: i32,
+    clip_bot: i32,
 }
 
 impl Default for Canvas {
@@ -22,7 +27,18 @@ impl Default for Canvas {
 
 impl Canvas {
     pub fn new() -> Self {
-        Self { buf: vec![0; W * H] }
+        Self { buf: vec![0; W * H], clip_top: 0, clip_bot: H as i32 }
+    }
+
+    /// Restrict drawing to rows `top..bottom` (screen coords). Pair with `clear_clip`.
+    pub fn set_clip_y(&mut self, top: i32, bottom: i32) {
+        self.clip_top = top.clamp(0, H as i32);
+        self.clip_bot = bottom.clamp(self.clip_top, H as i32);
+    }
+
+    pub fn clear_clip(&mut self) {
+        self.clip_top = 0;
+        self.clip_bot = H as i32;
     }
 
     pub fn fill(&mut self, c: Rgb888) {
@@ -32,7 +48,7 @@ impl Canvas {
 
     #[inline]
     pub fn put(&mut self, x: i32, y: i32, v: u32) {
-        if x >= 0 && y >= 0 && (x as usize) < W && (y as usize) < H {
+        if x >= 0 && y >= self.clip_top && y < self.clip_bot && (x as usize) < W {
             self.buf[y as usize * W + x as usize] = v;
         }
     }
@@ -40,7 +56,7 @@ impl Canvas {
     /// Alpha-blend `c` over the existing pixel with coverage `a` (0..=255).
     #[inline]
     pub fn blend(&mut self, x: i32, y: i32, c: Rgb888, a: u8) {
-        if x < 0 || y < 0 || x as usize >= W || y as usize >= H {
+        if x < 0 || y < self.clip_top || y >= self.clip_bot || x as usize >= W {
             return;
         }
         let idx = y as usize * W + x as usize;
@@ -95,9 +111,9 @@ impl DrawTarget for Canvas {
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let v = to_u32(color);
         let x0 = area.top_left.x.max(0);
-        let y0 = area.top_left.y.max(0);
+        let y0 = area.top_left.y.max(self.clip_top);
         let x1 = (area.top_left.x + area.size.width as i32).min(W as i32);
-        let y1 = (area.top_left.y + area.size.height as i32).min(H as i32);
+        let y1 = (area.top_left.y + area.size.height as i32).min(self.clip_bot);
         for y in y0..y1 {
             for x in x0..x1 {
                 self.buf[y as usize * W + x as usize] = v;
