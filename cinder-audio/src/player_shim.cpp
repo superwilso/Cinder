@@ -15,12 +15,37 @@
 namespace ps = pst::services::playerservice;
 namespace pl = pst::playservice;
 
+namespace psu = pst::services::playerservice::util;
+
+// libPlayerServiceClientUtil exports ONLY the base-object dtor (D2) for Node<UriInfo>, but our
+// unique_ptr<Node>/delete emit complete-object (D1) calls. Node has no virtual bases, so D1==D2:
+// define the mangled D1 as an extern "C" forwarder to Sony's exported D2.
+extern "C" void _ZN3pst8services13playerservice4util4NodeINS2_7UriInfoEED2Ev(void*);
+extern "C" void _ZN3pst8services13playerservice4util4NodeINS2_7UriInfoEED1Ev(void* p) {
+    _ZN3pst8services13playerservice4util4NodeINS2_7UriInfoEED2Ev(p);
+}
+
 namespace {
 std::shared_ptr<ps::PlayController> g_ctrl;
+// The active TrackSequence. SetTrackSequence ships only an int handle over IPC; the service
+// PULLS tracks by calling back into this object (Alloc/AllocNext/OnNextTrack...) for as long
+// as the sequence plays — so WE must keep it alive. Replaced (freeing the previous one) on
+// every play_tracks call, dropped at shutdown.
+std::shared_ptr<pl::TrackSequence> g_seq;
 
 inline int change_state(pl::playstate_t s) {
     if (!g_ctrl) return -1;
     return g_ctrl->ChangePlayState(s);
+}
+
+// Minimal JSON string escaping for the Node schema (paths can contain " \ and control chars).
+void json_escape_into(std::string& out, const char* s) {
+    for (; *s; ++s) {
+        unsigned char c = static_cast<unsigned char>(*s);
+        if (c == '"' || c == '\\') { out += '\\'; out += static_cast<char>(c); }
+        else if (c < 0x20) { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); out += b; }
+        else out += static_cast<char>(c);
+    }
 }
 } // namespace
 
@@ -39,6 +64,48 @@ int cinder_audio_init(const char* name) {
 void cinder_audio_shutdown(void) {
     if (g_ctrl) g_ctrl->Disconnect();
     g_ctrl.reset();
+    g_seq.reset();
+}
+
+int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
+    if (!g_ctrl || !uris || count <= 0) return -1;
+    if (start < 0 || start >= count) start = 0;
+
+    // Build the Node-tree JSON: a root container whose children are the track leaves, in play
+    // order. "format" is the int Sony's own psk::FileUtil::GetFormatFromFilename maps from the
+    // path (-1 = unsupported; the root container's format is never consulted, use -1 too).
+    std::string json;
+    json.reserve(64 + static_cast<size_t>(count) * 96);
+    json += "{\"uri\":\"/\",\"format\":-1,\"children\":[";
+    for (int i = 0; i < count; ++i) {
+        if (!uris[i]) return -1;
+        int fmt = psu::psk::FileUtil::GetFormatFromFilename(std::string(uris[i]));
+        if (i) json += ',';
+        json += "{\"uri\":\"";
+        json_escape_into(json, uris[i]);
+        json += "\",\"format\":";
+        char n[16]; std::snprintf(n, sizeof n, "%d", fmt);
+        json += n;
+        json += '}';
+    }
+    json += "]}";
+
+    psu::NodeJsonUtil<psu::UriInfo, psu::UriInfoPolicy> jsonUtil;
+    std::unique_ptr<psu::Node<psu::UriInfo>> node = jsonUtil.ConvJsonStringToNode(json);
+    if (!node) return -2;
+
+    auto nts = std::make_shared<psu::NodeTrackSequence<psu::UriInfo>>(
+        std::move(node), start,
+        std::function<void(psu::UpdateReason, int)>([](psu::UpdateReason, int) {}));
+    // Upcast to the TrackSequence base WITHOUT pointer adjustment: the C1 ctor disasm stores a
+    // single primary vtable at object+0, so the base subobject is at offset 0. Aliasing
+    // shared_ptr shares nts's control block (destruction still runs ~NodeTrackSequence).
+    std::shared_ptr<pl::TrackSequence> seq(nts, reinterpret_cast<pl::TrackSequence*>(nts.get()));
+
+    int rc = g_ctrl->SetTrackSequence(seq);
+    if (rc != 0) return -3;
+    g_seq = seq;   // keep the sequence alive for the service's pull callbacks
+    return g_ctrl->ChangePlayState(pl::playstate_t::Play);
 }
 
 int cinder_audio_play(void)  { return change_state(pl::playstate_t::Play); }

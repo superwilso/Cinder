@@ -178,9 +178,10 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 - **Playlists tab**: browses, but is **empty** — playlists aren't populated from the DB yet.
 
 ### ▢ Stationary (placeholder render / no action — not wired)
-- **Play a selected track/album** (`Select` on a Songs/Playlist row, or "Play album"): currently a
-  **no-op** — needs `PlayController::SetTrackSequence` (NodeTrackSequence) RE'd into the player shim.
-  *(This is the biggest functional gap — transport only moves within the already-queued set.)*
+- ~~Play a selected track/album~~ → **WIRED (2026-07-03, awaiting device verify)**: tapping a
+  Songs row / Album track / "Play album" band resolves the album context through the DB and hands
+  PlayerService a real `NodeTrackSequence` (see the eighth-round notes below). Playlist rows are
+  still not playable (playlists themselves unpopulated).
 - **Bluetooth radio on/off**: the toggle flips **UI state only**; it doesn't power the radio
   (BtTransmitterService not wired). *(The codec selector beneath it IS functional — see Functional.)*
 - **FM Radio** screen: static (88.6 MHz placeholder).
@@ -399,6 +400,39 @@ shared by both binaries.)
 >    both rightward gestures coexist. (Queue is display+intent; making PlayerService honor it
 >    needs `PlayController::SetTrackSequence` RE — same gate as play-by-index.)
 
+> **Eighth round (2026-07-03): play-a-selected-track WIRED, album covers, bigger text round 2,
+> Play-album tap, adb guide. All offline-verified (62 tests + qemu preflight); device verify next.**
+> 1. **Play a selected track/album — the big gap — is code-complete.** Tap a Songs row, an Album
+>    track, or the "Play album" band → `Action::PlayIndex(object_id)` → cinder-ffi resolves the
+>    track's whole album in play order (`cinder-db::album_context`) into `cinder_pending_play_*`
+>    → the shell (guarded, 10 s) calls the new `cinder_audio_play_tracks(uris, count, start)` →
+>    builds the Node-tree JSON (schema RE'd from `ConvJsonToNode` @0x10631: `{"uri":<abs path>,
+>    "format":<int>,"children":[…]}`), maps each path through Sony's own
+>    `psk::FileUtil::GetFormatFromFilename` (mp3=2, flac=9 confirmed under qemu), parses it with
+>    `NodeJsonUtil::ConvJsonStringToNode`, constructs `NodeTrackSequence<UriInfo>` (0x100
+>    reserve; single primary vtable at +0 → aliasing-shared_ptr upcast, no adjustment), then
+>    `SetTrackSequence` + `ChangePlayState(Play)`. The shim pins the sequence (`g_seq`) because
+>    the service PULLS tracks from it during playback. Link needed a hand-written D1→D2 dtor
+>    forwarder for `Node<UriInfo>` (the lib exports only D2). **The qemu preflight now constructs
+>    the whole JSON→Node→NodeTrackSequence chain with guard canaries** — ABI regressions in this
+>    path can't reach the device.
+> 2. **Album covers (real art).** New `cinder-ffi/art_load.rs`: resolves art via
+>    `images.bmpfile` (pre-rendered BMP) or the embedded blob at `value`+`dataoffset`/`datasize`
+>    (JPEG/PNG — zune-jpeg + png crates, pure Rust, 2.23-clean; hand-rolled 24/32bpp BMP reader).
+>    Decoded ONCE per track change, pre-scaled (bilinear) to 480×480 full-bleed + 92×92 thumb, and
+>    blitted by Now Playing (day full-bleed / night thumb). Decode failure or no DB row → the
+>    existing gradient placeholder, so this can't regress the UI. Caps: 16 MB blob, 2048² decoded
+>    (PNG header gated BEFORE allocation). **Unverified on device:** whether the stock DB fills
+>    `bmpfile` or the offset pair — `adb pull /db/MTPDB.dat` (docs/adb_setup.md §3) settles it.
+> 3. **"Play album" band now plays** (it was render-only): tap → PlayIndex(first track). Album
+>    drill-in (Albums tab → track list under the album header) verified wired for touch + tests.
+> 4. **Text bigger round 2:** list titles 16→18 (menu 17→18), subs 12→13, settings values 11→12.
+> 5. **adb for iteration + RE: docs/adb_setup.md.** Dev channel already self-enables adb at boot;
+>    the guide covers Windows platform-tools, WSL (ADB_SERVER_SOCKET or usbipd), the push→verify→
+>    swap loop (reboot, never kill), live log tailing, and the RE pulls (MTPDB.dat first).
+> 6. **Audit:** clippy = style-only across the workspace; fixed real hazards in the new code
+>    (PNG pre-alloc header gate, decode dimension caps, pending-play URI width 512).
+
 ## STEP 2: flash the Home app (only after STEP 1 looks clean)
 
 From `/home/sony/sony`, with the Walkman plugged in (paths shown for the **stable** channel; for the
@@ -498,10 +532,9 @@ The 2026-06-26 offline RE pass found the mechanism for all of these (full detail
 offsets in `analysis/RE_playerservice_sound.md`; ABI capture in
 `cinder-audio/src/effect_abi.hpp`). What remains is wiring + small on-device confirmations:
 
-1. **Play a selected track/album** (`Action::PlayIndex`) — **reusable**: build a `Node<UriInfo>`
-   tree (`NodeJsonUtil<UriInfo>::ConvJsonStringToNode` in `libPlayerServiceClientUtil.so`), wrap in
-   `NodeTrackSequence<UriInfo>`, call `PlayController::SetTrackSequence`. Remaining: UriInfo
-   layout / JSON schema (one disasm pass).
+1. **Play a selected track/album** (`Action::PlayIndex`) — **DONE 2026-07-03** (eighth-round
+   notes above): JSON schema + format enum RE'd, `cinder_audio_play_tracks` implemented, wired
+   end-to-end, qemu-preflighted. Remaining: on-device verify only.
 2. **EQ + all Sound effects → DSP** — **complete API** in `libEffectCtrlDmp.so` (`EffectCtrlDmp`,
    default ctor): `SetEq10BandValue`, `SetDseeHx`, `SetVpt`, `SetVinylizer`, … and
    `SetBtAudioSoundEffect(bool)` (= effects-on-Bluetooth, goal #7). Build `effect_shim.cpp` over it.

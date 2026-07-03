@@ -24,7 +24,11 @@ pub struct NowPlaying<'a> {
     pub elapsed: &'a str,
     pub remaining: &'a str,
     pub progress: f32, // 0..1
-    pub art: &'a str,  // swatch name
+    pub art: &'a str,  // swatch name (gradient fallback when no decoded cover)
+    /// Real decoded cover art, pre-scaled by the shell: full-bleed 480×480 (day) and the
+    /// 92×92 thumb (night header). None = draw the gradient fallback.
+    pub art_full: Option<&'a art::Image>,
+    pub art_thumb: Option<&'a art::Image>,
     pub liked: bool,
     pub playing: bool,
     pub shuffle: bool,
@@ -62,15 +66,21 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 
     if t.night {
         // compact header: 92px thumb @32% + title/artist/codec column
-        art::block(c, t, 24, 80, 92, 92, np.art, 0.32);
+        match np.art_thumb {
+            Some(img) => art::draw_image(c, t, 24, 80, img, 0.32),
+            None => art::block(c, t, 24, 80, 92, 92, np.art, 0.32),
+        }
         text::draw(c, f, 134.0, 110.0, np.title, &s(Family::Sans, Weight::Bold, 21.0, t.ink, 0.0));
         text::draw(c, f, 134.0, 133.0, np.artist, &s(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0));
         text::draw(c, f, 134.0, 153.0, np.codec, &s(Family::Mono, Weight::Regular, 10.0, t.acc, 0.08));
         // viz centred in the airy negative space
         crate::viz::draw(c, 24, 420, 432, 16, 36, 3, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels);
     } else {
-        // full-bleed album art (34..514)
-        art::block(c, t, 0, 34, 480, 480, np.art, 1.0);
+        // full-bleed album art (34..514): the real decoded cover when available
+        match np.art_full {
+            Some(img) => art::draw_image(c, t, 0, 34, img, 1.0),
+            None => art::block(c, t, 0, 34, 480, 480, np.art, 1.0),
+        }
         // visualiser pushed up onto the lower album art — frees room for bigger controls
         crate::viz::draw(c, 24, 466, 432, 42, 36, 3, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels);
         // title / artist / codec

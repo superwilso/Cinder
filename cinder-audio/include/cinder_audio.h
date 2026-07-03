@@ -31,6 +31,15 @@ int  cinder_audio_prev_group(void);
 /* Seek to an absolute position from the start of the track, in milliseconds. */
 int  cinder_audio_seek_ms(int ms);
 
+/* Play a track list: hands PlayerService a NodeTrackSequence built from `count` absolute file
+ * paths (play order), starting playback at index `start`. This is the play-a-selected-track/
+ * album entry point — the shell feeds it the cinder_pending_play_* URIs after a
+ * CINDER_ACT_PLAY_INDEX action. The sequence stays alive inside the shim until replaced or
+ * shutdown (the service pulls tracks from it during playback).
+ * 0 = ok, -1 = bad args/not connected, -2 = JSON->Node build failed, -3 = SetTrackSequence
+ * rejected, else the ChangePlayState result. */
+int  cinder_audio_play_tracks(const char* const* uris, int count, int start);
+
 /* Poll the current track URI into `buf` (NUL-terminated, truncated to cap). Returns the
  * length written, or <0 on error. This is the PlayStatus.uri field (offset +0x6c);
  * playstate / position / duration are NOT yet exposed (PlayStatus layout RE pending) —

@@ -11,6 +11,7 @@
 // (which assumes safe-Rust callers) is a false positive for this FFI surface.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+mod art_load;
 mod scrobble;
 mod spectrum;
 
@@ -277,6 +278,12 @@ struct Render {
     // (NodeTrackSequence). Replaced wholesale on every new PlayIndex.
     pending_play: Vec<String>,
     pending_play_start: usize,
+    // Decoded album cover for the CURRENT track, pre-scaled to the two draw sizes (480 full-bleed,
+    // 92 thumb). art_key = the object_id we last decoded for (skip re-decode on same-track polls);
+    // None images = no art found → the UI draws its gradient fallback.
+    art_full: Option<cinder_ui::art::Image>,
+    art_thumb: Option<cinder_ui::art::Image>,
+    art_key: Option<i64>,
 }
 
 fn now_unix() -> u64 {
@@ -349,6 +356,9 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         viz_peak: 0.0,
         pending_play: Vec::new(),
         pending_play_start: 0,
+        art_full: None,
+        art_thumb: None,
+        art_key: None,
     });
     0
 }
@@ -554,6 +564,8 @@ pub extern "C" fn cinder_render_tick() {
         remaining: &r.np.remaining,
         progress: r.np.progress,
         art: &r.np.art,
+        art_full: r.art_full.as_ref(),
+        art_thumb: r.art_thumb.as_ref(),
         liked: r.np.liked,
         playing: r.np.playing,
         shuffle: r.np.shuffle,
@@ -1222,6 +1234,15 @@ pub extern "C" fn cinder_set_now_playing_uri(
             let changed = r.last_track.as_ref().map_or(true, |p| p.object_id != t.object_id);
             apply_track(&mut r.np, &t);
             if changed {
+                // Decode the album cover ONCE per track change (never on same-track re-polls:
+                // art_key remembers the object we last decoded for). Pre-scale to the two draw
+                // sizes so render is a plain blit. Failure → gradient fallback stays.
+                if r.art_key != Some(t.object_id) {
+                    let native = r.db.as_ref().and_then(|db| art_load::load(db, t.object_id));
+                    r.art_full = native.as_ref().map(|img| img.scaled_to(480, 480));
+                    r.art_thumb = native.as_ref().map(|img| img.scaled_to(92, 92));
+                    r.art_key = Some(t.object_id);
+                }
                 r.cur_duration_ms = t.duration_raw.unwrap_or(0).max(0);
                 r.play_pos_ms = (r.cur_duration_ms as f32 * progress.clamp(0.0, 1.0)) as i64;
                 // NOTE: do NOT reset `last_pos` here — it's the shared clock_tick anchor used for
@@ -1249,11 +1270,14 @@ pub extern "C" fn cinder_set_now_playing_uri(
         None => {
             r.np.title = u.rsplit('/').next().unwrap_or(&u).to_string();
             r.np.artist.clear();
-            // Unknown track → unknown duration: no estimated bar.
+            // Unknown track → unknown duration: no estimated bar. And no cover.
             r.cur_duration_ms = 0;
             r.play_pos_ms = 0;
             set_progress(&mut r.np, 0, 0);
             r.last_track = None;
+            r.art_full = None;
+            r.art_thumb = None;
+            r.art_key = None;
             -1
         }
     }

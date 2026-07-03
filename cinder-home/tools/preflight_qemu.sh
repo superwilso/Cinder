@@ -54,12 +54,20 @@ cat > "$WORK/preflight.cpp" <<'EOF'
 #include "easel_abi.hpp"
 #include "effect_abi.hpp"
 #include "power_abi.hpp"
+#include "playerservice_abi.hpp"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 static int g_fail = 0;
 #define CHECK(cond, msg) do { if(!(cond)){ std::printf("  FAIL: %s\n", msg); g_fail=1; } } while(0)
+
+// Same D1->D2 dtor forwarder player_shim.cpp ships (the lib exports only D2 for Node<UriInfo>).
+extern "C" void _ZN3pst8services13playerservice4util4NodeINS2_7UriInfoEED2Ev(void*);
+extern "C" void _ZN3pst8services13playerservice4util4NodeINS2_7UriInfoEED1Ev(void* p) {
+    _ZN3pst8services13playerservice4util4NodeINS2_7UriInfoEED2Ev(p);
+}
 
 // A guard-wrapped allocation: [0xCANARY][object][0xCANARY]; we verify the trailing canary
 // survives the device ctor (i.e. the ctor wrote only within sizeof(T)).
@@ -137,6 +145,43 @@ int main(int argc, char** argv) {
     guarded_new<pst::services::funcarch::powermgr::PowerMgrServiceClient>(pmbase,
         [](void* mem) { return new (mem) pst::services::funcarch::powermgr::PowerMgrServiceClient(); });
 
+    // ---- 4. Play-by-track chain: JSON -> Node tree -> NodeTrackSequence (the play_tracks path) ----
+    // Runs Sony's REAL ConvJsonStringToNode + NodeTrackSequence ctor from libPlayerServiceClientUtil
+    // (pure in-process: no service, no file access), with canaries around both reserved-size shells.
+    {
+        namespace psu = pst::services::playerservice::util;
+        int f_mp3  = psu::psk::FileUtil::GetFormatFromFilename(std::string("/contents/MUSIC/a.mp3"));
+        int f_flac = psu::psk::FileUtil::GetFormatFromFilename(std::string("/contents/MUSIC/b.flac"));
+        std::printf("sizeof(NodeJsonUtil)=%zu sizeof(NodeTrackSequence)=%zu format(mp3)=%d format(flac)=%d\n",
+                    sizeof(psu::NodeJsonUtil<psu::UriInfo, psu::UriInfoPolicy>),
+                    sizeof(psu::NodeTrackSequence<psu::UriInfo>), f_mp3, f_flac);
+        CHECK(f_mp3 >= 0 && f_flac >= 0, "GetFormatFromFilename rejected a supported extension");
+
+        char json[512];
+        std::snprintf(json, sizeof json,
+            "{\"uri\":\"/\",\"format\":-1,\"children\":["
+            "{\"uri\":\"/contents/MUSIC/a.mp3\",\"format\":%d},"
+            "{\"uri\":\"/contents/MUSIC/b.flac\",\"format\":%d}]}", f_mp3, f_flac);
+
+        unsigned char* jubase = nullptr;
+        auto* ju = guarded_new<psu::NodeJsonUtil<psu::UriInfo, psu::UriInfoPolicy>>(jubase,
+            [](void* mem) { return new (mem) psu::NodeJsonUtil<psu::UriInfo, psu::UriInfoPolicy>(); });
+        std::unique_ptr<psu::Node<psu::UriInfo>> node = ju->ConvJsonStringToNode(std::string(json));
+        CHECK(node != nullptr, "ConvJsonStringToNode returned null for a valid playlist JSON");
+
+        if (node) {
+            unsigned char* ntsbase = nullptr;
+            auto* nts = guarded_new<psu::NodeTrackSequence<psu::UriInfo>>(ntsbase,
+                [&](void* mem) {
+                    return new (mem) psu::NodeTrackSequence<psu::UriInfo>(
+                        std::move(node), 1,
+                        std::function<void(psu::UpdateReason, int)>([](psu::UpdateReason, int) {}));
+                });
+            nts->~NodeTrackSequence();   // exercise the exported dtor (frees the node tree)
+        }
+        ju->~NodeJsonUtil();
+    }
+
     if (g_fail) { std::printf("== PREFLIGHT FAILED ==\n"); return 1; }
     std::printf("== PREFLIGHT PASS: construction + callback dispatch verified, no overflow ==\n");
     return 0;
@@ -151,7 +196,7 @@ echo "[preflight] compiling harness…"
   -L"$DEVSYS/usr/lib/arm-linux-gnueabihf" -L"$DEVSYS/lib/arm-linux-gnueabihf" \
   "$WORK/preflight.o" -L"$SONYLIB" -L"$RAMLIB" -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
   -Wl,--allow-shlib-undefined \
-  -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient \
+  -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lPlayerServiceClientUtil \
   -lEffectCtrlDmp -lPowerMgrServiceClient \
   -l:libc++.so.1 -l:libcxxrt.so.1 -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
   -Wl,--dynamic-linker=/lib/ld-2.23.so \

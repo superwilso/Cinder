@@ -127,7 +127,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      "$HERE/main.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/analyzer_shim.o" "$HERE/power_shim.o" "${DISCOVER_MAIN[@]}" "$HERE/glibc223_compat.o" \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
-     -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lEffectCtrlDmp -lPowerMgrServiceClient \
+     -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lPlayerServiceClientUtil -lEffectCtrlDmp -lPowerMgrServiceClient \
      -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$OUT"
@@ -167,7 +167,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      "$HERE/probe.o" "$HERE/player_shim.o" "$HERE/analyzer_shim.o" "$HERE/discover.o" "$HERE/glibc223_compat.o" \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
-     -lPlayerServiceClient -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
+     -lPlayerServiceClient -lPlayerServiceClientUtil -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$PROBE"
 gate_glibc "$PROBE"

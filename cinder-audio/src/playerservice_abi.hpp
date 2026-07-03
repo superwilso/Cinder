@@ -21,6 +21,7 @@
 #pragma once
 #include <memory>
 #include <functional>
+#include <string>
 
 namespace pst {
 namespace playservice {
@@ -83,12 +84,27 @@ public:
 // C1 ctor disasm @0xbcec: a SINGLE primary vtable is stored at object+0, so the TrackSequence
 // base sits at offset 0 — the shared_ptr upcast needs NO pointer adjustment (we use the aliasing
 // shared_ptr ctor with a plain reinterpret_cast). The ctor writes fields up to +0xb0 (176 B), so
-// we reserve 0x100 (256 B). The JSON node schema (from .rodata): {"uri":..,"format":ext,"children":[..]}.
+// we reserve 0x100 (256 B). The JSON node schema (ConvJsonToNode disasm @0x10631, keys @.rodata):
+//   {"uri": <string>, "format": <INT>, "children": [..]}   — "format" is read with asInt()!
+// The format int comes from Sony's own mapper psk::FileUtil::GetFormatFromFilename (below);
+// CreateTrack passes a "uri" through UNTOUCHED when it starts with '/' (or http://, https://,
+// mediastore://) — our absolute /contents paths qualify — otherwise it prefixes the parent path.
 namespace pst { namespace services { namespace playerservice { namespace util {
 
 struct UriInfo;            // opaque value type (never constructed here)
 enum class UpdateReason : int;
-template <class T> class Node;   // opaque node tree (owned via unique_ptr from the JSON builder)
+
+// Node<UriInfo> — the tree the JSON builder returns, owned via unique_ptr<Node> whose
+// default_delete needs a COMPLETE type: we ship a sized shell + the exported dtor (D1 @0x9d71,
+// non-virtual delete — exactly what Sony's own unique_ptr<Node, default_delete> does).
+// Real footprint: ConvJsonToNode allocates 32 B per node (movs r0,#32 before _Znwj @0x106ae).
+template <class T> class Node {
+public:
+    ~Node();
+private:
+    Node() /* never constructed by us */;
+    unsigned char _reserved[0x20];
+};
 
 // NodeJsonUtil<UriInfo,UriInfoPolicy>::ConvJsonStringToNode(std::string const&) -> unique_ptr<Node>
 // Its C1 ctor stores TWO adjacent vtable pointers (strd @+0/+4 in the disasm) — a small
@@ -115,5 +131,17 @@ public:
 private:
     unsigned char _reserved[0x100];
 };
+
+// psk::FileUtil — Sony's filename→format mapper (exported, T @0x60a5). STATIC member (the
+// disasm reads the string from r0 directly, no this). Returns the format int the JSON schema
+// wants, or -1 for unsupported/relative paths (it requires a leading '/'). Its extension
+// table (@.rodata 0x13c00): wav mp3 m4a mpa mp4 3gp 3gpp 3g2 3gpp2 aac flac aif aiff aifc
+// afc dsf dff wma asf wmv oma aa3 ape ogg — everything the device decodes.
+namespace psk {
+class FileUtil {
+public:
+    static int GetFormatFromFilename(const std::string& filename);
+};
+} // namespace psk
 
 } } } } // namespace pst::services::playerservice::util

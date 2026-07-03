@@ -993,7 +993,30 @@ void carry_out(int act) {
             // until /contents/cinder_volume.conf is populated from the discovery report.
             run_guarded("carry_out: volume", 4, apply_volume);
             break;
-        case CINDER_ACT_PLAY_INDEX:    break; // TODO: PlayController::SetTrackSequence (RE pending)
+        case CINDER_ACT_PLAY_INDEX:
+            // Play the tapped track inside its album context: drain the pending-play URI list the
+            // UI resolved (cinder_pending_play_*), hand PlayerService a NodeTrackSequence, start
+            // at the tapped index. Guarded: JSON->Node + SetTrackSequence are Sony-service calls.
+            run_guarded("carry_out: play selected track", 10, []() {
+                int n = cinder_pending_play_count();
+                if (n <= 0) return;
+                if (n > 512) n = 512;                       // sanity cap (one album, not the world)
+                static char bufs[512][512];                 // static: keep the pump stack tiny;
+                static const char* ptrs[512];               // 512B/URI — deep unicode paths fit
+                int kept = 0;
+                for (int i = 0; i < n; ++i) {
+                    if (cinder_pending_play_uri(i, bufs[kept], sizeof bufs[kept]) > 0)
+                        ptrs[kept] = bufs[kept], ++kept;
+                }
+                if (kept == 0) return;
+                int start = cinder_pending_play_start();
+                if (start < 0 || start >= kept) start = 0;
+                int rc = cinder_audio_play_tracks(ptrs, kept, start);
+                if (rc == 0) g_playing = true;
+                else fprintf(stderr, "[cinder] play_tracks(%d tracks, start %d) failed rc=%d\n",
+                             kept, start, rc);
+            });
+            break;
         case CINDER_ACT_EQ_CHANGED:
             // apply EQ to the DSP, guarded (a sound-service fault skips it, UI keeps running)
             run_guarded("carry_out: apply EQ to DSP", 6, apply_eq_fn);

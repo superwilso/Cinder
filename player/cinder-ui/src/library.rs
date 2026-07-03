@@ -279,8 +279,8 @@ pub fn render(
                 }
                 art::block(c, t, 22, y + (rh - 42) / 2, 42, 42, &sgn.art, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 78.0, (cy - 2) as f32, &sgn.title, &body_label(Family::Sans, Weight::SemiBold, 16.0, tcol));
-                text::draw(c, f, 78.0, (cy + 16) as f32, &sgn.artist, &body_label(Family::Sans, Weight::Regular, 12.0, t.dim));
+                text::draw(c, f, 78.0, (cy - 2) as f32, &sgn.title, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
+                text::draw(c, f, 78.0, (cy + 16) as f32, &sgn.artist, &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
                 if now {
                     tiny_bars(c, 408, cy, t.acc);
                 }
@@ -319,9 +319,9 @@ pub fn render(
                 }
                 art::block(c, t, 22, y + (rh - 44) / 2, 44, 44, &al.art, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 80.0, (cy - 2) as f32, &al.name, &body_label(Family::Sans, Weight::SemiBold, 16.0, tcol));
+                text::draw(c, f, 80.0, (cy - 2) as f32, &al.name, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
                 let sub = format!("{} · {} tracks", al.year, al.tracks);
-                text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 12.0, t.dim));
+                text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
                 stroke_rect(c, 416, cy - 19, 38, 38, t.line, 1);
                 icons::shuffle(c, 435.0, cy as f32, 14.0, t.dim);
                 hline(c, y + rh, t.line);
@@ -349,9 +349,9 @@ pub fn render(
                 let arts: Vec<&str> = ar.arts.iter().map(|s| s.as_str()).collect();
                 art_stack(c, t, 22, cy, &arts);
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 90.0, (cy - 2) as f32, &ar.name, &body_label(Family::Sans, Weight::SemiBold, 16.0, tcol));
+                text::draw(c, f, 90.0, (cy - 2) as f32, &ar.name, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
                 let sub = format!("{} albums · {} tracks", ar.albums, ar.tracks);
-                text::draw(c, f, 90.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 12.0, t.dim));
+                text::draw(c, f, 90.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
                 stroke_rect(c, 414, cy - 20, 40, 40, t.line, 1);
                 icons::shuffle(c, 434.0, cy as f32, 15.0, t.dim);
                 hline(c, y + rh, t.line);
@@ -378,9 +378,9 @@ pub fn render(
                 }
                 art::block(c, t, 22, y + (rh - 44) / 2, 44, 44, &pl.art, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, 16.0, tcol));
+                text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
                 let sub = format!("{} tracks", pl.tracks);
-                text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 12.0, t.dim));
+                text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
                 icons::chevron(c, 456.0, cy as f32, 14.0, t.faint);
                 hline(c, y + rh, t.line);
                 y += rh;
@@ -440,7 +440,7 @@ pub fn album_view(
         text::draw(c, f, 28.0, (cy + 4) as f32, &num,
             &sty(Family::Mono, Weight::Regular, 11.0, if now { t.acc } else { t.faint }, 0.0));
         let tcol = if now { t.acc } else { t.ink };
-        text::draw(c, f, 56.0, (cy - 2) as f32, &sgn.title, &body_label(Family::Sans, Weight::SemiBold, 16.0, tcol));
+        text::draw(c, f, 56.0, (cy - 2) as f32, &sgn.title, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
         if now {
             tiny_bars(c, 408, cy, t.acc);
         }

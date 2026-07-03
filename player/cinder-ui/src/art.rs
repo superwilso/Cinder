@@ -65,6 +65,70 @@ fn lerp(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
 }
 
+/// A decoded album-cover bitmap (packed RGB, 3 bytes/px). Produced by the shell's decoder
+/// (cinder-ffi) already PRE-SCALED to its draw size, so `draw_image` is a plain blit —
+/// no per-frame resampling while the visualiser animates over it.
+pub struct Image {
+    pub w: usize,
+    pub h: usize,
+    pub rgb: Vec<u8>,
+}
+
+impl Image {
+    /// Bilinear-resample into a new dw×dh image (called once per track change, not per frame).
+    pub fn scaled_to(&self, dw: usize, dh: usize) -> Image {
+        let mut out = vec![0u8; dw * dh * 3];
+        if self.w == 0 || self.h == 0 || dw == 0 || dh == 0 {
+            return Image { w: dw, h: dh, rgb: out };
+        }
+        let sx = self.w as f32 / dw as f32;
+        let sy = self.h as f32 / dh as f32;
+        for y in 0..dh {
+            let fy = ((y as f32 + 0.5) * sy - 0.5).max(0.0);
+            let y0 = (fy as usize).min(self.h - 1);
+            let y1 = (y0 + 1).min(self.h - 1);
+            let ty = fy - y0 as f32;
+            for x in 0..dw {
+                let fx = ((x as f32 + 0.5) * sx - 0.5).max(0.0);
+                let x0 = (fx as usize).min(self.w - 1);
+                let x1 = (x0 + 1).min(self.w - 1);
+                let tx = fx - x0 as f32;
+                let o = (y * dw + x) * 3;
+                for ch in 0..3 {
+                    let p00 = self.rgb[(y0 * self.w + x0) * 3 + ch] as f32;
+                    let p01 = self.rgb[(y0 * self.w + x1) * 3 + ch] as f32;
+                    let p10 = self.rgb[(y1 * self.w + x0) * 3 + ch] as f32;
+                    let p11 = self.rgb[(y1 * self.w + x1) * 3 + ch] as f32;
+                    let v = p00 * (1.0 - tx) * (1.0 - ty) + p01 * tx * (1.0 - ty)
+                        + p10 * (1.0 - tx) * ty + p11 * tx * ty;
+                    out[o + ch] = v.round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        Image { w: dw, h: dh, rgb: out }
+    }
+}
+
+/// Blit a pre-scaled cover at (x0,y0). `opacity` blends toward `t.bg` exactly like `block`
+/// (night thumbs sit back at 0.32). The image is drawn 1:1 — scale at decode time.
+pub fn draw_image(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, opacity: f32) {
+    let (br, bg, bb) = (t.bg.r(), t.bg.g(), t.bg.b());
+    let op = opacity.clamp(0.0, 1.0);
+    for yy in 0..img.h {
+        let row = yy * img.w * 3;
+        for xx in 0..img.w {
+            let o = row + xx * 3;
+            let (mut r, mut g, mut b) = (img.rgb[o], img.rgb[o + 1], img.rgb[o + 2]);
+            if op < 1.0 {
+                r = lerp(br, r, op);
+                g = lerp(bg, g, op);
+                b = lerp(bb, b, op);
+            }
+            c.put(x0 + xx as i32, y0 + yy as i32, ((r as u32) << 16) | ((g as u32) << 8) | b as u32);
+        }
+    }
+}
+
 /// Draw a gradient art block at (x0,y0) sized w×h. `opacity` (0..1) blends the
 /// gradient toward `t.bg` so night-dimmed art and small thumbnails sit back.
 pub fn block(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32, name: &str, opacity: f32) {

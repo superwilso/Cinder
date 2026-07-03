@@ -563,6 +563,16 @@ impl App {
                             .map(|s| vec![Action::PlayIndex(s.object_id)])
                             .unwrap_or_default();
                     }
+                    // The "Play album" band (shuffle_row @234..306): play from track 1 — the
+                    // shell's album_context expands it to the whole album in order.
+                    if (234..306).contains(&y) {
+                        self.album_track_idx = 0;
+                        return album
+                            .track_list
+                            .first()
+                            .map(|s| vec![Action::PlayIndex(s.object_id)])
+                            .unwrap_or_default();
+                    }
                 }
                 vec![]
             }
@@ -1704,12 +1714,15 @@ mod tests {
         a.press(Button::Select); // enter Library
         assert_eq!(a.current(), Screen::Library);
         let start = a.lib_tab();
-        a.press(Button::Right);
+        // Left from the default Albums tab lands on Songs (Artists/Playlists rows navigate,
+        // not play — only Songs rows emit PlayIndex directly).
+        a.press(Button::Left);
         assert_ne!(a.lib_tab(), start); // tab changed
+        assert_eq!(a.lib_tab(), Tab::Songs);
         assert_eq!(a.lib_index(), 0); // cursor reset on tab change
         a.press(Button::Down);
         assert!(a.lib_index() <= 1);
-        // Select on a library row asks the shell to play that index
+        // Select on a Songs row asks the shell to play that track (by object id)
         let acts = a.press(Button::Select);
         assert!(matches!(acts.as_slice(), [Action::PlayIndex(_)]));
     }
@@ -2049,6 +2062,23 @@ mod tests {
         // A rightward swipe on chrome (above the rows) queues nothing.
         assert!(a.swipe(1, 240, 100).is_empty());
         assert_eq!(a.queue().len(), 1);
+    }
+
+    #[test]
+    fn album_screen_taps_play_band_and_track_rows() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Albums;
+        a.album_view = 0;
+        a.push(Screen::Album);
+        let album = a.lib.albums_flat()[0].clone();
+        let first_id = album.track_list[0].object_id;
+        // Tap the "Play album" band → plays from the first track (shell expands the album).
+        assert_eq!(a.tap(240, 260), vec![Action::PlayIndex(first_id)]);
+        // Tap the first track row (rows start at y=312 @56px) → same first track by object id.
+        assert_eq!(a.tap(240, 320), vec![Action::PlayIndex(first_id)]);
+        // A tap in the header art/title area plays nothing.
+        assert!(a.tap(240, 160).is_empty());
     }
 
     #[test]

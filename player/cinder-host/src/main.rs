@@ -31,6 +31,8 @@ fn main() {
         remaining: "-2:45",
         progress: 0.39,
         art: "kind",
+        art_full: None,
+        art_thumb: None,
         liked: true,
         playing: true,
         shuffle: false,
