@@ -11,13 +11,15 @@
 # backend:
 
 # ── Backend A: ALSA mixer control (preferred — matches how Sony sets it) ──────────────────────
-# From the discovery report's "VOLUME — amixer" section, use the master/playback control name and
-# its value range (the "Limits:" line in `amixer contents`).
+# CONFIRMED on-device 2026-07-25 (adb amixer): card0 simple control 'master volume' is the
+# CXD3778GF digital master, INTEGER 0..120 (Sony's 120-step scale; numid=10). A separate
+# numid=42 'Master Volume' 0..100 also exists, but 'master volume' 0..120 is the stock scale and
+# is cinder-home's built-in default too — so volume works even without this file.
 backend=amixer
 control=master volume
 card=0
 min=0
-max=100
+max=120
 
 # ── Backend B: CXD3778GF sysfs node (if amixer isn't present / you prefer a direct write) ─────
 # From the discovery report (look for /sys/module/snd_soc_cxd3778gf/parameters/* or a mixer sysfs).
