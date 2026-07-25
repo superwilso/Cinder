@@ -1464,12 +1464,17 @@ mod tests {
             INSERT INTO schema  VALUES (1,7,2,'DURATION');
             INSERT INTO releaseyears VALUES (30,0,'2012','2012','2012');
             INSERT INTO releaseyears VALUES (31,0,'1992','1992','1992');
-            INSERT INTO object_body (object_id,object_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
-              VALUES (1,1,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,30,5000);
-            INSERT INTO object_body (object_id,object_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
-              VALUES (2,1,'Box of Stones','/music/box.flac',2,1,1,10,20,30,5001);
-            INSERT INTO object_body (object_id,object_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
-              VALUES (3,1,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,31,4000);
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
+              VALUES (1,1,1,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,30,5000);
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
+              VALUES (2,1,1,'Box of Stones','/music/box.flac',2,1,1,10,20,30,5001);
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
+              VALUES (3,1,1,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,31,4000);
+            -- non-audio rows that must NOT appear in the library (folder mt=0, cover image mt=3)
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,album_id)
+              VALUES (7,3,0,'MUSIC','MUSIC',NULL);
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,album_id)
+              VALUES (8,2,3,'Cover','/music/Cover.jpg',10);
             INSERT INTO object_ext_int VALUES (1,7,272000);
             "#,
             )

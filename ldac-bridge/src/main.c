@@ -87,10 +87,20 @@ int main(void) {
     }
     if (sock < 0) { fprintf(stderr, "bt_audio_connect failed after retries\n"); return 1; }
 
-    // 3. Data plane: open the USB-DAC capture (44100 S32_LE 2ch). NOTE: in stock
-    // USB-DAC mode the UAC service already owns card4/pcm0c — see README; this may
-    // require stopping/redirecting that service first.
-    capture_t *cap = capture_open("hw:4,0", 44100, 2, /*S32_LE*/ 4);
+    // 3. Data plane: open the USB-DAC capture (44100 S32_LE 2ch). The UAC gadget card index
+    // is DYNAMIC (on-device: card4 does not exist outside UAC mode) — discover it at runtime
+    // rather than assuming hw:4,0. NOTE: in stock USB-DAC mode the Sony UAC service may already
+    // own that capture PCM — see README; this may require stopping/redirecting it first.
+    char capdev[32];
+    if (capture_find_dev(capdev, sizeof capdev) != 0) {
+        fprintf(stderr, "no USB-DAC capture card found — is the gadget in UAC mode "
+                        "(setprop sys.sony.config uac) with a PC feeding audio? "
+                        "falling back to hw:4,0\n");
+        snprintf(capdev, sizeof capdev, "hw:4,0");
+    } else {
+        fprintf(stderr, "ldac-bridge: USB-DAC capture device = %s\n", capdev);
+    }
+    capture_t *cap = capture_open(capdev, 44100, 2, /*S32_LE*/ 4);
     if (!cap) { fprintf(stderr, "capture_open failed\n"); return 1; }
 
     // 4. Pump: read PCM frames -> write to the BT audio socket in chunk-sized writes.

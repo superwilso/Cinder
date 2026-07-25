@@ -24,8 +24,9 @@
 #   ONLY by cinder-home once it proves HEALTHY (painted + survived its risky init). So a crash OR
 #   HANG never resets it -> it accumulates and after MAXBAD=2 boots the launcher execs the stock
 #   Qt app -> stock UI returns on its own, NO PC/wbrt. (The old blind 60s-timer reset is removed:
-#   a hung process "survived" it -> the counter never accumulated -> soft-brick.) Plus a ~2s
-#   pre-launch window: connect USB (or create /contents/cinderhome_off) -> boot stock immediately.
+#   a hung process "survived" it -> the counter never accumulated -> soft-brick.) The manual escape
+#   is /contents/cinderhome_off -> boot stock. (The USB-cable-at-boot escape was removed 2026-07-25:
+#   cinder boots regardless of cable, and drives the msc/adb gadget itself instead of fleeing to stock.)
 #   All writes here are ATOMIC (temp+verify+mv) + a FINAL SANITY GATE reverts to stock if any
 #   piece is wrong, so a partial install can't soft-brick. Full revert: cinder_home_uninstall.upg.
 # The original Qt binary is never modified; only the .appcfg (backed up to .appcfg.real).
@@ -130,8 +131,8 @@ fi
 "$BB" cat > "$LAUNCH.tmp" <<'LAUNCH_EOF'
 #!/system/bin/sh
 # cinder-home launcher — appmgr execs this (via the repointed .appcfg command:). It runs
-# cinder-home behind a BAD-BOOT COUNTER + an escape window so a failed/HUNG launch reverts
-# to the stock Qt app WITHOUT a wbrt restore. The stock Qt binary is never modified.
+# cinder-home behind a BAD-BOOT COUNTER so a failed/HUNG launch reverts to the stock Qt app
+# WITHOUT a wbrt restore. The stock Qt binary is never modified.
 #
 # SAFETY MODEL (rewritten 2026-06-26 after a hung launch required wbrt):
 #  * The counter is incremented HERE every boot and persisted (sync). It is reset to 0 ONLY by
@@ -139,8 +140,10 @@ fi
 #    HANG — which never resets the counter — ACCUMULATES across (force-)reboots and auto-reverts
 #    after MAXBAD. (The old launcher reset the counter on a blind 60 s timer, which a hung
 #    process "survives" → it never accumulated → soft-brick. That bug is removed.)
-#  * A PRE-LAUNCH ESCAPE WINDOW lets you bail to stock fast: power the device off (hold Power
-#    ~8 s if hung), then during this window connect USB *or* leave an escape file → stock.
+#  * A MANUAL escape remains: create /contents/cinderhome_off (over MSC or adb) and reboot → stock.
+#    The USB-cable-at-boot escape was REMOVED 2026-07-25 (user trusts the counter) so cinder now
+#    boots regardless of cable state — you can develop/charge with USB in and still land in cinder,
+#    and the msc/adb gadget is driven from inside cinder instead of forcing stock at launch.
 BOOTCOUNT=/contents/cinderhome_bootcount
 MAXBAD=2
 REAL=/system/vendor/sony/bin/HgrmMediaPlayerApp           # untouched stock Qt app
@@ -148,15 +151,6 @@ HOME_BIN=/system/vendor/unknown321/bin/cinder-home
 export LD_LIBRARY_PATH="/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib:$LD_LIBRARY_PATH"
 
 run_stock() { exec "$REAL" "$@"; }
-usb_connected() {
-    for p in /sys/class/android_usb/android0/state /sys/class/power_supply/usb/online \
-             /sys/class/power_supply/usb/present /sys/class/power_supply/usb/uevent; do
-        v=$(cat "$p" 2>/dev/null) || continue
-        case "$v" in *CONFIGURED*|*POWER_SUPPLY_ONLINE=1*) return 0;; esac
-        [ "$v" = "1" ] && return 0
-    done
-    return 1
-}
 
 # explicit disable / missing binary -> stock, no counting
 [ -f /contents/cinderhome_off ] && run_stock "$@"
@@ -172,17 +166,9 @@ if [ "$n" -ge "$MAXBAD" ]; then
     run_stock "$@"
 fi
 
-# pre-launch escape window (~3 s): connect USB or drop /contents/cinderhome_off -> stock.
-i=0
-while [ "$i" -lt 2 ]; do
-    [ -f /contents/cinderhome_off ] && run_stock "$@"
-    if usb_connected; then
-        echo "usb-at-launch -> stock for recovery" > /contents/cinderhome_escape 2>/dev/null
-        run_stock "$@"
-    fi
-    sleep 1
-    i=$((i + 1))
-done
+# NOTE: the USB-cable-at-boot escape window was removed 2026-07-25. cinder now launches straight
+# through to the binary (the bad-boot counter above is the only automatic revert; cinderhome_off
+# is the manual one, checked at the top). No cable check, no ~3 s stall on the boot path.
 
 # optional USB-DAC->LDAC bridge supervisor (no-op if the bridge isn't installed). Started
 # HERE because appmgr execs only this launcher at boot — nothing else starts it.
