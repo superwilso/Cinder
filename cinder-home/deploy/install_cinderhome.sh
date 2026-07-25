@@ -44,6 +44,7 @@ echo "busybox: $BB ($("$BB" 2>&1 | head -1 2>/dev/null))"
 VENDOR=/system/vendor/unknown321
 BIN=$VENDOR/bin
 SRC=/contents/cinder-home
+SRC_UMOUNT=/contents/cinder-umount
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
 LAUNCH=$BIN/cinderhome-launch.sh
@@ -93,6 +94,24 @@ fi
 "$BB" chmod 0755 "$BIN/cinder-home.tmp"
 "$BB" mv -f "$BIN/cinder-home.tmp" "$BIN/cinder-home"
 echo "installed binary: $BIN/cinder-home ($sz bytes)"
+
+# 1b) install the setuid-root umount helper (SETUID is what lets capless uid-100 cinder-home
+#     unmount /contents for USB-MSC). Atomic temp->verify->chown root->chmod 4755->mv. Non-fatal:
+#     if the helper is missing/bad, cinder falls back to the (racy) stock-trigger MSC path.
+if [ -s "$SRC_UMOUNT" ]; then
+    "$BB" cat "$SRC_UMOUNT" > "$BIN/cinder-umount.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-umount.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-umount.tmp" 2>/dev/null
+        "$BB" chmod 4755 "$BIN/cinder-umount.tmp"
+        "$BB" mv -f "$BIN/cinder-umount.tmp" "$BIN/cinder-umount"
+        echo "installed setuid helper: $BIN/cinder-umount ($("$BB" wc -c < "$BIN/cinder-umount" 2>/dev/null | "$BB" tr -cd '0-9') bytes, mode $("$BB" stat -c %a "$BIN/cinder-umount" 2>/dev/null))"
+    else
+        echo "WARN: cinder-umount stage empty — MSC will use the fallback path."
+        "$BB" rm -f "$BIN/cinder-umount.tmp" 2>/dev/null
+    fi
+else
+    echo "WARN: $SRC_UMOUNT not staged (tools/flash.sh --push dist/<ch>/cinder-umount) — MSC fallback path."
+fi
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
 #    the .appcfg (otherwise the stock launch config is lost with no .real to restore).
