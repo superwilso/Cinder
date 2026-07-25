@@ -5,6 +5,27 @@ after device probing proved: no audio-stack mutex, USB-DAC = ALSA capture→play
 transmit = NOT ALSA, block = app-policy only. This document maps how LDAC transmit actually
 works so we can drive it for USB-DAC input.
 
+## On-device update (2026-07-25, live adb) — ALSA topology + card-index correction
+
+Direct adb (device `10459A05194859`) while NOT in UAC mode confirmed:
+- **`/proc/asound/cards` has exactly ONE card: `0 [sonysoccard]`** (the built-in cxd3778gf
+  codec). Its playback PCMs: dev0 `cxd3778gf-hires-out`, dev1 `cxd3778gf-standard`, dev2
+  `dsdenc`; it also exposes a capture substream `card0/pcm1c` (idle/closed).
+- **There is NO `card4`.** The USB-DAC (UAC gadget) capture card is registered *dynamically*
+  by the kernel **only while the gadget is in UAC mode** (`setprop sys.sony.config uac`,
+  functions `audio_func,adb`, PID 0x0B8C), and it gets the next FREE index — **not guaranteed
+  to be 4.** So the earlier `hw:4,0` in this doc / README / `capture.c` was fragile.
+- **FIX (landed):** `ldac-bridge/src/capture.c` now has `capture_find_dev()` — it scans
+  `/proc/asound/cards` for the first capture-capable card whose id is NOT `sonysoccard` and
+  returns its `hw:C,D`. `main.c` calls it instead of hardcoding `hw:4,0` (env `LDAC_CAP_DEV`
+  overrides; falls back to `hw:4,0` only if discovery finds nothing). Bridge still builds clean.
+
+**Still device-gated (needs a UAC-mode session, ideally with a PC feeding audio + LDAC
+headphones):** (1) the UAC capture card's actual index + whether `snd_pcm_open` returns
+`-EBUSY` (stock UAC service contention — TEST.md unknown #2); (2) whether `SetCurrentSource`
+opens the BtTransmitter server socket (TEST.md unknown #1). Both are unchanged by the above;
+the card-discovery fix just removes the wrong-index failure mode before we get there.
+
 ## TL;DR — the transmit pipeline
 
 ```

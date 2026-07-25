@@ -66,8 +66,12 @@ pub struct Db {
     duration_akey: Option<i64>,
 }
 
-// Real tracks are object_body rows that have a file (folders/containers don't).
-const TRACK_WHERE: &str = "ob.filename IS NOT NULL";
+// Real tracks are object_body rows that have a file AND are audio. `filename IS NOT NULL` alone
+// (the old filter) also matched folders (media_type=0: internal/MUSIC/LEARNING), cover images
+// (Cover.jpg/*.png, media_type=3) and .m3u8 playlists (media_type=3) — 445 junk rows in a real
+// device DB (RE 2026-07-25 on /db/MTPDB.dat). `media_type = 1` is Sony's semantic "audio" tag and
+// is set on every playable track (and only those), so it's the correct, format-agnostic gate.
+const TRACK_WHERE: &str = "ob.filename IS NOT NULL AND ob.media_type = 1";
 
 impl Db {
     /// Open the library DB read-only (won't perturb the scanner's writes).
@@ -105,7 +109,7 @@ impl Db {
         let mut st = self.conn.prepare(
             "SELECT al.id, al.value, \
                     (SELECT COUNT(*) FROM object_body ob \
-                       WHERE ob.album_id = al.id AND ob.filename IS NOT NULL) \
+                       WHERE ob.album_id = al.id AND ob.filename IS NOT NULL AND ob.media_type = 1) \
              FROM albums al ORDER BY al.sort_str, al.value",
         )?;
         let rows = st.query_map([], |r| {
@@ -340,13 +344,15 @@ mod tests {
             INSERT INTO images  VALUES (100,0,4096,20000,'/music/atlas.flac','d1','/db/thumb/100.bmp',92,92);
             INSERT INTO releaseyears VALUES (30,0,'2012','2012','2012');
             INSERT INTO releaseyears VALUES (31,0,'1992','1992','1992');
-            INSERT INTO object_body (object_id,object_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
-              VALUES (1,1,0,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,30,100,5000);
-            INSERT INTO object_body (object_id,object_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
-              VALUES (2,1,1,'Box of Stones','/music/box.flac',2,1,1,10,20,30,NULL,5001);
-            INSERT INTO object_body (object_id,object_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
-              VALUES (3,1,0,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,31,NULL,4000);
-            INSERT INTO object_body (object_id,object_type,title,filename,album_id) VALUES (9,0,'A Folder',NULL,NULL);
+            INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
+              VALUES (1,1,1,0,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,30,100,5000);
+            INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
+              VALUES (2,1,1,1,'Box of Stones','/music/box.flac',2,1,1,10,20,30,NULL,5001);
+            INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
+              VALUES (3,1,1,0,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,31,NULL,4000);
+            -- a folder (media_type 0) and a stray cover image (media_type 3) — both must be excluded
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,album_id) VALUES (9,0,0,'A Folder',NULL,NULL);
+            INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,album_id) VALUES (8,2,3,0,'Cover','/music/Cover.jpg',10);
             INSERT INTO object_ext_int VALUES (1,7,272000);
             INSERT INTO object_ext_int VALUES (3,7,303000);
             "#,

@@ -7,7 +7,7 @@ daemon driving `BtTransmitterService` directly).
 
 ## Pipeline
 ```
-USB-DAC capture (ALSA card4/pcm0c, 44100 S32_LE 2ch)
+USB-DAC capture (ALSA UAC-gadget card, discovered at runtime — NOT hardcoded card4; 44100 S32_LE 2ch)
   → ldac-bridge
     → abstract AF_UNIX socket "\0"+GetSocketName()
       → BtTransmitterService (recv → LDAC encode → MTK BT chip) → headphones

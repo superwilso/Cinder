@@ -14,11 +14,50 @@
 #include <alsa/asoundlib.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 struct capture {
     snd_pcm_t *pcm;
     unsigned frame_bytes;   // channels * bytes_per_sample
 };
+
+// Discover the USB-DAC capture PCM at runtime instead of assuming "hw:4,0".
+//
+// On-device probe (2026-07-25): outside UAC mode ONLY card0 ("sonysoccard", the built-in
+// cxd3778gf codec) exists. The UAC gadget registers a SEPARATE ALSA card only while the
+// gadget is in UAC mode, and the kernel gives it the next FREE index — which is NOT
+// guaranteed to be 4. Hardcoding hw:4,0 was therefore fragile (wrong card, or no card at
+// all). Strategy: scan /proc/asound/cards for a capture-capable card whose id is NOT the
+// built-in codec, and return its first capture PCM as an ALSA "hw:C,D" name.
+//
+// `LDAC_CAP_DEV` in the environment overrides discovery (test harness / odd firmware).
+// Returns 0 and fills `out` on success; -1 if no USB-DAC capture card is present.
+int capture_find_dev(char *out, size_t n) {
+    const char *env = getenv("LDAC_CAP_DEV");
+    if (env && *env) { snprintf(out, n, "%s", env); return 0; }
+
+    FILE *f = fopen("/proc/asound/cards", "r");
+    if (!f) return -1;
+    char line[256];
+    int rc = -1;
+    while (rc != 0 && fgets(line, sizeof line, f)) {
+        // format: " 4 [Gadget         ]: usb-audio - ..."
+        int idx;
+        char id[64];
+        if (sscanf(line, " %d [%63[^]]", &idx, id) != 2) continue;
+        char *e = id + strlen(id);
+        while (e > id && e[-1] == ' ') *--e = 0;      // trim trailing pad spaces
+        if (strcmp(id, "sonysoccard") == 0) continue; // built-in codec — not the USB-DAC
+        for (int d = 0; d < 8; ++d) {                 // find its first capture pcm device
+            char p[64];
+            snprintf(p, sizeof p, "/proc/asound/card%d/pcm%dc", idx, d);
+            if (access(p, F_OK) == 0) { snprintf(out, n, "hw:%d,%d", idx, d); rc = 0; break; }
+        }
+    }
+    fclose(f);
+    return rc;
+}
 
 capture_t *capture_open(const char *dev, unsigned rate, unsigned channels, unsigned bps) {
     snd_pcm_t *pcm = NULL;
