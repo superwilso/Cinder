@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NW-A55 · Interactive</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&family=Newsreader:ital,opsz@0,6..72;1,6..72&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="screens.css" />
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #0b0b0d; overflow: hidden; }
+    #root { width: 100vw; height: 100vh; }
+    * { box-sizing: border-box; }
+    /* hidden scrollbars inside the device screen */
+    .np-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+    .np-scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
+    button { font-family: inherit; }
+
+    @keyframes shelfUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+    /* album-art placeholder (inlined so it never depends on screens.css) */
+    .art { position: relative; overflow: hidden; flex-shrink: 0; }
+    .art::before { content: ''; position: absolute; inset: 0; background: var(--art-bg, linear-gradient(135deg, #555, #222)); }
+    .art::after {
+      content: ''; position: absolute; inset: 0; mix-blend-mode: overlay;
+      background:
+        repeating-linear-gradient(115deg, transparent 0 18px, rgba(255,255,255,.04) 18px 36px),
+        radial-gradient(120% 80% at 20% 10%, rgba(255,255,255,.18), transparent 55%);
+    }
+    [data-art="kind"] { --art-bg: linear-gradient(135deg, #d97757 0%, #8b3a1e 60%, #2a1108 100%); }
+    [data-art="harvest"] { --art-bg: linear-gradient(135deg, #e8c34a 0%, #8a6b1d 70%, #2b2008 100%); }
+    [data-art="midnight"] { --art-bg: linear-gradient(135deg, #4a6db8 0%, #1a2547 60%, #050810 100%); }
+    [data-art="ferns"] { --art-bg: linear-gradient(160deg, #6b9e6b 0%, #2f4d34 60%, #0d1a10 100%); }
+    [data-art="halcyon"] { --art-bg: linear-gradient(135deg, #c4a3d4 0%, #6b4a83 60%, #1a0d2b 100%); }
+    [data-art="atlas"] { --art-bg: linear-gradient(135deg, #2a2522 0%, #1a1614 50%, #050403 100%); }
+    [data-art="bloom"] { --art-bg: linear-gradient(135deg, #f0a3a0 0%, #b04855 60%, #3a0d18 100%); }
+    [data-art="prism"] { --art-bg: linear-gradient(120deg, #4a8acb 0%, #b04e9a 50%, #d4a955 100%); }
+    [data-art="static"] { --art-bg: repeating-linear-gradient(0deg, #1a1a1a 0 2px, #2a2a2a 2px 4px); }
+    [data-art="cassette"] { --art-bg: linear-gradient(135deg, #c8a45b 0%, #5a4520 50%, #1d1610 100%); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="icons.jsx"></script>
+  <script type="text/babel" src="data.jsx"></script>
+  <script type="text/babel" src="visualizer.jsx"></script>
+  <script type="text/babel" src="player.jsx"></script>
+  <script type="text/babel" src="player-screens.jsx"></script>
+  <script type="text/babel" src="library.jsx"></script>
+  <script type="text/babel" src="shelf.jsx"></script>
+  <script type="text/babel" src="interactive-app.jsx"></script>
+</body>
+</html>

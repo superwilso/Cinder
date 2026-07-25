@@ -1,0 +1,10 @@
+[package]
+name = "cinder-db"
+version = "0.1.0"
+edition = "2021"
+
+# Read-only reader for the Sony media library (SQLite, /db/MTPDB.dat). Pure Rust —
+# no libc++/IPC. Schema reverse-engineered from libMediaStoreService.so
+# (analysis/H_mediastore/RE_findings.md). Used by cinder-ffi (device) + cinder-host/sim.
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }

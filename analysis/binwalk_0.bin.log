@@ -1,0 +1,16 @@
+
+DECIMAL       HEXADECIMAL     DESCRIPTION
+--------------------------------------------------------------------------------
+0             0x0             Executable script, shebang: "/bin/sh"
+1396          0x574           Unix path: /dev/block/mmcblk0p19"
+2972          0xB9C           Unix path: /usr/local/bin/fwfb /root/fwup_err.rgb
+3450          0xD7A           Unix path: /sys/class/leds/dtb:gpio:LED_RED_1/brightness
+3507          0xDB3           Unix path: /sys/class/leds/dtb:gpio:LED_GREEN_1/brightness
+3566          0xDEE           Unix path: /sys/class/leds/dtb:pwm:LED_RED_2/brightness
+3622          0xE26           Unix path: /sys/class/leds/dtb:pwm:LED_GREEN_2/brightness
+4123          0x101B          Unix path: /sys/class/leds/dtb:gpio:LED_RED_1/brightness
+4363          0x110B          Unix path: /sys/class/leds/dtb:gpio:LED_RED_1/brightness
+5186          0x1442          Unix path: /sys/class/leds/dtb:gpio:LED_GREEN_1/brightness
+5421          0x152D          Unix path: /sys/class/leds/dtb:pwm:LED_RED_2/brightness
+6859          0x1ACB          Unix path: /sys/class/leds/dtb:pwm:LED_GREEN_2/brightness
+

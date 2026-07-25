@@ -1,0 +1,15 @@
+symbol: _ZTVN5easel13QtApplicationE @ 00012df8
+
+==== vtable @ 00012df8 ====
+[0] 0x0
+[1] 0x0
+[2] off 8  -> <EXTERNAL>::QApplication::metaObject
+[3] off 12  -> <EXTERNAL>::QApplication::qt_metacast
+[4] off 16  -> <EXTERNAL>::QApplication::qt_metacall
+[5] off 20  -> <EXTERNAL>::QApplication::~QApplication
+[6] off 24  -> easel::QtApplication::~QtApplication
+[7] off 28  -> easel::QtApplication::event
+[8] off 32  -> <EXTERNAL>::QObject::eventFilter
+[9] off 36  -> <EXTERNAL>::QObject::timerEvent
+[10] off 40  -> <EXTERNAL>::QObject::childEvent
+[11] off 44  -> <EXTERNAL>::QObject::customEvent

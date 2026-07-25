@@ -1,0 +1,33 @@
+[1;34mKeys
+[1;32m  KAS: [1;33mdd49de9dab2bce5a59090c01049576d537af6a313e5c0a2c24353937a87352d6
+[1;32m  Key: [1;33me828560e48f7504d
+[1;32m  Sig: [1;33m8857b2277f93aea2
+[1;34mFiles
+[1;30m  File[1;31m 0
+[1;32m    Offset: [1;33m0xc0
+[1;32m    Size: [1;33m0x2000
+[1;30m  File[1;31m 1
+[1;32m    Offset: [1;33m0x20c0
+[1;32m    Size: [1;33m0x1000
+[1;30m  File[1;31m 2
+[1;32m    Offset: [1;33m0x30c0
+[1;32m    Size: [1;33m0x6d6000
+[1;30m  File[1;31m 3
+[1;32m    Offset: [1;33m0x6d90c0
+[1;32m    Size: [1;33m0x21000
+[1;30m  File[1;31m 4
+[1;32m    Offset: [1;33m0x6fa0c0
+[1;32m    Size: [1;33m0x44000
+[1;30m  File[1;31m 5
+[1;32m    Offset: [1;33m0x73e0c0
+[1;32m    Size: [1;33m0xb3000
+[1;30m  File[1;31m 6
+[1;32m    Offset: [1;33m0x7f10c0
+[1;32m    Size: [1;33m0x67dc000
+[1;30m  File[1;31m 7
+[1;32m    Offset: [1;33m0x6fcd0c0
+[1;32m    Size: [1;33m0x6000
+[1;30m  File[1;31m 8
+[1;32m    Offset: [1;33m0x6fd30c0
+[1;32m    Size: [1;33m0x2000
+[1;00m

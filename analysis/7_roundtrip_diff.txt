@@ -1,0 +1,29 @@
+=== Phase 7: Round-trip verification ===
+Original: artifacts/unpacked/stock
+Repacked: artifacts/repack_test/NW_WM_FW_repack.UPG
+Re-unpacked: artifacts/repack_test/unpack_verify
+
+OK (identical): 0.bin
+OK (identical): 1.bin
+OK (identical): 2.bin
+OK (identical): 3.bin
+OK (identical): 4.bin
+OK (identical): 5.bin
+DIFFERS: 6.bin
+  original:  838860800 bytes / 1f697e43c6af5565589979f1fb9e4b69
+  roundtrip: 108904448 bytes / 5d29577d2f09df3932beb8631bfe0b78
+OK (identical): 7.bin
+OK (identical): 8.bin
+
+Result: 8 identical, 1 differ
+ROUND-TRIP: FAIL — investigate differences before deploying custom .UPG
+
+=== Audit addendum (2026-06-09) ===
+The 6.bin "DIFFERS" above is a framing artifact, not a real failure:
+phase1 saved 6.bin -z-decompressed (800 MB ext4) while the round-trip
+extract kept it in compressed fwpup form (108 MB). Re-extracted the
+repacked UPG with `upgtool -m nw-a50 -e -z 6` and compared:
+  original 6.bin:           1f697e43c6af5565589979f1fb9e4b69
+  roundtrip 6.bin (decomp): 1f697e43c6af5565589979f1fb9e4b69
+Byte-identical. ROUND-TRIP: PASS (9/9 sectors). The modify->repack->unpack
+mechanism is confirmed sound.

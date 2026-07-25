@@ -1,0 +1,29 @@
+Phase 3 — MT8590 SoC Confirmation
+Run: Tue May 26 16:20:40 BST 2026
+
+ro.board.platform=mt8590
+ro.board.platform=mt8590
+  CONFIRMED via strings(libMtkOmxFlacDec.so): mt8590/mediatek match
+  CONFIRMED via strings(libMtkOmxFlacDec.so): explicit mt8590
+  CONFIRMED via strings(libMtkOmxMp3Dec.so): mt8590/mediatek match
+  CONFIRMED via strings(libMtkOmxMp3Dec.so): explicit mt8590
+  CONFIRMED via strings(libMtkOmxWmaDec.so): mt8590/mediatek match
+  CONFIRMED via strings(libMtkOmxWmaDec.so): explicit mt8590
+  CONFIRMED via strings(libMtkOmxWmaProDec.so): mt8590/mediatek match
+  CONFIRMED via strings(libMtkOmxWmaProDec.so): explicit mt8590
+  CONFIRMED via strings(libbtcust.so): mt8590/mediatek match
+  CONFIRMED via strings(libmtk_drvb.so): mt8590/mediatek match
+  CONFIRMED via strings(libmtk_drvb.so): explicit mt8590
+  CONFIRMED via strings(libsbc_dec.so): mt8590/mediatek match
+  CONFIRMED via strings(liburee_meta_drmkeyinstall_v2.so): mt8590/mediatek match
+
+Pre-confirmed evidence (from primary sources, verified before device arrival):
+  [Verified] unknown321/wbrt README: "Create and restore backups for MT8590-based
+    Walkmans: NW-A30/40/50, ZX300, WM1A, WM1Z, DMP-Z1"
+    USB VID 0x0E8D (MediaTek preloader)
+  [Verified] Wampy MAKING_OF.md: "there is no ready-to-go MediaTek platform
+    emulator, you have to create your own unique qemu ARM configuration"
+  See docs/baseline_v1.4.md §4.1 for full citation chain.
+
+Firmware-derived confirmations: 10
+Supporting hints: 1

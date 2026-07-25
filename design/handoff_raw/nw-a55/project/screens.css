@@ -1,0 +1,216 @@
+/* ──────────────────────────────────────────────────────────────
+   Shared screen styles for all NW-A55 mockups.
+   Every artboard is a fixed 800×480 surface; scope everything
+   inside `.scr` so the three directions can sit side-by-side
+   on the design canvas without bleeding into one another.
+   ────────────────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Departure+Mono&display=swap');
+
+.scr {
+  width: 480px;
+  height: 800px;
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  font-family: 'Hanken Grotesk', sans-serif;
+}
+
+/* — placeholder album art ───────────────────────────── */
+.art {
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.art::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--art-bg, linear-gradient(135deg, #555, #222));
+}
+.art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(115deg, transparent 0 18px, rgba(255,255,255,.04) 18px 36px),
+    radial-gradient(120% 80% at 20% 10%, rgba(255,255,255,.18), transparent 55%);
+  mix-blend-mode: overlay;
+}
+.art > .art-label {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 10px 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.7);
+  z-index: 2;
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 8px;
+}
+.art > .art-label > .l { text-align: left; max-width: 60%; line-height: 1.25; }
+.art > .art-label > .r { text-align: right; opacity: .6; }
+.art > .art-mark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  color: rgba(255,255,255,.92);
+  font-weight: 700;
+}
+
+/* Album-art swatches — pick by data-art attribute */
+[data-art="kind"] { --art-bg: linear-gradient(135deg, #d97757 0%, #8b3a1e 60%, #2a1108 100%); }
+[data-art="harvest"] { --art-bg: linear-gradient(135deg, #e8c34a 0%, #8a6b1d 70%, #2b2008 100%); }
+[data-art="midnight"] { --art-bg: linear-gradient(135deg, #4a6db8 0%, #1a2547 60%, #050810 100%); }
+[data-art="ferns"] { --art-bg: linear-gradient(160deg, #6b9e6b 0%, #2f4d34 60%, #0d1a10 100%); }
+[data-art="halcyon"] { --art-bg: linear-gradient(135deg, #c4a3d4 0%, #6b4a83 60%, #1a0d2b 100%); }
+[data-art="atlas"] { --art-bg: linear-gradient(135deg, #2a2522 0%, #1a1614 50%, #050403 100%); }
+[data-art="bloom"] { --art-bg: linear-gradient(135deg, #f0a3a0 0%, #b04855 60%, #3a0d18 100%); }
+[data-art="prism"] { --art-bg: linear-gradient(120deg, #4a8acb 0%, #b04e9a 50%, #d4a955 100%); }
+[data-art="static"] { --art-bg: repeating-linear-gradient(0deg, #1a1a1a 0 2px, #2a2a2a 2px 4px); }
+[data-art="cassette"] { --art-bg: linear-gradient(135deg, #c8a45b 0%, #5a4520 50%, #1d1610 100%); }
+
+/* ───── Direction 1 · HI-RES (Walkman dark) ────────── */
+.scr.hires {
+  background: #0a0b0e;
+  color: #e6e3dc;
+  font-family: 'Hanken Grotesk', sans-serif;
+}
+.scr.hires.light {
+  background: #f0ece4;
+  color: #14130f;
+}
+.scr.hires .mono { font-family: 'JetBrains Mono', monospace; letter-spacing: .04em; }
+.scr.hires .accent { color: #d4a955; }
+.scr.hires .hires-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid #d4a955;
+  border-radius: 2px;
+  color: #d4a955;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.scr.hires.light .hires-badge { color: #8a6815; border-color: #b08a25; }
+
+/* ───── Direction 2 · NOCTURNE (dark editorial) ────── */
+.scr.nocturne {
+  background: #060608;
+  color: #ede5d2;
+  font-family: 'Hanken Grotesk', sans-serif;
+}
+.scr.nocturne.amoled { background: #000; }
+.scr.nocturne .serif { font-family: 'Instrument Serif', 'Newsreader', serif; font-weight: 400; }
+.scr.nocturne .display { font-family: 'Instrument Serif', 'Newsreader', serif; font-weight: 400; letter-spacing: -.01em; }
+.scr.nocturne .italic { font-family: 'Instrument Serif', serif; font-style: italic; }
+.scr.nocturne .mono { font-family: 'JetBrains Mono', monospace; letter-spacing: .04em; }
+.scr.nocturne .accent { color: #c4b6ff; }
+.scr.nocturne .rule { background: currentColor; opacity: .12; }
+.scr.nocturne .nb-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(196,182,255,.12);
+  color: #c4b6ff;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+/* signature waveform — thin continuous line, used in NP + Lock */
+.scr.nocturne .wave {
+  height: 28px;
+  width: 100%;
+  display: block;
+  opacity: .85;
+}
+
+/* ───── Direction 3 · TERMINAL (mono brutalist) ────── */
+.scr.terminal {
+  background: #0d0d0d;
+  color: #e8e6dc;
+  font-family: 'Departure Mono', 'JetBrains Mono', monospace;
+  letter-spacing: .02em;
+}
+.scr.terminal.light {
+  background: #e8e4d5;
+  color: #1a1a16;
+}
+.scr.terminal .phosphor { color: #f0a420; }
+.scr.terminal.light .phosphor { color: #a85a08; }
+.scr.terminal .box {
+  border: 1px solid currentColor;
+}
+.scr.terminal .dim { opacity: .55; }
+
+/* helpers used everywhere */
+.row { display: flex; }
+.col { display: flex; flex-direction: column; }
+.btn-circle {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* status bar (every screen) */
+.status {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: .08em;
+  flex-shrink: 0;
+}
+.status .l, .status .r { display: flex; gap: 10px; align-items: center; }
+.batt {
+  display: inline-block;
+  width: 18px; height: 9px;
+  border: 1px solid currentColor;
+  border-radius: 1px;
+  position: relative;
+}
+.batt::after {
+  content: '';
+  position: absolute; right: -3px; top: 2px;
+  width: 1.5px; height: 3px;
+  background: currentColor;
+}
+.batt > i {
+  display: block;
+  height: 100%;
+  width: var(--p, 70%);
+  background: currentColor;
+}
+
+/* progress bar */
+.prog {
+  height: 2px;
+  background: currentColor;
+  opacity: .18;
+  position: relative;
+  border-radius: 999px;
+}
+.prog > i {
+  position: absolute; inset: 0 auto 0 0;
+  width: var(--p, 38%);
+  background: currentColor;
+  opacity: 1;
+  border-radius: 999px;
+}

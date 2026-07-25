@@ -1,0 +1,152 @@
+
+DECIMAL       HEXADECIMAL     DESCRIPTION
+--------------------------------------------------------------------------------
+0             0x0             Linux EXT filesystem, blocks count: 204800, image size: 209715200, rev 2.0, ext4 filesystem data, UUID=57f8f4bc-abf4-655f-bf67-946fc0f9c0f9
+402652160     0x17FFFC00      Linux EXT filesystem, blocks count: 204800, image size: 209715200, rev 2.0, ext4 filesystem data, UUID=57f8f4bc-abf4-655f-bf67-946fc0f9c0f9
+820314112     0x30E50000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820339763     0x30E56433      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+820342784     0x30E57000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820368435     0x30E5D433      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+820371456     0x30E5E000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820379851     0x30E600CB      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+820383744     0x30E61000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820392103     0x30E630A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+820396032     0x30E64000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820404391     0x30E660A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+820408320     0x30E67000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820468736     0x30E75C00      Unix path: /dev/snd/controlC
+820469308     0x30E75E3C      Unix path: /var/lib/alsa/asound.state)
+820486144     0x30E7A000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820543488     0x30E88000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820559872     0x30E8C000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820580352     0x30E91000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820621312     0x30E9B000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820629651     0x30E9D093      Unix path: /dev/icx_nvp/003
+820633767     0x30E9E0A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+820637696     0x30E9F000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820699136     0x30EAE000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820805632     0x30EC8000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+820820943     0x30ECBBCF      Unix path: /sys/autok/ss_corner
+820821719     0x30ECBED7      Unix path: /sys/autok/param_count
+820821787     0x30ECBF1B      Unix path: /sys/autok/debug
+820821827     0x30ECBF43      Unix path: /sys/autok/ready
+820821874     0x30ECBF72      Unix path: /sys/autok/stage2
+820821930     0x30ECBFAA      Unix path: /sys/autok/stage1
+820822071     0x30ECC037      Unix path: /sys/kernel/debug/autok_log
+820826279     0x30ECD0A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+820830208     0x30ECE000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+821379706     0x30F5427A      Unix path: /usr/local/share/bashdb/bashdb-main.inc
+821383111     0x30F54FC7      Unix path: /usr/gnu/bin:/usr/local/bin:/bin:/usr/bin:.
+821386350     0x30F55C6E      Copyright string: "Copyright (C) 2007 Free Software Foundation, Inc."
+821477027     0x30F6BEA3      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+821628928     0x30F91000      Executable script, shebang: "/bin/sh"
+821629274     0x30F9115A      Unix path: /sys/module/icx_pm_helper/parameters/icx_bid3`
+821633024     0x30F92000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+821641387     0x30F940AB      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+821645312     0x30F95000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+821742667     0x30FACC4B      QNX4 Boot Block
+821862459     0x30FCA03B      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+822101971     0x310047D3      mcrypt 2.2 encrypted data, algorithm: blowfish-448, mode: CBC, keymode: 4bit
+822144847     0x3100EF4F      Unix path: /usr/lib/gcc/armv7a-cros-linux-gnueabi/4.9.x/include
+822153331     0x31011073      mcrypt 2.2 encrypted data, algorithm: blowfish-448, mode: CBC, keymode: 8bit
+822280192     0x31030000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+822288384     0x31032000      Executable script, shebang: "/bin/sh"
+822292480     0x31033000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+822870016     0x310C0000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+822882475     0x310C30AB      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+822890496     0x310C5000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+822894759     0x310C60A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+822898688     0x310C7000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+822915239     0x310CB0A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+822919168     0x310CC000      Executable script, shebang: "/bin/bash"
+822928604     0x310CE4DC      Unix path: /etc/firmware/wifi.cfg
+822928688     0x310CE530      Unix path: /etc/firmware/wifi.cfg
+822931456     0x310CF000      Executable script, shebang: "/bin/sh"
+822935552     0x310D0000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+822943911     0x310D20A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+822947840     0x310D3000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+822951148     0x310D3CEC      Unix path: /sys/bus/i2c/devices/2-0050/eeprom
+822960879     0x310D62EF      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+822964224     0x310D7000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+822967550     0x310D7CFE      Unix path: /sys/bus/i2c/devices/2-0050/eeprom
+822974743     0x310D9917      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+822980608     0x310DB000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+822988967     0x310DD0A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+822992896     0x310DE000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823017889     0x310E41A1      Unix path: /var/cache/distfiles/ccache/tmp/init.tmp.build162-m2.15802.XXXXXX.i
+823019871     0x310E495F      Unix path: /var/tmp/portage/cross-armv7a-cros-linux-gnueabi/gcc-4.9.2-r94/work/gcc-4.9.2/libgcc/config/arm
+823020752     0x310E4CD0      Unix path: /var/tmp/portage/cross-armv7a-cros-linux-gnueabi/gcc-4.9.2-r94/work/gcc-4.9.2/libgcc/config/arm
+823021366     0x310E4F36      Unix path: /usr/lib/gcc/armv7a-cros-linux-gnueabi/4.9.x-google/include
+823021540     0x310E4FE4      Unix path: /var/tmp/portage/cross-armv7a-cros-linux-gnueabi/gcc-4.9.2-r94/work/gcc-4.9.2/libgcc/config/arm/lib1funcs.S
+823027491     0x310E6723      Unix path: /var/tmp/portage/cross-armv7a-cros-linux-gnueabi/gcc-4.9.2-r94/work/gcc-4.9.2/libgcc/config/arm/bpabi.c
+823042048     0x310EA000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823135456     0x31100CE0      Unix path: /home/marvin/prjbuild/linux-gnueabi-/main_no_netbsd/ukexfs/../exfatfs/common/kern_descrip.c
+823141289     0x311023A9      Unix path: /var/cache/distfiles/ccache/tmp/init.tmp.build162-m2.15802.XXXXXX.i
+823148544     0x31104000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823152785     0x31105091      Unix path: /var/cache/distfiles/ccache/tmp/init.tmp.build162-m2.15802.XXXXXX.i
+823155080     0x31105988      Unix path: /usr/lib/gcc/armv7a-cros-linux-gnueabi/4.9.x-google/include
+823155608     0x31105B98      Unix path: /var/tmp/portage/cross-armv7a-cros-linux-gnueabi/glibc-2.19-r7/work/glibc-2.19/csu
+823160832     0x31107000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823165095     0x311080A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+823169024     0x31109000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823177216     0x3110B000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823186326     0x3110D396      Unix path: /dev/block/mtdblock%d
+823186476     0x3110D42C      Unix path: /dev/mtd/mtd%d
+823189099     0x3110DE6B      mcrypt 2.2 encrypted data, algorithm: blowfish-448, mode: CBC, keymode: 4bit
+823193600     0x3110F000      Executable script, shebang: "/bin/sh"
+823193723     0x3110F07B      Unix path: /dev/block/md0 ]; then
+823193827     0x3110F0E3      Unix path: /sys/class/block/$blkdev/size`
+823197696     0x31110000      Executable script, shebang: "/bin/sh"
+823201792     0x31111000      Executable script, shebang: "/bin/sh"
+823209984     0x31113000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823238823     0x3111A0A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+823242752     0x3111B000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823263333     0x31120065      Unix path: /var/cache/distfiles/ccache/tmp/init.tmp.build162-m2.15802.XXXXXX.i
+823284230     0x31125206      Intel x86 or x64 microcode, sig 0x00000124, pf_mask 0x4f1000, 1B00-01-07, rev 0x7ce5f, size 1587
+823323994     0x3112ED5A      Unix path: /home/marvin/prjbuild/linux-gnueabi-/armv7a-cros-linux-gnueabi-4.9.2/usr/x86_64-pc-linux-gnu/armv7a-cros-linux-gnueabi/gcc-bin/4
+823329179     0x3113019B      Unix path: /home/marvin/prjbuild/linux-gnueabi-/armv7a-cros-linux-gnueabi-4.9.2/usr/x86_64-pc-linux-gnu/armv7a-cros-linux-gnueabi/gcc-bin/4
+823331217     0x31130991      Unix path: /usr/lib/gcc/armv7a-cros-linux-gnueabi/4.9.x-google/include
+823332157     0x31130D3D      Unix path: /home/marvin/prjbuild/linux-gnueabi-/libfuse/util
+823332323     0x31130DE3      eCos RTOS string reference: "ecos"
+823345152     0x31134000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823350467     0x311354C3      Unix path: /dev/graphics/fb0
+823351189     0x31135795      Unix path: /dev/graphics/fb1
+823351340     0x3113582C      Unix path: /dev/icx_nvp/075
+823353527     0x311360B7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+823357440     0x31137000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823373245     0x3113ADBD      Unix path: /dev/icx_nvp/011
+823373401     0x3113AE59      Unix path: /dev/graphics/fb0
+823373955     0x3113B083      Unix path: /dev/graphics/fb1
+823374106     0x3113B11A      Unix path: /dev/icx_nvp/075
+823383104     0x3113D440      AES Inverse S-Box
+823386295     0x3113E0B7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+823390208     0x3113F000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823408464     0x31143750      Unix path: /dev/icx_nvp/011
+823408826     0x311438BA      Unix path: /dev/graphics/fb0
+823409380     0x31143AE4      Unix path: /dev/graphics/fb1
+823409531     0x31143B7B      Unix path: /dev/icx_nvp/075
+823418228     0x31145D74      AES Inverse S-Box
+823423159     0x311470B7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+823427072     0x31148000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823447552     0x3114D000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823459840     0x31150000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823468207     0x311520AF      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+823472128     0x31153000      Executable script, shebang: "/bin/sh"
+823476224     0x31154000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823480487     0x311550A7      Unix path: /var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache
+823484416     0x31156000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823492926     0x3115813E      Copyright string: "Copyright: "
+823493352     0x311582E8      Copyright string: "copyright information"
+823493383     0x31158307      Copyright string: "copyright information"
+823494488     0x31158758      Copyright string: "copyright (consumer)"
+823494520     0x31158778      Copyright string: "copyright, on = copyright"
+823500800     0x3115A000      ELF, 32-bit LSB shared object, ARM, version 1 (SYSV)
+823653929     0x3117F629      Unix path: /sys/class/power_supply
+823654556     0x3117F89C      HTML document header
+823654658     0x3117F902      HTML document footer
+823654666     0x3117F90A      Unix path: /sys/class/rtc/%s/hctosys
+823656796     0x3118015C      Unix path: /sys/bus/usb/devices/
+823657751     0x31180517      Unix path: /sys/class/rfkill/rfkill%u/uevent
+823658761     0x31180909      Unix path: /sys/devices/system/cpu
+823662830     0x311818EE      POSIX tar archive (GNU), owner user name: "E", owner group name: "R_GID"
+
