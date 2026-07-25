@@ -1,0 +1,14 @@
+
+DECIMAL       HEXADECIMAL     DESCRIPTION
+--------------------------------------------------------------------------------
+12352         0x3040          Boot section Start 0x525F4552 End 0x4F
+24640         0x6040          Boot section Start 0x525F4552 End 0x4F
+36928         0x9040          Boot section Start 0x525F4552 End 0x4F
+49216         0xC040          Boot section Start 0x525F4552 End 0x4F
+61504         0xF040          Boot section Start 0x525F4552 End 0x4F
+73792         0x12040         Boot section Start 0x525F4552 End 0x4F
+86080         0x15040         Boot section Start 0x525F4552 End 0x4F
+98368         0x18040         Boot section Start 0x525F4552 End 0x4F
+110656        0x1B040         Boot section Start 0x525F4552 End 0x4F
+122944        0x1E040         Boot section Start 0x525F4552 End 0x4F
+

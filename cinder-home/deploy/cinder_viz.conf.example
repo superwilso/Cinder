@@ -1,0 +1,26 @@
+# cinder_viz.conf — OPTIONAL visualiser config for cinder-home.
+#
+# Copy this to /contents/cinder_viz.conf on the device to turn ON the REAL audio-reactive
+# visualiser, which is driven by Sony's built-in spectrum analyzer (AudioAnalyzerService). With
+# this file ABSENT (the default), the visualiser still animates — synthetically — so there is zero
+# boot risk in shipping nothing.
+#
+# DO NOT enable this until you have validated the analyzer on the device, because it dlopens and
+# connects to a Sony audio service (a fresh runtime risk surface). Validate first:
+#
+#     adb push cinder-home/dist/cinder-probe /data/local/tmp/
+#     # start music playing on the device, then:
+#     adb shell 'cd /data/local/tmp && \
+#       LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib \
+#       ./cinder-probe --analyzer'
+#
+# A PASS prints "frames flowed" plus the raw band values. If you see "started but NO frames", try
+# `./cinder-probe --analyzer 0` (LEVEL mode) and confirm audio is actually playing. Note the raw
+# band range it prints — if it is not roughly 0..(a few hundred) linear or 0..-60 dB, tune
+# spectrum::from_bands in cinder-ffi before enabling. Only once the probe passes, set:
+
+analyzer=1
+
+# Everything in cinder-home that touches the analyzer runs behind the crash+hang guard, and the
+# stream is stopped automatically when the player goes to the background. To turn it back off,
+# delete this file (or change the line to anything other than `analyzer=1`).

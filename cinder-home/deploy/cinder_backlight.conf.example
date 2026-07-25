@@ -1,0 +1,21 @@
+# cinder_backlight.conf — make NIGHT MODE dim the panel backlight to minimal light.
+# Copy to /contents/cinder_backlight.conf. OPTIONAL: cinder-home auto-detects the common Android/MTK
+# backlight node and uses sensible defaults (night ≈ 3% of max, day ≈ 70%), so night mode already
+# goes dark on most devices with NO config. Use this file only to override the node or the levels.
+#
+# When you toggle Settings ▸ Theme to NIGHT, the backlight drops to `night`; DAY restores `day`.
+# (Raw brightness values — the same units as the sysfs `brightness` node, 0..max_brightness.)
+#
+# NOTE: the night dim is NOT resumed on boot — cinder-home always boots at the `day` level even if
+# night theme was persisted, so a daytime boot can never come up too dark to read. The dim is a
+# deliberate per-session action: toggle Theme → night to dim again.
+#
+# Find the exact node + range in the discovery report ("BACKLIGHT / BRIGHTNESS" section), e.g.
+# /sys/class/leds/lcd-backlight/brightness with max_brightness=255.
+
+# path = /sys/class/leds/lcd-backlight/brightness   # auto-detected if omitted
+night = 4      # MINIMAL light for night mode (1 = dimmest still-on; 0 may switch the panel off)
+day   = 140    # normal daytime backlight
+
+# Tip: want it even darker at night? lower `night` toward 1. If 1 is still too bright, the panel's
+# minimum is hardware-limited — there's no lower setting without turning the backlight fully off.

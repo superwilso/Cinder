@@ -1,0 +1,94 @@
+=== Phase 4f: USB-DAC routing investigation ===
+See docs/baseline_v1.4.md §5.10 for the three enforcement candidates.
+
+--- llusbdac.ko strings ---
+llusbdac.ko not found — check artifacts/repos/llusbdac/ for source
+
+--- Bluetooth exclusivity strings in HgrmMediaPlayerApp ---
+                exclusiveGroup: base.exclusiveGroup
+                exclusiveGroup: deviceListGroup
+                exclusiveGroup: listGroup
+                exclusiveGroup: playModeGroup
+            ExclusiveGroup {
+            exclusiveGroup: group
+            exclusiveGroup: keyboardRadioButtonGroup
+            exclusiveGroup: radioGroup
+            exclusiveGroup: settingExclusiveGroup
+          exclusiveGroup: base.exclusiveGroup
+          exclusiveGroup: priorityGroup
+        /** USB DAC
+        ExclusiveGroup {
+        exclusiveGroup: base.exclusiveGroup
+        exclusiveGroup: filter_choose_group
+        id: settingExclusiveGroup
+      exclusiveGroup: radioGroup
+     * @brief Bluetooth
+    /** type ExclusiveGroup 
+    ExclusiveGroup {
+    ExclusiveGroup {id: keyboardRadioButtonGroup}
+    id:disconnectMsgOverlay
+    properties: usbDacDeviceWindow.headerArea
+    properties: usbDacDeviceWindow.navigationBar
+    properties: usbDacDeviceWindow.pageIndicator
+    properties: usbDacDeviceWindow.sourceDirectOrClearAudio
+    property ExclusiveGroup exclusiveGroup: null
+  /** type ExclusiveGroup 
+  ExclusiveGroup {
+  ExclusiveGroup { id: radioGroup }
+  id: usbDacDeviceWindow
+  property ExclusiveGroup exclusiveGroup: null
+1DisConnectView(QObject*)
+1DisconnectComponent(QObject*)
+1DisconnectModel()
+1DisconnectView()
+1DisconnectView(QObject *)
+1DisconnectView(QObject*)
+1DisconnectWindowViewModel()
+1GoToBluetoothSetting()
+
+--- libSoundServiceFw routing strings ---
+  mode: %s
+!!! headphone model [%u] is not supported
+!!! unknown gain mode
+!!! unknown model
+-D _FORTIFY_SOURCE=2
+../../SRConvSource/SRConvlib_static.c
+BufferMode must be kInterleaved !!!
+DriverVolTblMode: %s, %s Latency adjustment
+Handles GainMode[%s]
+LowLatencyMode
+SequentialModel::init
+SoundServiceFw::SetSourceTypeTrack
+SoundServiceFwClient::SetSourceTypeTrack
+Track[%s] is assigned SourceType[%s]
+VptMode = [%u]
+_ZN15SequentialModel4initEP6BufferP4DataPKc
+_ZN15SequentialModel7processEPv
+_ZN2MI14MQABackendImpl13SetOutputModeENS_10OutputModeE
+_ZN2MI14MQABackendImplC2ENS_10OutputModeENS_19AudioRateMultiplierENS_11SampleRatesE
+_ZN2MI14MQADecoderImplC2ENS_9PowerModeENS_10OutputModeENS_19AudioRateMultiplierEbPNS_14DecodeListenerEPNS_18OutputInfoListenerEPNS_15UpsamplerPluginE
+_ZN2MI16MQABackendReader13SetOutputModeENS_10OutputModeE
+_ZN2MI16MQABackendReaderC1EPNS_11AudioReaderEbNS_10OutputModeENS_19AudioRateMultiplierENS_11SampleRatesEPNS_15UpsamplerPluginEss
+_ZN2MI16MQABackendReaderC2EPNS_11AudioReaderEbNS_10OutputModeENS_19AudioRateMultiplierENS_11SampleRatesEPNS_15UpsamplerPluginEss
+_ZN2MI16MQABackendWriter13SetOutputModeENS_10OutputModeE
+_ZN2MI16MQABackendWriterC1EPNS_11AudioWriterEbNS_10OutputModeENS_19AudioRateMultiplierENS_11SampleRatesEPNS_15UpsamplerPluginEss
+_ZN2MI16MQABackendWriterC2EPNS_11AudioWriterEbNS_10OutputModeENS_19AudioRateMultiplierENS_11SampleRatesEPNS_15UpsamplerPluginEss
+_ZN2MI16MQADecoderReader12SetPowerModeENS_9PowerModeE
+_ZN2MI16MQADecoderReader13SetOutputModeENS_10OutputModeE
+_ZN2MI16MQADecoderReaderC1EPNS_11AudioReaderEbNS_9PowerModeENS_10OutputModeENS_19AudioRateMultiplierEbPNS_14DecodeListenerEPNS_18OutputInfoListenerEPNS_15UpsamplerPluginEss
+_ZN2MI16MQADecoderReaderC2EPNS_11AudioReaderEbNS_9PowerModeENS_10OutputModeENS_19AudioRateMultiplierEbPNS_14DecodeListenerEPNS_18OutputInfoListenerEPNS_15UpsamplerPluginEss
+_ZN2MI16MQADecoderWriter12SetPowerModeENS_9PowerModeE
+_ZN2MI16MQADecoderWriter13SetOutputModeENS_10OutputModeE
+_ZN2MI16MQADecoderWriterC1EPNS_11AudioWriterEbNS_9PowerModeENS_10OutputModeENS_19AudioRateMultiplierEbPNS_14DecodeListenerEPNS_18OutputInfoListenerEPNS_15UpsamplerPluginEss
+_ZN2MI16MQADecoderWriterC2EPNS_11AudioWriterEbNS_9PowerModeENS_10OutputModeENS_19AudioRateMultiplierEbPNS_14DecodeListenerEPNS_18OutputInfoListenerEPNS_15UpsamplerPluginEss
+_ZN2MI6decodeEPNS_11AudioReaderEPNS_11AudioWriterENS_9PowerModeENS_10OutputModeENS_19AudioRateMultiplierEbPNS_14DecodeListenerEPNS_18OutputInfoListenerEPNS_15UpsamplerPluginEss
+_ZN2MI6renderEPNS_11AudioReaderEPNS_11AudioWriterENS_10OutputModeENS_19AudioRateMultiplierENS_11SampleRatesEPNS_15UpsamplerPluginEss
+_ZN3pst10dmpfeature10DmpFeature22IsFeaturedSourceDirectEv
+_ZN3pst8services14SoundServiceFw18SetSourceTypeTrackERKNS0_15ISoundServiceFw31RequestParam_SetSourceTypeTrackERNS2_32ResponseParam_SetSourceTypeTrackE
+_ZN3pst8services18SoundServiceFwBase22SetSourceTypeTrackBaseERNS0_6binder16TransactionParamEPS3_
+_ZN3pst8services20SoundServiceFwClient18SetSourceTypeTrackERKNS0_15ISoundServiceFw31RequestParam_SetSourceTypeTrackERNS2_32ResponseParam_SetSourceTypeTrackE
+
+=== Working hypothesis ===
+Candidate 1 (app policy) most likely — Sony shows a confirmation dialog
+when switching modes. On-device strace will confirm (CLAUDE.md Part E5).
+Do not treat USB-DAC+LDAC as a guaranteed feature before E4/E5.

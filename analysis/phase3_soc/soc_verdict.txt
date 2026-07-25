@@ -1,0 +1,6 @@
+SoC: MT8590 (MediaTek)
+Confidence: CONFIRMED
+Firmware evidence count: 10
+Note: Pre-device confirmation from wbrt + Wampy sources. On-device
+      confirmation via /sys/firmware/devicetree/base/compatible expected
+      to show 'mt8590' (see CLAUDE.md Part E3).

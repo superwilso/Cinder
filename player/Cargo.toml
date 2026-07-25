@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["cinder-ui", "cinder-host", "cinder-device", "cinder-sim", "cinder-ffi", "cinder-db"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1

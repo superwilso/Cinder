@@ -1,0 +1,43 @@
+
+DECIMAL       HEXADECIMAL     DESCRIPTION
+--------------------------------------------------------------------------------
+676           0x2A4           Zlib compressed data, best compression
+14532         0x38C4          Zlib compressed data, best compression
+136910        0x216CE         Zlib compressed data, best compression
+138382        0x21C8E         Zlib compressed data, best compression
+141112        0x22738         Zlib compressed data, best compression
+141569        0x22901         Zlib compressed data, best compression
+141680        0x22970         Zlib compressed data, best compression
+142154        0x22B4A         Zlib compressed data, best compression
+142701        0x22D6D         Zlib compressed data, best compression
+143069        0x22EDD         Zlib compressed data, best compression
+143577        0x230D9         Zlib compressed data, best compression
+144167        0x23327         Zlib compressed data, best compression
+144464        0x23450         Zlib compressed data, best compression
+145076        0x236B4         Zlib compressed data, best compression
+145646        0x238EE         Zlib compressed data, best compression
+146377        0x23BC9         Zlib compressed data, best compression
+147669        0x240D5         Zlib compressed data, best compression
+148984        0x245F8         Zlib compressed data, best compression
+150261        0x24AF5         Zlib compressed data, best compression
+151409        0x24F71         Zlib compressed data, best compression
+152469        0x25395         Zlib compressed data, best compression
+153538        0x257C2         Zlib compressed data, best compression
+154684        0x25C3C         Zlib compressed data, best compression
+155950        0x2612E         Zlib compressed data, best compression
+157232        0x26630         Zlib compressed data, best compression
+158517        0x26B35         Zlib compressed data, best compression
+165140        0x28514         Zlib compressed data, best compression
+171816        0x29F28         Zlib compressed data, best compression
+178444        0x2B90C         Zlib compressed data, best compression
+184879        0x2D22F         Zlib compressed data, best compression
+191213        0x2EAED         Zlib compressed data, best compression
+197544        0x303A8         Zlib compressed data, best compression
+204013        0x31CED         Zlib compressed data, best compression
+210607        0x336AF         Zlib compressed data, best compression
+217225        0x35089         Zlib compressed data, best compression
+223848        0x36A68         Zlib compressed data, best compression
+229917        0x3821D         Zlib compressed data, best compression
+230080        0x382C0         Zlib compressed data, best compression
+238381        0x3A32D         Zlib compressed data, best compression
+
