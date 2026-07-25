@@ -4,14 +4,28 @@ Forward-looking companion to [`STATUS.md`](STATUS.md) (which is the *current-sta
 This is **what's left and in what order**, written so the next working session — especially the
 first one with the device — is a straight line, not a guessing game.
 
-Last audited: 2026-06-30.
+Last audited: **2026-07-25** (full project audit). Prior: 2026-06-30; STATUS.md is current to
+2026-07-03 (rounds 9–10). No code has changed since 2026-07-03 — the tree is clean and this
+roadmap is the resume point.
 
 ## Audit summary — where we are
-Per the STATUS.md matrix: the player is daily-usable and **all genuinely-offline work is done**.
+Per the STATUS.md matrix: the player is daily-usable and **all genuinely-offline work is done**
+(host tests green: 39 UI + 8 DB; qemu preflight passes; both channels' `.UPG`s packed in
+`dist/`). The Option-B IPC reverse-engineering that used to be "next" is **complete and realized
+in code**: PlayerService transport + now-playing (`analysis/G_player_ipc/`) and the SQLite
+MediaStore library/metadata (`analysis/H_mediastore/`) are both implemented (`cinder-audio` drives
+`PlayerService`; `cinder-db` reads `/db/MTPDB.dat`; **play-by-index is wired**, not a gap anymore).
+
 What remains is **device-gated**: it needs real values from the hardware (control names, byte
 offsets, keycodes, ALSA topology) that the **discovery probe** captures in one run. Each remaining
 item is therefore either (a) **scaffolded** — activates with a config drop, no rebuild — or
 (b) **needs code wired** from the captured data (a dev rebuild). Nothing is blocked on design.
+
+> ### ⇒ THE single next action (2026-07-25): run one device session.
+> Everything below funnels to this. Flash `dist/dev/` once, capture the discovery dump, drop 2–3
+> config files, verify. That one session unblocks volume, keymap, seek-accurate progress, the
+> LDAC-bridge validation, album-art schema, and playlists — in a single pass. See the critical
+> path immediately below; nothing here needs more offline design or RE.
 
 ## The device session — critical path (do in this order)
 1. **Flash `dist/dev/` once.** Brings up adb, auto-writes `/contents/cinder_discovery.txt`, and logs
@@ -40,13 +54,18 @@ The bad-boot counter + probe-first gradient (STATUS.md STEP 1/2) still apply —
 | **Night backlight level** | `cinder_backlight.conf` (auto-detected; tune `night`) | scaffolded ✓ |
 
 ### P1 — wire code from device data (a dev rebuild; I do this with the data in hand)
-- **Play a selected track / album** — the biggest functional gap (`Select` on a library row is a
-  no-op). Needs `PlayController::SetTrackSequence` + the `NodeTrackSequence<UriInfo>` JSON shape,
-  captured live (strace PlayerService / the discovery PlayController dump). RE'd in principle; the
-  exact node construction must be confirmed on device (object sizing + JSON).
+- **Play a selected track / album** — **WIRED 2026-07-03 (was the biggest gap); needs device
+  verify only.** `Action::PlayIndex` → `cinder-db::album_context` → `cinder_audio_play_tracks`
+  builds the JSON Node-tree (`{"uri","format","children"}`), maps formats via Sony's
+  `psk::FileUtil::GetFormatFromFilename`, constructs `NodeTrackSequence<UriInfo>`, then
+  `SetTrackSequence` + `ChangePlayState(Play)`. qemu-preflighted (the whole JSON→Node chain is
+  built under guard canaries). Remaining: confirm playback starts on the unit. *(Queue-honoring —
+  `SetTrackSequence` for the user swipe-queue — rides the same code, gated on device verify.)*
 - **Seek-accurate progress** — replace the play-clock *estimate* with the real position. The
-  discovery PlayStatus hex dump reveals the position/duration int offsets; then read them in
-  `player_shim` and push via a `cinder_set_position`. (Estimate is fine meanwhile.)
+  discovery PlayStatus hex dump reveals the position/duration int offsets (only URI @ +0x6c mapped
+  so far); then read them in `player_shim` and push via `cinder_set_position`. Alternatively
+  implement the `PlayEventListener` (`OnPlayTimeUpdated(cur,total)` @slot+0xc, mapped in
+  `analysis/G_player_ipc/`) for event-driven, battery-efficient updates. (Estimate is fine meanwhile.)
 
 ### P2 — device-gated, lower priority
 - **Bluetooth radio on/off** — UI toggle exists; wire `BtTransmitterService` (SetCurrentSource/SetLdac).

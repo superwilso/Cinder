@@ -1,8 +1,27 @@
-# NW-A55 Project — Setup & Next Steps (v1.4)
+# NW-A55 Project — Setup & Next Steps (v1.5)
+
+> ## PROJECT STATE (audited 2026-07-25) — device is IN HAND; read this first
+> This document began (v1.4) as a *pre-device* onboarding plan ("when the NW-A55 arrives").
+> **That premise is now historical.** The device has been in hand for weeks, backed up (wbrt),
+> flashed, soft-bricked-and-recovered twice, and the **Cinder replacement player runs on it as
+> the easel Home app.** Read the sections below as the still-accurate *environment + RE reference*
+> (Parts B–H are reference-grade and current), but for **where the project actually is and what to
+> do next, the live docs win:**
+> - **Current feature state (what works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
+> - **Forward plan / next stages:** [`cinder-home/ROADMAP.md`](cinder-home/ROADMAP.md) — the prioritized backlog + device-session critical path.
+> - **RE detail behind each feature:** [`analysis/RE_playerservice_sound.md`](analysis/RE_playerservice_sound.md), plus per-subsystem `analysis/{E,F,G,H}_*/RE_findings.md`.
+>
+> **One-line status:** all genuinely-offline work is done and daily-usable (host tests green:
+> 39 UI + 8 DB; qemu preflight passes). **The entire remaining critical path is device-gated and
+> blocked on ONE thing — a first successful device session that runs the discovery dump.** Last
+> code change was 2026-07-03 (tenth round); the tree is clean and the resume point is that device
+> session (ROADMAP §"The device session — critical path"). The pre-device "Phase 8 / Part E"
+> milestone plan below is superseded by that roadmap; Part E survives as the *procedure* reference.
 
 **Purpose:** A single onboarding document that takes you from a stock Windows PC to a
 working analysis environment, runs the existing host-side pipeline, and then adds the
-device-side procedure for when the NW-A55 is in hand.
+device-side procedure. *(v1.5: the device-side procedure has now been executed — see the state
+banner above; the steps below remain the canonical how-to for reproducing it.)*
 
 **Relationship to existing repo:** The repo already has a 7-phase host-side pipeline
 (`Makefile`, `phases/phase1`–`phase7`, `CLAUDE.md`, `docs/`). This document does **not**
@@ -348,7 +367,16 @@ passthrough. Keep `wbrt` and SP Flash Tool on the Windows side.
 
 ## Part G — Suggested milestone order (the whole project on one page)
 
-1. **Environment** (Part B) — WSL2 + deps green on `make check-deps`. *Half a day.*
+> **Progress against this plan (2026-07-25):** steps **1–10 are effectively DONE.** Environment,
+> reading, the host pipeline (phases 1–7), the stale-doc flip (MT8590 confirmed), the wbrt backup
+> (E0), a stock+Wampy baseline, a device shell (via scsitool/MSC + dev-channel adb), the USB-DAC
+> investigation (E4/E5 → the block is **app-policy only**, LDAC transmit is **non-ALSA** via
+> `BtTransmitterService`), and first-code-on-device (E7 → the full **Cinder Home app**, not just a
+> hello-world) have all happened. What's left is **not** on this milestone ladder anymore — it's the
+> device-gated wiring in [`cinder-home/ROADMAP.md`](cinder-home/ROADMAP.md). Keep the list below as
+> the historical route; use the roadmap for the live plan.
+
+1. **Environment** (Part B) — WSL2 + deps green on `make check-deps`. *Half a day.* **[DONE]**
 2. **Read** (Part C) — wbrt README → roobscoob upgDocs → Wampy MAKING_OFs. *One day.*
 3. **Host pipeline** (Part D) — `make phase1`…`phase7`. *One to two days.* Produces the
    confirmed SoC, init map, toolchain version, SoundServiceFw symbols, the W1 diff recipe, a

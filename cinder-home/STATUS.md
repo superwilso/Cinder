@@ -1,4 +1,10 @@
-# Cinder — status & flash/verify guide (updated 2026-06-26)
+# Cinder — status & flash/verify guide (content current to 2026-07-03; audited 2026-07-25)
+
+> **RESUME POINT (2026-07-25):** no code has changed since the tenth round (2026-07-03); this file
+> is an accurate current-state snapshot and the workspace is clean (host tests pass: 39 UI + 8 DB).
+> **The next action is a device session, not more offline work** — flash `dist/dev/`, run the
+> discovery dump, drop the config files. The forward plan + critical path is in
+> [`ROADMAP.md`](ROADMAP.md); the safe flash gradient is "⚠️ READ FIRST" → "STEP 1" below.
 
 > ## ⚠️ READ FIRST — a flash hung the device and required a wbrt restore (2026-06-26)
 > The first Home-app flash **soft-bricked** the device (stuck on the boot screen, no auto-revert,
