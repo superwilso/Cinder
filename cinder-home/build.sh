@@ -183,8 +183,21 @@ fi
 
 # ── stage the channel binaries into dist/<channel>/ (the two channels never clobber each other).
 # pack_upg.sh <channel> packs the matching install/uninstall .UPGs alongside them.
+# cinder-umount: tiny static setuid-root helper (the only privileged op capless cinder-home needs
+# for USB-MSC — see src/cinder-umount.c). Built static-musl so it has no libc-version dependency;
+# installed chmod 4755 root:root by install_cinderhome.sh.
+echo "[6] build cinder-umount (setuid-root umount helper, static)…"
+UMOUNT_CC=""
+for c in arm-linux-musleabihf-gcc "$HOME/arm-linux-musleabihf-cross/bin/arm-linux-musleabihf-gcc"; do
+    command -v "$c" >/dev/null 2>&1 && { UMOUNT_CC="$c"; break; }
+done
+[ -n "$UMOUNT_CC" ] || { echo "ERROR: arm-linux-musleabihf-gcc not found (needed for cinder-umount)"; exit 1; }
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-umount" "$HERE/src/cinder-umount.c"
+echo "built: $HERE/cinder-umount ($(stat -c %s "$HERE/cinder-umount") bytes)"
+
 mkdir -p "$DIST"
 cp -f "$OUT" "$DIST/cinder-home"
 cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"
+cp -f "$HERE/cinder-umount" "$DIST/cinder-umount"
 echo "staged $CHANNEL binaries -> $DIST/"
 echo "── done ($CHANNEL). next: bash tools/pack_upg.sh $CHANNEL ──"

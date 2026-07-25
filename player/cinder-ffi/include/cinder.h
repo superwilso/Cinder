@@ -14,6 +14,10 @@ void cinder_render_tick(void);
  * anything an EXTERNAL process scribbled on the framebuffer (the boot animation's last frame
  * survives its kill — the dirty-flag renderer would otherwise never paint over it). */
 void cinder_force_dirty(void);
+/* Raise the USB mass-storage modal (idempotent). The shell calls this when it auto-detects a PC
+ * host, BEFORE flipping the gadget to MSC, so the UI shows the same modal a settings-row tap would.
+ * Returns 1 if the modal is now up. */
+int  cinder_show_usb_storage(void);
 /* Unmap + tear down. */
 void cinder_render_shutdown(void);
 /* 0 = day theme, non-zero = night. */

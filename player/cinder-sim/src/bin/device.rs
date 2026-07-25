@@ -59,6 +59,7 @@ fn main() {
         repeat: 1,
         viz_seed: 2.0,
         viz_kind: 0,
+        viz_on: true,
         viz_levels: None,
     };
 

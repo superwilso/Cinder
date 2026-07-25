@@ -35,6 +35,7 @@ pub struct NowPlaying<'a> {
     pub repeat: u8, // 0 off · 1 all · 2 one
     pub viz_seed: f32, // visualiser animation phase (the shell advances it while playing)
     pub viz_kind: u8,  // which visualiser type (index into viz::from_index)
+    pub viz_on: bool,  // master enable — false hides the visualiser entirely (nav injects UI state)
     pub viz_levels: Option<&'a [f32]>, // real per-bar spectrum (0..1) from FFT; None = synthetic
 }
 
@@ -73,8 +74,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         text::draw(c, f, 134.0, 110.0, np.title, &s(Family::Sans, Weight::Bold, 21.0, t.ink, 0.0));
         text::draw(c, f, 134.0, 133.0, np.artist, &s(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0));
         text::draw(c, f, 134.0, 153.0, np.codec, &s(Family::Mono, Weight::Regular, 10.0, t.acc, 0.08));
-        // viz centred in the airy negative space
-        crate::viz::draw(c, 24, 420, 432, 16, 36, 3, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels);
+        // viz centred in the airy negative space (skipped entirely when the user turns it off)
+        if np.viz_on {
+            crate::viz::draw(c, 24, 420, 432, 16, 36, 3, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels);
+        }
     } else {
         // full-bleed album art (34..514): the real decoded cover when available
         match np.art_full {
@@ -82,7 +85,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             None => art::block(c, t, 0, 34, 480, 480, np.art, 1.0),
         }
         // visualiser pushed up onto the lower album art — frees room for bigger controls
-        crate::viz::draw(c, 24, 466, 432, 42, 36, 3, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels);
+        // (skipped entirely when off → the album art shows through cleanly)
+        if np.viz_on {
+            crate::viz::draw(c, 24, 466, 432, 42, 36, 3, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels);
+        }
         // title / artist / codec
         text::draw(c, f, 24.0, 558.0, np.title, &s(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0));
         text::draw(c, f, 24.0, 583.0, np.artist, &s(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0));
