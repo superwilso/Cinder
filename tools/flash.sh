@@ -22,6 +22,7 @@
 #   tools/flash.sh --cat <file>            # print a file from the device (e.g. a log)
 #   tools/flash.sh --log                   # shortcut: --cat cinder_install.log
 #   tools/flash.sh --push <file>           # copy a local file to the device root
+#   tools/flash.sh --pull <file> [dest]    # copy a file OFF the device (binary-safe; e.g. MTPDB_copy.dat)
 #
 # Flags:
 #   -d /dev/sdX   force the block device (skip autodetect)
@@ -51,7 +52,7 @@ warn() { printf '%swarn%s %s\n' "$C_Y" "$C_0" "$*" >&2; }
 die()  { printf '%s err %s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------- arg parsing
-DEV=""; ASSUME_YES=0; SERIES="nw-a50"; MODE="flash"; UPG=""; CATFILE=""; PUSHFILE=""
+DEV=""; ASSUME_YES=0; SERIES="nw-a50"; MODE="flash"; UPG=""; CATFILE=""; PUSHFILE=""; PULLFILE=""; PULLDEST=""
 args=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -64,6 +65,10 @@ while [ $# -gt 0 ]; do
     --cat)          MODE="cat"; CATFILE="${2:-}"; shift 2;;
     --log)          MODE="cat"; CATFILE="cinder_home_install.log"; shift;;
     --push)         MODE="push"; PUSHFILE="${2:-}"; shift 2;;
+    --clear-latch)  MODE="clearlatch"; shift;;
+    --pull)         MODE="pull"; shift;
+                    PULLFILE="${1:-}"; [ $# -gt 0 ] && shift;
+                    if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then PULLDEST="$1"; shift; fi;;
     -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     install)   UPG="$REPO/cinder-home/dist/dev/cinder_home_install.upg";   shift;;
     uninstall) UPG="$REPO/cinder-home/dist/dev/cinder_home_uninstall.upg"; shift;;
@@ -87,6 +92,8 @@ reexec_root() {
   [ "$MODE" = ls ] && a+=(--ls)
   [ "$MODE" = cat ] && a+=(--cat "$CATFILE")
   [ "$MODE" = push ] && a+=(--push "$PUSHFILE")
+  [ "$MODE" = clearlatch ] && a+=(--clear-latch)
+  [ "$MODE" = pull ] && { a+=(--pull "$PULLFILE"); [ -n "$PULLDEST" ] && a+=("$PULLDEST"); }
   [ -n "$UPG" ] && a+=("$UPG")
   exec sudo -E "$0" "${a[@]}"
 }
@@ -196,6 +203,27 @@ if [ "$MODE" = "ls" ] || [ "$MODE" = "cat" ]; then
   exit 0
 fi
 
+# ---------------------------------------------------------------- --pull
+# Copy a file OFF the device (binary-safe: cp, not cat) — e.g. the dev build's
+# /contents/MTPDB_copy.dat for offline schema work.
+if [ "$MODE" = "pull" ]; then
+  [ -n "$PULLFILE" ] || die "--pull needs a device filename (relative to the device root)"
+  PART="$(data_partition "$DEV")"
+  [ -n "$PART" ] || die "no FAT/exFAT data partition on $DEV (is it in MSC mode?)"
+  MNT="$(mktemp -d /tmp/walkman.XXXXXX)"
+  trap 'mountpoint -q "$MNT" && umount "$MNT" 2>/dev/null; rmdir "$MNT" 2>/dev/null' EXIT
+  mount -o ro "$PART" "$MNT" 2>/dev/null || mount -t exfat -o ro "$PART" "$MNT" 2>/dev/null \
+    || die "could not mount $PART read-only"
+  REL="${PULLFILE#/}"; REL="${REL#contents/}"
+  F="$MNT/$REL"
+  [ -f "$F" ] || die "not found on device: $PULLFILE (try --ls)"
+  DEST="${PULLDEST:-$PWD/$(basename "$PULLFILE")}"
+  cp -f "$F" "$DEST"; sync
+  chmod a+r "$DEST" 2>/dev/null || true
+  ok "pulled $PULLFILE -> $DEST ($(stat -c %s "$DEST") bytes)"
+  exit 0
+fi
+
 # ---------------------------------------------------------------- --push
 # Copy a local file to the device storage root (e.g. the cinder-device binary the
 # Cinder installer expects at /contents/cinder-device).
@@ -214,6 +242,28 @@ if [ "$MODE" = "push" ]; then
   sync
   umount "$MNT"; trap - EXIT
   ok "pushed $base to device root"
+  exit 0
+fi
+
+# ---------------------------------------------------------------- --clear-latch
+# Recover from a bad-boot revert: the launcher latches to stock by touching
+# /contents/cinderhome_off (+ _DISABLED_badboot) after MAXBAD crash-boots. Deleting those
+# three files (rw MSC mount) lets the launcher run cinder-home again on the next boot.
+if [ "$MODE" = "clearlatch" ]; then
+  PART="$(data_partition "$DEV")"
+  [ -n "$PART" ] || die "no FAT/exFAT data partition on $DEV (is it in MSC mode?)"
+  MNT="$(mktemp -d /tmp/walkman.XXXXXX)"
+  trap 'mountpoint -q "$MNT" && umount "$MNT" 2>/dev/null; rmdir "$MNT" 2>/dev/null' EXIT
+  mount "$PART" "$MNT" 2>/dev/null || mount -t exfat "$PART" "$MNT" 2>/dev/null \
+    || die "could not mount $PART"
+  n=0
+  for f in cinderhome_off cinderhome_bootcount cinderhome_DISABLED_badboot; do
+    if [ -e "$MNT/$f" ]; then rm -f "$MNT/$f" && { info "removed $f"; n=$((n+1)); }
+    else info "$f not present (ok)"; fi
+  done
+  sync
+  umount "$MNT"; trap - EXIT
+  ok "cleared $n latch file(s). Boot the device with USB UNPLUGGED to run cinder-home."
   exit 0
 fi
 

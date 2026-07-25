@@ -126,9 +126,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &SettingsVi
     hline(c, y + RH, t.line);
     y += RH;
 
-    // Rows 1-2: the visualiser options (live)
-    y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser", v.viz_name, false);
-    y = srow(c, t, f, y, sel == ROW_VIZ_ANIM, "Visualiser anim", if v.viz_on { "ON" } else { "OFF" }, false);
+    // Rows 1-2: the visualiser options (live). ROW_VIZ_ANIM is the master ON/OFF (hides the
+    // visualiser entirely on Now Playing when off); ROW_VIZ picks which type to show when on.
+    y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser type", v.viz_name, false);
+    y = srow(c, t, f, y, sel == ROW_VIZ_ANIM, "Visualiser", if v.viz_on { "ON" } else { "OFF" }, false);
     // Row 3: Sleep timer (live) — pauses playback after N min. Shows the live remaining when running.
     y = srow(c, t, f, y, sel == ROW_SLEEP, "Sleep timer", v.sleep, false);
     // Rows 4-5: display-only

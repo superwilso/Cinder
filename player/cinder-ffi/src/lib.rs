@@ -611,6 +611,7 @@ pub extern "C" fn cinder_render_tick() {
         repeat: r.np.repeat,
         viz_seed: if animate { r.viz_phase } else { 2.0 },
         viz_kind: 0, // nav injects the real viz type on the NowPlaying render
+        viz_on: r.app.viz_on(), // nav re-injects this too; kept honest here
         // real FFT spectrum if the shell is feeding PCM AND we're animating; else None (synthetic)
         viz_levels: if animate && !r.viz_levels.is_empty() { Some(&r.viz_levels) } else { None },
     };
@@ -840,6 +841,18 @@ pub extern "C" fn cinder_force_dirty() {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.dirty = true;
     }
+}
+
+/// Raise the USB mass-storage modal from the shell. Called when the shell auto-detects a PC host
+/// (before it flips the gadget to MSC) so the UI shows the same modal a manual settings-row tap
+/// would. Idempotent — safe to call every auto-detect poll. Returns 1 if the modal is up.
+#[no_mangle]
+pub extern "C" fn cinder_show_usb_storage() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    r.app.show_usb_storage();
+    r.dirty = true;
+    r.app.is_usb_storage() as libc::c_int
 }
 
 #[no_mangle]

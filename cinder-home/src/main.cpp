@@ -32,6 +32,7 @@
 #include <pthread.h>
 #include <sys/statvfs.h>
 #include <sys/ioctl.h>
+#include <sys/mount.h>   // umount/umount2 (we unmount /contents ourselves before the MSC handoff)
 #include <cerrno>
 
 // The render core: the Rust Cinder UI, built as a glibc C-ABI staticlib
@@ -323,15 +324,22 @@ void deferred_up() {
     // DEV CHANNEL: copy the real library DB out to user-visible storage (once per boot, only if
     // missing or the size changed — ~a few MB). Pull it via USB-MSC/flash.sh to close the
     // album-art schema question offline (images.value TEXT-path vs inline BLOB vs bmpfile).
+    // Copy the library DB out to /contents so it's reachable over USB-MSC for offline schema work.
+    // HARDENED 2026-07-25: the previous version silently no-op'd (the copy never landed on device).
+    // Now it forces a sane PATH (the easel-launched context has a minimal one — `arecord`/`stat`
+    // resolved inconsistently) and LOGS the outcome (OK+size / FAILED+error / SRC-missing) to
+    // cinderhome.log, so one log pull tells us exactly what happened. Once adb is up (dev),
+    // `adb pull /db/MTPDB.dat` is the primary route and this is just a fallback.
     run_guarded("deferred_up: copy MTPDB.dat to /contents (dev)", 15, []() {
-        std::system("if [ -f /db/MTPDB.dat ]; then "
-                    "  a=$(stat -c %s /db/MTPDB.dat 2>/dev/null); "
-                    "  b=$(stat -c %s /contents/MTPDB_copy.dat 2>/dev/null); "
-                    "  if [ \"$a\" != \"$b\" ]; then "
-                    "    cp /db/MTPDB.dat /contents/MTPDB_copy.dat.tmp 2>/dev/null && "
-                    "    mv /contents/MTPDB_copy.dat.tmp /contents/MTPDB_copy.dat; "
-                    "  fi; "
-                    "fi 2>/dev/null");
+        std::system(
+            "export PATH=/system/bin:/system/xbin:/xbin:/bin:/sbin:/usr/bin:$PATH; "
+            "SRC=/db/MTPDB.dat; DST=/contents/MTPDB_copy.dat; "
+            "if [ -f \"$SRC\" ]; then "
+            "  if cp \"$SRC\" \"$DST.tmp\" 2>/tmp/cpdberr && mv \"$DST.tmp\" \"$DST\" 2>>/tmp/cpdberr; then "
+            "    echo \"[cinder-home] db-copy: OK $(stat -c %s \\\"$DST\\\" 2>/dev/null) bytes\"; "
+            "  else echo \"[cinder-home] db-copy: FAILED: $(cat /tmp/cpdberr 2>/dev/null)\"; fi; "
+            "else echo \"[cinder-home] db-copy: SRC $SRC not found\"; fi; "
+            "sync");
     });
     // DEV CHANNEL: auto-capture the read-only device discovery (volume/ALSA/sysfs/usb + PlayStatus)
     // so the data needed to wire the device-gated features lands in /contents/cinder_discovery.txt
@@ -344,21 +352,32 @@ void deferred_up() {
 #ifdef CINDER_DEV
     // DEV CHANNEL ONLY (build.sh dev): best-effort enable adb for push-and-run iteration. Guarded,
     // so a failure is harmless — the player runs exactly like stable, just without adb. Touches NO
-    // boot-critical files. Mechanism (RE'd from the ramdisk init.rc): the `adbd` service exists
-    // but is class-disabled; init only starts it inside the `on property:sys.sony.config=<mode>`
-    // blocks. The boot-default gadget already carries the adb function (PID 0B8B / 0B8D composite),
-    // so the ONLY missing piece is the daemon — `setprop ctl.start adbd` makes init start it
-    // directly (ctl.* works for disabled services; a plain `start` from a non-init process and
-    // `sys.usb.config` writes do nothing on this firmware — the previous approach's bug).
-    clog_("deferred_up: DEV channel — starting adbd (ctl.start, best-effort, guarded)");
-    run_guarded("deferred_up: start adbd (dev)", 10, []() {
-        std::system("setprop ctl.start adbd 2>/dev/null");
+    // boot-critical files.
+    //
+    // CORRECTED 2026-07-25 (from the on-device discovery dump): the previous approach only did
+    // `setprop ctl.start adbd`, on the assumption that "the boot-default gadget already carries the
+    // adb function." The discovery dump DISPROVED that — at normal boot the gadget reads
+    // `functions=mass_storage` (NO adb interface), so adbd ran but the PC never saw an adb device.
+    // Fix: COMPOSE adb into the android_usb gadget ourselves (the same sysfs pattern the MSC path
+    // uses below): disable, set functions=mass_storage,adb (keep storage so the log/DB stay
+    // reachable), set the MSC+adb composite PID 0B8D, re-enable, THEN start adbd. Safe here because
+    // a dev boot only reaches this code with USB DISCONNECTED at launch (USB-at-launch boots stock),
+    // so no PC is holding the gadget when we bounce it. Still fully guarded + best-effort.
+    clog_("deferred_up: DEV channel — composing adb into the USB gadget + starting adbd (guarded)");
+    run_guarded("deferred_up: enable adb (dev)", 10, []() {
+        std::system(
+            "echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null; "
+            "echo mass_storage,adb > /sys/class/android_usb/android0/functions 2>/dev/null; "
+            "echo 0B8D > /sys/class/android_usb/android0/idProduct 2>/dev/null; "
+            "echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null; "
+            "setprop ctl.start adbd 2>/dev/null");
         // Verification snapshot ~3 s later, straight into cinderhome.log: service state per init,
-        // the live process, and the gadget functions. One log pull now answers "is adb up, or is
-        // it just the Windows driver?" (docs/adb_setup.md §1.4).
+        // the live process, and the gadget functions (now expected to read `mass_storage,adb`).
+        // One log pull answers "is adb enumerated, or is it just the Windows driver?" (docs/adb_setup.md).
         std::system("sleep 3; echo \"[cinder-home] adb: init.svc.adbd=$(getprop init.svc.adbd) "
                     "proc=$(ps | grep -c '[a]dbd') "
                     "functions=$(cat /sys/class/android_usb/android0/functions 2>/dev/null) "
+                    "idProduct=$(cat /sys/class/android_usb/android0/idProduct 2>/dev/null) "
                     "state=$(getprop sys.usb.state)\"");
     });
 #endif
@@ -920,6 +939,7 @@ void apply_usb_dac() {
 // wait for the remount, then point the log back at /contents/cinderhome.log.
 static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
 static bool g_msc_seen_usb = false; // saw the cable while in MSC → unplug ends the session
+static int  g_usb_hi = 0;           // debounce: consecutive host-present samples while NOT in MSC
 
 void redirect_fds(const char* path, int flags) {
     std::fflush(stdout); std::fflush(stderr);
@@ -990,6 +1010,50 @@ void log_contents_holders() {
     std::fflush(stderr);
 }
 
+// Belt-and-braces after /contents is unmounted: guarantee the gadget's mass-storage LUN actually
+// backs /emmc@contents. Stock init's msc trigger normally points it, BUT the dev-channel adb
+// compose (or an enumeration race) can leave the LUN file empty — which makes the PC enumerate a
+// reader with NO MEDIUM (the "modal shows but no drive appears" symptom). Only acts when the LUN
+// is empty, so it's a safe no-op on the paths that already pointed it. Bounces the gadget so the
+// host re-enumerates and picks up the freshly-backed disk.
+static void ensure_msc_lun() {
+    const char* lunf = "/sys/class/android_usb/android0/f_mass_storage/lun/file";
+    char cur[128] = {};
+    if (FILE* f = std::fopen(lunf, "r")) {
+        if (std::fgets(cur, sizeof cur, f)) cur[std::strcspn(cur, "\n")] = 0;
+        std::fclose(f);
+    }
+    const char* s = cur;
+    while (*s == ' ' || *s == '\t') ++s;
+    if (*s != 0) return; // already backed — nothing to do
+    // The gadget is ALREADY enabled with functions=mass_storage,adb (the sys.sony.config=msc
+    // trigger set that). The mass_storage LUN is REMOVABLE, so writing its backing file is a
+    // media-INSERT event: the host sees the disk appear with NO re-enumeration. On-device RE
+    // (adb, 2026-07-25) proved a bare `echo /emmc@contents > lun/file` — with /contents already
+    // unmounted — makes the PC enumerate the full 55.9 GB WALKMAN drive (host: sdf 55.9G vfat).
+    // Do NOT enable-cycle here: `enable 0`→`enable 1` re-creates the mass_storage instance and
+    // CLEARS lun/file back to empty — THAT was the "modal shows but the LUN stays empty / PC sees
+    // a 0-byte reader with NO MEDIUM" bug this function was meant to cure. Write + confirm instead;
+    // retry a few times in case a holder is mid-close (EBUSY leaves the write silently empty).
+    for (int i = 0; i < 8; ++i) {
+        std::system("echo /emmc@contents > "
+                    "/sys/class/android_usb/android0/f_mass_storage/lun/file 2>/dev/null");
+        char rb[128] = {};
+        if (FILE* f = std::fopen(lunf, "r")) {
+            if (std::fgets(rb, sizeof rb, f)) rb[std::strcspn(rb, "\n")] = 0;
+            std::fclose(f);
+        }
+        const char* t = rb;
+        while (*t == ' ' || *t == '\t') ++t;
+        if (*t != 0) {
+            clog_("usb-msc: LUN was empty — bound /emmc@contents (host medium inserted, no re-enum)");
+            return;
+        }
+        usleep(250000); // holder still dropping — retry the media-insert
+    }
+    clog_("usb-msc: LUN STILL empty after retries — host will see a reader with NO medium");
+}
+
 void enter_usb_msc() {
     clog_("usb-msc: entering (session log -> /tmp/cinder_msc.log, spliced back on exit)");
     // 1) release OUR storage users. Pause is NOT enough: a paused PlayerService keeps the
@@ -1002,39 +1066,42 @@ void enter_usb_msc() {
     (void)chdir("/");
     // 2) move our log fds (1+2 ARE /contents/cinderhome.log via the launcher redirect)
     redirect_fds(MSC_TMP, O_WRONLY | O_CREAT | O_APPEND);
-    // 3) flip the mode: init runs unmount_msc1 (umount /contents), points the gadget LUN at
-    //    /emmc@contents, switches functions to mass_storage,adb (PID 0B8D).
-    std::system("setprop sys.sony.config msc 2>/dev/null");
-    // 4) VERIFY the umount. f_mass_storage opens the backing block device EXCLUSIVELY — if the
-    //    umount failed (EBUSY) the LUN write failed too and the PC sees a reader with NO MEDIUM
-    //    (exactly "the msc screen comes up but msc doesn't turn on"). So: wait, then recover by
-    //    unmounting ourselves and re-pointing the LUN.
+    // 3) UNMOUNT /contents FIRST, via the setuid-root helper, THEN flip the gadget. On-device RE
+    //    (adb, 2026-07-25) found TWO things: (a) the stock `sys.sony.config=msc` trigger is RACY —
+    //    it `start unmount_msc1` (an async fork of `umount /contents`) then IMMEDIATELY writes
+    //    lun/file, so the gadget often binds a STILL-MOUNTED block device and the LUN comes up EMPTY
+    //    (PC sees a 0-byte reader with NO MEDIUM); and (b) cinder-home runs as uid 100 with an EMPTY
+    //    capability set (appmgr strips them), so it CANNOT umount(2) itself (EPERM) — that's why the
+    //    earlier in-process umount always failed. Fix: cinder-umount (chmod 4755, owner root) regains
+    //    caps on exec and unmounts (verified: a uid-100 caller unmounts /contents rc 0). With
+    //    /contents already gone, the trigger's lun bind lands on a FREE device. Retry for a holder.
     bool unmounted = false;
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < 12; ++i) {
         if (!contents_mounted()) { unmounted = true; break; }
+        std::system("/system/vendor/unknown321/bin/cinder-umount");
+        if (!contents_mounted()) { unmounted = true; break; }
+        if (i == 0) log_contents_holders();   // name any fd holder on the first miss
         usleep(250000);
     }
-    if (!unmounted) {
-        clog_("usb-msc: /contents STILL MOUNTED after 5 s (unmount_msc1 EBUSY) — fd holders:");
+    if (!unmounted)
+        clog_("usb-msc: helper could NOT unmount /contents — falling through to the stock trigger");
+    // 3b) NOW flip the gadget. With /contents already unmounted the trigger's lun/file write binds a
+    //     free block device cleanly (functions=mass_storage,adb, idProduct 0B8D); unmount_msc1's
+    //     redundant umount is a harmless no-op. Kept over hand-rolled sysfs so adbd + idProduct stay
+    //     exactly as stock expects on the way in AND out. cinder is NOT a child of adbd, so the
+    //     enable-cycle inside the trigger doesn't kill this process mid-switch.
+    std::system("setprop sys.sony.config msc 2>/dev/null");
+    // 4) settle (let unmount_msc1/the enable-cycle catch up), then GUARANTEE the medium is present:
+    //    if the LUN still reads empty, point it + bounce the gadget so the host re-enumerates a
+    //    reader WITH medium. No-op when the trigger already bound it.
+    for (int i = 0; i < 12 && contents_mounted(); ++i) usleep(250000);
+    if (!contents_mounted()) {
+        ensure_msc_lun();
+    } else {
+        clog_("usb-msc: /contents STILL MOUNTED after the switch — fd holders:");
         log_contents_holders();
-        std::system("umount /contents 2>&1");
-        if (!contents_mounted()) {
-            // Re-point the LUN, then bounce the gadget: Windows has already enumerated a
-            // no-medium reader by now and won't rescan it — a disable/enable cycle forces a
-            // fresh enumeration that picks up the medium.
-            std::system("echo /emmc@contents > "
-                        "/sys/class/android_usb/android0/f_mass_storage/lun/file 2>&1");
-            std::system("echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null");
-            usleep(250000);
-            std::system("echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null");
-            clog_("usb-msc: recovery umount OK, LUN re-pointed + gadget re-enabled");
-        } else {
-            clog_("usb-msc: recovery umount FAILED — PC will see no medium this session");
-            // /contents is STILL MOUNTED here, so the main log is writable — copy the whole
-            // failed-session diagnosis (incl. the fd-holder dump above) into cinderhome.log NOW.
-            // Otherwise it lives only in tmpfs and vanishes if the user reboots out of MSC.
-            std::system("cat /tmp/cinder_msc.log >> /contents/cinderhome.log 2>/dev/null");
-        }
+        // /contents is writable here, so persist the failed-session diagnosis into the main log now.
+        std::system("cat /tmp/cinder_msc.log >> /contents/cinderhome.log 2>/dev/null");
     }
     // 5) record the gadget state (goes to the tmpfs log; readable after exit — or already
     //    spliced above on the unrecoverable path)
@@ -1476,16 +1543,46 @@ void* render_driver(void*) {
                 g_playing = false;
                 run_guarded("pump: sleep-timer pause", 6, []() { cinder_audio_pause(); });
             }
-            // MSC unplug watcher: once the cable was seen during the session, unplugging ends it —
-            // inject Back so the modal pops AND the navigator emits ExitUsbMsc (single exit path).
+            // USB mass-storage is fully automatic — no menu dive:
+            //  • NOT in MSC + a PC data-host appears (debounced ~2 s so charger/enumeration flicker
+            //    doesn't bounce us in) → raise the modal and hand /contents to the PC. usb_connected()
+            //    keys on android0/state==CONFIGURED, so a dumb wall charger (CONNECTED only) never
+            //    trips this; only a real PC does. Skipped while onboarding/locked can't matter here.
+            //  • IN MSC + the cable is pulled → inject Back so the modal pops AND the navigator emits
+            //    ExitUsbMsc (single exit path: remount /contents + restore the USB mode + log).
             if (g_msc_active) {
-                if (usb_connected()) g_msc_seen_usb = true;
+                g_usb_hi = 0;
+                if (usb_connected()) {
+                    g_msc_seen_usb = true;
+                    // A host tool (flash.sh's unmount, Windows "safely remove") EJECTS the medium
+                    // mid-session — SCSI START STOP UNIT clears lun/file, so the NEXT host op sees a
+                    // reader with no medium (the "worked once, then 0B" symptom across back-to-back
+                    // flash.sh calls). /contents is still unmounted here, so re-insert it: ensure_msc_lun
+                    // is a no-op while the LUN stays backed and re-binds the instant it goes empty.
+                    ensure_msc_lun();
+                }
                 else if (g_msc_seen_usb) {
                     int act = cinder_input(CINDER_BTN_BACK);
                     if (act != CINDER_ACT_NONE) carry_out(act);
                 }
+            } else if (usb_connected()) {
+                if (++g_usb_hi >= 2) {
+                    clog_("usb-msc: PC host detected — auto-entering mass storage");
+                    cinder_show_usb_storage();            // UI reflects the handoff (same modal as the tap)
+                    cinder_render_tick();                 // PAINT the modal now — enter_usb_msc blocks ~8 s
+                    carry_out(CINDER_ACT_ENTER_USB_MSC);  // flip gadget + hand /contents to the PC
+                }
+            } else {
+                g_usb_hi = 0;
             }
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
+#ifdef CINDER_DEV
+            // DEV: push the /contents page cache to eMMC every ~2 s so device-written files
+            // (cinderhome.log, cinder_discovery.txt, MTPDB_copy.dat, cinder_settings.conf) are
+            // readable over USB-MSC without a reboot. The host reads the raw block device, which
+            // lags the device's live rw mount until a sync — hence the earlier 0-byte/short reads.
+            if (n % 120 == 0) ::sync();
+#endif
         }
         if (n % 600 == 0) cinder_set_battery(read_battery());
         ++n;

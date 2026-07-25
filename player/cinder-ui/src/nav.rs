@@ -296,6 +296,20 @@ impl App {
         *self.stack.last().unwrap_or(&Screen::NowPlaying)
     }
 
+    /// Programmatically raise the USB mass-storage modal — used when the shell auto-detects a PC
+    /// host and enters MSC on its own (no settings-row tap). Idempotent: no-op if the modal is
+    /// already up, so the ~1 Hz auto-detect poll can call it every tick without stacking screens.
+    pub fn show_usb_storage(&mut self) {
+        if !matches!(self.current(), Screen::UsbStorage) {
+            self.push(Screen::UsbStorage);
+        }
+    }
+
+    /// True while the USB mass-storage modal owns the screen (shell asks before auto-entering).
+    pub fn is_usb_storage(&self) -> bool {
+        matches!(self.current(), Screen::UsbStorage)
+    }
+
     /// Activate a Menu row: navigate to its destination, or open the Shelf overlay for the Shelf
     /// sentinel. Shared by the Menu tap + Select handlers so they can't drift apart.
     fn activate_menu(&mut self, row: usize) {
@@ -1343,8 +1357,8 @@ impl App {
                 crate::lock::render(c, &theme, fonts, &lk);
             }
             Screen::NowPlaying => {
-                // inject the selected visualiser type (UI state) into the now-playing data
-                let np2 = NowPlaying { viz_kind: self.viz_kind, ..*np };
+                // inject the selected visualiser type + on/off (UI state) into the now-playing data
+                let np2 = NowPlaying { viz_kind: self.viz_kind, viz_on: self.viz_on, ..*np };
                 crate::now_playing::render(c, &theme, fonts, &np2);
                 // sleep-timer countdown badge (nav owns the live remaining minutes)
                 crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min);
@@ -2243,6 +2257,23 @@ mod tests {
         assert_eq!(a.current(), Screen::UsbStorage);
         assert_eq!(a.press(Button::Back), vec![Action::ExitUsbMsc]);
         assert!(a.current() != Screen::UsbStorage);
+    }
+
+    #[test]
+    fn auto_show_usb_storage_is_idempotent() {
+        // The shell auto-raises the modal when it detects a PC host; the ~1 Hz poll may call this
+        // every tick, so it must be idempotent (no stacked screens) and exit must still pop cleanly.
+        let mut a = unlocked();
+        assert!(!a.is_usb_storage());
+        a.show_usb_storage();
+        assert!(a.is_usb_storage());
+        let depth = a.stack.len();
+        a.show_usb_storage(); // repeat poll → no-op, no second screen pushed
+        assert!(a.is_usb_storage());
+        assert_eq!(a.stack.len(), depth);
+        // Same single exit path as a manual entry: Back pops the modal + emits ExitUsbMsc.
+        assert_eq!(a.press(Button::Back), vec![Action::ExitUsbMsc]);
+        assert!(!a.is_usb_storage());
     }
 
     #[test]
