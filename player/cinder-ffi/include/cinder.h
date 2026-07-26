@@ -14,6 +14,11 @@ void cinder_render_tick(void);
  * anything an EXTERNAL process scribbled on the framebuffer (the boot animation's last frame
  * survives its kill — the dirty-flag renderer would otherwise never paint over it). */
 void cinder_force_dirty(void);
+/* Save the NEXT rendered frame as a PNG at `path`. Captures the Canvas before presentation, so it
+ * is faithful on BOTH the software framebuffer and the GPU/EGL path (under EGL the Mali swapchain
+ * owns the panel, so reading /dev/graphics/fb0 externally does not reliably show what's on screen).
+ * Also marks the UI dirty so an idle screen still repaints. Returns 0 if the request was accepted. */
+int  cinder_request_screenshot(const char *path);
 /* Raise the USB mass-storage modal (idempotent). The shell calls this when it auto-detects a PC
  * host, BEFORE flipping the gadget to MSC, so the UI shows the same modal a settings-row tap would.
  * Returns 1 if the modal is now up. */

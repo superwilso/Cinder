@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Cross-build cinder-home for the NW-A50 — a real, device-loadable ARM binary.
-# VERIFIED 2026-06-24: links clean, needs only GLIBC_2.4 (device is glibc 2.23), every
-# undefined symbol resolves against the device libs. ~2.5 MB stripped ARM PIE.
+# VERIFIED 2026-06-24: links clean, needs only GLIBC_2.4/2.17 (device is glibc 2.23), every
+# undefined symbol resolves against the device libs. ~2.9 MB stripped ARM PIE.
+#
+# GPU present path (2026-07-26): cinder-ffi's frame present is EGL + GLES2 on the device's Mali
+# driver (libMali_linux.so — Mali-450 r0p0, glibc "linux" build; libEGL.so.1/libGLESv2.so.2 are
+# just symlinks to it). We link -l:libMali_linux.so (staged in analysis/ramdisk/lib); the egl*/gl*
+# symbols resolve there at runtime. If EGL won't init on device, cinder-ffi falls back to the
+# software framebuffer (mmap + FBIOPUT), so there is no black-screen risk. See player/cinder-ffi/
+# src/gpu.rs.
 #
 # ── The three things that make this work ──────────────────────────────────────────────
 # 1. ABI = libc++ (std::__1), NOT libstdc++. Sony's easel/appmgr/PlayerService symbols are
@@ -129,6 +136,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lPlayerServiceClientUtil -lEffectCtrlDmp -lPowerMgrServiceClient \
      -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
+     -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$OUT"
 
@@ -168,6 +176,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -lPlayerServiceClient -lPlayerServiceClientUtil -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
+     -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$PROBE"
 gate_glibc "$PROBE"
@@ -180,6 +189,19 @@ if [ "${SKIP_PREFLIGHT:-0}" != "1" ]; then
     echo "── preflight: qemu construction gate ──"
     DEVSYS="$DEVSYS" LIBCXX_V1="$LIBCXX_V1" bash "$HERE/tools/preflight_qemu.sh"
 fi
+
+# ── recovery gate: the launcher is the one file whose bugs are UNRECOVERABLE ──────────────────
+# It decides stock-vs-cinder before anything else runs, so a fault there is a boot loop with no
+# way in (2026-07-26: a failed log redirect made sh exit without exec'ing → appmgr rebooted →
+# wbrt restore). This drives the generated launcher through every escape and failure mode in a
+# sandbox. Never ship without it green.
+echo "── recovery gate: launcher escape matrix ──"
+if ! LT_OUT="$(bash "$HERE/tools/test_launcher.sh" 2>&1)"; then
+    echo "$LT_OUT"
+    echo "FAIL: launcher recovery gate — a boot-escape path is broken. NOT packing."
+    exit 1
+fi
+echo "$LT_OUT" | tail -1
 
 # ── stage the channel binaries into dist/<channel>/ (the two channels never clobber each other).
 # pack_upg.sh <channel> packs the matching install/uninstall .UPGs alongside them.
@@ -195,9 +217,17 @@ done
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-umount" "$HERE/src/cinder-umount.c"
 echo "built: $HERE/cinder-umount ($(stat -c %s "$HERE/cinder-umount") bytes)"
 
+# cinder-gpunode: second setuid-root helper — chmod 0666 on the four root-only GPU/display nodes
+# (/dev/ion, /dev/mtkfb_vsync, /dev/mtk_disp, /dev/sw_sync) that uid-100 EGL needs. Same static-musl
+# + chmod 4755 root:root install treatment as cinder-umount. See src/cinder-gpunode.c.
+echo "[6b] build cinder-gpunode (setuid-root GPU node helper, static)…"
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-gpunode" "$HERE/src/cinder-gpunode.c"
+echo "built: $HERE/cinder-gpunode ($(stat -c %s "$HERE/cinder-gpunode") bytes)"
+
 mkdir -p "$DIST"
 cp -f "$OUT" "$DIST/cinder-home"
 cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"
 cp -f "$HERE/cinder-umount" "$DIST/cinder-umount"
+cp -f "$HERE/cinder-gpunode" "$DIST/cinder-gpunode"
 echo "staged $CHANNEL binaries -> $DIST/"
 echo "── done ($CHANNEL). next: bash tools/pack_upg.sh $CHANNEL ──"

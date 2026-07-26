@@ -45,28 +45,28 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub
 
     // header
     icons::bookmark(c, 24.0, (TOP + 18) as f32, 16.0, t.ink);
-    text::draw(c, f, 48.0, (TOP + 30) as f32, "Shelf", &sty(Family::Sans, Weight::Bold, 20.0, t.ink, 0.0));
-    right(c, f, 458.0, (TOP + 28) as f32, "CLOSE ×", &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.08));
+    text::draw(c, f, 48.0, (TOP + 30) as f32, "Shelf", &sty(Family::Sans, Weight::Bold, 22.0, t.ink, 0.0));
+    right(c, f, 458.0, (TOP + 28) as f32, "CLOSE ×", &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.08));
 
-    let cap = sty(Family::Mono, Weight::Regular, 9.0, t.acc, 0.18);
+    let cap = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18);
 
     // HISTORY
     text::draw(c, f, 22.0, 466.0, "HISTORY", &cap);
     stroke_rect(c, 22, UNDO_Y, 208, 46, t.line, 1);
-    text::draw(c, f, 36.0, (UNDO_Y + 19) as f32, "\u{2039} Undo", &sty(Family::Sans, Weight::SemiBold, 13.0, t.ink, 0.0));
-    text::draw(c, f, 36.0, (UNDO_Y + 36) as f32, "Previous screen", &sty(Family::Mono, Weight::Regular, 9.0, t.dim, 0.0));
+    text::draw(c, f, 36.0, (UNDO_Y + 19) as f32, "\u{2039} Undo", &sty(Family::Sans, Weight::SemiBold, 15.0, t.ink, 0.0));
+    text::draw(c, f, 36.0, (UNDO_Y + 36) as f32, "Previous screen", &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0));
     stroke_rect(c, 242, UNDO_Y, 216, 46, t.line, 1);
-    text::draw(c, f, 256.0, (UNDO_Y + 19) as f32, "Redo \u{203a}", &sty(Family::Sans, Weight::SemiBold, 13.0, t.faint, 0.0));
-    text::draw(c, f, 256.0, (UNDO_Y + 36) as f32, "\u{2014}", &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.0));
+    text::draw(c, f, 256.0, (UNDO_Y + 19) as f32, "Redo \u{203a}", &sty(Family::Sans, Weight::SemiBold, 15.0, t.faint, 0.0));
+    text::draw(c, f, 256.0, (UNDO_Y + 36) as f32, "\u{2014}", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
 
     // THIS PLACE
     text::draw(c, f, 22.0, 544.0, "THIS PLACE", &cap);
     stroke_rect(c, 22, 558, 436, 48, t.line, 1);
-    text::draw(c, f, 36.0, 580.0, this_title, &sty(Family::Sans, Weight::SemiBold, 14.0, t.ink, 0.0));
-    text::draw(c, f, 36.0, 596.0, this_sub, &sty(Family::Mono, Weight::Regular, 9.0, t.dim, 0.0));
+    text::draw(c, f, 36.0, 580.0, this_title, &sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0));
+    text::draw(c, f, 36.0, 596.0, this_sub, &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0));
     let (px, py, pw, ph) = PIN_BTN;
     fill_rect(c, px, py + 6, pw, ph - 12, t.acc);
-    center(c, f, (px + pw / 2) as f32, (py + ph / 2 + 4) as f32, "Pin", &sty(Family::Sans, Weight::Bold, 12.0, t.acc_ink, 0.0));
+    center(c, f, (px + pw / 2) as f32, (py + ph / 2 + 4) as f32, "Pin", &sty(Family::Sans, Weight::Bold, 14.0, t.acc_ink, 0.0));
 
     // PINNED · N/3
     let filled = pins.iter().filter(|p| p.is_some()).count();
@@ -76,11 +76,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub
         match slot {
             Some(p) => {
                 stroke_rect(c, 22, y, 436, 40, t.line, 1);
-                text::draw(c, f, 36.0, (y + 24) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.0));
-                text::draw(c, f, 58.0, (y + 17) as f32, p.title, &sty(Family::Sans, Weight::SemiBold, 13.0, t.ink, 0.0));
-                text::draw(c, f, 58.0, (y + 32) as f32, p.sub, &sty(Family::Mono, Weight::Regular, 9.0, t.dim, 0.0));
-                right(c, f, 406.0, (y + 24) as f32, "GO \u{203a}", &sty(Family::Mono, Weight::Regular, 10.0, t.acc, 0.0));
-                right(c, f, 450.0, (y + 24) as f32, "\u{00d7}", &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0));
+                text::draw(c, f, 36.0, (y + 24) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 13.0, t.acc, 0.0));
+                text::draw(c, f, 58.0, (y + 17) as f32, p.title, &sty(Family::Sans, Weight::SemiBold, 15.0, t.ink, 0.0));
+                text::draw(c, f, 58.0, (y + 32) as f32, p.sub, &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0));
+                right(c, f, 406.0, (y + 24) as f32, "GO \u{203a}", &sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.0));
+                right(c, f, 450.0, (y + 24) as f32, "\u{00d7}", &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.0));
             }
             None => {
                 // dashed border (drawn as dashes) + hint
@@ -90,8 +90,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub
                     fill_rect(c, dx, y + 39, 7, 1, t.line);
                     dx += 14;
                 }
-                text::draw(c, f, 36.0, (y + 24) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
-                text::draw(c, f, 58.0, (y + 24) as f32, "Empty slot \u{2014} pin here", &sty(Family::Sans, Weight::Regular, 12.0, t.faint, 0.0));
+                text::draw(c, f, 36.0, (y + 24) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
+                text::draw(c, f, 58.0, (y + 24) as f32, "Empty slot \u{2014} pin here", &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0));
             }
         }
     }

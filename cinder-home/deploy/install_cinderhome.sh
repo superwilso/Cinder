@@ -20,13 +20,14 @@
 #   /contents rw and our log lands there).
 #
 # SAFETY — BAD-BOOT COUNTER + AUTO-REVERT (hardened 2026-06-26 after a hung launch needed wbrt):
-#   The launcher increments /contents/cinderhome_bootcount each boot; the counter is reset to 0
-#   ONLY by cinder-home once it proves HEALTHY (painted + survived its risky init). So a crash OR
-#   HANG never resets it -> it accumulates and after MAXBAD=2 boots the launcher execs the stock
+#   The launcher increments /data/cinder/bootcount each boot; the counter is reset to 0
+#   ONLY by cinder-home once it proves HEALTHY (painted + survived 8 s). So a crash OR
+#   HANG never resets it -> it accumulates and after MAXBAD=4 boots the launcher execs the stock
 #   Qt app -> stock UI returns on its own, NO PC/wbrt. (The old blind 60s-timer reset is removed:
-#   a hung process "survived" it -> the counter never accumulated -> soft-brick.) The manual escape
-#   is /contents/cinderhome_off -> boot stock. (The USB-cable-at-boot escape was removed 2026-07-25:
-#   cinder boots regardless of cable, and drives the msc/adb gadget itself instead of fleeing to stock.)
+#   a hung process "survived" it -> the counter never accumulated -> soft-brick.) Manual escapes:
+#   a USB cable connected at boot -> stock (needs no filesystem at all), or /contents/cinderhome_off
+#   over USB-MSC. State lives on /data (ext4) because /contents is vfat AND is unmounted for
+#   USB-MSC -> when it went missing the counter stopped advancing and the device could not revert.
 #   All writes here are ATOMIC (temp+verify+mv) + a FINAL SANITY GATE reverts to stock if any
 #   piece is wrong, so a partial install can't soft-brick. Full revert: cinder_home_uninstall.upg.
 # The original Qt binary is never modified; only the .appcfg (backed up to .appcfg.real).
@@ -46,6 +47,7 @@ VENDOR=/system/vendor/unknown321
 BIN=$VENDOR/bin
 SRC=/contents/cinder-home
 SRC_UMOUNT=/contents/cinder-umount
+SRC_GPUNODE=/contents/cinder-gpunode
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
 LAUNCH=$BIN/cinderhome-launch.sh
@@ -114,6 +116,25 @@ else
     echo "WARN: $SRC_UMOUNT not staged (tools/flash.sh --push dist/<ch>/cinder-umount) — MSC fallback path."
 fi
 
+# 1c) install the setuid-root GPU-node helper (chmod 0666 on /dev/ion, /dev/mtkfb_vsync,
+#     /dev/mtk_disp, /dev/sw_sync — the four root-only nodes uid-100 EGL needs). Same atomic
+#     temp->chown root->chmod 4755->mv treatment. Non-fatal: without it the GPU present path
+#     refuses to start and cinder renders via the software framebuffer exactly as before.
+if [ -s "$SRC_GPUNODE" ]; then
+    "$BB" cat "$SRC_GPUNODE" > "$BIN/cinder-gpunode.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-gpunode.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-gpunode.tmp" 2>/dev/null
+        "$BB" chmod 4755 "$BIN/cinder-gpunode.tmp"
+        "$BB" mv -f "$BIN/cinder-gpunode.tmp" "$BIN/cinder-gpunode"
+        echo "installed setuid helper: $BIN/cinder-gpunode ($("$BB" wc -c < "$BIN/cinder-gpunode" 2>/dev/null | "$BB" tr -cd '0-9') bytes, mode $("$BB" stat -c %a "$BIN/cinder-gpunode" 2>/dev/null))"
+    else
+        echo "WARN: cinder-gpunode stage empty — GPU path stays off (software render)."
+        "$BB" rm -f "$BIN/cinder-gpunode.tmp" 2>/dev/null
+    fi
+else
+    echo "WARN: $SRC_GPUNODE not staged (tools/flash.sh --push dist/<ch>/cinder-gpunode) — GPU path stays off."
+fi
+
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
 #    the .appcfg (otherwise the stock launch config is lost with no .real to restore).
 if [ ! -f "$APPCFG.real" ]; then
@@ -140,21 +161,112 @@ fi
 #    HANG — which never resets the counter — ACCUMULATES across (force-)reboots and auto-reverts
 #    after MAXBAD. (The old launcher reset the counter on a blind 60 s timer, which a hung
 #    process "survives" → it never accumulated → soft-brick. That bug is removed.)
-#  * A MANUAL escape remains: create /contents/cinderhome_off (over MSC or adb) and reboot → stock.
-#    The USB-cable-at-boot escape was REMOVED 2026-07-25 (user trusts the counter) so cinder now
-#    boots regardless of cable state — you can develop/charge with USB in and still land in cinder,
-#    and the msc/adb gadget is driven from inside cinder instead of forcing stock at launch.
-BOOTCOUNT=/contents/cinderhome_bootcount
-MAXBAD=2
+#  * ESCAPES, weakest dependency first (each works when the one below it cannot):
+#      1. USB cable connected at boot          -> stock. No fs, no shell, no counter. Always works.
+#      2. /contents/cinderhome_off  (USB-MSC)  -> stock. Needs a mountable /contents.
+#      3. /contents/cinderhome_clear (USB-MSC) -> clears the latch and retries.
+#      4. bad-boot counter hits MAXBAD         -> stock, automatically. Needs a writable /data.
+#
+# WHERE THE STATE LIVES (moved off /contents 2026-07-26, after a hard brick):
+#   The counter used to live on /contents. That is the WORST possible home for a safety net here:
+#     - /contents is VFAT (no journal) on /emmc@contents, so an unclean unmount corrupts it;
+#     - it is the ONLY partition handed to the PC for USB-MSC (init.rc: `service unmount_msc1
+#       /system/bin/umount /contents`), so it is repeatedly yanked away at runtime.
+#   When it failed to mount, the counter write went nowhere AND the old `>/contents/cinderhome.log`
+#   redirect on the exec line failed — so sh exited without exec'ing, appmgr rebooted, and the
+#   counter never advanced. Result: a logo boot-loop that could NEVER auto-revert. Required wbrt.
+#   State now lives on /data (ext4, journaled, `usrdata /emmc@usrdata /data ext4 discard` per
+#   /bin/mount_partition), which USB-MSC never touches. /contents keeps only the human-facing
+#   escapes, so recovery over USB-MSC still works without a shell.
+STATE=/data/cinder
+BOOTCOUNT=$STATE/bootcount
+DISABLED=$STATE/DISABLED_badboot
+OFF=$STATE/off
+# MSC-reachable escapes (read-only here — /contents may be absent, so every use is guarded)
+MSC_OFF=/contents/cinderhome_off        # drop this file over USB-MSC -> boot stock
+MSC_CLEAR=/contents/cinderhome_clear    # drop this file over USB-MSC -> clear the latch, try again
+# 4, not 2. cinder-home clears the counter ~8 s after its first painted frame, so a genuinely
+# healthy boot is "proven" almost immediately — but a developer reboot inside that window still
+# costs one count, and MAXBAD=2 meant a single impatient reboot could latch the device to stock
+# permanently. 4 gives real margin while still auto-reverting a build that truly never paints.
+MAXBAD=4
 REAL=/system/vendor/sony/bin/HgrmMediaPlayerApp           # untouched stock Qt app
 HOME_BIN=/system/vendor/unknown321/bin/cinder-home
 export LD_LIBRARY_PATH="/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib:$LD_LIBRARY_PATH"
 
 run_stock() { exec "$REAL" "$@"; }
 
+# ── USB CABLE ESCAPE (re-added 2026-07-26) ────────────────────────────────────────────────────
+# Plug the cable in and boot -> stock. This is the ONLY escape that needs no filesystem, no shell
+# and no working counter, so it is checked FIRST, before anything that could itself fail. It is
+# what would have recovered the 2026-07-26 brick without wbrt: /contents was gone, so every
+# file-based escape was unreachable, but the cable was always available.
+#
+# It was removed 2026-07-25 because it means "charge overnight -> wake up on stock". That
+# tradeoff is now resolved the other way round — recovery beats convenience — with an explicit
+# opt-out for cable-heavy dev sessions (dev has adb, so it loses nothing by opting out).
+#   /data/cinder/cable_escape_off       persistent, invisible to USB-MSC
+#   /contents/cinderhome_cable_off      settable over USB-MSC
+# A missing file leaves the escape ON, so a broken fs fails toward recovery, never away from it.
+usb_connected() {
+    for p in /sys/class/android_usb/android0/state \
+             /sys/class/power_supply/usb/online \
+             /sys/class/power_supply/usb/present; do
+        [ -r "$p" ] || continue
+        case "$(cat "$p" 2>/dev/null)" in CONFIGURED|CONNECTED|1) return 0;; esac
+    done
+    return 1
+}
+# Cost is zero on a cable-free boot: nothing sleeps unless a cable is actually present. The 3 s
+# re-check rejects the transient CONNECTED blip the gadget emits while enumerating.
+if [ ! -f /data/cinder/cable_escape_off ] && [ ! -f /contents/cinderhome_cable_off ] \
+   && usb_connected; then
+    sleep 3
+    usb_connected && run_stock "$@"
+fi
+
+# /contents present? Cinder's DB, settings, art cache and log all live there, and a missing
+# /contents is the signature of a corrupt vfat — exactly the state that bricked the device on
+# 2026-07-26. Fail to stock: Sony's app degrades gracefully with no content, and the user gets a
+# usable UI to work from instead of a logo loop. In a healthy boot /contents is mounted long
+# before appmgr runs us (init.rc `on fs` -> mount_partition, then prepare_contentroot.sh), so
+# this cannot false-trip on a mount race.
+contents_up() { grep -q " /contents " /proc/mounts 2>/dev/null; }
+contents_up || run_stock "$@"
+
+# MSC ESCAPE — clear the latch without a shell: drop /contents/cinderhome_clear over USB-MSC.
+# Consumed here (deleted) so it fires exactly once.
+if [ -f "$MSC_CLEAR" ]; then
+    rm -f "$MSC_CLEAR" 2>/dev/null
+    rm -f "$DISABLED" "$OFF" "$BOOTCOUNT" 2>/dev/null
+    sync
+fi
+
+# SELF-HEALING LATCH: a bad-boot revert used to be permanent — the off flag is checked below
+# before anything counts, and NOTHING in the running app ever clears it (the app can't: it never
+# gets to run while the flag is set). So a single false trip meant "boots to stock forever" until
+# the flags were removed by hand over USB-MSC. Here: if a NEWER cinder-home binary has been
+# installed since the latch was written, that is a deliberate "try again" signal from the
+# developer, so clear the latch and give the new build its chance. If the shell lacks `-nt` the
+# test just fails and we leave the latch alone (safe fallback).
+if [ -f "$DISABLED" ] && [ "$HOME_BIN" -nt "$DISABLED" ] 2>/dev/null; then
+    rm -f "$DISABLED" "$OFF" "$BOOTCOUNT" 2>/dev/null; sync
+fi
+
 # explicit disable / missing binary -> stock, no counting
-[ -f /contents/cinderhome_off ] && run_stock "$@"
+[ -f "$OFF" ] && run_stock "$@"
+[ -f "$MSC_OFF" ] && run_stock "$@"
 [ ! -x "$HOME_BIN" ] && run_stock "$@"
+
+# THE COUNTER MUST BE PERSISTABLE OR WE DO NOT RUN. This is the rule whose absence caused the
+# brick: if the counter can't be written, a hung build accumulates nothing and loops forever with
+# no way out. No working safety net -> don't take the risk. Proven by write-then-read-back, not by
+# a `[ -w ]` test, because a full or read-only fs passes -w and still fails the write.
+mkdir -p "$STATE" 2>/dev/null
+if ! echo probe > "$STATE/.wtest" 2>/dev/null || [ "$(cat "$STATE/.wtest" 2>/dev/null)" != "probe" ]; then
+    run_stock "$@"
+fi
+rm -f "$STATE/.wtest" 2>/dev/null
 
 # bad-boot counter: increment + persist FIRST. cinder-home resets it once healthy.
 n=0; [ -f "$BOOTCOUNT" ] && n=$(cat "$BOOTCOUNT" 2>/dev/null)
@@ -162,21 +274,34 @@ n=0; [ -f "$BOOTCOUNT" ] && n=$(cat "$BOOTCOUNT" 2>/dev/null)
 case "$n" in ''|*[!0-9]*) n=0;; esac
 n=$((n + 1)); echo "$n" > "$BOOTCOUNT"; sync
 if [ "$n" -ge "$MAXBAD" ]; then
-    touch /contents/cinderhome_off /contents/cinderhome_DISABLED_badboot; sync
+    touch "$OFF" "$DISABLED"; sync
+    # mirror the latch onto /contents so it is VISIBLE over USB-MSC — the user can see why they
+    # are on stock, and `cinderhome_clear` next to it is the documented way back.
+    touch /contents/cinderhome_DISABLED_badboot 2>/dev/null; sync
     run_stock "$@"
 fi
-
-# NOTE: the USB-cable-at-boot escape window was removed 2026-07-25. cinder now launches straight
-# through to the binary (the bad-boot counter above is the only automatic revert; cinderhome_off
-# is the manual one, checked at the top). No cable check, no ~3 s stall on the boot path.
 
 # optional USB-DAC->LDAC bridge supervisor (no-op if the bridge isn't installed). Started
 # HERE because appmgr execs only this launcher at boot — nothing else starts it.
 [ -x /system/vendor/unknown321/bin/ldac-run.sh ] && \
     /system/vendor/unknown321/bin/ldac-run.sh >/dev/null 2>&1 &
 
-# hand over to cinder-home (replaces this process; keeps the appmgr-expected name/args).
-exec "$HOME_BIN" "$@" >/contents/cinderhome.log 2>&1
+# Hand over to cinder-home (replaces this process; keeps the appmgr-expected name/args).
+# THE REDIRECT MUST NOT BE ABLE TO STOP THE EXEC. `exec cmd >file` that cannot open `file` makes
+# sh exit WITHOUT exec'ing — appmgr then sees no foreground app and reboots. With the log on
+# /contents that turned "vfat won't mount" into an unrecoverable logo loop (2026-07-26 brick).
+# So: prove the log path opens first, fall back to /data (ext4), and if neither opens, run with
+# the inherited stdio rather than not running at all.
+# The probe MUST run in a SUBSHELL. `:` is a POSIX *special builtin*, and a redirection failure
+# on a special builtin makes the shell EXIT (dash: rc=2) instead of returning non-zero — so the
+# plain `: > "$LOGF" || LOGF=fallback` form dies before it can fall back, reproducing the exact
+# no-exec-then-appmgr-reboot bug it was written to prevent. A subshell contains the exit.
+can_write() { ( : > "$1" ) 2>/dev/null; }
+LOGF=/contents/cinderhome.log
+can_write "$LOGF" || LOGF=/data/cinder/cinderhome.log
+can_write "$LOGF" || LOGF=""
+[ -n "$LOGF" ] && exec "$HOME_BIN" "$@" >"$LOGF" 2>&1
+exec "$HOME_BIN" "$@"
 LAUNCH_EOF
 # verify the launcher wrote fully (must contain its final exec line) before activating it
 if ! "$BB" grep -q 'exec "\$HOME_BIN"' "$LAUNCH.tmp" 2>/dev/null; then
@@ -227,14 +352,24 @@ if [ "$ok" != 1 ]; then
     exit 0
 fi
 
-# fresh install = enabled: clear any prior disable/bad-boot flags.
+# fresh install = enabled: clear any prior disable/bad-boot flags, on BOTH the current /data
+# location and the legacy /contents one (an upgrade from a pre-2026-07-26 build leaves those).
+"$BB" mkdir -p /data/cinder 2>/dev/null
+"$BB" rm -f /data/cinder/off /data/cinder/bootcount /data/cinder/DISABLED_badboot 2>/dev/null
 "$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot 2>/dev/null
 echo "cleared prior disable flags (fresh install = enabled)"
 echo "left staged binary at $SRC (safe to delete once cinder-home is confirmed)"
 sync
 umount /system 2>/dev/null
 echo "== done. reboot to normal; appmgr launches cinder-home as the Home app. =="
-echo "   SAFETY: a failed/hung launch AUTO-REVERTS to stock after 2 boots (no wbrt)."
-echo "   fast escape: during the ~3s pre-launch window, connect USB (or create"
-echo "   /contents/cinderhome_off) to boot stock. logs: /contents/cinderhome.log."
+echo "   SAFETY: a failed/hung launch AUTO-REVERTS to stock after 4 boots (no wbrt)."
+echo "   Escapes, in order of how little they depend on:"
+echo "     1. boot with the USB CABLE CONNECTED -> stock. Needs no filesystem, always works."
+echo "     2. create /contents/cinderhome_off over USB-MSC -> stock."
+echo "     3. create /contents/cinderhome_clear over USB-MSC -> clears the latch, tries again"
+echo "        (same as tools/flash.sh --clear-latch)."
+echo "   NOTE (1) means charging at boot lands on stock. Turn it off for cable-heavy dev with"
+echo "   /data/cinder/cable_escape_off or /contents/cinderhome_cable_off."
+echo "   Or just install a newer cinder-home binary — the launcher self-heals when it is newer."
+echo "   logs: /contents/cinderhome.log (falls back to /data/cinder/cinderhome.log)."
 exit 0

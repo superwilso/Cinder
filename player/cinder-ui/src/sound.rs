@@ -27,7 +27,7 @@ fn value_pill(c: &mut Canvas, f: &FontSet, t: &Theme, xr: i32, cy: i32, label: &
     let up = label.to_uppercase();
     let col = if active { t.acc } else { t.faint };
     let bord = if active { t.acc } else { t.line };
-    let st = sty(Family::Mono, Weight::Regular, 10.0, col, 0.08);
+    let st = sty(Family::Mono, Weight::Regular, 12.0, col, 0.08);
     let w = text::measure(f, &up, &st) as i32 + 24;
     let h = 28;
     crate::widgets::stroke_rect(c, xr - w, cy - h / 2, w, h, bord, 1);
@@ -41,15 +41,15 @@ fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, d
         fill_rect(c, 0, y, crate::canvas::W as i32, rh, t.row_sel);
     }
     let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy - 3) as f32, label, &sty(Family::Sans, Weight::SemiBold, 16.0, lc, 0.0));
-    text::draw(c, f, 22.0, (cy + 15) as f32, desc, &sty(Family::Sans, Weight::Regular, 11.0, t.dim, 0.0));
+    text::draw(c, f, 22.0, (cy - 3) as f32, label, &sty(Family::Sans, Weight::SemiBold, 18.0, lc, 0.0));
+    text::draw(c, f, 22.0, (cy + 15) as f32, desc, &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
     hline(c, y + rh, t.line);
     cy
 }
 
 /// Simple word-wrap draw for the mono signal-path caption.
 fn wrap(c: &mut Canvas, f: &FontSet, t: &Theme, x: f32, y0: f32, max_w: f32, text_s: &str) -> f32 {
-    let st = sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.12);
+    let st = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.12);
     let mut line = String::new();
     let mut y = y0;
     for word in text_s.split(' ') {
@@ -85,7 +85,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_
         let top = 44;
         let mut sx = 458 - (sw * 2 + 6);
         for (label, on) in segs.iter() {
-            let st = sty(Family::Mono, Weight::Bold, 12.0, if *on { t.acc_ink } else { t.dim }, 0.1);
+            let st = sty(Family::Mono, Weight::Bold, 14.0, if *on { t.acc_ink } else { t.dim }, 0.1);
             if *on {
                 fill_rect(c, sx, top, sw, sh, t.acc);
             }
@@ -95,7 +95,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_
             sx += sw + 6;
         }
         // hint
-        let hint = sty(Family::Mono, Weight::Regular, 8.0, t.faint, 0.14);
+        let hint = sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14);
         right(c, f, 458.0, (top + sh + 11) as f32, "OPTION = A/B", &hint);
     }
 
@@ -135,8 +135,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_
     };
     let yend = wrap(c, f, t, 22.0, (fy + 22) as f32, 436.0, &path);
     if ab_bypass {
-        text::draw(c, f, 22.0, yend + 8.0, "! A/B = B — EFFECT CHAIN BYPASSED (OPTION TO COMPARE)", &sty(Family::Mono, Weight::Regular, 9.0, t.acc, 0.1));
+        text::draw(c, f, 22.0, yend + 8.0, "! A/B = B — EFFECT CHAIN BYPASSED (OPTION TO COMPARE)", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.1));
     } else if s.clearaudio {
-        text::draw(c, f, 22.0, yend + 8.0, "! CLEARAUDIO+ ACTIVE — EQ AND MANUAL DSP BYPASSED", &sty(Family::Mono, Weight::Regular, 9.0, t.acc, 0.1));
+        text::draw(c, f, 22.0, yend + 8.0, "! CLEARAUDIO+ ACTIVE — EQ AND MANUAL DSP BYPASSED", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.1));
     }
 }

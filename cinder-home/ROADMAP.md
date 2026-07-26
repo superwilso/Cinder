@@ -54,6 +54,27 @@ The bad-boot counter + probe-first gradient (STATUS.md STEP 1/2) still apply —
 | **Night backlight level** | `cinder_backlight.conf` (auto-detected; tune `night`) | scaffolded ✓ |
 
 ### P1 — wire code from device data (a dev rebuild; I do this with the data in hand)
+- **GPU present path (EGL/GLES2 on Mali)** — **DONE in code 2026-07-26; needs device verify.**
+  cinder-ffi's frame present was a software framebuffer blit (mmap + 3× memcpy + `FBIOPUT` force-
+  flip, no vsync). It is now EGL + GLES2: upload the software-rasterized `Canvas` to one RGBA
+  texture, draw a full-screen quad, `eglSwapBuffers` (Mali fbdev does the page-flip + vsync
+  internally). Driver = `libMali_linux.so` (Mali-450 r0p0, glibc build); linked `-l:libMali_linux.so`.
+  Rasterization stays on CPU — this offloads *presentation* + gives vsync pacing, and is the
+  foundation for GPU transitions/scaling later. **Safety:** `GlPresenter::open` returns Err on any
+  EGL failure → falls back to the software framebuffer, so no black-screen risk; `CINDER_GPU=0`
+  forces software. **Device-gated unknown:** whether uid-100/CapEff-0 cinder-home may open the Mali/
+  M4U device nodes (Sony's Home app does GPU, so likely yes). If EGL init fails in `cinderhome.log`,
+  the software path still renders — check the log line "GPU present path active" vs "GPU init failed".
+  Code: `player/cinder-ffi/src/gpu.rs`.
+  - **DEVICE RESULT 2026-07-26:** root `egl_test` proved the Mali stack works (65fps vsync, EGL 1.4),
+    but uid-100 cinder HANGS in EGL init — it's blocked on four ROOT-ONLY device nodes (`/dev/ion`,
+    `/dev/mtkfb_vsync`, `/dev/mtk_disp`, `/dev/sw_sync`); it can only open the `system`-owned `mali`
+    + `fb0` (hence software works). The hang wedged the boot → bad-boot revert. **Fix shipped:** GPU
+    is now **opt-in, default OFF** via `/contents/cinder_gpu_on` (or `CINDER_GPU=1`); the default
+    binary never touches the GPU. **To enable GPU:** a setuid-root helper (like `cinder-umount`) that
+    `chmod 0666`s those four nodes before EGL init. Safe test path = grant perms, stop cinder-home,
+    run `cinder-probe` with `CINDER_GPU=1` as uid 100 (no lifecycle → no boot-counter risk), reboot
+    to restore. See memory `reference_gpu_mali_stack`.
 - **Play a selected track / album** — **WIRED 2026-07-03 (was the biggest gap); needs device
   verify only.** `Action::PlayIndex` → `cinder-db::album_context` → `cinder_audio_play_tracks`
   builds the JSON Node-tree (`{"uri","format","children"}`), maps formats via Sony's

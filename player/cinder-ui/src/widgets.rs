@@ -85,7 +85,7 @@ pub fn bars(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, n: i32, gap: i32, se
 
 /// A mono-caption "pill": bordered box, accent fill when `on`. Returns its width.
 pub fn pill(c: &mut Canvas, f: &FontSet, t: &Theme, x: i32, y: i32, h: i32, label: &str, on: bool) -> i32 {
-    let st = sty(Family::Mono, Weight::Regular, 10.0, if on { t.acc_ink } else { t.dim }, 0.08);
+    let st = sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc_ink } else { t.dim }, 0.08);
     let tw = text::measure(f, label, &st);
     let w = tw as i32 + 24;
     if on {
