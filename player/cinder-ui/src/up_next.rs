@@ -11,8 +11,27 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline, right, sty};
 use crate::Canvas;
 
-const RH: i32 = 62;
+pub const RH: i32 = 62;
 const LIST_BOTTOM: i32 = 736; // leave room for the footer rule
+
+/// Which visible row index `y` falls on (0 = the topmost DRAWN row, which is not necessarily
+/// track 0 — this list auto-scrolls to follow playback). `nav` pairs this with the ids the
+/// renderer publishes, so a tap resolves to the row actually under the finger.
+pub fn visible_row_at(y: i32) -> Option<usize> {
+    let top = crate::chrome::HEADER_BOTTOM;
+    if !(top..LIST_BOTTOM).contains(&y) {
+        return None;
+    }
+    Some(((y - top) / RH) as usize)
+}
+
+/// How many rows fit in the window, and where the auto-scrolled window starts for `current`.
+/// Kept next to the renderer that uses it so the two can't disagree.
+pub fn window(len: usize, current: usize) -> (usize, usize) {
+    let visible = ((LIST_BOTTOM - crate::chrome::HEADER_BOTTOM) / RH).max(1) as usize;
+    let max_scroll = len.saturating_sub(visible);
+    (visible, current.saturating_sub(4).min(max_scroll))
+}
 
 /// Render the queue: `tracks` = the current album's tracks (play order), `current` = the playing
 /// index within it. `album` is shown in the header. The window auto-scrolls to keep the playing
@@ -33,9 +52,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
     let y0 = crate::chrome::header(c, t, f, "Up Next", Some(&sub));
 
     // Window that keeps the playing row visible: ~4 rows of lead-in, clamped to the list end.
-    let visible = ((LIST_BOTTOM - y0) / RH).max(1) as usize;
-    let max_scroll = tracks.len().saturating_sub(visible);
-    let scroll = current.saturating_sub(4).min(max_scroll);
+    let (_visible, scroll) = window(tracks.len(), current);
 
     let mut y = y0;
     let mut shown = 0;

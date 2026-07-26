@@ -55,9 +55,12 @@ pub struct ArtistRow {
     pub arts: Vec<String>,
 }
 
-/// One playlist row (Playlists tab).
+/// One playlist row (Playlists tab). `id` is the DB container's `object_id` — the handle
+/// `cinder-db::playlist_tracks` takes to resolve the member tracks in saved order. It is 0 for
+/// the host/sim sample data, which has no DB behind it.
 #[derive(Clone)]
 pub struct PlaylistRow {
+    pub id: i64,
     pub name: String,
     pub tracks: u32,
     pub art: String,
@@ -157,7 +160,7 @@ impl Library {
             .collect();
         let playlists = data::PLAYLISTS
             .iter()
-            .map(|p| PlaylistRow { name: p.n.into(), tracks: p.k, art: p.art.into() })
+            .map(|p| PlaylistRow { id: 0, name: p.n.into(), tracks: p.k, art: p.art.into() })
             .collect();
         Library { songs, album_groups, artists, playlists }
     }

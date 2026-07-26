@@ -1,10 +1,27 @@
-# Cinder — status & flash/verify guide (content current to 2026-07-03; audited 2026-07-25)
+# Cinder — status & flash/verify guide (audited 2026-07-26)
 
-> **RESUME POINT (2026-07-25):** no code has changed since the tenth round (2026-07-03); this file
-> is an accurate current-state snapshot and the workspace is clean (host tests pass: 39 UI + 8 DB).
-> **The next action is a device session, not more offline work** — flash `dist/dev/`, run the
-> discovery dump, drop the config files. The forward plan + critical path is in
-> [`ROADMAP.md`](ROADMAP.md); the safe flash gradient is "⚠️ READ FIRST" → "STEP 1" below.
+> **RESUME POINT (2026-07-26).** Two device sessions have run since the 07-03 round (07-25 and
+> 07-26) and three commits have landed on top of it. The workspace is clean and every offline gate
+> passes: **71 host tests** (40 UI + 21 FFI + 8 DB + 2 font), the 18-case launcher recovery matrix,
+> the GLIBC ≤2.23 ceiling on both channels, and the qemu construction preflight.
+>
+> **Two facts that change what the next flash means:**
+> 1. **Cinder is NOT installed on the device.** The 2026-07-26 brick was recovered with a wbrt
+>    restore, which rolled the whole eMMC back to the 2026-06-18 image — no `cinder-home`, no
+>    launcher, no `/contents` flags, and the music library is whatever that image held.
+> 2. **The next flash carries a large unverified batch.** Everything from 07-26 is code-complete
+>    and offline-proven but has never run on hardware: the **+2 type-scale pass**, the **non-Latin
+>    font fallback**, the **GPU/EGL present path** (opt-in, default off), **screenshot capture**,
+>    the **rewritten escape ladder** (state on `/data`, cable-at-boot as rung 0, `MAXBAD=4`,
+>    self-healing latch), and the new **`cinder-gpunode`** setuid helper. Play-by-index (07-03) is
+>    also still device-unverified.
+>
+> Because of (2), **run `cinder-probe` before flashing** (STEP 1) — it exercises render/db/audio
+> with no easel lifecycle, so it cannot affect boot, and it shrinks the bisect surface if the
+> flash misbehaves. Reinstall now needs **three** pushes, not one (STEP 2).
+>
+> Forward plan + priorities: [`ROADMAP.md`](ROADMAP.md). Full audit incl. known doc drift:
+> [`../docs/AUDIT_2026-07-26.md`](../docs/AUDIT_2026-07-26.md).
 
 > ## ⚠️ READ FIRST — a flash hung the device and required a wbrt restore (2026-06-26)
 > The first Home-app flash **soft-bricked** the device (stuck on the boot screen, no auto-revert,
@@ -191,7 +208,23 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 - **Library browse**: Songs / Albums / Artists tabs, **real DB data**, windowed **scrolling**
   (thousands of rows), Songs sort chip (Title/Artist/Length), grouped album headers, **album drill-in**
   (album → track list), hashed-gradient art until real thumbnails decode.
-- **EQ → real DSP**: 10-band edit + preset cycle → `EffectCtrlDmp` (guarded).
+- **Playlists** (2026-07-26): the Playlists tab lists the device's real playlists with their track
+  counts, and tapping one **plays it from the top in saved order**. Sony has no playlist table —
+  playlists are containers in a second object tree, with membership rows pointing at tracks by
+  `reference_id` — so this is read straight from the DB with no extra service. Two traps handled:
+  the `.m3u8` rows in the file tree are decoys with zero children, and deleted playlists leave
+  their entries behind (96% of entry rows on the reference DB were orphans), so the container join
+  is what stops ghost playlists appearing. Full schema:
+  [`../analysis/H_mediastore/RE_findings.md`](../analysis/H_mediastore/RE_findings.md).
+  *(Playback path is shared with play-by-index, so it carries the same device-verify caveat.)*
+- **Library shuffle bands** (2026-07-26): the accent band at the top of each Library tab now
+  works — **Shuffle all songs** (whole library, random), **Shuffle by album** (random album order,
+  each album's tracks kept in sequence), **Shuffle by artist** (one random artist, shuffled), and
+  **Shuffle a playlist**. The queue is pre-shuffled by Cinder itself, so the order is genuinely
+  random regardless of what PlayerService's own shuffle does.
+- **EQ → real DSP**: 10-band edit + preset cycle → `EffectCtrlDmp` (guarded). Preset pills, band
+  columns and the footer **Reset** are hit-tested through the EQ's own layout helpers (2026-07-26 —
+  they previously disagreed with the render, so tapping "A2" applied "JAZZ").
 - **Sound effects → real DSP**: DSEE HX, Vinyl, VPT, DC-Phase, Dynamic Normalizer, ClearAudio+ as
   live On/Off toggles → `EffectCtrlDmp`; **A/B compare** (Option = Disable/Reenable whole chain).
 - **Battery care**: On/Off → Sony "Itawari" charging (`PowerMgrServiceClient::EnableItawariCharging`);
@@ -204,8 +237,11 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   --analyzer` to validate, then `/contents/cinder_viz.conf: analyzer=1`).
 - **Up Next**: the queue = the **current album** (resolved from the library by the now-playing
   track), playing row highlighted, auto-scrolls to follow playback; clean empty state otherwise.
-  When the user queue (below) is non-empty, Up Next shows it instead, in add order.
-- **Swipe-to-queue (Spotify-style)**: rightward swipe on a Library-Songs/Album-track row adds it
+  When the user queue (below) is non-empty, Up Next shows it instead, in add order. **Tapping a
+  row plays that track** (2026-07-26 — any tap used to just exit the screen).
+- **Swipe-to-queue (Spotify-style)**: rightward swipe on a Library-Songs row, an **expanded album's
+  inline track row** (added 2026-07-26 — the gesture previously ignored the Albums tab) or an
+  album drill-in track adds it
   to the user queue — "Added to queue" toast + a "+ QUEUED" chip slides off the row (~0.4 s).
   Left-edge→right is still Back (classified first); the two rightward gestures coexist. *(Queue
   display + intent only: PlayerService honoring it is gated on `SetTrackSequence` RE — same gate
@@ -257,13 +293,13 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   the **live `BtTransmitterService` apply** of the chosen codec is device-gated (C++ BT client shim).
 - **USB-DAC → LDAC bridge**: the UI/toggle/signalling are wired; the **`ldac-bridge` daemon engaging
   on device** (capture card4 → LDAC socket) + the UAC `setprop` switch need on-device validation.
-- **Playlists tab**: browses, but is **empty** — playlists aren't populated from the DB yet.
+- *(moved to Functional 2026-07-26: the Playlists tab is populated and playable.)*
 
 ### ▢ Stationary (placeholder render / no action — not wired)
 - ~~Play a selected track/album~~ → **WIRED (2026-07-03, awaiting device verify)**: tapping a
   Songs row / Album track / "Play album" band resolves the album context through the DB and hands
-  PlayerService a real `NodeTrackSequence` (see the eighth-round notes below). Playlist rows are
-  still not playable (playlists themselves unpopulated).
+  PlayerService a real `NodeTrackSequence` (see the eighth-round notes below). Playlist rows play
+  too, since 2026-07-26.
 - **Bluetooth radio on/off**: the toggle flips **UI state only**; it doesn't power the radio
   (BtTransmitterService not wired). *(The codec selector beneath it IS functional — see Functional.)*
 - **FM Radio** screen: static (88.6 MHz placeholder).
@@ -520,8 +556,16 @@ shared by both binaries.)
 From `/home/sony/sony`, with the Walkman plugged in (paths shown for the **stable** channel; for the
 dev build swap `dist/stable/` → `dist/dev/`):
 
+**Push all three binaries.** The installer stages each from the storage root
+(`/contents/cinder-{home,umount,gpunode}`); a missing helper does not abort the install, it just
+warns and silently degrades — no `cinder-umount` means USB-MSC falls back to the path that
+**cannot unmount `/contents` as uid 100**, and no `cinder-gpunode` means the GPU path can never be
+enabled. Both helpers install setuid-root (mode 4755).
+
 ```bash
-tools/flash.sh --push cinder-home/dist/stable/cinder-home          # push the binary to /contents
+tools/flash.sh --push cinder-home/dist/stable/cinder-home          # the player
+tools/flash.sh --push cinder-home/dist/stable/cinder-umount        # setuid helper: MSC unmount
+tools/flash.sh --push cinder-home/dist/stable/cinder-gpunode       # setuid helper: GPU device nodes
 tools/flash.sh cinder-home/dist/stable/cinder_home_install.upg     # install (repoints the Home app)
 # Power on and let it boot — WITH THE CABLE UNPLUGGED. A cable connected at boot is itself the
 # escape to stock (restored 2026-07-26). For cable-heavy dev, opt out once:

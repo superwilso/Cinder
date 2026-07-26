@@ -73,7 +73,43 @@ perfectly in sync with on-device DB mutations. For read-only browse + now-playin
   offset/len); is embedded cover art also extractable.
 - `media_type`/`object_type`/`format` enum values (which rows are audio tracks vs folders/playlists).
 - Text encoding of `title`/`value` (TEXT = UTF-8 expected; some IPC getters are UTF-16).
-- Playlists: `.m3u` handling (`ConvertM3uRootRule`) + how playlist membership is stored.
+- ~~Playlists: how playlist membership is stored.~~ **CLOSED 2026-07-26** — see below.
+
+## Playlists — SOLVED (2026-07-26, against a real device DB)
+
+Verified on `artifacts/MTPDB_dev.dat` (pulled 2026-07-25; 6949 objects, 4 playlists).
+**There is no playlist table.** Playlists live in `object_body` itself, in a *second object tree*:
+
+| Role | Row shape |
+|---|---|
+| The playlist | `object_type = 1`, `title` = its name, `filename` NULL, `parent_id = 0`, `child_count` = N |
+| A member | `object_type = 3`, `parent_id` = the playlist's `object_id`, `reference_id` = the **track's** `object_id`, `child_index` = position |
+
+On the reference DB the music/file tree is `tree_id = 1` and the playlist tree is `tree_id = 19`,
+but **do not key on `tree_id`** — detect by shape instead: a playlist is a container that has
+`object_type = 3` children. Music folders are also `object_type = 1`, but their children are type
+2, never type 3, so the shape rule separates them and cannot break if tree numbering differs on
+another unit.
+
+Two traps, both real on this DB:
+
+1. **The `.m3u8` rows are decoys.** Each playlist also has a row in the *file* tree
+   (`object_type = 2`, `format = 12`, `parent_id = 4` = MUSIC, filename `*.m3u8`) — but its
+   `child_count` is **0** and it has no children. That row is the source file, not the membership.
+   Reading it gets you playlist names with zero tracks.
+2. **Deleting a playlist orphans its entries.** 3028 of the 3151 `object_type = 3` rows point at a
+   `parent_id` that no longer exists — 96% garbage. Joining to the container is what keeps deleted
+   playlists (and their tracks) from coming back; matching on `parent_id` alone resurrects them.
+
+Both are covered by tests in `player/cinder-db/src/lib.rs` (`playlists_found_by_shape_and_orphans_ignored`,
+`playlist_tracks_of_unknown_playlist_is_empty`). API: `Db::playlists()` → `Playlist { id, name,
+track_count }` (count = entries that still resolve to a playable track), `Db::playlist_tracks(id)`
+→ tracks in saved `child_index` order. Inspect any DB with
+`cargo run -p cinder-db --example playlists -- <MTPDB.dat>` (or `--example schema_dump` for the
+whole schema).
+
+Still open: `.m3u` *writing* (`ConvertM3uRootRule`) if Cinder ever edits playlists — reading is
+done.
 
 ## Artifacts
 SQL schema + symbols captured here. `libMediaStoreServiceClient.so` available to import into

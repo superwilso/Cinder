@@ -78,6 +78,25 @@ backup → get the device into MediaTek mode (below) → let it finish, don't di
 > ~20 more minutes and makes the current library recoverable from that image afterwards, even
 > though the device won't boot. Save it to a **new filename**; never overwrite the known-good one.
 
+### After a restore — what state you are actually in
+A wbrt restore rewrites the **whole** eMMC from the backup image, so the device comes back as that
+image was: **no `cinder-home`, no launcher, no `/contents` flags**, `.appcfg` stock, and the music
+library rolled back to whatever the image held. Nothing of Cinder survives — there is no latch to
+clear and no counter to reset.
+
+Reinstalling is therefore a full install, and it needs **three** pushes, not one — the installer
+stages each helper from the storage root and only *warns* if one is missing, so a partial push
+degrades silently (no `cinder-umount` → USB-MSC cannot unmount `/contents` as uid 100; no
+`cinder-gpunode` → the GPU path can never be enabled):
+
+```bash
+tools/flash.sh --push cinder-home/dist/stable/cinder-home
+tools/flash.sh --push cinder-home/dist/stable/cinder-umount
+tools/flash.sh --push cinder-home/dist/stable/cinder-gpunode
+tools/flash.sh cinder-home/dist/stable/cinder_home_install.upg
+# then boot with the cable OUT — a cable at boot is itself the escape to stock
+```
+
 ### Getting a stubborn looping device into MediaTek mode (hard-won notes)
 - **Detach usbipd first.** If the device is bound to WSL it's invisible to Windows/wbrt:
   `usbipd detach --busid <X>` and `usbipd unbind --busid <X>`; close any `--auto-attach` window.

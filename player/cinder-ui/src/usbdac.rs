@@ -11,6 +11,22 @@ use crate::Canvas;
 
 /// `on` = USB-DAC engaged. `ldac` = audio is also going out over BT/LDAC (a device is connected).
 /// `codec`/`bt_device` describe that BT path; `eq_preset`/`dsee` fill the DSP line.
+/// The ON/OFF switch in the header, as drawn (`toggle` at 424,56 34×18 plus its ON/OFF label).
+const TOGGLE: (i32, i32, i32, i32) = (424, 56, 34, 18);
+
+/// True if `(x, y)` is on the USB-DAC switch.
+///
+/// This screen used to toggle on a tap *anywhere*, which meant a stray touch while reading the
+/// panel silently engaged USB-DAC — a disruptive action: it switches the USB gadget mode and
+/// starts the LDAC bridge. Now only the switch toggles it. The target is padded out to ≥44px in
+/// both directions (the drawn switch is only 34×18) so it stays easy to hit.
+pub fn hit_toggle(x: i32, y: i32) -> bool {
+    let (tx, ty, tw, th) = TOGGLE;
+    let (cx, cy) = (tx + tw / 2, ty + th / 2);
+    // Include the "ON"/"OFF" label to the left of the switch — it reads as part of the control.
+    (cx - 60..cx + 34).contains(&x) && (cy - 22..cy + 22).contains(&y)
+}
+
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, codec: &str,
               bt_device: Option<&str>, eq_preset: &str, dsee: bool) {
     c.fill(t.bg);
@@ -18,7 +34,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, code
     crate::chrome::header(c, t, f, "USB-DAC", None);
     let onoff = if on { "ON" } else { "OFF" };
     crate::widgets::right(c, f, 416.0, 65.0, onoff, &sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc } else { t.faint }, 0.12));
-    toggle(c, t, 424, 56, 34, 18, 12, on);
+    let (tx, ty, tw, th) = TOGGLE;
+    toggle(c, t, tx, ty, tw, th, 12, on);
 
     if on {
         icons::usb(c, 240.0, 232.0, 40.0, t.acc);

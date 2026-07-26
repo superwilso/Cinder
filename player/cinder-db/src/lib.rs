@@ -21,6 +21,15 @@ pub struct Artist {
     pub name: String,
 }
 
+/// One playlist. `id` is the container's `object_id` (feed it to [`Db::playlist_tracks`]);
+/// `track_count` counts only entries that still resolve to a playable track.
+#[derive(Debug, Clone)]
+pub struct Playlist {
+    pub id: i64,
+    pub name: String,
+    pub track_count: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Track {
     pub object_id: i64,
@@ -124,6 +133,57 @@ impl Db {
             .prepare("SELECT id, value FROM artists ORDER BY sort_str, value")?;
         let rows = st.query_map([], |r| Ok(Artist { id: r.get(0)?, name: r.get(1)? }))?;
         rows.collect()
+    }
+
+    /// Playlists, alphabetically. There is **no playlist table** — Sony stores playlists as
+    /// containers in a second object tree (RE'd 2026-07-26 against a real device DB):
+    ///
+    /// * the playlist itself is an `object_body` row with `object_type = 1`, its name in `title`,
+    ///   and `filename` NULL (the `.m3u8` row in the *file* tree is a different object with
+    ///   `child_count = 0` — it is the source file, not the membership, and is not what we read);
+    /// * membership rows are `object_type = 3` with `parent_id` = the playlist, `reference_id` =
+    ///   the track's `object_id`, and `child_index` = position.
+    ///
+    /// Detection is by shape (a container that has `object_type = 3` children) rather than by a
+    /// hard-coded `tree_id`, so it can't break if the tree numbering differs on another unit —
+    /// music folders are also `object_type = 1` but their children are type 2, never type 3.
+    ///
+    /// Deleting a playlist leaves its entries behind: on the reference DB **3028 of 3151 entry
+    /// rows were orphans** pointing at parents that no longer exist. The parent join is therefore
+    /// load-bearing, not decoration — without it the tab fills with ghost playlists.
+    pub fn playlists(&self) -> Result<Vec<Playlist>> {
+        let mut st = self.conn.prepare(
+            "SELECT p.object_id, COALESCE(p.title,''), \
+                    (SELECT COUNT(*) FROM object_body e \
+                       JOIN object_body t ON t.object_id = e.reference_id AND t.media_type = 1 \
+                      WHERE e.parent_id = p.object_id AND e.object_type = 3) \
+             FROM object_body p \
+             WHERE p.object_type = 1 \
+               AND EXISTS (SELECT 1 FROM object_body e \
+                            WHERE e.parent_id = p.object_id AND e.object_type = 3) \
+             ORDER BY p.sort_str, p.title",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(Playlist { id: r.get(0)?, name: r.get(1)?, track_count: r.get(2)? })
+        })?;
+        rows.collect()
+    }
+
+    /// Tracks of one playlist, in the user's saved order (`child_index`).
+    pub fn playlist_tracks(&self, playlist_id: i64) -> Result<Vec<Track>> {
+        self.query_tracks(
+            // The container join is what makes an id that isn't a live playlist return nothing:
+            // orphaned entries keep their dead parent_id, so matching on parent_id alone would
+            // resurrect a deleted playlist's tracks for whatever id it used to have.
+            &format!(
+                "JOIN object_body e ON e.reference_id = ob.object_id AND e.object_type = 3 \
+                    AND e.parent_id = ?1 \
+                 JOIN object_body p ON p.object_id = e.parent_id AND p.object_type = 1 \
+                 WHERE {TRACK_WHERE}"
+            ),
+            "e.child_index",
+            [playlist_id],
+        )
     }
 
     /// Tracks of one album, in disc/track order.
@@ -331,6 +391,7 @@ mod tests {
             CREATE TABLE releaseyears (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT);
             CREATE TABLE object_body (
                 object_id INTEGER PRIMARY KEY AUTOINCREMENT, object_type INTEGER NOT NULL,
+                parent_id INTEGER, reference_id INTEGER,
                 child_index INTEGER, media_type INTEGER DEFAULT 0, format INTEGER DEFAULT 0,
                 initial INTEGER, sort_str TEXT, search_str TEXT, title TEXT DEFAULT "",
                 addedtime INTEGER DEFAULT 0, filename TEXT, filesize INTEGER,
@@ -353,11 +414,46 @@ mod tests {
             -- a folder (media_type 0) and a stray cover image (media_type 3) — both must be excluded
             INSERT INTO object_body (object_id,object_type,media_type,title,filename,album_id) VALUES (9,0,0,'A Folder',NULL,NULL);
             INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,album_id) VALUES (8,2,3,0,'Cover','/music/Cover.jpg',10);
+            -- A playlist: a container (type 1) whose children are type-3 entries pointing at
+            -- tracks by reference_id, ordered by child_index (NOT title order).
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (50,1,0,0,'Night Bus',NULL);
+            INSERT INTO object_body (object_id,object_type,parent_id,reference_id,child_index) VALUES (51,3,50,3,0);
+            INSERT INTO object_body (object_id,object_type,parent_id,reference_id,child_index) VALUES (52,3,50,1,1);
+            -- Orphan entry: its parent playlist was deleted. Must NOT produce a ghost playlist
+            -- (3028 of 3151 entries were orphans on the real device DB).
+            INSERT INTO object_body (object_id,object_type,parent_id,reference_id,child_index) VALUES (53,3,999,2,0);
             INSERT INTO object_ext_int VALUES (1,7,272000);
             INSERT INTO object_ext_int VALUES (3,7,303000);
             "#,
         ).unwrap();
         Db::wrap(conn)
+    }
+
+    #[test]
+    fn playlists_found_by_shape_and_orphans_ignored() {
+        let p = db().playlists().unwrap();
+        // Only the real container. The orphan entry's parent (999) must not become a playlist,
+        // and plain tracks (also object_type 1 in this fixture) must not either — the
+        // has-type-3-children shape is what separates them.
+        assert_eq!(p.len(), 1, "got {p:?}");
+        assert_eq!(p[0].name, "Night Bus");
+        assert_eq!(p[0].id, 50);
+        assert_eq!(p[0].track_count, 2);
+    }
+
+    #[test]
+    fn playlist_tracks_keep_saved_order() {
+        let t = db().playlist_tracks(50).unwrap();
+        // child_index order, not alphabetical: Harvest Moon (idx 0) then Atlas Hands (idx 1).
+        let names: Vec<&str> = t.iter().map(|x| x.title.as_str()).collect();
+        assert_eq!(names, vec!["Harvest Moon", "Atlas Hands"]);
+    }
+
+    /// 999 is the dead parent of the orphan entry, so this also proves a deleted playlist's
+    /// tracks can't be resurrected by asking for its old id.
+    #[test]
+    fn playlist_tracks_of_unknown_playlist_is_empty() {
+        assert!(db().playlist_tracks(999).unwrap().is_empty());
     }
 
     #[test]

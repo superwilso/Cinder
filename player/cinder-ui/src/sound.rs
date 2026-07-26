@@ -10,6 +10,19 @@ use crate::Canvas;
 /// Number of selectable rows on the Sound screen (DSEE, Vinyl, VPT, DC Phase, Normalizer, Clear+).
 pub const ROWS: usize = 6;
 
+/// Row pitch and list top — SINGLE SOURCE for the render below and `nav`'s hit test.
+pub const ROW_H: i32 = 64;
+pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
+
+/// Which sound-effect row is under `y`.
+pub fn row_at(y: i32) -> Option<usize> {
+    if y < TOP {
+        return None;
+    }
+    let r = ((y - TOP) / ROW_H) as usize;
+    (r < ROWS).then_some(r)
+}
+
 pub struct Sound {
     pub dsee: bool,
     pub vinyl: bool,
@@ -35,7 +48,7 @@ fn value_pill(c: &mut Canvas, f: &FontSet, t: &Theme, xr: i32, cy: i32, label: &
 }
 
 fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, desc: &str) -> i32 {
-    let rh = 64;
+    let rh = ROW_H;
     let cy = y + rh / 2;
     if sel {
         fill_rect(c, 0, y, crate::canvas::W as i32, rh, t.row_sel);
@@ -99,7 +112,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_
         right(c, f, 458.0, (top + sh + 11) as f32, "OPTION = A/B", &hint);
     }
 
-    let rh = 64;
+    let rh = ROW_H;
+    debug_assert_eq!(y0, TOP, "sound list top drifted from the hit test");
     hline(c, y0, t.line);
     let cy = row(c, t, f, y0, sel == 0, "DSEE HX", "Upscale compressed audio to near hi-res");
     toggle(c, t, 418, cy - 11, 40, 22, 14, s.dsee);

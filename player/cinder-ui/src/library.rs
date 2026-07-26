@@ -33,11 +33,51 @@ const LIST_BOTTOM: i32 = H as i32 - 12;
 // px, rows render at `top - (scroll_px % rh)` under a clip band so partial rows are fine.
 // These helpers give nav the shared geometry: list top / row height / total content height.
 
-/// Top y of each tab's row area (below header+tabs+shuffle band).
+/// Y where the tab bar ends on the Library screen — `chrome::header` returns a fixed 91 and
+/// `tabs` adds 34, so this is constant and both the renderer and the hit test can rely on it.
+pub const TABS_BOTTOM: i32 = 125;
+
+/// Rect `(x, y, w, h)` of the accent "Shuffle …" band that `shuffle_row` draws when called with
+/// `y_below`. SINGLE SOURCE, like [`row_h`]: `shuffle_row` fills exactly this and
+/// [`hit_shuffle_band`] tests exactly this, so the biggest touch target on the screen cannot
+/// drift out from under the finger.
+pub fn shuffle_band_rect(y_below: i32) -> (i32, i32, i32, i32) {
+    (22, y_below + 16, W as i32 - 44, 56)
+}
+
+/// The Library-tab shuffle band (all four tabs draw it at the same place).
+pub fn library_shuffle_band() -> (i32, i32, i32, i32) {
+    shuffle_band_rect(TABS_BOTTOM)
+}
+
+/// The album drill-in's "Play album" band sits under the cover/title block.
+pub const ALBUM_BAND_Y: i32 = 234;
+
+/// The "Play album" band on the album drill-in.
+pub fn album_play_band() -> (i32, i32, i32, i32) {
+    shuffle_band_rect(ALBUM_BAND_Y)
+}
+
+/// True if `(x, y)` is inside the album drill-in's "Play album" band.
+pub fn hit_album_play_band(x: i32, y: i32) -> bool {
+    let (bx, by, bw, bh) = album_play_band();
+    (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+}
+
+/// True if `(x, y)` is inside the Library shuffle band.
+pub fn hit_shuffle_band(x: i32, y: i32) -> bool {
+    let (bx, by, bw, bh) = library_shuffle_band();
+    (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+}
+
+/// Top y of each tab's row area — derived from the band it sits under, so moving the band moves
+/// the list (and the hit test) with it instead of desyncing.
 pub fn list_top(tab: Tab) -> i32 {
+    let (_, by, _, bh) = library_shuffle_band();
+    let below = by + bh;
     match tab {
-        Tab::Albums => 201,
-        _ => 205,
+        Tab::Albums => below + 4,
+        _ => below + 8,
     }
 }
 
@@ -391,9 +431,8 @@ fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab) -> i32 {
 
 /// Accent shuffle row (scope-aware). Returns the y below it.
 fn shuffle_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str, sub: &str) -> i32 {
-    let top = y + 16;
-    let h = 56;
-    fill_rect(c, 22, top, (W as i32) - 44, h, t.acc);
+    let (bx, top, bw, h) = shuffle_band_rect(y);
+    fill_rect(c, bx, top, bw, h, t.acc);
     let cy = top + h / 2;
     icons::shuffle(c, 42.0, cy as f32, 20.0, t.acc_ink);
     text::draw(c, f, 64.0, (cy - 4) as f32, label, &sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0));
@@ -649,7 +688,7 @@ pub fn album_view(
     };
     text::draw(c, f, 132.0, 204.0, &meta, &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
 
-    let top = shuffle_row(c, t, f, 234, "Play album", "IN ORDER · THEN SHUFFLE") + 6;
+    let top = shuffle_row(c, t, f, ALBUM_BAND_Y, "Play album", "IN ORDER · THEN SHUFFLE") + 6;
     let rh = ALBUM_TRACK_RH;
     let total = album.track_list.len();
     let first = (scroll_px / rh) as usize;

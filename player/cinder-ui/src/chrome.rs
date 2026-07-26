@@ -60,6 +60,10 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
 
 /// Screen header (`CHeader`): back chevron + title (27/700) + optional right caption.
 /// Returns the y where content below the header should start.
+/// Y where `header` ends and a screen's own content begins. Screens lay out from this and their
+/// hit tests measure from it, so the two can't drift apart.
+pub const HEADER_BOTTOM: i32 = 91;
+
 pub fn header(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, right: Option<&str>) -> i32 {
     icons::back(c, 30.0, 62.0, 20.0, t.dim);
     let ts = sty(Family::Sans, Weight::Bold, 30.0, t.ink, -0.01);
@@ -72,5 +76,5 @@ pub fn header(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, right: Option
         let rw = text::measure(f, &r, &rs);
         text::draw(c, f, 458.0 - rw, 65.0, &r, &rs);
     }
-    91
+    HEADER_BOTTOM
 }

@@ -4,56 +4,98 @@ Forward-looking companion to [`STATUS.md`](STATUS.md) (which is the *current-sta
 This is **what's left and in what order**, written so the next working session — especially the
 first one with the device — is a straight line, not a guessing game.
 
-Last audited: **2026-07-25** (full project audit). Prior: 2026-06-30; STATUS.md is current to
-2026-07-03 (rounds 9–10). No code has changed since 2026-07-03 — the tree is clean and this
-roadmap is the resume point.
+Last audited: **2026-07-26** (full project audit — [`../docs/AUDIT_2026-07-26.md`](../docs/AUDIT_2026-07-26.md)).
+Prior: 2026-07-25, 2026-06-30. Three commits have landed since the 07-03 round; the tree is clean
+and every offline gate passes (71 host tests, 18-case launcher matrix, GLIBC ≤2.23, qemu preflight).
 
 ## Audit summary — where we are
-Per the STATUS.md matrix: the player is daily-usable and **all genuinely-offline work is done**
-(host tests green: 39 UI + 8 DB; qemu preflight passes; both channels' `.UPG`s packed in
-`dist/`). The Option-B IPC reverse-engineering that used to be "next" is **complete and realized
-in code**: PlayerService transport + now-playing (`analysis/G_player_ipc/`) and the SQLite
-MediaStore library/metadata (`analysis/H_mediastore/`) are both implemented (`cinder-audio` drives
-`PlayerService`; `cinder-db` reads `/db/MTPDB.dat`; **play-by-index is wired**, not a gap anymore).
+The player is daily-usable and **all genuinely-offline work is done**. The Option-B IPC
+reverse-engineering is complete and realized in code: PlayerService transport + now-playing
+(`analysis/G_player_ipc/`) and the SQLite MediaStore library/metadata (`analysis/H_mediastore/`)
+are both implemented (`cinder-audio` drives `PlayerService`; `cinder-db` reads `/db/MTPDB.dat`;
+play-by-index is wired).
 
-What remains is **device-gated**: it needs real values from the hardware (control names, byte
-offsets, keycodes, ALSA topology) that the **discovery probe** captures in one run. Each remaining
-item is therefore either (a) **scaffolded** — activates with a config drop, no rebuild — or
-(b) **needs code wired** from the captured data (a dev rebuild). Nothing is blocked on design.
+**The discovery session that used to head this roadmap has happened** — twice (2026-07-25 and
+2026-07-26) — and it answered what it was meant to answer: volume is `amixer -c0 'master volume'`
+0..120 (now the built-in default, no conf needed), backlight is `/sys/class/leds/lcd-backlight`,
+keys are plain keyboard codes (play=28, next=106, prev=105), touch is himax on `event1` with raw
+range x[0..959] y[0..1599], the real MTPDB was pulled and `cinder-db` calibrated against it, the
+USB-MSC failure was root-caused to a uid-100 unmount (fixed with the `cinder-umount` setuid
+helper), and the GPU/EGL hang was root-caused to four root-only device nodes (fixed with
+`cinder-gpunode`, opt-in). What those sessions did **not** produce: a PlayStatus dump with music
+actually playing (so the position/duration offsets are still unmapped), and any LDAC validation.
 
-> ### ⇒ THE single next action (2026-07-25): run one device session.
-> Everything below funnels to this. Flash `dist/dev/` once, capture the discovery dump, drop 2–3
-> config files, verify. That one session unblocks volume, keymap, seek-accurate progress, the
-> LDAC-bridge validation, album-art schema, and playlists — in a single pass. See the critical
-> path immediately below; nothing here needs more offline design or RE.
+**So the shape of the remaining work has changed.** It is no longer "gather data" — it is
+**verify a large batch of unverified code, then execute the headline feature.** The 07-26 brick
+was recovered with wbrt, so Cinder is not currently installed and the next flash carries the whole
+07-26 batch at once (type scale, fonts, GPU path, screenshot, escape ladder, gpunode).
 
-## The device session — critical path (do in this order)
-1. **Flash `dist/dev/` once.** Brings up adb, auto-writes `/contents/cinder_discovery.txt`, and logs
-   raw key codes to `cinderhome.log` as you press buttons.
-2. **Gather data:** play a track (for the PlayStatus dump), press each physical button (keycodes),
-   then `adb pull /contents/cinder_discovery.txt`. Or run `cinder-probe --discover` for the full
-   isolated capture incl. the 12 s keymap window.
-3. **Config drops — activate, no rebuild (P0):**
-   - `cinder_volume.conf`  ← amixer master control name + range (or CXD3778GF sysfs) → Vol± work.
-   - `cinder_keymap.conf`  ← the real GPIO keycodes from the dev keycode log → buttons map correctly.
-   - `cinder_backlight.conf` (optional) ← tune the night level / node (auto-detected otherwise).
-4. **Wire from data — needs a dev rebuild (P1):** play-by-index + seek-accurate progress (below).
-5. **Validate, then flash `dist/stable/`** for daily use (no adb, lean).
+> ### ⇒ THE next action (2026-07-26): probe, reinstall, then run the LDAC test.
+> Step 3 is the one that matters most — goal #3 is the reason this project exists and it has
+> **never been run end to end**, despite the RE being complete and the bridge building. It runs
+> under **stock** firmware, so it does not depend on steps 1–2 at all and can be done first if the
+> device is in a stock state.
 
-The bad-boot counter + probe-first gradient (STATUS.md STEP 1/2) still apply — never repoint the
-`.appcfg` before the probe run looks clean.
+## The next device session — critical path (do in this order)
+1. **Probe first — zero boot risk.** `cinder-probe` (and `cinder-probe --discover`) over adb, plus
+   one `CINDER_GPU=1` run as uid 100 after granting the nodes with `cinder-gpunode`. No easel
+   lifecycle → it cannot affect boot, and it de-risks the whole unverified batch.
+   **Capture a PlayStatus dump with music actually playing** — the 07-25 dump was all zeros
+   because nothing was playing, which is why seek-accurate progress is still blocked.
+2. **Reinstall Cinder** (`dist/dev/`): push **three** binaries — `cinder-home`, `cinder-umount`,
+   `cinder-gpunode` — then flash the install `.UPG` and boot **with the cable out** (a cable at
+   boot is itself the escape to stock). Confirm: paint, library load, counter cleared, and eyeball
+   the new type scale + non-Latin rendering. See STATUS.md STEP 2.
+3. **Run `ldac-bridge/TEST.md`** — the headline feature, still 0% validated. Its two unknowns
+   (does `SetCurrentSource(true)` open the server socket; is `hw:4,0` capture `-EBUSY`) each have a
+   documented next step in the three-outcome table. Runs under stock; independent of steps 1–2.
+4. **Validate, then flash `dist/stable/`** for daily use (no adb, lean).
+
+The probe-first gradient (STATUS.md STEP 1/2) applies more strongly than on any previous flash —
+never repoint the `.appcfg` before the probe run looks clean.
 
 ## Prioritized backlog
 
-### P0 — confirm/activate on device (data from discovery; NO code rebuild)
-| Item | Confirm/activate with | State |
+### P0 — verify on device (code already shipped; NO rebuild)
+| Item | Verify by | State |
 |---|---|---|
-| **Touch navigation** (the primary nav — no d-pad) | confirm taps land + the `EVIOCGABS` x/y range is right (discovery dumps it); nudge per-screen coords only if off | implemented ✓ (device-calibration) |
-| **Volume** (Vol± → hardware) | `cinder_volume.conf` (control/path + range) | scaffolded ✓ |
-| **Transport-button codes** (Play/Prev/Next/Vol/Power) | `cinder_keymap.conf` (codes from the dev keycode log) | mechanism exists ✓ |
-| **Night backlight level** | `cinder_backlight.conf` (auto-detected; tune `night`) | scaffolded ✓ |
+| **The 07-26 batch** (type scale, font fallback, escape ladder, screenshot) | one clean dev boot + eyeball; `test_launcher.sh` already covers the ladder offline | code-complete, **never run on hardware** |
+| **USB-DAC → LDAC** (goal #3, the headline) | `ldac-bridge/TEST.md` under stock | builds; **never executed** |
+| **Play-by-index** (tap a track/album → plays) | tap a Songs row on device | wired 07-03, qemu-preflighted, unverified |
+| **Touch navigation** (primary nav — no d-pad) | confirm taps land after the +2 type-scale/row-height pass | implemented ✓ (re-check after resize) |
+| **Volume** (Vol± → hardware) | one audible Vol± press; defaults are baked in, conf only if wrong | **default is the discovered control** ✓ |
+| **Transport-button codes** | press each button; real NW-A50 codes are already the defaults | defaults from wampy `glfw.patch` ✓ |
+| **GPU present path** | `cinder-gpunode` + `CINDER_GPU=1` under `cinder-probe`, then the flag | opt-in, default OFF ✓ |
+| **Night backlight level** | tune via `cinder_backlight.conf` if the auto-detected level is wrong | scaffolded ✓ |
 
-### P1 — wire code from device data (a dev rebuild; I do this with the data in hand)
+### P1 — offline work that no longer needs the device
+- ~~**Playlists**~~ — **DONE 2026-07-26.** Schema RE'd offline against the pulled DB
+  (`artifacts/MTPDB_dev.dat`): no playlist table; playlists are containers in a second object tree
+  with `object_type = 3` membership rows referencing tracks. `Db::playlists()` /
+  `Db::playlist_tracks()` added, wired through `build_library`, and a playlist row now plays the
+  whole list in saved order via the existing pending-play channel (no new FFI symbol, no C++
+  change). Schema + the two traps (decoy `.m3u8` rows, 96% orphaned entries) are written up in
+  `analysis/H_mediastore/RE_findings.md`. Device-verify rides with play-by-index.
+- ~~**The four "Shuffle …" bands are inert**~~ — **DONE 2026-07-26**, along with a full
+  touch-input sweep that found six more drawn-but-inert or mis-hit controls (EQ preset pills
+  selected the *wrong* preset; the EQ raise/lower split was 55px off the drawn zero line; Up Next
+  rows weren't tappable; a tap anywhere on the USB-DAC screen engaged the headline feature). All
+  fixed with shared render/hit-test geometry + regression tests — see
+  [`../docs/AUDIT_2026-07-26.md`](../docs/AUDIT_2026-07-26.md) §F6b.
+- **Remaining inert controls** (deliberate, tracked): FM / BT Receiver / Pairing screens (backends
+  not RE'd, P2 below); the EQ footer's **"Save Sound Preset"** — the EQ already persists
+  automatically on every change, so this button has nothing to do; either reword it or give it a
+  real named-preset store; the Now Playing heart (no "liked" store yet).
+- **Seek-accurate progress** — prefer the **`PlayEventListener`** route
+  (`OnPlayTimeUpdated(cur,total)` @slot+0xc, already mapped in `analysis/G_player_ipc/`): it is
+  event-driven, battery-efficient, and needs **no new RE**, unlike the byte-offset route which is
+  still blocked (the 07-25 PlayStatus dump was all zeros because nothing was playing). The
+  play-clock estimate is fine meanwhile.
+- **Repo hygiene** — 18 build outputs are tracked, including two ~5 MB `.unstripped` ELFs that
+  churn on every build (`.git` is 116 MB). The `dist/` artifacts arguably belong (they are what
+  gets flashed); the `.unstripped` pair and loose `*.o` files are pure churn.
+
+### Reference — device-verify items (detail; tracked in the P0 table above)
 - **GPU present path (EGL/GLES2 on Mali)** — **DONE in code 2026-07-26; needs device verify.**
   cinder-ffi's frame present was a software framebuffer blit (mmap + 3× memcpy + `FBIOPUT` force-
   flip, no vsync). It is now EGL + GLES2: upload the software-rasterized `Canvas` to one RGBA
@@ -71,10 +113,14 @@ The bad-boot counter + probe-first gradient (STATUS.md STEP 1/2) still apply —
     `/dev/mtkfb_vsync`, `/dev/mtk_disp`, `/dev/sw_sync`); it can only open the `system`-owned `mali`
     + `fb0` (hence software works). The hang wedged the boot → bad-boot revert. **Fix shipped:** GPU
     is now **opt-in, default OFF** via `/contents/cinder_gpu_on` (or `CINDER_GPU=1`); the default
-    binary never touches the GPU. **To enable GPU:** a setuid-root helper (like `cinder-umount`) that
-    `chmod 0666`s those four nodes before EGL init. Safe test path = grant perms, stop cinder-home,
-    run `cinder-probe` with `CINDER_GPU=1` as uid 100 (no lifecycle → no boot-counter risk), reboot
-    to restore. See memory `reference_gpu_mali_stack`.
+    binary never touches the GPU. **The enabling helper now exists:** `cinder-gpunode`
+    (`src/cinder-gpunode.c`, setuid-root, built + staged in `dist/`) `chmod 0666`s exactly those
+    four nodes — no argv, no environment, fixed path list, `lstat`-guarded so a planted symlink is
+    rejected. Safe test path = run the helper, stop cinder-home, run `cinder-probe` with
+    `CINDER_GPU=1` as uid 100 (no lifecycle → no boot-counter risk), reboot to restore.
+    **Security trade-off:** 0666 on those nodes world-opens graphics memory and display control —
+    acceptable on a single-user player, but it is a real loosening of kernel device permissions.
+    See memory `reference_gpu_mali_stack`.
 - **Play a selected track / album** — **WIRED 2026-07-03 (was the biggest gap); needs device
   verify only.** `Action::PlayIndex` → `cinder-db::album_context` → `cinder_audio_play_tracks`
   builds the JSON Node-tree (`{"uri","format","children"}`), maps formats via Sony's
@@ -82,11 +128,6 @@ The bad-boot counter + probe-first gradient (STATUS.md STEP 1/2) still apply —
   `SetTrackSequence` + `ChangePlayState(Play)`. qemu-preflighted (the whole JSON→Node chain is
   built under guard canaries). Remaining: confirm playback starts on the unit. *(Queue-honoring —
   `SetTrackSequence` for the user swipe-queue — rides the same code, gated on device verify.)*
-- **Seek-accurate progress** — replace the play-clock *estimate* with the real position. The
-  discovery PlayStatus hex dump reveals the position/duration int offsets (only URI @ +0x6c mapped
-  so far); then read them in `player_shim` and push via `cinder_set_position`. Alternatively
-  implement the `PlayEventListener` (`OnPlayTimeUpdated(cur,total)` @slot+0xc, mapped in
-  `analysis/G_player_ipc/`) for event-driven, battery-efficient updates. (Estimate is fine meanwhile.)
 
 ### P2 — device-gated, lower priority
 - **Bluetooth radio on/off** — UI toggle exists; wire `BtTransmitterService` (SetCurrentSource/SetLdac).
@@ -113,17 +154,23 @@ The bad-boot counter + probe-first gradient (STATUS.md STEP 1/2) still apply —
 - **Volume direction** — some mixer controls are attenuation (lower = louder); confirm + invert if so.
 - **Now Playing sleep badge** already done; consider an auto-night-by-clock option later.
 
-## Open risks to watch (first device session)
-- **adb-enable** (`setprop sys.usb.config mtp,adb` + `ctl.start adbd`) is best-effort — if adb doesn't
-  appear on the first dev flash, tweak the one `std::system(...)` in `main.cpp` (`#ifdef CINDER_DEV`).
-- **amixer presence** — if absent, use the sysfs backends for volume/backlight (configs support both).
+## Open risks to watch (next device session)
+- **The unverified 07-26 batch** — the single biggest risk. Type scale, font fallback, GPU path,
+  screenshot hooks, the rewritten escape ladder and `cinder-gpunode` all reach hardware for the
+  first time on the same flash, so a misbehaving boot has a whole day of changes as its bisect
+  surface. Probe first; the escape ladder's rung 0 (cable at boot) depends on nothing and is the
+  backstop. *(Resolved since the last audit: adb enumerated and was driven directly from the host
+  on 07-25, and `amixer` is confirmed present — it produced the discovery dump.)*
+- **`/contents` is fragile** — vfat, no journal, and it is the partition handed to the PC for
+  USB-MSC. Repeated auto-MSC cycling corrupted it on 07-26 and that is what bricked the device.
+  Cinder state now lives on `/data` (ext4); avoid gratuitous MSC cycling during dev sessions.
 - **deferred_up timeout budget** — many guarded calls (db/audio/battery/EQ/sound/storage/discovery/
   adb/analyzer); fast on a healthy device, but if one Sony service is wedged the boot UI freezes for
   that call's budget before the guard recovers. Watch the logs; trim budgets if needed.
 - **PlayStatus `_opaque[256]`** is a generous reserve (real ≈124 B); if a future fw enlarges it,
   re-confirm before reading new offsets.
 
-## Recent bug audit (this session)
+## Recent bug audit (2026-06-30 session)
 - **Fixed:** the sleep-timer countdown was coupled to the position-estimate clock anchor
   (`last_pos` reset on track change), making it drift slightly long; decoupled (anchor is now
   touched only by `clock_tick`).

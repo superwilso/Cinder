@@ -623,7 +623,23 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         .collect();
     artists.sort_by(|a, b| a.name.cmp(&b.name));
 
-    cinder_ui::Library { songs, album_groups, artists, playlists: Vec::new() }
+    // Playlists: real ones from the DB (Sony keeps them as containers in a second object tree —
+    // see Db::playlists). Empty-but-honest if the DB has none, rather than sample data.
+    let playlists = db
+        .playlists()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| cinder_ui::model::PlaylistRow {
+            id: p.id,
+            name: p.name.clone(),
+            tracks: p.track_count.max(0) as u32,
+            // No cover of its own: hash the name so each playlist still gets distinct art,
+            // the same fallback the album rows use.
+            art: p.name,
+        })
+        .collect();
+
+    cinder_ui::Library { songs, album_groups, artists, playlists }
 }
 
 /// Render the current state to the panel (call once per frame from the pump). No-op when
@@ -769,6 +785,118 @@ pub extern "C" fn cinder_input(button: libc::c_int) -> libc::c_int {
     0
 }
 
+/// Cheap non-cryptographic RNG (xorshift64*) seeded from the clock. Shuffling a play queue has
+/// no security requirement, and this avoids pulling a `rand` dependency into a binary that has to
+/// stay glibc-2.23-clean.
+struct Rng(u64);
+
+impl Rng {
+    fn new() -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64 ^ d.as_secs())
+            .unwrap_or(0x9e37_79b9_7f4a_7c15);
+        Rng(nanos | 1) // never seed 0: xorshift is stuck there
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    /// Fisher-Yates, unbiased enough for a shuffle queue.
+    fn shuffle<T>(&mut self, v: &mut [T]) {
+        for i in (1..v.len()).rev() {
+            v.swap(i, (self.next() % (i as u64 + 1)) as usize);
+        }
+    }
+}
+
+/// Resolve a Library shuffle band into the URIs to play, in the order to play them. `None` when
+/// there is no DB or the scope is empty — the caller then emits no action rather than handing the
+/// shell an empty sequence.
+///
+/// Each arm matches the sub-label the band draws, so what the button promises is what it does.
+fn shuffle_uris(db: Option<&cinder_db::Db>, scope: cinder_ui::nav::ShuffleScope) -> Option<Vec<String>> {
+    use cinder_ui::nav::ShuffleScope as S;
+    let db = db?;
+    let mut rng = Rng::new();
+
+    let uris: Vec<String> = match scope {
+        // "N TRACKS · RANDOM ORDER"
+        S::AllSongs => {
+            let mut v: Vec<String> = db
+                .tracks(cinder_db::Sort::Title)
+                .ok()?
+                .into_iter()
+                .map(|t| t.filename)
+                .collect();
+            rng.shuffle(&mut v);
+            v
+        }
+        // "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE" — shuffle the albums, keep each album's
+        // tracks in their disc/track order.
+        S::ByAlbum => {
+            let tracks = db.tracks_album_order().ok()?;
+            let mut albums: Vec<Vec<String>> = Vec::new();
+            let mut cur_id: Option<i64> = None;
+            for t in tracks {
+                if Some(t.album_id.unwrap_or(0)) != cur_id {
+                    cur_id = Some(t.album_id.unwrap_or(0));
+                    albums.push(Vec::new());
+                }
+                albums.last_mut().expect("pushed above").push(t.filename);
+            }
+            rng.shuffle(&mut albums);
+            albums.into_iter().flatten().collect()
+        }
+        // "RANDOM ARTIST · SHUFFLED WITHIN ARTIST" — one artist, their tracks shuffled.
+        S::ByArtist => {
+            let tracks = db.tracks(cinder_db::Sort::Artist).ok()?;
+            let mut by_artist: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+            for t in tracks {
+                if !t.artist.is_empty() {
+                    by_artist.entry(t.artist.clone()).or_default().push(t.filename);
+                }
+            }
+            let mut names: Vec<String> = by_artist.keys().cloned().collect();
+            if names.is_empty() {
+                return None;
+            }
+            let pick = &names[(rng.next() % names.len() as u64) as usize];
+            let mut v = by_artist.remove(pick).unwrap_or_default();
+            names.clear();
+            rng.shuffle(&mut v);
+            v
+        }
+        // "RANDOM PLAYLIST · SHUFFLED"
+        S::Playlist => {
+            let pls = db.playlists().ok()?;
+            if pls.is_empty() {
+                return None;
+            }
+            let pick = &pls[(rng.next() % pls.len() as u64) as usize];
+            let mut v = playlist_uris(Some(db), pick.id)?;
+            rng.shuffle(&mut v);
+            v
+        }
+    };
+    (!uris.is_empty()).then_some(uris)
+}
+
+/// Member file URIs of a playlist, in the user's saved order. `None` when there's no DB, the id
+/// isn't a live playlist, or nothing in it still resolves to a playable track — the caller then
+/// emits no action rather than handing the shell an empty sequence.
+fn playlist_uris(db: Option<&cinder_db::Db>, playlist_id: i64) -> Option<Vec<String>> {
+    let tracks = db?.playlist_tracks(playlist_id).ok()?;
+    let uris: Vec<String> = tracks.into_iter().map(|t| t.filename).collect();
+    (!uris.is_empty()).then_some(uris)
+}
+
 /// Map a navigator `Action` to the `cinder_action_t` the shell carries out (Some = return this
 /// code), applying the internal-only ones in place and returning None for them (theme is applied by
 /// the caller; the sleep timer arms here; BtToggle is UI-only). Shared by cinder_input + cinder_tap.
@@ -794,6 +922,37 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 }
                 _ => {
                     eprintln!("cinder-ffi: PlayIndex({object_id}): no DB context — ignored");
+                    return None;
+                }
+            }
+        }
+        Action::PlayPlaylist(playlist_id) => {
+            // Same channel as PlayIndex — the members become the pending sequence, starting at
+            // the top — so the shell keeps handling exactly one "play these URIs" action and
+            // needs no new code or FFI symbol for playlists.
+            match playlist_uris(r.db.as_ref(), *playlist_id) {
+                Some(uris) => {
+                    r.pending_play = uris;
+                    r.pending_play_start = 0;
+                    8
+                }
+                None => {
+                    eprintln!("cinder-ffi: PlayPlaylist({playlist_id}): empty or unknown — ignored");
+                    return None;
+                }
+            }
+        }
+        Action::Shuffle(scope) => {
+            // Same pending-play channel again: we pre-shuffle the URI list ourselves, so the
+            // order is genuinely random regardless of what PlayerService's own shuffle does.
+            match shuffle_uris(r.db.as_ref(), *scope) {
+                Some(uris) => {
+                    r.pending_play = uris;
+                    r.pending_play_start = 0;
+                    8
+                }
+                None => {
+                    eprintln!("cinder-ffi: Shuffle({scope:?}): nothing to play — ignored");
                     return None;
                 }
             }
@@ -1559,6 +1718,7 @@ mod tests {
             CREATE TABLE releaseyears (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT);
             CREATE TABLE object_body (
                 object_id INTEGER PRIMARY KEY AUTOINCREMENT, object_type INTEGER NOT NULL,
+                parent_id INTEGER, reference_id INTEGER,
                 child_index INTEGER, media_type INTEGER DEFAULT 0, format INTEGER DEFAULT 0,
                 initial INTEGER, sort_str TEXT, search_str TEXT, title TEXT DEFAULT "",
                 addedtime INTEGER DEFAULT 0, filename TEXT, filesize INTEGER,
@@ -1582,6 +1742,12 @@ mod tests {
               VALUES (7,3,0,'MUSIC','MUSIC',NULL);
             INSERT INTO object_body (object_id,object_type,media_type,title,filename,album_id)
               VALUES (8,2,3,'Cover','/music/Cover.jpg',10);
+            -- A playlist container + its entries (Sony's real shape: type-1 container, type-3
+            -- entries referencing tracks by object_id, ordered by child_index). Object 7 above is
+            -- a type-3 row with no parent — an orphan, which must not become a ghost playlist.
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (60,1,0,0,'Night Bus',NULL);
+            INSERT INTO object_body (object_id,object_type,parent_id,reference_id,child_index) VALUES (61,3,60,3,0);
+            INSERT INTO object_body (object_id,object_type,parent_id,reference_id,child_index) VALUES (62,3,60,1,1);
             INSERT INTO object_ext_int VALUES (1,7,272000);
             "#,
             )
@@ -1622,6 +1788,77 @@ mod tests {
         let bfl_artist = lib.artists.iter().find(|a| a.name == "Benjamin Francis Leftwich").unwrap();
         assert_eq!(bfl_artist.tracks, 2);
         assert_eq!(bfl_artist.albums, 1);
+    }
+
+    /// Playlists reach the browsable library, and the orphan type-3 row (object 7, no parent)
+    /// does not become a ghost playlist.
+    #[test]
+    fn build_library_includes_real_playlists() {
+        let lib = build_library(&fixture_db());
+        assert_eq!(lib.playlists.len(), 1, "one real playlist, no ghosts");
+        assert_eq!(lib.playlists[0].name, "Night Bus");
+        assert_eq!(lib.playlists[0].id, 60);
+        assert_eq!(lib.playlists[0].tracks, 2);
+    }
+
+    /// The URIs handed to the shell are in saved (child_index) order, NOT title order — this is
+    /// what makes a playlist play as the user arranged it.
+    #[test]
+    fn play_playlist_resolves_uris_in_saved_order() {
+        let db = fixture_db();
+        assert_eq!(
+            playlist_uris(Some(&db), 60),
+            Some(vec!["/music/harvest.flac".to_string(), "/music/atlas.flac".to_string()])
+        );
+    }
+
+    /// Every shuffle scope resolves to a non-empty queue drawn only from real tracks, and none of
+    /// them leak the non-audio rows (folder / cover image) the library filters out.
+    #[test]
+    fn shuffle_scopes_resolve_to_real_tracks() {
+        use cinder_ui::nav::ShuffleScope as S;
+        let db = fixture_db();
+        let all: std::collections::BTreeSet<&str> =
+            ["/music/atlas.flac", "/music/box.flac", "/music/harvest.flac"].into_iter().collect();
+        for scope in [S::AllSongs, S::ByAlbum, S::ByArtist, S::Playlist] {
+            let uris = shuffle_uris(Some(&db), scope).unwrap_or_else(|| panic!("{scope:?} empty"));
+            assert!(!uris.is_empty());
+            for u in &uris {
+                assert!(all.contains(u.as_str()), "{scope:?} produced a non-track: {u}");
+            }
+        }
+        // AllSongs is the whole library; ByAlbum keeps every track too (it only reorders albums).
+        assert_eq!(shuffle_uris(Some(&db), S::AllSongs).unwrap().len(), 3);
+        assert_eq!(shuffle_uris(Some(&db), S::ByAlbum).unwrap().len(), 3);
+    }
+
+    /// "TRACKS IN SEQUENCE": ByAlbum may reorder albums but must never split one up or reorder
+    /// the tracks inside it.
+    #[test]
+    fn shuffle_by_album_keeps_albums_intact_and_in_sequence() {
+        use cinder_ui::nav::ShuffleScope as S;
+        let db = fixture_db();
+        // Album 10 = atlas then box (series_no 1,2); album 11 = harvest alone.
+        for _ in 0..25 {
+            let uris = shuffle_uris(Some(&db), S::ByAlbum).unwrap();
+            let atlas = uris.iter().position(|u| u == "/music/atlas.flac").unwrap();
+            let boxs = uris.iter().position(|u| u == "/music/box.flac").unwrap();
+            assert_eq!(boxs, atlas + 1, "album 10 was split or reordered: {uris:?}");
+        }
+    }
+
+    /// No DB → no action (rather than an empty queue).
+    #[test]
+    fn shuffle_without_db_is_ignored() {
+        assert_eq!(shuffle_uris(None, cinder_ui::nav::ShuffleScope::AllSongs), None);
+    }
+
+    /// Unknown id, or no DB at all → no action, rather than handing the shell an empty sequence.
+    #[test]
+    fn play_playlist_unknown_is_ignored() {
+        let db = fixture_db();
+        assert_eq!(playlist_uris(Some(&db), 999), None);
+        assert_eq!(playlist_uris(None, 60), None);
     }
 
     #[test]

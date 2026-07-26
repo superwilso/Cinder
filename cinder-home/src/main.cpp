@@ -1172,8 +1172,9 @@ void exit_usb_msc() {
                              : "usb-msc: exited but /contents did NOT remount within 5 s");
 }
 
-// Carry out a navigator action via the audio/effect shims. Volume is config-gated (above);
-// play-by-index needs TrackSequence RE — left as TODO until the discovery/device session.
+// Carry out a navigator action via the audio/effect shims. Volume goes to the configured
+// backend (built-in CXD3778GF defaults, overridable by conf); play-by-index hands PlayerService
+// a NodeTrackSequence built from the pending-play list the UI resolved.
 void carry_out(int act) {
     // Every transport call is a PlayerService IPC call → guard it (same invariant as the EQ apply
     // and the now-playing poll): a hung/crashing PlayerService then skips that one action and the UI
@@ -1191,8 +1192,9 @@ void carry_out(int act) {
         case CINDER_ACT_PREV_ALBUM: run_guarded("carry_out: prev album", 6, []() { cinder_audio_prev_group(); }); break;
         case CINDER_ACT_VOLUP:
         case CINDER_ACT_VOLDOWN:
-            // apply the new UI volume to the hardware via the configured backend (guarded). No-op
-            // until /contents/cinder_volume.conf is populated from the discovery report.
+            // apply the new UI volume to the hardware via the configured backend (guarded).
+            // Defaults to the discovered control (amixer card0 'master volume' 0..120) with no
+            // conf present; /contents/cinder_volume.conf overrides it.
             run_guarded("carry_out: volume", 4, apply_volume);
             break;
         case CINDER_ACT_PLAY_INDEX:

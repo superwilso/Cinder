@@ -60,6 +60,20 @@ pub enum Screen {
     Shelf,
 }
 
+/// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
+/// draws, so the promise on screen and the behaviour stay in step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShuffleScope {
+    /// "Shuffle all songs" — every track, random order.
+    AllSongs,
+    /// "Shuffle by album" — random album order, tracks in sequence within each album.
+    ByAlbum,
+    /// "Shuffle by artist" — one random artist, their tracks shuffled.
+    ByArtist,
+    /// "Shuffle a playlist" — one random playlist, its tracks shuffled.
+    Playlist,
+}
+
 /// Side effects the shell carries out (via cinder-audio / system services). The UI emits
 /// these instead of acting on audio itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,6 +86,8 @@ pub enum Action {
     VolUp,
     VolDown,
     PlayIndex(i64), // play the library track with this DB object_id (the shell resolves it to a URI)
+    PlayPlaylist(i64), // play a whole playlist from the top (DB container object_id)
+    Shuffle(ShuffleScope), // the accent band on each Library tab — shuffle within that scope
     ThemeChanged(bool),
     Sleep,
     EnterUsbMsc,
@@ -205,6 +221,10 @@ pub struct App {
     /// fades. `queue_anim_y` = the row's y (UI coords); frames count down via tick().
     queue_anim_y: i32,
     queue_anim_frames: u8,
+    /// Object ids of the Up Next rows the last render actually drew, in drawn order. The window
+    /// auto-scrolls to follow playback, so the renderer (which knows `np`) publishes this for the
+    /// hit test instead of `tap` trying to recompute it.
+    up_next_rows: Vec<i64>,
 }
 
 /// How long the toast stays up (~1.8 s at the 60 fps pump).
@@ -264,6 +284,7 @@ impl Default for App {
             toast_frames: 0,
             queue_anim_y: 0,
             queue_anim_frames: 0,
+            up_next_rows: Vec::new(),
         }
     }
 }
@@ -533,12 +554,9 @@ impl App {
 
         match self.current() {
             Screen::Menu => {
-                if y >= 91 {
-                    let row = ((y - 91) / 63) as usize;
-                    if row < MENU.len() {
-                        self.menu_idx = row;
-                        self.activate_menu(row);
-                    }
+                if let Some(row) = crate::menu::row_at(y, MENU.len()) {
+                    self.menu_idx = row;
+                    self.activate_menu(row);
                 }
                 vec![]
             }
@@ -596,9 +614,10 @@ impl App {
                             .map(|s| vec![Action::PlayIndex(s.object_id)])
                             .unwrap_or_default();
                     }
-                    // The "Play album" band (shuffle_row @234..306): play from track 1 — the
-                    // shell's album_context expands it to the whole album in order.
-                    if (234..306).contains(&y) {
+                    // The "Play album" band: play from track 1 — the shell's album_context
+                    // expands it to the whole album in order. (Hit-tested through the band's own
+                    // rect; the old literal range started 16px above where the band is drawn.)
+                    if library::hit_album_play_band(x, y) {
                         self.album_track_idx = 0;
                         return album
                             .track_list
@@ -610,8 +629,13 @@ impl App {
                 vec![]
             }
             Screen::UpNext => {
-                // The queue window auto-scrolls to the playing track, so we can't map an exact row
-                // without `np`; a tap returns to Now Playing (the natural "done with the queue").
+                // Tap a queue row to play it. The rows are whatever the last render drew
+                // (`up_next_rows`), so this follows the auto-scrolled window exactly.
+                if let Some(id) = crate::up_next::visible_row_at(y).and_then(|r| self.up_next_rows.get(r))
+                {
+                    return vec![Action::PlayIndex(*id)];
+                }
+                // Anywhere off the rows keeps the old shortcut back to Now Playing.
                 self.go(Screen::NowPlaying);
                 vec![]
             }
@@ -628,33 +652,39 @@ impl App {
                     self.snd_ab_bypass = !self.snd_ab_bypass;
                     return vec![Action::SoundBypass(self.snd_ab_bypass)];
                 }
-                if y >= 91 {
-                    let row = ((y - 91) / 64) as usize;
-                    if row < crate::sound::ROWS {
-                        self.sound_sel = row;
-                        return self.sound_toggle_row();
-                    }
+                if let Some(row) = crate::sound::row_at(y) {
+                    self.sound_sel = row;
+                    return self.sound_toggle_row();
                 }
                 vec![]
             }
             Screen::Eq => {
-                // preset pills row (py = y0+6 = 97, ~30px tall) — even split across the 5 presets
-                if (92..130).contains(&y) {
-                    let idx = (((x - 22).max(0)) / 86).min((data::EQ_PRESETS.len() - 1) as i32) as usize;
+                // Every region below comes from `eq`'s own layout helpers — the same ones render
+                // draws with — so a pill/band/footer tap always lands on what's under the finger.
+                if let Some(idx) = crate::eq::preset_at(x, y) {
                     self.eq_preset = idx;
                     self.eq_bands = data::EQ_PRESETS[idx].1;
                     return vec![Action::EqChanged(self.eq_bands)];
                 }
-                // band field: tap a column to select it; tap above mid raises, below lowers
-                if y >= 150 && y < 600 {
-                    let band = (((x - 22).max(0)) / 44).min(9) as usize;
-                    self.eq_sel = band;
-                    let g = &mut self.eq_bands[band];
-                    if y < 375 {
-                        *g = (*g + 1).min(6);
-                    } else {
-                        *g = (*g - 1).max(-6);
+                // Band field: tap a column to select it; above the zero line raises, below lowers.
+                if (crate::eq::FIELD_TOP..crate::eq::FIELD_BOTTOM).contains(&y) {
+                    if let Some(band) = crate::eq::band_at(x) {
+                        self.eq_sel = band;
+                        let g = &mut self.eq_bands[band];
+                        if y < crate::eq::FIELD_MID {
+                            *g = (*g + 1).min(6);
+                        } else {
+                            *g = (*g - 1).max(-6);
+                        }
+                        return vec![Action::EqChanged(self.eq_bands)];
                     }
+                    return vec![];
+                }
+                // Footer: Reset flattens every band. (Save is not wired — the EQ is already
+                // persisted automatically on every change; see ROADMAP.)
+                if crate::eq::footer_at(x, y) == Some(crate::eq::Footer::Reset) {
+                    self.eq_bands = [0; 10];
+                    self.eq_preset = 0; // FLAT
                     return vec![Action::EqChanged(self.eq_bands)];
                 }
                 vec![]
@@ -678,10 +708,14 @@ impl App {
                 }
             }
             Screen::UsbDac => {
-                // single-purpose screen: any tap toggles USB-DAC (→ 3.5mm + BT/LDAC). Mass storage
-                // lives on the Settings "USB mode" row, not here.
-                self.usb_dac_on = !self.usb_dac_on;
-                vec![Action::UsbDacToggle(self.usb_dac_on)]
+                // Only the switch toggles USB-DAC (→ 3.5mm + BT/LDAC). It used to fire on a tap
+                // anywhere on the screen, so a stray touch could switch the USB gadget mode and
+                // start the LDAC bridge. Mass storage lives on Settings ▸ USB mode, not here.
+                if crate::usbdac::hit_toggle(x, y) {
+                    self.usb_dac_on = !self.usb_dac_on;
+                    return vec![Action::UsbDacToggle(self.usb_dac_on)];
+                }
+                vec![]
             }
             _ => vec![],
         }
@@ -720,6 +754,16 @@ impl App {
             self.album_expanded = None;
             return vec![];
         }
+        // The accent band sits above the list on every tab, so test it before the rows (it is the
+        // largest target on the screen; it used to be drawn but hit-tested nowhere).
+        if library::hit_shuffle_band(x, y) {
+            return vec![Action::Shuffle(match self.lib_tab {
+                Tab::Songs => ShuffleScope::AllSongs,
+                Tab::Albums => ShuffleScope::ByAlbum,
+                Tab::Artists => ShuffleScope::ByArtist,
+                Tab::Playlists => ShuffleScope::Playlist,
+            })];
+        }
         // Albums is a sortable accordion — its own hit test (expand/collapse, drill-in, play track).
         if matches!(self.lib_tab, Tab::Albums) {
             return self.tap_albums(x, y);
@@ -738,8 +782,18 @@ impl App {
                     vec![Action::PlayIndex(id)]
                 })
                 .unwrap_or_default(),
-            // Artists / Playlists rows aren't directly playable (no track object under the finger) —
-            // they navigate, not play. Nothing to enqueue.
+            // A playlist row has no single track under the finger, so tapping it plays the whole
+            // list from the top in saved order (the shell resolves the members through the DB).
+            Tab::Playlists => {
+                self.lib_idx = row;
+                self.lib
+                    .playlists
+                    .get(row)
+                    .map(|p| vec![Action::PlayPlaylist(p.id)])
+                    .unwrap_or_default()
+            }
+            // Artist rows aren't directly playable (no track object under the finger) — they
+            // navigate, not play. Nothing to enqueue.
             _ => {
                 self.lib_idx = row;
                 vec![]
@@ -777,6 +831,21 @@ impl App {
                 .map(|s| vec![Action::PlayIndex(s.object_id)])
                 .unwrap_or_default(),
             None => vec![],
+        }
+    }
+
+    /// The track under `y` in the Albums accordion (an expanded album's inline track row), if the
+    /// finger is on one. Shared by the tap and the swipe-to-queue gesture so both resolve to the
+    /// same row — the swipe used to ignore this tab entirely.
+    fn albums_track_at(&self, y: i32) -> Option<SongRow> {
+        use crate::library::AlbumsHit;
+        // x is inside the row body: the accordion's own hit test only reports Track for the
+        // track band, and the swipe already established this is a horizontal gesture on a row.
+        match library::albums_hit(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, 240, y) {
+            Some(AlbumsHit::Track(flat, track)) => {
+                self.lib.albums_flat().get(flat).and_then(|al| al.track_list.get(track)).cloned()
+            }
+            _ => None,
         }
     }
 
@@ -867,16 +936,20 @@ impl App {
                 }
             }
             Screen::Library if dir > 0 => {
-                // Right-swipe a Songs-tab row → queue that song (the same render-mirroring hit
-                // test the tap uses, so the queued song is exactly the row under the finger).
-                if self.lib_tab == Tab::Songs {
-                    if let Some(rank) = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
-                    {
-                        if let Some(s) = library::song_at(&self.lib, self.lib_sort, rank) {
-                            let s = s.clone();
-                            self.enqueue(s, y);
-                        }
-                    }
+                // Right-swipe a track row → queue that song, using the same render-mirroring hit
+                // test the tap uses so the queued song is exactly the row under the finger.
+                // Both tabs that put a *track* under the finger are covered: the Songs list, and
+                // the tracks of an expanded album in the Albums accordion. (Artist/playlist rows
+                // aren't tracks, so there is nothing to queue.)
+                let song = match self.lib_tab {
+                    Tab::Songs => library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
+                        .and_then(|rank| library::song_at(&self.lib, self.lib_sort, rank))
+                        .cloned(),
+                    Tab::Albums => self.albums_track_at(y),
+                    _ => None,
+                };
+                if let Some(s) = song {
+                    self.enqueue(s, y);
                 }
                 vec![]
             }
@@ -1186,7 +1259,15 @@ impl App {
                     Tab::Songs => library::song_at(&self.lib, self.lib_sort, self.lib_idx)
                         .map(|s| vec![Action::PlayIndex(s.object_id)])
                         .unwrap_or_default(),
-                    // Artists/Playlists rows navigate, not play (no track under the cursor).
+                    // A playlist row has no single track under the cursor — selecting it plays
+                    // the whole list from the top, in saved order.
+                    Tab::Playlists => self
+                        .lib
+                        .playlists
+                        .get(self.lib_idx)
+                        .map(|p| vec![Action::PlayPlaylist(p.id)])
+                        .unwrap_or_default(),
+                    // Artist rows navigate, not play (no track under the cursor).
                     _ => vec![],
                 },
                 Button::Back => {
@@ -1341,7 +1422,7 @@ impl App {
 
     /// Draw the current screen. Live now-playing data comes from the shell (`np`); list/
     /// settings screens currently use the design sample data (real data wires in later).
-    pub fn render(&self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
+    pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
         let theme = if self.night { Theme::night() } else { Theme::day() };
         match self.current() {
             Screen::Lock => {
@@ -1411,18 +1492,31 @@ impl App {
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
             Screen::UsbStorage => crate::usb_storage::render(c, &theme, fonts),
             Screen::UpNext => {
-                if !self.queue.is_empty() {
+                // Publish the ids of the rows actually drawn, in drawn order, so `tap` can
+                // resolve a finger to a row. The window auto-scrolls to follow playback and its
+                // position depends on `np`, which `tap` doesn't have — so the renderer, which
+                // does, records it rather than the hit test guessing.
+                let drawn: Vec<i64> = if !self.queue.is_empty() {
                     // The user's own queue (swipe-to-queue) takes precedence over the derived
-                    // current-album list.
+                    // current-album list. It renders unscrolled, from the top.
+                    let ids = self.queue.iter().map(|s| s.object_id).collect();
                     crate::up_next::render_queue(c, &theme, fonts, &self.queue);
+                    ids
                 } else {
                     match self.now_playing_queue(np.title, np.artist) {
                         Some((album, tracks, cur)) => {
-                            crate::up_next::render(c, &theme, fonts, album, tracks, cur)
+                            let (_, scroll) = crate::up_next::window(tracks.len(), cur);
+                            let ids = tracks.iter().skip(scroll).map(|s| s.object_id).collect();
+                            crate::up_next::render(c, &theme, fonts, album, tracks, cur);
+                            ids
                         }
-                        None => crate::up_next::render(c, &theme, fonts, "", &[], 0),
+                        None => {
+                            crate::up_next::render(c, &theme, fonts, "", &[], 0);
+                            Vec::new()
+                        }
                     }
-                }
+                };
+                self.up_next_rows = drawn;
             }
             Screen::Eq => crate::eq::render(
                 c, &theme, fonts, &self.eq_bands, data::EQ_PRESETS[self.eq_preset].0, self.eq_sel,
@@ -1881,8 +1975,8 @@ mod tests {
         a.press(Button::Select); // enter Library
         assert_eq!(a.current(), Screen::Library);
         let start = a.lib_tab();
-        // Left from the default Albums tab lands on Songs (Artists/Playlists rows navigate,
-        // not play — only Songs rows emit PlayIndex directly).
+        // Left from the default Albums tab lands on Songs (only Songs rows emit PlayIndex for a
+        // single track; Artists navigate, Playlists emit PlayPlaylist).
         a.press(Button::Left);
         assert_ne!(a.lib_tab(), start); // tab changed
         assert_eq!(a.lib_tab(), Tab::Songs);
@@ -1892,6 +1986,148 @@ mod tests {
         // Select on a Songs row asks the shell to play that track (by object id)
         let acts = a.press(Button::Select);
         assert!(matches!(acts.as_slice(), [Action::PlayIndex(_)]));
+    }
+
+    /// Tapping a preset pill selects THAT preset. Regression: the pills are drawn per-pill but
+    /// were hit-tested as five uniform 86px slots starting at x=22, so tapping "A2" applied
+    /// "JAZZ", and taps on the blank space past the last pill still changed the sound.
+    #[test]
+    fn eq_preset_tap_selects_the_pill_under_the_finger() {
+        for i in 0..data::EQ_PRESETS.len() {
+            let mut a = unlocked();
+            a.push(Screen::Eq);
+            let (px, py, pw, ph) = crate::eq::preset_rect(i);
+            let acts = a.tap(px + pw / 2, py + ph / 2);
+            assert_eq!(a.eq_preset, i, "pill {i} centre selected preset {}", a.eq_preset);
+            assert_eq!(acts, vec![Action::EqChanged(data::EQ_PRESETS[i].1)]);
+        }
+    }
+
+    /// A tap in the gap between pills, or past the last one, must do nothing rather than change
+    /// the sound.
+    #[test]
+    fn eq_preset_gaps_are_inert() {
+        let mut a = unlocked();
+        a.push(Screen::Eq);
+        let (px0, py, pw0, ph) = crate::eq::preset_rect(0);
+        let (px1, _, _, _) = crate::eq::preset_rect(1);
+        let gap_x = (px0 + pw0 + px1) / 2; // between pill 0 and pill 1
+        assert!(a.tap(gap_x, py + ph / 2).is_empty(), "gap between pills changed the EQ");
+        let (lx, _, lw, _) = crate::eq::preset_rect(data::EQ_PRESETS.len() - 1);
+        assert!(a.tap(lx + lw + 6, py + ph / 2).is_empty(), "blank space past the pills changed the EQ");
+    }
+
+    /// Above the zero line raises, below lowers — the split must be the drawn zero line, not an
+    /// unrelated constant (it was 375 while the line is drawn at the field midpoint).
+    #[test]
+    fn eq_band_tap_raises_above_the_zero_line_and_lowers_below() {
+        use crate::eq::{band_center_x, FIELD_BOTTOM, FIELD_MID, FIELD_TOP};
+        let mut a = unlocked();
+        a.push(Screen::Eq);
+        a.eq_bands = [0; 10];
+        for band in [0usize, 5, 9] {
+            let x = band_center_x(band);
+            a.tap(x, (FIELD_TOP + FIELD_MID) / 2); // upper half
+            assert_eq!(a.eq_bands[band], 1, "band {band} above the line should raise");
+            assert_eq!(a.eq_sel, band, "tap should select the band under the finger");
+            a.tap(x, (FIELD_MID + FIELD_BOTTOM) / 2); // lower half
+            assert_eq!(a.eq_bands[band], 0, "band {band} below the line should lower");
+        }
+        // Just below the zero line lowers (this pixel used to raise).
+        a.tap(band_center_x(3), FIELD_MID + 1);
+        assert_eq!(a.eq_bands[3], -1);
+    }
+
+    /// The band hit test must agree with where the knobs are drawn, for every band.
+    #[test]
+    fn eq_band_centres_resolve_to_their_own_band() {
+        for i in 0..10 {
+            assert_eq!(crate::eq::band_at(crate::eq::band_center_x(i)), Some(i), "band {i}");
+        }
+    }
+
+    /// The EQ footer "Reset" was drawn but hit-tested nowhere.
+    #[test]
+    fn eq_footer_reset_flattens_the_bands() {
+        let mut a = unlocked();
+        a.push(Screen::Eq);
+        a.eq_bands = [5, -3, 2, 0, 1, -1, 4, 2, -2, 6];
+        let acts = a.tap(60, crate::eq::FOOTER_TOP + 20);
+        assert_eq!(a.eq_bands, [0; 10]);
+        assert_eq!(acts, vec![Action::EqChanged([0; 10])]);
+    }
+
+    /// The accent band on each Library tab shuffles in that tab's scope. It is the largest touch
+    /// target on the screen and was previously drawn but hit-tested nowhere.
+    #[test]
+    fn shuffle_band_is_tappable_on_every_tab() {
+        let (bx, by, bw, bh) = library::library_shuffle_band();
+        let (cx, cy) = (bx + bw / 2, by + bh / 2);
+        for (tab, want) in [
+            (Tab::Songs, ShuffleScope::AllSongs),
+            (Tab::Albums, ShuffleScope::ByAlbum),
+            (Tab::Artists, ShuffleScope::ByArtist),
+            (Tab::Playlists, ShuffleScope::Playlist),
+        ] {
+            let mut a = unlocked();
+            a.push(Screen::Library);
+            a.lib_tab = tab;
+            assert_eq!(a.tap(cx, cy), vec![Action::Shuffle(want)], "tab {tab:?}");
+        }
+    }
+
+    /// The band must not swallow taps meant for the list, and the list must not start inside it —
+    /// this is the render/hit-test drift that made row taps land on the wrong song before.
+    #[test]
+    fn shuffle_band_and_list_do_not_overlap() {
+        let (_, by, _, bh) = library::library_shuffle_band();
+        for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
+            assert!(
+                library::list_top(tab) >= by + bh,
+                "{tab:?} list starts inside the shuffle band"
+            );
+        }
+        // A tap one pixel below the band is a list tap, not a shuffle.
+        let mut a = unlocked();
+        a.push(Screen::Library);
+        a.lib_tab = Tab::Songs;
+        assert!(!library::hit_shuffle_band(240, by + bh + 1));
+        // ...and one inside it is not a row.
+        assert_eq!(library::hit_row(Tab::Songs, &a.lib, 0, by + bh / 2), None);
+    }
+
+    /// A playlist row has no single track under the cursor, so both input routes (button Select
+    /// and a finger tap) play the whole list from the top.
+    #[test]
+    fn playlist_row_plays_the_whole_list() {
+        let mut a = unlocked();
+        a.push(Screen::Library);
+        a.lib_tab = Tab::Playlists;
+        a.lib_idx = 0;
+        a.lib = crate::model::Library {
+            playlists: vec![
+                crate::model::PlaylistRow { id: 77, name: "Night Bus".into(), tracks: 3, art: "Night Bus".into() },
+                crate::model::PlaylistRow { id: 78, name: "Morning".into(), tracks: 2, art: "Morning".into() },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(a.press(Button::Select), vec![Action::PlayPlaylist(77)]);
+
+        // Same for a tap. Derive the y from the render's own geometry (list_top + row_h) rather
+        // than a magic number, so this can't drift from the layout the way a hard-coded y would.
+        let y = library::list_top(Tab::Playlists) + library::row_h(Tab::Playlists) + 4;
+        assert_eq!(a.tap(240, y), vec![Action::PlayPlaylist(78)]);
+        assert_eq!(a.lib_index(), 1);
+    }
+
+    /// An empty Playlists tab must not emit an action for a tap on nothing.
+    #[test]
+    fn empty_playlists_tab_is_inert() {
+        let mut a = unlocked();
+        a.push(Screen::Library);
+        a.lib_tab = Tab::Playlists;
+        a.lib = crate::model::Library::default();
+        assert!(a.press(Button::Select).is_empty());
     }
 
     #[test]
@@ -2036,12 +2272,20 @@ mod tests {
         a.press(Button::Select); // USB-DAC (idx 7)
         assert_eq!(a.current(), Screen::UsbDac);
         assert!(!a.usb_dac_on());
-        // a tap engages USB-DAC → routes to 3.5mm + BT/LDAC (no BT disconnect)
-        assert_eq!(a.tap(240, 300), vec![Action::UsbDacToggle(true)]);
+        // A stray tap in the body must NOT engage it: this switches the USB gadget mode and
+        // starts the LDAC bridge, so it may only happen on the switch itself.
+        assert!(a.tap(240, 300).is_empty(), "a body tap engaged USB-DAC");
+        assert!(!a.usb_dac_on());
+        // The switch engages USB-DAC → routes to 3.5mm + BT/LDAC (no BT disconnect).
+        let sw = (441, 65); // centre of the drawn toggle
+        assert_eq!(a.tap(sw.0, sw.1), vec![Action::UsbDacToggle(true)]);
         assert!(a.usb_dac_on());
         // tapping again disengages
-        assert_eq!(a.tap(240, 300), vec![Action::UsbDacToggle(false)]);
+        assert_eq!(a.tap(sw.0, sw.1), vec![Action::UsbDacToggle(false)]);
         assert!(!a.usb_dac_on());
+        // The target is padded to ≥44px around the small drawn switch.
+        assert!(crate::usbdac::hit_toggle(sw.0 - 20, sw.1 - 18));
+        assert!(crate::usbdac::hit_toggle(sw.0 + 15, sw.1 + 18));
     }
 
     #[test]
@@ -2229,6 +2473,70 @@ mod tests {
         // A rightward swipe on chrome (above the rows) queues nothing.
         assert!(a.swipe(1, 240, 100).is_empty());
         assert_eq!(a.queue().len(), 1);
+    }
+
+    /// Swipe-to-queue also works on an expanded album's inline track rows. Those rows are
+    /// tappable-to-play, but the swipe used to handle the Songs tab only, so the same row queued
+    /// on one tab and did nothing on another.
+    #[test]
+    fn right_swipe_on_an_expanded_album_track_queues_it() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Albums;
+        // Expand the first album in display order.
+        let flat = library::album_display_order(&a.lib, a.album_sort)[0];
+        a.album_expanded = Some(flat);
+        // Find the y of its first inline track row through the accordion's own layout.
+        let want = a.lib.albums_flat()[flat].track_list[0].clone();
+        let y = (0..800)
+            .find(|&y| a.albums_track_at(y).map(|s| s.object_id) == Some(want.object_id))
+            .expect("expanded album should expose a track row");
+        assert!(a.swipe(1, 240, y).is_empty());
+        assert_eq!(a.queue().len(), 1);
+        assert_eq!(a.queue()[0].object_id, want.object_id);
+        // Collapsed, that same y is no longer a track row -> nothing queued.
+        a.album_expanded = None;
+        assert!(a.swipe(1, 240, y).is_empty());
+        assert_eq!(a.queue().len(), 1);
+    }
+
+    /// Tapping a queue row plays that track. Previously *any* tap on Up Next just returned to Now
+    /// Playing, so the queue was look-but-don't-touch.
+    #[test]
+    fn up_next_row_tap_plays_that_track() {
+        let mut a = unlocked();
+        a.push(Screen::UpNext);
+        // Simulate what a render publishes: the ids actually drawn, in drawn order.
+        a.up_next_rows = vec![101, 202, 303];
+        let top = crate::chrome::HEADER_BOTTOM;
+        let rh = crate::up_next::RH;
+        assert_eq!(a.tap(240, top + rh / 2), vec![Action::PlayIndex(101)]);
+        assert_eq!(a.tap(240, top + rh + rh / 2), vec![Action::PlayIndex(202)]);
+        assert_eq!(a.current(), Screen::UpNext, "playing a row should not leave the screen");
+        // Past the drawn rows there is nothing to play — the old shortcut back to Now Playing.
+        assert!(a.tap(240, top + rh * 3 + rh / 2).is_empty());
+        assert_eq!(a.current(), Screen::NowPlaying);
+    }
+
+    /// An empty queue keeps the old behaviour: a tap just leaves.
+    #[test]
+    fn up_next_tap_with_nothing_queued_returns_to_now_playing() {
+        let mut a = unlocked();
+        a.push(Screen::UpNext);
+        a.up_next_rows.clear();
+        assert!(a.tap(240, crate::chrome::HEADER_BOTTOM + 10).is_empty());
+        assert_eq!(a.current(), Screen::NowPlaying);
+    }
+
+    /// The "Play album" band on the drill-in is hit-tested through its own rect. The old literal
+    /// range started 16px above where the band is actually drawn.
+    #[test]
+    fn album_play_band_hit_matches_where_it_is_drawn() {
+        let (bx, by, bw, bh) = library::album_play_band();
+        assert!(library::hit_album_play_band(bx + bw / 2, by + bh / 2));
+        assert!(!library::hit_album_play_band(bx + bw / 2, by - 1), "band hit extends above the band");
+        assert!(!library::hit_album_play_band(bx - 1, by + bh / 2), "band hit extends left of the band");
+        assert!(!library::hit_album_play_band(bx + bw / 2, by + bh), "band hit extends below the band");
     }
 
     #[test]
