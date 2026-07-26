@@ -351,19 +351,27 @@ unsafe fn cstr(p: *const c_char) -> String {
 /// Open the framebuffer and initialise the renderer. Returns 0 on success, <0 on error.
 #[no_mangle]
 pub extern "C" fn cinder_render_init() -> libc::c_int {
-    // GPU present path (EGL/GLES2 on Mali) is now the DEFAULT (2026-07-26). It was opt-in while the
-    // failure mode was a driver-level HANG: cinder runs as uid 100 (CapEff=0) and the Mali EGL stack
-    // needs four nodes that ship root-only (/dev/ion, /dev/mtkfb_vsync, /dev/mtk_disp, /dev/sw_sync).
-    // Opening EGL without them didn't return an error — it blocked inside the driver, wedging a boot
-    // that can't fall through to software, which is how the bad-boot counter got tripped.
-    //   That class is now GONE: gpu::GlPresenter::open() preflights every node with access(R|W) and
-    //   refuses to enter EGL unless they're all open, running the setuid-root cinder-gpunode helper
-    //   once to widen them. A blocked node is therefore a clean Err → software framebuffer, proven
-    //   on-device in BOTH directions as uid 100 via `cinder-probe --gpu`.
-    //   Escapes kept for debugging: CINDER_GPU=0 or /contents/cinder_gpu_off force software.
+    // GPU present path (EGL/GLES2 on Mali) is OPT-IN. It was briefly made the default on
+    // 2026-07-26 and that flip is what wedged the two flashes that evening: the app booted
+    // perfectly (deferred_up: DONE, "healthy: bad-boot counter cleared", no crash in the log)
+    // while the panel still showed the boot animation. eglSwapBuffers returns success on this
+    // fbdev build whether or not the compositor ever scans the buffer out, so a GPU present that
+    // reaches no pixels is INVISIBLE to us — and worse, invisible to the bad-boot counter, which
+    // this process clears on "a frame was rendered". Frozen glass therefore also disabled rung 1
+    // of the escape ladder; only the cable escape (rung 0) got the device back.
+    //   The software framebuffer does not have that hole: Framebuffer::blit ends in an explicit
+    // FBIOPUT_VSCREENINFO(FB_ACTIVATE_FORCE), which is the only thing that makes mtkfb push pixels
+    // to the panel, and it reports failure.
+    //   So the proven path is the default and the unproven one costs a deliberate flag file. The
+    // flag lives on /contents, which is reachable over USB-MSC from a stock boot — deleting it
+    // needs strictly less than the app it rescues, per the escape-ladder rule.
+    //   Enable:  /contents/cinder_gpu_on   (or CINDER_GPU=1)
+    //   Disable: delete that file          (/contents/cinder_gpu_off and CINDER_GPU=0 also win)
     let force_off = std::path::Path::new("/contents/cinder_gpu_off").exists()
         || std::env::var("CINDER_GPU").map(|v| v == "0").unwrap_or(false);
-    let want_gpu = !force_off;
+    let opt_in = std::path::Path::new("/contents/cinder_gpu_on").exists()
+        || std::env::var("CINDER_GPU").map(|v| v == "1").unwrap_or(false);
+    let want_gpu = opt_in && !force_off;
     let present = if want_gpu {
         match gpu::GlPresenter::open(W as i32, H as i32) {
             Ok(g) => {
@@ -382,6 +390,9 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
             }
         }
     } else {
+        // Always name the live present path in cinderhome.log: "the app ran but the screen was
+        // stuck" is otherwise indistinguishable between these two branches from the log alone.
+        println!("cinder-ffi: software framebuffer present path (GPU opt-in flag absent)");
         match Framebuffer::open() {
             Ok(fb) => Presenter::Fb(fb),
             Err(e) => {
