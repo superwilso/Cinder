@@ -33,6 +33,51 @@ struct GlyphKey {
     size_q: u32,
 }
 
+/// Device font fallback chain, tried in order for any codepoint the bundled fonts lack.
+///
+/// Hanken Grotesk and JetBrains Mono are Latin-focused: Hanken has **no Cyrillic, Greek, CJK or
+/// Thai at all**, and neither has CJK. On a Walkman that matters — a library with Japanese,
+/// Chinese, Korean, Russian or Thai tags renders every one of those characters as a `.notdef`
+/// box. (Advance widths stay non-zero, so layout doesn't collapse; it's purely wrong glyphs.)
+///
+/// Sony already ships full coverage on the device for its own Qt UI, so we borrow it rather than
+/// bloating the binary. Nothing is redistributed — these are read at runtime from the device's
+/// own `/system`, and the paths simply don't exist on a host, where the chain is a no-op.
+/// Coverage verified against the extracted rootfs (see `tests/font_coverage.rs`):
+///   SST-Roman          Cyrillic, Greek, Latin-ext — Sony's own corporate face  (87 KB)
+///   SSTJpPro-Regular   JP kana+kanji, Hans, ♪♥ symbols                         (2.9 MB)
+///   NotoSansKR-Regular Hangul (+ JP/Hans)                                      (4.5 MB)
+///   DFPGothicPW5       Traditional Chinese / BIG5-HK                           (10 MB)
+///   NotoSansThai       Thai                                                    (34 KB)
+///
+/// **Order is not arbitrary.** `SSTJpPro` also covers Cyrillic and Greek, but as *full-width*
+/// glyphs (16 px advance at 16 px, vs ~9.6 proportional) — a Russian title resolved to it renders
+/// v e r y   s p a c e d   o u t. `SST-Roman` is proportional, tiny, and is the typeface Sony's
+/// own UI uses, so it goes first and the CJK faces only ever get scripts they are actually right
+/// for. Each is loaded ONLY when a glyph misses, so a Latin-only library pays for none of it.
+///
+/// Note `SSTUI-Roman.ttf` is deliberately absent: fontdue cannot parse it (see
+/// `analysis/RE_sony_fonts.md`). `SSTUI-Bold.ttf` parses fine — the pair are not interchangeable.
+const FALLBACK_FONTS: &[&str] = &[
+    "SST-Roman.otf",
+    "SSTJpPro-Regular.otf",
+    "NotoSansKR-Regular.otf",
+    "DFPGothicPW5-BIG5HK-SONY-20140613.ttf",
+    "NotoSansThai-Regular.ttf",
+];
+
+/// Where those live on the device. Overridable so the host harness and tests can point at the
+/// extracted rootfs and render real non-Latin text without a device.
+const FALLBACK_DIR: &str = "/system/vendor/sony/lib/fonts";
+
+/// Lazily-resolved fallback slot. Fonts live for the process lifetime (leaked once), which is
+/// what lets `resolve` hand back a plain reference out of a `RefCell`.
+enum Slot {
+    Untried,
+    Absent,
+    Ready(&'static Font),
+}
+
 pub struct FontSet {
     sans_regular: Font,
     sans_semibold: Font,
@@ -41,6 +86,7 @@ pub struct FontSet {
     mono_light: Font,
     mono_regular: Font,
     mono_bold: Font,
+    fallbacks: RefCell<Vec<Slot>>,
     // Rasterising a glyph allocates + does real work; the UI re-draws the same glyphs every frame
     // (especially while scrolling / the visualiser animates), so we cache (metrics, coverage
     // bitmap) per glyph. Single-threaded access (render runs under the cinder-ffi mutex), so a
@@ -59,8 +105,54 @@ impl FontSet {
             mono_light: f(include_bytes!("../assets/fonts/JetBrainsMono-Light.ttf")),
             mono_regular: f(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
             mono_bold: f(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf")),
+            fallbacks: RefCell::new((0..FALLBACK_FONTS.len()).map(|_| Slot::Untried).collect()),
             glyph_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Fallback #`i`, loading it on first demand. A missing/unparseable file is remembered as
+    /// `Absent` so a device without Sony's fonts costs exactly one failed `read` per font, ever.
+    fn fallback(&self, i: usize) -> Option<&'static Font> {
+        if let Slot::Ready(f) = self.fallbacks.borrow()[i] {
+            return Some(f);
+        }
+        if matches!(self.fallbacks.borrow()[i], Slot::Absent) {
+            return None;
+        }
+        let dir = std::env::var("CINDER_FONT_DIR").unwrap_or_else(|_| FALLBACK_DIR.to_string());
+        let loaded = std::fs::read(format!("{dir}/{}", FALLBACK_FONTS[i]))
+            .ok()
+            .and_then(|b| Font::from_bytes(b, FontSettings::default()).ok())
+            // Leak: at most 4 fonts, loaded once, alive until exit anyway. Buys a 'static ref so
+            // `resolve` can return it alongside a `&self`-bound primary font.
+            .map(|f| &*Box::leak(Box::new(f)));
+        self.fallbacks.borrow_mut()[i] = match loaded {
+            Some(f) => Slot::Ready(f),
+            None => Slot::Absent,
+        };
+        loaded
+    }
+
+    /// Pick the font that actually has `ch`, plus its cache id. Falls back through the device
+    /// chain when the bundled font lacks the codepoint; if nothing has it, returns the primary so
+    /// the caller still gets `.notdef` metrics and the text keeps its shape.
+    fn resolve(&self, fam: Family, w: Weight, ch: char) -> (u8, &Font) {
+        let id = Self::font_index(fam, w);
+        let primary = self.pick(fam, w);
+        // Space has no outline in some fonts but is never "missing" — skip the chain for it, and
+        // for ASCII generally, which is the overwhelmingly common case and always covered.
+        if (ch as u32) < 0x80 || primary.lookup_glyph_index(ch) != 0 {
+            return (id, primary);
+        }
+        for i in 0..FALLBACK_FONTS.len() {
+            if let Some(f) = self.fallback(i) {
+                if f.lookup_glyph_index(ch) != 0 {
+                    // ids 16.. are the fallbacks, so they can't collide with `font_index`'s 0..6.
+                    return (16 + i as u8, f);
+                }
+            }
+        }
+        (id, primary)
     }
 
     /// Stable font index for the cache key (matches `pick`'s selection).
@@ -83,11 +175,12 @@ impl FontSet {
     /// Cached rasterisation: returns the glyph metrics + an Rc to its coverage bitmap. Misses
     /// rasterise once and insert; hits are a hashmap lookup (no allocation/raster work).
     fn glyph(&self, fam: Family, w: Weight, ch: char, size: f32) -> (Metrics, std::sync::Arc<Vec<u8>>) {
-        let key = GlyphKey { font: Self::font_index(fam, w), ch, size_q: (size * 4.0) as u32 };
+        let (font_id, font) = self.resolve(fam, w, ch);
+        let key = GlyphKey { font: font_id, ch, size_q: (size * 4.0) as u32 };
         if let Some(hit) = self.glyph_cache.borrow().get(&key) {
             return (hit.0, hit.1.clone());
         }
-        let (m, bitmap) = self.pick(fam, w).rasterize(ch, size);
+        let (m, bitmap) = font.rasterize(ch, size);
         let rc = std::sync::Arc::new(bitmap);
         self.glyph_cache.borrow_mut().insert(key, (m, rc.clone()));
         (m, rc)
@@ -119,11 +212,16 @@ pub struct TextStyle {
 }
 
 /// Pixel width of `s` rendered with `st` (advances + tracking).
+/// MUST resolve per-char exactly as `draw` does. A fallback glyph is typically full-width where
+/// the primary's `.notdef` is half — measuring against the primary while drawing from the
+/// fallback would silently desync every truncation, centring and right-alignment on the screen.
 pub fn measure(fonts: &FontSet, s: &str, st: &TextStyle) -> f32 {
-    let font = fonts.pick(st.fam, st.weight);
     let track = st.tracking * st.size;
     s.chars()
-        .map(|ch| font.metrics(ch, st.size).advance_width + track)
+        .map(|ch| {
+            let (_, font) = fonts.resolve(st.fam, st.weight, ch);
+            font.metrics(ch, st.size).advance_width + track
+        })
         .sum()
 }
 

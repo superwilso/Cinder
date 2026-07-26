@@ -24,14 +24,20 @@ fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32) -> 
 pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &str, battery: u8) {
     // left: clock + codec badge + (NIGHT)
     let cx = text::draw(c, f, 18.0, 22.0, clock, &sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.06));
-    let bst = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.12);
-    let bw = text::measure(f, badge, &bst);
-    let bx = cx + 12.0;
-    Rectangle::new(Point::new((bx - 6.0) as i32, 7), Size::new((bw + 12.0) as u32, 18))
-        .into_styled(PrimitiveStyle::with_stroke(t.acc, 1))
-        .draw(c)
-        .ok();
-    let nx = text::draw(c, f, bx, 21.0, badge, &bst);
+    // Skip the whole badge when there is no codec string. Drawing it unconditionally left a bare
+    // 12px accent-stroked rectangle floating next to the clock whenever nothing was loaded —
+    // caught on a live device screenshot; the host harness never renders that state.
+    let mut nx = cx;
+    if !badge.is_empty() {
+        let bst = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.12);
+        let bw = text::measure(f, badge, &bst);
+        let bx = cx + 12.0;
+        Rectangle::new(Point::new((bx - 6.0) as i32, 7), Size::new((bw + 12.0) as u32, 18))
+            .into_styled(PrimitiveStyle::with_stroke(t.acc, 1))
+            .draw(c)
+            .ok();
+        nx = text::draw(c, f, bx, 21.0, badge, &bst);
+    }
     if t.night {
         text::draw(c, f, nx + 12.0, 21.0, "NIGHT", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
     }

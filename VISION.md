@@ -26,7 +26,7 @@ User-authored, living list. Numbered as originally given; append, don't prune.
 | # | Goal | State |
 |---|------|-------|
 | 1 | **Faster boot + better battery** — kill the heavy Qt app, lean native UI | ✅ Largely achieved. Cinder is a ~3 MB native binary with dirty-flag rendering vs Sony's Qt stack. GPU present path landed 2026-07-26 (vsync-paced, no triple memcpy). Not yet *measured* against stock — quantifying this is outstanding. |
-| 2 | **Improved UI/UX** — the Cinder design (warm amber on near-black) | ✅ All 14+ screens built and rendering. Type scale and touch-target pass done 2026-07-26 to better match Sony's larger, more legible sizing. |
+| 2 | **Improved UI/UX** — the Cinder design (warm amber on near-black) | ✅ All 14+ screens built and rendering. Type scale and touch-target pass done 2026-07-26 to better match Sony's larger, more legible sizing. Non-Latin tags (JP/CN/KR/Cyrillic/Greek/Thai) render properly since 2026-07-26 via a lazy fallback onto Sony's own on-device fonts — see [`analysis/RE_sony_fonts.md`](analysis/RE_sony_fonts.md). |
 | 3 | **USB-DAC in with LDAC *and* 3.5 mm out** — the headline | ◐ **The next major push.** All RE complete; `ldac-bridge` builds. Two on-device unknowns remain. See below. |
 | 4 | **Night mode** — dark palette *and* dimmer backlight | ✅ Both. Day/Night palettes plus real backlight dimming (auto-detected node). |
 | 5 | **Battery-efficient scrobbler** — native, not the heavy add-on | ✅ Writes `/contents/.scrobbler.log`. |

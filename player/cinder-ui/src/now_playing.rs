@@ -65,6 +65,19 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     crate::chrome::status_bar(c, t, f, np.clock, np.badge, np.battery);
     let seed = np.viz_seed; // animated by the shell while playing; constant when paused/host
 
+    // Nothing loaded — the state the device sits in from boot until the first track is picked.
+    // Falling through would draw an art block seeded from an empty string (an orphan coloured
+    // square) above three empty text runs, which is what the device actually showed.
+    if np.title.is_empty() && np.artist.is_empty() {
+        let cy = if t.night { 120.0 } else { 274.0 };
+        crate::widgets::center(c, f, 240.0, cy, "Nothing playing",
+            &s(Family::Sans, Weight::Regular, 22.0, t.dim, 0.0));
+        crate::widgets::center(c, f, 240.0, cy + 26.0, "CHOOSE A TRACK FROM YOUR LIBRARY",
+            &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+        idle_chrome(c, t, f);
+        return;
+    }
+
     if t.night {
         // compact header: 92px thumb @32% + title/artist/codec column
         match np.art_thumb {
@@ -132,4 +145,32 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     icons::eq(c, 240.0, tb, 26.0, t.dim);
     icons::bt(c, 336.0, tb, 25.0, t.dim);
     icons::settings(c, 432.0, tb, 26.0, t.dim);
+}
+
+/// Progress rail + transport + toolbar for the idle screen. Geometry is duplicated from `render`
+/// deliberately: every one of these is a TAP TARGET that `nav::tap` resolves by coordinate, so the
+/// idle screen has to put them in exactly the same places or the controls stop working when
+/// nothing is loaded. Only the *state* differs — empty rail, no times, transport shows play.
+fn idle_chrome(c: &mut Canvas, t: &Theme, f: &FontSet) {
+    fill_rect(c, 24, 612, 432, 4, t.line);
+
+    let ty = 692.0;
+    icons::shuffle(c, 44.0, ty, 24.0, t.faint);
+    icons::prev(c, 128.0, ty, 38.0, t.faint);
+    Circle::with_center(Point::new(240, ty as i32), 92)
+        .into_styled(PrimitiveStyle::with_fill(t.acc))
+        .draw(c)
+        .ok();
+    icons::play(c, 240.0, ty, 38.0, t.acc_ink);
+    icons::next(c, 352.0, ty, 38.0, t.faint);
+    icons::repeat(c, 436.0, ty, 24.0, t.faint);
+
+    hline(c, 744, t.line);
+    let tb = 774.0;
+    icons::library(c, 48.0, tb, 26.0, t.acc); // the one thing worth tapping from here
+    icons::queue(c, 144.0, tb, 26.0, t.dim);
+    icons::eq(c, 240.0, tb, 26.0, t.dim);
+    icons::bt(c, 336.0, tb, 25.0, t.dim);
+    icons::settings(c, 432.0, tb, 26.0, t.dim);
+    let _ = f;
 }
