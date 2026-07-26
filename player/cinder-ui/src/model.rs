@@ -74,6 +74,17 @@ pub struct Library {
     pub album_groups: Vec<ArtistGroup>,
     pub artists: Vec<ArtistRow>,
     pub playlists: Vec<PlaylistRow>,
+    /// Real cover thumbnails, keyed by `album_id`, pre-scaled to the 48x48 the list rows draw.
+    ///
+    /// Populated by the shell (cinder-ffi) from its on-disk art cache; empty on host/sample data
+    /// and empty for any album whose cover hasn't been decoded yet. Rows fall back to the
+    /// generated gradient when a key is missing, so this can fill in progressively while the
+    /// background builder works through the library. Rendering stays pure: it only ever reads.
+    ///
+    /// Kept pre-scaled because decoding is what's expensive — 365 ms for one of these covers on
+    /// device (they're 1425x1425 JPEGs embedded in the FLACs), which is why they cannot be
+    /// resolved during a scroll.
+    pub thumbs: std::collections::HashMap<i64, crate::art::Image>,
 }
 
 impl Library {
@@ -162,6 +173,6 @@ impl Library {
             .iter()
             .map(|p| PlaylistRow { id: 0, name: p.n.into(), tracks: p.k, art: p.art.into() })
             .collect();
-        Library { songs, album_groups, artists, playlists }
+        Library { songs, album_groups, artists, playlists, thumbs: Default::default() }
     }
 }

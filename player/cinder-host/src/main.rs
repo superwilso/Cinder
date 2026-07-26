@@ -16,6 +16,15 @@ fn save(c: &Canvas, name: &str) {
     println!("wrote {path}");
 }
 
+/// Load a raw NxN RGB thumbnail (the on-device art-cache format) so the host preview can render
+/// REAL covers pulled off the device — the only way to check the cover draw path without flashing.
+///   CINDER_PREVIEW_T48=<file> CINDER_PREVIEW_T96=<file> cargo run -p cinder-host
+fn preview_thumb(var: &str, edge: usize) -> Option<cinder_ui::art::Image> {
+    let path = std::env::var(var).ok()?;
+    let rgb = std::fs::read(path).ok()?;
+    (rgb.len() == edge * edge * 3).then(|| cinder_ui::art::Image { w: edge, h: edge, rgb })
+}
+
 fn main() {
     let fonts = FontSet::load();
     std::fs::create_dir_all("out").ok();
@@ -78,7 +87,16 @@ fn main() {
     };
     let bt = Bt { on: true, connected: Some("WH-1000XM5"), codec_sel: 0, ldac_quality: 0 };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
-    let lib = Library::sample();
+    let mut lib = Library::sample();
+    // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
+    // enough to check placement, scaling and the day/night dim against a real cover.
+    if let Some(t48) = preview_thumb("CINDER_PREVIEW_T48", 48) {
+        for id in 0..8 {
+            lib.thumbs.insert(id, t48.clone());
+        }
+        println!("preview: using real device thumbnails");
+    }
+    let lib = lib;
 
     for (name, theme) in [("day", Theme::day()), ("night", Theme::night())] {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
@@ -219,7 +237,7 @@ fn main() {
             .iter()
             .map(|a| ArtistRow { name: a.to_string(), albums: 7, tracks: 56, arts: vec![format!("{a}0"), format!("{a}1")] })
             .collect();
-        let big = Library { songs, album_groups, artists, playlists: Vec::new() };
+        let big = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default() };
 
         let mut app = App::unlocked();
         app.press(Button::Up); // Menu
@@ -305,7 +323,7 @@ fn main() {
         app.press(Button::Up);
         app.press(Button::Down);
         app.press(Button::Select);
-        app.set_library(Library { songs, album_groups, artists, playlists: Vec::new() });
+        app.set_library(Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default() });
         app.press(Button::Left); // -> Songs
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);

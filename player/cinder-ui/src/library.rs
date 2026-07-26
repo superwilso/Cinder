@@ -35,6 +35,26 @@ const LIST_BOTTOM: i32 = H as i32 - crate::chrome::NP_BAR_H;
 // px, rows render at `top - (scroll_px % rh)` under a clip band so partial rows are fine.
 // These helpers give nav the shared geometry: list top / row height / total content height.
 
+/// Draw an album thumbnail at `size`: the real decoded cover when the shell has one for this
+/// `album_id`, else the generated gradient keyed by `name`.
+///
+/// One place, so every list row behaves identically while the background art cache fills in —
+/// rows switch from gradient to cover the moment a thumbnail lands, with no layout change (the
+/// cover occupies exactly the rect the gradient did). A thumbnail of the wrong size falls back
+/// rather than scaling: resampling here would run per row per frame, which is what the cache
+/// exists to avoid.
+fn thumb(
+    c: &mut Canvas, t: &Theme, lib: &Library, album_id: i64, name: &str,
+    x: i32, y: i32, size: i32, op: f32,
+) {
+    match lib.thumbs.get(&album_id) {
+        Some(img) if img.w == size as usize && img.h == size as usize => {
+            art::draw_image(c, t, x, y, img, op)
+        }
+        _ => art::block(c, t, x, y, size, size, name, op),
+    }
+}
+
 /// Y where the tab bar ends on the Library screen — `chrome::header` returns a fixed 91 and
 /// `tabs` adds 34, so this is constant and both the renderer and the hit test can rely on it.
 pub const TABS_BOTTOM: i32 = 125;
@@ -509,7 +529,7 @@ pub fn render(
                 if now {
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
                 }
-                art::block(c, t, 22, y + (rh - 48) / 2, 48, 48, &sgn.art, artdim(t));
+                thumb(c, t, lib, sgn.album_id, &sgn.art, 22, y + (rh - 48) / 2, 48, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
                 let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
                 text::draw(c, f, 78.0, (cy - 2) as f32, &crate::widgets::fit(f, &sgn.title, &tst, 300.0), &tst);
@@ -561,7 +581,7 @@ pub fn render(
                         if now {
                             fill_rect(c, 0, y, W as i32, ALBUM_ROW_H, t.row_sel);
                         }
-                        art::block(c, t, 22, y + (ALBUM_ROW_H - 48) / 2, 48, 48, &al.art, artdim(t));
+                        thumb(c, t, lib, al.album_id, &al.art, 22, y + (ALBUM_ROW_H - 48) / 2, 48, artdim(t));
                         let tcol = if now { t.acc } else { t.ink };
                         text::draw(c, f, 80.0, (cy - 2) as f32, &al.name,
                             &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
@@ -662,6 +682,9 @@ pub fn render(
 
 /// Album drill-in: art + title/artist header, a shuffle row, then the pixel-scrolled track
 /// list. `track_idx` is the highlighted row, `scroll_px` the content offset in px.
+/// `cover` is the album's decoded art at exactly 96x96, or None to draw the gradient. The shell
+/// loads it from the art cache when the drill-in opens — one image, not a map, because only one
+/// album is ever open.
 pub fn album_view(
     c: &mut Canvas,
     t: &Theme,
@@ -669,6 +692,7 @@ pub fn album_view(
     album: &crate::model::AlbumRow,
     track_idx: usize,
     scroll_px: i32,
+    cover: Option<&crate::art::Image>,
 ) {
     let scroll_px = scroll_px.clamp(0, album_max_scroll_px(album));
     c.fill(t.bg);
@@ -677,7 +701,10 @@ pub fn album_view(
     icons::back(c, 30.0, 110.0, 20.0, t.dim);
     text::draw(c, f, 50.0, 114.0, "ALBUM", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
     // art block + title/artist/meta
-    art::block(c, t, 22, 130, 96, 96, &album.art, artdim(t));
+    match cover {
+        Some(img) if img.w == 96 && img.h == 96 => art::draw_image(c, t, 22, 130, img, artdim(t)),
+        _ => art::block(c, t, 22, 130, 96, 96, &album.art, artdim(t)),
+    }
     let title = crate::widgets::fit(
         f, &album.name, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01), (W as f32) - 150.0,
     );
@@ -805,6 +832,7 @@ mod tests {
                 ArtistGroup { artist: "Two".into(), albums: vec![album("B1", "Two", 4)] },
             ],
             artists: Vec::new(),
+            thumbs: Default::default(),
             playlists: Vec::new(),
         }
     }
@@ -892,6 +920,7 @@ mod tests {
             ],
             album_groups: Vec::new(),
             artists: Vec::new(),
+            thumbs: Default::default(),
             playlists: Vec::new(),
         };
         // added: song 1 newest, 3 oldest. album order: song 2 first. year: song 3 newest.
@@ -938,6 +967,7 @@ mod tests {
             album_groups: Vec::new(),
             artists: Vec::new(),
             playlists: Vec::new(),
+            thumbs: Default::default(),
         }
     }
 

@@ -172,6 +172,23 @@ int main(int argc, char** argv) {
         cinder_render_shutdown();
         return ar;
     }
+    if (argc > 1 && std::strcmp(argv[1], "--artcache") == 0) {
+        // Exercise the background cover-cache builder for N seconds (default 60) and report what
+        // it managed. Standalone: it writes only /data/cinder/artcache, which the running Home app
+        // also reads — a partially built cache is a valid cache, so this is safe to run live.
+        int secs = argc > 2 ? std::atoi(argv[2]) : 60;
+        install_diagnostics();
+        wd_arm(20); cinder_render_init(); wd_disarm();
+        wd_arm(60);
+        int rc = cinder_db_open("/db/MTPDB.dat");   // starts the builder thread
+        wd_disarm();
+        if (rc != 0) { clog_("artcache: db_open FAILED"); return 1; }
+        std::fprintf(stderr, "[cinder-probe] artcache: letting the builder run %d s …\n", secs);
+        std::fflush(stderr);
+        for (int i = 0; i < secs; ++i) { wd_arm(8); cinder_render_tick(); wd_disarm(); sleep(1); }
+        clog_("artcache: DONE (count the files in /data/cinder/artcache)");
+        return 0;
+    }
     if (argc > 1 && std::strcmp(argv[1], "--bench") == 0) {
         // Frame-time bench, in isolation like --gpu. "Scrolling is choppy" can be a slow
         // rasterizer, a slow present, or a loop that just isn't repainting — this separates them.

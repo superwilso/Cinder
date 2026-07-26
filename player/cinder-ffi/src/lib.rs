@@ -11,6 +11,7 @@
 // (which assumes safe-Rust callers) is a false positive for this FFI surface.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
+mod art_cache;
 mod art_load;
 mod gpu;
 mod scrobble;
@@ -258,6 +259,8 @@ struct Np {
 }
 
 struct Render {
+    /// Which album's cover is currently handed to the UI, so the 96x96 is loaded on change only.
+    album_cover_id: Option<i64>,
     present: Presenter,
     /// The frame buffer, allocated ONCE and reused every frame. Re-allocating it per frame
     /// is 1.5 MB of churn that fragmented the heap until an allocation failed outright on
@@ -408,6 +411,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
     np.codec = "—".into();
     np.battery = 100;
     *cell().lock().unwrap() = Some(Render {
+        album_cover_id: None,
         present,
         canvas: Canvas::new(),
         fonts: FontSet::load(),
@@ -658,7 +662,9 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         })
         .collect();
 
-    cinder_ui::Library { songs, album_groups, artists, playlists }
+    // `thumbs` is filled separately by start_art_cache: the disk cache load is I/O, not model
+    // building, and the rest arrives asynchronously from the decoder thread.
+    cinder_ui::Library { songs, album_groups, artists, playlists, thumbs: Default::default() }
 }
 
 /// Render the current state to the panel (call once per frame from the pump). No-op when
@@ -690,6 +696,14 @@ pub extern "C" fn cinder_render_tick() {
     // 3350-track library and the decoded cover art. Every screen's render begins with
     // `c.fill(theme.bg)`, so the previous frame's pixels are always fully overwritten; only the
     // clip band has to be reset.
+    // Album drill-in cover: load the 96x96 out of the art cache when the open album changes.
+    // Polled here rather than pushed from nav because the cache lives on this side; it is one
+    // 27 KB read off ext4, only on a change, so it costs nothing per frame.
+    let open_album = r.app.open_album_id();
+    if open_album != r.album_cover_id {
+        r.album_cover_id = open_album;
+        r.app.set_album_cover(open_album.and_then(|id| art_cache::load(id, art_cache::T96)));
+    }
     r.canvas.clear_clip();
     let np = NowPlaying {
         title: &r.np.title,
@@ -1652,6 +1666,82 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
 /// `progress` is 0..1; `playing`/`battery` as shown in the status/transport.
 /// Open the library DB (read-only). Call after `cinder_render_init`. Returns 0 on success,
 /// -1 on open failure, -2 if the renderer isn't initialised. Path is e.g. "/db/MTPDB.dat".
+/// Load whatever cover thumbnails are already cached into the live library, then start the
+/// background builder for the rest.
+///
+/// Called with the renderer lock held (from `cinder_db_open`), so it must not block: the disk load
+/// is a few MB of sequential reads off ext4, and the decoding — 365 ms per album — happens on the
+/// spawned thread, which takes the lock only to hand over each finished thumbnail.
+fn start_art_cache(r: &mut Render, db_path: &str) {
+    if !art_cache::ensure_dir() {
+        return;
+    }
+    let sources = match r.db.as_ref().map(|db| db.album_cover_sources()) {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => {
+            eprintln!("cinder-ffi: art cache: album source query failed: {e}");
+            return;
+        }
+        None => return,
+    };
+    // Anything already on disk shows up on this first frame.
+    let cached = art_cache::load_all(sources.iter().map(|(aid, _)| *aid));
+    let have = cached.len();
+    r.app.library_mut().thumbs = cached;
+    let todo: Vec<(i64, i64)> = sources
+        .into_iter()
+        .filter(|(aid, _)| !art_cache::is_cached(*aid))
+        .collect();
+    eprintln!(
+        "cinder-ffi: art cache: {have} cached, {} to decode (~{} s of background work)",
+        todo.len(),
+        todo.len() * 2 / 5,
+    );
+    if todo.is_empty() {
+        return;
+    }
+    if ART_BUILDER_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return; // a rebuild is already in flight (cinder_db_open can be called again)
+    }
+    let path = db_path.to_string();
+    std::thread::spawn(move || {
+        // The thread opens its OWN read-only DB handle rather than sharing the renderer's: no
+        // lifetime plumbing, no lock held across a 365 ms decode, and a read-only SQLite handle
+        // per thread is exactly what rusqlite wants.
+        let db = match cinder_db::Db::open(&path) {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("cinder-ffi: art cache: builder can't open {path}: {e}");
+                ART_BUILDER_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+        };
+        let total = todo.len();
+        let mut done = 0usize;
+        for (album_id, object_id) in todo {
+            // Decode OUTSIDE the lock. This is the expensive part and the UI must keep painting
+            // through it.
+            let Some(t48) = art_cache::build_one(&db, album_id, object_id) else {
+                continue;
+            };
+            done += 1;
+            if let Ok(mut g) = cell().lock() {
+                let Some(r) = g.as_mut() else { break }; // renderer gone (shutdown) — stop
+                r.app.library_mut().thumbs.insert(album_id, t48);
+                r.dirty = true; // the row this belongs to may be on screen right now
+            }
+            // Yield between albums. The builder is strictly background work: a cover that shows up
+            // a minute later costs the user nothing, whereas competing with the render thread for
+            // this single core would be visible immediately as scroll stutter.
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        eprintln!("cinder-ffi: art cache: builder finished — {done}/{total} covers decoded");
+        ART_BUILDER_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+static ART_BUILDER_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[no_mangle]
 pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let p = unsafe { cstr(path) };
@@ -1670,6 +1760,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
             );
             r.app.set_library(lib);
             r.db = Some(db);
+            start_art_cache(r, &p);
             0
         }
         Err(e) => {

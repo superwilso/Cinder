@@ -68,6 +68,7 @@ fn lerp(a: u8, b: u8, t: f32) -> u8 {
 /// A decoded album-cover bitmap (packed RGB, 3 bytes/px). Produced by the shell's decoder
 /// (cinder-ffi) already PRE-SCALED to its draw size, so `draw_image` is a plain blit —
 /// no per-frame resampling while the visualiser animates over it.
+#[derive(Clone)]
 pub struct Image {
     pub w: usize,
     pub h: usize,

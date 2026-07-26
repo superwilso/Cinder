@@ -152,5 +152,5 @@ fn big_library() -> Library {
         })
         .collect();
     songs.sort_by(|x, y| x.title.cmp(&y.title));
-    Library { songs, album_groups, artists: artist_rows, playlists: Vec::new() }
+    Library { songs, album_groups, artists: artist_rows, playlists: Vec::new(), thumbs: Default::default() }
 }

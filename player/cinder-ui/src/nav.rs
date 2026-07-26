@@ -150,6 +150,10 @@ pub struct App {
     album_expanded: Option<usize>,
     /// Album drill-in: the flat album index being viewed + the track cursor/pixel-scroll inside it.
     album_view: usize,
+    /// Decoded 96x96 cover for the album currently drilled into, or None for the gradient.
+    /// Set by the shell (which owns the art cache) whenever the open album changes; the UI never
+    /// decodes anything itself.
+    album_cover: Option<crate::art::Image>,
     album_track_idx: usize,
     album_scroll_px: i32,
     /// Fling (momentum) velocity in px/s for the current scrollable list; decays each tick.
@@ -236,6 +240,7 @@ impl Default for App {
     fn default() -> Self {
         App {
             stack: vec![Screen::Lock],
+            album_cover: None,
             night: false,
             locked: true,
             playing: true,
@@ -999,6 +1004,20 @@ impl App {
         self.stack = vec![s];
     }
 
+    /// Hand the shell-decoded 96x96 cover for the open album to the UI (None = draw the gradient).
+    pub fn set_album_cover(&mut self, img: Option<crate::art::Image>) {
+        self.album_cover = img;
+    }
+
+    /// `album_id` of the album currently drilled into, if any. The shell polls this to know which
+    /// cover to load out of its art cache — the UI never reads the cache itself.
+    pub fn open_album_id(&self) -> Option<i64> {
+        if self.current() != Screen::Album {
+            return None;
+        }
+        self.lib.albums_flat().get(self.album_view).map(|a| a.album_id)
+    }
+
     /// Screens that carry the Now Playing return bar: the library browse list and the album
     /// drill-in. These are the places you end up several pushes deep from Now Playing, which is
     /// exactly where Back-ing out one screen at a time is tedious.
@@ -1013,6 +1032,12 @@ impl App {
 
     /// Replace the browsable library (called by the shell after the real DB is read). Resets
     /// the cursor so a stale index can't point past the new contents.
+    /// Mutable access to the library, for the shell to drop in cover thumbnails as its background
+    /// decoder produces them. Deliberately narrow in intent: the UI itself never mutates this.
+    pub fn library_mut(&mut self) -> &mut Library {
+        &mut self.lib
+    }
+
     pub fn set_library(&mut self, lib: Library) {
         self.lib = lib;
         self.lib_idx = 0;
@@ -1500,6 +1525,7 @@ impl App {
                 if let Some(al) = flat.get(self.album_view) {
                     crate::library::album_view(
                         c, &theme, fonts, al, self.album_track_idx, self.album_scroll_px,
+                        self.album_cover.as_ref(),
                     );
                 } else {
                     crate::library::render(

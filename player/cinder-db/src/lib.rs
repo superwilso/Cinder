@@ -137,6 +137,23 @@ impl Db {
         rows.collect()
     }
 
+    /// One representative track per album that actually has art, as `(album_id, object_id)`.
+    ///
+    /// This is what the shell's art-cache builder walks: covers are per-track in the schema
+    /// (`object_body.othumb_id`), but every track on an album embeds the same picture, so one
+    /// decode per album is enough. Ordered by album so a partial build is predictable.
+    pub fn album_cover_sources(&self) -> Result<Vec<(i64, i64)>> {
+        let mut st = self.conn.prepare(&format!(
+            "SELECT ob.album_id, MIN(ob.object_id) \
+             FROM object_body ob \
+             WHERE {TRACK_WHERE} AND ob.album_id IS NOT NULL AND ob.othumb_id IS NOT NULL \
+             GROUP BY ob.album_id \
+             ORDER BY ob.album_id"
+        ))?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
     pub fn artists(&self) -> Result<Vec<Artist>> {
         let mut st = self
             .conn
