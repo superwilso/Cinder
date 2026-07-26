@@ -84,6 +84,12 @@ fn main() {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
             ("now_playing", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts, &np)),
             ("now_playing_sleep", &|c: &mut Canvas| { now_playing::render(c, &theme, &fonts, &np); now_playing::sleep_badge(c, &theme, &fonts, 23); }),
+            // Nothing loaded — the state the device actually boots into. Never rendered here
+            // before, which is how an empty codec badge shipped as a bare stroked box.
+            ("now_playing_idle", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts,
+                &now_playing::NowPlaying { title: "", artist: "", codec: "", badge: "", elapsed: "",
+                                           remaining: "", progress: 0.0, playing: false, liked: false,
+                                           art: "", viz_on: false, ..np })),
             ("onboard_0_welcome", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 0)),
             ("onboard_1_controls", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 1)),
             ("onboard_2_features", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 2)),
@@ -231,6 +237,79 @@ fn main() {
         let mut c2 = Canvas::new();
         app.render(&mut c2, &fonts, &np);
         save(&c2, "scroll_library_albums");
+    }
+
+    // ── i18n proof: non-Latin tags ────────────────────────────────────────────────────────────
+    // The bundled fonts are Latin-only (Hanken Grotesk has no Cyrillic/Greek/CJK/Thai at all), so
+    // on a device these render as `.notdef` boxes unless the fallback chain in `text.rs` picks up
+    // Sony's own fonts from /system. Point CINDER_FONT_DIR at the extracted rootfs to see the
+    // fixed version; leave it unset to see exactly what the bug looks like:
+    //   CINDER_FONT_DIR=../analysis/binwalk/6.bin/_6.bin.extracted/ext-root/vendor/sony/lib/fonts \
+    //     cargo run -p cinder-host
+    {
+        use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, Library, SongRow};
+        let rows: &[(&str, &str, &str)] = &[
+            ("君の名は", "RADWIMPS", "4:32"),
+            ("夜に駆ける", "YOASOBI", "4:19"),
+            ("周杰倫 — 稻香", "周杰倫", "3:43"),
+            ("봄날", "방탄소년단", "4:34"),
+            ("Чайковский — Вальс цветов", "Пётр Чайковский", "6:41"),
+            ("Ελλάδα", "Χατζιδάκις", "3:12"),
+            ("ลาบ", "คาราบาว", "5:07"),
+            ("Björk — Jóga", "Björk", "5:04"),
+        ];
+        let songs: Vec<SongRow> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, (t, a, d))| SongRow {
+                title: t.to_string(),
+                artist: a.to_string(),
+                dur: d.to_string(),
+                art: format!("i18n {i}"),
+                object_id: i as i64,
+                album_id: i as i64,
+                disc: 1,
+                track: i as i32 + 1,
+                year: 2020,
+                ..Default::default()
+            })
+            .collect();
+        let album_groups = rows
+            .iter()
+            .enumerate()
+            .map(|(i, (t, a, _))| ArtistGroup {
+                artist: a.to_string(),
+                albums: vec![AlbumRow {
+                    name: t.to_string(),
+                    artist: a.to_string(),
+                    year: "2020".into(),
+                    tracks: 8,
+                    art: format!("i18n {i}"),
+                    album_id: i as i64,
+                    added: 2020,
+                    track_list: songs.clone(),
+                }],
+            })
+            .collect();
+        let artists = rows
+            .iter()
+            .map(|(_, a, _)| ArtistRow { name: a.to_string(), albums: 1, tracks: 8, arts: vec![a.to_string()] })
+            .collect();
+
+        let mut app = App::unlocked();
+        app.press(Button::Up);
+        app.press(Button::Down);
+        app.press(Button::Select);
+        app.set_library(Library { songs, album_groups, artists, playlists: Vec::new() });
+        app.press(Button::Left); // -> Songs
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "i18n_library_songs");
+
+        let np_jp = now_playing::NowPlaying { title: "夜に駆ける", artist: "YOASOBI", ..np };
+        let mut c2 = Canvas::new();
+        now_playing::render(&mut c2, &Theme::night(), &fonts, &np_jp);
+        save(&c2, "i18n_now_playing");
     }
 
     // Volume HUD over Now Playing (press Vol Up a few times).

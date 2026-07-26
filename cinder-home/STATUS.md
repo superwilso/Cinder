@@ -155,6 +155,16 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 ### ✅ Fully functional (real device / real data)
 - **Boot & shell**: launches as the easel `type:Home` app, full lifecycle, dirty-flag framebuffer
   paint (480×800 XRGB8888, triple-buffered, blit bounded against the mapping).
+- **Text / non-Latin tags** (2026-07-26): the bundled faces are Latin-only — Hanken Grotesk has
+  **no Cyrillic, Greek, CJK or Thai at all** — so Japanese, Chinese, Korean, Russian and Thai tags
+  used to render as rows of `.notdef` boxes. `text.rs` now falls back, per codepoint and lazily,
+  onto **Sony's own fonts already on the device** (`/system/vendor/sony/lib/fonts`), so nothing is
+  bundled or redistributed and a Latin-only library loads none of them. `SST-Roman.otf` leads the
+  chain because `SSTJpPro` renders Cyrillic/Greek **full-width** (spaced-out). Both `measure()` and
+  `draw()` resolve identically, so truncation/centring stay correct. Full RE of the device font set,
+  including a genuine GSUB defect in `SSTUI-Roman.ttf`, is in
+  [`../analysis/RE_sony_fonts.md`](../analysis/RE_sony_fonts.md). Guarded by
+  `player/cinder-ui/tests/font_coverage.rs`; visible in the host renders `i18n_*`.
 - **Input model (NW-A55 = touch + transport buttons, NO d-pad)**: the physical buttons are
   Play/pause, ◁ rewind, ▷ skip, Vol±, Power, and the Hold switch — transport + power only.
   **All navigation is the touchscreen**: tap to open/select, drag to scroll lists, **left-edge swipe
