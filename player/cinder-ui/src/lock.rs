@@ -43,8 +43,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, l: &Lock) {
 
     // big clock, centred in the body
     centered(c, f, 366.0, l.big_clock, &sty(Family::Mono, Weight::Light, 88.0, t.ink, -0.02));
-    centered(c, f, 408.0, l.title, &sty(Family::Sans, Weight::Regular, 15.0, t.ink, 0.0));
-    centered(c, f, 428.0, l.artist, &sty(Family::Sans, Weight::Regular, 12.0, t.dim, 0.0));
+    centered(c, f, 408.0, l.title, &sty(Family::Sans, Weight::Regular, 17.0, t.ink, 0.0));
+    centered(c, f, 428.0, l.artist, &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0));
 
     // thin progress bar, 240px wide, centred
     let (px, pw, py) = (120, 240, 454);
@@ -54,7 +54,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, l: &Lock) {
     // bottom hint: lock glyph + caption. The Hold switch unlocks (touch is disabled); the side
     // transport keys stay live; Power just wakes the screen.
     let hint = "HOLD LOCK · SIDE KEYS ACTIVE · SLIDE HOLD OFF";
-    let hs = sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.16);
+    let hs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16);
     let hw = text::measure(f, hint, &hs);
     let total = 12.0 + 9.0 + hw;
     let startx = 240.0 - total / 2.0;

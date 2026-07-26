@@ -246,9 +246,11 @@ if [ "$MODE" = "push" ]; then
 fi
 
 # ---------------------------------------------------------------- --clear-latch
-# Recover from a bad-boot revert: the launcher latches to stock by touching
-# /contents/cinderhome_off (+ _DISABLED_badboot) after MAXBAD crash-boots. Deleting those
-# three files (rw MSC mount) lets the launcher run cinder-home again on the next boot.
+# Recover from a bad-boot revert. The latch itself now lives on /data (ext4) — see
+# deploy/install_cinderhome.sh "WHERE THE STATE LIVES" — and USB-MSC only ever exposes the vfat
+# /contents partition, so we cannot delete it directly from here. Instead we drop the trigger file
+# `cinderhome_clear`, which the launcher consumes on the next boot: it removes the /data latch and
+# gives the installed build another chance. Legacy /contents copies are cleaned up too.
 if [ "$MODE" = "clearlatch" ]; then
   PART="$(data_partition "$DEV")"
   [ -n "$PART" ] || die "no FAT/exFAT data partition on $DEV (is it in MSC mode?)"
@@ -261,9 +263,11 @@ if [ "$MODE" = "clearlatch" ]; then
     if [ -e "$MNT/$f" ]; then rm -f "$MNT/$f" && { info "removed $f"; n=$((n+1)); }
     else info "$f not present (ok)"; fi
   done
+  : > "$MNT/cinderhome_clear" && info "armed cinderhome_clear (launcher clears the /data latch)"
   sync
   umount "$MNT"; trap - EXIT
-  ok "cleared $n latch file(s). Boot the device with USB UNPLUGGED to run cinder-home."
+  ok "cleared $n legacy file(s) + armed the clear trigger."
+  ok "Boot with USB UNPLUGGED — a cable at boot is itself an escape to stock."
   exit 0
 fi
 

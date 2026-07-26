@@ -3,31 +3,55 @@
 If a flashed build misbehaves, work **top to bottom** — each step is more invasive than
 the last. Most cases now self-heal at step 0.
 
-## The guardrails that are built in (as of the safe `cinder_install.upg`)
-- **Auto-revert (bad-boot counter).** The boot wrapper bumps `/contents/cinder_bootcount`
-  on each Cinder-attempt boot. If Cinder reboots the device **3 times within 60 s**, it
-  creates `/contents/cinder_off` + `/contents/cinder_DISABLED_badboot` and the **stock UI
-  comes back on its own** (~2 min, no PC needed). A boot that survives 60 s clears the count.
-- **SIGSTOP, not kill.** The stock Qt app is frozen (kept alive), so init's watchdog never
-  forces a reboot. *(A true kill caused the 2026-06-23 boot loop — do not reintroduce it
-  without first neutralising the watchdog.)*
-- **Missing-binary guard.** If `cinder-device` isn't present+executable, the wrapper leaves
-  the stock UI untouched (never freezes stock with nothing to show).
-- **Verified copies.** Install uses `cat >` + `-s` checks; it won't write the wrapper unless
-  the binary copied and the scrobbler backup (`scrobbler.real`) both verified.
+## The escape ladder (rebuilt 2026-07-26 after a wbrt-requiring brick)
 
-## Step 0 — let the auto-revert do its job
-If the screen is glitching/rebooting, **leave it alone for ~2 minutes.** After 3 bad boots
-it auto-disables and stock returns. Confirm later via USB-MSC: `tools/flash.sh --ls` shows
-`cinder_DISABLED_badboot`. To re-enable Cinder, delete `cinder_off`, `cinder_bootcount`,
-and `cinder_DISABLED_badboot`, then reboot.
+Each rung depends on **less** than the one below it, so try them in this order. This ordering is
+the whole design: the 2026-07-26 brick happened because every escape that existed depended on
+`/contents`, and `/contents` was the thing that had failed.
 
-## Step 1 — manual escape hatch
+| # | Escape | Depends on |
+|---|--------|-----------|
+| 0 | **Boot with the USB cable connected → stock.** | Nothing. No filesystem, no shell, no counter. |
+| 1 | **Bad-boot counter** hits `MAXBAD=4` → stock, by itself. | A writable `/data` (ext4). |
+| 2 | `/contents/cinderhome_off` over USB-MSC → stock. | A mountable `/contents` + a PC. |
+| 3 | `/contents/cinderhome_clear` over USB-MSC → clears the latch, tries again. | Same. |
+| 4 | Flash `cinder_home_uninstall.upg`. | The Sony updater boots. |
+| 5 | `wbrt` eMMC restore. | Nothing — but it wipes `/contents`. |
+
+**Rung 0 is the important one.** Plug the cable in, power on, and you land on stock — no matter
+how broken the filesystem is. The cost is that charging at boot also lands on stock; turn that off
+for cable-heavy dev with `/data/cinder/cable_escape_off` (or `/contents/cinderhome_cable_off`).
+
+**Why state lives on `/data`:** the counter used to live on `/contents`, which is **vfat** (no
+journal) *and* is the partition handed to the PC for USB-MSC — so it is both corruptible and
+routinely absent. When it failed to mount, the counter write went nowhere, the launcher's
+`>/contents/cinderhome.log` redirect failed, `sh` exited **without exec'ing**, appmgr rebooted, and
+the loop repeated forever with the safety net silently disabled. State is now on `/data`
+(ext4, journaled, never touched by USB-MSC), the launcher refuses to run at all if it cannot
+persist the counter, and the log redirect can no longer block the exec.
+
+Other guardrails:
+- **Never SIGKILL the stock Qt app.** It is frozen, not killed *(a true kill caused the
+  2026-06-23 boot loop)*. In the current design `.appcfg` is repointed and the Qt binary is
+  never touched at all.
+- **Missing-binary guard.** No executable `cinder-home` → the launcher runs stock untouched.
+- **Verified copies.** Install is atomic (temp → verify → mv) with a final sanity gate that
+  reverts to stock if any piece is wrong.
+- **Recovery gate in the build.** `cinder-home/tools/test_launcher.sh` drives the generated
+  launcher through all 18 escape/failure paths in a sandbox; `build.sh` refuses to pack if any
+  fail. It is what caught the special-builtin `exec`-redirect bug above.
+
+## Step 0 — plug in the USB cable and power on
+That is the escape. You land on stock. If you want the counter to do it instead, leave the device
+alone for ~4 boot attempts.
+
+## Step 1 — manual escape hatch over USB-MSC
 If it's stable enough to mount as USB-MSC:
 ```bash
-: > /tmp/cinder_off; : > /tmp/ldac_off
-tools/flash.sh --push /tmp/cinder_off    # stock UI on next boot
-tools/flash.sh --push /tmp/ldac_off      # stop the LDAC bridge supervisor
+tools/flash.sh --clear-latch             # arms cinderhome_clear -> retry the installed build
+: > /tmp/cinderhome_off; : > /tmp/ldac_off
+tools/flash.sh --push /tmp/cinderhome_off  # stock UI on next boot
+tools/flash.sh --push /tmp/ldac_off        # stop the LDAC bridge supervisor
 ```
 
 ## Step 2 — flash the uninstaller
@@ -45,8 +69,14 @@ This is brick-insurance and works even in a hard boot loop, because it catches t
 - Tool: `C:\Users\walkman\Downloads\walkman-backup-restore-tool.v1.0.9.exe`
 - Driver: `C:\Users\walkman\WalkmanBackupRestoreDriver\installer_x64.exe` (device = `VID_0E8D&PID_2000`)
 
-Steps: run the driver installer → run wbrt → **Restore** → pick the backup → get the device
-into MediaTek mode (below) → let it finish, don't disconnect.
+Steps: run the driver installer → run wbrt → **Backup first (see below)** → **Restore** → pick the
+backup → get the device into MediaTek mode (below) → let it finish, don't disconnect.
+
+> **Take a fresh Backup before you Restore.** A restore rewrites the *whole* eMMC, and `/contents`
+> is inside it — the music library, playlists and `.scrobbler.log` all roll back to whatever the
+> backup image contains. You are already in MediaTek mode with the tool open, so a backup costs
+> ~20 more minutes and makes the current library recoverable from that image afterwards, even
+> though the device won't boot. Save it to a **new filename**; never overwrite the known-good one.
 
 ### Getting a stubborn looping device into MediaTek mode (hard-won notes)
 - **Detach usbipd first.** If the device is bound to WSL it's invisible to Windows/wbrt:

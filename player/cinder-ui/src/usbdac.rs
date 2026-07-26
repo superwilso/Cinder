@@ -17,14 +17,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, code
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     crate::chrome::header(c, t, f, "USB-DAC", None);
     let onoff = if on { "ON" } else { "OFF" };
-    crate::widgets::right(c, f, 416.0, 65.0, onoff, &sty(Family::Mono, Weight::Regular, 10.0, if on { t.acc } else { t.faint }, 0.12));
+    crate::widgets::right(c, f, 416.0, 65.0, onoff, &sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc } else { t.faint }, 0.12));
     toggle(c, t, 424, 56, 34, 18, 12, on);
 
     if on {
         icons::usb(c, 240.0, 232.0, 40.0, t.acc);
-        center(c, f, 240.0, 292.0, "USB-DAC active", &sty(Family::Sans, Weight::Bold, 22.0, t.ink, 0.0));
+        center(c, f, 240.0, 292.0, "USB-DAC active", &sty(Family::Sans, Weight::Bold, 24.0, t.ink, 0.0));
         let path = if ldac { "PC → NW-A55 → LDAC + 3.5MM" } else { "PC → NW-A55 → 3.5MM" };
-        center(c, f, 240.0, 320.0, path, &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.1));
+        center(c, f, 240.0, 320.0, path, &sty(Family::Mono, Weight::Regular, 13.0, t.acc, 0.1));
 
         // info box
         let (bx, by, bw, bh) = (50, 352, 380, 148);
@@ -33,7 +33,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, code
         let out = if ldac {
             let dev = bt_device.unwrap_or("BT");
             fit(f, &format!("OUTPUT : {} → {}  +  3.5MM", codec, dev),
-                &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.04), (bw - 44) as f32)
+                &sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.04), (bw - 44) as f32)
         } else {
             "OUTPUT : 3.5MM UNBALANCED".to_string()
         };
@@ -43,7 +43,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, code
             format!("DSP    : EQ {}{}", eq_preset, if dsee { " · DSEE HX" } else { "" }),
             out,
         ];
-        let ls = sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.04);
+        let ls = sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.04);
         for (i, ln) in lines.iter().enumerate() {
             text::draw(c, f, (bx + 22) as f32, (by + 28 + i as i32 * 26) as f32, ln, &ls);
         }
@@ -51,19 +51,19 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, code
         // the key behavioural difference from stock
         if ldac {
             center(c, f, 240.0, 542.0, "Bluetooth stays connected — both outputs are live.",
-                   &sty(Family::Sans, Weight::SemiBold, 13.0, t.acc, 0.0));
+                   &sty(Family::Sans, Weight::SemiBold, 15.0, t.acc, 0.0));
         } else {
             center(c, f, 240.0, 542.0, &format!("Connect Bluetooth to also stream over {}.", codec),
-                   &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0));
+                   &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
         }
     } else {
         icons::usb(c, 240.0, 300.0, 44.0, t.faint);
-        center(c, f, 240.0, 362.0, "USB-DAC is off", &sty(Family::Sans, Weight::Bold, 19.0, t.dim, 0.0));
-        center(c, f, 240.0, 396.0, "Turn on to use the Walkman as a USB sound card.", &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0));
-        center(c, f, 240.0, 418.0, "Audio also streams to Bluetooth (LDAC) when connected —", &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0));
-        center(c, f, 240.0, 438.0, "no need to disconnect.", &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0));
+        center(c, f, 240.0, 362.0, "USB-DAC is off", &sty(Family::Sans, Weight::Bold, 21.0, t.dim, 0.0));
+        center(c, f, 240.0, 396.0, "Turn on to use the Walkman as a USB sound card.", &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+        center(c, f, 240.0, 418.0, "Audio also streams to Bluetooth (LDAC) when connected —", &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+        center(c, f, 240.0, 438.0, "no need to disconnect.", &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
     }
 
     hline(c, 740, t.line);
-    center(c, f, 240.0, 770.0, "CHARGING WHILE IN DAC MODE: ON", &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.1));
+    center(c, f, 240.0, 770.0, "CHARGING WHILE IN DAC MODE: ON", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1));
 }

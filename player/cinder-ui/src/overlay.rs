@@ -41,11 +41,11 @@ pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
     let muted = level == 0;
     icons::sound(c, (x0 + 34) as f32, (y0 + 34) as f32, 22.0, if muted { t.faint } else { t.acc });
     text::draw(c, f, (x0 + 58) as f32, (y0 + 30) as f32, "VOLUME",
-        &sty(Family::Mono, Weight::Regular, 10.0, t.dim, 0.18));
+        &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.18));
     // numeric step value "N / 120", right-aligned (stock shows the raw 0..120 level)
     let val = format!("{level}");
-    let vst = sty(Family::Mono, Weight::Bold, 22.0, t.ink, 0.0);
-    let mst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0);
+    let vst = sty(Family::Mono, Weight::Bold, 24.0, t.ink, 0.0);
+    let mst = sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0);
     let max_lbl = format!(" / {VOL_MAX}");
     let vw = text::measure(f, &val, &vst);
     let mw = text::measure(f, &max_lbl, &mst);
@@ -65,13 +65,13 @@ pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
     // percentage caption under the bar
     let pct = (level as u32 * 100 / VOL_MAX as u32).min(100);
     text::draw(c, f, bx as f32, (by + 24) as f32, &format!("{pct}%"),
-        &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.1));
+        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1));
 }
 
 /// Confirmation toast: a bottom-centered pill with a one-line message (e.g. after swipe-to-queue).
 /// Sized to the text; long titles are clipped by the pill edge rather than wrapped.
 pub fn toast(c: &mut Canvas, t: &Theme, f: &FontSet, msg: &str) {
-    let st = sty(Family::Sans, Weight::SemiBold, 14.0, t.ink, 0.0);
+    let st = sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0);
     let tw = text::measure(f, msg, &st).min((W - 64) as f32);
     let pw = (tw as i32 + 44).min(W as i32 - 20);
     let ph = 44;
@@ -101,5 +101,5 @@ pub fn queue_chip(c: &mut Canvas, t: &Theme, f: &FontSet, row_y: i32, progress: 
     let y0 = (row_y - ph / 2).clamp(0, H as i32 - ph);
     fill_rect(c, x0, y0, pw, ph, t.acc);
     text::draw(c, f, (x0 + 16) as f32, (y0 + 23) as f32, "+ QUEUED",
-        &sty(Family::Mono, Weight::Bold, 12.0, t.acc_ink, 0.12));
+        &sty(Family::Mono, Weight::Bold, 14.0, t.acc_ink, 0.12));
 }

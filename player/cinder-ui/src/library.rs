@@ -43,26 +43,28 @@ pub fn list_top(tab: Tab) -> i32 {
 
 /// Fixed row height per tab (Albums rows are 60 but carry extra 30px artist headers —
 /// see `albums_layout`).
+/// Single source of truth for fixed-tab row heights — BOTH `render()` and the hit-test
+/// (`hit_row`/`content_h`/`row_top_px`) read this, so a tap always resolves to the drawn row.
 pub fn row_h(tab: Tab) -> i32 {
     match tab {
-        Tab::Songs => 62,
-        Tab::Albums => 60,
-        Tab::Artists | Tab::Playlists => 64,
+        Tab::Songs => 68,
+        Tab::Albums => ALBUM_ROW_H,
+        Tab::Artists | Tab::Playlists => 70,
     }
 }
 
 /// Album drill-in track rows: top y and row height.
 pub const ALBUM_TRACKS_TOP: i32 = 312;
-pub const ALBUM_TRACK_RH: i32 = 56;
+pub const ALBUM_TRACK_RH: i32 = 62;
 
 // ── Albums tab: sortable + expandable (accordion) display list ────────────────────────────
 // The Albums tab is a single flat list of variable-height rows: an artist header (grouped sort
 // only), an album row, or the track rows of the one expanded album. `albums_build` produces that
 // list (with content-space y tops) once per render/hit; layout/hit/scroll all read from it so the
 // three can never drift.
-pub const ALBUM_HDR_H: i32 = 30; // artist section header (grouped sort)
-pub const ALBUM_ROW_H: i32 = 60; // an album row
-pub const ALBUM_CHILD_H: i32 = 46; // an expanded track row (indented under its album)
+pub const ALBUM_HDR_H: i32 = 34; // artist section header (grouped sort)
+pub const ALBUM_ROW_H: i32 = 68; // an album row
+pub const ALBUM_CHILD_H: i32 = 50; // an expanded track row (indented under its album)
 /// A tap on an album row left of this x opens the drill-in page (cover art); right of it toggles
 /// the inline accordion. Keeps both affordances on one row.
 pub const ALBUM_ART_HIT_X: i32 = 72;
@@ -375,7 +377,7 @@ fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab) -> i32 {
     let mut x = 22.0;
     for (tab, label) in TABS {
         let on = tab == active;
-        let st = sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc } else { t.faint }, 0.12);
+        let st = sty(Family::Mono, Weight::Regular, 14.0, if on { t.acc } else { t.faint }, 0.12);
         let w = text::measure(f, label, &st);
         text::draw(c, f, x, (y0 + 20) as f32, label, &st);
         if on {
@@ -394,8 +396,8 @@ fn shuffle_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str, sub:
     fill_rect(c, 22, top, (W as i32) - 44, h, t.acc);
     let cy = top + h / 2;
     icons::shuffle(c, 42.0, cy as f32, 20.0, t.acc_ink);
-    text::draw(c, f, 64.0, (cy - 4) as f32, label, &sty(Family::Sans, Weight::Bold, 16.0, t.acc_ink, 0.0));
-    text::draw(c, f, 64.0, (cy + 14) as f32, sub, &sty(Family::Mono, Weight::Regular, 10.0, t.acc_ink, 0.06));
+    text::draw(c, f, 64.0, (cy - 4) as f32, label, &sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0));
+    text::draw(c, f, 64.0, (cy + 14) as f32, sub, &sty(Family::Mono, Weight::Regular, 12.0, t.acc_ink, 0.06));
     icons::play(c, 438.0, cy as f32, 18.0, t.acc_ink);
     top + h
 }
@@ -450,7 +452,7 @@ pub fn render(
         Tab::Songs => {
             let top = shuffle_row(c, t, f, yt, "Shuffle all songs",
                 &format!("{} TRACKS · RANDOM ORDER", group_thousands(lib.songs.len()))) + 8;
-            let rh = 62;
+            let rh = row_h(Tab::Songs);
             let order = song_order(lib, sort); // shared with hit_row/selection — keep in sync
             let first = (scroll_px / rh) as usize;
             let mut y = top - (scroll_px % rh);
@@ -466,14 +468,16 @@ pub fn render(
                 if now {
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
                 }
-                art::block(c, t, 22, y + (rh - 42) / 2, 42, 42, &sgn.art, artdim(t));
+                art::block(c, t, 22, y + (rh - 48) / 2, 48, 48, &sgn.art, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 78.0, (cy - 2) as f32, &sgn.title, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
-                text::draw(c, f, 78.0, (cy + 16) as f32, &sgn.artist, &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
+                let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
+                text::draw(c, f, 78.0, (cy - 2) as f32, &crate::widgets::fit(f, &sgn.title, &tst, 300.0), &tst);
+                let ast = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
+                text::draw(c, f, 78.0, (cy + 16) as f32, &crate::widgets::fit(f, &sgn.artist, &ast, 320.0), &ast);
                 if now {
-                    tiny_bars(c, 408, cy, t.acc);
+                    tiny_bars(c, 386, cy, t.acc);
                 }
-                right(c, f, 452.0, (cy + 4) as f32, &sgn.dur, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
+                right(c, f, 452.0, (cy + 4) as f32, &sgn.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
                 hline(c, y + rh, t.line);
                 y += rh;
             }
@@ -506,7 +510,7 @@ pub fn render(
                     AlbumsRow::Group { flat: fi } => {
                         let label = flat[fi].artist.to_uppercase();
                         text::draw(c, f, 22.0, (y + 20) as f32, &label,
-                            &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.16));
+                            &sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.16));
                     }
                     AlbumsRow::Album { flat: fi, expanded } => {
                         let al = flat[fi];
@@ -516,17 +520,17 @@ pub fn render(
                         if now {
                             fill_rect(c, 0, y, W as i32, ALBUM_ROW_H, t.row_sel);
                         }
-                        art::block(c, t, 22, y + (ALBUM_ROW_H - 44) / 2, 44, 44, &al.art, artdim(t));
+                        art::block(c, t, 22, y + (ALBUM_ROW_H - 48) / 2, 48, 48, &al.art, artdim(t));
                         let tcol = if now { t.acc } else { t.ink };
                         text::draw(c, f, 80.0, (cy - 2) as f32, &al.name,
-                            &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
+                            &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
                         let sub = if al.year.is_empty() {
                             format!("{} tracks", al.tracks)
                         } else {
                             format!("{} · {} tracks", al.year, al.tracks)
                         };
                         text::draw(c, f, 80.0, (cy + 16) as f32, &sub,
-                            &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
+                            &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
                         // Accordion caret (right): points down when open, right when closed.
                         let caret = if expanded { t.acc } else { t.faint };
                         icons::chevron(c, 452.0, cy as f32, 13.0, caret);
@@ -540,11 +544,12 @@ pub fn render(
                             fill_rect(c, 0, y, W as i32, ALBUM_CHILD_H, t.panel);
                             let num = format!("{}", track + 1);
                             text::draw(c, f, 84.0, (cy + 4) as f32, &num,
-                                &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.0));
-                            text::draw(c, f, 112.0, (cy + 4) as f32, &sgn.title,
-                                &body_label(Family::Sans, Weight::Regular, 15.0, t.ink));
+                                &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0));
+                            let cst = body_label(Family::Sans, Weight::Regular, 17.0, t.ink);
+                            text::draw(c, f, 112.0, (cy + 4) as f32,
+                                &crate::widgets::fit(f, &sgn.title, &cst, 296.0), &cst);
                             right(c, f, 452.0, (cy + 4) as f32, &sgn.dur,
-                                &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.0));
+                                &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0));
                             hline(c, y + ALBUM_CHILD_H, t.line);
                         }
                     }
@@ -555,7 +560,7 @@ pub fn render(
         }
         Tab::Artists => {
             let top = shuffle_row(c, t, f, yt, "Shuffle by artist", "RANDOM ARTIST · SHUFFLED WITHIN ARTIST") + 8;
-            let rh = 64;
+            let rh = row_h(Tab::Artists);
             let first = (scroll_px / rh) as usize;
             let mut y = top - (scroll_px % rh);
             c.set_clip_y(top, LIST_BOTTOM);
@@ -572,9 +577,9 @@ pub fn render(
                 let arts: Vec<&str> = ar.arts.iter().map(|s| s.as_str()).collect();
                 art_stack(c, t, 22, cy, &arts);
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 90.0, (cy - 2) as f32, &ar.name, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
+                text::draw(c, f, 90.0, (cy - 2) as f32, &ar.name, &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
                 let sub = format!("{} albums · {} tracks", ar.albums, ar.tracks);
-                text::draw(c, f, 90.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
+                text::draw(c, f, 90.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
                 stroke_rect(c, 414, cy - 20, 40, 40, t.line, 1);
                 icons::shuffle(c, 434.0, cy as f32, 15.0, t.dim);
                 hline(c, y + rh, t.line);
@@ -585,7 +590,7 @@ pub fn render(
         }
         Tab::Playlists => {
             let top = shuffle_row(c, t, f, yt, "Shuffle a playlist", "RANDOM PLAYLIST · SHUFFLED") + 8;
-            let rh = 64;
+            let rh = row_h(Tab::Playlists);
             let first = (scroll_px / rh) as usize;
             let mut y = top - (scroll_px % rh);
             c.set_clip_y(top, LIST_BOTTOM);
@@ -599,11 +604,11 @@ pub fn render(
                 if now {
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
                 }
-                art::block(c, t, 22, y + (rh - 44) / 2, 44, 44, &pl.art, artdim(t));
+                art::block(c, t, 22, y + (rh - 48) / 2, 48, 48, &pl.art, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
+                text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
                 let sub = format!("{} tracks", pl.tracks);
-                text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 13.0, t.dim));
+                text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
                 icons::chevron(c, 456.0, cy as f32, 14.0, t.faint);
                 hline(c, y + rh, t.line);
                 y += rh;
@@ -629,20 +634,20 @@ pub fn album_view(
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     // back chevron + ALBUM eyebrow
     icons::back(c, 30.0, 110.0, 20.0, t.dim);
-    text::draw(c, f, 50.0, 114.0, "ALBUM", &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.2));
+    text::draw(c, f, 50.0, 114.0, "ALBUM", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
     // art block + title/artist/meta
     art::block(c, t, 22, 130, 96, 96, &album.art, artdim(t));
     let title = crate::widgets::fit(
-        f, &album.name, &sty(Family::Sans, Weight::ExtraBold, 22.0, t.ink, -0.01), (W as f32) - 150.0,
+        f, &album.name, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01), (W as f32) - 150.0,
     );
-    text::draw(c, f, 132.0, 158.0, &title, &sty(Family::Sans, Weight::ExtraBold, 22.0, t.ink, -0.01));
-    text::draw(c, f, 132.0, 182.0, &album.artist, &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
+    text::draw(c, f, 132.0, 158.0, &title, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01));
+    text::draw(c, f, 132.0, 182.0, &album.artist, &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0));
     let meta = if album.year.is_empty() {
         format!("{} TRACKS", album.tracks)
     } else {
         format!("{} · {} TRACKS", album.year, album.tracks)
     };
-    text::draw(c, f, 132.0, 204.0, &meta, &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.1));
+    text::draw(c, f, 132.0, 204.0, &meta, &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
 
     let top = shuffle_row(c, t, f, 234, "Play album", "IN ORDER · THEN SHUFFLE") + 6;
     let rh = ALBUM_TRACK_RH;
@@ -663,13 +668,14 @@ pub fn album_view(
         // track number
         let num = format!("{}", idx + 1);
         text::draw(c, f, 28.0, (cy + 4) as f32, &num,
-            &sty(Family::Mono, Weight::Regular, 11.0, if now { t.acc } else { t.faint }, 0.0));
+            &sty(Family::Mono, Weight::Regular, 13.0, if now { t.acc } else { t.faint }, 0.0));
         let tcol = if now { t.acc } else { t.ink };
-        text::draw(c, f, 56.0, (cy - 2) as f32, &sgn.title, &body_label(Family::Sans, Weight::SemiBold, 18.0, tcol));
+        let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
+        text::draw(c, f, 56.0, (cy - 2) as f32, &crate::widgets::fit(f, &sgn.title, &tst, 320.0), &tst);
         if now {
-            tiny_bars(c, 408, cy, t.acc);
+            tiny_bars(c, 386, cy, t.acc);
         }
-        right(c, f, 452.0, (cy + 4) as f32, &sgn.dur, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
+        right(c, f, 452.0, (cy + 4) as f32, &sgn.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
         hline(c, y + rh, t.line);
         y += rh;
     }
@@ -683,42 +689,42 @@ pub fn artist(c: &mut Canvas, t: &Theme, f: &FontSet) {
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     // back + ARTIST eyebrow
     icons::back(c, 30.0, 110.0, 20.0, t.dim);
-    text::draw(c, f, 50.0, 114.0, "ARTIST", &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.2));
+    text::draw(c, f, 50.0, 114.0, "ARTIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
     // name + stats
-    text::draw(c, f, 22.0, 150.0, data::ARTIST_NAME, &sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01));
-    text::draw(c, f, 22.0, 173.0, data::ARTIST_STATS, &sty(Family::Mono, Weight::Regular, 10.0, t.dim, 0.1));
+    text::draw(c, f, 22.0, 150.0, data::ARTIST_NAME, &sty(Family::Sans, Weight::ExtraBold, 31.0, t.ink, -0.01));
+    text::draw(c, f, 22.0, 173.0, data::ARTIST_STATS, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
     let y = shuffle_row(c, t, f, 180, "Shuffle artist", "ALL 34 TRACKS · RANDOM ORDER");
 
     // ALBUMS · 3
-    text::draw(c, f, 22.0, (y + 28) as f32, "ALBUMS · 3", &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.18));
+    text::draw(c, f, 22.0, (y + 28) as f32, "ALBUMS · 3", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
     let ay = y + 40;
     let cw = (W as i32 - 44 - 24) / 3; // 3 across with 12px gaps
     for (i, al) in data::ARTIST_ALBUMS.iter().enumerate() {
         let ax = 22 + i as i32 * (cw + 12);
         art::block(c, t, ax, ay, cw, cw, al.art, artdim(t));
-        let nst = body_label(Family::Sans, Weight::SemiBold, 12.0, t.ink);
+        let nst = body_label(Family::Sans, Weight::SemiBold, 14.0, t.ink);
         let name = crate::widgets::fit(f, al.n, &nst, cw as f32);
         text::draw(c, f, ax as f32, (ay + cw + 16) as f32, &name, &nst);
-        text::draw(c, f, ax as f32, (ay + cw + 32) as f32, al.y, &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.0));
+        text::draw(c, f, ax as f32, (ay + cw + 32) as f32, al.y, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
     }
 
     // TOP SONGS
     let mut sy = ay + cw + 48;
-    text::draw(c, f, 22.0, sy as f32, "TOP SONGS", &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.18));
+    text::draw(c, f, 22.0, sy as f32, "TOP SONGS", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
     sy += 12;
     let rh = 54;
     for (i, sgn) in data::ARTIST_TOP.iter().enumerate() {
         let cy = sy + rh / 2;
         let now = i == 0;
         let col = if now { t.acc } else { t.faint };
-        text::draw(c, f, 22.0, (cy + 4) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 11.0, col, 0.0));
+        text::draw(c, f, 22.0, (cy + 4) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 13.0, col, 0.0));
         let tcol = if now { t.acc } else { t.ink };
-        text::draw(c, f, 48.0, (cy - 2) as f32, sgn.t, &body_label(Family::Sans, Weight::SemiBold, 14.0, tcol));
-        text::draw(c, f, 48.0, (cy + 15) as f32, sgn.al, &body_label(Family::Sans, Weight::Regular, 10.0, t.dim));
+        text::draw(c, f, 48.0, (cy - 2) as f32, sgn.t, &body_label(Family::Sans, Weight::SemiBold, 16.0, tcol));
+        text::draw(c, f, 48.0, (cy + 15) as f32, sgn.al, &body_label(Family::Sans, Weight::Regular, 12.0, t.dim));
         if now {
-            tiny_bars(c, 410, cy, t.acc);
+            tiny_bars(c, 388, cy, t.acc);
         }
-        right(c, f, 458.0, (cy + 4) as f32, sgn.d, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
+        right(c, f, 458.0, (cy + 4) as f32, sgn.d, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
         hline(c, sy + rh, t.line);
         sy += rh;
     }
@@ -783,31 +789,41 @@ mod tests {
         // Grouped (sort 0), nothing expanded. Content (px, 0 = list top 201):
         // header(One) 0..30, A1 30..90, A2 90..150 (same artist, no header),
         // header(Two) 150..180, B1 180..240.
-        let hit = |x, y| albums_hit(&l, 0, None, 0, x, y);
-        assert_eq!(hit(200, 210), None); // artist header — not a row
-        assert_eq!(hit(200, 232), Some(AlbumsHit::AlbumToggle(0))); // A1 body → toggle
-        assert_eq!(hit(30, 232), Some(AlbumsHit::AlbumOpen(0))); // A1 art → drill-in
-        assert_eq!(hit(200, 300), Some(AlbumsHit::AlbumToggle(1))); // A2 — no second header
-        assert_eq!(hit(200, 360), None); // header(Two)
-        assert_eq!(hit(200, 400), Some(AlbumsHit::AlbumToggle(2))); // B1
-        assert_eq!(hit(200, 500), None); // below the content
-        // Scrolled 60px (A1 off screen): the same screen y now lands on A2.
-        assert_eq!(albums_hit(&l, 0, None, 60, 200, 232), Some(AlbumsHit::AlbumToggle(1)));
+        // Content-y (0 = list top): header(One) 0..HDR, A1 HDR.., A2 (same artist, no header)..,
+        // header(Two).., B1.. — all derived from the shared row-height constants.
+        let top = list_top(Tab::Albums);
+        let (hdr, row) = (ALBUM_HDR_H, ALBUM_ROW_H);
+        let a1 = hdr + row / 2; // A1 body centre
+        let a2 = hdr + row + row / 2; // A2 (no second header)
+        let hdr_two = hdr + 2 * row + hdr / 2; // header(Two)
+        let b1 = 2 * hdr + 2 * row + row / 2; // B1
+        let hit = |x, cy| albums_hit(&l, 0, None, 0, x, top + cy);
+        assert_eq!(hit(200, hdr / 2), None); // artist header — not a row
+        assert_eq!(hit(200, a1), Some(AlbumsHit::AlbumToggle(0))); // A1 body → toggle
+        assert_eq!(hit(10, a1), Some(AlbumsHit::AlbumOpen(0))); // A1 art → drill-in
+        assert_eq!(hit(200, a2), Some(AlbumsHit::AlbumToggle(1))); // A2 — no second header
+        assert_eq!(hit(200, hdr_two), None); // header(Two)
+        assert_eq!(hit(200, b1), Some(AlbumsHit::AlbumToggle(2))); // B1
+        assert_eq!(hit(200, 3 * hdr + 3 * row), None); // below the content
+        // Scrolled one album row (A1 off screen): the same screen y now lands on A2.
+        assert_eq!(albums_hit(&l, 0, None, row, 200, top + a1), Some(AlbumsHit::AlbumToggle(1)));
     }
 
     #[test]
     fn albums_accordion_inserts_track_rows() {
         let l = lib();
-        // Expand A1 (flat 0, 3 tracks). Layout: header(One) 0..30, A1 30..90,
-        // t0 90..136, t1 136..182, t2 182..228, A2 228..288, header(Two) 288..318, B1 318..378.
+        // Expand A1 (flat 0, 3 tracks). Content-y layout (from the shared constants):
+        //   header(One) 0, A1 HDR, t0 HDR+ROW, t1 +CH, t2 +2CH, A2 HDR+ROW+3CH, ...
         let exp = Some(0);
-        let hit = |y| albums_hit(&l, 0, exp, 0, 200, y);
-        assert_eq!(hit(201 + 60), Some(AlbumsHit::AlbumToggle(0))); // A1 row (content y 60)
-        assert_eq!(hit(201 + 100), Some(AlbumsHit::Track(0, 0))); // t0 (content 90..136)
-        assert_eq!(hit(201 + 160), Some(AlbumsHit::Track(0, 1))); // t1 (content 136..182)
-        assert_eq!(hit(201 + 200), Some(AlbumsHit::Track(0, 2))); // t2 (content 182..228)
-        assert_eq!(hit(201 + 250), Some(AlbumsHit::AlbumToggle(1))); // A2, pushed down by the tracks
-        // Content height grew by 3 track rows (3 * 46 = 138) vs collapsed.
+        let top = list_top(Tab::Albums);
+        let (hdr, row, ch) = (ALBUM_HDR_H, ALBUM_ROW_H, ALBUM_CHILD_H);
+        let hit = |cy| albums_hit(&l, 0, exp, 0, 200, top + cy);
+        assert_eq!(hit(hdr + row / 2), Some(AlbumsHit::AlbumToggle(0))); // A1 row
+        assert_eq!(hit(hdr + row + ch / 2), Some(AlbumsHit::Track(0, 0))); // t0
+        assert_eq!(hit(hdr + row + ch + ch / 2), Some(AlbumsHit::Track(0, 1))); // t1
+        assert_eq!(hit(hdr + row + 2 * ch + ch / 2), Some(AlbumsHit::Track(0, 2))); // t2
+        assert_eq!(hit(hdr + row + 3 * ch + row / 2), Some(AlbumsHit::AlbumToggle(1))); // A2, pushed down
+        // Content height grew by 3 track rows vs collapsed.
         let collapsed = albums_build(&l, 0, None).content_h;
         let opened = albums_build(&l, 0, exp).content_h;
         assert_eq!(opened - collapsed, 3 * ALBUM_CHILD_H);
@@ -858,20 +874,21 @@ mod tests {
     #[test]
     fn fixed_tabs_only_hit_drawn_rows() {
         let l = lib();
-        // Songs rows: 205 @62. Row 0 = 205..267.
-        assert_eq!(hit_row(Tab::Songs, &l, 0, 204), None); // shuffle band
-        assert_eq!(hit_row(Tab::Songs, &l, 0, 206), Some(0));
-        assert_eq!(hit_row(Tab::Songs, &l, 0, 266), Some(0));
-        assert_eq!(hit_row(Tab::Songs, &l, 0, 268), Some(1));
+        let top = list_top(Tab::Songs);
+        let rh = row_h(Tab::Songs); // same height render draws — row 0 = top..top+rh
+        assert_eq!(hit_row(Tab::Songs, &l, 0, top - 1), None); // shuffle band
+        assert_eq!(hit_row(Tab::Songs, &l, 0, top + 1), Some(0));
+        assert_eq!(hit_row(Tab::Songs, &l, 0, top + rh - 1), Some(0));
+        assert_eq!(hit_row(Tab::Songs, &l, 0, top + rh + 1), Some(1));
         assert_eq!(hit_row(Tab::Songs, &l, 0, 700), None); // past the 3-song list
         // Pixel scroll: partially visible bottom rows ARE live (they're drawn under the clip),
-        // but nothing below LIST_BOTTOM hits.
-        assert_eq!(hit_row(Tab::Songs, &lib_many(), 0, 770), Some(9));
-        assert_eq!(hit_row(Tab::Songs, &lib_many(), 0, 760), Some(8));
-        assert_eq!(hit_row(Tab::Songs, &lib_many(), 0, 792), None); // >= LIST_BOTTOM
-        // Half-row offset: screen y 206 maps into row 0's second half → still row 0 at 31px in.
-        assert_eq!(hit_row(Tab::Songs, &lib_many(), 31, 206), Some(0));
-        assert_eq!(hit_row(Tab::Songs, &lib_many(), 62, 206), Some(1));
+        // but nothing >= LIST_BOTTOM hits.
+        let m = lib_many();
+        assert_eq!(hit_row(Tab::Songs, &m, 0, LIST_BOTTOM - 1), Some(((LIST_BOTTOM - 1 - top) / rh) as usize));
+        assert_eq!(hit_row(Tab::Songs, &m, 0, LIST_BOTTOM), None); // >= LIST_BOTTOM
+        // Scrolling by exactly one row height advances the hit by one row at the same screen y.
+        assert_eq!(hit_row(Tab::Songs, &m, rh / 2, top + 1), Some(0));
+        assert_eq!(hit_row(Tab::Songs, &m, rh, top + 1), Some(1));
     }
 
     fn lib_many() -> Library {
@@ -887,31 +904,34 @@ mod tests {
     fn album_track_hit_matches_album_view_geometry() {
         let l = lib();
         let flat = l.albums_flat();
-        let a = flat[2]; // B1, 4 tracks; rows 312 @56: 312..368, 368..424, ...
-        assert_eq!(album_hit_track(a, 0, 311), None); // Play-album band / gap
-        assert_eq!(album_hit_track(a, 0, 313), Some(0));
-        assert_eq!(album_hit_track(a, 0, 420), Some(1));
-        assert_eq!(album_hit_track(a, 0, 500), Some(3)); // row 3 = 480..536
-        assert_eq!(album_hit_track(a, 0, 640), None); // past the 4-track list
-        assert_eq!(album_hit_track(a, 112, 313), Some(2)); // scrolled 2 rows (112 px)
+        let a = flat[2]; // B1, 4 tracks
+        let t = ALBUM_TRACKS_TOP;
+        let rh = ALBUM_TRACK_RH; // rows from t @rh
+        assert_eq!(album_hit_track(a, 0, t - 1), None); // Play-album band / gap
+        assert_eq!(album_hit_track(a, 0, t + 1), Some(0));
+        assert_eq!(album_hit_track(a, 0, t + rh + 1), Some(1));
+        assert_eq!(album_hit_track(a, 0, t + 3 * rh + 1), Some(3)); // row 3
+        assert_eq!(album_hit_track(a, 0, t + 4 * rh + 1), None); // past the 4-track list
+        assert_eq!(album_hit_track(a, 2 * rh, t + 1), Some(2)); // scrolled 2 rows
     }
 
     #[test]
     fn pixel_scroll_geometry_helpers() {
         let l = lib();
-        // Albums content (grouped, collapsed): 2 headers (30) + 3 rows (60) = 240 px; fits → no scroll.
-        assert_eq!(content_h(Tab::Albums, &l, 0, None), 240);
+        let (hdr, row) = (ALBUM_HDR_H, ALBUM_ROW_H);
+        // Albums content (grouped, collapsed): 2 headers + 3 rows; fits → no scroll.
+        assert_eq!(content_h(Tab::Albums, &l, 0, None), 2 * hdr + 3 * row);
         assert_eq!(max_scroll_px(Tab::Albums, &l, 0, None), 0);
-        // Songs: 3 * 62 = 186 px, fits.
-        assert_eq!(content_h(Tab::Songs, &l, 0, None), 186);
+        // Songs: 3 rows, fits.
+        assert_eq!(content_h(Tab::Songs, &l, 0, None), 3 * row_h(Tab::Songs));
         // 40 songs don't fit: max scroll = content - view, positive.
         let many = lib_many();
         let max = max_scroll_px(Tab::Songs, &many, 0, None);
-        assert_eq!(max, 40 * 62 - (LIST_BOTTOM - 205));
+        assert_eq!(max, 40 * row_h(Tab::Songs) - (LIST_BOTTOM - list_top(Tab::Songs)));
         assert!(max > 0);
-        // Row-top helper (grouped albums, by album display rank): A1=30, A2=90, B1=180.
-        assert_eq!(row_top_px(Tab::Albums, &l, 0, 0, None), 30);
-        assert_eq!(row_top_px(Tab::Albums, &l, 1, 0, None), 90);
-        assert_eq!(row_top_px(Tab::Albums, &l, 2, 0, None), 180);
+        // Row-top helper (grouped albums, by album display rank): A1, A2, B1.
+        assert_eq!(row_top_px(Tab::Albums, &l, 0, 0, None), hdr);
+        assert_eq!(row_top_px(Tab::Albums, &l, 1, 0, None), hdr + row);
+        assert_eq!(row_top_px(Tab::Albums, &l, 2, 0, None), 2 * hdr + 2 * row);
     }
 }

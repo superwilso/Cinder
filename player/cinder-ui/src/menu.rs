@@ -57,8 +57,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, items: &[MenuItem]) {
         let cy = (yt + rh / 2) as f32;
         let icol = if m.active { t.acc } else { t.dim };
         draw_icon(c, m.icon, 33.0, cy, 19.0, icol);
-        text::draw(c, f, 56.0, cy + 6.0, m.label, &sty(Family::Sans, Weight::SemiBold, 18.0, t.ink, 0.0));
-        let vs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.04);
+        text::draw(c, f, 56.0, cy + 6.0, m.label, &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
+        let vs = sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.04);
         let vw = text::measure(f, m.value, &vs);
         text::draw(c, f, 438.0 - vw, cy + 5.0, m.value, &vs);
         icons::chevron(c, 456.0, cy, 14.0, t.faint);

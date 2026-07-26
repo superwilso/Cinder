@@ -28,7 +28,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
     icons::usb(c, cx, (cy - 120) as f32, 44.0, t.acc);
 
     let title = "USB Storage";
-    let tst = sty(Family::Sans, Weight::ExtraBold, 26.0, t.ink, -0.01);
+    let tst = sty(Family::Sans, Weight::ExtraBold, 29.0, t.ink, -0.01);
     let tw = text::measure(f, title, &tst);
     text::draw(c, f, cx - tw / 2.0, (cy - 40) as f32, title, &tst);
 
@@ -41,7 +41,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
     let mut y = cy + 8;
     for l in lines {
         if !l.is_empty() {
-            let st = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
+            let st = sty(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
             let w = text::measure(f, l, &st);
             text::draw(c, f, cx - w / 2.0, y as f32, l, &st);
         }
@@ -51,7 +51,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
     // TURN OFF button (also reachable via the physical Back button)
     let (bx, by, bw, bh) = OFF_BTN;
     fill_rect(c, bx, by, bw, bh, t.acc);
-    let bst = sty(Family::Sans, Weight::ExtraBold, 17.0, t.acc_ink, 0.06);
+    let bst = sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc_ink, 0.06);
     let lw = text::measure(f, "TURN OFF", &bst);
     text::draw(c, f, cx - lw / 2.0, (by + bh / 2 + 6) as f32, "TURN OFF", &bst);
 }

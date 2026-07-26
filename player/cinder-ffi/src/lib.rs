@@ -12,6 +12,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod art_load;
+mod gpu;
 mod scrobble;
 mod spectrum;
 
@@ -216,6 +217,24 @@ impl Drop for Framebuffer {
     }
 }
 
+/// Frame presentation backend. `Gl` is the GPU path (EGL + GLES2 on the device's Mali fbdev
+/// driver — see `gpu.rs`); `Fb` is the original software path (mmap the framebuffer, memcpy each
+/// page, force a mode re-apply). `cinder_render_init` prefers `Gl` and falls back to `Fb` if the
+/// GPU won't initialise, so the panel always gets pixels.
+enum Presenter {
+    Gl(gpu::GlPresenter),
+    Fb(Framebuffer),
+}
+
+impl Presenter {
+    fn present(&mut self, canvas: &Canvas) {
+        match self {
+            Presenter::Gl(g) => g.present(canvas),
+            Presenter::Fb(f) => f.blit(canvas),
+        }
+    }
+}
+
 /// Owned now-playing state (the FFI setters fill this; render borrows from it).
 #[derive(Default)]
 struct Np {
@@ -236,7 +255,7 @@ struct Np {
 }
 
 struct Render {
-    fb: Framebuffer,
+    present: Presenter,
     fonts: FontSet,
     night: bool,
     np: Np,
@@ -251,6 +270,11 @@ struct Render {
     play_pos_ms: i64,
     cur_duration_ms: i64,
     last_pos: std::time::Instant, // wall-clock anchor for the position estimate (rate-independent)
+    // Screenshot request: Some(path) => the next rendered frame is also written to `path` as a PNG.
+    // Captured from the Canvas BEFORE presentation, so it is identical on the software framebuffer
+    // and the GPU/EGL path (under EGL the Mali swapchain owns the panel, so reading /dev/graphics/fb0
+    // from outside does NOT reliably show what's on screen — this is the only faithful capture).
+    pending_screenshot: Option<String>,
     // Sleep timer: counts DOWN in wall-clock ms (regardless of play/pause); 0 = inactive. When it
     // reaches 0 we raise sleep_fire, which the shell polls (cinder_sleep_should_pause) to pause.
     sleep_remaining_ms: i64,
@@ -323,18 +347,50 @@ unsafe fn cstr(p: *const c_char) -> String {
 /// Open the framebuffer and initialise the renderer. Returns 0 on success, <0 on error.
 #[no_mangle]
 pub extern "C" fn cinder_render_init() -> libc::c_int {
-    let fb = match Framebuffer::open() {
-        Ok(fb) => fb,
-        Err(e) => {
-            eprintln!("cinder-ffi: {e}");
-            return -1;
+    // GPU present path (EGL/GLES2 on Mali) is now the DEFAULT (2026-07-26). It was opt-in while the
+    // failure mode was a driver-level HANG: cinder runs as uid 100 (CapEff=0) and the Mali EGL stack
+    // needs four nodes that ship root-only (/dev/ion, /dev/mtkfb_vsync, /dev/mtk_disp, /dev/sw_sync).
+    // Opening EGL without them didn't return an error — it blocked inside the driver, wedging a boot
+    // that can't fall through to software, which is how the bad-boot counter got tripped.
+    //   That class is now GONE: gpu::GlPresenter::open() preflights every node with access(R|W) and
+    //   refuses to enter EGL unless they're all open, running the setuid-root cinder-gpunode helper
+    //   once to widen them. A blocked node is therefore a clean Err → software framebuffer, proven
+    //   on-device in BOTH directions as uid 100 via `cinder-probe --gpu`.
+    //   Escapes kept for debugging: CINDER_GPU=0 or /contents/cinder_gpu_off force software.
+    let force_off = std::path::Path::new("/contents/cinder_gpu_off").exists()
+        || std::env::var("CINDER_GPU").map(|v| v == "0").unwrap_or(false);
+    let want_gpu = !force_off;
+    let present = if want_gpu {
+        match gpu::GlPresenter::open(W as i32, H as i32) {
+            Ok(g) => {
+                println!("cinder-ffi: GPU present path active (EGL/GLES2 on Mali, vsync)");
+                Presenter::Gl(g)
+            }
+            Err(e) => {
+                eprintln!("cinder-ffi: GPU init failed ({e}); falling back to software framebuffer");
+                match Framebuffer::open() {
+                    Ok(fb) => Presenter::Fb(fb),
+                    Err(e2) => {
+                        eprintln!("cinder-ffi: {e2}");
+                        return -1;
+                    }
+                }
+            }
+        }
+    } else {
+        match Framebuffer::open() {
+            Ok(fb) => Presenter::Fb(fb),
+            Err(e) => {
+                eprintln!("cinder-ffi: {e}");
+                return -1;
+            }
         }
     };
     let mut np = Np::default();
     np.codec = "—".into();
     np.battery = 100;
     *cell().lock().unwrap() = Some(Render {
-        fb,
+        present,
         fonts: FontSet::load(),
         night: false,
         np,
@@ -345,6 +401,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         play_pos_ms: 0,
         cur_duration_ms: 0,
         last_pos: std::time::Instant::now(),
+        pending_screenshot: None,
         sleep_remaining_ms: 0,
         sleep_fire: false,
         settings_path: None,
@@ -618,8 +675,58 @@ pub extern "C" fn cinder_render_tick() {
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
     // the list/menu screens from their own state.
     r.app.render(&mut canvas, &r.fonts, &np);
-    r.fb.blit(&canvas);
+    if let Some(path) = r.pending_screenshot.take() {
+        match write_png(&path, &canvas) {
+            Ok(()) => println!("cinder-ffi: screenshot written to {path}"),
+            Err(e) => eprintln!("cinder-ffi: screenshot failed ({path}): {e}"),
+        }
+    }
+    r.present.present(&canvas);
     r.dirty = false;
+}
+
+/// Encode the Canvas to a PNG. Canvas is `0x00RRGGBB`; `to_rgb_bytes()` already unpacks it to
+/// packed RGB triples, which is exactly PNG's RGB8 layout. Uses the `png` crate already vendored
+/// for album-art decode — no new dependency, stays glibc-2.23-clean.
+fn write_png(path: &str, canvas: &Canvas) -> Result<(), String> {
+    // Write to a temp file then rename, so a host puller can never read a half-written PNG.
+    let tmp = format!("{path}.part");
+    let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), W as u32, H as u32);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .map_err(|e| e.to_string())?
+        .write_image_data(&canvas.to_rgb_bytes())
+        .map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Request that the next rendered frame be saved as a PNG at `path` (NUL-terminated C string).
+/// Also marks the UI dirty, because the dirty-flag renderer skips identical frames — without this
+/// an idle UI would never repaint and the screenshot would never be produced. Returns 0 on accept.
+///
+/// This is the agent-facing "show me what's on screen" primitive: it captures the Canvas before
+/// presentation, so it works identically on the software framebuffer and the GPU/EGL path.
+#[no_mangle]
+pub extern "C" fn cinder_request_screenshot(path: *const libc::c_char) -> libc::c_int {
+    if path.is_null() {
+        return -1;
+    }
+    let p = unsafe { std::ffi::CStr::from_ptr(path) };
+    let p = match p.to_str() {
+        Ok(s) if !s.is_empty() => s.to_string(),
+        _ => return -1,
+    };
+    match cell().lock().unwrap().as_mut() {
+        Some(r) => {
+            r.pending_screenshot = Some(p);
+            r.dirty = true; // guarantee a repaint even if the UI is otherwise idle
+            0
+        }
+        None => -1,
+    }
 }
 
 /// Deliver a logical button press to the navigator. `button` is a `cinder_button_t`

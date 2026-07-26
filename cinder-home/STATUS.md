@@ -513,17 +513,40 @@ dev build swap `dist/stable/` → `dist/dev/`):
 ```bash
 tools/flash.sh --push cinder-home/dist/stable/cinder-home          # push the binary to /contents
 tools/flash.sh cinder-home/dist/stable/cinder_home_install.upg     # install (repoints the Home app)
-# UNPLUG, power on, let it boot. (USB-connected-at-launch deliberately runs STOCK for recovery.)
+# Power on and let it boot — WITH THE CABLE UNPLUGGED. A cable connected at boot is itself the
+# escape to stock (restored 2026-07-26). For cable-heavy dev, opt out once:
+#   adb shell 'mkdir -p /data/cinder && touch /data/cinder/cable_escape_off'
 ```
 
-**The recovery model (rebuilt 2026-06-26 — no more wbrt for a hang):**
-- The launcher increments a bad-boot counter each boot and reverts to stock after **2** boots
-  that don't reach "healthy". cinder-home clears the counter **only after rendering cleanly for
-  25 s** — a hang never clears it, so it accumulates and auto-reverts.
-- **If it ever sticks on the boot screen: force-reboot (hold Power ~8 s) twice.** The 2nd boot
-  hits the counter and you're back on stock — no PC, no wbrt.
-- **Faster manual escape:** during the ~3 s pre-launch window, **connect USB** (or have
-  `/contents/cinderhome_off` present) → it boots stock immediately.
+**The recovery model (rebuilt 2026-06-26; latch fixed 2026-07-26; state moved off `/contents`
+and the cable escape restored 2026-07-26 after a brick).** Full ladder in
+[`../RECOVERY.md`](../RECOVERY.md); the short version:
+
+- **Escape 0 — boot with the USB cable connected → stock.** Depends on nothing: no filesystem, no
+  shell, no counter. Restored 2026-07-26 (it had been removed on 07-25) because the brick left
+  *every* file-based escape unreachable. Cost: charging at boot also lands on stock — opt out with
+  `/data/cinder/cable_escape_off` or `/contents/cinderhome_cable_off` for cable-heavy dev sessions.
+- **Escape 1 — the bad-boot counter** reverts to stock after **4** boots that don't reach
+  "healthy". **If it sticks on the boot screen: force-reboot (hold Power ~8 s) four times.**
+- cinder-home clears the counter **~8 s after its first painted frame**. It used to wait for the
+  whole `deferred_up()` feature-init chain **plus 25 s** — up to ~170 s on dev, and that chain
+  blocks the render thread — so a reboot inside that window left the counter set. With the old
+  `MAXBAD=2` that meant two impatient reboots latched the device to stock **permanently**.
+- **State lives on `/data/cinder/` (ext4), not `/contents`.** `/contents` is vfat *and* is the
+  partition unmounted for USB-MSC, so it is both corruptible and routinely absent. On 2026-07-26 it
+  stopped mounting: the counter write went nowhere, the launcher's `>/contents/cinderhome.log`
+  redirect failed so `sh` **exited without exec'ing**, appmgr rebooted, and the device looped on the
+  logo with the safety net silently disabled — wbrt was the only way out. Now: the launcher runs
+  stock if `/contents` isn't mounted, **refuses to run at all if it cannot persist the counter**,
+  and the log redirect can never block the exec.
+- **Manual escape:** create `/contents/cinderhome_off` over USB-MSC and reboot → stock.
+- **Un-latching after an auto-revert:** `tools/flash.sh --clear-latch` (arms
+  `/contents/cinderhome_clear`, which the launcher consumes on the next boot), **or just install a
+  newer cinder-home binary** — the launcher self-heals when the binary is newer than the latch.
+- ⚠️ **adb cannot recover a stock-latched device**: dev-channel adb is enabled inside
+  `deferred_up()`, which never runs under stock. Recovery goes through the cable escape or USB-MSC.
+- **`tools/test_launcher.sh` gates the build** — 18 sandboxed scenarios covering every escape and
+  failure mode. `build.sh` refuses to pack if any fail.
 - Inside cinder-home, a crash/hang in the library or PlayerService is *caught* and that subsystem
   is skipped — worst case the UI runs without audio/library, not a hung boot.
 

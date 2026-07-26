@@ -136,6 +136,26 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[cinder-probe] discover: DONE — report at %s (pull it back)\n", path);
         return 0;
     }
+    if (argc > 1 && std::strcmp(argv[1], "--gpu") == 0) {
+        // GPU present-path test in ISOLATION — no easel lifecycle, so it CANNOT trip the launcher's
+        // bad-boot counter (unlike enabling the GPU in cinder-home itself, which is what wedged the
+        // boot on 2026-07-26). cinder_render_init() honours CINDER_GPU=1 / /contents/cinder_gpu_on,
+        // and gpu.rs refuses to enter EGL unless every required /dev node is accessible, so the
+        // worst case here is a clean "GPU init failed" + software fallback.
+        setenv("CINDER_GPU", "1", 1);
+        install_diagnostics();
+        clog_("gpu: cinder_render_init with CINDER_GPU=1 (watch for 'GPU present path active') …");
+        wd_arm(20);
+        int gr = cinder_render_init();
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] gpu: render_init returned %d\n", gr); std::fflush(stderr);
+        if (gr != 0) { clog_("gpu: render init FAILED — see the error above"); return 1; }
+        clog_("gpu: painting 120 frames (~2s at vsync) — the panel should show the Cinder UI …");
+        for (int i = 0; i < 120; ++i) { wd_arm(8); cinder_render_tick(); wd_disarm(); }
+        cinder_render_shutdown();
+        clog_("gpu: DONE — no hang. Reboot to restore the normal UI.");
+        return 0;
+    }
     clog_("start — isolating the suspect init calls (no easel lifecycle, no boot impact)");
     install_diagnostics();
 

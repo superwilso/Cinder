@@ -102,7 +102,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     let _y0 = crate::chrome::header(c, t, f, "Bluetooth", None);
     // header right: ON/OFF + toggle
     let onoff = if bt.on { "ON" } else { "OFF" };
-    right(c, f, 416.0, 65.0, onoff, &sty(Family::Mono, Weight::Regular, 10.0, if bt.on { t.acc } else { t.faint }, 0.12));
+    right(c, f, 416.0, 65.0, onoff, &sty(Family::Mono, Weight::Regular, 12.0, if bt.on { t.acc } else { t.faint }, 0.12));
     crate::widgets::toggle(c, t, 424, 56, 34, 18, 12, bt.on);
 
     // connected card (or empty state)
@@ -110,12 +110,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         let name = bt.connected.unwrap();
         fill_rect(c, 22, CARD_Y, 436, CARD_H, t.panel);
         stroke_rect(c, 22, CARD_Y, 436, CARD_H, t.line, 1);
-        text::draw(c, f, 40.0, (CARD_Y + 24) as f32, "CONNECTED", &sty(Family::Mono, Weight::Regular, 9.0, t.acc, 0.18));
-        right(c, f, 440.0, (CARD_Y + 24) as f32, "HP BATT 60%", &sty(Family::Mono, Weight::Regular, 9.0, t.dim, 0.1));
-        text::draw(c, f, 40.0, (CARD_Y + 52) as f32, name, &sty(Family::Sans, Weight::Bold, 22.0, t.ink, 0.0));
+        text::draw(c, f, 40.0, (CARD_Y + 24) as f32, "CONNECTED", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
+        right(c, f, 440.0, (CARD_Y + 24) as f32, "HP BATT 60%", &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.1));
+        text::draw(c, f, 40.0, (CARD_Y + 52) as f32, name, &sty(Family::Sans, Weight::Bold, 24.0, t.ink, 0.0));
         let (dx, dy, dw, dh) = DISC;
         stroke_rect(c, dx, dy, dw, dh, t.line, 1);
-        center(c, f, (dx + dw / 2) as f32, (dy + dh / 2 + 4) as f32, "Disconnect", &sty(Family::Sans, Weight::SemiBold, 12.0, t.dim, 0.0));
+        center(c, f, (dx + dw / 2) as f32, (dy + dh / 2 + 4) as f32, "Disconnect", &sty(Family::Sans, Weight::SemiBold, 14.0, t.dim, 0.0));
     } else {
         let mut dx = 22;
         while dx < 458 {
@@ -124,27 +124,27 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             dx += 11;
         }
         let msg = if bt.on { "No device connected" } else { "Bluetooth is off" };
-        center(c, f, 240.0, (CARD_Y + CARD_H / 2 + 4) as f32, msg, &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0));
+        center(c, f, 240.0, (CARD_Y + CARD_H / 2 + 4) as f32, msg, &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
     }
 
     // TRANSMIT CODEC — list with the active one selected (greyed while BT is off)
     let body = if bt.on { t.ink } else { t.faint };
     let subc = if bt.on { t.dim } else { t.faint };
-    text::draw(c, f, 22.0, 198.0, "TRANSMIT CODEC", &sty(Family::Mono, Weight::Regular, 9.0, if bt.on { t.acc } else { t.faint }, 0.18));
+    text::draw(c, f, 22.0, 198.0, "TRANSMIT CODEC", &sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.acc } else { t.faint }, 0.18));
     for (i, (name, sub)) in CODECS.iter().enumerate() {
         let y = CODEC_Y0 + i as i32 * CODEC_RH;
         let cy = y + CODEC_RH / 2;
         let active = bt.on && bt.codec_sel as usize == i;
         radio(c, 38, cy, active, t);
         let ncol = if active { t.acc } else { body };
-        text::draw(c, f, 64.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, 16.0, ncol, 0.0));
-        text::draw(c, f, 64.0, (cy + 15) as f32, sub, &sty(Family::Mono, Weight::Regular, 9.0, subc, 0.04));
+        text::draw(c, f, 64.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, 18.0, ncol, 0.0));
+        text::draw(c, f, 64.0, (cy + 15) as f32, sub, &sty(Family::Mono, Weight::Regular, 11.0, subc, 0.04));
         crate::widgets::hline(c, y + CODEC_RH, t.line);
     }
 
     // LDAC QUALITY chips — only when LDAC is the active codec
     if bt.on && bt.codec_sel == LDAC {
-        text::draw(c, f, 22.0, (QUAL_Y - 10) as f32, "LDAC SOUND QUALITY", &sty(Family::Mono, Weight::Regular, 9.0, t.acc, 0.18));
+        text::draw(c, f, 22.0, (QUAL_Y - 10) as f32, "LDAC SOUND QUALITY", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
         for (i, q) in QUALITIES.iter().enumerate() {
             let x = 22 + i as i32 * 109;
             let on = bt.ldac_quality as usize == i;
@@ -154,18 +154,18 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
                 stroke_rect(c, x, QUAL_Y, 103, QUAL_H, t.line, 1);
             }
             let col = if on { t.acc_ink } else { t.dim };
-            center(c, f, (x + 51) as f32, (QUAL_Y + QUAL_H / 2 + 4) as f32, q, &sty(Family::Sans, Weight::SemiBold, 13.0, col, 0.0));
+            center(c, f, (x + 51) as f32, (QUAL_Y + QUAL_H / 2 + 4) as f32, q, &sty(Family::Sans, Weight::SemiBold, 15.0, col, 0.0));
         }
         center(c, f, 240.0, (QUAL_Y + QUAL_H + 22) as f32, "Auto adapts the bitrate to the link. Used everywhere, incl. USB-DAC.",
-               &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.04));
+               &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.04));
     }
 
     // pair new device + NFC hint
     fill_rect(c, 22, PAIR_Y, 436, 52, if bt.on { t.acc } else { t.line });
     let plabel_col = if bt.on { t.acc_ink } else { t.faint };
     icons::bt(c, 178.0, (PAIR_Y + 26) as f32, 17.0, plabel_col);
-    text::draw(c, f, 196.0, (PAIR_Y + 31) as f32, "Pair new device", &sty(Family::Sans, Weight::Bold, 15.0, plabel_col, 0.0));
+    text::draw(c, f, 196.0, (PAIR_Y + 31) as f32, "Pair new device", &sty(Family::Sans, Weight::Bold, 17.0, plabel_col, 0.0));
     icons::rx(c, 30.0, 776.0, 14.0, t.faint);
-    text::draw(c, f, 46.0, 780.0, "NFC · TOUCH DEVICE TO REAR PANEL", &sty(Family::Mono, Weight::Regular, 9.0, t.faint, 0.08));
-    right(c, f, 458.0, 780.0, "RECEIVER MODE ›", &sty(Family::Mono, Weight::Regular, 9.0, t.dim, 0.08));
+    text::draw(c, f, 46.0, 780.0, "NFC · TOUCH DEVICE TO REAR PANEL", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08));
+    right(c, f, 458.0, 780.0, "RECEIVER MODE ›", &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08));
 }
