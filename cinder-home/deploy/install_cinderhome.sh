@@ -297,6 +297,13 @@ fi
 # plain `: > "$LOGF" || LOGF=fallback` form dies before it can fall back, reproducing the exact
 # no-exec-then-appmgr-reboot bug it was written to prevent. A subshell contains the exit.
 can_write() { ( : > "$1" ) 2>/dev/null; }
+# Keep ONE previous boot's log. Both `exec > "$LOGF"` and can_write's probe truncate, so a boot
+# that crashed erased the evidence of its own crash as soon as the next boot started — twice on
+# 2026-07-26, including the frozen-panel boot whose log was the whole diagnosis. One rename makes
+# the failing boot readable from the boot after it (`tools/flash.sh --cat cinderhome.log.1`).
+for l in /contents/cinderhome.log /data/cinder/cinderhome.log; do
+    [ -f "$l" ] && mv -f "$l" "$l.1" 2>/dev/null
+done
 LOGF=/contents/cinderhome.log
 can_write "$LOGF" || LOGF=/data/cinder/cinderhome.log
 can_write "$LOGF" || LOGF=""

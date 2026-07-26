@@ -9,8 +9,12 @@
 //! upload the Canvas to a single RGBA texture (`glTexSubImage2D`), draw one full-screen textured
 //! quad, and `eglSwapBuffers` — which on this Mali fbdev build does the page-flip AND blocks on
 //! vsync internally (`__egl_platform_supports_vsync_fbdev` / `_mali_uku_vsync_event_report` are
-//! present in libMali_linux.so). Result: no manual flip ioctl, no triple memcpy, vsync'd pacing,
-//! and headroom for GPU transitions/scaling later.
+//! present in libMali_linux.so). Result: no triple memcpy, vsync'd pacing, and headroom for GPU
+//! transitions/scaling later.
+//!
+//! The swap page-flips but does NOT light the panel: mtkfb only pushes on
+//! `FBIOPUT_VSCREENINFO(FB_ACTIVATE_FORCE)`. Skipping that is what left a healthy app painting onto
+//! a frozen boot animation on 2026-07-26. `PanelPoke` issues it after every swap.
 //!
 //! Device stack (confirmed from the extracted rootfs, 2026-07-26):
 //!   - GPU driver = `libMali_linux.so` (the glibc-native ARM Mali "linux"/fbdev build). It exports
@@ -23,7 +27,10 @@
 //!
 //! SAFETY MODEL: `GlPresenter::open` returns `Err` on ANY failure. lib.rs then falls back to the
 //! proven software `Framebuffer`. So a GPU that misbehaves degrades to the old path, never a black
-//! screen. `CINDER_GPU=0` in the environment forces the software path (debug escape hatch).
+//! screen. That covers failures EGL reports; it does not cover a swap that succeeds and reaches no
+//! pixels, which is why this path stays opt-in (`/contents/cinder_gpu_on`) and is best exercised
+//! first with `cinder-probe --gpu`, which runs it outside the easel lifecycle and cannot wedge a
+//! boot. `CINDER_GPU=0` / `/contents/cinder_gpu_off` force the software path.
 //!
 //! Pixel format: the Canvas u32 is `0x00RRGGBB`, i.e. little-endian bytes `[B, G, R, 0]`. Uploaded
 //! as `GL_RGBA`/`GL_UNSIGNED_BYTE` the sampler reads that as (r=B, g=G, b=R, a=0), so the fragment
@@ -263,6 +270,80 @@ mod imp {
             gl_FragColor = vec4(c.b, c.g, c.r, 1.0);\n\
         }\n\0";
 
+    // ── Panel poke ──────────────────────────────────────────────────────────────────────────────
+    // The 2026-07-26 evening flashes booted a completely healthy app onto a frozen panel: EGL
+    // reported success for every frame and the glass kept showing the boot animation. mtkfb does not
+    // scan the framebuffer continuously — it pushes to the panel only when someone issues
+    // FBIOPUT_VSCREENINFO with FB_ACTIVATE_FORCE. That is what icx_bootanimation does per frame and
+    // what our software path does per blit; the Mali fbdev eglSwapBuffers does NOT, so on this
+    // display nothing ever reached the glass.
+    //
+    // So after every swap we issue that trigger ourselves on our own fd. It is a mode RE-apply, not
+    // a pan: we re-READ the current var first, so whatever page EGL just flipped to is preserved and
+    // we only ask the driver to push it. Opening fb0 a second time is fine — fbdev allows it, and
+    // the software path is not mapped in this configuration.
+    //
+    // Escape: /contents/cinder_gpu_noflip skips the poke, in case a firmware exists where the extra
+    // ioctl fights the driver instead of helping it.
+    struct PanelPoke {
+        _file: std::fs::File,
+        fd: i32,
+    }
+
+    impl PanelPoke {
+        fn open() -> Option<Self> {
+            if std::path::Path::new("/contents/cinder_gpu_noflip").exists() {
+                println!("cinder-ffi: GPU panel poke DISABLED (/contents/cinder_gpu_noflip)");
+                return None;
+            }
+            match std::fs::OpenOptions::new().read(true).write(true).open("/dev/graphics/fb0") {
+                Ok(file) => {
+                    use std::os::unix::io::AsRawFd;
+                    let fd = file.as_raw_fd();
+                    // Geometry is worth one line in the log: a yres_virtual == yres panel cannot
+                    // page-flip at all, which would point the diagnosis somewhere else entirely.
+                    let mut var = crate::VarInfo::default();
+                    unsafe { libc::ioctl(fd, crate::FBIOGET_VSCREENINFO, &mut var as *mut _) };
+                    println!(
+                        "cinder-ffi: GPU panel poke armed — fb {}x{} virtual {}x{} {}bpp",
+                        var.xres, var.yres, var.xres_virtual, var.yres_virtual, var.bits_per_pixel
+                    );
+                    Some(PanelPoke { _file: file, fd })
+                }
+                Err(e) => {
+                    eprintln!(
+                        "cinder-ffi: GPU panel poke unavailable (open fb0: {e}) — \
+                         if the panel stays frozen this is why"
+                    );
+                    None
+                }
+            }
+        }
+
+        /// Re-apply the mode so mtkfb pushes the just-swapped page to the panel.
+        fn poke(&mut self) {
+            let mut var = crate::VarInfo::default();
+            unsafe {
+                if libc::ioctl(self.fd, crate::FBIOGET_VSCREENINFO, &mut var as *mut _) != 0 {
+                    return;
+                }
+                var.activate |= crate::FB_ACTIVATE_FORCE;
+                let rc = libc::ioctl(self.fd, crate::FBIOPUT_VSCREENINFO, &mut var as *mut _);
+                if rc != 0 {
+                    static ERR: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !ERR.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        eprintln!(
+                            "cinder-ffi: GPU panel poke ioctl FAILED (errno {}) — \
+                             the UI will not reach the panel",
+                            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     pub struct GlPresenter {
         dpy: EGLDisplay,
         surf: EGLSurface,
@@ -276,6 +357,8 @@ mod imp {
         a_tex: GLint,
         w: GLsizei,
         h: GLsizei,
+        /// None if fb0 wouldn't open, or the poke was disabled by flag.
+        poke: Option<PanelPoke>,
     }
 
     // Only ever touched under lib.rs's global Mutex (like Framebuffer). The raw EGL/GL handles make
@@ -411,13 +494,17 @@ mod imp {
 
                 // Clear both/all back buffers to black so no boot-animation garbage flashes through
                 // the alternating buffers before the first real frame lands.
+                let mut poke = PanelPoke::open();
                 glClearColor(0.0, 0.0, 0.0, 1.0);
                 for _ in 0..3 {
                     glClear(GL_COLOR_BUFFER_BIT);
                     eglSwapBuffers(dpy, surf);
+                    if let Some(p) = poke.as_mut() {
+                        p.poke();
+                    }
                 }
 
-                Ok(GlPresenter { dpy, surf, _ctx: ctx, win, tex, prog, a_pos, a_tex, w, h })
+                Ok(GlPresenter { dpy, surf, _ctx: ctx, win, tex, prog, a_pos, a_tex, w, h, poke })
             }
         }
 
@@ -462,8 +549,13 @@ mod imp {
                 );
 
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-                // Presents the frame and blocks on vsync (Mali fbdev). No manual FBIOPUT flip.
+                // Presents the frame and blocks on vsync (Mali fbdev)…
                 eglSwapBuffers(self.dpy, self.surf);
+            }
+            // …and then tell mtkfb to actually push it. The swap alone leaves the panel showing
+            // whatever was last force-activated — see PanelPoke.
+            if let Some(p) = self.poke.as_mut() {
+                p.poke();
             }
         }
     }

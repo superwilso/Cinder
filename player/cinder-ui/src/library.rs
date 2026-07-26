@@ -25,8 +25,10 @@ pub enum Tab {
 /// clips at the pixel budget, so this only needs to be ≤ the smallest tab's visible count).
 pub const PAGE: usize = 7;
 
-/// Bottom y of the scrollable list area (leave a hair at the panel edge).
-const LIST_BOTTOM: i32 = H as i32 - 12;
+/// Bottom y of the scrollable list area — the top of the Now Playing return bar, which is pinned
+/// to the bottom of every library screen. Derived, not a literal, so the list and the bar can't
+/// overlap if the bar's height changes.
+const LIST_BOTTOM: i32 = H as i32 - crate::chrome::NP_BAR_H;
 
 // ── Pixel-scroll geometry ────────────────────────────────────────────────────────────────
 // Lists scroll in PIXELS (live drag + fling), not rows: `scroll_px` is the content offset in

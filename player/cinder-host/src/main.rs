@@ -107,7 +107,12 @@ fn main() {
                     None => up_next::render(c, &theme, &fonts, "", &[], 0),
                 }
             }),
-            ("library_songs", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib)),
+            ("library_songs", &|c: &mut Canvas| {
+                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib);
+                // nav draws the Now Playing return bar over the library screens; mirror that here
+                // so the preview shows the real bottom of the screen, not a list running to the edge.
+                cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true);
+            }),
             // Songs sorted by ADDED (sort chip index 4) — shows the SORT chip label + reorder.
             ("library_songs_added", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 4, 0, None, &lib)),
             ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, None, &lib)),

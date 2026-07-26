@@ -533,21 +533,33 @@ impl App {
             }
             return vec![];
         }
-        // Global chrome (status bar, the full top strip). The bookmark glyph (top-right, drawn at
-        // x≈392) opens the **Shelf**; tapping anywhere else on the bar opens the **Menu** — the rest
-        // of the strip stays one big forgiving Menu target. Header back chevron → Back (below).
-        if y < 34 {
-            if (380..=406).contains(&x) {
-                self.open_shelf();
-            } else if self.current() != Screen::Menu {
-                self.push(Screen::Menu);
-            }
+        // Now Playing return bar (browsing screens only). Checked before everything else below the
+        // status strip: it is pinned to the bottom, so nothing else claims those rows.
+        if Self::shows_np_bar(self.current()) && crate::chrome::hit_np_bar(x, y) {
+            self.go(Screen::NowPlaying);
             return vec![];
+        }
+        // Global chrome (status bar, the full top strip). The bookmark glyph opens the **Shelf**;
+        // tapping anywhere else on the bar opens the **Menu** — the rest of the strip stays one big
+        // forgiving Menu target. Both zones come from `chrome::status_hit`, which is built from the
+        // same constants that place the glyphs. Header back chevron → Back (below).
+        match crate::chrome::status_hit(x, y) {
+            Some(crate::chrome::StatusTap::Shelf) => {
+                self.open_shelf();
+                return vec![];
+            }
+            Some(crate::chrome::StatusTap::Menu) => {
+                if self.current() != Screen::Menu {
+                    self.push(Screen::Menu);
+                }
+                return vec![];
+            }
+            None => {}
         }
         // Back chevron: a generous ≥44px target (the whole header-left block, from just under
         // the status strip to the header rule) on every screen that draws one.
         let has_header = !matches!(self.current(), Screen::NowPlaying | Screen::Menu | Screen::Lock);
-        if has_header && (34..91).contains(&y) && x < 80 {
+        if has_header && (crate::chrome::STATUS_H..crate::chrome::HEADER_BOTTOM).contains(&y) && x < 80 {
             self.pop();
             return vec![];
         }
@@ -985,6 +997,13 @@ impl App {
 
     fn go(&mut self, s: Screen) {
         self.stack = vec![s];
+    }
+
+    /// Screens that carry the Now Playing return bar: the library browse list and the album
+    /// drill-in. These are the places you end up several pushes deep from Now Playing, which is
+    /// exactly where Back-ing out one screen at a time is tedious.
+    fn shows_np_bar(s: Screen) -> bool {
+        matches!(s, Screen::Library | Screen::Album)
     }
 
     /// Number of rows in the current library tab (for cursor clamping).
@@ -1571,6 +1590,12 @@ impl App {
             // it somehow becomes current (it shouldn't).
             Screen::Shelf => crate::now_playing::render(c, &theme, fonts, np),
         }
+        // Now Playing return bar, pinned to the bottom of the browsing screens. Drawn after the
+        // screen (it overlays nothing — `library::LIST_BOTTOM` stops above it) and before the
+        // transient HUDs, which must stay on top of everything.
+        if Self::shows_np_bar(self.current()) {
+            crate::chrome::np_bar(c, &theme, fonts, np.title, np.artist, self.playing);
+        }
         // Transient HUD on top of any screen (except the lock screen, which owns the panel).
         if self.vol_overlay > 0 && self.current() != Screen::Lock {
             crate::overlay::volume(c, &theme, fonts, self.volume);
@@ -1904,7 +1929,7 @@ mod tests {
         a.tap(240, 200); // dim backdrop → Close
         assert!(!a.shelf_is_open());
         // Go to the Library, reopen the Shelf, and tap the pin's "GO ›" → back to Now Playing.
-        a.tap(372, 16); // status bar (not the bookmark) → Menu
+        a.tap(344, 22); // status bar, on the ☰ glyph (not the bookmark) → Menu
         a.tap(200, 91 + 1 * 63 + 8); // Library row
         assert_eq!(a.current(), Screen::Library);
         a.open_shelf();
@@ -1924,6 +1949,51 @@ mod tests {
         assert!(!a.shelf_is_open());
         a.tap(120, 16); // mid status bar → Menu
         assert_eq!(a.current(), Screen::Menu);
+    }
+
+    /// The status strip's two zones must land where the glyphs are DRAWN. Both come from
+    /// `chrome::status_hit`, so this pins the agreement rather than a pair of literals.
+    #[test]
+    fn status_strip_targets_match_the_drawn_glyphs() {
+        use crate::chrome::{status_hit, StatusTap, STATUS_H};
+        // The bookmark is drawn at x=388, centre of the strip.
+        assert_eq!(status_hit(388, STATUS_H / 2), Some(StatusTap::Shelf));
+        // The ☰ is drawn at x=344 — outside the Shelf zone, so tapping it means Menu.
+        assert_eq!(status_hit(344, STATUS_H / 2), Some(StatusTap::Menu));
+        // The whole strip is live to its full height: the bottom row used to be dead space
+        // (the strip was 34px) and is now a Menu target.
+        assert_eq!(status_hit(240, STATUS_H - 1), Some(StatusTap::Menu));
+        assert_eq!(status_hit(240, STATUS_H), None); // below the strip: not ours
+        // Every x along the strip resolves to something — no dead columns.
+        for x in 0..crate::W as i32 {
+            assert!(status_hit(x, 10).is_some(), "dead column at x={x}");
+        }
+    }
+
+    /// One tap from anywhere in the library back to Now Playing, however deep the drill-in went.
+    #[test]
+    fn np_bar_returns_to_now_playing() {
+        let mut a = unlocked();
+        a.tap(344, 22); // Menu
+        a.tap(200, 91 + 63 + 8); // Library
+        assert_eq!(a.current(), Screen::Library);
+        let (_, by, _, _) = crate::chrome::np_bar_rect();
+        a.tap(240, by + 20);
+        assert_eq!(a.current(), Screen::NowPlaying);
+        // …and it collapses the stack rather than popping one screen, so Back from Now Playing
+        // doesn't walk back into the library.
+        assert_eq!(a.stack.len(), 1);
+    }
+
+    /// The bar is pinned over the bottom of the list area, so no list row may resolve under it.
+    #[test]
+    fn np_bar_does_not_overlap_the_library_list() {
+        let (_, by, _, _) = crate::chrome::np_bar_rect();
+        let m = crate::model::Library::sample();
+        for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
+            assert_eq!(library::hit_row(tab, &m, 0, by), None, "{tab:?} row under the bar");
+            assert_eq!(library::hit_row(tab, &m, 0, by + 30), None, "{tab:?} row under the bar");
+        }
     }
 
     #[test]
@@ -2401,7 +2471,7 @@ mod tests {
         a.tap(20, 16); // far-left (over the clock) used to be a dead zone
         assert_eq!(a.current(), Screen::Menu);
         a.tap(200, 91 + 63 + 8); // leave Menu (into Library) so the next assert is meaningful
-        a.tap(372, 16); // right side (the ☰ icon) → Menu too
+        a.tap(344, 22); // right side (the ☰ icon) → Menu too
         assert_eq!(a.current(), Screen::Menu);
         // tap the Library row (row 1: y0=91 + 1*63 + a bit)
         a.tap(200, 91 + 63 + 8);
@@ -2587,7 +2657,7 @@ mod tests {
     #[test]
     fn pixel_scroll_and_fling_move_library_window() {
         let mut a = unlocked();
-        a.tap(372, 16); // Menu
+        a.tap(344, 22); // Menu
         a.tap(200, 91 + 63 + 8); // Library
         let max = library::max_scroll_px(a.lib_tab, &a.lib, 0, None);
         a.scroll_px(120); // live drag → later rows (clamped to content)

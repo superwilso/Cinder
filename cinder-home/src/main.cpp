@@ -1352,6 +1352,37 @@ static void touch_drag_motion() {
     g_drag_last_ms = now;
 }
 
+// ── Volume rocker auto-repeat ───────────────────────────────────────────────────────────────
+// Holding the rocker did nothing past the first step. The `val == 2` path in input_pump only ramps
+// when the KERNEL generates key repeats, and these evdev nodes don't set EV_REP for the side keys —
+// a held button delivers one press and then silence until the release.
+//
+// So we synthesize the repeat: remember which volume key is down and re-issue its action on a
+// timer. Any kernel repeat that does arrive pushes `g_vol_last_ms` forward, so on a unit/firmware
+// where EV_REP is set the two can't stack into a double-speed ramp — whichever ticks first wins.
+//
+// The dead-man cap matters more than it looks: every other button ignores releases (input_pump
+// drops `val == 0`), so if a release event is ever lost the ramp would otherwise run forever with
+// no finger on the device.
+int g_vol_btn = -1;      // CINDER_BTN_VOLUP / _VOLDOWN while held, else -1
+long g_vol_down_ms = 0;  // when the press landed
+long g_vol_last_ms = 0;  // last volume action emitted (kernel repeat OR synthetic)
+
+const long VOL_REPEAT_DELAY_MS = 350;    // hold this long before the ramp starts…
+const long VOL_REPEAT_EVERY_MS = 120;    // …then one step this often (~8/s, full scale in ~4 s)
+const long VOL_REPEAT_MAX_MS = 15000;    // dead-man: give up if a release was missed
+
+void vol_repeat_tick() {
+    if (g_vol_btn < 0) return;
+    long now = now_ms();
+    if (now - g_vol_down_ms > VOL_REPEAT_MAX_MS) { g_vol_btn = -1; return; }
+    if (now - g_vol_down_ms < VOL_REPEAT_DELAY_MS) return;
+    if (now - g_vol_last_ms < VOL_REPEAT_EVERY_MS) return;
+    g_vol_last_ms = now;
+    int act = cinder_input(g_vol_btn);
+    if (act != CINDER_ACT_NONE) carry_out(act);
+}
+
 void input_pump() {
     ev_event evs[32];
     static long g_ev_total = 0;   // events ever seen (any node) — for the silent-input heartbeat
@@ -1446,10 +1477,19 @@ void input_pump() {
                 if ((type == EV_KEY_ || type == EV_SW_) && code < keymap_size()
                         && g_keymap[code] == CINDER_BTN_HOLD) {
                     cinder_set_hold(val ? 1 : 0);
+                    g_vol_btn = -1;          // locking mid-hold must not keep ramping
                     continue;
                 }
 
                 // ── Buttons ──
+                // The volume rocker is the one button whose RELEASE means something: it ends the
+                // synthesized ramp (see vol_repeat_tick). Checked before the release filter below.
+                if (type == EV_KEY_ && val == 0 && code < keymap_size()
+                        && (g_keymap[code] == CINDER_BTN_VOLUP
+                            || g_keymap[code] == CINDER_BTN_VOLDOWN)) {
+                    if (g_vol_btn == g_keymap[code]) g_vol_btn = -1;
+                    continue;
+                }
                 if (type != EV_KEY_ || val == 0) continue; // releases never act
                 int kc = code;
                 // Key REPEATS (val=2) only ramp the volume rocker; for everything else a held
@@ -1470,12 +1510,18 @@ void input_pump() {
                 if (kc < 0 || kc >= keymap_size()) continue;
                 int btn = g_keymap[kc];
                 if (btn < 0) continue;
+                if (btn == CINDER_BTN_VOLUP || btn == CINDER_BTN_VOLDOWN) {
+                    if (val == 1) { g_vol_btn = btn; g_vol_down_ms = now_ms(); }
+                    g_vol_last_ms = now_ms();   // also swallows a kernel repeat's slot
+                }
                 int act = cinder_input(btn);
                 if (act != CINDER_ACT_NONE) carry_out(act);
             }
             if (n < (ssize_t)sizeof evs) break; // drained this node
         }
     }
+    // Held rocker: the events are all drained, so anything still down is a genuine hold.
+    vol_repeat_tick();
 }
 
 // Battery percent from sysfs (best-effort; 100 if unavailable).

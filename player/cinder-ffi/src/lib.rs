@@ -25,19 +25,22 @@ use std::os::unix::io::AsRawFd;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const FBIOGET_VSCREENINFO: libc::Ioctl = 0x4600;
-const FBIOPUT_VSCREENINFO: libc::Ioctl = 0x4601;
+// pub(crate): gpu.rs pokes the panel with the same ioctls after eglSwapBuffers (see gpu::PanelPoke).
+// Shared rather than re-declared there — a second copy of these numbers and of VarInfo's layout is
+// exactly the kind of duplicate that drifts.
+pub(crate) const FBIOGET_VSCREENINFO: libc::Ioctl = 0x4600;
+pub(crate) const FBIOPUT_VSCREENINFO: libc::Ioctl = 0x4601;
 const FBIOGET_FSCREENINFO: libc::Ioctl = 0x4602;
 /// fb_var_screeninfo.activate flag: force the driver to (re)apply the mode NOW. On mtkfb this is
 /// what actually pushes the framebuffer to the panel — writing pixels into the mmap does NOTHING
 /// on its own. icx_bootanimation's per-frame "flip" (disasm @0x1fae) is exactly
 /// `var.activate |= 0x80; ioctl(fd, FBIOPUT_VSCREENINFO, &var)`; without it the glass keeps showing
 /// whatever was pushed last, forever (the "frozen boot image" failure mode).
-const FB_ACTIVATE_FORCE: u32 = 0x80;
+pub(crate) const FB_ACTIVATE_FORCE: u32 = 0x80;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
-struct Bitfield {
+pub(crate) struct Bitfield {
     offset: u32,
     length: u32,
     msb_right: u32,
@@ -45,7 +48,7 @@ struct Bitfield {
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
-struct VarInfo {
+pub(crate) struct VarInfo {
     xres: u32,
     yres: u32,
     xres_virtual: u32,
