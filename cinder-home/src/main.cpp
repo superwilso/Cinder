@@ -99,6 +99,26 @@ volatile sig_atomic_t g_in_guard = 0;
 // bad-boot counter then reverts — far safer than corrupting the stack).
 volatile pthread_t g_guard_owner = 0;
 
+// Latch the bad-boot counter to MAXBAD so the NEXT boot reverts to stock, then never runs us again
+// until a newer binary is installed (the launcher self-heals on that).
+//
+// WHY THIS EXISTS (2026-07-26, learned the hard way): the counter is cleared once we've painted a
+// frame and survived ~8 s. A crash AFTER that point therefore leaves a *cleared* counter — so the
+// next boot starts from zero, crashes again, clears again… The counter can never accumulate and
+// rung 1 of the escape ladder is silently dead. That is exactly what happened with the per-frame
+// canvas OOM: it aborted seconds after "healthy: bad-boot counter cleared", and the device
+// logo-looped with no automatic way out (only the cable-at-boot escape saved it).
+//
+// Absence of health is not evidence of a crash. So the crash records itself.
+// async-signal-safe only: open/write/close/fsync are all on the POSIX AS-safe list.
+void latch_bad_boot_counter() {
+    int fd = open("/data/cinder/bootcount", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;                       // no /data → nothing we can do from a signal handler
+    ssize_t w = write(fd, "4", 1); (void)w;   // MAXBAD in deploy/install_cinderhome.sh
+    fsync(fd);                                // must survive the reboot we're about to take
+    close(fd);
+}
+
 void fault_handler(int sig, siginfo_t* si, void* uc_) {
     // SIGABRT is NEVER recoverable — not even inside a guard. glibc raises it when it detects
     // heap corruption *inside malloc with the arena lock held*; a siglongjmp "recovery" leaves
@@ -108,8 +128,9 @@ void fault_handler(int sig, siginfo_t* si, void* uc_) {
     // So: async-signal-safe write() only (stderr is the log file), then die → reboot → counter.
     if (sig == SIGABRT) {
         static const char m[] = "[cinder-home] *** FATAL SIGABRT (heap corruption / library abort)"
-                                " — no recovery possible, exiting for a clean reboot ***\n";
+                                " — no recovery possible, latching bad-boot + exiting ***\n";
         ssize_t w = write(2, m, sizeof m - 1); (void)w;
+        latch_bad_boot_counter();   // a post-health crash must still auto-revert
         _exit(42);
     }
     if (g_in_guard && pthread_equal(pthread_self(), (pthread_t)g_guard_owner)) {
@@ -120,6 +141,9 @@ void fault_handler(int sig, siginfo_t* si, void* uc_) {
     }
     log_fault(sig, uc_, si,
               sig == SIGALRM ? "WATCHDOG (un-guarded hang)" : "FATAL SIGNAL");
+    // Same reasoning as the SIGABRT path: if we already declared ourselves healthy, only the
+    // crash itself can put the counter back, so record it before dying.
+    latch_bad_boot_counter();
     _exit(42);  // die fast -> appmgr reboots -> bad-boot counter reverts to stock
 }
 

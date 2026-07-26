@@ -256,6 +256,10 @@ struct Np {
 
 struct Render {
     present: Presenter,
+    /// The frame buffer, allocated ONCE and reused every frame. Re-allocating it per frame
+    /// is 1.5 MB of churn that fragmented the heap until an allocation failed outright on
+    /// device (SIGABRT, 2026-07-26).
+    canvas: Canvas,
     fonts: FontSet,
     night: bool,
     np: Np,
@@ -391,6 +395,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
     np.battery = 100;
     *cell().lock().unwrap() = Some(Render {
         present,
+        canvas: Canvas::new(),
         fonts: FontSet::load(),
         night: false,
         np,
@@ -664,7 +669,14 @@ pub extern "C" fn cinder_render_tick() {
     if !r.dirty {
         return; // nothing changed — skip the render + framebuffer blit entirely
     }
-    let mut canvas = Canvas::new();
+    // Reuse the frame buffer. This used to be a fresh `Canvas::new()` EVERY painted frame — a
+    // 480×800×4 = 1,536,000-byte allocation at up to 60 fps. On device that eventually failed
+    // outright ("memory allocation of 1536000 bytes failed" → Rust's allocator aborts → SIGABRT
+    // → reboot), because the churn fragments a heap that also holds the Mali/EGL surfaces, the
+    // 3350-track library and the decoded cover art. Every screen's render begins with
+    // `c.fill(theme.bg)`, so the previous frame's pixels are always fully overwritten; only the
+    // clip band has to be reset.
+    r.canvas.clear_clip();
     let np = NowPlaying {
         title: &r.np.title,
         artist: &r.np.artist,
@@ -690,14 +702,14 @@ pub extern "C" fn cinder_render_tick() {
     };
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
     // the list/menu screens from their own state.
-    r.app.render(&mut canvas, &r.fonts, &np);
+    r.app.render(&mut r.canvas, &r.fonts, &np);
     if let Some(path) = r.pending_screenshot.take() {
-        match write_png(&path, &canvas) {
+        match write_png(&path, &r.canvas) {
             Ok(()) => println!("cinder-ffi: screenshot written to {path}"),
             Err(e) => eprintln!("cinder-ffi: screenshot failed ({path}): {e}"),
         }
     }
-    r.present.present(&canvas);
+    r.present.present(&r.canvas);
     r.dirty = false;
 }
 
