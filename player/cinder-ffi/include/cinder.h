@@ -10,6 +10,10 @@ extern "C" {
 int  cinder_render_init(void);
 /* Render the current state to the panel; call once per frame from the pump. */
 void cinder_render_tick(void);
+/* Frames whose presentation has COMPLETED (pixels pushed to the panel). The present runs on its
+ * own thread by default, so cinder_render_tick returning no longer means a frame reached the
+ * glass — gate any "first frame painted" health logic on this counter going nonzero. */
+unsigned long long cinder_frames_presented(void);
 /* Frame-time bench: render `frames` frames, reporting rasterize vs present cost. `scroll` != 0
    drags the library list by that many px per frame so the numbers cover scrolling, not a static
    screen. Diagnostic only — cinder-probe --bench. */

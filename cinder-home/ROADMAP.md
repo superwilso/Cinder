@@ -121,6 +121,18 @@ never repoint the `.appcfg` before the probe run looks clean.
     **Security trade-off:** 0666 on those nodes world-opens graphics memory and display control —
     acceptable on a single-user player, but it is a real loosening of kernel device permissions.
     See memory `reference_gpu_mali_stack`.
+  - **DEVICE RESULT 2026-07-26 (bench):** GPU present measures WORSE than software in every
+    config (ms/present, `cinder-probe --bench gpu`): poke+interval-1 **45.6**, poke+interval-0
+    **55.5**, no-poke **24.0** but the panel never updates (mtkfb needs the FBIOPUT poke; swap
+    alone reaches no glass). Software present: **9.6**. The cost is `FBIOPUT_VSCREENINFO`
+    contending with the Mali pipeline, not vsync stacking (interval 0 made it worse). GPU path
+    stays opt-in — worth revisiting only with a pan-display or real MTK overlay path.
+    **Superseding fix, same day:** the **present thread** (`cinder-ffi/src/present.rs`, ON by
+    default, escape `/contents/cinder_nothread`) overlaps raster with present — measured
+    **9.55 ms/frame pipelined ≈ 105 fps ceiling** on the software path (pump caps at 60). The
+    escape-ladder contract survives: submit blocks on a wedged present thread so the per-frame
+    `alarm(8)` still fires, and "first frame painted" health now gates on
+    `cinder_frames_presented()` (completed presents, not submissions).
 - **Play a selected track / album** — **WIRED 2026-07-03 (was the biggest gap); needs device
   verify only.** `Action::PlayIndex` → `cinder-db::album_context` → `cinder_audio_play_tracks`
   builds the JSON Node-tree (`{"uri","format","children"}`), maps formats via Sony's

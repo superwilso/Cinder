@@ -1622,7 +1622,12 @@ void* render_driver(void*) {
         alarm(8);
         cinder_render_tick();
         alarm(0);
-        if (!first_painted) {
+        // "First frame painted" gates on cinder_frames_presented(), NOT on tick returning: the
+        // present runs on its own thread now, so tick returns once the frame is SUBMITTED. The
+        // health signal (and StopBootAnimation) must mean pixels actually went to the glass —
+        // counting submission would re-open the frozen-panel-marked-healthy hole. Costs at most
+        // one extra 16 ms loop iteration after boot.
+        if (!first_painted && cinder_frames_presented() > 0) {
             first_painted = true;
             g_first_paint_at = std::time(nullptr);   // starts the bad-boot "proven good" clock
             clog_("render_driver: first frame painted (our own loop)");

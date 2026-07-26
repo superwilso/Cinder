@@ -14,6 +14,7 @@
 mod art_cache;
 mod art_load;
 mod gpu;
+mod present;
 mod scrobble;
 mod spectrum;
 
@@ -172,18 +173,18 @@ impl Framebuffer {
     /// rotated panel, or H > yres), an unchecked `(page*H+y)*stride` would write off the end of the
     /// mmap → SIGSEGV/corruption. So each row is bounded against `map_len`; an out-of-range row is
     /// skipped rather than written. Worst case is a cosmetically clipped frame, never a crash.
-    fn blit(&mut self, canvas: &Canvas) {
+    fn blit(&mut self, buf: &[u32]) {
         let base = self.base as *mut u8;
         let copy_bytes = (W * 4).min(self.stride);
         for page in 0..self.pages {
             for y in 0..H {
                 let dst_row = (page * H + y) * self.stride;
-                if dst_row + copy_bytes > self.map_len {
-                    break; // this row (and any after, in this page) would overrun the mapping
+                if dst_row + copy_bytes > self.map_len || (y + 1) * W > buf.len() {
+                    break; // this row (and any after, in this page) would overrun a mapping
                 }
                 unsafe {
                     std::ptr::copy_nonoverlapping(
-                        canvas.buf.as_ptr().add(y * W) as *const u8,
+                        buf.as_ptr().add(y * W) as *const u8,
                         base.add(dst_row),
                         copy_bytes,
                     );
@@ -230,11 +231,46 @@ enum Presenter {
     Fb(Framebuffer),
 }
 
-impl Presenter {
-    fn present(&mut self, canvas: &Canvas) {
+impl present::PresentTarget for Presenter {
+    fn present(&mut self, buf: &[u32]) {
         match self {
-            Presenter::Gl(g) => g.present(canvas),
-            Presenter::Fb(f) => f.blit(canvas),
+            Presenter::Gl(g) => g.present(buf),
+            Presenter::Fb(f) => f.blit(buf),
+        }
+    }
+}
+
+/// Frames whose presentation has COMPLETED (blit + flip ioctl returned / swap + poke returned) —
+/// i.e. pixels were pushed toward the glass, not merely queued. The shell reads this via
+/// `cinder_frames_presented` to gate its "first frame painted" bad-boot health signal; with the
+/// present running on its own thread, "cinder_render_tick returned" no longer implies that.
+pub(crate) static FRAMES_PRESENTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// How frames leave the render thread: inline (the original serial path, kept as the flagged
+/// escape because it is strictly less machinery) or through the present thread (see present.rs).
+enum Sink {
+    Sync(Presenter),
+    Threaded(present::PresentThread),
+}
+
+impl Sink {
+    fn present(&mut self, canvas: &mut Canvas) {
+        use present::PresentTarget;
+        match self {
+            Sink::Sync(p) => {
+                p.present(&canvas.buf);
+                FRAMES_PRESENTED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            Sink::Threaded(t) => t.submit(&mut canvas.buf),
+        }
+    }
+
+    /// Block until `target` frames have completed (no-op on the sync path, where completion is
+    /// implied by `present` returning). Bench uses this to time the true present cost.
+    fn wait_presented(&self, target: u64) {
+        if let Sink::Threaded(t) = self {
+            t.wait_presented(target);
         }
     }
 }
@@ -261,7 +297,7 @@ struct Np {
 struct Render {
     /// Which album's cover is currently handed to the UI, so the 96x96 is loaded on change only.
     album_cover_id: Option<i64>,
-    present: Presenter,
+    present: Sink,
     /// The frame buffer, allocated ONCE and reused every frame. Re-allocating it per frame
     /// is 1.5 MB of churn that fragmented the heap until an allocation failed outright on
     /// device (SIGABRT, 2026-07-26).
@@ -354,6 +390,27 @@ unsafe fn cstr(p: *const c_char) -> String {
     }
 }
 
+/// Open the requested presenter, falling back from GPU to the software framebuffer. Runs on the
+/// present thread in the default configuration (EGL thread affinity), inline under
+/// /contents/cinder_nothread. Always names the live path in cinderhome.log: "the app ran but the
+/// screen was stuck" is otherwise indistinguishable between these branches from the log alone.
+fn open_presenter(want_gpu: bool) -> Result<Presenter, String> {
+    if want_gpu {
+        match gpu::GlPresenter::open(W as i32, H as i32) {
+            Ok(g) => {
+                println!("cinder-ffi: GPU present path active (EGL/GLES2 on Mali)");
+                return Ok(Presenter::Gl(g));
+            }
+            Err(e) => {
+                eprintln!("cinder-ffi: GPU init failed ({e}); falling back to software framebuffer")
+            }
+        }
+    } else {
+        println!("cinder-ffi: software framebuffer present path (GPU opt-in flag absent)");
+    }
+    Framebuffer::open().map(Presenter::Fb)
+}
+
 /// Open the framebuffer and initialise the renderer. Returns 0 on success, <0 on error.
 #[no_mangle]
 pub extern "C" fn cinder_render_init() -> libc::c_int {
@@ -378,29 +435,27 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
     let opt_in = std::path::Path::new("/contents/cinder_gpu_on").exists()
         || std::env::var("CINDER_GPU").map(|v| v == "1").unwrap_or(false);
     let want_gpu = opt_in && !force_off;
-    let present = if want_gpu {
-        match gpu::GlPresenter::open(W as i32, H as i32) {
-            Ok(g) => {
-                println!("cinder-ffi: GPU present path active (EGL/GLES2 on Mali, vsync)");
-                Presenter::Gl(g)
-            }
+    // The present runs on its own thread by default (raster and present overlap — see present.rs,
+    // incl. why the watchdog contract survives the move). /contents/cinder_nothread or
+    // CINDER_NOTHREAD=1 keeps the original in-line present: the escape depends on strictly less.
+    let no_thread = std::path::Path::new("/contents/cinder_nothread").exists()
+        || std::env::var("CINDER_NOTHREAD").map(|v| v == "1").unwrap_or(false);
+    let present = if no_thread {
+        println!("cinder-ffi: synchronous present (present thread disabled by flag)");
+        match open_presenter(want_gpu) {
+            Ok(p) => Sink::Sync(p),
             Err(e) => {
-                eprintln!("cinder-ffi: GPU init failed ({e}); falling back to software framebuffer");
-                match Framebuffer::open() {
-                    Ok(fb) => Presenter::Fb(fb),
-                    Err(e2) => {
-                        eprintln!("cinder-ffi: {e2}");
-                        return -1;
-                    }
-                }
+                eprintln!("cinder-ffi: {e}");
+                return -1;
             }
         }
     } else {
-        // Always name the live present path in cinderhome.log: "the app ran but the screen was
-        // stuck" is otherwise indistinguishable between these two branches from the log alone.
-        println!("cinder-ffi: software framebuffer present path (GPU opt-in flag absent)");
-        match Framebuffer::open() {
-            Ok(fb) => Presenter::Fb(fb),
+        // The presenter is constructed ON the present thread (EGL contexts are thread-affine).
+        match present::PresentThread::start(move || open_presenter(want_gpu)) {
+            Ok(t) => {
+                println!("cinder-ffi: present thread active (raster overlaps present)");
+                Sink::Threaded(t)
+            }
             Err(e) => {
                 eprintln!("cinder-ffi: {e}");
                 return -1;
@@ -737,8 +792,16 @@ pub extern "C" fn cinder_render_tick() {
             Err(e) => eprintln!("cinder-ffi: screenshot failed ({path}): {e}"),
         }
     }
-    r.present.present(&r.canvas);
+    r.present.present(&mut r.canvas);
     r.dirty = false;
+}
+
+/// Frames whose presentation has COMPLETED — pixels pushed to the panel, not merely submitted to
+/// the present thread. The shell gates "first frame painted" (the bad-boot health signal) on this
+/// going nonzero; see FRAMES_PRESENTED for why submission alone must not count.
+#[no_mangle]
+pub extern "C" fn cinder_frames_presented() -> libc::c_ulonglong {
+    FRAMES_PRESENTED.load(std::sync::atomic::Ordering::SeqCst) as libc::c_ulonglong
 }
 
 /// Frame-time bench: render `frames` frames and report where the time goes, split into the
@@ -787,11 +850,21 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
         let t0 = std::time::Instant::now();
         r.app.render(&mut r.canvas, &r.fonts, &np2);
         let t1 = std::time::Instant::now();
-        r.present.present(&r.canvas);
+        // Submit AND wait for completion, so "present" is the true cost through the present
+        // thread (submit alone returns in microseconds and would time nothing).
+        let target = FRAMES_PRESENTED.load(std::sync::atomic::Ordering::SeqCst) + 1;
+        r.present.present(&mut r.canvas);
+        r.present.wait_presented(target);
         let t2 = std::time::Instant::now();
         raster.push(t1.duration_since(t0).as_micros() as u64);
         present.push(t2.duration_since(t1).as_micros() as u64);
     }
+    // What the pump actually achieves with the present thread: raster and present overlap, so a
+    // frame costs max(raster, present), not their sum. (Measured serially above on purpose — the
+    // split still says WHERE time goes; this line says what it adds up to in production.)
+    let pipelined: u64 =
+        raster.iter().zip(present.iter()).map(|(a, b)| *a.max(b)).sum();
+    let threaded = matches!(r.present, Sink::Threaded(_));
     let report = |name: &str, v: &mut Vec<u64>| {
         v.sort_unstable();
         let sum: u64 = v.iter().sum();
@@ -807,10 +880,17 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
     report("raster", &mut raster);
     report("present", &mut present);
     println!(
-        "cinder-ffi: bench TOTAL   avg {:6.2} ms/frame  =>  {:5.1} fps ceiling",
+        "cinder-ffi: bench serial  avg {:6.2} ms/frame  =>  {:5.1} fps ceiling",
         total as f64 / frames as f64 / 1000.0,
         1e6 * frames as f64 / total as f64,
     );
+    if threaded {
+        println!(
+            "cinder-ffi: bench PIPELINED avg {:6.2} ms/frame  =>  {:5.1} fps (present thread)",
+            pipelined as f64 / frames as f64 / 1000.0,
+            1e6 * frames as f64 / pipelined as f64,
+        );
+    }
 }
 
 /// Diagnostic: resolve + decode album art for `object_id` and report what happened. Prints the

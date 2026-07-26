@@ -41,7 +41,6 @@
 // binary links with no GPU libs. On the device the stub is never compiled.
 #[cfg(target_arch = "arm")]
 mod imp {
-    use cinder_ui::Canvas;
     use std::ffi::c_void;
     use std::os::raw::c_char;
 
@@ -442,7 +441,14 @@ mod imp {
                     drop(Box::from_raw(win));
                     return Err(format!("eglMakeCurrent failed (egl err {:#x})", eglGetError()));
                 }
-                let _ = eglSwapInterval(dpy, 1); // vsync (best-effort; not fatal if unsupported)
+                // Interval 1 is the best MEASURED config, not an assumption (device bench,
+                // 2026-07-26, ms/present): poke+interval1 45.6, poke+interval0 55.5, no-poke 24.0
+                // (dead panel). Interval 0 was tried on the "two vsync waits" theory and made it
+                // WORSE — the cost lives in FBIOPUT_VSCREENINFO contending with the Mali pipeline,
+                // not in the swap's vsync wait. The software path presents in 9.6 ms, so this
+                // whole GPU path stays opt-in; see cinder_render_init.
+                let mut poke = PanelPoke::open();
+                let _ = eglSwapInterval(dpy, 1);
 
                 // Shader program.
                 let vs = compile_shader(GL_VERTEX_SHADER, VERT_SRC)?;
@@ -494,7 +500,6 @@ mod imp {
 
                 // Clear both/all back buffers to black so no boot-animation garbage flashes through
                 // the alternating buffers before the first real frame lands.
-                let mut poke = PanelPoke::open();
                 glClearColor(0.0, 0.0, 0.0, 1.0);
                 for _ in 0..3 {
                     glClear(GL_COLOR_BUFFER_BIT);
@@ -508,12 +513,12 @@ mod imp {
             }
         }
 
-        pub fn present(&mut self, canvas: &Canvas) {
+        pub fn present(&mut self, buf: &[u32]) {
             unsafe {
                 glUseProgram(self.prog);
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, self.tex);
-                // Upload the freshly-rasterized Canvas. buf is W*H u32 (BGRX); the fragment shader
+                // Upload the freshly-rasterized canvas buffer: W*H u32 (BGRX); the fragment shader
                 // swizzles to RGB. One full-frame upload replaces the old 3x fb memcpy.
                 glTexSubImage2D(
                     GL_TEXTURE_2D,
@@ -524,7 +529,7 @@ mod imp {
                     self.h,
                     GL_RGBA,
                     GL_UNSIGNED_BYTE,
-                    canvas.buf.as_ptr() as *const c_void,
+                    buf.as_ptr() as *const c_void,
                 );
 
                 let stride = (4 * std::mem::size_of::<f32>()) as GLsizei;
@@ -578,15 +583,13 @@ mod imp {
 // `cargo test -p cinder-ffi` linkable with no EGL/GLES libraries present.
 #[cfg(not(target_arch = "arm"))]
 mod imp {
-    use cinder_ui::Canvas;
-
     pub struct GlPresenter;
 
     impl GlPresenter {
         pub fn open(_w: i32, _h: i32) -> Result<Self, String> {
             Err("GPU present path is ARM-only (host build)".into())
         }
-        pub fn present(&mut self, _canvas: &Canvas) {}
+        pub fn present(&mut self, _buf: &[u32]) {}
     }
 }
 

@@ -60,10 +60,12 @@ shell on the device in **normal boot** (stock UI up, so PlayerService is running
 easy path:
 
 ```bash
-adb push cinder-home/dist/stable/cinder-probe /data/local/tmp/
-adb shell 'cd /data/local/tmp && \
-  LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib \
-  ./cinder-probe'
+# /tmp is the ONLY writable exec-able mount (/data and /contents are noexec); toolbox chmod
+# needs an octal mode, not +x.
+adb push cinder-home/dist/stable/cinder-probe /tmp/cinder-probe
+adb shell 'chmod 755 /tmp/cinder-probe && \
+  LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib \
+  /tmp/cinder-probe'
 ```
 
 Read the printed trace. The **last `[N/4]` line before it stops** is the culprit:

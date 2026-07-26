@@ -16,9 +16,14 @@ use cinder_ui::art::Image;
 
 /// Cap for a single art blob (sanity against a corrupt datasize — covers are ≤ a few MB).
 const MAX_BLOB: u64 = 16 * 1024 * 1024;
-/// Cap on DECODED dimensions: a 2048×2048 cover is already 12 MB of RGB — anything larger
-/// is a mastering accident, and this device doesn't have the RAM to indulge it.
-const MAX_DIM: usize = 2048;
+/// Cap on DECODED dimensions. Was 2048 on the "mastering accident" theory — and then the user's
+/// real library turned out to hold 22 albums with covers up to 3600×3600 (Bandcamp-style masters),
+/// every one silently cover-less. 4096² is a 50 MB transient decode; the device has 467 MB with
+/// ~250 MB free+reclaimable (measured 2026-07-26), and the decode is serialized (one at a time in
+/// the art-cache builder, or one per track change), so the peak is safe. The check runs on the
+/// HEADER dimensions before any allocation — see decode_jpeg — so covers beyond even this cap cost
+/// a few KB of header parse, not a decode.
+const MAX_DIM: usize = 4096;
 
 /// Resolve + decode art for `object_id`. Returns the image at its NATIVE decoded size
 /// (caller pre-scales to draw sizes). Logs ONE diagnostic line per call to stderr (→
@@ -105,11 +110,43 @@ fn decode_jpeg(bytes: &[u8]) -> Option<Image> {
     use zune_jpeg::zune_core::options::DecoderOptions;
     let opts = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGB);
     let mut dec = zune_jpeg::JpegDecoder::new_with_options(bytes, opts);
-    let rgb = dec.decode().ok()?;
-    let (w, h) = dec.dimensions()?;
-    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM || rgb.len() < w * h * 3 {
+    // Dimension-gate on the HEADER before the pixel decode: the old order (decode, then check)
+    // allocated the full RGB — 39 MB for a real 3600×3600 cover — only to throw it away.
+    if let Err(e) = dec.decode_headers() {
+        eprintln!("[cinder-ffi] art: jpeg header parse failed: {e}");
         return None;
     }
+    let (w, h) = dec.dimensions()?;
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
+        eprintln!("[cinder-ffi] art: jpeg {w}x{h} exceeds cap {MAX_DIM} — skipped");
+        return None;
+    }
+    let out = match dec.decode() {
+        Ok(v) => v,
+        Err(e) => {
+            // Named because a silent None here cost a day: 22 albums looked "cover-less" when the
+            // real story (oversize/grayscale) was only visible once this path said why it gave up.
+            eprintln!("[cinder-ffi] art: jpeg {w}x{h} decode failed: {e}");
+            return None;
+        }
+    };
+    // The out-colorspace request is not a guarantee: a GRAYSCALE source (components=1 — real
+    // covers in the user's library are mastered this way) comes back 1 byte/px regardless.
+    // Match on the actual layout by exact length; anything unrecognized is logged, not guessed.
+    let px = w * h;
+    let rgb = if out.len() == px * 3 {
+        out
+    } else if out.len() == px {
+        out.iter().flat_map(|&g| [g, g, g]).collect()
+    } else if out.len() == px * 4 {
+        out.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+    } else {
+        eprintln!(
+            "[cinder-ffi] art: jpeg {w}x{h} returned {} bytes (unrecognized layout) — skipped",
+            out.len()
+        );
+        return None;
+    };
     Some(Image { w, h, rgb })
 }
 
