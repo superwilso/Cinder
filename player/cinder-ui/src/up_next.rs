@@ -23,8 +23,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
 
     if tracks.is_empty() {
         let _ = crate::chrome::header(c, t, f, "Up Next", None);
-        let st = sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0);
-        text::draw(c, f, 22.0, 360.0, "Nothing queued.", &sty(Family::Sans, Weight::SemiBold, 18.0, t.ink, 0.0));
+        let st = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
+        text::draw(c, f, 22.0, 360.0, "Nothing queued.", &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
         text::draw(c, f, 22.0, 386.0, "Play a track and its album appears here.", &st);
         return;
     }
@@ -51,15 +51,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
         // index / ▶
         let idx_col = if now { t.acc } else { t.faint };
         let idx = if now { "▶".to_string() } else { format!("{:02}", i + 1) };
-        text::draw(c, f, 22.0, cy + 4.0, &idx, &sty(Family::Mono, Weight::Regular, 10.0, idx_col, 0.0));
+        text::draw(c, f, 22.0, cy + 4.0, &idx, &sty(Family::Mono, Weight::Regular, 12.0, idx_col, 0.0));
         // thumb
         art::block(c, t, 46, y + (RH - 40) / 2, 40, 40, &song.art, if t.night { 0.30 } else { 1.0 });
         // title / artist
         let title_col = if now { t.acc } else { t.ink };
-        text::draw(c, f, 100.0, cy - 2.0, &song.title, &sty(Family::Sans, Weight::SemiBold, 18.0, title_col, 0.0));
-        text::draw(c, f, 100.0, cy + 16.0, &song.artist, &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
+        let tst = sty(Family::Sans, Weight::SemiBold, 20.0, title_col, 0.0);
+        text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 306.0), &tst);
+        let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
+        text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, 320.0), &ast);
         // duration
-        right(c, f, 458.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
+        right(c, f, 458.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
         hline(c, y + RH, t.line);
         y += RH;
         shown += 1;
@@ -88,11 +90,13 @@ pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow]) {
         }
         let cy = (y + RH / 2) as f32;
         text::draw(c, f, 22.0, cy + 4.0, &format!("{:02}", i + 1),
-            &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
+            &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
         art::block(c, t, 46, y + (RH - 40) / 2, 40, 40, &song.art, if t.night { 0.30 } else { 1.0 });
-        text::draw(c, f, 100.0, cy - 2.0, &song.title, &sty(Family::Sans, Weight::SemiBold, 18.0, t.ink, 0.0));
-        text::draw(c, f, 100.0, cy + 16.0, &song.artist, &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
-        right(c, f, 458.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
+        let tst = sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0);
+        text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 306.0), &tst);
+        let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
+        text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, 320.0), &ast);
+        right(c, f, 458.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
         hline(c, y + RH, t.line);
         y += RH;
         shown += 1;

@@ -24,7 +24,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
     let y0 = crate::chrome::header(c, t, f, "Equalizer", None);
     // header-right pill: CUSTOM <preset>
     let plabel = format!("CUSTOM {}", preset);
-    let ps = sty(Family::Mono, Weight::Regular, 10.0, t.acc, 0.12);
+    let ps = sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.12);
     let pw = text::measure(f, &plabel, &ps) as i32 + 18;
     stroke_rect(c, 458 - pw, 52, pw, 26, t.acc, 1);
     text::draw(c, f, (458 - pw + 9) as f32, 69.0, &plabel, &ps);
@@ -35,7 +35,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
     let ph = 30;
     for (name, _) in EQ_PRESETS {
         let on = name == preset;
-        let st = sty(Family::Mono, Weight::Regular, 10.0, if on { t.acc_ink } else { t.dim }, 0.08);
+        let st = sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc_ink } else { t.dim }, 0.08);
         let w = text::measure(f, name, &st) as i32 + 26;
         if on {
             fill_rect(c, px, py, w, ph, t.acc);
@@ -77,14 +77,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
         let dbcol = if on { t.ink } else if db != 0 { t.acc } else { t.faint };
         crate::widgets::center(c, f, bx as f32, (sy - 6) as f32, &dbl, &sty(Family::Mono, Weight::Regular, if on { 10.0 } else { 9.0 }, dbcol, 0.0));
         // Hz label below
-        crate::widgets::center(c, f, bx as f32, (by + 22) as f32, EQ_BANDS[i], &sty(Family::Mono, Weight::Regular, 9.0, t.dim, 0.0));
+        crate::widgets::center(c, f, bx as f32, (by + 22) as f32, EQ_BANDS[i], &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0));
     }
 
     // footer
     let fy = 740;
     hline(c, fy, t.line);
     let fcy = (fy + 60 / 2) as f32;
-    text::draw(c, f, 22.0, fcy + 4.0, "Reset", &sty(Family::Sans, Weight::SemiBold, 14.0, t.dim, 0.0));
-    right(c, f, 458.0, fcy + 4.0, "Save Sound Preset", &sty(Family::Sans, Weight::Bold, 14.0, t.acc, 0.0));
+    text::draw(c, f, 22.0, fcy + 4.0, "Reset", &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0));
+    right(c, f, 458.0, fcy + 4.0, "Save Sound Preset", &sty(Family::Sans, Weight::Bold, 16.0, t.acc, 0.0));
     let _ = W;
 }

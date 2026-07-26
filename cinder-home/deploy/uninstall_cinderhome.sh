@@ -41,6 +41,10 @@ fi
 
 # ALWAYS set the escape flag: if the .appcfg still points at our launcher (restore didn't run),
 # the launcher reads this and runs stock. This is what keeps a failed uninstall non-bricking.
+# Set it in BOTH places: /data/cinder/off is the one the launcher treats as authoritative,
+# /contents/cinderhome_off is the USB-MSC-visible copy (and what pre-2026-07-26 launchers read).
+"$BB" mkdir -p /data/cinder 2>/dev/null
+touch /data/cinder/off 2>/dev/null
 touch /contents/cinderhome_off 2>/dev/null; sync
 
 # Only remove the launcher + binary once stock is verifiably restored. Otherwise KEEP them, so the
@@ -48,8 +52,11 @@ touch /contents/cinderhome_off 2>/dev/null; sync
 # cinderhome_off -> runs stock). Deleting the launcher under a broken .appcfg = soft-brick.
 if [ "$restored" = 1 ]; then
     "$BB" rm -f "$BIN/cinderhome-launch.sh" "$BIN/cinder-home" 2>/dev/null
-    "$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot 2>/dev/null
-    echo "removed launcher + binary + flags (full uninstall)"
+    # setuid-root helpers must not outlive the app they exist for.
+    "$BB" rm -f "$BIN/cinder-umount" "$BIN/cinder-gpunode" 2>/dev/null
+    "$BB" rm -rf /data/cinder 2>/dev/null
+    "$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot /contents/cinder_gpu_on /contents/cinderhome_clear /contents/cinderhome_cable_off 2>/dev/null
+    echo "removed launcher + binary + setuid helpers + flags (full uninstall)"
 else
     echo "kept launcher/binary (restore incomplete); cinderhome_off set -> launcher runs stock."
 fi

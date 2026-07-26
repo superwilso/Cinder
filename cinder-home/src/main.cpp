@@ -186,6 +186,8 @@ pthread_t g_pump_ticker = 0;   // the ticker thread handle (joined at finalize)
 bool g_deferred_done = false;  // slow/blocking init (DB + PlayerService) finished?
 time_t g_healthy_since = 0;    // when deferred init completed (for the proven-healthy reset)
 bool g_counter_reset = false;  // have we cleared the launcher bad-boot counter this boot?
+time_t g_first_paint_at = 0;   // when the FIRST frame hit the panel (the bad-boot health signal)
+int g_screenshot_sync = 0;     // countdown: sync /contents a few ticks after a screenshot is taken
 
 // ── watchdog summary ────────────────────────────────────────────────────────────────────
 // SIGALRM (alarm) + fault_handler give two layers: (1) `run_guarded` wraps the blocking Sony-IPC
@@ -395,18 +397,66 @@ void deferred_up() {
     clog_("deferred_up: DONE");
 }
 
-// Clear the launcher's bad-boot counter once we've rendered cleanly for a while AFTER the risky
-// init — i.e. this boot is proven good. The launcher only INCREMENTS the counter; only we reset
-// it, so a hang (which never reaches here) leaves it climbing → auto-revert. (Replaces the old
-// launcher's blind 60s timer reset, which a hung process "survived" → soft-brick.)
+// Clear the launcher's bad-boot counter once this boot is proven good. The launcher only
+// INCREMENTS the counter; only we reset it, so a hang (which never reaches here) leaves it
+// climbing → auto-revert.
+//
+// HEALTH BAR = "first frame painted, and still alive N seconds later" — deliberately NOT
+// "deferred_up() finished". Rationale (2026-07-26): the counter exists to catch a boot that
+// WEDGES — one that never satisfies appmgr's foreground handshake or never paints, leaving a
+// black screen with no adb and no way in. Once a frame is on the glass the device is usable and
+// recoverable, which is exactly the condition the safety net cares about. deferred_up() is
+// FEATURE init (DB + PlayerService + battery + EQ + storage + volume, and on dev additionally
+// the MTPDB copy, discovery dump and adb-enable); its guarded budgets sum to ~69 s on stable and
+// ~104 s more on dev, so gating the reset behind it meant a perfectly healthy boot could stay
+// "unproven" for over two minutes. Any reboot inside that window left the counter set, and with
+// MAXBAD=2 the very next boot latched cinderhome_off PERMANENTLY (the launcher checks that flag
+// before it counts, and nothing running ever clears it) → every subsequent boot ran stock until
+// the flags were cleared by hand over USB-MSC. That is precisely what happened during the GPU
+// work: three quick staged reboots put the device into a permanent stock-boot state.
+// The counter moved from /contents to /data on 2026-07-26. /contents is vfat AND is the partition
+// handed to the PC for USB-MSC, so it is both corruptible and periodically absent — when it failed
+// to mount, this write went nowhere, the launcher's increment went nowhere too, and the device
+// looped on the boot logo with the safety net silently disabled. /data is ext4 and USB-MSC never
+// touches it. The path MUST stay in step with $BOOTCOUNT in deploy/install_cinderhome.sh.
 void mark_healthy_maybe() {
-    if (g_counter_reset || !g_deferred_done) return;
-    if (std::time(nullptr) - g_healthy_since >= 25) {
-        FILE* f = std::fopen("/contents/cinderhome_bootcount", "w");
-        if (f) { std::fputc('0', f); std::fclose(f); }
+    if (g_counter_reset || g_first_paint_at == 0) return;
+    if (std::time(nullptr) - g_first_paint_at >= 8) {
+        FILE* f = std::fopen("/data/cinder/bootcount", "w");
+        if (!f) { clog_("healthy: FAILED to open /data/cinder/bootcount"); return; }  // retry next tick
+        std::fputc('0', f);
+        std::fclose(f);
+        ::sync();
         g_counter_reset = true;
         clog_("healthy: bad-boot counter cleared");
     }
+}
+
+// The render thread calls mark_healthy_maybe() from its ~1/sec housekeeping block — but that block
+// sits AFTER the `if (!g_deferred_done) { … deferred_up(); continue; }` gate, and deferred_up()
+// BLOCKS that thread for as long as its guarded budgets allow (~69 s stable, ~173 s dev worst case).
+// So the reset could not fire until feature init finished, which is the whole bug described above.
+// This detached one-shot keeps ticking while the render thread is blocked, so "painted a frame and
+// survived 8 s" clears the counter on time regardless of how slow the Sony services are.
+void* healthy_timer(void*) {
+    sleep(9);
+    mark_healthy_maybe();
+    return nullptr;
+}
+
+// DEV channel: an adb connection makes the gadget report CONFIGURED, which looks exactly like a PC
+// data-host — so auto-MSC fires, hands /contents to the PC and UNMOUNTS it. That breaks adb-based
+// development in a very confusing way: adb drops (the gadget re-enumerates), /contents reads come
+// back empty, and files written there (logs, screenshots, the bad-boot counter) vanish mid-session.
+// Observed 2026-07-26 while building the screenshot loop. On dev, auto-MSC is therefore OFF by
+// default; create /contents/cinder_automsc_on to restore it. The Settings ▸ USB mode row still
+// enters MSC manually on every channel, and stable is unchanged (auto-MSC is a real feature there).
+bool dev_skip_auto_msc() {
+#ifdef CINDER_DEV
+    return ::access("/contents/cinder_automsc_on", F_OK) != 0;
+#else
+    return false;
+#endif
 }
 
 // ───────────────────────── input + playback glue ──────────────────────────────────────
@@ -1501,7 +1551,10 @@ void* render_driver(void*) {
         alarm(0);
         if (!first_painted) {
             first_painted = true;
+            g_first_paint_at = std::time(nullptr);   // starts the bad-boot "proven good" clock
             clog_("render_driver: first frame painted (our own loop)");
+            // Detached: deferred_up() blocks THIS thread, so the counter reset needs its own timer.
+            { pthread_t t; if (pthread_create(&t, nullptr, healthy_timer, nullptr) == 0) pthread_detach(t); }
             // Kill the boot animation at first paint. Timing does NOT matter (all the earlier
             // "coin flip" theories were wrong): disasm shows icx_bootanimation installs NO signal
             // handlers at all — SIGTERM just drops it dead at any point. The frozen-boot-image
@@ -1565,7 +1618,7 @@ void* render_driver(void*) {
                     int act = cinder_input(CINDER_BTN_BACK);
                     if (act != CINDER_ACT_NONE) carry_out(act);
                 }
-            } else if (usb_connected()) {
+            } else if (usb_connected() && !dev_skip_auto_msc()) {
                 if (++g_usb_hi >= 2) {
                     clog_("usb-msc: PC host detected — auto-entering mass storage");
                     cinder_show_usb_storage();            // UI reflects the handoff (same modal as the tap)
@@ -1576,6 +1629,22 @@ void* render_driver(void*) {
                 g_usb_hi = 0;
             }
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
+            // Screenshot-on-demand: drop /tmp/cinder_screenshot.req and the next frame is written
+            // to /tmp/cinder_screen.png. Same polled-flag idiom as ldac_on above (no new IPC
+            // primitive — the safety model here is best-effort polled file I/O).
+            //   /tmp, NOT /contents: /tmp is tmpfs, so it survives USB-MSC (which unmounts
+            //   /contents and hands it to the PC), needs no sync (/contents is vfat — unsynced
+            //   writes are lost), and costs no eMMC wear for a throwaway debug artifact.
+            //   Also accept the /contents trigger, for setting it over USB-MSC with no adb.
+            if (::access("/tmp/cinder_screenshot.req", F_OK) == 0) {
+                ::unlink("/tmp/cinder_screenshot.req");
+                cinder_request_screenshot("/tmp/cinder_screen.png");
+            } else if (!g_msc_active && ::access("/contents/cinder_screenshot.req", F_OK) == 0) {
+                ::unlink("/contents/cinder_screenshot.req");
+                cinder_request_screenshot("/contents/cinder_screen.png");
+                g_screenshot_sync = 3;        // vfat: sync a few ticks later, once the PNG is written
+            }
+            if (g_screenshot_sync > 0 && --g_screenshot_sync == 0) ::sync();
 #ifdef CINDER_DEV
             // DEV: push the /contents page cache to eMMC every ~2 s so device-written files
             // (cinderhome.log, cinder_discovery.txt, MTPDB_copy.dat, cinder_settings.conf) are
