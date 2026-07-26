@@ -156,6 +156,50 @@ int main(int argc, char** argv) {
         clog_("gpu: DONE — no hang. Reboot to restore the normal UI.");
         return 0;
     }
+    if (argc > 1 && std::strcmp(argv[1], "--art") == 0) {
+        // Album-art pipeline test. The art path only runs on a track change, so on a device that
+        // has not played anything it leaves no trace in the log at all — this forces it.
+        install_diagnostics();
+        // ORDER MATTERS: cinder_db_open stores into the renderer's state and returns -2 if the
+        // renderer isn't up yet.
+        wd_arm(20); cinder_render_init(); wd_disarm();
+        wd_arm(40); cinder_db_open("/db/MTPDB.dat"); wd_disarm();
+        long long oid = argc > 2 ? std::atoll(argv[2]) : 0;
+        wd_arm(30);
+        int ar = cinder_art_probe(oid);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] art: returned %d\n", ar);
+        cinder_render_shutdown();
+        return ar;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--bench") == 0) {
+        // Frame-time bench, in isolation like --gpu. "Scrolling is choppy" can be a slow
+        // rasterizer, a slow present, or a loop that just isn't repainting — this separates them.
+        //   --bench           software present (what ships)
+        //   --bench gpu       EGL present, for the A/B
+        bool gpu = argc > 2 && std::strcmp(argv[2], "gpu") == 0;
+        if (gpu) setenv("CINDER_GPU", "1", 1);
+        install_diagnostics();
+        wd_arm(20);
+        int br = cinder_render_init();
+        wd_disarm();
+        if (br != 0) { clog_("bench: render init FAILED"); return 1; }
+        // A real library makes the rasterizer do real work (rows of text + art blocks) instead of
+        // an empty list. MUST come after render_init — cinder_db_open stores into the renderer's
+        // state and returns -2 if it isn't up, which silently benched an empty screen.
+        wd_arm(40);
+        int bdb = cinder_db_open("/db/MTPDB.dat");
+        wd_disarm();
+        if (bdb != 0) { clog_("bench: db_open FAILED — numbers would be for an empty list"); return 1; }
+        clog_(gpu ? "bench: 300 frames scrolling the library (GPU present) …"
+                  : "bench: 300 frames scrolling the library (software present) …");
+        wd_arm(60);
+        cinder_render_bench(300, 3);
+        wd_disarm();
+        cinder_render_shutdown();
+        clog_("bench: DONE");
+        return 0;
+    }
     clog_("start — isolating the suspect init calls (no easel lifecycle, no boot impact)");
     install_diagnostics();
 

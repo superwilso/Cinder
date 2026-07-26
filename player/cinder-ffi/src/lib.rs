@@ -727,6 +727,108 @@ pub extern "C" fn cinder_render_tick() {
     r.dirty = false;
 }
 
+/// Frame-time bench: render `frames` frames and report where the time goes, split into the
+/// software rasterize (cinder-ui drawing the whole 480×800 canvas) and the present (memcpy to the
+/// framebuffer pages + flip, or texture upload + swap on the GPU path).
+///
+/// Exists because "scrolling is choppy" has at least three unrelated candidate causes — a slow
+/// rasterizer, a slow present, or a render loop that isn't repainting often enough — and they
+/// need completely different fixes. Called from `cinder-probe --bench`, which runs standalone: no
+/// easel lifecycle, no boot risk, no flash needed to measure.
+///
+/// `scroll != 0` drives the library list past `frames` pixels while it measures, so the numbers
+/// describe the case the user is actually complaining about rather than a static screen.
+#[no_mangle]
+pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) {
+    let frames = frames.max(1) as usize;
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else {
+        eprintln!("cinder-ffi: bench: renderer not initialised");
+        return;
+    };
+    // Bench the LIBRARY, not whatever screen happened to be up: that's the screen the choppiness
+    // report is about, and it's the most expensive one to rasterize (rows of text + art blocks).
+    // Driven through the same taps a finger would use, so no diagnostic-only nav API is needed.
+    r.app.tap(344, 22); // status strip → Menu
+    r.app.tap(200, cinder_ui::chrome::HEADER_BOTTOM + 63 + 8); // the Library row
+    let np = Np::default();
+    let mut raster = Vec::with_capacity(frames);
+    let mut present = Vec::with_capacity(frames);
+    for i in 0..frames {
+        if scroll != 0 {
+            // One list row every few frames, wrapping — a realistic drag, not a teleport.
+            r.app.scroll_px(scroll);
+            if i % 120 == 119 {
+                r.app.scroll_px(-scroll * 120); // wrap back so a long run stays on real rows
+            }
+        }
+        let np2 = NowPlaying {
+            title: &np.title, artist: &np.artist, codec: &np.codec, badge: &np.badge,
+            clock: &np.clock, battery: np.battery, elapsed: &np.elapsed, remaining: &np.remaining,
+            progress: np.progress, art: &np.art, art_full: None, art_thumb: None,
+            liked: np.liked, playing: np.playing, shuffle: np.shuffle, repeat: np.repeat,
+            viz_seed: 2.0, viz_kind: 0, viz_on: false, viz_levels: None,
+        };
+        r.canvas.clear_clip();
+        let t0 = std::time::Instant::now();
+        r.app.render(&mut r.canvas, &r.fonts, &np2);
+        let t1 = std::time::Instant::now();
+        r.present.present(&r.canvas);
+        let t2 = std::time::Instant::now();
+        raster.push(t1.duration_since(t0).as_micros() as u64);
+        present.push(t2.duration_since(t1).as_micros() as u64);
+    }
+    let report = |name: &str, v: &mut Vec<u64>| {
+        v.sort_unstable();
+        let sum: u64 = v.iter().sum();
+        println!(
+            "cinder-ffi: bench {name:8} avg {:6.2} ms   median {:6.2}   p95 {:6.2}   max {:6.2}",
+            sum as f64 / v.len() as f64 / 1000.0,
+            v[v.len() / 2] as f64 / 1000.0,
+            v[v.len() * 95 / 100] as f64 / 1000.0,
+            v[v.len() - 1] as f64 / 1000.0,
+        );
+    };
+    let total: u64 = raster.iter().sum::<u64>() + present.iter().sum::<u64>();
+    report("raster", &mut raster);
+    report("present", &mut present);
+    println!(
+        "cinder-ffi: bench TOTAL   avg {:6.2} ms/frame  =>  {:5.1} fps ceiling",
+        total as f64 / frames as f64 / 1000.0,
+        1e6 * frames as f64 / total as f64,
+    );
+}
+
+/// Diagnostic: resolve + decode album art for `object_id` and report what happened. Prints the
+/// `images`-row shape and the decoded size, or the reason it stopped. `cinder-probe --art`.
+///
+/// Worth its own entry point because the art path is otherwise only exercised on a track change,
+/// so on a device that has not played anything the log says nothing at all about it.
+#[no_mangle]
+pub extern "C" fn cinder_art_probe(object_id: libc::c_longlong) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return -1 };
+    let Some(db) = r.db.as_ref() else {
+        eprintln!("cinder-ffi: art probe: no DB open");
+        return -1;
+    };
+    let t0 = std::time::Instant::now();
+    match art_load::load(db, object_id as i64) {
+        Some(img) => {
+            let ms = t0.elapsed().as_millis();
+            println!("cinder-ffi: art probe obj={object_id}: decoded {}x{} in {ms} ms", img.w, img.h);
+            let t1 = std::time::Instant::now();
+            let _ = img.scaled_to(92, 92);
+            println!("cinder-ffi: art probe: scale to 92x92 took {} ms", t1.elapsed().as_millis());
+            0
+        }
+        None => {
+            println!("cinder-ffi: art probe obj={object_id}: NO IMAGE (see the art: line above)");
+            1
+        }
+    }
+}
+
 /// Encode the Canvas to a PNG. Canvas is `0x00RRGGBB`; `to_rgb_bytes()` already unpacks it to
 /// packed RGB triples, which is exactly PNG's RGB8 layout. Uses the `png` crate already vendored
 /// for album-art decode — no new dependency, stays glibc-2.23-clean.

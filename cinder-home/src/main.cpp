@@ -1617,6 +1617,7 @@ void* render_driver(void*) {
         if (n < 600) cinder_force_dirty();
         else if (n % 60 == 0) cinder_force_dirty();
 
+        long frame_start = now_ms();
         // PER-FRAME WATCHDOG around OUR paint: a real render hang -> _exit -> launcher counter -> stock.
         alarm(8);
         cinder_render_tick();
@@ -1727,7 +1728,17 @@ void* render_driver(void*) {
         }
         if (n % 600 == 0) cinder_set_battery(read_battery());
         ++n;
-        usleep(16000);   // ~60 fps (the blit+flip is ~2 ms; dirty-flag keeps idle frames free)
+        // FRAME PACING: sleep only the REMAINDER of the 16 ms budget, not a flat 16 ms on top of
+        // however long the frame took. The old comment here assumed "the blit+flip is ~2 ms"; on
+        // device it is ~15.6 ms, and a scrolling frame costs ~31 ms all in (cinder-probe --bench,
+        // 2026-07-26). Adding a full 16 ms to that turned a 32 fps ceiling into ~21 fps — the
+        // scrolling choppiness was half render cost and half this sleep.
+        //   An idle frame still costs ~nothing (the dirty flag skips the work) and sleeps the full
+        // budget, so this does not spin the CPU when nothing is moving. A frame that overruns
+        // yields 1 ms rather than 0, so the input/housekeeping threads always get scheduled.
+        long spent = now_ms() - frame_start;
+        long left = 16 - spent;
+        usleep((left > 0 ? left : 1) * 1000);
     }
     return nullptr;
 }

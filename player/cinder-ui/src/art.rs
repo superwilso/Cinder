@@ -135,10 +135,16 @@ pub fn block(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32, name: 
     let s = stops(name);
     let (br, bg, bb) = (t.bg.r(), t.bg.g(), t.bg.b());
     let op = opacity.clamp(0.0, 1.0);
+    // Hoist the per-pixel divisions: `xx/w` and `yy/h` were two float divides for every pixel of
+    // every art block on screen, and this core has no fast divider. Reciprocal-multiply instead.
+    let inv_w = 1.0 / (w.max(1) as f32);
+    let inv_h = 1.0 / (h.max(1) as f32);
     for yy in 0..h {
+        let v = yy as f32 * inv_h;
         for xx in 0..w {
+            let u_ = xx as f32 * inv_w;
             // 135deg ≈ top-left → bottom-right
-            let pos = ((xx as f32 / w as f32) + (yy as f32 / h as f32)) * 0.5;
+            let pos = (u_ + v) * 0.5;
             let (mut r, mut g, mut b) = if pos <= s[1].0 {
                 let u = (pos - s[0].0) / (s[1].0 - s[0].0).max(1e-3);
                 (lerp(s[0].1 .0, s[1].1 .0, u), lerp(s[0].1 .1, s[1].1 .1, u), lerp(s[0].1 .2, s[1].1 .2, u))
@@ -147,9 +153,9 @@ pub fn block(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32, name: 
                 (lerp(s[1].1 .0, s[2].1 .0, u), lerp(s[1].1 .1, s[2].1 .1, u), lerp(s[1].1 .2, s[2].1 .2, u))
             };
             // soft radial highlight near top-left (the .art ::after overlay)
-            let dx = xx as f32 / w as f32 - 0.2;
-            let dy = yy as f32 / h as f32 - 0.1;
-            let hl = (1.0 - (dx * dx + dy * dy).sqrt() / 0.65).clamp(0.0, 1.0) * 0.16;
+            let dx = u_ - 0.2;
+            let dy = v - 0.1;
+            let hl = (1.0 - (dx * dx + dy * dy).sqrt() * (1.0 / 0.65)).clamp(0.0, 1.0) * 0.16;
             r = lerp(r, 255, hl);
             g = lerp(g, 255, hl);
             b = lerp(b, 255, hl);

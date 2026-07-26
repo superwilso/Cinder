@@ -10,6 +10,12 @@ extern "C" {
 int  cinder_render_init(void);
 /* Render the current state to the panel; call once per frame from the pump. */
 void cinder_render_tick(void);
+/* Frame-time bench: render `frames` frames, reporting rasterize vs present cost. `scroll` != 0
+   drags the library list by that many px per frame so the numbers cover scrolling, not a static
+   screen. Diagnostic only — cinder-probe --bench. */
+void cinder_render_bench(int frames, int scroll);
+/* Diagnostic: resolve+decode album art for one object_id, reporting shape and timing. */
+int  cinder_art_probe(long long object_id);
 /* Force the next cinder_render_tick to repaint + blit even if nothing changed. Used to overwrite
  * anything an EXTERNAL process scribbled on the framebuffer (the boot animation's last frame
  * survives its kill — the dirty-flag renderer would otherwise never paint over it). */

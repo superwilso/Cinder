@@ -42,8 +42,7 @@ impl Canvas {
     }
 
     pub fn fill(&mut self, c: Rgb888) {
-        let v = to_u32(c);
-        self.buf.iter_mut().for_each(|p| *p = v);
+        self.buf.fill(to_u32(c));
     }
 
     #[inline]
@@ -65,9 +64,9 @@ impl Canvas {
         let dr = (dst >> 16) & 0xff;
         let dg = (dst >> 8) & 0xff;
         let db = dst & 0xff;
-        let r = (dr * ia + c.r() as u32 * a + 127) / 255;
-        let g = (dg * ia + c.g() as u32 * a + 127) / 255;
-        let b = (db * ia + c.b() as u32 * a + 127) / 255;
+        let r = div255(dr * ia + c.r() as u32 * a);
+        let g = div255(dg * ia + c.g() as u32 * a);
+        let b = div255(db * ia + c.b() as u32 * a);
         self.buf[idx] = (r << 16) | (g << 8) | b;
     }
 
@@ -81,6 +80,17 @@ impl Canvas {
         }
         v
     }
+}
+
+/// Rounded `x / 255` without a division, exact for the 0..=65535 range alpha blending produces.
+///
+/// This matters far more here than it looks: the device is an ARMv7-A core with no hardware
+/// integer divide, so `/ 255` compiles to a `__aeabi_uidiv` CALL. `blend` runs once per glyph
+/// pixel — order 10^5 times a frame while a text list scrolls — and was paying three of them.
+#[inline]
+fn div255(x: u32) -> u32 {
+    let t = x + 128;
+    (t + (t >> 8)) >> 8
 }
 
 #[inline]
@@ -114,11 +124,30 @@ impl DrawTarget for Canvas {
         let y0 = area.top_left.y.max(self.clip_top);
         let x1 = (area.top_left.x + area.size.width as i32).min(W as i32);
         let y1 = (area.top_left.y + area.size.height as i32).min(self.clip_bot);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                self.buf[y as usize * W + x as usize] = v;
+        // Row-at-a-time slice fill, not pixel-at-a-time: this is the single hottest primitive in
+        // the UI (every row background, separator, band and panel goes through it), and the
+        // per-pixel form paid an index calculation and a bounds check for each of ~400k pixels a
+        // frame. `[T]::fill` on a slice compiles to a memset the pixel loop can't become.
+        if x1 > x0 {
+            for y in y0..y1 {
+                let row = y as usize * W;
+                self.buf[row + x0 as usize..row + x1 as usize].fill(v);
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::div255;
+
+    /// The shift form must agree with real division across everything blending can produce,
+    /// otherwise text picks up a colour cast that no test would otherwise catch.
+    #[test]
+    fn div255_matches_division() {
+        for x in 0..=65535u32 {
+            assert_eq!(div255(x), (x + 127) / 255, "x={x}");
+        }
     }
 }

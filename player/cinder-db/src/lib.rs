@@ -114,12 +114,22 @@ impl Db {
     }
 
     /// Albums with track counts, ordered for display.
+    ///
+    /// Albums with NO playable tracks are omitted. `albums` is a lookup table the stock scanner
+    /// never prunes: deleting the music leaves the row behind, and the old correlated-subquery
+    /// form listed those as real albums with "0 songs" (15 of 321 on the device library,
+    /// 2026-07-26 — confirmed to have no `object_body` rows at all, not hidden ones we filtered
+    /// out). An inner JOIN drops them by construction, and computes the count in the same pass
+    /// instead of running a subquery per album row.
     pub fn albums(&self) -> Result<Vec<Album>> {
         let mut st = self.conn.prepare(
-            "SELECT al.id, al.value, \
-                    (SELECT COUNT(*) FROM object_body ob \
-                       WHERE ob.album_id = al.id AND ob.filename IS NOT NULL AND ob.media_type = 1) \
-             FROM albums al ORDER BY al.sort_str, al.value",
+            &format!(
+                "SELECT al.id, al.value, COUNT(ob.object_id) \
+                 FROM albums al \
+                 JOIN object_body ob ON ob.album_id = al.id AND {TRACK_WHERE} \
+                 GROUP BY al.id, al.value, al.sort_str \
+                 ORDER BY al.sort_str, al.value"
+            ),
         )?;
         let rows = st.query_map([], |r| {
             Ok(Album { id: r.get(0)?, name: r.get(1)?, track_count: r.get(2)? })
@@ -399,6 +409,9 @@ mod tests {
                 album_id INTEGER, artist_id INTEGER, releaseyear_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
             INSERT INTO albums  VALUES (10,0,'last smoke','last smoke','Last Smoke Before the Snowstorm');
             INSERT INTO albums  VALUES (11,0,'harvest','harvest','Harvest Moon');
+            -- Orphan lookup row: the stock scanner leaves these behind when the music is deleted,
+            -- and they used to surface in the UI as real albums with "0 songs".
+            INSERT INTO albums  VALUES (12,0,'ghost','ghost','Deleted Album');
             INSERT INTO artists VALUES (20,0,'leftwich','leftwich','Benjamin Francis Leftwich',NULL,0,0,0,0);
             INSERT INTO artists VALUES (21,0,'cold','cold','Cold Stone & Sea',NULL,0,0,0,0);
             INSERT INTO schema  VALUES (1,7,2,'DURATION');
@@ -464,7 +477,10 @@ mod tests {
     #[test]
     fn albums_with_counts() {
         let a = db().albums().unwrap();
+        // 3 rows in `albums`, but id 12 has no tracks left and must not be listed.
         assert_eq!(a.len(), 2);
+        assert!(a.iter().all(|x| x.id != 12), "orphan album row listed: {a:?}");
+        assert!(a.iter().all(|x| x.track_count > 0), "album with 0 tracks listed: {a:?}");
         let last = a.iter().find(|x| x.id == 10).unwrap();
         assert_eq!(last.name, "Last Smoke Before the Snowstorm");
         assert_eq!(last.track_count, 2); // Atlas + Box (folder excluded)
