@@ -1519,6 +1519,13 @@ void input_pump() {
                             g_scrub_active = false; g_scrub_tested = false;
                             cinder_touch_down();   // finger down stops an in-flight fling
                         } else if (g_touch_start_x < 0) g_touch_start_x = val;
+                        // Also drive the classifier from HERE, not only from ABS_Y: a panel that
+                        // reports Y before X in a contact's first frame would otherwise never get
+                        // classified (at Y time g_touch_down is still false, so touch_drag_motion
+                        // returns early, and nothing calls it again for a stationary tap). Safe to
+                        // call twice per frame — it no-ops unless the contact has both coordinates,
+                        // and the drag branch ignores a zero y-delta.
+                        touch_drag_motion();
                         continue;
                     }
                     if (type == EV_ABS_ && (code == ABS_Y_ || code == ABS_MT_POSITION_Y_)) {
