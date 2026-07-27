@@ -115,6 +115,47 @@ pub fn row_h(tab: Tab) -> i32 {
     }
 }
 
+// ── A–Z jump strip ────────────────────────────────────────────────────────────────────────────
+// A 300-album library is ~20 screens of flicking. The stock player has no way to jump, and Wampy
+// structurally can't add one (it drives Sony's app and never owns the list). Cinder owns the list,
+// so it gets the iPod-style alphabet rail: tap or drag the letters down the right edge to jump.
+// Touch-native, which matters on a device with no d-pad.
+pub const AZ_W: i32 = 26;            // rail width — narrow enough not to eat row taps
+pub const AZ_LETTERS: &[u8] = b"#ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/// The sort key a row is indexed by, per tab. Matches what the list is ordered by, so a jump always
+/// lands where the eye expects: Songs by title, Albums by artist (grouped) or album name, Artists
+/// by artist name, Playlists by playlist name.
+fn az_key(c: char) -> u8 {
+    let u = c.to_ascii_uppercase();
+    if u.is_ascii_alphabetic() { u as u8 } else { b'#' }
+}
+
+/// First letter of `s`, normalised: leading "The " is skipped (it is a sort-order artefact, not how
+/// anyone looks a band up), and anything non-alphabetic buckets under '#'.
+pub fn az_bucket(s: &str) -> u8 {
+    let t = s.trim();
+    let t = t.strip_prefix("The ").or_else(|| t.strip_prefix("the ")).unwrap_or(t);
+    t.chars().next().map(az_key).unwrap_or(b'#')
+}
+
+/// Which letter is at screen y on the rail? None when y is outside it.
+pub fn az_letter_at(y: i32, tab: Tab) -> Option<u8> {
+    let top = list_top(tab);
+    let h = LIST_BOTTOM - top;
+    if y < top || y >= LIST_BOTTOM {
+        return None;
+    }
+    let n = AZ_LETTERS.len() as i32;
+    let i = ((y - top) * n / h).clamp(0, n - 1);
+    Some(AZ_LETTERS[i as usize])
+}
+
+/// Is screen x inside the rail?
+pub fn az_hit_x(x: i32) -> bool {
+    x >= W as i32 - AZ_W
+}
+
 /// Album drill-in track rows: top y and row height.
 pub const ALBUM_TRACKS_TOP: i32 = 312;
 pub const ALBUM_TRACK_RH: i32 = 62;
@@ -248,6 +289,63 @@ pub fn content_h(tab: Tab, lib: &Library, album_sort: usize, album_expanded: Opt
         Tab::Albums => albums_build(lib, album_sort, album_expanded).content_h,
         _ => row_count(tab, lib) as i32 * row_h(tab),
     }
+}
+
+/// Scroll offset that puts the first row of bucket `letter` at the top of the list, clamped to the
+/// tab's scroll range. None when the tab has no row in that bucket (the rail greys those out, so a
+/// tap on one is a no-op rather than a confusing jump to the nearest neighbour).
+///
+/// Reads the SAME layout the render and hit test use (`albums_build` for Albums, `row_h` elsewhere),
+/// so a jump can't land somewhere the drawn list disagrees with.
+pub fn az_scroll_for(
+    tab: Tab,
+    lib: &Library,
+    letter: u8,
+    album_sort: usize,
+    album_expanded: Option<usize>,
+) -> Option<i32> {
+    let max = max_scroll_px(tab, lib, album_sort, album_expanded);
+    let top_px = match tab {
+        Tab::Albums => {
+            let flat = lib.albums_flat();
+            let layout = albums_build(lib, album_sort, album_expanded);
+            // Grouped sort indexes by ARTIST (that's the visible ordering); every other album sort
+            // is by album name.
+            layout.rows.iter().find_map(|(vy, row)| match row {
+                AlbumsRow::Group { flat: fi } if album_sort == 0 => {
+                    (az_bucket(&flat[*fi].artist) == letter).then_some(*vy)
+                }
+                AlbumsRow::Album { flat: fi, .. } if album_sort != 0 => {
+                    (az_bucket(&flat[*fi].name) == letter).then_some(*vy)
+                }
+                _ => None,
+            })?
+        }
+        Tab::Songs => {
+            let i = lib.songs.iter().position(|r| az_bucket(&r.title) == letter)?;
+            i as i32 * row_h(tab)
+        }
+        Tab::Artists => {
+            let i = lib.artists.iter().position(|r| az_bucket(&r.name) == letter)?;
+            i as i32 * row_h(tab)
+        }
+        Tab::Playlists => {
+            let i = lib.playlists.iter().position(|r| az_bucket(&r.name) == letter)?;
+            i as i32 * row_h(tab)
+        }
+    };
+    Some(top_px.clamp(0, max))
+}
+
+/// Does this tab have any row in `letter`'s bucket? Drives the rail's greying.
+pub fn az_has(
+    tab: Tab,
+    lib: &Library,
+    letter: u8,
+    album_sort: usize,
+    album_expanded: Option<usize>,
+) -> bool {
+    az_scroll_for(tab, lib, letter, album_sort, album_expanded).is_some()
 }
 
 /// Largest useful `scroll_px` for a tab (0 when everything fits).
@@ -484,6 +582,32 @@ fn dur_secs(d: &str) -> i32 {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Draw the A–Z rail down the right edge of the list. Letters with no rows are drawn faint, so the
+/// rail also reads as a map of what the library actually contains.
+pub fn az_render(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    tab: Tab,
+    lib: &Library,
+    album_sort: usize,
+    album_expanded: Option<usize>,
+) {
+    let top = list_top(tab);
+    let h = LIST_BOTTOM - top;
+    let n = AZ_LETTERS.len() as i32;
+    let x = W as i32 - AZ_W / 2;
+    for (i, &ch) in AZ_LETTERS.iter().enumerate() {
+        let cy = top + (i as i32 * h) / n + h / (2 * n);
+        let has = az_has(tab, lib, ch, album_sort, album_expanded);
+        let col = if has { t.dim } else { t.faint };
+        let label = (ch as char).to_string();
+        let st = sty(Family::Mono, Weight::Regular, 11.0, col, 0.0);
+        let w = text::measure(f, &label, &st) as i32;
+        text::draw(c, f, (x - w / 2) as f32, (cy + 4) as f32, &label, &st);
+    }
+}
+
 pub fn render(
     c: &mut Canvas,
     t: &Theme,

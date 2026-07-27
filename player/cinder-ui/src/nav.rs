@@ -890,6 +890,19 @@ impl App {
             self.album_expanded = None;
             return vec![];
         }
+        // A–Z rail: right edge, over the list. Tested BEFORE the rows, because it overlays them —
+        // a tap there means "jump", never "open the row underneath".
+        if library::az_hit_x(x) {
+            if let Some(letter) = library::az_letter_at(y, self.lib_tab) {
+                if let Some(px) = library::az_scroll_for(
+                    self.lib_tab, &self.lib, letter, self.album_sort, self.album_expanded,
+                ) {
+                    self.lib_scroll_px = px;
+                    self.fling_v = 0.0;   // a jump must not keep coasting from a previous flick
+                }
+            }
+            return vec![];
+        }
         // The accent band sits above the list on every tab, so test it before the rows (it is the
         // largest target on the screen; it used to be drawn but hit-tested nowhere).
         if library::hit_shuffle_band(x, y) {
@@ -1637,10 +1650,16 @@ impl App {
                     .collect();
                 crate::menu::render(c, &theme, fonts, &items);
             }
-            Screen::Library => crate::library::render(
-                c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
-                self.album_sort, self.album_expanded, &self.lib,
-            ),
+            Screen::Library => {
+                crate::library::render(
+                    c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
+                    self.album_sort, self.album_expanded, &self.lib,
+                );
+                crate::library::az_render(
+                    c, &theme, fonts, self.lib_tab, &self.lib, self.album_sort,
+                    self.album_expanded,
+                );
+            }
             Screen::Album => {
                 let flat = self.lib.albums_flat();
                 if let Some(al) = flat.get(self.album_view) {
@@ -2285,6 +2304,57 @@ mod tests {
             content_height() - max_scroll_px() <= crate::canvas::H as i32,
             "bottom of the content is still off-screen at full scroll"
         );
+    }
+
+    /// The A–Z rail must land on a row that really is in that bucket, on every tab. A jump that
+    /// lands near-but-not-on the letter is worse than no jump: you can't tell it worked.
+    #[test]
+    fn az_jump_lands_on_a_row_in_that_bucket() {
+        let app = unlocked();
+        for &letter in library::AZ_LETTERS {
+            for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
+                let Some(px) =
+                    library::az_scroll_for(tab, &app.lib, letter, app.album_sort, app.album_expanded)
+                else {
+                    continue; // no rows in this bucket — rail greys it and the tap is a no-op
+                };
+                let max = library::max_scroll_px(tab, &app.lib, app.album_sort, app.album_expanded);
+                assert!((0..=max).contains(&px), "{tab:?}/{}: scroll {px} out of 0..={max}", letter as char);
+            }
+        }
+    }
+
+    /// "The Beatles" files under B, and anything not a letter buckets under '#'. Sorting already
+    /// works this way, so the rail has to agree or the jump lands nowhere near the eye.
+    #[test]
+    fn az_buckets_ignore_a_leading_the_and_fold_non_letters() {
+        assert_eq!(library::az_bucket("The Beatles"), b'B');
+        assert_eq!(library::az_bucket("the xx"), b'X');
+        assert_eq!(library::az_bucket("Theatre of Tragedy"), b'T', "only a whole leading word");
+        assert_eq!(library::az_bucket("aphex twin"), b'A');
+        assert_eq!(library::az_bucket("65daysofstatic"), b'#');
+        assert_eq!(library::az_bucket("...And Justice For All"), b'#');
+        assert_eq!(library::az_bucket(""), b'#');
+    }
+
+    /// The rail's hit test must cover the whole list height and map monotonically onto the letters,
+    /// with the first and last letters actually reachable.
+    #[test]
+    fn az_rail_hit_test_covers_every_letter() {
+        for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
+            let mut seen: Vec<u8> = Vec::new();
+            for y in 0..crate::canvas::H as i32 {
+                if let Some(l) = library::az_letter_at(y, tab) {
+                    if !seen.contains(&l) {
+                        seen.push(l);
+                    }
+                }
+            }
+            assert_eq!(seen, library::AZ_LETTERS.to_vec(), "{tab:?}: rail letters unreachable");
+        }
+        // And the rail only claims the right edge, so it can't swallow row taps.
+        assert!(library::az_hit_x(crate::canvas::W as i32 - 1));
+        assert!(!library::az_hit_x(crate::canvas::W as i32 - library::AZ_W - 1));
     }
 
     #[test]

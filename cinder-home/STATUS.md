@@ -315,6 +315,14 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   could not. The estimate survives only as the fallback for before the first callback arrives.
   Play/pause state also comes from observed position movement rather than from the shell's
   optimistic view of the last transport action it sent.
+- **A–Z jump rail** (2026-07-27): an alphabet strip down the right edge of the Library list — tap a
+  letter to jump. On a 304-album library the alternative is ~20 screens of flicking. Letters with no
+  rows are drawn faint, so the rail doubles as a map of what the library holds, and tapping one is a
+  no-op rather than a jump to the nearest neighbour. Indexes by what each tab is actually ordered by
+  (Songs → title, Albums → artist when grouped else album name, Artists/Playlists → name), reading
+  the same layout the render and hit test use so a jump can't land where the drawn list disagrees.
+  "The Beatles" files under B; non-letters bucket under '#'. **Neither stock nor Wampy has this** —
+  and Wampy structurally can't, since it drives Sony's app and never owns the list.
 - **Boot to stock** (2026-07-27, Settings ▸ SYSTEM): arms a **one-shot** return to Sony's player and
   restarts. This is the **only escape reachable with no USB cable** — the other four all need one
   (cable-at-boot, `cinderhome_off`/`cinderhome_clear` over USB-MSC), and the bad-boot counter route
