@@ -336,6 +336,12 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   unconditionally and never reflected any BT state.
 - **Menu ▸ Now Playing shows the running track** (2026-07-27): title · elapsed, or "Nothing
   playing". The row was blank.
+- **16-bit and palette PNG covers** (2026-07-27): the PNG decoder now sets `STRIP_16 | EXPAND`.
+  16-bit-per-channel PNGs (real in high-quality rips) arrived as `w*h*6` bytes and the RGB path's
+  `truncate(w*h*3)` kept the first half of the interleaved high/low bytes — so those covers rendered
+  as **noise** rather than being rejected, the worst of both outcomes. Indexed/palette PNGs were
+  skipped outright, so those covers simply never appeared. Both now decode correctly, with tests
+  that fail against the old behaviour.
 - **USB-MSC log redirect now fails safe** (2026-07-27): entering mass storage moves stdout/stderr
   off `/contents` because an open fd there makes init's `umount /contents` fail `EBUSY` (the LUN
   write then fails and the PC sees a reader with no medium). `redirect_fds` silently did **nothing**

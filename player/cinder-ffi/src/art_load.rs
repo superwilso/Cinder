@@ -151,7 +151,15 @@ fn decode_jpeg(bytes: &[u8]) -> Option<Image> {
 }
 
 fn decode_png(bytes: &[u8]) -> Option<Image> {
-    let dec = png::Decoder::new(bytes);
+    let mut dec = png::Decoder::new(bytes);
+    // Normalise the sample format up front instead of hand-handling every variant below:
+    //   STRIP_16 — 16-bit-per-channel PNGs (real in high-quality rips) otherwise arrive as
+    //     w*h*6 bytes, and the RGB arm's `truncate(w*h*3)` would keep the first half of the
+    //     interleaved high/low bytes, rendering the cover as NOISE rather than rejecting it.
+    //     The grayscale arm had the same problem via `take(w*h)`.
+    //   EXPAND — expands palette (Indexed) and sub-8-bit grayscale to full bytes. Indexed used to
+    //     be skipped outright, so those covers simply never appeared.
+    dec.set_transformations(png::Transformations::STRIP_16 | png::Transformations::EXPAND);
     let mut reader = dec.read_info().ok()?;
     {
         // Gate on the HEADER dimensions before allocating the output buffer (a hostile
@@ -252,6 +260,58 @@ fn decode_bmp(b: &[u8]) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Encode a 2x2 PNG with the given colour type and bit depth, so the decoder's handling of the
+    /// awkward sample formats can be checked rather than assumed.
+    fn png_bytes(color: png::ColorType, depth: png::BitDepth, data: &[u8], pal: Option<&[u8]>) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, 2, 2);
+            enc.set_color(color);
+            enc.set_depth(depth);
+            if let Some(p) = pal {
+                enc.set_palette(p.to_vec());
+            }
+            let mut w = enc.write_header().unwrap();
+            w.write_image_data(data).unwrap();
+        }
+        out
+    }
+
+    /// 16-bit-per-channel PNGs are real in high-quality rips. Before STRIP_16 the RGB arm's
+    /// `truncate(w*h*3)` kept the first half of the interleaved high/low bytes, so the cover
+    /// decoded to NOISE instead of being rejected — the worst of both outcomes.
+    #[test]
+    fn png_16bit_decodes_to_real_pixels_not_noise() {
+        // 2x2 RGB16: pure red, green, blue, white — big-endian samples.
+        let px: Vec<u8> = [
+            [0xffffu16, 0, 0], [0, 0xffff, 0],
+            [0, 0, 0xffff], [0xffff, 0xffff, 0xffff],
+        ]
+        .iter()
+        .flatten()
+        .flat_map(|c| c.to_be_bytes())
+        .collect();
+        let img = decode_png(&png_bytes(png::ColorType::Rgb, png::BitDepth::Sixteen, &px, None))
+            .expect("16-bit PNG must decode");
+        assert_eq!((img.w, img.h), (2, 2));
+        assert_eq!(img.rgb.len(), 2 * 2 * 3);
+        assert_eq!(&img.rgb[0..3], &[255, 0, 0], "first pixel should be red, not a high/low byte pair");
+        assert_eq!(&img.rgb[3..6], &[0, 255, 0]);
+        assert_eq!(&img.rgb[9..12], &[255, 255, 255]);
+    }
+
+    /// Palette PNGs used to be skipped outright, so those covers simply never appeared.
+    #[test]
+    fn png_indexed_is_expanded_rather_than_skipped() {
+        let pal = [255u8, 0, 0, /**/ 0, 0, 255]; // red, blue
+        let img = decode_png(&png_bytes(
+            png::ColorType::Indexed, png::BitDepth::Eight, &[0, 1, 1, 0], Some(&pal),
+        ))
+        .expect("indexed PNG must decode");
+        assert_eq!(&img.rgb[0..3], &[255, 0, 0]);
+        assert_eq!(&img.rgb[3..6], &[0, 0, 255]);
+    }
 
     /// Build a tiny 24bpp bottom-up BMP: 2×2, rows padded to 4 bytes.
     fn tiny_bmp() -> Vec<u8> {

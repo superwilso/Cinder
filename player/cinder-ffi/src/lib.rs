@@ -771,10 +771,18 @@ pub extern "C" fn cinder_render_tick() {
     // Visualiser: advance + force a repaint ONLY while playing on the Now Playing screen (and
     // enabled), and at most ~20 fps (the pump may tick at 60) — that bounds the battery cost.
     let animate = r.app.viz_on() && r.np.playing && r.app.is_now_playing();
-    if animate && r.last_viz.elapsed() >= std::time::Duration::from_millis(50) {
-        r.viz_phase += 0.18;
-        r.last_viz = std::time::Instant::now();
-        r.dirty = true;
+    if animate {
+        let since = r.last_viz.elapsed().as_millis() as f32;
+        if since >= 50.0 {
+            // Advance by the REAL time that passed, not a flat step. The 50 ms gate caps the repaint
+            // rate at ~20 fps, but ticks arrive whenever the frame loop gets round to it — 50 ms on
+            // an idle screen, ~31 ms-aligned to 62 ms while a list is scrolling — so a fixed +0.18
+            // made the visualiser drift slower exactly when the device was busy. Clamped so a stall
+            // can't fast-forward the animation on the frame after it.
+            r.viz_phase += 0.18 * (since.min(250.0) / 50.0);
+            r.last_viz = std::time::Instant::now();
+            r.dirty = true;
+        }
     }
     if !r.dirty {
         return; // nothing changed — skip the render + framebuffer blit entirely
