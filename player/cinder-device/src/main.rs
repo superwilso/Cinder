@@ -146,7 +146,7 @@ fn main() {
         repeat: 1,
         viz_seed: 2.0,
         viz_kind: 0,
-        viz_on: true,
+        viz_size: 1, page: 0,
         viz_levels: None,
         scrubbing: false,
     };

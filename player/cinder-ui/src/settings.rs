@@ -1,7 +1,7 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row. Rows:
-//! DISPLAY (Theme, Accent, Visualiser type, Visualiser animation, Sleep, Screen-off, Brightness),
+//! DISPLAY (Theme, Accent, Visualiser style, Cover visualiser, Sleep, Screen-off, Brightness),
 //! SYSTEM (Storage, Database, Battery care, USB mode, Boot to stock), ABOUT (Firmware, Model).
-//! Live rows: Theme, Accent, Visualiser type, Visualiser, Sleep timer, Screen-off timer, Brightness
+//! Live rows: Theme, Accent, Visualiser style, Cover visualiser, Sleep, Screen-off, Brightness
 //! (DISPLAY), Battery care and USB mode (SYSTEM). Database is drawn but NOT wired (shows "—" — see
 //! the dead-UI audit in cinder-home/STATUS.md); Firmware/Model are static info.
 
@@ -56,7 +56,8 @@ pub const FIRMWARE_LABEL: &str = "CINDER 1.0 · RUST";
 pub struct SettingsView<'a> {
     pub night: bool,
     pub viz_name: &'a str,
-    pub viz_on: bool,
+    /// Visualiser size label: OFF / EDGE / FLOOR / VEIL / FULL.
+    pub viz_size_label: &'a str,
     pub usb_dac: bool,
     pub battery_care: bool,
     pub storage: &'a str,
@@ -218,10 +219,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     hline(c, y + RH, t.line);
     y += RH;
 
-    // Rows 2-3: the visualiser options (live). ROW_VIZ_ANIM is the master ON/OFF (hides the
-    // visualiser entirely on Now Playing when off); ROW_VIZ picks which type to show when on.
-    y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser type", v.viz_name, false);
-    y = srow(c, t, f, y, sel == ROW_VIZ_ANIM, "Visualiser", if v.viz_on { "ON" } else { "OFF" }, false);
+    // Rows 2-3: the two visualiser axes. ROW_VIZ picks the STYLE (used by the cover overlay AND
+    // by the Now Playing spectrum page); ROW_VIZ_ANIM picks how much of the COVER it takes, where
+    // OFF means a completely clean cover.
+    y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser style", v.viz_name, false);
+    // "Cover visualiser", not "Visualiser": this row governs ONLY what is drawn on the cover
+    // page. The spectrum and level pages are pages — you reach them by swiping, and they are not
+    // affected by this. Calling it "Visualiser · OFF" would promise to switch off a feature that
+    // is still one swipe away, which is the kind of label that teaches you not to trust the rest.
+    y = srow(c, t, f, y, sel == ROW_VIZ_ANIM, "Cover visualiser", v.viz_size_label, false);
     // Row 3: Sleep timer (live) — pauses playback after N min. Shows the live remaining when running.
     y = srow(c, t, f, y, sel == ROW_SLEEP, "Sleep timer", v.sleep, false);
     // Row 4: idle screen-off (live). Defaults to OFF, so the panel never blanks on its own unless

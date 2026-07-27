@@ -353,7 +353,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         Screen::NowPlaying => now_playing::render(c, theme, fonts, &now_playing::NowPlaying {
             title: SONGS[i].t, artist: SONGS[i].a, codec, badge, clock: "14:32", battery: 78,
             elapsed: "1:47", remaining: "-2:45", progress: 0.39, art: SONGS[i].art, art_full: None, art_thumb: None, liked: app.liked, playing: app.playing,
-            shuffle: app.shuffle, repeat: app.repeat, viz_seed: 2.0, viz_kind: 0, viz_on: true, viz_levels: None, scrubbing: false,
+            shuffle: app.shuffle, repeat: app.repeat, viz_seed: 2.0, viz_kind: 0, viz_size: 1, page: 0, viz_levels: None, scrubbing: false,
         }),
         Screen::Menu => menu::render(c, theme, fonts, &menu_items(app)),
         Screen::UpNext => {
@@ -376,7 +376,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             bt_codec: if app.bt_on && app.bt_conn.is_some() { Some(BT_CODECS[app.bt_codec]) } else { None },
         }, 0, false),
         Screen::Settings => settings::render(c, theme, fonts, 0, 0,
-            &settings::SettingsView { night: app.night, viz_name: "Bars", viz_on: true, usb_dac: app.usb_dac, battery_care: false, storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY", accent: app.accent }),
+            &settings::SettingsView { night: app.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: app.usb_dac, battery_care: false, storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY", accent: app.accent }),
         Screen::Bluetooth => bluetooth::render(c, theme, fonts, &Bt {
             on: app.bt_on,
             connected: app.bt_conn.map(|r| PAIRED[r].name),

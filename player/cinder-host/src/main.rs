@@ -48,7 +48,7 @@ fn main() {
         repeat: 1,
         viz_seed: 2.0,
         viz_kind: 0,
-        viz_on: true,
+        viz_size: 1, page: 0,
         viz_levels: None,
         scrubbing: false,
     };
@@ -108,7 +108,7 @@ fn main() {
             ("now_playing_idle", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts,
                 &now_playing::NowPlaying { title: "", artist: "", codec: "", badge: "", elapsed: "",
                                            remaining: "", progress: 0.0, playing: false, liked: false,
-                                           art: "", viz_on: false, ..np })),
+                                           art: "", viz_size: 0, page: 0, ..np })),
             ("onboard_0_welcome", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 0)),
             ("onboard_1_controls", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 1)),
             ("onboard_2_features", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 2)),
@@ -146,7 +146,7 @@ fn main() {
             ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, false)),
             ("sound_bypass", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, true)),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_on: true, usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY", accent: cinder_ui::Accent::Amber })),
+                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY", accent: cinder_ui::Accent::Amber })),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
             ("pairing", &|c: &mut Canvas| pairing::render(c, &theme, &fonts, 2, Some(1))),
             ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, true)),
@@ -161,6 +161,88 @@ fn main() {
             // missing the chrome the real thing has, and UI work would be done against a lie.
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, &format!("{screen}_{name}"));
+        }
+    }
+
+    // Visualiser sweeps: the same frame, the same cover, the SAME spectrum data every time —
+    // only the visualiser changes. "Intrusive" is not a thing that can be settled in prose, and
+    // comparing styles against different bar heights would be meaningless.
+    {
+        let theme = Theme::day();
+        // A PLAUSIBLE spectrum, not a test pattern: energy falling off with frequency plus a
+        // couple of slow ripples. The first version alternated near-full-scale between adjacent
+        // bands, which no real music does, and it made every contour style look like a sawtooth —
+        // judging a style against data it will never see is worse than not previewing it.
+        let levels: Vec<f32> = (0..36)
+            .map(|i| {
+                let f = i as f32 / 36.0;
+                let tilt = (1.0 - f).powf(0.85);
+                let ripple = 0.16 * (i as f32 * 0.55).sin() + 0.09 * (i as f32 * 1.3 + 1.0).sin();
+                (tilt * 0.9 + ripple).clamp(0.05, 1.0)
+            })
+            .collect();
+        // How much room it takes: OFF / BELOW ART / VEIL / FULL, all drawn as Bars.
+        for size in 0..cinder_ui::viz::SIZE_COUNT {
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &theme, &fonts,
+                &now_playing::NowPlaying { viz_size: size, viz_kind: 0, viz_levels: Some(&levels), ..np });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            let label = cinder_ui::viz::size_name(size).to_lowercase().replace(' ', "_");
+            save(&c, &format!("viz_size_{size}_{label}"));
+        }
+        // The Now Playing PAGES: swipe the artwork to turn them. Only the block above the title
+        // changes — same title, same progress, same transport on every one.
+        for page in 0..now_playing::PAGES {
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &theme, &fonts,
+                &now_playing::NowPlaying { page, viz_size: 1, viz_kind: 0, viz_levels: Some(&levels), ..np });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            save(&c, &format!("np_page_{page}"));
+        }
+        // Night pages too — the theme has a different layout (compact header, no full-bleed
+        // cover), so the pages must be checked there separately or a collision would only show up
+        // on device, at night, which is the worst place to find one.
+        for page in 0..now_playing::PAGES {
+            let nt = Theme::night();
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &nt, &fonts,
+                &now_playing::NowPlaying { page, viz_size: 1, viz_kind: 1, viz_levels: Some(&levels), ..np });
+            cinder_ui::chrome::status_bar(&mut c, &nt, &fonts, "02:14", "FLAC 24/96", 41);
+            save(&c, &format!("np_night_page_{page}"));
+        }
+        // The spectrum page in every style — this is where the style choice actually shows.
+        for kind in 0..cinder_ui::viz::COUNT {
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &theme, &fonts,
+                &now_playing::NowPlaying { page: 1, viz_kind: kind, viz_levels: Some(&levels), ..np });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            save(&c, &format!("np_spectrum_{kind}_{}", cinder_ui::viz::name(kind).to_lowercase()));
+        }
+        // And the spectrum page with nothing playing — it must say so, not show an empty graph.
+        {
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &theme, &fonts,
+                &now_playing::NowPlaying { page: 1, viz_levels: None, ..np });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            save(&c, "np_spectrum_no_signal");
+        }
+        // Which style: every VizKind, all at VEIL (the default), so they are judged in the size
+        // they will actually be seen in.
+        for kind in 0..cinder_ui::viz::COUNT {
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &theme, &fonts,
+                &now_playing::NowPlaying { viz_size: 2, viz_kind: kind, viz_levels: Some(&levels), ..np });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            save(&c, &format!("viz_kind_{kind}_{}", cinder_ui::viz::name(kind).to_lowercase()));
+        }
+        // The three low-ink styles again at BELOW ART, where the band is only 16px — a style that
+        // needs height to read would fall apart there and that has to be visible, not assumed.
+        for kind in [1u8, 2, 7] {
+            let mut c = Canvas::new();
+            now_playing::render(&mut c, &theme, &fonts,
+                &now_playing::NowPlaying { viz_size: 1, viz_kind: kind, viz_levels: Some(&levels), ..np });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            save(&c, &format!("viz_below_{}", cinder_ui::viz::name(kind).to_lowercase()));
         }
     }
 
@@ -179,7 +261,7 @@ fn main() {
 
         let mut c = Canvas::new();
         settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
-            &settings::SettingsView { night: false, viz_name: "Bars", viz_on: true, usb_dac: false,
+            &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false,
                 battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
                 screen_off: "OFF", boot_stock: "SONY", accent: a });
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);

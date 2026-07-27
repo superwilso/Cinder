@@ -406,6 +406,45 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   moving, so idle costs zero IPC. Changing the loop rate also exposed that the ~1 Hz housekeeping
   and battery read were paced by *iteration count* (silently assuming 60 Hz); both are now
   wall-clock paced, so the sleep timer and USB debounce keep their real timing at any rate.
+- **Now Playing is a pager** (2026-07-27): swipe the artwork left/right for three pages — **Cover**,
+  **Spectrum** (the visualiser given the whole block) and **Level** (one big output meter with a
+  peak marker and figures). Only the block above the title changes; the title, progress rail,
+  transport and toolbar are identical on every page, so nothing moves under your thumb when you
+  turn one. Dots above the title mark position — without them a swipe-only feature is undiscoverable.
+  This replaces the old design where the visualiser was painted **onto** the cover, which made every
+  setting a compromise between seeing the artwork and seeing the audio; as pages they stop competing
+  and the visualiser gets a 348px block instead of a 42px strip. **The horizontal swipe is zoned by
+  y**: on the artwork it turns the page, below it it still skips tracks, as it always did. That
+  keeps both gestures with no modifier and no long-press, and it matches what the finger is on —
+  you flip the picture, or you change the track. (The physical FF/REW keys skip from anywhere
+  regardless, and on a device with no d-pad they are the primary skip affordance.) **Night pages
+  too**, with its own geometry: the compact header stays put and the open space beneath it is what
+  changes, so the gesture never has to be relearned when the theme flips. Everything there inherits
+  the night palette, whose accent is already at ~55% luminance — the spectrum page at night is a
+  dim spectrum, and the visualiser gets no exemption from what the theme is for.
+- **Three new visualiser styles, eight total** (2026-07-27): **Ribbon** (a filled shape under a
+  smooth contour — one object rather than 36 rectangles competing with the artwork), **Line** (that
+  contour alone, the lowest-ink style there is) and **Pulse** (no per-band detail at all: one
+  centred bar tracking overall level). They join Bars, Mirror, Segments, Dots and Wave, and the
+  style applies to both the cover overlay and the spectrum page. Two defects the host previews
+  caught that no amount of reading would have: Ribbon's crest drew as a dotted line because it
+  stamped a 2px stub per pixel column instead of joining adjacent points — between columns the
+  contour can jump tens of pixels — and Pulse was a 6px sliver pinned to the bottom of a 348px
+  block, so it now scales with the box it is given and centres in it. The preview's own test signal
+  was replaced as well: it alternated near-full-scale between adjacent bands, which no real music
+  does, and it made every contour style look like a sawtooth. Judging a style against data it will
+  never see is worse than not previewing it at all.
+- **"Cover visualiser": OFF · VEIL · FULL** (2026-07-27): the size axis now governs **only** the
+  cover page, and the row is named for that. Calling it "Visualiser · OFF" would have promised to
+  switch off a feature that is still one swipe away. **OFF means a genuinely untouched cover** —
+  not a smaller visualiser, not a relocated one. A test renders the cover twice with wildly
+  different spectrum data and requires the art block to be pixel-identical, which is a stronger
+  claim than counting accent pixels (the translucent sizes blend, so none of their pixels is ever
+  exactly the accent colour). An intermediate design had six sizes including EDGE, FLOOR and a
+  BELOW ART band; EDGE and FLOOR were two strips too alike to be a real choice, and BELOW ART was
+  left fighting the progress rail for 16px once the pager made it unnecessary. Sony's analyzer is
+  started for the audio pages regardless of this setting, and not at all for a clean cover page —
+  a page that shows nothing costs nothing.
 - **Visualiser bars fall away instead of freezing** (2026-07-27): the analyzer is demand-driven, so
   the spectrum stream now STOPS on every screen blank, pause and screen wake — and cinder-ffi kept
   drawing the last frame it received, forever, because `viz_levels` was never aged out. The visible

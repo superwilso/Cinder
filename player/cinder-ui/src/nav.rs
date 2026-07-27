@@ -222,7 +222,9 @@ pub struct App {
     usb_dac_on: bool,
     /// Now Playing visualiser type (cinder_ui::viz index) + animation on/off (UI settings).
     viz_kind: u8,
-    viz_on: bool,
+    viz_size: u8,
+    /// Which Now Playing page is showing (see now_playing::NpPage). Persisted.
+    np_page: u8,
     /// Settings screen cursor.
     settings_sel: usize,
     /// Battery care (Sony "Itawari" charging, ~90% cap). Mirrors the device state; the shell reads
@@ -328,7 +330,8 @@ impl Default for App {
             bt_ldac_quality: 0, // Auto
             usb_dac_on: false,
             viz_kind: 0,
-            viz_on: true,
+            viz_size: 1, // VEIL on the cover page; the big spectrum has its own page
+            np_page: 0,
             settings_sel: 0,
             battery_care: false,
             snd_dsee: false,
@@ -585,7 +588,7 @@ impl App {
                 vec![]
             }
             crate::settings::ROW_VIZ_ANIM => {
-                self.viz_on = !self.viz_on;
+                self.viz_size = (self.viz_size + 1) % crate::viz::SIZE_COUNT;
                 vec![]
             }
             crate::settings::ROW_SLEEP => {
@@ -1130,7 +1133,20 @@ impl App {
                 vec![]
             }
             Screen::NowPlaying => {
-                if dir < 0 {
+                // Zoned by y. A swipe on the PAGING BLOCK (the artwork) turns the page; a swipe
+                // anywhere below it still skips tracks, which is where the transport already is.
+                // Splitting it keeps both gestures with no modifier and no long-press, and it
+                // matches what the finger is on: you flip the picture, or you change the track.
+                // The physical FF/REW keys skip from anywhere regardless.
+                if y < crate::now_playing::PAGE_SWIPE_BOT {
+                    let pages = crate::now_playing::PAGES;
+                    self.np_page = if dir < 0 {
+                        (self.np_page + 1) % pages
+                    } else {
+                        (self.np_page + pages - 1) % pages
+                    };
+                    vec![]
+                } else if dir < 0 {
                     vec![Action::Next]
                 } else {
                     vec![Action::Prev]
@@ -1680,7 +1696,8 @@ impl App {
                 let live = np.viz_levels.is_some();
                 let np2 = NowPlaying {
                     viz_kind: self.viz_kind,
-                    viz_on: self.viz_on && live,
+                    viz_size: if live { self.viz_size } else { 0 },
+                    page: self.np_page,
                     ..*np
                 };
                 crate::now_playing::render(c, &theme, fonts, &np2);
@@ -1815,7 +1832,7 @@ impl App {
                 let view = crate::settings::SettingsView {
                     night: self.night,
                     viz_name: crate::viz::name(self.viz_kind),
-                    viz_on: self.viz_on,
+                    viz_size_label: crate::viz::size_name(self.viz_size),
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
                     storage: self.storage_label(),
@@ -2144,14 +2161,38 @@ impl App {
     pub fn viz_kind(&self) -> u8 {
         self.viz_kind
     }
+    /// Is the visualiser showing at all? The analyzer gating asks this — starting Sony's service
+    /// is a yes/no question even though the display is a five-way size.
     pub fn viz_on(&self) -> bool {
-        self.viz_on
+        self.viz_size != 0
+    }
+    /// The visualiser size index (0 = off). Persisted.
+    pub fn viz_size(&self) -> u8 {
+        self.viz_size
+    }
+    pub fn set_viz_size(&mut self, i: u8) {
+        self.viz_size = i % crate::viz::SIZE_COUNT;
+    }
+    /// The Now Playing page index. Persisted, so the device comes back to the page you left on.
+    pub fn np_page(&self) -> u8 {
+        self.np_page
+    }
+    pub fn set_np_page(&mut self, i: u8) {
+        self.np_page = i % crate::now_playing::PAGES;
+    }
+    /// Does anything on screen right now need the spectrum? True for the audio pages whatever the
+    /// cover overlay is set to, and for the cover page only when its overlay is on. The shell
+    /// starts and stops Sony's analyzer to match, so a page that shows nothing costs nothing.
+    pub fn wants_spectrum(&self) -> bool {
+        self.np_page != 0 || self.viz_on()
     }
     pub fn set_viz_kind(&mut self, k: u8) {
         self.viz_kind = k % crate::viz::COUNT;
     }
+    /// Legacy on/off setter — kept because a settings file written before sizes existed carries
+    /// `viz_on=`, and an upgrade must not silently turn the visualiser off (or on).
     pub fn set_viz_on(&mut self, on: bool) {
-        self.viz_on = on;
+        self.viz_size = if on { 4 } else { 0 }; // FULL was the only "on" there used to be
     }
     fn cycle_viz(&mut self) {
         self.viz_kind = (self.viz_kind + 1) % crate::viz::COUNT;
@@ -3061,12 +3102,25 @@ mod tests {
         let k1 = a.viz_kind();
         a.press(Button::Select);
         assert_eq!(a.viz_kind(), (k1 + 1) % crate::viz::COUNT);
-        // down to Visualiser anim and toggle it
+        // down to the Visualiser SIZE row. It is no longer an on/off toggle: it cycles
+        // OFF / EDGE / FLOOR / VEIL / FULL, because on the day theme the visualiser is drawn over
+        // the album art and "how much" is the question that matters. OFF is index 0, so a full
+        // cycle must pass through viz_on() == false exactly once and come home.
         a.press(Button::Down);
         assert_eq!(a.settings_sel, crate::settings::ROW_VIZ_ANIM);
-        let on = a.viz_on();
-        a.press(Button::Select);
-        assert_eq!(a.viz_on(), !on);
+        let start = a.viz_size();
+        let mut seen_off = false;
+        for _ in 0..crate::viz::SIZE_COUNT {
+            a.press(Button::Select);
+            if a.viz_size() == 0 {
+                seen_off = true;
+                assert!(!a.viz_on(), "size 0 must read as off");
+            } else {
+                assert!(a.viz_on(), "any non-zero size must read as on");
+            }
+        }
+        assert!(seen_off, "the cycle never offered OFF");
+        assert_eq!(a.viz_size(), start, "the cycle did not return to where it started");
         // cursor clamps at the last row
         for _ in 0..30 {
             a.press(Button::Down);
@@ -3329,14 +3383,55 @@ mod tests {
             a.swipe(-1, 240, 400);
         }
         assert!(a.current() != Screen::Onboarding);
-        // Now Playing: swipe = the same transport actions as the skip buttons
+        // Now Playing is ZONED: a swipe BELOW the paging block still skips tracks, exactly as it
+        // always did. y=400 is on the artwork, so that one now turns the page instead.
         let mut b = unlocked();
         assert_eq!(b.current(), Screen::NowPlaying);
-        assert_eq!(b.swipe(-1, 240, 400), vec![Action::Next]);
-        assert_eq!(b.swipe(1, 240, 400), vec![Action::Prev]);
+        let below = crate::now_playing::PAGE_SWIPE_BOT + 40;
+        assert_eq!(b.swipe(-1, 240, below), vec![Action::Next]);
+        assert_eq!(b.swipe(1, 240, below), vec![Action::Prev]);
         // locked → swipes dead
         b.set_hold(true);
-        assert!(b.swipe(-1, 240, 400).is_empty());
+        assert!(b.swipe(-1, 240, below).is_empty());
+    }
+
+    /// A swipe on the artwork turns the Now Playing page, wraps both ways, and emits NO action —
+    /// it is a pure view change, so it must never reach the shell or the audio path.
+    #[test]
+    fn swiping_the_artwork_turns_the_page_and_never_skips() {
+        use crate::now_playing::{PAGES, PAGE_SWIPE_BOT};
+        let mut a = unlocked();
+        assert_eq!(a.current(), Screen::NowPlaying);
+        let on_art = PAGE_SWIPE_BOT - 100;
+        assert_eq!(a.np_page(), 0);
+        for want in 1..PAGES {
+            assert!(a.swipe(-1, 240, on_art).is_empty(), "paging must emit no action");
+            assert_eq!(a.np_page(), want);
+        }
+        // wraps forward…
+        assert!(a.swipe(-1, 240, on_art).is_empty());
+        assert_eq!(a.np_page(), 0);
+        // …and backward
+        assert!(a.swipe(1, 240, on_art).is_empty());
+        assert_eq!(a.np_page(), PAGES - 1);
+    }
+
+    /// The analyzer must run for the audio pages even when the cover overlay is OFF — otherwise
+    /// swiping to the spectrum page would show a permanently empty graph.
+    #[test]
+    fn the_audio_pages_ask_for_the_analyzer_regardless_of_the_cover_overlay() {
+        let mut a = unlocked();
+        a.set_viz_size(0); // cover overlay OFF
+        a.set_np_page(0);
+        assert!(!a.wants_spectrum(), "cover page with the overlay off needs no spectrum");
+        for page in 1..crate::now_playing::PAGES {
+            a.set_np_page(page);
+            assert!(a.wants_spectrum(), "page {page} draws audio and must ask for the analyzer");
+        }
+        // And the cover page alone is enough when its overlay is on.
+        a.set_np_page(0);
+        a.set_viz_size(2);
+        assert!(a.wants_spectrum());
     }
 
     #[test]

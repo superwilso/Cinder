@@ -577,11 +577,12 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\nscreen_off={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\nscreen_off={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
-        r.app.viz_on() as u8,
+        r.app.viz_size(),
+        r.app.np_page(),
         eq.join(","),
         r.app.sound_flags(),
         r.app.onboarding_seen() as u8,
@@ -827,7 +828,7 @@ pub extern "C" fn cinder_render_tick() {
     }
     // Visualiser: advance + force a repaint ONLY while playing on the Now Playing screen (and
     // enabled), and at most ~20 fps (the pump may tick at 60) — that bounds the battery cost.
-    let animate = r.app.viz_on() && r.np.playing && r.app.is_now_playing();
+    let animate = r.app.wants_spectrum() && r.np.playing && r.app.is_now_playing();
     if animate {
         let since = r.last_viz.elapsed().as_millis() as f32;
         if since >= 50.0 {
@@ -879,7 +880,8 @@ pub extern "C" fn cinder_render_tick() {
         repeat: r.np.repeat,
         viz_seed: if animate { r.viz_phase } else { 2.0 },
         viz_kind: 0, // nav injects the real viz type on the NowPlaying render
-        viz_on: r.app.viz_on(), // nav re-injects this too; kept honest here
+        viz_size: r.app.viz_size(), // nav re-injects this too; kept honest here
+        page: r.app.np_page(),
         // real FFT spectrum if the shell is feeding PCM AND we're animating; else None (synthetic)
         viz_levels: if animate && !r.viz_levels.is_empty() { Some(&r.viz_levels) } else { None },
         scrubbing: r.scrub_ms.is_some(),
@@ -945,7 +947,7 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
             clock: &np.clock, battery: np.battery, elapsed: &np.elapsed, remaining: &np.remaining,
             progress: np.progress, art: &np.art, art_full: None, art_thumb: None,
             liked: np.liked, playing: np.playing, shuffle: np.shuffle, repeat: np.repeat,
-            viz_seed: 2.0, viz_kind: 0, viz_on: false, viz_levels: None, scrubbing: false,
+            viz_seed: 2.0, viz_kind: 0, viz_size: 0, page: 0, viz_levels: None, scrubbing: false,
         };
         r.canvas.clear_clip();
         let t0 = std::time::Instant::now();
@@ -1543,7 +1545,7 @@ pub extern "C" fn cinder_get_battery_care() -> libc::c_int {
 pub extern "C" fn cinder_viz_wants_analyzer() -> libc::c_int {
     let guard = cell().lock().unwrap();
     let Some(r) = guard.as_ref() else { return 0 };
-    (r.app.viz_on() && r.app.is_now_playing() && r.np.playing) as libc::c_int
+    (r.app.wants_spectrum() && r.app.is_now_playing() && r.np.playing) as libc::c_int
 }
 
 #[no_mangle]
@@ -1702,7 +1704,7 @@ pub extern "C" fn cinder_set_pcm(samples: *const i16, n: libc::c_int) {
         r.viz_at = std::time::Instant::now();
         // Only force a repaint when the visualiser is actually on screen — the audio source may
         // stream continuously, but off Now Playing the new levels are unused, so don't burn a frame.
-        if r.app.viz_on() && r.app.is_now_playing() {
+        if r.app.wants_spectrum() && r.app.is_now_playing() {
             r.dirty = true;
         }
     }
@@ -1728,7 +1730,7 @@ pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int)
         r.viz_peak = peak;
         r.viz_at = std::time::Instant::now();
         // Only force a repaint when the visualiser is on screen (the analyzer streams continuously).
-        if r.app.viz_on() && r.app.is_now_playing() {
+        if r.app.wants_spectrum() && r.app.is_now_playing() {
             r.dirty = true;
         }
     }
@@ -1881,7 +1883,21 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_viz_kind(n);
                         }
                     }
+                    // Written by builds before the visualiser gained sizes. Map it so an upgrade
+                    // keeps the user's choice instead of silently resetting it: on => FULL (the
+                    // only "on" that existed), off => OFF. A `viz_size` line, if present, is read
+                    // after this and wins.
                     "viz_on" => r.app.set_viz_on(v == "1"),
+                    "viz_size" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_viz_size(n);
+                        }
+                    }
+                    "np_page" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_np_page(n);
+                        }
+                    }
                     "eq" => {
                         let mut arr = r.app.eq_bands();
                         for (i, part) in v.split(',').enumerate().take(10) {
