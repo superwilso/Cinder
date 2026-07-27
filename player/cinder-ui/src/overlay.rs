@@ -20,52 +20,46 @@ pub const VOL_FRAMES: u8 = 96;
 
 /// Draw the volume HUD: a centered slab with a speaker icon, a level bar, and the step value.
 pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
+    // A slim pill just under the status bar, NOT a card in the middle of the screen.
+    //
+    // It used to be a 320x96 slab centred on the panel, parked over the focal point of the album
+    // art, and it said the same number three separate ways: "18", "/ 120" and "15%". Volume is a
+    // transient nudge — you already know what you pressed, you just want confirmation — so it needs
+    // to be readable at a glance and gone, not to take over the screen. One icon (what it is), one
+    // bar (where it is), one number (exactly where it is), out of the way of the artwork.
     let level = level.min(VOL_MAX);
-    let slab_w = 320;
-    let slab_h = 96;
-    let x0 = (W as i32 - slab_w) / 2;
-    let y0 = (H as i32 - slab_h) / 2;
-
-    // backing slab (panel tone) + 1px accent-tinted border
-    fill_rect(c, x0, y0, slab_w, slab_h, t.panel);
-    for (bx, by, bw, bh) in [
-        (x0, y0, slab_w, 1),
-        (x0, y0 + slab_h - 1, slab_w, 1),
-        (x0, y0, 1, slab_h),
-        (x0 + slab_w - 1, y0, 1, slab_h),
-    ] {
-        fill_rect(c, bx, by, bw, bh, t.line);
-    }
-
-    // speaker icon + "VOLUME" eyebrow
     let muted = level == 0;
-    icons::sound(c, (x0 + 34) as f32, (y0 + 34) as f32, 22.0, if muted { t.faint } else { t.acc });
-    text::draw(c, f, (x0 + 58) as f32, (y0 + 30) as f32, "VOLUME",
-        &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.18));
-    // numeric step value "N / 120", right-aligned (stock shows the raw 0..120 level)
-    let val = format!("{level}");
-    let vst = sty(Family::Mono, Weight::Bold, 24.0, t.ink, 0.0);
-    let mst = sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0);
-    let max_lbl = format!(" / {VOL_MAX}");
-    let vw = text::measure(f, &val, &vst);
-    let mw = text::measure(f, &max_lbl, &mst);
-    text::draw(c, f, (x0 + slab_w - 28) as f32 - mw - vw, (y0 + 34) as f32, &val, &vst);
-    text::draw(c, f, (x0 + slab_w - 28) as f32 - mw, (y0 + 34) as f32, &max_lbl, &mst);
+    let pill_h = 40;
+    let x0 = 24;
+    let y0 = crate::chrome::STATUS_H + 12;
+    let pill_w = W as i32 - x0 * 2;
 
-    // level bar
-    let bx = x0 + 34;
-    let by = y0 + 56;
-    let bw = slab_w - 68;
-    let bh = 8;
-    fill_rect(c, bx, by, bw, bh, t.line);
-    let filled = (bw as f32 * (level as f32 / VOL_MAX as f32)).round() as i32;
-    if filled > 0 {
-        fill_rect(c, bx, by, filled, bh, if muted { t.faint } else { t.acc });
+    fill_rect(c, x0, y0, pill_w, pill_h, t.panel);
+    // Hairline edge only — no full border box; the panel tone already separates it from the art.
+    fill_rect(c, x0, y0, pill_w, 1, t.line);
+    fill_rect(c, x0, y0 + pill_h - 1, pill_w, 1, t.line);
+
+    let mid = y0 + pill_h / 2;
+    icons::sound(c, (x0 + 26) as f32, mid as f32, 20.0, if muted { t.faint } else { t.acc });
+
+    // Number on the right, so the bar between them gets the width.
+    let val = if muted { String::from("MUTE") } else { format!("{level}") };
+    let vst = sty(Family::Mono, Weight::Bold, 15.0, if muted { t.faint } else { t.ink }, 0.04);
+    let vw = text::measure(f, &val, &vst);
+    text::draw(c, f, (x0 + pill_w - 20) as f32 - vw, (mid + 5) as f32, &val, &vst);
+
+    // Level bar fills the space between the icon and the number.
+    let bx = x0 + 48;
+    let bw = (x0 + pill_w - 32) - bx - vw as i32;
+    let bh = 4;
+    let by = mid - bh / 2;
+    if bw > 8 {
+        fill_rect(c, bx, by, bw, bh, t.line);
+        let filled = (bw as f32 * (level as f32 / VOL_MAX as f32)).round() as i32;
+        if filled > 0 {
+            fill_rect(c, bx, by, filled, bh, if muted { t.faint } else { t.acc });
+        }
     }
-    // percentage caption under the bar
-    let pct = (level as u32 * 100 / VOL_MAX as u32).min(100);
-    text::draw(c, f, bx as f32, (by + 24) as f32, &format!("{pct}%"),
-        &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1));
 }
 
 /// Confirmation toast: a bottom-centered pill with a one-line message (e.g. after swipe-to-queue).

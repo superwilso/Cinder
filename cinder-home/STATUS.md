@@ -336,6 +336,11 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   unconditionally and never reflected any BT state.
 - **Menu ▸ Now Playing shows the running track** (2026-07-27): title · elapsed, or "Nothing
   playing". The row was blank.
+- **Volume HUD is a slim pill, not a card** (2026-07-27): it was a 320×96 slab centred on the
+  panel — parked over the focal point of the album art — stating the same number three ways
+  (`18`, `/ 120`, `15%`). Volume is a transient nudge: you already know what you pressed and just
+  want confirmation. Now a 40 px pill under the status bar with one icon, one bar and one number
+  (`MUTE` at zero), leaving the artwork alone.
 - **Visualiser is live-only, and demand-driven** (2026-07-27): it now draws **only** when real
   spectrum data is arriving from Sony's `AudioAnalyzerService`. The synthetic fallback is gone — it
   animated identically for silence, a ballad and a drum solo, so it looked like a representation of
