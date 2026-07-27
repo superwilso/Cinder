@@ -336,6 +336,18 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   unconditionally and never reflected any BT state.
 - **Menu ▸ Now Playing shows the running track** (2026-07-27): title · elapsed, or "Nothing
   playing". The row was blank.
+- **Volume ramp no longer forks a shell 8×/second** (2026-07-27): the rocker auto-repeats a step
+  every 120 ms, and the amixer backend costs a `fork`+`exec` of `/bin/sh` *and* of `amixer` per
+  step — tens of milliseconds each on a single-core ARMv7, competing with the render thread for the
+  only core. Writes are now coalesced (during a ramp only the final value matters) with a trailing
+  flush so the level you stop on is always the one that lands. The mixer control name is also
+  validated: it is interpolated into a shell command inside single quotes and comes from
+  `cinder_volume.conf` on `/contents`, which is user-writable over USB-MSC — a stray apostrophe
+  would break out of the quoting, so names outside the ALSA character set are rejected.
+- **Scrobble clock follows real time** (2026-07-27): it added a flat 1 s per tick, assuming the
+  caller arrives at exactly 1 Hz. Housekeeping fires when *at least* 1000 ms have passed and the
+  loop runs at 10 Hz while dark, so the true gap there is 1000–1100 ms — the play clock ran up to
+  10% slow exactly when the screen is off, which is how the device is normally used.
 - **Battery / idle cost** (2026-07-27, audit): four things ran continuously and now don't.
   `input_pump()` does a non-blocking `read()` on **every** input node **every** loop iteration — 8
   nodes at 60 Hz is ~480 syscalls/s plus 60 thread wakeups, sustained — so the loop drops to 10 Hz

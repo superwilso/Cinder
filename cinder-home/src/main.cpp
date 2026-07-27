@@ -812,7 +812,21 @@ void load_vol_cfg() {
         char* nl = std::strpbrk(v, "\r\n"); if (nl) *nl = 0;
         if      (!std::strcmp(k, "backend")) g_vol.amixer = !std::strcmp(v, "amixer");
         else if (!std::strcmp(k, "path"))    std::strncpy(g_vol.path, v, sizeof g_vol.path - 1);
-        else if (!std::strcmp(k, "control")) std::strncpy(g_vol.control, v, sizeof g_vol.control - 1);
+        else if (!std::strcmp(k, "control")) {
+            // This value is interpolated into a /bin/sh command inside single quotes, and the file
+            // it comes from lives on /contents — which the user can write over USB-MSC. A single
+            // quote in the name would break out of the quoting, so anything outside the character
+            // set real ALSA control names use is rejected outright rather than escaped: a name we
+            // don't recognise is far more likely to be a typo than something worth running.
+            bool safe = v[0] != 0;
+            for (const char* q = v; *q && safe; ++q) {
+                safe = (*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') ||
+                       (*q >= '0' && *q <= '9') || *q == ' ' || *q == '_' || *q == '-' ||
+                       *q == '.' || *q == ',' || *q == '(' || *q == ')' || *q == '/';
+            }
+            if (safe) std::strncpy(g_vol.control, v, sizeof g_vol.control - 1);
+            else clog_("volume: control name has unsafe characters — IGNORED (check cinder_volume.conf)");
+        }
         else if (!std::strcmp(k, "card"))    g_vol.card = (int)std::strtol(v, nullptr, 10);
         else if (!std::strcmp(k, "min"))     g_vol.min = (int)std::strtol(v, nullptr, 10);
         else if (!std::strcmp(k, "max"))     g_vol.max = (int)std::strtol(v, nullptr, 10);
@@ -858,11 +872,20 @@ void sync_volume_from_hw() {
 // Apply the UI's 0..120 volume level to the device via the configured backend (1:1 with the
 // default amixer 'master volume' 0..120; rescaled only for a conf-overridden range). No-op if
 // unconfigured. Called guarded (system()/sysfs write). Read-on-first-use.
-void apply_volume() {
-    if (!g_vol_read) load_vol_cfg();
+// Volume writes are COALESCED. The rocker auto-repeats a step every 120 ms while held, and the
+// amixer backend costs a fork+exec of /bin/sh AND of amixer per step — on a single-core ARMv7 that
+// is tens of milliseconds, eight times a second, competing with the render thread for the only
+// core. During a ramp only the FINAL value matters, so a step marks the level pending and the
+// actual write happens at most every VOL_WRITE_EVERY_MS, with a trailing flush so the value the
+// user stopped on is always the one that lands.
+const long VOL_WRITE_EVERY_MS = 150;
+int  g_vol_pending = -1;      // level waiting to be written (-1 = nothing pending)
+int  g_vol_written = -1;      // last level actually written (dedupe)
+long g_vol_write_ms = 0;
+
+// Do the write. Split out so both the rate-limited path and the trailing flush share it.
+void volume_write_now(int level) {
     if (!g_vol.valid) return;
-    int level = cinder_get_volume();
-    if (level < 0) level = 0; if (level > 120) level = 120;
     int val = g_vol.min + (g_vol.max - g_vol.min) * level / 120;
     if (g_vol.amixer) {
         char cmd[384];
@@ -873,6 +896,33 @@ void apply_volume() {
         FILE* f = std::fopen(g_vol.path, "w");
         if (f) { std::fprintf(f, "%d", val); std::fclose(f); }
     }
+    g_vol_written = level;
+    g_vol_write_ms = now_ms();
+}
+
+void apply_volume() {
+    if (!g_vol_read) load_vol_cfg();
+    if (!g_vol.valid) return;
+    int level = cinder_get_volume();
+    if (level < 0) level = 0;
+    if (level > 120) level = 120;
+    if (level == g_vol_written) { g_vol_pending = -1; return; }   // nothing changed
+    if (now_ms() - g_vol_write_ms >= VOL_WRITE_EVERY_MS) {
+        g_vol_pending = -1;
+        volume_write_now(level);
+    } else {
+        g_vol_pending = level;   // flushed by volume_flush() below
+    }
+}
+
+// Trailing flush: writes the level the user actually stopped on. Called every pump iteration, so
+// the last step of a ramp lands within VOL_WRITE_EVERY_MS of the button coming up.
+void volume_flush() {
+    if (g_vol_pending < 0) return;
+    if (now_ms() - g_vol_write_ms < VOL_WRITE_EVERY_MS) return;
+    int level = g_vol_pending;
+    g_vol_pending = -1;
+    volume_write_now(level);
 }
 
 // ── Backlight (night = minimal light) ───────────────────────────────────────────────────────
@@ -1984,6 +2034,7 @@ void* render_driver(void*) {
 
         if (!g_input_started) { input_open(); g_input_started = true; }
         alarm(8); input_pump(); alarm(0);     // touch + buttons -> navigator -> actions -> carry_out
+        volume_flush();                       // trailing write of a coalesced volume ramp
         // ~1x/sec housekeeping, paced by the WALL CLOCK rather than an iteration count. It used to
         // be `n % 60`, which silently assumed the loop always runs at 60 Hz — no longer true now
         // that a dark panel drops it to 10 Hz, where `n % 60` would mean once every SIX seconds and
