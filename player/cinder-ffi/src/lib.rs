@@ -554,7 +554,7 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     format!(
-        "night={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\n",
+        "night={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\n",
         r.app.night as u8,
         r.app.viz_kind(),
         r.app.viz_on() as u8,
@@ -564,6 +564,7 @@ fn settings_body(r: &Render) -> String {
         r.app.bt_codec(),
         r.app.bt_ldac_quality(),
         r.app.volume_level(),
+        r.app.brightness(),
     )
 }
 
@@ -1219,6 +1220,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         }
         Action::BtCodecChanged => 17, // shell reads cinder_get_bt_codec/quality + applies via BtTransmitter
         Action::UsbDacToggle(_) => 18, // shell reads cinder_get_usb_dac() + starts/stops the LDAC bridge
+        Action::BrightnessChanged(_) => 20, // shell reads cinder_get_brightness() + writes the backlight
     })
 }
 
@@ -1457,6 +1459,20 @@ pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
         Some(r) if r.app.usb_dac_on() => 1,
         _ => 0,
     }
+}
+
+/// The UI's panel-brightness level, 1..=5. Read after a CINDER_ACT_BRIGHTNESS_CHANGED action (and
+/// at boot) and map it onto the backlight node. Never returns 0 — the shell's lowest level must
+/// stay readable, or the screen you'd use to turn it back up is unreadable. Defaults to 4 (which
+/// matches the shell's ~70% day level) if the renderer isn't up yet.
+#[no_mangle]
+pub extern "C" fn cinder_get_brightness() -> libc::c_int {
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(4, |r| r.app.brightness() as libc::c_int)
+        .clamp(1, 5)
 }
 
 /// Seed the UI volume from the device's REAL level (raw 0..120 steps — the stock scale, 1:1 with
@@ -1746,6 +1762,13 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_volume(n);
                             loaded |= 2; // bit1: a persisted volume level was restored
+                        }
+                    }
+                    "brightness" => {
+                        // set_brightness clamps to 1..5, so a corrupt or out-of-range file can
+                        // never restore a level the shell would map to an unreadable screen.
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_brightness(n);
                         }
                     }
                     _ => {}

@@ -315,6 +315,13 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   could not. The estimate survives only as the fallback for before the first callback arrives.
   Play/pause state also comes from observed position movement rather than from the shell's
   optimistic view of the last transport action it sent.
+- **Brightness** (2026-07-27): the Settings row cycles 5 levels and writes the panel backlight,
+  reusing the proven auto-detected node (the same one night dimming uses), as a percentage of its
+  own `max_brightness` so it works whatever the raw scale is. Persisted, and applied at boot.
+  **Level 1 is 15%, never 0** — the lowest setting reachable from the UI has to stay readable, or a
+  single persisted tap leaves the Settings screen needed to undo it invisible across reboots (the
+  same reasoning as the boot-always-day rule). An explicit `day=` in `cinder_backlight.conf` still
+  overrides, so the file remains the escape hatch. Tests pin the cycle and the clamp.
 - **Drag-to-seek**: dragging (or tapping) the Now Playing progress rail seeks. The rail geometry is
   a single shared source (`now_playing::RAIL_*`) used by the render AND the hit test, with a
   52 px grab band that deliberately stops short of the transport row so it can never steal a
@@ -359,9 +366,10 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 >   already pre-shuffles queues itself for the Library shuffle bands.
 > - **Bluetooth radio toggle / Disconnect**: `Action::BtToggle` maps to no `CINDER_ACT_*` at all.
 > - **Bluetooth "Pair new device"**: `BtHit::Pair` is hit-tested and returns `vec![]`.
-> - Settings **Screen-off timer**, **Brightness**, **Database**: no arm in `settings_activate`.
->   Brightness is the closest to free — the backlight sysfs write already works (night dimming uses
->   it); it needs a level action plus a safe floor so a low value can't leave an unreadable screen.
+> - Settings **Screen-off timer** and **Database**: no arm in `settings_activate`.
+>   (**Brightness is now wired** — see Functional.) A screen-off timer is deliberately NOT wired
+>   yet: taps are dropped while the panel is dark (`g_screen_on`), so an idle blank would need a
+>   verified wake-on-touch path or the device looks dead — not something to ship untested.
 >
 > **Unreachable / dead plumbing:**
 > - `pairing.rs` renders a complete pairing screen, but **there is no `Screen::Pairing`** — it is

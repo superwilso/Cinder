@@ -71,7 +71,9 @@ typedef enum {
      * gadget to UAC, WITHOUT disconnecting Bluetooth (the headline USB-DAC→LDAC feature). */
     CINDER_ACT_USBDAC_LDAC = 18,
     /* User left the USB mass-storage modal (Back): remount /contents and restore the USB mode. */
-    CINDER_ACT_EXIT_USB_MSC = 19
+    CINDER_ACT_EXIT_USB_MSC = 19,
+    /* Panel brightness changed: read cinder_get_brightness() (1..5) and write the backlight. */
+    CINDER_ACT_BRIGHTNESS_CHANGED = 20
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -173,6 +175,10 @@ int  cinder_get_night(void);
  * apply via BtTransmitterService. The same values configure the USB-DAC→LDAC bridge. */
 int  cinder_get_bt_codec(void);
 int  cinder_get_bt_ldac_quality(void);
+/* The UI's panel-brightness level, 1..5 (never 0). Read after a CINDER_ACT_BRIGHTNESS_CHANGED
+ * action and at boot, then map it onto the backlight node. Level 1 must stay READABLE — if the
+ * lowest setting blanks the panel, the screen needed to turn it back up is unusable. */
+int  cinder_get_brightness(void);
 /* Is USB-DAC mode engaged? (1/0). Read after a CINDER_ACT_USBDAC_LDAC action to start/stop the LDAC
  * bridge + switch the USB gadget to UAC, without disconnecting Bluetooth. */
 int  cinder_get_usb_dac(void);

@@ -202,6 +202,7 @@ int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
 bool g_settings_loaded = false; // did cinder_settings_load find a saved file? (→ re-apply EQ/sound)
 bool g_volume_restored = false; // did it restore a persisted volume level? (→ push to hw, not seed)
 void set_backlight(int night); // night=minimal/day=normal; boot forces day, toggle matches theme
+void recompute_day_level();   // map the UI's 1..5 brightness onto the node's day level (no write)
 bool g_render_ready = false;   // framebuffer/renderer open? (pump must not tick before this)
 easel::CuiAppModule* g_cui = nullptr;   // the UI module — used to drive the pump (OnPumpTrigger)
 easel::ApplicationBase* g_app = nullptr; // the app — for StopBootAnimation() (stop the boot-anim overlay)
@@ -263,6 +264,9 @@ void render_up() {
     // across boots. Otherwise a daytime boot into persisted night could come up at ~3% backlight and
     // you couldn't see the screen to turn it back up. The night dim is a deliberate per-session action
     // (toggle Theme→night). Pure sysfs write (no Sony service); no-op if no backlight node found.
+    // Persisted brightness applies at boot; the theme does NOT (always day — see above). Level 1
+    // is 15% of max, so even the dimmest persisted setting comes up readable.
+    recompute_day_level();
     set_backlight(0);
     clog_("render_up: DONE (renderer ready)");
     // From here the render_driver worker thread owns SIGALRM (per-frame watchdog + run_guarded).
@@ -925,6 +929,27 @@ void set_backlight(int night) {
     if (f) { std::fprintf(f, "%d", level); std::fclose(f); }
 }
 
+// Apply the UI's brightness level (1..5) by recomputing the DAY level, then re-writing the panel.
+// The level is a percentage of the node's own max_brightness, so it works whatever the raw scale is.
+//
+// LEVEL 1 IS 15%, NOT 0. The lowest setting reachable from the UI has to stay readable: if it
+// blanked the panel, the Settings screen needed to turn it back up would be invisible, and the
+// brightness row is persisted — so a single tap could make the device look bricked across reboots.
+// (Same reasoning as the boot-always-day rule for night dimming.) An explicit `day=` in
+// /contents/cinder_backlight.conf still wins, exactly as before, so the file stays the escape hatch.
+void recompute_day_level() {
+    if (!g_bl_read) load_bl_cfg();
+    if (!g_bl.valid) return;
+    static const int pct[5] = { 15, 30, 50, 70, 100 };
+    int lvl = cinder_get_brightness();          // already clamped to 1..5 by cinder-ffi
+    if (lvl < 1 || lvl > 5) lvl = 4;
+    g_bl.day = g_bl.max * pct[lvl - 1] / 100;
+    if (g_bl.day < 1) g_bl.day = 1;             // never fully dark
+}
+
+// Live change from the Settings row: recompute, then write at the CURRENT theme's level.
+void apply_brightness() { recompute_day_level(); set_backlight(cinder_get_night()); }
+
 // For the LIVE theme toggle: match the backlight to the current theme.
 void apply_backlight() { set_backlight(cinder_get_night()); }
 
@@ -1284,6 +1309,10 @@ void carry_out(int act) {
         case CINDER_ACT_THEME_CHANGED:
             // night/day toggled -> set the panel backlight (night = minimal light), guarded.
             run_guarded("carry_out: backlight (theme)", 4, apply_backlight);
+            break;
+        case CINDER_ACT_BRIGHTNESS_CHANGED:
+            // Settings Brightness row cycled 1..5 → recompute the day level + rewrite the node.
+            run_guarded("carry_out: backlight (brightness)", 4, apply_brightness);
             break;
         case CINDER_ACT_BT_CODEC_CHANGED:
             // device-wide codec/quality changed → persist it for every BT path (file IO, safe).

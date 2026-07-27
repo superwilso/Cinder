@@ -1,7 +1,9 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row. Rows:
 //! DISPLAY (Theme, Visualiser type, Visualiser animation, Screen-off, Brightness),
 //! SYSTEM (Storage, Database, Battery care, USB mode), ABOUT (Firmware, Model).
-//! The first three DISPLAY rows are live (theme/visualiser); the rest are display/device-gated.
+//! Live rows: Theme, Visualiser type, Visualiser, Sleep timer, Brightness (DISPLAY), Battery care
+//! and USB mode (SYSTEM). Screen-off timer and Database are drawn but NOT wired (they show "—" —
+//! see the dead-UI audit in cinder-home/STATUS.md); Firmware/Model are static info.
 
 use crate::icons;
 use crate::text::{self, Family, FontSet, Weight};
@@ -18,6 +20,7 @@ pub const ROW_VIZ: usize = 1;
 pub const ROW_VIZ_ANIM: usize = 2;
 pub const ROW_SLEEP: usize = 3;
 pub const ROW_BATTERY: usize = 8;
+pub const ROW_BRIGHTNESS: usize = 5;
 pub const ROW_USB_MODE: usize = 9; // tapping enters USB mass-storage (file transfer to a PC)
 
 const RH: i32 = 56;
@@ -38,6 +41,8 @@ pub struct SettingsView<'a> {
     pub battery_care: bool,
     pub storage: &'a str,
     pub sleep: &'a str,
+    /// Brightness label, e.g. "3 / 5" (nav formats it from its 1..5 level).
+    pub brightness: &'a str,
 }
 
 /// Which selectable row is at touch-y `y`? Mirrors `render`'s vertical layout exactly: header
@@ -132,12 +137,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &SettingsVi
     y = srow(c, t, f, y, sel == ROW_VIZ_ANIM, "Visualiser", if v.viz_on { "ON" } else { "OFF" }, false);
     // Row 3: Sleep timer (live) — pauses playback after N min. Shows the live remaining when running.
     y = srow(c, t, f, y, sel == ROW_SLEEP, "Sleep timer", v.sleep, false);
-    // Rows 4-5: NOT WIRED. They are still drawn (both are real stock features worth having, and the
-    // rows mark where they go) but they must not pretend: the old "30 SEC" / "3 / 5" were invented
-    // numbers on rows that do nothing when tapped, so they read as settings the user had chosen.
-    // "—" is the honest value; see settings_activate, which has no arm for either row.
+    // Row 4 is NOT WIRED — still drawn (it marks where a real stock feature goes) but it must not
+    // pretend: the old "30 SEC" was an invented number on a row that does nothing when tapped, so
+    // it read as a setting the user had chosen. "—" is the honest value.
     y = srow(c, t, f, y, sel == 4, "Screen-off timer", "—", false);
-    y = srow(c, t, f, y, sel == 5, "Brightness", "—", false);
+    // Row 5: brightness is live — tapping cycles 1..5 and the shell writes the backlight node.
+    y = srow(c, t, f, y, sel == ROW_BRIGHTNESS, "Brightness", v.brightness, false);
 
     y = eyebrow(c, t, f, y + 14, "SYSTEM");
     // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).

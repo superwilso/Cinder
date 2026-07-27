@@ -102,6 +102,7 @@ pub enum Action {
     RepeatCycle,              // Now Playing repeat: off → all → one (FFI holds the state)
     BtCodecChanged,           // device-wide BT transmit codec / LDAC quality changed; shell reads + applies
     UsbDacToggle(bool),       // engage/disengage USB-DAC input routed to 3.5mm + BT/LDAC (the headline feature)
+    BrightnessChanged(u8),    // panel brightness level 1..5; shell maps it onto the backlight node
 }
 
 /// The Menu rows, in display order — index ↔ destination Screen. Matches the prototype's 10 rows;
@@ -222,6 +223,10 @@ pub struct App {
     /// Sleep timer: `sleep_idx` cycles the presets (Off/15/30/45/60 min) in Settings; `sleep_min` is
     /// the LIVE remaining minutes that cinder-ffi counts down and pushes back for display. 0 = off.
     sleep_idx: usize,
+    /// Panel brightness, 1..=5 (Settings row cycles it). Deliberately has no 0: the shell maps
+    /// level 1 to a dim-but-readable fraction of max_brightness, so no setting reachable from the
+    /// UI can leave a screen you can't read to change it back. Persisted.
+    brightness: u8,
     sleep_min: u32,
     /// First-run onboarding: which page is showing, and whether the intro has been completed (the
     /// latter is persisted, so it only appears once; the Menu can re-open it any time).
@@ -297,6 +302,7 @@ impl Default for App {
             sound_sel: 0,
             storage: String::new(),
             sleep_idx: 0,
+            brightness: 4,   // matches the shell's ~70% day default
             sleep_min: 0,
             onboarding_page: 0,
             onboarding_seen: false,
@@ -539,6 +545,11 @@ impl App {
                 // then unmounts the volume + switches the gadget (and reverts on failure/unplug).
                 self.push(Screen::UsbStorage);
                 vec![Action::EnterUsbMsc]
+            }
+            crate::settings::ROW_BRIGHTNESS => {
+                // 1..5 and wrap. The shell turns the level into a raw backlight value.
+                self.brightness = if self.brightness >= 5 { 1 } else { self.brightness + 1 };
+                vec![Action::BrightnessChanged(self.brightness)]
             }
             _ => vec![], // display-only / device-gated rows
         }
@@ -1649,6 +1660,7 @@ impl App {
             }
             Screen::Settings => {
                 let sleep_lbl = self.sleep_label();
+                let brightness_lbl = format!("{} / 5", self.brightness);
                 let view = crate::settings::SettingsView {
                     night: self.night,
                     viz_name: crate::viz::name(self.viz_kind),
@@ -1657,6 +1669,7 @@ impl App {
                     battery_care: self.battery_care,
                     storage: self.storage_label(),
                     sleep: &sleep_lbl,
+                    brightness: &brightness_lbl,
                 };
                 crate::settings::render(c, &theme, fonts, self.settings_sel, &view)
             }
@@ -1895,6 +1908,12 @@ impl App {
     /// into bluetooth::QUALITIES). The shell reads these after a BtCodecChanged action and applies
     /// them via BtTransmitterService (and the same values feed the USB-DAC→LDAC bridge). The setters
     /// let the shell restore the persisted values at boot.
+    pub fn brightness(&self) -> u8 {
+        self.brightness
+    }
+    pub fn set_brightness(&mut self, level: u8) {
+        self.brightness = level.clamp(1, 5);
+    }
     pub fn bt_codec(&self) -> u8 {
         self.bt_codec
     }
@@ -2052,6 +2071,35 @@ mod tests {
         app.snd_dsee = false;
         app.snd_vpt = false;
         assert_eq!(app.menu_subtitles().sound, "Off");
+    }
+
+    /// Brightness cycles 1..5 and wraps — and never reaches 0. A 0 would let the shell write a dark
+    /// panel, and since the level is persisted that single tap would survive reboots, leaving the
+    /// Settings screen you need to undo it invisible.
+    #[test]
+    fn brightness_cycles_one_to_five_and_never_reaches_zero() {
+        let mut app = unlocked();
+        app.set_brightness(1);
+        let mut seen = vec![app.brightness()];
+        for _ in 0..6 {
+            app.settings_sel = crate::settings::ROW_BRIGHTNESS;
+            let acts = app.settings_activate();
+            assert_eq!(acts, vec![Action::BrightnessChanged(app.brightness())]);
+            seen.push(app.brightness());
+        }
+        assert!(seen.iter().all(|&l| (1..=5).contains(&l)), "level left 1..=5: {seen:?}");
+        // 1→2→3→4→5→1→2 : it wraps rather than saturating, and 0 never appears.
+        assert_eq!(seen, vec![1, 2, 3, 4, 5, 1, 2]);
+    }
+
+    /// Out-of-range values from a corrupt settings file are clamped, not trusted.
+    #[test]
+    fn set_brightness_clamps_out_of_range_values() {
+        let mut app = unlocked();
+        app.set_brightness(0);
+        assert_eq!(app.brightness(), 1);
+        app.set_brightness(200);
+        assert_eq!(app.brightness(), 5);
     }
 
     #[test]
