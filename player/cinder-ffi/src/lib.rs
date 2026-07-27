@@ -361,6 +361,7 @@ struct Render {
     // lookup per track change, and persisted to its own file rather than the settings blob — it
     // grows with the library, and losing every preference because one liked-list line is corrupt
     // would be a bad trade. `liked_path` is None until cinder_db_open supplies it.
+    last_scrob: std::time::Instant, // real-time anchor for the scrobble play clock
     liked: std::collections::BTreeSet<i64>,
     liked_path: Option<String>,
     pending_play_start: usize,
@@ -509,6 +510,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         viz_levels: Vec::new(),
         viz_peak: 0.0,
         pending_play: Vec::new(),
+        last_scrob: std::time::Instant::now(),
         liked: std::collections::BTreeSet::new(),
         liked_path: None,
         pending_play_start: 0,
@@ -1729,8 +1731,18 @@ pub extern "C" fn cinder_sleep_should_pause() -> libc::c_int {
 #[no_mangle]
 pub extern "C" fn cinder_scrobble_tick(playing: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
+        // Measure the REAL gap since the last tick here rather than trusting the caller to arrive
+        // exactly once a second. The shell's housekeeping fires when *at least* 1000 ms have
+        // passed, and its loop runs at 10 Hz while the panel is dark, so the true interval there is
+        // 1000-1100 ms. Deriving it means the scrobble clock can't drift when the loop rate changes
+        // — and the C ABI stays the same, so the shell can't get it wrong.
+        let now = std::time::Instant::now();
+        let dt = now.saturating_duration_since(r.last_scrob).as_millis() as u64;
+        r.last_scrob = now;
         if let Some(s) = r.scrob.as_mut() {
-            s.tick(playing != 0);
+            // Clamp: a long stall (deferred init, USB-MSC) must not credit minutes of listening
+            // that never happened.
+            s.tick_ms(playing != 0, dt.min(5000));
         }
     }
 }

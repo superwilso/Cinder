@@ -30,8 +30,8 @@ pub struct Track {
 struct Pending {
     track: Track,
     start_unix: u64,
-    played_s: u32,
-    logged: bool, // already written this play (don't double-log if it crosses the threshold)
+    played_ms: u64, // accumulated REAL play time; seconds are derived from it
+    logged: bool,   // already written this play (don't double-log if it crosses the threshold)
 }
 
 pub struct Scrobbler {
@@ -74,13 +74,19 @@ impl Scrobbler {
 
     /// Advance the play clock by one second (call once a second from the pump). Only counts
     /// time while actually playing; a paused track doesn't accrue listen time.
-    pub fn tick(&mut self, playing: bool) {
+    /// Advance the play clock by REAL elapsed time. Takes milliseconds rather than assuming one
+    /// call per second: the caller is the shell's housekeeping block, which fires when *at least*
+    /// a second has passed — and its loop drops to 10 Hz while the panel is dark, so "1000 ms" is
+    /// really 1000–1100 ms there. Assuming a fixed +1 s made the scrobble clock run up to 10% slow
+    /// exactly when the screen is off, which is the normal way this device gets listened to.
+    pub fn tick_ms(&mut self, playing: bool, elapsed_ms: u64) {
         if !playing {
             return;
         }
         if let Some(p) = self.cur.as_mut() {
-            p.played_s = p.played_s.saturating_add(1);
-            if !p.logged && is_listened(p.track.length_s, p.played_s) {
+            p.played_ms = p.played_ms.saturating_add(elapsed_ms);
+            let played_s = (p.played_ms / 1000) as u32;
+            if !p.logged && is_listened(p.track.length_s, played_s) {
                 // write as soon as the threshold is crossed, so a sudden power-off still logs it
                 let line = format_line(&p.track, "L", p.start_unix);
                 p.logged = true;
@@ -93,13 +99,13 @@ impl Scrobbler {
     /// listened-but-not-yet-logged, then starts timing the new one. `now_unix` = current time.
     pub fn set_track(&mut self, track: Track, now_unix: u64) {
         if let Some(p) = self.cur.take() {
-            if !p.logged && is_listened(p.track.length_s, p.played_s) {
+            if !p.logged && is_listened(p.track.length_s, (p.played_ms / 1000) as u32) {
                 let line = format_line(&p.track, "L", p.start_unix);
                 let _ = self.append(&line);
             }
         }
         // ignore a no-op re-set of the identical track (avoid resetting the clock on re-poll)
-        self.cur = Some(Pending { track, start_unix: now_unix, played_s: 0, logged: false });
+        self.cur = Some(Pending { track, start_unix: now_unix, played_ms: 0, logged: false });
     }
 
     /// True if the current pending track matches `t` (so the caller can avoid re-setting it).
@@ -180,17 +186,37 @@ mod tests {
         let mut s = Scrobbler::new(&path, "Cinder NW-A55 0.1");
         s.set_track(t(60), 1000); // 60s track
         for _ in 0..29 {
-            s.tick(true); // 29s — not yet half
+            s.tick_ms(true, 1000); // 29s — not yet half
         }
         assert!(std::fs::read_to_string(&path).is_err() || !std::fs::read_to_string(&path).unwrap().contains("Atlas"));
-        s.tick(true); // 30s == half of 60 → listened, logged immediately
+        s.tick_ms(true, 1000); // 30s == half of 60 → listened, logged immediately
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.starts_with("#AUDIOSCROBBLER/1.1\n#TZ/UTC\n#CLIENT/Cinder NW-A55 0.1\n"));
         assert!(body.contains("Atlas Hands\t1\t60\tL\t1000\t"));
         // a second tick must not double-log
-        s.tick(true);
+        s.tick_ms(true, 1000);
         let n = body.matches("Atlas Hands").count();
         assert_eq!(n, 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The play clock must track REAL time, not the number of calls. The shell ticks when at least
+    /// a second has passed, and its loop runs at 10 Hz while the panel is dark, so the true gap is
+    /// 1000-1100 ms — assuming a flat +1 s per call made the clock run up to 10% slow exactly when
+    /// the screen is off, which is how this device is normally listened to.
+    #[test]
+    fn play_clock_follows_real_elapsed_time_not_call_count() {
+        let path = std::env::temp_dir().join("cinder_scrob_rate.log");
+        let _ = std::fs::remove_file(&path);
+        let mut s = Scrobbler::new(&path, "c");
+        s.set_track(t(60), 1000); // needs 30 s to count
+        // 28 ticks of a realistic dark-panel interval already exceed 30 s of real time; a
+        // call-counting clock would still be sitting at 28 s and would not have logged.
+        for _ in 0..28 {
+            s.tick_ms(true, 1100);
+        }
+        let body = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(body.contains("Atlas Hands"), "real elapsed time should have crossed the threshold");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -199,11 +225,11 @@ mod tests {
         let mut s = Scrobbler::new(std::env::temp_dir().join("cinder_scrob_pause.log"), "c");
         s.set_track(t(60), 0);
         for _ in 0..100 {
-            s.tick(false); // paused the whole time
+            s.tick_ms(false, 1000); // paused the whole time
         }
-        // nothing logged because played_s stayed 0
+        // nothing logged because the play clock stayed at 0
         let p = s.cur.as_ref().unwrap();
-        assert_eq!(p.played_s, 0);
+        assert_eq!(p.played_ms, 0);
         assert!(!p.logged);
     }
 }
