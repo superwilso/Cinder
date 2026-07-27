@@ -1192,6 +1192,28 @@ bool usb_connected() {
     }
     return false;
 }
+// STRICT probe: is a real USB DATA HOST (a PC) attached? Only the gadget's own enumeration state
+// says that. `usb_connected()` above is deliberately broad — it answers "is a cable in?", which is
+// what the launcher's recovery escape wants (fail toward recovery) — but it returns true for a
+// plain wall charger too, because power_supply/usb/{online,present} read 1 on any 5 V source.
+//
+// Using the broad probe to decide auto-MSC was a real bug: on the stable channel, plugging the
+// device into a CHARGER would, after the ~2 s debounce, unmount /contents and hand it over as mass
+// storage — the library would vanish mid-charge and the "connected to PC" modal would take over the
+// screen. It never showed up in testing because the dev channel disables auto-MSC by default
+// (dev_skip_auto_msc), which is exactly the channel this has been developed on.
+//
+// Unreadable node => false: no auto-MSC. That fails toward "nothing happens" (Settings ▸ USB mode
+// still enters MSC by hand), never toward yanking the filesystem away on a charger.
+bool usb_data_host() {
+    FILE* f = std::fopen("/sys/class/android_usb/android0/state", "r");
+    if (!f) return false;
+    char buf[64] = {};
+    (void)!std::fread(buf, 1, sizeof buf - 1, f);
+    std::fclose(f);
+    return std::strstr(buf, "CONFIGURED") != nullptr;
+}
+
 // While /contents is away we log to tmpfs; the file is spliced back into cinderhome.log on exit,
 // so the whole MSC session (including failures) is visible afterwards.
 static const char* MSC_TMP = "/tmp/cinder_msc.log";
@@ -1991,10 +2013,11 @@ void* render_driver(void*) {
                 }
             }
             // USB mass-storage is fully automatic — no menu dive:
-            //  • NOT in MSC + a PC data-host appears (debounced ~2 s so charger/enumeration flicker
-            //    doesn't bounce us in) → raise the modal and hand /contents to the PC. usb_connected()
-            //    keys on android0/state==CONFIGURED, so a dumb wall charger (CONNECTED only) never
-            //    trips this; only a real PC does. Skipped while onboarding/locked can't matter here.
+            //  • NOT in MSC + a PC data-host appears (debounced ~2 s so enumeration flicker doesn't
+            //    bounce us in) → raise the modal and hand /contents to the PC. This MUST use
+            //    usb_data_host() (gadget state == CONFIGURED), not usb_connected(): the latter also
+            //    reads the power-supply nodes, which a dumb wall charger sets, and entering MSC on a
+            //    charger unmounts the user's library mid-charge.
             //  • IN MSC + the cable is pulled → inject Back so the modal pops AND the navigator emits
             //    ExitUsbMsc (single exit path: remount /contents + restore the USB mode + log).
             if (g_msc_active) {
@@ -2012,7 +2035,7 @@ void* render_driver(void*) {
                     int act = cinder_input(CINDER_BTN_BACK);
                     if (act != CINDER_ACT_NONE) carry_out(act);
                 }
-            } else if (usb_connected() && !dev_skip_auto_msc()) {
+            } else if (usb_data_host() && !dev_skip_auto_msc()) {
                 if (++g_usb_hi >= 2) {
                     clog_("usb-msc: PC host detected — auto-entering mass storage");
                     cinder_show_usb_storage();            // UI reflects the handoff (same modal as the tap)

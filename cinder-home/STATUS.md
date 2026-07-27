@@ -315,6 +315,18 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   could not. The estimate survives only as the fallback for before the first callback arrives.
   Play/pause state also comes from observed position movement rather than from the shell's
   optimistic view of the last transport action it sent.
+- **Battery / idle cost** (2026-07-27, audit): four things ran continuously and now don't.
+  `input_pump()` does a non-blocking `read()` on **every** input node **every** loop iteration — 8
+  nodes at 60 Hz is ~480 syscalls/s plus 60 thread wakeups, sustained — so the loop drops to 10 Hz
+  while the panel is dark (nothing is drawn; the only input that matters then is the one that wakes
+  the device). `cinder_force_dirty()` had stayed at 1 Hz *forever*, costing a full raster + 4.6 MB
+  blit every second on a static screen, to guard against framebuffer scribbling that only happens
+  in the first seconds of boot — now dense for ~10 s, then every 5 s. The Framework pump thread
+  drops 50 Hz → 10 Hz while dark. And `poll_now_playing` no longer makes a binder round trip every
+  second when nothing is playing: the URI read is gated on the PlayEventListener's callback count
+  moving, so idle costs zero IPC. Changing the loop rate also exposed that the ~1 Hz housekeeping
+  and battery read were paced by *iteration count* (silently assuming 60 Hz); both are now
+  wall-clock paced, so the sleep timer and USB debounce keep their real timing at any rate.
 - **A–Z jump rail** (2026-07-27): an alphabet strip down the right edge of the Library list — tap a
   letter to jump. On a 304-album library the alternative is ~20 screens of flicking. Letters with no
   rows are drawn faint, so the rail doubles as a map of what the library holds, and tapping one is a
