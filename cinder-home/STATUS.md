@@ -332,6 +332,52 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 - *(moved to Functional 2026-07-26: the Playlists tab is populated and playable.)*
 
 ### ▢ Stationary (placeholder render / no action — not wired)
+
+> **Dead-UI audit, 2026-07-27.** A full sweep of every `Screen`, every `Action`, and every drawn
+> control against its hit test. Findings, worst first:
+>
+> **Fabricated state shown as real — FIXED in this pass.** These weren't inert, they were *lying*,
+> which is worse: an inert control teaches the user it doesn't work, a false value doesn't.
+> - `"WH-1000XM5"` was hardcoded as a **connected Bluetooth device** in three live places (Menu
+>   caption, Bluetooth screen, USB-DAC screen), shown whenever the UI-only radio toggle was on.
+>   No BT client exists, so no device was ever connected. `bluetooth::render` already had an honest
+>   "No device connected" empty state; it now gets `None`.
+> - Menu captions were the prototype's mock strings and read as fact: `"124 albums · 1,842 tracks"`
+>   on a device with 304 albums, `"88.6 MHz"` for an unwired tuner, `"Custom A1"` whatever EQ preset
+>   was selected, `"DSEE HX · VPT · Vinyl"` whatever was actually engaged. All now live
+>   (`App::menu_subtitles`, extracted from `render` so the strings are unit-testable — `render`
+>   only makes pixels, so a mock value creeping back could not otherwise be caught by a test).
+> - Settings `"Screen-off timer 30 SEC"` and `"Brightness 3 / 5"` were invented numbers on rows that
+>   do nothing when tapped, so they read as settings the user had chosen. Both now show `—`.
+> - Settings `Database "REBUILD"` drew a **chevron** — this screen's affordance for "tapping acts"
+>   — on a row with no handler. Chevron removed.
+>
+> **Genuinely inert (drawn, tappable, no effect) — unchanged, listed so it's known:**
+> - Now Playing **shuffle** and **repeat** icons: `Action::ShuffleToggle`/`RepeatCycle` flip the icon
+>   and `return None`. PlayerService is never told, so play order and repeat behaviour don't change.
+>   Now cheap to finish: `NodeTrackSequence::SetOneTrackMode` is exported for repeat-one, and Cinder
+>   already pre-shuffles queues itself for the Library shuffle bands.
+> - **Bluetooth radio toggle / Disconnect**: `Action::BtToggle` maps to no `CINDER_ACT_*` at all.
+> - **Bluetooth "Pair new device"**: `BtHit::Pair` is hit-tested and returns `vec![]`.
+> - Settings **Screen-off timer**, **Brightness**, **Database**: no arm in `settings_activate`.
+>   Brightness is the closest to free — the backlight sysfs write already works (night dimming uses
+>   it); it needs a level action plus a safe floor so a low value can't leave an unreadable screen.
+>
+> **Unreachable / dead plumbing:**
+> - `pairing.rs` renders a complete pairing screen, but **there is no `Screen::Pairing`** — it is
+>   reachable only from the host preview harness and the sim. Designed, not wired.
+> - `Screen::Fm` and `Screen::Receiver` have no `tap()` branch (they fall to `_ => vec![]`); only
+>   Back does anything. `Screen::Fm` also renders a hardcoded `88.6`.
+> - `NowPlaying.liked` is threaded through four crates and `icons::heart` exists, but the heart is
+>   **never drawn** — an unfinished favourites feature, left in place rather than deleted.
+> - FFI exports the shell never calls: `cinder_set_now_playing` (superseded by `_uri`),
+>   `cinder_set_theme_night`, `cinder_set_visualizer`, `cinder_set_visualizer_type`,
+>   `cinder_visualizer_count`, `cinder_set_pcm` (the analyzer path uses `cinder_set_spectrum`).
+>
+> One transient worth knowing: `App` starts with `Library::sample()` (6 demo albums), replaced when
+> `cinder_db_open` runs in `deferred_up`. A DB failure substitutes an **empty** library, so the demo
+> data can never stand in for the user's music — but it is briefly live before the DB loads.
+
 - ~~Play a selected track/album~~ → **WIRED (2026-07-03, awaiting device verify)**: tapping a
   Songs row / Album track / "Play album" band resolves the album context through the DB and hands
   PlayerService a real `NodeTrackSequence` (see the eighth-round notes below). Playlist rows play

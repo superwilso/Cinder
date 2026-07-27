@@ -107,19 +107,38 @@ pub enum Action {
 /// The Menu rows, in display order — index ↔ destination Screen. Matches the prototype's 10 rows;
 /// the Shelf is NOT here by design (it's opened from the status-bar bookmark glyph). "Help &
 /// Controls" is the one Cinder addition (the onboarding intro, re-openable).
+// The `value` column is the row's SUBTITLE. Anything that describes live state is filled in at
+// render time (see the `value:` match in render) — the literals here are only for rows whose
+// subtitle is genuinely fixed, or empty for rows that have nothing true to say yet.
+//
+// These used to be the prototype's mock strings and they read as fact: "124 albums · 1,842 tracks"
+// on a device with 304 albums, "88.6 MHz" for a tuner that isn't wired, "Custom A1" regardless of
+// the selected EQ preset, and "WH-1000XM5 · LDAC" naming a pair of headphones that were never
+// connected. A subtitle that states something false is worse than no subtitle.
 const MENU: [(Screen, &str, &str, &str); 11] = [
     (Screen::NowPlaying, "note", "Now Playing", ""),
-    (Screen::Library, "library", "Library", "124 albums · 1,842 tracks"),
-    (Screen::UpNext, "queue", "Up Next", "8 tracks · 41:24"),
-    (Screen::Fm, "radio", "FM Radio", "88.6 MHz"),
-    (Screen::Eq, "eq", "Equalizer", "Custom A1"),
-    (Screen::Sound, "sound", "Sound Settings", "DSEE HX · VPT · Vinyl"),
-    (Screen::Bluetooth, "bt", "Bluetooth", "WH-1000XM5 · LDAC"),
-    (Screen::UsbDac, "usb", "USB-DAC", "Off"),
-    (Screen::Receiver, "rx", "BT Receiver", "Off"),
+    (Screen::Library, "library", "Library", ""),      // live: album/track counts
+    (Screen::UpNext, "queue", "Up Next", ""),         // live: queue length
+    (Screen::Fm, "radio", "FM Radio", ""),            // tuner not wired — claim nothing
+    (Screen::Eq, "eq", "Equalizer", ""),              // live: selected preset
+    (Screen::Sound, "sound", "Sound Settings", ""),   // live: which effects are on
+    (Screen::Bluetooth, "bt", "Bluetooth", ""),       // live: configured transmit codec
+    (Screen::UsbDac, "usb", "USB-DAC", ""),           // live: On/Off
+    (Screen::Receiver, "rx", "BT Receiver", "Off"),   // not wired, and Off is the truth
     (Screen::Settings, "settings", "Settings", "System · Storage · About"),
     (Screen::Onboarding, "note", "Help & Controls", "Button map · features"),
 ];
+
+/// The Menu's live row subtitles (see `App::menu_subtitles`). One field per Menu row whose caption
+/// describes current state rather than being fixed text.
+pub(crate) struct MenuSubtitles {
+    pub library: String,
+    pub queue: String,
+    pub eq: String,
+    pub sound: String,
+    pub bluetooth: String,
+    pub usb_dac: String,
+}
 
 /// A pinned place on the Shelf: enough route context to jump straight back. Session-scoped (held in
 /// the navigator; persisting across boots is a later refinement).
@@ -452,6 +471,44 @@ impl App {
     }
 
     // Activate the focused Settings row (shared by the Select button and a tap).
+    /// The Menu's live row subtitles. Extracted from `render` so the strings themselves are
+    /// testable: `render` only produces pixels, so a mock value creeping back in (this table used
+    /// to carry the prototype's invented "124 albums · 1,842 tracks" and "WH-1000XM5 · LDAC") could
+    /// not otherwise be caught by a test. Every field below reports state this App actually holds.
+    pub(crate) fn menu_subtitles(&self) -> MenuSubtitles {
+        MenuSubtitles {
+            library: if self.lib.is_empty() {
+                String::from("Empty")
+            } else {
+                format!("{} albums · {} tracks", self.lib.album_count(), self.lib.songs.len())
+            },
+            queue: if self.queue.is_empty() {
+                String::from("Queue empty")
+            } else {
+                format!("{} queued", self.queue.len())
+            },
+            eq: data::EQ_PRESETS[self.eq_preset].0.to_string(),
+            bluetooth: crate::bluetooth::CODECS[self.bt_codec as usize].0.to_string(),
+            usb_dac: String::from(if self.usb_dac_on { "On" } else { "Off" }),
+            // Name the effects actually engaged; "Off" when the chain is clean.
+            sound: {
+                let on: Vec<&str> = [
+                    ("DSEE HX", self.snd_dsee),
+                    ("Vinyl", self.snd_vinyl),
+                    ("VPT", self.snd_vpt),
+                    ("DC Phase", self.snd_dc),
+                    ("Normaliser", self.snd_norm),
+                    ("Clear Phase", self.snd_clear),
+                ]
+                .iter()
+                .filter(|(_, en)| *en)
+                .map(|(n, _)| *n)
+                .collect();
+                if on.is_empty() { String::from("Off") } else { on.join(" · ") }
+            },
+        }
+    }
+
     fn settings_activate(&mut self) -> Vec<Action> {
         match self.settings_sel {
             crate::settings::ROW_THEME => {
@@ -1452,8 +1509,10 @@ impl App {
                 }
                 _ => vec![],
             },
-            // The remaining screens (Fm/Receiver/UpNext/Pairing): Back pops, everything else is a
-            // no-op until their per-screen controls are wired.
+            // The remaining screens (Fm/Receiver): Back pops, everything else is a no-op until
+            // their per-screen controls are wired. (Not "Pairing" — there is no Screen::Pairing;
+            // pairing.rs is a designed-but-unreachable screen, rendered only by the host preview
+            // harness and the sim. UpNext isn't here either: it handles buttons above.)
             _ => match b {
                 Button::Back => {
                     self.pop();
@@ -1489,17 +1548,9 @@ impl App {
                 crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min);
             }
             Screen::Menu => {
-                // The Library row's caption reflects the real library size.
-                let lib_value = if self.lib.is_empty() {
-                    String::from("Empty")
-                } else {
-                    format!("{} albums · {} tracks", self.lib.album_count(), self.lib.songs.len())
-                };
-                let queue_value = if self.queue.is_empty() {
-                    String::from("Queue empty")
-                } else {
-                    format!("{} queued", self.queue.len())
-                };
+                let subs = self.menu_subtitles();
+                let (lib_value, queue_value, eq_value, sound_value, bt_value, usb_value) =
+                    (&subs.library, &subs.queue, &subs.eq, &subs.sound, &subs.bluetooth, &subs.usb_dac);
                 let items: Vec<MenuItem> = MENU
                     .iter()
                     .enumerate()
@@ -1509,6 +1560,10 @@ impl App {
                         value: match *screen {
                             Screen::Library => &lib_value,
                             Screen::UpNext => &queue_value,
+                            Screen::Eq => &eq_value,
+                            Screen::Sound => &sound_value,
+                            Screen::Bluetooth => &bt_value,
+                            Screen::UsbDac => &usb_value,
                             _ => value,
                         },
                         active: i == self.menu_idx,
@@ -1582,7 +1637,11 @@ impl App {
             Screen::Bluetooth => {
                 let bt = Bt {
                     on: self.bt_on,
-                    connected: if self.bt_on { Some("WH-1000XM5") } else { None },
+                    // No connected-device name until there is a real BtCommonService client to ask.
+                    // This used to report a hardcoded "WH-1000XM5" whenever the (UI-only) radio
+                    // toggle was on, i.e. it invented a paired device that was never there.
+                    // bluetooth::render already draws an honest "No device connected" for None.
+                    connected: None,
                     codec_sel: self.bt_codec,
                     ldac_quality: self.bt_ldac_quality,
                 };
@@ -1605,7 +1664,7 @@ impl App {
             Screen::UsbDac => {
                 let ldac = self.usb_dac_on && self.bt_on;
                 let codec = crate::bluetooth::CODECS[self.bt_codec as usize].0;
-                let dev = if self.bt_on { Some("WH-1000XM5") } else { None };
+                let dev: Option<&str> = None; // see the Bluetooth screen: no invented device name
                 crate::usbdac::render(
                     c, &theme, fonts, self.usb_dac_on, ldac, codec, dev,
                     data::EQ_PRESETS[self.eq_preset].0, self.snd_dsee,
@@ -1907,6 +1966,92 @@ mod tests {
 
     fn unlocked() -> App {
         App::unlocked()
+    }
+
+    /// The Menu subtitle contract: a row's literal is EMPTY exactly when render fills it from live
+    /// state, and non-empty only when the text is genuinely fixed. This is the guard against the
+    /// prototype's mock strings creeping back — those literals ("124 albums · 1,842 tracks",
+    /// "88.6 MHz", "WH-1000XM5 · LDAC") stated things that were not true of the device.
+    /// If you add a Menu row, either give it a static subtitle that is always true, or leave it
+    /// empty AND add an arm to the `value:` match in render.
+    #[test]
+    fn menu_rows_with_no_static_subtitle_are_the_ones_render_fills_in() {
+        // Compared as sorted debug names — Screen deliberately isn't Ord.
+        let mut dynamic: Vec<String> = MENU
+            .iter()
+            .filter(|(_, _, _, value)| value.is_empty())
+            .map(|(screen, _, _, _)| format!("{screen:?}"))
+            .collect();
+        dynamic.sort();
+        let mut expected: Vec<String> = [
+            Screen::NowPlaying, // no subtitle by design (the title is the screen)
+            Screen::Library,
+            Screen::UpNext,
+            Screen::Fm, // tuner not wired — deliberately says nothing
+            Screen::Eq,
+            Screen::Sound,
+            Screen::Bluetooth,
+            Screen::UsbDac,
+        ]
+        .iter()
+        .map(|s| format!("{s:?}"))
+        .collect();
+        expected.sort();
+        assert_eq!(dynamic, expected);
+    }
+
+    /// No static Menu subtitle may assert a count or a device name. Digits are the tell: every mock
+    /// string we removed had one ("124 albums", "8 tracks · 41:24", "88.6 MHz", "WH-1000XM5").
+    #[test]
+    fn static_menu_subtitles_never_assert_countable_state() {
+        for (screen, _, label, value) in MENU.iter() {
+            assert!(
+                !value.chars().any(|c| c.is_ascii_digit()),
+                "static subtitle for {label} ({screen:?}) asserts a number: {value:?} — \
+                 make it live (empty literal + a render arm) or drop the claim"
+            );
+        }
+    }
+
+    /// The live subtitles must report this App's real state. (These are the actual strings the Menu
+    /// draws; see App::menu_subtitles.) A fresh App still holds `Library::sample()` — the shell
+    /// replaces it in cinder_db_open, and substitutes an EMPTY library if the DB fails to load, so
+    /// the sample never stands in for the user's music on device. Both cases are asserted here.
+    #[test]
+    fn live_menu_subtitles_report_real_state() {
+        let mut app = unlocked();
+        // Library caption counts whatever library is actually loaded, not a fixed number.
+        let subs = app.menu_subtitles();
+        assert_eq!(
+            subs.library,
+            format!("{} albums · {} tracks", app.lib.album_count(), app.lib.songs.len())
+        );
+        // An empty library says so rather than showing a count of nothing.
+        app.set_library(Library::default());
+        let subs = app.menu_subtitles();
+        assert_eq!(subs.library, "Empty");
+        assert_eq!(subs.queue, "Queue empty");
+        assert_eq!(subs.usb_dac, "Off");
+        assert_eq!(subs.sound, "Off", "no effect is engaged on a fresh App");
+        // EQ preset and BT codec name whatever is SELECTED — real values from the real tables,
+        // indexed by the App's own selection (the old caption said "Custom A1" regardless).
+        assert_eq!(subs.eq, data::EQ_PRESETS[app.eq_preset].0);
+        assert_eq!(subs.bluetooth, crate::bluetooth::CODECS[app.bt_codec as usize].0);
+        // And specifically: no invented headphones, anywhere.
+        assert!(!subs.bluetooth.contains("WH-"));
+    }
+
+    /// Turning effects on changes the Sound subtitle to name them — proving it tracks state rather
+    /// than being a fixed feature list (it used to read "DSEE HX · VPT · Vinyl" unconditionally).
+    #[test]
+    fn sound_subtitle_names_only_the_engaged_effects() {
+        let mut app = unlocked();
+        app.snd_dsee = true;
+        app.snd_vpt = true;
+        assert_eq!(app.menu_subtitles().sound, "DSEE HX · VPT");
+        app.snd_dsee = false;
+        app.snd_vpt = false;
+        assert_eq!(app.menu_subtitles().sound, "Off");
     }
 
     #[test]

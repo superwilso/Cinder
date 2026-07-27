@@ -132,14 +132,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &SettingsVi
     y = srow(c, t, f, y, sel == ROW_VIZ_ANIM, "Visualiser", if v.viz_on { "ON" } else { "OFF" }, false);
     // Row 3: Sleep timer (live) — pauses playback after N min. Shows the live remaining when running.
     y = srow(c, t, f, y, sel == ROW_SLEEP, "Sleep timer", v.sleep, false);
-    // Rows 4-5: display-only
-    y = srow(c, t, f, y, sel == 4, "Screen-off timer", "30 SEC", false);
-    y = srow(c, t, f, y, sel == 5, "Brightness", "3 / 5", false);
+    // Rows 4-5: NOT WIRED. They are still drawn (both are real stock features worth having, and the
+    // rows mark where they go) but they must not pretend: the old "30 SEC" / "3 / 5" were invented
+    // numbers on rows that do nothing when tapped, so they read as settings the user had chosen.
+    // "—" is the honest value; see settings_activate, which has no arm for either row.
+    y = srow(c, t, f, y, sel == 4, "Screen-off timer", "—", false);
+    y = srow(c, t, f, y, sel == 5, "Brightness", "—", false);
 
     y = eyebrow(c, t, f, y + 14, "SYSTEM");
     // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
     y = srow(c, t, f, y, sel == 6, "Storage", v.storage, false);
-    y = srow(c, t, f, y, sel == 7, "Database", "REBUILD", true);
+    // Database: no chevron. The chevron is this screen's affordance for "tapping does something"
+    // (USB mode has one and acts), and this row has no arm in settings_activate — so a chevron here
+    // promised a rebuild that never ran.
+    y = srow(c, t, f, y, sel == 7, "Database", "—", false);
     // Battery care = Sony "Itawari" charging (caps ~90%). Live On/Off toggle (no chevron — it acts
     // in place), wired to PowerMgrServiceClient::EnableItawariCharging via the shell.
     y = srow(c, t, f, y, sel == ROW_BATTERY, "Battery care", if v.battery_care { "ON · 90%" } else { "OFF" }, false);
