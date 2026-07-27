@@ -591,7 +591,20 @@ static int touch_ui_y(int ry) {
     long v = (long)(ry - g_touch_min_y) * 800 / span;
     return v < 0 ? 0 : (v > 799 ? 799 : (int)v);
 }
-static bool g_playing = true;   // local transport state (PlayStatus playstate offset not RE'd)
+// Transport state. This is our INTENT (the last play/pause we sent); poll_now_playing replaces it
+// with the service's own view once the grace window below has passed. Both are needed: the intent
+// keeps the glyph correct immediately after a press, and the service's view is how a track ending
+// or PlayerService pausing itself reaches the UI.
+static bool g_playing = true;
+static long g_transport_at = 0;              // when we last set g_playing ourselves (now_ms)
+static const long TRANSPORT_GRACE_MS = 3000; // > the ~1 s onPlayTimeUpdated period + its 2.5 s
+                                             // movement tolerance, so the lag can't fight a press
+// Set the transport intent AND start the grace window. Always use this rather than assigning
+// g_playing directly, or the service's lagging view will immediately overwrite the new state.
+static void set_transport(bool playing) {
+    g_playing = playing;
+    g_transport_at = now_ms();
+}
 
 static int keymap_size() { return (int)(sizeof g_keymap / sizeof *g_keymap); }
 
@@ -1178,7 +1191,7 @@ void enter_usb_msc() {
     //    Stop + drop the pinned sequence so the service closes the media file. Called directly
     //    (NOT via a nested run_guarded — the guard's jmp buffer doesn't nest): this whole
     //    function already runs under carry_out's "enter USB MSC" guard, which covers the IPC.
-    g_playing = false;
+    set_transport(false);
     cinder_audio_release_sequence();
     (void)chdir("/");
     // 2) move our log fds (1+2 ARE /contents/cinderhome.log via the launcher redirect)
@@ -1249,7 +1262,7 @@ void carry_out(int act) {
     // lambdas are non-capturing (g_playing is global) so they convert to run_guarded's fn pointer.
     switch (act) {
         case CINDER_ACT_PLAYPAUSE:
-            g_playing = !g_playing;
+            set_transport(!g_playing);
             run_guarded("carry_out: play/pause", 6,
                         []() { if (g_playing) cinder_audio_play(); else cinder_audio_pause(); });
             break;
@@ -1283,7 +1296,7 @@ void carry_out(int act) {
                 int start = cinder_pending_play_start();
                 if (start < 0 || start >= kept) start = 0;
                 int rc = cinder_audio_play_tracks(ptrs, kept, start);
-                if (rc == 0) g_playing = true;
+                if (rc == 0) set_transport(true);
                 else fprintf(stderr, "[cinder] play_tracks(%d tracks, start %d) failed rc=%d\n",
                              kept, start, rc);
             });
@@ -1664,11 +1677,19 @@ void poll_now_playing() {
         last[sizeof last - 1] = 0;
         cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, read_battery());
     }
-    // The service is the authority on both position AND whether it is really playing: g_playing is
-    // only our optimistic view of the last transport action we sent.
+    // The service is the authority on position, and eventually on whether it is really playing —
+    // which is how a track ending, or PlayerService pausing for its own reasons, reaches the UI.
+    //
+    // But cinder_audio_is_playing() is derived from the position having MOVED recently, and that
+    // lags a transport command in both directions: just after Play the position hasn't moved yet
+    // (~1 s until the next onPlayTimeUpdated), and just after Pause it looks like it moved 2.5 s ago.
+    // Adopting it immediately therefore flickered the transport glyph back to the old state right
+    // after every press. So for a short grace window our own intent wins; after that the service's
+    // view takes over.
     int cur = -1, tot = -1;
     if (cinder_audio_position(&cur, &tot)) {
-        g_playing = cinder_audio_is_playing() != 0;
+        if (now_ms() - g_transport_at > TRANSPORT_GRACE_MS)
+            g_playing = cinder_audio_is_playing() != 0;
         cinder_set_play_position(cur, tot, g_playing ? 1 : 0);
     }
 }
@@ -1764,7 +1785,7 @@ void* render_driver(void*) {
             if (!g_msc_active) cinder_scrobble_tick(g_playing ? 1 : 0);
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");
-                g_playing = false;
+                set_transport(false);
                 run_guarded("pump: sleep-timer pause", 6, []() { cinder_audio_pause(); });
             }
             // USB mass-storage is fully automatic — no menu dive:
