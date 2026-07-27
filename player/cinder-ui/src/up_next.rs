@@ -38,7 +38,6 @@ pub fn window(len: usize, current: usize) -> (usize, usize) {
 /// track visible (no cursor state needed — the queue follows playback).
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[SongRow], current: usize) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
 
     if tracks.is_empty() {
         let _ = crate::chrome::header(c, t, f, "Up Next", None);
@@ -95,7 +94,6 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
 /// "now playing" highlight — these are upcoming picks, not the live album window.
 pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow]) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     let sub = format!("QUEUE · {} TRACKS", queue.len());
     let y0 = crate::chrome::header(c, t, f, "Up Next", Some(&sub));
 

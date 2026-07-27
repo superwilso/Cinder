@@ -167,6 +167,12 @@ pub fn chevron(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     polyline(c, cx, cy, s, col, w, &[(9.0, 5.0), (16.0, 12.0), (9.0, 19.0)]);
 }
 
+/// Chevron pointing UP — "this opens upward", used on the Now Playing return bar.
+pub fn chevron_up(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let w = stroke_w(s).max(2);
+    polyline(c, cx, cy, s, col, w, &[(5.0, 16.0), (12.0, 9.0), (19.0, 16.0)]);
+}
+
 pub fn back(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     let w = stroke_w(s).max(2);
     polyline(c, cx, cy, s, col, w, &[(15.0, 5.0), (8.0, 12.0), (15.0, 19.0)]);

@@ -39,7 +39,6 @@ fn centered(c: &mut Canvas, f: &FontSet, baseline: f32, s: &str, st: &TextStyle)
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, l: &Lock) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, l.clock, l.badge, l.battery);
 
     // big clock, centred in the body
     centered(c, f, 366.0, l.big_clock, &sty(Family::Mono, Weight::Light, 88.0, t.ink, -0.02));

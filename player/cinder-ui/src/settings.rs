@@ -118,7 +118,6 @@ fn srow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, 
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v: &SettingsView) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     let y0 = crate::chrome::header(c, t, f, "Settings", None);
     // Content is taller than the panel (13 rows + 3 section headers), so it scrolls. Rows are drawn
     // shifted up by `scroll`; row_at applies the same shift, so the hit test can't drift from the

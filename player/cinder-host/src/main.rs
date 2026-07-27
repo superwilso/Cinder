@@ -64,12 +64,12 @@ fn main() {
 
     let menu_items = [
         MenuItem { icon: "note", label: "Now Playing", value: "Atlas Hands · 1:47", active: true },
-        MenuItem { icon: "library", label: "Library", value: "124 albums · 1,842 tracks", active: false },
+        MenuItem { icon: "library", label: "Library", value: "6 albums · 8 tracks", active: false },
         MenuItem { icon: "queue", label: "Up Next", value: "8 tracks · 41:24", active: false },
-        MenuItem { icon: "radio", label: "FM Radio", value: "88.6 MHz", active: false },
-        MenuItem { icon: "eq", label: "Equalizer", value: "Custom A1", active: false },
-        MenuItem { icon: "sound", label: "Sound Settings", value: "DSEE HX · VPT · Vinyl", active: false },
-        MenuItem { icon: "bt", label: "Bluetooth", value: "WH-1000XM5 · LDAC", active: false },
+        MenuItem { icon: "radio", label: "FM Radio", value: "", active: false },
+        MenuItem { icon: "eq", label: "Equalizer", value: "A1", active: false },
+        MenuItem { icon: "sound", label: "Sound Settings", value: "Off", active: false },
+        MenuItem { icon: "bt", label: "Bluetooth", value: "LDAC", active: false },
         MenuItem { icon: "usb", label: "USB-DAC", value: "Off", active: false },
         MenuItem { icon: "rx", label: "BT Receiver", value: "Off", active: false },
         MenuItem { icon: "settings", label: "Settings", value: "System · Storage · About", active: false },
@@ -130,7 +130,7 @@ fn main() {
                 library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib);
                 // nav draws the Now Playing return bar over the library screens; mirror that here
                 // so the preview shows the real bottom of the screen, not a list running to the edge.
-                cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true);
+                cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
             }),
             // Songs sorted by ADDED (sort chip index 4) — shows the SORT chip label + reorder.
             ("library_songs_added", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 4, 0, None, &lib)),
@@ -156,6 +156,10 @@ fn main() {
         for (screen, draw) in render_set {
             let mut c = Canvas::new();
             draw(&mut c);
+            // The status strip is drawn by the NAVIGATOR on device (one place, live values), not by
+            // each screen — so these direct screen calls have to add it or every preview would be
+            // missing the chrome the real thing has, and UI work would be done against a lie.
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, &format!("{screen}_{name}"));
         }
     }

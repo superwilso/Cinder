@@ -315,6 +315,27 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   could not. The estimate survives only as the fallback for before the first callback arrives.
   Play/pause state also comes from observed position movement rather than from the shell's
   optimistic view of the last transport action it sent.
+- **Status bar shows the REAL clock and battery** (2026-07-27): it was drawn inside each screen's
+  own render, and **14 of the 16 call sites passed hardcoded literals** (`"14:32"`, `"FLAC 24/96"`,
+  `78`). Only Now Playing and Lock passed live values — so on device the clock read *14:32* and the
+  battery *78%* on the Menu, the entire Library, Settings, EQ, Sound, Bluetooth, Up Next, USB-DAC,
+  FM and the Receiver: every screen you actually browse in. It is now drawn **once**, by the
+  navigator, so it cannot drift again.
+- **One-tap return to Now Playing** (2026-07-27): tapping the clock/codec-badge zone of the status
+  bar goes straight there, from any screen. The badge *is* the now-playing indicator, so that is
+  where a finger already points. Previously the only route back was the Now Playing bar, which
+  appears solely on Library and Album — from Settings, EQ, Sound, Bluetooth, Up Next or the Menu
+  there was no direct way back at all. Uses `go`, not `push`, so it collapses the stack instead of
+  burying Now Playing under whatever was being browsed.
+- **Now Playing bar is a real mini-player** (2026-07-27): its left zone is now a **play/pause
+  button** (the rest still opens the screen), it carries a **live progress line** along its top
+  edge, and an up-chevron marks it as something that opens rather than a passive label.
+- **Bigger Shelf target** (2026-07-27): the bookmark hit zone grew 44 → 60 px and the glyph 19 → 23,
+  since it is the one part of the strip that doesn't open the Menu — a miss there lands on the wrong
+  screen. Room came from dropping the status bar's Bluetooth glyph, which was drawn `faint`
+  unconditionally and never reflected any BT state.
+- **Menu ▸ Now Playing shows the running track** (2026-07-27): title · elapsed, or "Nothing
+  playing". The row was blank.
 - **Battery / idle cost** (2026-07-27, audit): four things ran continuously and now don't.
   `input_pump()` does a non-blocking `read()` on **every** input node **every** loop iteration — 8
   nodes at 60 Hz is ~480 syscalls/s plus 60 thread wakeups, sustained — so the loop drops to 10 Hz

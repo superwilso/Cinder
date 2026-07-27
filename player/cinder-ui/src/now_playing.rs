@@ -84,7 +84,6 @@ pub fn sleep_badge(c: &mut Canvas, t: &Theme, f: &FontSet, min: u32) {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, np.clock, np.badge, np.battery);
     let seed = np.viz_seed; // animated by the shell while playing; constant when paused/host
 
     // Nothing loaded — the state the device sits in from boot until the first track is picked.

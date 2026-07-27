@@ -60,7 +60,6 @@ pub fn row_at(y: i32, rows: usize) -> Option<usize> {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, items: &[MenuItem]) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     let y0 = crate::chrome::header(c, t, f, "Menu", Some("NW-A55"));
 
     let rh = ROW_H;

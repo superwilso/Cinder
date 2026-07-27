@@ -622,7 +622,6 @@ pub fn render(
 ) {
     let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib, album_sort, album_expanded));
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     // Songs shows a tappable SORT chip; Albums an ORDER chip; the others show their count.
     let rc = match tab {
         Tab::Songs => format!("SORT \u{00b7} {}", SORTS[sort.min(SORTS.len() - 1)]),
@@ -820,7 +819,6 @@ pub fn album_view(
 ) {
     let scroll_px = scroll_px.clamp(0, album_max_scroll_px(album));
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     // back chevron + ALBUM eyebrow
     icons::back(c, 30.0, 110.0, 20.0, t.dim);
     text::draw(c, f, 50.0, 114.0, "ALBUM", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
@@ -878,7 +876,6 @@ pub fn album_view(
 /// Artist drill-in page (`CArtist`).
 pub fn artist(c: &mut Canvas, t: &Theme, f: &FontSet) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     // back + ARTIST eyebrow
     icons::back(c, 30.0, 110.0, 20.0, t.dim);
     text::draw(c, f, 50.0, 114.0, "ARTIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));

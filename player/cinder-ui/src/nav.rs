@@ -119,7 +119,7 @@ pub enum Action {
 // the selected EQ preset, and "WH-1000XM5 · LDAC" naming a pair of headphones that were never
 // connected. A subtitle that states something false is worse than no subtitle.
 const MENU: [(Screen, &str, &str, &str); 11] = [
-    (Screen::NowPlaying, "note", "Now Playing", ""),
+    (Screen::NowPlaying, "note", "Now Playing", ""),   // live: current track · elapsed
     (Screen::Library, "library", "Library", ""),      // live: album/track counts
     (Screen::UpNext, "queue", "Up Next", ""),         // live: queue length
     (Screen::Fm, "radio", "FM Radio", ""),            // tuner not wired — claim nothing
@@ -149,6 +149,7 @@ pub fn screen_off_label(secs: u32) -> String {
 /// The Menu's live row subtitles (see `App::menu_subtitles`). One field per Menu row whose caption
 /// describes current state rather than being fixed text.
 pub(crate) struct MenuSubtitles {
+    pub now_playing: String,
     pub library: String,
     pub queue: String,
     pub eq: String,
@@ -514,6 +515,8 @@ impl App {
     /// not otherwise be caught by a test. Every field below reports state this App actually holds.
     pub(crate) fn menu_subtitles(&self) -> MenuSubtitles {
         MenuSubtitles {
+            // Filled by render, which is the only place with the live NowPlaying view-model.
+            now_playing: String::new(),
             library: if self.lib.is_empty() {
                 String::from("Empty")
             } else {
@@ -660,6 +663,11 @@ impl App {
         // Now Playing return bar (browsing screens only). Checked before everything else below the
         // status strip: it is pinned to the bottom, so nothing else claims those rows.
         if Self::shows_np_bar(self.current()) && crate::chrome::hit_np_bar(x, y) {
+            // Left zone = play/pause without leaving the list; the rest opens Now Playing.
+            if crate::chrome::hit_np_bar_play(x, y) {
+                self.playing = !self.playing;
+                return vec![Action::PlayPause];
+            }
             self.go(Screen::NowPlaying);
             return vec![];
         }
@@ -670,6 +678,12 @@ impl App {
         match crate::chrome::status_hit(x, y) {
             Some(crate::chrome::StatusTap::Shelf) => {
                 self.open_shelf();
+                return vec![];
+            }
+            Some(crate::chrome::StatusTap::NowPlaying) => {
+                // One-tap return from any screen. `go` (not `push`) so this collapses the stack
+                // instead of burying Now Playing under whatever you were browsing.
+                self.go(Screen::NowPlaying);
                 return vec![];
             }
             Some(crate::chrome::StatusTap::Menu) => {
@@ -1627,9 +1641,20 @@ impl App {
                 crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min);
             }
             Screen::Menu => {
-                let subs = self.menu_subtitles();
-                let (lib_value, queue_value, eq_value, sound_value, bt_value, usb_value) =
-                    (&subs.library, &subs.queue, &subs.eq, &subs.sound, &subs.bluetooth, &subs.usb_dac);
+                let mut subs = self.menu_subtitles();
+                // The Now Playing row carries the running track, so the Menu answers "what's on?"
+                // without a trip to the player — the row was previously blank.
+                subs.now_playing = if np.title.is_empty() {
+                    String::from("Nothing playing")
+                } else if np.elapsed.is_empty() {
+                    np.title.to_string()
+                } else {
+                    format!("{} · {}", np.title, np.elapsed)
+                };
+                let (np_value, lib_value, queue_value, eq_value, sound_value, bt_value, usb_value) = (
+                    &subs.now_playing, &subs.library, &subs.queue, &subs.eq, &subs.sound,
+                    &subs.bluetooth, &subs.usb_dac,
+                );
                 let items: Vec<MenuItem> = MENU
                     .iter()
                     .enumerate()
@@ -1637,6 +1662,7 @@ impl App {
                         icon,
                         label,
                         value: match *screen {
+                            Screen::NowPlaying => &np_value,
                             Screen::Library => &lib_value,
                             Screen::UpNext => &queue_value,
                             Screen::Eq => &eq_value,
@@ -1768,11 +1794,25 @@ impl App {
             // it somehow becomes current (it shouldn't).
             Screen::Shelf => crate::now_playing::render(c, &theme, fonts, np),
         }
+        // ── Status bar: drawn ONCE, here, for every screen that has one ──────────────────────
+        // It used to be drawn inside each screen's own render, and 14 of the 16 call sites passed
+        // HARDCODED literals ("14:32", "FLAC 24/96", 78). Only Now Playing and Lock passed live
+        // values, so on the device the clock read 14:32 and the battery 78% on the Menu, the whole
+        // Library, Settings, EQ, Sound, Bluetooth, Up Next, USB-DAC, FM and the Receiver — every
+        // screen you actually browse in. Drawing it in one place means it cannot drift again.
+        //
+        // Drawn AFTER the screen (each one fills its own background first) but BEFORE the return
+        // bar and the overlays, so the previous layering is preserved — the Shelf's dim still
+        // covers it. Onboarding and the USB-storage modal own the whole panel and never had one.
+        if !matches!(self.current(), Screen::Onboarding | Screen::UsbStorage) {
+            crate::chrome::status_bar(c, &theme, fonts, np.clock, np.badge, np.battery);
+        }
+
         // Now Playing return bar, pinned to the bottom of the browsing screens. Drawn after the
         // screen (it overlays nothing — `library::LIST_BOTTOM` stops above it) and before the
         // transient HUDs, which must stay on top of everything.
         if Self::shows_np_bar(self.current()) {
-            crate::chrome::np_bar(c, &theme, fonts, np.title, np.artist, self.playing);
+            crate::chrome::np_bar(c, &theme, fonts, np.title, np.artist, self.playing, np.progress);
         }
         // Transient HUD on top of any screen (except the lock screen, which owns the panel).
         if self.vol_overlay > 0 && self.current() != Screen::Lock {
@@ -2357,6 +2397,63 @@ mod tests {
         assert!(!library::az_hit_x(crate::canvas::W as i32 - library::AZ_W - 1));
     }
 
+    /// The status strip's three zones must be distinct, and the Shelf target must be big enough for
+    /// a thumb — it is the only part of the strip that doesn't open the Menu, so a miss there lands
+    /// you on the wrong screen rather than doing nothing.
+    #[test]
+    fn status_strip_zones_are_distinct_and_the_shelf_target_is_thumb_sized() {
+        use crate::chrome::{status_hit, StatusTap, STATUS_H};
+        let mut shelf_w = 0;
+        let mut np_w = 0;
+        let mut menu_w = 0;
+        for x in 0..crate::canvas::W as i32 {
+            match status_hit(x, STATUS_H / 2) {
+                Some(StatusTap::Shelf) => shelf_w += 1,
+                Some(StatusTap::NowPlaying) => np_w += 1,
+                Some(StatusTap::Menu) => menu_w += 1,
+                None => panic!("x={x} inside the strip resolved to nothing"),
+            }
+        }
+        assert!(shelf_w >= 56, "Shelf target only {shelf_w}px wide — too small for a thumb");
+        assert!(np_w >= 120, "Now Playing zone only {np_w}px wide");
+        assert!(menu_w > 0, "the forgiving Menu zone must survive");
+        assert_eq!(shelf_w + np_w + menu_w, crate::canvas::W as i32);
+        // Below the strip the whole thing stops claiming taps.
+        assert_eq!(status_hit(10, STATUS_H), None);
+    }
+
+    /// One-tap return to Now Playing from anywhere, and it must COLLAPSE the stack rather than
+    /// burying Now Playing under whatever was being browsed.
+    #[test]
+    fn status_bar_returns_to_now_playing_from_any_screen() {
+        let mut app = unlocked();
+        app.push(Screen::Library);
+        app.push(Screen::Settings);
+        assert_eq!(app.tap(20, 20), vec![]);
+        assert_eq!(app.current(), Screen::NowPlaying);
+        // Back must not walk down through the screens we came from.
+        let _ = app.press(Button::Back);
+        assert_eq!(app.current(), Screen::NowPlaying, "stack should have collapsed");
+    }
+
+    /// The Now Playing bar's left zone is a real play/pause button; the rest still opens the screen.
+    #[test]
+    fn np_bar_left_zone_is_play_pause_and_the_rest_navigates() {
+        use crate::chrome::{np_bar_rect, NP_BAR_PLAY_W};
+        let (_, by, w, h) = np_bar_rect();
+        let midy = by + h / 2;
+
+        let mut app = unlocked();
+        app.push(Screen::Library);
+        assert_eq!(app.tap(NP_BAR_PLAY_W / 2, midy), vec![Action::PlayPause]);
+        assert_eq!(app.current(), Screen::Library, "play/pause must not navigate");
+
+        let mut app = unlocked();
+        app.push(Screen::Library);
+        assert_eq!(app.tap(w - 40, midy), vec![]);
+        assert_eq!(app.current(), Screen::NowPlaying);
+    }
+
     #[test]
     fn hold_switch_is_the_only_unlock() {
         // The Hold SWITCH locks/unlocks; the touchscreen and nav buttons never do.
@@ -2421,7 +2518,8 @@ mod tests {
         // tapping elsewhere on the bar still opens the Menu (after closing the shelf)
         a.tap(240, 200); // backdrop → close
         assert!(!a.shelf_is_open());
-        a.tap(120, 16); // mid status bar → Menu
+        // Mid-strip (right of the clock/badge zone, left of the bookmark) still opens the Menu.
+        a.tap(240, 16);
         assert_eq!(a.current(), Screen::Menu);
     }
 
@@ -2941,11 +3039,15 @@ mod tests {
     fn touch_tap_navigates() {
         let mut a = App::unlocked();
         assert_eq!(a.current(), Screen::NowPlaying);
-        // status bar opens the Menu from anywhere along the top strip — not just the ☰ icon.
-        a.tap(20, 16); // far-left (over the clock) used to be a dead zone
+        // The strip is forgiving, but not uniform: the far-left clock/badge zone is the ONE-TAP
+        // return to Now Playing (the badge is the now-playing indicator), while the rest of the
+        // strip opens the Menu.
+        a.tap(20, 16); // over the clock → Now Playing (already there, so it stays)
+        assert_eq!(a.current(), Screen::NowPlaying);
+        a.tap(240, 16); // mid strip → Menu
         assert_eq!(a.current(), Screen::Menu);
         a.tap(200, 91 + 63 + 8); // leave Menu (into Library) so the next assert is meaningful
-        a.tap(344, 22); // right side (the ☰ icon) → Menu too
+        a.tap(338, 22); // the ☰ icon → Menu too
         assert_eq!(a.current(), Screen::Menu);
         // tap the Library row (row 1: y0=91 + 1*63 + a bit)
         a.tap(200, 91 + 63 + 8);

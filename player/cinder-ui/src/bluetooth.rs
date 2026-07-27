@@ -98,7 +98,6 @@ fn radio(c: &mut Canvas, cx: i32, cy: i32, on: bool, t: &Theme) {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     let _y0 = crate::chrome::header(c, t, f, "Bluetooth", None);
     // header right: ON/OFF + toggle
     let onoff = if bt.on { "ON" } else { "OFF" };

@@ -30,17 +30,29 @@ pub const STATUS_H: i32 = 44;
 /// Vertical centre of the strip; every glyph in it is centred here.
 const STATUS_MID: f32 = STATUS_H as f32 / 2.0;
 
-/// The bookmark/Shelf glyph's centre and its hit half-width. The glyph is 19px but the target is
-/// 44 wide, because it is the one part of the strip that does something *other* than open the
-/// Menu — a miss here is a wrong screen, not a no-op.
-const SHELF_CX: i32 = 388;
-const SHELF_HALF_W: i32 = 22;
+/// The bookmark/Shelf glyph's centre and its hit half-width. Widened from ±22 to ±30 (and the glyph
+/// from 19 to 23px): it is the one part of the strip that does something *other* than open the
+/// Menu, so a miss here is a wrong screen rather than a no-op, and 44px was tight for a thumb on a
+/// device with no d-pad. Room came from dropping the old Bluetooth glyph that used to sit at x=424
+/// — it was drawn `t.faint` unconditionally and never reflected any BT state, so it was decoration
+/// occupying the scarcest space on the panel.
+const SHELF_CX: i32 = 390;
+const SHELF_HALF_W: i32 = 30;
+
+/// Left zone of the strip — the clock and the codec badge. Tapping it goes straight to Now Playing.
+/// That badge IS the now-playing indicator, so this is where a finger already points, and it makes
+/// the return a ONE-tap gesture from every screen. Before this the only route back was the Now
+/// Playing bar, which appears solely on Library and Album: from Settings, EQ, Sound, Bluetooth,
+/// Up Next or the Menu there was no direct way back at all.
+const NP_ZONE_W: i32 = 150;
 
 /// What a tap on the status strip means. `None` = the tap was below the strip.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum StatusTap {
     /// The bookmark glyph → the Shelf.
     Shelf,
+    /// The clock/codec-badge zone → Now Playing. One tap back from anywhere.
+    NowPlaying,
     /// Anywhere else along the strip → the Menu. Deliberately forgiving.
     Menu,
 }
@@ -54,6 +66,8 @@ pub fn status_hit(x: i32, y: i32) -> Option<StatusTap> {
     }
     Some(if (SHELF_CX - SHELF_HALF_W..=SHELF_CX + SHELF_HALF_W).contains(&x) {
         StatusTap::Shelf
+    } else if x < NP_ZONE_W {
+        StatusTap::NowPlaying
     } else {
         StatusTap::Menu
     })
@@ -83,9 +97,8 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
     // right: menu ≡, bookmark, bt, [battery].
     // The ≡ sits LEFT of the Shelf zone on purpose: the whole strip opens the Menu, so the glyph
     // only has to be outside SHELF_CX ± SHELF_HALF_W for "tap the ≡" to mean what it looks like.
-    icons::menu(c, 344.0, STATUS_MID, 22.0, t.dim);
-    icons::bookmark(c, SHELF_CX as f32, STATUS_MID, 19.0, t.dim);
-    icons::bt(c, 424.0, STATUS_MID, 17.0, t.faint);
+    icons::menu(c, 338.0, STATUS_MID, 22.0, t.dim);
+    icons::bookmark(c, SHELF_CX as f32, STATUS_MID, 23.0, t.dim);
     let batt = format!("{}", battery);
     let bs = sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.04);
     let bwid = text::measure(f, &batt, &bs);
@@ -110,6 +123,12 @@ pub const NP_BAR_H: i32 = 64;
 /// Rect `(x, y, w, h)` of the return bar. SINGLE SOURCE: [`np_bar`] fills exactly this,
 /// [`hit_np_bar`] tests exactly this, and `library::LIST_BOTTOM` is derived from it so the list
 /// never scrolls underneath.
+/// Did a tap on the Now Playing bar land on its PLAY/PAUSE button (left zone) rather than the
+/// navigate-to-Now-Playing rest of it? Built from the same constant the divider is drawn at.
+pub fn hit_np_bar_play(x: i32, y: i32) -> bool {
+    hit_np_bar(x, y) && x < NP_BAR_PLAY_W
+}
+
 pub fn np_bar_rect() -> (i32, i32, i32, i32) {
     (0, crate::H as i32 - NP_BAR_H, crate::W as i32, NP_BAR_H)
 }
@@ -123,31 +142,60 @@ pub fn hit_np_bar(x: i32, y: i32) -> bool {
 /// Draw the return bar: play/pause state glyph, the current title/artist, and a "NOW PLAYING"
 /// caption. Drawn on every browsing screen regardless of whether anything is loaded — a bar that
 /// appears and disappears would move `LIST_BOTTOM` under the user mid-scroll.
-pub fn np_bar(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, artist: &str, playing: bool) {
+/// Width of the bar's left zone: the play/pause button. The REST of the bar navigates to Now
+/// Playing. Single source with [`hit_np_bar_play`].
+pub const NP_BAR_PLAY_W: i32 = 74;
+
+pub fn np_bar(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    title: &str,
+    artist: &str,
+    playing: bool,
+    progress: f32,
+) {
     let (x, y, w, h) = np_bar_rect();
     fill_rect(c, x, y, w, h, t.panel);
     fill_rect(c, x, y, w, 1, t.line);
+    // Live progress along the bar's top edge. Two pixels, no labels: it costs nothing, and it makes
+    // the strip read as the running track rather than a static label — you can see at a glance that
+    // something is playing and roughly how far in, without leaving the list.
+    let fillw = (w as f32 * progress.clamp(0.0, 1.0)) as i32;
+    if fillw > 0 {
+        fill_rect(c, x, y, fillw, 2, t.acc);
+    }
 
-    // STATE glyph, left — deliberately not a transport button. The whole bar navigates to Now
-    // Playing; drawing a pause icon here would promise a control that doesn't exist, so playback
-    // state is carried by colour on one shape: accent = playing, faint = paused.
+    // Left zone is a REAL play/pause button now. It used to be a state-only glyph, on the reasoning
+    // that drawing a pause icon would promise a control that didn't exist — the better answer is to
+    // make the control exist: it is the one transport action worth having without leaving the list,
+    // and every mini-player behaves this way, so a tap here was being attempted regardless.
     let gy = y + h / 2;
-    icons::play(c, 34.0, gy as f32, 20.0, if playing { t.acc } else { t.faint });
+    if playing {
+        icons::pause(c, 34.0, gy as f32, 22.0, t.acc);
+    } else {
+        icons::play(c, 34.0, gy as f32, 22.0, t.dim);
+    }
+    // Divider: makes the button read as a separate target from the rest of the bar.
+    fill_rect(c, NP_BAR_PLAY_W, y + 14, 1, h - 28, t.line);
 
     let cap = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16);
     let cap_w = text::measure(f, "NOW PLAYING", &cap);
-    text::draw(c, f, (crate::W as f32) - 22.0 - cap_w, (y + 26) as f32, "NOW PLAYING", &cap);
+    text::draw(c, f, (crate::W as f32) - 34.0 - cap_w, (y + 26) as f32, "NOW PLAYING", &cap);
+    // Chevron pointing UP, under the caption: says "this opens something" rather than leaving the
+    // bar looking like a passive label. Without it the strip reads as status, not as a target.
+    icons::chevron_up(c, (crate::W as f32) - 20.0, (y + 46) as f32, 12.0, t.faint);
 
     // Title + artist, clamped so they never run under the caption.
-    let avail = (crate::W as f32) - 62.0 - cap_w - 34.0;
+    let avail = (crate::W as f32) - 88.0 - cap_w - 34.0;
     let ts = sty(Family::Sans, Weight::Bold, 17.0, t.ink, -0.01);
     let title = if title.is_empty() { "Nothing playing" } else { title };
     let title = crate::widgets::fit(f, title, &ts, avail);
-    text::draw(c, f, 62.0, (y + 28) as f32, &title, &ts);
+    text::draw(c, f, 90.0, (y + 28) as f32, &title, &ts);
     if !artist.is_empty() {
         let asty = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
         let artist = crate::widgets::fit(f, artist, &asty, avail);
-        text::draw(c, f, 62.0, (y + 48) as f32, &artist, &asty);
+        text::draw(c, f, 90.0, (y + 48) as f32, &artist, &asty);
     }
 }
 

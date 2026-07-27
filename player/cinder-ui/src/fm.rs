@@ -13,7 +13,6 @@ const MAX: f32 = 108.0;
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, freq: f32) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     crate::chrome::header(c, t, f, "FM Radio", Some("STEREO"));
 
     // big frequency + MHz, centred as a block

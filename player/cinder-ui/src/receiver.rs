@@ -9,7 +9,6 @@ use crate::Canvas;
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     crate::chrome::header(c, t, f, "BT Receiver", None);
     toggle(c, t, 424, 56, 34, 18, 12, on);
 
