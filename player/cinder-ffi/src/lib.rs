@@ -1303,8 +1303,13 @@ pub extern "C" fn cinder_pending_play_count() -> libc::c_int {
     cell().lock().unwrap().as_ref().map_or(0, |r| r.pending_play.len() as libc::c_int)
 }
 
-/// Copy pending-play URI `i` (0-based) into `buf` (NUL-terminated). Returns the byte length
-/// copied, or -1 for a bad index/args.
+/// Copy pending-play URI `i` (0-based) into `buf` (NUL-terminated). Returns the FULL byte length
+/// of the URI — snprintf semantics — so a return >= `cap` means the value was TRUNCATED and the
+/// caller must not use it. Returns -1 for a bad index/args.
+///
+/// The full length matters: a truncated path still looks like a perfectly good path, and handing
+/// one to PlayerService queues a file that doesn't exist. Silently playing the wrong thing is worse
+/// than skipping the track.
 #[no_mangle]
 pub extern "C" fn cinder_pending_play_uri(i: libc::c_int, buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
     if buf.is_null() || cap <= 0 {
@@ -1313,12 +1318,20 @@ pub extern "C" fn cinder_pending_play_uri(i: libc::c_int, buf: *mut c_char, cap:
     let guard = cell().lock().unwrap();
     let Some(r) = guard.as_ref() else { return -1 };
     let Some(uri) = r.pending_play.get(i as usize) else { return -1 };
-    let n = uri.len().min(cap as usize - 1);
-    unsafe {
-        std::ptr::copy_nonoverlapping(uri.as_ptr(), buf as *mut u8, n);
-        *buf.add(n) = 0;
-    }
-    n as libc::c_int
+    unsafe { copy_str_into(uri, buf, cap) }
+}
+
+/// Copy `s` into a C buffer, NUL-terminated, and return `s`'s FULL length (snprintf semantics):
+/// a result >= `cap` means the value was truncated. Split out from the FFI wrapper so the length
+/// contract — the part that had the bug — is unit-testable without a live renderer.
+///
+/// # Safety
+/// `buf` must be valid for `cap` bytes and `cap` must be > 0.
+unsafe fn copy_str_into(s: &str, buf: *mut c_char, cap: libc::c_int) -> libc::c_int {
+    let n = s.len().min(cap as usize - 1);
+    std::ptr::copy_nonoverlapping(s.as_ptr(), buf as *mut u8, n);
+    *buf.add(n) = 0;
+    s.len() as libc::c_int
 }
 
 /// The start index within the pending-play list (the track the user actually tapped).
@@ -2357,6 +2370,30 @@ mod tests {
         assert_eq!(np.elapsed, "0:00");
         assert_eq!(np.remaining, "");
         assert_eq!(np.progress, 0.0);
+    }
+
+    /// The URI copy must report the FULL length, not the copied length, so the caller can tell a
+    /// truncated path from a complete one. A truncated path looks perfectly valid and would queue a
+    /// file that doesn't exist; the shell relies on `len >= cap` to skip those. Reachable in
+    /// practice with deep UTF-8 (CJK) paths, which is why the buffer size is not a safe assumption.
+    #[test]
+    fn uri_copy_reports_full_length_so_truncation_is_detectable() {
+        let mut buf = [0i8; 32];
+        let long = "/contents/MUSIC/".to_string() + &"ま".repeat(50) + "/track.flac";
+        assert!(long.len() > buf.len(), "test needs a URI longer than the buffer");
+
+        let got = unsafe { copy_str_into(&long, buf.as_mut_ptr(), buf.len() as libc::c_int) };
+        assert_eq!(got as usize, long.len(), "must return the FULL length, not the copied one");
+        assert!(got >= buf.len() as libc::c_int, "caller must be able to detect truncation");
+        assert_eq!(buf[buf.len() - 1], 0, "still NUL-terminated inside the buffer");
+
+        // One that fits reports its own length, which is < cap — the "safe to use" signal.
+        let short = "/contents/a.flac";
+        let got = unsafe { copy_str_into(short, buf.as_mut_ptr(), buf.len() as libc::c_int) };
+        assert_eq!(got, short.len() as libc::c_int);
+        assert!(got < buf.len() as libc::c_int);
+        let back = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
+        assert_eq!(back.to_str().unwrap(), short);
     }
 
     #[test]

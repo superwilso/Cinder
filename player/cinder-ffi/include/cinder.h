@@ -100,6 +100,9 @@ void cinder_touch_down(void);
  * album context as file URIs in play order + the index to start at. The shell reads these and
  * hands PlayerService a NodeTrackSequence (cinder_audio_play_tracks). */
 int  cinder_pending_play_count(void);
+/* Copies URI `i` into `buf` and returns its FULL length (snprintf semantics): a return >= `cap`
+ * means it was TRUNCATED and must not be used — a truncated path still looks valid and would queue
+ * a file that doesn't exist. -1 = bad index/args. */
 int  cinder_pending_play_uri(int i, char* buf, int cap);
 int  cinder_pending_play_start(void);
 /* Horizontal swipe (dir < 0 = leftward, else rightward) with the gesture's START point in UI

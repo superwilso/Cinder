@@ -22,6 +22,10 @@ extern "C" {
  * -2 = disabled via CINDER_NOPUMP=1. Idempotent. */
 int  cinder_audio_pump_start(int interval_ms);
 void cinder_audio_pump_stop(void);
+/* Change the pump period while running. The shell slows it down when the panel goes dark: nothing
+ * on screen needs sub-100 ms IPC latency, and this thread otherwise wakes 50x/second for hours
+ * while a track plays in a pocket. Takes effect on the next iteration. */
+void cinder_audio_pump_set_interval(int interval_ms);
 /* Pump iterations so far — 0 while playback is broken is the signature of a dead looper. */
 unsigned cinder_audio_pump_ticks(void);
 

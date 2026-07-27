@@ -1085,6 +1085,7 @@ static void screen_auto_off() {
         FILE* f = std::fopen(g_bl.path, "w");
         if (f) { std::fputc('0', f); std::fclose(f); }
     }
+    cinder_audio_pump_set_interval(100);   // nothing on screen needs 50 Hz IPC latency
     clog_("screen: idle timeout -> panel off (touch or Power wakes it)");
 }
 
@@ -1096,6 +1097,7 @@ static void screen_auto_wake() {
     g_screen_on = true;
     apply_backlight();
     cinder_force_dirty();   // the render loop skipped painting while dark — repaint immediately
+    cinder_audio_pump_set_interval(20);
     clog_("screen: woken by input");
 }
 
@@ -1106,6 +1108,7 @@ void screen_toggle() {
     // Drop any in-flight contact: the sleeping controller never sends its lift, and a stale
     // "down" would make the next touch classify as a drag from the old start point.
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
+    cinder_audio_pump_set_interval(g_screen_on ? 20 : 100);
     if (g_screen_on) { apply_backlight(); cinder_force_dirty(); return; }
     if (!g_bl_read) load_bl_cfg();
     if (g_bl.valid) {
@@ -1376,13 +1379,26 @@ void carry_out(int act) {
                 if (n > 512) n = 512;                       // sanity cap (one album, not the world)
                 static char bufs[512][512];                 // static: keep the pump stack tiny;
                 static const char* ptrs[512];               // 512B/URI — deep unicode paths fit
+                int start = cinder_pending_play_start();
                 int kept = 0;
                 for (int i = 0; i < n; ++i) {
-                    if (cinder_pending_play_uri(i, bufs[kept], sizeof bufs[kept]) > 0)
-                        ptrs[kept] = bufs[kept], ++kept;
+                    int len = cinder_pending_play_uri(i, bufs[kept], sizeof bufs[kept]);
+                    // len >= capacity means TRUNCATED (snprintf semantics). A truncated path still
+                    // looks valid, so queueing it would hand PlayerService a file that doesn't
+                    // exist — skip it instead. Reachable with deep UTF-8 (CJK) paths.
+                    if (len > 0 && len < (int)sizeof bufs[kept]) {
+                        ptrs[kept] = bufs[kept];
+                        ++kept;
+                        continue;
+                    }
+                    if (len >= (int)sizeof bufs[kept])
+                        fprintf(stderr, "[cinder] play: URI %d truncated (%d B) — skipped\n", i, len);
+                    // A SKIPPED entry shifts every later track down by one, so the caller's start
+                    // index — which refers to the ORIGINAL list — would then select the wrong
+                    // track. Pull it back for each drop that happened before it.
+                    if (i < start) --start;
                 }
                 if (kept == 0) return;
-                int start = cinder_pending_play_start();
                 if (start < 0 || start >= kept) start = 0;
                 int rc = cinder_audio_play_tracks(ptrs, kept, start);
                 if (rc == 0) set_transport(true);
@@ -1798,12 +1814,23 @@ void report_storage() {
 // estimate it survives seeks, mid-track starts and wrong tag durations.
 void poll_now_playing() {
     static char last[1024];
-    char uri[1024];
-    int n = cinder_audio_current_uri(uri, sizeof uri);
-    if (n > 0 && std::strcmp(uri, last) != 0) {
-        std::strncpy(last, uri, sizeof last - 1);
-        last[sizeof last - 1] = 0;
-        cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, read_battery());
+    static unsigned last_events = 0;
+    // The URI read is a BINDER ROUND TRIP into hagodaemon (GetCurrentStatus, plus a std::string
+    // copied out) and it ran every single second whether or not anything was playing. The
+    // PlayEventListener already tells us when something happened: onPlayTimeUpdated fires ~1x/sec
+    // while playing and not at all while stopped, and a track change always comes with events. So
+    // only ask the service when its callback count has moved. Idle now costs zero IPC; playing is
+    // unchanged at one call per second.
+    unsigned events = cinder_audio_listener_events();
+    if (events != last_events) {
+        last_events = events;
+        char uri[1024];
+        int n = cinder_audio_current_uri(uri, sizeof uri);
+        if (n > 0 && std::strcmp(uri, last) != 0) {
+            std::strncpy(last, uri, sizeof last - 1);
+            last[sizeof last - 1] = 0;
+            cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, read_battery());
+        }
     }
     // The service is the authority on position, and eventually on whether it is really playing —
     // which is how a track ending, or PlayerService pausing for its own reasons, reaches the UI.
@@ -1856,8 +1883,24 @@ void* render_driver(void*) {
         // never paint again until state changes — and anything an external process scribbled on the
         // framebuffer after that blit (the boot animation's last video frame survives its kill)
         // would sit on screen forever. Repaint every frame for the first ~10 s, then 1×/s for life.
-        if (n < 600) cinder_force_dirty();
-        else if (n % 60 == 0) cinder_force_dirty();
+        // Forced repaint, as insurance against an EXTERNAL process scribbling into the framebuffer
+        // pages (the boot animation's last video frame survives its kill, and the dirty-flag
+        // renderer would otherwise never paint over it).
+        //
+        // Dense during the first ~10 s, which is the only window where anything else is actually
+        // writing to fb0 — then RARE. It used to stay at 1 Hz forever, which meant a full UI raster
+        // plus a 4.6 MB blit every single second on a completely static screen, for the life of the
+        // process. Nothing writes to fb0 after boot, so that was expensive insurance against an
+        // event that can no longer happen; 5 s keeps the safety net at a twentieth of the cost.
+        // (While the panel is dark the paint is skipped entirely, so this costs nothing there.)
+        static long last_forced_ms = 0;
+        if (n < 600) {
+            cinder_force_dirty();
+            last_forced_ms = now_ms();
+        } else if (now_ms() - last_forced_ms >= 5000) {
+            cinder_force_dirty();
+            last_forced_ms = now_ms();
+        }
 
         long frame_start = now_ms();
         // Panel dark => skip the PAINT ONLY. Nobody can see the frame, and with the visualiser
@@ -1919,7 +1962,14 @@ void* render_driver(void*) {
 
         if (!g_input_started) { input_open(); g_input_started = true; }
         alarm(8); input_pump(); alarm(0);     // touch + buttons -> navigator -> actions -> carry_out
-        if (n % 60 == 0) {                    // ~1x/sec housekeeping
+        // ~1x/sec housekeeping, paced by the WALL CLOCK rather than an iteration count. It used to
+        // be `n % 60`, which silently assumed the loop always runs at 60 Hz — no longer true now
+        // that a dark panel drops it to 10 Hz, where `n % 60` would mean once every SIX seconds and
+        // would have delayed the sleep timer and the USB-host debounce by that much.
+        static long last_house_ms = 0;
+        long house_now = now_ms();
+        if (house_now - last_house_ms >= 1000) {
+            last_house_ms = house_now;
             cinder_clock_tick();
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             // Scrobble writes /contents — skip while it's handed to the PC (stale mountpoint).
@@ -1997,7 +2047,14 @@ void* render_driver(void*) {
             if (n % 120 == 0) ::sync();
 #endif
         }
-        if (n % 600 == 0) cinder_set_battery(read_battery());
+        // Battery gauge: every ~10 s, wall-clock paced for the same reason as the housekeeping block
+        // above (an iteration count means something different at 60 Hz and at 10 Hz). Reading it is
+        // two small sysfs reads, so 10 s is already conservative.
+        static long last_batt_ms = 0;
+        if (house_now - last_batt_ms >= 10000) {
+            last_batt_ms = house_now;
+            cinder_set_battery(read_battery());
+        }
         ++n;
         // FRAME PACING: sleep only the REMAINDER of the 16 ms budget, not a flat 16 ms on top of
         // however long the frame took. The old comment here assumed "the blit+flip is ~2 ms"; on
@@ -2007,8 +2064,18 @@ void* render_driver(void*) {
         //   An idle frame still costs ~nothing (the dirty flag skips the work) and sleeps the full
         // budget, so this does not spin the CPU when nothing is moving. A frame that overruns
         // yields 1 ms rather than 0, so the input/housekeeping threads always get scheduled.
+        // ── Frame pacing, and the single biggest battery lever in the app ────────────────────
+        // Awake: ~60 Hz, for touch tracking (a drag has to follow the finger).
+        // Panel DARK: 10 Hz. Nothing is being drawn, so the only thing this rate buys is input
+        // latency, and the only input that matters while dark is the one that wakes the device —
+        // where 100 ms is imperceptible. It is worth a lot: input_pump() does a non-blocking read()
+        // on EVERY input node EVERY iteration (8 nodes here), so 60 Hz is ~480 syscalls/second plus
+        // 60 thread wakeups, sustained. Dark is also the LONGEST-lived state on a music player —
+        // screen off, in a pocket, playing for hours — so this is where the cost actually adds up.
+        // 60 -> 10 Hz cuts it to ~80 syscalls/second.
+        const long budget = g_screen_on ? 16 : 100;
         long spent = now_ms() - frame_start;
-        long left = 16 - spent;
+        long left = budget - spent;
         usleep((left > 0 ? left : 1) * 1000);
     }
     return nullptr;

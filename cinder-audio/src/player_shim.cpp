@@ -158,14 +158,18 @@ void* pump_main(void*) {
         g_pump_run = false;
         return nullptr;
     }
-    struct timespec ts;
-    ts.tv_sec  = g_pump_interval_ms / 1000;
-    ts.tv_nsec = (long)(g_pump_interval_ms % 1000) * 1000000L;
     while (g_pump_run) {
         fw.Pump(true);
         g_pump_ticks.fetch_add(1, std::memory_order_relaxed);
-        nanosleep(&ts, nullptr);   // Pump(true) returns immediately when idle — without this it
-                                   // spins a core flat (measured ~380k calls/s in cinder-probe).
+        // Re-read the interval every iteration so the shell can slow us down when the panel goes
+        // dark (cinder_audio_pump_set_interval). Pump(true) returns immediately when idle — without
+        // a sleep it spins a core flat (measured ~380k calls/s in cinder-probe).
+        int ms = g_pump_interval_ms;
+        if (ms < 1) ms = 1;
+        struct timespec ts;
+        ts.tv_sec  = ms / 1000;
+        ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+        nanosleep(&ts, nullptr);
     }
     return nullptr;
 }
@@ -243,6 +247,10 @@ void cinder_audio_pump_stop(void) {
     if (!g_pump_run) return;
     g_pump_run = false;
     if (g_pump_th) { pthread_join(g_pump_th, nullptr); g_pump_th = 0; }
+}
+
+void cinder_audio_pump_set_interval(int interval_ms) {
+    if (interval_ms > 0) g_pump_interval_ms = interval_ms;
 }
 
 unsigned cinder_audio_pump_ticks(void) {
