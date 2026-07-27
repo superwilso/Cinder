@@ -1032,6 +1032,7 @@ void touch_set_sleep(int slp) {
 // button restores the screen. That escape depends on strictly less than the thing it rescues (a
 // key event vs. the whole touch stack).
 static bool g_screen_auto_off = false;   // dark because of the idle timer (not the Power button)
+static bool g_held = false;              // Hold/lock switch engaged (mirrors cinder_set_hold)
 long g_last_input_ms = 0;                // when we last saw ANY input event (see the fwd decl above)
 
 // Blank the panel WITHOUT sleeping the touch controller, so a touch can wake it.
@@ -1582,15 +1583,25 @@ void input_pump() {
                     // never also activate whatever happens to be under the finger. A Power-button
                     // blank is left alone — that one stays off until Power is pressed again.
                     if (!g_screen_on) {
-                        g_last_input_ms = now_ms();
-                        if (g_screen_auto_off) screen_auto_wake();
+                        // Hold engaged = in a pocket: do NOT let stray contact wake the panel, or
+                        // an idle blank would be undone by the first thing it brushes against and
+                        // the battery saving is lost exactly when it matters most. Keys still wake
+                        // (the buttons are usable under Hold by design), and so does the switch
+                        // itself. Note this deliberately does not refresh the idle clock either.
+                        if (!g_held) {
+                            g_last_input_ms = now_ms();
+                            if (g_screen_auto_off) screen_auto_wake();
+                        }
                         g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
                         g_touch_saw_pos = false;
                         g_drag_active = false; g_drag_vel = 0.0f;
                         g_scrub_active = false; g_scrub_tested = false;
                         continue;
                     }
-                    g_last_input_ms = now_ms();   // live touch = activity, hold off the idle blank
+                    // Live touch = activity, so the idle blank holds off — but NOT while Hold is
+                    // engaged: those contacts are pocket noise (nav ignores them anyway), and
+                    // letting them count would keep the Lock screen lit in a pocket indefinitely.
+                    if (!g_held) g_last_input_ms = now_ms();
                     if (type == EV_ABS_ && (code == ABS_X_ || code == ABS_MT_POSITION_X_)) {
                         g_touch_cur_x = val; g_touch_saw_pos = true;
                         if (!g_touch_down) {
@@ -1640,6 +1651,8 @@ void input_pump() {
                 if ((type == EV_KEY_ || type == EV_SW_) && code < keymap_size()
                         && g_keymap[code] == CINDER_BTN_HOLD) {
                     cinder_set_hold(val ? 1 : 0);
+                    g_held = (val != 0);     // the auto-wake path needs it (pocket-safety, below)
+                    g_last_input_ms = now_ms();   // flicking the switch is deliberate activity
                     g_vol_btn = -1;          // locking mid-hold must not keep ramping
                     continue;
                 }

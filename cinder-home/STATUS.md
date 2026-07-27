@@ -322,8 +322,11 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   so wake-on-touch would be impossible); a waking touch is **consumed**, so waking can't also
   activate whatever is under the finger; and the physical **Power button still wakes it** regardless,
   an escape that depends on strictly less than the touch stack it rescues. Keys wake *and* are
-  delivered (transport/volume work whether or not you can see the screen). It never fires over the
-  USB-MSC modal, which is the only indication the volume is handed to the PC.
+  delivered (transport/volume work whether or not you can see the screen). **Under Hold, touches
+  neither wake the panel nor count as activity** — those contacts are pocket noise (nav ignores them
+  anyway), so without that the blank would be undone by the first thing the device brushes against,
+  losing the saving exactly when it matters most; keys and the Hold switch itself still wake it.
+  It never fires over the USB-MSC modal, which is the only indication the volume is handed to the PC.
   The render loop now also **skips painting while the panel is dark** (either cause) — with the
   visualiser running that was a full repaint + 4.6 MB blit every 16 ms, i.e. most of what the timer
   is meant to save; the wake path forces a repaint so nothing stale shows.
