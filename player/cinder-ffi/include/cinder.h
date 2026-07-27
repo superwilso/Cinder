@@ -75,7 +75,11 @@ typedef enum {
     /* Panel brightness changed: read cinder_get_brightness() (1..5) and write the backlight. */
     CINDER_ACT_BRIGHTNESS_CHANGED = 20,
     /* Idle screen-off timeout changed: read cinder_get_screen_off_s() (seconds, 0 = off). */
-    CINDER_ACT_SCREEN_OFF_CHANGED = 21
+    CINDER_ACT_SCREEN_OFF_CHANGED = 21,
+    /* Settings ▸ Boot to stock, confirmed: arm the launcher's ONE-SHOT stock flag and restart into
+     * Sony's player. One-shot by design — it is the only escape reachable with no USB cable, so it
+     * must undo itself or it would strand a cable-less user on stock. */
+    CINDER_ACT_BOOT_TO_STOCK = 22
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a

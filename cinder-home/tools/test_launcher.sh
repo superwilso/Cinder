@@ -67,9 +67,29 @@ scenario "MSC cinderhome_clear un-latches"        cinder ': > $R/data/cinder/off
 scenario "self-heal: binary newer than latch"     cinder ': > $R/data/cinder/DISABLED_badboot; : > $R/data/cinder/off; touch -d "2020-01-01" $R/data/cinder/DISABLED_badboot $R/data/cinder/off'
 scenario "binary missing"                         stock  'rm -f $R/cinder'
 scenario "garbage counter treated as 0"           cinder 'printf "\x00\xff junk" > $R/data/cinder/bootcount'
+# One-shot "Boot to stock", armed from Cinder's Settings row. Fires once, from either filesystem,
+# and must NOT spend a bad-boot life (it is a deliberate choice, not a failed boot).
+scenario "one-shot boot-to-stock (/data)"         stock  ': > $R/data/cinder/once_stock'
+scenario "one-shot boot-to-stock (/contents)"     stock  ': > $R/contents/cinderhome_once'
+scenario "one-shot fires even when latched clear" stock  ': > $R/data/cinder/once_stock; echo 1 > $R/data/cinder/bootcount'
 
 # the log-redirect trap that caused the brick: unwritable log dir must NOT stop the exec
 scenario "log path unwritable -> still execs"     cinder 'chmod 555 $R/contents'
+
+# The one-shot must be self-undoing: consumed on the boot it fires, so the NEXT boot is Cinder
+# again. Without that it would be a one-way trip for anyone without a cable to undo it.
+scenario "one-shot is consumed (arms once)"       stock  ': > $R/data/cinder/once_stock; echo 0 > $R/data/cinder/bootcount'
+if [ ! -f "$LAST_R/data/cinder/once_stock" ]; then
+    printf '  ok    %-46s -> %s\n' "one-shot flag consumed" "gone"; PASS=$((PASS+1))
+else
+    printf '  FAIL  %-46s -> %s\n' "one-shot flag consumed" "still present"; FAIL=$((FAIL+1))
+fi
+n=$(cat "$LAST_R/data/cinder/bootcount" 2>/dev/null)
+if [ "$n" = "0" ]; then
+    printf '  ok    %-46s -> %s\n' "one-shot costs no bad-boot life" "$n"; PASS=$((PASS+1))
+else
+    printf '  FAIL  %-46s -> %s (want 0)\n' "one-shot costs no bad-boot life" "$n"; FAIL=$((FAIL+1))
+fi
 
 echo
 echo "post-checks:"

@@ -12,7 +12,7 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 12;
+pub const ROWS: usize = 13;
 /// The actionable rows: Theme / Visualiser / Visualiser animation / Sleep timer (DISPLAY) +
 /// Battery care (SYSTEM).
 pub const ROW_THEME: usize = 0;
@@ -23,6 +23,9 @@ pub const ROW_BATTERY: usize = 8;
 pub const ROW_SCREEN_OFF: usize = 4;
 pub const ROW_BRIGHTNESS: usize = 5;
 pub const ROW_USB_MODE: usize = 9; // tapping enters USB mass-storage (file transfer to a PC)
+/// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
+/// for confirmation first) because it reboots the device.
+pub const ROW_BOOT_STOCK: usize = 10;
 
 const RH: i32 = 56;
 
@@ -46,12 +49,27 @@ pub struct SettingsView<'a> {
     pub brightness: &'a str,
     /// Idle screen-off label, e.g. "OFF" / "30 SEC" / "2 MIN".
     pub screen_off: &'a str,
+    /// Boot-to-stock row value: normally "SONY", or the confirm prompt once armed.
+    pub boot_stock: &'a str,
 }
 
-/// Which selectable row is at touch-y `y`? Mirrors `render`'s vertical layout exactly: header
-/// ends at 91, each section eyebrow consumes +14 (gap) then +24, and every row is `RH` tall.
-/// Returns the row index (0..ROWS) or None (tapped a gap/eyebrow).
-pub fn row_at(y: i32) -> Option<usize> {
+/// Total height of the row content, from the top of the screen to the bottom of the last row.
+/// Exceeds the 800px panel, which is why this screen scrolls.
+pub fn content_height() -> i32 {
+    // DISPLAY eyebrow + 6 rows, SYSTEM eyebrow + 5 rows, ABOUT eyebrow + 2 rows.
+    91 + 24 + 6 * RH + 14 + 24 + 5 * RH + 14 + 24 + 2 * RH
+}
+
+/// How far this screen can scroll. 0 would mean everything fits (it doesn't).
+pub fn max_scroll_px() -> i32 {
+    (content_height() + 8 - crate::canvas::H as i32).max(0)
+}
+
+/// Which selectable row is at touch-y `y`, given the current `scroll` offset? Mirrors `render`'s
+/// vertical layout exactly: header ends at 91, each section eyebrow consumes +14 (gap) then +24,
+/// and every row is `RH` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow).
+pub fn row_at(y: i32, scroll: i32) -> Option<usize> {
+    let y = y + scroll;   // screen y -> content y
     let mut yy = 91 + 24; // after the DISPLAY eyebrow
     for r in 0..6 {
         if y >= yy && y < yy + RH {
@@ -60,14 +78,14 @@ pub fn row_at(y: i32) -> Option<usize> {
         yy += RH;
     }
     yy += 14 + 24; // SYSTEM eyebrow
-    for r in 6..10 {
+    for r in 6..11 {
         if y >= yy && y < yy + RH {
             return Some(r);
         }
         yy += RH;
     }
     yy += 14 + 24; // ABOUT eyebrow
-    for r in 10..12 {
+    for r in 11..13 {
         if y >= yy && y < yy + RH {
             return Some(r);
         }
@@ -98,10 +116,14 @@ fn srow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, 
     y + RH
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &SettingsView) {
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v: &SettingsView) {
     c.fill(t.bg);
     crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
     let y0 = crate::chrome::header(c, t, f, "Settings", None);
+    // Content is taller than the panel (13 rows + 3 section headers), so it scrolls. Rows are drawn
+    // shifted up by `scroll`; row_at applies the same shift, so the hit test can't drift from the
+    // render. Off-screen rows are cheap — the row helpers clip against the canvas.
+    let y0 = y0 - scroll;
 
     let mut y = eyebrow(c, t, f, y0, "DISPLAY");
 
@@ -156,9 +178,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &SettingsVi
     // Battery care = Sony "Itawari" charging (caps ~90%). Live On/Off toggle (no chevron — it acts
     // in place), wired to PowerMgrServiceClient::EnableItawariCharging via the shell.
     y = srow(c, t, f, y, sel == ROW_BATTERY, "Battery care", if v.battery_care { "ON · 90%" } else { "OFF" }, false);
-    y = srow(c, t, f, y, sel == 9, "USB mode", if v.usb_dac { "DAC" } else { "MASS STORAGE" }, true);
+    y = srow(c, t, f, y, sel == ROW_USB_MODE, "USB mode", if v.usb_dac { "DAC" } else { "MASS STORAGE" }, true);
+    // Boot to stock: the only way back to Sony's player that needs no USB cable. Chevron, because
+    // it acts. The value doubles as the confirmation prompt (see nav: first tap arms, second goes).
+    y = srow(c, t, f, y, sel == ROW_BOOT_STOCK, "Boot to stock", v.boot_stock, true);
 
     y = eyebrow(c, t, f, y + 14, "ABOUT");
-    y = srow(c, t, f, y, sel == 10, "Firmware", FIRMWARE_LABEL, false);
-    let _ = srow(c, t, f, y, sel == 11, "Model", "SONY NW-A55", false);
+    y = srow(c, t, f, y, sel == 11, "Firmware", FIRMWARE_LABEL, false);
+    let _ = srow(c, t, f, y, sel == 12, "Model", "SONY NW-A55", false);
 }

@@ -315,6 +315,22 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   could not. The estimate survives only as the fallback for before the first callback arrives.
   Play/pause state also comes from observed position movement rather than from the shell's
   optimistic view of the last transport action it sent.
+- **Boot to stock** (2026-07-27, Settings ▸ SYSTEM): arms a **one-shot** return to Sony's player and
+  restarts. This is the **only escape reachable with no USB cable** — the other four all need one
+  (cable-at-boot, `cinderhome_off`/`cinderhome_clear` over USB-MSC), and the bad-boot counter route
+  requires cutting power 4× inside Cinder's ~8 s health window *and* latches permanently, so without
+  a cable it was previously a one-way trip. One-shot by design: `cinderhome-launch.sh` consumes the
+  flag on the boot it fires, so the boot after that is Cinder again, and it is checked **before** the
+  bad-boot counter increments so a deliberate choice never spends a bad-boot life. The flag is
+  written to `/data/cinder/once_stock` (journaled) **and** `/contents/cinderhome_once` (visible over
+  USB-MSC, so it can be deleted from a PC); either alone is enough. No root needed for the restart:
+  appmgr calls `android_reboot` when the Home app dies, so `_exit()` *is* the reboot — the flag is
+  synced first. The row takes **two taps** (it shows "TAP AGAIN"), and the armed state is cleared by
+  touching any other row or leaving the screen. Covered by the launcher recovery matrix (24 cases).
+- **Settings scrolling** (2026-07-27): the Settings list is 919 px of content on an 800 px panel, so
+  it now scrolls like the library lists. It never did — meaning **"Model" was unreachable and
+  "Firmware" was clipped** before this, which a new test caught when the Boot-to-stock row pushed
+  both fully off screen. `row_at` takes the scroll offset so the hit test can't drift from the render.
 - **Screen-off timer** (2026-07-27): blanks the panel after 15/30/60/120 s of no input, to stop
   paying for the backlight *and* the frame. **Off by default** — an idle blank is opt-in, because a
   failed wake looks like a dead device. Three things make it safe: the auto-off path does **not**

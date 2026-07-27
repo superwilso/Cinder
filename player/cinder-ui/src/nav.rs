@@ -104,6 +104,7 @@ pub enum Action {
     UsbDacToggle(bool),       // engage/disengage USB-DAC input routed to 3.5mm + BT/LDAC (the headline feature)
     BrightnessChanged(u8),    // panel brightness level 1..5; shell maps it onto the backlight node
     ScreenOffTimer(u32),      // idle screen-off timeout in seconds (0 = off); the shell counts idle
+    BootToStock,              // arm a ONE-SHOT boot into Sony's player, then restart
 }
 
 /// The Menu rows, in display order — index ↔ destination Screen. Matches the prototype's 10 rows;
@@ -238,6 +239,11 @@ pub struct App {
     /// Sleep timer: `sleep_idx` cycles the presets (Off/15/30/45/60 min) in Settings; `sleep_min` is
     /// the LIVE remaining minutes that cinder-ffi counts down and pushes back for display. 0 = off.
     sleep_idx: usize,
+    /// Boot-to-stock confirmation: the row arms on the first tap and only acts on the second, so a
+    /// stray tap can't restart the device. Cleared by leaving Settings or tapping anything else.
+    boot_stock_armed: bool,
+    /// Settings is taller than the panel, so it scrolls like the library lists.
+    settings_scroll_px: i32,
     /// Screen-off (idle) timeout in SECONDS; 0 = off, which is the default — nothing changes unless
     /// the user opts in. `screen_off_idx` cycles the presets from the Settings row.
     screen_off_idx: usize,
@@ -321,6 +327,8 @@ impl Default for App {
             sound_sel: 0,
             storage: String::new(),
             sleep_idx: 0,
+            boot_stock_armed: false,
+            settings_scroll_px: 0,
             screen_off_idx: 0,
             screen_off_s: 0,  // OFF by default — an idle blank is opt-in
             brightness: 4,   // matches the shell's ~70% day default
@@ -488,11 +496,13 @@ impl App {
 
     fn push(&mut self, s: Screen) {
         if self.current() != s {
+            self.boot_stock_armed = false;   // never leave a restart armed across a screen change
             self.stack.push(s);
         }
     }
     fn pop(&mut self) {
         if self.stack.len() > 1 {
+            self.boot_stock_armed = false;
             self.stack.pop();
         }
     }
@@ -537,6 +547,11 @@ impl App {
     }
 
     fn settings_activate(&mut self) -> Vec<Action> {
+        // Touching any other row cancels a pending boot-to-stock confirmation, so the armed state
+        // can never linger and turn a later, unrelated tap on that row into a restart.
+        if self.settings_sel != crate::settings::ROW_BOOT_STOCK {
+            self.boot_stock_armed = false;
+        }
         match self.settings_sel {
             crate::settings::ROW_THEME => {
                 self.night = !self.night;
@@ -566,6 +581,16 @@ impl App {
                 // then unmounts the volume + switches the gadget (and reverts on failure/unplug).
                 self.push(Screen::UsbStorage);
                 vec![Action::EnterUsbMsc]
+            }
+            crate::settings::ROW_BOOT_STOCK => {
+                // Two-step: arm, then act. This reboots the device, so it must not be one stray tap.
+                if self.boot_stock_armed {
+                    self.boot_stock_armed = false;
+                    vec![Action::BootToStock]
+                } else {
+                    self.boot_stock_armed = true;
+                    vec![]
+                }
             }
             crate::settings::ROW_SCREEN_OFF => {
                 self.screen_off_idx = (self.screen_off_idx + 1) % SCREEN_OFF_PRESETS.len();
@@ -751,7 +776,7 @@ impl App {
                 vec![]
             }
             Screen::Settings => {
-                if let Some(row) = crate::settings::row_at(y) {
+                if let Some(row) = crate::settings::row_at(y, self.settings_scroll_px) {
                     self.settings_sel = row;
                     return self.settings_activate();
                 }
@@ -998,6 +1023,10 @@ impl App {
                     let max = library::album_max_scroll_px(al);
                     self.album_scroll_px = (self.album_scroll_px + dy_px).clamp(0, max);
                 }
+            }
+            Screen::Settings => {
+                let max = crate::settings::max_scroll_px();
+                self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
             }
             _ => {}
         }
@@ -1688,6 +1717,9 @@ impl App {
                 let sleep_lbl = self.sleep_label();
                 let brightness_lbl = format!("{} / 5", self.brightness);
                 let screen_off_lbl = screen_off_label(self.screen_off_s);
+                // The row value doubles as the confirmation prompt — no extra screen needed, and
+                // the armed state is impossible to miss because it replaces the value in place.
+                let boot_stock_lbl = if self.boot_stock_armed { "TAP AGAIN" } else { "SONY" };
                 let view = crate::settings::SettingsView {
                     night: self.night,
                     viz_name: crate::viz::name(self.viz_kind),
@@ -1698,8 +1730,9 @@ impl App {
                     sleep: &sleep_lbl,
                     brightness: &brightness_lbl,
                     screen_off: &screen_off_lbl,
+                    boot_stock: boot_stock_lbl,
                 };
-                crate::settings::render(c, &theme, fonts, self.settings_sel, &view)
+                crate::settings::render(c, &theme, fonts, self.settings_sel, self.settings_scroll_px, &view)
             }
             Screen::Fm => crate::fm::render(c, &theme, fonts, 88.6),
             Screen::UsbDac => {
@@ -2185,6 +2218,73 @@ mod tests {
         assert_eq!(screen_off_label(60), "1 MIN");
         assert_eq!(screen_off_label(120), "2 MIN");
         assert_eq!(screen_off_label(90), "1:30");
+    }
+
+    /// Boot to stock reboots the device, so one stray tap must never do it: the row arms first and
+    /// only acts on a second tap.
+    #[test]
+    fn boot_to_stock_needs_two_taps() {
+        let mut app = unlocked();
+        app.settings_sel = crate::settings::ROW_BOOT_STOCK;
+        assert_eq!(app.settings_activate(), vec![], "first tap only arms");
+        assert_eq!(app.settings_activate(), vec![Action::BootToStock], "second tap acts");
+        // And it disarms after firing, so a third tap arms again rather than re-firing.
+        assert_eq!(app.settings_activate(), vec![]);
+    }
+
+    /// An armed confirmation must not survive touching something else — otherwise a tap on this row
+    /// minutes later, with no prompt on screen, would restart the device.
+    #[test]
+    fn boot_to_stock_disarms_when_you_touch_anything_else() {
+        let mut app = unlocked();
+        app.settings_sel = crate::settings::ROW_BOOT_STOCK;
+        assert_eq!(app.settings_activate(), vec![]); // armed
+        app.settings_sel = crate::settings::ROW_THEME;
+        let _ = app.settings_activate(); // a different row cancels it
+        app.settings_sel = crate::settings::ROW_BOOT_STOCK;
+        assert_eq!(app.settings_activate(), vec![], "must re-arm, not fire");
+
+        // Leaving the screen cancels it too.
+        let mut app = unlocked();
+        app.settings_sel = crate::settings::ROW_BOOT_STOCK;
+        assert_eq!(app.settings_activate(), vec![]); // armed
+        app.push(Screen::Library);
+        app.pop();
+        assert_eq!(app.settings_activate(), vec![], "must re-arm after navigating away");
+    }
+
+    /// EVERY Settings row must be reachable by a finger at some scroll position. This caught a real
+    /// bug: the content is 919px tall on an 800px panel, so before this screen scrolled the ABOUT
+    /// rows sat past the bottom edge — "Model" was entirely unreachable and "Firmware" was clipped,
+    /// and adding "Boot to stock" pushed both fully off. row_at also hardcodes the section
+    /// boundaries, so it silently drifts from render whenever a row is added.
+    #[test]
+    fn every_settings_row_is_reachable_at_some_scroll_position() {
+        use crate::settings::{max_scroll_px, row_at, ROWS};
+        let mut hit: Vec<usize> = Vec::new();
+        for scroll in 0..=max_scroll_px() {
+            for y in 0..crate::canvas::H as i32 {
+                if let Some(r) = row_at(y, scroll) {
+                    if !hit.contains(&r) {
+                        hit.push(r);
+                    }
+                }
+            }
+        }
+        hit.sort();
+        assert_eq!(hit, (0..ROWS).collect::<Vec<_>>(), "some rows can never be tapped");
+    }
+
+    /// Scrolling to the bottom must actually bring the last row fully on screen — a max_scroll that
+    /// is too small leaves it half-clipped and awkward to hit.
+    #[test]
+    fn settings_scrolls_far_enough_to_reach_the_last_row() {
+        use crate::settings::{content_height, max_scroll_px};
+        assert!(max_scroll_px() > 0, "content is taller than the panel; it must scroll");
+        assert!(
+            content_height() - max_scroll_px() <= crate::canvas::H as i32,
+            "bottom of the content is still off-screen at full scroll"
+        );
     }
 
     #[test]

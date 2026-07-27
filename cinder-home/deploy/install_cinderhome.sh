@@ -166,6 +166,9 @@ fi
 #      2. /contents/cinderhome_off  (USB-MSC)  -> stock. Needs a mountable /contents.
 #      3. /contents/cinderhome_clear (USB-MSC) -> clears the latch and retries.
 #      4. bad-boot counter hits MAXBAD         -> stock, automatically. Needs a writable /data.
+#      5. Settings ▸ Boot to stock (in Cinder)  -> stock ONCE, then back. Needs Cinder to be running,
+#         so it is the weakest of the five — but it is the only one reachable with NO CABLE, and
+#         unlike the others it is self-undoing, so it cannot strand the user on stock.
 #
 # WHERE THE STATE LIVES (moved off /contents 2026-07-26, after a hard brick):
 #   The counter used to live on /contents. That is the WORST possible home for a safety net here:
@@ -185,6 +188,13 @@ OFF=$STATE/off
 # MSC-reachable escapes (read-only here — /contents may be absent, so every use is guarded)
 MSC_OFF=/contents/cinderhome_off        # drop this file over USB-MSC -> boot stock
 MSC_CLEAR=/contents/cinderhome_clear    # drop this file over USB-MSC -> clear the latch, try again
+# ONE-SHOT stock boot, armed from Cinder's own Settings ▸ Boot to stock row. Deliberately NOT the
+# same thing as $OFF: it is CONSUMED on the boot it fires, so the boot after that returns to Cinder.
+# That matters because it is the only escape a user can reach with NO CABLE, and a persistent latch
+# would then be one-way — you could leave Cinder without a cable but not come back without one.
+# Written to both filesystems: /data is journaled and reliable, /contents is visible over USB-MSC.
+ONCE=$STATE/once_stock
+MSC_ONCE=/contents/cinderhome_once
 # 4, not 2. cinder-home clears the counter ~8 s after its first painted frame, so a genuinely
 # healthy boot is "proven" almost immediately — but a developer reboot inside that window still
 # costs one count, and MAXBAD=2 meant a single impatient reboot could latch the device to stock
@@ -251,6 +261,15 @@ fi
 # test just fails and we leave the latch alone (safe fallback).
 if [ -f "$DISABLED" ] && [ "$HOME_BIN" -nt "$DISABLED" ] 2>/dev/null; then
     rm -f "$DISABLED" "$OFF" "$BOOTCOUNT" 2>/dev/null; sync
+fi
+
+# ONE-SHOT stock boot: consume the flag and hand over. Checked BEFORE the counter is incremented,
+# because this is a deliberate user choice, not a failed boot — it must not spend a bad-boot life.
+if [ -f "$ONCE" ] || [ -f "$MSC_ONCE" ]; then
+    rm -f "$ONCE" 2>/dev/null
+    rm -f "$MSC_ONCE" 2>/dev/null
+    sync
+    run_stock "$@"
 fi
 
 # explicit disable / missing binary -> stock, no counting
@@ -362,8 +381,8 @@ fi
 # fresh install = enabled: clear any prior disable/bad-boot flags, on BOTH the current /data
 # location and the legacy /contents one (an upgrade from a pre-2026-07-26 build leaves those).
 "$BB" mkdir -p /data/cinder 2>/dev/null
-"$BB" rm -f /data/cinder/off /data/cinder/bootcount /data/cinder/DISABLED_badboot 2>/dev/null
-"$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot 2>/dev/null
+"$BB" rm -f /data/cinder/off /data/cinder/bootcount /data/cinder/DISABLED_badboot /data/cinder/once_stock 2>/dev/null
+"$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot /contents/cinderhome_once 2>/dev/null
 echo "cleared prior disable flags (fresh install = enabled)"
 echo "left staged binary at $SRC (safe to delete once cinder-home is confirmed)"
 sync

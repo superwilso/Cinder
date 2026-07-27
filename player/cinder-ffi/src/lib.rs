@@ -1223,6 +1223,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::UsbDacToggle(_) => 18, // shell reads cinder_get_usb_dac() + starts/stops the LDAC bridge
         Action::BrightnessChanged(_) => 20, // shell reads cinder_get_brightness() + writes the backlight
         Action::ScreenOffTimer(_) => 21,    // shell reads cinder_get_screen_off_s() + counts idle
+        Action::BootToStock => 22,          // shell arms the one-shot flag + restarts into stock
     })
 }
 

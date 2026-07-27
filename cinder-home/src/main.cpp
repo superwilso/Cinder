@@ -969,6 +969,42 @@ void recompute_day_level() {
 // Live change from the Settings row: recompute, then write at the CURRENT theme's level.
 void apply_brightness() { recompute_day_level(); set_backlight(cinder_get_night()); }
 
+// ── Boot to stock (Settings ▸ Boot to stock, after the row's two-tap confirm) ─────────────────
+// Arms the launcher's ONE-SHOT flag and then restarts into Sony's player.
+//
+// One-shot, not the persistent $OFF latch: this is the ONLY escape a user can reach with no USB
+// cable, and every other route back to Cinder (cinderhome_clear over USB-MSC, or installing a newer
+// binary) needs one. A persistent flag here would let someone leave Cinder without a cable and then
+// be unable to return without one. cinderhome-launch.sh consumes the flag on the boot it fires, so
+// the boot after that is Cinder again.
+//
+// Written to BOTH filesystems on purpose: /data is ext4 and journaled (the launcher's real home for
+// state), /contents is vfat but visible over USB-MSC, so the user can see and delete the flag from
+// a PC if anything goes wrong. Either one alone is enough for the launcher.
+//
+// The restart itself needs no root: appmgr watches the Home app and calls android_reboot when it
+// dies (analysis/F_appmgr_home/RE_findings.md §2). So _exit() IS the reboot. The flag is synced
+// first, so it survives regardless of how abrupt that reboot turns out to be.
+void boot_to_stock() {
+    bool armed = false;
+    for (const char* p : { "/data/cinder/once_stock", "/contents/cinderhome_once" }) {
+        FILE* f = std::fopen(p, "w");
+        if (f) { std::fclose(f); armed = true; clog_(p); }
+    }
+    ::sync();
+    if (!armed) {
+        // Nothing written => a restart now would just come back to Cinder. Say so and stay put,
+        // rather than rebooting the device for no reason.
+        clog_("boot-to-stock: could NOT arm the flag on either filesystem — staying on Cinder");
+        return;
+    }
+    clog_("boot-to-stock: armed; exiting so appmgr restarts the device into the Sony player");
+    cinder_render_shutdown();   // release the framebuffer so the reboot isn't fighting our mapping
+    std::fflush(nullptr);
+    ::sync();
+    _exit(0);
+}
+
 // For the LIVE theme toggle: match the backlight to the current theme.
 void apply_backlight() { set_backlight(cinder_get_night()); }
 
@@ -1375,6 +1411,9 @@ void carry_out(int act) {
         case CINDER_ACT_THEME_CHANGED:
             // night/day toggled -> set the panel backlight (night = minimal light), guarded.
             run_guarded("carry_out: backlight (theme)", 4, apply_backlight);
+            break;
+        case CINDER_ACT_BOOT_TO_STOCK:
+            run_guarded("carry_out: boot to stock", 8, boot_to_stock);
             break;
         case CINDER_ACT_SCREEN_OFF_CHANGED:
             // Nothing to apply now — the countdown lives in the pump and reads the value each tick.
