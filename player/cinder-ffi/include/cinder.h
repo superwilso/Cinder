@@ -121,6 +121,17 @@ int  cinder_db_open(const char *path);
  * title/artist/codec/duration from the DB and derives elapsed/remaining from progress (0..1).
  * 0 = resolved, -1 = not found (falls back to filename), -2 = renderer not initialised. */
 int  cinder_set_now_playing_uri(const char *uri, float progress, int playing, int battery);
+/* Liked songs (the Now Playing heart). The set and its persistence live in cinder-ffi, so the
+ * shell has nothing to carry out — the toggle is handled in-process when the heart is tapped.
+ * cinder_toggle_liked returns the NEW state (1/0), or -1 if nothing is playing.
+ * Two files are written beside the music on /contents: cinder_liked.conf (object ids, the real
+ * state) and cinder_loved.tsv (artist<TAB>title). The TSV exists because this device has no WiFi,
+ * so Last.fm can only ever be reached by a PC tool after a USB connection — and the AS/1.1
+ * scrobble log can't carry loves (its rating column is Listened/Skipped). artist+title is exactly
+ * what Last.fm's track.love takes. */
+int  cinder_is_liked(void);
+int  cinder_toggle_liked(void);
+int  cinder_liked_count(void);
 /* Drag-to-seek on the Now Playing progress rail. On finger-DOWN the shell asks cinder_scrub_hit;
  * if it returns 1 the whole contact belongs to the scrub (no tap / list-drag / swipe). Then
  * cinder_scrub_to(x) on down and on every move makes the bar follow the finger, and

@@ -356,6 +356,13 @@ struct Render {
     // cinder_pending_play_* after a CINDER_ACT_PLAY_INDEX action and hands it to PlayerService
     // (NodeTrackSequence). Replaced wholesale on every new PlayIndex.
     pending_play: Vec<String>,
+    // ── Liked songs ────────────────────────────────────────────────────────────────────────
+    // Track object_ids the user has hearted. Kept as a set so the Now Playing heart is an O(log n)
+    // lookup per track change, and persisted to its own file rather than the settings blob — it
+    // grows with the library, and losing every preference because one liked-list line is corrupt
+    // would be a bad trade. `liked_path` is None until cinder_db_open supplies it.
+    liked: std::collections::BTreeSet<i64>,
+    liked_path: Option<String>,
     pending_play_start: usize,
     // Decoded album cover for the CURRENT track, pre-scaled to the two draw sizes (480 full-bleed,
     // 92 thumb). art_key = the object_id we last decoded for (skip re-decode on same-track polls);
@@ -502,6 +509,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         viz_levels: Vec::new(),
         viz_peak: 0.0,
         pending_play: Vec::new(),
+        liked: std::collections::BTreeSet::new(),
+        liked_path: None,
         pending_play_start: 0,
         art_full: None,
         art_thumb: None,
@@ -1224,6 +1233,12 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::BrightnessChanged(_) => 20, // shell reads cinder_get_brightness() + writes the backlight
         Action::ScreenOffTimer(_) => 21,    // shell reads cinder_get_screen_off_s() + counts idle
         Action::BootToStock => 22,          // shell arms the one-shot flag + restarts into stock
+        Action::ToggleLiked => {
+            // Handled entirely in-process: the set and its file live here, so there is nothing for
+            // the shell to carry out.
+            liked_toggle_current(r);
+            return None;
+        }
     })
 }
 
@@ -1917,6 +1932,13 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
             );
             r.app.set_library(lib);
             r.db = Some(db);
+            // Liked list lives beside the user's music, not next to the DB: /contents is the
+            // partition they can actually reach over USB-MSC to back it up or edit it.
+            let liked_path = String::from("/contents/cinder_liked.conf");
+            r.liked = liked_load(&liked_path);
+            eprintln!("cinder-ffi: liked songs: {} loaded", r.liked.len());
+            r.liked_path = Some(liked_path);
+            r.app.set_liked_count(r.liked.len());
             start_art_cache(r, &p);
             0
         }
@@ -1990,6 +2012,96 @@ pub extern "C" fn cinder_scrub_end() -> libc::c_int {
         }
         None => -1,
     }
+}
+
+// ── Liked songs: load / save / toggle ─────────────────────────────────────────────────────────
+// One decimal object_id per line. A plain-text list survives partial writes gracefully (a torn
+// line is skipped, not fatal) and is trivially inspectable over USB-MSC, which matters for
+// something the user has curated by hand and cannot otherwise back up.
+fn liked_load(path: &str) -> std::collections::BTreeSet<i64> {
+    std::fs::read_to_string(path)
+        .map(|body| body.lines().filter_map(|l| l.trim().parse::<i64>().ok()).collect())
+        .unwrap_or_default()
+}
+
+fn liked_save(r: &Render) {
+    let Some(path) = r.liked_path.as_ref() else { return };
+    let body: String = r.liked.iter().map(|id| format!("{id}\n")).collect();
+    // Write via a temp file + rename so a power cut mid-write can't truncate the existing list.
+    let tmp = format!("{path}.tmp");
+    if std::fs::write(&tmp, body).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+    liked_export_tsv(r);
+}
+
+/// Export the liked list as `artist \t title`, one per line, next to the music.
+///
+/// LAST.FM: this device has no WiFi — Bluetooth only — so nothing here can ever call the Last.fm
+/// API directly, and the offline `.scrobbler.log` cannot carry loves either: its rating column is
+/// AS/1.1 `L` = *Listened* / `S` = *Skipped*, which is not the same thing as Last.fm's `track.love`.
+/// So syncing takes the same shape scrobbling already does — the device writes a file, a tool on
+/// the PC uploads it on the next USB connection. `artist` + `title` is exactly the pair `track.love`
+/// takes, which is why this is a separate human-readable file rather than the object_id list (those
+/// ids mean nothing off-device).
+fn liked_export_tsv(r: &Render) {
+    let Some(path) = r.liked_path.as_ref() else { return };
+    let tsv = path.replace("cinder_liked.conf", "cinder_loved.tsv");
+    let lib = r.app.library();
+    let mut body = String::from("# artist\ttitle — liked in Cinder; feed to Last.fm track.love\n");
+    for id in &r.liked {
+        if let Some(song) = lib.songs.iter().find(|s| s.object_id == *id) {
+            body.push_str(&format!("{}\t{}\n", song.artist, song.title));
+        }
+    }
+    let tmp = format!("{tsv}.tmp");
+    if std::fs::write(&tmp, body).is_ok() {
+        let _ = std::fs::rename(&tmp, &tsv);
+    }
+}
+
+/// Is the CURRENTLY PLAYING track liked? 1/0. (-1 if the renderer isn't up.)
+#[no_mangle]
+pub extern "C" fn cinder_is_liked() -> libc::c_int {
+    let guard = cell().lock().unwrap();
+    let Some(r) = guard.as_ref() else { return -1 };
+    match r.last_track.as_ref() {
+        Some(t) => r.liked.contains(&t.object_id) as libc::c_int,
+        None => 0,
+    }
+}
+
+/// Toggle the current track's liked state. Takes `&mut Render` because the action mapper already
+/// holds the lock — calling the FFI wrapper from there would deadlock.
+fn liked_toggle_current(r: &mut Render) -> libc::c_int {
+    let Some(id) = r.last_track.as_ref().map(|t| t.object_id) else { return -1 };
+    let now_liked = if r.liked.remove(&id) {
+        false
+    } else {
+        r.liked.insert(id);
+        true
+    };
+    r.np.liked = now_liked;
+    r.dirty = true;
+    let n = r.liked.len();
+    r.app.set_liked_count(n);
+    liked_save(r);
+    now_liked as libc::c_int
+}
+
+/// Toggle the liked state of the currently playing track and persist. Returns the NEW state
+/// (1 liked, 0 not), or -1 when nothing is playing / no renderer.
+#[no_mangle]
+pub extern "C" fn cinder_toggle_liked() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return -1 };
+    liked_toggle_current(r)
+}
+
+/// How many tracks are liked (for the Library's "Liked songs" row).
+#[no_mangle]
+pub extern "C" fn cinder_liked_count() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.liked.len() as libc::c_int)
 }
 
 /// Push the REAL play position/duration from PlayerService's PlayEventListener
@@ -2071,6 +2183,7 @@ pub extern "C" fn cinder_set_now_playing_uri(
                     r.art_thumb = native.as_ref().map(|img| img.scaled_to(92, 92));
                     r.art_key = Some(t.object_id);
                 }
+                r.np.liked = r.liked.contains(&t.object_id);
                 r.cur_duration_ms = t.duration_raw.unwrap_or(0).max(0);
                 r.play_pos_ms = (r.cur_duration_ms as f32 * progress.clamp(0.0, 1.0)) as i64;
                 // Drop the previous track's service-position anchor: interpolating the new track's
@@ -2394,6 +2507,22 @@ mod tests {
         assert!(got < buf.len() as libc::c_int);
         let back = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
         assert_eq!(back.to_str().unwrap(), short);
+    }
+
+    /// The liked list is plain text on purpose: a torn line from a power cut must be SKIPPED, not
+    /// take the whole list with it. This is a hand-curated list the user cannot otherwise back up.
+    #[test]
+    fn liked_load_skips_garbage_instead_of_failing() {
+        let dir = std::env::temp_dir().join(format!("cinder_liked_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("liked.conf");
+        // A realistic torn write: a valid run, a half-written line, a blank, then more valid ids.
+        std::fs::write(&p, "101\n202\n\nnot-a-number\n  303  \n\u{0}\n404").unwrap();
+        let set = liked_load(p.to_str().unwrap());
+        assert_eq!(set.iter().copied().collect::<Vec<_>>(), vec![101, 202, 303, 404]);
+        // A missing file is an empty list, not an error — first run has no file.
+        assert!(liked_load("/nonexistent/cinder/liked.conf").is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

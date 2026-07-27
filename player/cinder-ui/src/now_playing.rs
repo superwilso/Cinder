@@ -29,6 +29,17 @@ pub const RAIL_H: i32 = 6;
 pub const RAIL_GRAB_TOP: i32 = 594;
 pub const RAIL_GRAB_BOT: i32 = 646;
 
+/// Like (heart) glyph centre, and the half-size of its touch target. Single source for the draw
+/// above and the hit test in nav.
+pub const HEART_CX: i32 = 432;
+pub const HEART_CY: i32 = 548;
+pub const HEART_HALF: i32 = 30;
+
+/// Did a tap land on the like heart?
+pub fn hit_heart(x: i32, y: i32) -> bool {
+    (x - HEART_CX).abs() <= HEART_HALF && (y - HEART_CY).abs() <= HEART_HALF
+}
+
 /// Map a UI x coordinate to a 0..1 position along the rail (clamped). Used by the scrub.
 pub fn rail_fraction(x: i32) -> f32 {
     ((x - RAIL_X0) as f32 / RAIL_W as f32).clamp(0.0, 1.0)
@@ -126,10 +137,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             crate::viz::draw(c, 24, 466, 432, 42, 36, 3, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels);
         }
         // title / artist / codec
-        text::draw(c, f, 24.0, 558.0, np.title, &s(Family::Sans, Weight::Bold, 29.0, t.ink, 0.0));
+        text::draw(c, f, 24.0, 558.0, &crate::widgets::fit(f, np.title, &s(Family::Sans, Weight::Bold, 29.0, t.ink, 0.0), 372.0), &s(Family::Sans, Weight::Bold, 29.0, t.ink, 0.0));
         text::draw(c, f, 24.0, 583.0, np.artist, &s(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0));
         right(c, f, 456.0, 583.0, np.codec, &s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08));
     }
+
+    // ---------- like (heart) ----------
+    // Wired at last: `liked` and icons::heart existed but nothing ever drew the glyph, so the
+    // field was carried through four crates for an invisible feature. Sits on the title row, which
+    // is where the eye already is and clear of every transport target.
+    icons::heart(c, HEART_CX as f32, HEART_CY as f32, 26.0,
+                 if np.liked { t.acc } else { t.faint });
 
     // ---------- progress (shared) ----------
     let (py, px0, pw) = (RAIL_Y, RAIL_X0, RAIL_W);

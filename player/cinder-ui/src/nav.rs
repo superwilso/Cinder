@@ -105,6 +105,7 @@ pub enum Action {
     BrightnessChanged(u8),    // panel brightness level 1..5; shell maps it onto the backlight node
     ScreenOffTimer(u32),      // idle screen-off timeout in seconds (0 = off); the shell counts idle
     BootToStock,              // arm a ONE-SHOT boot into Sony's player, then restart
+    ToggleLiked,              // heart the currently playing track (cinder-ffi owns the set)
 }
 
 /// The Menu rows, in display order — index ↔ destination Screen. Matches the prototype's 10 rows;
@@ -243,6 +244,9 @@ pub struct App {
     /// Boot-to-stock confirmation: the row arms on the first tap and only acts on the second, so a
     /// stray tap can't restart the device. Cleared by leaving Settings or tapping anything else.
     boot_stock_armed: bool,
+    /// How many tracks are liked — drives the Library's "Liked songs" row. The set itself lives in
+    /// cinder-ffi (it owns persistence); nav only needs the count to render.
+    liked_count: usize,
     /// Settings is taller than the panel, so it scrolls like the library lists.
     settings_scroll_px: i32,
     /// Screen-off (idle) timeout in SECONDS; 0 = off, which is the default — nothing changes unless
@@ -329,6 +333,7 @@ impl Default for App {
             storage: String::new(),
             sleep_idx: 0,
             boot_stock_armed: false,
+            liked_count: 0,
             settings_scroll_px: 0,
             screen_off_idx: 0,
             screen_off_s: 0,  // OFF by default — an idle blank is opt-in
@@ -712,6 +717,11 @@ impl App {
             }
             Screen::NowPlaying => {
                 let hit = |cx: i32, cy: i32, r: i32| (x - cx).pow(2) + (y - cy).pow(2) <= r * r;
+                // Like: tested before the transport row (it sits above it, and its target is
+                // square rather than circular, so the two can't overlap).
+                if crate::now_playing::hit_heart(x, y) {
+                    return vec![Action::ToggleLiked];
+                }
                 if hit(240, 692, 44) {
                     self.playing = !self.playing;
                     vec![Action::PlayPause]
@@ -1184,6 +1194,9 @@ impl App {
     /// the cursor so a stale index can't point past the new contents.
     /// Mutable access to the library, for the shell to drop in cover thumbnails as its background
     /// decoder produces them. Deliberately narrow in intent: the UI itself never mutates this.
+    pub fn library(&self) -> &Library {
+        &self.lib
+    }
     pub fn library_mut(&mut self) -> &mut Library {
         &mut self.lib
     }
@@ -2039,6 +2052,12 @@ impl App {
             .position(|&p| p == secs)
             .unwrap_or(0);
         self.screen_off_s = SCREEN_OFF_PRESETS[self.screen_off_idx];
+    }
+    pub fn set_liked_count(&mut self, n: usize) {
+        self.liked_count = n;
+    }
+    pub fn liked_count(&self) -> usize {
+        self.liked_count
     }
     pub fn brightness(&self) -> u8 {
         self.brightness
