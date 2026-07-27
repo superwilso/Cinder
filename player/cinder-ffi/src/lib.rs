@@ -569,8 +569,9 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     format!(
-        "night={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\nscreen_off={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\nscreen_off={}\n",
         r.app.night as u8,
+        r.app.accent(),
         r.app.viz_kind(),
         r.app.viz_on() as u8,
         eq.join(","),
@@ -1810,6 +1811,13 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                 let v = it.next().unwrap_or("").trim();
                 match k {
                     "night" => r.app.night = v == "1",
+                    "accent" => {
+                        // set_accent snaps an unknown index to the default, so a hand-edited or
+                        // corrupt value can't leave the UI on a colour the picker can't reach.
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_accent(n);
+                        }
+                    }
                     "viz_kind" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_viz_kind(n);

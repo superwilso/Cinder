@@ -1,33 +1,49 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row. Rows:
-//! DISPLAY (Theme, Visualiser type, Visualiser animation, Screen-off, Brightness),
-//! SYSTEM (Storage, Database, Battery care, USB mode), ABOUT (Firmware, Model).
-//! Live rows: Theme, Visualiser type, Visualiser, Sleep timer, Screen-off timer, Brightness
+//! DISPLAY (Theme, Accent, Visualiser type, Visualiser animation, Sleep, Screen-off, Brightness),
+//! SYSTEM (Storage, Database, Battery care, USB mode, Boot to stock), ABOUT (Firmware, Model).
+//! Live rows: Theme, Accent, Visualiser type, Visualiser, Sleep timer, Screen-off timer, Brightness
 //! (DISPLAY), Battery care and USB mode (SYSTEM). Database is drawn but NOT wired (shows "—" — see
 //! the dead-UI audit in cinder-home/STATUS.md); Firmware/Model are static info.
 
 use crate::icons;
 use crate::text::{self, Family, FontSet, Weight};
-use crate::theme::Theme;
+use crate::theme::{Accent, Theme};
 use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 13;
-/// The actionable rows: Theme / Visualiser / Visualiser animation / Sleep timer (DISPLAY) +
-/// Battery care (SYSTEM).
+pub const ROWS: usize = 14;
+/// The actionable rows: Theme / Accent / Visualiser / Visualiser animation / Sleep timer (DISPLAY)
+/// + Battery care (SYSTEM).
 pub const ROW_THEME: usize = 0;
-pub const ROW_VIZ: usize = 1;
-pub const ROW_VIZ_ANIM: usize = 2;
-pub const ROW_SLEEP: usize = 3;
-pub const ROW_BATTERY: usize = 8;
-pub const ROW_SCREEN_OFF: usize = 4;
-pub const ROW_BRIGHTNESS: usize = 5;
-pub const ROW_USB_MODE: usize = 9; // tapping enters USB mass-storage (file transfer to a PC)
+/// Accent colour — six swatches, tap one directly (Select cycles).
+pub const ROW_ACCENT: usize = 1;
+pub const ROW_VIZ: usize = 2;
+pub const ROW_VIZ_ANIM: usize = 3;
+pub const ROW_SLEEP: usize = 4;
+pub const ROW_SCREEN_OFF: usize = 5;
+pub const ROW_BRIGHTNESS: usize = 6;
+pub const ROW_BATTERY: usize = 9;
+pub const ROW_USB_MODE: usize = 10; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 10;
+pub const ROW_BOOT_STOCK: usize = 11;
 
 const RH: i32 = 56;
+/// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
+/// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
+const SECTIONS: [usize; 3] = [7, 5, 2];
+
+/// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
+/// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
+/// found six times). Swatches are right-aligned to the same 458 edge every other value uses.
+const SW: i32 = 30; // swatch edge
+const SW_GAP: i32 = 6;
+const SW_RIGHT: i32 = 458;
+fn swatch_x(i: usize) -> i32 {
+    let total = Accent::COUNT as i32 * SW + (Accent::COUNT as i32 - 1) * SW_GAP;
+    SW_RIGHT - total + i as i32 * (SW + SW_GAP)
+}
 
 /// Firmware/build label shown on the Settings "Firmware" row. The `dev` feature (development
 /// channel, built from the same tree) makes the two builds visually distinguishable on-device.
@@ -51,13 +67,23 @@ pub struct SettingsView<'a> {
     pub screen_off: &'a str,
     /// Boot-to-stock row value: normally "SONY", or the confirm prompt once armed.
     pub boot_stock: &'a str,
+    /// The selected accent — which swatch gets the ring, and the name shown beside them.
+    pub accent: Accent,
 }
 
 /// Total height of the row content, from the top of the screen to the bottom of the last row.
 /// Exceeds the 800px panel, which is why this screen scrolls.
 pub fn content_height() -> i32 {
-    // DISPLAY eyebrow + 6 rows, SYSTEM eyebrow + 5 rows, ABOUT eyebrow + 2 rows.
-    91 + 24 + 6 * RH + 14 + 24 + 5 * RH + 14 + 24 + 2 * RH
+    // header, then each section: eyebrow (24) + its rows, with a 14px gap before every eyebrow
+    // after the first.
+    let mut h = 91;
+    for (i, n) in SECTIONS.iter().enumerate() {
+        if i > 0 {
+            h += 14;
+        }
+        h += 24 + *n as i32 * RH;
+    }
+    h
 }
 
 /// How far this screen can scroll. 0 would mean everything fits (it doesn't).
@@ -69,29 +95,44 @@ pub fn max_scroll_px() -> i32 {
 /// vertical layout exactly: header ends at 91, each section eyebrow consumes +14 (gap) then +24,
 /// and every row is `RH` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow).
 pub fn row_at(y: i32, scroll: i32) -> Option<usize> {
-    let y = y + scroll;   // screen y -> content y
-    let mut yy = 91 + 24; // after the DISPLAY eyebrow
-    for r in 0..6 {
-        if y >= yy && y < yy + RH {
-            return Some(r);
+    row_span(scroll).find(|(_, top)| y >= *top && y < *top + RH).map(|(r, _)| r)
+}
+
+/// Every row as `(index, screen-y of its top)`, in order — the one place the vertical layout is
+/// expressed. `render` walks the same section table, so the two cannot drift.
+fn row_span(scroll: i32) -> impl Iterator<Item = (usize, i32)> {
+    let mut out = Vec::with_capacity(ROWS);
+    let mut yy = 91 - scroll;
+    let mut r = 0;
+    for (i, n) in SECTIONS.iter().enumerate() {
+        if i > 0 {
+            yy += 14;
         }
-        yy += RH;
-    }
-    yy += 14 + 24; // SYSTEM eyebrow
-    for r in 6..11 {
-        if y >= yy && y < yy + RH {
-            return Some(r);
+        yy += 24; // section eyebrow
+        for _ in 0..*n {
+            out.push((r, yy));
+            r += 1;
+            yy += RH;
         }
-        yy += RH;
     }
-    yy += 14 + 24; // ABOUT eyebrow
-    for r in 11..13 {
-        if y >= yy && y < yy + RH {
-            return Some(r);
-        }
-        yy += RH;
+    out.into_iter()
+}
+
+/// Which accent swatch is under `(x, y)`, if any. Returns an index into `Accent::ALL`.
+/// Checked BEFORE `row_at` by the navigator, so tapping a swatch picks that colour directly
+/// instead of advancing the cycle by one — six taps to reach the last accent is not a picker.
+pub fn accent_hit(x: i32, y: i32, scroll: i32) -> Option<usize> {
+    let (_, top) = row_span(scroll).find(|(r, _)| *r == ROW_ACCENT)?;
+    // Full row height vertically: the swatch is 30px inside a 56px row, and a near-miss above or
+    // below should still land on the colour the finger was clearly aiming at.
+    if y < top || y >= top + RH {
+        return None;
     }
-    None
+    (0..Accent::COUNT).find(|i| {
+        let sx = swatch_x(*i);
+        // Half the gap on each side counts as the swatch, so there is no dead strip between them.
+        x >= sx - SW_GAP / 2 && x < sx + SW + SW_GAP / 2
+    })
 }
 
 fn eyebrow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str) -> i32 {
@@ -155,7 +196,29 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     hline(c, y + RH, t.line);
     y += RH;
 
-    // Rows 1-2: the visualiser options (live). ROW_VIZ_ANIM is the master ON/OFF (hides the
+    // Row 1: Accent — all six swatches at once, the selected one ringed. Showing every choice is
+    // the point: a "next colour" row makes you cycle blind through five wrong answers to see the
+    // sixth, and on a touch device there is room to just offer them. Tapping a swatch selects it.
+    if sel == ROW_ACCENT {
+        fill_rect(c, 0, y, crate::canvas::W as i32, RH, t.row_sel);
+    }
+    let cy = y + RH / 2;
+    let lc = if sel == ROW_ACCENT { t.acc } else { t.ink };
+    text::draw(c, f, 22.0, (cy + 5) as f32, "Accent", &sty(Family::Sans, Weight::SemiBold, 20.0, lc, 0.0));
+    for (i, a) in Accent::ALL.iter().enumerate() {
+        let sx = swatch_x(i);
+        let sy = cy - SW / 2;
+        fill_rect(c, sx, sy, SW, SW, a.swatch(t.night));
+        if *a == v.accent {
+            // The ring is drawn in ink, not in the accent: on BONE the swatch already *is* near-ink,
+            // so an accent-coloured ring would vanish on exactly one of the six.
+            stroke_rect(c, sx - 3, sy - 3, SW + 6, SW + 6, t.ink, 2);
+        }
+    }
+    hline(c, y + RH, t.line);
+    y += RH;
+
+    // Rows 2-3: the visualiser options (live). ROW_VIZ_ANIM is the master ON/OFF (hides the
     // visualiser entirely on Now Playing when off); ROW_VIZ picks which type to show when on.
     y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser type", v.viz_name, false);
     y = srow(c, t, f, y, sel == ROW_VIZ_ANIM, "Visualiser", if v.viz_on { "ON" } else { "OFF" }, false);
@@ -169,11 +232,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
 
     y = eyebrow(c, t, f, y + 14, "SYSTEM");
     // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
-    y = srow(c, t, f, y, sel == 6, "Storage", v.storage, false);
+    y = srow(c, t, f, y, sel == 7, "Storage", v.storage, false);
     // Database: no chevron. The chevron is this screen's affordance for "tapping does something"
     // (USB mode has one and acts), and this row has no arm in settings_activate — so a chevron here
     // promised a rebuild that never ran.
-    y = srow(c, t, f, y, sel == 7, "Database", "—", false);
+    y = srow(c, t, f, y, sel == 8, "Database", "—", false);
     // Battery care = Sony "Itawari" charging (caps ~90%). Live On/Off toggle (no chevron — it acts
     // in place), wired to PowerMgrServiceClient::EnableItawariCharging via the shell.
     y = srow(c, t, f, y, sel == ROW_BATTERY, "Battery care", if v.battery_care { "ON · 90%" } else { "OFF" }, false);
@@ -183,6 +246,6 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     y = srow(c, t, f, y, sel == ROW_BOOT_STOCK, "Boot to stock", v.boot_stock, true);
 
     y = eyebrow(c, t, f, y + 14, "ABOUT");
-    y = srow(c, t, f, y, sel == 11, "Firmware", FIRMWARE_LABEL, false);
-    let _ = srow(c, t, f, y, sel == 12, "Model", "SONY NW-A55", false);
+    y = srow(c, t, f, y, sel == 12, "Firmware", FIRMWARE_LABEL, false);
+    let _ = srow(c, t, f, y, sel == 13, "Model", "SONY NW-A55", false);
 }

@@ -4,6 +4,12 @@ Forward-looking companion to [`STATUS.md`](STATUS.md) (which is the *current-sta
 This is **what's left and in what order**, written so the next working session — especially the
 first one with the device — is a straight line, not a guessing game.
 
+> **What stands between this tree and a device the owner can rely on:**
+> [`../docs/PRODUCTION_READINESS.md`](../docs/PRODUCTION_READINESS.md) (2026-07-27). Short version:
+> **25 commits have landed since the last hardware-verified one** (`eb07f7f`), several of them on
+> the boot path; the headline LDAC feature has never been executed; and shuffle/repeat still draw
+> as real while doing nothing.
+
 Last audited: **2026-07-26** (full project audit — [`../docs/AUDIT_2026-07-26.md`](../docs/AUDIT_2026-07-26.md)).
 Prior: 2026-07-25, 2026-06-30. Three commits have landed since the 07-03 round; the tree is clean
 and every offline gate passes (71 host tests, 18-case launcher matrix, GLIBC ≤2.23, qemu preflight).

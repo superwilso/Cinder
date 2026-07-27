@@ -1,5 +1,10 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26)
 
+> **Production-readiness gap list (2026-07-27):**
+> [`../docs/PRODUCTION_READINESS.md`](../docs/PRODUCTION_READINESS.md) — what is left before this is
+> a device the owner can rely on with no PC in the room. This file says what *is*; that one says
+> what is *missing*.
+
 > **RESUME POINT (2026-07-26).** Two device sessions have run since the 07-03 round (07-25 and
 > 07-26) and three commits have landed on top of it. The workspace is clean and every offline gate
 > passes: **71 host tests** (40 UI + 21 FFI + 8 DB + 2 font), the 18-case launcher recovery matrix,
@@ -401,6 +406,24 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   moving, so idle costs zero IPC. Changing the loop rate also exposed that the ~1 Hz housekeeping
   and battery read were paced by *iteration count* (silently assuming 60 Hz); both are now
   wall-clock paced, so the sleep timer and USB debounce keep their real timing at any rate.
+- **Accent colour choice** (2026-07-27, Settings ▸ DISPLAY): six accents — AMBER (Cinder's own,
+  the default), CRIMSON, VIOLET, AZURE, MINT and BONE (monochrome, the accent *is* the ink). Only
+  the accent tokens move: `acc`, `acc_ink` and `row_sel`. The neutrals — the warm near-black bg,
+  the panel, the hairlines, the ink — are the Cinder identity and are the same in all six, so a
+  colour choice cannot wreck the design or make anything unreadable, and a test asserts it
+  (`accents_change_only_the_accent_tokens`). Picking AMBER reproduces the original palette **byte
+  for byte**, also pinned by a test, so a device whose owner never opens the row sees no change at
+  all. Each accent carries its own hand-picked night twin, `row_sel` wash and `acc_ink` rather than
+  deriving them: a blend that looks right under amber goes muddy under mint, and near-black ink
+  reads differently on a bright accent than a dark one — those are contrast decisions, not
+  arithmetic. The row draws **all six swatches at once** and a tap selects that colour directly.
+  Cycling would have meant stepping blind through five wrong answers to see the sixth; there is
+  room on a touch screen to just offer them. The swatch geometry is a single shared source
+  (`settings::swatch_x`) read by both the render and `accent_hit`, and a test sweeps every pixel to
+  prove the hit band never leaks into the neighbouring rows. The physical Select button still
+  cycles the row. Render-only: no shell action, no Sony service, no FFI symbol — one repaint and a
+  settings write. Persisted as `accent=` in `cinder_settings.conf`; an out-of-range value snaps to
+  the default rather than stranding the UI on a colour the picker can't reach.
 - **A–Z jump rail** (2026-07-27): an alphabet strip down the right edge of the Library list — tap a
   letter to jump. On a 304-album library the alternative is ~20 screens of flicking. Letters with no
   rows are drawn faint, so the rail doubles as a map of what the library holds, and tapping one is a

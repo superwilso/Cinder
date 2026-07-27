@@ -12,6 +12,7 @@ use crate::menu::MenuItem;
 use crate::model::{Library, SongRow};
 use crate::now_playing::NowPlaying;
 use crate::sound::Sound;
+use crate::theme::Accent;
 use crate::{data, Canvas, FontSet, Theme};
 
 /// Logical buttons (the physical NW-A50 keys, mapped from raw codes by the backend).
@@ -177,6 +178,9 @@ struct ShelfPin {
 pub struct App {
     stack: Vec<Screen>,
     pub night: bool,
+    /// The chosen accent colour. Purely a render input — no shell action, no Sony service, so
+    /// changing it costs one repaint and a settings write.
+    pub accent: Accent,
     pub locked: bool,
     pub playing: bool,
     menu_idx: usize,
@@ -300,6 +304,7 @@ impl Default for App {
             stack: vec![Screen::Lock],
             album_cover: None,
             night: false,
+            accent: Accent::default(),
             locked: true,
             playing: true,
             menu_idx: 0,
@@ -569,6 +574,12 @@ impl App {
                 self.night = !self.night;
                 vec![Action::ThemeChanged(self.night)]
             }
+            crate::settings::ROW_ACCENT => {
+                // Select (the physical button) cycles; a tap on a specific swatch is handled in
+                // `tap` and picks that colour outright. Render-only, so nothing for the shell.
+                self.accent = self.accent.next();
+                vec![]
+            }
             crate::settings::ROW_VIZ => {
                 self.cycle_viz();
                 vec![]
@@ -804,6 +815,15 @@ impl App {
                 vec![]
             }
             Screen::Settings => {
+                // A swatch tap picks that accent directly. Checked first because it lives inside
+                // the Accent row's band, and falling through to `settings_activate` would advance
+                // the cycle by one instead of honouring the colour under the finger.
+                if let Some(i) = crate::settings::accent_hit(x, y, self.settings_scroll_px) {
+                    self.settings_sel = crate::settings::ROW_ACCENT;
+                    self.boot_stock_armed = false; // same disarm rule as any other row touch
+                    self.accent = Accent::from_index(i);
+                    return vec![];
+                }
                 if let Some(row) = crate::settings::row_at(y, self.settings_scroll_px) {
                     self.settings_sel = row;
                     return self.settings_activate();
@@ -1636,7 +1656,7 @@ impl App {
     /// Draw the current screen. Live now-playing data comes from the shell (`np`); list/
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
-        let theme = if self.night { Theme::night() } else { Theme::day() };
+        let theme = Theme::for_mode(self.night, self.accent);
         match self.current() {
             Screen::Lock => {
                 let lk = crate::lock::Lock {
@@ -1803,6 +1823,7 @@ impl App {
                     brightness: &brightness_lbl,
                     screen_off: &screen_off_lbl,
                     boot_stock: boot_stock_lbl,
+                    accent: self.accent,
                 };
                 crate::settings::render(c, &theme, fonts, self.settings_sel, self.settings_scroll_px, &view)
             }
@@ -2092,6 +2113,15 @@ impl App {
     pub fn set_brightness(&mut self, level: u8) {
         self.brightness = level.clamp(1, 5);
     }
+    /// The accent's cycle index — what gets persisted.
+    pub fn accent(&self) -> u8 {
+        self.accent.index() as u8
+    }
+    /// Restore a persisted accent. Out-of-range snaps to the default (see `Accent::from_index`),
+    /// so a corrupt settings file can never restore a colour the picker can't reach.
+    pub fn set_accent(&mut self, i: u8) {
+        self.accent = Accent::from_index(i as usize);
+    }
     pub fn bt_codec(&self) -> u8 {
         self.bt_codec
     }
@@ -2378,6 +2408,91 @@ mod tests {
         }
         hit.sort();
         assert_eq!(hit, (0..ROWS).collect::<Vec<_>>(), "some rows can never be tapped");
+    }
+
+    /// Tapping a swatch must select THAT accent, not advance the cycle by one. This is the whole
+    /// reason the swatches are hit-tested separately from the row.
+    #[test]
+    fn tapping_an_accent_swatch_picks_that_colour() {
+        use crate::settings::{accent_hit, ROW_ACCENT};
+        let mut a = unlocked();
+        a.go(Screen::Settings);
+        // Find a scroll offset where the Accent row is on screen, then the y of one of its swatches.
+        let scroll = (0..=crate::settings::max_scroll_px())
+            .find(|s| (0..crate::canvas::H as i32).any(|y| crate::settings::row_at(y, *s) == Some(ROW_ACCENT)))
+            .expect("the Accent row must be reachable at some scroll");
+        a.settings_scroll_px = scroll;
+        let y = (0..crate::canvas::H as i32)
+            .find(|y| crate::settings::row_at(*y, scroll) == Some(ROW_ACCENT))
+            .unwrap() + 28; // middle of the row
+        for want in 0..Accent::COUNT {
+            // Sweep x to find a pixel that really is inside swatch `want`, then tap exactly there.
+            let x = (0..crate::canvas::W as i32)
+                .find(|x| accent_hit(*x, y, scroll) == Some(want))
+                .unwrap_or_else(|| panic!("swatch {want} has no tappable pixel"));
+            let acts = a.tap(x, y);
+            assert!(acts.is_empty(), "accent is render-only; it must not emit a shell action");
+            assert_eq!(a.accent(), want as u8, "tapping swatch {want} selected something else");
+            assert_eq!(a.settings_sel, ROW_ACCENT, "the tap should focus the Accent row");
+        }
+    }
+
+    /// The physical Select button still cycles the row — the swatches are the shortcut, not the
+    /// only way in (there is no d-pad on this device, but Select exists and Settings is keyboard-
+    /// navigable).
+    #[test]
+    fn select_on_the_accent_row_cycles() {
+        let mut a = unlocked();
+        a.go(Screen::Settings);
+        a.settings_sel = crate::settings::ROW_ACCENT;
+        for i in 0..Accent::COUNT {
+            assert_eq!(a.accent() as usize, i);
+            a.press(Button::Select);
+        }
+        assert_eq!(a.accent(), 0, "the cycle must wrap back to the default");
+    }
+
+    /// A tap on a swatch counts as touching a row other than Boot to stock, so it has to disarm a
+    /// pending restart confirmation — otherwise picking a colour could leave the device one stray
+    /// tap from rebooting.
+    #[test]
+    fn picking_an_accent_disarms_boot_to_stock() {
+        use crate::settings::{accent_hit, ROW_ACCENT};
+        let mut a = unlocked();
+        a.go(Screen::Settings);
+        a.settings_sel = crate::settings::ROW_BOOT_STOCK;
+        assert!(a.settings_activate().is_empty(), "first tap only arms");
+        assert!(a.boot_stock_armed);
+        let scroll = (0..=crate::settings::max_scroll_px())
+            .find(|s| (0..crate::canvas::H as i32).any(|y| crate::settings::row_at(y, *s) == Some(ROW_ACCENT)))
+            .unwrap();
+        a.settings_scroll_px = scroll;
+        let y = (0..crate::canvas::H as i32)
+            .find(|y| crate::settings::row_at(*y, scroll) == Some(ROW_ACCENT))
+            .unwrap() + 28;
+        let x = (0..crate::canvas::W as i32).find(|x| accent_hit(*x, y, scroll).is_some()).unwrap();
+        a.tap(x, y);
+        assert!(!a.boot_stock_armed, "picking a colour left the restart armed");
+    }
+
+    /// The swatch band must sit inside the Accent row and nowhere else — a swatch hit-test that
+    /// leaked into the neighbouring rows would swallow taps on Theme or Visualiser type.
+    #[test]
+    fn accent_swatches_do_not_leak_into_other_rows() {
+        use crate::settings::{accent_hit, row_at, ROW_ACCENT};
+        for scroll in 0..=crate::settings::max_scroll_px() {
+            for y in 0..crate::canvas::H as i32 {
+                for x in (0..crate::canvas::W as i32).step_by(3) {
+                    if accent_hit(x, y, scroll).is_some() {
+                        assert_eq!(
+                            row_at(y, scroll),
+                            Some(ROW_ACCENT),
+                            "swatch hit at ({x},{y}) scroll {scroll} is outside the Accent row"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Scrolling to the bottom must actually bring the last row fully on screen — a max_scroll that
@@ -2936,13 +3051,17 @@ mod tests {
         }
         a.press(Button::Select);
         assert_eq!(a.current(), Screen::Settings);
-        // cursor down to the Visualiser row (ROW_VIZ=1) and cycle it
-        a.press(Button::Down); // sel 0 -> 1 (Visualiser)
+        // cursor down to the Visualiser row and cycle it. Walk to the constant rather than
+        // pressing a fixed number of times, so inserting a DISPLAY row above it can't silently
+        // retarget this test at whatever ends up in that slot.
+        while a.settings_sel < crate::settings::ROW_VIZ {
+            a.press(Button::Down);
+        }
         assert_eq!(a.settings_sel, crate::settings::ROW_VIZ);
         let k1 = a.viz_kind();
         a.press(Button::Select);
         assert_eq!(a.viz_kind(), (k1 + 1) % crate::viz::COUNT);
-        // down to Visualiser anim (ROW_VIZ_ANIM=2) and toggle it
+        // down to Visualiser anim and toggle it
         a.press(Button::Down);
         assert_eq!(a.settings_sel, crate::settings::ROW_VIZ_ANIM);
         let on = a.viz_on();

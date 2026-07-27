@@ -146,7 +146,7 @@ fn main() {
             ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, false)),
             ("sound_bypass", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, true)),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_on: true, usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY" })),
+                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_on: true, usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY", accent: cinder_ui::Accent::Amber })),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
             ("pairing", &|c: &mut Canvas| pairing::render(c, &theme, &fonts, 2, Some(1))),
             ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, true)),
@@ -162,6 +162,28 @@ fn main() {
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, &format!("{screen}_{name}"));
         }
+    }
+
+    // Accent sweep: every selectable colour, on the two screens where the accent does the most
+    // work — Now Playing (progress fill, transport, badge) and the Settings picker itself. Rendered
+    // day-side; the night halves come out of the same table, so a night-only mistake would be a
+    // table typo, and `theme::tests::night_accents_are_dimmer_than_day` already guards that.
+    for a in cinder_ui::Accent::ALL {
+        let theme = Theme::day_with(a);
+        let lower = a.name().to_lowercase();
+
+        let mut c = Canvas::new();
+        now_playing::render(&mut c, &theme, &fonts, &np);
+        cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+        save(&c, &format!("accent_{lower}_now_playing"));
+
+        let mut c = Canvas::new();
+        settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
+            &settings::SettingsView { night: false, viz_name: "Bars", viz_on: true, usb_dac: false,
+                battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
+                screen_off: "OFF", boot_stock: "SONY", accent: a });
+        cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+        save(&c, &format!("accent_{lower}_settings"));
     }
 
     // Navigator demo: drive the nav state machine through a press sequence and dump the

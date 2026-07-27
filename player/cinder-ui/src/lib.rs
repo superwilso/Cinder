@@ -38,4 +38,4 @@ pub mod nav;
 pub use canvas::{Canvas, H, W};
 pub use model::Library;
 pub use text::{Family, FontSet, TextStyle, Weight};
-pub use theme::Theme;
+pub use theme::{Accent, Theme};
