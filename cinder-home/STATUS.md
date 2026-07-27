@@ -172,6 +172,31 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 `../analysis/RE_playerservice_sound.md` (§10 audit, §11 bullet-proofing).
 
 ### ✅ Fully functional (real device / real data)
+- **AUDIO PLAYBACK** (2026-07-27) — measured on device: position advancing 1000 ms/s, listener
+  callbacks 1/s with real position + duration, `ALSA pcm4p` reaching `RUNNING`. Three bugs had to
+  fall, and the first one is the important one:
+  1. **Nothing drove `pst::core::Framework`'s event loop.** Sony's PlayerService client is
+     asynchronous — every call marshals a request and the *reply* is dispatched by that looper.
+     This file already noted that easel's pump never fires for our non-Qt `CuiAppModule`, but the
+     consequence went unnoticed for weeks: with no pump, every out-param stayed **uninitialised**,
+     so the client handed back stack garbage. `Connect` "returned" a `0xb6xxxxxx` pointer,
+     `IsConnected()` read uninitialised stack as *true*, and `SetTrackSequence` "failed with code
+     99". None of those were real error codes, and the service logged nothing at all because no
+     transaction ever completed. `cinder_audio_pump_start()` (called from `deferred_up`, after
+     `app.run()` has started the Framework — calling `GetReference()` earlier segfaults) fixes the
+     whole class of symptom. Wampy's `pstserver` drives the same loop the same way.
+  2. **The SoundService "Music" track leaked.** SoundService allows exactly one track per type
+     (`SoundServiceImpl.cc:248 "Cannot create multiple tracks that have same type"`). A process
+     that exits without `ClosePlayer` leaves it held inside the long-lived `hagodaemon`, and every
+     later attempt then dies at `AudioTrackFactory::Create()` → `WMX_AudioOutput::Open()`
+     (`0x80001009`) — a track that loads and shows correct metadata but is silent forever.
+  3. **`SetTrackSequence` leaves the OMX graph at Idle, and Idle → Executing is illegal.**
+     `play_tracks` now does Pause then Play. `playstate_t` is calibrated from the service's own
+     logcat, one value per run: `0` = Stop (no transition at all), `1` = Pause (`GapPlayer_pause`,
+     Idle → `OMX_StatePause`, and where the track is actually created), `2` = Play.
+  **3.5 mm goes out over the hardware DAC, not the CPU**: the PCM device that opens is `hw:0,4` =
+  `cxd3778gf-icx-lowpower`, the low-power S-Master path, so this is already the battery-efficient
+  route. Diagnosed with `cinder-probe --pump`, which is kept for re-testing.
 - **Boot & shell**: launches as the easel `type:Home` app, full lifecycle, dirty-flag framebuffer
   paint (480×800 XRGB8888, triple-buffered, blit bounded against the mapping).
 - **Text / non-Latin tags** (2026-07-26): the bundled faces are Latin-only — Hanken Grotesk has
@@ -283,10 +308,19 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   `/contents/cinder_volume.conf` still fully overrides (see `deploy/cinder_volume.conf.example`);
   wrong-hardware safety: an unknown control name makes `amixer cset` fail → keys stay HUD-only.
   *Pending: one on-device verify that Vol± audibly changes output.*
-- **Now Playing progress bar**: now a **live play-through estimate** (DB duration + a local
-  play-clock that advances 1 s/tick while playing, resets on track change) — moves the bar +
-  elapsed/remaining. It can't see seeks or a mid-track start; the exact PlayStatus position offsets
-  (only the URI @ +0x6c is mapped so far) would make it seek-accurate.
+- **Now Playing progress bar**: **real position from the service** (2026-07-27). The
+  `PlayEventListener` fires `onPlayTimeUpdated(cur_ms, total_ms)` about once a second; cinder-ffi
+  interpolates between updates so the bar is smooth, and re-anchors on every update, so it follows
+  seeks, mid-track starts and wrong tag durations — all of which the old local play-clock estimate
+  could not. The estimate survives only as the fallback for before the first callback arrives.
+  Play/pause state also comes from observed position movement rather than from the shell's
+  optimistic view of the last transport action it sent.
+- **Drag-to-seek**: dragging (or tapping) the Now Playing progress rail seeks. The rail geometry is
+  a single shared source (`now_playing::RAIL_*`) used by the render AND the hit test, with a
+  52 px grab band that deliberately stops short of the transport row so it can never steal a
+  play/pause tap; a contact that starts on the rail is routed entirely to the scrub, so it can't
+  also fire the horizontal track-skip swipe. *Pending one on-device verify: `SeekTime`'s
+  `media_origin_t::Begin` is still assumed to be 0 (the only unverified value left in this path).*
 - **VPT / DC-Phase mode**: On/Off reaches the DSP, but the **specific mode** (Studio/Club/Concert Hall,
   Standard/Low A/B) is on/off-only — the mode enum values are device-gated (TBD).
 - **Power button**: toggles the **screen/backlight on/off** (panel dark, app keeps running); it does

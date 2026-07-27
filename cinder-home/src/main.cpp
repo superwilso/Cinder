@@ -544,6 +544,12 @@ static bool  g_drag_active = false;
 static int   g_drag_last_uy = 0;
 static float g_drag_vel = 0.0f;
 static long  g_drag_last_ms = 0;
+// Drag-to-seek on the Now Playing progress rail. Decided at finger-DOWN (cinder_scrub_hit) and,
+// once set, this contact belongs entirely to the scrub: no tap, no list drag, no swipe. That
+// exclusivity matters — the rail band overlaps the horizontal-swipe area that skips tracks, so a
+// scrub gesture would otherwise also fire a Next/Prev on release.
+static bool  g_scrub_active = false;
+static bool  g_scrub_tested = false;   // has this contact been offered to cinder_scrub_hit yet?
 static long now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1304,7 +1310,15 @@ void carry_out(int act) {
 // Drain pending input from every node; map raw code -> logical button -> navigator -> action.
 // Classify a finished contact (finger-up), from BTN_TOUCH=0 or a type-A empty-frame lift.
 static void touch_release() {
-    if (g_touch_down && g_drag_active) {
+    if (g_touch_down && g_scrub_active) {
+        // Drag-to-seek ends: ask cinder-ffi where the finger left the rail and seek there.
+        int ms = cinder_scrub_end();
+        if (ms >= 0) {
+            std::fprintf(stderr, "[cinder-home] seek to %d ms\n", ms);
+            int rc = cinder_audio_seek_ms(ms);
+            if (rc != 0) clog_("touch: seek REJECTED by PlayerService");
+        }
+    } else if (g_touch_down && g_drag_active) {
         // Live drag ends: hand the measured velocity to the fling (unless the finger held
         // still before lifting — stale velocity must not fling).
         if (now_ms() - g_drag_last_ms <= 120 && (g_drag_vel > 220.0f || g_drag_vel < -220.0f))
@@ -1332,6 +1346,7 @@ static void touch_release() {
     }
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
     g_drag_active = false; g_drag_vel = 0.0f;
+    g_scrub_active = false; g_scrub_tested = false;
 }
 
 // Called on every touch position update while the contact is down: promote a mostly-vertical
@@ -1339,6 +1354,24 @@ static void touch_release() {
 static void touch_drag_motion() {
     if (!g_touch_down || g_touch_start_x < 0 || g_touch_start_y < 0 || g_touch_cur_y < 0) return;
     int uy = touch_ui_y(g_touch_cur_y);
+    // Classify ONCE per contact, on the first motion after both coordinates are known (X and Y
+    // arrive as separate events, so finger-down alone doesn't have a position yet). The hit test
+    // uses the START point: a scrub only begins if the finger LANDED on the rail, so a list drag
+    // that happens to pass over the rail is unaffected.
+    if (!g_scrub_tested) {
+        g_scrub_tested = true;
+        if (cinder_scrub_hit(touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y))) {
+            g_scrub_active = true;
+            cinder_scrub_to(touch_ui_x(g_touch_cur_x));   // a tap on the rail also seeks
+            return;
+        }
+    }
+    if (g_scrub_active) {
+        // Seeking: the bar tracks x only. Never promote to a list drag — vertical wander during a
+        // horizontal scrub must not start scrolling the screen underneath.
+        cinder_scrub_to(touch_ui_x(g_touch_cur_x));
+        return;
+    }
     if (!g_drag_active) {
         int dyt = uy - touch_ui_y(g_touch_start_y);
         int dxt = touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x);
@@ -1447,12 +1480,14 @@ void input_pump() {
                         g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
                         g_touch_saw_pos = false;
                         g_drag_active = false; g_drag_vel = 0.0f;
+                        g_scrub_active = false; g_scrub_tested = false;
                         continue;
                     }
                     if (type == EV_ABS_ && (code == ABS_X_ || code == ABS_MT_POSITION_X_)) {
                         g_touch_cur_x = val; g_touch_saw_pos = true;
                         if (!g_touch_down) {
                             g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1;
+                            g_scrub_active = false; g_scrub_tested = false;
                             cinder_touch_down();   // finger down stops an in-flight fling
                         } else if (g_touch_start_x < 0) g_touch_start_x = val;
                         continue;
@@ -1467,6 +1502,7 @@ void input_pump() {
                         if (val) {
                             if (!g_touch_down) {
                                 g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1;
+                                g_scrub_active = false; g_scrub_tested = false;
                                 cinder_touch_down();
                             }
                         } else {

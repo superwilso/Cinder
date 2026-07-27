@@ -321,6 +321,10 @@ struct Render {
     last_pos: std::time::Instant, // wall-clock anchor for the position estimate (rate-independent)
     real_pos_ms: i64,             // last position from the service; -1 = none seen yet
     real_pos_at: std::time::Instant, // when it arrived (interpolation anchor)
+    // Drag-to-seek: Some(target_ms) while a finger is dragging the progress rail. While set, the
+    // bar/labels show this pending target and incoming position updates are ignored, so the bar
+    // does not fight the finger. The shell issues the actual SeekTime on release.
+    scrub_ms: Option<i64>,
     // Screenshot request: Some(path) => the next rendered frame is also written to `path` as a PNG.
     // Captured from the Canvas BEFORE presentation, so it is identical on the software framebuffer
     // and the GPU/EGL path (under EGL the Mali swapchain owns the panel, so reading /dev/graphics/fb0
@@ -486,6 +490,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         last_pos: std::time::Instant::now(),
         real_pos_ms: -1,
         real_pos_at: std::time::Instant::now(),
+        scrub_ms: None,
         pending_screenshot: None,
         sleep_remaining_ms: 0,
         sleep_fire: false,
@@ -789,6 +794,7 @@ pub extern "C" fn cinder_render_tick() {
         viz_on: r.app.viz_on(), // nav re-injects this too; kept honest here
         // real FFT spectrum if the shell is feeding PCM AND we're animating; else None (synthetic)
         viz_levels: if animate && !r.viz_levels.is_empty() { Some(&r.viz_levels) } else { None },
+        scrubbing: r.scrub_ms.is_some(),
     };
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
     // the list/menu screens from their own state.
@@ -851,7 +857,7 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
             clock: &np.clock, battery: np.battery, elapsed: &np.elapsed, remaining: &np.remaining,
             progress: np.progress, art: &np.art, art_full: None, art_thumb: None,
             liked: np.liked, playing: np.playing, shuffle: np.shuffle, repeat: np.repeat,
-            viz_seed: 2.0, viz_kind: 0, viz_on: false, viz_levels: None,
+            viz_seed: 2.0, viz_kind: 0, viz_on: false, viz_levels: None, scrubbing: false,
         };
         r.canvas.clear_clip();
         let t0 = std::time::Instant::now();
@@ -1610,7 +1616,9 @@ pub extern "C" fn cinder_clock_tick() {
         let now = std::time::Instant::now();
         let dt = now.saturating_duration_since(r.last_pos).as_millis() as i64;
         r.last_pos = now;
-        if r.np.playing && r.cur_duration_ms > 0 && r.play_pos_ms < r.cur_duration_ms {
+        if r.scrub_ms.is_none() && r.np.playing && r.cur_duration_ms > 0
+            && r.play_pos_ms < r.cur_duration_ms
+        {
             // Prefer the real service position, interpolated forward from when it arrived (it
             // lands ~1x/sec, which would otherwise make the bar step visibly). Falling back to
             // the local estimate keeps the bar alive if the listener goes quiet.
@@ -1870,6 +1878,66 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     }
 }
 
+/// Would a touch at (`x`,`y`) start a drag-to-seek? True only on Now Playing, inside the progress
+/// rail's grab band, and only when a track with a known duration is loaded (there is nothing to
+/// seek within otherwise). The shell calls this on finger-DOWN and, if it returns 1, routes the
+/// whole contact to the scrub instead of the usual tap / list-drag / swipe classification.
+#[no_mangle]
+pub extern "C" fn cinder_scrub_hit(x: libc::c_int, y: libc::c_int) -> libc::c_int {
+    let guard = cell().lock().unwrap();
+    let Some(r) = guard.as_ref() else { return 0 };
+    if !r.app.is_now_playing() || r.cur_duration_ms <= 0 {
+        return 0;
+    }
+    let (x, y) = (x as i32, y as i32);
+    let in_band = y >= cinder_ui::now_playing::RAIL_GRAB_TOP
+        && y <= cinder_ui::now_playing::RAIL_GRAB_BOT;
+    // Horizontally generous: the full width is the rail plus its end caps, so a finger slightly
+    // past either end still scrubs to 0% / 100% rather than doing nothing.
+    if in_band && x >= 0 && x <= 480 { 1 } else { 0 }
+}
+
+/// Move an in-progress drag-to-seek to UI x. Returns the target position in ms (>= 0), or -1 if
+/// there is nothing to scrub. Also starts the scrub if it wasn't started yet, so the shell can
+/// just call this on down and on every move.
+#[no_mangle]
+pub extern "C" fn cinder_scrub_to(x: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return -1 };
+    if r.cur_duration_ms <= 0 {
+        return -1;
+    }
+    let frac = cinder_ui::now_playing::rail_fraction(x as i32);
+    let target = (r.cur_duration_ms as f32 * frac) as i64;
+    r.scrub_ms = Some(target);
+    r.play_pos_ms = target;
+    let dur = r.cur_duration_ms;
+    set_progress(&mut r.np, target, dur);
+    r.dirty = true;
+    target as libc::c_int
+}
+
+/// Finish a drag-to-seek. Returns the target ms the shell should SeekTime to, or -1 if no scrub
+/// was active. Clears the scrub so position updates resume; the bar keeps showing the target
+/// until the service reports a position (which it does within ~1 s of the seek landing).
+#[no_mangle]
+pub extern "C" fn cinder_scrub_end() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return -1 };
+    match r.scrub_ms.take() {
+        Some(target) => {
+            // Re-anchor the interpolator on the seek target. Without this, clock_tick would keep
+            // extrapolating from the pre-seek anchor and the bar would jump backwards for the
+            // ~1 s until the next onPlayTimeUpdated lands.
+            r.real_pos_ms = target;
+            r.real_pos_at = std::time::Instant::now();
+            r.dirty = true;
+            target as libc::c_int
+        }
+        None => -1,
+    }
+}
+
 /// Push the REAL play position/duration from PlayerService's PlayEventListener
 /// (`onPlayTimeUpdated(cur_ms, total_ms)`), plus the real play/pause state. This is what makes the
 /// progress bar truthful: it follows seeks and mid-track starts, which the local play-clock
@@ -1894,6 +1962,11 @@ pub extern "C" fn cinder_set_play_position(
     r.np.playing = playing != 0;
     if total_ms > 0 {
         r.cur_duration_ms = total_ms as i64;
+    }
+    // A drag-to-seek owns the bar until the finger lifts: applying the service's (pre-seek)
+    // position here would yank the rail out from under the finger every second.
+    if r.scrub_ms.is_some() {
+        return 0;
     }
     if cur_ms >= 0 {
         r.real_pos_ms = cur_ms as i64;
@@ -2257,5 +2330,33 @@ mod tests {
         assert_eq!(np.elapsed, "3:00");
         assert_eq!(np.remaining, "-0:00");
         assert!((np.progress - 1.0).abs() < 1e-6);
+    }
+
+    // ── drag-to-seek geometry ────────────────────────────────────────────────────────────────
+    // The rail fraction is what turns a finger x into a seek target, so it has to agree exactly
+    // with the drawn rail at both ends. An off-by-a-few-pixels mapping is the difference between
+    // "seek to the end" and "seek to 99%, then the track ends on its own a moment later".
+    #[test]
+    fn rail_fraction_maps_the_drawn_rail_and_clamps_outside_it() {
+        use cinder_ui::now_playing::{rail_fraction, RAIL_W, RAIL_X0};
+        assert_eq!(rail_fraction(RAIL_X0), 0.0);
+        assert_eq!(rail_fraction(RAIL_X0 + RAIL_W), 1.0);
+        assert!((rail_fraction(RAIL_X0 + RAIL_W / 2) - 0.5).abs() < 1e-3);
+        // Outside the rail clamps rather than extrapolating: a thumb landing left of x=24 or
+        // right of the end must mean 0% / 100%, never a negative or >1 seek target.
+        assert_eq!(rail_fraction(0), 0.0);
+        assert_eq!(rail_fraction(479), 1.0);
+        assert_eq!(rail_fraction(-500), 0.0);
+    }
+
+    // The grab band must be thick enough for a thumb but must never reach the transport row —
+    // the play/pause circle is centred at y=692 with radius 44, so anything from 648 is its.
+    #[test]
+    fn rail_grab_band_is_thumb_sized_and_clears_the_transport_row() {
+        use cinder_ui::now_playing::{RAIL_GRAB_BOT, RAIL_GRAB_TOP, RAIL_Y};
+        assert!(RAIL_GRAB_TOP <= RAIL_Y, "band must include the rail itself");
+        assert!(RAIL_GRAB_BOT >= RAIL_Y + 4);
+        assert!(RAIL_GRAB_BOT - RAIL_GRAB_TOP >= 40, "too thin to hit with a thumb");
+        assert!(RAIL_GRAB_BOT < 692 - 44, "band overlaps the play/pause target");
     }
 }

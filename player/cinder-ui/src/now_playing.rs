@@ -13,6 +13,25 @@ use crate::widgets::{fill_rect, hline, right, sty};
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::{Circle, PrimitiveStyle};
 
+// ── Progress-rail geometry — THE single source ────────────────────────────────────────────────
+// Both renders below (loaded + idle) and the drag-to-seek hit test read these. The rail used to be
+// literal numbers in three places; a scrub target that disagrees with the drawn bar by even a few
+// pixels feels broken, so they live here and nowhere else.
+pub const RAIL_Y: i32 = 612;
+pub const RAIL_X0: i32 = 24;
+pub const RAIL_W: i32 = 432;
+/// Vertical grab band for drag-to-seek. The rail itself is 4 px tall — unhittable with a thumb —
+/// so the band spans from just above the rail down through the elapsed/remaining labels. It stops
+/// short of the transport row (centre y 692, radius 44 ⇒ from 648) so it can never steal a
+/// play/pause tap.
+pub const RAIL_GRAB_TOP: i32 = 594;
+pub const RAIL_GRAB_BOT: i32 = 646;
+
+/// Map a UI x coordinate to a 0..1 position along the rail (clamped). Used by the scrub.
+pub fn rail_fraction(x: i32) -> f32 {
+    ((x - RAIL_X0) as f32 / RAIL_W as f32).clamp(0.0, 1.0)
+}
+
 #[derive(Clone, Copy)]
 pub struct NowPlaying<'a> {
     pub title: &'a str,
@@ -37,6 +56,9 @@ pub struct NowPlaying<'a> {
     pub viz_kind: u8,  // which visualiser type (index into viz::from_index)
     pub viz_on: bool,  // master enable — false hides the visualiser entirely (nav injects UI state)
     pub viz_levels: Option<&'a [f32]>, // real per-bar spectrum (0..1) from FFT; None = synthetic
+    /// A drag-to-seek is in progress: `progress`/`elapsed`/`remaining` show the pending TARGET
+    /// rather than the live position, and the rail grows a handle under the finger.
+    pub scrubbing: bool,
 }
 
 fn s(fam: Family, weight: Weight, size: f32, color: embedded_graphics::pixelcolor::Rgb888, tracking: f32) -> TextStyle {
@@ -109,10 +131,19 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     }
 
     // ---------- progress (shared) ----------
-    let (py, px0, pw) = (612, 24, 432);
+    let (py, px0, pw) = (RAIL_Y, RAIL_X0, RAIL_W);
     fill_rect(c, px0, py, pw, 4, t.line);
     let fillw = (pw as f32 * np.progress.clamp(0.0, 1.0)) as i32;
     fill_rect(c, px0, py, fillw, 4, t.acc);
+    // Scrub handle: only while a drag-to-seek is in progress. It gives the finger something to
+    // aim at and makes it obvious the bar is showing a pending target, not the live position.
+    if np.scrubbing {
+        let cx = px0 + fillw;
+        Circle::with_center(Point::new(cx, py + 2), 22)
+            .into_styled(PrimitiveStyle::with_fill(t.acc))
+            .draw(c)
+            .ok();
+    }
     text::draw(c, f, 24.0, 636.0, np.elapsed, &s(Family::Mono, Weight::Regular, 13.0, t.dim, 0.0));
     right(c, f, 456.0, 636.0, np.remaining, &s(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
 
@@ -152,7 +183,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 /// idle screen has to put them in exactly the same places or the controls stop working when
 /// nothing is loaded. Only the *state* differs — empty rail, no times, transport shows play.
 fn idle_chrome(c: &mut Canvas, t: &Theme, f: &FontSet) {
-    fill_rect(c, 24, 612, 432, 4, t.line);
+    fill_rect(c, RAIL_X0, RAIL_Y, RAIL_W, 4, t.line);
 
     let ty = 692.0;
     icons::shuffle(c, 44.0, ty, 24.0, t.faint);

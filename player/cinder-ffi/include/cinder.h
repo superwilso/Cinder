@@ -110,6 +110,15 @@ int  cinder_db_open(const char *path);
  * title/artist/codec/duration from the DB and derives elapsed/remaining from progress (0..1).
  * 0 = resolved, -1 = not found (falls back to filename), -2 = renderer not initialised. */
 int  cinder_set_now_playing_uri(const char *uri, float progress, int playing, int battery);
+/* Drag-to-seek on the Now Playing progress rail. On finger-DOWN the shell asks cinder_scrub_hit;
+ * if it returns 1 the whole contact belongs to the scrub (no tap / list-drag / swipe). Then
+ * cinder_scrub_to(x) on down and on every move makes the bar follow the finger, and
+ * cinder_scrub_end() at release returns the ms to hand to cinder_audio_seek_ms (-1 = nothing to
+ * do). While a scrub is active, incoming position updates are ignored so the bar can't fight the
+ * finger. */
+int  cinder_scrub_hit(int x, int y);
+int  cinder_scrub_to(int x);
+int  cinder_scrub_end(void);
 /* Push the REAL position/duration from PlayerService's PlayEventListener (onPlayTimeUpdated) plus
  * the real play/pause state. Takes priority over the local play-clock estimate and is what makes
  * the progress bar follow seeks and mid-track starts. `cur_ms` < 0 = no update yet (ignored);
