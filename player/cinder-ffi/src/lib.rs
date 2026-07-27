@@ -554,7 +554,7 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     format!(
-        "night={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\n",
+        "night={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\nscreen_off={}\n",
         r.app.night as u8,
         r.app.viz_kind(),
         r.app.viz_on() as u8,
@@ -565,6 +565,7 @@ fn settings_body(r: &Render) -> String {
         r.app.bt_ldac_quality(),
         r.app.volume_level(),
         r.app.brightness(),
+        r.app.screen_off_s(),
     )
 }
 
@@ -1221,6 +1222,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::BtCodecChanged => 17, // shell reads cinder_get_bt_codec/quality + applies via BtTransmitter
         Action::UsbDacToggle(_) => 18, // shell reads cinder_get_usb_dac() + starts/stops the LDAC bridge
         Action::BrightnessChanged(_) => 20, // shell reads cinder_get_brightness() + writes the backlight
+        Action::ScreenOffTimer(_) => 21,    // shell reads cinder_get_screen_off_s() + counts idle
     })
 }
 
@@ -1473,6 +1475,14 @@ pub extern "C" fn cinder_get_brightness() -> libc::c_int {
         .as_ref()
         .map_or(4, |r| r.app.brightness() as libc::c_int)
         .clamp(1, 5)
+}
+
+/// The UI's idle screen-off timeout in SECONDS; 0 = disabled (the default). The shell owns the idle
+/// countdown because only it sees every input event. Read after a CINDER_ACT_SCREEN_OFF_CHANGED
+/// action and at boot.
+#[no_mangle]
+pub extern "C" fn cinder_get_screen_off_s() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.screen_off_s() as libc::c_int)
 }
 
 /// Seed the UI volume from the device's REAL level (raw 0..120 steps — the stock scale, 1:1 with
@@ -1762,6 +1772,13 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_volume(n);
                             loaded |= 2; // bit1: a persisted volume level was restored
+                        }
+                    }
+                    "screen_off" => {
+                        // set_screen_off_s snaps to a known preset, so a hand-edited value can't
+                        // leave the Settings row showing something it can't cycle away from.
+                        if let Ok(n) = v.parse::<u32>() {
+                            r.app.set_screen_off_s(n);
                         }
                     }
                     "brightness" => {

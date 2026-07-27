@@ -1,9 +1,9 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row. Rows:
 //! DISPLAY (Theme, Visualiser type, Visualiser animation, Screen-off, Brightness),
 //! SYSTEM (Storage, Database, Battery care, USB mode), ABOUT (Firmware, Model).
-//! Live rows: Theme, Visualiser type, Visualiser, Sleep timer, Brightness (DISPLAY), Battery care
-//! and USB mode (SYSTEM). Screen-off timer and Database are drawn but NOT wired (they show "—" —
-//! see the dead-UI audit in cinder-home/STATUS.md); Firmware/Model are static info.
+//! Live rows: Theme, Visualiser type, Visualiser, Sleep timer, Screen-off timer, Brightness
+//! (DISPLAY), Battery care and USB mode (SYSTEM). Database is drawn but NOT wired (shows "—" — see
+//! the dead-UI audit in cinder-home/STATUS.md); Firmware/Model are static info.
 
 use crate::icons;
 use crate::text::{self, Family, FontSet, Weight};
@@ -20,6 +20,7 @@ pub const ROW_VIZ: usize = 1;
 pub const ROW_VIZ_ANIM: usize = 2;
 pub const ROW_SLEEP: usize = 3;
 pub const ROW_BATTERY: usize = 8;
+pub const ROW_SCREEN_OFF: usize = 4;
 pub const ROW_BRIGHTNESS: usize = 5;
 pub const ROW_USB_MODE: usize = 9; // tapping enters USB mass-storage (file transfer to a PC)
 
@@ -43,6 +44,8 @@ pub struct SettingsView<'a> {
     pub sleep: &'a str,
     /// Brightness label, e.g. "3 / 5" (nav formats it from its 1..5 level).
     pub brightness: &'a str,
+    /// Idle screen-off label, e.g. "OFF" / "30 SEC" / "2 MIN".
+    pub screen_off: &'a str,
 }
 
 /// Which selectable row is at touch-y `y`? Mirrors `render`'s vertical layout exactly: header
@@ -137,10 +140,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &SettingsVi
     y = srow(c, t, f, y, sel == ROW_VIZ_ANIM, "Visualiser", if v.viz_on { "ON" } else { "OFF" }, false);
     // Row 3: Sleep timer (live) — pauses playback after N min. Shows the live remaining when running.
     y = srow(c, t, f, y, sel == ROW_SLEEP, "Sleep timer", v.sleep, false);
-    // Row 4 is NOT WIRED — still drawn (it marks where a real stock feature goes) but it must not
-    // pretend: the old "30 SEC" was an invented number on a row that does nothing when tapped, so
-    // it read as a setting the user had chosen. "—" is the honest value.
-    y = srow(c, t, f, y, sel == 4, "Screen-off timer", "—", false);
+    // Row 4: idle screen-off (live). Defaults to OFF, so the panel never blanks on its own unless
+    // the user picks a duration.
+    y = srow(c, t, f, y, sel == ROW_SCREEN_OFF, "Screen-off timer", v.screen_off, false);
     // Row 5: brightness is live — tapping cycles 1..5 and the shell writes the backlight node.
     y = srow(c, t, f, y, sel == ROW_BRIGHTNESS, "Brightness", v.brightness, false);
 

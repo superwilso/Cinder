@@ -315,6 +315,18 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   could not. The estimate survives only as the fallback for before the first callback arrives.
   Play/pause state also comes from observed position movement rather than from the shell's
   optimistic view of the last transport action it sent.
+- **Screen-off timer** (2026-07-27): blanks the panel after 15/30/60/120 s of no input, to stop
+  paying for the backlight *and* the frame. **Off by default** — an idle blank is opt-in, because a
+  failed wake looks like a dead device. Three things make it safe: the auto-off path does **not**
+  sleep the touch controller (unlike the Power-button path — a sleeping controller reports nothing,
+  so wake-on-touch would be impossible); a waking touch is **consumed**, so waking can't also
+  activate whatever is under the finger; and the physical **Power button still wakes it** regardless,
+  an escape that depends on strictly less than the touch stack it rescues. Keys wake *and* are
+  delivered (transport/volume work whether or not you can see the screen). It never fires over the
+  USB-MSC modal, which is the only indication the volume is handed to the PC.
+  The render loop now also **skips painting while the panel is dark** (either cause) — with the
+  visualiser running that was a full repaint + 4.6 MB blit every 16 ms, i.e. most of what the timer
+  is meant to save; the wake path forces a repaint so nothing stale shows.
 - **Brightness** (2026-07-27): the Settings row cycles 5 levels and writes the panel backlight,
   reusing the proven auto-detected node (the same one night dimming uses), as a percentage of its
   own `max_brightness` so it works whatever the raw scale is. Persisted, and applied at boot.
@@ -366,10 +378,8 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 >   already pre-shuffles queues itself for the Library shuffle bands.
 > - **Bluetooth radio toggle / Disconnect**: `Action::BtToggle` maps to no `CINDER_ACT_*` at all.
 > - **Bluetooth "Pair new device"**: `BtHit::Pair` is hit-tested and returns `vec![]`.
-> - Settings **Screen-off timer** and **Database**: no arm in `settings_activate`.
->   (**Brightness is now wired** — see Functional.) A screen-off timer is deliberately NOT wired
->   yet: taps are dropped while the panel is dark (`g_screen_on`), so an idle blank would need a
->   verified wake-on-touch path or the device looks dead — not something to ship untested.
+> - Settings **Database**: no arm in `settings_activate`. (**Brightness** and the **Screen-off
+>   timer** are now wired — see Functional.)
 >
 > **Unreachable / dead plumbing:**
 > - `pairing.rs` renders a complete pairing screen, but **there is no `Screen::Pairing`** — it is

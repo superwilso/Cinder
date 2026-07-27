@@ -73,7 +73,9 @@ typedef enum {
     /* User left the USB mass-storage modal (Back): remount /contents and restore the USB mode. */
     CINDER_ACT_EXIT_USB_MSC = 19,
     /* Panel brightness changed: read cinder_get_brightness() (1..5) and write the backlight. */
-    CINDER_ACT_BRIGHTNESS_CHANGED = 20
+    CINDER_ACT_BRIGHTNESS_CHANGED = 20,
+    /* Idle screen-off timeout changed: read cinder_get_screen_off_s() (seconds, 0 = off). */
+    CINDER_ACT_SCREEN_OFF_CHANGED = 21
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -179,6 +181,9 @@ int  cinder_get_bt_ldac_quality(void);
  * action and at boot, then map it onto the backlight node. Level 1 must stay READABLE — if the
  * lowest setting blanks the panel, the screen needed to turn it back up is unusable. */
 int  cinder_get_brightness(void);
+/* Idle screen-off timeout in SECONDS; 0 = disabled (the default). The shell owns the countdown
+ * because only it sees every input event. Read after CINDER_ACT_SCREEN_OFF_CHANGED and at boot. */
+int  cinder_get_screen_off_s(void);
 /* Is USB-DAC mode engaged? (1/0). Read after a CINDER_ACT_USBDAC_LDAC action to start/stop the LDAC
  * bridge + switch the USB gadget to UAC, without disconnecting Bluetooth. */
 int  cinder_get_usb_dac(void);

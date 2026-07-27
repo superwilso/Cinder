@@ -203,6 +203,8 @@ bool g_settings_loaded = false; // did cinder_settings_load find a saved file? (
 bool g_volume_restored = false; // did it restore a persisted volume level? (→ push to hw, not seed)
 void set_backlight(int night); // night=minimal/day=normal; boot forces day, toggle matches theme
 void recompute_day_level();   // map the UI's 1..5 brightness onto the node's day level (no write)
+extern long g_last_input_ms;  // idle-screen-off clock; seeded by render_up, defined with the input state
+long now_ms();                // CLOCK_MONOTONIC ms (defined with the touch state, below)
 bool g_render_ready = false;   // framebuffer/renderer open? (pump must not tick before this)
 easel::CuiAppModule* g_cui = nullptr;   // the UI module — used to drive the pump (OnPumpTrigger)
 easel::ApplicationBase* g_app = nullptr; // the app — for StopBootAnimation() (stop the boot-anim overlay)
@@ -268,6 +270,10 @@ void render_up() {
     // is 15% of max, so even the dimmest persisted setting comes up readable.
     recompute_day_level();
     set_backlight(0);
+    // Start the idle clock NOW. It defaults to 0, which reads as "last input was at time zero", so
+    // a persisted screen-off timeout would otherwise blank the panel on the first housekeeping tick,
+    // before the user has touched anything.
+    g_last_input_ms = now_ms();
     clog_("render_up: DONE (renderer ready)");
     // From here the render_driver worker thread owns SIGALRM (per-frame watchdog + run_guarded).
     // Block SIGALRM on THIS (main) thread first: main is about to get stuck in easel's OnForeground
@@ -554,7 +560,7 @@ static long  g_drag_last_ms = 0;
 // scrub gesture would otherwise also fire a Next/Prev on release.
 static bool  g_scrub_active = false;
 static bool  g_scrub_tested = false;   // has this contact been offered to cinder_scrub_hit yet?
-static long now_ms() {
+long now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
@@ -1011,13 +1017,59 @@ void touch_set_sleep(int slp) {
     if (!slp) clog_("input: touch WAKE — no touch sleep node found (harmless: the held evdev grab keeps events flowing; screen-off tap-drop is handled in input_pump)");
 }
 
+// ── Idle screen-off (opt-in, Settings > Screen-off timer) ─────────────────────────────────────
+// Blanks the BACKLIGHT after N seconds with no input, to save power (goal #1). Two rules make this
+// safe enough to ship without a device to test on:
+//
+//  1. It is OFF by default. Nothing changes unless the user picks a duration, so the worst case is
+//     opt-in rather than inflicted on every boot.
+//  2. The auto-off path does NOT sleep the touch controller, unlike the Power-button path. A
+//     sleeping controller reports nothing, so wake-on-touch would be impossible and a dark panel
+//     would look like a dead device. Keeping it awake costs a little current; the backlight is the
+//     dominant draw anyway.
+//
+// And the escape ladder still holds: even if wake-on-touch fails entirely, the physical Power
+// button restores the screen. That escape depends on strictly less than the thing it rescues (a
+// key event vs. the whole touch stack).
+static bool g_screen_auto_off = false;   // dark because of the idle timer (not the Power button)
+long g_last_input_ms = 0;                // when we last saw ANY input event (see the fwd decl above)
+
+// Blank the panel WITHOUT sleeping the touch controller, so a touch can wake it.
+static void screen_auto_off() {
+    if (!g_screen_on) return;
+    g_screen_on = false;
+    g_screen_auto_off = true;
+    // Drop any in-flight contact so the waking touch starts a fresh gesture.
+    g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
+    g_drag_active = false; g_drag_vel = 0.0f;
+    g_scrub_active = false; g_scrub_tested = false;
+    if (!g_bl_read) load_bl_cfg();
+    if (g_bl.valid) {
+        FILE* f = std::fopen(g_bl.path, "w");
+        if (f) { std::fputc('0', f); std::fclose(f); }
+    }
+    clog_("screen: idle timeout -> panel off (touch or Power wakes it)");
+}
+
+// Wake from an idle blank. No-op unless WE turned it off: a Power-button blank must stay off until
+// Power is pressed again (that is the pocket-safe case, and the Hold switch's job otherwise).
+static void screen_auto_wake() {
+    if (!g_screen_auto_off) return;
+    g_screen_auto_off = false;
+    g_screen_on = true;
+    apply_backlight();
+    cinder_force_dirty();   // the render loop skipped painting while dark — repaint immediately
+    clog_("screen: woken by input");
+}
+
 void screen_toggle() {
+    g_screen_auto_off = false;   // an explicit Power press takes ownership of the panel state
     g_screen_on = !g_screen_on;
     touch_set_sleep(g_screen_on ? 0 : 1);   // stock behaviour: TS sleeps with the panel (battery)
     // Drop any in-flight contact: the sleeping controller never sends its lift, and a stale
     // "down" would make the next touch classify as a drag from the old start point.
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
-    if (g_screen_on) { apply_backlight(); return; }
+    if (g_screen_on) { apply_backlight(); cinder_force_dirty(); return; }
     if (!g_bl_read) load_bl_cfg();
     if (g_bl.valid) {
         FILE* f = std::fopen(g_bl.path, "w");
@@ -1323,6 +1375,12 @@ void carry_out(int act) {
             // night/day toggled -> set the panel backlight (night = minimal light), guarded.
             run_guarded("carry_out: backlight (theme)", 4, apply_backlight);
             break;
+        case CINDER_ACT_SCREEN_OFF_CHANGED:
+            // Nothing to apply now — the countdown lives in the pump and reads the value each tick.
+            // Just treat the change itself as activity so picking a short timeout doesn't blank the
+            // screen a moment later while the user is still reading the row.
+            g_last_input_ms = now_ms();
+            break;
         case CINDER_ACT_BRIGHTNESS_CHANGED:
             // Settings Brightness row cycled 1..5 → recompute the day level + rewrite the node.
             run_guarded("carry_out: backlight (brightness)", 4, apply_brightness);
@@ -1515,16 +1573,24 @@ void input_pump() {
                 // to BTN_TOUCH panels AND type-A MT (contact begins on the first position; a lift is
                 // BTN_TOUCH=0 or a SYN_REPORT frame that carried no position).
                 if (g_evfds[i] == g_touch_fd) {
-                    // Panel dark (Power toggle): taps must not navigate invisibly. Stock sleeps
-                    // the controller; this fw has no sleep node (see touch_set_sleep), so the
-                    // events keep coming — drop them and any in-flight contact until screen-on.
+                    // Panel dark: taps must not navigate invisibly. Stock sleeps the controller;
+                    // this fw has no sleep node (see touch_set_sleep), so the events keep coming —
+                    // drop them and any in-flight contact until screen-on.
+                    //
+                    // EXCEPT when the blank was the idle timer's: then this touch is the wake
+                    // gesture. It wakes the panel and is CONSUMED (not delivered), so waking can
+                    // never also activate whatever happens to be under the finger. A Power-button
+                    // blank is left alone — that one stays off until Power is pressed again.
                     if (!g_screen_on) {
+                        g_last_input_ms = now_ms();
+                        if (g_screen_auto_off) screen_auto_wake();
                         g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
                         g_touch_saw_pos = false;
                         g_drag_active = false; g_drag_vel = 0.0f;
                         g_scrub_active = false; g_scrub_tested = false;
                         continue;
                     }
+                    g_last_input_ms = now_ms();   // live touch = activity, hold off the idle blank
                     if (type == EV_ABS_ && (code == ABS_X_ || code == ABS_MT_POSITION_X_)) {
                         g_touch_cur_x = val; g_touch_saw_pos = true;
                         if (!g_touch_down) {
@@ -1607,6 +1673,16 @@ void input_pump() {
                 if (kc < 0 || kc >= keymap_size()) continue;
                 int btn = g_keymap[kc];
                 if (btn < 0) continue;
+                // Any mapped key press counts as activity for the idle blank. A key ALSO wakes an
+                // idle blank — and unlike a touch it is still delivered: the physical buttons do
+                // the same thing whether or not you can see the screen (transport, volume), so
+                // swallowing them would make the first press after an idle blank feel broken.
+                // Power is the exception and needs no special case: cinder_input maps it to
+                // CINDER_ACT_SLEEP -> screen_toggle, which takes ownership of the panel state.
+                if (val == 1) {
+                    g_last_input_ms = now_ms();
+                    if (g_screen_auto_off && btn != CINDER_BTN_POWER) screen_auto_wake();
+                }
                 if (btn == CINDER_BTN_VOLUP || btn == CINDER_BTN_VOLDOWN) {
                     if (val == 1) { g_vol_btn = btn; g_vol_down_ms = now_ms(); }
                     g_vol_last_ms = now_ms();   // also swallows a kernel repeat's slot
@@ -1731,6 +1807,18 @@ void* render_driver(void*) {
         if (n < 600) cinder_force_dirty();
         else if (n % 60 == 0) cinder_force_dirty();
 
+        // Panel dark => don't paint. Nobody can see the frame, and with the visualiser running
+        // while playing this is a full repaint + 4.6 MB blit every 16 ms — the exact cost the
+        // screen-off timer exists to avoid, and the reason blanking the backlight alone wasn't
+        // enough. The loop itself keeps running (housekeeping, input, the idle/wake checks); only
+        // the paint is skipped, and the wake path forces a repaint so nothing stale shows.
+        // The forced-dirty calls above still run, so the flag is set when we resume.
+        if (!g_screen_on) {
+            ++n;
+            usleep(16000);
+            continue;
+        }
+
         long frame_start = now_ms();
         // PER-FRAME WATCHDOG around OUR paint: a real render hang -> _exit -> launcher counter -> stock.
         alarm(8);
@@ -1787,6 +1875,17 @@ void* render_driver(void*) {
                 clog_("sleep timer expired -> pausing");
                 set_transport(false);
                 run_guarded("pump: sleep-timer pause", 6, []() { cinder_audio_pause(); });
+            }
+            // Idle screen-off. Only ever blanks the panel; playback and every background job keep
+            // running (the app renders regardless — same as the Power-button blank). Never fires
+            // while already dark, and never while the USB-MSC modal is up: that screen is the only
+            // indication the volume is handed to the PC, so blanking it would be actively confusing.
+            {
+                int idle_s = cinder_get_screen_off_s();
+                if (idle_s > 0 && g_screen_on && !g_msc_active &&
+                    now_ms() - g_last_input_ms >= (long)idle_s * 1000) {
+                    screen_auto_off();
+                }
             }
             // USB mass-storage is fully automatic — no menu dive:
             //  • NOT in MSC + a PC data-host appears (debounced ~2 s so charger/enumeration flicker

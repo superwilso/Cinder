@@ -103,6 +103,7 @@ pub enum Action {
     BtCodecChanged,           // device-wide BT transmit codec / LDAC quality changed; shell reads + applies
     UsbDacToggle(bool),       // engage/disengage USB-DAC input routed to 3.5mm + BT/LDAC (the headline feature)
     BrightnessChanged(u8),    // panel brightness level 1..5; shell maps it onto the backlight node
+    ScreenOffTimer(u32),      // idle screen-off timeout in seconds (0 = off); the shell counts idle
 }
 
 /// The Menu rows, in display order — index ↔ destination Screen. Matches the prototype's 10 rows;
@@ -129,6 +130,20 @@ const MENU: [(Screen, &str, &str, &str); 11] = [
     (Screen::Settings, "settings", "Settings", "System · Storage · About"),
     (Screen::Onboarding, "note", "Help & Controls", "Button map · features"),
 ];
+
+/// Screen-off (idle) timeout presets, in seconds. 0 = off and is first, so the cycle starts from
+/// "no idle blank" and the feature is strictly opt-in.
+pub const SCREEN_OFF_PRESETS: [u32; 5] = [0, 15, 30, 60, 120];
+
+/// Label for a screen-off preset, matching the row's other mono values.
+pub fn screen_off_label(secs: u32) -> String {
+    match secs {
+        0 => String::from("OFF"),
+        s if s < 60 => format!("{s} SEC"),
+        s if s % 60 == 0 => format!("{} MIN", s / 60),
+        s => format!("{}:{:02}", s / 60, s % 60),
+    }
+}
 
 /// The Menu's live row subtitles (see `App::menu_subtitles`). One field per Menu row whose caption
 /// describes current state rather than being fixed text.
@@ -223,6 +238,10 @@ pub struct App {
     /// Sleep timer: `sleep_idx` cycles the presets (Off/15/30/45/60 min) in Settings; `sleep_min` is
     /// the LIVE remaining minutes that cinder-ffi counts down and pushes back for display. 0 = off.
     sleep_idx: usize,
+    /// Screen-off (idle) timeout in SECONDS; 0 = off, which is the default — nothing changes unless
+    /// the user opts in. `screen_off_idx` cycles the presets from the Settings row.
+    screen_off_idx: usize,
+    screen_off_s: u32,
     /// Panel brightness, 1..=5 (Settings row cycles it). Deliberately has no 0: the shell maps
     /// level 1 to a dim-but-readable fraction of max_brightness, so no setting reachable from the
     /// UI can leave a screen you can't read to change it back. Persisted.
@@ -302,6 +321,8 @@ impl Default for App {
             sound_sel: 0,
             storage: String::new(),
             sleep_idx: 0,
+            screen_off_idx: 0,
+            screen_off_s: 0,  // OFF by default — an idle blank is opt-in
             brightness: 4,   // matches the shell's ~70% day default
             sleep_min: 0,
             onboarding_page: 0,
@@ -545,6 +566,11 @@ impl App {
                 // then unmounts the volume + switches the gadget (and reverts on failure/unplug).
                 self.push(Screen::UsbStorage);
                 vec![Action::EnterUsbMsc]
+            }
+            crate::settings::ROW_SCREEN_OFF => {
+                self.screen_off_idx = (self.screen_off_idx + 1) % SCREEN_OFF_PRESETS.len();
+                self.screen_off_s = SCREEN_OFF_PRESETS[self.screen_off_idx];
+                vec![Action::ScreenOffTimer(self.screen_off_s)]
             }
             crate::settings::ROW_BRIGHTNESS => {
                 // 1..5 and wrap. The shell turns the level into a raw backlight value.
@@ -1661,6 +1687,7 @@ impl App {
             Screen::Settings => {
                 let sleep_lbl = self.sleep_label();
                 let brightness_lbl = format!("{} / 5", self.brightness);
+                let screen_off_lbl = screen_off_label(self.screen_off_s);
                 let view = crate::settings::SettingsView {
                     night: self.night,
                     viz_name: crate::viz::name(self.viz_kind),
@@ -1670,6 +1697,7 @@ impl App {
                     storage: self.storage_label(),
                     sleep: &sleep_lbl,
                     brightness: &brightness_lbl,
+                    screen_off: &screen_off_lbl,
                 };
                 crate::settings::render(c, &theme, fonts, self.settings_sel, &view)
             }
@@ -1908,6 +1936,18 @@ impl App {
     /// into bluetooth::QUALITIES). The shell reads these after a BtCodecChanged action and applies
     /// them via BtTransmitterService (and the same values feed the USB-DAC→LDAC bridge). The setters
     /// let the shell restore the persisted values at boot.
+    pub fn screen_off_s(&self) -> u32 {
+        self.screen_off_s
+    }
+    pub fn set_screen_off_s(&mut self, secs: u32) {
+        // Snap to a known preset so a hand-edited or corrupt settings file can't produce a value
+        // the Settings row can't display or cycle away from.
+        self.screen_off_idx = SCREEN_OFF_PRESETS
+            .iter()
+            .position(|&p| p == secs)
+            .unwrap_or(0);
+        self.screen_off_s = SCREEN_OFF_PRESETS[self.screen_off_idx];
+    }
     pub fn brightness(&self) -> u8 {
         self.brightness
     }
@@ -2100,6 +2140,51 @@ mod tests {
         assert_eq!(app.brightness(), 1);
         app.set_brightness(200);
         assert_eq!(app.brightness(), 5);
+    }
+
+    /// The idle screen-off timer must default to OFF and its cycle must START at OFF. It blanks the
+    /// panel, so it has to be opt-in: a default-on idle blank would land on every user at once, on
+    /// hardware where a failed wake looks like a dead device.
+    #[test]
+    fn screen_off_timer_defaults_to_off_and_cycles_from_off() {
+        let app = unlocked();
+        assert_eq!(app.screen_off_s(), 0, "must be opt-in");
+        assert_eq!(SCREEN_OFF_PRESETS[0], 0, "the cycle has to start at OFF");
+
+        let mut app = unlocked();
+        let mut seen = vec![app.screen_off_s()];
+        for _ in 0..SCREEN_OFF_PRESETS.len() {
+            app.settings_sel = crate::settings::ROW_SCREEN_OFF;
+            let acts = app.settings_activate();
+            assert_eq!(acts, vec![Action::ScreenOffTimer(app.screen_off_s())]);
+            seen.push(app.screen_off_s());
+        }
+        // Cycles through every preset and wraps back to OFF, so it is always reachable again.
+        assert_eq!(seen.first(), Some(&0));
+        assert_eq!(seen.last(), Some(&0));
+        for p in SCREEN_OFF_PRESETS {
+            assert!(seen.contains(&p), "preset {p} unreachable by cycling");
+        }
+    }
+
+    /// A hand-edited or corrupt settings value snaps to a known preset — otherwise the row would
+    /// display something the cycle can never return to.
+    #[test]
+    fn set_screen_off_snaps_to_a_known_preset() {
+        let mut app = unlocked();
+        app.set_screen_off_s(37);
+        assert_eq!(app.screen_off_s(), 0, "unknown value falls back to OFF");
+        app.set_screen_off_s(60);
+        assert_eq!(app.screen_off_s(), 60);
+    }
+
+    #[test]
+    fn screen_off_labels_read_as_durations() {
+        assert_eq!(screen_off_label(0), "OFF");
+        assert_eq!(screen_off_label(15), "15 SEC");
+        assert_eq!(screen_off_label(60), "1 MIN");
+        assert_eq!(screen_off_label(120), "2 MIN");
+        assert_eq!(screen_off_label(90), "1:30");
     }
 
     #[test]
