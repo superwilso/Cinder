@@ -336,6 +336,18 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   unconditionally and never reflected any BT state.
 - **Menu ▸ Now Playing shows the running track** (2026-07-27): title · elapsed, or "Nothing
   playing". The row was blank.
+- **Visualiser is live-only, and demand-driven** (2026-07-27): it now draws **only** when real
+  spectrum data is arriving from Sony's `AudioAnalyzerService`. The synthetic fallback is gone — it
+  animated identically for silence, a ballad and a drum solo, so it looked like a representation of
+  the audio without being one, the same category of untruth as the hardcoded clock. The analyzer is
+  no longer started at boot: it starts on demand only while the panel is **on**, Now Playing is the
+  current screen, and audio is actually playing, and stops the moment any of those stops being true.
+  That keeps a Sony-service connect off the boot path entirely (it can only run after the app has
+  painted and cleared the bad-boot counter) and means no FFT, no IPC and no wakeups while the screen
+  is dark or you are browsing — most of the time the device is switched on. Now default **ON**
+  (`analyzer=0` in `/contents/cinder_viz.conf` disables it), because with no synthetic fallback the
+  visualiser cannot appear at all without it. *Pending the one on-device check that Sony's analyzer
+  actually emits frames — `cinder-probe --analyzer` — which has never been run.*
 - **16-bit and palette PNG covers** (2026-07-27): the PNG decoder now sets `STRIP_16 | EXPAND`.
   16-bit-per-channel PNGs (real in high-quality rips) arrived as `w*h*6` bytes and the RGB path's
   `truncate(w*h*3)` kept the first half of the interleaved high/low bytes — so those covers rendered

@@ -187,6 +187,10 @@ int  cinder_get_volume(void);
 /* Seed the UI volume from the device's real level (raw 0..120 steps), no HUD pop. Call at boot
  * after restoring the saved level (or reading the mixer), so Vol± nudges from the actual level. */
 void cinder_set_volume(int level);
+/* Does the visualiser want the analyzer streaming? 1 when it is enabled, Now Playing is showing,
+ * and audio is actually playing. The shell polls this and starts/stops Sony's AudioAnalyzerService
+ * to match, so the FFT only runs while its output is visible. */
+int  cinder_viz_wants_analyzer(void);
 /* Is night theme active? (1/0). Call after a CINDER_ACT_THEME_CHANGED action (and at boot) to set
  * the panel backlight — night = minimal light. */
 int  cinder_get_night(void);

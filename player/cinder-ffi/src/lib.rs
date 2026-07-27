@@ -1475,6 +1475,20 @@ pub extern "C" fn cinder_get_battery_care() -> libc::c_int {
 
 /// Is night theme currently active? (1 = night, 0 = day.) The shell reads this after a
 /// CINDER_ACT_THEME_CHANGED action (and at boot) to set the panel backlight: night = minimal light.
+/// Does the visualiser want the analyzer streaming right now? 1 when the user has it enabled, the
+/// Now Playing screen is showing, and something is actually playing.
+///
+/// The shell polls this and starts/stops Sony's AudioAnalyzerService to match, so the service only
+/// runs while its output is on screen. Combined with the shell's own screen-on check that means no
+/// FFT, no IPC and no wakeups while the panel is dark or while you are browsing the library —
+/// which is most of the time a music player is switched on.
+#[no_mangle]
+pub extern "C" fn cinder_viz_wants_analyzer() -> libc::c_int {
+    let guard = cell().lock().unwrap();
+    let Some(r) = guard.as_ref() else { return 0 };
+    (r.app.viz_on() && r.app.is_now_playing() && r.np.playing) as libc::c_int
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_get_night() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {

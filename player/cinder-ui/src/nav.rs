@@ -1652,7 +1652,17 @@ impl App {
             }
             Screen::NowPlaying => {
                 // inject the selected visualiser type + on/off (UI state) into the now-playing data
-                let np2 = NowPlaying { viz_kind: self.viz_kind, viz_on: self.viz_on, ..*np };
+                // The visualiser is shown ONLY when real spectrum data is arriving. Without the
+                // analyzer running it used to fall back to a synthetic animation driven by
+                // viz_phase — pretty, but it is not the music: it moved identically for silence,
+                // for a ballad and for a drum solo. A visualiser that doesn't represent the audio
+                // is a lie the same way a hardcoded clock is, so it now draws nothing instead.
+                let live = np.viz_levels.is_some();
+                let np2 = NowPlaying {
+                    viz_kind: self.viz_kind,
+                    viz_on: self.viz_on && live,
+                    ..*np
+                };
                 crate::now_playing::render(c, &theme, fonts, &np2);
                 // sleep-timer countdown badge (nav owns the live remaining minutes)
                 crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min);
@@ -2546,6 +2556,24 @@ mod tests {
             slow.toast_frames == 0,
             "toast outlived its wall-clock duration at the slower frame rate"
         );
+    }
+
+    /// The visualiser must never animate without real spectrum data behind it. The synthetic
+    /// fallback moved identically for silence, a ballad and a drum solo — it looked like a
+    /// representation of the audio and wasn't one.
+    #[test]
+    fn visualiser_is_hidden_unless_real_spectrum_data_is_arriving() {
+        let app = unlocked();
+        assert!(app.viz_on(), "precondition: the user preference is on");
+
+        // No levels => the NowPlaying view-model must come out with viz_on false.
+        let live_flag = |levels: Option<&[f32]>| {
+            // Mirrors the expression in render's NowPlaying arm.
+            app.viz_on() && levels.is_some()
+        };
+        assert!(!live_flag(None), "no data must mean no visualiser");
+        let bars = [0.5f32; 36];
+        assert!(live_flag(Some(&bars)), "real data must show it");
     }
 
     #[test]

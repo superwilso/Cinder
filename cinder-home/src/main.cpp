@@ -203,6 +203,7 @@ bool g_settings_loaded = false; // did cinder_settings_load find a saved file? (
 bool g_volume_restored = false; // did it restore a persisted volume level? (→ push to hw, not seed)
 void set_backlight(int night); // night=minimal/day=normal; boot forces day, toggle matches theme
 void recompute_day_level();   // map the UI's 1..5 brightness onto the node's day level (no write)
+extern bool g_screen_on;      // panel lit? (defined with the screen state, below)
 extern long g_last_input_ms;  // idle-screen-off clock; seeded by render_up, defined with the input state
 long now_ms();                // CLOCK_MONOTONIC ms (defined with the touch state, below)
 bool g_render_ready = false;   // framebuffer/renderer open? (pump must not tick before this)
@@ -291,13 +292,18 @@ void render_up() {
 // `analyzer=1`. Absent/unset/0 => OFF (the safe default — the synthetic visualiser still runs).
 // Kept deliberately dumb (substring match) so a malformed file can't do anything but disable it.
 bool viz_analyzer_enabled() {
+    // DEFAULT ON now. It used to default off because a Sony-service connect on the BOOT PATH is a
+    // real risk — but it is no longer started at boot, only on demand once Now Playing is up and
+    // playing, by which point the app has painted and cleared the bad-boot counter. And with the
+    // synthetic fallback gone the visualiser simply cannot appear without it, so defaulting off
+    // would mean shipping a feature that never works. `analyzer=0` in the file turns it off.
     FILE* f = std::fopen("/contents/cinder_viz.conf", "r");
-    if (!f) return false;
+    if (!f) return true;
     char buf[256] = {0};
     size_t got = std::fread(buf, 1, sizeof buf - 1, f);
     std::fclose(f);
-    if (got == 0) return false;
-    return std::strstr(buf, "analyzer=1") != nullptr;
+    if (got == 0) return true;
+    return std::strstr(buf, "analyzer=0") == nullptr;
 }
 
 void report_storage();  // defined below (with the other sysfs readers); called from deferred_up
@@ -306,6 +312,27 @@ void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, 
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
 void sync_volume_from_hw(); // defined below (volume backend); seeds the UI level from the mixer
 void apply_volume();        // defined below (volume backend); writes the UI level to the mixer
+
+// Start/stop Sony's spectrum analyzer to match what the screen is actually showing.
+//
+// The visualiser only draws when REAL spectrum data is arriving (cinder-ffi hides it otherwise), so
+// the analyzer is the thing that makes it exist at all — and running it when nothing displays it is
+// pure waste: an FFT plus an IPC callback stream, for pixels nobody sees.
+//
+// Conditions, all required: the panel is ON, the user hasn't disabled the visualiser, Now Playing
+// is the current screen, and audio is actually playing. Anything else stops the stream. Guarded,
+// because Start/Stop are Sony-service calls; failure just means no visualiser.
+void viz_analyzer_tick() {
+    bool want = g_screen_on && viz_analyzer_enabled() && cinder_viz_wants_analyzer();
+    bool running = cinder_analyzer_is_running() != 0;
+    if (want == running) return;
+    if (want) {
+        run_guarded("viz: analyzer start", 10,
+                    []() { cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, 20.0f, 0); });
+    } else {
+        run_guarded("viz: analyzer stop", 6, []() { cinder_analyzer_stop(); });
+    }
+}
 
 // Stop the analyzer stream (guarded — Stop() is a Sony-service call). No-op if it was never
 // started, so it's safe to call unconditionally from the lifecycle hooks.
@@ -429,15 +456,10 @@ void deferred_up() {
                     "state=$(getprop sys.usb.state)\"");
     });
 #endif
-    // OPTIONAL real-spectrum visualiser via Sony's AudioAnalyzerService. DEFAULT OFF — only started
-    // if /contents/cinder_viz.conf contains `analyzer=1`, and even then behind the guard (dlopen +
-    // a Sony-service connect is a fresh risk surface). Off, the visualiser still animates
-    // synthetically. Validate first with `cinder-probe --analyzer` on device. The shim no-ops the
-    // repaint when Now Playing isn't showing, so continuous streaming is cheap off-screen.
-    if (viz_analyzer_enabled()) {
-        run_guarded("deferred_up: analyzer start (AudioAnalyzerService spectrum)", 10,
-                    []() { cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, 20.0f, 0); });
-    }
+    // The real-spectrum visualiser is NOT started here any more. It is now started ON DEMAND (see
+    // viz_analyzer_tick in the pump) only while its output is actually on screen, which keeps a
+    // Sony-service connect off the boot path entirely — by the time it can run, the app has already
+    // painted and cleared the bad-boot counter.
     g_deferred_done = true;
     g_healthy_since = std::time(nullptr);
     clog_("deferred_up: DONE");
@@ -1061,7 +1083,7 @@ void apply_backlight() { set_backlight(cinder_get_night()); }
 // Power button = screen on/off. OFF writes backlight 0 (panel dark; the app keeps rendering so
 // playback/Hold-state continue); ON restores the current theme's level. Pure sysfs write, no Sony
 // service. Locking is independent (the Hold switch) — waking the screen never unlocks the touch.
-static bool g_screen_on = true;
+bool g_screen_on = true;      // see the fwd decl above
 // The himax touch controller has a driver sysfs SLEEP switch — and something must write it, or
 // the controller never scans and /dev/input/event1 stays silent forever (opens fine, EVIOCGABS
 // answers, zero events — the exact 2026-07-02 symptom). The stock Qt app is what normally wakes
@@ -2126,6 +2148,7 @@ void* render_driver(void*) {
             } else {
                 g_usb_hi = 0;
             }
+            viz_analyzer_tick();              // analyzer runs only while its output is visible
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
             // Screenshot-on-demand: drop /tmp/cinder_screenshot.req and the next frame is written
             // to /tmp/cinder_screen.png. Same polled-flag idiom as ldac_on above (no new IPC
