@@ -336,6 +336,15 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   unconditionally and never reflected any BT state.
 - **Menu ▸ Now Playing shows the running track** (2026-07-27): title · elapsed, or "Nothing
   playing". The row was blank.
+- **Scrolling momentum is frame-rate independent** (2026-07-27): the fling stepped `v / 60.0` per
+  tick and decayed a flat `0.92` per tick — a hardcoded 60 fps. But this project's own bench
+  measured a **scrolling** frame at ~31 ms on device (~32 fps), and flinging *is* scrolling, so the
+  assumption was wrong by 2× in both terms at once: each step moved half as far as intended *and*
+  the decay compounded twice as fast per second. A flick travelled a fraction of its intended
+  distance on hardware while feeling perfect on the host — the kind of gap that just reads as "the
+  device is sluggish". Momentum and the HUD/toast countdowns now advance on real elapsed time
+  (clamped, so a stall can't teleport a fling). The fling also never coasted on Settings, whose
+  scrolling was added without updating its clamp detection.
 - **Volume ramp no longer forks a shell 8×/second** (2026-07-27): the rocker auto-repeats a step
   every 120 ms, and the amixer backend costs a `fork`+`exec` of `/bin/sh` *and* of `amixer` per
   step — tens of milliseconds each on a single-core ARMv7, competing with the render thread for the

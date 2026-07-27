@@ -133,6 +133,10 @@ const MENU: [(Screen, &str, &str, &str); 11] = [
     (Screen::Onboarding, "note", "Help & Controls", "Button map · features"),
 ];
 
+/// Nominal frame period at 60 fps, in ms. The HUD/fling constants are expressed in these frames;
+/// `tick_dt` converts real elapsed time into them so the durations hold at any actual frame rate.
+const FRAME_MS: u32 = 17;
+
 /// Screen-off (idle) timeout presets, in seconds. 0 = off and is first, so the cycle starts from
 /// "no idle blank" and the feature is strictly opt-in.
 pub const SCREEN_OFF_PRESETS: [u32; 5] = [0, 15, 30, 60, 120];
@@ -1855,43 +1859,56 @@ impl App {
 
     /// Advance per-frame timers (overlay countdowns). The shell calls this once per pump tick
     /// before `render`. Returns true while something time-driven still needs redrawing.
+    /// One animation step at the nominal 60 fps. Prefer [`tick_dt`] — this is the host/sim path.
     pub fn tick(&mut self) -> bool {
+        self.tick_dt(FRAME_MS)
+    }
+
+    /// Advance HUD countdowns and fling momentum by REAL elapsed time.
+    ///
+    /// This used to assume a fixed 60 fps: the fling stepped `v / 60.0` per call and decayed by a
+    /// flat 0.92. But the project's own bench measured a SCROLLING frame at ~31 ms on device
+    /// (~32 fps) — and flinging *is* scrolling, so during the one animation that matters the
+    /// assumption was off by 2x in both terms at once: each step moved half as far as intended
+    /// AND the decay compounded twice as fast per second. A flick travelled a fraction of its
+    /// intended distance on hardware while feeling perfect on the host, which is exactly the kind
+    /// of difference that reads as "the device is just sluggish".
+    pub fn tick_dt(&mut self, dt_ms: u32) -> bool {
         // Return true for EVERY counting-down frame, INCLUDING the one that reaches 0 — that
         // frame must repaint (now without the HUD/toast) to clear it. (With dirty-flag rendering,
         // returning false on the 0-transition would leave it stuck on screen.)
         let mut animating = false;
-        // Fling momentum: integrate at the ~60 fps tick, exponential decay, stop below a
-        // threshold. Hitting the clamp (top/bottom) kills it immediately.
+        // Clamp: a long stall (deferred init, a USB-MSC session) must not teleport a fling or
+        // swallow a whole toast in one step.
+        let dt = (dt_ms.max(1)).min(200) as f32;
+        // Fling momentum: integrate over real time, decay exponentially per unit time (0.92 per
+        // 60 fps frame, expressed continuously), stop below a threshold. Hitting the clamp
+        // (top/bottom) kills it immediately.
         if self.fling_v != 0.0 {
-            let before = match self.current() {
-                Screen::Library => self.lib_scroll_px,
-                Screen::Album => self.album_scroll_px,
+            let scroll_of = |a: &Self| match a.current() {
+                Screen::Library => a.lib_scroll_px,
+                Screen::Album => a.album_scroll_px,
+                Screen::Settings => a.settings_scroll_px,
                 _ => 0,
             };
-            let step = self.fling_v / 60.0;
+            let before = scroll_of(self);
+            let step = self.fling_v * dt / 1000.0;
             self.scroll_px(step as i32);
-            let after = match self.current() {
-                Screen::Library => self.lib_scroll_px,
-                Screen::Album => self.album_scroll_px,
-                _ => 0,
-            };
-            self.fling_v *= 0.92;
+            let after = scroll_of(self);
+            self.fling_v *= 0.92f32.powf(dt / FRAME_MS as f32);
             if self.fling_v.abs() < 30.0 || (step as i32 != 0 && after == before) {
                 self.fling_v = 0.0;
             }
             animating = true;
         }
-        if self.vol_overlay > 0 {
-            self.vol_overlay -= 1;
-            animating = true;
-        }
-        if self.toast_frames > 0 {
-            self.toast_frames -= 1;
-            animating = true;
-        }
-        if self.queue_anim_frames > 0 {
-            self.queue_anim_frames -= 1;
-            animating = true;
+        // HUD/toast countdowns are expressed in 60 fps frames; burn the number of frames that
+        // really elapsed so their on-screen duration is the same at any frame rate.
+        let frames = ((dt / FRAME_MS as f32).round() as u8).max(1);
+        for ctr in [&mut self.vol_overlay, &mut self.toast_frames, &mut self.queue_anim_frames] {
+            if *ctr > 0 {
+                *ctr = ctr.saturating_sub(frames);
+                animating = true;
+            }
         }
         animating
     }
@@ -2471,6 +2488,64 @@ mod tests {
         app.push(Screen::Library);
         assert_eq!(app.tap(w - 40, midy), vec![]);
         assert_eq!(app.current(), Screen::NowPlaying);
+    }
+
+    /// A fling must cover the same distance in the same wall-clock time whatever the frame rate.
+    /// It used to step `v/60` per call and decay a flat 0.92 per call, so at the ~32 fps a scrolling
+    /// frame actually costs on device a flick travelled roughly half as far AND died twice as fast
+    /// — while feeling right on the host, which runs far quicker.
+    #[test]
+    fn fling_distance_is_frame_rate_independent() {
+        // Needs a list long enough to scroll: the sample library is 8 songs, so the fling would hit
+        // the clamp on its first step and the test would measure nothing.
+        let big = {
+            let mut lib = crate::model::Library::sample();
+            let base = lib.songs.clone();
+            while lib.songs.len() < 400 {
+                lib.songs.extend(base.iter().cloned());
+            }
+            lib
+        };
+        let travel = |dt: u32, steps: usize| {
+            let mut app = unlocked();
+            app.push(Screen::Library);
+            app.set_library(big.clone());
+            app.lib_tab = crate::library::Tab::Songs;
+            app.fling(3000.0);
+            for _ in 0..steps {
+                app.tick_dt(dt);
+            }
+            app.lib_scroll_px
+        };
+        // Same 500 ms of wall clock, delivered as 30x17ms and as 16x31ms (the device's real
+        // scrolling frame time). The two must land within a few percent of each other.
+        let fast = travel(17, 30);
+        let slow = travel(31, 16);
+        assert!(fast > 100, "fling should actually travel ({fast}px)");
+        let diff = (fast - slow).abs() as f32 / fast as f32;
+        assert!(diff < 0.15, "frame-rate dependent: 17ms->{fast}px vs 31ms->{slow}px");
+    }
+
+    /// HUD countdowns are written in 60 fps frames; they must still last the same wall-clock time
+    /// when frames are slower, or a toast outstays its welcome exactly when the device is busy.
+    #[test]
+    fn hud_countdown_duration_is_frame_rate_independent() {
+        let mut fast = unlocked();
+        let mut slow = unlocked();
+        fast.toast_frames = TOAST_FRAMES;
+        slow.toast_frames = TOAST_FRAMES;
+        // ~500 ms each way.
+        for _ in 0..30 {
+            fast.tick_dt(17);
+        }
+        for _ in 0..16 {
+            slow.tick_dt(31);
+        }
+        assert_eq!(
+            fast.toast_frames == 0,
+            slow.toast_frames == 0,
+            "toast outlived its wall-clock duration at the slower frame rate"
+        );
     }
 
     #[test]

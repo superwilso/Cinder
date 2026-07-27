@@ -361,6 +361,7 @@ struct Render {
     // lookup per track change, and persisted to its own file rather than the settings blob — it
     // grows with the library, and losing every preference because one liked-list line is corrupt
     // would be a bad trade. `liked_path` is None until cinder_db_open supplies it.
+    last_tick: std::time::Instant,  // real-time anchor for fling/HUD animation
     last_scrob: std::time::Instant, // real-time anchor for the scrobble play clock
     liked: std::collections::BTreeSet<i64>,
     liked_path: Option<String>,
@@ -510,6 +511,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         viz_levels: Vec::new(),
         viz_peak: 0.0,
         pending_play: Vec::new(),
+        last_tick: std::time::Instant::now(),
         last_scrob: std::time::Instant::now(),
         liked: std::collections::BTreeSet::new(),
         liked_path: None,
@@ -755,7 +757,13 @@ pub extern "C" fn cinder_render_tick() {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return };
     // An active overlay (volume HUD) animates, so it keeps us dirty until it fades.
-    if r.app.tick() {
+    // Real elapsed time since the last tick, so the fling and the HUD countdowns run at the same
+    // wall-clock speed whatever the frame rate happens to be (a scrolling frame measures ~31 ms on
+    // device, not the 16.7 ms the constants were written against).
+    let now = std::time::Instant::now();
+    let dt_ms = now.saturating_duration_since(r.last_tick).as_millis() as u32;
+    r.last_tick = now;
+    if r.app.tick_dt(dt_ms) {
         r.dirty = true;
     }
     // Visualiser: advance + force a repaint ONLY while playing on the Now Playing screen (and
