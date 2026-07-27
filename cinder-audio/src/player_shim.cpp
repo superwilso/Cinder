@@ -121,12 +121,43 @@ volatile bool g_pump_run = false;
 pthread_t     g_pump_th = 0;
 int           g_pump_interval_ms = 20;
 
+// Is the Framework actually STARTED? GetReference() is a Meyers singleton that happily hands back
+// a zero-initialised object if nothing called StartForApplication yet, and Pump() then dereferences
+// its event queue and segfaults (cinder-probe reproduced exactly that: SIGSEGV at addr 0x14).
+// Pump reads that queue from `this+0x38` (disasm libpstcore @0x1e6a0 `ldr r0, [r4, #0x38]`), so a
+// null there is the precise "not started yet" signal.
+//
+// This guard exists because a crash on THIS thread is not survivable the way the rest of our Sony
+// calls are: run_guarded wraps the *spawn*, not the thread body, so a segfault here kills
+// cinder-home, which feeds the launcher's bad-boot counter and eventually reverts the device to
+// stock. Not pumping degrades to "no playback"; crashing costs the user a manual recovery.
+// If the offset is ever wrong the check simply stops discriminating — it cannot make things worse.
+bool framework_started(pst::core::Framework& fw) {
+    void* queue = *reinterpret_cast<void* const*>(reinterpret_cast<const char*>(&fw) + 0x38);
+    return queue != nullptr;
+}
+
 void* pump_main(void*) {
     // SIGALRM belongs to cinder-home's render worker (per-frame watchdog + run_guarded); a guard
     // alarm delivered here would fail its owner check and _exit the process.
     sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
     pthread_sigmask(SIG_BLOCK, &sa, nullptr);
     pst::core::Framework& fw = pst::core::Framework::GetReference();
+    // Wait (up to ~5 s) for the app lifecycle to have started it, then refuse rather than crash.
+    for (int i = 0; i < 50 && g_pump_run && !framework_started(fw); ++i) {
+        struct timespec w; w.tv_sec = 0; w.tv_nsec = 100000000L;
+        nanosleep(&w, nullptr);
+    }
+    // Log the probed word either way: if playback is ever dead with "never started" in the log,
+    // this one line says whether the +0x38 guess went stale rather than leaving it a mystery.
+    std::fprintf(stderr, "[cinder-audio] pump: Framework=%p queue@+0x38=%p\n", (void*)&fw,
+                 *reinterpret_cast<void* const*>(reinterpret_cast<const char*>(&fw) + 0x38));
+    if (!framework_started(fw)) {
+        std::fprintf(stderr, "[cinder-audio] pump: Framework never started — NOT pumping "
+                             "(playback + progress will be unavailable, but we stay alive)\n");
+        g_pump_run = false;
+        return nullptr;
+    }
     struct timespec ts;
     ts.tv_sec  = g_pump_interval_ms / 1000;
     ts.tv_nsec = (long)(g_pump_interval_ms % 1000) * 1000000L;
