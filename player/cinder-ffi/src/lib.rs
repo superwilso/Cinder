@@ -361,6 +361,7 @@ struct Render {
     // lookup per track change, and persisted to its own file rather than the settings blob — it
     // grows with the library, and losing every preference because one liked-list line is corrupt
     // would be a bad trade. `liked_path` is None until cinder_db_open supplies it.
+    duration_checked: bool,         // have we compared the DB duration against the service's yet?
     last_tick: std::time::Instant,  // real-time anchor for fling/HUD animation
     last_scrob: std::time::Instant, // real-time anchor for the scrobble play clock
     liked: std::collections::BTreeSet<i64>,
@@ -511,6 +512,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         viz_levels: Vec::new(),
         viz_peak: 0.0,
         pending_play: Vec::new(),
+        duration_checked: false,
         last_tick: std::time::Instant::now(),
         last_scrob: std::time::Instant::now(),
         liked: std::collections::BTreeSet::new(),
@@ -2147,6 +2149,22 @@ pub extern "C" fn cinder_set_play_position(
     let was_playing = r.np.playing;
     r.np.playing = playing != 0;
     if total_ms > 0 {
+        // SELF-CHECK for the one remaining unverified assumption in the metadata path: the library
+        // DB's `duration_raw` is *assumed* to be milliseconds (fmt_time, and every track length the
+        // Library lists, depend on it). PlayerService reports the true duration, so the first time
+        // the two disagree materially, say so — one line in the boot log settles a guess that has
+        // otherwise been carried since the DB was first read. Logged once, not per second.
+        if let Some(db_ms) = r.last_track.as_ref().and_then(|t| t.duration_raw) {
+            if db_ms > 0 && !r.duration_checked {
+                r.duration_checked = true;
+                let ratio = total_ms as f64 / db_ms as f64;
+                if !(0.95..1.05).contains(&ratio) {
+                    eprintln!(
+                        "cinder-ffi: DURATION UNIT MISMATCH — service says {total_ms} ms, DB says                          {db_ms} (ratio {ratio:.3}); duration_raw is not milliseconds"
+                    );
+                }
+            }
+        }
         r.cur_duration_ms = total_ms as i64;
     }
     // A drag-to-seek owns the bar until the finger lifts: applying the service's (pre-seek)
