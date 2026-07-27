@@ -309,13 +309,18 @@ struct Render {
     app: cinder_ui::nav::App,
     scrob: Option<scrobble::Scrobbler>,
     last_track: Option<cinder_db::Track>, // last resolved track (for scrobble metadata)
-    // Now-playing position ESTIMATE: the track duration is known from the DB, so we advance a local
-    // play-clock 1 s per tick while playing (reset on track change) to drive a live progress bar +
-    // elapsed/remaining. This is a play-through estimate (it can't see seeks or a mid-track start);
-    // on device it will be replaced by the real PlayStatus position once those offsets are RE'd.
+    // Now-playing position. Two sources, in priority order:
+    //  1. REAL position from PlayerService's PlayEventListener::onPlayTimeUpdated, pushed in via
+    //     cinder_set_play_position. It arrives about once a second, so `real_pos_at` records when,
+    //     and clock_tick interpolates forward from it — drift-free, and it follows seeks and
+    //     mid-track starts, which the estimate below cannot.
+    //  2. The local play-clock ESTIMATE (duration from the DB, advance by wall-clock delta while
+    //     playing). Used only until the first real update arrives, or if the listener goes quiet.
     play_pos_ms: i64,
     cur_duration_ms: i64,
     last_pos: std::time::Instant, // wall-clock anchor for the position estimate (rate-independent)
+    real_pos_ms: i64,             // last position from the service; -1 = none seen yet
+    real_pos_at: std::time::Instant, // when it arrived (interpolation anchor)
     // Screenshot request: Some(path) => the next rendered frame is also written to `path` as a PNG.
     // Captured from the Canvas BEFORE presentation, so it is identical on the software framebuffer
     // and the GPU/EGL path (under EGL the Mali swapchain owns the panel, so reading /dev/graphics/fb0
@@ -479,6 +484,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         play_pos_ms: 0,
         cur_duration_ms: 0,
         last_pos: std::time::Instant::now(),
+        real_pos_ms: -1,
+        real_pos_at: std::time::Instant::now(),
         pending_screenshot: None,
         sleep_remaining_ms: 0,
         sleep_fire: false,
@@ -1604,7 +1611,15 @@ pub extern "C" fn cinder_clock_tick() {
         let dt = now.saturating_duration_since(r.last_pos).as_millis() as i64;
         r.last_pos = now;
         if r.np.playing && r.cur_duration_ms > 0 && r.play_pos_ms < r.cur_duration_ms {
-            r.play_pos_ms = (r.play_pos_ms + dt).min(r.cur_duration_ms);
+            // Prefer the real service position, interpolated forward from when it arrived (it
+            // lands ~1x/sec, which would otherwise make the bar step visibly). Falling back to
+            // the local estimate keeps the bar alive if the listener goes quiet.
+            r.play_pos_ms = if r.real_pos_ms >= 0 {
+                let since = now.saturating_duration_since(r.real_pos_at).as_millis() as i64;
+                (r.real_pos_ms + since).min(r.cur_duration_ms)
+            } else {
+                (r.play_pos_ms + dt).min(r.cur_duration_ms)
+            };
             let (pos, dur) = (r.play_pos_ms, r.cur_duration_ms);
             set_progress(&mut r.np, pos, dur);
             // Repaint only when Now Playing is on screen (the bar/labels are only visible there); the
@@ -1855,6 +1870,46 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     }
 }
 
+/// Push the REAL play position/duration from PlayerService's PlayEventListener
+/// (`onPlayTimeUpdated(cur_ms, total_ms)`), plus the real play/pause state. This is what makes the
+/// progress bar truthful: it follows seeks and mid-track starts, which the local play-clock
+/// estimate cannot, and `total_ms` from the service beats the DB duration for files whose tag
+/// metadata is wrong.
+///
+/// `cur_ms` < 0 means "no update yet" and is ignored (the estimate keeps running). Marking the
+/// arrival time rather than resetting `last_pos` is deliberate: `last_pos` is the shared anchor
+/// the sleep-timer countdown also uses, so re-anchoring it here would make the sleep timer lose
+/// time on every position update.
+///
+/// Returns 0 on success, -2 if the renderer isn't initialised.
+#[no_mangle]
+pub extern "C" fn cinder_set_play_position(
+    cur_ms: libc::c_int,
+    total_ms: libc::c_int,
+    playing: libc::c_int,
+) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return -2 };
+    let was_playing = r.np.playing;
+    r.np.playing = playing != 0;
+    if total_ms > 0 {
+        r.cur_duration_ms = total_ms as i64;
+    }
+    if cur_ms >= 0 {
+        r.real_pos_ms = cur_ms as i64;
+        r.real_pos_at = std::time::Instant::now();
+        r.play_pos_ms = (cur_ms as i64).min(r.cur_duration_ms.max(0));
+        let (pos, dur) = (r.play_pos_ms, r.cur_duration_ms);
+        set_progress(&mut r.np, pos, dur);
+    }
+    // Repaint when the bar is on screen, or whenever play/pause flipped (the transport glyph
+    // changes on every screen that shows it).
+    if r.app.is_now_playing() || was_playing != r.np.playing {
+        r.dirty = true;
+    }
+    0
+}
+
 /// Set now-playing from the track URI PlayerService reports (PlayStatus.uri): resolves
 /// title/artist/codec/duration from the library DB and derives elapsed/remaining from
 /// `progress` (0..1). Returns 0 if the track resolved, -1 if not (falls back to the
@@ -1891,6 +1946,10 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 }
                 r.cur_duration_ms = t.duration_raw.unwrap_or(0).max(0);
                 r.play_pos_ms = (r.cur_duration_ms as f32 * progress.clamp(0.0, 1.0)) as i64;
+                // Drop the previous track's service-position anchor: interpolating the new track's
+                // bar from the old track's position would show a wrong (often near-full) bar until
+                // the next onPlayTimeUpdated lands.
+                r.real_pos_ms = -1;
                 // NOTE: do NOT reset `last_pos` here — it's the shared clock_tick anchor used for
                 // BOTH the position estimate and the sleep-timer countdown. Resetting it on a track
                 // change would make the sleep timer lose the sub-second gap each track change (drift

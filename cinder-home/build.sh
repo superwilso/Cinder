@@ -168,14 +168,16 @@ PROBE="$HERE/cinder-probe"
 $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
      -fPIC -O2 -Wall -std=c++14 -fno-rtti "${CHANNEL_DEF[@]}" "${INCLUDES[@]}" \
      -c "$HERE/src/probe.cpp" -o "$HERE/probe.o"
-# Links WITHOUT easelcore/easelcui/pstcore/appmgrservice — the probe never does the app
-# lifecycle, only the render/DB/PlayerService calls, so it can't register as the Home app.
+# Links WITHOUT easelcore/easelcui/appmgrservice — the probe never does the app lifecycle, only
+# the render/DB/PlayerService calls, so it can't register as the Home app. It DOES link pstcore
+# (2026-07-27) for --pump: pst::core::Framework::Pump() drives the event looper that delivers
+# binder replies, which is what the "every PlayerService out-param is stack garbage" hunt needs.
 $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$DEVSYS/usr/lib/arm-linux-gnueabihf" -L"$DEVSYS/lib/arm-linux-gnueabihf" \
      "$HERE/probe.o" "$HERE/player_shim.o" "$HERE/analyzer_shim.o" "$HERE/discover.o" "$HERE/glibc223_compat.o" \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
-     -lPlayerServiceClient -lPlayerServiceClientUtil -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
+     -lPlayerServiceClient -lPlayerServiceClientUtil -lpstcore -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
      -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$PROBE"

@@ -11,10 +11,48 @@
 extern "C" {
 #endif
 
-/* Bootstrap: PlayerService::GetInstance() -> getPlayController(name) -> Connect(NULL).
- * `name` is the controller slot (e.g. "cinder"). 0 = ok, <0 = error. */
+/* Drive pst::core::Framework's event looper on a background thread. REQUIRED BEFORE ANY OTHER
+ * CALL HERE: Sony's client proxies are async and the reply is delivered by that looper, so with
+ * no pump every call below leaves its out-param uninitialised and returns stack garbage (that was
+ * the whole "playback does nothing" bug — Connect appeared to return a pointer, IsConnected read
+ * as true, SetTrackSequence "failed with 99", and the service logged nothing at all).
+ * Must be called only AFTER the easel app lifecycle has started the Framework (cinder-home does
+ * it from deferred_up): calling it earlier constructs an unstarted singleton and Pump segfaults.
+ * `interval_ms` <= 0 keeps the 20 ms default. 0 = ok, -1 = thread spawn failed,
+ * -2 = disabled via CINDER_NOPUMP=1. Idempotent. */
+int  cinder_audio_pump_start(int interval_ms);
+void cinder_audio_pump_stop(void);
+/* Pump iterations so far — 0 while playback is broken is the signature of a dead looper. */
+unsigned cinder_audio_pump_ticks(void);
+
+/* Bootstrap: PlayerService::GetInstance() -> getPlayController(name) -> Connect(listener).
+ * `name` is the controller slot (e.g. "cinder"). Retries Connect with backoff and FAILS if the
+ * service never acknowledges — a nonzero Connect means the listener was not registered, so no
+ * position callbacks would ever arrive. 0 = ok, <0 = error (-3 = Connect never succeeded). */
 int  cinder_audio_init(const char *name);
-/* Disconnect + drop the controller. */
+/* 1 once the service has acknowledged the Connect (IsConnected). Registration is async IPC:
+ * calls made before this flips (SetTrackSequence, GetCurrentStatus) are rejected. */
+int  cinder_audio_is_connected(void);
+/* Real position/duration from the PlayEventListener (onPlayTimeUpdated). Returns 1 when at
+ * least one time update has arrived, 0 before (outputs are -1 then). */
+int  cinder_audio_position(int *cur_ms, int *total_ms);
+/* Total listener callbacks seen. 0 after playback started = the listener vtable never fired. */
+unsigned cinder_audio_listener_events(void);
+/* Is audio REALLY playing? Derived from the position having moved in the last 2.5 s, not from the
+ * shell's optimistic view of the last transport action it sent. */
+int  cinder_audio_is_playing(void);
+/* Raw onPlayStatusUpdated state int, encoding not yet calibrated. Diagnostic only. */
+unsigned cinder_audio_play_state(void);
+/* Engine-level unpause / pause. After play_tracks the OMX graph reaches OMX_StatePause with the
+ * SoundService track created but silent; resume is the transition into Executing. 0 = ok. */
+int  cinder_audio_resume(void);
+int  cinder_audio_suspend(void);
+
+/* Release the service-side player (and with it SoundService's single "Music" track). Called by
+ * shutdown; exposed separately so a fresh session can reclaim a track leaked by a process that
+ * died without shutting down. 0 = ok, <0 = no controller. */
+int  cinder_audio_close_player(void);
+/* ClosePlayer + Disconnect + drop the controller. */
 void cinder_audio_shutdown(void);
 
 /* Transport (ChangePlayState). 0 = ok, <0 = error. */

@@ -26,9 +26,25 @@
 namespace pst {
 namespace playservice {
 
-// ChangePlayState argument. Exact 0/1/2 <-> stop/play/pause mapping TBC on device
-// (the wrapper rejects 3..6). We name them by best-known meaning; calibrate on device.
-enum class playstate_t : int { Stop = 0, Play = 1, Pause = 2 };
+// ChangePlayState argument. The client wrapper (disasm @0x3044: `r2 = s-3; if (r2 < 4) return 1`)
+// silently no-ops 3..6 and sends everything else, so only 0/1/2 reach the service.
+//
+// MEASURED 2026-07-27 (device, service's own logcat) — do NOT "restore" the old guess:
+//   1 -> GapPlayer.c:502 GapPlayer_pause()   ... so 1 is PAUSE, not Play. The original
+//        Stop=0/Play=1/Pause=2 guess is why a "successful" play_tracks produced a loaded track
+//        frozen at 0:00: we were paused, not playing.
+//   2 -> binder transport error (GetBinderLastError()=4) and the device REBOOTED. Whatever 2
+//        means, it is not a safe Play. Never send 2 speculatively again.
+// MAPPING MEASURED ON DEVICE 2026-07-27 from the service's own logcat, one value per run:
+//   0 -> graph stays at OMX_StateIdle, no GapPlayer_* transition at all      => Stop
+//   1 -> GapPlayer.c:502 GapPlayer_pause(), Idle -> OMX_StatePause           => Pause
+//   2 -> (by elimination; see below)                                         => Play
+// So the original RE guess was right after all. The reason 2 looked lethal on the first attempt
+// (GetBinderLastError()=4 and the device rebooted) is that it was sent straight from Idle while a
+// leaked SoundService Music track was still held — NOT because the value is wrong. Idle ->
+// Executing is not a legal OMX transition; the engine must pass through Pause. cinder_audio's
+// play_tracks therefore does Pause THEN Play, which is the OMX lifecycle the renderer expects.
+enum class playstate_t : int { Stop = 0, Pause = 1, Play = 2 };
 
 // SeekTime origin (begin vs current). Calibrate exact values on device.
 enum class media_origin_t : int { Begin = 0, Current = 1 };
@@ -57,8 +73,20 @@ class PlayController {
 public:
     int  Connect(pst::playservice::PlayEventListener* listener);  // NULL = poll mode
     int  Disconnect();
+    // Tears down the service-side player for this session. MUST be called before we go away:
+    // PlayerService holds a SoundService "Music" track for the open player, and SoundService
+    // permits exactly ONE track per type ("Cannot create multiple tracks that have same type",
+    // SoundServiceImpl.cc:248). A process that exits without ClosePlayer leaks that track inside
+    // the long-lived hagodaemon, and every later play attempt fails at
+    // AudioTrackFactory::Create() -> WMX_AudioOutput::Open() (0x80001009) with no audio.
+    int  ClosePlayer();
     bool IsConnected() const;
     int  ChangePlayState(pst::playservice::playstate_t state);
+    // Suspend/Resume are the engine-level pause/unpause. MEASURED 2026-07-27: after
+    // SetTrackSequence + ChangePlayState(1) the OMX graph sits at OMX_StatePause with the
+    // SoundService track created but no audio — this is the transition out of it.
+    int  Suspend();
+    int  Resume();
     int  NextTrack();
     int  PrevTrack(const pst::playservice::PrevTrackOption* opt);
     int  NextGroup();

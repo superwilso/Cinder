@@ -316,8 +316,20 @@ void deferred_up() {
                 []() { cinder_db_open("/db/MTPDB.dat"); });   // path: confirm on device
     clog_("deferred_up: cinder_scrobble_open(/contents/.scrobbler.log)");
     cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
+    // THE FRAMEWORK PUMP — must come BEFORE cinder_audio_init. Sony's PlayerService client is
+    // asynchronous: replies are dispatched by pst::core::Framework's event looper. Nothing drove
+    // it (easel's pump never fires for our non-Qt CuiAppModule — see the render-driver note
+    // above), so until 2026-07-27 every PlayerService call returned uninitialised stack and
+    // playback silently did nothing. Safe to call here and not earlier: app.run() has already
+    // constructed easel::Framework (which calls StartForApplication) by the time OnForeground
+    // fires, and deferred_up runs after that — GetReference() on an unstarted Framework segfaults.
+    clog_("deferred_up: cinder_audio_pump_start (pst::core::Framework event looper)");
+    run_guarded("deferred_up: audio pump start", 8, []() { cinder_audio_pump_start(20); });
     run_guarded("deferred_up: cinder_audio_init (PlayerService connect)", 12,
-                []() { cinder_audio_init("cinder"); });
+                []() {
+                    if (cinder_audio_init("cinder") != 0)
+                        clog_("deferred_up: audio_init FAILED — transport + progress unavailable");
+                });
     // Sync the Settings "Battery care" toggle to the device's real Itawari state (guarded — the
     // PowerMgrServiceClient ctor connects to the power service). Unavailable (-1) leaves the UI default.
     run_guarded("deferred_up: read battery care state", 8,
@@ -1568,16 +1580,25 @@ void report_storage() {
 }
 
 // Poll the now-playing URI; on change, push it to the UI (cinder-ffi resolves title/artist/
-// codec from the library DB). Position/duration await PlayStatus RE → pass 0 for now.
+// codec from the library DB). Then push the REAL position/duration/state from the
+// PlayEventListener every tick — that is what drives the progress bar, and unlike the old local
+// estimate it survives seeks, mid-track starts and wrong tag durations.
 void poll_now_playing() {
     static char last[1024];
     char uri[1024];
     int n = cinder_audio_current_uri(uri, sizeof uri);
-    if (n <= 0) return;
-    if (std::strcmp(uri, last) == 0) return;
-    std::strncpy(last, uri, sizeof last - 1);
-    last[sizeof last - 1] = 0;
-    cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, read_battery());
+    if (n > 0 && std::strcmp(uri, last) != 0) {
+        std::strncpy(last, uri, sizeof last - 1);
+        last[sizeof last - 1] = 0;
+        cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, read_battery());
+    }
+    // The service is the authority on both position AND whether it is really playing: g_playing is
+    // only our optimistic view of the last transport action we sent.
+    int cur = -1, tot = -1;
+    if (cinder_audio_position(&cur, &tot)) {
+        g_playing = cinder_audio_is_playing() != 0;
+        cinder_set_play_position(cur, tot, g_playing ? 1 : 0);
+    }
 }
 
 // Concrete app. The pure virtual destructor (slots 0,1) is satisfied by ~CinderApp.

@@ -7,6 +7,12 @@
 #include "playerservice_abi.hpp"
 #include "cinder_audio.h"
 
+#include <atomic>
+#include <cstdlib>
+#include <functional>
+#include <pthread.h>
+#include <signal.h>
+#include <time.h>
 #include <memory>
 #include <string>
 #include <cstring>
@@ -25,6 +31,15 @@ extern "C" void _ZN3pst8services13playerservice4util4NodeINS2_7UriInfoEED1Ev(voi
     _ZN3pst8services13playerservice4util4NodeINS2_7UriInfoEED2Ev(p);
 }
 
+namespace pst { namespace core {
+class Framework {
+public:
+    static Framework& GetReference();
+    int  StartForApplication(std::function<void()> job, bool flag);
+    bool Pump(bool short_timeout);
+};
+} }
+
 namespace {
 std::shared_ptr<ps::PlayController> g_ctrl;
 // The active TrackSequence. SetTrackSequence ships only an int handle over IPC; the service
@@ -32,6 +47,97 @@ std::shared_ptr<ps::PlayController> g_ctrl;
 // as the sequence plays — so WE must keep it alive. Replaced (freeing the previous one) on
 // every play_tracks call, dropped at shutdown.
 std::shared_ptr<pl::TrackSequence> g_seq;
+
+// ── PlayEventListener (RE_playerservice_sound.md §2 — vtable MAPPED from the On* forwarders) ──
+// Device result 2026-07-26: Connect(NULL) "poll mode" was a qemu-era assumption and it is WRONG —
+// with a NULL listener the client never finishes registering (IsConnected stays false,
+// GetCurrentStatus returns nonzero, SetTrackSequence is rejected). So we implement the listener.
+// The controller stores it at this+0x30 and calls THROUGH ITS VTABLE only (no size assumption on
+// our object beyond the vptr), with slots:
+//   0,1 ~dtor(D1/D0)   2 onPlayStatusUpdated(uint, PlayStatus const&)
+//   3 onPlayTimeUpdated(int cur_ms, int total_ms)   4 (unmapped)   5 onNextTrack(mode)
+//   6 onPrevTrack(mode)
+// A standalone clang/Itanium class with virtuals in exactly that order produces that vtable.
+// Slots 7..10 are no-op padding: if the service ever forwards an unmapped event, it lands in a
+// harmless empty virtual instead of past the end of the vtable. Callbacks arrive on a binder
+// thread → everything they touch is atomic; readers poll the atomics.
+std::atomic<int>      g_cb_pos_ms{-1};
+std::atomic<int>      g_cb_dur_ms{-1};
+std::atomic<unsigned> g_cb_state{0};
+std::atomic<unsigned> g_cb_events{0};   // total callbacks seen — 0 = listener never fired
+std::atomic<long long> g_cb_moved_at_ms{0};  // CLOCK_MONOTONIC ms when the position last changed
+
+class CinderPlayListener {
+public:
+    virtual ~CinderPlayListener() {}                                         // slots 0,1
+    virtual void onPlayStatusUpdated(unsigned state, const pl::PlayStatus&) { // slot 2
+        g_cb_state.store(state, std::memory_order_relaxed);
+        g_cb_events.fetch_add(1, std::memory_order_relaxed);
+    }
+    virtual void onPlayTimeUpdated(int currentMs, int totalMs) {              // slot 3
+        // Note when the position last actually MOVED. The onPlayStatusUpdated state enum is not
+        // calibrated yet (cinder_audio_play_state exposes it raw for that), and a moving position
+        // is an unambiguous "really playing" regardless of what the enum turns out to mean:
+        // the service keeps sending updates while paused, it just repeats the same value.
+        if (currentMs != g_cb_pos_ms.load(std::memory_order_relaxed)) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            g_cb_moved_at_ms.store((long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000,
+                                   std::memory_order_relaxed);
+        }
+        g_cb_pos_ms.store(currentMs, std::memory_order_relaxed);
+        g_cb_dur_ms.store(totalMs, std::memory_order_relaxed);
+        g_cb_events.fetch_add(1, std::memory_order_relaxed);
+    }
+    virtual void onUnmapped4() {}                                             // slot 4
+    virtual void onNextTrack(int) { g_cb_events.fetch_add(1, std::memory_order_relaxed); } // 5
+    virtual void onPrevTrack(int) { g_cb_events.fetch_add(1, std::memory_order_relaxed); } // 6
+    virtual void pad7() {}
+    virtual void pad8() {}
+    virtual void pad9() {}
+    virtual void pad10() {}
+};
+CinderPlayListener g_listener;
+
+// ── pst::core::Framework pump (THE fix for "playback does nothing", 2026-07-27) ───────────────
+// Sony's client proxies are asynchronous: a call marshals a request and the REPLY is delivered by
+// pst::core::Framework's event looper. Nothing in Cinder ever drove that looper — main.cpp's own
+// comment notes easel's pump never fires for a non-Qt CuiAppModule, but the consequence was
+// missed: every PlayerService out-param stayed UNINITIALISED. Connect "returned" a 0xb6xxxxxx
+// pointer, IsConnected read uninitialised stack as true, SetTrackSequence "failed with 99" — all
+// garbage, and the service logged nothing because no transaction ever completed.
+// Driving Framework::Pump() makes the same calls return real values (Connect rc=0,
+// SetTrackSequence OK, listener callbacks with real position/duration).
+// Wampy's pstserver does exactly this (artifacts/repos/wampy/pstserver/main.cpp): GetReference,
+// StartForApplication, then Pump in a loop on its own thread.
+//
+// We do NOT call StartForApplication here: in cinder-home easel::ApplicationBase::run already
+// constructs an easel::Framework, which calls it. Calling GetReference BEFORE that happens
+// returns a zero-initialised singleton and Pump() then segfaults (proved in cinder-probe), so
+// start this only once the app lifecycle is up — cinder-home starts it from deferred_up().
+
+std::atomic<unsigned> g_pump_ticks{0};
+volatile bool g_pump_run = false;
+pthread_t     g_pump_th = 0;
+int           g_pump_interval_ms = 20;
+
+void* pump_main(void*) {
+    // SIGALRM belongs to cinder-home's render worker (per-frame watchdog + run_guarded); a guard
+    // alarm delivered here would fail its owner check and _exit the process.
+    sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
+    pthread_sigmask(SIG_BLOCK, &sa, nullptr);
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    struct timespec ts;
+    ts.tv_sec  = g_pump_interval_ms / 1000;
+    ts.tv_nsec = (long)(g_pump_interval_ms % 1000) * 1000000L;
+    while (g_pump_run) {
+        fw.Pump(true);
+        g_pump_ticks.fetch_add(1, std::memory_order_relaxed);
+        nanosleep(&ts, nullptr);   // Pump(true) returns immediately when idle — without this it
+                                   // spins a core flat (measured ~380k calls/s in cinder-probe).
+    }
+    return nullptr;
+}
 
 inline int change_state(pl::playstate_t s) {
     if (!g_ctrl) return -1;
@@ -56,13 +162,118 @@ int cinder_audio_init(const char* name) {
     if (!svc) return -1;
     g_ctrl = svc->getPlayController(name ? name : "cinder");
     if (!g_ctrl) return -2;
-    // NULL listener => poll mode (we read state via GetCurrentStatus, no PlayEventListener).
-    g_ctrl->Connect(nullptr);
+    // Real listener by default (Connect(NULL) never completes registration — see the listener
+    // block above). CINDER_NOLISTENER=1 keeps the old NULL connect for on-device A/B via probe.
+    pst::playservice::PlayEventListener* l = nullptr;
+    const char* nol = getenv("CINDER_NOLISTENER");
+    if (!(nol && nol[0] == '1'))
+        l = reinterpret_cast<pst::playservice::PlayEventListener*>(&g_listener);
+    // Connect's return is meaningful ONLY with the framework pump running: the wrapper reads an
+    // out-param the reply fills, and returns 0 on success / that out-param on failure (disasm
+    // @0x2f32: `if (out == 0) { this->listener = l; return 0; }`). With no pump the reply never
+    // arrives and this is uninitialised stack. It is also the gate on the listener actually being
+    // registered, so a nonzero rc means no position callbacks will ever fire — retry rather than
+    // reporting success, which is what the old `Connect(nullptr); return 0;` did.
+    int rc = -1;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (attempt) {
+            struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = 200000000L;  // 200 ms backoff
+            nanosleep(&ts, nullptr);
+        }
+        rc = g_ctrl->Connect(l);
+        std::fprintf(stderr, "[cinder-audio] Connect(%s) attempt=%d rc=%d\n",
+                     l ? "listener" : "NULL", attempt, rc);
+        if (rc == 0) break;
+    }
+    if (rc != 0) {
+        std::fprintf(stderr, "[cinder-audio] Connect FAILED (rc=%d) — no transport, no listener. "
+                             "Is the Framework pump running?\n", rc);
+        g_ctrl.reset();
+        return -3;
+    }
     return 0;
 }
 
+int cinder_audio_pump_start(int interval_ms) {
+    if (g_pump_run) return 0;
+    if (const char* off = getenv("CINDER_NOPUMP")) if (off[0] == '1') return -2;
+    if (interval_ms > 0) g_pump_interval_ms = interval_ms;
+    g_pump_run = true;
+    if (pthread_create(&g_pump_th, nullptr, pump_main, nullptr) != 0) {
+        g_pump_run = false;
+        std::fprintf(stderr, "[cinder-audio] pump: pthread_create FAILED\n");
+        return -1;
+    }
+    std::fprintf(stderr, "[cinder-audio] pump: started (%d ms interval)\n", g_pump_interval_ms);
+    return 0;
+}
+
+void cinder_audio_pump_stop(void) {
+    if (!g_pump_run) return;
+    g_pump_run = false;
+    if (g_pump_th) { pthread_join(g_pump_th, nullptr); g_pump_th = 0; }
+}
+
+unsigned cinder_audio_pump_ticks(void) {
+    return g_pump_ticks.load(std::memory_order_relaxed);
+}
+
+int cinder_audio_is_connected(void) {
+    return g_ctrl && g_ctrl->IsConnected() ? 1 : 0;
+}
+
+int cinder_audio_position(int* cur_ms, int* total_ms) {
+    if (cur_ms)   *cur_ms   = g_cb_pos_ms.load(std::memory_order_relaxed);
+    if (total_ms) *total_ms = g_cb_dur_ms.load(std::memory_order_relaxed);
+    return g_cb_pos_ms.load(std::memory_order_relaxed) >= 0 ? 1 : 0;
+}
+
+unsigned cinder_audio_listener_events(void) {
+    return g_cb_events.load(std::memory_order_relaxed);
+}
+
+unsigned cinder_audio_play_state(void) {
+    return g_cb_state.load(std::memory_order_relaxed);
+}
+
+int cinder_audio_is_playing(void) {
+    // "The position moved recently." onPlayTimeUpdated lands ~1x/sec, so 2500 ms tolerates one
+    // dropped update without flickering the transport glyph. This is deliberately derived from
+    // observed motion rather than from onPlayStatusUpdated's state int, whose encoding is not
+    // calibrated — see cinder_audio_play_state.
+    long long moved = g_cb_moved_at_ms.load(std::memory_order_relaxed);
+    if (moved == 0) return 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return (now - moved) < 2500 ? 1 : 0;
+}
+
+int cinder_audio_resume(void) {
+    if (!g_ctrl) return -1;
+    int rc = g_ctrl->Resume();
+    std::fprintf(stderr, "[cinder-audio] Resume rc=%d\n", rc);
+    return rc;
+}
+
+int cinder_audio_suspend(void) {
+    if (!g_ctrl) return -1;
+    return g_ctrl->Suspend();
+}
+
+int cinder_audio_close_player(void) {
+    if (!g_ctrl) return -1;
+    int rc = g_ctrl->ClosePlayer();
+    std::fprintf(stderr, "[cinder-audio] ClosePlayer rc=%d\n", rc);
+    return rc;
+}
+
 void cinder_audio_shutdown(void) {
-    if (g_ctrl) g_ctrl->Disconnect();
+    // ClosePlayer BEFORE Disconnect: it releases the service-side player and with it the
+    // SoundService "Music" track. Skipping it leaks that track inside hagodaemon (which outlives
+    // us), and the next process to try to play gets "Cannot create multiple tracks that have
+    // same type" -> WMX_AudioOutput::Open() 0x80001009 -> a loaded track that never makes sound.
+    if (g_ctrl) { g_ctrl->ClosePlayer(); g_ctrl->Disconnect(); }
     g_ctrl.reset();
     g_seq.reset();
 }
@@ -102,10 +313,37 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
     // shared_ptr shares nts's control block (destruction still runs ~NodeTrackSequence).
     std::shared_ptr<pl::TrackSequence> seq(nts, reinterpret_cast<pl::TrackSequence*>(nts.get()));
 
+    // Keep the sequence alive BEFORE handing it over. SetTrackSequence ships only
+    // {playerId, startIndex, 0} over IPC (disasm @0x3245) — our object is never sent; the service
+    // pulls tracks by calling back through the controller, which holds the seq at +0x38. So the
+    // object must outlive the call, and a rejected call must not leave a dangling one either.
+    g_seq = seq;
     int rc = g_ctrl->SetTrackSequence(seq);
-    if (rc != 0) return -3;
-    g_seq = seq;   // keep the sequence alive for the service's pull callbacks
-    return g_ctrl->ChangePlayState(pl::playstate_t::Play);
+    if (rc != 0) {
+        // The raw service code, not a flattened -3: this is a wire reject and its value is the
+        // only thing that distinguishes "player busy" from "bad sequence" from "not connected".
+        std::fprintf(stderr, "[cinder-audio] SetTrackSequence REJECTED rc=%d (0x%08x) "
+                             "connected=%d count=%d start=%d\n",
+                     rc, (unsigned)rc, (int)g_ctrl->IsConnected(), count, start);
+        g_seq.reset();
+        return -3;
+    }
+    // PAUSE, then PLAY — the OMX lifecycle, not an optimisation. Measured 2026-07-27:
+    // SetTrackSequence leaves the graph at OMX_StateIdle (demuxer open, renderer Loaded->Idle).
+    // ChangePlayState(Pause) takes Idle -> OMX_StatePause and is where SoundService actually
+    // creates the Music track. Only from Pause is Executing reachable; going straight from Idle
+    // to Play is what produced the binder error + reboot on the first attempt.
+    // CINDER_PLAYSTATE overrides the prepare value for re-calibration.
+    pl::playstate_t prep = pl::playstate_t::Pause;
+    if (const char* ov = getenv("CINDER_PLAYSTATE"))
+        prep = static_cast<pl::playstate_t>(atoi(ov));
+    int pr = g_ctrl->ChangePlayState(prep);
+    std::fprintf(stderr, "[cinder-audio] SetTrackSequence OK; prepare ChangePlayState(%d) rc=%d\n",
+                 (int)prep, pr);
+    if (pr != 0) return pr;
+    int rr = g_ctrl->ChangePlayState(pl::playstate_t::Play);
+    std::fprintf(stderr, "[cinder-audio] ChangePlayState(Play=2) rc=%d\n", rr);
+    return rr;
 }
 
 int cinder_audio_play(void)  { return change_state(pl::playstate_t::Play); }

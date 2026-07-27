@@ -110,6 +110,11 @@ int  cinder_db_open(const char *path);
  * title/artist/codec/duration from the DB and derives elapsed/remaining from progress (0..1).
  * 0 = resolved, -1 = not found (falls back to filename), -2 = renderer not initialised. */
 int  cinder_set_now_playing_uri(const char *uri, float progress, int playing, int battery);
+/* Push the REAL position/duration from PlayerService's PlayEventListener (onPlayTimeUpdated) plus
+ * the real play/pause state. Takes priority over the local play-clock estimate and is what makes
+ * the progress bar follow seeks and mid-track starts. `cur_ms` < 0 = no update yet (ignored);
+ * `total_ms` <= 0 keeps the DB duration. 0 = ok, -2 = renderer not initialised. */
+int  cinder_set_play_position(int cur_ms, int total_ms, int playing);
 /* Push the currently-playing track explicitly (progress 0..1, playing 0/1, battery 0..100). */
 void cinder_set_now_playing(const char *title, const char *artist, const char *codec,
                             const char *elapsed, const char *remaining,
