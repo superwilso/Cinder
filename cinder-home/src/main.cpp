@@ -1807,23 +1807,24 @@ void* render_driver(void*) {
         if (n < 600) cinder_force_dirty();
         else if (n % 60 == 0) cinder_force_dirty();
 
-        // Panel dark => don't paint. Nobody can see the frame, and with the visualiser running
-        // while playing this is a full repaint + 4.6 MB blit every 16 ms — the exact cost the
-        // screen-off timer exists to avoid, and the reason blanking the backlight alone wasn't
-        // enough. The loop itself keeps running (housekeeping, input, the idle/wake checks); only
-        // the paint is skipped, and the wake path forces a repaint so nothing stale shows.
-        // The forced-dirty calls above still run, so the flag is set when we resume.
-        if (!g_screen_on) {
-            ++n;
-            usleep(16000);
-            continue;
-        }
-
         long frame_start = now_ms();
-        // PER-FRAME WATCHDOG around OUR paint: a real render hang -> _exit -> launcher counter -> stock.
-        alarm(8);
-        cinder_render_tick();
-        alarm(0);
+        // Panel dark => skip the PAINT ONLY. Nobody can see the frame, and with the visualiser
+        // running while playing this is a full repaint + 4.6 MB blit every 16 ms — the cost the
+        // screen-off timer exists to avoid, so blanking the backlight alone left the win on the
+        // table. The forced-dirty calls above still run, so the flag is set when we resume, and
+        // both wake paths force a repaint as well.
+        //
+        // MUST NOT `continue` here. input_pump() is BELOW this point, and so is the housekeeping
+        // block: skipping the rest of the iteration would stop reading input while the panel is
+        // dark, and then NOTHING could wake it — not a touch, and not the Power button either,
+        // since that arrives through input_pump too. A reboot would be the only way out.
+        if (g_screen_on) {
+            // PER-FRAME WATCHDOG around OUR paint: a real render hang -> _exit -> launcher
+            // counter -> stock.
+            alarm(8);
+            cinder_render_tick();
+            alarm(0);
+        }
         // "First frame painted" gates on cinder_frames_presented(), NOT on tick returning: the
         // present runs on its own thread now, so tick returns once the frame is SUBMITTED. The
         // health signal (and StopBootAnimation) must mean pixels actually went to the glass —
