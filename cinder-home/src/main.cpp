@@ -288,22 +288,39 @@ void render_up() {
     start_pump_ticker();
 }
 
-// Is the optional real-spectrum visualiser enabled? Reads /contents/cinder_viz.conf for a line
-// `analyzer=1`. Absent/unset/0 => OFF (the safe default — the synthetic visualiser still runs).
-// Kept deliberately dumb (substring match) so a malformed file can't do anything but disable it.
+// Is the optional real-spectrum visualiser enabled? Reads /contents/cinder_viz.conf for
+// `analyzer=0`. Absent/unset => ON. Kept deliberately dumb (substring match) so a malformed file
+// can't do anything but disable it.
+//
+// CACHED. This is polled by viz_analyzer_tick() at 1 Hz for the entire runtime of the device, and
+// it used to open + read + close a file on /contents EVERY call: ~86k opens a day, on the fragile
+// vfat partition, to re-answer a question whose answer can only change if the user rewrites the
+// file — which needs USB-MSC, which means leaving the app. The cache is dropped when a mass-storage
+// session ends (viz_conf_invalidate, called from the MSC exit path), which is the only moment the
+// file can have changed under us without a reboot.
+bool g_viz_conf_known = false;
+bool g_viz_conf_on = true;
+void viz_conf_invalidate() { g_viz_conf_known = false; }
+
 bool viz_analyzer_enabled() {
+    if (g_viz_conf_known) return g_viz_conf_on;
     // DEFAULT ON now. It used to default off because a Sony-service connect on the BOOT PATH is a
     // real risk — but it is no longer started at boot, only on demand once Now Playing is up and
     // playing, by which point the app has painted and cleared the bad-boot counter. And with the
     // synthetic fallback gone the visualiser simply cannot appear without it, so defaulting off
     // would mean shipping a feature that never works. `analyzer=0` in the file turns it off.
+    bool on = true;
     FILE* f = std::fopen("/contents/cinder_viz.conf", "r");
-    if (!f) return true;
-    char buf[256] = {0};
-    size_t got = std::fread(buf, 1, sizeof buf - 1, f);
-    std::fclose(f);
-    if (got == 0) return true;
-    return std::strstr(buf, "analyzer=0") == nullptr;
+    if (f) {
+        char buf[256] = {0};
+        size_t got = std::fread(buf, 1, sizeof buf - 1, f);
+        std::fclose(f);
+        if (got > 0) on = std::strstr(buf, "analyzer=0") == nullptr;
+    }
+    g_viz_conf_on = on;
+    g_viz_conf_known = true;
+    clog_(on ? "viz: analyzer enabled (cinder_viz.conf)" : "viz: analyzer disabled (cinder_viz.conf)");
+    return on;
 }
 
 void report_storage();  // defined below (with the other sysfs readers); called from deferred_up
@@ -952,7 +969,11 @@ void volume_flush() {
 // is auto-detected (the common Android/MTK paths) and overridable via /contents/cinder_backlight.conf
 // (path, night, day raw values). If no node is writable, it's a no-op (the device keeps its own
 // brightness). Levels default to a tiny fraction of max_brightness for night, ~70% for day.
-struct BlCfg { int valid = 0, night = -1, day = -1, max = 255; char path[256] = {0}; };
+// `day_pinned` = the conf gave an explicit `day=`. It exists so recompute_day_level() knows to
+// leave the value alone: the file is the documented escape hatch for a device whose auto-detected
+// node or max_brightness scale is wrong, and an escape that a later feature silently overwrites is
+// not an escape.
+struct BlCfg { int valid = 0, night = -1, day = -1, max = 255, day_pinned = 0; char path[256] = {0}; };
 BlCfg g_bl;
 bool g_bl_read = false;
 
@@ -1007,7 +1028,12 @@ void load_bl_cfg() {
     // Night = a tiny fraction (minimal light, floored to 1 so it's not fully off); Day ~70%.
     g_bl.night = (cfg_night >= 0) ? cfg_night : (g_bl.max * 3 / 100 > 0 ? g_bl.max * 3 / 100 : 1);
     g_bl.day   = (cfg_day   >= 0) ? cfg_day   : (g_bl.max * 70 / 100);
+    g_bl.day_pinned = (cfg_day >= 0) ? 1 : 0;
     g_bl.valid = 1;
+    // Say so in the log: with `day=` pinned the Settings Brightness row still cycles 1..5 and
+    // persists, but it no longer moves the panel. That is the override working as intended, and
+    // this line is what tells the next person reading cinderhome.log why the row looks dead.
+    if (g_bl.day_pinned) clog_("backlight: day= pinned by cinder_backlight.conf — Settings Brightness will not move the panel");
 }
 
 // Write the panel backlight: night → minimal, day → normal. No-op if no node / level unset.
@@ -1031,6 +1057,12 @@ void set_backlight(int night) {
 void recompute_day_level() {
     if (!g_bl_read) load_bl_cfg();
     if (!g_bl.valid) return;
+    // The conf's `day=` really does win — it did not before this check, which made the escape hatch
+    // the comment above promises a no-op: load_bl_cfg parsed the value and then this function
+    // overwrote it on the very next line of render_up. That matters most in the case the file
+    // exists for: an auto-detected node or max_brightness that produces an unreadable panel, where
+    // the UI you would use to fix it is the thing that is unreadable.
+    if (g_bl.day_pinned) return;
     static const int pct[5] = { 15, 30, 50, 70, 100 };
     int lvl = cinder_get_brightness();          // already clamped to 1..5 by cinder-ffi
     if (lvl < 1 || lvl > 5) lvl = 4;
@@ -1071,6 +1103,11 @@ void boot_to_stock() {
         return;
     }
     clog_("boot-to-stock: armed; exiting so appmgr restarts the device into the Sony player");
+    // ORDER MATTERS: the flag is written and sync()'d ABOVE, before anything else runs. Keep it
+    // that way. cinder_render_shutdown joins the present thread, which blocks if the display driver
+    // has wedged — so if this ever hangs, the user power-cycles and STILL lands on stock, because
+    // the flag was already durable. Doing the sync after the shutdown would make the cable-free
+    // escape depend on a healthy present path, i.e. on more than it is there to rescue.
     cinder_render_shutdown();   // release the framebuffer so the reboot isn't fighting our mapping
     std::fflush(nullptr);
     ::sync();
@@ -1464,6 +1501,9 @@ void exit_usb_msc() {
     g_msc_active = false;
     // splice the away-session log back in (cat writes to fd 1 = cinderhome.log again)
     std::system("cat /tmp/cinder_msc.log 2>/dev/null; rm -f /tmp/cinder_msc.log 2>/dev/null");
+    // The PC may have rewritten anything under /contents while it held the volume, so any config
+    // we cache from there is now suspect. Only cinder_viz.conf is cached; drop it.
+    viz_conf_invalidate();
     clog_(contents_mounted() ? "usb-msc: exited (/contents remounted; log restored)"
                              : "usb-msc: exited but /contents did NOT remount within 5 s");
 }

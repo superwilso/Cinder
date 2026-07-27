@@ -351,6 +351,13 @@ struct Render {
     last_viz: std::time::Instant, // throttle the visualiser repaint to ~20fps (battery)
     viz_levels: Vec<f32>, // real spectrum bars (0..1) from the last set_pcm/set_spectrum; empty = synthetic
     viz_peak: f32,        // slow-decaying auto-gain peak for cinder_set_spectrum's linear branch
+    // When the last spectrum frame arrived. Sony's analyzer streams at ~20 Hz WHILE IT RUNS, and it
+    // now runs on demand — so it stops on every screen blank, pause and (possibly) track change,
+    // and starts again up to a second later (housekeeping is 1 Hz) plus service latency. Without a
+    // staleness check the last frame simply STAYS on screen: a held snapshot of a drum hit, which
+    // is exactly as untrue as the synthetic animation it replaced, and would be visible on every
+    // single screen wake. Frames older than VIZ_FRESH_MS decay to nothing and are then dropped.
+    viz_at: std::time::Instant,
     // Pending play request (Action::PlayIndex resolved through the DB): the chosen track's album
     // context — file URIs in play order + the start index. The shell drains it via
     // cinder_pending_play_* after a CINDER_ACT_PLAY_INDEX action and hands it to PlayerService
@@ -511,6 +518,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         last_viz: std::time::Instant::now(),
         viz_levels: Vec::new(),
         viz_peak: 0.0,
+        viz_at: std::time::Instant::now(),
         pending_play: Vec::new(),
         duration_checked: false,
         last_tick: std::time::Instant::now(),
@@ -752,6 +760,51 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     cinder_ui::Library { songs, album_groups, artists, playlists, thumbs: Default::default() }
 }
 
+/// A spectrum frame is "current" for this long. Sony's analyzer is asked for 20 Hz, so a live
+/// stream delivers one every ~50 ms; 250 ms is five missed frames, comfortably past jitter but
+/// short enough that a stopped stream is caught within a frame or two of the user noticing.
+const VIZ_FRESH_MS: u128 = 250;
+/// How long the bars take to fall from full to nothing once the stream has stopped. They decay
+/// rather than vanishing: bars dropping away reads as "the music stopped", bars blinking out reads
+/// as the UI breaking.
+const VIZ_DECAY_MS: f32 = 400.0;
+
+/// Age out the spectrum. Returns true if anything moved (so the caller repaints).
+///
+/// This is what stops a stale frame being displayed as if it were live. It runs unconditionally —
+/// including while the visualiser is off screen — so that coming back to Now Playing can never
+/// show bars left over from the last time it was open.
+fn viz_decay(r: &mut Render, dt_ms: u32) -> bool {
+    if r.viz_at.elapsed().as_millis() <= VIZ_FRESH_MS {
+        return false;
+    }
+    viz_decay_levels(&mut r.viz_levels, dt_ms)
+}
+
+/// The decay itself, split out so it can be tested without building a whole `Render`. Steps every
+/// bar down and clears the buffer once they are all at zero.
+fn viz_decay_levels(levels: &mut Vec<f32>, dt_ms: u32) -> bool {
+    if levels.is_empty() {
+        return false;
+    }
+    // Clamped: a long stall (screen off for an hour) must collapse the bars, not wrap or spike.
+    let step = (dt_ms.min(1000) as f32 / VIZ_DECAY_MS).clamp(0.0, 1.0);
+    let mut any = false;
+    for v in levels.iter_mut() {
+        if *v > 0.0 {
+            *v = (*v - step).max(0.0);
+            any = true;
+        }
+    }
+    if levels.iter().all(|v| *v <= 0.0) {
+        // Fully faded: drop the buffer so `viz_levels` is None again and the visualiser is simply
+        // absent, which is the honest state when no analyzer is feeding it.
+        levels.clear();
+        any = true;
+    }
+    any
+}
+
 /// Render the current state to the panel (call once per frame from the pump). No-op when
 /// nothing has changed (dirty-flag rendering) — that keeps the device idle at near-zero CPU
 /// instead of re-blitting ~4.6 MB every tick (battery, goal #1).
@@ -767,6 +820,9 @@ pub extern "C" fn cinder_render_tick() {
     let dt_ms = now.saturating_duration_since(r.last_tick).as_millis() as u32;
     r.last_tick = now;
     if r.app.tick_dt(dt_ms) {
+        r.dirty = true;
+    }
+    if viz_decay(r, dt_ms) {
         r.dirty = true;
     }
     // Visualiser: advance + force a repaint ONLY while playing on the Now Playing screen (and
@@ -1643,6 +1699,7 @@ pub extern "C" fn cinder_set_pcm(samples: *const i16, n: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         let prev = std::mem::take(&mut r.viz_levels);
         r.viz_levels = spectrum::levels(pcm, 36, &prev);
+        r.viz_at = std::time::Instant::now();
         // Only force a repaint when the visualiser is actually on screen — the audio source may
         // stream continuously, but off Now Playing the new levels are unused, so don't burn a frame.
         if r.app.viz_on() && r.app.is_now_playing() {
@@ -1669,6 +1726,7 @@ pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int)
         let mut peak = r.viz_peak;
         r.viz_levels = spectrum::from_bands(src, 36, &prev, &mut peak);
         r.viz_peak = peak;
+        r.viz_at = std::time::Instant::now();
         // Only force a repaint when the visualiser is on screen (the analyzer streams continuously).
         if r.app.viz_on() && r.app.is_now_playing() {
             r.dirty = true;
@@ -2325,6 +2383,45 @@ pub extern "C" fn cinder_set_now_playing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stopped analyzer must not leave its last frame on screen. The bars fall to nothing and the
+    /// buffer is dropped, so the visualiser goes absent rather than holding a snapshot — the same
+    /// reason the synthetic animation was removed.
+    #[test]
+    fn a_stale_spectrum_decays_away_instead_of_freezing() {
+        let mut lv = vec![1.0f32, 0.5, 0.25];
+        // One 100 ms frame: every bar steps down by 100/400 = 0.25.
+        assert!(viz_decay_levels(&mut lv, 100));
+        assert!((lv[0] - 0.75).abs() < 1e-6, "got {lv:?}");
+        assert!((lv[1] - 0.25).abs() < 1e-6, "got {lv:?}");
+        assert!(lv[2] <= 0.0, "the smallest bar should have bottomed out: {lv:?}");
+        // Keep going: it must reach empty, not hover just above zero forever.
+        for _ in 0..10 {
+            viz_decay_levels(&mut lv, 100);
+        }
+        assert!(lv.is_empty(), "bars never cleared: {lv:?}");
+    }
+
+    /// Nothing to decay = nothing to repaint. A visualiser that reported "changed" every frame
+    /// while empty would defeat the dirty-flag render and repaint a static screen forever.
+    #[test]
+    fn decaying_an_empty_spectrum_is_not_a_change() {
+        let mut lv: Vec<f32> = Vec::new();
+        assert!(!viz_decay_levels(&mut lv, 100));
+        let mut lv = vec![0.0f32; 4];
+        assert!(viz_decay_levels(&mut lv, 100), "all-zero bars still need clearing once");
+        assert!(lv.is_empty());
+        assert!(!viz_decay_levels(&mut lv, 100), "and then never again");
+    }
+
+    /// A long stall — the panel was dark for an hour — must collapse the bars in one step, not
+    /// produce a negative level or a spike when the screen comes back.
+    #[test]
+    fn a_huge_frame_gap_collapses_the_bars_cleanly() {
+        let mut lv = vec![1.0f32, 0.4];
+        assert!(viz_decay_levels(&mut lv, 3_600_000));
+        assert!(lv.is_empty(), "a long gap should clear outright: {lv:?}");
+    }
 
     #[test]
     fn time_formatting() {

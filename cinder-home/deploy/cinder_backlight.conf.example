@@ -1,24 +1,42 @@
-# cinder_backlight.conf — make NIGHT MODE dim the panel backlight to minimal light.
-# Copy to /contents/cinder_backlight.conf. OPTIONAL: cinder-home auto-detects the common Android/MTK
-# backlight node and uses sensible defaults (night ≈ 3% of max, day ≈ 70%), so night mode already
-# goes dark on most devices with NO config. Use this file only to override the node or the levels.
+# cinder_backlight.conf — OPTIONAL override for the panel backlight node and levels.
+# Copy to /contents/cinder_backlight.conf. cinder-home auto-detects the common Android/MTK node and
+# picks sensible levels, so most devices need NO config at all. Use this file to override the node
+# (if detection picks the wrong one) or to pin the raw levels.
 #
-# When you toggle Settings ▸ Theme to NIGHT, the backlight drops to `night`; DAY restores `day`.
-# (Raw brightness values — the same units as the sysfs `brightness` node, 0..max_brightness.)
+# ── WHO SETS WHAT ─────────────────────────────────────────────────────────────────────────────
+#   day    the normal daytime backlight. NORMALLY OWNED BY THE UI: Settings ▸ Brightness cycles
+#          1..5 and maps onto 15 / 30 / 50 / 70 / 100 % of the node's own max_brightness, so it
+#          works whatever the raw scale turns out to be. Level 1 is 15%, never 0 — the lowest
+#          setting reachable from the UI has to stay readable, or the screen you would use to turn
+#          it back up is invisible, and the level persists across reboots.
+#   night  the dim level used while Settings ▸ Theme is NIGHT. Not affected by the Brightness row:
+#          night mode is deliberately "minimal light", not "your brightness, but less".
+#
+# ── PINNING `day` DISABLES THE BRIGHTNESS ROW ─────────────────────────────────────────────────
+# If you uncomment `day` below, it WINS: cinder-home stops recomputing it from the Brightness
+# setting, so the Settings ▸ Brightness row will still cycle 1..5 and persist but will no longer
+# move the panel. cinderhome.log records this at boot ("backlight: day= pinned …") so the row does
+# not just look broken.
+#
+# That is the point: this file is the escape hatch for a device where the auto-detected node or
+# max_brightness produces an unreadable panel — precisely the situation in which the UI you would
+# use to fix it cannot be read. So it has to override the UI, not the other way round.
+#
+# Leave `day` commented out (as below) if you only want to change the node or the night level and
+# want to keep the Brightness row working.
 #
 # NOTE: the night dim is NOT resumed on boot — cinder-home always boots at the `day` level even if
-# night theme was persisted, so a daytime boot can never come up too dark to read. The dim is a
-# deliberate per-session action: toggle Theme → night to dim again.
+# the night theme was persisted, so a daytime boot can never come up too dark to read. The dim is a
+# deliberate per-session action: toggle Theme → Night to dim again.
 #
-# Find the exact node + range in the discovery report ("BACKLIGHT / BRIGHTNESS" section), e.g.
-# /sys/class/leds/lcd-backlight/brightness with max_brightness=255.
+# Find the exact node + range in the discovery report ("BACKLIGHT / BRIGHTNESS" section).
 
 # CONFIRMED on-device 2026-07-25 (adb): node below, max_brightness=255, booted at 178 (≈70%).
-# (This is also cinder-home's auto-detected default node, so night mode already dims without this
-# file; keep it to pin the exact levels.)
+# This is also cinder-home's auto-detected default, so you only need `path` if detection fails.
 path  = /sys/class/leds/lcd-backlight/brightness
 night = 8      # MINIMAL light for night mode (1 = dimmest still-on; 0 may switch the panel off)
-day   = 178    # normal daytime backlight (≈70% of 255)
 
-# Tip: want it even darker at night? lower `night` toward 1. If 1 is still too bright, the panel's
-# minimum is hardware-limited — there's no lower setting without turning the backlight fully off.
+# day = 178    # UNCOMMENT ONLY TO OVERRIDE the Settings ▸ Brightness row (see above). 178 ≈ 70%.
+
+# Tip: want it even darker at night? Lower `night` toward 1. If 1 is still too bright, the panel's
+# minimum is hardware-limited — there is no lower setting without turning the backlight fully off.

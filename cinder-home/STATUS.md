@@ -406,6 +406,37 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   moving, so idle costs zero IPC. Changing the loop rate also exposed that the ~1 Hz housekeeping
   and battery read were paced by *iteration count* (silently assuming 60 Hz); both are now
   wall-clock paced, so the sleep timer and USB debounce keep their real timing at any rate.
+- **Visualiser bars fall away instead of freezing** (2026-07-27): the analyzer is demand-driven, so
+  the spectrum stream now STOPS on every screen blank, pause and screen wake — and cinder-ffi kept
+  drawing the last frame it received, forever, because `viz_levels` was never aged out. The visible
+  result would have been a held snapshot of whatever the music was doing a second ago, on **every
+  single screen wake** (housekeeping is 1 Hz, so the analyzer restarts up to a second late, plus
+  service latency). A frozen snapshot presented as live is the same untruth as the synthetic
+  animation that was just removed for the same reason. Frames older than 250 ms (five missed frames
+  at the 20 Hz the analyzer is asked for) now decay to nothing over 400 ms and the buffer is
+  dropped, so the bars fall away and then the visualiser is simply absent — the honest state when
+  nothing is feeding it. Bars dropping reads as "the music stopped"; bars blinking out reads as the
+  UI breaking, hence the decay rather than a hard clear. Three tests, including a one-hour frame gap.
+- **`cinder_backlight.conf`'s `day=` actually wins now** (2026-07-27): it did not. `load_bl_cfg`
+  parsed the value and `recompute_day_level()` overwrote it on the next line of `render_up`, so the
+  documented override was dead from the moment the Settings Brightness row landed. That is the
+  file's whole reason to exist — the escape for a device whose auto-detected node or
+  `max_brightness` produces an unreadable panel, i.e. exactly the case where the UI you would use to
+  fix it cannot be read. A pinned `day=` is now respected and logged at boot, so the Brightness row
+  looking inert has a written explanation. Both shipped conf examples were rewritten: the backlight
+  one no longer hands out an uncommented `day=` that silently disables the row, and the visualiser
+  one no longer describes a synthetic fallback that was removed, nor tells the user to disable the
+  analyzer by "changing the line to anything other than `analyzer=1`" — the check matches
+  `analyzer=0`, so following that instruction would have left it running.
+- **Analyzer polling and threading** (2026-07-27, audit): `viz_analyzer_enabled()` opened, read and
+  closed a file on `/contents` **every second for the entire runtime of the device** — ~86k opens a
+  day on the fragile vfat partition, to re-answer a question that can only change if the user
+  rewrites the file over USB-MSC. Cached, and invalidated when a mass-storage session ends (the only
+  moment it can change without a reboot). The analyzer shim's SIGALRM mask was a process-wide
+  "once" flag, correct when the analyzer started once at boot and wrong now that it starts and stops
+  on demand: if Sony hands the callbacks to a fresh thread each time, only the first one was ever
+  masked and every later analyzer thread was a valid target for the shell's watchdog alarm. Now
+  thread-local. The six `dlsym` lookups are resolved once instead of on every start.
 - **Accent colour choice** (2026-07-27, Settings ▸ DISPLAY): six accents — AMBER (Cinder's own,
   the default), CRIMSON, VIOLET, AZURE, MINT and BONE (monochrome, the accent *is* the ink). Only
   the accent tokens move: `acc`, `acc_ink` and `row_sel`. The neutrals — the warm near-black bg,

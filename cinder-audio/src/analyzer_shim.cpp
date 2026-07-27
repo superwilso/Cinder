@@ -58,12 +58,19 @@ volatile int g_frames = 0;
 int g_last_n = 0;
 int g_last_vals[16] = {0};
 
-// Block SIGALRM on the CURRENT thread (called once from the analyzer's monitor thread, where the
+// Block SIGALRM on the CURRENT thread (called from the analyzer's monitor thread, where the
 // callbacks run). This keeps the shell's per-frame/guard watchdog (SIGALRM) from being delivered to
 // the analyzer thread — it always reaches the pump thread, which is the one that armed alarm(). We
 // do this from the thread itself (never the pump thread), so it can't defeat any guard.
+//
+// THREAD-LOCAL, not a plain static. The flag used to be process-wide, which was correct back when
+// the analyzer started once at boot and its thread lived for the whole session. It is now started
+// and stopped on demand — every screen blank, pause and screen wake — so if Sony's Start() hands
+// the callbacks to a FRESH thread each time, only the very first one would ever have masked the
+// signal and every later analyzer thread would be a valid target for the shell's watchdog alarm.
+// Per-thread state costs one TLS slot and makes the guarantee actually hold.
 static void mask_sigalrm_self_once() {
-    static bool done = false;
+    static thread_local bool done = false;
     if (done) return;
     done = true;
     sigset_t block;
@@ -105,7 +112,17 @@ using fn_rate    = void  (*)(void*, float);
 using fn_samples = void  (*)(void*, unsigned);
 using fn_start   = void  (*)(void*, void*);
 
-fn_void    p_stop  = nullptr;
+// Resolved once, on the first start, and reused. The analyzer is now started and stopped on demand
+// (see the shell's viz_analyzer_tick), so this runs on every entry to Now Playing rather than once
+// at boot — and dlsym over a Sony client library's symbol table is not free on a single-core ARMv7
+// competing with the render thread. Resolution is all-or-nothing, so caching cannot half-apply.
+fn_getinst p_getinst = nullptr;
+fn_mode    p_setmode = nullptr;
+fn_rate    p_setrate = nullptr;
+fn_samples p_setsamp = nullptr;
+fn_start   p_start   = nullptr;
+fn_void    p_stop    = nullptr;
+bool       g_resolved = false;
 
 } // namespace
 
@@ -128,18 +145,26 @@ int cinder_analyzer_start(int mode, float update_hz, unsigned calc_samples) {
         if (!g_lib) return -1;
     }
 
-    auto getinst = reinterpret_cast<fn_getinst>(dlsym(g_lib,
-        "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService11GetInstanceEv"));
-    auto setmode = reinterpret_cast<fn_mode>(dlsym(g_lib,
-        "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService7SetModeENS1_6mode_tE"));
-    auto setrate = reinterpret_cast<fn_rate>(dlsym(g_lib,
-        "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService13SetUpdateRateEf"));
-    auto setsamp = reinterpret_cast<fn_samples>(dlsym(g_lib,
-        "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService14SetCalcSamplesEj"));
-    auto start   = reinterpret_cast<fn_start>(dlsym(g_lib,
-        "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService5StartEPNS1_14IEventListenerE"));
-    p_stop       = reinterpret_cast<fn_void>(dlsym(g_lib,
-        "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService4StopEv"));
+    if (!g_resolved) {
+        p_getinst = reinterpret_cast<fn_getinst>(dlsym(g_lib,
+            "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService11GetInstanceEv"));
+        p_setmode = reinterpret_cast<fn_mode>(dlsym(g_lib,
+            "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService7SetModeENS1_6mode_tE"));
+        p_setrate = reinterpret_cast<fn_rate>(dlsym(g_lib,
+            "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService13SetUpdateRateEf"));
+        p_setsamp = reinterpret_cast<fn_samples>(dlsym(g_lib,
+            "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService14SetCalcSamplesEj"));
+        p_start   = reinterpret_cast<fn_start>(dlsym(g_lib,
+            "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService5StartEPNS1_14IEventListenerE"));
+        p_stop    = reinterpret_cast<fn_void>(dlsym(g_lib,
+            "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService4StopEv"));
+        g_resolved = true;
+    }
+    auto getinst = p_getinst;
+    auto setmode = p_setmode;
+    auto setrate = p_setrate;
+    auto setsamp = p_setsamp;
+    auto start   = p_start;
 
     if (!getinst || !start || !p_stop) return -2;   // hard requirements
 
