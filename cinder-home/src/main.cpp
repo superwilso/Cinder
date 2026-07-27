@@ -1213,10 +1213,37 @@ static bool g_msc_active = false;   // between enter and exit (gates /contents w
 static bool g_msc_seen_usb = false; // saw the cable while in MSC → unplug ends the session
 static int  g_usb_hi = 0;           // debounce: consecutive host-present samples while NOT in MSC
 
-void redirect_fds(const char* path, int flags) {
+// Point stdout/stderr at `path`. Returns false only if even /dev/null could not be opened.
+//
+// THE FALLBACK IS THE POINT. Entering USB-MSC redirects the log OFF /contents precisely because an
+// open fd under /contents makes init's `umount /contents` fail EBUSY — the LUN write then fails and
+// the PC sees a reader with no medium. The old version silently did nothing when the open failed,
+// leaving fds 1 and 2 still on /contents/cinderhome.log: mass storage would break, and the reason
+// could not appear in any log, because the log was the thing breaking it. That is not theoretical —
+// a whole MSC debugging session was blinded this way when /tmp/cinder_msc.log turned out never to
+// have been created.
+//
+// So: on failure, fall back to /dev/null. Losing the log is a bad outcome; silently failing to
+// release /contents is a worse one. The failure is reported BEFORE the switch, while stderr still
+// points at the old destination, so the explanation survives in the previous log.
+bool redirect_fds(const char* path, int flags) {
     std::fflush(stdout); std::fflush(stderr);
     int fd = open(path, flags, 0644);
-    if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
+    if (fd < 0) {
+        std::fprintf(stderr, "[cinder-home] redirect_fds: cannot open %s (errno=%d) — falling back "
+                             "to /dev/null so /contents is released\n", path, errno);
+        std::fflush(stderr);
+        fd = open("/dev/null", O_WRONLY);
+        if (fd < 0) {
+            std::fprintf(stderr, "[cinder-home] redirect_fds: /dev/null failed too (errno=%d) — "
+                                 "fds still on the old target; umount may fail EBUSY\n", errno);
+            std::fflush(stderr);
+            return false;
+        }
+    }
+    dup2(fd, 1); dup2(fd, 2);
+    if (fd > 2) close(fd);
+    return true;
 }
 bool contents_mounted() {
     FILE* f = std::fopen("/proc/mounts", "r");
@@ -1358,8 +1385,11 @@ void enter_usb_msc() {
     set_transport(false);
     cinder_audio_release_sequence();
     (void)chdir("/");
-    // 2) move our log fds (1+2 ARE /contents/cinderhome.log via the launcher redirect)
-    redirect_fds(MSC_TMP, O_WRONLY | O_CREAT | O_APPEND);
+    // 2) move our log fds (1+2 ARE /contents/cinderhome.log via the launcher redirect). A failure
+    //    here falls back to /dev/null rather than leaving them on /contents — see redirect_fds; an
+    //    fd there is exactly what makes the umount below fail EBUSY.
+    if (!redirect_fds(MSC_TMP, O_WRONLY | O_CREAT | O_APPEND))
+        clog_("usb-msc: log fds could NOT be moved off /contents — umount will likely fail EBUSY");
     // 3) UNMOUNT /contents FIRST, via the setuid-root helper, THEN flip the gadget. On-device RE
     //    (adb, 2026-07-25) found TWO things: (a) the stock `sys.sony.config=msc` trigger is RACY —
     //    it `start unmount_msc1` (an async fork of `umount /contents`) then IMMEDIATELY writes

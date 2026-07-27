@@ -336,6 +336,15 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   unconditionally and never reflected any BT state.
 - **Menu ▸ Now Playing shows the running track** (2026-07-27): title · elapsed, or "Nothing
   playing". The row was blank.
+- **USB-MSC log redirect now fails safe** (2026-07-27): entering mass storage moves stdout/stderr
+  off `/contents` because an open fd there makes init's `umount /contents` fail `EBUSY` (the LUN
+  write then fails and the PC sees a reader with no medium). `redirect_fds` silently did **nothing**
+  when its `open` failed, leaving both fds on `/contents/cinderhome.log` — so MSC would break and
+  the reason could never appear in any log, because the log was the thing breaking it. That is not
+  hypothetical: a whole MSC debugging session was blinded this way when `/tmp/cinder_msc.log` turned
+  out never to have been created. It now falls back to `/dev/null` (losing the log beats failing to
+  release `/contents`) and reports the failure *before* switching, while stderr still points at the
+  old destination, so the explanation survives in the previous log.
 - **Scrolling momentum is frame-rate independent** (2026-07-27): the fling stepped `v / 60.0` per
   tick and decayed a flat `0.92` per tick — a hardcoded 60 fps. But this project's own bench
   measured a **scrolling** frame at ~31 ms on device (~32 fps), and flinging *is* scrolling, so the
