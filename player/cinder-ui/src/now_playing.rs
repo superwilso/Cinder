@@ -20,6 +20,8 @@ use embedded_graphics::primitives::{Circle, PrimitiveStyle};
 pub const RAIL_Y: i32 = 612;
 pub const RAIL_X0: i32 = 24;
 pub const RAIL_W: i32 = 432;
+/// Rail thickness. Single source for both the track and the filled portion.
+pub const RAIL_H: i32 = 6;
 /// Vertical grab band for drag-to-seek. The rail itself is 4 px tall — unhittable with a thumb —
 /// so the band spans from just above the rail down through the elapsed/remaining labels. It stops
 /// short of the transport row (centre y 692, radius 44 ⇒ from 648) so it can never steal a
@@ -131,14 +133,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 
     // ---------- progress (shared) ----------
     let (py, px0, pw) = (RAIL_Y, RAIL_X0, RAIL_W);
-    fill_rect(c, px0, py, pw, 4, t.line);
+    fill_rect(c, px0, py, pw, RAIL_H, t.line);
     let fillw = (pw as f32 * np.progress.clamp(0.0, 1.0)) as i32;
-    fill_rect(c, px0, py, fillw, 4, t.acc);
+    fill_rect(c, px0, py, fillw, RAIL_H, t.acc);
     // Scrub handle: only while a drag-to-seek is in progress. It gives the finger something to
     // aim at and makes it obvious the bar is showing a pending target, not the live position.
     if np.scrubbing {
         let cx = px0 + fillw;
-        Circle::with_center(Point::new(cx, py + 2), 22)
+        Circle::with_center(Point::new(cx, py + RAIL_H / 2), 22)
             .into_styled(PrimitiveStyle::with_fill(t.acc))
             .draw(c)
             .ok();
@@ -182,7 +184,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 /// idle screen has to put them in exactly the same places or the controls stop working when
 /// nothing is loaded. Only the *state* differs — empty rail, no times, transport shows play.
 fn idle_chrome(c: &mut Canvas, t: &Theme, f: &FontSet) {
-    fill_rect(c, RAIL_X0, RAIL_Y, RAIL_W, 4, t.line);
+    fill_rect(c, RAIL_X0, RAIL_Y, RAIL_W, RAIL_H, t.line);
 
     let ty = 692.0;
     icons::shuffle(c, 44.0, ty, 24.0, t.faint);
