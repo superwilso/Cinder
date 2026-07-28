@@ -136,16 +136,33 @@ pub fn from_bands(bands: &[i32], bars: usize, prev: &[f32], peak: &mut f32) -> V
     if bands.is_empty() || bars == 0 {
         return Vec::new();
     }
-    // resample source bands -> `bars` by averaging each output bucket's source span
+    let n = bands.len();
     let mut raw = vec![0.0f32; bars];
-    for (b, slot) in raw.iter_mut().enumerate() {
-        let lo = b * bands.len() / bars;
-        let hi = (((b + 1) * bands.len() / bars).max(lo + 1)).min(bands.len());
-        let mut s = 0.0f32;
-        for &x in &bands[lo..hi] {
-            s += x as f32;
+    if n >= bars {
+        // Downsampling: average each output bucket's source span.
+        for (b, slot) in raw.iter_mut().enumerate() {
+            let lo = b * n / bars;
+            let hi = (((b + 1) * n / bars).max(lo + 1)).min(n);
+            let mut s = 0.0f32;
+            for &x in &bands[lo..hi] {
+                s += x as f32;
+            }
+            *slot = s / (hi - lo) as f32;
         }
-        *slot = s / (hi - lo) as f32;
+    } else {
+        // UPSAMPLING — interpolate, don't block-average. Sony's analyzer caps at TWELVE passbands
+        // (wampy's MAKING_OF_VIS, confirmed against Sony's own client library), and the display asks
+        // for 36 columns. Bucket-averaging 12 into 36 gives three IDENTICAL bars per band: a
+        // staircase of 12 wide steps pretending to be 36 bars, which claims a frequency resolution
+        // the data does not have. Interpolating between band centres is honest about the same data
+        // and reads correctly in every style — especially Ribbon and Line, which are contours.
+        for (b, slot) in raw.iter_mut().enumerate() {
+            let t = if bars > 1 { b as f32 * (n - 1) as f32 / (bars - 1) as f32 } else { 0.0 };
+            let i0 = (t.floor() as usize).min(n - 1);
+            let i1 = (i0 + 1).min(n - 1);
+            let f = t - i0 as f32;
+            *slot = bands[i0] as f32 * (1.0 - f) + bands[i1] as f32 * f;
+        }
     }
     let mut out = vec![0.0f32; bars];
     if bands.iter().any(|&x| x < 0) {
@@ -156,12 +173,27 @@ pub fn from_bands(bands: &[i32], bars: usize, prev: &[f32], peak: &mut f32) -> V
             *slot = smooth(v, prev, bars, b);
         }
     } else {
-        // linear magnitude: auto-gain against a slow-decaying peak (floor 1.0 avoids div-by-0 and
-        // keeps silence flat). sqrt for a livelier display, same as the FFT path.
+        // Linear amplitudes -> DECIBELS against a slow-decaying peak.
+        //
+        // This was `raw / peak` with a `sqrt` for liveliness, and that is wrong for this data.
+        // Sony's analyzer reports raw amplitudes "ranging from 40k to millions" (wampy, from
+        // intercepting the stock player), i.e. a dynamic range of 100:1 to 1000:1 within one frame.
+        // Divided linearly by the peak, everything but the loudest band or two sits in the bottom
+        // tenth of the display — a `sqrt` softens that but does not fix it, because the ear is
+        // logarithmic and the data spans three decades. Hence a real dB mapping: the quiet bands
+        // get the room they actually occupy perceptually. Sony's own player converts these to sound
+        // pressure levels for the same reason.
+        const FLOOR_DB: f32 = -48.0;
         let frame_max = raw.iter().cloned().fold(0.0f32, f32::max);
+        // Floor of 1.0 keeps silence flat and the division defined.
         *peak = frame_max.max(*peak * 0.95).max(1.0);
         for (b, slot) in out.iter_mut().enumerate() {
-            let v = (raw[b] / *peak).clamp(0.0, 1.0).sqrt();
+            let v = if raw[b] <= 0.0 {
+                0.0 // log of zero is -inf; silence is the floor, not a NaN
+            } else {
+                let db = 20.0 * (raw[b] / *peak).log10();
+                ((db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0)
+            };
             *slot = smooth(v, prev, bars, b);
         }
     }
@@ -237,6 +269,49 @@ mod tests {
         assert!(lv[0] < 0.05, "floor maps to ~0");
         assert!(lv[2] > 0.95, "0 dB maps to ~1");
         assert!((lv[1] - 0.5).abs() < 0.1, "-30 dB maps to ~mid");
+    }
+
+    /// Twelve source bands into 36 bars must produce a smooth curve, not 12 groups of three
+    /// identical values. A staircase claims a resolution the analyzer does not have.
+    #[test]
+    fn upsampling_interpolates_instead_of_stepping() {
+        // Monotonically rising source: the output must rise at nearly every step.
+        let bands: Vec<i32> = (0..12).map(|i| 1000 + i * 1000).collect();
+        let mut peak = 0.0;
+        let lv = from_bands(&bands, 36, &[], &mut peak);
+        assert_eq!(lv.len(), 36);
+        let mut equal_runs = 0;
+        for w in lv.windows(2) {
+            if (w[0] - w[1]).abs() < 1e-6 {
+                equal_runs += 1;
+            }
+        }
+        assert!(equal_runs <= 2, "output is a staircase, not a curve ({equal_runs} flat steps)");
+        assert!(lv[35] > lv[0], "rising input must give a rising output");
+    }
+
+    /// A frame spanning three decades — which is what Sony's analyzer actually reports — must not
+    /// leave every quiet band pinned at the bottom of the display.
+    #[test]
+    fn a_three_decade_frame_uses_the_whole_display() {
+        let bands = [40_000, 100_000, 400_000, 1_000_000, 4_000_000, 8_000_000];
+        let mut peak = 0.0;
+        let lv = from_bands(&bands, 6, &[], &mut peak);
+        // The quietest band is ~-46 dB below the peak: visible, near the floor, but not zero.
+        assert!(lv[0] > 0.01, "quietest band vanished: {lv:?}");
+        assert!(lv[0] < 0.25, "quietest band should still read as quiet: {lv:?}");
+        assert!(lv[5] > 0.95, "loudest band should be near full: {lv:?}");
+        // And the middle of the range should land in the middle of the display, which is the whole
+        // point of a log mapping — under the old linear/sqrt form it sat around a fifth.
+        assert!(lv[3] > 0.55 && lv[3] < 0.95, "mid-range band mapped to {:.2}", lv[3]);
+    }
+
+    /// All-zero bands: log(0) is -inf, and a NaN reaching the renderer would draw garbage or panic.
+    #[test]
+    fn silence_maps_to_zero_not_nan() {
+        let mut peak = 0.0;
+        let lv = from_bands(&[0, 0, 0, 0], 4, &[], &mut peak);
+        assert!(lv.iter().all(|v| v.is_finite() && *v == 0.0), "{lv:?}");
     }
 
     #[test]

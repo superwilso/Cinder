@@ -34,6 +34,14 @@ extern "C" void cinder_set_spectrum(const int* bands, int n);
 
 namespace pst { namespace services { namespace audioanalyzerservice {
 
+// One analysis band. `value` is the band's centre frequency in Hz; `mean` is a per-band scaling
+// reference the service wants alongside it. Layout is {int; float} = 8 bytes, POD — confirmed
+// against Sony's own client library and against wampy's independently-derived declaration.
+struct Passband {
+    int value;
+    float mean;
+};
+
 // Faithful re-declaration of Sony's listener interface. Only the vtable layout matters; we never
 // link Sony's IEventListener (our derived class is self-contained). The dtor is defined out-of-line
 // (below) so this TU emits the vtable.
@@ -111,6 +119,9 @@ using fn_mode    = void  (*)(void*, int);
 using fn_rate    = void  (*)(void*, float);
 using fn_samples = void  (*)(void*, unsigned);
 using fn_start   = void  (*)(void*, void*);
+// SetPassband(const std::vector<Passband>&) — a libc++ vector crosses this boundary, which is fine
+// because this shim is built with the same clang -stdlib=libc++ (libc++ 3.9 ABI) as Sony's libs.
+using fn_passband = void (*)(void*, const std::vector<aas::Passband>*);
 
 // Resolved once, on the first start, and reused. The analyzer is now started and stopped on demand
 // (see the shell's viz_analyzer_tick), so this runs on every entry to Now Playing rather than once
@@ -120,8 +131,9 @@ fn_getinst p_getinst = nullptr;
 fn_mode    p_setmode = nullptr;
 fn_rate    p_setrate = nullptr;
 fn_samples p_setsamp = nullptr;
-fn_start   p_start   = nullptr;
-fn_void    p_stop    = nullptr;
+fn_start    p_start    = nullptr;
+fn_passband p_passband = nullptr;
+fn_void     p_stop     = nullptr;
 bool       g_resolved = false;
 
 } // namespace
@@ -156,6 +168,9 @@ int cinder_analyzer_start(int mode, float update_hz, unsigned calc_samples) {
             "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService14SetCalcSamplesEj"));
         p_start   = reinterpret_cast<fn_start>(dlsym(g_lib,
             "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService5StartEPNS1_14IEventListenerE"));
+        p_passband = reinterpret_cast<fn_passband>(dlsym(g_lib,
+            "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService11SetPassbandERKNSt3__1"
+            "6vectorINS1_8PassbandENS3_9allocatorIS5_EEEE"));
         p_stop    = reinterpret_cast<fn_void>(dlsym(g_lib,
             "_ZN3pst8services20audioanalyzerservice20AudioAnalyzerService4StopEv"));
         g_resolved = true;
@@ -171,11 +186,29 @@ int cinder_analyzer_start(int mode, float update_hz, unsigned calc_samples) {
     if (!g_inst) g_inst = getinst();
     if (!g_inst) return -3;
 
-    // Configure only what the caller asked for; otherwise inherit the service defaults (same params
-    // the stock spectrum screen uses). SetMode picks level vs spectrum.
+    // Configure only what the caller asked for; otherwise inherit the service defaults. SetMode
+    // picks level vs spectrum.
     if (setmode)                    setmode(g_inst, mode);
     if (setsamp && calc_samples)    setsamp(g_inst, calc_samples);
     if (setrate && update_hz > 0.f) setrate(g_inst, update_hz);
+
+    // SET THE PASSBANDS. This was missing, and it is very likely why the analyzer had never been
+    // observed to emit a single frame: the service is told WHICH bands to analyse, and until it is,
+    // it has nothing to report. Sony's own player sets exactly this list, and the service caps at
+    // TWELVE bands (both facts independently derived by wampy's MAKING_OF_VIS, which reached the
+    // service by LD_PRELOAD-ing the stock app and reading the calls it made).
+    //
+    // The `mean` column is Sony's: 456 for every band except the topmost, which gets 406. Their
+    // origin is undocumented; they are reproduced rather than invented, because a value we made up
+    // would be a guess dressed as calibration.
+    if (p_passband) {
+        static const int kHz[12]    = { 50, 100, 160, 250, 500, 750, 1000, 2000, 4000, 8000, 16000, 28000 };
+        static const float kMean[12] = { 456, 456, 456, 456, 456, 456, 456, 456, 456, 456, 456, 406 };
+        std::vector<aas::Passband> bands;
+        bands.reserve(12);
+        for (int i = 0; i < 12; ++i) bands.push_back(aas::Passband{ kHz[i], kMean[i] });
+        p_passband(g_inst, &bands);
+    }
 
     // NOTE: do NOT mask SIGALRM around start() here — start() runs inside the shell's run_guarded
     // (alarm-based watchdog), so blocking SIGALRM on THIS (pump) thread would defeat that watchdog

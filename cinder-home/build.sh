@@ -230,6 +230,16 @@ mkdir -p "$DIST"
 cp -f "$OUT" "$DIST/cinder-home"
 cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"
 cp -f "$HERE/cinder-umount" "$DIST/cinder-umount"
-cp -f "$HERE/cinder-gpunode" "$DIST/cinder-gpunode"
+# cinder-gpunode ships on the DEV channel ONLY. It is setuid-root and its whole job is to make
+# four kernel graphics nodes world-writable — real attack surface — in service of a GPU present
+# path that is default OFF and measured 4.7x SLOWER than the software one (45.6 ms/present vs 9.6;
+# FBIOPUT_VSCREENINFO contends with the Mali pipeline). The present thread superseded the reason it
+# existed. Shipping it on the daily-use build would trade a permanent permission loosening for a
+# feature nobody turns on, so stable does not get it; it stays available for GPU experiments on dev.
+if [ "$CHANNEL" = "dev" ]; then
+    cp -f "$HERE/cinder-gpunode" "$DIST/cinder-gpunode"
+else
+    rm -f "$DIST/cinder-gpunode"
+fi
 echo "staged $CHANNEL binaries -> $DIST/"
 echo "── done ($CHANNEL). next: bash tools/pack_upg.sh $CHANNEL ──"
