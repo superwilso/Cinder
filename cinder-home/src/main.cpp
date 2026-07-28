@@ -327,6 +327,8 @@ void report_storage();  // defined below (with the other sysfs readers); called 
 void apply_eq_fn();      // defined below (carry_out helpers); re-applied from deferred_up on restore
 void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, before render_up)
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
+extern bool g_np_poll_now;  // defined with the pump state: force the next now-playing poll (see below)
+extern bool g_house_due;    // defined with the pump state: run the ~1 Hz housekeeping on the next frame
 void sync_volume_from_hw(); // defined below (volume backend); seeds the UI level from the mixer
 void apply_volume();        // defined below (volume backend); writes the UI level to the mixer
 
@@ -1641,7 +1643,13 @@ void carry_out(int act) {
                 if (kept == 0) return;
                 if (start < 0 || start >= kept) start = 0;
                 int rc = cinder_audio_play_tracks(ptrs, kept, start);
-                if (rc == 0) set_transport(true);
+                if (rc == 0) {
+                    set_transport(true);
+                    // Update the screen NOW rather than on the next 1 Hz tick. Without this the
+                    // track you just tapped can take a full second to appear.
+                    g_np_poll_now = true;
+                    g_house_due = true;
+                }
                 else fprintf(stderr, "[cinder] play_tracks(%d tracks, start %d) failed rc=%d\n",
                              kept, start, rc);
             });
@@ -2073,6 +2081,14 @@ void report_storage() {
 // codec from the library DB). Then push the REAL position/duration/state from the
 // PlayEventListener every tick — that is what drives the progress bar, and unlike the old local
 // estimate it survives seeks, mid-track starts and wrong tag durations.
+// Set when the user has just started something, to make the very next poll ask the service
+// immediately instead of waiting for the listener to tick. See g_np_poll_now's use below.
+bool g_np_poll_now = false;  // fwd-declared above
+// Makes the ~1 Hz housekeeping block run on the NEXT frame instead of waiting out its interval.
+// Set alongside g_np_poll_now so a freshly-started track reaches the screen in one frame rather
+// than up to a second later.
+bool g_house_due = false;    // fwd-declared above
+
 void poll_now_playing() {
     static char last[1024];
     static unsigned last_events = 0;
@@ -2083,7 +2099,14 @@ void poll_now_playing() {
     // only ask the service when its callback count has moved. Idle now costs zero IPC; playing is
     // unchanged at one call per second.
     unsigned events = cinder_audio_listener_events();
-    if (events != last_events) {
+    // …EXCEPT right after the user pressed play. The listener has not necessarily fired yet at that
+    // point, so waiting for it means the screen keeps showing the previous track — for up to a
+    // second on the housekeeping tick, plus however long the first callback takes. That delay is
+    // most of what "playing a song from the library feels laggy" actually is: the audio starts, and
+    // the UI just sits there.
+    bool force = g_np_poll_now;
+    g_np_poll_now = false;
+    if (force || events != last_events) {
         last_events = events;
         char uri[1024];
         int n = cinder_audio_current_uri(uri, sizeof uri);
@@ -2230,7 +2253,8 @@ void* render_driver(void*) {
         // would have delayed the sleep timer and the USB-host debounce by that much.
         static long last_house_ms = 0;
         long house_now = now_ms();
-        if (house_now - last_house_ms >= 1000) {
+        if (g_house_due || house_now - last_house_ms >= 1000) {
+            g_house_due = false;
             last_house_ms = house_now;
             cinder_clock_tick();
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
