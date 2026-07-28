@@ -74,7 +74,7 @@ struct App {
     usb_dac: bool,
     rx: bool,
     shuffle: bool,
-    repeat: u8, // 0 off · 1 all · 2 one
+    repeat: u8, // 0 off · 1 one  (matches nav: repeat-all has no PlayerService primitive)
     shelf_open: bool,
     pins: [Option<(String, String)>; 3],
     history: Vec<Screen>,
@@ -179,7 +179,7 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
             } else if hit(x, y, 44, 692, 28) {
                 app.shuffle = !app.shuffle;
             } else if hit(x, y, 436, 692, 28) {
-                app.repeat = (app.repeat + 1) % 3;
+                app.repeat = (app.repeat + 1) % 2;
             } else if y > 744 {
                 // bottom toolbar: heart · queue · eq · bt · library
                 if x < 96 {

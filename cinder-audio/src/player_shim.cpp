@@ -321,6 +321,9 @@ void cinder_audio_shutdown(void) {
     if (g_ctrl) { g_ctrl->ClosePlayer(); g_ctrl->Disconnect(); }
     g_ctrl.reset();
     g_seq.reset();
+    // BOTH handles refer to the same object; dropping only one keeps it alive and would leave
+    // cinder_audio_set_repeat_one writing into a sequence the service has already released.
+    g_nts.reset();
 }
 
 int cinder_audio_play_tracks(const char* const* uris, int count, int start) {

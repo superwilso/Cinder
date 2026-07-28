@@ -580,12 +580,14 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\nscreen_off={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\nscreen_off={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
         r.app.viz_size(),
         r.app.np_page(),
+        r.np.shuffle as u8,
+        r.np.repeat,
         eq.join(","),
         r.app.sound_flags(),
         r.app.onboarding_seen() as u8,
@@ -2039,6 +2041,13 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_np_page(n);
                         }
                     }
+                    // Shuffle and repeat persist now that they do something. Losing them on every
+                    // reboot would mean re-enabling shuffle each morning, and everything else on
+                    // this screen already survives a restart.
+                    "shuffle" => r.np.shuffle = v == "1",
+                    // Clamped: only 0 and 1 exist (repeat-all has no primitive), so a stale file
+                    // written by a build that cycled three states cannot restore a dead value.
+                    "repeat" => r.np.repeat = u8::from(v == "1"),
                     "eq" => {
                         let mut arr = r.app.eq_bands();
                         for (i, part) in v.split(',').enumerate().take(10) {
@@ -2552,6 +2561,25 @@ mod tests {
     /// A stopped analyzer must not leave its last frame on screen. The bars fall to nothing and the
     /// buffer is dropped, so the visualiser goes absent rather than holding a snapshot — the same
     /// reason the synthetic animation was removed.
+    /// The panic hook's screen table must line up with `screen_ord`, or a crash report names the
+    /// wrong screen — which is worse than naming none, because it sends the reader somewhere else.
+    #[test]
+    fn every_screen_has_a_distinct_panic_name() {
+        use cinder_ui::nav::Screen as S;
+        let all = [
+            S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::UpNext, S::Eq, S::Sound,
+            S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
+            S::UsbStorage, S::Shelf,
+        ];
+        assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
+        let mut seen = std::collections::BTreeSet::new();
+        for sc in all {
+            let i = screen_ord(sc) as usize;
+            assert!(i < SCREEN_NAMES.len(), "{sc:?} maps past the end of the name table");
+            assert!(seen.insert(i), "{sc:?} shares an ordinal with another screen");
+        }
+    }
+
     #[test]
     fn a_stale_spectrum_decays_away_instead_of_freezing() {
         let mut lv = vec![1.0f32, 0.5, 0.25];

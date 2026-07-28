@@ -5,6 +5,10 @@
 > subsystem, including the three Cinder defects that comparison found, why Cinder's volume is correct
 > as-is, and the full evidenced answer on FM-over-Bluetooth with a 3.5 mm cable as the antenna.
 >
+> **FLASHING? Start here:** [`../docs/FLASH_NEXT.md`](../docs/FLASH_NEXT.md) — the run sheet for the
+> next hardware session, in safety-gradient order, with the seven assumptions this build is asking
+> the device to settle and the fallback for each.
+>
 > **Backlog and what to do next:** [`ROADMAP.md`](ROADMAP.md) — re-audited 2026-07-28.
 >
 > **Production-readiness gap list (2026-07-27, refreshed 07-28):**

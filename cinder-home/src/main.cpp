@@ -393,6 +393,10 @@ void deferred_up() {
     if (g_settings_loaded) {
         run_guarded("deferred_up: re-apply saved EQ", 6, apply_eq_fn);
         run_guarded("deferred_up: re-apply saved sound", 6, apply_sound_fn);
+        // Repeat-one is sticky inside the audio shim and applied to every sequence it builds, so
+        // pushing the restored value once here is enough — nothing is playing yet at this point.
+        run_guarded("deferred_up: re-apply saved repeat", 4,
+                    []() { cinder_audio_set_repeat_one(cinder_get_repeat_one()); });
     }
     // Real storage usage for Settings (statvfs — read-only, no Sony service; guarded for parity).
     run_guarded("deferred_up: report storage", 6, report_storage);
