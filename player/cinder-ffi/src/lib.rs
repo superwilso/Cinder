@@ -358,6 +358,12 @@ struct Render {
     // is exactly as untrue as the synthetic animation it replaced, and would be visible on every
     // single screen wake. Frames older than VIZ_FRESH_MS decay to nothing and are then dropped.
     viz_at: std::time::Instant,
+    /// The user queue was edited and PlayerService has not been told yet. Flushed at a track
+    /// boundary — see `Action::QueueChanged` for why it cannot be flushed immediately.
+    queue_pending: bool,
+    /// A queue flush is sitting in `pending_play` waiting for the shell to collect it. Reported
+    /// through `cinder_take_queue_flush` so the shell knows to hand it to PlayerService.
+    queue_flush: bool,
     // Pending play request (Action::PlayIndex resolved through the DB): the chosen track's album
     // context — file URIs in play order + the start index. The shell drains it via
     // cinder_pending_play_* after a CINDER_ACT_PLAY_INDEX action and hands it to PlayerService
@@ -522,6 +528,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         viz_levels: Vec::new(),
         viz_peak: 0.0,
         viz_at: std::time::Instant::now(),
+        queue_pending: false,
+        queue_flush: false,
         pending_play: Vec::new(),
         duration_checked: false,
         last_tick: std::time::Instant::now(),
@@ -1457,6 +1465,18 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::BrightnessChanged(_) => 20, // shell reads cinder_get_brightness() + writes the backlight
         Action::ScreenOffTimer(_) => 21,    // shell reads cinder_get_screen_off_s() + counts idle
         Action::BootToStock => 22,          // shell arms the one-shot flag + restarts into stock
+        Action::QueueChanged => {
+            // DO NOT re-issue now. Measured on device 2026-07-28 with the in-app probe: a
+            // SetTrackSequence during playback restarts the sequence — position went 9000 → 0 and
+            // the track stopped. PlayerService has no insert, so the queue can only be changed by
+            // handing it a whole new sequence, and the only moment that is free is a track
+            // boundary, where the position is already ~0 and a reset is invisible.
+            //
+            // So the change is recorded and `apply_pending_queue` flushes it when the track
+            // changes (or when nothing is playing, where there is nothing to disturb).
+            r.queue_pending = true;
+            return None;
+        }
         Action::Restart => 24,              // PowerMgrServiceClient::Reboot — back into Cinder
         Action::PowerOff => 25,             // PowerMgrServiceClient::SetStatus(PowerOff)
         Action::ToggleLiked => {
@@ -1681,6 +1701,19 @@ pub extern "C" fn cinder_get_battery_care() -> libc::c_int {
 
 /// Is night theme currently active? (1 = night, 0 = day.) The shell reads this after a
 /// CINDER_ACT_THEME_CHANGED action (and at boot) to set the panel backlight: night = minimal light.
+/// Did a queue flush become ready at the last track boundary? Clears on read. When it returns 1 the
+/// shell drains `cinder_pending_play_*` and hands the result to PlayerService exactly as it does
+/// for a normal play request — the sequence is rebuilt with the track that just started at index 0
+/// followed by the user queue.
+#[no_mangle]
+pub extern "C" fn cinder_take_queue_flush() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let f = r.queue_flush;
+    r.queue_flush = false;
+    f as libc::c_int
+}
+
 /// Repeat-one on/off (1/0). Read after a CINDER_ACT_REPEAT_CHANGED action; the shell hands it to
 /// cinder_audio_set_repeat_one.
 #[no_mangle]
@@ -2489,6 +2522,28 @@ pub extern "C" fn cinder_set_now_playing_uri(
                     r.art_thumb = native.as_ref().map(|img| img.scaled_to(92, 92));
                     bake_gradient_art(r); // no embedded cover → bake the fallback once, not per frame
                     r.art_key = Some(t.object_id);
+                }
+                // TRACK BOUNDARY — the one moment a queue change is free. The new track has just
+                // begun, so re-issuing the sequence resets a position that is already ~0 and the
+                // reset is invisible. Doing it any other time restarts the music (device-measured;
+                // see Action::QueueChanged).
+                if r.queue_pending {
+                    r.queue_pending = false;
+                    let mut uris: Vec<String> = vec![t.filename.clone()];
+                    uris.extend(r.app.queue().iter().filter_map(|q| {
+                        r.db.as_ref()
+                            .and_then(|db| db.track_by_object_id(q.object_id).ok().flatten())
+                            .map(|t| t.filename)
+                    }));
+                    if uris.len() > 1 {
+                        eprintln!(
+                            "cinder-ffi: queue flush at track boundary — {} tracks",
+                            uris.len()
+                        );
+                        r.pending_play = uris;
+                        r.pending_play_start = 0;
+                        r.queue_flush = true;
+                    }
                 }
                 r.np.liked = r.liked.contains(&t.object_id);
                 r.cur_duration_ms = t.duration_raw.unwrap_or(0).max(0);

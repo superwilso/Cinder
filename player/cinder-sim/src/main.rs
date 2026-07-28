@@ -365,7 +365,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                     ..Default::default()
                 })
                 .collect();
-            up_next::render(c, theme, fonts, "Now Playing", &tracks, app.track)
+            up_next::render(c, theme, fonts, "Now Playing", &tracks, app.track, &app.lib)
         }
         Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, 0, None, &app.lib),
         Screen::Artist => library::artist(c, theme, fonts),

@@ -349,6 +349,17 @@ impl Db {
         Ok(v.into_iter().next())
     }
 
+    /// One track by its object_id. The queue stores object_ids (they survive a re-scan; a path does
+    /// not), so this is what turns a queued row back into something PlayerService can open.
+    pub fn track_by_object_id(&self, object_id: i64) -> Result<Option<Track>> {
+        let v = self.query_tracks(
+            &format!("WHERE {TRACK_WHERE} AND ob.object_id = ?1"),
+            "ob.object_id",
+            [object_id],
+        )?;
+        Ok(v.into_iter().next())
+    }
+
     /// The play context for a chosen track: its album's tracks in disc/track order plus the
     /// track's index within them. Falls back to just the track itself if it has no album (or
     /// somehow isn't in its own album's list). This is what "tap a song" hands PlayerService,

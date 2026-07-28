@@ -36,7 +36,9 @@ pub fn window(len: usize, current: usize) -> (usize, usize) {
 /// Render the queue: `tracks` = the current album's tracks (play order), `current` = the playing
 /// index within it. `album` is shown in the header. The window auto-scrolls to keep the playing
 /// track visible (no cursor state needed — the queue follows playback).
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[SongRow], current: usize) {
+#[allow(clippy::too_many_arguments)]
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[SongRow],
+              current: usize, lib: &crate::model::Library) {
     c.fill(t.bg);
 
     if tracks.is_empty() {
@@ -68,8 +70,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
         let idx_col = if now { t.acc } else { t.faint };
         let idx = if now { "▶".to_string() } else { format!("{:02}", i + 1) };
         text::draw(c, f, 22.0, cy + 4.0, &idx, &sty(Family::Mono, Weight::Regular, 12.0, idx_col, 0.0));
-        // thumb
-        art::block(c, t, 46, y + (RH - 40) / 2, 40, 40, &song.art, if t.night { 0.30 } else { 1.0 });
+        // Thumb: the REAL decoded cover when the art cache has one, exactly like the library rows.
+        // This screen drew the gradient fallback unconditionally, so a queue of tracks whose covers
+        // were already decoded and sitting on disk still showed twelve coloured squares. Drawn at
+        // 48px because that is the size the cache stores (T48) — at any other size `thumb` cannot
+        // match and silently falls back to the gradient, which is how it would look "fixed" while
+        // changing nothing.
+        crate::library::thumb(c, t, lib, song.album_id, &song.art,
+                              46, y + (RH - 48) / 2, 48, if t.night { 0.30 } else { 1.0 });
         // title / artist
         let title_col = if now { t.acc } else { t.ink };
         let tst = sty(Family::Sans, Weight::SemiBold, 20.0, title_col, 0.0);
@@ -92,7 +100,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
 
 /// Render the USER queue (songs added by the Spotify-style right-swipe), in add order. No
 /// "now playing" highlight — these are upcoming picks, not the live album window.
-pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow]) {
+pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow], lib: &crate::model::Library) {
     c.fill(t.bg);
     let sub = format!("QUEUE · {} TRACKS", queue.len());
     let y0 = crate::chrome::header(c, t, f, "Up Next", Some(&sub));
@@ -106,7 +114,10 @@ pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow]) {
         let cy = (y + RH / 2) as f32;
         text::draw(c, f, 22.0, cy + 4.0, &format!("{:02}", i + 1),
             &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
-        art::block(c, t, 46, y + (RH - 40) / 2, 40, 40, &song.art, if t.night { 0.30 } else { 1.0 });
+        // Real cover here too — the user queue had the same gradient-only problem as the album
+        // window above it.
+        crate::library::thumb(c, t, lib, song.album_id, &song.art,
+                              46, y + (RH - 48) / 2, 48, if t.night { 0.30 } else { 1.0 });
         let tst = sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0);
         text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 306.0), &tst);
         let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);

@@ -207,6 +207,13 @@ int  cinder_get_night(void);
  * apply via BtTransmitterService. The same values configure the USB-DAC→LDAC bridge. */
 int  cinder_get_bt_codec(void);
 int  cinder_get_bt_ldac_quality(void);
+/* Did a queue flush become ready at the last track boundary? Clears on read. When it returns 1,
+ * drain cinder_pending_play_* and hand the result to PlayerService exactly as for a normal play
+ * request: the sequence is rebuilt with the track that just started at index 0, followed by the
+ * user queue. Deferred to a boundary because a SetTrackSequence mid-track RESTARTS the sequence
+ * (device-measured 2026-07-28: position 9000 -> 0 and playback stopped). */
+int  cinder_take_queue_flush(void);
+
 /* Repeat-one state (1/0) for CINDER_ACT_REPEAT_CHANGED. */
 int  cinder_get_repeat_one(void);
 /* The UI's panel-brightness level, 1..5 (never 0). Read after a CINDER_ACT_BRIGHTNESS_CHANGED

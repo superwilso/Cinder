@@ -77,6 +77,20 @@ pub enum ShuffleScope {
 
 /// Side effects the shell carries out (via cinder-audio / system services). The UI emits
 /// these instead of acting on audio itself.
+/// Where a newly queued track goes. PlayerService has no insert operation, so this only decides
+/// where it lands in OUR queue — the sequence it plays from is rebuilt at a track boundary (see
+/// `Action::QueueChanged`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum QueueAt {
+    /// Straight after the current track. Swipe LEFT on a row.
+    Next,
+    /// At the end of whatever is already queued. Swipe RIGHT — the original gesture, kept so the
+    /// habit still works and still means the same thing.
+    Later,
+}
+
+/// Side effects the shell carries out (via cinder-audio / system services). The UI emits these
+/// instead of acting on audio itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     PlayPause,
@@ -101,6 +115,11 @@ pub enum Action {
     SleepTimer(u32),          // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
     ShuffleToggle,            // Now Playing shuffle on/off (FFI holds the state; PlayController wiring is device-gated)
     RepeatCycle,              // Now Playing repeat: off ↔ one (shell applies via SetOneTrackMode)
+    /// The user queue changed. The shell does NOT re-issue the sequence now — it marks the change
+    /// pending and applies it at the next track boundary. Measured on device 2026-07-28: a
+    /// SetTrackSequence during playback restarts the sequence (position 9000 → 0) and the track
+    /// stops, so an immediate apply would interrupt the music every time you queued anything.
+    QueueChanged,
     Restart,                  // confirmed in the modal: shell calls PowerMgrServiceClient::Reboot
     PowerOff,                 // confirmed in the modal: shell calls SetStatus(PowerOff)
     BtCodecChanged,           // device-wide BT transmit codec / LDAC quality changed; shell reads + applies
@@ -1182,6 +1201,33 @@ impl App {
                     vec![Action::Prev]
                 }
             }
+            // LEFT swipe on a row = Play Next. The mirror of the right-swipe below, which has
+            // always meant "queue this", and which keeps meaning exactly that. Two symmetric
+            // gestures need no new control and no long-press, and the toast names which one
+            // happened so a mis-swipe is legible rather than silent.
+            Screen::Library if dir < 0 => {
+                let song = match self.lib_tab {
+                    Tab::Songs => library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
+                        .and_then(|rank| library::song_at(&self.lib, self.lib_sort, rank))
+                        .cloned(),
+                    Tab::Albums => self.albums_track_at(y),
+                    _ => None,
+                };
+                match song {
+                    Some(s) => self.enqueue_at(s, y, QueueAt::Next),
+                    None => vec![],
+                }
+            }
+            Screen::Album if dir < 0 => {
+                let song = self.lib.albums_flat().get(self.album_view).and_then(|al| {
+                    library::album_hit_track(al, self.album_scroll_px, y)
+                        .and_then(|ti| al.track_list.get(ti).cloned())
+                });
+                match song {
+                    Some(s) => self.enqueue_at(s, y, QueueAt::Next),
+                    None => vec![],
+                }
+            }
             Screen::Library if dir > 0 => {
                 // Right-swipe a track row → queue that song, using the same render-mirroring hit
                 // test the tap uses so the queued song is exactly the row under the finger.
@@ -1195,10 +1241,10 @@ impl App {
                     Tab::Albums => self.albums_track_at(y),
                     _ => None,
                 };
-                if let Some(s) = song {
-                    self.enqueue(s, y);
+                match song {
+                    Some(s) => self.enqueue_at(s, y, QueueAt::Later),
+                    None => vec![],
                 }
-                vec![]
             }
             Screen::Album if dir > 0 => {
                 // Right-swipe a track row inside an album drill-in → queue it.
@@ -1218,11 +1264,46 @@ impl App {
     /// Append a song to the user queue + pop the confirmation toast + start the row chip
     /// animation (`y` = the gesture y, so the chip rides the row the user flicked).
     fn enqueue(&mut self, s: SongRow, y: i32) {
-        self.toast = format!("Added to queue — {}", s.title);
+        self.enqueue_at(s, y, QueueAt::Later);
+    }
+
+    /// Add a track to the user queue, at the front or the back.
+    ///
+    /// The toast names WHICH it was, because the two gestures are mirror images and the only way to
+    /// know a left-swipe registered as "next" rather than "later" is to be told.
+    fn enqueue_at(&mut self, s: SongRow, y: i32, at: QueueAt) -> Vec<Action> {
+        self.toast = match at {
+            QueueAt::Next => format!("Playing next — {}", s.title),
+            QueueAt::Later => format!("Added to queue — {}", s.title),
+        };
         self.toast_frames = TOAST_FRAMES;
         self.queue_anim_y = y;
         self.queue_anim_frames = QUEUE_ANIM_FRAMES;
-        self.queue.push(s);
+        match at {
+            QueueAt::Next => self.queue.insert(0, s),
+            QueueAt::Later => self.queue.push(s),
+        }
+        vec![Action::QueueChanged]
+    }
+
+    /// Move a queued track. Used by reordering; clamps rather than panicking on a stale index,
+    /// because the queue can change under a gesture that started before it did.
+    pub fn queue_move(&mut self, from: usize, to: usize) -> Vec<Action> {
+        if from >= self.queue.len() || to >= self.queue.len() || from == to {
+            return vec![];
+        }
+        let row = self.queue.remove(from);
+        self.queue.insert(to, row);
+        vec![Action::QueueChanged]
+    }
+
+    /// Drop everything queued. The "clear it?" answer when you play something unrelated.
+    pub fn queue_clear(&mut self) -> Vec<Action> {
+        if self.queue.is_empty() {
+            return vec![];
+        }
+        self.queue.clear();
+        vec![Action::QueueChanged]
     }
 
     /// The user queue (Up Next shows it in front of the album-derived list).
@@ -1805,18 +1886,18 @@ impl App {
                     // The user's own queue (swipe-to-queue) takes precedence over the derived
                     // current-album list. It renders unscrolled, from the top.
                     let ids = self.queue.iter().map(|s| s.object_id).collect();
-                    crate::up_next::render_queue(c, &theme, fonts, &self.queue);
+                    crate::up_next::render_queue(c, &theme, fonts, &self.queue, &self.lib);
                     ids
                 } else {
                     match self.now_playing_queue(np.title, np.artist) {
                         Some((album, tracks, cur)) => {
                             let (_, scroll) = crate::up_next::window(tracks.len(), cur);
                             let ids = tracks.iter().skip(scroll).map(|s| s.object_id).collect();
-                            crate::up_next::render(c, &theme, fonts, album, tracks, cur);
+                            crate::up_next::render(c, &theme, fonts, album, tracks, cur, &self.lib);
                             ids
                         }
                         None => {
-                            crate::up_next::render(c, &theme, fonts, "", &[], 0);
+                            crate::up_next::render(c, &theme, fonts, "", &[], 0, &self.lib);
                             Vec::new()
                         }
                     }
@@ -2486,6 +2567,55 @@ mod tests {
         }
         hit.sort();
         assert_eq!(hit, (0..ROWS).collect::<Vec<_>>(), "some rows can never be tapped");
+    }
+
+    /// Left-swipe queues NEXT, right-swipe queues LATER, and both report the change so the shell
+    /// can schedule a flush. The two gestures are mirror images, so a mix-up would be invisible
+    /// without the toast naming which one happened.
+    #[test]
+    fn swiping_a_row_queues_next_or_later() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        let y = crate::library::list_top(Tab::Songs) + 10;
+
+        let acts = a.swipe(1, 240, y); // right = later
+        assert_eq!(acts, vec![Action::QueueChanged]);
+        assert_eq!(a.queue().len(), 1);
+        assert!(a.toast.starts_with("Added to queue"), "toast was {:?}", a.toast);
+        let later = a.queue()[0].title.clone();
+
+        let acts = a.swipe(-1, 240, y + crate::library::row_h(Tab::Songs)); // left = next, a different row
+        assert_eq!(acts, vec![Action::QueueChanged]);
+        assert_eq!(a.queue().len(), 2);
+        assert!(a.toast.starts_with("Playing next"), "toast was {:?}", a.toast);
+        // "Next" must land in FRONT of what was already queued — that is the whole distinction.
+        assert_eq!(a.queue()[1].title, later, "Play Next did not jump the queue");
+    }
+
+    /// Reordering and clearing both report a change, and neither may panic on a stale index — the
+    /// queue can be edited while a gesture that started earlier is still in flight.
+    #[test]
+    fn queue_reorder_and_clear_are_safe() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        let y = crate::library::list_top(Tab::Songs) + 10;
+        for i in 0..3 {
+            a.swipe(1, 240, y + i * crate::library::row_h(Tab::Songs));
+        }
+        assert_eq!(a.queue().len(), 3);
+        let first = a.queue()[0].title.clone();
+        assert_eq!(a.queue_move(0, 2), vec![Action::QueueChanged]);
+        assert_eq!(a.queue()[2].title, first, "the moved row did not land at its target");
+        // Out-of-range and no-op moves change nothing and emit nothing.
+        assert!(a.queue_move(9, 0).is_empty());
+        assert!(a.queue_move(0, 9).is_empty());
+        assert!(a.queue_move(1, 1).is_empty());
+        assert_eq!(a.queue().len(), 3);
+        assert_eq!(a.queue_clear(), vec![Action::QueueChanged]);
+        assert!(a.queue().is_empty());
+        assert!(a.queue_clear().is_empty(), "clearing an empty queue is not a change");
     }
 
     /// Repeat is two states, both of which do something. It used to cycle off → all → one and tell
@@ -3502,7 +3632,7 @@ mod tests {
         a.stack = vec![Screen::Library];
         a.lib_tab = Tab::Songs;
         // Rightward swipe starting on the first Songs row (rows start at y=205, 62px tall).
-        assert!(a.swipe(1, 240, 220).is_empty());
+        assert_eq!(a.swipe(1, 240, 220), vec![Action::QueueChanged]);
         assert_eq!(a.queue().len(), 1);
         let expected = library::song_at(&a.lib, a.lib_sort, 0).unwrap().title.clone();
         assert_eq!(a.queue()[0].title, expected);
@@ -3511,12 +3641,14 @@ mod tests {
         assert_eq!(a.queue_anim_frames, QUEUE_ANIM_FRAMES);
         assert_eq!(a.queue_anim_y, 220);
         assert!(a.tick());
-        // A LEFTWARD swipe on the list queues nothing.
-        assert!(a.swipe(-1, 240, 220).is_empty());
-        assert_eq!(a.queue().len(), 1);
+        // A LEFTWARD swipe now queues too — as PLAY NEXT, in front of what is already there.
+        // It used to do nothing at all; the gesture was free and is now the mirror of the right.
+        assert_eq!(a.swipe(-1, 240, 220), vec![Action::QueueChanged]);
+        assert_eq!(a.queue().len(), 2);
+        assert!(a.toast.starts_with("Playing next"), "toast was {:?}", a.toast);
         // A rightward swipe on chrome (above the rows) queues nothing.
         assert!(a.swipe(1, 240, 100).is_empty());
-        assert_eq!(a.queue().len(), 1);
+        assert_eq!(a.queue().len(), 2);
     }
 
     /// Swipe-to-queue also works on an expanded album's inline track rows. Those rows are
@@ -3535,12 +3667,13 @@ mod tests {
         let y = (0..800)
             .find(|&y| a.albums_track_at(y).map(|s| s.object_id) == Some(want.object_id))
             .expect("expanded album should expose a track row");
-        assert!(a.swipe(1, 240, y).is_empty());
+        // Queuing now reports the change so the shell can schedule a boundary flush.
+        assert_eq!(a.swipe(1, 240, y), vec![Action::QueueChanged]);
         assert_eq!(a.queue().len(), 1);
         assert_eq!(a.queue()[0].object_id, want.object_id);
         // Collapsed, that same y is no longer a track row -> nothing queued.
         a.album_expanded = None;
-        assert!(a.swipe(1, 240, y).is_empty());
+        assert!(a.swipe(1, 240, y).is_empty(), "a non-row swipe must queue nothing");
         assert_eq!(a.queue().len(), 1);
     }
 

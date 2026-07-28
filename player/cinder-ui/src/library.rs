@@ -43,7 +43,7 @@ const LIST_BOTTOM: i32 = H as i32 - crate::chrome::NP_BAR_H;
 /// cover occupies exactly the rect the gradient did). A thumbnail of the wrong size falls back
 /// rather than scaling: resampling here would run per row per frame, which is what the cache
 /// exists to avoid.
-fn thumb(
+pub(crate) fn thumb(
     c: &mut Canvas, t: &Theme, lib: &Library, album_id: i64, name: &str,
     x: i32, y: i32, size: i32, op: f32,
 ) {

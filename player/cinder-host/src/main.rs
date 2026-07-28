@@ -122,8 +122,8 @@ fn main() {
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
             ("up_next", &|c: &mut Canvas| {
                 match lib.album_groups.first().and_then(|g| g.albums.iter().find(|a| !a.track_list.is_empty())) {
-                    Some(al) => up_next::render(c, &theme, &fonts, &al.name, &al.track_list, 1),
-                    None => up_next::render(c, &theme, &fonts, "", &[], 0),
+                    Some(al) => up_next::render(c, &theme, &fonts, &al.name, &al.track_list, 1, &lib),
+                    None => up_next::render(c, &theme, &fonts, "", &[], 0, &lib),
                 }
             }),
             ("library_songs", &|c: &mut Canvas| {

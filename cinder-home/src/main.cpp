@@ -2285,6 +2285,32 @@ void* render_driver(void*) {
             } else {
                 g_usb_hi = 0;
             }
+            // QUEUE FLUSH — the pending user-queue edit, applied at a track boundary. cinder-ffi
+            // only raises this when the track has just changed, which is the one moment
+            // SetTrackSequence is free: the position is already ~0, so the reset it causes is
+            // invisible. Applying it any other time restarts the music (measured on device).
+            if (cinder_take_queue_flush()) {
+                run_guarded("queue: flush at track boundary", 10, []() {
+                    static char bufs[64][512];
+                    const char* uris[64];
+                    int have = cinder_pending_play_count();
+                    if (have > 64) have = 64;
+                    int n = 0;
+                    for (int i = 0; i < have; ++i) {
+                        int len = cinder_pending_play_uri(i, bufs[n], (int)sizeof bufs[n]);
+                        // snprintf semantics: len is the FULL length, so >= capacity means it was
+                        // truncated. A truncated path is a path to nothing — skip it rather than
+                        // queue a track that cannot open.
+                        if (len <= 0 || len >= (int)sizeof bufs[n]) continue;
+                        uris[n] = bufs[n];
+                        ++n;
+                    }
+                    if (n > 0) {
+                        int rc = cinder_audio_play_tracks(uris, n, 0);
+                        std::fprintf(stderr, "[cinder-home] queue: flushed %d tracks rc=%d\n", n, rc);
+                    }
+                });
+            }
             viz_analyzer_tick();              // analyzer runs only while its output is visible
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
             // Screenshot-on-demand: drop /tmp/cinder_screenshot.req and the next frame is written
