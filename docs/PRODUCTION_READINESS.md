@@ -85,6 +85,29 @@ which *is* functional as a stored preference — never reaches `BtTransmitterSer
 (*keep all audio effects and try to apply them to Bluetooth audio*) cannot begin until this shim
 exists. It is the same ABI boundary as `ldac-bridge`, so B2 and B4 share most of their groundwork.
 
+**Latent, and it will bite the moment BT works: Cinder's volume keys cannot change Bluetooth
+volume.** They write `amixer -c0 'master volume'`, which is a CXD3778GF codec register — and the BT
+transmit path never touches that codec. It is decode → *we* write raw PCM into an AF_UNIX socket
+(`BtTransmitterService::GetSocketName`) → the MTK Bluetooth chip. No codec register is in that path,
+so today's volume control would silently do nothing on BT.
+
+Sony solves this with a route-aware layer Cinder has no equivalent of:
+`pst::services::volume::VolumeService::SetVolume(unsigned)` plus a `VolumeCondition` (the route) and
+an `AvlsCondition` (the regional loudness cap). One volume goes in; the service decides whether that
+means a DAC gain register or `BtTransmitterService::SetCurrentVolume(uint8_t)` — AVRCP Absolute
+Volume, 7-bit, so 0..127.
+
+So when BT lands, `apply_volume()` has to branch on the output route. Two things make that easier
+than it sounds, and one harder:
+- **The BT ceiling is 128 steps**, slightly *finer* than the 0..120 the wired path uses.
+- **Cinder is the PCM producer** for the BT pipe, so a digital pre-scale before the socket write
+  gives step granularity finer than any protocol limit — half-steps included — at the cost of bit
+  depth, which is negligible for a trim of a fraction of a dB and is not for a full digital volume.
+- **Harder:** if the headphones report no absolute-volume support
+  (`IsSupportedAbsoluteVolume()`), Sony falls back to injecting AVRCP VOLUME_UP/DOWN key events
+  through `/dev/uinput`, and the step size is then entirely the headphones' choice. In that mode the
+  pre-scale is the only lever there is.
+
 ---
 
 ## Not blocking a flash, but required before calling it done
