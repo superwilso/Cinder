@@ -37,6 +37,13 @@ pub struct Track {
     pub artist: String,
     pub album: String,
     pub filename: String, // the URI/path PlayerService keys on
+    /// The ALBUM artist, which is what album and artist BROWSING must group by. `artist` is the
+    /// per-track artist and stays the right thing to show on a song row — but grouping by it
+    /// shatters compilations: on this device 24 albums span several track artists, and one DJ mix
+    /// spans 26, so it appeared as 26 one-track albums under 26 different artists. Grouping by
+    /// album artist leaves ZERO albums split. Empty when the DB has none; callers fall back to
+    /// `artist`.
+    pub album_artist: String,
     pub disc_no: i64,
     pub track_no: i64,
     pub duration_raw: Option<i64>, // DURATION ext-int prop; units = DB's (calibrate on device, likely ms)
@@ -426,11 +433,13 @@ impl Db {
         let sql = format!(
             "SELECT ob.object_id, ob.title, COALESCE(ar.value,''), COALESCE(al.value,''), \
                     ob.filename, COALESCE(ob.disc_no,0), COALESCE(ob.series_no,0), {dur_sel}, \
+                    COALESCE(aa.value,''), \
                     COALESCE(ob.is_high_resolution,0), ob.othumb_id, ob.album_id, \
                     COALESCE(ob.addedtime,0), ob.releaseyear_id, COALESCE(ob.parent_id,0) \
              FROM object_body ob \
              LEFT JOIN artists ar ON ar.id = ob.artist_id \
              LEFT JOIN albums  al ON al.id = ob.album_id \
+             LEFT JOIN artists aa ON aa.id = ob.albumartist_id \
              {dur_join} {where_clause} ORDER BY {order_by}"
         );
         let mut st = self.conn.prepare(&sql)?;
@@ -447,17 +456,18 @@ impl Db {
                 // pre-2026-07-28 behaviour rather than a new failure.
                 filename: {
                     let base = r.get::<_, Option<String>>(4)?.unwrap_or_default();
-                    let parent: i64 = r.get(13)?;
+                    let parent: i64 = r.get(14)?;
                     self.track_path(parent, &base).unwrap_or(base)
                 },
                 disc_no: r.get(5)?,
                 track_no: r.get(6)?,
                 duration_raw: r.get(7)?,
-                is_hires: r.get::<_, i64>(8)? != 0,
-                othumb_id: r.get(9)?,
-                album_id: r.get(10)?,
-                added: r.get(11)?,
-                releaseyear_id: r.get(12)?,
+                album_artist: r.get(8)?,
+                is_hires: r.get::<_, i64>(9)? != 0,
+                othumb_id: r.get(10)?,
+                album_id: r.get(11)?,
+                added: r.get(12)?,
+                releaseyear_id: r.get(13)?,
             })
         })?;
         rows.collect()
@@ -519,7 +529,7 @@ mod tests {
                 parent_id INTEGER, reference_id INTEGER,
                 child_index INTEGER, media_type INTEGER DEFAULT 0, format INTEGER DEFAULT 0,
                 initial INTEGER, sort_str TEXT, search_str TEXT, title TEXT DEFAULT "",
-                addedtime INTEGER DEFAULT 0, filename TEXT, filesize INTEGER,
+                addedtime INTEGER DEFAULT 0, filename TEXT, filesize INTEGER, albumartist_id INTEGER,
                 series_no INTEGER, disc_no INTEGER, is_high_resolution INTEGER,
                 album_id INTEGER, artist_id INTEGER, releaseyear_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
             INSERT INTO albums  VALUES (10,0,'last smoke','last smoke','Last Smoke Before the Snowstorm');
@@ -551,8 +561,12 @@ mod tests {
             INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (921,1,920,0,'ODD','ODD');
             INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
               VALUES (1,1,902,1,0,'Atlas Hands','atlas.flac',1,1,1,10,20,30,100,5000);
+            UPDATE object_body SET albumartist_id=20 WHERE object_id=1;
             INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
               VALUES (2,1,902,1,1,'Box of Stones','box.flac',2,1,1,10,20,30,NULL,5001);
+            -- A GUEST on the same album: its TRACK artist differs, but its ALBUM artist does not.
+            -- Grouping by track artist is what split compilations into one-track albums.
+            UPDATE object_body SET artist_id=21, albumartist_id=20 WHERE object_id=2;
             -- On the SD CARD, and deliberately sharing a basename with the internal track below it
             -- would be ambiguous — the now-playing lookup must disambiguate on the FULL path.
             INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)

@@ -670,12 +670,24 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     let mut album_artist: BTreeMap<i64, String> = BTreeMap::new();
     let mut artist_albums: BTreeMap<String, (BTreeSet<String>, u32)> = BTreeMap::new();
     let mut songs = Vec::with_capacity(tracks.len());
+    // ALBUM ARTIST is what browsing groups by — it is the default, and the track artist is only a
+    // fallback for files that carry no album artist at all. Grouping by the track artist shatters
+    // compilations: on this library 24 albums span several track artists and one DJ mix spans 26,
+    // so it showed up as 26 one-track albums under 26 different people. By album artist, ZERO
+    // albums split. (The Songs tab still shows the TRACK artist — that is the right thing on a
+    // song row, and it is where a featured guest belongs.)
+    //
+    // The old code also took the album's artist from whichever track sorted FIRST BY TITLE, which
+    // for a compilation is simply an arbitrary pick.
+    let group_artist = |t: &cinder_db::Track| -> String {
+        if t.album_artist.trim().is_empty() { t.artist.clone() } else { t.album_artist.clone() }
+    };
     for t in &tracks {
         if let Some(aid) = t.album_id {
-            album_artist.entry(aid).or_insert_with(|| t.artist.clone());
+            album_artist.entry(aid).or_insert_with(|| group_artist(t));
         }
         songs.push(song_row(t));
-        let e = artist_albums.entry(t.artist.clone()).or_default();
+        let e = artist_albums.entry(group_artist(t)).or_default();
         if !t.album.is_empty() {
             e.0.insert(t.album.clone());
         }
@@ -2639,6 +2651,7 @@ mod tests {
             object_id: 1,
             title: "Atlas Hands".into(),
             artist: "Benjamin Francis Leftwich".into(),
+            album_artist: "Benjamin Francis Leftwich".into(),
             album: "Last Smoke".into(),
             filename: "/music/atlas.flac".into(),
             disc_no: 1,
@@ -2679,7 +2692,7 @@ mod tests {
                 initial INTEGER, sort_str TEXT, search_str TEXT, title TEXT DEFAULT "",
                 addedtime INTEGER DEFAULT 0, filename TEXT, filesize INTEGER,
                 series_no INTEGER, disc_no INTEGER, is_high_resolution INTEGER,
-                album_id INTEGER, artist_id INTEGER, releaseyear_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
+                album_id INTEGER, artist_id INTEGER, albumartist_id INTEGER, releaseyear_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
             INSERT INTO albums  VALUES (10,0,'last smoke','last smoke','Last Smoke');
             INSERT INTO albums  VALUES (11,0,'harvest','harvest','Harvest Moon');
             INSERT INTO artists VALUES (20,0,'leftwich','leftwich','Benjamin Francis Leftwich',NULL,0,0,0,0);
@@ -2689,10 +2702,14 @@ mod tests {
             INSERT INTO releaseyears VALUES (31,0,'1992','1992','1992');
             INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
               VALUES (1,1,1,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,30,5000);
-            INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
-              VALUES (2,1,1,'Box of Stones','/music/box.flac',2,1,1,10,20,30,5001);
+            UPDATE object_body SET albumartist_id=20 WHERE object_id=1;
+            -- A GUEST on Last Smoke: its TRACK artist is someone else, its ALBUM artist is not.
+            -- Grouping by track artist is what shattered compilations on the real device.
+            INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,albumartist_id,releaseyear_id,addedtime)
+              VALUES (2,1,1,'Box of Stones','/music/box.flac',2,1,1,10,21,20,30,5001);
             INSERT INTO object_body (object_id,object_type,media_type,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,addedtime)
               VALUES (3,1,1,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,31,4000);
+            UPDATE object_body SET albumartist_id=21 WHERE object_id=3;
             -- non-audio rows that must NOT appear in the library (folder mt=0, cover image mt=3)
             INSERT INTO object_body (object_id,object_type,media_type,title,filename,album_id)
               VALUES (7,3,0,'MUSIC','MUSIC',NULL);
@@ -2771,6 +2788,46 @@ mod tests {
     /// Every shuffle scope resolves to a non-empty queue drawn only from real tracks, and none of
     /// them leak the non-audio rows (folder / cover image) the library filters out.
     #[test]
+    /// Browsing groups by ALBUM ARTIST. The fixture's second track has a different TRACK artist
+    /// (a guest) but the same album artist — exactly the shape that shattered compilations on the
+    /// real device, where 24 albums spanned several track artists and one DJ mix spanned 26,
+    /// producing 26 one-track "albums" under 26 different people.
+    #[test]
+    fn browsing_groups_by_album_artist_not_track_artist() {
+        let lib = build_library(&fixture_db());
+        // One album, one artist group — not one group per guest.
+        assert_eq!(lib.album_groups.len(), 2, "expected one group per ALBUM artist");
+        let smoke = lib
+            .album_groups
+            .iter()
+            .find(|g| g.albums.iter().any(|a| a.name == "Last Smoke"))
+            .expect("Last Smoke must appear under an album-artist group");
+        assert_eq!(smoke.artist, "Benjamin Francis Leftwich");
+        assert_eq!(
+            smoke.albums.iter().filter(|a| a.name == "Last Smoke").count(),
+            1,
+            "the album was split by a guest track artist"
+        );
+        // The guest IS a real album artist in its own right (it owns Harvest Moon), so it belongs
+        // in the tab — but its guest appearance on someone else's album must not credit it with a
+        // second album. That is the precise damage track-artist grouping did.
+        let guest_artist = lib
+            .artists
+            .iter()
+            .find(|a| a.name == "Cold Stone & Sea")
+            .expect("an album artist must appear in the Artists tab");
+        assert_eq!(
+            guest_artist.albums, 1,
+            "a guest appearance was counted as an album: {:?}",
+            guest_artist.arts
+        );
+        // And its track count is its OWN album's, not inflated by the guest track.
+        assert_eq!(guest_artist.tracks, 1, "a guest track was counted against the wrong artist");
+        // …but the SONG row still credits the guest, which is where it belongs.
+        let guest = lib.songs.iter().find(|s| s.title == "Box of Stones").unwrap();
+        assert_eq!(guest.artist, "Cold Stone & Sea", "song rows must show the track artist");
+    }
+
     fn shuffle_scopes_resolve_to_real_tracks() {
         use cinder_ui::nav::ShuffleScope as S;
         let db = fixture_db();
@@ -2865,6 +2922,7 @@ mod tests {
             object_id: 2,
             title: String::new(),
             artist: String::new(),
+            album_artist: String::new(),
             album: String::new(),
             filename: "/music/box.flac".into(),
             disc_no: 0,
