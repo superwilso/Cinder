@@ -101,6 +101,8 @@ pub enum Action {
     SleepTimer(u32),          // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
     ShuffleToggle,            // Now Playing shuffle on/off (FFI holds the state; PlayController wiring is device-gated)
     RepeatCycle,              // Now Playing repeat: off ↔ one (shell applies via SetOneTrackMode)
+    Restart,                  // confirmed in the modal: shell calls PowerMgrServiceClient::Reboot
+    PowerOff,                 // confirmed in the modal: shell calls SetStatus(PowerOff)
     BtCodecChanged,           // device-wide BT transmit codec / LDAC quality changed; shell reads + applies
     UsbDacToggle(bool),       // engage/disengage USB-DAC input routed to 3.5mm + BT/LDAC (the headline feature)
     BrightnessChanged(u8),    // panel brightness level 1..5; shell maps it onto the backlight node
@@ -254,6 +256,9 @@ pub struct App {
     /// Boot-to-stock confirmation: the row arms on the first tap and only acts on the second, so a
     /// stray tap can't restart the device. Cleared by leaving Settings or tapping anything else.
     boot_stock_armed: bool,
+    /// The confirmation modal, when one is open. `Some` makes it modal: it is drawn over the
+    /// current screen and it swallows every tap until it is answered.
+    confirm: Option<crate::confirm::Ask>,
     /// How many tracks are liked — drives the Library's "Liked songs" row. The set itself lives in
     /// cinder-ffi (it owns persistence); nav only needs the count to render.
     liked_count: usize,
@@ -345,6 +350,7 @@ impl Default for App {
             storage: String::new(),
             sleep_idx: 0,
             boot_stock_armed: false,
+            confirm: None,
             liked_count: 0,
             settings_scroll_px: 0,
             screen_off_idx: 0,
@@ -608,6 +614,14 @@ impl App {
                 self.push(Screen::UsbStorage);
                 vec![Action::EnterUsbMsc]
             }
+            crate::settings::ROW_RESTART => {
+                self.confirm = Some(crate::confirm::Ask::Restart);
+                vec![]
+            }
+            crate::settings::ROW_POWER_OFF => {
+                self.confirm = Some(crate::confirm::Ask::PowerOff);
+                vec![]
+            }
             crate::settings::ROW_BOOT_STOCK => {
                 // Two-step: arm, then act. This reboots the device, so it must not be one stray tap.
                 if self.boot_stock_armed {
@@ -651,6 +665,18 @@ impl App {
     /// returns shell actions (same vocabulary as `press`). The left-edge swipe (Back) and drag-
     /// scroll are handled by the shell, which calls `touch_scroll`/`press(Back)` for those.
     pub fn tap(&mut self, x: i32, y: i32) -> Vec<Action> {
+        // MODAL FIRST, and it consumes the tap whatever the answer. Letting a tap fall through to
+        // the screen underneath is how a dialog dismissal also presses whatever it was covering.
+        if let Some(ask) = self.confirm {
+            self.confirm = None;
+            return match crate::confirm::hit(x, y) {
+                crate::confirm::Hit::Cancel => vec![],
+                crate::confirm::Hit::Confirm => match ask {
+                    crate::confirm::Ask::Restart => vec![Action::Restart],
+                    crate::confirm::Ask::PowerOff => vec![Action::PowerOff],
+                },
+            };
+        }
         use crate::canvas::W;
         // Hold/lock switch engaged → the touchscreen is dead (pocket-safe). Taps do nothing; only
         // the physical Hold switch going off unlocks (see `set_hold`).
@@ -1906,6 +1932,13 @@ impl App {
                 self.pins[2].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub }),
             ];
             crate::shelf::render(c, &theme, fonts, &title, &sub, &pins);
+        }
+
+        // The confirmation modal is drawn LAST OF ALL — over every screen, the status strip, the
+        // return bar and the shelf. It is modal, so nothing may sit on top of it; anything that did
+        // would read as still interactive while every tap is going to the dialog.
+        if let Some(ask) = self.confirm {
+            crate::confirm::render(c, &theme, fonts, ask);
         }
     }
 

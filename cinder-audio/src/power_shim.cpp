@@ -42,4 +42,24 @@ int cinder_power_set_battery_care(int on) {
     return 0;
 }
 
+/// Restart. Sony's own client method, no argument — this is the one the stock player uses and
+/// there is nothing to guess about it.
+int cinder_power_reboot(void) {
+    pm::PowerMgrServiceClient* p = pmc();
+    if (!p) return -1;
+    p->Reboot();
+    return 0;
+}
+
+/// Power off. The PowerStatus VALUE is inferred from the service's own name table (see
+/// power_abi.hpp) and is device-unverified; if the numbering is wrong the device enters a sleep
+/// state instead, which the power button recovers from.
+int cinder_power_off(void) {
+    pm::PowerMgrServiceClient* p = pmc();
+    if (!p) return -1;
+    const pm::IPowerMgrService::PowerStatus off = pm::IPowerMgrService::PowerStatus::PowerOff;
+    p->SetStatus(off);   // takes PowerStatus const& — pass an lvalue
+    return 0;
+}
+
 } // extern "C"

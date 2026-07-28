@@ -190,6 +190,20 @@ fn main() {
             let label = cinder_ui::viz::size_name(size).to_lowercase().replace(' ', "_");
             save(&c, &format!("viz_size_{size}_{label}"));
         }
+        // The confirmation modal, over Settings — Restart and Power off both go through it.
+        for (ask, name) in [(cinder_ui::confirm::Ask::Restart, "restart"),
+                            (cinder_ui::confirm::Ask::PowerOff, "poweroff")] {
+            let mut c = Canvas::new();
+            settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
+                &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
+                    usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN",
+                    brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY",
+                    accent: cinder_ui::Accent::Amber });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
+            save(&c, &format!("confirm_{name}"));
+        }
+
         // Settings mid-scroll — the header must survive it (device report, 2026-07-28).
         {
             let mut c = Canvas::new();

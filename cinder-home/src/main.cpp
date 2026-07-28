@@ -1658,6 +1658,20 @@ void carry_out(int act) {
             // screen a moment later while the user is still reading the row.
             g_last_input_ms = now_ms();
             break;
+        case CINDER_ACT_RESTART:
+            // Already confirmed in the modal. Sync first: the device goes down under us, and an
+            // unsynced /contents is a vfat partition with a half-written settings file on it.
+            clog_("restart: confirmed — PowerMgrServiceClient::Reboot()");
+            std::fflush(nullptr);
+            ::sync();
+            run_guarded("power: reboot", 8, []() { cinder_power_reboot(); });
+            break;
+        case CINDER_ACT_POWER_OFF:
+            clog_("power off: confirmed — SetStatus(PowerOff)");
+            std::fflush(nullptr);
+            ::sync();
+            run_guarded("power: off", 8, []() { cinder_power_off(); });
+            break;
         case CINDER_ACT_REPEAT_CHANGED:
             // Repeat-one → NodeTrackSequence::SetOneTrackMode on the pinned sequence. Guarded:
             // it is a call into Sony-constructed object layout, and a wedge here must not take

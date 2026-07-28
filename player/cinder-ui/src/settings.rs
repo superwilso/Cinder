@@ -1,6 +1,7 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row. Rows:
 //! DISPLAY (Theme, Accent, Visualiser style, Cover visualiser, Sleep, Screen-off, Brightness),
-//! SYSTEM (Storage, Database, Battery care, USB mode, Boot to stock), ABOUT (Firmware, Model).
+//! SYSTEM (Storage, Database, Battery care, USB mode, Boot to stock, Restart, Power off),
+//! ABOUT (Firmware, Model).
 //! Live rows: Theme, Accent, Visualiser style, Cover visualiser, Sleep, Screen-off, Brightness
 //! (DISPLAY), Battery care and USB mode (SYSTEM). Database is drawn but NOT wired (shows "—" — see
 //! the dead-UI audit in cinder-home/STATUS.md); Firmware/Model are static info.
@@ -12,7 +13,7 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 14;
+pub const ROWS: usize = 16;
 /// The actionable rows: Theme / Accent / Visualiser / Visualiser animation / Sleep timer (DISPLAY)
 /// + Battery care (SYSTEM).
 pub const ROW_THEME: usize = 0;
@@ -28,11 +29,15 @@ pub const ROW_USB_MODE: usize = 10; // tapping enters USB mass-storage (file tra
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
 pub const ROW_BOOT_STOCK: usize = 11;
+/// Restart and Power off. Both go through the confirmation modal — they take the device away
+/// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
+pub const ROW_RESTART: usize = 12;
+pub const ROW_POWER_OFF: usize = 13;
 
 const RH: i32 = 56;
 /// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
 /// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [7, 5, 2];
+const SECTIONS: [usize; 3] = [7, 7, 2];
 
 /// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
 /// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
@@ -257,9 +262,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     // it acts. The value doubles as the confirmation prompt (see nav: first tap arms, second goes).
     y = srow(c, t, f, y, sel == ROW_BOOT_STOCK, "Boot to stock", v.boot_stock, true);
 
+    y = srow(c, t, f, y, sel == ROW_RESTART, "Restart", "", true);
+    y = srow(c, t, f, y, sel == ROW_POWER_OFF, "Power off", "", true);
+
     y = eyebrow(c, t, f, y + 14, "ABOUT");
-    y = srow(c, t, f, y, sel == 12, "Firmware", FIRMWARE_LABEL, false);
-    let _ = srow(c, t, f, y, sel == 13, "Model", "SONY NW-A55", false);
+    y = srow(c, t, f, y, sel == 14, "Firmware", FIRMWARE_LABEL, false);
+    let _ = srow(c, t, f, y, sel == 15, "Model", "SONY NW-A55", false);
     c.clear_clip();
 }
 

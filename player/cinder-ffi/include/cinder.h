@@ -82,7 +82,12 @@ typedef enum {
     CINDER_ACT_BOOT_TO_STOCK = 22,
     /* Now Playing repeat toggled: read cinder_get_repeat_one() (1/0) and hand it to
      * cinder_audio_set_repeat_one(). Two states only — no repeat-ALL primitive is known. */
-    CINDER_ACT_REPEAT_CHANGED = 23
+    CINDER_ACT_REPEAT_CHANGED = 23,
+    /* Settings ▸ Restart, CONFIRMED in the modal: PowerMgrServiceClient::Reboot(). Comes back into
+     * Cinder, unlike CINDER_ACT_BOOT_TO_STOCK which arms the one-shot stock flag first. */
+    CINDER_ACT_RESTART = 24,
+    /* Settings ▸ Power off, CONFIRMED in the modal: PowerMgrServiceClient::SetStatus(PowerOff). */
+    CINDER_ACT_POWER_OFF = 25
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a

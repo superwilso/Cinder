@@ -9,6 +9,7 @@
 pub mod art;
 pub mod canvas;
 pub mod chrome;
+pub mod confirm;
 pub mod data;
 pub mod icons;
 pub mod model;

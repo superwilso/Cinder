@@ -1457,6 +1457,8 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::BrightnessChanged(_) => 20, // shell reads cinder_get_brightness() + writes the backlight
         Action::ScreenOffTimer(_) => 21,    // shell reads cinder_get_screen_off_s() + counts idle
         Action::BootToStock => 22,          // shell arms the one-shot flag + restarts into stock
+        Action::Restart => 24,              // PowerMgrServiceClient::Reboot — back into Cinder
+        Action::PowerOff => 25,             // PowerMgrServiceClient::SetStatus(PowerOff)
         Action::ToggleLiked => {
             // Handled entirely in-process: the set and its file live here, so there is nothing for
             // the shell to carry out.
