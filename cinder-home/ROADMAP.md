@@ -200,6 +200,21 @@ never repoint the `.appcfg` before the probe run looks clean.
     If the sink reports no absolute-volume support (`IsSupportedAbsoluteVolume()`), Sony injects
     AVRCP VOLUME_UP/DOWN through `/dev/uinput` and the step size is entirely the headphones' —
     there the pre-scale is the only lever. Detail: `../docs/PRODUCTION_READINESS.md` §B4.
+- **aptX Adaptive is NOT possible on this device** (checked 2026-07-28, so it stops being asked).
+  The BT stack has **zero** "adaptive" strings anywhere. Sony ships the encoders as licensed
+  Qualcomm binaries — `libaptX-1.0.18-rel-linux2.6-ARMv7A-hf.so` and `libaptXHD-1.0.5-…` — which
+  are the pre-Adaptive generation, and there is no Adaptive blob to load. There is no open
+  implementation to substitute either: LDAC was open-sourced by Sony and aptX classic/HD were once
+  reverse-engineered, but Adaptive never was. `libBtMw.so` carries the A2DP capability descriptors
+  actually advertised in the AVDTP handshake (`A2dpSrcAptxClassicCapability`,
+  `A2dpSrcAptxHdCapability0`) and there is no Adaptive one, so the negotiation could not offer it
+  even with an encoder. `BtTransmitterService`'s entire codec surface is
+  `SetLdac / SetAptxHD / SetAptxClassic / SetSbcSoundQuality`. And Cinder has no injection point
+  regardless: we write **raw PCM** into the socket and the encode happens downstream, so we never
+  handle a frame we could encode differently. The radio is a MediaTek **MT662x**; Adaptive is a
+  Qualcomm/Snapdragon-Sound feature. None of this is a gap — LDAC at 990 kbps already exceeds
+  aptX Adaptive's typical 279–420 kbps, and Adaptive's advantage is latency and robustness rather
+  than fidelity, which is the wrong trade for a music player.
 - **BT transmit codec — live apply.** The selector (LDAC/aptX HD/aptX/SBC + LDAC quality), the
   device-wide preference, and its persistence (`cinder_settings.conf` + `cinder_bt.conf`) are **DONE
   in the UI/shell**. Remaining = the live `BtTransmitterService` apply (SetLdac/SetAptxHD/SetSbc +
