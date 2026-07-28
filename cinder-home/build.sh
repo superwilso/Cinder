@@ -226,10 +226,21 @@ echo "[6b] build cinder-gpunode (setuid-root GPU node helper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-gpunode" "$HERE/src/cinder-gpunode.c"
 echo "built: $HERE/cinder-gpunode ($(stat -c %s "$HERE/cinder-gpunode") bytes)"
 
+# cinder-power: third setuid-root helper — reboot(2) for Power off / Restart. Sony's own
+# PowerMgrServiceClient cannot do it while Cinder is the Home app (its shutdown barrier waits on a
+# service ACK we do not send: Reboot() froze the device, SetStatus(PowerOff) only slept it — see
+# src/cinder-power.c). reboot(2) needs CAP_SYS_BOOT, which capless cinder-home does not have.
+# Ships on BOTH channels: unlike cinder-gpunode this backs a feature that is always on, and it
+# widens nothing — it grants two fixed verbs, no caller-supplied paths.
+echo "[6c] build cinder-power (setuid-root power helper, static)…"
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-power" "$HERE/src/cinder-power.c"
+echo "built: $HERE/cinder-power ($(stat -c %s "$HERE/cinder-power") bytes)"
+
 mkdir -p "$DIST"
 cp -f "$OUT" "$DIST/cinder-home"
 cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"
 cp -f "$HERE/cinder-umount" "$DIST/cinder-umount"
+cp -f "$HERE/cinder-power" "$DIST/cinder-power"
 # cinder-gpunode ships on the DEV channel ONLY. It is setuid-root and its whole job is to make
 # four kernel graphics nodes world-writable — real attack surface — in service of a GPU present
 # path that is default OFF and measured 4.7x SLOWER than the software one (45.6 ms/present vs 9.6;

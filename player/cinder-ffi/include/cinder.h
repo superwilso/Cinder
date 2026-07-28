@@ -122,6 +122,14 @@ int  cinder_swipe(int dir, int x, int y);
  * ignored but the transport/volume buttons still work; ONLY the switch going off (held=0) unlocks.
  * Power is a screen on/off toggle (CINDER_ACT_SLEEP) and does NOT unlock. Call on every edge. */
 void cinder_set_hold(int held);
+/* The Power button has been held past the long-press threshold (~1 s): open the Power menu
+ * (Power off / Restart / Cancel), which is what the stock Sony firmware does. Returns 1 if the
+ * menu opened, 0 if refused (Hold engaged, or a modal is already up). A 1 means the shell must
+ * NOT also toggle the screen when the button is finally released. */
+int  cinder_power_held(void);
+/* Is a modal dialog up? Used so the idle screen-blank timer does not blank a "Power off?" prompt
+ * out from under the finger about to answer it. */
+int  cinder_modal_open(void);
 /* Open the library DB read-only (e.g. "/db/MTPDB.dat"). Call after cinder_render_init.
  * 0 = ok, -1 = open failed, -2 = renderer not initialised. */
 int  cinder_db_open(const char *path);

@@ -42,24 +42,23 @@ int cinder_power_set_battery_care(int on) {
     return 0;
 }
 
-/// Restart. Sony's own client method, no argument — this is the one the stock player uses and
-/// there is nothing to guess about it.
-int cinder_power_reboot(void) {
-    pm::PowerMgrServiceClient* p = pmc();
-    if (!p) return -1;
-    p->Reboot();
-    return 0;
-}
-
-/// Power off. The PowerStatus VALUE is inferred from the service's own name table (see
-/// power_abi.hpp) and is device-unverified; if the numbering is wrong the device enters a sleep
-/// state instead, which the power button recovers from.
-int cinder_power_off(void) {
-    pm::PowerMgrServiceClient* p = pmc();
-    if (!p) return -1;
-    const pm::IPowerMgrService::PowerStatus off = pm::IPowerMgrService::PowerStatus::PowerOff;
-    p->SetStatus(off);   // takes PowerStatus const& — pass an lvalue
-    return 0;
-}
+/* THERE IS DELIBERATELY NO cinder_power_reboot / cinder_power_off HERE ANY MORE.
+ *
+ * Both existed and both were wired to Settings. MEASURED on device 2026-07-28:
+ *   PowerMgrServiceClient::Reboot()          -> the player FROZE (never returned, never rebooted)
+ *   SetStatus(PowerStatus::PowerOff)         -> the device SLEPT instead of powering off
+ *
+ * The enum value was not the problem. libpstcore.so shows shutdown is a two-phase barrier across
+ * every registered service — OnPreShutdown -> "All services preshutdowned!" -> OnShutdown ->
+ * "All services shutdowned!" -> android_reboot — and libPowerService.so agrees ("Power state
+ * transition is stopping! Check all services and reboot the system..."). Cinder-home replaced the
+ * Qt Home app but does not speak that protocol, so its phase is never acknowledged, the barrier
+ * never clears, and the request hangs holding the caller. Sony's power-off cannot complete while
+ * we are the Home app, whatever argument we pass.
+ *
+ * Power off and Restart now go through the setuid-root cinder-power helper (reboot(2)) instead —
+ * see cinder-home/src/cinder-power.c. The declarations stay in power_abi.hpp as the RE record;
+ * they are simply not reachable from Cinder, so nobody can re-wire them by accident.
+ */
 
 } // extern "C"

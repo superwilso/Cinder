@@ -53,7 +53,7 @@ touch /contents/cinderhome_off 2>/dev/null; sync
 if [ "$restored" = 1 ]; then
     "$BB" rm -f "$BIN/cinderhome-launch.sh" "$BIN/cinder-home" 2>/dev/null
     # setuid-root helpers must not outlive the app they exist for.
-    "$BB" rm -f "$BIN/cinder-umount" "$BIN/cinder-gpunode" 2>/dev/null
+    "$BB" rm -f "$BIN/cinder-umount" "$BIN/cinder-gpunode" "$BIN/cinder-power" 2>/dev/null
     "$BB" rm -rf /data/cinder 2>/dev/null
     "$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot /contents/cinder_gpu_on /contents/cinderhome_clear /contents/cinderhome_cable_off 2>/dev/null
     echo "removed launcher + binary + setuid helpers + flags (full uninstall)"

@@ -1120,6 +1120,34 @@ void boot_to_stock() {
     _exit(0);
 }
 
+// Power off / Restart. Goes through the setuid-root cinder-power helper (reboot(2)), NOT through
+// PowerMgrServiceClient — measured 2026-07-28, Sony's Reboot() froze the player and
+// SetStatus(PowerOff) only slept it, because shutdown is a two-phase barrier across every
+// registered service and Cinder-as-Home-app never acknowledges its phase. See src/cinder-power.c.
+//
+// NOT run_guarded: on success this call never returns (the machine goes down inside it), and the
+// guard's whole job is to _exit on a call that does not return — which would trip the launcher's
+// bad-boot counter on the one path that is SUPPOSED to take the device away. If the helper is
+// missing or lost its setuid bit, system() returns promptly and we log a real cause and stay up.
+void power_action(bool restart) {
+    const char* verb = restart ? "restart" : "off";
+    char m[160];
+    std::snprintf(m, sizeof m, "power: %s confirmed — exec cinder-power %s", verb, verb);
+    clog_(m);
+    // Sync BEFORE the helper, not only inside it: /contents is vfat holding the settings file and
+    // this log, and the helper's own remount-ro can legitimately fail with EBUSY while we still
+    // hold the log open. Two syncs cost nothing next to a shutdown.
+    std::fflush(nullptr);
+    ::sync();
+    std::snprintf(m, sizeof m, "/system/vendor/unknown321/bin/cinder-power %s", verb);
+    int rc = std::system(m);
+    // Reached only on failure — the helper does not return when reboot(2) succeeds.
+    std::snprintf(m, sizeof m,
+                  "power: %s FAILED (cinder-power rc=%d) — helper missing or setuid bit lost; staying up",
+                  verb, rc);
+    clog_(m);
+}
+
 // For the LIVE theme toggle: match the backlight to the current theme.
 void apply_backlight() { set_backlight(cinder_get_night()); }
 
@@ -1685,20 +1713,8 @@ void carry_out(int act) {
             // screen a moment later while the user is still reading the row.
             g_last_input_ms = now_ms();
             break;
-        case CINDER_ACT_RESTART:
-            // Already confirmed in the modal. Sync first: the device goes down under us, and an
-            // unsynced /contents is a vfat partition with a half-written settings file on it.
-            clog_("restart: confirmed — PowerMgrServiceClient::Reboot()");
-            std::fflush(nullptr);
-            ::sync();
-            run_guarded("power: reboot", 8, []() { cinder_power_reboot(); });
-            break;
-        case CINDER_ACT_POWER_OFF:
-            clog_("power off: confirmed — SetStatus(PowerOff)");
-            std::fflush(nullptr);
-            ::sync();
-            run_guarded("power: off", 8, []() { cinder_power_off(); });
-            break;
+        case CINDER_ACT_RESTART:  power_action(true);  break;
+        case CINDER_ACT_POWER_OFF: power_action(false); break;
         case CINDER_ACT_REPEAT_CHANGED:
             // Repeat-one → NodeTrackSequence::SetOneTrackMode on the pinned sequence. Guarded:
             // it is a call into Sony-constructed object layout, and a wedge here must not take
@@ -1853,6 +1869,38 @@ void vol_repeat_tick() {
     if (act != CINDER_ACT_NONE) carry_out(act);
 }
 
+// ── Power button: HOLD opens the power menu, TAP toggles the screen ──────────────────────────
+// Sony's own gesture, and the one the user asked for: hold Power for about a second and a menu
+// comes up. Cinder used to act on the PRESS (screen toggle), so no matter how long you held it the
+// only outcomes were "screen off" and — past the PMIC's own ~8 s threshold, which is hardware and
+// nothing to do with us — a forced reset.
+//
+// So the press now only starts a clock. Which action fires is decided later:
+//   held >= POWER_HOLD_MS  -> open the menu, and the release does NOTHING
+//   released before that   -> the screen toggle, exactly as before
+// The menu therefore has to open on a TIMER rather than on an event: mtk-kpd's key repeats are not
+// something to depend on for a safety-relevant gesture, so power_hold_tick() is called every frame
+// from the end of input_pump(), the same way the volume ramp is driven.
+static long g_power_down_ms = 0;     // when Power went down (0 = not down)
+static bool g_power_consumed = false; // has this press already produced the menu?
+static const long POWER_HOLD_MS = 1000;
+
+void power_hold_tick() {
+    if (g_power_down_ms == 0 || g_power_consumed) return;
+    if (now_ms() - g_power_down_ms < POWER_HOLD_MS) return;
+    g_power_consumed = true;   // set FIRST: whatever happens next, this press is spent
+    if (cinder_power_held()) {
+        clog_("input: Power held — power menu");
+        // Waking here matters: holding Power with the panel already dark must show the menu, not
+        // put up a dialog nobody can see. The blank is ours (backlight only), so this is a write.
+        if (!g_screen_on) screen_toggle();
+        g_last_input_ms = now_ms();
+    }
+    // If the navigator refused (Hold engaged, or a modal already up) the press stays consumed
+    // anyway — a refused hold must not fall through to a screen toggle on release either, or
+    // holding Power in a pocket would blank/unblank the panel.
+}
+
 void input_pump() {
     ev_event evs[32];
     static long g_ev_total = 0;   // events ever seen (any node) — for the silent-input heartbeat
@@ -1990,6 +2038,20 @@ void input_pump() {
                     if (g_vol_btn == g_keymap[code]) g_vol_btn = -1;
                     continue;
                 }
+                // POWER RELEASE — the second button whose release means something. A press that
+                // was NOT long enough to open the menu becomes the screen toggle here, on the way
+                // up. Doing it on the way up is the whole mechanism: on the way down we cannot yet
+                // know whether this is a tap or a hold.
+                if (type == EV_KEY_ && val == 0 && code < keymap_size()
+                        && g_keymap[code] == CINDER_BTN_POWER) {
+                    bool was_down = g_power_down_ms != 0, spent = g_power_consumed;
+                    g_power_down_ms = 0; g_power_consumed = false;
+                    if (was_down && !spent) {
+                        int act = cinder_input(CINDER_BTN_POWER);   // -> CINDER_ACT_SLEEP
+                        if (act != CINDER_ACT_NONE) carry_out(act);
+                    }
+                    continue;
+                }
                 if (type != EV_KEY_ || val == 0) continue; // releases never act
                 int kc = code;
                 // Key REPEATS (val=2) only ramp the volume rocker; for everything else a held
@@ -2024,6 +2086,17 @@ void input_pump() {
                     if (val == 1) { g_vol_btn = btn; g_vol_down_ms = now_ms(); }
                     g_vol_last_ms = now_ms();   // also swallows a kernel repeat's slot
                 }
+                // POWER PRESS starts the hold clock and does NOTHING ELSE. The screen toggle now
+                // happens on the release (above), and the menu on the timer (power_hold_tick), so
+                // acting here as well would fire both. Kernel repeats are ignored — the clock is
+                // already running and re-arming it would push the hold threshold out forever.
+                if (btn == CINDER_BTN_POWER) {
+                    if (val == 1 && g_power_down_ms == 0) {
+                        g_power_down_ms = now_ms();
+                        g_power_consumed = false;
+                    }
+                    continue;
+                }
                 int act = cinder_input(btn);
                 if (act != CINDER_ACT_NONE) carry_out(act);
             }
@@ -2032,6 +2105,8 @@ void input_pump() {
     }
     // Held rocker: the events are all drained, so anything still down is a genuine hold.
     vol_repeat_tick();
+    // Same idea for Power: the menu opens on elapsed time, not on an event, so it needs a tick.
+    power_hold_tick();
 }
 
 // Battery percent from sysfs (best-effort; 100 if unavailable).
@@ -2187,6 +2262,24 @@ void* render_driver(void*) {
         }
 
         long frame_start = now_ms();
+
+        // ── INPUT IS READ BEFORE THE PAINT ────────────────────────────────────────────────────
+        // It used to run *after* cinder_render_tick(), and that cost a whole frame on every single
+        // interaction: a tap read at the END of frame N could only reach the glass in frame N+1,
+        // and a drag always painted the finger's PREVIOUS position. On device a scrolling frame
+        // measures ~31 ms (cinder-probe --bench), so that was ~31 ms of pure, avoidable lag on
+        // everything you touch — the "clunky" feel in Settings, which has no album art to blame.
+        // Reading first means the frame we are about to paint already reflects the finger.
+        //
+        // Gated on g_deferred_done to preserve the OLD ordering exactly: the deferred-init block
+        // below `continue`s before the input call ever ran, so input has never been pumped before
+        // Sony's services are up and must not start now (carry_out would drive uninitialised audio).
+        if (g_deferred_done) {
+            if (!g_input_started) { input_open(); g_input_started = true; }
+            alarm(8); input_pump(); alarm(0);  // touch + buttons -> navigator -> actions -> carry_out
+            volume_flush();                    // trailing write of a coalesced volume ramp
+        }
+
         // Panel dark => skip the PAINT ONLY. Nobody can see the frame, and with the visualiser
         // running while playing this is a full repaint + 4.6 MB blit every 16 ms — the cost the
         // screen-off timer exists to avoid, so blanking the backlight alone left the win on the
@@ -2244,9 +2337,7 @@ void* render_driver(void*) {
             if (g_app) g_app->StopBootAnimation();
         }
 
-        if (!g_input_started) { input_open(); g_input_started = true; }
-        alarm(8); input_pump(); alarm(0);     // touch + buttons -> navigator -> actions -> carry_out
-        volume_flush();                       // trailing write of a coalesced volume ramp
+        // (input_pump + volume_flush now run at the TOP of the loop, before the paint — see there)
         // ~1x/sec housekeeping, paced by the WALL CLOCK rather than an iteration count. It used to
         // be `n % 60`, which silently assumed the loop always runs at 60 Hz — no longer true now
         // that a dark panel drops it to 10 Hz, where `n % 60` would mean once every SIX seconds and
@@ -2269,9 +2360,11 @@ void* render_driver(void*) {
             // running (the app renders regardless — same as the Power-button blank). Never fires
             // while already dark, and never while the USB-MSC modal is up: that screen is the only
             // indication the volume is handed to the PC, so blanking it would be actively confusing.
+            // Nor while a confirmation dialog is up: blanking a "Power off?" prompt out from under
+            // the finger about to answer it would leave the device dark with a live modal on it.
             {
                 int idle_s = cinder_get_screen_off_s();
-                if (idle_s > 0 && g_screen_on && !g_msc_active &&
+                if (idle_s > 0 && g_screen_on && !g_msc_active && !cinder_modal_open() &&
                     now_ms() - g_last_input_ms >= (long)idle_s * 1000) {
                     screen_auto_off();
                 }
@@ -2370,6 +2463,45 @@ void* render_driver(void*) {
                     c0, playing0, c1, cinder_audio_is_playing(),
                     (c1 > c0) ? "CONTINUED (transparent — Play Next is buildable)"
                               : "INTERRUPTED (inserts must wait for a track boundary)");
+                std::fflush(stderr);
+            }
+            // DEV PROBE: `echo "<origin> <ms>" > /tmp/cinder_seek.req` seeks the PLAYING track and
+            // logs where it actually landed. Drag-to-seek moves the bar but the audio does not
+            // follow (reported 2026-07-28), and there is exactly one unverified value in that path:
+            // media_origin_t. The enum is a guess — playerservice_abi.hpp says "Begin = 0,
+            // Current = 1 ... calibrate exact values on device" — and SeekTime is void, so a
+            // rejected request looks identical to an accepted one from the caller's side.
+            //
+            // Same reasoning as the reissue probe for why it lives in the app: SoundService allows
+            // one track per type and cinder-home holds it, so a seek from cinder-probe would have
+            // nothing playing to seek within. Sweeping origin 0 then 1 against a known target and
+            // reading the resulting position off the log settles it in two runs.
+            if (::access("/tmp/cinder_seek.req", F_OK) == 0) {
+                int origin = 0; long target = 60000;
+                if (FILE* rf = std::fopen("/tmp/cinder_seek.req", "r")) {
+                    char buf[64] = {0};
+                    if (std::fgets(buf, sizeof buf, rf)) std::sscanf(buf, "%d %ld", &origin, &target);
+                    std::fclose(rf);
+                }
+                ::unlink("/tmp/cinder_seek.req");
+                int c0 = -1, t0 = -1;
+                cinder_audio_position(&c0, &t0);
+                int rc = 0;
+                run_guarded("seek probe", 8, [&]() { rc = cinder_audio_seek_ms_origin(origin, (int)target); });
+                usleep(1200000);
+                int c1 = -1, t1 = -1;
+                cinder_audio_position(&c1, &t1);
+                // "Landed" is generous by 3 s: the position is polled about once a second and the
+                // track keeps advancing after the seek, so an exact match would fail on a correct
+                // seek. What it must NOT look like is "carried on from where it was".
+                long drift = (long)c1 - target;
+                if (drift < 0) drift = -drift;
+                std::fprintf(stderr,
+                    "[cinder-home] seek probe: origin=%d target=%ld rc=%d | before pos=%d dur=%d"
+                    " | after 1.2s pos=%d dur=%d => %s\n",
+                    origin, target, rc, c0, t0, c1, t1,
+                    (drift <= 3000) ? "LANDED (this origin is correct)"
+                                    : "MISSED (wrong origin, or ms is not the unit)");
                 std::fflush(stderr);
             }
 #endif

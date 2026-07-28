@@ -48,6 +48,7 @@ BIN=$VENDOR/bin
 SRC=/contents/cinder-home
 SRC_UMOUNT=/contents/cinder-umount
 SRC_GPUNODE=/contents/cinder-gpunode
+SRC_POWER=/contents/cinder-power
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
 LAUNCH=$BIN/cinderhome-launch.sh
@@ -133,6 +134,26 @@ if [ -s "$SRC_GPUNODE" ]; then
     fi
 else
     echo "WARN: $SRC_GPUNODE not staged (tools/flash.sh --push dist/<ch>/cinder-gpunode) — GPU path stays off."
+fi
+
+# 1d) install the setuid-root power helper (reboot(2) for Settings ▸ Power off / Restart, and for
+#     the Power-button hold menu). Sony's PowerMgrServiceClient cannot serve those while Cinder is
+#     the Home app — its shutdown barrier waits on an ACK we do not send. Same atomic
+#     temp->chown root->chmod 4755->mv treatment. Non-fatal: without it Power off and Restart log
+#     a clear failure and do nothing, which is what they effectively did before this existed.
+if [ -s "$SRC_POWER" ]; then
+    "$BB" cat "$SRC_POWER" > "$BIN/cinder-power.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-power.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-power.tmp" 2>/dev/null
+        "$BB" chmod 4755 "$BIN/cinder-power.tmp"
+        "$BB" mv -f "$BIN/cinder-power.tmp" "$BIN/cinder-power"
+        echo "installed setuid helper: $BIN/cinder-power ($("$BB" wc -c < "$BIN/cinder-power" 2>/dev/null | "$BB" tr -cd '0-9') bytes, mode $("$BB" stat -c %a "$BIN/cinder-power" 2>/dev/null))"
+    else
+        echo "WARN: cinder-power stage empty — Power off / Restart will not work."
+        "$BB" rm -f "$BIN/cinder-power.tmp" 2>/dev/null
+    fi
+else
+    echo "WARN: $SRC_POWER not staged (tools/flash.sh --push dist/<ch>/cinder-power) — Power off / Restart will not work."
 fi
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch

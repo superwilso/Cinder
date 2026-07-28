@@ -1612,6 +1612,29 @@ pub extern "C" fn cinder_set_hold(held: libc::c_int) {
     }
 }
 
+/// The Power button has been held down past the long-press threshold: open the Power menu
+/// (Power off / Restart / Cancel), Sony's own gesture. Returns 1 if the menu opened, 0 if it was
+/// refused (Hold engaged, or a modal is already up). The shell uses the answer to decide whether
+/// the eventual RELEASE should still toggle the screen — it must not, if the menu is now showing.
+#[no_mangle]
+pub extern "C" fn cinder_power_held() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    if r.app.power_held() {
+        r.dirty = true;
+        1
+    } else {
+        0
+    }
+}
+
+/// Is a modal dialog up? The shell asks so the idle screen-blank timer does not blank a
+/// "Power off?" prompt out from under the finger that is about to answer it.
+#[no_mangle]
+pub extern "C" fn cinder_modal_open() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.modal_open() as libc::c_int)
+}
+
 /// Force the next `cinder_render_tick` to repaint + blit even if nothing changed. The shell calls
 /// this to overwrite anything an external process drew on the framebuffer (e.g. the boot
 /// animation's last frame, which survives its kill and would otherwise sit on screen forever

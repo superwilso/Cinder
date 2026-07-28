@@ -489,9 +489,21 @@ int cinder_audio_prev_track(void) { return g_ctrl ? g_ctrl->PrevTrack(nullptr) :
 int cinder_audio_next_group(void) { return g_ctrl ? g_ctrl->NextGroup() : -1; }
 int cinder_audio_prev_group(void) { return g_ctrl ? g_ctrl->PrevGroup(nullptr) : -1; }
 
-int cinder_audio_seek_ms(int ms) {
+/// Seek. NOTE SeekTime IS `void` — the RE disasm (analysis/G_player_ipc/player.c @0x13200) packs
+/// {session, origin, ms} and calls proxy vtable+0x48 with a response slot it then DISCARDS, exactly
+/// like NextTrack. It used to be declared `int` here and the shell logged "seek REJECTED" whenever
+/// the leftover r0 happened to be non-zero, which was pure noise: a rejected seek and an accepted
+/// one are indistinguishable from the caller. So 0 here means "sent", not "worked".
+int cinder_audio_seek_ms(int ms) { return cinder_audio_seek_ms_origin(0, ms); }
+
+/// Same, with the origin selectable. The `media_origin_t` VALUES are unverified (Begin=0/Current=1
+/// is an RE guess), and drag-to-seek moving the bar without moving the audio is exactly what a
+/// wrong origin looks like — so the dev-channel `/tmp/cinder_seek.req` probe drives this directly
+/// to settle it against a real playing track. Everything else goes through cinder_audio_seek_ms.
+int cinder_audio_seek_ms_origin(int origin, int ms) {
     if (!g_ctrl) return -1;
-    return g_ctrl->SeekTime(pl::media_origin_t::Begin, ms);
+    g_ctrl->SeekTime(static_cast<pl::media_origin_t>(origin), ms);
+    return 0;
 }
 
 int cinder_audio_current_uri(char* buf, int cap) {

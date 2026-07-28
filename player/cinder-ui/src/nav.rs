@@ -414,6 +414,27 @@ impl App {
         self.go(if held { Screen::Lock } else { Screen::NowPlaying });
     }
 
+    /// The Power button was held down (~1 s), Sony's own gesture: open the Power menu.
+    ///
+    /// Returns whether it opened, so the shell knows whether the eventual RELEASE should still
+    /// toggle the screen. Refused while Hold is engaged — the whole point of the switch is that a
+    /// pocket cannot operate the device, and a power-off menu is the last thing that should be
+    /// reachable in there. Refused too if a modal is already up, so a second hold cannot stack one
+    /// dialog on another or silently replace the question you were reading.
+    pub fn power_held(&mut self) -> bool {
+        if self.locked || self.confirm.is_some() {
+            return false;
+        }
+        self.confirm = Some(crate::confirm::Ask::PowerMenu);
+        true
+    }
+
+    /// Is a modal dialog currently up? The shell uses this to decide whether the screen-blank
+    /// timer should keep running (it must not blank a "Power off?" prompt out from under a finger).
+    pub fn modal_open(&self) -> bool {
+        self.confirm.is_some()
+    }
+
     /// The screen currently on top of the route stack.
     pub fn current(&self) -> Screen {
         *self.stack.last().unwrap_or(&Screen::NowPlaying)
@@ -688,11 +709,17 @@ impl App {
         // the screen underneath is how a dialog dismissal also presses whatever it was covering.
         if let Some(ask) = self.confirm {
             self.confirm = None;
-            return match crate::confirm::hit(x, y) {
+            return match crate::confirm::hit(ask, x, y) {
                 crate::confirm::Hit::Cancel => vec![],
+                // The menu's own rows say which action was chosen; a yes/no card's Confirm means
+                // "the thing the card is named after".
+                crate::confirm::Hit::Restart => vec![Action::Restart],
+                crate::confirm::Hit::PowerOff => vec![Action::PowerOff],
                 crate::confirm::Hit::Confirm => match ask {
                     crate::confirm::Ask::Restart => vec![Action::Restart],
                     crate::confirm::Ask::PowerOff => vec![Action::PowerOff],
+                    // PowerMenu never produces a bare Confirm (its hit test returns named rows).
+                    crate::confirm::Ask::PowerMenu => vec![],
                 },
             };
         }
@@ -1419,6 +1446,18 @@ impl App {
                 }
                 _ => vec![],
             };
+        }
+
+        // MODAL OPEN: Back dismisses it, and every other button is swallowed. Tapping the dimmed
+        // backdrop already cancels, so this is a second escape rather than the only one — but a
+        // dialog you cannot back out of is exactly the shape of bug that strands a device with no
+        // d-pad, and a transport press leaking through to the music underneath a "Power off?"
+        // prompt would be its own small surprise.
+        if self.confirm.is_some() {
+            if b == Button::Back {
+                self.confirm = None;
+            }
+            return vec![];
         }
 
         // Shelf overlay open: Back (incl. the left-edge swipe) closes it; Play/Vol still work as

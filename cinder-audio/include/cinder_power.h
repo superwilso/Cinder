@@ -18,14 +18,11 @@ int cinder_power_get_battery_care(void);
 /* Enable (on != 0) or disable battery care on the device. Returns 0 = applied, -1 = unavailable. */
 int cinder_power_set_battery_care(int on);
 
-/* Restart the device (PowerMgrServiceClient::Reboot). 0 = requested, -1 = service unavailable.
- * Does not return on success in practice — the device goes down under it. */
-int cinder_power_reboot(void);
-
-/* Power the device off (PowerMgrServiceClient::SetStatus(PowerOff)). 0 = requested, -1 =
- * unavailable. The PowerStatus enum value is INFERRED from the service's own name table and is
- * device-unverified; a wrong value yields a sleep state, recoverable with the power button. */
-int cinder_power_off(void);
+/* Power off / Restart are NOT here. Sony's Reboot()/SetStatus(PowerOff) were tried and measured
+ * on device 2026-07-28: Reboot() froze the player, SetStatus(PowerOff) only slept it. Shutdown is
+ * a two-phase barrier across every registered service and Cinder-as-Home-app never acknowledges
+ * its phase, so it can never complete. Both now go through the setuid-root cinder-power helper
+ * (reboot(2)) — see cinder-home/src/cinder-power.c and the note in power_shim.cpp. */
 
 #ifdef __cplusplus
 }
