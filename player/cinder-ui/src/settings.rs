@@ -161,10 +161,16 @@ fn srow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v: &SettingsView) {
     c.fill(t.bg);
     let y0 = crate::chrome::header(c, t, f, "Settings", None);
-    // Content is taller than the panel (13 rows + 3 section headers), so it scrolls. Rows are drawn
-    // shifted up by `scroll`; row_at applies the same shift, so the hit test can't drift from the
-    // render. Off-screen rows are cheap — the row helpers clip against the canvas.
+    // Content is taller than the panel, so it scrolls. Rows are drawn shifted up by `scroll`;
+    // row_at applies the same shift, so the hit test can't drift from the render.
+    //
+    // CLIP TO BELOW THE HEADER. Without this the scrolled rows keep painting upward past
+    // HEADER_BOTTOM and cover the "Settings" title and the back chevron — the header is drawn
+    // above, so whatever is drawn after simply wins. The library lists have always clipped; this
+    // screen gained pixel scrolling later and did not, which is why it was the one that showed it.
+    // (The status bar is safe either way: the navigator draws it AFTER every screen.)
     let y0 = y0 - scroll;
+    c.set_clip_y(crate::chrome::HEADER_BOTTOM, crate::canvas::H as i32);
 
     let mut y = eyebrow(c, t, f, y0, "DISPLAY");
 
@@ -254,4 +260,86 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     y = eyebrow(c, t, f, y + 14, "ABOUT");
     y = srow(c, t, f, y, sel == 12, "Firmware", FIRMWARE_LABEL, false);
     let _ = srow(c, t, f, y, sel == 13, "Model", "SONY NW-A55", false);
+    c.clear_clip();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text::FontSet;
+
+    fn view<'a>(accent: Accent) -> SettingsView<'a> {
+        SettingsView {
+            night: false,
+            viz_name: "Bars",
+            viz_size_label: "VEIL",
+            usb_dac: false,
+            battery_care: true,
+            storage: "12.4 / 58 GB",
+            sleep: "30 MIN",
+            brightness: "4 / 5",
+            screen_off: "OFF",
+            boot_stock: "SONY",
+            accent,
+        }
+    }
+
+    /// Scrolling must never repaint the header. The rows move UP as you scroll, and without a clip
+    /// they carry on past HEADER_BOTTOM and cover the "Settings" title and the back chevron — the
+    /// header is drawn first, so anything drawn after it simply wins. Reported from the device
+    /// 2026-07-28 ("the top bars get covered up when scrolling").
+    ///
+    /// The check is a pixel diff of the whole header band against an unscrolled frame, so it will
+    /// catch any future control that reaches up there, not just the rows that did.
+    #[test]
+    fn scrolling_never_paints_over_the_header() {
+        let t = Theme::day();
+        let f = FontSet::load();
+        let mut base = Canvas::new();
+        render(&mut base, &t, &f, 0, 0, &view(Accent::Amber));
+
+        for scroll in [1, 17, 60, max_scroll_px() / 2, max_scroll_px()] {
+            let mut c = Canvas::new();
+            render(&mut c, &t, &f, 0, scroll, &view(Accent::Amber));
+            for y in 0..crate::chrome::HEADER_BOTTOM {
+                for x in 0..crate::canvas::W {
+                    let i = y as usize * crate::canvas::W + x;
+                    assert_eq!(
+                        c.buf[i], base.buf[i],
+                        "scroll {scroll} painted over the header at ({x},{y})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// …and the clip must be released again, or every later screen in the same frame would inherit
+    /// it. The navigator draws the status bar and the Now Playing bar after the screen.
+    #[test]
+    fn the_clip_is_released_after_rendering() {
+        let t = Theme::day();
+        let f = FontSet::load();
+        let mut c = Canvas::new();
+        render(&mut c, &t, &f, 0, max_scroll_px(), &view(Accent::Amber));
+        // A full-screen fill must reach row 0 again; if the clip leaked, the top band stays put.
+        c.fill(t.acc);
+        assert_eq!(c.buf[0], crate::canvas::to_u32(t.acc), "clip band leaked out of settings::render");
+    }
+
+    /// Scrolling still has to actually move the rows — otherwise the test above passes trivially.
+    #[test]
+    fn scrolling_moves_the_content() {
+        let t = Theme::day();
+        let f = FontSet::load();
+        let mut a = Canvas::new();
+        render(&mut a, &t, &f, 0, 0, &view(Accent::Amber));
+        let mut b = Canvas::new();
+        render(&mut b, &t, &f, 0, max_scroll_px(), &view(Accent::Amber));
+        let band = (crate::chrome::HEADER_BOTTOM as usize)..(crate::canvas::H);
+        let differing = band
+            .flat_map(|y| (0..crate::canvas::W).map(move |x| y * crate::canvas::W + x))
+            .filter(|&i| a.buf[i] != b.buf[i])
+            .count();
+        assert!(differing > 5000, "scrolling barely changed the list ({differing} px)");
+    }
 }

@@ -190,6 +190,19 @@ fn main() {
             let label = cinder_ui::viz::size_name(size).to_lowercase().replace(' ', "_");
             save(&c, &format!("viz_size_{size}_{label}"));
         }
+        // Settings mid-scroll — the header must survive it (device report, 2026-07-28).
+        {
+            let mut c = Canvas::new();
+            settings::render(&mut c, &theme, &fonts, settings::ROW_BRIGHTNESS,
+                settings::max_scroll_px() / 2,
+                &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
+                    usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN",
+                    brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY",
+                    accent: cinder_ui::Accent::Amber });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+            save(&c, "settings_scrolled");
+        }
+
         // The Now Playing PAGES: swipe the artwork to turn them. Only the block above the title
         // changes — same title, same progress, same transport on every one.
         for page in 0..now_playing::PAGES {
