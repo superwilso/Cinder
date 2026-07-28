@@ -45,6 +45,13 @@ int main(int argc, char **argv)
     else if (strcmp(argv[1], "restart") == 0) restart = 1;
     else return 2;
 
+    /* CHECK BEFORE TOUCHING ANYTHING. The realistic failure here is the setuid bit not surviving
+     * install (a FAT stage, a chmod that did not take), and the remount below is only safe if the
+     * reboot that follows it is certain. Without this, a lost setuid bit would leave the running
+     * system with /contents and /data read-only and no reboot to clear it — settings writes and
+     * the log would start failing and the cause would be invisible. Bail out first instead. */
+    if (geteuid() != 0) return 3;
+
     sync();
     for (int i = 0; kFlush[i]; ++i)
         mount(0, kFlush[i], 0, MS_REMOUNT | MS_RDONLY, 0);   /* best-effort; EBUSY is survivable */

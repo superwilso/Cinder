@@ -3871,4 +3871,94 @@ mod tests {
         a.press(Button::Select);
         assert_eq!(a.sound_flags() & (1 << 5), 1 << 5);
     }
+
+    // ── Power button hold -> Power menu ───────────────────────────────────────────────────────
+
+    /// Holding Power opens the menu, and each row emits its own action. The whole gesture exists
+    /// because acting on the PRESS meant a hold could only ever blank the screen.
+    #[test]
+    fn holding_power_opens_a_menu_whose_rows_act() {
+        use crate::confirm::{hit, Ask, Hit};
+        for (want, act) in [(Hit::PowerOff, Action::PowerOff), (Hit::Restart, Action::Restart)] {
+            let mut a = unlocked();
+            assert!(a.power_held(), "the hold should open the menu");
+            assert!(a.modal_open());
+            // Find a pixel that really is on the row we mean, then tap exactly there.
+            let (x, y) = (0..crate::canvas::H as i32)
+                .find_map(|y| (hit(Ask::PowerMenu, 240, y) == want).then_some((240, y)))
+                .expect("row has no tappable pixel");
+            assert_eq!(a.tap(x, y), vec![act]);
+            assert!(!a.modal_open(), "answering must close the modal");
+        }
+    }
+
+    /// Cancel — and the dimmed backdrop — must do nothing at all. A power menu that can be
+    /// dismissed into a power-off is the one failure this whole widget exists to prevent.
+    #[test]
+    fn cancelling_the_power_menu_does_nothing() {
+        use crate::confirm::{hit, Ask, Hit};
+        let cancel_y = (0..crate::canvas::H as i32)
+            .find(|y| hit(Ask::PowerMenu, 240, *y) == Hit::Cancel && *y > 400)
+            .expect("no Cancel row");
+        for (x, y) in [(240, cancel_y), (5, 5), (240, 60)] {
+            let mut a = unlocked();
+            assert!(a.power_held());
+            assert!(a.tap(x, y).is_empty(), "({x},{y}) must not act");
+            assert!(!a.modal_open(), "the tap must still dismiss");
+        }
+    }
+
+    /// Hold engaged = the device is in a pocket. Nothing may open a power menu in there, and a
+    /// refused hold must not leave a modal behind.
+    #[test]
+    fn a_locked_device_refuses_the_power_menu() {
+        let mut a = unlocked();
+        a.set_hold(true);
+        assert!(!a.power_held());
+        assert!(!a.modal_open());
+    }
+
+    /// A second hold must not stack or silently replace the question already on screen.
+    #[test]
+    fn a_second_hold_does_not_restack_the_menu() {
+        let mut a = unlocked();
+        assert!(a.power_held());
+        assert!(!a.power_held(), "the menu is already up");
+        assert!(a.modal_open());
+    }
+
+    /// Back is the second escape from a modal, and every other button is swallowed — a transport
+    /// press must not reach the music underneath a "Power off?" prompt.
+    #[test]
+    fn back_dismisses_a_modal_and_other_buttons_are_swallowed() {
+        let mut a = unlocked();
+        assert!(a.power_held());
+        for b in [Button::Play, Button::Next, Button::Prev, Button::Select, Button::Up] {
+            assert!(a.press(b).is_empty(), "{b:?} leaked through the modal");
+            assert!(a.modal_open(), "{b:?} should not have closed it");
+        }
+        assert!(a.press(Button::Back).is_empty());
+        assert!(!a.modal_open(), "Back must dismiss");
+    }
+
+    /// The Settings rows still raise their own two-button confirms — the menu is an addition, not
+    /// a replacement, and each card must answer for its own question.
+    #[test]
+    fn settings_rows_still_confirm_their_own_action() {
+        use crate::confirm::{hit, Ask, Hit};
+        for (row, ask, act) in [
+            (crate::settings::ROW_RESTART, Ask::Restart, Action::Restart),
+            (crate::settings::ROW_POWER_OFF, Ask::PowerOff, Action::PowerOff),
+        ] {
+            let mut a = unlocked();
+            a.go(Screen::Settings);
+            a.settings_sel = row;
+            assert!(a.press(Button::Select).is_empty(), "the row itself must not act");
+            assert!(a.modal_open());
+            let (x, y) = (0..crate::canvas::H as i32)
+                .find_map(|y| (hit(ask, 240 + 120, y) == Hit::Confirm).then_some((360, y)))
+                .expect("no confirm pixel");
+            assert_eq!(a.tap(x, y), vec![act]);
+        }
+    }
 }

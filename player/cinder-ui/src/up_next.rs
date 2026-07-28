@@ -3,7 +3,6 @@
 //! tracks that follow. Windowed like the library lists so long albums scroll. When nothing is
 //! playing / the track isn't in the library, a clean empty state is shown (no fake data).
 
-use crate::art;
 use crate::canvas::W;
 use crate::model::SongRow;
 use crate::text::{self, Family, FontSet, Weight};

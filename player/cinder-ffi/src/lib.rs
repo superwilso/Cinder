@@ -2865,9 +2865,6 @@ mod tests {
         );
     }
 
-    /// Every shuffle scope resolves to a non-empty queue drawn only from real tracks, and none of
-    /// them leak the non-audio rows (folder / cover image) the library filters out.
-    #[test]
     /// Browsing groups by ALBUM ARTIST. The fixture's second track has a different TRACK artist
     /// (a guest) but the same album artist — exactly the shape that shattered compilations on the
     /// real device, where 24 albums spanned several track artists and one DJ mix spanned 26,
@@ -2908,6 +2905,9 @@ mod tests {
         assert_eq!(guest.artist, "Cold Stone & Sea", "song rows must show the track artist");
     }
 
+    /// Every shuffle scope resolves to a non-empty queue drawn only from real tracks, and none of
+    /// them leak the non-audio rows (folder / cover image) the library filters out.
+    #[test]
     fn shuffle_scopes_resolve_to_real_tracks() {
         use cinder_ui::nav::ShuffleScope as S;
         let db = fixture_db();
@@ -2940,8 +2940,6 @@ mod tests {
         }
     }
 
-    /// No DB → no action (rather than an empty queue).
-    #[test]
     /// The toggle has to reach the queue. It used to light an icon and change nothing: with shuffle
     /// showing ON, tapping a track played its album in strict order.
     #[test]
@@ -2984,6 +2982,8 @@ mod tests {
         assert_eq!(apply_shuffle(true, two.clone(), 9), (two, 9));
     }
 
+    /// No DB → no action (rather than an empty queue).
+    #[test]
     fn shuffle_without_db_is_ignored() {
         assert_eq!(shuffle_uris(None, cinder_ui::nav::ShuffleScope::AllSongs), None);
     }

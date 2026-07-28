@@ -87,8 +87,17 @@ int  cinder_audio_reissue_sequence(int dup_after_current);
  * is DEVICE-UNVERIFIED. There is no known repeat-ALL primitive — see ROADMAP. */
 int  cinder_audio_set_repeat_one(int on);
 
-/* Seek to an absolute position from the start of the track, in milliseconds. */
+/* Seek to an absolute position from the start of the track, in milliseconds.
+ * Returns 0 = SENT, -1 = no controller. NOT 0 = "worked": PlayController::SeekTime is void
+ * (RE disasm @0x13200 discards the response slot), so a rejected seek is indistinguishable from
+ * an accepted one here. Use the dev probe below to find out where it actually landed. */
 int  cinder_audio_seek_ms(int ms);
+
+/* Same, with media_origin_t selectable. Those enum values are UNVERIFIED (Begin=0/Current=1 is an
+ * RE guess) and a wrong origin looks exactly like the 2026-07-28 bug — the progress bar follows
+ * the finger, the audio does not follow the bar. Driven from the dev-channel
+ * `echo "<origin> <ms>" > /tmp/cinder_seek.req` probe, which logs the resulting position. */
+int  cinder_audio_seek_ms_origin(int origin, int ms);
 
 /* Play a track list: hands PlayerService a NodeTrackSequence built from `count` absolute file
  * paths (play order), starting playback at index `start`. This is the play-a-selected-track/

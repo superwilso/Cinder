@@ -1,152 +1,183 @@
 # Next flash — run sheet
 
-Built **2026-07-28** from `HEAD`. Everything below is staged and packed:
-`cinder-home/dist/dev/` and `cinder-home/dist/stable/`.
+Built **2026-07-28** from `HEAD`. Staged in `cinder-home/dist/dev/` and `cinder-home/dist/stable/`.
 
-This is the first hardware run in **35 commits**. Several are on the boot path, so the order below
-is a safety gradient, not a preference — each step can only fail in ways the previous step has
-already ruled out.
-
----
-
-## Before you plug anything in
-
-**Confirm you have a wbrt backup of THIS unit.** It is the only thing that recovers a brick, it is
-device-specific, and the 07-26 brick was recovered with one.
+This build answers four things reported from the last hardware session: Power off did nothing but
+sleep, Restart froze the device, drag-to-seek moved the bar but not the audio, and normal touch felt
+clunky. Three of the four have a root cause and a fix. The fourth (seek) has a probe that settles it.
 
 ---
 
-## Step 1 — LDAC, under stock (no boot risk at all)
+## What changed and why
 
-Do this **first**, before flashing anything. It runs under Sony's own firmware, needs no Cinder
-install, and cannot affect the boot path. It is also **goal #3 — the reason the project exists —
-and it has never been run end to end.**
+### 1. Power off / Restart — root cause found, mechanism replaced
 
-Follow `ldac-bridge/TEST.md`. Its two unknowns each have a documented three-outcome table:
-does `SetCurrentSource(true)` open the server socket, and is the USB-DAC capture `-EBUSY`.
+Sony's own route cannot work while Cinder is the Home app, and the enum guess was never the problem.
+`libpstcore.so` shows shutdown is a **two-phase barrier across every registered service**:
 
-If you only get time for one thing this session, make it this one.
-
----
-
-## Step 2 — Probe (still no boot risk)
-
-`cinder-probe` has no easel lifecycle, so it cannot touch the bad-boot counter. Push it and run it
-over adb. This de-risks the whole unverified batch before any of it can affect a boot.
-
-**`/tmp`, NOT `/data`.** `/data` and `/contents` are both mounted **noexec** on this device, so a
-binary pushed there fails with a bare `permission denied` that looks like a mode problem and is not.
-`/tmp` is the only writable exec-able mount. (The device's toolbox `chmod` also needs an octal mode,
-not `+x`.)
-
-Note adb only exists on the **dev** channel — cinder-home starts `adbd` from `deferred_up`. There is
-no adb under stock, so probe runs need Cinder installed and booted.
-
-```sh
-adb push cinder-home/dist/dev/cinder-probe /tmp/cinder-probe
-adb shell 'chmod 755 /tmp/cinder-probe && \
-  LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib \
-  /tmp/cinder-probe --analyzer'
+```
+OnPreShutdown -> "All services preshutdowned!" -> OnShutdown -> "All services shutdowned!" -> android_reboot
 ```
 
-Three runs matter, in this order:
+`libPowerService.so` agrees: *"Power state transition is stopping! Check all services and reboot the
+system..."*. Cinder-home replaced the Qt Home app but does not speak that protocol, so its phase is
+never acknowledged, the barrier never clears, and `Reboot()` hangs **holding the UI thread** — the
+freeze. `SetStatus(PowerOff)` came back as a sleep for the same reason.
 
-| Run | Why it matters |
+Both now go through **`cinder-power`**, a third setuid-root helper (`reboot(2)`), alongside
+`cinder-umount` and `cinder-gpunode`. `reboot(2)` needs `CAP_SYS_BOOT` and appmgr launches
+cinder-home capless — the same wall that made `cinder-umount` necessary, same solution.
+
+Already verified on device (no reboot needed to test these):
+
+| Check | Result |
 |---|---|
-| `--analyzer` | **Never run once.** Until 07-28 Cinder never called `SetPassband`, and the service reports nothing until told which bands to analyse — the likely reason the visualiser has never produced a frame. If this prints "frames flowed", the visualiser works. If it still prints nothing, there is a second cause and the visualiser pages are dead. |
-| `--pump` **with music playing** | Re-confirms playback, and this is the run that can finally capture a **PlayStatus dump with audio actually running**. Every previous dump was all zeros because nothing was playing, which is why the byte offsets are still unmapped. |
-| `--discover` | Refreshes the device dump. Cheap, and it is what every future offline decision is made against. |
+| runs on-device, correct ABI | ✅ |
+| no argv → refuses | ✅ rc 2 |
+| bad verb (`banana`) → refuses | ✅ rc 2 |
+| non-root (`setuidgid 1000`) → refuses **before touching mounts** | ✅ rc 3 |
 
-Note the raw band values `--analyzer` prints. `spectrum::from_bands` auto-detects dBFS vs linear, so
-most encodings work as-is, but a range far outside 40k–millions linear or 0..−60 dB is worth
-recalibrating against.
+The euid check is not decoration: without it, a lost setuid bit would remount `/contents` and
+`/data` read-only and then fail to reboot, leaving a running system that cannot write its own log.
 
----
+**Untested branch: `reboot(2)` itself.** That is what this flash is for.
 
-## Step 3 — Flash `dist/dev`, cable OUT
+### 2. Power button hold → power menu (the Sony gesture)
 
-Run from `/home/sony/sony`, Walkman plugged in and in MSC mode:
+Power used to act on the **press** (screen toggle), so holding it could only ever blank the screen —
+past about eight seconds the PMIC's own forced reset took over, which is hardware and nothing to do
+with Cinder. Now the press only starts a clock:
+
+* held ≥ **1 s** → the Power menu opens (Power off / Restart / Cancel), and the release does nothing
+* released before that → the screen toggle, exactly as before
+
+**One assumption, and it is self-defending.** Everything else in the input loop ignores releases, so
+nobody has ever checked whether `mtk-kpd` reports a `KEY_POWER` release. If it does not, deferring
+the toggle would make a short press do *nothing* — a core function silently dead. So the toggle is
+only deferred **once a release has actually been observed**; until then Power behaves exactly as it
+did before and the hold menu stays off. The dev log records both edges:
 
 ```sh
-tools/flash.sh --push cinder-home/dist/dev/cinder-home        # the player
-tools/flash.sh --push cinder-home/dist/dev/cinder-umount      # setuid helper: MSC unmount
-tools/flash.sh cinder-home/dist/dev/cinder_home_install.upg   # install — repoints the Home app
+adb shell 'grep POWER /contents/cinderhome.log'      # "input: POWER release after N ms"
 ```
 
-The device reboots into Sony's updater, runs the payload, and reboots.
-**Then unplug the cable before it boots into Cinder.**
+If that line never appears, this unit does not report the release, Power still works, and the hold
+gesture needs a different trigger.
 
-Useful afterwards:
+### 3. Touch latency — input now runs before the paint
+
+`input_pump()` ran **after** `cinder_render_tick()` in the frame loop. So a tap read at the end of
+frame N could only reach the glass in frame N+1, and a drag always painted the finger's *previous*
+position. A scrolling frame measures ~31 ms on device, so that was ~31 ms of avoidable lag on
+everything you touch — which is why Settings felt clunky despite having no album art to blame.
+
+Input is now read at the top of the loop, so the frame about to be painted already reflects the
+finger. Gated on `g_deferred_done` so nothing runs earlier in the boot than it used to.
+
+### 4. Drag-to-seek — one unverified value, and a probe for it
+
+Two findings. First, `PlayController::SeekTime` is **void**, not `int` (disasm @0x13200 packs
+`{session, origin, ms}`, calls proxy vtable+0x48, and discards the response — exactly like
+`NextTrack`). The shell was reading a leftover register and logging "seek REJECTED" off it, which
+was noise: an accepted seek and a rejected one are indistinguishable from the caller.
+
+That leaves exactly one unverified value in the path — `media_origin_t`. `Begin = 0, Current = 1` is
+an RE guess the header itself flags as *"calibrate exact values on device"*, and a wrong origin
+looks precisely like the reported bug: the bar follows the finger, the audio does not follow the bar.
+
+So: **step 2 below settles it in two runs.**
+
+---
+
+## Step 1 — Flash `dist/dev`, cable OUT
 
 ```sh
-tools/flash.sh --log                    # the install log
-tools/flash.sh --cat cinderhome.log     # this boot
-tools/flash.sh --cat cinderhome.log.1   # the PREVIOUS boot — where a crash is recorded
+tools/flash.sh --push cinder-home/dist/dev/cinder-home
+tools/flash.sh --push cinder-home/dist/dev/cinder-umount
+tools/flash.sh --push cinder-home/dist/dev/cinder-power      # NEW — Power off / Restart need this
+tools/flash.sh cinder-home/dist/dev/cinder_home_install.upg
 ```
 
-`cinder-gpunode` is **dev-only now** and you only need it if you intend to re-test the GPU path —
-which measures 4.7× slower than software, so there is no reason to unless you are experimenting.
+**Unplug the cable before it boots into Cinder** (a cable at boot is rung 0 of the escape ladder, so
+booting with it out is what actually tests the app).
 
-**A cable connected at boot is itself the escape to stock.** That is rung 0 of the ladder and it
-depends on nothing, so booting with it out is what actually tests the app.
+Confirm the helper landed, mode **4755**, owner root:
 
-### What to check on the first boot, in order
-1. **It paints.** If the panel stays on the boot animation, that is the 07-26 failure mode — pull
-   power and boot with the cable in.
-2. **Library loads** and the counter clears (~8 s after first paint).
-3. **Tap a track.** Play-by-index has never been confirmed on hardware.
-4. **Swipe the artwork** left/right — the pager is new. Then swipe *below* it: that should still
-   skip tracks.
-5. **Shuffle and repeat** — both new this session, and both worth pressing early (see below).
-6. **Settings ▸ Accent** — tap a swatch, confirm the colour it draws is the one you touched.
-7. **Vol±** audibly changes output.
+```sh
+adb shell 'ls -l /system/vendor/unknown321/bin/cinder-power'
+tools/flash.sh --log | grep cinder-power
+```
+
+If the mode is not `4755` the euid guard will refuse and Power off will log a clear failure instead
+of half-working.
+
+## Step 2 — Settle the seek origin (needs music playing)
+
+Start a track, let it run ~10 s, then:
+
+```sh
+adb shell 'echo "0 60000" > /tmp/cinder_seek.req'   # origin 0 -> 60 s
+sleep 3; adb shell 'grep "seek probe" /contents/cinderhome.log | tail -1'
+
+adb shell 'echo "1 60000" > /tmp/cinder_seek.req'   # origin 1 -> 60 s
+sleep 3; adb shell 'grep "seek probe" /contents/cinderhome.log | tail -1'
+```
+
+Each run prints the position before and 1.2 s after, and says `LANDED` or `MISSED`. Whichever origin
+lands is the right one — it goes into `cinder_audio_seek_ms` as a one-line change.
+
+If **both** miss, ms is not the unit, and the `before/after` numbers say what the unit actually is.
+
+## Step 3 — The four reported bugs, in order
+
+| # | Test | Expected | If it fails |
+|---|---|---|---|
+| 1 | **Hold Power ~1 s** | Power menu appears | check the log for `POWER release`; absent = this unit reports no release |
+| 2 | Menu ▸ **Cancel** | dismisses, nothing happens | — |
+| 3 | Menu ▸ **Restart** | device actually restarts | the `cinder-power rc=` log line names the cause |
+| 4 | Menu ▸ **Power off** | device actually powers off | as above; hold Power to bring it back |
+| 5 | **Short-press Power** | screen toggles as before | this is the release path; a dead short-press means no release event |
+| 6 | **Scroll Settings** | noticeably tighter than last build | — |
+| 7 | **Drag the progress rail** | after step 2's fix, audio lands where you dropped it | step 2 already told you which origin |
+
+Settings ▸ Restart and Settings ▸ Power off still exist and still raise their own two-button
+confirms — the hold menu is an addition, not a replacement.
+
+## Step 4 — Flash `dist/stable` for daily use
+
+`cinder-power` ships on **both** channels (unlike `cinder-gpunode`): it backs a feature that is
+always on, and it widens nothing — two fixed verbs, no caller-supplied paths.
 
 ---
 
-## Step 4 — Soak it
+## Still open after this flash
 
-Nothing has ever run for more than a few minutes. Leave it playing for a few hours and check:
-memory growth, log growth within one boot, the art cache's first build across the library, and
-**boot time and battery against stock** — goal #1's entire claim, still unmeasured.
-
----
-
-## Step 5 — Flash `dist/stable` for daily use
-
-Lean, no adb, and no setuid GPU helper.
-
----
-
-## The specific things this build is asking you to settle
-
-Each is a single observation, and each has a written fallback if it fails.
-
-| Assumption | How it shows up | If wrong |
-|---|---|---|
-| `SetPassband` was the missing piece | `--analyzer` prints frames | visualiser pages stay empty; second cause to find |
-| `OneTrackMode::On == 1` | repeat-one actually repeats the track | flip the enum value; one line |
-| Setting repeat **live** on an in-use sequence is safe | toggling repeat mid-track does not glitch or stop playback | drop the live call, let the sticky flag apply from the next track; one line |
-| `media_origin_t::Begin == 0` | drag-to-seek lands where you dropped it | try the other origin values |
-| `duration_raw` is milliseconds | the progress bar's scale is right | the `1ccb7bc` diagnostic prints the answer on the first boot |
-| The idle screen-off wakes | blank it, wake by touch **and** by Power | a failed wake looks exactly like a dead device — Power is the escape |
-| The brightness node write is right | Settings ▸ Brightness moves the panel and survives a reboot | `cinder_backlight.conf` `day=` pins it (and, since 07-28, actually does) |
+| Thing | State |
+|---|---|
+| **LDAC** | `ldac-bridge` builds, is **not installed**, `TEST.md` never run. 0% validated. Goal #3. |
+| **Bluetooth** | Deferred by request. Needs the `BtTransmitterService` shim, which also unblocks route-aware volume and FM→BT. |
+| **Album-art decode latency** | ~365 ms inline on the render thread at every track change. Needs moving onto the background decoder with the gradient shown until it lands. The biggest remaining win. |
+| **Drag-and-drop queue reorder** | `queue_move` exists; the gesture does not. |
+| **"Clear queue or keep playing later"** | The modal is now three-way capable; the prompt and its wiring are not built. |
+| `OneTrackMode::On == 1` | Still a guess. Repeat-one either repeats or it does not. |
 
 ---
 
 ## If it goes wrong
 
-The escape ladder, weakest dependency first — each rung needs strictly less than the one above:
+Escape ladder, weakest dependency first — each rung needs strictly less than the one above:
 
 0. **Cable in at boot** → stock. Depends on nothing.
-1. **Settings ▸ Boot to stock** → one-shot, no cable needed at all. Two taps.
+1. **Settings ▸ Boot to stock** → one-shot, no cable needed.
 2. **`/contents/cinderhome_off`** over USB-MSC from a PC.
 3. **Bad-boot counter** — four failed boots auto-revert.
 4. **wbrt restore** — the backstop.
 
-**A reboot loop is most likely a Rust panic.** As of 07-28 the log says which screen it happened on:
-grep `cinderhome.log` (and `cinderhome.log.1`, which holds the *previous* boot — the one that
-crashed) for `PANIC`.
+A reboot loop is most likely a Rust panic; the log names the screen it happened on:
 
 ```sh
 adb shell 'cat /contents/cinderhome.log.1' | grep -A 4 PANIC
 ```
+
+**`/tmp`, not `/data`,** for anything you push and execute — `/data` and `/contents` are mounted
+`noexec` and fail with a bare `permission denied` that looks like a mode problem and is not.

@@ -1755,9 +1755,14 @@ static void touch_release() {
         // Drag-to-seek ends: ask cinder-ffi where the finger left the rail and seek there.
         int ms = cinder_scrub_end();
         if (ms >= 0) {
-            std::fprintf(stderr, "[cinder-home] seek to %d ms\n", ms);
+            // -1 means "no controller"; 0 only means the request was SENT. SeekTime is void, so
+            // there is no acceptance to report — the old "seek REJECTED" line here was reading a
+            // leftover register and saying something it could not know. Where the seek actually
+            // landed is answered by the /tmp/cinder_seek.req dev probe, not from this call.
             int rc = cinder_audio_seek_ms(ms);
-            if (rc != 0) clog_("touch: seek REJECTED by PlayerService");
+            char m[80];
+            std::snprintf(m, sizeof m, "touch: seek -> %d ms (sent=%s)", ms, rc == 0 ? "yes" : "NO CONTROLLER");
+            clog_(m);
         }
     } else if (g_touch_down && g_drag_active) {
         // Live drag ends: hand the measured velocity to the fling (unless the finger held
@@ -1881,12 +1886,22 @@ void vol_repeat_tick() {
 // The menu therefore has to open on a TIMER rather than on an event: mtk-kpd's key repeats are not
 // something to depend on for a safety-relevant gesture, so power_hold_tick() is called every frame
 // from the end of input_pump(), the same way the volume ramp is driven.
-static long g_power_down_ms = 0;     // when Power went down (0 = not down)
+// THE ONE ASSUMPTION HERE IS THAT KEY_POWER REPORTS ITS RELEASE. Everything else in this file
+// deliberately ignores releases ("releases never act"), and mtk-kpd has never been observed
+// reporting one because nothing ever looked. If it does not, deferring the screen toggle to the
+// release would make a short Power press do NOTHING — a core function, silently dead.
+//
+// So the toggle is only deferred once a release has actually been seen. Until then Power behaves
+// exactly as it did before (toggle on the press), and the hold menu is disabled. The first real
+// release flips this permanently, on the very first press of a boot, and the dev log records both
+// edges so the answer is in cinderhome.log rather than in anyone's assumption.
+static bool g_power_hold_ok = false;  // have we ever seen a KEY_POWER release on this unit?
+static long g_power_down_ms = 0;      // when Power went down (0 = not down)
 static bool g_power_consumed = false; // has this press already produced the menu?
 static const long POWER_HOLD_MS = 1000;
 
 void power_hold_tick() {
-    if (g_power_down_ms == 0 || g_power_consumed) return;
+    if (!g_power_hold_ok || g_power_down_ms == 0 || g_power_consumed) return;
     if (now_ms() - g_power_down_ms < POWER_HOLD_MS) return;
     g_power_consumed = true;   // set FIRST: whatever happens next, this press is spent
     if (cinder_power_held()) {
@@ -2045,8 +2060,22 @@ void input_pump() {
                 if (type == EV_KEY_ && val == 0 && code < keymap_size()
                         && g_keymap[code] == CINDER_BTN_POWER) {
                     bool was_down = g_power_down_ms != 0, spent = g_power_consumed;
+                    // Was the toggle ALREADY deferred to the release when this press went down?
+                    // On the very first Power press of a boot it was not — the press itself
+                    // toggled the screen (the fallback below), so toggling again here would undo
+                    // it and Power would appear dead exactly once per boot.
+                    bool deferred = g_power_hold_ok;
+                    g_power_hold_ok = true;   // this unit DOES report the release — see below
+#ifdef CINDER_DEV
+                    {
+                        char m[80];
+                        std::snprintf(m, sizeof m, "input: POWER release after %ld ms (spent=%d)",
+                                      was_down ? now_ms() - g_power_down_ms : -1L, (int)spent);
+                        clog_(m);
+                    }
+#endif
                     g_power_down_ms = 0; g_power_consumed = false;
-                    if (was_down && !spent) {
+                    if (deferred && was_down && !spent) {
                         int act = cinder_input(CINDER_BTN_POWER);   // -> CINDER_ACT_SLEEP
                         if (act != CINDER_ACT_NONE) carry_out(act);
                     }
@@ -2095,7 +2124,10 @@ void input_pump() {
                         g_power_down_ms = now_ms();
                         g_power_consumed = false;
                     }
-                    continue;
+                    // Until a release has been seen on this unit, fall through and toggle the
+                    // screen on the PRESS exactly as before — see g_power_hold_ok. This costs the
+                    // hold gesture on the first press of a boot and nothing else.
+                    if (g_power_hold_ok) continue;
                 }
                 int act = cinder_input(btn);
                 if (act != CINDER_ACT_NONE) carry_out(act);
@@ -2486,8 +2518,13 @@ void* render_driver(void*) {
                 ::unlink("/tmp/cinder_seek.req");
                 int c0 = -1, t0 = -1;
                 cinder_audio_position(&c0, &t0);
-                int rc = 0;
-                run_guarded("seek probe", 8, [&]() { rc = cinder_audio_seek_ms_origin(origin, (int)target); });
+                // run_guarded takes a plain function pointer (it must survive a longjmp out of a
+                // signal handler), so the probe's two inputs travel in statics rather than a
+                // capture. Single-threaded here — this block runs on the render thread only.
+                static int s_origin, s_ms, s_rc;
+                s_origin = origin; s_ms = (int)target; s_rc = -99;
+                run_guarded("seek probe", 8, []() { s_rc = cinder_audio_seek_ms_origin(s_origin, s_ms); });
+                int rc = s_rc;
                 usleep(1200000);
                 int c1 = -1, t1 = -1;
                 cinder_audio_position(&c1, &t1);
