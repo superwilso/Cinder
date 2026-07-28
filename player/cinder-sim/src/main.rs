@@ -367,8 +367,12 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                 .collect();
             up_next::render(c, theme, fonts, "Now Playing", &tracks, app.track, &app.lib)
         }
-        Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, 0, None, &app.lib),
-        Screen::Artist => library::artist(c, theme, fonts),
+        Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, 0, None, &app.lib, None),
+        Screen::Artist => {
+            let name = app.lib.artists.first().map(|a| a.name.as_str()).unwrap_or("");
+            let page = library::artist_page(&app.lib, name);
+            library::artist_view(c, theme, fonts, &app.lib, &page, 0, 0, None)
+        }
         Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0, 0),
         Screen::Sound => sound::render(c, theme, fonts, &Sound {
             dsee: app.dsee, vinyl: app.vinyl, vpt: VPTS[app.vpt], dcphase: DCS[app.dc],

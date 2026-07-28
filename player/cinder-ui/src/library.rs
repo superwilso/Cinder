@@ -4,7 +4,6 @@
 
 use crate::art;
 use crate::canvas::{H, W};
-use crate::data;
 use crate::icons;
 use crate::model::Library;
 use crate::text::{self, Family, FontSet, TextStyle, Weight};
@@ -43,6 +42,20 @@ const LIST_BOTTOM: i32 = H as i32 - crate::chrome::NP_BAR_H;
 /// cover occupies exactly the rect the gradient did). A thumbnail of the wrong size falls back
 /// rather than scaling: resampling here would run per row per frame, which is what the cache
 /// exists to avoid.
+/// The ONE thumbnail edge a list row may ask [`thumb`] for, and the one the shell's art cache
+/// stores (`cinder-ffi::art_cache::T48`, which static-asserts against this).
+///
+/// `thumb` falls back to the gradient when the cached image isn't exactly the requested size —
+/// correct, but SILENT. The Artists tab asked for 44/36/40 px, so it never matched the cache and
+/// drew procedural gradients forever: the covers were fetched, decoded, written to disk, loaded
+/// into memory, looked up by the right id, and then thrown away one branch before being drawn.
+/// It also cost 1315 us/frame against 224 for the Albums tab, because generating two gradients per
+/// row is far more expensive than blitting two cached images.
+pub const THUMB_PX: i32 = 48;
+
+/// The album drill-in's cover edge — the cache's other stored size.
+pub const COVER_PX: i32 = 96;
+
 pub(crate) fn thumb(
     c: &mut Canvas, t: &Theme, lib: &Library, album_id: i64, name: &str,
     x: i32, y: i32, size: i32, op: f32,
@@ -113,6 +126,93 @@ pub fn row_h(tab: Tab) -> i32 {
         Tab::Albums => ALBUM_ROW_H,
         Tab::Artists | Tab::Playlists => 70,
     }
+}
+
+// ── Swipe-to-queue: the row travels with the finger ───────────────────────────────────────────
+// The gesture already existed but acted only on release, so a flick either did nothing visible or
+// popped a toast out of nowhere. Spotify moves the whole bar under the finger and reveals the
+// action behind it, which makes the gesture self-teaching: you find it by half-doing it, and the
+// revealed panel says what letting go will do BEFORE you let go.
+
+/// A list row travelling under the finger. `y` is the SCREEN y the gesture started at — the
+/// renderer finds the row by containment, so this works on every list without knowing how that
+/// list is sorted, grouped or scrolled. `dx` is how far the row has moved: positive = rightward =
+/// "add to queue", negative = leftward = "play next", matching what release does.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SwipeRow {
+    pub y: i32,
+    pub dx: i32,
+}
+
+/// Travel at which release commits the queue action. Deliberately the same 60px the SHELL uses to
+/// classify a horizontal swipe (`main.cpp`: `adx >= 60`) — the row lighting up and the gesture
+/// firing have to be one event, or a row can look armed and then do nothing on release.
+pub const SWIPE_COMMIT_PX: i32 = 60;
+
+/// Hard limit on row travel. Past the commit point the row keeps moving so the gesture still feels
+/// live, but at 40% of finger speed: it resists, which reads as "this is as far as it goes".
+pub const SWIPE_MAX_PX: i32 = 150;
+
+/// Raw finger travel → the row's rubber-banded offset.
+pub fn swipe_offset(dx: i32) -> i32 {
+    let a = dx.abs();
+    let o = if a <= SWIPE_COMMIT_PX { a } else { SWIPE_COMMIT_PX + (a - SWIPE_COMMIT_PX) * 2 / 5 };
+    o.min(SWIPE_MAX_PX) * if dx < 0 { -1 } else { 1 }
+}
+
+/// True once the row has travelled far enough that releasing will queue the track.
+pub fn swipe_armed(dx: i32) -> bool {
+    dx.abs() >= SWIPE_COMMIT_PX
+}
+
+/// Paint the action panel revealed behind a swiped row, then translate the canvas so the caller's
+/// normal row drawing lands on top of it, offset. The caller MUST `clear_offset_x()` afterwards.
+///
+/// The panel spans the full row width so it shows on whichever side the row uncovered, and it goes
+/// accent-coloured only once the swipe is armed. That colour change is the whole point: it is the
+/// difference between "I am dragging something" and "letting go does this".
+fn swipe_reveal(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, rh: i32, dx: i32) {
+    let armed = swipe_armed(dx);
+    let (bg, ink) = if armed { (t.acc, t.acc_ink) } else { (t.panel, t.dim) };
+    fill_rect(c, 0, y, W as i32, rh, bg);
+    let cy = y + rh / 2;
+    let st = sty(Family::Mono, Weight::Bold, 13.0, ink, 0.12);
+    // The panel's contents are CENTRED IN THE STRIP THE ROW HAS UNCOVERED, not pinned to the
+    // screen edge: the row is drawn over the top of this, so anything placed past `|dx|` is simply
+    // covered up — an edge-pinned label reads as "QU" for most of the gesture. The word only
+    // appears once the strip is wide enough to hold it; below that the icon carries the meaning.
+    let a = dx.abs();
+    let label = if dx > 0 { "QUEUE" } else { "PLAY NEXT" };
+    let lw = text::measure(f, label, &st);
+    let icon_w = 18.0;
+    let gap = 8.0;
+    let with_label = a as f32 >= icon_w + gap + lw + 28.0;
+    let group = if with_label { icon_w + gap + lw } else { icon_w };
+    let left = (a as f32 - group) / 2.0;
+    let (ix, tx) = if dx > 0 {
+        (left + icon_w / 2.0, left + icon_w + gap)
+    } else {
+        // Leftward: the strip is at the RIGHT edge, so mirror the group into it.
+        let l = W as f32 - a as f32 + left;
+        (l + icon_w / 2.0, l + icon_w + gap)
+    };
+    if dx > 0 {
+        icons::queue(c, ix, cy as f32, icon_w, ink);
+    } else {
+        icons::next(c, ix, cy as f32, icon_w, ink);
+    }
+    if with_label {
+        text::draw(c, f, tx, (cy + 5) as f32, label, &st);
+    }
+    // The row carries no background of its own (the list fills `t.bg` once, up front), so without
+    // this the panel would read straight through the moving row instead of from beside it.
+    c.set_offset_x(dx);
+    fill_rect(c, 0, y, W as i32, rh, t.bg);
+}
+
+/// The swipe offset for the row occupying `y..y + rh`, if that is the row being swiped.
+fn swipe_for(swipe: Option<SwipeRow>, y: i32, rh: i32) -> Option<i32> {
+    swipe.filter(|s| (y..y + rh).contains(&s.y) && s.dx != 0).map(|s| s.dx)
 }
 
 // ── A–Z jump strip ────────────────────────────────────────────────────────────────────────────
@@ -348,6 +448,48 @@ pub fn az_has(
     az_scroll_for(tab, lib, letter, album_sort, album_expanded).is_some()
 }
 
+/// Index of a bucket letter in [`AZ_LETTERS`] ('#' first, then A–Z).
+fn az_index(b: u8) -> Option<usize> {
+    match b {
+        b'#' => Some(0),
+        b'A'..=b'Z' => Some((b - b'A') as usize + 1),
+        _ => None,
+    }
+}
+
+/// Which of the 27 rail letters have rows, in ONE pass over the library.
+///
+/// The rail used to answer this per letter, by asking `az_scroll_for` 27 times — so drawing it
+/// scanned the whole library 27 times EVERY FRAME. On the real library (3349 songs) that measured
+/// 1529 us/frame on the host, more than rendering the list it decorates, and on the Albums tab it
+/// also rebuilt the accordion layout 27 times per frame. It is a per-frame cost on every Library
+/// screen, which is most of what "the list feels heavy" was.
+///
+/// Must agree with `az_scroll_for` letter for letter — a bright letter that doesn't jump, or a
+/// faint one that does, is worse than either. `az_rail_agrees_with_the_jump` pins that.
+pub fn az_present(tab: Tab, lib: &Library, album_sort: usize) -> [bool; 27] {
+    let mut out = [false; 27];
+    let mut mark = |s: &str| {
+        if let Some(i) = az_index(az_bucket(s)) {
+            out[i] = true;
+        }
+    };
+    match tab {
+        Tab::Songs => lib.songs.iter().for_each(|r| mark(&r.title)),
+        Tab::Artists => lib.artists.iter().for_each(|r| mark(&r.name)),
+        Tab::Playlists => lib.playlists.iter().for_each(|r| mark(&r.name)),
+        // Grouped (sort 0) indexes by ARTIST — that's the visible ordering, and the only rows the
+        // jump can land on are the group headers. Every other album sort is by album name.
+        Tab::Albums if album_sort == 0 => lib.album_groups.iter().for_each(|g| mark(&g.artist)),
+        Tab::Albums => lib
+            .album_groups
+            .iter()
+            .flat_map(|g| g.albums.iter())
+            .for_each(|a| mark(&a.name)),
+    }
+    out
+}
+
 /// Largest useful `scroll_px` for a tab (0 when everything fits).
 pub fn max_scroll_px(tab: Tab, lib: &Library, album_sort: usize, album_expanded: Option<usize>) -> i32 {
     (content_h(tab, lib, album_sort, album_expanded) - (LIST_BOTTOM - list_top(tab))).max(0)
@@ -522,13 +664,38 @@ fn tiny_bars(c: &mut Canvas, x: i32, cy: i32, acc: Rgb888) {
 }
 
 /// Overlapping album-art stack (artist identity): one or two swatches.
-fn art_stack(c: &mut Canvas, t: &Theme, x: i32, cy: i32, arts: &[&str]) {
+/// The Artists-tab cover stack: up to two album covers, back one offset behind the front.
+///
+/// Takes the LIBRARY so it can draw the real decoded covers. It used to take only the gradient
+/// seeds, which is why Artists looked wrong beside Albums — the covers were sitting in
+/// `lib.thumbs` the whole time with no id here to fetch them by. `thumb` falls back to the
+/// gradient per-cover, so a half-built art cache degrades one square at a time rather than
+/// dropping the whole stack.
+/// How far the back cover of the stack peeks out from behind the front one.
+const ART_STACK_OFFSET: i32 = 18;
+
+/// Total width of the Artists-tab cover stack, so the row's text can be placed off it rather than
+/// at a literal that stops clearing it the moment the squares change size.
+pub const ART_STACK_W: i32 = THUMB_PX + ART_STACK_OFFSET;
+
+/// "1 album" / "2 albums" — a count and a noun that disagree reads as a bug in everything near it.
+fn plural(n: u32, noun: &str) -> String {
+    if n == 1 { format!("{n} {noun}") } else { format!("{n} {noun}s") }
+}
+
+fn art_stack(c: &mut Canvas, t: &Theme, lib: &Library, x: i32, cy: i32, arts: &[&str], ids: &[i64]) {
     let op = artdim(t);
+    let id_at = |i: usize| ids.get(i).copied().unwrap_or(i64::MIN);
+    // Both squares at THUMB_PX — see the constant. The stack reads as two covers through the
+    // OFFSET and the dimming of the one behind, not through drawing them at different sizes,
+    // because any size but this one silently loses the real artwork.
+    let s = THUMB_PX;
+    let top = cy - s / 2;
     if arts.len() == 1 {
-        art::block(c, t, x, cy - 22, 44, 44, arts[0], op);
+        thumb(c, t, lib, id_at(0), arts[0], x, top, s, op);
     } else {
-        art::block(c, t, x + 18, cy - 24, 36, 36, arts[1], 0.55 * op);
-        art::block(c, t, x, cy - 4, 40, 40, arts[0], op);
+        thumb(c, t, lib, id_at(1), arts[1], x + ART_STACK_OFFSET, top - 4, s, 0.55 * op);
+        thumb(c, t, lib, id_at(0), arts[0], x, top + 4, s, op);
     }
 }
 
@@ -591,16 +758,15 @@ pub fn az_render(
     tab: Tab,
     lib: &Library,
     album_sort: usize,
-    album_expanded: Option<usize>,
 ) {
     let top = list_top(tab);
     let h = LIST_BOTTOM - top;
     let n = AZ_LETTERS.len() as i32;
     let x = W as i32 - AZ_W / 2;
+    let present = az_present(tab, lib, album_sort);
     for (i, &ch) in AZ_LETTERS.iter().enumerate() {
         let cy = top + (i as i32 * h) / n + h / (2 * n);
-        let has = az_has(tab, lib, ch, album_sort, album_expanded);
-        let col = if has { t.dim } else { t.faint };
+        let col = if present[i] { t.dim } else { t.faint };
         let label = (ch as char).to_string();
         let st = sty(Family::Mono, Weight::Regular, 11.0, col, 0.0);
         let w = text::measure(f, &label, &st) as i32;
@@ -619,6 +785,7 @@ pub fn render(
     album_sort: usize,
     album_expanded: Option<usize>,
     lib: &Library,
+    swipe: Option<SwipeRow>,
 ) {
     let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib, album_sort, album_expanded));
     c.fill(t.bg);
@@ -649,10 +816,14 @@ pub fn render(
                 let sgn = &lib.songs[i];
                 let cy = y + rh / 2;
                 let now = rank == current;
+                let sw = swipe_for(swipe, y, rh);
+                if let Some(dx) = sw {
+                    swipe_reveal(c, t, f, y, rh, dx);
+                }
                 if now {
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
                 }
-                thumb(c, t, lib, sgn.album_id, &sgn.art, 22, y + (rh - 48) / 2, 48, artdim(t));
+                thumb(c, t, lib, sgn.album_id, &sgn.art, 22, y + (rh - THUMB_PX) / 2, THUMB_PX, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
                 let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
                 text::draw(c, f, 78.0, (cy - 2) as f32, &crate::widgets::fit(f, &sgn.title, &tst, 300.0), &tst);
@@ -663,6 +834,9 @@ pub fn render(
                 }
                 right(c, f, 452.0, (cy + 4) as f32, &sgn.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
                 hline(c, y + rh, t.line);
+                if sw.is_some() {
+                    c.clear_offset_x();
+                }
                 y += rh;
             }
             c.clear_clip();
@@ -704,7 +878,7 @@ pub fn render(
                         if now {
                             fill_rect(c, 0, y, W as i32, ALBUM_ROW_H, t.row_sel);
                         }
-                        thumb(c, t, lib, al.album_id, &al.art, 22, y + (ALBUM_ROW_H - 48) / 2, 48, artdim(t));
+                        thumb(c, t, lib, al.album_id, &al.art, 22, y + (ALBUM_ROW_H - THUMB_PX) / 2, THUMB_PX, artdim(t));
                         let tcol = if now { t.acc } else { t.ink };
                         text::draw(c, f, 80.0, (cy - 2) as f32, &al.name,
                             &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
@@ -724,6 +898,10 @@ pub fn render(
                         let al = flat[fi];
                         if let Some(sgn) = al.track_list.get(track) {
                             let cy = y + ALBUM_CHILD_H / 2;
+                            let sw = swipe_for(swipe, y, ALBUM_CHILD_H);
+                            if let Some(dx) = sw {
+                                swipe_reveal(c, t, f, y, ALBUM_CHILD_H, dx);
+                            }
                             // subtle inset band so tracks read as children of the album above
                             fill_rect(c, 0, y, W as i32, ALBUM_CHILD_H, t.panel);
                             let num = format!("{}", track + 1);
@@ -735,6 +913,9 @@ pub fn render(
                             right(c, f, 452.0, (cy + 4) as f32, &sgn.dur,
                                 &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0));
                             hline(c, y + ALBUM_CHILD_H, t.line);
+                            if sw.is_some() {
+                                c.clear_offset_x();
+                            }
                         }
                     }
                 }
@@ -759,11 +940,15 @@ pub fn render(
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
                 }
                 let arts: Vec<&str> = ar.arts.iter().map(|s| s.as_str()).collect();
-                art_stack(c, t, 22, cy, &arts);
+                art_stack(c, t, lib, 22, cy, &arts, &ar.album_ids);
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 90.0, (cy - 2) as f32, &ar.name, &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
-                let sub = format!("{} albums · {} tracks", ar.albums, ar.tracks);
-                text::draw(c, f, 90.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
+                // Text clears the cover stack: it is 22 + STACK_OFFSET + THUMB_PX wide.
+                let tx = (22 + ART_STACK_W + 10) as f32;
+                let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
+                text::draw(c, f, tx, (cy - 2) as f32,
+                    &crate::widgets::fit(f, &ar.name, &tst, 402.0 - tx), &tst);
+                let sub = format!("{} · {} tracks", plural(ar.albums, "album"), ar.tracks);
+                text::draw(c, f, tx, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
                 stroke_rect(c, 414, cy - 20, 40, 40, t.line, 1);
                 icons::shuffle(c, 434.0, cy as f32, 15.0, t.dim);
                 hline(c, y + rh, t.line);
@@ -816,6 +1001,7 @@ pub fn album_view(
     track_idx: usize,
     scroll_px: i32,
     cover: Option<&crate::art::Image>,
+    swipe: Option<SwipeRow>,
 ) {
     let scroll_px = scroll_px.clamp(0, album_max_scroll_px(album));
     c.fill(t.bg);
@@ -824,8 +1010,9 @@ pub fn album_view(
     text::draw(c, f, 50.0, 114.0, "ALBUM", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
     // art block + title/artist/meta
     match cover {
-        Some(img) if img.w == 96 && img.h == 96 => art::draw_image(c, t, 22, 130, img, artdim(t)),
-        _ => art::block(c, t, 22, 130, 96, 96, &album.art, artdim(t)),
+        Some(img) if img.w == COVER_PX as usize && img.h == COVER_PX as usize =>
+            art::draw_image(c, t, 22, 130, img, artdim(t)),
+        _ => art::block(c, t, 22, 130, COVER_PX, COVER_PX, &album.art, artdim(t)),
     }
     let title = crate::widgets::fit(
         f, &album.name, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01), (W as f32) - 150.0,
@@ -852,6 +1039,10 @@ pub fn album_view(
         let sgn = &album.track_list[idx];
         let now = idx == track_idx;
         let cy = y + rh / 2;
+        let sw = swipe_for(swipe, y, rh);
+        if let Some(dx) = sw {
+            swipe_reveal(c, t, f, y, rh, dx);
+        }
         if now {
             fill_rect(c, 0, y, W as i32, rh, t.row_sel);
         }
@@ -867,56 +1058,271 @@ pub fn album_view(
         }
         right(c, f, 452.0, (cy + 4) as f32, &sgn.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
         hline(c, y + rh, t.line);
+        if sw.is_some() {
+            c.clear_offset_x();
+        }
         y += rh;
     }
     c.clear_clip();
     scrollbar(c, t, top, scroll_px, total as i32 * rh);
 }
 
-/// Artist drill-in page (`CArtist`).
-pub fn artist(c: &mut Canvas, t: &Theme, f: &FontSet) {
+// ── Artist drill-in ───────────────────────────────────────────────────────────────────────────
+// Every artist gets a real page: their albums (with the same decoded covers the Albums tab draws)
+// then every one of their tracks, over one scroll. This used to be a static mock wired to
+// `data::ARTIST_*` — three hard-coded albums and five hard-coded songs, the same ones whichever
+// artist you were looking at — and nothing pushed it, so it was only ever reachable from the host
+// preview.
+
+/// The "Shuffle artist" band sits under the name/stats block.
+pub const ARTIST_BAND_Y: i32 = 182;
+
+/// Top of the artist page's scrolling content — derived from the band, like `list_top`.
+pub fn artist_content_top() -> i32 {
+    let (_, by, _, bh) = shuffle_band_rect(ARTIST_BAND_Y);
+    by + bh + 8
+}
+
+/// True if `(x, y)` is inside the artist page's "Shuffle artist" band.
+pub fn hit_artist_shuffle_band(x: i32, y: i32) -> bool {
+    let (bx, by, bw, bh) = shuffle_band_rect(ARTIST_BAND_Y);
+    (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+}
+
+pub const ARTIST_SEC_H: i32 = 36; // "ALBUMS · n" / "SONGS · n" section header
+pub const ARTIST_ALBUM_RH: i32 = 68;
+pub const ARTIST_TRACK_RH: i32 = 62;
+
+/// One row of the artist page's scrolling content.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ArtistRowKind {
+    AlbumsSection,
+    /// Index into [`ArtistPage::albums`].
+    Album(usize),
+    SongsSection,
+    /// Index into [`ArtistPage::tracks`].
+    Song(usize),
+}
+
+impl ArtistRowKind {
+    fn h(self) -> i32 {
+        match self {
+            ArtistRowKind::AlbumsSection | ArtistRowKind::SongsSection => ARTIST_SEC_H,
+            ArtistRowKind::Album(_) => ARTIST_ALBUM_RH,
+            ArtistRowKind::Song(_) => ARTIST_TRACK_RH,
+        }
+    }
+}
+
+/// Everything one artist's page shows, resolved from the library once when the page opens.
+/// Borrows the library — this is a view, not a copy: an artist with 300 tracks would otherwise
+/// clone 300 rows on every frame.
+/// One track on an artist page, with the album it came from. The album name is carried separately
+/// rather than read off `SongRow::art`: that field is an ART SEED, which equals the album name on
+/// device but is a gradient key in the sample data — a subtitle that is right only on hardware is
+/// a subtitle nobody can check.
+pub struct ArtistTrack<'a> {
+    pub song: &'a crate::model::SongRow,
+    pub album: &'a str,
+}
+
+pub struct ArtistPage<'a> {
+    pub name: &'a str,
+    /// `(index into `Library::albums_flat()`, the album)` — the flat index is what the Album
+    /// drill-in screen takes, so tapping an album here opens the same page the Albums tab does.
+    pub albums: Vec<(usize, &'a crate::model::AlbumRow)>,
+    pub tracks: Vec<ArtistTrack<'a>>,
+    /// `(content-space y, row)` in draw order. ONE list, shared by the renderer and the hit test.
+    pub rows: Vec<(i32, ArtistRowKind)>,
+    pub content_h: i32,
+}
+
+/// Resolve an artist's page out of the library, by name.
+///
+/// Albums come from `album_groups`, which cinder-ffi groups by ALBUM ARTIST — the same key the
+/// Artists tab is built from, so the two always agree. Tracks are the albums' track lists in album
+/// order; if the artist has no albums at all (tracks with no album row behind them), it falls back
+/// to matching the Songs list on artist name, so a page is never empty when the tab said it has
+/// tracks.
+pub fn artist_page<'a>(lib: &'a Library, name: &'a str) -> ArtistPage<'a> {
+    let mut albums: Vec<(usize, &crate::model::AlbumRow)> = Vec::new();
+    let mut flat = 0usize;
+    for g in &lib.album_groups {
+        for al in &g.albums {
+            if g.artist == name {
+                albums.push((flat, al));
+            }
+            flat += 1;
+        }
+    }
+    let mut tracks: Vec<ArtistTrack> = albums
+        .iter()
+        .flat_map(|(_, al)| al.track_list.iter().map(|s| ArtistTrack { song: s, album: &al.name }))
+        .collect();
+    if tracks.is_empty() {
+        tracks = lib
+            .songs
+            .iter()
+            .filter(|s| s.artist == name)
+            .map(|s| ArtistTrack { song: s, album: "" })
+            .collect();
+    }
+
+    let mut rows: Vec<(i32, ArtistRowKind)> = Vec::new();
+    let mut y = 0;
+    if !albums.is_empty() {
+        rows.push((y, ArtistRowKind::AlbumsSection));
+        y += ARTIST_SEC_H;
+        for i in 0..albums.len() {
+            rows.push((y, ArtistRowKind::Album(i)));
+            y += ARTIST_ALBUM_RH;
+        }
+    }
+    if !tracks.is_empty() {
+        rows.push((y, ArtistRowKind::SongsSection));
+        y += ARTIST_SEC_H;
+        for i in 0..tracks.len() {
+            rows.push((y, ArtistRowKind::Song(i)));
+            y += ARTIST_TRACK_RH;
+        }
+    }
+    ArtistPage { name, albums, tracks, rows, content_h: y + 8 }
+}
+
+/// Visible height of the artist page's scrolling content.
+pub fn artist_view_h() -> i32 {
+    LIST_BOTTOM - artist_content_top()
+}
+
+/// Largest useful scroll offset for an artist page.
+pub fn artist_max_scroll_px(page: &ArtistPage) -> i32 {
+    (page.content_h - artist_view_h()).max(0)
+}
+
+/// What sits under a tap on the artist page's scrolling content.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ArtistHit {
+    /// Open this album's drill-in (index into `Library::albums_flat()`).
+    Album(usize),
+    /// Play this track (index into [`ArtistPage::tracks`]).
+    Track(usize),
+}
+
+/// Which artist-page row is under touch-`y`? Reads the SAME `page.rows` the renderer draws, so a
+/// tap cannot land on a row other than the one under the finger.
+pub fn artist_hit(page: &ArtistPage, scroll_px: i32, y: i32) -> Option<ArtistHit> {
+    let top = artist_content_top();
+    if y < top || y >= LIST_BOTTOM {
+        return None;
+    }
+    let cy = y - top + scroll_px.max(0);
+    page.rows.iter().find(|(vy, r)| (*vy..*vy + r.h()).contains(&cy)).and_then(|(_, r)| match *r {
+        ArtistRowKind::Album(i) => page.albums.get(i).map(|(flat, _)| ArtistHit::Album(*flat)),
+        ArtistRowKind::Song(i) => Some(ArtistHit::Track(i)),
+        _ => None,
+    })
+}
+
+/// Artist drill-in page: fixed header (name, stats, shuffle band), then a scrolling list of the
+/// artist's albums and all of their tracks.
+///
+/// The albums are LIST ROWS with 48px covers rather than a poster grid on purpose: the on-device
+/// art cache holds one pre-scaled size (48px, because decoding a 1425x1425 embedded JPEG costs
+/// 365 ms), so a grid of big tiles would be a grid of gradient fallbacks — exactly the thing that
+/// made the Artists tab look wrong in the first place.
+#[allow(clippy::too_many_arguments)]
+pub fn artist_view(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    lib: &Library,
+    page: &ArtistPage,
+    scroll_px: i32,
+    sel: usize,
+    swipe: Option<SwipeRow>,
+) {
+    let scroll_px = scroll_px.clamp(0, artist_max_scroll_px(page));
     c.fill(t.bg);
-    // back + ARTIST eyebrow
     icons::back(c, 30.0, 110.0, 20.0, t.dim);
     text::draw(c, f, 50.0, 114.0, "ARTIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
-    // name + stats
-    text::draw(c, f, 22.0, 150.0, data::ARTIST_NAME, &sty(Family::Sans, Weight::ExtraBold, 31.0, t.ink, -0.01));
-    text::draw(c, f, 22.0, 173.0, data::ARTIST_STATS, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
-    let y = shuffle_row(c, t, f, 180, "Shuffle artist", "ALL 34 TRACKS · RANDOM ORDER");
 
-    // ALBUMS · 3
-    text::draw(c, f, 22.0, (y + 28) as f32, "ALBUMS · 3", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
-    let ay = y + 40;
-    let cw = (W as i32 - 44 - 24) / 3; // 3 across with 12px gaps
-    for (i, al) in data::ARTIST_ALBUMS.iter().enumerate() {
-        let ax = 22 + i as i32 * (cw + 12);
-        art::block(c, t, ax, ay, cw, cw, al.art, artdim(t));
-        let nst = body_label(Family::Sans, Weight::SemiBold, 14.0, t.ink);
-        let name = crate::widgets::fit(f, al.n, &nst, cw as f32);
-        text::draw(c, f, ax as f32, (ay + cw + 16) as f32, &name, &nst);
-        text::draw(c, f, ax as f32, (ay + cw + 32) as f32, al.y, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.0));
-    }
+    let nst = sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
+    let name = crate::widgets::fit(f, page.name, &nst, W as f32 - 44.0);
+    text::draw(c, f, 22.0, 152.0, &name, &nst);
+    let stats = format!("{} ALBUMS · {} TRACKS", page.albums.len(), page.tracks.len());
+    text::draw(c, f, 22.0, 174.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
+    shuffle_row(c, t, f, ARTIST_BAND_Y, "Shuffle artist",
+        &format!("ALL {} TRACKS · RANDOM ORDER", page.tracks.len()));
 
-    // TOP SONGS
-    let mut sy = ay + cw + 48;
-    text::draw(c, f, 22.0, sy as f32, "TOP SONGS", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
-    sy += 12;
-    let rh = 54;
-    for (i, sgn) in data::ARTIST_TOP.iter().enumerate() {
-        let cy = sy + rh / 2;
-        let now = i == 0;
-        let col = if now { t.acc } else { t.faint };
-        text::draw(c, f, 22.0, (cy + 4) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 13.0, col, 0.0));
-        let tcol = if now { t.acc } else { t.ink };
-        text::draw(c, f, 48.0, (cy - 2) as f32, sgn.t, &body_label(Family::Sans, Weight::SemiBold, 16.0, tcol));
-        text::draw(c, f, 48.0, (cy + 15) as f32, sgn.al, &body_label(Family::Sans, Weight::Regular, 12.0, t.dim));
-        if now {
-            tiny_bars(c, 388, cy, t.acc);
+    let top = artist_content_top();
+    c.set_clip_y(top, LIST_BOTTOM);
+    for (vy, row) in &page.rows {
+        let y = top + *vy - scroll_px;
+        let h = row.h();
+        if y + h <= top {
+            continue;
         }
-        right(c, f, 458.0, (cy + 4) as f32, sgn.d, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
-        hline(c, sy + rh, t.line);
-        sy += rh;
+        if y >= LIST_BOTTOM {
+            break;
+        }
+        match *row {
+            ArtistRowKind::AlbumsSection => {
+                text::draw(c, f, 22.0, (y + 24) as f32, &format!("ALBUMS · {}", page.albums.len()),
+                    &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+            }
+            ArtistRowKind::SongsSection => {
+                text::draw(c, f, 22.0, (y + 24) as f32, &format!("SONGS · {}", page.tracks.len()),
+                    &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+            }
+            ArtistRowKind::Album(i) => {
+                let Some((_, al)) = page.albums.get(i) else { continue };
+                let cy = y + ARTIST_ALBUM_RH / 2;
+                thumb(c, t, lib, al.album_id, &al.art, 22, y + (ARTIST_ALBUM_RH - THUMB_PX) / 2, THUMB_PX, artdim(t));
+                let tst = body_label(Family::Sans, Weight::SemiBold, 19.0, t.ink);
+                text::draw(c, f, 80.0, (cy - 2) as f32,
+                    &crate::widgets::fit(f, &al.name, &tst, 340.0), &tst);
+                let sub = if al.year.is_empty() {
+                    format!("{} tracks", al.tracks)
+                } else {
+                    format!("{} · {} tracks", al.year, al.tracks)
+                };
+                text::draw(c, f, 80.0, (cy + 16) as f32, &sub,
+                    &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
+                icons::chevron(c, 452.0, cy as f32, 13.0, t.faint);
+                hline(c, y + ARTIST_ALBUM_RH, t.line);
+            }
+            ArtistRowKind::Song(i) => {
+                let Some(tr) = page.tracks.get(i) else { continue };
+                let sgn = tr.song;
+                let now = i == sel;
+                let cy = y + ARTIST_TRACK_RH / 2;
+                let sw = swipe_for(swipe, y, ARTIST_TRACK_RH);
+                if let Some(dx) = sw {
+                    swipe_reveal(c, t, f, y, ARTIST_TRACK_RH, dx);
+                }
+                if now {
+                    fill_rect(c, 0, y, W as i32, ARTIST_TRACK_RH, t.row_sel);
+                }
+                text::draw(c, f, 26.0, (cy + 4) as f32, &format!("{}", i + 1),
+                    &sty(Family::Mono, Weight::Regular, 12.0, if now { t.acc } else { t.faint }, 0.0));
+                let tcol = if now { t.acc } else { t.ink };
+                let tst = body_label(Family::Sans, Weight::SemiBold, 18.0, tcol);
+                text::draw(c, f, 58.0, (cy - 2) as f32,
+                    &crate::widgets::fit(f, &sgn.title, &tst, 300.0), &tst);
+                let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
+                text::draw(c, f, 58.0, (cy + 16) as f32,
+                    &crate::widgets::fit(f, tr.album, &ast, 300.0), &ast);
+                right(c, f, 452.0, (cy + 4) as f32, &sgn.dur,
+                    &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0));
+                hline(c, y + ARTIST_TRACK_RH, t.line);
+                if sw.is_some() {
+                    c.clear_offset_x();
+                }
+            }
+        }
     }
+    c.clear_clip();
+    scrollbar(c, t, top, scroll_px, page.content_h);
 }
 
 #[cfg(test)]
@@ -1125,5 +1531,98 @@ mod tests {
         assert_eq!(row_top_px(Tab::Albums, &l, 0, 0, None), hdr);
         assert_eq!(row_top_px(Tab::Albums, &l, 1, 0, None), hdr + row);
         assert_eq!(row_top_px(Tab::Albums, &l, 2, 0, None), 2 * hdr + 2 * row);
+    }
+
+    /// The rail's brightness and the jump must never disagree: a bright letter that goes nowhere,
+    /// or a faint one that does jump, is worse than either being wrong on its own. `az_present`
+    /// (one pass, drawn) and `az_scroll_for` (per letter, tapped) are separate code, so pin them.
+    #[test]
+    fn az_rail_agrees_with_the_jump() {
+        let l = lib();
+        for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
+            for sort in 0..2 {
+                let present = az_present(tab, &l, sort);
+                for (i, &ch) in AZ_LETTERS.iter().enumerate() {
+                    assert_eq!(
+                        present[i],
+                        az_scroll_for(tab, &l, ch, sort, None).is_some(),
+                        "{tab:?} sort={sort} letter {:?}", ch as char
+                    );
+                }
+            }
+        }
+    }
+
+    /// The row must ARM at exactly the travel the shell commits at. If the two ever drift, a row
+    /// goes accent-coloured — promising "letting go queues this" — and then release does nothing,
+    /// or the reverse: it queues silently with the row still looking un-armed.
+    #[test]
+    fn swipe_arms_at_the_same_travel_the_shell_commits_at() {
+        // cinder-home/src/main.cpp classifies a horizontal swipe at `adx >= 60` on RAW travel, and
+        // `swipe_offset` is the identity up to that point — so raw and offset agree at the edge.
+        assert_eq!(swipe_offset(SWIPE_COMMIT_PX), SWIPE_COMMIT_PX);
+        assert!(swipe_armed(swipe_offset(SWIPE_COMMIT_PX)));
+        assert!(!swipe_armed(swipe_offset(SWIPE_COMMIT_PX - 1)));
+        assert!(!swipe_armed(swipe_offset(-(SWIPE_COMMIT_PX - 1))));
+        assert!(swipe_armed(swipe_offset(-SWIPE_COMMIT_PX)));
+    }
+
+    #[test]
+    fn swipe_tracks_the_finger_then_resists_and_clamps() {
+        assert_eq!(swipe_offset(0), 0);
+        assert_eq!(swipe_offset(40), 40); // 1:1 below the commit point
+        assert_eq!(swipe_offset(-40), -40); // symmetric
+        // Past it, 40% of finger travel — still moving, visibly harder.
+        assert_eq!(swipe_offset(160), SWIPE_COMMIT_PX + 40);
+        // And never off the screen, however far the finger goes.
+        assert_eq!(swipe_offset(100_000), SWIPE_MAX_PX);
+        assert_eq!(swipe_offset(-100_000), -SWIPE_MAX_PX);
+    }
+
+    fn artist_lib() -> Library {
+        let mut l = lib();
+        l.songs.push(song("orphan", "Solo", "2:00", 900));
+        l
+    }
+
+    #[test]
+    fn artist_page_collects_that_artists_albums_and_tracks() {
+        let l = artist_lib();
+        let p = artist_page(&l, "One");
+        // Both of One's albums, and NOT Two's — with the flat indices the Album screen takes.
+        assert_eq!(p.albums.iter().map(|(f, a)| (*f, a.name.as_str())).collect::<Vec<_>>(),
+            vec![(0, "A1"), (1, "A2")]);
+        // Every track of both albums, in album order, each labelled with its own album.
+        assert_eq!(p.tracks.len(), 5); // A1 has 3, A2 has 2
+        assert_eq!(p.tracks[0].album, "A1");
+        assert_eq!(p.tracks[4].album, "A2");
+        // An artist with tracks but no album rows still gets a page (the Songs fallback) rather
+        // than an empty one, which is what the Artists tab's track count promised.
+        let solo = artist_page(&l, "Solo");
+        assert!(solo.albums.is_empty());
+        assert_eq!(solo.tracks.len(), 1);
+        assert_eq!(solo.tracks[0].song.object_id, 900);
+    }
+
+    #[test]
+    fn artist_hit_mirrors_the_rows_the_page_draws() {
+        let l = artist_lib();
+        let p = artist_page(&l, "One");
+        let top = artist_content_top();
+        // Section headers are labels, not targets.
+        assert_eq!(artist_hit(&p, 0, top + ARTIST_SEC_H / 2), None);
+        // First album row → its FLAT index, which is what opens the Album drill-in.
+        let a0 = top + ARTIST_SEC_H + ARTIST_ALBUM_RH / 2;
+        assert_eq!(artist_hit(&p, 0, a0), Some(ArtistHit::Album(0)));
+        assert_eq!(artist_hit(&p, 0, a0 + ARTIST_ALBUM_RH), Some(ArtistHit::Album(1)));
+        // First track row, past both album rows and the SONGS header.
+        let s0 = top + ARTIST_SEC_H + 2 * ARTIST_ALBUM_RH + ARTIST_SEC_H + ARTIST_TRACK_RH / 2;
+        assert_eq!(artist_hit(&p, 0, s0), Some(ArtistHit::Track(0)));
+        assert_eq!(artist_hit(&p, 0, s0 + ARTIST_TRACK_RH), Some(ArtistHit::Track(1)));
+        // Scrolling shifts what is under the same y by exactly the scroll.
+        assert_eq!(artist_hit(&p, ARTIST_TRACK_RH, s0), Some(ArtistHit::Track(1)));
+        // Above the content and below the list are both misses.
+        assert_eq!(artist_hit(&p, 0, top - 1), None);
+        assert_eq!(artist_hit(&p, 0, LIST_BOTTOM), None);
     }
 }

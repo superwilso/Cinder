@@ -52,7 +52,13 @@ pub struct ArtistRow {
     pub name: String,
     pub albums: u32,
     pub tracks: u32,
+    /// Gradient seeds — the fallback when a cover has not been decoded yet.
     pub arts: Vec<String>,
+    /// DB album ids behind `arts`, in the same order. The Artists tab used to draw only the
+    /// gradients, which is why its rows looked wrong next to the Albums tab: covers live in
+    /// `Library::thumbs` keyed by album id, and without the id there was nothing to look them up
+    /// with. Empty for the host/sim sample data, which has no DB.
+    pub album_ids: Vec<i64>,
 }
 
 /// One playlist row (Playlists tab). `id` is the DB container's `object_id` — the handle
@@ -167,6 +173,9 @@ impl Library {
                 albums: a.al,
                 tracks: a.tr,
                 arts: a.arts.iter().map(|s| s.to_string()).collect(),
+                // Sample data has no DB behind it, so there are no ids to look covers up by —
+                // the gradient fallback is the correct and only answer here.
+                album_ids: Vec::new(),
             })
             .collect();
         let playlists = data::PLAYLISTS

@@ -236,11 +236,20 @@ echo "[6c] build cinder-power (setuid-root power helper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-power" "$HERE/src/cinder-power.c"
 echo "built: $HERE/cinder-power ($(stat -c %s "$HERE/cinder-power") bytes)"
 
+# cinder-msc: fourth setuid-root helper — the USB mass-storage handoff. BOTH privileged steps are
+# root-only on this device (the LUN backing-file write opens the block device in the caller's
+# credentials, and sys.sony.config is refused for uid system), which is why MSC never worked from
+# capless cinder-home. Ships on BOTH channels — MSC is how the user gets files onto the device.
+echo "[6d] build cinder-msc (setuid-root USB-MSC helper, static)…"
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-msc" "$HERE/src/cinder-msc.c"
+echo "built: $HERE/cinder-msc ($(stat -c %s "$HERE/cinder-msc") bytes)"
+
 mkdir -p "$DIST"
 cp -f "$OUT" "$DIST/cinder-home"
 cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"
 cp -f "$HERE/cinder-umount" "$DIST/cinder-umount"
 cp -f "$HERE/cinder-power" "$DIST/cinder-power"
+cp -f "$HERE/cinder-msc" "$DIST/cinder-msc"
 # cinder-gpunode ships on the DEV channel ONLY. It is setuid-root and its whole job is to make
 # four kernel graphics nodes world-writable — real attack surface — in service of a GPU present
 # path that is default OFF and measured 4.7x SLOWER than the software one (45.6 ms/present vs 9.6;

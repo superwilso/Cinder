@@ -118,6 +118,14 @@ int  cinder_pending_play_start(void);
  * Library/Album song row queues that song (start y picks the row). Returns a cinder_action_t for
  * the shell to carry out (0 = nothing). */
 int  cinder_swipe(int dir, int x, int y);
+/* LIVE horizontal drag on a list row, streamed per pump tick while the contact is down: `dx_px` is
+ * total travel from the gesture's start point, `y` that start point. The row under `y` slides with
+ * the finger and reveals what releasing will do. Returns 1 if a track row took the gesture — the
+ * shell should then commit the contact to the swipe and stop weighing it as a vertical scroll.
+ * Nothing is queued here; that still happens at release, in cinder_swipe. Call
+ * cinder_swipe_release() when the finger lifts so the row animates back to rest. */
+int  cinder_swipe_track(int dx_px, int y);
+void cinder_swipe_release(void);
 /* The Hold/lock SWITCH changed state (held = 1 locked, 0 unlocked). When locked the touchscreen is
  * ignored but the transport/volume buttons still work; ONLY the switch going off (held=0) unlocks.
  * Power is a screen on/off toggle (CINDER_ACT_SLEEP) and does NOT unlock. Call on every edge. */

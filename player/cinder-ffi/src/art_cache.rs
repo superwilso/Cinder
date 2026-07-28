@@ -35,6 +35,13 @@ pub const T48: usize = 48;
 /// Album drill-in cover edge (must match `library::album_view`).
 pub const T96: usize = 96;
 
+// "Must match" is now enforced rather than asked for. `library::thumb` falls back to the gradient
+// when the cached image is not EXACTLY the requested size, which is silent: the Artists tab asked
+// for 44 px against this 48 and drew gradients for every artist, with no error anywhere and the
+// decoded covers sitting in memory unused. A mismatch is a build failure now.
+const _: () = assert!(T48 == cinder_ui::library::THUMB_PX as usize);
+const _: () = assert!(T96 == cinder_ui::library::COVER_PX as usize);
+
 fn path(album_id: i64, edge: usize) -> String {
     format!("{}/{album_id}.t{edge}", dir())
 }

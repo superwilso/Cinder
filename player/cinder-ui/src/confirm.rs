@@ -27,6 +27,10 @@ pub enum Ask {
     /// a separate widget so that the modal stays one thing: one place that dims the screen, one
     /// place the navigator consumes taps, one hit test to keep honest.
     PowerMenu,
+    /// Play was pressed on a song while the user queue still has tracks in it. Apple asks the same
+    /// question, and it is a genuine either/or rather than a confirmation: the queue you built by
+    /// hand is not something to silently discard, nor something to silently keep.
+    QueueOnPlay,
 }
 
 impl Ask {
@@ -49,17 +53,43 @@ impl Ask {
                 "Power off",
             ),
             Ask::PowerMenu => ("Power", "", ""),
+            Ask::QueueOnPlay => ("Play this now?", "", ""),
         }
     }
 
-    /// Does this question draw the three-row menu rather than the two-button footer?
+    /// Does this question draw the stacked-row menu rather than the two-button footer?
     pub fn is_menu(self) -> bool {
-        matches!(self, Ask::PowerMenu)
+        !self.rows().is_empty()
+    }
+
+    /// The menu's rows, top to bottom, each with the `Hit` it produces. Empty = this is a yes/no
+    /// card, not a menu. Keeping the rows on the Ask is what lets one hit test and one renderer
+    /// serve every menu — a second stacked-choice dialog would otherwise mean a second geometry to
+    /// keep in step with its own hit test.
+    pub fn rows(self) -> &'static [(&'static str, Hit)] {
+        match self {
+            // Destructive first, the way the two-button card puts Cancel under the thumb that is
+            // already there — but the escape is also the LAST row, furthest from where the finger
+            // lands after a Power hold.
+            Ask::PowerMenu => &[
+                ("Power off", Hit::PowerOff),
+                ("Restart", Hit::Restart),
+                ("Cancel", Hit::Cancel),
+            ],
+            // "Play now" first because it is what the tap already asked for; keeping the queue is
+            // the considered choice and sits below it.
+            Ask::QueueOnPlay => &[
+                ("Clear queue and play", Hit::ClearQueue),
+                ("Play now, keep queue", Hit::KeepQueue),
+                ("Cancel", Hit::Cancel),
+            ],
+            _ => &[],
+        }
     }
 
     /// Card height. The menu needs room for three stacked rows; the yes/no card does not.
     fn card_h(self) -> i32 {
-        if self.is_menu() { MENU_CARD_H } else { CARD_H }
+        if self.is_menu() { MENU_HEAD_H + MENU_ROW_H * self.rows().len() as i32 } else { CARD_H }
     }
 
     /// Card top, derived from the shared optical centre so both cards sit in the same place.
@@ -67,15 +97,6 @@ impl Ask {
         CARD_MID - self.card_h() / 2
     }
 }
-
-/// The Power menu's rows, top to bottom, each with the `Hit` it produces. Destructive first, the
-/// way the two-button card puts Cancel under the thumb that is already there — but here the
-/// escape is also the LAST row, furthest from where the finger lands after a Power hold.
-const MENU_ROWS: [(&str, Hit); 3] = [
-    ("Power off", Hit::PowerOff),
-    ("Restart", Hit::Restart),
-    ("Cancel", Hit::Cancel),
-];
 
 // Geometry. One source, shared by the render and the hit test — the same rule the accent swatches
 // and the Now Playing rail follow, and for the same reason: a confirm button that is not where it
@@ -98,7 +119,6 @@ const BTN_SPLIT: i32 = CARD_X + CARD_W / 2;
 /// vertical list is what a thumb scans on a portrait screen.
 const MENU_ROW_H: i32 = 68;
 const MENU_HEAD_H: i32 = 76;
-const MENU_CARD_H: i32 = MENU_HEAD_H + MENU_ROW_H * 3;
 
 /// Which button is under a tap. A tap anywhere outside the card cancels, which is the conventional
 /// and forgiving reading of "I didn't mean it".
@@ -112,6 +132,10 @@ pub enum Hit {
     Cancel,
     PowerOff,
     Restart,
+    /// Discard the hand-built user queue, then play the tapped song.
+    ClearQueue,
+    /// Play the tapped song and leave the queue alone — it plays after.
+    KeepQueue,
 }
 
 pub fn hit(ask: Ask, x: i32, y: i32) -> Hit {
@@ -126,7 +150,7 @@ pub fn hit(ask: Ask, x: i32, y: i32) -> Hit {
             return Hit::Cancel; // the title band is not a button
         }
         let row = ((y - top) / MENU_ROW_H) as usize;
-        return MENU_ROWS.get(row).map(|r| r.1).unwrap_or(Hit::Cancel);
+        return ask.rows().get(row).map(|r| r.1).unwrap_or(Hit::Cancel);
     }
     if y >= BTN_Y && x >= BTN_SPLIT {
         return Hit::Confirm;
@@ -200,7 +224,7 @@ fn render_menu(c: &mut Canvas, t: &Theme, f: &FontSet, ask: Ask) {
            &sty(Family::Sans, Weight::Bold, 26.0, t.ink, 0.0));
 
     let top = cy + MENU_HEAD_H;
-    for (i, (label, what)) in MENU_ROWS.iter().enumerate() {
+    for (i, (label, what)) in ask.rows().iter().enumerate() {
         let ry = top + MENU_ROW_H * i as i32;
         fill_rect(c, CARD_X, ry, CARD_W, 1, t.line);   // separator above every row, incl. the first
         // Cancel is dimmed, the two actions are in ink: the row that does nothing should not read
@@ -296,7 +320,7 @@ mod tests {
     fn every_menu_row_hits_its_own_action() {
         let a = Ask::PowerMenu;
         let top = a.card_y() + MENU_HEAD_H;
-        for (i, (label, want)) in MENU_ROWS.iter().enumerate() {
+        for (i, (label, want)) in a.rows().iter().enumerate() {
             let ry = top + MENU_ROW_H * i as i32;
             for dy in [1, MENU_ROW_H / 2, MENU_ROW_H - 1] {
                 for x in [CARD_X + 2, 240, CARD_X + CARD_W - 2] {
@@ -326,7 +350,7 @@ mod tests {
         let a = Ask::PowerMenu;
         let (cy, ch) = (a.card_y(), a.card_h());
         let top = cy + MENU_HEAD_H;
-        assert_eq!(top + MENU_ROW_H * 3, cy + ch, "rows must fill the card exactly");
+        assert_eq!(top + MENU_ROW_H * a.rows().len() as i32, cy + ch, "rows must fill the card exactly");
         for y in 0..crate::canvas::H as i32 {
             for x in (0..crate::canvas::W as i32).step_by(3) {
                 if hit(a, x, y) != Hit::Cancel {
@@ -351,9 +375,9 @@ mod tests {
     /// The menu must offer exactly one way out and it must be distinct from both actions.
     #[test]
     fn menu_offers_one_escape() {
-        let cancels = MENU_ROWS.iter().filter(|r| r.1 == Hit::Cancel).count();
+        let cancels = Ask::PowerMenu.rows().iter().filter(|r| r.1 == Hit::Cancel).count();
         assert_eq!(cancels, 1, "the Power menu needs exactly one Cancel row");
-        assert!(MENU_ROWS.iter().any(|r| r.1 == Hit::PowerOff));
-        assert!(MENU_ROWS.iter().any(|r| r.1 == Hit::Restart));
+        assert!(Ask::PowerMenu.rows().iter().any(|r| r.1 == Hit::PowerOff));
+        assert!(Ask::PowerMenu.rows().iter().any(|r| r.1 == Hit::Restart));
     }
 }

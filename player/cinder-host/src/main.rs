@@ -127,21 +127,29 @@ fn main() {
                 }
             }),
             ("library_songs", &|c: &mut Canvas| {
-                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib);
+                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib, None);
                 // nav draws the Now Playing return bar over the library screens; mirror that here
                 // so the preview shows the real bottom of the screen, not a list running to the edge.
                 cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
             }),
             // Songs sorted by ADDED (sort chip index 4) — shows the SORT chip label + reorder.
-            ("library_songs_added", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 4, 0, None, &lib)),
-            ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, None, &lib)),
+            ("library_songs_added", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 4, 0, None, &lib, None)),
+            ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, None, &lib, None)),
             // Albums with the first album's accordion expanded (tracks listed inline).
-            ("library_albums_expanded", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, Some(0), &lib)),
+            ("library_albums_expanded", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, Some(0), &lib, None)),
             // Albums flat-ordered A-Z (ORDER chip index 1 — no artist headers).
-            ("library_albums_az", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 1, None, &lib)),
-            ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &lib)),
-            ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &lib)),
-            ("artist", &|c: &mut Canvas| library::artist(c, &theme, &fonts)),
+            ("library_albums_az", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 1, None, &lib, None)),
+            ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &lib, None)),
+            ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &lib, None)),
+            // The artist drill-in, built from the SAMPLE LIBRARY like every other list preview —
+            // it used to render three hard-coded albums from `data::ARTIST_*` regardless of who
+            // the artist was, which is precisely why nothing ever pushed it.
+            ("artist", &|c: &mut Canvas| {
+                let name = lib.artists.first().map(|a| a.name.as_str()).unwrap_or("");
+                let page = library::artist_page(&lib, name);
+                library::artist_view(c, &theme, &fonts, &lib, &page, 0, 0, None);
+                cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
+            }),
             ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4)),
             ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, false)),
             ("sound_bypass", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, true)),
@@ -371,7 +379,7 @@ fn main() {
         }
         let artists = artists_n
             .iter()
-            .map(|a| ArtistRow { name: a.to_string(), albums: 7, tracks: 56, arts: vec![format!("{a}0"), format!("{a}1")] })
+            .map(|a| ArtistRow { name: a.to_string(), albums: 7, tracks: 56, arts: vec![format!("{a}0"), format!("{a}1")], album_ids: Vec::new() })
             .collect();
         let big = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default() };
 
@@ -452,7 +460,7 @@ fn main() {
             .collect();
         let artists = rows
             .iter()
-            .map(|(_, a, _)| ArtistRow { name: a.to_string(), albums: 1, tracks: 8, arts: vec![a.to_string()] })
+            .map(|(_, a, _)| ArtistRow { name: a.to_string(), albums: 1, tracks: 8, arts: vec![a.to_string()] , album_ids: Vec::new() })
             .collect();
 
         let mut app = App::unlocked();
@@ -513,6 +521,32 @@ fn main() {
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "eq_interactive");
+    }
+
+    // ── Swipe-to-queue, frame by frame ────────────────────────────────────────────────────────
+    // The gesture used to act only on release: nothing moved, then a toast appeared. These frames
+    // are the whole point of the change — the row travels with the finger, and the panel behind it
+    // goes accent-coloured at exactly the travel where releasing will commit, so the gesture says
+    // what it will do BEFORE you let go.
+    {
+        let theme = Theme::day();
+        // A row in the middle of the Songs list, picked from the same geometry the renderer uses
+        // rather than a literal — the frames have to sit on a real row or the reveal never shows.
+        let row_y = library::list_top(Tab::Songs) + library::row_h(Tab::Songs) * 2 + 24;
+        let travels = [0, 30, 60, 100, 160, 240];
+        for (i, raw) in travels.iter().enumerate() {
+            for (dir, tag) in [(1, "queue"), (-1, "play_next")] {
+                let dx = library::swipe_offset(raw * dir);
+                let mut c = Canvas::new();
+                library::render(&mut c, &theme, &fonts, Tab::Songs, 99, 0, 0, 0, None, &lib,
+                    Some(cinder_ui::library::SwipeRow { y: row_y, dx }));
+                cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+                cinder_ui::chrome::np_bar(&mut c, &theme, &fonts, "Atlas Hands",
+                    "Benjamin Francis Leftwich", true, 0.39);
+                let armed = if library::swipe_armed(dx) { "armed" } else { "held" };
+                save(&c, &format!("swipe_{tag}_{i}_{}px_{armed}", dx.abs()));
+            }
+        }
     }
 
     // Visualiser TYPES: render Now Playing with each viz kind (mid-animation) so they can be diffed.

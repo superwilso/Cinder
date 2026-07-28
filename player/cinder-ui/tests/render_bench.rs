@@ -92,3 +92,88 @@ fn bench_pages() {
                              cinder_ui::viz::from_index(0), t.acc, t.line, Some(&levels), 0, 180);
     });
 }
+
+/// Library-tab frame cost at REAL library size (the device DB: 3349 songs, 305 albums,
+/// 170 artists). The Artists tab reported as "slow to load" on device, and a guess about why is
+/// exactly what this harness exists to replace.
+#[test]
+#[ignore]
+fn bench_library_tabs() {
+    use cinder_ui::library::{self, Tab};
+    use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, Library, SongRow};
+
+    let mut songs = Vec::new();
+    let mut album_groups: Vec<ArtistGroup> = Vec::new();
+    let mut artists = Vec::new();
+    let mut aid = 0i64;
+    for a in 0..170 {
+        let name = format!("Artist {a:03}");
+        let mut albums = Vec::new();
+        for k in 0..2 {
+            aid += 1;
+            let an = format!("Album {aid:03}");
+            let track_list: Vec<SongRow> = (0..10)
+                .map(|i| SongRow {
+                    title: format!("{an} track {i}"), artist: name.clone(), dur: "3:20".into(),
+                    art: an.clone(), object_id: aid * 100 + i, album_id: aid,
+                    ..Default::default()
+                })
+                .collect();
+            songs.extend(track_list.iter().cloned());
+            albums.push(AlbumRow {
+                name: an.clone(), artist: name.clone(), year: "2019".into(), tracks: 10,
+                art: an, album_id: aid, added: aid, track_list,
+            });
+            let _ = k;
+        }
+        artists.push(ArtistRow {
+            name: name.clone(), albums: 2, tracks: 20,
+            arts: albums.iter().map(|x| x.name.clone()).collect(),
+            album_ids: albums.iter().map(|x| x.album_id).collect(),
+        });
+        album_groups.push(ArtistGroup { artist: name, albums });
+    }
+    let mut lib = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default() };
+    println!("library: {} songs, {} albums, {} artists",
+        lib.songs.len(), lib.album_count(), lib.artists.len());
+
+    let t = Theme::day();
+    let f = FontSet::load();
+    let mut c = Canvas::new();
+    let n = 100;
+
+    // Gradients only — the state a fresh device is in before the art cache fills.
+    for (tab, name) in [(Tab::Songs, "songs"), (Tab::Albums, "albums"),
+                        (Tab::Artists, "artists"), (Tab::Playlists, "playlists")] {
+        time_it(&format!("library {name} (gradients)"), n, || {
+            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None)
+        });
+    }
+    for (tab, name) in [(Tab::Songs, "songs"), (Tab::Artists, "artists")] {
+        time_it(&format!("az_render {name}"), n, || {
+            library::az_render(&mut c, &t, &f, tab, &lib, 0)
+        });
+    }
+
+    // With the art cache populated — what the device looks like once the builder has run.
+    let img = cinder_ui::art::Image { w: 48, h: 48, rgb: vec![90u8; 48 * 48 * 3] };
+    for id in 1..=aid {
+        lib.thumbs.insert(id, img.clone());
+    }
+    for (tab, name) in [(Tab::Songs, "songs"), (Tab::Albums, "albums"), (Tab::Artists, "artists")] {
+        time_it(&format!("library {name} (real covers)"), n, || {
+            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None)
+        });
+    }
+
+    // Resolving an artist page — this happens on EVERY frame the page is up, plus once per
+    // scroll tick, so its cost is a per-frame cost, not a one-off.
+    let who = lib.artists[0].name.clone();
+    time_it("artist_page resolve", n, || {
+        let _ = library::artist_page(&lib, &who).tracks.len();
+    });
+    let page = library::artist_page(&lib, &who);
+    time_it("artist_view render", n, || {
+        library::artist_view(&mut c, &t, &f, &lib, &page, 0, 0, None)
+    });
+}

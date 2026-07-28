@@ -150,6 +150,7 @@ fn big_library() -> Library {
             albums: (3 + ai % 3) as u32,
             tracks: 30 + ai as u32,
             arts: vec![format!("{a} 0"), format!("{a} 1")],
+            album_ids: Vec::new(),
         })
         .collect();
     songs.sort_by(|x, y| x.title.cmp(&y.title));

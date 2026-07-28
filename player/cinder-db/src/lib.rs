@@ -80,6 +80,11 @@ pub enum Sort {
 pub struct Db {
     conn: Connection,
     duration_akey: Option<i64>,
+    /// Which lookup table `albumartist_id` points into. Sony keeps album artists in their own
+    /// `albumartists` table with its own id space; `artists` is a DIFFERENT, larger table. Probed
+    /// at open rather than hard-coded so a firmware that doesn't ship `albumartists` degrades to
+    /// the old (wrong-name) behaviour instead of failing every query and showing an EMPTY library.
+    albumartist_table: &'static str,
     /// object_id → absolute directory path, for every folder in the file tree. See `build_dirs`.
     dirs: std::collections::HashMap<i64, String>,
 }
@@ -115,8 +120,23 @@ impl Db {
                 |r| r.get::<_, i64>(0),
             )
             .ok();
+        let has_albumartists = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='albumartists'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .is_ok();
+        if !has_albumartists {
+            eprintln!(
+                "[cinder-db] no `albumartists` table — album artists fall back to `artists`, \
+                 which on the reference device names 96% of tracks WRONG. Browsing by artist \
+                 will group albums under the wrong people."
+            );
+        }
+        let albumartist_table = if has_albumartists { "albumartists" } else { "artists" };
         let dirs = Self::build_dirs(&conn);
-        Db { conn, duration_akey, dirs }
+        Db { conn, duration_akey, albumartist_table, dirs }
     }
 
     /// Mount point for each STORAGE ROOT of the MTP file tree, by the root object's name.
@@ -441,6 +461,7 @@ impl Db {
             ),
             None => (String::new(), "NULL"),
         };
+        let aa_table = self.albumartist_table;
         let sql = format!(
             "SELECT ob.object_id, ob.title, COALESCE(ar.value,''), COALESCE(al.value,''), \
                     ob.filename, COALESCE(ob.disc_no,0), COALESCE(ob.series_no,0), {dur_sel}, \
@@ -450,7 +471,7 @@ impl Db {
              FROM object_body ob \
              LEFT JOIN artists ar ON ar.id = ob.artist_id \
              LEFT JOIN albums  al ON al.id = ob.album_id \
-             LEFT JOIN artists aa ON aa.id = ob.albumartist_id \
+             LEFT JOIN {aa_table} aa ON aa.id = ob.albumartist_id \
              {dur_join} {where_clause} ORDER BY {order_by}"
         );
         let mut st = self.conn.prepare(&sql)?;
@@ -531,6 +552,11 @@ mod tests {
             r#"
             CREATE TABLE albums  (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT);
             CREATE TABLE artists (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT, imagefile TEXT, face_x INTEGER, face_y INTEGER, face_w INTEGER, face_h INTEGER);
+            -- ALBUM ARTISTS ARE A SEPARATE TABLE WITH ITS OWN ID SPACE. On the real device it has
+            -- 180 rows against `artists`' 272, so the two agree only up to the first artist that
+            -- never appears as an album artist and diverge from there. Modelling it as a distinct
+            -- table is the whole point of this fixture row — see the test below.
+            CREATE TABLE albumartists (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT);
             CREATE TABLE schema  (prop_type INTEGER, akey INTEGER, data_type INTEGER, prop_name TEXT, PRIMARY KEY(prop_type,akey));
             CREATE TABLE object_ext_int (object_id INTEGER, akey INTEGER, value INTEGER DEFAULT 0, PRIMARY KEY(object_id,akey));
             CREATE TABLE images  (id INTEGER PRIMARY KEY, dataform INTEGER, dataoffset INTEGER, datasize INTEGER, value TEXT, digest TEXT, bmpfile TEXT, bmpwidth INTEGER, bmpheight INTEGER);
@@ -550,6 +576,11 @@ mod tests {
             INSERT INTO albums  VALUES (12,0,'ghost','ghost','Deleted Album');
             INSERT INTO artists VALUES (20,0,'leftwich','leftwich','Benjamin Francis Leftwich',NULL,0,0,0,0);
             INSERT INTO artists VALUES (21,0,'cold','cold','Cold Stone & Sea',NULL,0,0,0,0);
+            -- The SAME ids carry DIFFERENT names in `albumartists` — which is exactly the shape of
+            -- the real DB, and exactly what makes joining albumartist_id against `artists` produce
+            -- a wrong-but-plausible name instead of an obvious failure.
+            INSERT INTO albumartists VALUES (20,0,'leftwich','leftwich','Benjamin Francis Leftwich');
+            INSERT INTO albumartists VALUES (21,0,'someone','someone','Someone Else Entirely');
             INSERT INTO schema  VALUES (1,7,2,'DURATION');
             INSERT INTO images  VALUES (100,0,4096,20000,'/music/atlas.flac','d1','/db/thumb/100.bmp',92,92);
             INSERT INTO releaseyears VALUES (30,0,'2012','2012','2012');
@@ -582,6 +613,9 @@ mod tests {
             -- would be ambiguous — the now-playing lookup must disambiguate on the FULL path.
             INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
               VALUES (3,1,912,1,0,'Harvest Moon','harvest.flac',1,1,0,11,21,31,NULL,4000);
+            -- Same id (21) in BOTH lookup tables, different names: the album artist must come from
+            -- `albumartists` ("Someone Else Entirely"), never from `artists` ("Cold Stone & Sea").
+            UPDATE object_body SET albumartist_id=21 WHERE object_id=3;
             -- a folder (media_type 0) and a stray cover image (media_type 3) — both must be excluded
             INSERT INTO object_body (object_id,object_type,media_type,title,filename,album_id) VALUES (9,0,0,'A Folder',NULL,NULL);
             INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,album_id) VALUES (8,2,3,0,'Cover','Cover.jpg',10);
@@ -630,6 +664,24 @@ mod tests {
     #[test]
     fn duration_akey_resolved() {
         assert_eq!(db().duration_akey, Some(7));
+    }
+
+    /// The album artist comes from `albumartists`, NOT `artists`.
+    ///
+    /// Sony keeps two lookup tables with independent id spaces (272 artists vs 180 album artists on
+    /// the test device). Joining `albumartist_id` against `artists` therefore returns a real, valid
+    /// artist name — just the wrong one — and the error grows as the tables diverge: on the device
+    /// it mislabelled 3214 of 3349 tracks, which shuffled every artist's albums onto a neighbour.
+    /// Nothing failed loudly, because every answer was a plausible name.
+    #[test]
+    fn album_artist_comes_from_the_albumartists_table() {
+        let tracks = db().tracks(Sort::Title).unwrap();
+        let harvest = tracks.iter().find(|t| t.title == "Harvest Moon").unwrap();
+        assert_eq!(harvest.artist, "Cold Stone & Sea", "track artist still comes from `artists`");
+        assert_eq!(
+            harvest.album_artist, "Someone Else Entirely",
+            "album artist must resolve through `albumartists` — same id, different table"
+        );
     }
 
     #[test]

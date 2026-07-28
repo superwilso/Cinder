@@ -386,6 +386,9 @@ struct Render {
     art_full: Option<cinder_ui::art::Image>,
     art_thumb: Option<cinder_ui::art::Image>,
     art_key: Option<i64>,
+    /// Path the library DB was opened from, so the cover decoder can open its own read-only
+    /// handle instead of borrowing this one across a thread (same reasoning as start_art_cache).
+    db_path: Option<String>,
 }
 
 fn now_unix() -> u64 {
@@ -540,6 +543,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         art_full: None,
         art_thumb: None,
         art_key: None,
+        db_path: None,
     });
     0
 }
@@ -642,9 +646,14 @@ fn set_progress(np: &mut Np, pos_ms: i64, dur_ms: i64) {
 /// Songs tab gets every track; artists are derived with album/track counts. Playlists aren't
 /// in cinder-db yet, so that tab is empty for now. Art keys use the album/title so each item
 /// gets a distinct hashed gradient until real thumbnails are decoded.
+/// Stand-in album id for a row that has no album behind it. Deliberately not 0 — 0 is a perfectly
+/// valid SQLite primary key, and using it would make an artless row collide with a real album's
+/// cached cover.
+const NO_ALBUM_ID: i64 = i64::MIN;
+
 fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, SongRow};
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     // Resolve release-year FKs once (best-effort; empty map if the table shape differs — years
     // then stay blank, exactly as before). Shared by the song-row builder + the album year label.
@@ -676,7 +685,14 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
 
     let tracks = db.tracks(cinder_db::Sort::Title).unwrap_or_default();
     let mut album_artist: BTreeMap<i64, String> = BTreeMap::new();
-    let mut artist_albums: BTreeMap<String, (BTreeSet<String>, u32)> = BTreeMap::new();
+    // Per artist: their distinct albums as name → album id, plus a track count.
+    //
+    // The name and the id have to live in ONE ordered structure. They used to be a sorted
+    // `BTreeSet<String>` of names beside an insertion-ordered `Vec<i64>` of ids, with a comment
+    // claiming the two lined up — they did not, and could not: one was alphabetical and the other
+    // was DB row order. The Artists tab draws the cover by id and the gradient by name, so 78 rows
+    // on the test library showed one album's artwork labelled with another album's colours.
+    let mut artist_albums: BTreeMap<String, (BTreeMap<String, i64>, u32)> = BTreeMap::new();
     let mut songs = Vec::with_capacity(tracks.len());
     // ALBUM ARTIST is what browsing groups by — it is the default, and the track artist is only a
     // fallback for files that carry no album artist at all. Grouping by the track artist shatters
@@ -697,7 +713,15 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         songs.push(song_row(t));
         let e = artist_albums.entry(group_artist(t)).or_default();
         if !t.album.is_empty() {
-            e.0.insert(t.album.clone());
+            // Keyed by name (that is what the album COUNT has always meant here). The id is
+            // whichever track first supplies one — a track with no album_id leaves the slot at
+            // NO_ALBUM_ID, which simply misses the thumbnail cache and draws the gradient.
+            let slot = e.0.entry(t.album.clone()).or_insert(NO_ALBUM_ID);
+            if *slot == NO_ALBUM_ID {
+                if let Some(aid) = t.album_id {
+                    *slot = aid;
+                }
+            }
         }
         e.1 += 1;
     }
@@ -755,12 +779,14 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         .into_iter()
         .filter(|(n, _)| !n.is_empty())
         .map(|(name, (albs, tr))| {
-            let arts: Vec<String> = if albs.is_empty() {
-                vec![name.clone()]
+            // The cover stack draws at most two. Both arrays are taken from the SAME iterator in
+            // the SAME order, so `arts[i]` and `album_ids[i]` are guaranteed to be one album.
+            let (arts, album_ids): (Vec<String>, Vec<i64>) = if albs.is_empty() {
+                (vec![name.clone()], vec![NO_ALBUM_ID])
             } else {
-                albs.iter().take(2).cloned().collect()
+                albs.iter().take(2).map(|(n, id)| (n.clone(), *id)).unzip()
             };
-            ArtistRow { albums: albs.len() as u32, tracks: tr, arts, name }
+            ArtistRow { albums: albs.len() as u32, tracks: tr, arts, album_ids, name }
         })
         .collect();
     artists.sort_by(|a, b| a.name.cmp(&b.name));
@@ -801,9 +827,9 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 16] = [
-    "Lock", "NowPlaying", "Menu", "Library", "Album", "UpNext", "Eq", "Sound", "Bluetooth",
-    "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage", "Shelf",
+const SCREEN_NAMES: [&str; 17] = [
+    "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "UpNext", "Eq", "Sound",
+    "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage", "Shelf",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -812,9 +838,9 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
     use cinder_ui::nav::Screen as S;
     match s {
         S::Lock => 0, S::NowPlaying => 1, S::Menu => 2, S::Library => 3, S::Album => 4,
-        S::UpNext => 5, S::Eq => 6, S::Sound => 7, S::Bluetooth => 8, S::Settings => 9,
-        S::Fm => 10, S::UsbDac => 11, S::Receiver => 12, S::Onboarding => 13,
-        S::UsbStorage => 14, S::Shelf => 15,
+        S::Artist => 5, S::UpNext => 6, S::Eq => 7, S::Sound => 8, S::Bluetooth => 9,
+        S::Settings => 10, S::Fm => 11, S::UsbDac => 12, S::Receiver => 13, S::Onboarding => 14,
+        S::UsbStorage => 15, S::Shelf => 16,
     }
 }
 
@@ -1293,6 +1319,28 @@ fn apply_shuffle(on: bool, mut uris: Vec<String>, start: usize) -> (Vec<String>,
 /// shell an empty sequence.
 ///
 /// Each arm matches the sub-label the band draws, so what the button promises is what it does.
+/// Every track by one named artist, shuffled. Matches on ALBUM ARTIST with the track artist as the
+/// fallback — the same `group_artist` rule the Artists tab is built with, so the row's track count
+/// and what this plays are the same set.
+fn artist_uris(db: Option<&cinder_db::Db>, name: &str) -> Option<Vec<String>> {
+    let db = db?;
+    let mut v: Vec<String> = db
+        .tracks(cinder_db::Sort::Artist)
+        .ok()?
+        .into_iter()
+        .filter(|t| {
+            let group = if t.album_artist.trim().is_empty() { &t.artist } else { &t.album_artist };
+            group == name
+        })
+        .map(|t| t.filename)
+        .collect();
+    if v.is_empty() {
+        return None;
+    }
+    Rng::new().shuffle(&mut v);
+    Some(v)
+}
+
 fn shuffle_uris(db: Option<&cinder_db::Db>, scope: cinder_ui::nav::ShuffleScope) -> Option<Vec<String>> {
     use cinder_ui::nav::ShuffleScope as S;
     let db = db?;
@@ -1432,6 +1480,33 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 }
             }
         }
+        Action::ShuffleArtist(idx) => {
+            // One named artist, their tracks shuffled — the Artists-row button and the band on the
+            // artist page. Same pending-play channel as every other "play these URIs" action.
+            //
+            // Grouped by ALBUM ARTIST (falling back to the track artist), which is what the
+            // Artists tab itself is built from. `ShuffleScope::ByArtist` groups by TRACK artist
+            // instead, so on a compilation it would shuffle a different set of tracks than the row
+            // you pressed claims to contain.
+            let name = match r.app.artist_name_at(*idx) {
+                Some(n) => n.to_string(),
+                None => {
+                    eprintln!("cinder-ffi: ShuffleArtist({idx}): no such artist — ignored");
+                    return None;
+                }
+            };
+            match artist_uris(r.db.as_ref(), &name) {
+                Some(uris) => {
+                    r.pending_play = uris;
+                    r.pending_play_start = 0;
+                    8
+                }
+                None => {
+                    eprintln!("cinder-ffi: ShuffleArtist({name}): nothing to play — ignored");
+                    return None;
+                }
+            }
+        }
         Action::ThemeChanged(_) => 16, // shell also drives the backlight (night = minimal light)
         Action::Sleep => 10,
         Action::EnterUsbMsc => 11,
@@ -1525,6 +1600,32 @@ pub extern "C" fn cinder_swipe(dir: libc::c_int, x: libc::c_int, y: libc::c_int)
         }
     }
     0
+}
+
+/// LIVE horizontal drag on a list row: `dx_px` is total travel from the gesture's start point,
+/// `y` that start point (UI coords). The row under `y` slides with the finger and reveals the
+/// action behind it. Returns 1 if a track row took the gesture, so the shell can commit the
+/// contact to the swipe instead of still weighing it against a vertical scroll.
+///
+/// Nothing is queued here — that still happens on release, in `cinder_swipe`. This is purely the
+/// feedback the gesture never had.
+#[no_mangle]
+pub extern "C" fn cinder_swipe_track(dx_px: libc::c_int, y: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let took = r.app.swipe_track(dx_px as i32, y as i32);
+    r.dirty = true;
+    took as libc::c_int
+}
+
+/// The finger came off a live row swipe: the row animates back to rest. Safe to call for any
+/// contact — it is a no-op if no row was moving.
+#[no_mangle]
+pub extern "C" fn cinder_swipe_release() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.swipe_release();
+        r.dirty = true;
+    }
 }
 
 /// LIVE drag-scroll: move the current list by `dy_px` pixels (positive = show later rows).
@@ -2260,6 +2361,72 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
 
 static ART_BUILDER_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+// ── The now-playing cover, decoded off the render thread ──────────────────────────────────────
+//
+// The library-wide art cache above builds 48 px thumbnails in the background. Now Playing needs a
+// 480 px cover, which is not cached, so it used to be decoded INLINE at every track change — on the
+// render thread, holding the global lock, for ~365 ms. That is a visible freeze on every skip and
+// on every track that ends, and it is the larger half of the "playing a song is laggy" report.
+//
+// One long-lived worker, woken by a slot holding only the LATEST request. A slot rather than a
+// queue is the point: while a decode is in flight the user may skip five times, and every cover
+// but the last is already garbage by the time it would be drawn. The worker overwrites, so a run
+// of skips costs one decode, not five.
+static COVER_REQ: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
+static COVER_WAKE: std::sync::Condvar = std::sync::Condvar::new();
+static COVER_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask for `object_id`'s cover. Returns immediately; the worker installs it when it is ready.
+fn request_cover(r: &Render, object_id: i64) {
+    let Some(path) = r.db_path.clone() else { return };
+    *COVER_REQ.lock().unwrap() = Some(object_id);
+    COVER_WAKE.notify_one();
+    if COVER_THREAD.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return; // already running
+    }
+    std::thread::spawn(move || {
+        // Own read-only handle, exactly as the thumbnail builder does: no lifetime plumbing, and
+        // no chance of holding the renderer's DB across a long decode.
+        let db = match cinder_db::Db::open(&path) {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("cinder-ffi: cover decoder can't open {path}: {e}");
+                COVER_THREAD.store(false, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+        };
+        loop {
+            let want = {
+                let mut slot = COVER_REQ.lock().unwrap();
+                while slot.is_none() {
+                    slot = COVER_WAKE.wait(slot).unwrap();
+                }
+                slot.take().unwrap()
+            };
+            // Decode with NO lock held — the whole reason this thread exists.
+            let native = art_load::load(&db, want);
+            let full = native.as_ref().map(|img| img.scaled_to(480, 480));
+            let thumb = native.as_ref().map(|img| img.scaled_to(92, 92));
+            if full.is_none() {
+                continue; // no embedded cover; the gradient already on screen is the right answer
+            }
+            let Ok(mut g) = cell().lock() else { break };
+            let Some(r) = g.as_mut() else { break }; // renderer gone (shutdown)
+            // STILL WANTED? The track may have changed while we decoded. Installing anyway would
+            // paint the previous song's cover over the current one and leave it there until the
+            // next change — worse than the gradient it replaced.
+            if r.art_key == Some(want) {
+                r.art_full = full;
+                r.art_thumb = thumb;
+                r.dirty = true;
+            }
+        }
+        COVER_THREAD.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+
+
 #[no_mangle]
 pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let p = unsafe { cstr(path) };
@@ -2285,6 +2452,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
             eprintln!("cinder-ffi: liked songs: {} loaded", r.liked.len());
             r.liked_path = Some(liked_path);
             r.app.set_liked_count(r.liked.len());
+            r.db_path = Some(p.clone());
             start_art_cache(r, &p);
             0
         }
@@ -2540,11 +2708,20 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 // art_key remembers the object we last decoded for). Pre-scale to the two draw
                 // sizes so render is a plain blit. Failure → gradient fallback stays.
                 if r.art_key != Some(t.object_id) {
-                    let native = r.db.as_ref().and_then(|db| art_load::load(db, t.object_id));
-                    r.art_full = native.as_ref().map(|img| img.scaled_to(480, 480));
-                    r.art_thumb = native.as_ref().map(|img| img.scaled_to(92, 92));
-                    bake_gradient_art(r); // no embedded cover → bake the fallback once, not per frame
+                    // DO NOT DECODE HERE. art_load::load plus the two rescales measures ~365 ms on
+                    // device, and this runs on the RENDER THREAD holding the global lock — so every
+                    // track change froze the whole UI for a third of a second, which is most of
+                    // what "playing a song from the library is laggy" was.
+                    //
+                    // Show the gradient immediately and let the decoder thread replace it when it
+                    // lands. art_key is claimed NOW, so a re-poll of the same track does not queue
+                    // the work twice; the decoder re-checks it before installing, so a fast run of
+                    // skips cannot paint an earlier track's cover over a later one.
+                    r.art_full = None;
+                    r.art_thumb = None;
+                    bake_gradient_art(r);
                     r.art_key = Some(t.object_id);
+                    request_cover(r, t.object_id);
                 }
                 // TRACK BOUNDARY — the one moment a queue change is free. The new track has just
                 // begun, so re-issuing the sequence resets a position that is already ~0 and the
@@ -2659,8 +2836,8 @@ mod tests {
     fn every_screen_has_a_distinct_panic_name() {
         use cinder_ui::nav::Screen as S;
         let all = [
-            S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::UpNext, S::Eq, S::Sound,
-            S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
+            S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::Artist, S::UpNext, S::Eq,
+            S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
@@ -3105,3 +3282,4 @@ mod tests {
         assert!(RAIL_GRAB_BOT < 692 - 44, "band overlaps the play/pause target");
     }
 }
+

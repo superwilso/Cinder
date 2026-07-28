@@ -30,6 +30,7 @@
 #include <time.h>   // clock_gettime/CLOCK_MONOTONIC (drag velocity timing)
 #include <setjmp.h>
 #include <pthread.h>
+#include <sys/stat.h>      // stat() — the dev request-file consumer (take_req)
 #include <sys/statvfs.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>   // umount/umount2 (we unmount /contents ourselves before the MSC handoff)
@@ -605,6 +606,11 @@ static long  g_drag_last_ms = 0;
 // scrub gesture would otherwise also fire a Next/Prev on release.
 static bool  g_scrub_active = false;
 static bool  g_scrub_tested = false;   // has this contact been offered to cinder_scrub_hit yet?
+// Live ROW SWIPE (swipe-to-queue). Like the scrub, this is decided once and then owns the contact:
+// a row that is following the finger must not also start scrolling the list under it. Set only if
+// cinder_swipe_track reports that a TRACK row actually took the gesture — on an artist row, or the
+// empty space below a list, the contact stays a normal drag.
+static bool  g_hswipe_active = false;
 long now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1222,7 +1228,7 @@ static void screen_auto_off() {
     // Drop any in-flight contact so the waking touch starts a fresh gesture.
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
     g_drag_active = false; g_drag_vel = 0.0f;
-    g_scrub_active = false; g_scrub_tested = false;
+    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
     if (!g_bl_read) load_bl_cfg();
     if (g_bl.valid) {
         FILE* f = std::fopen(g_bl.path, "w");
@@ -1499,6 +1505,10 @@ static void ensure_msc_lun() {
     clog_("usb-msc: LUN STILL empty after retries — host will see a reader with NO medium");
 }
 
+// Forward decl: the MSC entry needs to dismiss its own modal if the handoff is refused, and
+// carry_out is defined below (it dispatches every navigator action, including this one).
+void carry_out(int act);
+
 void enter_usb_msc() {
     clog_("usb-msc: entering (session log -> /tmp/cinder_msc.log, spliced back on exit)");
     // 1) release OUR storage users. Pause is NOT enough: a paused PlayerService keeps the
@@ -1523,85 +1533,52 @@ void enter_usb_msc() {
     //    earlier in-process umount always failed. Fix: cinder-umount (chmod 4755, owner root) regains
     //    caps on exec and unmounts (verified: a uid-100 caller unmounts /contents rc 0). With
     //    /contents already gone, the trigger's lun bind lands on a FREE device. Retry for a holder.
-    bool unmounted = false;
-    for (int i = 0; i < 12; ++i) {
-        if (!contents_mounted()) { unmounted = true; break; }
-        std::system("/system/vendor/unknown321/bin/cinder-umount");
-        if (!contents_mounted()) { unmounted = true; break; }
-        if (i == 0) log_contents_holders();   // name any fd holder on the first miss
-        usleep(250000);
-    }
-    if (!unmounted)
-        clog_("usb-msc: helper could NOT unmount /contents — falling through to the stock trigger");
-    // 3b) NOW flip the gadget. With /contents already unmounted the trigger's lun/file write binds a
-    //     free block device cleanly (functions=mass_storage,adb, idProduct 0B8D); unmount_msc1's
-    //     redundant umount is a harmless no-op. Kept over hand-rolled sysfs so adbd + idProduct stay
-    //     exactly as stock expects on the way in AND out. cinder is NOT a child of adbd, so the
-    //     enable-cycle inside the trigger doesn't kill this process mid-switch.
-    std::system("setprop sys.sony.config msc 2>/dev/null");
-    // 4) settle (let unmount_msc1/the enable-cycle catch up), then GUARANTEE the medium is present:
-    //    if the LUN still reads empty, point it + bounce the gadget so the host re-enumerates a
-    //    reader WITH medium. No-op when the trigger already bound it.
-    for (int i = 0; i < 12 && contents_mounted(); ++i) usleep(250000);
-    // WAIT FOR INIT TO FINISH ITS msc BLOCK BEFORE TOUCHING THE LUN. `setprop` returns the moment
-    // the property is set; init then asynchronously runs init.usbcfg.rc's `on
-    // property:sys.sony.config=msc` — which writes lun/file, and THEN does enable 0 → functions →
-    // enable 1. An enable-cycle re-creates the mass_storage instance and clears lun/file.
+    // 3) EVERYTHING PRIVILEGED HAPPENS IN cinder-msc, AS ROOT, IN ONE GO.
     //
-    // The old code did not wait at all: /contents was already unmounted by the helper above, so the
-    // loop on the previous line exited on its first test, and ensure_msc_lun() ran within
-    // microseconds of the setprop — i.e. BEFORE init had done anything. It saw an empty LUN (init
-    // had not bound it yet), wrote it, read it straight back, logged success — and then init's
-    // enable-cycle wiped it. That is the "modal opens, PC sees a reader with no medium" bug, and
-    // the safety net was CAUSING it by racing the sequence it exists to protect.
+    // This used to be a sequence of unprivileged steps here, and MEASURED on device 2026-07-28,
+    // BOTH of the ones that matter are root-only — cinder-home is uid `system` with an empty
+    // capability set, so neither has ever worked:
     //
-    // init's LAST action in that block is `setprop sys.usb.state $sys.usb.config`, so that property
-    // reaching mass_storage,adb is the completion signal. 4 s is generous; the block is a handful
-    // of sysfs writes.
-    bool init_done = false;
-    for (int i = 0; i < 40; ++i) {
-        if (prop_equals("sys.usb.state", "mass_storage,adb")) { init_done = true; break; }
-        usleep(100000);
+    //   * Writing the LUN backing file makes the KERNEL open the block device in OUR credentials.
+    //     /dev/block/mmcblk0p29 is `brw------- root root`, so it is EACCES and the sysfs write
+    //     silently fails. The sysfs node is 0666 system:system, so it LOOKS writable and `echo`
+    //     returns 0 regardless. Hence "LUN STILL empty after retries", eighteen times, and a host
+    //     that saw a reader with no medium.
+    //   * `setprop sys.sony.config msc` is refused for uid system, so the property never left
+    //     "adb" and init's msc block never ran at all. The old "init never reported
+    //     sys.usb.state=mass_storage,adb" line was reporting precisely that, and it was read as a
+    //     timeout to wait out rather than a refusal.
+    //
+    // Every previous fix here (trigger ordering, the enable-cycle, the exit remount) was aimed
+    // downstream of that and could not have worked. As root it binds first time.
+    int rc = std::system("/system/vendor/unknown321/bin/cinder-msc on");
+    if (rc != 0) {
+        char m[128];
+        std::snprintf(m, sizeof m, "usb-msc: cinder-msc on FAILED rc=%d — not entering", rc);
+        clog_(m);
+        // The helper unmounts nothing it cannot hand over, so a failure leaves /contents mounted
+        // and the gadget untouched. Put the log back and stay out of MSC rather than sitting in a
+        // modal over a handoff that did not happen.
+        redirect_fds("/contents/cinderhome.log", O_WRONLY | O_CREAT | O_APPEND);
+        std::system("cat /tmp/cinder_msc.log 2>/dev/null; rm -f /tmp/cinder_msc.log 2>/dev/null");
+        int back = cinder_input(CINDER_BTN_BACK);
+        if (back != CINDER_ACT_NONE && back != CINDER_ACT_EXIT_USB_MSC) carry_out(back);
+        return;
     }
-    clog_(init_done ? "usb-msc: init finished its msc block (sys.usb.state=mass_storage,adb)"
-                    : "usb-msc: init never reported sys.usb.state=mass_storage,adb — binding the LUN anyway");
-    if (!contents_mounted()) {
-        ensure_msc_lun();
-    } else {
-        clog_("usb-msc: /contents STILL MOUNTED after the switch — fd holders:");
-        log_contents_holders();
-        // /contents is writable here, so persist the failed-session diagnosis into the main log now.
-        std::system("cat /tmp/cinder_msc.log >> /contents/cinderhome.log 2>/dev/null");
-    }
-    // 5) record the gadget state (goes to the tmpfs log; readable after exit — or already
-    //    spliced above on the unrecoverable path)
-    std::system("sleep 3; echo \"[cinder-home] usb-msc: state=$(getprop sys.usb.state) "
-                "functions=$(cat /sys/class/android_usb/android0/functions 2>/dev/null) "
-                "lun=$(cat /sys/class/android_usb/android0/f_mass_storage/lun/file 2>/dev/null)\"");
+    clog_("usb-msc: handed over (cinder-msc on)");
     g_msc_active = true;
     g_msc_seen_usb = false;
 }
 void exit_usb_msc() {
-    std::system("setprop sys.sony.config adb 2>/dev/null");           // stock default; remounts
-    for (int i = 0; i < 50 && !contents_mounted(); ++i) usleep(100000); // ≤5 s for mount_msc1
-    // FALLBACK: start the mount service OURSELVES if the trigger's did not take.
-    //
-    // Observed on device 2026-07-28: after an MSC session the property was back to adb (so init
-    // HAD run the block, which ends in `start mount_msc1`) and /contents was still not mounted.
-    // mount_msc1 is `oneshot`, so init will not retry it on its own, and everything downstream
-    // then quietly goes wrong in ways that do not look like a mount problem: the library is empty
-    // because the music is gone, and redirect_fds below reopens the log on the UNMOUNTED
-    // mountpoint — a real file on the root filesystem that nobody will ever find, so the session
-    // log is spliced into oblivion and the failure erases its own evidence.
-    //
-    // `setprop ctl.start` is init's own service-start channel and needs no privilege we lack —
-    // cinder already starts adbd this way on the dev channel.
-    if (!contents_mounted()) {
-        clog_("usb-msc: /contents did not come back from the trigger — starting mount_msc1 directly");
-        for (int i = 0; i < 3 && !contents_mounted(); ++i) {
-            std::system("setprop ctl.start mount_msc1 2>/dev/null");
-            for (int j = 0; j < 20 && !contents_mounted(); ++j) usleep(100000); // ≤2 s per attempt
-        }
+    // Mirror of the entry: releasing the LUN and remounting /contents are both root-only, and the
+    // helper does them in the one order that is safe — media released BEFORE the remount, so the
+    // host and the kernel never hold the same vfat at once. It also falls back to mounting
+    // /contents itself, because init's mount_msc1 is `oneshot` and will not re-run within a boot.
+    int rc = std::system("/system/vendor/unknown321/bin/cinder-msc off");
+    if (rc != 0) {
+        char m[128];
+        std::snprintf(m, sizeof m, "usb-msc: cinder-msc off rc=%d", rc);
+        clog_(m);
     }
     redirect_fds("/contents/cinderhome.log", O_WRONLY | O_CREAT | O_APPEND);
     g_msc_active = false;
@@ -1759,6 +1736,22 @@ static void touch_release() {
             // there is no acceptance to report — the old "seek REJECTED" line here was reading a
             // leftover register and saying something it could not know. Where the seek actually
             // landed is answered by the /tmp/cinder_seek.req dev probe, not from this call.
+            // PAINT THE NEW POSITION BEFORE BLOCKING. cinder_scrub_end has already re-anchored the
+            // bar on the target, but the seek itself takes ~700 ms — and MEASURED 2026-07-28 that
+            // is almost entirely Sony's two ChangePlayState round trips (pause 190-254 ms, play
+            // 440-503 ms; the SeekTime in the middle is 7-35 ms). The engine will not seek while it
+            // is streaming, so the pause is not optional.
+            //
+            // Nothing here can make the audio resume faster, but the render thread does not have to
+            // sit on a stale frame for the whole transaction. One tick costs ~16 ms and puts the
+            // bar where the finger left it immediately, so the wait reads as the audio catching up
+            // rather than as the UI having ignored the gesture.
+            //
+            // (The full fix is to run the sequence off the render thread. Not done: it would mean
+            // concurrent PlayController IPC with whatever carry_out is doing, and the client's
+            // thread-safety is unknown — a real risk for a ~700 ms input-blocking window that only
+            // occurs on a deliberate drag.)
+            cinder_render_tick();
             int rc = cinder_audio_seek_ms(ms);
             char m[80];
             std::snprintf(m, sizeof m, "touch: seek -> %d ms (sent=%s)", ms, rc == 0 ? "yes" : "NO CONTROLLER");
@@ -1790,9 +1783,13 @@ static void touch_release() {
         }
         // (vertical drags never reach here — they became a live drag at ~12px of movement)
     }
+    // Whatever the classification decided, a row that was following the finger has to be let go:
+    // this animates it home. Ordered AFTER cinder_swipe so the queue action (and its toast) is
+    // already in flight when the row starts travelling back.
+    if (g_hswipe_active) cinder_swipe_release();
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
     g_drag_active = false; g_drag_vel = 0.0f;
-    g_scrub_active = false; g_scrub_tested = false;
+    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
 }
 
 // Called on every touch position update while the contact is down: promote a mostly-vertical
@@ -1818,6 +1815,12 @@ static void touch_drag_motion() {
         cinder_scrub_to(touch_ui_x(g_touch_cur_x));
         return;
     }
+    if (g_hswipe_active) {
+        // The row owns this contact: stream its travel so it keeps tracking the finger.
+        cinder_swipe_track(touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x),
+                           touch_ui_y(g_touch_start_y));
+        return;
+    }
     if (!g_drag_active) {
         int dyt = uy - touch_ui_y(g_touch_start_y);
         int dxt = touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x);
@@ -1827,6 +1830,13 @@ static void touch_drag_motion() {
             g_drag_last_uy = uy;
             g_drag_last_ms = now_ms();
             g_drag_vel = 0.0f;
+            return;
+        }
+        // Mostly-horizontal past the same 12px slop: offer it to the UI as a live row swipe. The
+        // left-edge Back gesture is NOT offered — it starts at x<=38 and owns that strip, and a row
+        // that slid under an edge-back would promise a queue that release never performs.
+        if (adxt > 12 && adxt > adyt && touch_ui_x(g_touch_start_x) > 38) {
+            g_hswipe_active = cinder_swipe_track(dxt, touch_ui_y(g_touch_start_y)) != 0;
         }
         return;
     }
@@ -1916,6 +1926,36 @@ void power_hold_tick() {
     // holding Power in a pocket would blank/unblank the panel.
 }
 
+// Consume a dev request-file: true if one was waiting. Handles the two ways /tmp defeats us —
+// cinder-home is uid `system`, /tmp is sticky (drwxrwxrwt) and `adb shell echo >` creates files
+// root-owned 0600, so an unlink() by a non-owner is EPERM and a request that cannot be removed
+// re-fires on every housekeeping tick forever (observed 2026-07-28: one echo, fifty seek probes).
+// Falls back to truncating, and treats an empty file as "nothing to do", so a request is consumed
+// exactly once whether or not we own it. `out` receives the first line, if the caller wants it.
+static bool take_req(const char* path, char* out, size_t cap) {
+    struct stat st;
+    if (::stat(path, &st) != 0 || st.st_size == 0) return false;
+    bool read_ok = false;
+    if (out && cap) {
+        out[0] = 0;
+        if (FILE* f = std::fopen(path, "r")) {
+            if (std::fgets(out, (int)cap, f)) read_ok = true;
+            std::fclose(f);
+        }
+    } else {
+        read_ok = true;   // caller only cares that the file was there
+    }
+    if (::unlink(path) != 0) {
+        if (FILE* t = std::fopen(path, "w")) std::fclose(t);   // truncate = consumed
+    }
+    if (!read_ok) {
+        char m[160];
+        std::snprintf(m, sizeof m, "req: %s exists but is UNREADABLE by us (chmod 666 it) — ignored", path);
+        clog_(m);
+    }
+    return read_ok;
+}
+
 void input_pump() {
     ev_event evs[32];
     static long g_ev_total = 0;   // events ever seen (any node) — for the silent-input heartbeat
@@ -1982,7 +2022,7 @@ void input_pump() {
                         g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
                         g_touch_saw_pos = false;
                         g_drag_active = false; g_drag_vel = 0.0f;
-                        g_scrub_active = false; g_scrub_tested = false;
+                        g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
                         continue;
                     }
                     // Live touch = activity, so the idle blank holds off — but NOT while Hold is
@@ -1993,7 +2033,7 @@ void input_pump() {
                         g_touch_cur_x = val; g_touch_saw_pos = true;
                         if (!g_touch_down) {
                             g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1;
-                            g_scrub_active = false; g_scrub_tested = false;
+                            g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
                             cinder_touch_down();   // finger down stops an in-flight fling
                         } else if (g_touch_start_x < 0) g_touch_start_x = val;
                         // Also drive the classifier from HERE, not only from ABS_Y: a panel that
@@ -2015,7 +2055,7 @@ void input_pump() {
                         if (val) {
                             if (!g_touch_down) {
                                 g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1;
-                                g_scrub_active = false; g_scrub_tested = false;
+                                g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
                                 cinder_touch_down();
                             }
                         } else {
@@ -2508,22 +2548,44 @@ void* render_driver(void*) {
             // one track per type and cinder-home holds it, so a seek from cinder-probe would have
             // nothing playing to seek within. Sweeping origin 0 then 1 against a known target and
             // reading the resulting position off the log settles it in two runs.
-            if (::access("/tmp/cinder_seek.req", F_OK) == 0) {
-                int origin = 0; long target = 60000;
-                if (FILE* rf = std::fopen("/tmp/cinder_seek.req", "r")) {
-                    char buf[64] = {0};
-                    if (std::fgets(buf, sizeof buf, rf)) std::sscanf(buf, "%d %ld", &origin, &target);
-                    std::fclose(rf);
-                }
-                ::unlink("/tmp/cinder_seek.req");
+            char seekreq[64];
+            if (take_req("/tmp/cinder_seek.req", seekreq, sizeof seekreq)) {
+                int origin = 0, mode = 0; long target = 60000;
+                std::sscanf(seekreq, "%d %ld %d", &origin, &target, &mode);
                 int c0 = -1, t0 = -1;
                 cinder_audio_position(&c0, &t0);
                 // run_guarded takes a plain function pointer (it must survive a longjmp out of a
-                // signal handler), so the probe's two inputs travel in statics rather than a
-                // capture. Single-threaded here — this block runs on the render thread only.
-                static int s_origin, s_ms, s_rc;
-                s_origin = origin; s_ms = (int)target; s_rc = -99;
-                run_guarded("seek probe", 8, []() { s_rc = cinder_audio_seek_ms_origin(s_origin, s_ms); });
+                // signal handler), so the probe's inputs travel in statics rather than a capture.
+                // Single-threaded here — this block runs on the render thread only.
+                //
+                // MODE is the real question now. Origin 0..11, milliseconds, seconds and an offset
+                // of ZERO were all rejected with the same "Bad parameter. ignored" from
+                // MediaEnginePlayer.cc:221 — and a seek to the start of the track cannot be a bad
+                // parameter, so the parameters were never it. The stock app wraps every seek in a
+                // state machine (dmpapp::AudioPlayerImplStateSeek carries a PlayState alongside the
+                // origin and offset), which says the engine wants to be in a particular state
+                // first. These are the two ways to put it there, both already in the shim:
+                //   0 = seek outright (the original, known-rejected path — the control)
+                //   1 = Suspend -> seek -> Resume   (engine-level pause: OMX Executing -> Pause)
+                //   2 = Pause   -> seek -> Play     (transport-level, via ChangePlayState)
+                //   3 = cinder_audio_seek_ms        (the SHIPPING path, so what gets tested is
+                //                                    what runs — no 200 ms settle around the
+                //                                    state change, because drag-to-seek releases
+                //                                    on the render thread and cannot block there)
+                // ANSWER (2026-07-28): mode 2 lands, modes 0 and 1 do not. Mode 3 exists to prove
+                // the production path lands too, without the probe's artificial settles.
+                static int s_origin, s_ms, s_rc, s_mode;
+                s_origin = origin; s_ms = (int)target; s_rc = -99; s_mode = mode;
+                run_guarded("seek probe", 8, []() {
+                    if (s_mode == 3) { s_rc = cinder_audio_seek_ms(s_ms); return; }
+                    if (s_mode == 1) cinder_audio_suspend();
+                    else if (s_mode == 2) cinder_audio_pause();
+                    if (s_mode) usleep(200000);      // let the state transition land before seeking
+                    s_rc = cinder_audio_seek_ms_origin(s_origin, s_ms);
+                    if (s_mode) usleep(200000);
+                    if (s_mode == 1) cinder_audio_resume();
+                    else if (s_mode == 2) cinder_audio_play();
+                });
                 int rc = s_rc;
                 usleep(1200000);
                 int c1 = -1, t1 = -1;
@@ -2534,12 +2596,26 @@ void* render_driver(void*) {
                 long drift = (long)c1 - target;
                 if (drift < 0) drift = -drift;
                 std::fprintf(stderr,
-                    "[cinder-home] seek probe: origin=%d target=%ld rc=%d | before pos=%d dur=%d"
-                    " | after 1.2s pos=%d dur=%d => %s\n",
-                    origin, target, rc, c0, t0, c1, t1,
-                    (drift <= 3000) ? "LANDED (this origin is correct)"
-                                    : "MISSED (wrong origin, or ms is not the unit)");
+                    "[cinder-home] seek probe: origin=%d target=%ld mode=%d rc=%d | before pos=%d"
+                    " dur=%d | after 1.2s pos=%d dur=%d => %s\n",
+                    origin, target, mode, rc, c0, t0, c1, t1,
+                    (t1 != t0)    ? "TRACK CHANGED mid-probe — rerun, this result means nothing"
+                    : (drift <= 3000) ? "LANDED (this mode/origin works)"
+                                      : "MISSED (still refused)");
                 std::fflush(stderr);
+            }
+
+            // DEV PROBE: `echo go > /tmp/cinder_msc.req` runs the SAME path as Settings ▸ USB mass
+            // storage. The manual row is the one the user actually uses and it has never produced a
+            // log anyone could read: the whole session logs to tmpfs (/contents is away) and is
+            // spliced back on exit, so a failure that also breaks the exit erases its own evidence.
+            // Driving it from adb means the attempt can be made, watched and dissected without
+            // anyone having to be holding the device.
+            if (take_req("/tmp/cinder_msc.req", nullptr, 0)) {
+                clog_("usb-msc: entering ON REQUEST (/tmp/cinder_msc.req) — same path as the Settings row");
+                cinder_show_usb_storage();
+                cinder_render_tick();                 // paint the modal; enter_usb_msc blocks ~8 s
+                carry_out(CINDER_ACT_ENTER_USB_MSC);
             }
 #endif
             if (::access("/tmp/cinder_screenshot.req", F_OK) == 0) {

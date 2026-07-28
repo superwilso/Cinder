@@ -44,6 +44,8 @@ pub enum Screen {
     Menu,
     Library,
     Album,
+    /// One artist's page: their albums + every track, pushed from an Artists-tab row.
+    Artist,
     UpNext,
     Eq,
     Sound,
@@ -103,6 +105,11 @@ pub enum Action {
     PlayIndex(i64), // play the library track with this DB object_id (the shell resolves it to a URI)
     PlayPlaylist(i64), // play a whole playlist from the top (DB container object_id)
     Shuffle(ShuffleScope), // the accent band on each Library tab — shuffle within that scope
+    /// Shuffle ONE named artist: the shuffle button on an Artists row, or the band on that
+    /// artist's page. The payload is a `lib.artists` INDEX (resolve it with
+    /// `App::artist_name_at`) rather than the name, because `Action` is `Copy` and a `String`
+    /// would take that away from every other variant.
+    ShuffleArtist(usize),
     ThemeChanged(bool),
     Sleep,
     EnterUsbMsc,
@@ -223,6 +230,19 @@ pub struct App {
     album_cover: Option<crate::art::Image>,
     album_track_idx: usize,
     album_scroll_px: i32,
+    /// Artist drill-in: which `lib.artists` row is open, plus its track cursor and pixel scroll.
+    /// Held as an INDEX, not a resolved page — the page borrows the library, so it is rebuilt per
+    /// frame from this (cheap: it walks the album groups once and collects references).
+    artist_view: usize,
+    artist_track_idx: usize,
+    artist_scroll_px: i32,
+    /// The row currently travelling under a horizontal swipe, and how far. `y` is the screen y the
+    /// gesture started at; the renderer resolves it to a row by containment. `None` between
+    /// gestures. After release this keeps decaying to zero for the snap-back.
+    swipe_row: Option<crate::library::SwipeRow>,
+    /// True while the finger is still down on that swipe. Release clears it, which is what lets
+    /// `tick_dt` take over and animate the row home.
+    swipe_live: bool,
     /// Fling (momentum) velocity in px/s for the current scrollable list; decays each tick.
     fling_v: f32,
     /// Hardware volume (0..VOL_MAX steps) + frames the volume HUD stays visible.
@@ -278,6 +298,9 @@ pub struct App {
     /// The confirmation modal, when one is open. `Some` makes it modal: it is drawn over the
     /// current screen and it swallows every tap until it is answered.
     confirm: Option<crate::confirm::Ask>,
+    /// The song a QueueOnPlay prompt is about. Held only while that modal is up: the tap has
+    /// already happened, but which action it becomes depends on the answer.
+    pending_song: Option<i64>,
     /// How many tracks are liked — drives the Library's "Liked songs" row. The set itself lives in
     /// cinder-ffi (it owns persistence); nav only needs the count to render.
     liked_count: usize,
@@ -343,6 +366,11 @@ impl Default for App {
             album_view: 0,
             album_track_idx: 0,
             album_scroll_px: 0,
+            artist_view: 0,
+            artist_track_idx: 0,
+            artist_scroll_px: 0,
+            swipe_row: None,
+            swipe_live: false,
             fling_v: 0.0,
             volume: 15,
             vol_overlay: 0,
@@ -370,6 +398,7 @@ impl Default for App {
             sleep_idx: 0,
             boot_stock_armed: false,
             confirm: None,
+            pending_song: None,
             liked_count: 0,
             settings_scroll_px: 0,
             screen_off_idx: 0,
@@ -427,6 +456,31 @@ impl App {
         }
         self.confirm = Some(crate::confirm::Ask::PowerMenu);
         true
+    }
+
+    /// Every "play this library track" goes through here.
+    ///
+    /// With an empty user queue it is just `PlayIndex`. With tracks queued it is a question first:
+    /// playing something new either discards the queue you built by hand or leaves it to play
+    /// afterwards, and silently picking either one is wrong. Apple asks the same thing.
+    ///
+    /// A funnel rather than a check at each call site: `PlayIndex` is emitted from seven places
+    /// (song rows, album rows, search, playlists, shuffle, the shelf), and a prompt that only some
+    /// of them respect is worse than no prompt — it would look like the queue is discarded at
+    /// random depending on which screen you started from.
+    fn start_play(&mut self, id: i64) -> Vec<Action> {
+        if self.queue.is_empty() {
+            return vec![Action::PlayIndex(id)];
+        }
+        self.pending_song = Some(id);
+        self.confirm = Some(crate::confirm::Ask::QueueOnPlay);
+        vec![]
+    }
+
+    /// Test helper: put one track in the user queue.
+    #[cfg(test)]
+    fn queue_push_for_test(&mut self) {
+        self.queue.push(crate::model::SongRow::default());
     }
 
     /// Is a modal dialog currently up? The shell uses this to decide whether the screen-blank
@@ -490,6 +544,10 @@ impl App {
             Screen::Album => match self.lib.albums_flat().get(self.album_view) {
                 Some(al) => (al.name.clone(), al.artist.clone()),
                 None => ("Album".into(), String::new()),
+            },
+            Screen::Artist => match self.lib.artists.get(self.artist_view) {
+                Some(ar) => (ar.name.clone(), format!("{} albums · {} tracks", ar.albums, ar.tracks)),
+                None => ("Artist".into(), String::new()),
             },
             s => (screen_title(s).into(), String::new()),
         }
@@ -710,16 +768,27 @@ impl App {
         if let Some(ask) = self.confirm {
             self.confirm = None;
             return match crate::confirm::hit(ask, x, y) {
-                crate::confirm::Hit::Cancel => vec![],
+                crate::confirm::Hit::Cancel => { self.pending_song = None; vec![] }
                 // The menu's own rows say which action was chosen; a yes/no card's Confirm means
                 // "the thing the card is named after".
                 crate::confirm::Hit::Restart => vec![Action::Restart],
                 crate::confirm::Hit::PowerOff => vec![Action::PowerOff],
+                crate::confirm::Hit::ClearQueue => {
+                    let had = !self.queue.is_empty();
+                    self.queue.clear();
+                    let mut acts = Vec::new();
+                    if had { acts.push(Action::QueueChanged); }
+                    if let Some(id) = self.pending_song.take() { acts.push(Action::PlayIndex(id)); }
+                    acts
+                }
+                crate::confirm::Hit::KeepQueue => {
+                    self.pending_song.take().map(|id| vec![Action::PlayIndex(id)]).unwrap_or_default()
+                }
                 crate::confirm::Hit::Confirm => match ask {
                     crate::confirm::Ask::Restart => vec![Action::Restart],
                     crate::confirm::Ask::PowerOff => vec![Action::PowerOff],
-                    // PowerMenu never produces a bare Confirm (its hit test returns named rows).
-                    crate::confirm::Ask::PowerMenu => vec![],
+                    // The menus never produce a bare Confirm (their hit test returns named rows).
+                    _ => vec![],
                 },
             };
         }
@@ -858,32 +927,27 @@ impl App {
                 if let Some(album) = self.lib.albums_flat().get(self.album_view) {
                     if let Some(row) = library::album_hit_track(album, self.album_scroll_px, y) {
                         self.album_track_idx = row;
-                        return album
-                            .track_list
-                            .get(row)
-                            .map(|s| vec![Action::PlayIndex(s.object_id)])
-                            .unwrap_or_default();
+                        let id = album.track_list.get(row).map(|s| s.object_id);
+                        return id.map(|i| self.start_play(i)).unwrap_or_default();
                     }
                     // The "Play album" band: play from track 1 — the shell's album_context
                     // expands it to the whole album in order. (Hit-tested through the band's own
                     // rect; the old literal range started 16px above where the band is drawn.)
                     if library::hit_album_play_band(x, y) {
                         self.album_track_idx = 0;
-                        return album
-                            .track_list
-                            .first()
-                            .map(|s| vec![Action::PlayIndex(s.object_id)])
-                            .unwrap_or_default();
+                        let id = album.track_list.first().map(|s| s.object_id);
+                        return id.map(|i| self.start_play(i)).unwrap_or_default();
                     }
                 }
                 vec![]
             }
+            Screen::Artist => self.tap_artist(x, y),
             Screen::UpNext => {
                 // Tap a queue row to play it. The rows are whatever the last render drew
                 // (`up_next_rows`), so this follows the auto-scrolled window exactly.
                 if let Some(id) = crate::up_next::visible_row_at(y).and_then(|r| self.up_next_rows.get(r))
                 {
-                    return vec![Action::PlayIndex(*id)];
+                    return self.start_play(*id);
                 }
                 // Anywhere off the rows keeps the old shortcut back to Now Playing.
                 self.go(Screen::NowPlaying);
@@ -1051,7 +1115,7 @@ impl App {
                 .map(|s| s.object_id)
                 .map(|id| {
                     self.lib_idx = row;
-                    vec![Action::PlayIndex(id)]
+                    self.start_play(id)
                 })
                 .unwrap_or_default(),
             // A playlist row has no single track under the finger, so tapping it plays the whole
@@ -1064,12 +1128,77 @@ impl App {
                     .map(|p| vec![Action::PlayPlaylist(p.id)])
                     .unwrap_or_default()
             }
-            // Artist rows aren't directly playable (no track object under the finger) — they
-            // navigate, not play. Nothing to enqueue.
+            // An artist row has no track under the finger — it opens that artist's page.
+            // The shuffle button on the right of the row shuffles them without the detour.
+            Tab::Artists => {
+                self.lib_idx = row;
+                if row >= self.lib.artists.len() {
+                    return vec![];
+                }
+                if x >= 404 {
+                    return vec![Action::ShuffleArtist(row)];
+                }
+                self.open_artist(row);
+                vec![]
+            }
             _ => {
                 self.lib_idx = row;
                 vec![]
             }
+        }
+    }
+
+    /// Push the artist page for `lib.artists[idx]`, from its top.
+    fn open_artist(&mut self, idx: usize) {
+        self.artist_view = idx;
+        self.artist_track_idx = 0;
+        self.artist_scroll_px = 0;
+        self.fling_v = 0.0;
+        self.push(Screen::Artist);
+    }
+
+    /// The open artist's page, resolved against the library. Borrows `self.lib`, so callers that
+    /// need to mutate must copy what they want out first.
+    fn artist_page(&self) -> Option<crate::library::ArtistPage<'_>> {
+        self.lib.artists.get(self.artist_view).map(|a| library::artist_page(&self.lib, &a.name))
+    }
+
+    /// A tap on the artist page: an album row drills in, a track row plays.
+    fn tap_artist(&mut self, x: i32, y: i32) -> Vec<Action> {
+        if library::hit_artist_shuffle_band(x, y) {
+            return vec![Action::ShuffleArtist(self.artist_view)];
+        }
+        // Resolve the hit and copy the result out — `page` borrows `self.lib`, and everything
+        // below this line mutates `self`.
+        let hit = self.artist_page().and_then(|p| {
+            library::artist_hit(&p, self.artist_scroll_px, y).map(|h| match h {
+                library::ArtistHit::Track(i) => (h, p.tracks.get(i).map(|t| t.song.object_id)),
+                _ => (h, None),
+            })
+        });
+        match hit {
+            Some((library::ArtistHit::Album(flat), _)) => {
+                self.album_view = flat;
+                self.album_track_idx = 0;
+                self.album_scroll_px = 0;
+                self.fling_v = 0.0;
+                self.push(Screen::Album);
+                vec![]
+            }
+            Some((library::ArtistHit::Track(i), Some(id))) => {
+                self.artist_track_idx = i;
+                self.start_play(id)
+            }
+            _ => vec![],
+        }
+    }
+
+    /// The track under `y` on the artist page, for the swipe-to-queue gesture.
+    fn artist_track_at(&self, y: i32) -> Option<SongRow> {
+        let page = self.artist_page()?;
+        match library::artist_hit(&page, self.artist_scroll_px, y) {
+            Some(library::ArtistHit::Track(i)) => page.tracks.get(i).map(|t| t.song.clone()),
+            _ => None,
         }
     }
 
@@ -1095,13 +1224,11 @@ impl App {
                 self.push(Screen::Album);
                 vec![]
             }
-            Some(AlbumsHit::Track(flat, track)) => self
-                .lib
-                .albums_flat()
-                .get(flat)
-                .and_then(|al| al.track_list.get(track))
-                .map(|s| vec![Action::PlayIndex(s.object_id)])
-                .unwrap_or_default(),
+            Some(AlbumsHit::Track(flat, track)) => {
+                let id = self.lib.albums_flat().get(flat)
+                    .and_then(|al| al.track_list.get(track)).map(|s| s.object_id);
+                id.map(|i| self.start_play(i)).unwrap_or_default()
+            }
             None => vec![],
         }
     }
@@ -1160,6 +1287,11 @@ impl App {
                     self.album_scroll_px = (self.album_scroll_px + dy_px).clamp(0, max);
                 }
             }
+            Screen::Artist => {
+                if let Some(max) = self.artist_page().map(|p| library::artist_max_scroll_px(&p)) {
+                    self.artist_scroll_px = (self.artist_scroll_px + dy_px).clamp(0, max);
+                }
+            }
             Screen::Settings => {
                 let max = crate::settings::max_scroll_px();
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
@@ -1171,7 +1303,7 @@ impl App {
     /// Momentum fling: the release velocity (px/s, same sign convention as `scroll_px`). The
     /// per-frame `tick()` integrates and decays it, keeping frames dirty until it stops.
     pub fn fling(&mut self, velocity_px_s: f32) {
-        if matches!(self.current(), Screen::Library | Screen::Album) {
+        if matches!(self.current(), Screen::Library | Screen::Album | Screen::Artist) {
             self.fling_v = velocity_px_s.clamp(-8000.0, 8000.0);
         }
     }
@@ -1187,6 +1319,56 @@ impl App {
     /// buttons; on the Library/Album lists a RIGHTWARD swipe on a song row adds that song to the
     /// play queue (Spotify-style) with a toast. (Edge-back is classified by the shell before
     /// this and never reaches here.)
+    /// LIVE horizontal drag on a list row: `dx` is total travel from the gesture's start point,
+    /// `y` that start point. The row under `y` moves with the finger and reveals what releasing
+    /// will do. Returns true if a row actually took the gesture, so the shell can commit the
+    /// contact to it (and stop trying to promote it into a vertical scroll).
+    ///
+    /// This is feedback only — it changes no state but the offset. The queueing still happens on
+    /// release, in `swipe`, so a gesture dragged back to zero costs nothing.
+    pub fn swipe_track(&mut self, dx: i32, y: i32) -> bool {
+        if self.locked || self.shelf_open || self.confirm.is_some() {
+            return false;
+        }
+        // Only where a track sits under the finger: the same rows `swipe` can queue. Artist and
+        // playlist rows have nothing to queue, so they must not move — a row that slides and then
+        // does nothing is worse feedback than a row that never moved.
+        let has_track = match self.current() {
+            Screen::Library => match self.lib_tab {
+                Tab::Songs => library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
+                    .and_then(|r| library::song_at(&self.lib, self.lib_sort, r))
+                    .is_some(),
+                Tab::Albums => self.albums_track_at(y).is_some(),
+                _ => false,
+            },
+            Screen::Album => self
+                .lib
+                .albums_flat()
+                .get(self.album_view)
+                .and_then(|al| library::album_hit_track(al, self.album_scroll_px, y))
+                .is_some(),
+            Screen::Artist => self.artist_track_at(y).is_some(),
+            _ => false,
+        };
+        if !has_track {
+            return false;
+        }
+        self.swipe_live = true;
+        self.swipe_row = Some(crate::library::SwipeRow { y, dx: library::swipe_offset(dx) });
+        true
+    }
+
+    /// The finger came off a live row swipe. The row animates home from wherever it was; whether
+    /// the gesture also queued anything is `swipe`'s business, not this one's.
+    pub fn swipe_release(&mut self) {
+        self.swipe_live = false;
+    }
+
+    /// The row offset currently in effect, for tests and the host preview.
+    pub fn swipe_state(&self) -> Option<crate::library::SwipeRow> {
+        self.swipe_row
+    }
+
     pub fn swipe(&mut self, dir: i32, _x: i32, y: i32) -> Vec<Action> {
         if self.locked || self.shelf_open {
             return vec![];
@@ -1255,6 +1437,14 @@ impl App {
                     None => vec![],
                 }
             }
+            // The artist page's track rows queue exactly like every other track list.
+            Screen::Artist => match self.artist_track_at(y) {
+                Some(s) => {
+                    let at = if dir < 0 { QueueAt::Next } else { QueueAt::Later };
+                    self.enqueue_at(s, y, at)
+                }
+                None => vec![],
+            },
             Screen::Library if dir > 0 => {
                 // Right-swipe a track row → queue that song, using the same render-mirroring hit
                 // test the tap uses so the queued song is exactly the row under the finger.
@@ -1360,7 +1550,7 @@ impl App {
     /// drill-in. These are the places you end up several pushes deep from Now Playing, which is
     /// exactly where Back-ing out one screen at a time is tedious.
     fn shows_np_bar(s: Screen) -> bool {
-        matches!(s, Screen::Library | Screen::Album)
+        matches!(s, Screen::Library | Screen::Album | Screen::Artist)
     }
 
     /// Number of rows in the current library tab (for cursor clamping).
@@ -1409,6 +1599,35 @@ impl App {
         } else if row_top + library::ALBUM_TRACK_RH > self.album_scroll_px + view {
             self.album_scroll_px = row_top + library::ALBUM_TRACK_RH - view;
         }
+    }
+
+    /// Keep the artist page's track cursor in view. The track rows sit below a variable-height
+    /// album block, so the row's content-space y comes from the page layout rather than from
+    /// `idx * row_h` — the album rows above it are not the same height.
+    fn artist_ensure_visible(&mut self) {
+        let want = self.artist_track_idx;
+        let Some((row_top, max)) = self.artist_page().and_then(|p| {
+            let top = p.rows.iter().find_map(|(vy, r)| {
+                matches!(*r, library::ArtistRowKind::Song(i) if i == want).then_some(*vy)
+            })?;
+            Some((top, library::artist_max_scroll_px(&p)))
+        }) else {
+            return;
+        };
+        let view = library::artist_view_h().max(1);
+        let rh = library::ARTIST_TRACK_RH;
+        if row_top < self.artist_scroll_px {
+            self.artist_scroll_px = row_top;
+        } else if row_top + rh > self.artist_scroll_px + view {
+            self.artist_scroll_px = row_top + rh - view;
+        }
+        self.artist_scroll_px = self.artist_scroll_px.clamp(0, max);
+    }
+
+    /// The name of `lib.artists[idx]` — how the shell resolves an `Action::ShuffleArtist` payload
+    /// back to something it can query the DB with.
+    pub fn artist_name_at(&self, idx: usize) -> Option<&str> {
+        self.lib.artists.get(idx).map(|a| a.name.as_str())
     }
 
     /// Resolve the currently-highlighted library row to a track object_id to play, if any.
@@ -1653,9 +1872,11 @@ impl App {
                         vec![]
                     }
                     // lib_idx is a RANK in the drawn (sorted) order — resolve through it.
-                    Tab::Songs => library::song_at(&self.lib, self.lib_sort, self.lib_idx)
-                        .map(|s| vec![Action::PlayIndex(s.object_id)])
-                        .unwrap_or_default(),
+                    Tab::Songs => {
+                        let id = library::song_at(&self.lib, self.lib_sort, self.lib_idx)
+                            .map(|s| s.object_id);
+                        id.map(|i| self.start_play(i)).unwrap_or_default()
+                    }
                     // A playlist row has no single track under the cursor — selecting it plays
                     // the whole list from the top, in saved order.
                     Tab::Playlists => self
@@ -1693,13 +1914,40 @@ impl App {
                         }
                         vec![]
                     }
-                    Button::Select => self
-                        .lib
-                        .albums_flat()
-                        .get(self.album_view)
-                        .and_then(|a| a.track_list.get(self.album_track_idx))
-                        .map(|s| vec![Action::PlayIndex(s.object_id)])
-                        .unwrap_or_default(),
+                    Button::Select => {
+                        let id = self.lib.albums_flat().get(self.album_view)
+                            .and_then(|a| a.track_list.get(self.album_track_idx))
+                            .map(|s| s.object_id);
+                        id.map(|i| self.start_play(i)).unwrap_or_default()
+                    }
+                    Button::Back | Button::Left => {
+                        self.pop();
+                        vec![]
+                    }
+                    _ => vec![],
+                }
+            }
+            Screen::Artist => {
+                let n = self.artist_page().map(|p| p.tracks.len()).unwrap_or(0);
+                match b {
+                    Button::Up => {
+                        self.artist_track_idx = self.artist_track_idx.saturating_sub(1);
+                        self.artist_ensure_visible();
+                        vec![]
+                    }
+                    Button::Down => {
+                        if self.artist_track_idx + 1 < n {
+                            self.artist_track_idx += 1;
+                            self.artist_ensure_visible();
+                        }
+                        vec![]
+                    }
+                    Button::Select => {
+                        let id = self
+                            .artist_page()
+                            .and_then(|p| p.tracks.get(self.artist_track_idx).map(|t| t.song.object_id));
+                        id.map(|i| self.start_play(i)).unwrap_or_default()
+                    }
                     Button::Back | Button::Left => {
                         self.pop();
                         vec![]
@@ -1893,27 +2141,36 @@ impl App {
             Screen::Library => {
                 crate::library::render(
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
-                    self.album_sort, self.album_expanded, &self.lib,
+                    self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
                 );
-                crate::library::az_render(
-                    c, &theme, fonts, self.lib_tab, &self.lib, self.album_sort,
-                    self.album_expanded,
-                );
+                crate::library::az_render(c, &theme, fonts, self.lib_tab, &self.lib, self.album_sort);
             }
             Screen::Album => {
                 let flat = self.lib.albums_flat();
                 if let Some(al) = flat.get(self.album_view) {
                     crate::library::album_view(
                         c, &theme, fonts, al, self.album_track_idx, self.album_scroll_px,
-                        self.album_cover.as_ref(),
+                        self.album_cover.as_ref(), self.swipe_row,
                     );
                 } else {
                     crate::library::render(
                         c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
-                        self.album_sort, self.album_expanded, &self.lib,
+                        self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
                     );
                 }
             }
+            Screen::Artist => match self.artist_page() {
+                Some(page) => crate::library::artist_view(
+                    c, &theme, fonts, &self.lib, &page, self.artist_scroll_px,
+                    self.artist_track_idx, self.swipe_row,
+                ),
+                // The artist index outlived its library (a rescan while the page was open).
+                // Falling back to the list is better than a blank screen, and Back still works.
+                None => crate::library::render(
+                    c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
+                    self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
+                ),
+            },
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
             Screen::UsbStorage => crate::usb_storage::render(c, &theme, fonts),
             Screen::UpNext => {
@@ -2039,7 +2296,9 @@ impl App {
         }
         // Swipe-to-queue chip riding the flicked row (list screens only — if the user navigates
         // away mid-animation the anchor row is gone, so it just stops).
-        if self.queue_anim_frames > 0 && matches!(self.current(), Screen::Library | Screen::Album) {
+        if self.queue_anim_frames > 0
+            && matches!(self.current(), Screen::Library | Screen::Album | Screen::Artist)
+        {
             let p = self.queue_anim_frames as f32 / QUEUE_ANIM_FRAMES as f32;
             crate::overlay::queue_chip(c, &theme, fonts, self.queue_anim_y, p);
         }
@@ -2093,6 +2352,7 @@ impl App {
             let scroll_of = |a: &Self| match a.current() {
                 Screen::Library => a.lib_scroll_px,
                 Screen::Album => a.album_scroll_px,
+                Screen::Artist => a.artist_scroll_px,
                 Screen::Settings => a.settings_scroll_px,
                 _ => 0,
             };
@@ -2105,6 +2365,19 @@ impl App {
                 self.fling_v = 0.0;
             }
             animating = true;
+        }
+        // Swipe snap-back: once the finger is off, the row travels home under the same
+        // time-based decay the fling uses (NOT a per-call constant — see the comment above; the
+        // device renders at ~32 fps, so a per-frame factor would take twice as long there as it
+        // does on the host, on the one animation the user is watching most closely).
+        if let Some(s) = self.swipe_row {
+            if self.swipe_live {
+                animating = true; // the finger is driving it; keep frames coming
+            } else {
+                let dx = (s.dx as f32 * 0.70f32.powf(dt / FRAME_MS as f32)) as i32;
+                self.swipe_row = if dx.abs() < 2 { None } else { Some(crate::library::SwipeRow { dx, ..s }) };
+                animating = true;
+            }
         }
         // HUD/toast countdowns are expressed in 60 fps frames; burn the number of frames that
         // really elapsed so their on-screen duration is the same at any frame rate.
@@ -3960,5 +4233,162 @@ mod tests {
                 .expect("no confirm pixel");
             assert_eq!(a.tap(x, y), vec![act]);
         }
+    }
+
+    // ── Playing a song while a hand-built queue exists ────────────────────────────────────────
+
+    /// With an empty queue, playing is immediate — the prompt must not appear for the common case.
+    #[test]
+    fn an_empty_queue_plays_without_asking() {
+        let mut a = unlocked();
+        assert_eq!(a.start_play(77), vec![Action::PlayIndex(77)]);
+        assert!(!a.modal_open());
+    }
+
+    /// With tracks queued it asks first, and each answer does exactly one thing.
+    #[test]
+    fn a_queued_song_asks_before_replacing_the_queue() {
+        use crate::confirm::{hit, Ask, Hit};
+        let pick = |want: Hit| {
+            (0..crate::canvas::H as i32)
+                .find(|y| hit(Ask::QueueOnPlay, 240, *y) == want)
+                .expect("row has no tappable pixel")
+        };
+
+        // CLEAR: queue emptied, and the shell is told both things that changed.
+        let mut a = unlocked();
+        a.queue_push_for_test();
+        assert!(a.start_play(77).is_empty(), "the tap must not play until answered");
+        assert!(a.modal_open());
+        let acts = a.tap(240, pick(Hit::ClearQueue));
+        assert_eq!(acts, vec![Action::QueueChanged, Action::PlayIndex(77)]);
+        assert!(a.queue().is_empty());
+
+        // KEEP: plays, queue untouched, and no spurious QueueChanged.
+        let mut a = unlocked();
+        a.queue_push_for_test();
+        let before = a.queue().len();
+        assert!(a.start_play(77).is_empty());
+        assert_eq!(a.tap(240, pick(Hit::KeepQueue)), vec![Action::PlayIndex(77)]);
+        assert_eq!(a.queue().len(), before, "keeping must not touch the queue");
+
+        // CANCEL: nothing plays, nothing changes, and the pending song is dropped so it cannot
+        // leak into the NEXT prompt.
+        let mut a = unlocked();
+        a.queue_push_for_test();
+        assert!(a.start_play(77).is_empty());
+        assert!(a.tap(5, 5).is_empty());
+        assert!(!a.modal_open());
+        assert_eq!(a.queue().len(), 1);
+        assert!(a.pending_song.is_none(), "a cancelled song must not survive the dialog");
+    }
+
+    /// Open the Library on a given tab, the way a user does.
+    fn library_on(tab: Tab) -> App {
+        let mut a = unlocked();
+        a.go(Screen::Library);
+        a.lib_tab = tab;
+        a
+    }
+
+    /// The y of Artists row `i`, from the same geometry the renderer uses.
+    fn artist_row_y(i: usize) -> i32 {
+        library::list_top(Tab::Artists) + library::row_h(Tab::Artists) * i as i32 + 20
+    }
+
+    #[test]
+    fn an_artist_row_opens_that_artists_page_and_back_returns_to_the_list() {
+        let mut a = library_on(Tab::Artists);
+        assert!(a.lib.artists.len() > 1, "sample library must have artists to open");
+        // Tap the SECOND row — row 0 would also be the default index, so it could pass by accident.
+        assert!(a.tap(200, artist_row_y(1)).is_empty(), "opening a page plays nothing");
+        assert_eq!(a.current(), Screen::Artist);
+        assert_eq!(a.artist_view, 1);
+        // The page is the one that row named.
+        let page = a.artist_page().expect("page resolves");
+        assert_eq!(page.name, a.lib.artists[1].name);
+        // Back returns to the list, still on Artists.
+        assert_eq!(a.press(Button::Back), vec![]);
+        assert_eq!(a.current(), Screen::Library);
+        assert_eq!(a.lib_tab, Tab::Artists);
+    }
+
+    #[test]
+    fn the_row_shuffle_button_shuffles_that_artist_without_opening_the_page() {
+        let mut a = library_on(Tab::Artists);
+        // The button is drawn at x 414..454; anywhere in that block is it.
+        assert_eq!(a.tap(434, artist_row_y(1)), vec![Action::ShuffleArtist(1)]);
+        assert_eq!(a.current(), Screen::Library, "the button must not also navigate");
+        // And the band on the page itself shuffles the artist whose page it is.
+        a.tap(200, artist_row_y(1));
+        let (bx, by, _, bh) = library::shuffle_band_rect(library::ARTIST_BAND_Y);
+        assert_eq!(a.tap(bx + 20, by + bh / 2), vec![Action::ShuffleArtist(1)]);
+    }
+
+    #[test]
+    fn an_artist_page_track_row_plays_and_swipes_to_the_queue() {
+        let mut a = library_on(Tab::Artists);
+        a.tap(200, artist_row_y(0));
+        assert_eq!(a.current(), Screen::Artist);
+        // The first track row, located through the page layout rather than a literal.
+        let (first_track_y, want) = {
+            let p = a.artist_page().expect("page");
+            let vy = p
+                .rows
+                .iter()
+                .find_map(|(vy, r)| matches!(*r, library::ArtistRowKind::Song(0)).then_some(*vy))
+                .expect("the artist has tracks");
+            (library::artist_content_top() + vy + 4, p.tracks[0].song.object_id)
+        };
+        assert_eq!(a.tap(200, first_track_y), vec![Action::PlayIndex(want)]);
+        // Right-swiping the same row queues it instead (empty queue → no prompt involved).
+        let mut a = library_on(Tab::Artists);
+        a.tap(200, artist_row_y(0));
+        assert!(a.queue().is_empty());
+        a.swipe(1, 200, first_track_y);
+        assert_eq!(a.queue().len(), 1, "a swipe on an artist-page track must queue it");
+    }
+
+    #[test]
+    fn only_rows_with_a_track_under_the_finger_move_with_the_swipe() {
+        // A song row takes the gesture …
+        let mut a = library_on(Tab::Songs);
+        let song_y = library::list_top(Tab::Songs) + library::row_h(Tab::Songs) + 20;
+        assert!(a.swipe_track(40, song_y));
+        assert_eq!(a.swipe_state().map(|s| s.dx), Some(40));
+        // … an ARTIST row does not: there is nothing to queue, so a row that slid would be
+        // promising an action release cannot perform.
+        let mut a = library_on(Tab::Artists);
+        assert!(!a.swipe_track(40, artist_row_y(1)));
+        assert_eq!(a.swipe_state(), None);
+        // Neither does the shuffle band above the list.
+        let mut a = library_on(Tab::Songs);
+        let (_, by, _, bh) = library::library_shuffle_band();
+        assert!(!a.swipe_track(40, by + bh / 2));
+        assert_eq!(a.swipe_state(), None);
+    }
+
+    #[test]
+    fn a_released_row_animates_back_to_rest_and_stops() {
+        let mut a = library_on(Tab::Songs);
+        let song_y = library::list_top(Tab::Songs) + library::row_h(Tab::Songs) + 20;
+        a.swipe_track(200, song_y);
+        let held = a.swipe_state().expect("row is travelling").dx;
+        assert!(held > 0);
+        // While the finger is down the row holds its offset, however many frames pass.
+        for _ in 0..60 {
+            a.tick();
+        }
+        assert_eq!(a.swipe_state().map(|s| s.dx), Some(held), "a held row must not drift home");
+        // After release it decays to rest — and then STOPS asking for frames, or the device would
+        // repaint forever for an animation that has finished.
+        a.swipe_release();
+        let mut frames = 0;
+        while a.swipe_state().is_some() {
+            assert!(a.tick(), "an animating row must report that it needs a repaint");
+            frames += 1;
+            assert!(frames < 240, "the snap-back never settled");
+        }
+        assert!(frames > 1, "the row must animate home, not teleport");
     }
 }

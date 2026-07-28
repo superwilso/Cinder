@@ -17,6 +17,12 @@ pub struct Canvas {
     /// chrome above or below; everything else draws with the full-screen default.
     clip_top: i32,
     clip_bot: i32,
+    /// Horizontal translation applied to EVERY pixel write, in px. Zero for normal drawing; set
+    /// while a swiped list row is drawn so the whole row — text, separators, cover art, icons —
+    /// moves as one piece. Doing it here rather than threading an offset through each draw call
+    /// is what makes "the whole bar follows the finger" a two-line change at the call site
+    /// instead of an edit to every primitive in the row.
+    off_x: i32,
 }
 
 impl Default for Canvas {
@@ -27,7 +33,17 @@ impl Default for Canvas {
 
 impl Canvas {
     pub fn new() -> Self {
-        Self { buf: vec![0; W * H], clip_top: 0, clip_bot: H as i32 }
+        Self { buf: vec![0; W * H], clip_top: 0, clip_bot: H as i32, off_x: 0 }
+    }
+
+    /// Translate every subsequent draw horizontally by `dx` px. Pair with `clear_offset_x`.
+    /// The vertical clip band is NOT affected — a shifted row still can't paint outside the list.
+    pub fn set_offset_x(&mut self, dx: i32) {
+        self.off_x = dx;
+    }
+
+    pub fn clear_offset_x(&mut self) {
+        self.off_x = 0;
     }
 
     /// Restrict drawing to rows `top..bottom` (screen coords). Pair with `clear_clip`.
@@ -47,6 +63,7 @@ impl Canvas {
 
     #[inline]
     pub fn put(&mut self, x: i32, y: i32, v: u32) {
+        let x = x + self.off_x;
         if x >= 0 && y >= self.clip_top && y < self.clip_bot && (x as usize) < W {
             self.buf[y as usize * W + x as usize] = v;
         }
@@ -55,6 +72,7 @@ impl Canvas {
     /// Alpha-blend `c` over the existing pixel with coverage `a` (0..=255).
     #[inline]
     pub fn blend(&mut self, x: i32, y: i32, c: Rgb888, a: u8) {
+        let x = x + self.off_x;
         if x < 0 || y < self.clip_top || y >= self.clip_bot || x as usize >= W {
             return;
         }
@@ -78,6 +96,7 @@ impl Canvas {
     /// a full-bleed 480x480 cover is 230,400 of them — measured at ~1 ms/frame on the host, which
     /// is most of what a Now Playing frame costs, redrawn 20x a second while the visualiser runs.
     pub fn row_run(&mut self, y: i32, x: i32, len: usize) -> Option<(usize, &mut [u32])> {
+        let x = x + self.off_x;
         if y < self.clip_top || y >= self.clip_bot || len == 0 {
             return None;
         }
@@ -145,9 +164,9 @@ impl DrawTarget for Canvas {
 
     fn fill_solid(&mut self, area: &Rectangle, color: Self::Color) -> Result<(), Self::Error> {
         let v = to_u32(color);
-        let x0 = area.top_left.x.max(0);
+        let x0 = (area.top_left.x + self.off_x).max(0);
         let y0 = area.top_left.y.max(self.clip_top);
-        let x1 = (area.top_left.x + area.size.width as i32).min(W as i32);
+        let x1 = (area.top_left.x + self.off_x + area.size.width as i32).min(W as i32);
         let y1 = (area.top_left.y + area.size.height as i32).min(self.clip_bot);
         // Row-at-a-time slice fill, not pixel-at-a-time: this is the single hottest primitive in
         // the UI (every row background, separator, band and panel goes through it), and the

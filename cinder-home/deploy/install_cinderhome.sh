@@ -49,6 +49,7 @@ SRC=/contents/cinder-home
 SRC_UMOUNT=/contents/cinder-umount
 SRC_GPUNODE=/contents/cinder-gpunode
 SRC_POWER=/contents/cinder-power
+SRC_MSC=/contents/cinder-msc
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
 LAUNCH=$BIN/cinderhome-launch.sh
@@ -154,6 +155,24 @@ if [ -s "$SRC_POWER" ]; then
     fi
 else
     echo "WARN: $SRC_POWER not staged (tools/flash.sh --push dist/<ch>/cinder-power) — Power off / Restart will not work."
+fi
+
+# 1e) install the setuid-root USB-MSC helper. Both privileged steps of the handoff (binding the
+#     LUN's backing block device, and switching sys.sony.config) are root-only, so without this
+#     USB mass storage cannot work at all from capless cinder-home.
+if [ -s "$SRC_MSC" ]; then
+    "$BB" cat "$SRC_MSC" > "$BIN/cinder-msc.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-msc.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-msc.tmp" 2>/dev/null
+        "$BB" chmod 4755 "$BIN/cinder-msc.tmp"
+        "$BB" mv -f "$BIN/cinder-msc.tmp" "$BIN/cinder-msc"
+        echo "installed setuid helper: $BIN/cinder-msc ($("$BB" wc -c < "$BIN/cinder-msc" 2>/dev/null | "$BB" tr -cd '0-9') bytes, mode $("$BB" stat -c %a "$BIN/cinder-msc" 2>/dev/null))"
+    else
+        echo "WARN: cinder-msc stage empty — USB mass storage will not work."
+        "$BB" rm -f "$BIN/cinder-msc.tmp" 2>/dev/null
+    fi
+else
+    echo "WARN: $SRC_MSC not staged (tools/flash.sh --push dist/<ch>/cinder-msc) — USB mass storage will not work."
 fi
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch

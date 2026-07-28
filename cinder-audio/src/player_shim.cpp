@@ -494,7 +494,44 @@ int cinder_audio_prev_group(void) { return g_ctrl ? g_ctrl->PrevGroup(nullptr) :
 /// like NextTrack. It used to be declared `int` here and the shell logged "seek REJECTED" whenever
 /// the leftover r0 happened to be non-zero, which was pure noise: a rejected seek and an accepted
 /// one are indistinguishable from the caller. So 0 here means "sent", not "worked".
-int cinder_audio_seek_ms(int ms) { return cinder_audio_seek_ms_origin(0, ms); }
+int cinder_audio_seek_ms(int ms) {
+    if (!g_ctrl) return -1;
+    // THE ENGINE WILL NOT SEEK WHILE IT IS STREAMING. Drag-to-seek moved the bar and never moved
+    // the audio, and the reason was not the parameters: with playback running, EVERY origin (swept
+    // 0..11), milliseconds, seconds, and even an offset of ZERO came back from
+    // MediaEnginePlayer.cc:221 as "SeekTime(): Bad parameter. ignored". A seek to the start of the
+    // track cannot be a bad parameter — so it was never the argument, it was the state.
+    //
+    // Sony's own app agrees: it wraps every seek in dmpapp::AudioPlayerImplStateSeek, which carries
+    // a PlayState alongside the origin and offset. (Wampy never hits this at all — it asks the
+    // stock app to seek over a socket, so the direct path had never been driven by anything.)
+    //
+    // Pause first and the identical call lands exactly. MEASURED 2026-07-28 against a live track:
+    // targets 20 s / 30 s / 150 s, forwards and backwards, three for three, and zero "Bad
+    // parameter" in logcat. Suspend()/Resume() — the engine-level pause — does NOT work; it has to
+    // be the transport-level ChangePlayState.
+    //
+    // Only resume if we interrupted something: seeking inside a PAUSED track must leave it paused.
+    const bool resume = cinder_audio_is_playing() != 0;
+    // Timed in three parts, because "seek feels slow" has three possible owners and they need
+    // different fixes: our IPC round trips (move them off the render thread), the engine's own
+    // pause/resume transition (nothing we can do), or the demuxer reposition (likewise).
+    auto now_ms_ = []() {
+        struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+        return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    };
+    long long t0 = now_ms_();
+    if (resume) change_state(pl::playstate_t::Pause);
+    long long t1 = now_ms_();
+    int rc = cinder_audio_seek_ms_origin(0, ms);
+    long long t2 = now_ms_();
+    if (resume) change_state(pl::playstate_t::Play);
+    long long t3 = now_ms_();
+    std::fprintf(stderr, "[cinder-audio] seek %d ms: pause=%lldms seek=%lldms play=%lldms total=%lldms\n",
+                 ms, t1 - t0, t2 - t1, t3 - t2, t3 - t0);
+    std::fflush(stderr);
+    return rc;
+}
 
 /// Same, with the origin selectable. The `media_origin_t` VALUES are unverified (Begin=0/Current=1
 /// is an RE guess), and drag-to-seek moving the bar without moving the audio is exactly what a

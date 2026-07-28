@@ -2,9 +2,13 @@
 
 Built **2026-07-28** from `HEAD`. Staged in `cinder-home/dist/dev/` and `cinder-home/dist/stable/`.
 
-This build answers four things reported from the last hardware session: Power off did nothing but
-sleep, Restart froze the device, drag-to-seek moved the bar but not the audio, and normal touch felt
-clunky. Three of the four have a root cause and a fix. The fourth (seek) has a probe that settles it.
+Five things are fixed here, each with a root cause established on hardware rather than inferred:
+Power off only slept, Restart froze the device, drag-to-seek moved the bar but not the audio, normal
+touch felt clunky, and USB mass storage had never worked at all.
+
+Four of the five were misdiagnosed for weeks in the same way — as timing, ordering or enum-value
+problems — and all four turned out to be **permission or state** problems that a single on-device
+measurement settled. Worth remembering the next time something here looks like a race.
 
 ---
 
@@ -74,18 +78,75 @@ everything you touch — which is why Settings felt clunky despite having no alb
 Input is now read at the top of the loop, so the frame about to be painted already reflects the
 finger. Gated on `g_deferred_done` so nothing runs earlier in the boot than it used to.
 
-### 4. Drag-to-seek — one unverified value, and a probe for it
+### 4. Drag-to-seek — SOLVED
 
-Two findings. First, `PlayController::SeekTime` is **void**, not `int` (disasm @0x13200 packs
-`{session, origin, ms}`, calls proxy vtable+0x48, and discards the response — exactly like
-`NextTrack`). The shell was reading a leftover register and logging "seek REJECTED" off it, which
-was noise: an accepted seek and a rejected one are indistinguishable from the caller.
+**The engine will not seek while it is streaming.** With playback running, every origin (swept
+0..11), milliseconds, seconds, and even an offset of **zero** came back from
+`MediaEnginePlayer.cc:221` as `SeekTime(): Bad parameter. ignored`. A seek to the start of a track
+cannot be a bad parameter, so it was never the argument — it was the state.
 
-That leaves exactly one unverified value in the path — `media_origin_t`. `Begin = 0, Current = 1` is
-an RE guess the header itself flags as *"calibrate exact values on device"*, and a wrong origin
-looks precisely like the reported bug: the bar follows the finger, the audio does not follow the bar.
+Pause first and the identical call lands exactly. Measured against a live track: targets 20 s /
+30 s / 150 s, forwards and backwards, three for three, zero rejections in logcat. `Suspend()` /
+`Resume()` (the engine-level pause) does **not** work; it has to be transport-level
+`ChangePlayState`. Sony's own app agrees — it wraps every seek in `dmpapp::AudioPlayerImplStateSeek`,
+which carries a `PlayState` alongside the origin and offset.
 
-So: **step 2 below settles it in two runs.**
+Nobody had hit this before because nobody had driven the path: Wampy asks the *stock app* to seek
+over a Unix socket (`hagoromo.cpp:872`, `CMD_SEEK`), so `PlayController::SeekTime` had never been
+called directly on this device. `cinder_audio_seek_ms` now pauses, seeks and resumes — and only
+resumes if it actually interrupted something, so seeking inside a paused track leaves it paused.
+
+Also fixed on the way: `SeekTime` is **void**, not `int`, so the shell's old "seek REJECTED" line
+was reading a leftover register and asserting something it could not know.
+
+### 5. USB mass storage — SOLVED, and the cause was never a race
+
+MSC had never worked from Cinder, and every earlier fix (trigger ordering, the gadget enable-cycle,
+the exit remount) was aimed downstream of the real cause. Both privileged steps are **root-only**,
+and cinder-home runs as uid `system` with an empty capability set:
+
+* **Binding the LUN.** Writing `/emmc@contents` to `f_mass_storage/lun/file` makes the *kernel* open
+  the backing block device **in the caller's credentials**. `/dev/block/mmcblk0p29` is
+  `brw------- root root`, so the open is EACCES and the sysfs write fails. The sysfs node itself is
+  `0666 system:system`, so it looks writable and `echo` returns 0 either way — which is exactly why
+  this presented as a race. The repeated `LUN STILL empty after retries` (~3 s of retries each,
+  eighteen times) is also where the MSC lag came from.
+* **Switching the gadget.** `setprop sys.sony.config msc` is refused for uid `system`. The property
+  never left `adb`, so init's `on property:sys.sony.config=msc` block **never ran at all**. The old
+  `init never reported sys.usb.state=mass_storage,adb` line was reporting a refusal, not a timeout.
+
+Proved directly on device: as root the LUN binds first try and the property takes; as uid 1000 the
+write returns 0 with an empty readback and the property stays `adb`.
+
+Fixed with **`cinder-msc`**, a fourth setuid-root helper (same pattern as `cinder-umount` /
+`cinder-gpunode` / `cinder-power`) that does the whole handoff in one root context, in the only safe
+order — volumes unmounted before the gadget binds them, LUN released before the remount.
+
+**Verified end to end:** `on` → host sees `sde 55.9G WALKMAN vfat`; `off` → LUN cleared, `/contents`
+remounted and readable, gadget back to `adb`.
+
+**One more trap, and it cost three wrong fixes.** cinder-home is uid `system` and the helper is
+setuid root, so it runs ruid=1000/euid=0 — and the kernel sets `AT_SECURE` on any exec where those
+differ, which **propagates to every descendant**. The loader then strips `LD_LIBRARY_PATH` from the
+shell the helper spawns and from `setprop` under it, so every toolbox applet died with
+`libcutils.so: cannot open shared object file` and the gadget switch silently never happened.
+Neither `setenv()` nor inlining `LD_LIBRARY_PATH=...` into the command string helps — the loader
+*discards* it at exec. The fix is `setuid(0)` at the top of the helper.
+
+Two things made this hard to see: the identical command from an `adb shell` worked throughout
+(that shell is not setuid, so it keeps its environment), and on the DEV channel the failure hid
+itself because cinder-home composes the gadget as `mass_storage,adb` at boot for adb, so binding
+the LUN alone was enough and both volumes appeared anyway. **Test MSC through the app, never from
+an adb shell** — and note that anything setting `sys.sony.config` makes init `stop adbd`, which
+kills an adb shell *and its children* mid-run.
+
+Verified after the fix, through the real in-app path: `sony.config=msc`,
+`usb.state=mass_storage,adb`, `idProduct=0b8d` — the exact stock composition — with **zero**
+`libcutils` errors, and the host enumerating both `sde 55.9G WALKMAN` and `sdf 29.8G` (SD).
+
+Its remount fallback mounts with **stock's own vfat options** (`fmask=0000,dmask=0000,...`). This is
+not cosmetic: vfat defaults to root-only masks, so a "successful" default mount hands back a library
+cinder-home cannot read — a failure that looks like an empty library rather than a mount problem.
 
 ---
 
@@ -95,6 +156,7 @@ So: **step 2 below settles it in two runs.**
 tools/flash.sh --push cinder-home/dist/dev/cinder-home
 tools/flash.sh --push cinder-home/dist/dev/cinder-umount
 tools/flash.sh --push cinder-home/dist/dev/cinder-power      # NEW — Power off / Restart need this
+tools/flash.sh --push cinder-home/dist/dev/cinder-msc        # NEW — USB mass storage needs this
 tools/flash.sh cinder-home/dist/dev/cinder_home_install.upg
 ```
 
@@ -104,7 +166,7 @@ booting with it out is what actually tests the app).
 Confirm the helper landed, mode **4755**, owner root:
 
 ```sh
-adb shell 'ls -l /system/vendor/unknown321/bin/cinder-power'
+adb shell 'ls -l /system/vendor/unknown321/bin/cinder-power /system/vendor/unknown321/bin/cinder-msc'
 tools/flash.sh --log | grep cinder-power
 ```
 
@@ -158,6 +220,8 @@ always on, and it widens nothing — two fixed verbs, no caller-supplied paths.
 | **Bluetooth** | Deferred by request. Needs the `BtTransmitterService` shim, which also unblocks route-aware volume and FM→BT. |
 | **Album-art decode latency** | ~365 ms inline on the render thread at every track change. Needs moving onto the background decoder with the gradient shown until it lands. The biggest remaining win. |
 | **Drag-and-drop queue reorder** | `queue_move` exists; the gesture does not. |
+| **A dead Home app is not restarted** | 2026-07-28: cinder-home was killed by its own watchdog during MSC and sat as a **zombie** with the UI dead and nothing relaunching it. The MSC fix removes that trigger, but "the Home app died and nothing brought it back" is an independent gap in the safety net. |
+| **`/contents_ext` is not remounted by anything** | Nothing in Cinder or init mounts the SD card — a Sony service does it at boot. Once unmounted it stays unmounted for the rest of the boot, and the SD library silently disappears. `cinder-msc off` now remounts it; nothing else does. |
 | **"Clear queue or keep playing later"** | The modal is now three-way capable; the prompt and its wiring are not built. |
 | `OneTrackMode::On == 1` | Still a guess. Repeat-one either repeats or it does not. |
 
