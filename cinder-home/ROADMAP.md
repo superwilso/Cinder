@@ -149,6 +149,22 @@ never repoint the `.appcfg` before the probe run looks clean.
 
 ### P2 — device-gated, lower priority
 - **Bluetooth radio on/off** — UI toggle exists; wire `BtTransmitterService` (SetCurrentSource/SetLdac).
+- **Volume must become route-aware BEFORE BT ships.** `apply_volume()` writes
+  `amixer -c0 'master volume'`, a CXD3778GF codec register — and the BT transmit path never touches
+  that codec (decode → we `write()` raw PCM into the `GetSocketName` AF_UNIX socket → the MTK BT
+  chip). So the volume keys would silently do **nothing** on Bluetooth. Sony has a layer Cinder does
+  not: `pst::services::volume::VolumeService::SetVolume(unsigned)` + `VolumeCondition` (the route) +
+  `AvlsCondition` (regional loudness cap); one volume goes in and the service picks the DAC register
+  or `BtTransmitterService::SetCurrentVolume(uint8_t)` (AVRCP Absolute Volume, 7-bit → 0..127).
+  Ship this with the BT client, not after — the first BT build without it looks broken.
+  - Granularity, since it comes up: 128 AVRCP steps is already *finer* than the wired 0..120. The
+    coarseness users feel is the headphones quantising 0..127 into their own 16 or 32 internal
+    steps. Cinder is the **PCM producer** for the BT pipe, so a digital pre-scale before the socket
+    write gives finer steps than any protocol limit (half-steps included) — cheap for a
+    fraction-of-a-dB trim, expensive if used for the whole range, because it spends bit depth.
+    If the sink reports no absolute-volume support (`IsSupportedAbsoluteVolume()`), Sony injects
+    AVRCP VOLUME_UP/DOWN through `/dev/uinput` and the step size is entirely the headphones' —
+    there the pre-scale is the only lever. Detail: `../docs/PRODUCTION_READINESS.md` §B4.
 - **BT transmit codec — live apply.** The selector (LDAC/aptX HD/aptX/SBC + LDAC quality), the
   device-wide preference, and its persistence (`cinder_settings.conf` + `cinder_bt.conf`) are **DONE
   in the UI/shell**. Remaining = the live `BtTransmitterService` apply (SetLdac/SetAptxHD/SetSbc +
@@ -161,13 +177,31 @@ never repoint the `.appcfg` before the probe run looks clean.
 - **USB-mode switch** (enter MSC) — wired to **Settings ▸ USB mode** (`setprop sys.sony.config msc`,
   guarded; disruptive — validate live).
 - **FM radio / BT receiver / Pairing** screens — Sony tuner/BT services (currently static).
+- **FM radio, and FM → Bluetooth** — designed end to end 2026-07-28, none of it built. Full write-up
+  with the evidence: [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md).
+  Short version: the Si4708 is a V4L2 *control* device with no ALSA symbols, so its audio is analog
+  into the codec's `'analog input device'` mux (item #1 is `tuner`) → ADC → **`hw:0,1`**
+  (`/dev/snd/pcmC0D1c`, a real capture PCM that wampy already records from on hardware). From there
+  it is PCM in the SoC and the existing `ldac-bridge` shape applies — the capture scanner currently
+  *skips* card 0 on purpose, so FM is a flag rather than a rewrite. The 3.5 mm cable is the
+  **antenna**, not the audio path, so a bare extension lead works while audio leaves over BT.
+  Order: needs the BT client (above) first. Three traps wampy hit first are documented there — a
+  Sony service re-disables the mux on a timer, ALSA control events cannot be watched with
+  `poll`/`epoll` on this device, and the power state drops to `mem` without a `/sys/power/wake_lock`.
 - **Database rebuild** — triggers the Sony MTP re-indexer (complex).
-- **Manual Brightness slider** (the static Settings row) — the backlight node is now known; make the
-  row interactive and reuse `set_backlight`.
+- ~~**Manual Brightness slider**~~ — **DONE 2026-07-27.** The Settings row cycles 5 levels as a
+  percentage of the node's own `max_brightness`, is persisted and applied at boot, and level 1 is
+  15% rather than 0 so the screen you would use to undo it stays readable. `cinder_backlight.conf`'s
+  `day=` overrides it (and, since 2026-07-28, actually does).
 
 ### P3 — calibration / polish
-- **Analyzer `mode_t`** (LEVEL vs SPECTRUM) for the real audio-reactive visualiser — `cinder-probe
-  --analyzer` confirms, then flip `/contents/cinder_viz.conf: analyzer=1`.
+- **Analyzer: verify it now emits frames.** `cinder-probe --analyzer` has still never been run. It
+  matters more than it did: 2026-07-28 found that Cinder never called `SetPassband`, and the service
+  reports nothing until it is told which bands to analyse — very likely the whole reason no frame
+  has ever been seen. The twelve stock passbands are set now, the values are mapped in dB rather
+  than linearly, and 12 bands interpolate up to 36 bars instead of stepping. All of that is
+  unverified on hardware. (The old note here said to "flip `analyzer=1`" — the analyzer defaults ON
+  since 2026-07-27 and that file now only turns it OFF.)
 - **VPT / DC-Phase mode** enums (Studio/Club, Standard/Low) — on/off works; the specific mode is TBD.
 - **Volume direction** — some mixer controls are attenuation (lower = louder); confirm + invert if so.
 - **Now Playing sleep badge** already done; consider an auto-night-by-clock option later.
