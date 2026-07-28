@@ -114,11 +114,11 @@ static void wd_disarm() { alarm(0); }
 // ever enabled in the boot shell. Connects, starts the stream, and reports whether frames flow +
 // the raw band values (so spectrum::from_bands can be calibrated). Play audio while running this.
 // `mode` defaults to 1 (SPECTRUM); pass 0 to try LEVEL if SPECTRUM yields no frames.
-static int analyzer_probe(int mode) {
-    install_diagnostics();
-    clog_("analyzer: cinder_render_init (so set_spectrum has a target; not strictly required) …");
-    wd_arm(10); cinder_render_init(); wd_disarm();
+static int g_an_mode = 1;
 
+// The analyzer body, run INSIDE Framework::StartForApplication with a Pump() thread going — see
+// analyzer_probe below for why that is not optional.
+static int analyzer_job(int mode) {
     std::fprintf(stderr, "[cinder-probe] analyzer: cinder_analyzer_start(mode=%d, 20Hz, default) …\n", mode);
     std::fflush(stderr);
     wd_arm(12);
@@ -150,13 +150,57 @@ static int analyzer_probe(int mode) {
     wd_arm(8); cinder_analyzer_stop(); wd_disarm();
     cinder_render_shutdown();
     if (total > 0) {
-        clog_("analyzer: PASS — frames flowed. Calibrate from_bands to the printed range, then enable "
-              "in the shell via /contents/cinder_viz.conf (analyzer=1).");
+        clog_("analyzer: PASS — frames flowed. The visualiser will work; note the printed band range "
+              "(spectrum::from_bands auto-detects dBFS vs linear, so it should need no change). The "
+              "shell enables the analyzer BY DEFAULT — cinder_viz.conf only turns it OFF.");
         return 0;
     }
     clog_("analyzer: started but NO frames — try the other mode (--analyzer 0), confirm audio is "
           "playing, or the service emits only while its own screen is foregrounded.");
     return 2;
+}
+
+static void analyzer_job_entry() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] analyzer: job running (fw=%p) — starting Pump() thread\n",
+                 (void*)&fw);
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) {
+        clog_("analyzer: pthread_create FAILED"); _exit(1);
+    }
+    usleep(300000);
+    std::fprintf(stderr, "[cinder-probe] analyzer: %u pump ticks before connect\n", g_pump_ticks);
+    clog_("analyzer: cinder_render_init (so set_spectrum has a target) …");
+    wd_arm(10); cinder_render_init(); wd_disarm();
+    _exit(analyzer_job(g_an_mode));
+}
+
+// --analyzer [mode] — THE ENTRY POINT.
+//
+// This MUST run with pst::core::Framework started and pumped, and for a long time it did not.
+// AudioAnalyzerService is a Sony service client exactly like PlayerService: the call marshals a
+// request and the REPLY is dispatched by the framework's event looper. With no looper the
+// out-params stay uninitialised and the service never does anything — which is the entire reason
+// playback appeared broken for weeks (Connect "returned" a pointer, IsConnected read true from
+// stack garbage, and the service logged nothing at all).
+//
+// So the old version of this probe would have reported "started but NO frames" on a perfectly good
+// device, and the obvious conclusion — that the SetPassband fix did not work — would have been
+// wrong. Same shape as the bug it was meant to help diagnose.
+static int analyzer_probe(int mode) {
+    g_an_mode = mode;
+    install_diagnostics();
+    clog_("analyzer: Framework::GetReference() …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] analyzer: got Framework=%p BinderLastError=%d\n",
+                 (void*)&fw, pst::core::Framework::GetBinderLastError());
+    clog_("analyzer: StartForApplication(finish_job, true) …");
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    std::fprintf(stderr, "[cinder-probe] analyzer: StartForApplication returned %d\n", sr);
+    analyzer_job_entry();
+    return 0; // unreachable: analyzer_job_entry _exit()s with the real status
 }
 
 // The --pump job: runs INSIDE pst::core::Framework::StartForApplication, i.e. with the framework

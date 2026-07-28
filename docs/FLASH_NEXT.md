@@ -57,11 +57,23 @@ recalibrating against.
 
 ## Step 3 — Flash `dist/dev`, cable OUT
 
+Run from `/home/sony/sony`, Walkman plugged in and in MSC mode:
+
 ```sh
-# push the two binaries the installer stages from /contents
-adb push cinder-home/dist/dev/cinder-home   /contents/
-adb push cinder-home/dist/dev/cinder-umount /contents/
-# then install cinder_home_install.upg the usual way, and REBOOT WITH THE CABLE UNPLUGGED
+tools/flash.sh --push cinder-home/dist/dev/cinder-home        # the player
+tools/flash.sh --push cinder-home/dist/dev/cinder-umount      # setuid helper: MSC unmount
+tools/flash.sh cinder-home/dist/dev/cinder_home_install.upg   # install — repoints the Home app
+```
+
+The device reboots into Sony's updater, runs the payload, and reboots.
+**Then unplug the cable before it boots into Cinder.**
+
+Useful afterwards:
+
+```sh
+tools/flash.sh --log                    # the install log
+tools/flash.sh --cat cinderhome.log     # this boot
+tools/flash.sh --cat cinderhome.log.1   # the PREVIOUS boot — where a crash is recorded
 ```
 
 `cinder-gpunode` is **dev-only now** and you only need it if you intend to re-test the GPU path —

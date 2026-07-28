@@ -952,16 +952,19 @@ shared by both binaries.)
 From `/home/sony/sony`, with the Walkman plugged in (paths shown for the **stable** channel; for the
 dev build swap `dist/stable/` → `dist/dev/`):
 
-**Push all three binaries.** The installer stages each from the storage root
+**Push the binaries.** The installer stages each from the storage root
 (`/contents/cinder-{home,umount,gpunode}`); a missing helper does not abort the install, it just
 warns and silently degrades — no `cinder-umount` means USB-MSC falls back to the path that
-**cannot unmount `/contents` as uid 100**, and no `cinder-gpunode` means the GPU path can never be
-enabled. Both helpers install setuid-root (mode 4755).
+**cannot unmount `/contents` as uid 100**. `cinder-umount` installs setuid-root (mode 4755).
+
+**`cinder-gpunode` is DEV-ONLY since 2026-07-28** and is not staged into `dist/stable/` at all. It
+is also setuid-root, and its whole job is to make four kernel graphics nodes world-writable — for a
+GPU present path that is default OFF and measured **4.7× slower** than the software one. Push it
+only if you are deliberately experimenting with the GPU path on dev.
 
 ```bash
 tools/flash.sh --push cinder-home/dist/stable/cinder-home          # the player
 tools/flash.sh --push cinder-home/dist/stable/cinder-umount        # setuid helper: MSC unmount
-tools/flash.sh --push cinder-home/dist/stable/cinder-gpunode       # setuid helper: GPU device nodes
 tools/flash.sh cinder-home/dist/stable/cinder_home_install.upg     # install (repoints the Home app)
 # Power on and let it boot — WITH THE CABLE UNPLUGGED. A cable connected at boot is itself the
 # escape to stock (restored 2026-07-26). For cable-heavy dev, opt out once:
