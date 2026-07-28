@@ -34,11 +34,19 @@ If you only get time for one thing this session, make it this one.
 `cinder-probe` has no easel lifecycle, so it cannot touch the bad-boot counter. Push it and run it
 over adb. This de-risks the whole unverified batch before any of it can affect a boot.
 
+**`/tmp`, NOT `/data`.** `/data` and `/contents` are both mounted **noexec** on this device, so a
+binary pushed there fails with a bare `permission denied` that looks like a mode problem and is not.
+`/tmp` is the only writable exec-able mount. (The device's toolbox `chmod` also needs an octal mode,
+not `+x`.)
+
+Note adb only exists on the **dev** channel — cinder-home starts `adbd` from `deferred_up`. There is
+no adb under stock, so probe runs need Cinder installed and booted.
+
 ```sh
-adb push cinder-home/dist/dev/cinder-probe /data/local/tmp/
-adb shell 'cd /data/local/tmp && chmod 755 cinder-probe && \
-  LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib \
-  ./cinder-probe'
+adb push cinder-home/dist/dev/cinder-probe /tmp/cinder-probe
+adb shell 'chmod 755 /tmp/cinder-probe && \
+  LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib \
+  /tmp/cinder-probe --analyzer'
 ```
 
 Three runs matter, in this order:
