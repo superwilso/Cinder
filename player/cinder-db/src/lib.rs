@@ -73,6 +73,8 @@ pub enum Sort {
 pub struct Db {
     conn: Connection,
     duration_akey: Option<i64>,
+    /// object_id → absolute directory path, for every folder in the file tree. See `build_dirs`.
+    dirs: std::collections::HashMap<i64, String>,
 }
 
 // Real tracks are object_body rows that have a file AND are audio. `filename IS NOT NULL` alone
@@ -106,7 +108,84 @@ impl Db {
                 |r| r.get::<_, i64>(0),
             )
             .ok();
-        Db { conn, duration_akey }
+        let dirs = Self::build_dirs(&conn);
+        Db { conn, duration_akey, dirs }
+    }
+
+    /// Mount point for each STORAGE ROOT of the MTP file tree, by the root object's name.
+    ///
+    /// The database stores `filename` as a BARE BASENAME — `01 A Horse with No Name.flac` — and the
+    /// directories above it as separate `object_body` rows linked by `parent_id`. Nothing in the
+    /// row tells you where the file actually is. Handing PlayerService the basename produced
+    /// `content URI: /01 - … .flac`, which does not exist, so Sony's FLAC demuxer failed
+    /// `WMX_CP_PIPETYPE::Open() (0x12)` → `GAP_E_INVALID_TRACK` and the play chain died the instant
+    /// it was built. Every transport call still returned 0, which is why this looked like
+    /// "starts then pauses" rather than an error.
+    ///
+    /// BOTH STORAGES MATTER: this device has ~2/3 of the library on internal storage and ~1/3 on
+    /// the microSD, and they hang off two different roots.
+    const ROOTS: [(&'static str, &'static str); 2] = [
+        ("internal", "/contents"),      // /emmc@contents, vfat
+        ("external", "/contents_ext"),  // the microSD, /dev/block/mmcblk1p1
+    ];
+
+    /// Resolve every folder object to an absolute directory path, once, at open.
+    ///
+    /// Walks `parent_id` up to a storage root and maps that root onto its mount point. Tracks are
+    /// never parents, so only non-track rows are loaded (a few hundred, against thousands of
+    /// tracks). Unknown roots resolve to nothing rather than guessing a mount — a track under one
+    /// then keeps its bare filename, which is exactly the old behaviour and cannot make anything
+    /// worse than it already was.
+    fn build_dirs(conn: &Connection) -> std::collections::HashMap<i64, String> {
+        use std::collections::HashMap;
+        let mut raw: HashMap<i64, (i64, String)> = HashMap::new();
+        if let Ok(mut st) = conn.prepare(
+            "SELECT object_id, COALESCE(parent_id,0), COALESCE(filename, title, '') \
+             FROM object_body WHERE media_type <> 1 OR filename IS NULL",
+        ) {
+            if let Ok(rows) = st.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+            }) {
+                for row in rows.flatten() {
+                    raw.insert(row.0, (row.1, row.2));
+                }
+            }
+        }
+        // Resolve with memoisation; the depth is tiny (root/MUSIC/album) but a cycle in a corrupt
+        // DB must not hang the boot, so the walk is bounded.
+        let mut out: HashMap<i64, String> = HashMap::new();
+        let ids: Vec<i64> = raw.keys().copied().collect();
+        for id in ids {
+            let mut stack: Vec<&str> = Vec::new();
+            let mut cur = id;
+            let mut prefix: Option<&str> = None;
+            for _ in 0..32 {
+                let Some((parent, name)) = raw.get(&cur) else { break };
+                if *parent == 0 {
+                    // A storage root: its own name selects the mount, and is not part of the path.
+                    prefix = Self::ROOTS.iter().find(|(n, _)| n == name).map(|(_, m)| *m);
+                    break;
+                }
+                stack.push(name.as_str());
+                cur = *parent;
+            }
+            if let Some(mount) = prefix {
+                let mut path = String::from(mount);
+                for seg in stack.iter().rev() {
+                    path.push('/');
+                    path.push_str(seg);
+                }
+                out.insert(id, path);
+            }
+        }
+        out
+    }
+
+    /// Absolute path for a track, from its parent folder plus its basename. `None` when the folder
+    /// is under an unrecognised root.
+    fn track_path(&self, parent_id: i64, basename: &str) -> Option<String> {
+        let dir = self.dirs.get(&parent_id)?;
+        Some(format!("{dir}/{basename}"))
     }
 
     pub fn conn(&self) -> &Connection {
@@ -245,11 +324,21 @@ impl Db {
 
     /// Resolve the now-playing metadata for the file PlayerService reports (PlayStatus.uri).
     pub fn track_by_filename(&self, filename: &str) -> Result<Option<Track>> {
+        // PlayerService reports back the absolute path we gave it, but the DB column is a bare
+        // basename — so match on the basename and then disambiguate on the full path. Basenames
+        // repeat constantly across a real library ("01 Intro.flac"), so picking the first row that
+        // merely shares a name would show the wrong album's metadata on Now Playing.
+        let base = filename.rsplit('/').next().unwrap_or(filename);
         let v = self.query_tracks(
             &format!("WHERE {TRACK_WHERE} AND ob.filename = ?1"),
             "ob.object_id",
-            [filename],
+            [base],
         )?;
+        if let Some(exact) = v.iter().position(|t| t.filename == filename) {
+            return Ok(v.into_iter().nth(exact));
+        }
+        // No exact match: either the caller passed a bare basename (older callers did), or the
+        // track is under an unresolved root. Either way the single-candidate answer is still right.
         Ok(v.into_iter().next())
     }
 
@@ -338,7 +427,7 @@ impl Db {
             "SELECT ob.object_id, ob.title, COALESCE(ar.value,''), COALESCE(al.value,''), \
                     ob.filename, COALESCE(ob.disc_no,0), COALESCE(ob.series_no,0), {dur_sel}, \
                     COALESCE(ob.is_high_resolution,0), ob.othumb_id, ob.album_id, \
-                    COALESCE(ob.addedtime,0), ob.releaseyear_id \
+                    COALESCE(ob.addedtime,0), ob.releaseyear_id, COALESCE(ob.parent_id,0) \
              FROM object_body ob \
              LEFT JOIN artists ar ON ar.id = ob.artist_id \
              LEFT JOIN albums  al ON al.id = ob.album_id \
@@ -351,7 +440,16 @@ impl Db {
                 title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 artist: r.get(2)?,
                 album: r.get(3)?,
-                filename: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                // The DB's `filename` is a BARE BASENAME; the directories live in the parent
+                // chain. Resolve to the absolute path here so every consumer — play_tracks,
+                // now-playing lookup, the queue — gets something that actually opens. Falls back
+                // to the basename when the folder sits under an unrecognised root, which is the
+                // pre-2026-07-28 behaviour rather than a new failure.
+                filename: {
+                    let base = r.get::<_, Option<String>>(4)?.unwrap_or_default();
+                    let parent: i64 = r.get(13)?;
+                    self.track_path(parent, &base).unwrap_or(base)
+                },
                 disc_no: r.get(5)?,
                 track_no: r.get(6)?,
                 duration_raw: r.get(7)?,
@@ -435,15 +533,33 @@ mod tests {
             INSERT INTO images  VALUES (100,0,4096,20000,'/music/atlas.flac','d1','/db/thumb/100.bmp',92,92);
             INSERT INTO releaseyears VALUES (30,0,'2012','2012','2012');
             INSERT INTO releaseyears VALUES (31,0,'1992','1992','1992');
-            INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
-              VALUES (1,1,1,0,'Atlas Hands','/music/atlas.flac',1,1,1,10,20,30,100,5000);
-            INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
-              VALUES (2,1,1,1,'Box of Stones','/music/box.flac',2,1,1,10,20,30,NULL,5001);
-            INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
-              VALUES (3,1,1,0,'Harvest Moon','/music/harvest.flac',1,1,0,11,21,31,NULL,4000);
+            -- THE FILE TREE, exactly as the device stores it. `filename` is a BARE BASENAME and the
+            -- directories are separate rows linked by parent_id; the storage ROOTS (parent_id 0)
+            -- select the mount. Modelling this correctly is not decoration — the old fixture put
+            -- absolute paths in `filename`, which no real DB does, and that is precisely why the
+            -- "hand PlayerService a path with no directory" bug survived every test until 07-28.
+            -- BOTH storages are represented: this device keeps roughly a third of the library on
+            -- the microSD, under a separate root.
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (900,1,0,0,'internal','internal');
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (901,1,900,0,'MUSIC','MUSIC');
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (902,1,901,0,'Benjamin Francis Leftwich - Last Smoke','Benjamin Francis Leftwich - Last Smoke');
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (910,1,0,0,'external','external');
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (911,1,910,0,'MUSIC','MUSIC');
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (912,1,911,0,'Neil Young - Harvest Moon','Neil Young - Harvest Moon');
+            -- An unrecognised root: tracks under it must degrade to the bare basename, not guess.
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (920,1,0,0,'limited','limited');
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (921,1,920,0,'ODD','ODD');
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
+              VALUES (1,1,902,1,0,'Atlas Hands','atlas.flac',1,1,1,10,20,30,100,5000);
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
+              VALUES (2,1,902,1,1,'Box of Stones','box.flac',2,1,1,10,20,30,NULL,5001);
+            -- On the SD CARD, and deliberately sharing a basename with the internal track below it
+            -- would be ambiguous — the now-playing lookup must disambiguate on the FULL path.
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,releaseyear_id,othumb_id,addedtime)
+              VALUES (3,1,912,1,0,'Harvest Moon','harvest.flac',1,1,0,11,21,31,NULL,4000);
             -- a folder (media_type 0) and a stray cover image (media_type 3) — both must be excluded
             INSERT INTO object_body (object_id,object_type,media_type,title,filename,album_id) VALUES (9,0,0,'A Folder',NULL,NULL);
-            INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,album_id) VALUES (8,2,3,0,'Cover','/music/Cover.jpg',10);
+            INSERT INTO object_body (object_id,object_type,media_type,child_index,title,filename,album_id) VALUES (8,2,3,0,'Cover','Cover.jpg',10);
             -- A playlist: a container (type 1) whose children are type-3 entries pointing at
             -- tracks by reference_id, ordered by child_index (NOT title order).
             INSERT INTO object_body (object_id,object_type,parent_id,media_type,title,filename) VALUES (50,1,0,0,'Night Bus',NULL);
@@ -521,9 +637,91 @@ mod tests {
         assert_eq!(titles, ["Atlas Hands", "Box of Stones", "Harvest Moon"]);
     }
 
+    /// THE bug of 2026-07-28: the DB stores a bare basename, and handing that to PlayerService
+    /// produced `content URI: /01 - ….flac` — a path with no directory. Sony's demuxer failed to
+    /// open it, the play chain died the instant it was built, and because every transport call
+    /// still returned 0 it looked like "starts, then pauses" rather than an error.
+    ///
+    /// BOTH storages must resolve: roughly a third of a real library lives on the microSD, under a
+    /// different root that maps to a different mount.
+    #[test]
+    fn track_paths_resolve_absolutely_on_both_storages() {
+        let d = db();
+        let all = d.tracks(Sort::Title).unwrap();
+        let by_title = |t: &str| all.iter().find(|x| x.title == t).cloned().unwrap();
+
+        // Internal storage → /contents
+        let atlas = by_title("Atlas Hands");
+        assert_eq!(
+            atlas.filename,
+            "/contents/MUSIC/Benjamin Francis Leftwich - Last Smoke/atlas.flac"
+        );
+
+        // microSD → /contents_ext
+        let harvest = by_title("Harvest Moon");
+        assert_eq!(
+            harvest.filename,
+            "/contents_ext/MUSIC/Neil Young - Harvest Moon/harvest.flac"
+        );
+
+        // Every resolved path must be absolute and must carry a directory — a bare "/name.flac"
+        // is the exact shape that failed on device.
+        for t in &all {
+            assert!(t.filename.starts_with('/'), "not absolute: {}", t.filename);
+            assert!(
+                t.filename.matches('/').count() >= 2,
+                "no directory component, this is the on-device failure: {}",
+                t.filename
+            );
+        }
+    }
+
+    /// An unrecognised storage root must NOT be guessed at. Falling back to the bare basename is
+    /// the pre-fix behaviour: no worse than before, and it cannot send PlayerService to a path on
+    /// the wrong volume.
+    #[test]
+    fn an_unknown_root_degrades_instead_of_guessing() {
+        let d = db();
+        d.conn()
+            .execute_batch(
+                "INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,\
+                   title,filename,series_no,disc_no,album_id) \
+                 VALUES (4,1,921,1,0,'Odd One','odd.flac',1,1,10);",
+            )
+            .unwrap();
+        let t = d.tracks(Sort::Title).unwrap().into_iter().find(|t| t.title == "Odd One").unwrap();
+        assert_eq!(t.filename, "odd.flac", "an unknown root must not invent a mount");
+    }
+
+    /// Basenames repeat constantly across a real library. The now-playing lookup gets the absolute
+    /// path back from PlayerService and must disambiguate on it, or Now Playing shows the wrong
+    /// album's metadata for a track that merely shares a filename.
+    #[test]
+    fn now_playing_disambiguates_duplicate_basenames_across_storages() {
+        let d = db();
+        // Same basename as the SD-card "harvest.flac", but on internal storage in another album.
+        d.conn()
+            .execute_batch(
+                "INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,\
+                   title,filename,series_no,disc_no,album_id) \
+                 VALUES (5,1,902,1,2,'Harvest Moon (Live)','harvest.flac',3,1,10);",
+            )
+            .unwrap();
+        let sd = d
+            .track_by_filename("/contents_ext/MUSIC/Neil Young - Harvest Moon/harvest.flac")
+            .unwrap()
+            .unwrap();
+        assert_eq!(sd.title, "Harvest Moon");
+        let internal = d
+            .track_by_filename("/contents/MUSIC/Benjamin Francis Leftwich - Last Smoke/harvest.flac")
+            .unwrap()
+            .unwrap();
+        assert_eq!(internal.title, "Harvest Moon (Live)");
+    }
+
     #[test]
     fn now_playing_lookup_by_filename() {
-        let t = db().track_by_filename("/music/harvest.flac").unwrap().unwrap();
+        let t = db().track_by_filename("/contents_ext/MUSIC/Neil Young - Harvest Moon/harvest.flac").unwrap().unwrap();
         assert_eq!(t.title, "Harvest Moon");
         assert_eq!(t.album, "Harvest Moon");
         assert_eq!(t.duration_raw, Some(303000));

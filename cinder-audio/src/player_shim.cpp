@@ -369,7 +369,13 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
     g_nts = nts;
     // Apply the sticky repeat mode BEFORE SetTrackSequence: at this point the service has never
     // seen this object, so there is no reader to race with.
-    nts->SetOneTrackMode(g_repeat_one ? psu::OneTrackMode::On : psu::OneTrackMode::Off);
+    //
+    // ONLY WHEN REPEAT IS ON. Sony's OneTrackMode enum values are undocumented and 0/1 is an
+    // assumption; calling this unconditionally would put a new, unverified call into the play path
+    // on EVERY track — a path that was verified working on 2026-07-27 before this call existed.
+    // Leaving it out when repeat is off keeps that path byte-identical to the verified one, so a
+    // wrong guess about the enum can only ever affect users who turned repeat on.
+    if (g_repeat_one) nts->SetOneTrackMode(psu::OneTrackMode::On);
     int rc = g_ctrl->SetTrackSequence(seq);
     if (rc != 0) {
         // The raw service code, not a flattened -3: this is a wire reject and its value is the
@@ -410,6 +416,8 @@ int cinder_audio_stop(void)  { return change_state(pl::playstate_t::Stop); }
 int cinder_audio_set_repeat_one(int on) {
     g_repeat_one = (on != 0);
     if (!g_nts) return 1;  // no sequence yet — it will be applied when the next one is built
+    // Turning repeat OFF still has to reach the live sequence, or it would stay on until the next
+    // track. This is the only place Off is ever sent, and only after On was sent first.
     // Live change on a sequence the service is already pulling from. This is a single enum store
     // into an object we own; it is not synchronised, and it is the one part of this path that
     // wants a device to confirm rather than an argument. If it ever misbehaves, the fallback is to

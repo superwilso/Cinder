@@ -136,7 +136,7 @@ static int analyzer_job(int mode) {
     clog_("analyzer: watching for spectrum frames (8s) — play audio now …");
     int vals[16];
     for (int i = 0; i < 16; ++i) {
-        wd_arm(8); cinder_render_tick(); wd_disarm();
+        // Just wait — no render tick. See analyzer_job_entry: this process must not draw.
         int frames = cinder_analyzer_frames();
         if (i % 2 == 0) {
             int n = cinder_analyzer_last(vals, 16);
@@ -148,7 +148,6 @@ static int analyzer_job(int mode) {
     }
     int total = cinder_analyzer_frames();
     wd_arm(8); cinder_analyzer_stop(); wd_disarm();
-    cinder_render_shutdown();
     if (total > 0) {
         clog_("analyzer: PASS — frames flowed. The visualiser will work; note the printed band range "
               "(spectrum::from_bands auto-detects dBFS vs linear, so it should need no change). The "
@@ -172,8 +171,13 @@ static void analyzer_job_entry() {
     }
     usleep(300000);
     std::fprintf(stderr, "[cinder-probe] analyzer: %u pump ticks before connect\n", g_pump_ticks);
-    clog_("analyzer: cinder_render_init (so set_spectrum has a target) …");
-    wd_arm(10); cinder_render_init(); wd_disarm();
+    // DELIBERATELY NO cinder_render_init(). The Home app is normally running while this probe is
+    // used, and it owns the framebuffer: opening fb0 a second time and then calling
+    // cinder_render_tick() would paint THIS process's (blank, Lock-screen) UI over the live app.
+    // The frame counter lives in the listener and increments whether or not a renderer exists —
+    // cinder_set_spectrum simply returns early when there is none — so the diagnostic loses
+    // nothing. The old version did init a renderer "so set_spectrum has a target", which was true
+    // and unnecessary.
     _exit(analyzer_job(g_an_mode));
 }
 
