@@ -47,7 +47,7 @@ Individual unverified assumptions, each roughly one boot to settle:
 |---|---|---|
 | `media_origin_t::Begin == 0` | `cinder_audio_seek_ms` | drag-to-seek seeks from the wrong origin |
 | Sony's `AudioAnalyzerService` emits frames — `cinder-probe --analyzer` has **never been run**. *(2026-07-28: the likely cause was found and fixed — Cinder never called `SetPassband`, and the service reports nothing until it is told which bands to analyse. See the Wampy comparison in STATUS.md.)* | `viz_analyzer_tick` | the visualiser never draws at all; the synthetic fallback was deliberately removed |
-| `duration_raw` is milliseconds (diagnostic shipped in `1ccb7bc`) | `onPlayTimeUpdated` | progress-bar scale is wrong |
+| ~~`duration_raw` is milliseconds~~ — **CONFIRMED on device 2026-07-28**: a 4:12 track reported `total=252239`, i.e. ms. | `onPlayTimeUpdated` | *(closed)* |
 | Idle screen-off wakes reliably | `screen_auto_wake` | a failed wake is indistinguishable from a dead device |
 | `amixer` master reaches the hardware audibly | `volume_write_now` | Vol± stays HUD-only |
 | Backlight write at boot picks the right node | `apply_brightness` | screen at the wrong level, or black |

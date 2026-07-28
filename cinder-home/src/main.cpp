@@ -1554,6 +1554,25 @@ void enter_usb_msc() {
 void exit_usb_msc() {
     std::system("setprop sys.sony.config adb 2>/dev/null");           // stock default; remounts
     for (int i = 0; i < 50 && !contents_mounted(); ++i) usleep(100000); // ≤5 s for mount_msc1
+    // FALLBACK: start the mount service OURSELVES if the trigger's did not take.
+    //
+    // Observed on device 2026-07-28: after an MSC session the property was back to adb (so init
+    // HAD run the block, which ends in `start mount_msc1`) and /contents was still not mounted.
+    // mount_msc1 is `oneshot`, so init will not retry it on its own, and everything downstream
+    // then quietly goes wrong in ways that do not look like a mount problem: the library is empty
+    // because the music is gone, and redirect_fds below reopens the log on the UNMOUNTED
+    // mountpoint — a real file on the root filesystem that nobody will ever find, so the session
+    // log is spliced into oblivion and the failure erases its own evidence.
+    //
+    // `setprop ctl.start` is init's own service-start channel and needs no privilege we lack —
+    // cinder already starts adbd this way on the dev channel.
+    if (!contents_mounted()) {
+        clog_("usb-msc: /contents did not come back from the trigger — starting mount_msc1 directly");
+        for (int i = 0; i < 3 && !contents_mounted(); ++i) {
+            std::system("setprop ctl.start mount_msc1 2>/dev/null");
+            for (int j = 0; j < 20 && !contents_mounted(); ++j) usleep(100000); // ≤2 s per attempt
+        }
+    }
     redirect_fds("/contents/cinderhome.log", O_WRONLY | O_CREAT | O_APPEND);
     g_msc_active = false;
     // splice the away-session log back in (cat writes to fd 1 = cinderhome.log again)

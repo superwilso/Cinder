@@ -334,6 +334,64 @@ int main(int argc, char** argv) {
         clog_("gpu: DONE — no hang. Reboot to restore the normal UI.");
         return 0;
     }
+    if (argc > 1 && std::strcmp(argv[1], "--requeue") == 0) {
+        // DOES RE-ISSUING SetTrackSequence INTERRUPT THE CURRENT TRACK?
+        //
+        // This decides whether an Apple-style "Play Next" is even buildable. Cinder hands
+        // PlayerService one NodeTrackSequence; inserting a track after the current one means
+        // building a NEW sequence and calling SetTrackSequence again while audio is running. If
+        // that restarts or stops the track, Play Next would stutter playback every single time and
+        // the feature has to be designed completely differently (queue the insert until the track
+        // ends, say). Better to know before designing than after.
+        //
+        // Method: play A, let it settle, sample the position; re-issue a sequence with an extra
+        // track inserted after A, starting at the SAME index; sample again. A position that keeps
+        // climbing means the re-issue was transparent.
+        if (argc < 4) { clog_("requeue: need <playing-path> <insert-path>"); return 1; }
+        g_pump_argc = argc; g_pump_argv = argv;
+        install_diagnostics();
+        pst::core::Framework& fw = pst::core::Framework::GetReference();
+        int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+        std::fprintf(stderr, "[cinder-probe] requeue: StartForApplication=%d\n", sr);
+        g_pump_run = true;
+        pthread_t th;
+        if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) { clog_("requeue: thread failed"); return 1; }
+        usleep(300000);
+        wd_arm(12); cinder_audio_init("cinderprobe"); wd_disarm();
+        for (int i = 0; i < 50 && !cinder_audio_is_connected(); ++i) usleep(100000);
+        wd_arm(8); cinder_audio_close_player(); wd_disarm();
+
+        const char* first[1] = { argv[2] };
+        wd_arm(15);
+        int pr = cinder_audio_play_tracks(first, 1, 0);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] requeue: initial play_tracks=%d\n", pr);
+        int cur = -1, tot = -1;
+        for (int i = 0; i < 16; ++i) { usleep(500000); cinder_audio_position(&cur, &tot); }
+        std::fprintf(stderr, "[cinder-probe] requeue: BEFORE pos=%d/%d playing=%d\n",
+                     cur, tot, cinder_audio_is_playing());
+        int before = cur;
+
+        // Re-issue: same first track, one inserted behind it. start index stays 0.
+        const char* both[2] = { argv[2], argv[3] };
+        wd_arm(15);
+        int rr = cinder_audio_play_tracks(both, 2, 0);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] requeue: re-issue play_tracks=%d\n", rr);
+        for (int i = 0; i < 6; ++i) {
+            usleep(500000);
+            cinder_audio_position(&cur, &tot);
+            std::fprintf(stderr, "[cinder-probe] requeue: +%.1fs pos=%d/%d playing=%d\n",
+                         (i + 1) * 0.5, cur, tot, cinder_audio_is_playing());
+        }
+        std::fprintf(stderr,
+            "[cinder-probe] requeue: VERDICT %s (before=%d after=%d)\n",
+            (cur > before) ? "CONTINUED — re-issue is transparent, Play Next is buildable"
+                           : "RESTARTED/STOPPED — Play Next must not re-issue mid-track",
+            before, cur);
+        wd_arm(8); cinder_audio_shutdown(); wd_disarm();
+        _exit(0);
+    }
     if (argc > 1 && std::strcmp(argv[1], "--pump") == 0) {
         // Same end-to-end playback test as --play, but with the pst::core::Framework STARTED and
         // PUMPED. --play proved the calls fail with the framework dead; if this passes, the dead
