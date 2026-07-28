@@ -1400,6 +1400,21 @@ void log_contents_holders() {
 // reader with NO MEDIUM (the "modal shows but no drive appears" symptom). Only acts when the LUN
 // is empty, so it's a safe no-op on the paths that already pointed it. Bounces the gadget so the
 // host re-enumerates and picks up the freshly-backed disk.
+// Read a system property and compare it. popen rather than __system_property_get: this is a glibc
+// process, not bionic, so the property API is not linkable here — the shell's getprop is.
+static bool prop_equals(const char* name, const char* want) {
+    char cmd[160];
+    std::snprintf(cmd, sizeof cmd, "getprop %s 2>/dev/null", name);
+    FILE* p = popen(cmd, "r");
+    if (!p) return false;
+    char buf[160] = {0};
+    bool got = std::fgets(buf, sizeof buf, p) != nullptr;
+    pclose(p);
+    if (!got) return false;
+    buf[std::strcspn(buf, "\r\n")] = 0;
+    return std::strcmp(buf, want) == 0;
+}
+
 static void ensure_msc_lun() {
     const char* lunf = "/sys/class/android_usb/android0/f_mass_storage/lun/file";
     char cur[128] = {};
@@ -1430,6 +1445,22 @@ static void ensure_msc_lun() {
         const char* t = rb;
         while (*t == ' ' || *t == '\t') ++t;
         if (*t != 0) {
+            // Read back again after a settle. An immediate readback only proves the write reached
+            // the node, not that it SURVIVED — anything still reconfiguring the gadget behind us
+            // clears it, and reporting success on a LUN that is about to be wiped is worse than
+            // reporting nothing, because it sends the next reader looking in the wrong place.
+            usleep(400000);
+            char rb2[128] = {};
+            if (FILE* f2 = std::fopen(lunf, "r")) {
+                if (std::fgets(rb2, sizeof rb2, f2)) rb2[std::strcspn(rb2, "\n")] = 0;
+                std::fclose(f2);
+            }
+            const char* t2 = rb2;
+            while (*t2 == ' ' || *t2 == '\t') ++t2;
+            if (*t2 == 0) {
+                clog_("usb-msc: LUN was cleared again right after binding — retrying");
+                continue;
+            }
             clog_("usb-msc: LUN was empty — bound /emmc@contents (host medium inserted, no re-enum)");
             return;
         }
@@ -1482,6 +1513,28 @@ void enter_usb_msc() {
     //    if the LUN still reads empty, point it + bounce the gadget so the host re-enumerates a
     //    reader WITH medium. No-op when the trigger already bound it.
     for (int i = 0; i < 12 && contents_mounted(); ++i) usleep(250000);
+    // WAIT FOR INIT TO FINISH ITS msc BLOCK BEFORE TOUCHING THE LUN. `setprop` returns the moment
+    // the property is set; init then asynchronously runs init.usbcfg.rc's `on
+    // property:sys.sony.config=msc` — which writes lun/file, and THEN does enable 0 → functions →
+    // enable 1. An enable-cycle re-creates the mass_storage instance and clears lun/file.
+    //
+    // The old code did not wait at all: /contents was already unmounted by the helper above, so the
+    // loop on the previous line exited on its first test, and ensure_msc_lun() ran within
+    // microseconds of the setprop — i.e. BEFORE init had done anything. It saw an empty LUN (init
+    // had not bound it yet), wrote it, read it straight back, logged success — and then init's
+    // enable-cycle wiped it. That is the "modal opens, PC sees a reader with no medium" bug, and
+    // the safety net was CAUSING it by racing the sequence it exists to protect.
+    //
+    // init's LAST action in that block is `setprop sys.usb.state $sys.usb.config`, so that property
+    // reaching mass_storage,adb is the completion signal. 4 s is generous; the block is a handful
+    // of sysfs writes.
+    bool init_done = false;
+    for (int i = 0; i < 40; ++i) {
+        if (prop_equals("sys.usb.state", "mass_storage,adb")) { init_done = true; break; }
+        usleep(100000);
+    }
+    clog_(init_done ? "usb-msc: init finished its msc block (sys.usb.state=mass_storage,adb)"
+                    : "usb-msc: init never reported sys.usb.state=mass_storage,adb — binding the LUN anyway");
     if (!contents_mounted()) {
         ensure_msc_lun();
     } else {
