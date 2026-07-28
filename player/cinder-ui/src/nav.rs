@@ -1138,7 +1138,11 @@ impl App {
                 // Splitting it keeps both gestures with no modifier and no long-press, and it
                 // matches what the finger is on: you flip the picture, or you change the track.
                 // The physical FF/REW keys skip from anywhere regardless.
-                if y < crate::now_playing::PAGE_SWIPE_BOT {
+                // A RANGE, not just an upper bound. The shell passes y = 0 when a contact somehow
+                // arrives with no ABS_Y, and 0 is above the artwork (it is the status bar) — a bare
+                // `y < BOT` would silently turn every one of those degenerate swipes into a page
+                // turn instead of the track skip it has always been.
+                if (crate::now_playing::PAGE_TOP..crate::now_playing::PAGE_SWIPE_BOT).contains(&y) {
                     let pages = crate::now_playing::PAGES;
                     self.np_page = if dir < 0 {
                         (self.np_page + 1) % pages

@@ -406,6 +406,54 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   moving, so idle costs zero IPC. Changing the loop rate also exposed that the ~1 Hz housekeeping
   and battery read were paced by *iteration count* (silently assuming 60 Hz); both are now
   wall-clock paced, so the sleep timer and USB debounce keep their real timing at any rate.
+- **Render: the album art was the whole cost, not the visualiser** (2026-07-28). The optimisation
+  pass started from a guess that was wrong by two orders of magnitude. Measured with a new
+  `cargo test -p cinder-ui --release --test render_bench -- --ignored --nocapture` harness (an
+  `#[ignore]`d tool, never a gate): the **visualiser costs ~30 µs** a frame and the **album art
+  behind it cost ~8,000**. A Now Playing frame was 8.3 ms on the host for a track with no embedded
+  cover and 1.1 ms for one with. Three fixes, all pure — the pixels are unchanged to within 1/255:
+  1. **`art::block` recomputed the gradient every frame**: a float divide per pixel for the colour
+     ramp and a **`sqrt` per pixel** for the radial highlight, across 230,400 pixels. The ramp is a
+     smooth function of one variable, so it is now a 512-entry table (below the eye's resolution —
+     a test asserts no adjacent pixel jumps by more than 3), and the highlight contributes exactly
+     nothing outside its own disc, so the `sqrt` runs only inside it. **8.1 ms → 3.3 ms.**
+  2. **The gradient is now baked once per track**, into the same slot a decoded cover would occupy,
+     so the render is a blit either way. It is identical for a track with artwork and one without.
+     Neither bake depends on the live theme, so a Day/Night switch never rebuilds them. A test
+     requires the baked image to be **pixel-identical** to the drawn one — they share one copy of
+     the maths, and that test is what keeps them sharing it.
+  3. **`art::draw_image` blitted pixel by pixel** through `Canvas::put`, re-checking four bounds and
+     recomputing an index for each of a cover's 230,400 pixels. A new `Canvas::row_run` does the
+     clip once per row and hands back a slice. **999 µs → 179 µs.**
+  Net: a Now Playing frame is **~430 µs whatever the track has**, down from 1,080 (with art) and
+  8,300 (without). Scaled by this project's own host↔device ratio that is roughly **16 ms → 6 ms**,
+  and the no-artwork case — which would have been ~125 ms a frame, i.e. 8 fps with the CPU pegged —
+  lands in the same place as every other track. The frame is now **present-bound, not raster-bound**:
+  the software present measures 9.6 ms and the present thread overlaps it with the raster, so the
+  ceiling is ~104 fps against a 60 fps pump. **That closes the GPU question rather than reopening
+  it** — the Mali path measured 45.6 ms/present (4.7× *slower*, `FBIOPUT_VSCREENINFO` contending
+  with the Mali pipeline) and making the raster cheaper cannot change that. The next real lever is
+  partial repaint, which would cut the raster again but not the flip, so it is worth less than it
+  looks.
+- **Brick-risk sweep of the 07-27/28 work** (2026-07-28). `panic = "abort"` means any Rust panic
+  kills the process, appmgr calls `android_reboot`, and the bad-boot counter takes a life — so a
+  panic here is a reboot, and four frames of one are a revert to stock. Every new arithmetic and
+  indexing site was checked (the accent table, the swatch geometry, the ramp lookup, the contour
+  interpolation, the level statistics, `row_run`'s slice bounds, the settings parsers). What
+  actually needed fixing:
+  - **`gradient_image` allocated a 1.5 MB scratch `Canvas`** — the exact allocation size whose churn
+    already caused one on-device allocator abort. It writes straight into its output buffer now.
+  - **The Level page called `format!` twice a frame** at ~20 fps, and the Spectrum page called
+    `to_uppercase()` once. All three are gone: stack decimals and a static uppercase name table.
+  - **`viz_decay` did a `clock_gettime` on every frame** to discover there was nothing to decay.
+    The empty check comes first now.
+  - **The page swipe used `y < BOT` where it needed a range.** The shell passes `y = 0` for a
+    contact that somehow arrives with no `ABS_Y`, and 0 is above the artwork — every one of those
+    degenerate swipes would have silently become a page turn instead of the track skip it has
+    always been.
+  - **`cinder_bench`'s percentile report indexed an empty vector** on a zero-frame run. Probe-only,
+    so it could never cost a boot, but an aborted diagnostic is still a diagnostic you don't get.
+  - **An unresolved track URI redrew its gradient every frame** — the bake covers that path too now.
 - **Now Playing is a pager** (2026-07-27): swipe the artwork left/right for three pages — **Cover**,
   **Spectrum** (the visualiser given the whole block) and **Level** (one big output meter with a
   peak marker and figures). Only the block above the title changes; the title, progress rail,

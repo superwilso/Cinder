@@ -70,6 +70,31 @@ impl Canvas {
         self.buf[idx] = (r << 16) | (g << 8) | b;
     }
 
+    /// A writable, clipped run of ONE row: the destination slice, plus how many leading source
+    /// pixels fell off the left edge so the caller can advance its own pointer.
+    ///
+    /// This exists so blitters can pay the clip test once per row instead of once per pixel.
+    /// `put` is correct but it re-checks four bounds and recomputes an index for every pixel, and
+    /// a full-bleed 480x480 cover is 230,400 of them — measured at ~1 ms/frame on the host, which
+    /// is most of what a Now Playing frame costs, redrawn 20x a second while the visualiser runs.
+    pub fn row_run(&mut self, y: i32, x: i32, len: usize) -> Option<(usize, &mut [u32])> {
+        if y < self.clip_top || y >= self.clip_bot || len == 0 {
+            return None;
+        }
+        let x1 = x + len as i32;
+        if x1 <= 0 || x >= W as i32 {
+            return None;
+        }
+        let skip = if x < 0 { (-x) as usize } else { 0 };
+        let dx0 = x.max(0) as usize;
+        let dx1 = x1.min(W as i32) as usize;
+        if dx1 <= dx0 {
+            return None;
+        }
+        let row = y as usize * W;
+        Some((skip, &mut self.buf[row + dx0..row + dx1]))
+    }
+
     /// RGB byte triples for PNG export (host backend).
     pub fn to_rgb_bytes(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(W * H * 3);

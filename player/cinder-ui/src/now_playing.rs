@@ -179,7 +179,7 @@ fn spectrum_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, seed: 
         crate::widgets::center(c, f, 240.0, 356.0, "PLAY SOMETHING TO SEE THE SPECTRUM",
             &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
     }
-    crate::widgets::center(c, f, 240.0, 130.0, crate::viz::name(np.viz_kind).to_uppercase().as_str(),
+    crate::widgets::center(c, f, 240.0, 130.0, crate::viz::name_upper(np.viz_kind),
         &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
 }
 
@@ -195,8 +195,37 @@ fn spectrum_page_night(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, 
         crate::widgets::center(c, f, 240.0, 340.0, "No audio signal",
             &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0));
     }
-    crate::widgets::center(c, f, 240.0, 196.0, crate::viz::name(np.viz_kind).to_uppercase().as_str(),
+    crate::widgets::center(c, f, 240.0, 196.0, crate::viz::name_upper(np.viz_kind),
         &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+}
+
+/// Decimal for 0..=999 into a caller-supplied buffer. Allocation-free, and clamped rather than
+/// fallible so a nonsense level can never panic a render (a panic here aborts, and an abort on this
+/// device is a reboot into stock).
+fn dec(v: i32, buf: &mut [u8; 3]) -> &str {
+    let v = v.clamp(0, 999) as u32;
+    let mut n = 0;
+    if v >= 100 {
+        buf[n] = b'0' + (v / 100) as u8;
+        n += 1;
+    }
+    if v >= 10 {
+        buf[n] = b'0' + (v / 10 % 10) as u8;
+        n += 1;
+    }
+    buf[n] = b'0' + (v % 10) as u8;
+    n += 1;
+    core::str::from_utf8(&buf[..n]).unwrap_or("0")
+}
+
+/// "PEAK nnn", allocation-free.
+fn peak_label(v: i32, buf: &mut [u8; 8]) -> &str {
+    buf[..5].copy_from_slice(b"PEAK ");
+    let mut d = [0u8; 3];
+    let s = dec(v, &mut d);
+    let n = 5 + s.len();
+    buf[5..n].copy_from_slice(s.as_bytes());
+    core::str::from_utf8(&buf[..n]).unwrap_or("PEAK")
 }
 
 /// PAGE 3 — output level. One big meter, a peak marker, and a scale. No per-band detail: this is
@@ -234,10 +263,14 @@ fn level_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 
     // The numbers, big, in the space below. Mono so they do not jitter as the digits change —
     // proportional figures would make the whole line dance at 20 fps.
-    let pct = (mean * 100.0).round() as i32;
-    crate::widgets::center(c, f, 240.0, 430.0, &format!("{pct:>3}"),
+    // Stack-formatted, not `format!`. This page redraws at ~20 fps while playing, and two heap
+    // allocations a frame is churn this device has already been bitten by once — the per-frame
+    // Canvas allocation that ended in an allocator abort, and an abort here means a reboot.
+    let mut mb = [0u8; 3];
+    crate::widgets::center(c, f, 240.0, 430.0, dec((mean * 100.0).round() as i32, &mut mb),
         &s(Family::Mono, Weight::Bold, 56.0, t.ink, 0.0));
-    crate::widgets::center(c, f, 240.0, 460.0, &format!("PEAK {:>3}", (peak * 100.0).round() as i32),
+    let mut pb = [0u8; 8];
+    crate::widgets::center(c, f, 240.0, 460.0, peak_label((peak * 100.0).round() as i32, &mut pb),
         &s(Family::Mono, Weight::Regular, 12.0, t.faint, 0.14));
 }
 

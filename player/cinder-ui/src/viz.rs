@@ -46,6 +46,21 @@ pub fn from_index(i: u8) -> VizKind {
     }
 }
 
+/// Short display name, already uppercased — the Now Playing spectrum page draws it as a caption at
+/// ~20 fps, and `name(i).to_uppercase()` there allocated a `String` on every single frame.
+pub fn name_upper(i: u8) -> &'static str {
+    match from_index(i) {
+        VizKind::Bars => "BARS",
+        VizKind::Ribbon => "RIBBON",
+        VizKind::Line => "LINE",
+        VizKind::Mirror => "MIRROR",
+        VizKind::Segments => "SEGMENTS",
+        VizKind::Dots => "DOTS",
+        VizKind::Wave => "WAVE",
+        VizKind::Pulse => "PULSE",
+    }
+}
+
 /// Short display name (for a settings row).
 pub fn name(i: u8) -> &'static str {
     match from_index(i) {

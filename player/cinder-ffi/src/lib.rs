@@ -775,8 +775,39 @@ const VIZ_DECAY_MS: f32 = 400.0;
 /// This is what stops a stale frame being displayed as if it were live. It runs unconditionally —
 /// including while the visualiser is off screen — so that coming back to Now Playing can never
 /// show bars left over from the last time it was open.
+/// Sentinel `art_key` meaning "the current URI resolved to no library track". Distinct from every
+/// real object_id, so the baked fallback below is built once for that state rather than on every
+/// poll of the same unresolved URI.
+const ART_KEY_UNRESOLVED: i64 = i64::MIN;
+
+/// Bake the gradient fallback into `art_full`/`art_thumb` when there is no decoded cover, so the
+/// render blits it instead of recomputing it.
+///
+/// The gradient costs real per-pixel work — a ramp lookup, a squared-distance test, and a `sqrt`
+/// inside the highlight disc. At 480×480 that measured ~3.3 ms a frame on the host even after
+/// being optimised (~8 ms before), and it was paid on EVERY frame, which while the visualiser
+/// animates means 20 times a second, for a picture that only changes when the track does.
+///
+/// NEITHER bake depends on the live theme, so a Day/Night switch never has to rebuild them: the
+/// full-bleed one is drawn at opacity 1.0, where the gradient maths never reads `t.bg` at all, and
+/// the 92px thumb — which is blended toward the background — is only ever drawn by the night
+/// layout, so it is baked against the night palette by construction.
+fn bake_gradient_art(r: &mut Render) {
+    if r.art_full.is_some() {
+        return;
+    }
+    let day = cinder_ui::Theme::day();
+    let night = cinder_ui::Theme::night();
+    r.art_full = Some(cinder_ui::art::gradient_image(&day, 480, 480, &r.np.art, 1.0));
+    r.art_thumb = Some(cinder_ui::art::gradient_image(&night, 92, 92, &r.np.art, 0.32));
+}
+
 fn viz_decay(r: &mut Render, dt_ms: u32) -> bool {
-    if r.viz_at.elapsed().as_millis() <= VIZ_FRESH_MS {
+    // Empty check FIRST: this runs on every frame for the whole life of the process, and the
+    // overwhelmingly common state (no analyzer running) has nothing to decay. `Instant::elapsed`
+    // is a clock_gettime, so testing it first would buy a syscall 60 times a second to learn that
+    // there is no work.
+    if r.viz_levels.is_empty() || r.viz_at.elapsed().as_millis() <= VIZ_FRESH_MS {
         return false;
     }
     viz_decay_levels(&mut r.viz_levels, dt_ms)
@@ -969,6 +1000,13 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
         raster.iter().zip(present.iter()).map(|(a, b)| *a.max(b)).sum();
     let threaded = matches!(r.present, Sink::Threaded(_));
     let report = |name: &str, v: &mut Vec<u64>| {
+        // A zero-frame bench would index an empty vector three times below. This runs only from
+        // cinder-probe (no easel lifecycle, so it cannot cost a boot), but an aborted diagnostic
+        // is still a diagnostic you don't get.
+        if v.is_empty() {
+            println!("cinder-ffi: bench {name:8} no samples");
+            return;
+        }
         v.sort_unstable();
         let sum: u64 = v.iter().sum();
         println!(
@@ -2323,6 +2361,7 @@ pub extern "C" fn cinder_set_now_playing_uri(
                     let native = r.db.as_ref().and_then(|db| art_load::load(db, t.object_id));
                     r.art_full = native.as_ref().map(|img| img.scaled_to(480, 480));
                     r.art_thumb = native.as_ref().map(|img| img.scaled_to(92, 92));
+                    bake_gradient_art(r); // no embedded cover → bake the fallback once, not per frame
                     r.art_key = Some(t.object_id);
                 }
                 r.np.liked = r.liked.contains(&t.object_id);
@@ -2362,9 +2401,16 @@ pub extern "C" fn cinder_set_now_playing_uri(
             r.play_pos_ms = 0;
             set_progress(&mut r.np, 0, 0);
             r.last_track = None;
-            r.art_full = None;
-            r.art_thumb = None;
-            r.art_key = None;
+            // A URI the library doesn't know still shows a gradient, and it was being recomputed
+            // per frame here exactly as it was for a track with no artwork. Bake it once for this
+            // state; the sentinel key keeps a re-poll of the same unresolved URI from rebuilding
+            // it, and any real track that follows replaces the key with its object_id.
+            if r.art_key != Some(ART_KEY_UNRESOLVED) {
+                r.art_full = None;
+                r.art_thumb = None;
+                bake_gradient_art(r);
+                r.art_key = Some(ART_KEY_UNRESOLVED);
+            }
             -1
         }
     }

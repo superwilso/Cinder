@@ -115,58 +115,231 @@ impl Image {
 pub fn draw_image(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, opacity: f32) {
     let (br, bg, bb) = (t.bg.r(), t.bg.g(), t.bg.b());
     let op = opacity.clamp(0.0, 1.0);
+    // Row at a time. The per-pixel `put` this replaced re-checked four bounds and recomputed an
+    // index for each of a full cover's 230,400 pixels; `row_run` does the clip once per row and
+    // hands back a slice, so the inner loop is just a pack-and-store the optimiser can unroll.
     for yy in 0..img.h {
-        let row = yy * img.w * 3;
-        for xx in 0..img.w {
-            let o = row + xx * 3;
-            let (mut r, mut g, mut b) = (img.rgb[o], img.rgb[o + 1], img.rgb[o + 2]);
-            if op < 1.0 {
-                r = lerp(br, r, op);
-                g = lerp(bg, g, op);
-                b = lerp(bb, b, op);
+        let Some((skip, dst)) = c.row_run(y0 + yy as i32, x0, img.w) else { continue };
+        let base = (yy * img.w + skip) * 3;
+        let Some(src) = img.rgb.get(base..) else { continue };
+        if op >= 1.0 {
+            for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
+                *d = ((s[0] as u32) << 16) | ((s[1] as u32) << 8) | s[2] as u32;
             }
-            c.put(x0 + xx as i32, y0 + yy as i32, ((r as u32) << 16) | ((g as u32) << 8) | b as u32);
+        } else {
+            for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
+                let r = lerp(br, s[0], op);
+                let g = lerp(bg, s[1], op);
+                let b = lerp(bb, s[2], op);
+                *d = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+            }
         }
+    }
+}
+
+/// The gradient's base colour ramp, precomputed into a table indexed by position along the
+/// diagonal. The two-segment interpolation it replaces did a float DIVIDE per pixel, and the ramp
+/// is a smooth function of one variable — so 512 samples reproduce it below the eye's resolution
+/// (each entry spans well under one output colour step) for the cost of 512 evaluations instead of
+/// one per pixel.
+const RAMP: usize = 512;
+
+fn ramp_lut(name: &str) -> [(u8, u8, u8); RAMP] {
+    let s = stops(name);
+    // Hoisted reciprocals: these two divides used to be inside the pixel loop.
+    let inv0 = 1.0 / (s[1].0 - s[0].0).max(1e-3);
+    let inv1 = 1.0 / (s[2].0 - s[1].0).max(1e-3);
+    let mut lut = [(0u8, 0u8, 0u8); RAMP];
+    for (i, e) in lut.iter_mut().enumerate() {
+        let pos = i as f32 / (RAMP - 1) as f32;
+        *e = if pos <= s[1].0 {
+            let u = (pos - s[0].0) * inv0;
+            (lerp(s[0].1 .0, s[1].1 .0, u), lerp(s[0].1 .1, s[1].1 .1, u), lerp(s[0].1 .2, s[1].1 .2, u))
+        } else {
+            let u = (pos - s[1].0) * inv1;
+            (lerp(s[1].1 .0, s[2].1 .0, u), lerp(s[1].1 .1, s[2].1 .1, u), lerp(s[1].1 .2, s[2].1 .2, u))
+        };
+    }
+    lut
+}
+
+/// Radius of the soft top-left highlight. Outside it the highlight contributes exactly nothing,
+/// which is most of any block — so the `sqrt` only runs inside the disc instead of on every pixel.
+const HL_R: f32 = 0.65;
+const HL_R2: f32 = HL_R * HL_R;
+
+/// One row of the gradient, written as packed 0x00RRGGBB into `dst`. `x_off` is the first source
+/// column (for a row clipped at the left edge).
+///
+/// THE single copy of the gradient maths: `block` and `bake` both call it, so a cached gradient can
+/// never drift from a directly-drawn one.
+#[allow(clippy::too_many_arguments)]
+fn grad_row(
+    dst: &mut [u32],
+    lut: &[(u8, u8, u8); RAMP],
+    x_off: usize,
+    v: f32,
+    inv_w: f32,
+    op: f32,
+    bg: (u8, u8, u8),
+) {
+    let dy = v - 0.1;
+    let dyy = dy * dy;
+    for (i, d) in dst.iter_mut().enumerate() {
+        let u_ = (x_off + i) as f32 * inv_w;
+        let pos = ((u_ + v) * 0.5).clamp(0.0, 1.0);
+        let (mut r, mut g, mut b) = lut[(pos * (RAMP - 1) as f32) as usize];
+        // Soft radial highlight near top-left (the .art ::after overlay). Skipped entirely outside
+        // the disc, which is where the `sqrt` used to be paid for every pixel of every block.
+        let dx = u_ - 0.2;
+        let d2 = dx * dx + dyy;
+        if d2 < HL_R2 {
+            let hl = (1.0 - d2.sqrt() * (1.0 / HL_R)).clamp(0.0, 1.0) * 0.16;
+            r = lerp(r, 255, hl);
+            g = lerp(g, 255, hl);
+            b = lerp(b, 255, hl);
+        }
+        if op < 1.0 {
+            r = lerp(bg.0, r, op);
+            g = lerp(bg.1, g, op);
+            b = lerp(bg.2, b, op);
+        }
+        *d = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
     }
 }
 
 /// Draw a gradient art block at (x0,y0) sized w×h. `opacity` (0..1) blends the
 /// gradient toward `t.bg` so night-dimmed art and small thumbnails sit back.
 pub fn block(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32, name: &str, opacity: f32) {
-    let s = stops(name);
-    let (br, bg, bb) = (t.bg.r(), t.bg.g(), t.bg.b());
+    let lut = ramp_lut(name);
+    let bg = (t.bg.r(), t.bg.g(), t.bg.b());
     let op = opacity.clamp(0.0, 1.0);
-    // Hoist the per-pixel divisions: `xx/w` and `yy/h` were two float divides for every pixel of
-    // every art block on screen, and this core has no fast divider. Reciprocal-multiply instead.
     let inv_w = 1.0 / (w.max(1) as f32);
     let inv_h = 1.0 / (h.max(1) as f32);
     for yy in 0..h {
-        let v = yy as f32 * inv_h;
-        for xx in 0..w {
-            let u_ = xx as f32 * inv_w;
-            // 135deg ≈ top-left → bottom-right
-            let pos = (u_ + v) * 0.5;
-            let (mut r, mut g, mut b) = if pos <= s[1].0 {
-                let u = (pos - s[0].0) / (s[1].0 - s[0].0).max(1e-3);
-                (lerp(s[0].1 .0, s[1].1 .0, u), lerp(s[0].1 .1, s[1].1 .1, u), lerp(s[0].1 .2, s[1].1 .2, u))
-            } else {
-                let u = (pos - s[1].0) / (s[2].0 - s[1].0).max(1e-3);
-                (lerp(s[1].1 .0, s[2].1 .0, u), lerp(s[1].1 .1, s[2].1 .1, u), lerp(s[1].1 .2, s[2].1 .2, u))
-            };
-            // soft radial highlight near top-left (the .art ::after overlay)
-            let dx = u_ - 0.2;
-            let dy = v - 0.1;
-            let hl = (1.0 - (dx * dx + dy * dy).sqrt() * (1.0 / 0.65)).clamp(0.0, 1.0) * 0.16;
-            r = lerp(r, 255, hl);
-            g = lerp(g, 255, hl);
-            b = lerp(b, 255, hl);
-            // blend toward bg by (1 - opacity)
-            if op < 1.0 {
-                r = lerp(br, r, op);
-                g = lerp(bg, g, op);
-                b = lerp(bb, b, op);
-            }
-            c.put(x0 + xx, y0 + yy, ((r as u32) << 16) | ((g as u32) << 8) | b as u32);
+        let Some((skip, dst)) = c.row_run(y0 + yy, x0, w.max(0) as usize) else { continue };
+        grad_row(dst, &lut, skip, yy as f32 * inv_h, inv_w, op, bg);
+    }
+}
+
+/// Render the gradient fallback ONCE into an `Image`, so it can be blitted like a real cover
+/// instead of recomputed every frame.
+///
+/// `block` costs real work per pixel (a ramp lookup, a squared-distance test, and a `sqrt` inside
+/// the highlight disc). At 480×480 that measured ~8 ms a frame on the host — 98% of what a cover
+/// frame cost — and it was paid 20 times a second whenever the visualiser animated, on tracks that
+/// simply have no embedded artwork. The pixels are identical; only the timing changes, from every
+/// frame to once per track.
+///
+/// Writes straight into the output buffer. An earlier version rendered into a scratch `Canvas`,
+/// which is a 1.5 MB allocation — the exact size whose churn already caused one on-device
+/// allocation abort (and therefore a reboot).
+pub fn gradient_image(t: &Theme, w: i32, h: i32, name: &str, opacity: f32) -> Image {
+    let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+    let lut = ramp_lut(name);
+    let bg = (t.bg.r(), t.bg.g(), t.bg.b());
+    let op = opacity.clamp(0.0, 1.0);
+    let inv_w = 1.0 / w as f32;
+    let inv_h = 1.0 / h as f32;
+    let mut row = vec![0u32; w];
+    let mut rgb = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        grad_row(&mut row, &lut, 0, y as f32 * inv_h, inv_w, op, bg);
+        for p in &row {
+            rgb.push((p >> 16) as u8);
+            rgb.push((p >> 8) as u8);
+            rgb.push(*p as u8);
         }
+    }
+    Image { w, h, rgb }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The baked gradient must be pixel-identical to the drawn one. They share `grad_row`, and this
+    /// test is what keeps them sharing it: the moment a "fast path" is added to one of them, a
+    /// track with no embedded artwork would render differently depending on whether it came from
+    /// the cache or the renderer, which is exactly the kind of bug nobody reports precisely.
+    #[test]
+    fn the_baked_gradient_matches_the_drawn_one_exactly() {
+        let t = Theme::day();
+        for name in ["kind", "harvest", "Atlas Hands", "", "prism"] {
+            for (w, h, op) in [(480, 480, 1.0f32), (92, 92, 0.32), (48, 48, 1.0)] {
+                let mut c = Canvas::new();
+                block(&mut c, &t, 0, 0, w, h, name, op);
+                let img = gradient_image(&t, w, h, name, op);
+                assert_eq!(img.w, w as usize);
+                assert_eq!(img.h, h as usize);
+                for y in 0..h as usize {
+                    for x in 0..w as usize {
+                        let drawn = c.buf[y * crate::canvas::W + x];
+                        let o = (y * w as usize + x) * 3;
+                        let baked = ((img.rgb[o] as u32) << 16)
+                            | ((img.rgb[o + 1] as u32) << 8)
+                            | img.rgb[o + 2] as u32;
+                        assert_eq!(drawn, baked, "{name} {w}x{h} op{op} differs at ({x},{y})");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The gradient is a smooth ramp; the 512-entry table must not introduce visible banding.
+    /// Adjacent pixels along the diagonal may differ by a colour step, never by a jump.
+    #[test]
+    fn the_ramp_table_does_not_band() {
+        let t = Theme::day();
+        let mut c = Canvas::new();
+        block(&mut c, &t, 0, 0, 480, 480, "kind", 1.0);
+        for y in 0..480usize {
+            for x in 1..480usize {
+                let a = c.buf[y * crate::canvas::W + x - 1];
+                let b = c.buf[y * crate::canvas::W + x];
+                for sh in [16, 8, 0] {
+                    let d = (((a >> sh) & 0xff) as i32 - ((b >> sh) & 0xff) as i32).abs();
+                    assert!(d <= 3, "banding at ({x},{y}): {a:06x} -> {b:06x}");
+                }
+            }
+        }
+    }
+
+    /// `row_run` is the new clipping boundary for both blitters — a block drawn partly off the left
+    /// or right edge must clip, not wrap onto the next row or panic.
+    #[test]
+    fn blocks_clip_at_the_canvas_edges() {
+        let t = Theme::day();
+        let mut c = Canvas::new();
+        block(&mut c, &t, -40, 10, 100, 20, "kind", 1.0); // hangs off the left
+        block(&mut c, &t, 440, 40, 100, 20, "kind", 1.0); // hangs off the right
+        block(&mut c, &t, -500, 70, 100, 20, "kind", 1.0); // entirely off-screen
+        block(&mut c, &t, 0, -30, 100, 20, "kind", 1.0); // entirely above
+        // Column 479 belongs to the right-hand block's rows only; column 0 to the left one's.
+        assert_ne!(c.buf[10 * crate::canvas::W], 0, "left-clipped block drew nothing");
+        assert_ne!(c.buf[40 * crate::canvas::W + 479], 0, "right-clipped block drew nothing");
+        // Nothing may have leaked onto the row used by the fully off-screen draws.
+        for x in 0..crate::canvas::W {
+            assert_eq!(c.buf[70 * crate::canvas::W + x], 0, "off-screen block painted row 70");
+        }
+    }
+
+    /// An image blitted through the rewritten row-wise path must land exactly where the old
+    /// per-pixel one did, including when it hangs off an edge.
+    #[test]
+    fn draw_image_places_and_clips_correctly() {
+        let t = Theme::day();
+        let mut c = Canvas::new();
+        let img = Image { w: 4, h: 2, rgb: vec![0x11, 0x22, 0x33].repeat(8) };
+        draw_image(&mut c, &t, 2, 5, &img, 1.0);
+        assert_eq!(c.buf[5 * crate::canvas::W + 2], 0x112233);
+        assert_eq!(c.buf[5 * crate::canvas::W + 5], 0x112233);
+        assert_eq!(c.buf[5 * crate::canvas::W + 1], 0, "painted left of x0");
+        assert_eq!(c.buf[5 * crate::canvas::W + 6], 0, "painted right of the image");
+        // Hanging off the left: only the visible columns land, and on the right row.
+        draw_image(&mut c, &t, -2, 20, &img, 1.0);
+        assert_eq!(c.buf[20 * crate::canvas::W], 0x112233);
+        assert_eq!(c.buf[20 * crate::canvas::W + 2], 0, "clipped image drew too wide");
+        assert_eq!(c.buf[19 * crate::canvas::W + 479], 0, "wrapped onto the previous row");
     }
 }
