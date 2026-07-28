@@ -1,6 +1,6 @@
 # Cinder — production-readiness gap list
 
-Assessed **2026-07-27** against `afdd930`. Companion to
+Assessed **2026-07-27**, refreshed **2026-07-28**. Companion to
 [`../cinder-home/STATUS.md`](../cinder-home/STATUS.md) (current state) and
 [`../cinder-home/ROADMAP.md`](../cinder-home/ROADMAP.md) (forward plan). This file answers one
 question only: **what stands between the tree as it is and a device the owner can rely on with no
@@ -15,14 +15,14 @@ it draws is a lie, and every failure mode has an escape that needs no cable.
 
 | Gate | State |
 |---|---|
-| Host tests | **133 passing** (`cargo test --workspace`) |
+| Host tests | **157 passing** (`cargo test --workspace`) |
 | Launcher recovery matrix | **24/24** (`cinder-home/tools/test_launcher.sh`) |
 | qemu preflight | PASS (both channels) |
 | GLIBC floor | ≤ 2.23 |
 | Channels packed | `dist/dev`, `dist/stable` |
 | Audio on real hardware | **verified 2026-07-27** — position advancing 1000 ms/s, `ALSA pcm4p` RUNNING, `hw:0,4` = `cxd3778gf-icx-lowpower` (the low-power S-Master DAC, so 3.5 mm is already the battery-efficient route) |
 
-**And the headline number: 25 commits have landed since the last time any of this ran on the
+**And the headline number: 33 commits have landed since the last time any of this ran on the
 device** (`eb07f7f`, the Framework-pump fix, was the last hardware-verified commit).
 
 ---
@@ -33,8 +33,8 @@ device** (`eb07f7f`, the Framework-pump fix, was the last hardware-verified comm
 
 Everything after `eb07f7f` is untested on hardware, and several of those commits touch the **boot
 path**: brightness applied at boot, the idle screen-off timer, the render-loop rate change, the
-analyzer's demand-start, auto-MSC gating, and the dark-panel paint skip. A wedge in any of them
-ends in a bad-boot revert with 25 commits as the bisect surface.
+analyzer's demand-start, auto-MSC gating, the dark-panel paint skip, and the per-track art bake. A wedge in any of them
+ends in a bad-boot revert with 33 commits as the bisect surface.
 
 The existing safety gradient is the mitigation and it should be followed exactly:
 `cinder-probe` has no easel lifecycle, so it **cannot** affect boot — run it, and read its output,
