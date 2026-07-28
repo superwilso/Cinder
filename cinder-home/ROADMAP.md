@@ -114,10 +114,13 @@ never repoint the `.appcfg` before the probe run looks clean.
   on it. The byte-offset route is no longer needed for this and stays blocked.
 - ~~**The Now Playing heart**~~ — **DONE 2026-07-27.** Liked songs are a real store
   (`cinder_liked.conf`, object ids) with a TSV export.
-- **Remaining inert controls** (deliberate, tracked): **shuffle and repeat on Now Playing** — they
-  flip the icon and tell PlayerService nothing, and they are the ones a user hits in the first hour;
-  cheap to finish now that `NodeTrackSequence::SetOneTrackMode` is known and Cinder already
-  pre-shuffles its own queues. Then FM / BT Receiver / Pairing (backends not wired, P2 below),
+- ~~**Shuffle and repeat on Now Playing**~~ — **DONE 2026-07-28.** Shuffle reorders the queue
+  Cinder builds (tapped track first); repeat is two real states wired to `SetOneTrackMode`, since
+  repeat-**all** has no known primitive. Device-verify: does `OneTrackMode::On == 1` actually repeat,
+  and is setting it live on an in-use sequence safe. **Repeat-all** stays open — the shape would be
+  to detect end-of-queue and re-issue the sequence, which needs one device session to observe what
+  the play state actually does when a queue runs out.
+- **Remaining inert controls** (deliberate, tracked): FM / BT Receiver / Pairing (backends not wired, P2 below),
   Settings ▸ Database, and the EQ footer's **"Save Sound Preset"** — the EQ already persists on
   every change, so that button has nothing to do; reword it or give it a real named-preset store.
 - **Repo hygiene — now materially worse, and worth doing.** `.git` has grown from 116 MB to

@@ -413,6 +413,37 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   moving, so idle costs zero IPC. Changing the loop rate also exposed that the ~1 Hz housekeeping
   and battery read were paced by *iteration count* (silently assuming 60 Hz); both are now
   wall-clock paced, so the sleep timer and USB debounce keep their real timing at any rate.
+- **Shuffle and repeat are real** (2026-07-28). They were the last two controls that lit up and did
+  nothing, and the ones a user hits first.
+  - **Shuffle** now reaches the queue builder. It set a flag and lit an icon and nothing ever read
+    it: with shuffle showing ON you could tap a track and get its album in strict order — a control
+    telling you something about the next hour of listening that was not true. The **tapped track
+    stays first** and everything behind it is shuffled: you chose that track, and the tap is a more
+    specific instruction than the toggle. Cinder builds the URI list itself, so reordering a `Vec`
+    IS the play order — no Sony API needed, where Sony's own shuffle would have meant driving the
+    sequence's `SetupPermutation` for a result we can produce exactly. (The Library's "Shuffle …"
+    bands already worked; nothing is chosen there, so they shuffle the scope and start at the top.)
+  - **Repeat** is now **two states, not three**. It cycled off → all → one and told PlayerService
+    nothing; repeat-**all** has no known primitive on this service, so a third position would still
+    have been decorative. Off ↔ one, wired to `NodeTrackSequence::SetOneTrackMode` — a non-virtual
+    exported method on an object *we* construct, so a direct call rather than a vtable
+    reconstruction. The preference is sticky and applied to every new sequence **at construction**,
+    before the service has ever seen the object, so the common path has no reader to race with.
+  - **Verified as far as it can be offline:** the qemu preflight now calls `SetOneTrackMode` both
+    ways on a real Sony `NodeTrackSequence` between the ctor and the dtor, inside guard canaries —
+    proving the symbol resolves, the calling convention is right and the write stays inside our
+    reserved footprint. Two things it cannot prove and the device must: that Sony's undocumented
+    `OneTrackMode` enum really uses 1 for on, and that setting it *live* on a sequence the service
+    is already pulling from is safe. If the live path misbehaves, the fallback is one line — drop
+    that call and let the sticky flag apply from the next track.
+- **Panic hook** (2026-07-28): `panic = "abort"` means any Rust panic kills the process, appmgr
+  calls `android_reboot`, and the bad-boot counter takes a life. The message already reached
+  `cinderhome.log` via the launcher's stderr redirect, but "panicked at lib.rs:1234" says nothing
+  about what the user was doing — and on a device whose only symptom is *it rebooted*, that is most
+  of the diagnosis. A hook now prints the **screen, the Now Playing page, the track id and the
+  frame count** ahead of the standard message. It reads only plain atomics refreshed once a frame
+  and never touches the renderer mutex: a panic raised while that lock was held would otherwise
+  deadlock in the hook instead of aborting, turning a clean reboot into a hang.
 - **Render: the album art was the whole cost, not the visualiser** (2026-07-28). The optimisation
   pass started from a guess that was wrong by two orders of magnitude. Measured with a new
   `cargo test -p cinder-ui --release --test render_bench -- --ignored --nocapture` harness (an

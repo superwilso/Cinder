@@ -47,6 +47,12 @@ std::shared_ptr<ps::PlayController> g_ctrl;
 // as the sequence plays — so WE must keep it alive. Replaced (freeing the previous one) on
 // every play_tracks call, dropped at shutdown.
 std::shared_ptr<pl::TrackSequence> g_seq;
+// The SAME object as g_seq, kept at its concrete type so repeat-one can be set on it. g_seq is an
+// aliasing shared_ptr over this one, so there is exactly one object and one refcount.
+std::shared_ptr<psu::NodeTrackSequence<psu::UriInfo>> g_nts;
+// Sticky repeat-one preference. Applied to every sequence AT CONSTRUCTION (before the service is
+// ever told about it, so nothing can be mid-read), and applied live when the user toggles it.
+bool g_repeat_one = false;
 
 // ── PlayEventListener (RE_playerservice_sound.md §2 — vtable MAPPED from the On* forwarders) ──
 // Device result 2026-07-26: Connect(NULL) "poll mode" was a qemu-era assumption and it is WRONG —
@@ -357,6 +363,10 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
     // pulls tracks by calling back through the controller, which holds the seq at +0x38. So the
     // object must outlive the call, and a rejected call must not leave a dangling one either.
     g_seq = seq;
+    g_nts = nts;
+    // Apply the sticky repeat mode BEFORE SetTrackSequence: at this point the service has never
+    // seen this object, so there is no reader to race with.
+    nts->SetOneTrackMode(g_repeat_one ? psu::OneTrackMode::On : psu::OneTrackMode::Off);
     int rc = g_ctrl->SetTrackSequence(seq);
     if (rc != 0) {
         // The raw service code, not a flattened -3: this is a wire reject and its value is the
@@ -365,6 +375,7 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
                              "connected=%d count=%d start=%d\n",
                      rc, (unsigned)rc, (int)g_ctrl->IsConnected(), count, start);
         g_seq.reset();
+        g_nts.reset();
         return -3;
     }
     // PAUSE, then PLAY — the OMX lifecycle, not an optimisation. Measured 2026-07-27:
@@ -393,9 +404,21 @@ int cinder_audio_stop(void)  { return change_state(pl::playstate_t::Stop); }
 // track's file descriptor. Needed before handing /contents to the PC over USB-MSC: a paused
 // service keeps the media file open, and any open fd under /contents makes init's
 // unmount_msc1 fail EBUSY → the LUN write fails → the PC sees a reader with no medium.
+int cinder_audio_set_repeat_one(int on) {
+    g_repeat_one = (on != 0);
+    if (!g_nts) return 1;  // no sequence yet — it will be applied when the next one is built
+    // Live change on a sequence the service is already pulling from. This is a single enum store
+    // into an object we own; it is not synchronised, and it is the one part of this path that
+    // wants a device to confirm rather than an argument. If it ever misbehaves, the fallback is to
+    // drop this call and let the sticky flag apply from the next track onward.
+    g_nts->SetOneTrackMode(g_repeat_one ? psu::OneTrackMode::On : psu::OneTrackMode::Off);
+    return 0;
+}
+
 int cinder_audio_release_sequence(void) {
     int rc = change_state(pl::playstate_t::Stop);
     g_seq.reset();
+    g_nts.reset();
     return rc;
 }
 

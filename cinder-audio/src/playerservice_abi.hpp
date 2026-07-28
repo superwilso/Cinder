@@ -151,11 +151,20 @@ private:
 // NodeTrackSequence<UriInfo> — reserved-size shell. We only ever construct it in a 0x100 buffer
 // and destroy it via the exported dtor (through the shared_ptr deleter). No fields modeled: the
 // real ctor lays them out; we just give it room.
+// OneTrackMode — the repeat-one control. Sony's enum values are NOT documented and are not
+// recoverable from the symbol table; 0/1 is the natural encoding for a two-state mode and is what
+// we pass. Treat it as unverified until a device session confirms that 1 actually repeats the
+// track (the same status as media_origin_t::Begin == 0 in the seek path).
+enum class OneTrackMode : int { Off = 0, On = 1 };
+
 template <class T> class NodeTrackSequence {
 public:
     NodeTrackSequence(std::unique_ptr<Node<T>> node, int startIndex,
                       std::function<void(UpdateReason, int)> cb);
     ~NodeTrackSequence();
+    // Repeat-one. Non-virtual, exported, and a member of an object WE construct — so this is a
+    // direct call, not a vtable reconstruction.
+    void SetOneTrackMode(OneTrackMode);
 private:
     unsigned char _reserved[0x100];
 };

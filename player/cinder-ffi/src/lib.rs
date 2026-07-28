@@ -440,6 +440,9 @@ fn open_presenter(want_gpu: bool) -> Result<Presenter, String> {
 /// Open the framebuffer and initialise the renderer. Returns 0 on success, <0 on error.
 #[no_mangle]
 pub extern "C" fn cinder_render_init() -> libc::c_int {
+    // First thing, before anything can panic: a hook that says WHERE in the UI it happened.
+    // Idempotent in practice — render_init runs once per process.
+    install_panic_hook();
     // GPU present path (EGL/GLES2 on Mali) is OPT-IN. It was briefly made the default on
     // 2026-07-26 and that flip is what wedged the two flashes that evening: the app booted
     // perfectly (deferred_up: DONE, "healthy: bad-boot counter cleared", no crash in the log)
@@ -761,6 +764,57 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     cinder_ui::Library { songs, album_groups, artists, playlists, thumbs: Default::default() }
 }
 
+// ── Panic context ────────────────────────────────────────────────────────────────────────────
+// `panic = "abort"` means a Rust panic kills the process, appmgr calls android_reboot, and the
+// bad-boot counter takes a life. The panic message itself does reach cinderhome.log through the
+// launcher's stderr redirect — but "panicked at lib.rs:1234" says nothing about what the user was
+// doing, and on a device whose only symptom is "it rebooted", that is most of the diagnosis.
+//
+// The hook must not touch the renderer mutex: a panic raised while that lock is held would then
+// deadlock instead of aborting, turning a clean reboot into a hang. So the context it prints is
+// kept in plain atomics, updated once a frame, and the hook only ever reads them.
+static PANIC_SCREEN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(u8::MAX);
+static PANIC_PAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
+/// allocates nothing it does not have to.
+const SCREEN_NAMES: [&str; 16] = [
+    "Lock", "NowPlaying", "Menu", "Library", "Album", "UpNext", "Eq", "Sound", "Bluetooth",
+    "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage", "Shelf",
+];
+
+/// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
+/// than silently printing the wrong screen in a crash report.
+fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
+    use cinder_ui::nav::Screen as S;
+    match s {
+        S::Lock => 0, S::NowPlaying => 1, S::Menu => 2, S::Library => 3, S::Album => 4,
+        S::UpNext => 5, S::Eq => 6, S::Sound => 7, S::Bluetooth => 8, S::Settings => 9,
+        S::Fm => 10, S::UsbDac => 11, S::Receiver => 12, S::Onboarding => 13,
+        S::UsbStorage => 14, S::Shelf => 15,
+    }
+}
+
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::sync::atomic::Ordering::Relaxed;
+        let name = SCREEN_NAMES
+            .get(PANIC_SCREEN.load(Relaxed) as usize)
+            .copied()
+            .unwrap_or("<pre-init>");
+        eprintln!(
+            "[cinder-ffi] PANIC — screen={} np_page={} track_id={} frames_presented={}",
+            name,
+            PANIC_PAGE.load(Relaxed),
+            PANIC_TRACK.load(Relaxed),
+            FRAMES_PRESENTED.load(Relaxed),
+        );
+        prev(info); // then the standard message + location, which is the other half of the story
+    }));
+}
+
 /// A spectrum frame is "current" for this long. Sony's analyzer is asked for 20 Hz, so a live
 /// stream delivers one every ~50 ms; 250 ms is five missed frames, comfortably past jitter but
 /// short enough that a stopped stream is caught within a frame or two of the user noticing.
@@ -853,6 +907,14 @@ pub extern "C" fn cinder_render_tick() {
     r.last_tick = now;
     if r.app.tick_dt(dt_ms) {
         r.dirty = true;
+    }
+    {
+        // Panic context, refreshed once a frame. Three relaxed stores — no ordering is needed
+        // because nothing reads them except a hook that is already past the point of no return.
+        use std::sync::atomic::Ordering::Relaxed;
+        PANIC_SCREEN.store(screen_ord(r.app.current()), Relaxed);
+        PANIC_PAGE.store(r.app.np_page(), Relaxed);
+        PANIC_TRACK.store(r.last_track.as_ref().map_or(0, |t| t.object_id as u64), Relaxed);
     }
     if viz_decay(r, dt_ms) {
         r.dirty = true;
@@ -1179,6 +1241,31 @@ impl Rng {
     }
 }
 
+/// Apply the Now Playing SHUFFLE toggle to a queue that is about to be handed to PlayerService.
+///
+/// This is what made the toggle real. It set a flag and lit an icon, and nothing ever read it: with
+/// shuffle showing ON you could tap a track and get its album in strict order — the control was
+/// telling you something about the next hour of listening that simply was not true.
+///
+/// The chosen track stays FIRST and everything else is shuffled behind it. You tapped that track;
+/// shuffling it away from you would be obeying the toggle and disobeying the tap, and the tap is
+/// the more specific instruction. (The Library's own "Shuffle …" bands are different — nothing was
+/// chosen there, so those shuffle the whole scope and start at the top. They already worked.)
+///
+/// Shuffling here rather than asking PlayerService to do it is deliberate: Cinder builds the URI
+/// list itself, so the order it hands over IS the play order. Sony's own shuffle lives in a
+/// permutation over the sequence's children (`SetupPermutation`), which would mean more ABI surface
+/// for a result we can produce exactly by reordering a `Vec`.
+fn apply_shuffle(on: bool, mut uris: Vec<String>, start: usize) -> (Vec<String>, usize) {
+    if !on || uris.len() < 2 || start >= uris.len() {
+        return (uris, start);
+    }
+    let chosen = uris.remove(start);
+    Rng::new().shuffle(&mut uris);
+    uris.insert(0, chosen);
+    (uris, 0)
+}
+
 /// Resolve a Library shuffle band into the URIs to play, in the order to play them. `None` when
 /// there is no DB or the scope is empty — the caller then emits no action rather than handing the
 /// shell an empty sequence.
@@ -1279,8 +1366,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             let ctx = r.db.as_ref().and_then(|db| db.album_context(*object_id).ok().flatten());
             match ctx {
                 Some((tracks, idx)) if !tracks.is_empty() => {
-                    r.pending_play = tracks.into_iter().map(|t| t.filename).collect();
-                    r.pending_play_start = idx;
+                    let uris: Vec<String> = tracks.into_iter().map(|t| t.filename).collect();
+                    let (uris, start) = apply_shuffle(r.np.shuffle, uris, idx);
+                    r.pending_play = uris;
+                    r.pending_play_start = start;
                     8
                 }
                 _ => {
@@ -1295,8 +1384,9 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // needs no new code or FFI symbol for playlists.
             match playlist_uris(r.db.as_ref(), *playlist_id) {
                 Some(uris) => {
+                    let (uris, start) = apply_shuffle(r.np.shuffle, uris, 0);
                     r.pending_play = uris;
-                    r.pending_play_start = 0;
+                    r.pending_play_start = start;
                     8
                 }
                 None => {
@@ -1342,8 +1432,11 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             return None;
         }
         Action::RepeatCycle => {
-            r.np.repeat = (r.np.repeat + 1) % 3; // off → all → one
-            return None;
+            // Two states, both of which do something. It used to cycle off → all → one and tell
+            // PlayerService nothing at all; "all" has no known primitive, so a third position would
+            // still be decorative. The shell reads cinder_get_repeat_one() and applies it.
+            r.np.repeat = if r.np.repeat == 0 { 1 } else { 0 };
+            23
         }
         Action::BtCodecChanged => 17, // shell reads cinder_get_bt_codec/quality + applies via BtTransmitter
         Action::UsbDacToggle(_) => 18, // shell reads cinder_get_usb_dac() + starts/stops the LDAC bridge
@@ -1572,6 +1665,16 @@ pub extern "C" fn cinder_get_battery_care() -> libc::c_int {
 
 /// Is night theme currently active? (1 = night, 0 = day.) The shell reads this after a
 /// CINDER_ACT_THEME_CHANGED action (and at boot) to set the panel backlight: night = minimal light.
+/// Repeat-one on/off (1/0). Read after a CINDER_ACT_REPEAT_CHANGED action; the shell hands it to
+/// cinder_audio_set_repeat_one.
+#[no_mangle]
+pub extern "C" fn cinder_get_repeat_one() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) if r.np.repeat == 1 => 1,
+        _ => 0,
+    }
+}
+
 /// Does the visualiser want the analyzer streaming right now? 1 when the user has it enabled, the
 /// Now Playing screen is showing, and something is actually playing.
 ///
@@ -2674,6 +2777,48 @@ mod tests {
 
     /// No DB → no action (rather than an empty queue).
     #[test]
+    /// The toggle has to reach the queue. It used to light an icon and change nothing: with shuffle
+    /// showing ON, tapping a track played its album in strict order.
+    #[test]
+    fn the_shuffle_toggle_actually_reorders_the_queue() {
+        let uris: Vec<String> = (0..40).map(|i| format!("/contents/{i:02}.flac")).collect();
+
+        // Off: byte-for-byte untouched, and the start index is preserved.
+        let (off, start) = apply_shuffle(false, uris.clone(), 7);
+        assert_eq!(off, uris);
+        assert_eq!(start, 7);
+
+        // On: the TAPPED track leads (the tap is more specific than the toggle) and playback
+        // starts at 0, because the queue was reordered to put it there.
+        let (on, start) = apply_shuffle(true, uris.clone(), 7);
+        assert_eq!(start, 0);
+        assert_eq!(on[0], uris[7], "the track you tapped must still be the one that plays");
+
+        // Same multiset — a shuffle must not drop, duplicate or invent a track.
+        let mut a = uris.clone();
+        let mut b = on.clone();
+        a.sort();
+        b.sort();
+        assert_eq!(a, b, "shuffle changed which tracks are in the queue");
+
+        // And it is actually shuffled. With 39 tracks behind the leader, the odds of the original
+        // order surviving by chance are 1/39! — if this fires, the shuffle did not run.
+        assert_ne!(on, uris, "queue came back in its original order");
+    }
+
+    /// Degenerate inputs must not panic — a panic here aborts the process, and on this device an
+    /// abort is a reboot.
+    #[test]
+    fn shuffling_degenerate_queues_is_safe() {
+        assert_eq!(apply_shuffle(true, Vec::new(), 0), (Vec::new(), 0));
+        let one = vec!["/a.flac".to_string()];
+        assert_eq!(apply_shuffle(true, one.clone(), 0), (one.clone(), 0));
+        // A start index past the end (a stale index against a shorter queue) is left alone rather
+        // than indexing out of bounds.
+        let two = vec!["/a.flac".to_string(), "/b.flac".to_string()];
+        assert_eq!(apply_shuffle(true, two.clone(), 9), (two, 9));
+    }
+
     fn shuffle_without_db_is_ignored() {
         assert_eq!(shuffle_uris(None, cinder_ui::nav::ShuffleScope::AllSongs), None);
     }

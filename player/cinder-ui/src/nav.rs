@@ -100,7 +100,7 @@ pub enum Action {
     SoundBypass(bool),        // A/B: true = bypass whole chain (B), false = re-enable (A)
     SleepTimer(u32),          // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
     ShuffleToggle,            // Now Playing shuffle on/off (FFI holds the state; PlayController wiring is device-gated)
-    RepeatCycle,              // Now Playing repeat: off → all → one (FFI holds the state)
+    RepeatCycle,              // Now Playing repeat: off ↔ one (shell applies via SetOneTrackMode)
     BtCodecChanged,           // device-wide BT transmit codec / LDAC quality changed; shell reads + applies
     UsbDacToggle(bool),       // engage/disengage USB-DAC input routed to 3.5mm + BT/LDAC (the headline feature)
     BrightnessChanged(u8),    // panel brightness level 1..5; shell maps it onto the backlight node
@@ -2453,6 +2453,31 @@ mod tests {
         }
         hit.sort();
         assert_eq!(hit, (0..ROWS).collect::<Vec<_>>(), "some rows can never be tapped");
+    }
+
+    /// Repeat is two states, both of which do something. It used to cycle off → all → one and tell
+    /// PlayerService nothing at all; "all" has no known primitive, so a third position would still
+    /// be decorative. Every press must also emit an action, or the shell never applies it.
+    #[test]
+    fn repeat_is_two_real_states_and_always_reaches_the_shell() {
+        let mut a = unlocked();
+        assert_eq!(a.current(), Screen::NowPlaying);
+        // The repeat icon lives at the far right of the transport row.
+        let acts = a.tap(436, 692);
+        assert_eq!(acts, vec![Action::RepeatCycle], "tapping repeat must emit an action");
+        let acts = a.tap(436, 692);
+        assert_eq!(acts, vec![Action::RepeatCycle], "and again on the way back off");
+    }
+
+    /// Shuffle likewise: the icon is at the far LEFT of the same row, and must not be swallowed by
+    /// the prev-track target beside it.
+    #[test]
+    fn shuffle_and_repeat_do_not_steal_each_others_taps() {
+        let mut a = unlocked();
+        assert_eq!(a.tap(44, 692), vec![Action::ShuffleToggle]);
+        assert_eq!(a.tap(436, 692), vec![Action::RepeatCycle]);
+        assert_eq!(a.tap(130, 692), vec![Action::Prev]);
+        assert_eq!(a.tap(350, 692), vec![Action::Next]);
     }
 
     /// Tapping a swatch must select THAT accent, not advance the cycle by one. This is the whole

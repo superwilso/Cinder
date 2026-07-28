@@ -64,7 +64,10 @@ pub struct NowPlaying<'a> {
     pub liked: bool,
     pub playing: bool,
     pub shuffle: bool,
-    pub repeat: u8, // 0 off · 1 all · 2 one
+    /// Repeat: 0 = off, 1 = repeat-one. There is deliberately no repeat-ALL state: no primitive for
+    /// it has been found on PlayerService, and a third position that changed nothing would be the
+    /// same lie the shuffle icon used to tell.
+    pub repeat: u8,
     pub viz_seed: f32, // visualiser animation phase (the shell advances it while playing)
     pub viz_kind: u8,  // which visualiser type (index into viz::from_index)
     /// How much room the visualiser gets, as a `viz::VizSize` index (0 = OFF). Replaced the old
@@ -393,8 +396,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     }
     icons::next(c, 352.0, ty, 38.0, t.ink);
     icons::repeat(c, 436.0, ty, 24.0, if np.repeat > 0 { t.acc } else { t.faint });
-    if np.repeat == 2 {
-        // repeat-one dot
+    if np.repeat == 1 {
+        // the "one" dot inside the loop glyph
         fill_rect(c, 435, ty as i32 - 1, 3, 3, t.acc);
     }
 

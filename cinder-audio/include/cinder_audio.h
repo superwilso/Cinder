@@ -75,6 +75,12 @@ int  cinder_audio_prev_track(void);
 int  cinder_audio_next_group(void);
 int  cinder_audio_prev_group(void);
 
+/* Repeat-one on/off (NodeTrackSequence::SetOneTrackMode). Sticky: applied to every sequence at
+ * construction, and applied live to the current one if there is one. 0 = applied live, 1 = stored
+ * only (nothing playing yet). Sony's OneTrackMode enum values are undocumented; 0/1 is assumed and
+ * is DEVICE-UNVERIFIED. There is no known repeat-ALL primitive — see ROADMAP. */
+int  cinder_audio_set_repeat_one(int on);
+
 /* Seek to an absolute position from the start of the track, in milliseconds. */
 int  cinder_audio_seek_ms(int ms);
 

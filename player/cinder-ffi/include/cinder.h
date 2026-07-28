@@ -79,7 +79,10 @@ typedef enum {
     /* Settings ▸ Boot to stock, confirmed: arm the launcher's ONE-SHOT stock flag and restart into
      * Sony's player. One-shot by design — it is the only escape reachable with no USB cable, so it
      * must undo itself or it would strand a cable-less user on stock. */
-    CINDER_ACT_BOOT_TO_STOCK = 22
+    CINDER_ACT_BOOT_TO_STOCK = 22,
+    /* Now Playing repeat toggled: read cinder_get_repeat_one() (1/0) and hand it to
+     * cinder_audio_set_repeat_one(). Two states only — no repeat-ALL primitive is known. */
+    CINDER_ACT_REPEAT_CHANGED = 23
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -199,6 +202,8 @@ int  cinder_get_night(void);
  * apply via BtTransmitterService. The same values configure the USB-DAC→LDAC bridge. */
 int  cinder_get_bt_codec(void);
 int  cinder_get_bt_ldac_quality(void);
+/* Repeat-one state (1/0) for CINDER_ACT_REPEAT_CHANGED. */
+int  cinder_get_repeat_one(void);
 /* The UI's panel-brightness level, 1..5 (never 0). Read after a CINDER_ACT_BRIGHTNESS_CHANGED
  * action and at boot, then map it onto the backlight node. Level 1 must stay READABLE — if the
  * lowest setting blanks the panel, the screen needed to turn it back up is unusable. */

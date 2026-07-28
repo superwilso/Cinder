@@ -177,6 +177,15 @@ int main(int argc, char** argv) {
                         std::move(node), 1,
                         std::function<void(psu::UpdateReason, int)>([](psu::UpdateReason, int) {}));
                 });
+            // Repeat-one: exercise SetOneTrackMode on the real object, BOTH ways, between the
+            // ctor and the dtor. This is the offline gate for that call — it proves the symbol
+            // resolves, the calling convention is right, and the write lands inside our reserved
+            // footprint (the guard canaries around `ntsbase` catch an overflow). What it CANNOT
+            // prove is Sony's enum semantics, i.e. that On=1 actually repeats the track; that
+            // needs the device.
+            nts->SetOneTrackMode(psu::OneTrackMode::On);
+            nts->SetOneTrackMode(psu::OneTrackMode::Off);
+            std::printf("SetOneTrackMode(On/Off) survived on a real NodeTrackSequence\n");
             nts->~NodeTrackSequence();   // exercise the exported dtor (frees the node tree)
         }
         ju->~NodeJsonUtil();

@@ -1601,6 +1601,13 @@ void carry_out(int act) {
             // screen a moment later while the user is still reading the row.
             g_last_input_ms = now_ms();
             break;
+        case CINDER_ACT_REPEAT_CHANGED:
+            // Repeat-one → NodeTrackSequence::SetOneTrackMode on the pinned sequence. Guarded:
+            // it is a call into Sony-constructed object layout, and a wedge here must not take
+            // the frame loop with it.
+            run_guarded("repeat: set one-track mode", 4,
+                        []() { cinder_audio_set_repeat_one(cinder_get_repeat_one()); });
+            break;
         case CINDER_ACT_BRIGHTNESS_CHANGED:
             // Settings Brightness row cycled 1..5 → recompute the day level + rewrite the node.
             run_guarded("carry_out: backlight (brightness)", 4, apply_brightness);
