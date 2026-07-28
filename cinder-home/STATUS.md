@@ -1,5 +1,10 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26)
 
+> **How Cinder differs from Wampy and from Sony's stock player (2026-07-28):**
+> [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md) — subsystem by
+> subsystem, including the three Cinder defects that comparison found, why Cinder's volume is correct
+> as-is, and the full evidenced answer on FM-over-Bluetooth with a 3.5 mm cable as the antenna.
+>
 > **Production-readiness gap list (2026-07-27):**
 > [`../docs/PRODUCTION_READINESS.md`](../docs/PRODUCTION_READINESS.md) — what is left before this is
 > a device the owner can rely on with no PC in the room. This file says what *is*; that one says
