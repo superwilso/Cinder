@@ -75,6 +75,12 @@ int  cinder_audio_prev_track(void);
 int  cinder_audio_next_group(void);
 int  cinder_audio_prev_group(void);
 
+/* DEV PROBE: re-hand PlayerService the last sequence while it is playing, touching no transport
+ * state. `dup_after_current` inserts a copy of the current track behind it, approximating a queue
+ * insert. Answers whether "Play Next" can change the queue without interrupting the current track —
+ * PlayerService has no insert, so a new SetTrackSequence is the only way to do it. 0 = accepted. */
+int  cinder_audio_reissue_sequence(int dup_after_current);
+
 /* Repeat-one on/off (NodeTrackSequence::SetOneTrackMode). Sticky: applied to every sequence at
  * construction, and applied live to the current one if there is one. 0 = applied live, 1 = stored
  * only (nothing playing yet). Sony's OneTrackMode enum values are undocumented; 0/1 is assumed and

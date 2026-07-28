@@ -15,6 +15,7 @@
 #include <time.h>
 #include <memory>
 #include <string>
+#include <vector>
 #include <cstring>
 #include <cstdio>
 
@@ -53,6 +54,12 @@ std::shared_ptr<psu::NodeTrackSequence<psu::UriInfo>> g_nts;
 // Sticky repeat-one preference. Applied to every sequence AT CONSTRUCTION (before the service is
 // ever told about it, so nothing can be mid-read), and applied live when the user toggles it.
 bool g_repeat_one = false;
+// The last sequence we built, kept so it can be re-issued verbatim. Only used by the dev-channel
+// re-issue probe below — but it is also exactly what an "insert into the queue" feature will need,
+// because PlayerService has no insert: the only way to change the queue is to hand it a new
+// sequence.
+std::vector<std::string> g_last_uris;
+int g_last_start = 0;
 
 // ── PlayEventListener (RE_playerservice_sound.md §2 — vtable MAPPED from the On* forwarders) ──
 // Device result 2026-07-26: Connect(NULL) "poll mode" was a qemu-era assumption and it is WRONG —
@@ -367,6 +374,8 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
     // object must outlive the call, and a rejected call must not leave a dangling one either.
     g_seq = seq;
     g_nts = nts;
+    g_last_uris.assign(uris, uris + count);
+    g_last_start = start;
     // Apply the sticky repeat mode BEFORE SetTrackSequence: at this point the service has never
     // seen this object, so there is no reader to race with.
     //
@@ -413,6 +422,48 @@ int cinder_audio_stop(void)  { return change_state(pl::playstate_t::Stop); }
 // track's file descriptor. Needed before handing /contents to the PC over USB-MSC: a paused
 // service keeps the media file open, and any open fd under /contents makes init's
 // unmount_msc1 fail EBUSY → the LUN write fails → the PC sees a reader with no medium.
+int cinder_audio_reissue_sequence(int dup_after_current) {
+    // Re-hand PlayerService a sequence WHILE IT IS PLAYING, and touch nothing else — no
+    // ChangePlayState, no seek. This answers the one question that decides whether an Apple-style
+    // "Play Next" is buildable: the service has no insert operation, so adding a track to the queue
+    // can only mean building a new NodeTrackSequence and calling SetTrackSequence again. If that is
+    // transparent, Play Next is a small feature. If it restarts or stops the track, inserts have to
+    // be deferred to a track boundary and it is a completely different design.
+    //
+    // `dup_after_current` duplicates the entry after the current one, which is the closest thing to
+    // a real insert without needing another file on hand.
+    if (!g_ctrl || g_last_uris.empty()) return -1;
+    std::vector<std::string> v = g_last_uris;
+    if (dup_after_current) {
+        std::size_t at = (std::size_t)g_last_start + 1;
+        if (at > v.size()) at = v.size();
+        v.insert(v.begin() + at, v[(std::size_t)g_last_start]);
+    }
+    std::string json = "{\"children\":[";
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        int fmt = psu::psk::FileUtil::GetFormatFromFilename(v[i]);
+        if (i) json += ",";
+        json += "{\"uri\":\"";
+        for (char ch : v[i]) { if (ch == '"' || ch == '\\') json += '\\'; json += ch; }
+        json += "\",\"format\":" + std::to_string(fmt) + "}";
+    }
+    json += "]}";
+    psu::NodeJsonUtil<psu::UriInfo, psu::UriInfoPolicy> ju;
+    std::unique_ptr<psu::Node<psu::UriInfo>> node = ju.ConvJsonStringToNode(json);
+    if (!node) return -2;
+    auto nts = std::make_shared<psu::NodeTrackSequence<psu::UriInfo>>(
+        std::move(node), g_last_start,
+        std::function<void(psu::UpdateReason, int)>([](psu::UpdateReason, int) {}));
+    std::shared_ptr<pl::TrackSequence> seq(nts, reinterpret_cast<pl::TrackSequence*>(nts.get()));
+    g_seq = seq;
+    g_nts = nts;
+    if (g_repeat_one) nts->SetOneTrackMode(psu::OneTrackMode::On);
+    int rc = g_ctrl->SetTrackSequence(seq);
+    std::fprintf(stderr, "[cinder-audio] reissue: n=%d start=%d dup=%d SetTrackSequence rc=%d\n",
+                 (int)v.size(), g_last_start, dup_after_current, rc);
+    return rc;
+}
+
 int cinder_audio_set_repeat_one(int on) {
     g_repeat_one = (on != 0);
     if (!g_nts) return 1;  // no sequence yet — it will be applied when the next one is built

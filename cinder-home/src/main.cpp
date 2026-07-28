@@ -2294,6 +2294,35 @@ void* render_driver(void*) {
             //   /contents and hands it to the PC), needs no sync (/contents is vfat — unsynced
             //   writes are lost), and costs no eMMC wear for a throwaway debug artifact.
             //   Also accept the /contents trigger, for setting it over USB-MSC with no adb.
+#ifdef CINDER_DEV
+            // DEV PROBE: `touch /tmp/cinder_reissue.req` re-hands PlayerService the current
+            // sequence WHILE IT PLAYS, changing nothing else. It answers whether an Apple-style
+            // "Play Next" can alter the queue without interrupting the track — PlayerService has no
+            // insert, so a fresh SetTrackSequence is the only way to change a queue, and if that is
+            // not transparent the feature has to defer inserts to a track boundary instead.
+            //
+            // It has to run HERE, inside the app, rather than from cinder-probe: SoundService
+            // allows exactly one track of a type, cinder-home holds it, and a probe run alongside
+            // therefore never gets audio to interrupt. The position either side is logged so the
+            // answer is in the log rather than in someone's judgement of what they heard.
+            if (::access("/tmp/cinder_reissue.req", F_OK) == 0) {
+                ::unlink("/tmp/cinder_reissue.req");
+                int c0 = -1, t0 = -1;
+                cinder_audio_position(&c0, &t0);
+                int playing0 = cinder_audio_is_playing();
+                run_guarded("reissue probe", 8, []() { cinder_audio_reissue_sequence(1); });
+                usleep(1500000);
+                int c1 = -1, t1 = -1;
+                cinder_audio_position(&c1, &t1);
+                std::fprintf(stderr,
+                    "[cinder-home] reissue: before pos=%d playing=%d | after 1.5s pos=%d playing=%d"
+                    " => %s\n",
+                    c0, playing0, c1, cinder_audio_is_playing(),
+                    (c1 > c0) ? "CONTINUED (transparent — Play Next is buildable)"
+                              : "INTERRUPTED (inserts must wait for a track boundary)");
+                std::fflush(stderr);
+            }
+#endif
             if (::access("/tmp/cinder_screenshot.req", F_OK) == 0) {
                 ::unlink("/tmp/cinder_screenshot.req");
                 cinder_request_screenshot("/tmp/cinder_screen.png");
