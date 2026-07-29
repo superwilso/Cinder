@@ -1,0 +1,27 @@
+=== Phase 4g: Hold switch / input event mapping ===
+
+--- Input device nodes ---
+
+--- keylayout / keychars files ---
+
+--- Hold/lock strings in HgrmMediaPlayerApp ---
+                            : "qrc:/assets/images/setting_top/slider_setting_nc_thumb_disable.png"
+                        : "qrc:/assets/images/setting_top/slider_setting_amb_guide_base_disable.png"
+                        base.pressAndHold()
+                    base.pressAndHold()
+                    if (base.isEnablePressAndHold) {
+                    text: (switchButton.checked ? qsTr("000042") : qsTr("000043")) + viewstyle.empty_string // ON or OFF
+                description: synchroSilenceThresholdTime
+                if (base.isEnablePressAndHold) {
+                isEnablePressAndHold: base.isEnablePressAndHold
+                onClicked: selectSynchroSilenceThresholdTime()
+                onPressAndHold: base.pressAndHold()
+                onPressAndHold: {
+                peakIndex: base.peakholdIndexList[index]
+                source: "qrc:/slider_se_setting_lr_balance_guide.png"
+                source: "qrc:/slider_se_setting_lr_balance_pointer.png"
+              base.pressAndHold();
+            base.pressAndHold()
+            id: bgImageSwitchOn
+            id: switchButton
+            onPressAndHold: {

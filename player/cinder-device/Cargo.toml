@@ -1,0 +1,8 @@
+[package]
+name = "cinder-device"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cinder-ui = { path = "../cinder-ui" }
+libc = "0.2"

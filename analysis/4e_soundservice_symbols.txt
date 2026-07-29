@@ -1,0 +1,185 @@
+=== Phase 4e: libSoundServiceFw.so ===
+
+Path: artifacts/rootfs_mnt/vendor/sony/lib/libSoundServiceFw.so
+
+--- Exported symbols (nm) ---
+00181d10 T CB_6bandEQ_CopyInputData_2ch_asm
+00181d80 T CB_6bandEQ_CopyInputData_deinterleav_2ch_asm
+00181df0 T CB_6bandEQ_CopyOutputData_2ch_asm
+00181e60 T CB_6bandEQ_CopyOutputData_deinter_2ch_asm
+0015c910 T CB_6bandEQ_add2_signal_2ch_CortexA7_Neon_i
+00181ed0 T CB_6bandEQ_alc
+0015c944 T CB_6bandEQ_copy_blk_2ch_CortexA7_Neon_i
+0015c4d4 T CB_6bandEQ_core
+0015c660 T CB_6bandEQ_effect_update
+0015c140 T CB_6bandEQ_eq
+0015c710 T CB_6bandEQ_geq_2ch_CortexA7_Neon_i
+0015c7e0 T CB_6bandEQ_iir2order_flt_2ch_asm
+001822e0 T CB_6bandEQ_ln_approx_asm
+0015c8cc T CB_6bandEQ_mult_add_loop_2ch_CortexA7_Neon_i
+0015c8a0 T CB_6bandEQ_mult_loop_2ch_const_CortexA7_Neon_i
+0015c970 T CB_6bandEQ_ramp_CortexA7_Neon_i
+0015c5cc T CB_6bandEQ_reset_unit
+001822a0 T CB_6bandEQchsep_CortexA7_Neon_i
+0017c6f0 T ClearPhase_Core_proc
+00187f10 T DSEEHX_Add_neon_f32
+0018877c T DSEEHX_CReLU_neon_f32
+00187f58 T DSEEHX_Clip_neon_f32
+00187fac T DSEEHX_Conv8_neon_f32
+0018853c T DSEEHX_Convolution_neon_f32
+00183ce8 T DSEEHX_Copy_data_neon_f32
+001887fc T DSEEHX_DELTA_neon_f32
+00183d50 T DSEEHX_Memcpy_neon_f32
+00183da8 T DSEEHX_Memmove_neon_f32
+001888c4 T DSEEHX_Pooling_neon_f32
+00188aa0 T DSEEHX_Standardizing_neon_f32
+00156630 T EffectExecuteALC
+0015b76c T EffectExecuteCB_6bandEQ
+001505ec T EffectExecuteClearPhase
+0015811c T EffectExecuteDCPhaseLinearizer
+0016ec28 T EffectExecuteDSX
+0014a134 T EffectExecuteDYN_NORM
+0014b235 T EffectExecuteF2I
+00159544 T EffectExecuteHEQ
+00159bd4 T EffectExecuteHEQ_CortexA7_Neon_f
+0015a1e8 T EffectExecuteHQEQ_10bandEQ
+0015ca98 T EffectExecuteHQEQ_ToneControl
+00149499 T EffectExecuteI2F
+0015ffc1 T EffectExecuteRealVinyl
+00151748 T EffectExecuteVPT
+00156fbc T EffectFinalizeALC
+0015c08c T EffectFinalizeCB_6bandEQ
+0015088c T EffectFinalizeClearPhase
+00158448 T EffectFinalizeDCPhaseLinearizer
+0016f678 T EffectFinalizeDSX
+0014a9b0 T EffectFinalizeDYN_NORM
+0014b9b1 T EffectFinalizeF2I
+00159aa8 T EffectFinalizeHEQ
+0015ac38 T EffectFinalizeHQEQ_10bandEQ
+0015d3b8 T EffectFinalizeHQEQ_ToneControl
+0014a0b9 T EffectFinalizeI2F
+00164349 T EffectFinalizeRealVinyl
+00151ab8 T EffectFinalizeVPT
+00157028 T EffectGetDelaySizeALC
+0015c0f8 T EffectGetDelaySizeCB_6bandEQ
+00150904 T EffectGetDelaySizeClearPhase
+001584b4 T EffectGetDelaySizeDCPhaseLinearizer
+0016f368 T EffectGetDelaySizeDSX
+0014aa1c T EffectGetDelaySizeDYN_NORM
+00159b20 T EffectGetDelaySizeHEQ
+0015aca4 T EffectGetDelaySizeHQEQ_10bandEQ
+0015d424 T EffectGetDelaySizeHQEQ_ToneControl
+00151b30 T EffectGetDelaySizeVPT
+00156c00 T EffectGetParamALC
+0015b690 T EffectGetParamCB_6bandEQ
+0015053c T EffectGetParamClearPhase
+00157ff0 T EffectGetParamDCPhaseLinearizer
+0016f3d0 T EffectGetParamDSX
+0014a4bc T EffectGetParamDYN_NORM
+0014b8b5 T EffectGetParamF2I
+00158dac T EffectGetParamHEQ
+0015a0fc T EffectGetParamHQEQ_10bandEQ
+0015c9c0 T EffectGetParamHQEQ_ToneControl
+00149fc1 T EffectGetParamI2F
+001634ed T EffectGetParamRealVinyl
+00151a08 T EffectGetParamVPT
+0014b945 T EffectGetVariableF2I
+0014a04d T EffectGetVariableI2F
+001640d1 T EffectGetVariableRealVinyl
+001565e4 T EffectGetVersionALC
+0015c040 T EffectGetVersionCB_6bandEQ
+0014fc0c T EffectGetVersionClearPhase
+00157be0 T EffectGetVersionDCPhaseLinearizer
+0016f6c0 T EffectGetVersionDSX
+0014a0e8 T EffectGetVersionDYN_NORM
+0014b201 T EffectGetVersionF2I
+00159b74 T EffectGetVersionHEQ
+0015abec T EffectGetVersionHQEQ_10bandEQ
+0015d36c T EffectGetVersionHQEQ_ToneControl
+00149465 T EffectGetVersionI2F
+0015f085 T EffectGetVersionRealVinyl
+00150de0 T EffectGetVersionVPT
+00156e24 T EffectInitALC
+0015ba60 T EffectInitCB_6bandEQ
+0014fcc0 T EffectInitClearPhase
+00157c94 T EffectInitDCPhaseLinearizer
+
+--- Filter/EQ-related strings ---
+	Filter: %s
+	Filter: %s (%u[Hz] -> %u[Hz])
+	Filter: %s (%u[Hz] -> [Max]%s)
+!!! EffectExecuteCB_6bandEQ error [%d]
+!!! EffectExecuteHEQ error [%d]
+!!! EffectExecuteHQEQ_10bandEQ error [%d]
+!!! EffectExecuteHQEQ_ToneControl error [%d]
+!!! EffectResetCB_6bandEQ error [%d]
+!!! EffectResetHEQ error [%d]
+!!! EffectResetHQEQ_10bandEQ error [%d]
+!!! EffectResetHQEQ_ToneControl error [%d]
+!!! EffectResetVPT error [%d]
+!!! Filter::SetParam error
+!!! GetParamToneValue error
+!!! SetParamToneValue error
+----- Created FilterChain as -----
+-Wfloat-equal
+CB_6bandEQ_CopyInputData_2ch_asm
+CB_6bandEQ_CopyInputData_deinterleav_2ch_asm
+CB_6bandEQ_CopyOutputData_2ch_asm
+CB_6bandEQ_CopyOutputData_deinter_2ch_asm
+CB_6bandEQ_add2_signal_2ch_CortexA7_Neon_i
+CB_6bandEQ_alc
+CB_6bandEQ_chsep_coef
+CB_6bandEQ_copy_blk_2ch_CortexA7_Neon_i
+CB_6bandEQ_core
+CB_6bandEQ_effect_update
+CB_6bandEQ_eq
+CB_6bandEQ_geq_2ch_CortexA7_Neon_i
+CB_6bandEQ_geq_coef
+CB_6bandEQ_iir2order_flt_2ch_asm
+CB_6bandEQ_iir_coef
+CB_6bandEQ_ln_approx_asm
+CB_6bandEQ_mult_add_loop_2ch_CortexA7_Neon_i
+CB_6bandEQ_mult_loop_2ch_const_CortexA7_Neon_i
+CB_6bandEQ_ramp_CortexA7_Neon_i
+CB_6bandEQ_reset_unit
+CB_6bandEQchsep_CortexA7_Neon_i
+Cannot close FilterIn
+DSEEHX_Add_neon_f32
+DSEEHX_CReLU_neon_f32
+DSEEHX_Clip_neon_f32
+DSEEHX_Conv8_neon_f32
+DSEEHX_Convolution_neon_f32
+DSEEHX_Copy_data_neon_f32
+DSEEHX_DELTA_neon_f32
+DSEEHX_Memcpy_neon_f32
+DSEEHX_Memmove_neon_f32
+DSEEHX_Pooling_neon_f32
+DSEEHX_Standardizing_neon_f32
+DcPhaseFilterType = [%u]
+DseeAi.bin
+DseeAi.cc
+DseeAi.dcfg
+DseeAiOnOff = [%u]
+DseeAi_HP_ICX1291.bin
+DseeAi_HP_ICX1291.dcfg
+EFFECT: Flushes to clear Filters' buffer
+EFFECT: Flushes to grow up Filters
+EFFECT: Setup Filters by Incoming Format changed
+
+--- Volume table / model strings ---
+!!! headphone model [%u] is not supported
+!!! unknown model
+SequentialModel::init
+_ZN15SequentialModel4initEP6BufferP4DataPKc
+_ZN15SequentialModel7processEPv
+_ZN3pst8services5sound6mobile10ClearPhase10SetLpsDataERKNS1_10TrackParamENS1_12OutputDeviceENS1_14HeadphoneModelEPPj
+_ZN3pst8services5sound6mobile10ClearPhase15IsProcessNeededERKNS1_12OutputDeviceERKNS1_14HeadphoneModelEb
+_ZN3pst8services5sound6mobile10ClearPhase18IsAdaptedHeadphoneERKNS1_14HeadphoneModelE
+_ZNSt3__13mapIN3pst8services5sound14HeadphoneModelENS0_INS3_5FSampENS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS5_EENS9_INS_4pairIKS5_SB_EEEEEENSC_IS4_EENS9_INSE_IKS4_SI_EEEEED2Ev
+_ZNSt3__13mapIN3pst8services5sound14HeadphoneModelEbNS_4lessIS4_EENS_9allocatorINS_4pairIKS4_bEEEEED2Ev
+_ZNSt3__16__treeINS_12__value_typeIN3pst8services5sound14HeadphoneModelENS_3mapINS4_5FSampENS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS7_EENSB_INS_4pairIKS7_SD_EEEEEEEENS_19__map_value_compareIS5_SL_NSE_IS5_EELb1EEENSB_ISL_EEE12__find_equalIS5_EERPNS_16__tree_node_baseIPvEENS_21__tree_const_iteratorISL_PNS_11__tree_nodeISL_ST_EEiEERPNS_15__tree_end_nodeISV_EESW_RKT_
+_ZNSt3__16__treeINS_12__value_typeIN3pst8services5sound14HeadphoneModelENS_3mapINS4_5FSampENS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS7_EENSB_INS_4pairIKS7_SD_EEEEEEEENS_19__map_value_compareIS5_SL_NSE_IS5_EELb1EEENSB_ISL_EEE30__emplace_hint_unique_key_argsIS5_JRKNSG_IKS5_SK_EEEEENS_15__tree_iteratorISL_PNS_11__tree_nodeISL_PvEEiEENS_21__tree_const_iteratorISL_S10_iEERKT_DpOT0_
+_ZNSt3__16__treeINS_12__value_typeIN3pst8services5sound14HeadphoneModelENS_3mapINS4_5FSampENS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS7_EENSB_INS_4pairIKS7_SD_EEEEEEEENS_19__map_value_compareIS5_SL_NSE_IS5_EELb1EEENSB_ISL_EEE7destroyEPNS_11__tree_nodeISL_PvEE
+_ZNSt3__16__treeINS_12__value_typeIN3pst8services5sound14HeadphoneModelEbEENS_19__map_value_compareIS5_S6_NS_4lessIS5_EELb1EEENS_9allocatorIS6_EEE12__find_equalIS5_EERPNS_16__tree_node_baseIPvEENS_21__tree_const_iteratorIS6_PNS_11__tree_nodeIS6_SG_EEiEERPNS_15__tree_end_nodeISI_EESJ_RKT_
+_ZNSt3__16__treeINS_12__value_typeIN3pst8services5sound14HeadphoneModelEbEENS_19__map_value_compareIS5_S6_NS_4lessIS5_EELb1EEENS_9allocatorIS6_EEE7destroyEPNS_11__tree_nodeIS6_PvEE
+hp model

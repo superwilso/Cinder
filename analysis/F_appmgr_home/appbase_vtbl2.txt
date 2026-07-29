@@ -1,0 +1,47 @@
+symbol: _ZTVN5easel15ApplicationBaseE @ 00019a18
+
+==== vtable @ 00019a18 ====
+[0] 0x0
+[1] 0x0
+[2] off 8  -> <EXTERNAL>::__cxa_pure_virtual
+[3] off 12  -> <EXTERNAL>::__cxa_pure_virtual
+[4] off 16  -> easel::ApplicationBase::OnInitialize
+[5] off 20  -> easel::ApplicationBase::OnPostInitialize
+[6] off 24  -> easel::ApplicationBase::OnActivate
+[7] off 28  -> easel::ApplicationBase::OnForeground
+[8] off 32  -> easel::ApplicationBase::OnBackground
+[9] off 36  -> easel::ApplicationBase::OnInactivate
+[10] off 40  -> easel::ApplicationBase::OnFinalize
+[11] off 44  -> easel::ApplicationBase::OnSuspend
+[12] off 48  -> easel::ApplicationBase::OnResume
+[13] off 52  -> easel::ApplicationBase::OnEarlySuspend
+[14] off 56  -> easel::ApplicationBase::OnLateResume
+[15] off 60  -> easel::ApplicationBase::OnPreShutdown
+[16] off 64  -> easel::ApplicationBase::OnPreResetSetting
+[17] off 68  -> easel::ApplicationBase::OnResetSetting
+[18] off 72  -> easel::ApplicationBase::OnPostResetSetting
+[19] off 76  -> easel::ApplicationBase::StopBootAnimation
+[20] off 80  -> easel::ApplicationBase::StartResumeAnimation
+[21] off 84  -> easel::ApplicationBase::StopResumeAnimation
+[22] off 88  -> ?@0023cbeb
+[23] off 92  -> ?@00017da5
+[24] off 96  -> ?@00000005
+[25] 0x0
+[26] off 104  -> ?@00017f7b
+[27] off 108  -> ?@00017f9a
+[28] 0x0
+[29] 0x0
+[30] 0x0
+[31] off 124  -> FUN_000150c4
+[32] off 128  -> FUN_00014f40
+[33] off 132  -> FUN_00014f74
+[34] off 136  -> FUN_00014fbc
+[35] off 140  -> FUN_00014ffc
+[36] off 144  -> FUN_0001502c
+[37] off 148  -> FUN_00015060
+[38] 0x0
+[39] 0x0
+[40] off 160  -> FUN_000150c4
+[41] off 164  -> ?@000150f5
+[42] off 168  -> ?@00015129
+[43] off 172  -> FUN_00015170

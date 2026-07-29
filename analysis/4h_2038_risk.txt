@@ -1,0 +1,57 @@
+=== Phase 4h: Year 2038 / time_t boundary analysis ===
+
+Platform: Linux 3.10, 32-bit ARM, time_t is 32-bit.
+Risk: kernel and libc syscalls will overflow in Jan 2038.
+Rust mitigation: SystemTime → u64 via as_secs() is safe for scrobbler
+timestamps; does NOT fix kernel RTC, filesystem timestamps, or
+any Sony library that accepts/returns time_t.
+
+--- Kernel version (from strings) ---
+
+--- time_t / mktime / localtime usage in libSoundServiceFw ---
+000ee619 T _ZN3pst4base6Select16TimedWaitFdEventEPNS1_5FdSetES3_j
+000ee545 T _ZN3pst4base6Select6DoWaitEPNS1_5FdSetES3_P7timeval
+000edce1 T _ZN3pst4base8Selector9TimedWaitEj
+000f6a41 T _ZN3pst8services5sound11VolumeUtils12SetTimedMuteERKj
+000f6ac5 T _ZN3pst8services5sound11VolumeUtils24SetTimedMutePrimaryAudioERKj
+000eb9c1 T _ZN3pst8services5sound14IpcAudioBuffer24TimedCheckoutEmptyPacketEi
+000ebbfd T _ZN3pst8services5sound14IpcAudioBuffer25TimedCheckoutFilledPacketEi
+000fa679 T _ZN3pst8services5sound15RendererDmpBase12SetTimedMuteERKj
+000fa6dd T _ZN3pst8services5sound15RendererDmpBase24SetTimedMutePrimaryAudioERKj
+000eb9f5 T _ZN3pst8services5sound18IpcAudioBufferImpl24TimedCheckoutEmptyPacketEi
+000ebc31 T _ZN3pst8services5sound18IpcAudioBufferImpl25TimedCheckoutFilledPacketEi
+000ed25d T _ZN3pst8services5sound30CalcMicrosecTimeLengthOfDataInERKNS1_10DataPacketE
+00116b75 T _ZN3pst8services5sound6mobile3Alc13GetAlcAttTimeENS1_5FSampE
+00116bd5 T _ZN3pst8services5sound6mobile3Alc13GetAlcRelTimeENS1_5FSampE
+         U _ZN3pst8services6binder14ServiceManager17TimeMeasureHolderC1ERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEEb
+         U _ZN3pst8services6binder14ServiceManager17TimeMeasureHolderD1Ev
+         U _ZN3pst8services6volume13VolumeService12SetTimedMuteEj
+         U _ZN3pst8services6volume13VolumeService24SetTimedMutePrimaryAudioEj
+         U _ZN3pst8services8funcarch10AudioUtils16ToPlaybackTimeMsERKjRKNS2_6FormatE
+001427e5 W _ZNSt3__13mapIN3pst8services5sound5FSampENS3_6mobile16WaitTimeAmixerSeENS_4lessIS4_EENS_9allocatorINS_4pairIKS4_S6_EEEEED2Ev
+
+--- time_t exposure in HgrmMediaPlayerApp ---
+         U _ZN13QElapsedTimer10invalidateEv
+         U _ZN13QElapsedTimer5startEv
+         U _ZN3pst4core9Framework31UpdateCurrentContextHangTimeoutEy
+         U _ZN3pst8services6binder14ServiceManager17TimeMeasureHolderC1ERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEEb
+         U _ZN3pst8services6binder14ServiceManager17TimeMeasureHolderD1Ev
+         U _ZN3pst8services6volume13VolumeService12SetTimedMuteEj
+         U _ZN5QTimeC1Eiiii
+         U _ZN5easel15ApplicationBase24GetPostInitializeTimeoutEv
+         U _ZN5easel15ApplicationBase25GetChangeLifeCycleTimeoutEv
+         U _ZN6QTimer10singleShotEiPK7QObjectPKc
+         U _ZN6QTimer11setIntervalEi
+         U _ZN6QTimer16staticMetaObjectE
+         U _ZN6QTimer4stopEv
+         U _ZN6QTimer5startEi
+         U _ZN6QTimer5startEv
+         U _ZN6QTimer7timeoutENS_14QPrivateSignalE
+         U _ZN6QTimerC1EP7QObject
+         U _ZN6QTimerD1Ev
+         U _ZN7QObject10startTimerEiN2Qt9TimerTypeE
+         U _ZN7QObject10timerEventEP11QTimerEvent
+
+Mitigation rule: never pass time_t across the Rust↔C shim boundary.
+All timestamps in the replacement player must stay in u64 (Unix seconds).
+See docs/baseline_v1.4.md §5.4 and §8 risk register.

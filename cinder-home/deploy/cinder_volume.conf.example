@@ -1,0 +1,33 @@
+# cinder_volume.conf — wire the hardware VOLUME keys. Copy to /contents/cinder_volume.conf.
+#
+# WHY a config: the volume mechanism is identified (the CXD3778GF "master volume", set via the ALSA
+# mixer — Sony uses pst::services::funcarch::AmixerUtils::SetInt), but the exact control NAME and
+# RANGE are device-specific. Rather than hard-code a guess, cinder-home reads them here, so once the
+# discovery report (`cinder-probe --discover` / the dev build's /contents/cinder_discovery.txt) gives
+# you the real values, you drop them in — and the volume keys work with NO rebuild. Until this file
+# exists, Vol+/Vol- just move the on-screen HUD (no-op on the hardware).
+#
+# The UI volume is mapped 0..100% → [min..max] and applied on each Vol+/Vol- (guarded). Pick ONE
+# backend:
+
+# ── Backend A: ALSA mixer control (preferred — matches how Sony sets it) ──────────────────────
+# CONFIRMED on-device 2026-07-25 (adb amixer): card0 simple control 'master volume' is the
+# CXD3778GF digital master, INTEGER 0..120 (Sony's 120-step scale; numid=10). A separate
+# numid=42 'Master Volume' 0..100 also exists, but 'master volume' 0..120 is the stock scale and
+# is cinder-home's built-in default too — so volume works even without this file.
+backend=amixer
+control=master volume
+card=0
+min=0
+max=120
+
+# ── Backend B: CXD3778GF sysfs node (if amixer isn't present / you prefer a direct write) ─────
+# From the discovery report (look for /sys/module/snd_soc_cxd3778gf/parameters/* or a mixer sysfs).
+# backend=sysfs
+# path=/sys/module/snd_soc_cxd3778gf/parameters/master_volume
+# min=0
+# max=120
+
+# NOTE: confirm the direction (some controls are attenuation = lower number is louder). If Vol+
+# makes it quieter, swap so max<min isn't needed — instead invert by setting min=<loud> max=<quiet>
+# is NOT supported (max must be > min); if inverted, map in the discovery follow-up.

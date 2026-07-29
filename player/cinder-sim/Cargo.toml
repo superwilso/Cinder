@@ -1,0 +1,14 @@
+[package]
+name = "cinder-sim"
+version = "0.1.0"
+edition = "2021"
+# Two binaries: `device` (drives the real on-device nav::App from the keyboard — the default)
+# and `cinder-sim` (the older click-driven screen browser). Both render the real cinder-ui.
+default-run = "device"
+
+# Interactive desktop preview of the real cinder-ui code, in a 480x800 window
+# (displays on Windows via WSLg). Host-only.
+
+[dependencies]
+cinder-ui = { path = "../cinder-ui" }
+minifb = "0.27"

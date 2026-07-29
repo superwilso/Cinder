@@ -1,0 +1,48 @@
+# === Inputs you must supply manually ===
+# Sony stock firmware  -> artifacts/stock/NW_WM_FW.UPG       (~112 MB)
+# Walkman One firmware -> artifacts/walkmanone/WalkmanOne.UPG (~375 MB)
+# Both are too large and not redistributable. See CLAUDE.md Part D1
+# for where to download them.
+
+# === Everything under artifacts/ is regenerable by `make phaseN` ===
+# (built tools, unpacked firmware, mounted rootfs, repack tests, cloned
+#  repos, phase sentinels, and the firmware inputs above).
+artifacts/
+
+# === Analysis ===
+# Text findings and per-phase logs ARE tracked (they're the actual
+# research output and let a new dev read prior conclusions without
+# rerunning the whole pipeline). The large derived dumps are not.
+analysis/binwalk/
+analysis/boot_image/
+analysis/ramdisk/
+# ui_assets IS tracked (UI-design reference: indexes, labels, gallery,
+# extracted QML, PNG assets) except the large regenerable boot animation.
+analysis/ui_assets/bootanim/
+
+# === Replacement-player Rust workspace (player/) ===
+# Source, Cargo.lock, and the bundled OFL fonts ARE tracked. Build output and
+# the rendered screen previews are regenerable, so they're not.
+player/target/
+player/out/
+# Stray Cargo build dirs anywhere else (e.g. spikes outside artifacts/).
+**/target/
+
+# === Editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === C++ build intermediates + linked binaries (rebuild: bash cinder-home/build.sh) ===
+# dist/ stays tracked — those are the flashable deliverables. .crt223/*.o stay tracked —
+# they are glibc-2.23 toolchain INPUTS, not outputs.
+cinder-home/*.o
+cinder-home/cinder-home
+cinder-home/cinder-probe
+ldac-bridge/*.o
+ldac-bridge/cinder-ldac-bridge

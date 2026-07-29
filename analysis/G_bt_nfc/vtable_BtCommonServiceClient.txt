@@ -1,0 +1,64 @@
+# artifacts/rootfs_mnt/vendor/sony/lib/libBtCommonService.so
+# _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv
+# GOT slot 0x0001be64 -> vtable group base 0x0001baac
+# primary vptr = group+8 = 0x0001bab4   (slot 0 is the first virtual)
+  0  0x0001bab4  -> 0x00011891  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x5604
+  1  0x0001bab8  -> 0x000118c9  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x563c
+  2  0x0001babc  -> 0x00007315  _ZN3pst8services22BtCommonServiceFactory14CreateInstanceEv@@Base+0x4194
+  3  0x0001bac0  -> 0x0000d6c9  BtCommonServiceClient::GetBtStatus
+  4  0x0001bac4  -> 0x0000d8a5  BtCommonServiceClient::SetRfOnOff
+  5  0x0001bac8  -> 0x0000daa1  BtCommonServiceClient::SetRfOnOffEx
+  6  0x0001bacc  -> 0x0000dc9d  BtCommonServiceClient::SetDiscoverableMode
+  7  0x0001bad0  -> 0x0000de99  BtCommonServiceClient::Pairing
+  8  0x0001bad4  -> 0x0000e0e1  BtCommonServiceClient::CancelPairing
+  9  0x0001bad8  -> 0x0000e2c5  BtCommonServiceClient::SetNumericComparison
+ 10  0x0001badc  -> 0x0000e519  BtCommonServiceClient::SetPasskey
+ 11  0x0001bae0  -> 0x0000e78d  BtCommonServiceClient::CancelPasskey
+ 12  0x0001bae4  -> 0x0000e9d5  BtCommonServiceClient::SwitchDeviceSession
+ 13  0x0001bae8  -> 0x0000ebd1  BtCommonServiceClient::DisconnectAll
+ 14  0x0001baec  -> 0x0000edb5  BtCommonServiceClient::SetSearchMode
+ 15  0x0001baf0  -> 0x0000efc5  BtCommonServiceClient::DeleteLinkkey
+ 16  0x0001baf4  -> 0x0000f20d  BtCommonServiceClient::DeleteLinkkeys
+ 17  0x0001baf8  -> 0x0000f4ed  BtCommonServiceClient::DeleteAllLinkkey
+ 18  0x0001bafc  -> 0x0000f6d1  BtCommonServiceClient::GetMyDeviceInfo
+ 19  0x0001bb00  -> 0x0000fa0d  BtCommonServiceClient::SetMyDeviceName
+ 20  0x0001bb04  -> 0x0000fc21  BtCommonServiceClient::GetPairedDeviceInfo
+ 21  0x0001bb08  -> 0x0000ff11  BtCommonServiceClient::GetPairedDeviceInfo
+ 22  0x0001bb0c  -> 0x00010219  BtCommonServiceClient::SetCoexistenceBtWifiRatio
+ 23  0x0001bb10  -> 0x00010429  BtCommonServiceClient::GetCoexistenceBtWifiRatio
+ 24  0x0001bb14  -> 0x0001060d  BtCommonServiceClient::SetiAPModelNumber
+ 25  0x0001bb18  -> 0x00010821  BtCommonServiceClient::GetRssi
+ 26  0x0001bb1c  -> 0x00010a05  BtCommonServiceClient::SetHciLogEnabled
+ 27  0x0001bb20  -> 0x00010c01  BtCommonServiceClient::SetStackLogEnabled
+ 28  0x0001bb24  -> 0x00010dfd  BtCommonServiceClient::RequestSspReply
+ 29  0x0001bb28  -> 0x00011085  BtCommonServiceClient::GetServiceUuids
+ 30  0x0001bb2c  -> 0x0000d541  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x12b4
+ 31  0x0001bb30  -> 0x0000d659  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x13cc
+ 32  0x0001bb34  -> 0x00011909  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x567c
+ 33  0x0001bb38  -> 0xfffffffc  .fini+0xfffe9edc
+ 34  0x0001bb3c  <null / end of table>
+ 35  0x0001bb40  -> 0x00011941  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x56b4
+ 36  0x0001bb44  -> 0x00011975  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x56e8
+ 37  0x0001bb48  -> 0x000119b1  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x5724
+ 38  0x0001bb4c  <null / end of table>
+ 39  0x0001bb50  <null / end of table>
+ 40  0x0001bb54  -> 0x00011b7d  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x58f0
+ 41  0x0001bb58  -> 0x000119e9  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x575c
+ 42  0x0001bb5c  -> 0x00011a55  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x57c8
+ 43  0x0001bb60  -> 0x0000741d  _ZN3pst8services22BtCommonServiceFactory14CreateInstanceEv@@Base+0x429c
+ 44  0x0001bb64  -> 0x0000744d  _ZN3pst8services22BtCommonServiceFactory14CreateInstanceEv@@Base+0x42cc
+ 45  0x0001bb68  -> 0x0000747d  _ZN3pst8services22BtCommonServiceFactory14CreateInstanceEv@@Base+0x42fc
+ 46  0x0001bb6c  -> 0x00011a95  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x5808
+ 47  0x0001bb70  -> 0x000074ed  _ZN3pst8services22BtCommonServiceFactory14CreateInstanceEv@@Base+0x436c
+ 48  0x0001bb74  -> 0x0000c2fd  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x70
+ 49  0x0001bb78  <null / end of table>
+ 50  0x0001bb7c  <null / end of table>
+ 51  0x0001bb80  -> 0x00011ac5  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x5838
+ 52  0x0001bb84  -> 0x00011b45  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x58b8
+ 53  0x0001bb88  <null / end of table>
+ 54  0x0001bb8c  <null / end of table>
+ 55  0x0001bb90  <null / end of table>
+ 56  0x0001bb94  -> 0x00011b7d  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x58f0
+ 57  0x0001bb98  -> 0x00011be5  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x5958
+ 58  0x0001bb9c  -> 0x00011a55  _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv@@Base+0x57c8
+ 59  0x0001bba0  -> 0x0000741d  _ZN3pst8services22BtCommonServiceFactory14CreateInstanceEv@@Base+0x429c
