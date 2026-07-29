@@ -253,6 +253,8 @@ void start_pump_ticker();   // full worker defined just before main(), after the
 
 // FAST foreground bring-up: open the framebuffer ONLY, so we can paint immediately and the
 // appmgr Foreground handshake completes promptly. No DB, no IPC here (those can be slow/block).
+bool gadget_in_dac_mode();   // defined with the USB-DAC block below
+
 void render_up() {
     if (g_render_ready) return;
     clog_("render_up: cinder_render_init");
@@ -264,6 +266,12 @@ void render_up() {
     int sl = cinder_settings_load("/contents/cinder_settings.conf");
     g_settings_loaded = (sl & 1) != 0;
     g_volume_restored = (sl & 2) != 0;
+    // Reconcile the USB-DAC toggle with the gadget's ACTUAL mode. The toggle is our intent; the
+    // property is the fact, and they diverge whenever USB mode is changed outside Cinder. Without
+    // this, Settings can report MASS STORAGE while the hardware sits in `uac`, and the only way out
+    // is to toggle all the way through DAC and back — measured 2026-07-29, and it stranded the
+    // device with no USB. Pure property read, no Sony service, safe on the boot path.
+    cinder_set_usb_dac(gadget_in_dac_mode() ? 1 : 0);
     // Boot ALWAYS at DAY backlight, even if night theme is persisted — the night dim is NOT resumed
     // across boots. Otherwise a daytime boot into persisted night could come up at ~3% backlight and
     // you couldn't see the screen to turn it back up. The night dim is a deliberate per-session action
@@ -1305,6 +1313,75 @@ void write_bt_pref() {
 // USB-MSC look like a race for weeks (see cinder-msc.c's header), in exactly the same place.
 //
 // cinder-msc now owns the verb, reads sys.usb.state back, and says which way it went.
+// ── the render half of USB-DAC ───────────────────────────────────────────────────────────────
+// Flipping the gadget to `uac` only makes the PC ENUMERATE a sound card. It does not make sound
+// come out of the 3.5 mm jack, because nothing has told Sony's player service to open the render
+// path — which is why DAC mode was "recognised in audio, no output". That call is
+// `UsbDeviceAudioPlayerServiceClient::Start` (vtable slot 4).
+//
+// Signature is not guesswork; the service side is exported in full:
+//     UsbDeviceAudioPlayerService::Start(IUsbDeviceAudioPlayerService::stream_info_t&)
+//     UsbDeviceAudioPlayerService::GetStatus(IUsbDeviceAudioPlayerService::stream_info_t&)
+// The ref is NON-const, so stream_info_t is an OUT param. The client stub (0x235a4) unpacks the
+// reply with six plain TransactionParam::Get calls and NO GetStr, so every field is a scalar and a
+// zeroed buffer is safe to pass. That check is the whole ballgame on this platform: the same
+// assumption applied to BtTransmitterServiceClient::GetConnectInformation crashed twice, because
+// THAT struct does hold a std::string and the write landed at a garbage offset.
+//
+// cinder-home is an easel app, so the framework/looper is already running and these calls get
+// their replies — no Pump() thread needed here (cf. reference: pst clients return uninitialised
+// stack when nothing drives the looper).
+extern "C" void* _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstanceEv(void);
+
+static void* g_uac_client = nullptr;
+
+static void* uac_slot(void* obj, int idx) {
+    void** vptr = *reinterpret_cast<void***>(obj);
+    return vptr[idx];
+}
+
+// Returns false if the client could not be built; caller logs. Never throws out.
+static bool uac_render(bool start) {
+    enum { VIDX_UacStart = 4, VIDX_UacStop = 5 };
+    try {
+        if (!g_uac_client) {
+            g_uac_client =
+                _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstanceEv();
+        }
+        if (!g_uac_client) return false;
+        typedef void (*fnp)(void*, void*);
+        // Oversized + zeroed: the field COUNT is known (six reads), the struct's true size is not,
+        // and over-allocating an out-param buffer is free while under-allocating smashes the stack.
+        unsigned si[32];
+        std::memset(si, 0, sizeof si);
+        ((fnp)uac_slot(g_uac_client, start ? VIDX_UacStart : VIDX_UacStop))(g_uac_client, si);
+        char m[160];
+        std::snprintf(m, sizeof m, "usb-dac: %s -> stream_info %u %u %u %u %u %u",
+                      start ? "Start()" : "Stop()", si[0], si[1], si[2], si[3], si[4], si[5]);
+        clog_(m);
+        return true;
+    } catch (...) {
+        clog_(start ? "usb-dac: Start() threw" : "usb-dac: Stop() threw");
+        return false;
+    }
+}
+
+// Read the gadget's ACTUAL mode rather than trusting our own toggle.
+//
+// This exists because the two states genuinely diverge. `apply_usb_dac` only ever writes the
+// gadget; nothing read it back, so anything that changed USB mode outside Cinder — a probe, a
+// crash mid-toggle, a stock-side change — left Settings reporting the opposite of the hardware,
+// with no way to correct it except toggling all the way through. Measured 2026-07-29: the gadget
+// sat in `uac` while the UI read MASS STORAGE, and the only route back out was DAC-then-off.
+bool gadget_in_dac_mode() {
+    FILE* f = ::popen("/system/bin/getprop sys.sony.config 2>/dev/null", "r");
+    if (!f) return false;
+    char buf[64] = {0};
+    if (!std::fgets(buf, sizeof buf, f)) { ::pclose(f); return false; }
+    ::pclose(f);
+    return std::strncmp(buf, "uac", 3) == 0;
+}
+
 void apply_usb_dac() {
     bool on = cinder_get_usb_dac() != 0;
     int rc = std::system(on ? "/system/vendor/unknown321/bin/cinder-msc dac-on"
@@ -1320,6 +1397,17 @@ void apply_usb_dac() {
         std::system("touch /contents/ldac_on 2>/dev/null");
     } else {
         std::system("rm -f /contents/ldac_on 2>/dev/null");
+    }
+
+    // Open (or close) the render path. Only when the gadget actually went where we asked — calling
+    // Start() against a gadget still on `adb` is how the previous round looked like it worked.
+    if (rc == 0) {
+        if (on) {
+            if (!uac_render(true))
+                clog_("usb-dac: gadget is up but Start() failed — expect silence at the jack");
+        } else {
+            uac_render(false);
+        }
     }
 }
 
@@ -1731,7 +1819,11 @@ void carry_out(int act) {
             write_bt_pref();
             break;
         case CINDER_ACT_USBDAC_LDAC:
-            run_guarded("carry_out: USB-DAC/LDAC toggle", 6, apply_usb_dac);
+            // 18 s, not 6: this used to be one setprop via cinder-msc, but it now also builds a
+            // UsbDeviceAudioPlayerServiceClient and makes a Start()/Stop() IPC round trip on top of
+            // the gadget re-enumerating. A budget sized for the old body would fire the guard
+            // mid-call and _exit a perfectly healthy app.
+            run_guarded("carry_out: USB-DAC/LDAC toggle", 18, apply_usb_dac);
             break;
         case CINDER_ACT_SLEEP:         screen_toggle(); break; // Power = panel on/off (not lock)
         case CINDER_ACT_ENTER_USB_MSC:

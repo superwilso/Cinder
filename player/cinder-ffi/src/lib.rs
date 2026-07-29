@@ -2003,6 +2003,18 @@ pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
     }
 }
 
+/// Force the USB-DAC toggle to match the gadget's real mode. The shell calls this at startup with
+/// the result of reading `sys.sony.config`, so a mode set outside Cinder (a probe, a crash between
+/// the property write and our state, a stock-side change) cannot leave Settings reporting the
+/// opposite of the hardware. Sets state only — it raises no action, because the gadget is already
+/// there and re-applying would switch USB mode for real.
+#[no_mangle]
+pub extern "C" fn cinder_set_usb_dac(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_usb_dac(on != 0);
+    }
+}
+
 /// The UI's panel-brightness level, 1..=5. Read after a CINDER_ACT_BRIGHTNESS_CHANGED action (and
 /// at boot) and map it onto the backlight node. Never returns 0 — the shell's lowest level must
 /// stay readable, or the screen you'd use to turn it back up is unreadable. Defaults to 4 (which

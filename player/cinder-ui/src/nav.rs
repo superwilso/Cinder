@@ -3012,6 +3012,16 @@ impl App {
         self.usb_dac_on
     }
 
+    /// Force the USB-DAC toggle to match reality, without raising a `UsbDacToggle` action.
+    ///
+    /// The toggle is our *intent*; the gadget's `sys.sony.config` is the *fact*, and they diverge
+    /// whenever anything changes USB mode outside Cinder. The shell reconciles at startup by
+    /// reading the property and calling this. It deliberately does NOT emit an action: the gadget
+    /// is already in this state, so re-applying it would flip USB mode for real.
+    pub fn set_usb_dac(&mut self, on: bool) {
+        self.usb_dac_on = on;
+    }
+
     /// Visualiser settings (the shell reads these to gate/animate; the render uses viz_kind).
     pub fn viz_kind(&self) -> u8 {
         self.viz_kind

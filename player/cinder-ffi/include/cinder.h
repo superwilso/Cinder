@@ -258,6 +258,10 @@ int  cinder_get_screen_off_s(void);
 /* Is USB-DAC mode engaged? (1/0). Read after a CINDER_ACT_USBDAC_LDAC action to start/stop the LDAC
  * bridge + switch the USB gadget to UAC, without disconnecting Bluetooth. */
 int  cinder_get_usb_dac(void);
+/* Force the USB-DAC toggle to match the gadget's real mode (from sys.sony.config). Sets state
+   only — raises no action, since the gadget is already there. Call at startup to stop Settings
+   reporting the opposite of the hardware after a mode change made outside Cinder. */
+void cinder_set_usb_dac(int on);
 /* Read the Sound A/B compare state (1 = B/bypassed, 0 = A/active). Call after a
  * CINDER_ACT_SOUND_BYPASS action, then apply via cinder_effects_set_bypass. */
 int  cinder_get_sound_bypass(void);

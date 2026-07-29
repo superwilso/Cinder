@@ -135,6 +135,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lPlayerServiceClientUtil -lEffectCtrlDmp -lPowerMgrServiceClient \
+     -lUsbDeviceAudioPlayerService \
      -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
      -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
