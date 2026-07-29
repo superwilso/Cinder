@@ -320,3 +320,142 @@ One UI note worth keeping: the first version of `apply_bt_toggle` polled for up 
 render/input thread. That froze the UI, the user tapped again thinking the switch had failed, and
 the second tap turned Bluetooth back off — it read as "the toggle doesn't work". Anything on that
 thread must stay short; the polling is now capped at ~0.9 s and the guard budget at 8 s.
+
+---
+
+## 2026-07-29 (late) — the libraries carry their own signatures; stop guessing arguments
+
+Everything below replaces the decompile-and-infer workflow this document has been using. It is
+faster, and unlike inference it is not a guess.
+
+### The technique
+
+These libraries are `-fno-rtti` and stripped, which is why the vtable dumper exists. But they are
+NOT stripped of **`__PRETTY_FUNCTION__` literals** — every service method logs its own name, and the
+compiler bakes the *fully demangled prototype* into `.rodata` to do it:
+
+```console
+$ strings -a libBtTransmitterService.so | grep '^virtual .*pst::services::'
+virtual bool pst::services::BtTransmitterService::SetVolumeUp()
+virtual bool pst::services::BtTransmitterService::SetCurrentVolume(const uint8_t &)
+virtual bool pst::services::BtTransmitterService::SetLdac(const bool &)
+virtual bool pst::services::BtTransmitterService::SetLdacSoundQuality(const pst::services::IBtTransmitterService::BtLdacSoundQuality &)
+virtual bool pst::services::BtTransmitterService::SetCurrentPlayStatus(const pst::services::IBtTransmitterService::BtPlayStatus &, const uint32_t &, const uint32_t &)
+virtual bool pst::services::BtTransmitterService::SetMediaAttribute(const pst::base::vector<AvrcpElementAttribute> &)
+```
+
+Argument count, types, constness, reference-ness, return type — all of it, for free. Note these are
+the **service** (server-side) prototypes, and the client stub mirrors them; the vtable dump still
+supplies the INDEX, which the strings do not.
+
+**Do this first, before any decompiling.** `GetConnectInformation` cost two crashes and a Ghidra
+session to characterise; `strings` would have shown the shape immediately.
+
+### The marshalling cross-check (cheap, and it agrees)
+
+Every client stub costs a **base of 3 × `TransactionParam::Alloc(4)`**. Arguments appear as
+*additional* `Alloc` calls sized to the type. So the argument list is readable from a histogram
+without decompiling anything:
+
+| stub | allocs | sizes | meaning |
+|---|---|---|---|
+| `SetVolumeUp` / `SetVolumeDown` | 3 | 4,4,4 | **no arguments** |
+| `IsSupportedAbsoluteVolume` | 3 | 4,4,4 | no arguments |
+| `SetLdac`, `SetAptxHD`, `SetAptxClassic`, `SetAvrcpNotification` | 4 | 4,4,4,**1** | one `const bool&` |
+| `SetCurrentVolume` | 4 | 4,4,4,**1** | one `const uint8_t&` |
+| `SetLdacSoundQuality`, `SetSbcSoundQuality` | 4 | 4,4,4,**4** | one 32-bit enum ref |
+| `SetCurrentPlayStatus` | 6 | 4,4,4,**4,4,4** | enum + two `uint32_t` |
+
+Combined with the older rule — **a `GetStr` in the reply means a `std::string` is in the out-param
+struct, so a zeroed scalar buffer is unsafe** — this settles call safety without running anything.
+
+### Volume: absolute is available, and it is the right mechanism
+
+The volume rocker did nothing on Bluetooth because Cinder's only volume backend was the ALSA
+`card0 'master volume'` control — the **CXD3778GF codec master**, i.e. the 3.5 mm analogue
+attenuator. Nothing in the A2DP path passes through it. The switch was never wrong; it was wired to
+the other output.
+
+`BtTransmitterServiceClient` has both mechanisms:
+
+| slot | method | note |
+|---|---|---|
+| 16 / 17 | `SetVolumeDown()` / `SetVolumeUp()` | relative, one sink step, **open loop** |
+| 33 | `IsSupportedAbsoluteVolume()` | ask before using 34 |
+| 34 | `SetCurrentVolume(const uint8_t&)` | **absolute, 0..127 AVRCP** — preferred |
+| 30 / 31 / 32 | `IsAvrcpTgVolumeSupported` / `Set` / `GetControlAbsoluteVolume` | negotiation side |
+
+Absolute wins wherever the sink supports it: the UI level *is* the level, so a persisted level
+restores exactly and a ramp cannot drift. Support is a property of the connected headphones, so the
+answer is re-queried on every route change rather than cached once for the process.
+
+**3.5 mm and Bluetooth levels are now separate all the way down** — separate UI fields, separate
+persisted keys (`volume` / `bt_volume`), separate hardware paths. They have to be: they are
+physically different attenuators, and sharing one number means connecting headphones silently
+reassigns the jack's level and disconnecting them blasts the headphone level out the jack.
+
+### Full client vtables
+
+**`BtTransmitterServiceClient`** (slots 3–38; 39+ are the destructor group):
+
+| slot | method | slot | method |
+|---|---|---|---|
+| 3 | `GetAvSrcConnectionStatus` | 21 | `SetAptxClassic` |
+| 4 | `GetAvrcpConnectionStatus` | 22 | `SetAptxHD` |
+| 5 | `GetConnectInformation` | 23 | `SetAvrcpNotification` |
+| 6 | `RequestConnection` | 24 | `IsAvrcpNotification` |
+| 7 | `RequestLastDeviceConnection` | 25 | `GetCapabilities` |
+| 8 | `RequestDisconnection` | 26 | `GetSoundStatus` |
+| 9 | `RequestCancelConnection` | 27 | `SetConnectRetryMode` |
+| 10 | `RequestStartConnectWait` | 28 | `GetConnectRetryMode` |
+| 11 | `RequestStopConnectWait` | 29 | `GetSocketName` |
+| 12 | `SetCurrentSource` | 30 | `IsAvrcpTgVolumeSupported` |
+| 13 | `SetCurrentPlayStatus` | 31 | `SetControlAbsoluteVolume` |
+| 14 | `SetCurrentTrack` | 32 | `GetControlAbsoluteVolume` |
+| 15 | `SetMediaAttribute` | 33 | `IsSupportedAbsoluteVolume` |
+| 16 | `SetVolumeDown` | 34 | `SetCurrentVolume` |
+| 17 | `SetVolumeUp` | 35 | `ChangeBatteryStatus` |
+| 18 | `SetLdacSoundQuality` | 36 | `ChangePlaybackPosition` |
+| 19 | `SetSbcSoundQuality` | 37 | `ChangeApplicationSetting` |
+| 20 | `SetLdac` | 38 | `SetEnableLowLatency` |
+
+**`BtCommonServiceClient`** (slots 3–29) — this is the entire pairing screen:
+
+| slot | method | slot | method |
+|---|---|---|---|
+| 3 | `GetBtStatus` | 17 | `DeleteAllLinkkey` |
+| 4 | `SetRfOnOff` | 18 | `GetMyDeviceInfo` |
+| 5 | `SetRfOnOffEx` | 19 | `SetMyDeviceName` |
+| 6 | `SetDiscoverableMode` | 20 | `GetPairedDeviceInfo` |
+| 7 | `Pairing` | 21 | `GetPairedDeviceInfo` (overload, + profile filter) |
+| 8 | `CancelPairing` | 22 | `SetCoexistenceBtWifiRatio` |
+| 9 | `SetNumericComparison` | 23 | `GetCoexistenceBtWifiRatio` |
+| 10 | `SetPasskey` | 24 | `SetiAPModelNumber` |
+| 11 | `CancelPasskey` | 25 | `GetRssi` |
+| 12 | `SwitchDeviceSession` | 26 | `SetHciLogEnabled` |
+| 13 | `DisconnectAll` | 27 | `SetStackLogEnabled` |
+| 14 | `SetSearchMode` | 28 | `RequestSspReply` |
+| 15 | `DeleteLinkkey` | 29 | `GetServiceUuids` |
+| 16 | `DeleteLinkkeys` | | |
+
+### Codec selection was file-only
+
+`write_bt_pref()` recorded the codec choice in `/contents/cinder_bt.conf` for the LDAC bridge and
+never told the radio — the same defect shape as the BT switch that never called `SetRfOnOff`. Now
+applied live via `SetLdac` / `SetAptxHD` / `SetAptxClassic` (three independent bools, so the
+exclusive UI choice becomes "enable one, disable the others"; SBC is the A2DP baseline left when all
+three are off), plus `SetLdacSoundQuality`. Applied **before** `RequestLastDeviceConnection`,
+because A2DP negotiates the codec during connection setup.
+
+### Still blocked
+
+Everything taking or returning a **`pst::base::vector<…>`** — `GetPairedDeviceInfo`,
+`GetCapabilities`, `Pairing`/`DeleteLinkkey` (MAC as `vector<uint8_t>`), `SetMediaAttribute`,
+`SetCurrentTrack`. The container layout is unrecovered, and this is exactly the hazard that crashed
+`GetConnectInformation` twice. The scan/pair/forget UI needs it; the no-argument calls
+(`DisconnectAll`, `RequestDisconnection`, `CancelPairing`, `DeleteAllLinkkey`) do not.
+
+`BtLdacSoundQuality`'s numeric values are also unrecovered. Cinder passes its own UI index
+(0 Auto, 1 990, 2 660, 3 330 — Sony's own menu order). Safe to be wrong: it is a by-value scalar, so
+the failure mode is the wrong bitrate, not memory corruption. The service logs the value it received
+as `ldac quality:%d`, so cycling the row while watching logcat settles it.
