@@ -214,6 +214,50 @@ static int msc_off(void)
     return 0;
 }
 
+/* USB-DAC (UAC gadget): the Walkman becomes a USB sound card for the PC.
+ *
+ * Same root-only property as the MSC handoff above, and it failed the same silent way: cinder-home
+ * is uid `system`, so its `setprop sys.sony.config uac` was REFUSED by the property service and the
+ * property just stayed "adb" — while the app logged "usb-dac: engaged". init's
+ * `on property:sys.sony.config=uac` block therefore never ran, so the gadget was never
+ * reconfigured and no PC ever saw a sound card.
+ *
+ * Much simpler than `msc_on` and deliberately so: UAC only ADDS `audio_func` to the composition
+ * (init.usbcfg.rc:46 — `audio_func,adb`, idProduct 0B8C). Nothing is handed to the host, so
+ * /contents stays mounted, the library keeps working, and there is nothing to corrupt. That also
+ * means the exit path is just the stock composition again.
+ *
+ * The property is READ BACK rather than assumed. A refused setprop returns 0 from the shell, which
+ * is exactly how this went unnoticed for so long. */
+static int dac_set(const char *mode, const char *want_state)
+{
+    char buf[96];
+    snprintf(buf, sizeof buf, SETPROP "sys.sony.config %s", mode);
+    if (system(buf) != 0)
+        fprintf(stderr, "cinder-msc: setprop %s returned non-zero\n", mode);
+    /* init's block ends with `setprop sys.usb.state $sys.usb.config`, so that is the completion
+     * signal — the same one msc_on waits on. */
+    wait_prop("sys.usb.state", want_state, 60);
+
+    snprintf(buf, sizeof buf, GETPROP "sys.usb.state");
+    FILE *p = popen(buf, "r");
+    buf[0] = 0;
+    if (p) {
+        if (fgets(buf, sizeof buf, p)) buf[strcspn(buf, "\r\n")] = 0;
+        pclose(p);
+    }
+    if (strcmp(buf, want_state) != 0) {
+        fprintf(stderr, "cinder-msc: dac %s FAILED — sys.usb.state is '%s', wanted '%s'\n",
+                mode, buf, want_state);
+        return 1;
+    }
+    fprintf(stderr, "cinder-msc: dac %s OK — sys.usb.state=%s\n", mode, buf);
+    return 0;
+}
+
+static int dac_on(void)  { return dac_set("uac", "audio_func,adb"); }
+static int dac_off(void) { return dac_set("adb", "adb"); }
+
 int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
@@ -240,5 +284,9 @@ int main(int argc, char **argv)
     setenv("LD_LIBRARY_PATH", "/system/lib:/vendor/lib", 1);
     if (strcmp(argv[1], "on")  == 0) return msc_on();
     if (strcmp(argv[1], "off") == 0) return msc_off();
+    /* The USB-DAC gadget. Same helper because it is the same root-only property switch, and a
+     * fourth setuid binary to write one property would be worse. */
+    if (strcmp(argv[1], "dac-on")  == 0) return dac_on();
+    if (strcmp(argv[1], "dac-off") == 0) return dac_off();
     return 2;
 }

@@ -46,6 +46,7 @@ pub enum Screen {
     Album,
     /// One artist's page: their albums + every track, pushed from an Artists-tab row.
     Artist,
+    Playlist,
     UpNext,
     Eq,
     Sound,
@@ -110,6 +111,10 @@ pub enum Action {
     /// `App::artist_name_at`) rather than the name, because `Action` is `Copy` and a `String`
     /// would take that away from every other variant.
     ShuffleArtist(usize),
+    /// Shuffle one playlist by DB id. Same channel as `PlayPlaylist`, but shuffled — the page's
+    /// band needs it and `ShuffleScope::Playlist` picks a RANDOM playlist, which is a different
+    /// thing entirely.
+    ShufflePlaylist(i64),
     ThemeChanged(bool),
     Sleep,
     EnterUsbMsc,
@@ -236,6 +241,10 @@ pub struct App {
     artist_view: usize,
     artist_track_idx: usize,
     artist_scroll_px: i32,
+    /// Playlist drill-in: the `lib.playlists` index being viewed, plus its cursor and pixel scroll.
+    playlist_view: usize,
+    playlist_track_idx: usize,
+    playlist_scroll_px: i32,
     /// The row currently travelling under a horizontal swipe, and how far. `y` is the screen y the
     /// gesture started at; the renderer resolves it to a row by containment. `None` between
     /// gestures. After release this keeps decaying to zero for the snap-back.
@@ -247,6 +256,17 @@ pub struct App {
     /// grab-handle gesture). `None` between drags.
     queue_scroll_px: i32,
     queue_drag: Option<crate::up_next::QueueDrag>,
+    /// How many tracks in `queue` the user swiped in BY HAND. Playing an album or hitting a
+    /// Shuffle band now fills the queue too, so "is the queue non-empty" no longer means "the user
+    /// built something they'd hate to lose" — this does, and it is what the replace prompt asks
+    /// about.
+    queue_user_adds: u32,
+    /// Set by the "keep queue" answer: the next sequence handed to `set_play_queue` is APPENDED
+    /// rather than replacing what is there. Consumed on use.
+    queue_keep: bool,
+    /// Scrollbar drag: the scroll offset and the finger y the grab started at, so travel is applied
+    /// against a fixed anchor rather than accumulated per event.
+    sbar: Option<(i32, i32)>,
     /// Fling (momentum) velocity in px/s for the current scrollable list; decays each tick.
     fling_v: f32,
     /// Hardware volume (0..VOL_MAX steps) + frames the volume HUD stays visible.
@@ -371,12 +391,18 @@ impl Default for App {
             album_track_idx: 0,
             album_scroll_px: 0,
             artist_view: 0,
+            playlist_view: 0,
+            playlist_track_idx: 0,
+            playlist_scroll_px: 0,
             artist_track_idx: 0,
             artist_scroll_px: 0,
             swipe_row: None,
             swipe_live: false,
             queue_scroll_px: 0,
             queue_drag: None,
+            queue_user_adds: 0,
+            queue_keep: false,
+            sbar: None,
             fling_v: 0.0,
             volume: 15,
             vol_overlay: 0,
@@ -475,7 +501,10 @@ impl App {
     /// of them respect is worse than no prompt — it would look like the queue is discarded at
     /// random depending on which screen you started from.
     fn start_play(&mut self, id: i64) -> Vec<Action> {
-        if self.queue.is_empty() {
+        // Only HAND-BUILT picks are worth interrupting for. The queue is normally full of the
+        // sequence that is already playing, and asking "discard the queue?" every time you tap a
+        // track would make the prompt meaningless within a minute.
+        if self.queue_user_adds == 0 {
             return vec![Action::PlayIndex(id)];
         }
         self.pending_song = Some(id);
@@ -487,6 +516,8 @@ impl App {
     #[cfg(test)]
     fn queue_push_for_test(&mut self) {
         self.queue.push(crate::model::SongRow::default());
+        // A hand-queued track — which is what the replace prompt is about.
+        self.queue_user_adds += 1;
     }
 
     /// Is a modal dialog currently up? The shell uses this to decide whether the screen-blank
@@ -554,6 +585,10 @@ impl App {
             Screen::Artist => match self.lib.artists.get(self.artist_view) {
                 Some(ar) => (ar.name.clone(), format!("{} albums · {} tracks", ar.albums, ar.tracks)),
                 None => ("Artist".into(), String::new()),
+            },
+            Screen::Playlist => match self.playlist_row() {
+                Some(p) => (p.name.clone(), format!("{} tracks", p.track_list.len())),
+                None => ("Playlist".into(), String::new()),
             },
             s => (screen_title(s).into(), String::new()),
         }
@@ -782,12 +817,16 @@ impl App {
                 crate::confirm::Hit::ClearQueue => {
                     let had = !self.queue.is_empty();
                     self.queue.clear();
+                    self.queue_user_adds = 0;
                     let mut acts = Vec::new();
                     if had { acts.push(Action::QueueChanged); }
                     if let Some(id) = self.pending_song.take() { acts.push(Action::PlayIndex(id)); }
                     acts
                 }
                 crate::confirm::Hit::KeepQueue => {
+                    // Honour it for real: the new sequence is APPENDED after the picks instead of
+                    // replacing them, so "keep" keeps them where the user can still see them.
+                    self.queue_keep = true;
                     self.pending_song.take().map(|id| vec![Action::PlayIndex(id)]).unwrap_or_default()
                 }
                 crate::confirm::Hit::Confirm => match ask {
@@ -948,11 +987,17 @@ impl App {
                 vec![]
             }
             Screen::Artist => self.tap_artist(x, y),
+            Screen::Playlist => self.tap_playlist(x, y),
             Screen::UpNext => {
                 // The user queue scrolls by pixels, so it resolves a finger itself. A tap on the
                 // grab handle is swallowed: that column belongs to the reorder drag, and playing a
                 // track because a reorder ended up too short to classify is a nasty surprise.
                 if !self.queue.is_empty() {
+                    if crate::up_next::hit_clear_chip(x, y) {
+                        self.toast = String::from("Queue cleared");
+                        self.toast_frames = TOAST_FRAMES;
+                        return self.queue_clear();
+                    }
                     if crate::up_next::queue_grip_hit(x) {
                         return vec![];
                     }
@@ -1017,9 +1062,9 @@ impl App {
                         self.eq_sel = band;
                         let g = &mut self.eq_bands[band];
                         if y < crate::eq::FIELD_MID {
-                            *g = (*g + 1).min(6);
+                            *g = (*g + crate::eq::BAND_STEP).min(crate::eq::BAND_MAX);
                         } else {
-                            *g = (*g - 1).max(-6);
+                            *g = (*g - crate::eq::BAND_STEP).max(-crate::eq::BAND_MAX);
                         }
                         return vec![Action::EqChanged(self.eq_bands)];
                     }
@@ -1145,15 +1190,17 @@ impl App {
                     self.start_play(id)
                 })
                 .unwrap_or_default(),
-            // A playlist row has no single track under the finger, so tapping it plays the whole
-            // list from the top in saved order (the shell resolves the members through the DB).
+            // A playlist row opens that playlist's page, the same way an artist row opens theirs.
+            // The button on the right of the row plays the whole list from the top in saved order
+            // without the detour — the shortcut the row itself used to be.
             Tab::Playlists => {
                 self.lib_idx = row;
-                self.lib
-                    .playlists
-                    .get(row)
-                    .map(|p| vec![Action::PlayPlaylist(p.id)])
-                    .unwrap_or_default()
+                let Some(p) = self.lib.playlists.get(row) else { return vec![] };
+                if x >= 404 {
+                    return vec![Action::PlayPlaylist(p.id)];
+                }
+                self.open_playlist(row);
+                vec![]
             }
             // An artist row has no track under the finger — it opens that artist's page.
             // The shuffle button on the right of the row shuffles them without the detour.
@@ -1218,6 +1265,47 @@ impl App {
             }
             _ => vec![],
         }
+    }
+
+    /// Push the playlist page for `lib.playlists[idx]`, from its top.
+    fn open_playlist(&mut self, idx: usize) {
+        self.playlist_view = idx;
+        self.playlist_track_idx = 0;
+        self.playlist_scroll_px = 0;
+        self.fling_v = 0.0;
+        self.push(Screen::Playlist);
+    }
+
+    /// The open playlist, or None if the library changed under us.
+    fn playlist_row(&self) -> Option<&crate::model::PlaylistRow> {
+        self.lib.playlists.get(self.playlist_view)
+    }
+
+    /// A tap on the playlist page: the band shuffles it, a track row plays it.
+    fn tap_playlist(&mut self, x: i32, y: i32) -> Vec<Action> {
+        let Some(id) = self.playlist_row().map(|p| p.id) else { return vec![] };
+        if library::hit_playlist_shuffle_band(x, y) {
+            return vec![Action::ShufflePlaylist(id)];
+        }
+        // Copy the object id out before mutating — `playlist_row` borrows `self.lib`.
+        let hit = self.playlist_row().and_then(|p| {
+            library::playlist_hit_track(p, self.playlist_scroll_px, y)
+                .and_then(|i| p.track_list.get(i).map(|s| (i, s.object_id)))
+        });
+        match hit {
+            Some((i, oid)) => {
+                self.playlist_track_idx = i;
+                self.start_play(oid)
+            }
+            None => vec![],
+        }
+    }
+
+    /// The track under `y` on the playlist page, for the swipe-to-queue gesture.
+    fn playlist_track_at(&self, y: i32) -> Option<SongRow> {
+        let p = self.playlist_row()?;
+        library::playlist_hit_track(p, self.playlist_scroll_px, y)
+            .and_then(|i| p.track_list.get(i).cloned())
     }
 
     /// The track under `y` on the artist page, for the swipe-to-queue gesture.
@@ -1319,6 +1407,11 @@ impl App {
                     self.artist_scroll_px = (self.artist_scroll_px + dy_px).clamp(0, max);
                 }
             }
+            Screen::Playlist => {
+                if let Some(max) = self.playlist_row().map(library::playlist_max_scroll_px) {
+                    self.playlist_scroll_px = (self.playlist_scroll_px + dy_px).clamp(0, max);
+                }
+            }
             Screen::Settings => {
                 let max = crate::settings::max_scroll_px();
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
@@ -1336,7 +1429,8 @@ impl App {
     /// Momentum fling: the release velocity (px/s, same sign convention as `scroll_px`). The
     /// per-frame `tick()` integrates and decays it, keeping frames dirty until it stops.
     pub fn fling(&mut self, velocity_px_s: f32) {
-        if matches!(self.current(), Screen::Library | Screen::Album | Screen::Artist | Screen::UpNext) {
+        if matches!(self.current(),
+                    Screen::Library | Screen::Album | Screen::Artist | Screen::Playlist | Screen::UpNext) {
             self.fling_v = velocity_px_s.clamp(-8000.0, 8000.0);
         }
     }
@@ -1381,6 +1475,10 @@ impl App {
                 .and_then(|al| library::album_hit_track(al, self.album_scroll_px, y))
                 .is_some(),
             Screen::Artist => self.artist_track_at(y).is_some(),
+            Screen::Playlist => self.playlist_track_at(y).is_some(),
+            // The queue's own rows swipe too, but to REMOVE rather than to queue again.
+            Screen::UpNext => !self.queue.is_empty()
+                && crate::up_next::queue_row_at(y, self.queue_scroll_px, self.queue.len()).is_some(),
             _ => false,
         };
         if !has_track {
@@ -1457,6 +1555,96 @@ impl App {
         self.queue_drag
     }
 
+    /// `(max_scroll_px, list_top)` of whatever the current screen scrolls, or None if it doesn't.
+    /// The scrollbar's whole geometry follows from these two, so this is the only place a screen
+    /// has to be taught about the drag.
+    fn sbar_metrics(&self) -> Option<(i32, i32)> {
+        match self.current() {
+            Screen::Library => Some((self.lib_max_scroll(), library::list_top(self.lib_tab))),
+            Screen::Album => self
+                .lib
+                .albums_flat()
+                .get(self.album_view)
+                .map(|al| (library::album_max_scroll_px(al), library::ALBUM_TRACKS_TOP)),
+            Screen::Artist => self
+                .artist_page()
+                .map(|p| (library::artist_max_scroll_px(&p), library::artist_content_top())),
+            Screen::Playlist => self
+                .playlist_row()
+                .map(|p| (library::playlist_max_scroll_px(p), library::playlist_content_top())),
+            Screen::UpNext if !self.queue.is_empty() => Some((
+                crate::up_next::queue_max_scroll_px(self.queue.len()),
+                crate::chrome::HEADER_BOTTOM,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Does a vertical drag starting at `(x, y)` grab the scrollbar? Sony's own UI lets you drag
+    /// the bar, and a flick-and-wait is a poor substitute on a 3400-song list.
+    ///
+    /// The strip is shared with the A–Z rail and split by GESTURE, not geometry: this is only
+    /// consulted for a drag, and `tap` still routes the same x to a letter jump.
+    pub fn sbar_begin(&mut self, x: i32, y: i32) -> bool {
+        if self.locked || self.shelf_open || self.confirm.is_some() {
+            return false;
+        }
+        if !library::sbar_hit_x(x) {
+            return false;
+        }
+        let Some((max, top)) = self.sbar_metrics() else { return false };
+        // Nothing to scroll, or the thumb fills the track: no drag, so the contact stays available
+        // to the list underneath.
+        if max <= 0 || !(top..library::list_bottom()).contains(&y) {
+            return false;
+        }
+        if library::sbar_span(top, max + (library::list_bottom() - top)) <= 0 {
+            return false;
+        }
+        self.fling_v = 0.0;
+        self.sbar = Some((self.sbar_scroll(), y));
+        true
+    }
+
+    /// Current scroll of the screen the scrollbar is riding.
+    fn sbar_scroll(&self) -> i32 {
+        match self.current() {
+            Screen::Album => self.album_scroll_px,
+            Screen::Artist => self.artist_scroll_px,
+            Screen::Playlist => self.playlist_scroll_px,
+            Screen::UpNext => self.queue_scroll_px,
+            _ => self.lib_scroll_px,
+        }
+    }
+
+    /// Stream the scrollbar drag. `dy` is TOTAL travel from the grab point.
+    ///
+    /// Finger px are converted to content px through the thumb's travel, so the content tracks the
+    /// THUMB rather than the finger — dragging the bar half way down lands half way through the
+    /// list however long it is. Applied against the anchor captured at grab time, so a coalesced
+    /// event stream can't accumulate drift.
+    pub fn sbar_track(&mut self, dy: i32) {
+        let Some((start_scroll, _)) = self.sbar else { return };
+        let Some((max, top)) = self.sbar_metrics() else { return };
+        let span = library::sbar_span(top, max + (library::list_bottom() - top));
+        if span <= 0 {
+            return;
+        }
+        let want = start_scroll + (dy as i64 * max as i64 / span as i64) as i32;
+        let delta = want.clamp(0, max) - self.sbar_scroll();
+        self.scroll_px(delta);
+    }
+
+    pub fn sbar_release(&mut self) {
+        self.sbar = None;
+    }
+
+    /// Is a scrollbar drag in progress? The renderer widens and accents the thumb while it is, so
+    /// the (much wider) grab zone gives some feedback that it took the gesture.
+    pub fn sbar_active(&self) -> bool {
+        self.sbar.is_some()
+    }
+
     pub fn swipe(&mut self, dir: i32, _x: i32, y: i32) -> Vec<Action> {
         if self.locked || self.shelf_open {
             return vec![];
@@ -1525,6 +1713,29 @@ impl App {
                     None => vec![],
                 }
             }
+            // On the queue itself, either direction removes the row — there is nothing to queue.
+            Screen::UpNext => {
+                match crate::up_next::queue_row_at(y, self.queue_scroll_px, self.queue.len()) {
+                    Some(i) if i < self.queue.len() => {
+                        let gone = self.queue.remove(i);
+                        self.toast = format!("Removed — {}", gone.title);
+                        self.toast_frames = TOAST_FRAMES;
+                        // The cursor and scroll both index a list that just got shorter.
+                        self.queue_scroll_px = self.queue_scroll_px.min(
+                            crate::up_next::queue_max_scroll_px(self.queue.len()));
+                        vec![Action::QueueChanged]
+                    }
+                    _ => vec![],
+                }
+            }
+            // The playlist page's rows queue exactly like every other track list.
+            Screen::Playlist => match self.playlist_track_at(y) {
+                Some(s) => {
+                    let at = if dir < 0 { QueueAt::Next } else { QueueAt::Later };
+                    self.enqueue_at(s, y, at)
+                }
+                None => vec![],
+            },
             // The artist page's track rows queue exactly like every other track list.
             Screen::Artist => match self.artist_track_at(y) {
                 Some(s) => {
@@ -1582,6 +1793,7 @@ impl App {
             QueueAt::Later => format!("Added to queue — {}", s.title),
         };
         self.toast_frames = TOAST_FRAMES;
+        self.queue_user_adds += 1;
         self.queue_anim_y = y;
         self.queue_anim_frames = QUEUE_ANIM_FRAMES;
         match at {
@@ -1608,7 +1820,32 @@ impl App {
             return vec![];
         }
         self.queue.clear();
+        self.queue_user_adds = 0;
+        self.queue_scroll_px = 0;
+        self.queue_drag = None;
         vec![Action::QueueChanged]
+    }
+
+    /// Replace the queue with the sequence that is now PLAYING.
+    ///
+    /// Called by the shell every time it resolves a play action — a track tap, an album, a
+    /// playlist, any Shuffle band. Up Next used to show only hand-swiped picks and, failing that,
+    /// a guess at the current album derived from the now-playing title; so the one thing it never
+    /// showed was the actual 200-track sequence the device was working through. Now the resolution
+    /// happens once and both the player and the queue screen read the same answer.
+    ///
+    /// `queue_keep` (the "keep queue" answer to the replace prompt) appends instead, so that
+    /// button keeps its promise.
+    pub fn set_play_queue(&mut self, rows: Vec<SongRow>) {
+        if self.queue_keep {
+            self.queue.extend(rows);
+        } else {
+            self.queue = rows;
+            self.queue_user_adds = 0;
+        }
+        self.queue_keep = false;
+        self.queue_scroll_px = 0;
+        self.queue_drag = None;
     }
 
     /// The user queue (Up Next shows it in front of the album-derived list).
@@ -1638,7 +1875,7 @@ impl App {
     /// drill-in. These are the places you end up several pushes deep from Now Playing, which is
     /// exactly where Back-ing out one screen at a time is tedious.
     fn shows_np_bar(s: Screen) -> bool {
-        matches!(s, Screen::Library | Screen::Album | Screen::Artist)
+        matches!(s, Screen::Library | Screen::Album | Screen::Artist | Screen::Playlist)
     }
 
     /// Number of rows in the current library tab (for cursor clamping).
@@ -1692,6 +1929,22 @@ impl App {
     /// Keep the artist page's track cursor in view. The track rows sit below a variable-height
     /// album block, so the row's content-space y comes from the page layout rather than from
     /// `idx * row_h` — the album rows above it are not the same height.
+    /// Keep the playlist cursor on screen when the transport buttons move it.
+    fn playlist_ensure_visible(&mut self) {
+        let want = self.playlist_track_idx as i32 * library::PLAYLIST_TRACK_RH;
+        let Some(max) = self.playlist_row().map(library::playlist_max_scroll_px) else { return };
+        let view = library::playlist_view_h();
+        let s = self.playlist_scroll_px;
+        let s = if want < s {
+            want
+        } else if want + library::PLAYLIST_TRACK_RH > s + view {
+            want + library::PLAYLIST_TRACK_RH - view
+        } else {
+            s
+        };
+        self.playlist_scroll_px = s.clamp(0, max);
+    }
+
     fn artist_ensure_visible(&mut self) {
         let want = self.artist_track_idx;
         let Some((row_top, max)) = self.artist_page().and_then(|p| {
@@ -2015,6 +2268,35 @@ impl App {
                     _ => vec![],
                 }
             }
+            Screen::Playlist => {
+                let n = self.playlist_row().map(|p| p.track_list.len()).unwrap_or(0);
+                match b {
+                    Button::Up => {
+                        self.playlist_track_idx = self.playlist_track_idx.saturating_sub(1);
+                        self.playlist_ensure_visible();
+                        vec![]
+                    }
+                    Button::Down => {
+                        if self.playlist_track_idx + 1 < n {
+                            self.playlist_track_idx += 1;
+                            self.playlist_ensure_visible();
+                        }
+                        vec![]
+                    }
+                    Button::Select => {
+                        let id = self
+                            .playlist_row()
+                            .and_then(|p| p.track_list.get(self.playlist_track_idx))
+                            .map(|s| s.object_id);
+                        id.map(|i| self.start_play(i)).unwrap_or_default()
+                    }
+                    Button::Back | Button::Left => {
+                        self.pop();
+                        vec![]
+                    }
+                    _ => vec![],
+                }
+            }
             Screen::Artist => {
                 let n = self.artist_page().map(|p| p.tracks.len()).unwrap_or(0);
                 match b {
@@ -2086,12 +2368,12 @@ impl App {
                 }
                 Button::Up => {
                     let g = &mut self.eq_bands[self.eq_sel];
-                    *g = (*g + 1).min(6);
+                    *g = (*g + crate::eq::BAND_STEP).min(crate::eq::BAND_MAX);
                     vec![Action::EqChanged(self.eq_bands)]
                 }
                 Button::Down => {
                     let g = &mut self.eq_bands[self.eq_sel];
-                    *g = (*g - 1).max(-6);
+                    *g = (*g - crate::eq::BAND_STEP).max(-crate::eq::BAND_MAX);
                     vec![Action::EqChanged(self.eq_bands)]
                 }
                 // Option cycles presets (applies the preset's band gains).
@@ -2230,6 +2512,7 @@ impl App {
                 crate::library::render(
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
+                    self.sbar_active(),
                 );
                 crate::library::az_render(
                     c, &theme, fonts, self.lib_tab, &self.lib, self.lib_sort, self.album_sort,
@@ -2240,25 +2523,40 @@ impl App {
                 if let Some(al) = flat.get(self.album_view) {
                     crate::library::album_view(
                         c, &theme, fonts, al, self.album_track_idx, self.album_scroll_px,
-                        self.album_cover.as_ref(), self.swipe_row,
+                        self.album_cover.as_ref(), self.swipe_row, self.sbar_active(),
                     );
                 } else {
                     crate::library::render(
                         c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                         self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
+                        self.sbar_active(),
                     );
                 }
             }
+            Screen::Playlist => match self.playlist_row() {
+                Some(pl) => crate::library::playlist_view(
+                    c, &theme, fonts, &self.lib, pl, self.playlist_scroll_px,
+                    self.playlist_track_idx, self.swipe_row, self.sbar_active(),
+                ),
+                // The library reloaded and the index is stale — fall back to the tab rather than
+                // drawing a blank page the user cannot leave.
+                None => crate::library::render(
+                    c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
+                    self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
+                    self.sbar_active(),
+                ),
+            },
             Screen::Artist => match self.artist_page() {
                 Some(page) => crate::library::artist_view(
                     c, &theme, fonts, &self.lib, &page, self.artist_scroll_px,
-                    self.artist_track_idx, self.swipe_row,
+                    self.artist_track_idx, self.swipe_row, self.sbar_active(),
                 ),
                 // The artist index outlived its library (a rescan while the page was open).
                 // Falling back to the list is better than a blank screen, and Back still works.
                 None => crate::library::render(
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
+                    self.sbar_active(),
                 ),
             },
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
@@ -2276,7 +2574,7 @@ impl App {
                     let ids = self.queue.iter().map(|s| s.object_id).collect();
                     crate::up_next::render_queue(
                         c, &theme, fonts, &self.queue, &self.lib, self.queue_scroll_px,
-                        self.queue_drag,
+                        self.queue_drag, self.swipe_row, self.sbar_active(),
                     );
                     ids
                 } else {
@@ -2392,7 +2690,8 @@ impl App {
         // Swipe-to-queue chip riding the flicked row (list screens only — if the user navigates
         // away mid-animation the anchor row is gone, so it just stops).
         if self.queue_anim_frames > 0
-            && matches!(self.current(), Screen::Library | Screen::Album | Screen::Artist)
+            && matches!(self.current(),
+                        Screen::Library | Screen::Album | Screen::Artist | Screen::Playlist)
         {
             let p = self.queue_anim_frames as f32 / QUEUE_ANIM_FRAMES as f32;
             crate::overlay::queue_chip(c, &theme, fonts, self.queue_anim_y, p);
@@ -2448,6 +2747,7 @@ impl App {
                 Screen::Library => a.lib_scroll_px,
                 Screen::Album => a.album_scroll_px,
                 Screen::Artist => a.artist_scroll_px,
+                Screen::Playlist => a.playlist_scroll_px,
                 Screen::Settings => a.settings_scroll_px,
                 Screen::UpNext => a.queue_scroll_px,
                 _ => 0,
@@ -3139,10 +3439,9 @@ mod tests {
         assert!(a.tap(crate::up_next::GRIP_X0 + 20, qrow_y(&a, 1)).is_empty());
         assert_eq!(a.current(), Screen::UpNext, "and it must not navigate either");
         assert!(!a.modal_open(), "nor may it raise the replace-the-queue prompt");
-        // The row body still acts: with a queue up, playing a row asks whether to clear it first,
-        // so the visible effect is that prompt rather than a PlayIndex.
-        let _ = a.tap(60, qrow_y(&a, 1));
-        assert!(a.modal_open(), "the row body must still start a play");
+        // The row body still plays. No prompt: this queue is the PLAYING sequence, not hand-built
+        // picks, so there is nothing the user would be sad to lose.
+        assert_eq!(a.tap(60, qrow_y(&a, 1)), vec![Action::PlayIndex(9001)]);
     }
 
     /// Holding the row at the bottom edge scrolls the list under it, so a track can be moved
@@ -3160,6 +3459,172 @@ mod tests {
         }
         assert!(a.queue_scroll_px > before, "the list did not scroll under the held row");
         assert!(a.reorder_state().map(|d| d.to).unwrap() > 0, "the landing slot must follow");
+    }
+
+    /// The EQ's raw band units are HALF-decibels, measured on device (`cinder-probe --eq`): the
+    /// ladder -20..+20 came back unclamped with dB -10.0..+10.0. So the label has to halve the raw
+    /// value — printing it straight claimed twice the boost the DSP applies — and the range has to
+    /// be the full +/-20, not the +/-6 that reached less than a third of it.
+    #[test]
+    fn eq_band_labels_are_real_decibels_over_sonys_full_range() {
+        assert_eq!(crate::eq::BAND_MAX, 20);
+        assert_eq!(crate::eq::band_db(crate::eq::BAND_MAX), 10.0);
+        assert_eq!(crate::eq::band_db(-crate::eq::BAND_MAX), -10.0);
+        assert_eq!(crate::eq::band_db(0), 0.0);
+        assert_eq!(crate::eq::band_db(crate::eq::BAND_STEP), 1.0, "one tap is one dB");
+        // Every shipped preset must sit inside the measured range.
+        for (name, bands) in data::EQ_PRESETS {
+            for b in bands {
+                assert!(b.abs() <= crate::eq::BAND_MAX, "{name} band {b} is out of range");
+            }
+        }
+    }
+
+    /// The bar is grabbable and the CONTENT follows the THUMB: dragging the thumb its full travel
+    /// must cover the whole list, however long it is. A 1:1 finger-to-content mapping would need a
+    /// 3400-row drag on the real library, which is the bug this replaces.
+    #[test]
+    fn dragging_the_scrollbar_scrolls_by_thumb_travel() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        let max = a.lib_max_scroll();
+        assert!(max > 0, "the sample library must overflow the panel");
+        let top = library::list_top(Tab::Songs);
+        let x = crate::canvas::W as i32 - 4;
+        assert!(a.sbar_begin(x, top + 20), "the right-edge strip must take a vertical drag");
+        assert!(a.sbar_active());
+
+        let span = library::sbar_span(top, max + (library::list_bottom() - top));
+        assert!(span > 0);
+        a.sbar_track(span / 2);
+        let half = a.lib_scroll_px;
+        assert!((half - max / 2).abs() <= 2, "half the thumb travel = half the list: {half} vs {}", max / 2);
+        a.sbar_track(span);
+        assert_eq!(a.lib_scroll_px, max, "full travel reaches the end");
+        a.sbar_track(span * 4);
+        assert_eq!(a.lib_scroll_px, max, "and clamps there");
+        a.sbar_track(-span * 4);
+        assert_eq!(a.lib_scroll_px, 0, "dragging back up returns to the top");
+        a.sbar_release();
+        assert!(!a.sbar_active());
+    }
+
+    /// The strip is shared with the A–Z rail and split by GESTURE. A TAP there must still jump to
+    /// the letter — if the drag swallowed the strip, the rail would become undismissable dead space.
+    #[test]
+    fn the_scrollbar_strip_still_taps_through_to_the_az_rail() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        a.lib_sort = 0; // TITLE — the rail is shown
+        let x = crate::canvas::W as i32 - 4;
+        // Find a letter the library actually has, and tap it.
+        let top = library::list_top(Tab::Songs);
+        let hit = (top..library::list_bottom()).find(|&y| {
+            library::az_letter_at(y, Tab::Songs)
+                .and_then(|l| library::az_scroll_for(Tab::Songs, &a.lib, l, 0, 0, None))
+                .is_some_and(|px| px > 0)
+        });
+        let y = hit.expect("some letter jumps somewhere");
+        a.tap(x, y);
+        assert!(a.lib_scroll_px > 0, "a tap on the strip must still be an A-Z jump");
+        assert!(!a.sbar_active(), "and must not leave a drag armed");
+    }
+
+    /// Nothing to scroll = no grab, so the contact stays available to whatever is underneath
+    /// instead of being silently eaten by an invisible bar.
+    #[test]
+    fn the_scrollbar_declines_when_there_is_nothing_to_scroll() {
+        let mut a = unlocked();
+        a.push(Screen::UpNext); // empty user queue -> no px scroll on this screen
+        assert!(!a.sbar_begin(crate::canvas::W as i32 - 4, 300));
+        assert!(!a.sbar_active());
+    }
+
+    /// The queue's grab handle and the scrollbar cannot both own the same pixels.
+    #[test]
+    fn the_queue_grip_stops_short_of_the_scrollbar_strip() {
+        assert!(crate::up_next::queue_grip_hit(crate::up_next::GRIP_X0));
+        assert!(crate::up_next::queue_grip_hit(crate::up_next::GRIP_X1 - 1));
+        assert!(!crate::up_next::queue_grip_hit(crate::up_next::GRIP_X1));
+        assert!(library::sbar_hit_x(crate::up_next::GRIP_X1), "the strips must abut, not overlap");
+        assert!(!library::sbar_hit_x(crate::up_next::GRIP_X1 - 1));
+    }
+
+    /// Swiping a queue row removes it — either direction, because "queue this" makes no sense for
+    /// a track that is already queued.
+    #[test]
+    fn swiping_a_queue_row_removes_it() {
+        for dir in [-1, 1] {
+            let mut a = queued(4);
+            let y = qrow_y(&a, 1);
+            assert!(a.swipe_track(dir * 80, y), "the row must take the gesture");
+            assert_eq!(a.swipe(dir, 240, y), vec![Action::QueueChanged]);
+            assert_eq!(a.queue().len(), 3);
+            assert!(a.queue().iter().all(|s| s.title != "Q1"), "wrong row removed (dir {dir})");
+        }
+    }
+
+    /// Emptying the queue cannot be undone, so it is an explicit labelled chip rather than a
+    /// gesture — and the chip must not also play the row it sits over.
+    #[test]
+    fn the_clear_chip_empties_the_queue() {
+        let mut a = queued(5);
+        let (cx, cy, cw, ch) = crate::up_next::CLEAR_CHIP;
+        assert_eq!(a.tap(cx + cw / 2, cy + ch / 2), vec![Action::QueueChanged]);
+        assert!(a.queue().is_empty());
+        assert_eq!(a.current(), Screen::UpNext);
+        // And on an empty queue it is inert rather than emitting a no-op change.
+        assert!(a.tap(cx + cw / 2, cy + ch / 2).is_empty());
+    }
+
+    /// Playing an album or hitting a Shuffle band fills the queue, so Up Next shows what will
+    /// actually play. It used to show ONLY hand-swiped picks, and otherwise a guess at the current
+    /// album derived from the now-playing title.
+    #[test]
+    fn playback_fills_the_queue() {
+        let mut a = unlocked();
+        let rows: Vec<SongRow> = (0..3)
+            .map(|i| SongRow { title: format!("S{i}"), object_id: 10 + i, ..Default::default() })
+            .collect();
+        a.set_play_queue(rows.clone());
+        assert_eq!(a.queue().len(), 3);
+        assert_eq!(a.queue()[0].title, "S0");
+
+        // A second sequence REPLACES the first: it is what is playing, not an accumulation.
+        a.set_play_queue(rows.clone());
+        assert_eq!(a.queue().len(), 3);
+
+        // And it does not arm the replace prompt — nothing here was hand-picked.
+        assert_eq!(a.start_play(99), vec![Action::PlayIndex(99)]);
+        assert!(!a.modal_open());
+    }
+
+    /// "Keep queue" has to keep it. With playback now filling the queue, a naive replace would
+    /// discard the picks the button just promised to preserve.
+    #[test]
+    fn keeping_the_queue_appends_the_new_sequence() {
+        use crate::confirm::{hit, Ask, Hit};
+        let pick = |want: Hit| {
+            (0..crate::canvas::H as i32)
+                .find(|y| hit(Ask::QueueOnPlay, 240, *y) == want)
+                .expect("row has no tappable pixel")
+        };
+        let mut a = unlocked();
+        a.queue_push_for_test(); // one hand-swiped pick
+        assert!(a.start_play(77).is_empty(), "hand-built picks still prompt");
+        assert_eq!(a.tap(240, pick(Hit::KeepQueue)), vec![Action::PlayIndex(77)]);
+
+        let rows: Vec<SongRow> = (0..2)
+            .map(|i| SongRow { title: format!("S{i}"), object_id: 10 + i, ..Default::default() })
+            .collect();
+        a.set_play_queue(rows);
+        assert_eq!(a.queue().len(), 3, "the pick must survive, with the sequence after it");
+        assert_eq!(a.queue()[1].title, "S0");
+        // The flag is one-shot: the sequence after this one replaces.
+        a.set_play_queue(vec![SongRow::default()]);
+        assert_eq!(a.queue().len(), 1);
     }
 
     /// The user queue used to draw from row 0 and stop at the panel edge, so past ~10 tracks it was
@@ -3700,14 +4165,15 @@ mod tests {
         for band in [0usize, 5, 9] {
             let x = band_center_x(band);
             a.tap(x, (FIELD_TOP + FIELD_MID) / 2); // upper half
-            assert_eq!(a.eq_bands[band], 1, "band {band} above the line should raise");
+            assert_eq!(a.eq_bands[band], crate::eq::BAND_STEP,
+                       "band {band} above the line should raise");
             assert_eq!(a.eq_sel, band, "tap should select the band under the finger");
             a.tap(x, (FIELD_MID + FIELD_BOTTOM) / 2); // lower half
             assert_eq!(a.eq_bands[band], 0, "band {band} below the line should lower");
         }
         // Just below the zero line lowers (this pixel used to raise).
         a.tap(band_center_x(3), FIELD_MID + 1);
-        assert_eq!(a.eq_bands[3], -1);
+        assert_eq!(a.eq_bands[3], -crate::eq::BAND_STEP);
     }
 
     /// The band hit test must agree with where the knobs are drawn, for every band.
@@ -3772,24 +4238,81 @@ mod tests {
     /// and a finger tap) play the whole list from the top.
     #[test]
     fn playlist_row_plays_the_whole_list() {
+        let mut a = two_playlists();
+        assert_eq!(a.press(Button::Select), vec![Action::PlayPlaylist(77)]);
+
+        // Same for a tap on the ROW BUTTON (x >= 404). Derive the y from the render's own geometry
+        // (list_top + row_h) rather than a magic number, so this can't drift from the layout.
+        let y = library::list_top(Tab::Playlists) + library::row_h(Tab::Playlists) + 4;
+        assert_eq!(a.tap(434, y), vec![Action::PlayPlaylist(78)]);
+        assert_eq!(a.lib_index(), 1);
+    }
+
+    /// Two playlists with real members, sitting on the Playlists tab.
+    fn two_playlists() -> App {
         let mut a = unlocked();
         a.push(Screen::Library);
         a.lib_tab = Tab::Playlists;
         a.lib_idx = 0;
+        let songs: Vec<SongRow> = (0..5)
+            .map(|i| SongRow {
+                title: format!("P{i}"), artist: "Someone".into(), dur: "3:00".into(),
+                object_id: 500 + i, ..Default::default()
+            })
+            .collect();
         a.lib = crate::model::Library {
             playlists: vec![
-                crate::model::PlaylistRow { id: 77, name: "Night Bus".into(), tracks: 3, art: "Night Bus".into() },
-                crate::model::PlaylistRow { id: 78, name: "Morning".into(), tracks: 2, art: "Morning".into() },
+                crate::model::PlaylistRow {
+                    id: 77, name: "Night Bus".into(), tracks: 3, art: "Night Bus".into(),
+                    track_list: songs[..3].to_vec(),
+                },
+                crate::model::PlaylistRow {
+                    id: 78, name: "Morning".into(), tracks: 2, art: "Morning".into(),
+                    track_list: songs[3..].to_vec(),
+                },
             ],
             ..Default::default()
         };
-        assert_eq!(a.press(Button::Select), vec![Action::PlayPlaylist(77)]);
+        a
+    }
 
-        // Same for a tap. Derive the y from the render's own geometry (list_top + row_h) rather
-        // than a magic number, so this can't drift from the layout the way a hard-coded y would.
+    /// Tapping the row body opens that playlist's own page — the same shape the Artists tab has.
+    /// The row used to be a shortcut that played the whole list, which left no way to see what was
+    /// in one before committing to it.
+    #[test]
+    fn tapping_a_playlist_row_opens_its_page() {
+        let mut a = two_playlists();
         let y = library::list_top(Tab::Playlists) + library::row_h(Tab::Playlists) + 4;
-        assert_eq!(a.tap(240, y), vec![Action::PlayPlaylist(78)]);
-        assert_eq!(a.lib_index(), 1);
+        assert!(a.tap(120, y).is_empty(), "opening a page emits no action");
+        assert_eq!(a.current(), Screen::Playlist);
+        assert_eq!(a.playlist_row().map(|p| p.id), Some(78));
+
+        // A track row plays; the band shuffles that playlist by id.
+        let ty = library::playlist_content_top() + library::PLAYLIST_TRACK_RH / 2;
+        assert_eq!(a.tap(200, ty), vec![Action::PlayIndex(503)]);
+        assert_eq!(a.current(), Screen::Playlist, "playing must not leave the page");
+        let (bx, by, _, bh) = library::shuffle_band_rect(library::PLAYLIST_BAND_Y);
+        assert_eq!(a.tap(bx + 20, by + bh / 2), vec![Action::ShufflePlaylist(78)]);
+
+        // And Back returns to the tab.
+        a.press(Button::Back);
+        assert_eq!(a.current(), Screen::Library);
+    }
+
+    /// The page scrolls, and a right-swipe on one of its rows queues that track like every other
+    /// track list in the app.
+    #[test]
+    fn the_playlist_page_scrolls_and_queues() {
+        let mut a = two_playlists();
+        a.open_playlist(0);
+        let ty = library::playlist_content_top() + library::PLAYLIST_TRACK_RH / 2;
+        assert_eq!(a.swipe(1, 240, ty), vec![Action::QueueChanged]);
+        assert_eq!(a.queue().len(), 1);
+        assert_eq!(a.queue()[0].title, "P0");
+        // Three rows do not overflow the panel, so there is nothing to scroll — and the scrollbar
+        // must decline rather than eat the contact.
+        assert_eq!(library::playlist_max_scroll_px(a.playlist_row().unwrap()), 0);
+        assert!(!a.sbar_begin(crate::canvas::W as i32 - 4, ty));
     }
 
     /// An empty Playlists tab must not emit an action for a tap on nothing.
@@ -3897,17 +4420,18 @@ mod tests {
         a.press(Button::Right); // band 1
         let before = a.eq_bands[1];
         let acts = a.press(Button::Up);
-        assert_eq!(a.eq_bands[1], (before + 1).min(6));
+        assert_eq!(a.eq_bands[1], (before + crate::eq::BAND_STEP).min(crate::eq::BAND_MAX));
         assert!(matches!(acts.as_slice(), [Action::EqChanged(_)]));
-        // clamps at +6 / -6
-        for _ in 0..20 {
+        // Clamps symmetrically at the limit the slider field is DRAWN to — a knob that stops at
+        // 60% of its column is the bug this replaces.
+        for _ in 0..40 {
             a.press(Button::Up);
         }
-        assert_eq!(a.eq_bands[1], 6);
-        for _ in 0..20 {
+        assert_eq!(a.eq_bands[1], crate::eq::BAND_MAX);
+        for _ in 0..40 {
             a.press(Button::Down);
         }
-        assert_eq!(a.eq_bands[1], -6);
+        assert_eq!(a.eq_bands[1], -crate::eq::BAND_MAX);
     }
 
     #[test]

@@ -615,6 +615,8 @@ static bool  g_hswipe_active = false;
 // row's grab handle it owns that contact for the rest of its life, so the list must not also
 // scroll under it.
 static bool  g_reorder_active = false;
+// Scrollbar drag: the bar at the right edge owns the contact, like the reorder handle does.
+static bool  g_sbar_active = false;
 long now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1232,7 +1234,7 @@ static void screen_auto_off() {
     // Drop any in-flight contact so the waking touch starts a fresh gesture.
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
     g_drag_active = false; g_drag_vel = 0.0f;
-    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
+    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     if (!g_bl_read) load_bl_cfg();
     if (g_bl.valid) {
         FILE* f = std::fopen(g_bl.path, "w");
@@ -1293,14 +1295,31 @@ void write_bt_pref() {
 // /contents/ldac_on; see deploy/ldac-run.sh) + switch the USB gadget to UAC. The setprop USB-mode
 // switch is device-gated (disruptive; validate live) — run_guarded + best-effort so it can't wedge
 // the UI. The codec/quality the bridge uses comes from /contents/cinder_bt.conf (write_bt_pref).
+// Engage / release USB-DAC mode (the Walkman as a USB sound card for a PC).
+//
+// THROUGH THE SETUID HELPER, NOT setprop DIRECTLY. This used to run `setprop sys.sony.config uac`
+// from here — and cinder-home is uid `system`, whose setprop the property service REFUSES. The
+// shell still returns 0, so the property silently stayed "adb", init's `on
+// property:sys.sony.config=uac` block never ran, the gadget was never reconfigured, and no PC ever
+// saw a sound card — while this function logged "usb-dac: engaged". Exactly the failure that made
+// USB-MSC look like a race for weeks (see cinder-msc.c's header), in exactly the same place.
+//
+// cinder-msc now owns the verb, reads sys.usb.state back, and says which way it went.
 void apply_usb_dac() {
-    if (cinder_get_usb_dac()) {
-        std::system("touch /contents/ldac_on 2>/dev/null; "
-                    "setprop sys.sony.config uac 2>/dev/null");
-        clog_("usb-dac: engaged (UAC + LDAC bridge on; Bluetooth left connected)");
+    bool on = cinder_get_usb_dac() != 0;
+    int rc = std::system(on ? "/system/vendor/unknown321/bin/cinder-msc dac-on"
+                            : "/system/vendor/unknown321/bin/cinder-msc dac-off");
+    char m[128];
+    std::snprintf(m, sizeof m, "usb-dac: %s -> cinder-msc dac-%s rc=%d%s",
+                  on ? "engage" : "release", on ? "on" : "off", rc,
+                  rc == 0 ? "" : "  (FAILED — is the helper setuid root?)");
+    clog_(m);
+    // The LDAC bridge trigger rides along, but only when the gadget actually came up: arming the
+    // bridge for a UAC mode that never engaged is how the last round of this looked like it worked.
+    if (on && rc == 0) {
+        std::system("touch /contents/ldac_on 2>/dev/null");
     } else {
         std::system("rm -f /contents/ldac_on 2>/dev/null");
-        clog_("usb-dac: disengaged (LDAC bridge off)");
     }
 }
 
@@ -1761,6 +1780,10 @@ static void touch_release() {
             std::snprintf(m, sizeof m, "touch: seek -> %d ms (sent=%s)", ms, rc == 0 ? "yes" : "NO CONTROLLER");
             clog_(m);
         }
+    } else if (g_touch_down && g_sbar_active) {
+        // Scrollbar drag ends. Its own branch for the same reason the reorder has one: falling
+        // through would re-read a short bar drag as a TAP on the A-Z rail and jump to a letter.
+        cinder_sbar_release();
     } else if (g_touch_down && g_reorder_active) {
         // Queue reorder ends: drop the row where it sits. Must be its OWN branch — falling through
         // to the classifier below would re-read the gesture as a tap (a short drag) or a swipe and
@@ -1798,7 +1821,7 @@ static void touch_release() {
     if (g_hswipe_active) cinder_swipe_release();
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
     g_drag_active = false; g_drag_vel = 0.0f;
-    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
+    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
 }
 
 // Called on every touch position update while the contact is down: promote a mostly-vertical
@@ -1835,6 +1858,10 @@ static void touch_drag_motion() {
         cinder_reorder_track(uy - touch_ui_y(g_touch_start_y));
         return;
     }
+    if (g_sbar_active) {
+        cinder_sbar_track(uy - touch_ui_y(g_touch_start_y));
+        return;
+    }
     if (!g_drag_active) {
         int dyt = uy - touch_ui_y(g_touch_start_y);
         int dxt = touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x);
@@ -1847,6 +1874,13 @@ static void touch_drag_motion() {
             if (cinder_reorder_begin(touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y))) {
                 g_reorder_active = true;
                 cinder_reorder_track(dyt);
+                return;
+            }
+            // Then the scrollbar, at the right edge. AFTER the reorder, so where the two strips
+            // overlap on Up Next the queue's grab handle wins.
+            if (cinder_sbar_begin(touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y))) {
+                g_sbar_active = true;
+                cinder_sbar_track(dyt);
                 return;
             }
             g_drag_active = true;
@@ -2045,7 +2079,7 @@ void input_pump() {
                         g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
                         g_touch_saw_pos = false;
                         g_drag_active = false; g_drag_vel = 0.0f;
-                        g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
+                        g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
                         continue;
                     }
                     // Live touch = activity, so the idle blank holds off — but NOT while Hold is
@@ -2056,7 +2090,7 @@ void input_pump() {
                         g_touch_cur_x = val; g_touch_saw_pos = true;
                         if (!g_touch_down) {
                             g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1;
-                            g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
+                            g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
                             cinder_touch_down();   // finger down stops an in-flight fling
                         } else if (g_touch_start_x < 0) g_touch_start_x = val;
                         // Also drive the classifier from HERE, not only from ABS_Y: a panel that
@@ -2078,7 +2112,7 @@ void input_pump() {
                         if (val) {
                             if (!g_touch_down) {
                                 g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1;
-                                g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
+                                g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
                                 cinder_touch_down();
                             }
                         } else {
@@ -2487,7 +2521,14 @@ void* render_driver(void*) {
                     int act = cinder_input(CINDER_BTN_BACK);
                     if (act != CINDER_ACT_NONE) carry_out(act);
                 }
-            } else if (usb_data_host() && !dev_skip_auto_msc()) {
+            } else if (usb_data_host() && !dev_skip_auto_msc() && !cinder_get_usb_dac()) {
+                // USB-DAC EXCLUDES auto-MSC, and that is why plain DAC mode never worked.
+                // `sys.sony.config=uac` reconfigures the gadget to `audio_func,adb`, which
+                // enumerates — so `usb_data_host()` goes true within ~2 s and this branch handed
+                // /contents to the PC instead, flipping the property to `msc` and then back to
+                // `adb` on exit. Measured 2026-07-29: dac-on reported `sys.usb.state=audio_func,adb`
+                // and twelve seconds later the device was on `adb` with `functions=mass_storage,adb`.
+                // The user asked for a sound card; offering a disk drive instead is not a fallback.
                 if (++g_usb_hi >= 2) {
                     clog_("usb-msc: PC host detected — auto-entering mass storage");
                     cinder_show_usb_storage();            // UI reflects the handoff (same modal as the tap)

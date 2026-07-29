@@ -14,11 +14,22 @@ pub const RH: i32 = 62;
 const LIST_BOTTOM: i32 = 736; // leave room for the footer rule
 const LIST_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
-/// Left edge of the reorder grab handle on a user-queue row. It runs to the panel edge on purpose:
-/// this device has no d-pad, so reordering is a thumb-only gesture and the target must be
-/// impossible to miss. A vertical drag that STARTS here reorders; anywhere else it scrolls, which
-/// is the same start-point ownership rule the scrub rail uses.
+/// The reorder grab handle's hit strip on a user-queue row. Wide, because this device has no d-pad
+/// and reordering is a thumb-only gesture, but it STOPS short of the right edge: the last
+/// `library::SBAR_GRAB_W` px belong to the scrollbar drag, and one strip cannot serve both. A
+/// vertical drag starting here reorders; anywhere else it scrolls, which is the same start-point
+/// ownership rule the scrub rail uses.
 pub const GRIP_X0: i32 = 424;
+pub const GRIP_X1: i32 = W as i32 - crate::library::SBAR_GRAB_W;
+
+/// The "clear the queue" chip in the header: `(x, y, w, h)`. An explicit, labelled control rather
+/// than a gesture, because emptying the queue is the one action here that cannot be undone.
+pub const CLEAR_CHIP: (i32, i32, i32, i32) = (388, 48, 70, 28);
+
+pub fn hit_clear_chip(x: i32, y: i32) -> bool {
+    let (cx, cy, cw, ch) = CLEAR_CHIP;
+    (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y)
+}
 
 /// A queue row being dragged to a new position.
 ///
@@ -69,7 +80,7 @@ pub fn queue_row_at(y: i32, scroll_px: i32, len: usize) -> Option<usize> {
 
 /// Is this x on the grab handle?
 pub fn queue_grip_hit(x: i32) -> bool {
-    x >= GRIP_X0
+    (GRIP_X0..GRIP_X1).contains(&x)
 }
 
 /// Which slot a floating row is hovering over, from its top edge in screen coords. Uses the row's
@@ -135,6 +146,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
 
     // Window that keeps the playing row visible: ~4 rows of lead-in, clamped to the list end.
     let (_visible, scroll) = window(tracks.len(), current);
+    // This view scrolls by whole rows to follow playback; there is nothing for a finger to drag.
+    let sbar_active = false;
 
     let mut y = y0;
     let mut shown = 0;
@@ -175,7 +188,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
     // scrollbar (only if the album overflows the window) — px-space equivalents of the
     // row-window this screen still scrolls by
     if tracks.len() > shown {
-        crate::library::scrollbar(c, t, y0, scroll as i32 * RH, tracks.len() as i32 * RH);
+        crate::library::scrollbar(c, t, y0, scroll as i32 * RH, tracks.len() as i32 * RH, sbar_active);
     }
 }
 
@@ -202,10 +215,10 @@ fn queue_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow, lib: &crate
 /// is lifted so the gesture reads as engaged even though the finger covers the icon.
 fn grip(c: &mut Canvas, t: &Theme, y: i32, lifted: bool) {
     let col = if lifted { t.acc } else { t.faint };
-    let x = GRIP_X0 + 14;
     let cy = y + RH / 2;
+    let w = GRIP_X1 - GRIP_X0 - 8;
     for k in -1..=1 {
-        fill_rect(c, x, cy + k * 7 - 1, 26, 2, col);
+        fill_rect(c, GRIP_X0 + 4, cy + k * 7 - 1, w, 2, col);
     }
 }
 
@@ -214,16 +227,25 @@ fn grip(c: &mut Canvas, t: &Theme, y: i32, lifted: bool) {
 ///
 /// `drag` is the row being reordered, if any: the list is drawn in its would-be order with that
 /// row's slot left empty, and the row itself floats under the finger on top.
+#[allow(clippy::too_many_arguments)]
 pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow],
-                    lib: &crate::model::Library, scroll_px: i32, drag: Option<QueueDrag>) {
+                    lib: &crate::model::Library, scroll_px: i32, drag: Option<QueueDrag>,
+                    swipe: Option<crate::library::SwipeRow>, sbar_active: bool) {
     c.fill(t.bg);
     let scroll_px = scroll_px.clamp(0, queue_max_scroll_px(queue.len()));
     let sub = if drag.is_some() {
         String::from("DRAG TO REORDER")
     } else {
-        format!("QUEUE · {} TRACKS", queue.len())
+        format!("{} TRACKS", queue.len())
     };
-    let y0 = crate::chrome::header(c, t, f, "Up Next", Some(&sub));
+    let y0 = crate::chrome::header(c, t, f, "Up Next", None);
+    // Count on the left of the chip, right-aligned into the gap it leaves.
+    let (chx, chy, chw, chh) = CLEAR_CHIP;
+    right(c, f, (chx - 12) as f32, 65.0, &sub,
+          &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
+    crate::widgets::stroke_rect(c, chx, chy, chw, chh, t.line, 1);
+    let cst = sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14);
+    crate::widgets::center(c, f, (chx + chw / 2) as f32, (chy + chh / 2 + 4) as f32, "CLEAR", &cst);
 
     let order = drag_order(queue.len(), drag);
     let first = (scroll_px / RH) as usize;
@@ -239,7 +261,17 @@ pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow],
         if drag.map(|d| d.from) == Some(i) {
             fill_rect(c, 0, y, W as i32, RH, t.panel);
         } else {
+            // Swipe-to-remove. Both directions mean the same thing here — see `SwipeIntent`.
+            let sw = swipe
+                .filter(|s| (y..y + RH).contains(&s.y) && s.dx != 0)
+                .map(|s| s.dx);
+            if let Some(dx) = sw {
+                crate::library::swipe_reveal(c, t, f, y, RH, dx, crate::library::SwipeIntent::Remove);
+            }
             queue_row(c, t, f, &queue[i], lib, y, slot + 1);
+            if sw.is_some() {
+                c.clear_offset_x();
+            }
         }
         hline(c, y + RH, t.line);
         y += RH;
@@ -263,6 +295,6 @@ pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow],
     }
 
     if queue_max_scroll_px(queue.len()) > 0 {
-        crate::library::scrollbar(c, t, y0, scroll_px, queue.len() as i32 * RH);
+        crate::library::scrollbar(c, t, y0, scroll_px, queue.len() as i32 * RH, sbar_active);
     }
 }

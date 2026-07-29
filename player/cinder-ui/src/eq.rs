@@ -20,6 +20,33 @@ use embedded_graphics::primitives::{Circle, PrimitiveStyle};
 /// Preset pill row: a uniform 5-across grid. Uniform (rather than text-width) keeps the hit test
 /// exact without needing font metrics, and gives the short names ("A1"/"A2") the same big target
 /// as the long ones.
+/// Band gain limits, in the RAW units `Action::EqChanged` carries to
+/// `EffectCtrlDmp::SetEq10BandValue`.
+///
+/// MEASURED on device 2026-07-29 (`cinder-probe --eq`), because RE could not close it: the library
+/// exports both `GetEq10BandValue` and `GetEq10BandValuedB`, so the raw value was known not to be
+/// dB but the scale was not. Setting a ladder of -20..+20 and reading both getters back gave:
+///
+/// ```text
+///     set  -20 -> raw  -20   dB -10.000
+///     set  -10 -> raw  -10   dB  -5.000
+///     set   10 -> raw   10   dB   5.000
+///     set   20 -> raw   20   dB  10.000
+/// ```
+///
+/// Nothing clamped anywhere in that range, so: **raw units are HALF-decibels, and Sony's range is
+/// ±20 raw = ±10 dB.** Cinder was sending ±6 (±3 dB) — under a third of the available range — and
+/// LABELLING it "+6", i.e. reporting double the boost it was actually applying.
+pub const BAND_MAX: i8 = 20;
+/// One tap = 1.0 dB. Sony's own UI steps in whole dB, and half-dB steps would need 40 taps to
+/// cross the field.
+pub const BAND_STEP: i8 = 2;
+
+/// A raw band value as the decibels it actually applies.
+pub fn band_db(raw: i8) -> f32 {
+    raw as f32 / 2.0
+}
+
 pub const PRESET_TOP: i32 = crate::chrome::HEADER_BOTTOM + 6;
 pub const PRESET_H: i32 = 30;
 const PRESET_X0: i32 = 22;
@@ -123,7 +150,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
     for i in 0..10 {
         let bx = band_center_x(i);
         let db = bands[i] as i32;
-        let knob_y = mid - db * span / 10;
+        let knob_y = mid - db * span / BAND_MAX as i32;
         // vertical guide
         fill_rect(c, bx - 1, sy, 2, by - sy, t.line);
         // deviation fill (mid → knob)
@@ -137,7 +164,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
         disc(c, bx, knob_y, 16, t.bg);
         disc(c, bx, knob_y, if on { 12 } else { 10 }, t.acc);
         // dB label above (brighter on the selected band)
-        let dbl = if db > 0 { format!("+{}", db) } else { format!("{}", db) };
+        // The REAL decibels, not the raw half-dB value — printing the raw number claimed twice
+        // the boost the DSP was applying.
+        let dbl = match band_db(bands[i]) {
+            v if v == 0.0 => "0".to_string(),
+            v if v.fract() == 0.0 => format!("{v:+.0}"),
+            v => format!("{v:+.1}"),
+        };
         let dbcol = if on { t.ink } else if db != 0 { t.acc } else { t.faint };
         crate::widgets::center(c, f, bx as f32, (sy - 6) as f32, &dbl, &sty(Family::Mono, Weight::Regular, if on { 10.0 } else { 9.0 }, dbcol, 0.0));
         // Hz label below
@@ -149,6 +182,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
     hline(c, fy, t.line);
     let fcy = (fy + FOOTER_H / 2) as f32;
     text::draw(c, f, 22.0, fcy + 4.0, "Reset", &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0));
-    right(c, f, 458.0, fcy + 4.0, "Save Sound Preset", &sty(Family::Sans, Weight::Bold, 16.0, t.acc, 0.0));
+    // NOT "Save Sound Preset": there is no save step. Every band change is written to the settings
+    // file as it happens, so a Save button would be a control that appears to do something and
+    // does not — and the accent colour made it look like the primary action on the screen.
+    right(c, f, 458.0, fcy + 4.0, "Saved automatically",
+        &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0));
     let _ = W;
 }

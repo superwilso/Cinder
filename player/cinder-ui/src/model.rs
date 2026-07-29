@@ -70,6 +70,10 @@ pub struct PlaylistRow {
     pub name: String,
     pub tracks: u32,
     pub art: String,
+    /// Members in the user's saved order. Resolved once at library build, like `AlbumRow`'s, so
+    /// the drill-in page is a pure view and needs no DB access per frame. `tracks` is the DB's own
+    /// count and can legitimately exceed this when a member file no longer resolves.
+    pub track_list: Vec<SongRow>,
 }
 
 /// The whole browsable library, as owned rows. Built once (from the DB on device, or the
@@ -113,7 +117,7 @@ impl Library {
 
     /// The design demo data (mirrors `data::` constants) so host preview is unchanged.
     pub fn sample() -> Self {
-        let songs = data::SONGS
+        let songs: Vec<SongRow> = data::SONGS
             .iter()
             .enumerate()
             .map(|(i, s)| SongRow {
@@ -178,9 +182,20 @@ impl Library {
                 album_ids: Vec::new(),
             })
             .collect();
+        // Sample members: the first `k` songs, cycled. The device builds these from the DB — this
+        // only has to give the drill-in page something real to lay out in the host preview.
         let playlists = data::PLAYLISTS
             .iter()
-            .map(|p| PlaylistRow { id: 0, name: p.n.into(), tracks: p.k, art: p.art.into() })
+            .enumerate()
+            .map(|(pi, p)| PlaylistRow {
+                id: pi as i64 + 1,
+                name: p.n.into(),
+                tracks: p.k,
+                art: p.art.into(),
+                track_list: (0..p.k as usize)
+                    .filter_map(|i| songs.get((i + pi) % songs.len().max(1)).cloned())
+                    .collect(),
+            })
             .collect();
         Library { songs, album_groups, artists, playlists, thumbs: Default::default() }
     }

@@ -30,7 +30,7 @@ pub struct Playlist {
     pub track_count: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Track {
     pub object_id: i64,
     pub title: String,

@@ -160,6 +160,15 @@ pub fn swipe_offset(dx: i32) -> i32 {
     o.min(SWIPE_MAX_PX) * if dx < 0 { -1 } else { 1 }
 }
 
+/// What releasing a swiped row will do — which decides the panel's icon and word.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SwipeIntent {
+    /// A library/album/artist/playlist row: rightward queues it, leftward plays it next.
+    Queue,
+    /// A row of the queue itself: either direction removes it.
+    Remove,
+}
+
 /// True once the row has travelled far enough that releasing will queue the track.
 pub fn swipe_armed(dx: i32) -> bool {
     dx.abs() >= SWIPE_COMMIT_PX
@@ -171,7 +180,8 @@ pub fn swipe_armed(dx: i32) -> bool {
 /// The panel spans the full row width so it shows on whichever side the row uncovered, and it goes
 /// accent-coloured only once the swipe is armed. That colour change is the whole point: it is the
 /// difference between "I am dragging something" and "letting go does this".
-fn swipe_reveal(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, rh: i32, dx: i32) {
+pub fn swipe_reveal(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, rh: i32, dx: i32,
+                    intent: SwipeIntent) {
     let armed = swipe_armed(dx);
     let (bg, ink) = if armed { (t.acc, t.acc_ink) } else { (t.panel, t.dim) };
     fill_rect(c, 0, y, W as i32, rh, bg);
@@ -182,7 +192,14 @@ fn swipe_reveal(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, rh: i32, dx: i32
     // covered up — an edge-pinned label reads as "QU" for most of the gesture. The word only
     // appears once the strip is wide enough to hold it; below that the icon carries the meaning.
     let a = dx.abs();
-    let label = if dx > 0 { "QUEUE" } else { "PLAY NEXT" };
+    // On a list, the two directions are two different actions. On the QUEUE itself neither makes
+    // sense — the track is already queued — so both directions mean remove, and the label says so
+    // rather than leaving the direction to carry a meaning it no longer has.
+    let label = match intent {
+        SwipeIntent::Remove => "REMOVE",
+        SwipeIntent::Queue if dx > 0 => "QUEUE",
+        SwipeIntent::Queue => "PLAY NEXT",
+    };
     let lw = text::measure(f, label, &st);
     let icon_w = 18.0;
     let gap = 8.0;
@@ -196,10 +213,10 @@ fn swipe_reveal(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, rh: i32, dx: i32
         let l = W as f32 - a as f32 + left;
         (l + icon_w / 2.0, l + icon_w + gap)
     };
-    if dx > 0 {
-        icons::queue(c, ix, cy as f32, icon_w, ink);
-    } else {
-        icons::next(c, ix, cy as f32, icon_w, ink);
+    match intent {
+        SwipeIntent::Remove => icons::close(c, ix, cy as f32, icon_w, ink),
+        SwipeIntent::Queue if dx > 0 => icons::queue(c, ix, cy as f32, icon_w, ink),
+        SwipeIntent::Queue => icons::next(c, ix, cy as f32, icon_w, ink),
     }
     if with_label {
         text::draw(c, f, tx, (cy + 5) as f32, label, &st);
@@ -698,19 +715,55 @@ pub fn album_hit_track(album: &crate::model::AlbumRow, scroll_px: i32, y: i32) -
 }
 
 /// Thin scrollbar on the right edge: window position in PIXEL space (scroll_px over content_h).
-pub(crate) fn scrollbar(c: &mut Canvas, t: &Theme, top: i32, scroll_px: i32, content_h: i32) {
+/// Bottom of every scrolling list on the library screens.
+pub fn list_bottom() -> i32 {
+    LIST_BOTTOM
+}
+
+/// Right-edge strip in which a vertical drag grabs the scrollbar, as the Sony UI does.
+///
+/// It is the SAME strip as the A–Z rail, and the two coexist by gesture rather than by geometry: a
+/// TAP there is a letter jump, a DRAG is a scrollbar drag. That falls straight out of the shell's
+/// existing tap-vs-drag classification and costs no screen width — and on the sorts where the rail
+/// is hidden ([`az_key_for`] returns `None`) the strip does nothing else anyway. The drawn bar
+/// stays 3 px; only the target is wide, because a 3 px target is not a target.
+pub const SBAR_GRAB_W: i32 = AZ_W;
+
+pub fn sbar_hit_x(x: i32) -> bool {
+    x >= W as i32 - SBAR_GRAB_W
+}
+
+/// Thumb height for a `track_h`-tall bar showing `content_h` of content. Floored at 18 px so a
+/// very long list still has something grabbable.
+pub fn sbar_thumb_h(track_h: i32, content_h: i32) -> i32 {
+    if content_h <= 0 {
+        return track_h;
+    }
+    ((track_h as f32 / content_h as f32) * track_h as f32).max(18.0) as i32
+}
+
+/// How far the thumb can travel — the denominator that converts finger px into content px.
+pub fn sbar_span(top: i32, content_h: i32) -> i32 {
+    let track_h = LIST_BOTTOM - top;
+    (track_h - sbar_thumb_h(track_h, content_h)).max(0)
+}
+
+pub(crate) fn scrollbar(c: &mut Canvas, t: &Theme, top: i32, scroll_px: i32, content_h: i32,
+                        active: bool) {
     let track_h = LIST_BOTTOM - top;
     if track_h <= 0 || content_h <= track_h {
         return;
     }
-    let x = W as i32 - 4;
-    let thumb_h = ((track_h as f32 / content_h as f32) * track_h as f32).max(18.0) as i32;
+    let thumb_h = sbar_thumb_h(track_h, content_h);
     let max_off = (content_h - track_h) as f32;
     let pos = if max_off > 0.0 { (scroll_px as f32 / max_off).clamp(0.0, 1.0) } else { 0.0 };
     let thumb_y = top + ((track_h - thumb_h) as f32 * pos) as i32;
-    // faint full-height track + a brighter thumb so position is readable at a glance
-    fill_rect(c, x, top, 3, track_h, t.line);
-    fill_rect(c, x, thumb_y, 3, thumb_h, t.faint);
+    // faint full-height track + a brighter thumb so position is readable at a glance. While a
+    // finger is on it the thumb goes wide and accent-coloured: the grab zone is much wider than
+    // the drawn bar, so without that there is no way to tell the drag was picked up.
+    let (w, col) = if active { (7, t.acc) } else { (3, t.faint) };
+    fill_rect(c, W as i32 - 4, top, 3, track_h, t.line);
+    fill_rect(c, W as i32 - 1 - w, thumb_y, w, thumb_h, col);
 }
 
 fn artdim(t: &Theme) -> f32 {
@@ -854,6 +907,7 @@ pub fn render(
     album_expanded: Option<usize>,
     lib: &Library,
     swipe: Option<SwipeRow>,
+    sbar_active: bool,
 ) {
     let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib, album_sort, album_expanded));
     c.fill(t.bg);
@@ -886,7 +940,7 @@ pub fn render(
                 let now = rank == current;
                 let sw = swipe_for(swipe, y, rh);
                 if let Some(dx) = sw {
-                    swipe_reveal(c, t, f, y, rh, dx);
+                    swipe_reveal(c, t, f, y, rh, dx, SwipeIntent::Queue);
                 }
                 if now {
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
@@ -908,7 +962,7 @@ pub fn render(
                 y += rh;
             }
             c.clear_clip();
-            scrollbar(c, t, top, scroll_px, total as i32 * rh);
+            scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
         }
         Tab::Albums => {
             let top = shuffle_row(c, t, f, yt, "Shuffle by album", "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE") + 4;
@@ -968,7 +1022,7 @@ pub fn render(
                             let cy = y + ALBUM_CHILD_H / 2;
                             let sw = swipe_for(swipe, y, ALBUM_CHILD_H);
                             if let Some(dx) = sw {
-                                swipe_reveal(c, t, f, y, ALBUM_CHILD_H, dx);
+                                swipe_reveal(c, t, f, y, ALBUM_CHILD_H, dx, SwipeIntent::Queue);
                             }
                             // subtle inset band so tracks read as children of the album above
                             fill_rect(c, 0, y, W as i32, ALBUM_CHILD_H, t.panel);
@@ -989,7 +1043,7 @@ pub fn render(
                 }
             }
             c.clear_clip();
-            scrollbar(c, t, top, scroll_px, layout.content_h);
+            scrollbar(c, t, top, scroll_px, layout.content_h, sbar_active);
         }
         Tab::Artists => {
             let top = shuffle_row(c, t, f, yt, "Shuffle by artist", "RANDOM ARTIST · SHUFFLED WITHIN ARTIST") + 8;
@@ -1023,7 +1077,7 @@ pub fn render(
                 y += rh;
             }
             c.clear_clip();
-            scrollbar(c, t, top, scroll_px, total as i32 * rh);
+            scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
         }
         Tab::Playlists => {
             let top = shuffle_row(c, t, f, yt, "Shuffle a playlist", "RANDOM PLAYLIST · SHUFFLED") + 8;
@@ -1051,7 +1105,7 @@ pub fn render(
                 y += rh;
             }
             c.clear_clip();
-            scrollbar(c, t, top, scroll_px, total as i32 * rh);
+            scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
         }
     }
 }
@@ -1070,6 +1124,7 @@ pub fn album_view(
     scroll_px: i32,
     cover: Option<&crate::art::Image>,
     swipe: Option<SwipeRow>,
+    sbar_active: bool,
 ) {
     let scroll_px = scroll_px.clamp(0, album_max_scroll_px(album));
     c.fill(t.bg);
@@ -1109,7 +1164,7 @@ pub fn album_view(
         let cy = y + rh / 2;
         let sw = swipe_for(swipe, y, rh);
         if let Some(dx) = sw {
-            swipe_reveal(c, t, f, y, rh, dx);
+            swipe_reveal(c, t, f, y, rh, dx, SwipeIntent::Queue);
         }
         if now {
             fill_rect(c, 0, y, W as i32, rh, t.row_sel);
@@ -1132,7 +1187,7 @@ pub fn album_view(
         y += rh;
     }
     c.clear_clip();
-    scrollbar(c, t, top, scroll_px, total as i32 * rh);
+    scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
 }
 
 // ── Artist drill-in ───────────────────────────────────────────────────────────────────────────
@@ -1308,6 +1363,7 @@ pub fn artist_view(
     scroll_px: i32,
     sel: usize,
     swipe: Option<SwipeRow>,
+    sbar_active: bool,
 ) {
     let scroll_px = scroll_px.clamp(0, artist_max_scroll_px(page));
     c.fill(t.bg);
@@ -1366,7 +1422,7 @@ pub fn artist_view(
                 let cy = y + ARTIST_TRACK_RH / 2;
                 let sw = swipe_for(swipe, y, ARTIST_TRACK_RH);
                 if let Some(dx) = sw {
-                    swipe_reveal(c, t, f, y, ARTIST_TRACK_RH, dx);
+                    swipe_reveal(c, t, f, y, ARTIST_TRACK_RH, dx, SwipeIntent::Queue);
                 }
                 if now {
                     fill_rect(c, 0, y, W as i32, ARTIST_TRACK_RH, t.row_sel);
@@ -1390,7 +1446,129 @@ pub fn artist_view(
         }
     }
     c.clear_clip();
-    scrollbar(c, t, top, scroll_px, page.content_h);
+    scrollbar(c, t, top, scroll_px, page.content_h, sbar_active);
+}
+
+// ── Playlist drill-in ────────────────────────────────────────────────────────────────────────
+// The same shape as the artist page, minus the albums section: a playlist is one ordered list of
+// tracks, so there is nothing to group. It reads `PlaylistRow::track_list`, resolved once at
+// library build, so no frame here touches the DB.
+
+/// The "Shuffle playlist" band. Sits higher than the artist page's because there is no
+/// albums/tracks stat pair above it, just the one count.
+pub const PLAYLIST_BAND_Y: i32 = 182;
+pub const PLAYLIST_TRACK_RH: i32 = ARTIST_TRACK_RH;
+
+pub fn playlist_content_top() -> i32 {
+    let (_, by, _, bh) = shuffle_band_rect(PLAYLIST_BAND_Y);
+    by + bh + 8
+}
+
+pub fn hit_playlist_shuffle_band(x: i32, y: i32) -> bool {
+    let (bx, by, bw, bh) = shuffle_band_rect(PLAYLIST_BAND_Y);
+    (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+}
+
+pub fn playlist_view_h() -> i32 {
+    LIST_BOTTOM - playlist_content_top()
+}
+
+pub fn playlist_content_h(pl: &crate::model::PlaylistRow) -> i32 {
+    pl.track_list.len() as i32 * PLAYLIST_TRACK_RH + 8
+}
+
+pub fn playlist_max_scroll_px(pl: &crate::model::PlaylistRow) -> i32 {
+    (playlist_content_h(pl) - playlist_view_h()).max(0)
+}
+
+/// Which track is under touch-`y`. Mirrors the renderer's geometry exactly.
+pub fn playlist_hit_track(pl: &crate::model::PlaylistRow, scroll_px: i32, y: i32) -> Option<usize> {
+    let top = playlist_content_top();
+    if y < top || y >= LIST_BOTTOM {
+        return None;
+    }
+    let i = ((y - top + scroll_px.max(0)) / PLAYLIST_TRACK_RH) as usize;
+    (i < pl.track_list.len()).then_some(i)
+}
+
+/// Playlist drill-in: fixed header (name, count, shuffle band) then the members in saved order.
+#[allow(clippy::too_many_arguments)]
+pub fn playlist_view(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    lib: &Library,
+    pl: &crate::model::PlaylistRow,
+    scroll_px: i32,
+    sel: usize,
+    swipe: Option<SwipeRow>,
+    sbar_active: bool,
+) {
+    let scroll_px = scroll_px.clamp(0, playlist_max_scroll_px(pl));
+    c.fill(t.bg);
+    icons::back(c, 30.0, 110.0, 20.0, t.dim);
+    text::draw(c, f, 50.0, 114.0, "PLAYLIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
+
+    let nst = sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
+    let name = crate::widgets::fit(f, &pl.name, &nst, W as f32 - 44.0);
+    text::draw(c, f, 22.0, 152.0, &name, &nst);
+    // The DB's own count, not the resolved length: a member whose file is gone still counts in
+    // Sony's container, and silently showing a smaller number would hide that.
+    let stats = if pl.track_list.len() as u32 == pl.tracks {
+        plural(pl.tracks, "TRACK").to_uppercase()
+    } else {
+        format!("{} OF {} TRACKS AVAILABLE", pl.track_list.len(), pl.tracks)
+    };
+    text::draw(c, f, 22.0, 174.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
+    shuffle_row(c, t, f, PLAYLIST_BAND_Y, "Shuffle playlist",
+        &format!("ALL {} TRACKS · RANDOM ORDER", pl.track_list.len()));
+
+    let top = playlist_content_top();
+    c.set_clip_y(top, LIST_BOTTOM);
+    if pl.track_list.is_empty() {
+        let st = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
+        text::draw(c, f, 22.0, (top + 40) as f32, "Nothing in this playlist.",
+            &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
+        text::draw(c, f, 22.0, (top + 66) as f32, "Its tracks are missing from the library.", &st);
+        c.clear_clip();
+        return;
+    }
+    let first = (scroll_px / PLAYLIST_TRACK_RH) as usize;
+    let mut y = top - (scroll_px % PLAYLIST_TRACK_RH);
+    for (i, sgn) in pl.track_list.iter().enumerate().skip(first) {
+        if y >= LIST_BOTTOM {
+            break;
+        }
+        let now = i == sel;
+        let cy = y + PLAYLIST_TRACK_RH / 2;
+        let sw = swipe_for(swipe, y, PLAYLIST_TRACK_RH);
+        if let Some(dx) = sw {
+            swipe_reveal(c, t, f, y, PLAYLIST_TRACK_RH, dx, SwipeIntent::Queue);
+        }
+        if now {
+            fill_rect(c, 0, y, W as i32, PLAYLIST_TRACK_RH, t.row_sel);
+        }
+        text::draw(c, f, 26.0, (cy + 4) as f32, &format!("{}", i + 1),
+            &sty(Family::Mono, Weight::Regular, 12.0, if now { t.acc } else { t.faint }, 0.0));
+        thumb(c, t, lib, sgn.album_id, &sgn.art, 52, y + (PLAYLIST_TRACK_RH - THUMB_PX) / 2,
+              THUMB_PX, artdim(t));
+        let tcol = if now { t.acc } else { t.ink };
+        let tst = body_label(Family::Sans, Weight::SemiBold, 18.0, tcol);
+        text::draw(c, f, 110.0, (cy - 2) as f32,
+            &crate::widgets::fit(f, &sgn.title, &tst, 268.0), &tst);
+        let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
+        text::draw(c, f, 110.0, (cy + 16) as f32,
+            &crate::widgets::fit(f, &sgn.artist, &ast, 268.0), &ast);
+        right(c, f, 452.0, (cy + 4) as f32, &sgn.dur,
+            &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0));
+        hline(c, y + PLAYLIST_TRACK_RH, t.line);
+        if sw.is_some() {
+            c.clear_offset_x();
+        }
+        y += PLAYLIST_TRACK_RH;
+    }
+    c.clear_clip();
+    scrollbar(c, t, top, scroll_px, playlist_content_h(pl), sbar_active);
 }
 
 #[cfg(test)]

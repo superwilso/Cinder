@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <csignal>
 #include <cstring>
+#include <string>
 #include <ucontext.h>
 #include <unistd.h>
 #include <execinfo.h>
@@ -355,6 +356,12 @@ static int ldac_probe() {
     g_pump_run = true;
     pthread_t pt;
     pthread_create(&pt, nullptr, pump_thread, &fw);
+    // WAIT for the looper to actually be turning before the first client call. The first run of
+    // this reported `pump ticks so far 0` at CreateInstance — the thread had not been scheduled
+    // yet — and a pst client call made with a dead looper returns uninitialised stack, which is
+    // the exact trap this probe exists to rule out.
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    std::fprintf(stderr, "[cinder-probe] ldac: pump running (%u ticks)\n", g_pump_ticks);
 
     // 2. Control plane. Each call is watchdog-bounded, so a HANG names itself instead of looking
     //    like a silent failure.
@@ -380,12 +387,25 @@ static int ldac_probe() {
     // GetSocketName returns a libc++ std::string BY VALUE (sret): hidden result ptr is arg0.
     // libc++ 3.9 layout, 12 bytes: (bytes[0] & 1) == 0 -> short, size = bytes[0] >> 1, data =
     // &bytes[1]; otherwise long, {cap, size, data} as words.
+    // GetSocketName THREW on the first device run with no headphones connected: libcxxrt reported
+    // "Fatal error during phase 1 unwinding" and the process died at PC=0. Catch it, because "this
+    // call throws unless a link is up" is itself the answer to Q1 — and losing the run to it means
+    // Q2 never gets asked.
     clog_("ldac: GetSocketName() …");
     typedef void (*fn_s)(void*, void*);
     unsigned char s[12] = {0};
-    wd_arm(12); ((fn_s)vslot(bt, VIDX_GetSocketName))(s, bt); wd_disarm();
+    bool got_name = false;
+    wd_arm(12);
+    try {
+        ((fn_s)vslot(bt, VIDX_GetSocketName))(s, bt);
+        got_name = true;
+    } catch (...) {
+        clog_("ldac: GetSocketName THREW — the transmitter has no open source (connect the LDAC "
+              "headphones first, per ldac-bridge/TEST.md §2)");
+    }
+    wd_disarm();
     char name[128] = {0};
-    {
+    if (got_name) {
         const char* data; size_t n;
         if ((s[0] & 1) == 0) { n = s[0] >> 1; data = (const char*)&s[1]; }
         else { unsigned* w = (unsigned*)s; n = w[1]; data = (const char*)(uintptr_t)w[2]; }
@@ -402,9 +422,14 @@ static int ldac_probe() {
     // 3. Q1 proper: can we connect to the socket the server should now be listening on? The open is
     //    async after SetCurrentSource, so retry ~2 s before calling it a no.
     int sock = -1;
-    if (name[0] == '\0') {
-        clog_("ldac: Q1 FAIL — GetSocketName empty (with a live pump this really is the control "
-              "plane, so re-check the open trigger in FUN_00019aa0's callers)");
+    if (!got_name) {
+        clog_("ldac: Q1 INCONCLUSIVE — the call threw, which is what it does with no link up. "
+              "Re-run with the LDAC headphones connected; this is NOT evidence against the "
+              "control plane.");
+    } else if (name[0] == '\0') {
+        clog_("ldac: Q1 FAIL — GetSocketName returned EMPTY with a live pump and a link up, so "
+              "this really is the control plane: re-check the open trigger in FUN_00019aa0's "
+              "callers");
     } else {
         for (int i = 0; i < 20 && sock < 0; i++) {
             sock = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -451,10 +476,360 @@ static int ldac_probe() {
     wd_arm(12); ((fn_b)vslot(bt, VIDX_SetCurrentSource))(bt, &f); wd_disarm();
     g_pump_run = false;
     std::fprintf(stderr, "[cinder-probe] ldac: done (%u pump ticks)\n", g_pump_ticks);
-    return 0;
+    std::fflush(nullptr);
+    _exit(0);   // same reason as eq_probe: do not unwind with the pump thread live
+}
+
+// ── --eq : what units does SetEq10BandValue actually take, and is the 10-band engine SELECTED? ──
+//
+// Two questions RE could not close, both of which decide whether the EQ screen does what it says:
+//
+//  1. UNITS. `libEffectCtrlDmp` exports BOTH `GetEq10BandValue` and `GetEq10BandValuedB`. Two
+//     getters means the raw value is NOT dB, so the -10..+10 the UI sends may not be the range
+//     Sony expects — and a value outside it would clip silently. Setting a known ladder and
+//     reading BOTH getters back answers it outright.
+//     The dB getter's RETURN TYPE is unknown too (mangling does not encode it), and this is armhf,
+//     so a float comes back in s0 and an int in r0 — reading the wrong one gives a plausible
+//     number from the wrong register. So the same address is called through both prototypes and
+//     both results printed; exactly one of them will make sense.
+//
+//  2. SELECTION. `SetSelectUsingEq(EqType)` / `GetSelectUsingEq()` exist and Cinder calls neither.
+//     `SetEq10Band(true)` may only arm the 10-band, not make the DSP USE it. Reading what stock
+//     leaves the selector at says whether that call is missing.
+//
+// Read-mostly: it restores every band it touched, and it does the easel lifecycle not at all, so
+// it cannot affect boot.
+namespace pst { namespace services { namespace sound { class EffectCtrlDmp; } } }
+extern "C" {
+void _ZN3pst8services5sound13EffectCtrlDmpC1Ev(void*);
+void _ZN3pst8services5sound13EffectCtrlDmp11SetEq10BandEb(void*, bool);
+void _ZN3pst8services5sound13EffectCtrlDmp16SetEq10BandValueENS1_8Eq10BandEi(void*, int, int);
+int  _ZN3pst8services5sound13EffectCtrlDmp16GetEq10BandValueENS1_8Eq10BandE(void*, int);
+void _ZN3pst8services5sound13EffectCtrlDmp18GetEq10BandValuedBENS1_8Eq10BandE(void);
+int  _ZN3pst8services5sound13EffectCtrlDmp16GetSelectUsingEqEv(void*);
+int  _ZN3pst8services5sound13EffectCtrlDmp12IsEq10BandOnEv(void*);
+}
+
+static int eq_probe() {
+    install_diagnostics();
+    clog_("eq: Framework::GetReference() + StartForApplication …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] eq: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+
+    // Same over-allocation care as the shim: the real object size is RE-confirmed in
+    // cinder-audio/src/effect_abi.hpp, and the 2026-06-25 heap corruption came from under-sizing.
+    static unsigned char obj[1024];
+    std::memset(obj, 0, sizeof obj);
+    clog_("eq: EffectCtrlDmp ctor …");
+    wd_arm(12);
+    _ZN3pst8services5sound13EffectCtrlDmpC1Ev(obj);
+    wd_disarm();
+
+    // Q2 first — it needs nothing set, so it reports the state STOCK left behind.
+    wd_arm(10);
+    int sel = _ZN3pst8services5sound13EffectCtrlDmp16GetSelectUsingEqEv(obj);
+    int on  = _ZN3pst8services5sound13EffectCtrlDmp12IsEq10BandOnEv(obj);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] eq: Q2 GetSelectUsingEq=%d  IsEq10BandOn=%d "
+                 "(pump ticks %u)\n", sel, on, g_pump_ticks);
+    if (g_pump_ticks == 0)
+        clog_("eq: *** pump never ticked — nothing below is trustworthy ***");
+
+    // Q1: set band 0 (32 Hz) across a ladder that brackets every plausible range and read back.
+    // A value the DSP rejects comes back CLAMPED, which is exactly what identifies the range.
+    void* dbfn = (void*)&_ZN3pst8services5sound13EffectCtrlDmp18GetEq10BandValuedBENS1_8Eq10BandE;
+    typedef int   (*db_i)(void*, int);
+    typedef float (*db_f)(void*, int);
+    int saved = _ZN3pst8services5sound13EffectCtrlDmp16GetEq10BandValueENS1_8Eq10BandE(obj, 0);
+    std::fprintf(stderr, "[cinder-probe] eq: band0 was %d — ladder (set -> raw / dB-as-int / "
+                 "dB-as-float):\n", saved);
+    _ZN3pst8services5sound13EffectCtrlDmp11SetEq10BandEb(obj, true);
+    for (int v : { -20, -12, -10, -6, 0, 6, 10, 12, 20 }) {
+        wd_arm(8);
+        _ZN3pst8services5sound13EffectCtrlDmp16SetEq10BandValueENS1_8Eq10BandEi(obj, 0, v);
+        int raw = _ZN3pst8services5sound13EffectCtrlDmp16GetEq10BandValueENS1_8Eq10BandE(obj, 0);
+        int di  = ((db_i)dbfn)(obj, 0);
+        float df = ((db_f)dbfn)(obj, 0);
+        wd_disarm();
+        std::fprintf(stderr, "    set %4d -> raw %4d   dB(int) %6d   dB(float) %8.3f%s\n",
+                     v, raw, di, (double)df, raw == v ? "" : "   <-- CLAMPED");
+    }
+    wd_arm(8);
+    _ZN3pst8services5sound13EffectCtrlDmp16SetEq10BandValueENS1_8Eq10BandEi(obj, 0, saved);
+    wd_disarm();
+    clog_("eq: band 0 restored");
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] eq: done (%u pump ticks)\n", g_pump_ticks);
+    // _exit, not return: the pump thread is still inside libpstcore, and letting the process unwind
+    // through static destructors while it is faults in the BT/effect libs. The measurement is
+    // already printed by here, so the crash was pure noise on top of a good run — but noise in a
+    // diagnostic's own output is exactly what makes the next one hard to read.
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// ── --bt : reconnect the last paired Bluetooth device ────────────────────────────────────────
+//
+// Headphones paired under stock stay paired under Cinder — the link key belongs to Sony's BT
+// service, not to whichever app is foreground. What does NOT happen is the CONNECT: stock calls it
+// at boot and Cinder calls nothing, so they sit paired and silent.
+//
+// `RequestLastDeviceConnection` (transmitter vtable slot 7) takes NO arguments — decompiled
+// 2026-07-29, `void(this)`. So this needs no device address, no pairing UI and no
+// BtCommonServiceClient. Same client the --ldac probe already proved constructs and responds.
+//
+// 2026-07-29 run 2: that connect returned quietly and the status never moved off 0. The pump was
+// turning and the radio read ON, so the call was delivered and declined. First candidate for why:
+// the --ldac path calls `SetCurrentSource(true)` and this one did not — the transmitter plausibly
+// refuses to connect while it is not the current source. One extra call to test it.
+//
+// `GetConnectInformation(this, int*)` (slot 5, decompiled) is read-only and tells us whether a
+// "last device" record exists at all; if SetCurrentSource does not fix it, that number is the
+// evidence for the addressed-connect fallback (GetPairedDeviceInfo -> RequestConnection).
+enum { VIDX_GetAvSrcConnectionStatus = 3, VIDX_GetConnectInformation = 5,
+       VIDX_RequestLastDeviceConnection = 7, VIDX_RequestDisconnection = 8,
+       VIDX_SetCurrentSourceBt = 12 };
+// BtCommonServiceClient — the RADIO, which is a different service from the transmitter. Cinder's
+// on/off toggle has always been UI-only (`SetRfOnOff` is never called), so the radio is in
+// whatever state something else left it, and a connect against a powered-down radio would look
+// exactly like the connect not working.
+extern "C" void* _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv(void);
+enum { VIDX_GetBtStatus = 3, VIDX_SetRfOnOff = 4 };
+
+static int bt_probe(bool disconnect, bool cycle) {
+    install_diagnostics();
+    clog_("bt: Framework::GetReference() + StartForApplication …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] bt: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    std::fprintf(stderr, "[cinder-probe] bt: pump running (%u ticks)\n", g_pump_ticks);
+
+    clog_("bt: BtTransmitterServiceClientFactory::CreateInstance() …");
+    wd_arm(12);
+    void* bt = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    if (!bt) { clog_("bt: CreateInstance returned NULL — STOP"); return 1; }
+
+    typedef int (*fn0)(void*);
+    typedef void (*fnb)(void*, const bool*);
+
+    // Radio first. Everything below is meaningless against a powered-down radio.
+    clog_("bt: BtCommonServiceClientFactory::CreateInstance() …");
+    wd_arm(12);
+    void* cmn = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    int rf = -1;
+    if (cmn) {
+        wd_arm(10); rf = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] bt: GetBtStatus = %d\n", rf);
+        if (rf == 0) {
+            clog_("bt: radio reads OFF — SetRfOnOff(true) …");
+            bool on = true;
+            wd_arm(15); ((fnb)vslot(cmn, VIDX_SetRfOnOff))(cmn, &on); wd_disarm();
+            for (int i = 0; i < 10; i++) {
+                usleep(500000);
+                wd_arm(10); rf = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); wd_disarm();
+                if (rf != 0) break;
+            }
+            std::fprintf(stderr, "[cinder-probe] bt: GetBtStatus after power-on = %d\n", rf);
+        }
+    } else {
+        clog_("bt: BtCommonServiceClient CreateInstance returned NULL");
+    }
+
+    // `cycle` exists to answer ONE question: is the BT middleware alive and acting on what we send
+    // it? The connect path is silent all the way down — the service logs "last device found" and
+    // then nothing, and MTK's stack (mtkbt + libBtMw, not BlueZ) logs nothing to any logcat buffer.
+    // So a declined connect and a dead middleware look identical from outside.
+    //
+    // Powering the radio down and back up is the strongest liveness test available WITHOUT guessing
+    // a new vtable signature: it reuses SetRfOnOff (slot 4) and GetBtStatus (slot 3), both already
+    // exercised. If GetBtStatus moves 7 -> 0 -> 7 the middleware is provably responsive and the
+    // connect failure lies with the peer or the profile, not with our call. If it does not move,
+    // the stack is wedged and that is the bug.
+    if (cycle && cmn) {
+        typedef void (*fnb2)(void*, const bool*);
+        bool off = false, on = true;
+        clog_("bt: cycle: SetRfOnOff(false) …");
+        wd_arm(15); ((fnb2)vslot(cmn, VIDX_SetRfOnOff))(cmn, &off); wd_disarm();
+        int low = rf;
+        for (int i = 0; i < 20; i++) {
+            usleep(500000);
+            wd_arm(10); low = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); wd_disarm();
+            if (low != rf) break;
+        }
+        std::fprintf(stderr, "[cinder-probe] bt: cycle: status after off = %d%s\n", low,
+                     low == rf ? "   <-- UNCHANGED: radio ignored the request" : "");
+        clog_("bt: cycle: SetRfOnOff(true) …");
+        wd_arm(15); ((fnb2)vslot(cmn, VIDX_SetRfOnOff))(cmn, &on); wd_disarm();
+        int back = low;
+        for (int i = 0; i < 30; i++) {
+            usleep(500000);
+            wd_arm(10); back = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); wd_disarm();
+            if (back != low) break;
+        }
+        std::fprintf(stderr, "[cinder-probe] bt: cycle: status after on = %d%s\n", back,
+                     back == low ? "   <-- STUCK: radio did not come back" : "");
+        sleep(2);
+    }
+
+    wd_arm(10);
+    int before = ((fn0)vslot(bt, VIDX_GetAvSrcConnectionStatus))(bt);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] bt: AvSrc status before = %d\n", before);
+
+    if (!disconnect) {
+        // Candidate 1: become the current source before asking for a connection.
+        clog_("bt: SetCurrentSource(true) …");
+        bool t = true;
+        wd_arm(15); ((fnb)vslot(bt, VIDX_SetCurrentSourceBt))(bt, &t); wd_disarm();
+        usleep(500000);
+    }
+
+    if (disconnect) {
+        clog_("bt: RequestDisconnection() …");
+        wd_arm(15); ((fn0)vslot(bt, VIDX_RequestDisconnection))(bt); wd_disarm();
+    } else {
+        clog_("bt: RequestLastDeviceConnection() …");
+        wd_arm(20); ((fn0)vslot(bt, VIDX_RequestLastDeviceConnection))(bt); wd_disarm();
+    }
+    // The connect is asynchronous — the reply and the state change both arrive on the looper, so
+    // poll the status rather than reading it once and calling it a failure.
+    for (int i = 0; i < 12; i++) {
+        usleep(1000000);
+        wd_arm(10);
+        int now = ((fn0)vslot(bt, VIDX_GetAvSrcConnectionStatus))(bt);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] bt: +%2ds status = %d%s\n", i + 1, now,
+                     now != before ? "   <-- CHANGED" : "");
+        if (now != before) break;
+    }
+
+    // NOT calling GetConnectInformation (slot 5). Two attempts crashed at a byte-identical fault
+    // address inside `TransactionParam::GetStr(std::string&)`, which is what a *wrong out-param
+    // shape* looks like, not a wrong slot. Reading the stub's marshalling settled it: 0xf7b0 makes
+    // no `TransactionParam::Set*` call before the send (so it takes no input), and unpacks the
+    // reply as Get, Get, GetStr, Get, Get — i.e. it fills a STRUCT containing a std::string at an
+    // offset we have not recovered. Passing an `int*` or a bare `std::string*` lands the GetStr
+    // write at a garbage offset inside that struct. Recover the layout before calling it again.
+    //
+    // It is not needed for the connect question anyway: logcat already proves the record exists —
+    // `BtTransmitterService.cc:257  last device found [AC:80:0A:56:A9:91]`.
+
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] bt: done (%u pump ticks)\n", g_pump_ticks);
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// ── --dac : make the USB-DAC actually audible ────────────────────────────────────────────────
+//
+// The gadget half already works: `cinder-msc dac-on` flips `sys.sony.config` to `uac` and the PC
+// enumerates a sound card. But nothing comes out of the 3.5 mm jack, because enumerating a gadget
+// is not the same as playing through it — something has to tell Sony's player service to open the
+// render path, and Cinder never did.
+//
+// That is `UsbDeviceAudioPlayerServiceClient::Start` (vtable slot 4). Its service-side signature is
+// exported in full, which is a rare luxury here:
+//
+//   UsbDeviceAudioPlayerService::Start(IUsbDeviceAudioPlayerService::stream_info_t&)
+//   UsbDeviceAudioPlayerService::GetStatus(IUsbDeviceAudioPlayerService::stream_info_t&)
+//
+// The ref is NON-const on both, so `stream_info_t` is an OUT param the service fills in. The client
+// stub at 0x235a4 unpacks the reply with six plain `TransactionParam::Get` calls and NO `GetStr`,
+// so every field is a scalar and a zeroed buffer is safe to hand it. (That distinction is not
+// pedantry: it is exactly what made `BtTransmitterServiceClient::GetConnectInformation` crash —
+// that one DOES contain a std::string, so a zeroed buffer put the GetStr write at a garbage
+// offset. Check for GetStr before trusting a buffer to any out-param on this platform.)
+extern "C" void* _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstanceEv(void);
+enum { VIDX_UacGetStatus = 3, VIDX_UacStart = 4, VIDX_UacStop = 5 };
+
+static void dump_stream_info(const char* tag, const unsigned* si) {
+    std::fprintf(stderr,
+                 "[cinder-probe] dac: %s stream_info = %u %u %u %u %u %u  (%08x %08x %08x)\n",
+                 tag, si[0], si[1], si[2], si[3], si[4], si[5], si[0], si[1], si[2]);
+}
+
+static int dac_probe(bool stop) {
+    install_diagnostics();
+    clog_("dac: Framework::GetReference() + StartForApplication …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] dac: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    std::fprintf(stderr, "[cinder-probe] dac: pump running (%u ticks)\n", g_pump_ticks);
+    if (g_pump_ticks == 0) {
+        clog_("dac: pump never ticked — NOTHING below this line is trustworthy");
+    }
+
+    clog_("dac: UsbDeviceAudioPlayerServiceClientFactory::CreateInstance() …");
+    wd_arm(12);
+    void* uac = _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    if (!uac) { clog_("dac: CreateInstance returned NULL — STOP"); return 1; }
+
+    typedef void (*fnp)(void*, void*);
+    // Oversized and zeroed: we know the field COUNT (six reads) but not the struct's true size,
+    // and over-allocating an out-param buffer is free while under-allocating corrupts the stack.
+    unsigned si[32];
+
+    std::memset(si, 0, sizeof si);
+    wd_arm(10); ((fnp)vslot(uac, VIDX_UacGetStatus))(uac, si); wd_disarm();
+    dump_stream_info("before ", si);
+
+    if (stop) {
+        clog_("dac: Stop() …");
+        std::memset(si, 0, sizeof si);
+        wd_arm(15); ((fnp)vslot(uac, VIDX_UacStop))(uac, si); wd_disarm();
+    } else {
+        clog_("dac: Start() …");
+        std::memset(si, 0, sizeof si);
+        wd_arm(15); ((fnp)vslot(uac, VIDX_UacStart))(uac, si); wd_disarm();
+        dump_stream_info("at Start", si);
+    }
+
+    for (int i = 0; i < 8; i++) {
+        usleep(1000000);
+        std::memset(si, 0, sizeof si);
+        wd_arm(10); ((fnp)vslot(uac, VIDX_UacGetStatus))(uac, si); wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] dac: +%ds status = %u %u %u %u %u %u\n",
+                     i + 1, si[0], si[1], si[2], si[3], si[4], si[5]);
+    }
+
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] dac: done (%u pump ticks)\n", g_pump_ticks);
+    std::fflush(nullptr);
+    _exit(0);
 }
 
 int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--dac") == 0) {
+        return dac_probe(argc > 2 && std::strcmp(argv[2], "stop") == 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--bt") == 0) {
+        return bt_probe(argc > 2 && std::strcmp(argv[2], "off") == 0,
+                        argc > 2 && std::strcmp(argv[2], "cycle") == 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--eq") == 0) {
+        return eq_probe();
+    }
     if (argc > 1 && std::strcmp(argv[1], "--ldac") == 0) {
         return ldac_probe();
     }

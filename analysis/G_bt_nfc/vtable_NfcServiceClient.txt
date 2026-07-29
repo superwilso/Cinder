@@ -1,0 +1,44 @@
+# artifacts/rootfs_mnt/vendor/sony/lib/libNfcService.so
+# _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv
+# GOT slot 0x0000ae70 -> vtable group base 0x0000ab40
+# primary vptr = group+8 = 0x0000ab48   (slot 0 is the first virtual)
+  0  0x0000ab48  -> 0x000060a9  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x158c
+  1  0x0000ab4c  -> 0x000060e1  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x15c4
+  2  0x0000ab50  -> 0x00003391  e::FireOnBluetoothOob
+  3  0x0000ab54  -> 0x000051b9  NfcServiceClient::Open
+  4  0x0000ab58  -> 0x00005535  NfcServiceClient::Open
+  5  0x0000ab5c  -> 0x00005711  NfcServiceClient::Start
+  6  0x0000ab60  -> 0x00005909  NfcServiceClient::Start
+  7  0x0000ab64  -> 0x00005b15  NfcServiceClient::Stop
+  8  0x0000ab68  -> 0x00005cf1  NfcServiceClient::Close
+  9  0x0000ab6c  -> 0x00005ecd  NfcServiceClient::GetCurrentMode
+ 10  0x0000ab70  -> 0x00005031  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x514
+ 11  0x0000ab74  -> 0x00005149  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x62c
+ 12  0x0000ab78  -> 0x00006121  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x1604
+ 13  0x0000ab7c  -> 0xfffffffc  .fini+0xffff7bb4
+ 14  0x0000ab80  <null / end of table>
+ 15  0x0000ab84  -> 0x00006159  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x163c
+ 16  0x0000ab88  -> 0x0000618d  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x1670
+ 17  0x0000ab8c  -> 0x000061c9  ice::FireOnBluetoothOob
+ 18  0x0000ab90  <null / end of table>
+ 19  0x0000ab94  <null / end of table>
+ 20  0x0000ab98  -> 0x00006201  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x16e4
+ 21  0x0000ab9c  -> 0x00006269  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x174c
+ 22  0x0000aba0  -> 0x000062d5  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x17b8
+ 23  0x0000aba4  -> 0x00003579  _ZN3pst8services17NfcServiceFactory14CreateInstanceEv@@Base+0xcf0
+ 24  0x0000aba8  -> 0x000035a9  _ZN3pst8services17NfcServiceFactory14CreateInstanceEv@@Base+0xd20
+ 25  0x0000abac  -> 0x000035d9  _ZN3pst8services17NfcServiceFactory14CreateInstanceEv@@Base+0xd50
+ 26  0x0000abb0  -> 0x00006315  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x17f8
+ 27  0x0000abb4  -> 0x00003649  _ZN3pst8services17NfcServiceFactory14CreateInstanceEv@@Base+0xdc0
+ 28  0x0000abb8  -> 0x00004b8d  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x70
+ 29  0x0000abbc  <null / end of table>
+ 30  0x0000abc0  <null / end of table>
+ 31  0x0000abc4  -> 0x00006345  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x1828
+ 32  0x0000abc8  -> 0x000063c5  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x18a8
+ 33  0x0000abcc  <null / end of table>
+ 34  0x0000abd0  <null / end of table>
+ 35  0x0000abd4  <null / end of table>
+ 36  0x0000abd8  -> 0x00006201  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x16e4
+ 37  0x0000abdc  -> 0x000063fd  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x18e0
+ 38  0x0000abe0  -> 0x000062d5  _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv@@Base+0x17b8
+ 39  0x0000abe4  -> 0x00003579  _ZN3pst8services17NfcServiceFactory14CreateInstanceEv@@Base+0xcf0

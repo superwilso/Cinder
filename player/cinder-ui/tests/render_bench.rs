@@ -146,7 +146,7 @@ fn bench_library_tabs() {
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Albums, "albums"),
                         (Tab::Artists, "artists"), (Tab::Playlists, "playlists")] {
         time_it(&format!("library {name} (gradients)"), n, || {
-            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None)
+            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false)
         });
     }
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Artists, "artists")] {
@@ -162,7 +162,7 @@ fn bench_library_tabs() {
     }
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Albums, "albums"), (Tab::Artists, "artists")] {
         time_it(&format!("library {name} (real covers)"), n, || {
-            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None)
+            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false)
         });
     }
 
@@ -174,6 +174,6 @@ fn bench_library_tabs() {
     });
     let page = library::artist_page(&lib, &who);
     time_it("artist_view render", n, || {
-        library::artist_view(&mut c, &t, &f, &lib, &page, 0, 0, None)
+        library::artist_view(&mut c, &t, &f, &lib, &page, 0, 0, None, false)
     });
 }

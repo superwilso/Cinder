@@ -60,13 +60,29 @@ garbage (see §5).
 |---|---|---|
 | `Q1 PASS` + `Q2 PASS` | Control plane and capture both good. | Build the pump loop: read PCM → write the socket. The remaining risk is format/chunk negotiation only. |
 | `Q1 PASS` + `Q2 FAIL — … is BUSY` | Control plane works; **capture contention** confirmed (stock UAC owns the card). | This is a contention problem, not an RE problem: stop/redirect `UsbDeviceAudioPlayerService`, or replace `libaudiohal-uacalsasingletrack.so` to tee PCM to our socket. |
-| `Q1 FAIL — GetSocketName empty` **with a non-zero pump tick count** | The control-plane assumption really is wrong. | Ghidra: re-check the open trigger in `FUN_00019aa0`'s callers — the open may need a different method/arg, or `NotifyOpenAudio` on the *service* side rather than the client. |
+| `Q1 INCONCLUSIVE — the call threw` | `GetSocketName` **throws** when no source is open. Measured 2026-07-29 with no headphones connected: the first three calls (`SetLdac`, `SetLdacSoundQuality`, `SetCurrentSource`) all returned cleanly, then this one threw. Not evidence against the control plane. | Redo §2 properly and re-run. This is the expected result without a link. |
+| `Q1 FAIL — GetSocketName returned EMPTY` **with a link up and a non-zero pump tick count** | The control-plane assumption really is wrong. | Ghidra: re-check the open trigger in `FUN_00019aa0`'s callers — the open may need a different method/arg, or `NotifyOpenAudio` on the *service* side rather than the client. |
 | `Q2 INCONCLUSIVE — no capture PCM at all` | The UAC gadget isn't up. | Re-do §2: `sys.sony.config` must be `uac` **and** the PC must actually be feeding audio. The UAC card only exists while both are true. |
 | `pump never ticked` | The framework didn't start. | Nothing else in the run is valid. Check `StartForApplication`'s return in the log. |
 
 Also useful while it runs: `adb shell 'cat /proc/asound/card*/pcm*/sub*/status'` to see which
 substreams are RUNNING, and `adb logcat` — `hagodaemon` logs every service entry/exit with
 `file:line`, so silence there means the request never left our process.
+
+### What a dry run already established (2026-07-29, no headphones, no USB-DAC)
+
+Worth knowing before the real run, because it narrows what is left to find out:
+
+- The framework comes up and the pump is turning **before** the first client call (`3339 ticks`), so
+  nothing below it is stack garbage — the trap in §5 is ruled out for this path.
+- `BtTransmitterServiceClientFactory::CreateInstance()` returns a real object.
+- `SetLdac(true)`, `SetLdacSoundQuality(Auto)` and `SetCurrentSource(true)` all return without
+  throwing or hanging. The RE'd vtable indices are therefore at least plausible.
+- `GetSocketName()` **throws** with no link up. So the socket genuinely does not exist until a
+  source is open, and an empty name only means something once §2 is really in place.
+
+So the only untested step is the one that needs the hardware: does a live LDAC link make
+`GetSocketName` return a name we can `connect()` to.
 
 ## 5. Why not run the `cinder-ldac-bridge` daemon for this?
 

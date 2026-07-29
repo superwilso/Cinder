@@ -135,6 +135,13 @@ void cinder_swipe_release(void);
 int  cinder_reorder_begin(int x, int y);
 void cinder_reorder_track(int dy_px);
 void cinder_reorder_release(void);
+/* SCROLLBAR drag — grab the bar at the right edge and drag it, as the Sony UI does. Same contract
+ * again, and offered right AFTER the reorder so a queue row's grab handle wins where the two strips
+ * would overlap. The strip is shared with the A-Z rail and split by GESTURE: a tap there is still a
+ * letter jump (cinder_tap), a drag is this. The content follows the THUMB, not the finger. */
+int  cinder_sbar_begin(int x, int y);
+void cinder_sbar_track(int dy_px);
+void cinder_sbar_release(void);
 /* The Hold/lock SWITCH changed state (held = 1 locked, 0 unlocked). When locked the touchscreen is
  * ignored but the transport/volume buttons still work; ONLY the switch going off (held=0) unlocks.
  * Power is a screen on/off toggle (CINDER_ACT_SLEEP) and does NOT unlock. Call on every edge. */

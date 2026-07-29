@@ -119,12 +119,15 @@ pub const ARTIST_TOP: &[TopSong] = &[
 
 // EQ — 10 bands, presets (dB per band)
 pub const EQ_BANDS: [&str; 10] = ["32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
+// RAW half-dB units (see eq::BAND_MAX): the curves below were authored as decibels, so each value
+// is doubled. ROCK's first band is +8 raw = +4 dB — which is what it always claimed to be and,
+// until the units were measured on device, never was.
 pub const EQ_PRESETS: [(&str, [i8; 10]); 5] = [
     ("FLAT", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    ("ROCK", [4, 3, 1, 0, -1, 0, 2, 3, 4, 4]),
-    ("JAZZ", [2, 1, 0, 1, 2, 1, 0, 1, 2, 3]),
-    ("A1", [2, 3, 1, 0, -1, 0, 2, 3, 2, 1]),
-    ("A2", [5, 4, 2, 0, 0, 1, 1, 2, 4, 5]),
+    ("ROCK", [8, 6, 2, 0, -2, 0, 4, 6, 8, 8]),
+    ("JAZZ", [4, 2, 0, 2, 4, 2, 0, 2, 4, 6]),
+    ("A1", [4, 6, 2, 0, -2, 0, 4, 6, 4, 2]),
+    ("A2", [10, 8, 4, 0, 0, 2, 2, 4, 8, 10]),
 ];
 
 // FM presets

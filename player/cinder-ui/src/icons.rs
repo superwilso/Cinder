@@ -162,6 +162,14 @@ pub fn lock(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     polyline(c, cx, cy, s, col, w, &[(8.0, 10.5), (8.0, 7.5), (10.0, 5.6), (14.0, 5.6), (16.0, 7.5), (16.0, 10.5)]);
 }
 
+/// An X — "remove this". Used by the queue's swipe-to-delete reveal, where a trash can would be
+/// unreadable at 18 px on this panel.
+pub fn close(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let w = stroke_w(s);
+    polyline(c, cx, cy, s, col, w, &[(6.0, 6.0), (18.0, 18.0)]);
+    polyline(c, cx, cy, s, col, w, &[(18.0, 6.0), (6.0, 18.0)]);
+}
+
 pub fn chevron(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     let w = stroke_w(s).max(2);
     polyline(c, cx, cy, s, col, w, &[(9.0, 5.0), (16.0, 12.0), (9.0, 19.0)]);
