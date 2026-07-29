@@ -592,7 +592,7 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbrightness={}\nscreen_off={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbt_volume={}\nbrightness={}\nscreen_off={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -606,6 +606,7 @@ fn settings_body(r: &Render) -> String {
         r.app.bt_codec(),
         r.app.bt_ldac_quality(),
         r.app.volume_level(),
+        r.app.bt_volume_level(),
         r.app.brightness(),
         r.app.screen_off_s(),
     )
@@ -2077,6 +2078,44 @@ pub extern "C" fn cinder_get_volume() -> libc::c_int {
     }
 }
 
+/// Read the UI's Bluetooth volume as a raw AVRCP step (0..30). Separate from `cinder_get_volume`
+/// on purpose: that one is the 3.5 mm codec level and must not move while audio is on headphones.
+#[no_mangle]
+pub extern "C" fn cinder_get_bt_volume() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.bt_volume_level() as libc::c_int,
+        None => 0,
+    }
+}
+
+/// Seed the UI's Bluetooth volume (0..30 AVRCP steps) without popping the HUD.
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_volume(level: libc::c_int) {
+    let level = level.clamp(0, cinder_ui::overlay::BT_VOL_MAX as libc::c_int);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_bt_volume(level as u8);
+    }
+}
+
+/// Tell the UI which output the volume rocker should drive: nonzero = Bluetooth, 0 = the 3.5 mm
+/// jack. The shell owns this because only it can see the radio. Changing it never moves either
+/// level — it just decides which one the next press touches and which one the HUD shows.
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_route(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_bt_route(on != 0);
+    }
+}
+
+/// 1 if the rocker is currently driving the Bluetooth route.
+#[no_mangle]
+pub extern "C" fn cinder_get_bt_route() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.bt_route() as libc::c_int,
+        None => 0,
+    }
+}
+
 /// Read the UI's Sound-effect toggles as a bitmask (bit0 DSEE · bit1 Vinyl · bit2 VPT ·
 /// bit3 DC-Phase · bit4 Normalizer · bit5 ClearAudio+). The shell calls this after a
 /// CINDER_ACT_SOUND_CHANGED action and applies each bit via the effect shim. 0 if renderer not up.
@@ -2383,6 +2422,16 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_volume(n);
                             loaded |= 2; // bit1: a persisted volume level was restored
+                        }
+                    }
+                    "bt_volume" => {
+                        // Deliberately does NOT set bit1. That bit means "push this to the
+                        // hardware", and there is no way to push an absolute level over AVRCP —
+                        // only up/down steps. The sink keeps its own volume across reconnects, so
+                        // this is restored as the UI's BELIEF about where the headphones are, and
+                        // it can be stale until the user nudges the rocker.
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_bt_volume(n);
                         }
                     }
                     "screen_off" => {

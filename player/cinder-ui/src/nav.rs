@@ -269,9 +269,20 @@ pub struct App {
     sbar: Option<(i32, i32)>,
     /// Fling (momentum) velocity in px/s for the current scrollable list; decays each tick.
     fling_v: f32,
-    /// Hardware volume (0..VOL_MAX steps) + frames the volume HUD stays visible.
+    /// Hardware volume (0..VOL_MAX steps) + frames the volume HUD stays visible. This is the
+    /// 3.5 mm level specifically — the CXD3778GF master, which is where the rocker lands whenever
+    /// audio is going out the jack.
     volume: u8,
     vol_overlay: u8,
+    /// Bluetooth output volume, kept SEPARATE from `volume` on its own 0..BT_VOL_MAX scale, and
+    /// which of the two the rocker is currently driving. They are separate because they are
+    /// physically different attenuators: `volume` is the local codec, `bt_volume` is a step count
+    /// the sink applies at the far end. Sharing one number would mean connecting headphones
+    /// silently reassigns the jack's level, and disconnecting them blasts whatever the headphones
+    /// were set to out the jack. `bt_route` is owned by the shell (it polls the radio) — the UI
+    /// only reads it.
+    bt_volume: u8,
+    bt_route: bool,
     /// Equalizer: 10 band gains (dB), selected band, active preset index.
     eq_bands: [i8; 10],
     eq_sel: usize,
@@ -406,6 +417,8 @@ impl Default for App {
             fling_v: 0.0,
             volume: 15,
             vol_overlay: 0,
+            bt_volume: 15,
+            bt_route: false,
             eq_bands: data::EQ_PRESETS[3].1, // "A1"
             eq_sel: 0,
             eq_preset: 3,
@@ -1997,11 +2010,11 @@ impl App {
                 Button::Right | Button::Next => vec![Action::Next],
                 Button::Left | Button::Prev => vec![Action::Prev],
                 Button::VolUp => {
-                    self.volume = (self.volume + 1).min(crate::overlay::VOL_MAX);
+                    self.vol_step(true);
                     vec![Action::VolUp]
                 }
                 Button::VolDown => {
-                    self.volume = self.volume.saturating_sub(1);
+                    self.vol_step(false);
                     vec![Action::VolDown]
                 }
                 _ => vec![],
@@ -2036,12 +2049,12 @@ impl App {
                 Button::Next => vec![Action::Next],
                 Button::Prev => vec![Action::Prev],
                 Button::VolUp => {
-                    self.volume = (self.volume + 1).min(crate::overlay::VOL_MAX);
+                    self.vol_step(true);
                     self.vol_overlay = crate::overlay::VOL_FRAMES;
                     vec![Action::VolUp]
                 }
                 Button::VolDown => {
-                    self.volume = self.volume.saturating_sub(1);
+                    self.vol_step(false);
                     self.vol_overlay = crate::overlay::VOL_FRAMES;
                     vec![Action::VolDown]
                 }
@@ -2100,12 +2113,12 @@ impl App {
                 return vec![];
             }
             Button::VolUp => {
-                self.volume = (self.volume + 1).min(crate::overlay::VOL_MAX);
+                self.vol_step(true);
                 self.vol_overlay = crate::overlay::VOL_FRAMES;
                 return vec![Action::VolUp];
             }
             Button::VolDown => {
-                self.volume = self.volume.saturating_sub(1);
+                self.vol_step(false);
                 self.vol_overlay = crate::overlay::VOL_FRAMES;
                 return vec![Action::VolDown];
             }
@@ -2681,7 +2694,7 @@ impl App {
         }
         // Transient HUD on top of any screen (except the lock screen, which owns the panel).
         if self.vol_overlay > 0 && self.current() != Screen::Lock {
-            crate::overlay::volume(c, &theme, fonts, self.volume);
+            crate::overlay::volume(c, &theme, fonts, self.display_volume());
         }
         // Confirmation toast (e.g. "Added to queue — …"), same rules as the volume HUD.
         if self.toast_frames > 0 && self.current() != Screen::Lock {
@@ -2828,8 +2841,62 @@ impl App {
 
     /// Current volume as the raw 0..VOL_MAX (=120) step level. The shell writes this 1:1 to the
     /// device mixer ('master volume' is also 0..120) — no lossy percent round-trip.
+    ///
+    /// This stays the 3.5 mm level even while the Bluetooth route is active, which is what lets
+    /// the shell leave the codec exactly where the user left it and lets the level persist
+    /// unpolluted by a listening session on headphones.
     pub fn volume_level(&self) -> u8 {
         self.volume
+    }
+
+    /// Move whichever volume the rocker currently owns. One press is one step on that route's own
+    /// scale — on Bluetooth that is one AVRCP command to the sink, so the step count IS the level.
+    fn vol_step(&mut self, up: bool) {
+        if self.bt_route {
+            self.bt_volume = if up {
+                (self.bt_volume + 1).min(crate::overlay::BT_VOL_MAX)
+            } else {
+                self.bt_volume.saturating_sub(1)
+            };
+        } else {
+            self.volume = if up {
+                (self.volume + 1).min(crate::overlay::VOL_MAX)
+            } else {
+                self.volume.saturating_sub(1)
+            };
+        }
+    }
+
+    /// The level the HUD draws, always on the 0..VOL_MAX scale so the bar looks the same on both
+    /// routes. Bluetooth's 30 steps are stretched over it; the number under the bar is therefore
+    /// the 0..120 equivalent, not the raw AVRCP step.
+    pub fn display_volume(&self) -> u8 {
+        if self.bt_route {
+            ((self.bt_volume as u16 * crate::overlay::VOL_MAX as u16)
+                / crate::overlay::BT_VOL_MAX as u16) as u8
+        } else {
+            self.volume
+        }
+    }
+
+    /// The Bluetooth route's own level, in AVRCP steps (0..BT_VOL_MAX). Persisted separately from
+    /// `volume_level()`; the shell uses it only to know which way it has drifted from the sink.
+    pub fn bt_volume_level(&self) -> u8 {
+        self.bt_volume
+    }
+
+    pub fn set_bt_volume(&mut self, level: u8) {
+        self.bt_volume = level.min(crate::overlay::BT_VOL_MAX);
+    }
+
+    pub fn bt_route(&self) -> bool {
+        self.bt_route
+    }
+
+    /// The shell polls the radio and pushes the answer here; the rocker follows it from the next
+    /// press onward. Setting it does NOT touch either level — that is the whole point.
+    pub fn set_bt_route(&mut self, on: bool) {
+        self.bt_route = on;
     }
 
     /// The current 10-band EQ gains (dB), for the shell to apply to the device DSP.

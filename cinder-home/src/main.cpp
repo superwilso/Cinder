@@ -256,6 +256,8 @@ void start_pump_ticker();   // full worker defined just before main(), after the
 bool gadget_in_dac_mode();   // defined with the USB-DAC block below
 static int bt_status();      // defined with the Bluetooth block below
 static bool bt_radio_up(int st);
+void refresh_bt_route();     // ditto — points the volume rocker at whichever output is live
+void apply_bt_codec();       // ditto — pushes the codec choice to the radio (not just the conf file)
 
 void render_up() {
     if (g_render_ready) return;
@@ -402,20 +404,25 @@ void deferred_up() {
     run_guarded("deferred_up: read battery care state", 8,
                 []() { cinder_set_battery_care(cinder_power_get_battery_care()); });
     // Same treatment for the Bluetooth switch: sync it to the RADIO's real state instead of letting
-    // it default to on. Healthy statuses are 2 (idle) and 3 (connected); 0 is off and 7 is the
-    // wedged stack (see apply_bt_toggle). Anything that is not a healthy value reads as off, so the
-    // switch never claims a radio that is not actually up — and flipping it then performs the
-    // power-cycle that clears a wedge. Deferred, not in render_up, because this is Sony IPC and
-    // needs the framework pump started just above.
+    // it default to on. Statuses are 2 (on, idle) and 3 (connected) for a live radio; 7 is OFF and 0
+    // reads as unknown. Anything that is not 2 or 3 reads as off, so the switch never claims a radio
+    // that is not actually up. Deferred, not in render_up, because this is Sony IPC and needs the
+    // framework pump started just above.
     run_guarded("deferred_up: read Bluetooth radio state", 8,
                 []() {
                     int st = bt_status();
                     cinder_set_bt_on(bt_radio_up(st) ? 1 : 0);
+                    // Same read decides where the volume rocker points, so headphones that were
+                    // already connected at launch get the rocker from the very first press.
+                    refresh_bt_route();
                     char m[96];
                     std::snprintf(m, sizeof m, "deferred_up: BT radio status=%d -> switch %s",
                                   st, bt_radio_up(st) ? "ON" : "OFF");
                     clog_(m);
                 });
+    // Push the saved codec preference at the radio too. Same reasoning as the EQ re-apply below: a
+    // preference that only lives in a file is a preference the hardware never hears about.
+    run_guarded("deferred_up: apply saved BT codec", 6, apply_bt_codec);
     // Re-apply the user's SAVED EQ + sound effects to the DSP (only if a settings file was restored —
     // no point pushing defaults on a fresh install). Guarded, like every effect-shim call.
     if (g_settings_loaded) {
@@ -1413,6 +1420,10 @@ void apply_bt_toggle() {
         clog_(m);
     }
 
+    // Codec BEFORE the connect, not after: A2DP negotiates the codec during connection setup, so a
+    // preference applied to an already-established link doesn't take until the next one.
+    apply_bt_codec();
+
     // Radio is up — reconnect whatever was last paired. Zero-arg: the service looks the address up
     // itself (confirmed both by decompiling the stub, which makes no TransactionParam::Set* call,
     // and by its own log line naming the MAC).
@@ -1427,6 +1438,152 @@ void apply_bt_toggle() {
     } catch (...) {
         clog_("bt: RequestLastDeviceConnection threw");
     }
+    refresh_bt_route();
+}
+
+// ── Bluetooth volume ────────────────────────────────────────────────────────────────────────
+// The volume rocker has to go somewhere ELSE once audio leaves the jack. The 3.5 mm level is the
+// CXD3778GF codec master (ALSA card0 'master volume', 0..120) — that attenuator is downstream of
+// nothing the A2DP encoder touches, so turning it up while headphones are connected does exactly
+// what the user reported: nothing.
+//
+// The Bluetooth attenuator lives at the far end, in the headphones, reached over AVRCP. Two ways to
+// drive it, and the good one is conditional on the sink:
+//
+//   * ABSOLUTE — `SetCurrentVolume(const uint8_t&)` (slot 34), gated on `IsSupportedAbsoluteVolume()`
+//     (slot 33). Preferred wherever it works, because it is CLOSED LOOP: the UI level is the level,
+//     so a saved level restores exactly and repeated presses can't accumulate drift.
+//   * STEPS — `SetVolumeUp` / `SetVolumeDown` (slots 17/16), one sink step per call. Open loop, the
+//     fallback for a sink that doesn't do absolute volume. The UI count is then only a belief about
+//     where the far end actually is.
+//
+// Signature safety (the rule from GetConnectInformation, which crashed twice on a bogus out-param):
+// these libraries carry their own demangled signatures as __PRETTY_FUNCTION__ log literals, so they
+// are READ, not inferred — `strings` gives `virtual bool ...SetVolumeUp()` and
+// `virtual bool ...SetCurrentVolume(const uint8_t &)` outright. The marshalling agrees: every stub
+// costs a base 3×Alloc(4), and the ARGUMENT shows up as extra Allocs sized to it — SetVolumeUp has
+// exactly the base 3 (no args), SetCurrentVolume has a 4th of size 1 (the uint8_t). None of them
+// call GetStr, so no std::string comes back and a plain scalar reply is safe.
+static void* bt_xmit() {
+    if (!g_bt_xmit) g_bt_xmit = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    return g_bt_xmit;
+}
+
+// -1 = not asked yet, 0 = sink is step-only, 1 = sink takes absolute volume. Cached because it is a
+// property of the connected headphones, and re-queried on every route change (below) so swapping to
+// a different pair re-decides it.
+static int g_bt_abs_vol = -1;
+
+static bool bt_abs_volume_supported() {
+    enum { VIDX_IsSupportedAbsoluteVolume = 33 };
+    if (g_bt_abs_vol >= 0) return g_bt_abs_vol == 1;
+    g_bt_abs_vol = 0;
+    try {
+        void* x = bt_xmit();
+        if (!x) return false;
+        typedef int (*fn0)(void*);
+        g_bt_abs_vol = ((fn0)bt_slot(x, VIDX_IsSupportedAbsoluteVolume))(x) ? 1 : 0;
+    } catch (...) { clog_("bt-vol: IsSupportedAbsoluteVolume threw"); }
+    clog_(g_bt_abs_vol == 1 ? "bt-vol: sink takes ABSOLUTE volume (SetCurrentVolume)"
+                            : "bt-vol: sink is step-only (SetVolumeUp/Down)");
+    return g_bt_abs_vol == 1;
+}
+
+// Push the UI's Bluetooth level at the sink. `up` only matters on the step fallback — with absolute
+// volume the UI has already moved its level and we just send where it landed.
+static void apply_bt_volume(bool up) {
+    enum { VIDX_SetVolumeDown = 16, VIDX_SetVolumeUp = 17, VIDX_SetCurrentVolume = 34 };
+    try {
+        void* x = bt_xmit();
+        if (!x) { clog_("bt-vol: BtTransmitterServiceClient unavailable"); return; }
+        if (bt_abs_volume_supported()) {
+            // UI steps -> the AVRCP 0..127 scale. Integer maths, and the top step must land on 127
+            // exactly or full volume would be unreachable.
+            int lvl = cinder_get_bt_volume();
+            if (lvl < 0) lvl = 0;
+            if (lvl > CINDER_BT_VOL_MAX) lvl = CINDER_BT_VOL_MAX;
+            unsigned char v = (unsigned char)(lvl * 127 / CINDER_BT_VOL_MAX);
+            typedef int (*fnu)(void*, const unsigned char*);
+            ((fnu)bt_slot(x, VIDX_SetCurrentVolume))(x, &v);
+        } else {
+            typedef int (*fn0)(void*);
+            ((fn0)bt_slot(x, up ? VIDX_SetVolumeUp : VIDX_SetVolumeDown))(x);
+        }
+    } catch (...) {
+        clog_("bt-vol: volume call threw");
+    }
+}
+
+// ── Bluetooth codec ─────────────────────────────────────────────────────────────────────────
+// The Settings codec row used to be write_bt_pref() only — it recorded the choice in
+// /contents/cinder_bt.conf for the LDAC bridge to read, and never told the radio. So picking LDAC
+// changed a file and nothing else, which is the same shape of defect as the BT switch that never
+// called SetRfOnOff.
+//
+// The codec toggles are three independent bools rather than one selector, so the exclusive choice
+// the UI presents has to be expressed as "enable the chosen one, disable the others". SBC is the
+// A2DP mandatory baseline and has no toggle — it is what is left when all three are off.
+//
+// Signatures are read, not guessed: `virtual bool ...SetLdac(const bool &)`,
+// `SetAptxClassic(const bool &)`, `SetAptxHD(const bool &)`,
+// `SetLdacSoundQuality(const IBtTransmitterService::BtLdacSoundQuality &)` all appear verbatim in
+// the library's strings, and the marshalling matches (base 3×Alloc(4) plus one Alloc sized 1 for
+// each bool, 4 for the quality enum).
+void apply_bt_codec() {
+    enum { VIDX_SetLdacSoundQuality = 18, VIDX_SetLdac = 20,
+           VIDX_SetAptxClassic = 21, VIDX_SetAptxHD = 22 };
+    int ci = cinder_get_bt_codec();        if (ci < 0 || ci > 3) ci = 0;   // 0 ldac 1 aptxhd 2 aptx 3 sbc
+    int qi = cinder_get_bt_ldac_quality(); if (qi < 0 || qi > 3) qi = 0;   // 0 auto 1 990 2 660 3 330
+    try {
+        void* x = bt_xmit();
+        if (!x) { clog_("bt-codec: BtTransmitterServiceClient unavailable"); return; }
+        typedef int (*fnb)(void*, const bool*);
+        bool ldac = (ci == 0), aptxhd = (ci == 1), aptx = (ci == 2);
+        ((fnb)bt_slot(x, VIDX_SetLdac))(x, &ldac);
+        ((fnb)bt_slot(x, VIDX_SetAptxHD))(x, &aptxhd);
+        ((fnb)bt_slot(x, VIDX_SetAptxClassic))(x, &aptx);
+        if (ldac) {
+            // The enum's numeric values are NOT recovered — the UI order (Auto/990/660/330) mirrors
+            // Sony's own menu, so declaration order is the reasonable assumption, and it is only an
+            // assumption. It is safe to be wrong: this is a by-value scalar, so a bad value picks
+            // the wrong bitrate or gets rejected, it cannot corrupt memory. The service logs the
+            // value it received as `ldac quality:%d`, so one look at logcat while cycling the row
+            // settles it — see task #21.
+            unsigned q = (unsigned)qi;
+            typedef int (*fne)(void*, const unsigned*);
+            ((fne)bt_slot(x, VIDX_SetLdacSoundQuality))(x, &q);
+        }
+        char m[128];
+        std::snprintf(m, sizeof m, "bt-codec: ldac=%d aptxhd=%d aptx=%d quality=%d (0=sbc baseline)",
+                      (int)ldac, (int)aptxhd, (int)aptx, qi);
+        clog_(m);
+    } catch (...) {
+        clog_("bt-codec: apply threw");
+    }
+}
+
+// Which output owns the rocker. GetBtStatus == 3 is the measured "connected" value (see
+// reference_bt_radio_wedge: 7 = off, 2 = on/idle, 3 = connected), and a connected transmitter is
+// where the audio is going, so that is the whole test. Pushed into the UI, which uses it to pick
+// WHICH of its two stored levels the next press moves — it never moves either one by itself.
+void refresh_bt_route() {
+    int st = bt_status();
+    int on = (st == 3) ? 1 : 0;
+    if (on == cinder_get_bt_route()) return;      // no change — don't log every poll
+    cinder_set_bt_route(on);
+    // Absolute-volume support is a property of the SINK, so a new connection has to re-ask. Clearing
+    // it here rather than caching once is what makes swapping between two different pairs of
+    // headphones pick the right mechanism for each.
+    g_bt_abs_vol = -1;
+    char m[128];
+    std::snprintf(m, sizeof m, "bt-vol: rocker now drives %s (GetBtStatus=%d)",
+                  on ? "BLUETOOTH" : "the 3.5 mm jack", st);
+    clog_(m);
+    // On CONNECT, push the level the user last used on Bluetooth, so a session resumes where it left
+    // off instead of at whatever the headphones happen to remember. Only meaningful with absolute
+    // volume — there is no way to command a level with up/down steps, so a step-only sink just keeps
+    // its own and the UI count stays a belief until the next press.
+    if (on && bt_abs_volume_supported()) apply_bt_volume(true);
 }
 
 // ── the render half of USB-DAC ───────────────────────────────────────────────────────────────
@@ -1877,10 +2034,23 @@ void carry_out(int act) {
         case CINDER_ACT_PREV_ALBUM: run_guarded("carry_out: prev album", 6, []() { cinder_audio_prev_group(); }); break;
         case CINDER_ACT_VOLUP:
         case CINDER_ACT_VOLDOWN:
-            // apply the new UI volume to the hardware via the configured backend (guarded).
-            // Defaults to the discovered control (amixer card0 'master volume' 0..120) with no
-            // conf present; /contents/cinder_volume.conf overrides it.
-            run_guarded("carry_out: volume", 4, apply_volume);
+            // The rocker drives whichever output is actually carrying audio, and the two levels are
+            // kept apart end to end (separate UI fields, separate persisted keys). On Bluetooth the
+            // codec master is left exactly where the jack had it, so unplugging headphones doesn't
+            // dump the headphone level into your ears.
+            if (cinder_get_bt_route()) {
+                // Not coalesced the way the amixer path is. That optimisation exists because an
+                // amixer write costs a fork+exec of /bin/sh; this is a single IPC message, and on
+                // the step fallback the calls are RELATIVE, so dropping one during a ramp loses a
+                // step outright rather than being superseded by the next write.
+                if (act == CINDER_ACT_VOLUP) run_guarded("carry_out: BT volume up",   4, []() { apply_bt_volume(true);  });
+                else                         run_guarded("carry_out: BT volume down", 4, []() { apply_bt_volume(false); });
+            } else {
+                // apply the new UI volume to the hardware via the configured backend (guarded).
+                // Defaults to the discovered control (amixer card0 'master volume' 0..120) with no
+                // conf present; /contents/cinder_volume.conf overrides it.
+                run_guarded("carry_out: volume", 4, apply_volume);
+            }
             break;
         case CINDER_ACT_PLAY_INDEX:
             // Play the tapped track inside its album context: drain the pending-play URI list the
@@ -1970,8 +2140,10 @@ void carry_out(int act) {
             run_guarded("carry_out: backlight (brightness)", 4, apply_brightness);
             break;
         case CINDER_ACT_BT_CODEC_CHANGED:
-            // device-wide codec/quality changed → persist it for every BT path (file IO, safe).
+            // device-wide codec/quality changed → persist it for every BT path (file IO, safe)…
             write_bt_pref();
+            // …and apply it to the live radio, which the conf file alone never did.
+            run_guarded("carry_out: BT codec apply", 6, apply_bt_codec);
             break;
         case CINDER_ACT_USBDAC_LDAC:
             // 18 s, not 6: this used to be one setprop via cinder-msc, but it now also builds a
@@ -2659,6 +2831,19 @@ void* render_driver(void*) {
             if (!g_input_started) { input_open(); g_input_started = true; }
             alarm(8); input_pump(); alarm(0);  // touch + buttons -> navigator -> actions -> carry_out
             volume_flush();                    // trailing write of a coalesced volume ramp
+
+            // Headphones can connect or drop without Cinder doing anything — the user powers them
+            // on, or walks out of range, and the sink the volume rocker should be driving changes
+            // underneath us. Poll it slowly so the rocker follows. It has to be ahead of the press
+            // rather than resolved during it: the UI moves its level when the button goes down, so
+            // a route learned only at carry_out time would always be one press stale.
+            // 3 s is chosen against the cost — this is a synchronous IPC round trip on the render
+            // thread, and it is guarded like every other one.
+            static long last_route_ms = 0;
+            if (now_ms() - last_route_ms >= 3000) {
+                last_route_ms = now_ms();
+                run_guarded("loop: BT route poll", 4, refresh_bt_route);
+            }
         }
 
         // Panel dark => skip the PAINT ONLY. Nobody can see the frame, and with the visualiser

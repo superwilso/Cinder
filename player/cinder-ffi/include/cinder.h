@@ -232,7 +232,21 @@ int  cinder_get_volume(void);
 /* Seed the UI volume from the device's real level (raw 0..120 steps), no HUD pop. Call at boot
  * after restoring the saved level (or reading the mixer), so Vol± nudges from the actual level. */
 void cinder_set_volume(int level);
-/* Does the visualiser want the analyzer streaming? 1 when it is enabled, Now Playing is showing,
+/* Top of the Bluetooth volume scale (must match cinder_ui::overlay::BT_VOL_MAX). Coarser than the
+ * 0..120 codec scale because it is a step count, not a mixer value. */
+#define CINDER_BT_VOL_MAX 30
+/* Bluetooth output volume, a SEPARATE level on its own 0..30 AVRCP-step scale. `cinder_get_volume`
+ * above stays the 3.5 mm codec level even while headphones are connected, so the two routes never
+ * overwrite each other's setting. */
+int  cinder_get_bt_volume(void);
+void cinder_set_bt_volume(int level);
+/* Which output the volume rocker drives: nonzero = Bluetooth, 0 = the 3.5 mm jack. The shell owns
+ * this (only it can see the radio) and pushes it whenever the connection state changes. Setting it
+ * moves neither level — it selects which one the next Vol± press adjusts and which one the HUD
+ * shows. */
+void cinder_set_bt_route(int on);
+int  cinder_get_bt_route(void);
+/* Does the visualiser want the analyzer streaming?1 when it is enabled, Now Playing is showing,
  * and audio is actually playing. The shell polls this and starts/stops Sony's AudioAnalyzerService
  * to match, so the FFT only runs while its output is visible. */
 int  cinder_viz_wants_analyzer(void);
