@@ -17,9 +17,28 @@ build_launcher() {   # $1 = sandbox root
         -e "s#/system/vendor/unknown321/bin/cinder-home#$R/cinder#g" \
         -e "s#/system/vendor/unknown321/bin/ldac-run.sh#$R/noldac#g" \
         -e "s#^sleep 3\$#sleep 0#" -e "s#    sleep 3\$#    sleep 0#" \
+        -e "s#^    sleep 1\$#    sleep 0#" \
         -e "s#^sync\$#true#" -e "s#; sync#; true#g" \
+        -e "s#^RESPAWN_HEALTHY_S=30#RESPAWN_HEALTHY_S=2#" \
+        -e "s#^RESPAWN_MAX_TOTAL=10#RESPAWN_MAX_TOTAL=4#" \
   > "$R/launch.sh"
   chmod +x "$R/launch.sh"
+}
+
+# ── crash-supervisor stubs ────────────────────────────────────────────────────────────────────
+# Each records its own invocation count in $R/runs so a scenario can assert how many times the
+# launcher actually started cinder-home — the whole point of the supervisor is invisible otherwise.
+stub_head() { printf '#!/bin/sh\necho CINDER\nn=$(cat "%s/runs" 2>/dev/null)\ncase "$n" in ""|*[!0-9]*) n=0;; esac\nn=$((n+1)); echo "$n" > "%s/runs"\n' "$1" "$1"; }
+# $1=R $2=exit code $3=seconds to run first
+stub_always()       { { stub_head "$1"; printf 'sleep %s\nexit %s\n' "$3" "$2"; } > "$1/cinder"; chmod +x "$1/cinder"; }
+# $1=R $2=exit code $3=how many of the first runs die that way (the rest run 3 s and exit 0)
+stub_crash_then_ok(){ { stub_head "$1"; printf '[ "$n" -le %s ] && exit %s\nsleep 3\nexit 0\n' "$3" "$2"; } > "$1/cinder"; chmod +x "$1/cinder"; }
+# dies AND removes itself — the hot-swap-lands-mid-session case
+stub_vanish()       { { stub_head "$1"; printf 'rm -f "%s/cinder"\nexit 139\n' "$1"; } > "$1/cinder"; chmod +x "$1/cinder"; }
+runs_of() { cat "$1/runs" 2>/dev/null || echo 0; }
+check() {  # $1 label $2 got $3 want
+  if [ "$2" = "$3" ]; then printf '  ok    %-46s -> %s\n' "$1" "$2"; PASS=$((PASS+1))
+  else printf '  FAIL  %-46s -> %s (want %s)\n' "$1" "$2" "$3"; FAIL=$((FAIL+1)); fi
 }
 
 # $1 name, $2 expected (cinder|stock), rest: setup commands run with $R set
@@ -35,12 +54,16 @@ scenario() {
   echo 0            > "$R/sys/class/power_supply/usb/online"
   ( export R; eval "$*" )          # scenario-specific setup
   build_launcher "$R"
-  # cinder's stdout is redirected into the log by design, so look there too.
-  local got; got="$(sh "$R/launch.sh" 2>/dev/null | tail -1)"
-  [ -n "$got" ] || got="$(cat "$R/contents/cinderhome.log" "$R/data/cinder/cinderhome.log" 2>/dev/null | tail -1)"
-  case "$got" in
-    CINDER) got=cinder;; STOCK) got=stock;; *) got="none($got)";;
-  esac
+  # cinder's stdout is redirected into the log by design and the supervisor logs to BOTH, so
+  # gather everything and look for the markers rather than trusting the last line of one stream.
+  # STOCK wins when both appear: handing over to the Sony player is terminal, and with the
+  # supervisor a scenario can legitimately run cinder several times before getting there.
+  local all
+  all="$( { sh "$R/launch.sh" 2>/dev/null
+            cat "$R/contents/cinderhome.log" "$R/data/cinder/cinderhome.log" 2>/dev/null; } )"
+  local got=none
+  case "$all" in *CINDER*) got=cinder;; esac
+  case "$all" in *STOCK*)  got=stock;;  esac
   if [ "$got" = "$want" ]; then
     printf '  ok    %-46s -> %s\n' "$name" "$got"; PASS=$((PASS+1))
   else
@@ -98,6 +121,46 @@ scenario "counter persists across a failed boot"  cinder 'echo 1 > $R/data/cinde
 n=$(cat "$LAST_R/data/cinder/bootcount" 2>/dev/null)
 if [ "$n" = "2" ]; then printf '  ok    %-46s -> %s\n' "counter incremented 1 -> 2" "$n"; PASS=$((PASS+1))
 else printf '  FAIL  %-46s -> %s (want 2)\n' "counter incremented 1 -> 2" "$n"; FAIL=$((FAIL+1)); fi
+
+echo
+echo "crash supervisor:"
+# Sandbox constants (see build_launcher): MAX_FAST=3, MAX_TOTAL=4, HEALTHY_S=2. A "healthy" stub
+# therefore runs 3 s; a "fast crash" exits immediately.
+
+scenario "SEGV once -> respawns and survives"     cinder 'stub_crash_then_ok $R 139 1'
+check "  ran cinder-home twice" "$(runs_of "$LAST_R")" 2
+
+scenario "3 fast crashes -> hands boot to stock"  stock  'stub_always $R 139 0'
+check "  gave up after MAX_FAST" "$(runs_of "$LAST_R")" 3
+
+# Slow crashes must NOT trip the consecutive counter — each healthy run resets it — but the
+# absolute per-boot cap still ends the loop, so a 3-s crash cycle cannot spin forever.
+scenario "slow crashes reset the tally, cap ends it" stock 'stub_always $R 134 3'
+check "  gave up after MAX_TOTAL" "$(runs_of "$LAST_R")" 4
+
+# The three deaths that mean "do not bring me back". Each must run exactly once and leave the
+# reboot decision to appmgr, exactly as before the supervisor existed.
+scenario "rc 42 (watchdog) is NOT respawned"      cinder 'stub_always $R 42 0'
+check "  ran once" "$(runs_of "$LAST_R")" 1
+scenario "rc 0 (boot-to-stock) is NOT respawned"  cinder 'stub_always $R 0 0'
+check "  ran once" "$(runs_of "$LAST_R")" 1
+scenario "SIGTERM (143) is NOT respawned"         cinder 'stub_always $R 143 0'
+check "  ran once" "$(runs_of "$LAST_R")" 1
+
+# An rc nobody recognised falls through to the old behaviour rather than respawning — a bug in
+# the accounting degrades to the pre-supervisor net instead of disabling it.
+scenario "unknown rc 7 is NOT respawned"          cinder 'stub_always $R 7 0'
+check "  ran once" "$(runs_of "$LAST_R")" 1
+
+# The escape for the escape: both kill switches restore the plain exec.
+scenario "kill switch (/data) -> single exec"     cinder 'stub_always $R 139 0; : > $R/data/cinder/no_respawn'
+check "  ran once" "$(runs_of "$LAST_R")" 1
+scenario "kill switch (USB-MSC) -> single exec"   cinder 'stub_always $R 139 0; : > $R/contents/cinderhome_norespawn'
+check "  ran once" "$(runs_of "$LAST_R")" 1
+
+# A hot-swap that lands between two launches must not burn the whole budget on rc=127.
+scenario "binary vanishes mid-session -> stock"   stock  'stub_vanish $R'
+check "  ran once" "$(runs_of "$LAST_R")" 1
 
 rm -rf "$SP"/lt.*
 echo

@@ -401,29 +401,37 @@ pub fn az_scroll_for(
     tab: Tab,
     lib: &Library,
     letter: u8,
+    sort: usize,
     album_sort: usize,
     album_expanded: Option<usize>,
 ) -> Option<i32> {
+    let key = az_key_for(tab, sort, album_sort)?;
     let max = max_scroll_px(tab, lib, album_sort, album_expanded);
     let top_px = match tab {
         Tab::Albums => {
             let flat = lib.albums_flat();
             let layout = albums_build(lib, album_sort, album_expanded);
-            // Grouped sort indexes by ARTIST (that's the visible ordering); every other album sort
-            // is by album name.
+            // Grouped sort indexes by ARTIST (that's the visible ordering); A-Z indexes by album
+            // name. `az_key_for` already rejected the orderings that are neither.
             layout.rows.iter().find_map(|(vy, row)| match row {
-                AlbumsRow::Group { flat: fi } if album_sort == 0 => {
+                AlbumsRow::Group { flat: fi } if key == AzKey::Artist => {
                     (az_bucket(&flat[*fi].artist) == letter).then_some(*vy)
                 }
-                AlbumsRow::Album { flat: fi, .. } if album_sort != 0 => {
+                AlbumsRow::Album { flat: fi, .. } if key == AzKey::AlbumName => {
                     (az_bucket(&flat[*fi].name) == letter).then_some(*vy)
                 }
                 _ => None,
             })?
         }
+        // VISUAL RANK, not the index in `lib.songs`. The list draws in `song_order(lib, sort)`, so
+        // a position in DB order scrolls to an unrelated row on every sort but the one that
+        // happens to match. This is the half of the bug you can see from the couch.
         Tab::Songs => {
-            let i = lib.songs.iter().position(|r| az_bucket(&r.title) == letter)?;
-            i as i32 * row_h(tab)
+            let order = song_order(lib, sort);
+            let rank = order
+                .iter()
+                .position(|&i| az_bucket(song_az_field(&lib.songs[i], key)) == letter)?;
+            rank as i32 * row_h(tab)
         }
         Tab::Artists => {
             let i = lib.artists.iter().position(|r| az_bucket(&r.name) == letter)?;
@@ -442,10 +450,59 @@ pub fn az_has(
     tab: Tab,
     lib: &Library,
     letter: u8,
+    sort: usize,
     album_sort: usize,
     album_expanded: Option<usize>,
 ) -> bool {
-    az_scroll_for(tab, lib, letter, album_sort, album_expanded).is_some()
+    az_scroll_for(tab, lib, letter, sort, album_sort, album_expanded).is_some()
+}
+
+/// Which field the A–Z rail indexes for a tab under its ACTIVE ordering — or `None` when that
+/// ordering is not alphabetical at all, in which case the rail is hidden.
+///
+/// The rail used to bucket Songs by TITLE whatever the SORT chip said, so with any other sort
+/// selected it was wrong twice over: it lit the wrong letters, and it jumped to a position in
+/// `lib.songs` (DB order) instead of a visual rank. Under LENGTH / ADDED / ALBUM / YEAR there is no
+/// letter ordering to index at all — "M" would land at whatever scroll offset the first M-titled
+/// song happens to occupy — so showing the rail there is worse than not showing it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AzKey {
+    Title,
+    Artist,
+    AlbumName,
+}
+
+pub fn az_key_for(tab: Tab, sort: usize, album_sort: usize) -> Option<AzKey> {
+    match tab {
+        // Indexes into SORTS. ARTIST Z-A still indexes by artist: the rail letters stay A→Z down
+        // the screen, so on a descending list "A" jumps near the bottom. That reads oddly but it
+        // lands on the right row, which is the part that matters.
+        Tab::Songs => match sort {
+            0 => Some(AzKey::Title),
+            1 | 2 => Some(AzKey::Artist),
+            _ => None,
+        },
+        // Indexes into ALBUM_SORTS: ARTIST groups by artist, A-Z is by album name, ADDED and YEAR
+        // are not alphabetical.
+        Tab::Albums => match album_sort {
+            0 => Some(AzKey::Artist),
+            1 => Some(AzKey::AlbumName),
+            _ => None,
+        },
+        // These two have no sort chip; both lists are always built in name order.
+        Tab::Artists => Some(AzKey::Artist),
+        Tab::Playlists => Some(AzKey::Title),
+    }
+}
+
+/// The field of a song row that `key` names. Shared by the rail's presence pass and its jump, so
+/// the two cannot drift apart. `AlbumName` never reaches here (no Songs sort maps to it); it falls
+/// back to the title rather than panicking if that ever changes.
+fn song_az_field(r: &crate::model::SongRow, key: AzKey) -> &str {
+    match key {
+        AzKey::Artist => &r.artist,
+        AzKey::Title | AzKey::AlbumName => &r.title,
+    }
 }
 
 /// Index of a bucket letter in [`AZ_LETTERS`] ('#' first, then A–Z).
@@ -467,20 +524,25 @@ fn az_index(b: u8) -> Option<usize> {
 ///
 /// Must agree with `az_scroll_for` letter for letter — a bright letter that doesn't jump, or a
 /// faint one that does, is worse than either. `az_rail_agrees_with_the_jump` pins that.
-pub fn az_present(tab: Tab, lib: &Library, album_sort: usize) -> [bool; 27] {
+pub fn az_present(tab: Tab, lib: &Library, sort: usize, album_sort: usize) -> [bool; 27] {
     let mut out = [false; 27];
+    // No alphabetical ordering under this sort chip -> no rail. Every letter reads as absent, so
+    // `az_render` draws nothing and `az_hit_x` stops claiming taps (see `az_key_for`).
+    let Some(key) = az_key_for(tab, sort, album_sort) else { return out };
     let mut mark = |s: &str| {
         if let Some(i) = az_index(az_bucket(s)) {
             out[i] = true;
         }
     };
     match tab {
-        Tab::Songs => lib.songs.iter().for_each(|r| mark(&r.title)),
+        Tab::Songs => lib.songs.iter().for_each(|r| mark(song_az_field(r, key))),
         Tab::Artists => lib.artists.iter().for_each(|r| mark(&r.name)),
         Tab::Playlists => lib.playlists.iter().for_each(|r| mark(&r.name)),
-        // Grouped (sort 0) indexes by ARTIST — that's the visible ordering, and the only rows the
-        // jump can land on are the group headers. Every other album sort is by album name.
-        Tab::Albums if album_sort == 0 => lib.album_groups.iter().for_each(|g| mark(&g.artist)),
+        // ARTIST groups by artist — that's the visible ordering, and the only rows the jump can
+        // land on are the group headers. A-Z is by album name.
+        Tab::Albums if key == AzKey::Artist => {
+            lib.album_groups.iter().for_each(|g| mark(&g.artist))
+        }
         Tab::Albums => lib
             .album_groups
             .iter()
@@ -757,13 +819,19 @@ pub fn az_render(
     f: &FontSet,
     tab: Tab,
     lib: &Library,
+    sort: usize,
     album_sort: usize,
 ) {
+    // Nothing to index under this ordering (LENGTH / ADDED / ALBUM / YEAR) — draw no rail at all
+    // rather than 27 letters that jump to arbitrary scroll offsets.
+    if az_key_for(tab, sort, album_sort).is_none() {
+        return;
+    }
     let top = list_top(tab);
     let h = LIST_BOTTOM - top;
     let n = AZ_LETTERS.len() as i32;
     let x = W as i32 - AZ_W / 2;
-    let present = az_present(tab, lib, album_sort);
+    let present = az_present(tab, lib, sort, album_sort);
     for (i, &ch) in AZ_LETTERS.iter().enumerate() {
         let cy = top + (i as i32 * h) / n + h / (2 * n);
         let col = if present[i] { t.dim } else { t.faint };
@@ -1540,16 +1608,67 @@ mod tests {
     fn az_rail_agrees_with_the_jump() {
         let l = lib();
         for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
-            for sort in 0..2 {
-                let present = az_present(tab, &l, sort);
-                for (i, &ch) in AZ_LETTERS.iter().enumerate() {
-                    assert_eq!(
-                        present[i],
-                        az_scroll_for(tab, &l, ch, sort, None).is_some(),
-                        "{tab:?} sort={sort} letter {:?}", ch as char
-                    );
+            for sort in 0..SORTS.len() {
+                for album_sort in 0..ALBUM_SORTS.len() {
+                    let present = az_present(tab, &l, sort, album_sort);
+                    for (i, &ch) in AZ_LETTERS.iter().enumerate() {
+                        assert_eq!(
+                            present[i],
+                            az_scroll_for(tab, &l, ch, sort, album_sort, None).is_some(),
+                            "{tab:?} sort={sort} album_sort={album_sort} letter {:?}", ch as char
+                        );
+                    }
                 }
             }
+        }
+    }
+
+    /// The rail jumps to a VISUAL RANK. It used to jump to a position in `lib.songs` (DB order),
+    /// so with any sort but TITLE the tap scrolled to an unrelated row — and it bucketed by title
+    /// even when the list was ordered by artist, so it lit the wrong letters too. Walk every
+    /// alphabetical sort and check the row the jump actually lands on.
+    #[test]
+    fn az_jump_uses_the_active_sorts_key_and_visual_rank() {
+        let l = lib();
+        for sort in 0..SORTS.len() {
+            let Some(key) = az_key_for(Tab::Songs, sort, 0) else { continue };
+            let order = song_order(&l, sort);
+            for &ch in AZ_LETTERS {
+                let Some(px) = az_scroll_for(Tab::Songs, &l, ch, sort, 0, None) else { continue };
+                // Un-clamped rank: a jump near the end of the list clamps to max_scroll, so only
+                // check the row when the offset still maps back exactly.
+                if px % row_h(Tab::Songs) != 0 {
+                    continue;
+                }
+                let rank = (px / row_h(Tab::Songs)) as usize;
+                let hit = &l.songs[order[rank]];
+                let landed = az_bucket(song_az_field(hit, key)) == ch;
+                let clamped = px == max_scroll_px(Tab::Songs, &l, 0, None);
+                assert!(landed || clamped, "SORT={} letter {:?} landed on {:?}",
+                        SORTS[sort], ch as char, hit.title);
+            }
+        }
+    }
+
+    /// LENGTH / ADDED / ALBUM / YEAR have no letter ordering, so the rail is hidden rather than
+    /// shown pointing at arbitrary scroll offsets — and with it hidden, nothing may claim a jump.
+    #[test]
+    fn az_rail_is_absent_for_non_alphabetical_sorts() {
+        let l = lib();
+        for (sort, name) in SORTS.iter().enumerate() {
+            let alphabetical = matches!(*name, "TITLE" | "ARTIST A-Z" | "ARTIST Z-A");
+            assert_eq!(az_key_for(Tab::Songs, sort, 0).is_some(), alphabetical, "SORT {name}");
+            if !alphabetical {
+                assert_eq!(az_present(Tab::Songs, &l, sort, 0), [false; 27], "SORT {name}");
+                assert!(AZ_LETTERS.iter()
+                    .all(|&ch| az_scroll_for(Tab::Songs, &l, ch, sort, 0, None).is_none()));
+            }
+        }
+        for (album_sort, name) in ALBUM_SORTS.iter().enumerate() {
+            let alphabetical = matches!(*name, "ARTIST" | "A-Z");
+            assert_eq!(
+                az_key_for(Tab::Albums, 0, album_sort).is_some(), alphabetical, "ORDER {name}"
+            );
         }
     }
 

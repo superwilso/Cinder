@@ -611,6 +611,10 @@ static bool  g_scrub_tested = false;   // has this contact been offered to cinde
 // cinder_swipe_track reports that a TRACK row actually took the gesture — on an artist row, or the
 // empty space below a list, the contact stays a normal drag.
 static bool  g_hswipe_active = false;
+// Up Next queue reorder. Vertical counterpart of g_hswipe_active: once a contact lands on a queue
+// row's grab handle it owns that contact for the rest of its life, so the list must not also
+// scroll under it.
+static bool  g_reorder_active = false;
 long now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1228,7 +1232,7 @@ static void screen_auto_off() {
     // Drop any in-flight contact so the waking touch starts a fresh gesture.
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
     g_drag_active = false; g_drag_vel = 0.0f;
-    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
+    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
     if (!g_bl_read) load_bl_cfg();
     if (g_bl.valid) {
         FILE* f = std::fopen(g_bl.path, "w");
@@ -1757,6 +1761,11 @@ static void touch_release() {
             std::snprintf(m, sizeof m, "touch: seek -> %d ms (sent=%s)", ms, rc == 0 ? "yes" : "NO CONTROLLER");
             clog_(m);
         }
+    } else if (g_touch_down && g_reorder_active) {
+        // Queue reorder ends: drop the row where it sits. Must be its OWN branch — falling through
+        // to the classifier below would re-read the gesture as a tap (a short drag) or a swipe and
+        // start playing the track the user was only trying to move.
+        cinder_reorder_release();
     } else if (g_touch_down && g_drag_active) {
         // Live drag ends: hand the measured velocity to the fling (unless the finger held
         // still before lifting — stale velocity must not fling).
@@ -1789,7 +1798,7 @@ static void touch_release() {
     if (g_hswipe_active) cinder_swipe_release();
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
     g_drag_active = false; g_drag_vel = 0.0f;
-    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
+    g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
 }
 
 // Called on every touch position update while the contact is down: promote a mostly-vertical
@@ -1821,11 +1830,25 @@ static void touch_drag_motion() {
                            touch_ui_y(g_touch_start_y));
         return;
     }
+    if (g_reorder_active) {
+        // Same deal vertically: the lifted queue row follows the finger, the list does not scroll.
+        cinder_reorder_track(uy - touch_ui_y(g_touch_start_y));
+        return;
+    }
     if (!g_drag_active) {
         int dyt = uy - touch_ui_y(g_touch_start_y);
         int dxt = touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x);
         int adyt = dyt < 0 ? -dyt : dyt, adxt = dxt < 0 ? -dxt : dxt;
         if (adyt > 12 && adyt > adxt) {
+            // A vertical drag that STARTED on an Up Next grab handle reorders that row instead of
+            // scrolling the list. Offered before the scroll, and decided on the START point — the
+            // same ownership rule as the scrub rail, so a drag begun elsewhere keeps scrolling even
+            // when it wanders across the handle column.
+            if (cinder_reorder_begin(touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y))) {
+                g_reorder_active = true;
+                cinder_reorder_track(dyt);
+                return;
+            }
             g_drag_active = true;
             g_drag_last_uy = uy;
             g_drag_last_ms = now_ms();
@@ -2022,7 +2045,7 @@ void input_pump() {
                         g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
                         g_touch_saw_pos = false;
                         g_drag_active = false; g_drag_vel = 0.0f;
-                        g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
+                        g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
                         continue;
                     }
                     // Live touch = activity, so the idle blank holds off — but NOT while Hold is
@@ -2033,7 +2056,7 @@ void input_pump() {
                         g_touch_cur_x = val; g_touch_saw_pos = true;
                         if (!g_touch_down) {
                             g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1;
-                            g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
+                            g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
                             cinder_touch_down();   // finger down stops an in-flight fling
                         } else if (g_touch_start_x < 0) g_touch_start_x = val;
                         // Also drive the classifier from HERE, not only from ABS_Y: a panel that
@@ -2055,7 +2078,7 @@ void input_pump() {
                         if (val) {
                             if (!g_touch_down) {
                                 g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1;
-                                g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false;
+                                g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false;
                                 cinder_touch_down();
                             }
                         } else {

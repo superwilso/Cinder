@@ -243,6 +243,10 @@ pub struct App {
     /// True while the finger is still down on that swipe. Release clears it, which is what lets
     /// `tick_dt` take over and animate the row home.
     swipe_live: bool,
+    /// Up Next: pixel scroll of the USER queue, and the row being dragged to a new position (the
+    /// grab-handle gesture). `None` between drags.
+    queue_scroll_px: i32,
+    queue_drag: Option<crate::up_next::QueueDrag>,
     /// Fling (momentum) velocity in px/s for the current scrollable list; decays each tick.
     fling_v: f32,
     /// Hardware volume (0..VOL_MAX steps) + frames the volume HUD stays visible.
@@ -371,6 +375,8 @@ impl Default for App {
             artist_scroll_px: 0,
             swipe_row: None,
             swipe_live: false,
+            queue_scroll_px: 0,
+            queue_drag: None,
             fling_v: 0.0,
             volume: 15,
             vol_overlay: 0,
@@ -943,6 +949,22 @@ impl App {
             }
             Screen::Artist => self.tap_artist(x, y),
             Screen::UpNext => {
+                // The user queue scrolls by pixels, so it resolves a finger itself. A tap on the
+                // grab handle is swallowed: that column belongs to the reorder drag, and playing a
+                // track because a reorder ended up too short to classify is a nasty surprise.
+                if !self.queue.is_empty() {
+                    if crate::up_next::queue_grip_hit(x) {
+                        return vec![];
+                    }
+                    if let Some(i) =
+                        crate::up_next::queue_row_at(y, self.queue_scroll_px, self.queue.len())
+                    {
+                        let id = self.queue[i].object_id;
+                        return self.start_play(id);
+                    }
+                    self.go(Screen::NowPlaying);
+                    return vec![];
+                }
                 // Tap a queue row to play it. The rows are whatever the last render drew
                 // (`up_next_rows`), so this follows the auto-scrolled window exactly.
                 if let Some(id) = crate::up_next::visible_row_at(y).and_then(|r| self.up_next_rows.get(r))
@@ -1078,11 +1100,16 @@ impl App {
             return vec![];
         }
         // A–Z rail: right edge, over the list. Tested BEFORE the rows, because it overlays them —
-        // a tap there means "jump", never "open the row underneath".
-        if library::az_hit_x(x) {
+        // a tap there means "jump", never "open the row underneath". Skipped entirely when the
+        // active sort has no alphabetical ordering: the rail isn't drawn then, so it must not go on
+        // silently eating taps over rows the user can see.
+        if library::az_hit_x(x)
+            && library::az_key_for(self.lib_tab, self.lib_sort, self.album_sort).is_some()
+        {
             if let Some(letter) = library::az_letter_at(y, self.lib_tab) {
                 if let Some(px) = library::az_scroll_for(
-                    self.lib_tab, &self.lib, letter, self.album_sort, self.album_expanded,
+                    self.lib_tab, &self.lib, letter, self.lib_sort, self.album_sort,
+                    self.album_expanded,
                 ) {
                     self.lib_scroll_px = px;
                     self.fling_v = 0.0;   // a jump must not keep coasting from a previous flick
@@ -1296,6 +1323,12 @@ impl App {
                 let max = crate::settings::max_scroll_px();
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
             }
+            // The user queue drew from row 0 and stopped at the bottom of the panel, so anything
+            // past ~10 tracks was unreachable — and unreorderable with it.
+            Screen::UpNext => {
+                let max = crate::up_next::queue_max_scroll_px(self.queue.len());
+                self.queue_scroll_px = (self.queue_scroll_px + dy_px).clamp(0, max);
+            }
             _ => {}
         }
     }
@@ -1303,7 +1336,7 @@ impl App {
     /// Momentum fling: the release velocity (px/s, same sign convention as `scroll_px`). The
     /// per-frame `tick()` integrates and decays it, keeping frames dirty until it stops.
     pub fn fling(&mut self, velocity_px_s: f32) {
-        if matches!(self.current(), Screen::Library | Screen::Album | Screen::Artist) {
+        if matches!(self.current(), Screen::Library | Screen::Album | Screen::Artist | Screen::UpNext) {
             self.fling_v = velocity_px_s.clamp(-8000.0, 8000.0);
         }
     }
@@ -1367,6 +1400,61 @@ impl App {
     /// The row offset currently in effect, for tests and the host preview.
     pub fn swipe_state(&self) -> Option<crate::library::SwipeRow> {
         self.swipe_row
+    }
+
+    /// Does a vertical drag starting at `(x, y)` pick up a queue row for reordering?
+    ///
+    /// Ownership is decided by the START point, the same rule the scrub rail uses: the handle owns
+    /// the contact for its whole life, and a drag that begins anywhere else scrolls the list even
+    /// if it later wanders across the handle column. Returns true when the row was picked up, so
+    /// the shell knows to stream this contact here instead of to the scroll.
+    pub fn reorder_begin(&mut self, x: i32, y: i32) -> bool {
+        if self.locked || self.shelf_open || self.confirm.is_some() {
+            return false;
+        }
+        // Only the USER queue reorders. The other Up Next view is the current album's own track
+        // order, which is the album's, not ours to rewrite.
+        if self.current() != Screen::UpNext || self.queue.is_empty() {
+            return false;
+        }
+        if !crate::up_next::queue_grip_hit(x) {
+            return false;
+        }
+        let Some(from) = crate::up_next::queue_row_at(y, self.queue_scroll_px, self.queue.len())
+        else {
+            return false;
+        };
+        let row_top = crate::chrome::HEADER_BOTTOM + from as i32 * crate::up_next::RH
+            - self.queue_scroll_px;
+        self.fling_v = 0.0; // a pick-up must not ride a leftover flick
+        self.queue_drag = Some(crate::up_next::QueueDrag {
+            from,
+            to: from,
+            start_y: y,
+            y,
+            grab_off: y - row_top,
+        });
+        true
+    }
+
+    /// Stream the drag. `dy` is total travel from the gesture's start point.
+    pub fn reorder_track(&mut self, dy: i32) {
+        let len = self.queue.len();
+        let Some(mut d) = self.queue_drag else { return };
+        d.y = d.start_y + dy;
+        d.to = crate::up_next::queue_slot_for(d.float_top(), self.queue_scroll_px, len);
+        self.queue_drag = Some(d);
+    }
+
+    /// Drop the row. Returns `QueueChanged` when the order actually moved.
+    pub fn reorder_release(&mut self) -> Vec<Action> {
+        let Some(d) = self.queue_drag.take() else { return vec![] };
+        self.queue_move(d.from, d.to)
+    }
+
+    /// The drag in effect, for tests and the host preview.
+    pub fn reorder_state(&self) -> Option<crate::up_next::QueueDrag> {
+        self.queue_drag
     }
 
     pub fn swipe(&mut self, dir: i32, _x: i32, y: i32) -> Vec<Action> {
@@ -2143,7 +2231,9 @@ impl App {
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
                 );
-                crate::library::az_render(c, &theme, fonts, self.lib_tab, &self.lib, self.album_sort);
+                crate::library::az_render(
+                    c, &theme, fonts, self.lib_tab, &self.lib, self.lib_sort, self.album_sort,
+                );
             }
             Screen::Album => {
                 let flat = self.lib.albums_flat();
@@ -2180,9 +2270,14 @@ impl App {
                 // does, records it rather than the hit test guessing.
                 let drawn: Vec<i64> = if !self.queue.is_empty() {
                     // The user's own queue (swipe-to-queue) takes precedence over the derived
-                    // current-album list. It renders unscrolled, from the top.
+                    // current-album list. It scrolls and reorders, so `tap` resolves it through
+                    // `queue_row_at` rather than through these ids — they stay published for the
+                    // album path below, which really does need the renderer to record its window.
                     let ids = self.queue.iter().map(|s| s.object_id).collect();
-                    crate::up_next::render_queue(c, &theme, fonts, &self.queue, &self.lib);
+                    crate::up_next::render_queue(
+                        c, &theme, fonts, &self.queue, &self.lib, self.queue_scroll_px,
+                        self.queue_drag,
+                    );
                     ids
                 } else {
                     match self.now_playing_queue(np.title, np.artist) {
@@ -2354,6 +2449,7 @@ impl App {
                 Screen::Album => a.album_scroll_px,
                 Screen::Artist => a.artist_scroll_px,
                 Screen::Settings => a.settings_scroll_px,
+                Screen::UpNext => a.queue_scroll_px,
                 _ => 0,
             };
             let before = scroll_of(self);
@@ -2378,6 +2474,35 @@ impl App {
                 self.swipe_row = if dx.abs() < 2 { None } else { Some(crate::library::SwipeRow { dx, ..s }) };
                 animating = true;
             }
+        }
+        // Queue reorder: hold the row near an edge and the list scrolls under it, so a track can
+        // be moved further than one screenful. Time-based like everything else here, and driven
+        // from the tick rather than from touch events — a finger held perfectly still delivers no
+        // events at all, which is exactly when this has to keep working.
+        if let Some(mut d) = self.queue_drag {
+            const EDGE_PX: i32 = 70;
+            const EDGE_RATE: f32 = 520.0; // px/s at the very edge, tapering to 0 at EDGE_PX in
+            let top = crate::chrome::HEADER_BOTTOM;
+            let bot = top + crate::up_next::queue_view_h();
+            let into = if d.y < top + EDGE_PX {
+                -(top + EDGE_PX - d.y) as f32 / EDGE_PX as f32
+            } else if d.y > bot - EDGE_PX {
+                (d.y - (bot - EDGE_PX)) as f32 / EDGE_PX as f32
+            } else {
+                0.0
+            };
+            if into != 0.0 {
+                let max = crate::up_next::queue_max_scroll_px(self.queue.len());
+                let step = (into.clamp(-1.0, 1.0) * EDGE_RATE * dt / 1000.0) as i32;
+                self.queue_scroll_px = (self.queue_scroll_px + step).clamp(0, max);
+                // The finger hasn't moved, but the content under it has — so where the row would
+                // land has changed and the parted list must follow.
+                d.to = crate::up_next::queue_slot_for(
+                    d.float_top(), self.queue_scroll_px, self.queue.len(),
+                );
+                self.queue_drag = Some(d);
+            }
+            animating = true; // the lifted row is live; keep painting it
         }
         // HUD/toast countdowns are expressed in 60 fps frames; burn the number of frames that
         // really elapsed so their on-screen duration is the same at any frame rate.
@@ -2930,6 +3055,129 @@ mod tests {
         assert!(a.queue_clear().is_empty(), "clearing an empty queue is not a change");
     }
 
+    /// Build an app sitting on Up Next with `n` distinctly-titled tracks in the USER queue. Built
+    /// directly rather than by swiping rows in, so the length isn't capped by the sample library
+    /// (the edge-scroll test needs more tracks than fit on the panel). Swipe-to-queue itself is
+    /// covered by `swiping_a_row_queues_next_or_later`.
+    fn queued(n: usize) -> App {
+        let mut a = unlocked();
+        let src = a.lib.songs.first().cloned().expect("sample library has songs");
+        for i in 0..n {
+            let mut s = src.clone();
+            s.title = format!("Q{i}");
+            s.object_id = 9000 + i as i64;
+            a.queue.push(s);
+        }
+        a.push(Screen::UpNext);
+        a
+    }
+    /// Screen y of the middle of queue row `i` at the current scroll.
+    fn qrow_y(a: &App, i: usize) -> i32 {
+        crate::chrome::HEADER_BOTTOM + i as i32 * crate::up_next::RH + crate::up_next::RH / 2
+            - a.queue_scroll_px
+    }
+
+    /// The whole point: drag a queue row by its handle and it lands where you dropped it. Before
+    /// this, `queue_move` existed and nothing could reach it.
+    #[test]
+    fn dragging_a_queue_row_by_its_handle_reorders_it() {
+        let mut a = queued(4);
+        let titles: Vec<String> = a.queue().iter().map(|s| s.title.clone()).collect();
+        let grab = crate::up_next::GRIP_X0 + 20;
+        assert!(a.reorder_begin(grab, qrow_y(&a, 0)), "the handle must pick the row up");
+        assert_eq!(a.reorder_state().map(|d| (d.from, d.to)), Some((0, 0)));
+        // Two rows down. `to` follows the row's CENTRE, so this is unambiguous.
+        a.reorder_track(2 * crate::up_next::RH);
+        assert_eq!(a.reorder_state().map(|d| d.to), Some(2));
+        assert_eq!(a.reorder_release(), vec![Action::QueueChanged]);
+        assert!(a.reorder_state().is_none(), "the drag must end at release");
+        assert_eq!(a.queue()[2].title, titles[0], "the dragged row did not land at its target");
+        assert_eq!(a.queue()[0].title, titles[1], "the rows below did not close up");
+    }
+
+    /// A drag that ends where it started is not a change — it must not spend a queue flush (which
+    /// costs a SetTrackSequence at the next track boundary) on nothing.
+    #[test]
+    fn a_reorder_that_moves_nothing_reports_nothing() {
+        let mut a = queued(3);
+        assert!(a.reorder_begin(crate::up_next::GRIP_X0 + 20, qrow_y(&a, 1)));
+        a.reorder_track(4); // less than half a row
+        assert_eq!(a.reorder_state().map(|d| d.to), Some(1));
+        assert!(a.reorder_release().is_empty());
+    }
+
+    /// Start-point ownership, the same rule the scrub rail uses. A drag that begins on the row body
+    /// scrolls the list; only one that begins on the handle reorders. Without this, every attempt
+    /// to scroll a long queue would pick a row up instead.
+    #[test]
+    fn only_the_grab_handle_starts_a_reorder() {
+        let mut a = queued(4);
+        assert!(!a.reorder_begin(40, qrow_y(&a, 0)), "the row body must still scroll");
+        assert!(!a.reorder_begin(crate::up_next::GRIP_X0 - 1, qrow_y(&a, 0)));
+        assert!(!a.reorder_begin(crate::up_next::GRIP_X0 + 20, 20), "the header is not a row");
+        assert!(a.reorder_state().is_none());
+        assert!(a.reorder_begin(crate::up_next::GRIP_X0 + 20, qrow_y(&a, 0)));
+    }
+
+    /// The album view of Up Next is the album's own track order, not ours to rewrite — and there is
+    /// nothing to reorder on any other screen either.
+    #[test]
+    fn reorder_only_applies_to_the_user_queue() {
+        let mut a = unlocked();
+        a.push(Screen::UpNext);
+        assert!(!a.reorder_begin(crate::up_next::GRIP_X0 + 20, 200), "empty user queue");
+        let mut a = queued(3);
+        a.go(Screen::Library);
+        assert!(!a.reorder_begin(crate::up_next::GRIP_X0 + 20, 200), "wrong screen");
+    }
+
+    /// A tap on the handle must NOT play the track. A reorder that ends too short to classify as a
+    /// drag arrives here as a tap, and "I nudged it and it started playing" is the worst outcome.
+    #[test]
+    fn tapping_the_grab_handle_does_not_play() {
+        let mut a = queued(3);
+        assert!(a.tap(crate::up_next::GRIP_X0 + 20, qrow_y(&a, 1)).is_empty());
+        assert_eq!(a.current(), Screen::UpNext, "and it must not navigate either");
+        assert!(!a.modal_open(), "nor may it raise the replace-the-queue prompt");
+        // The row body still acts: with a queue up, playing a row asks whether to clear it first,
+        // so the visible effect is that prompt rather than a PlayIndex.
+        let _ = a.tap(60, qrow_y(&a, 1));
+        assert!(a.modal_open(), "the row body must still start a play");
+    }
+
+    /// Holding the row at the bottom edge scrolls the list under it, so a track can be moved
+    /// further than one screenful. Driven from the tick, because a finger held still delivers no
+    /// touch events at all — which is precisely when this has to keep working.
+    #[test]
+    fn holding_a_dragged_row_at_the_edge_scrolls_the_queue() {
+        let mut a = queued(40);
+        assert!(crate::up_next::queue_max_scroll_px(a.queue().len()) > 0, "queue must overflow");
+        assert!(a.reorder_begin(crate::up_next::GRIP_X0 + 20, qrow_y(&a, 0)));
+        a.reorder_track(700); // park it against the bottom edge
+        let before = a.queue_scroll_px;
+        for _ in 0..10 {
+            a.tick_dt(16);
+        }
+        assert!(a.queue_scroll_px > before, "the list did not scroll under the held row");
+        assert!(a.reorder_state().map(|d| d.to).unwrap() > 0, "the landing slot must follow");
+    }
+
+    /// The user queue used to draw from row 0 and stop at the panel edge, so past ~10 tracks it was
+    /// both unreachable and unreorderable.
+    #[test]
+    fn the_user_queue_scrolls() {
+        let mut a = queued(40);
+        let max = crate::up_next::queue_max_scroll_px(a.queue().len());
+        assert!(max > 0);
+        a.scroll_px(10_000);
+        assert_eq!(a.queue_scroll_px, max, "must scroll, and clamp to the end");
+        // And the hit test follows the scroll rather than always answering row 0.
+        assert_ne!(
+            crate::up_next::queue_row_at(qrow_y(&a, 0) + a.queue_scroll_px, a.queue_scroll_px, 40),
+            Some(0)
+        );
+    }
+
     /// Repeat is two states, both of which do something. It used to cycle off → all → one and tell
     /// PlayerService nothing at all; "all" has no known primitive, so a third position would still
     /// be decorative. Every press must also emit an action, or the shell never applies it.
@@ -3059,9 +3307,9 @@ mod tests {
         let app = unlocked();
         for &letter in library::AZ_LETTERS {
             for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
-                let Some(px) =
-                    library::az_scroll_for(tab, &app.lib, letter, app.album_sort, app.album_expanded)
-                else {
+                let Some(px) = library::az_scroll_for(
+                    tab, &app.lib, letter, app.lib_sort, app.album_sort, app.album_expanded,
+                ) else {
                     continue; // no rows in this bucket — rail greys it and the tap is a no-op
                 };
                 let max = library::max_scroll_px(tab, &app.lib, app.album_sort, app.album_expanded);

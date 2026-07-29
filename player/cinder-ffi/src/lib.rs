@@ -1628,6 +1628,43 @@ pub extern "C" fn cinder_swipe_release() {
     }
 }
 
+/// Does a vertical drag starting at `(x, y)` pick up an Up Next queue row for reordering?
+///
+/// Asked ONCE, at the moment the shell classifies a contact as mostly-vertical. A non-zero return
+/// means the row owns this contact for the rest of its life: the shell must stream it to
+/// [`cinder_reorder_track`] instead of to the scroll, and end it with [`cinder_reorder_release`].
+#[no_mangle]
+pub extern "C" fn cinder_reorder_begin(x: libc::c_int, y: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let took = r.app.reorder_begin(x as i32, y as i32);
+    r.dirty = true;
+    took as libc::c_int
+}
+
+/// Stream a reorder drag: `dy_px` is TOTAL travel from the gesture's start point.
+#[no_mangle]
+pub extern "C" fn cinder_reorder_track(dy_px: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.reorder_track(dy_px as i32);
+        r.dirty = true;
+    }
+}
+
+/// Drop the dragged row where it now sits. No-op if no drag was in progress. The reorder is
+/// recorded in-process (`Action::QueueChanged` → `queue_pending`) and flushed to PlayerService at
+/// the next track boundary, for the same reason a swipe-to-queue is.
+#[no_mangle]
+pub extern "C" fn cinder_reorder_release() {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return };
+    let actions = r.app.reorder_release();
+    r.dirty = true;
+    for a in &actions {
+        carry_action(r, a);
+    }
+}
+
 /// LIVE drag-scroll: move the current list by `dy_px` pixels (positive = show later rows).
 /// The shell calls this every pump tick while a vertical drag is in progress, so the list
 /// tracks the finger 1:1.

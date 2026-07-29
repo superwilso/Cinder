@@ -10,14 +10,31 @@
 // its exported factory, then NotifyOpenAudio / SetLdac / SetLdacSoundQuality /
 // GetSocketName / NotifyPcmPreferredSize.
 //
-// STATUS: scaffold. The abstract-socket writer below is complete. capture_open()
-// and the btclient_* control plane need on-device completion (see README).
+// STATUS: scaffold, and BLOCKED as a standalone daemon — see the banner in main().
+//
+// THE BLOCKER (found 2026-07-29, host-side): `libBtTransmitterService` is a `pst::services::*`
+// client like every other one on this device, so its calls are ASYNCHRONOUS — the request is
+// marshalled over binder and the reply is delivered by `pst::core::Framework`'s event looper.
+// Nothing dispatches that looper unless someone drives `Framework::Pump()`, and this process
+// starts no framework at all. Sony's wrappers do not initialise their out-params before the IPC,
+// so with no pump a call does not fail cleanly: it returns whatever was on the stack. That is the
+// same trap that cost weeks on PlayerService (`Connect()` "returned" 0xb6xxxxxx; `IsConnected()`
+// read garbage and said true), and here it would surface as `GetSocketName returned empty` —
+// indistinguishable from "the control-plane RE is wrong", which is the wrong thing to go fix.
+//
+// So the bring-up questions are answered by `cinder-probe --ldac` instead: it already starts the
+// framework (`StartForApplication`) and runs a pump thread, and it needs an adb push rather than a
+// .UPG flash. See ldac-bridge/TEST.md. Once those answers are in, the pump belongs here too (or,
+// more likely, this whole pipeline moves inside cinder-home, which is an easel app and therefore
+// has a live framework already).
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
+#include <stddef.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -60,6 +77,15 @@ static int write_all(int fd, const void *buf, size_t len) {
 
 int main(void) {
     fprintf(stderr, "ldac-bridge: starting\n");
+    // A write to a socket the transmitter has closed must be an EPIPE we can LOG, not a SIGPIPE
+    // that kills the process with nothing in the log to say why. This runs unattended under
+    // ldac-run.sh, so a silent death is the one failure mode we can't debug afterwards.
+    signal(SIGPIPE, SIG_IGN);
+    // Say the known blocker out loud, at the top of every log, so a run that fails at
+    // GetSocketName is not read as "the control-plane RE is wrong" (see the file header).
+    fprintf(stderr, "ldac-bridge: WARNING — no pst::core::Framework is started in this process, so "
+                    "BtTransmitterService replies have nothing to deliver them and every call "
+                    "below may return uninitialised stack. Use `cinder-probe --ldac` for bring-up.\n");
 
     // 1. Control plane: get the transmitter client and arm the LDAC source. Per RE
     // (RE_findings.md): the server opens the audio socket INTERNALLY, triggered by the

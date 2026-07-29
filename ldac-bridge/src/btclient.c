@@ -10,10 +10,14 @@
 // IBtTransmitterService vtable at word[0] and a ServiceClientBase subobject vtable
 // at word[1]; CreateInstance already calls Connect().
 //
-// >>> TODO (on-device RE): the VTABLE INDICES below are placeholders. Extract them
-// with a Ghidra vtable dump of the BtTransmitterServiceClient primary vtable and map
-// each slot to its method via the per-function log strings
-// ("BtTransmitterServiceClient::SetLdac" etc.). Until then this shim is non-functional.
+// The vtable indices below are NO LONGER placeholders — they come from
+// analysis/E_usbdac_ldac/ghidra/DumpVtable.java. `cinder-probe --ldac` uses the same table; keep
+// the two in step.
+//
+// >>> STILL BLOCKED: none of these calls can return a real value in a process that does not drive
+// `pst::core::Framework::Pump()`. The replies are delivered by that looper, and Sony's wrappers
+// leave their out-params uninitialised, so without a pump every call here reads back stack
+// garbage rather than failing. See the header of main.c.
 #include "btclient.h"
 #include <stdio.h>
 

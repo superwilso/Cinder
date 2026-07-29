@@ -12,6 +12,88 @@ use crate::Canvas;
 
 pub const RH: i32 = 62;
 const LIST_BOTTOM: i32 = 736; // leave room for the footer rule
+const LIST_TOP: i32 = crate::chrome::HEADER_BOTTOM;
+
+/// Left edge of the reorder grab handle on a user-queue row. It runs to the panel edge on purpose:
+/// this device has no d-pad, so reordering is a thumb-only gesture and the target must be
+/// impossible to miss. A vertical drag that STARTS here reorders; anywhere else it scrolls, which
+/// is the same start-point ownership rule the scrub rail uses.
+pub const GRIP_X0: i32 = 424;
+
+/// A queue row being dragged to a new position.
+///
+/// `y`/`grab_off` are in SCREEN space, not content space, so the floating row keeps sitting under
+/// the finger while the list auto-scrolls beneath it — deriving the float from `from * RH` instead
+/// would make it slide away from the thumb the moment the edge-scroll kicked in.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct QueueDrag {
+    /// Index in the queue the finger picked up.
+    pub from: usize,
+    /// Index it would land on if released now. The other rows part to show this slot.
+    pub to: usize,
+    /// Finger y when the row was picked up. Kept so the shell can report TOTAL travel from the
+    /// gesture's start — the same thing it measures for a swipe — instead of per-event deltas,
+    /// which drift whenever the driver coalesces events.
+    pub start_y: i32,
+    /// Current finger y, UI screen coords.
+    pub y: i32,
+    /// Where inside the row the finger grabbed it, so the row doesn't jump on pick-up.
+    pub grab_off: i32,
+}
+
+impl QueueDrag {
+    /// Top of the floating row, in screen coords.
+    pub fn float_top(&self) -> i32 {
+        self.y - self.grab_off
+    }
+}
+
+/// Height of the user queue's scrolling window.
+pub fn queue_view_h() -> i32 {
+    LIST_BOTTOM - LIST_TOP
+}
+
+pub fn queue_max_scroll_px(len: usize) -> i32 {
+    (len as i32 * RH - queue_view_h()).max(0)
+}
+
+/// Which queue index sits under screen-`y` at this scroll offset. Unlike [`visible_row_at`] this
+/// returns the index into the queue itself, so the caller never has to know where the window is.
+pub fn queue_row_at(y: i32, scroll_px: i32, len: usize) -> Option<usize> {
+    if !(LIST_TOP..LIST_BOTTOM).contains(&y) {
+        return None;
+    }
+    let i = ((y - LIST_TOP + scroll_px) / RH) as usize;
+    (i < len).then_some(i)
+}
+
+/// Is this x on the grab handle?
+pub fn queue_grip_hit(x: i32) -> bool {
+    x >= GRIP_X0
+}
+
+/// Which slot a floating row is hovering over, from its top edge in screen coords. Uses the row's
+/// CENTRE, so the swap happens when the dragged row is more than half way over its neighbour —
+/// swapping on the leading edge makes the list twitch a full row before the finger has committed.
+pub fn queue_slot_for(float_top: i32, scroll_px: i32, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let centre = float_top - LIST_TOP + scroll_px + RH / 2;
+    (centre.div_euclid(RH)).clamp(0, len as i32 - 1) as usize
+}
+
+/// The queue in the order it is currently DRAWN: `from` lifted out and re-inserted at `to`.
+fn drag_order(len: usize, drag: Option<QueueDrag>) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    if let Some(d) = drag {
+        if d.from < len && d.to < len {
+            let it = order.remove(d.from);
+            order.insert(d.to, it);
+        }
+    }
+    order
+}
 
 /// Which visible row index `y` falls on (0 = the topmost DRAWN row, which is not necessarily
 /// track 0 — this list auto-scrolls to follow playback). `nav` pairs this with the ids the
@@ -97,36 +179,90 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
     }
 }
 
+/// One user-queue row's content at screen-`y`. `n` is the position label (1-based).
+fn queue_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow, lib: &crate::model::Library,
+             y: i32, n: usize) {
+    let cy = (y + RH / 2) as f32;
+    text::draw(c, f, 22.0, cy + 4.0, &format!("{n:02}"),
+        &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
+    // Real cover here too — the user queue had the same gradient-only problem as the album
+    // window above it.
+    crate::library::thumb(c, t, lib, song.album_id, &song.art,
+                          46, y + (RH - 48) / 2, 48, if t.night { 0.30 } else { 1.0 });
+    let tst = sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0);
+    text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 262.0), &tst);
+    let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
+    text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, 276.0), &ast);
+    // Duration moved in from 458 to clear the grab handle.
+    right(c, f, 410.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
+    grip(c, t, y, false);
+}
+
+/// The reorder grab handle: three stacked bars, the universal "drag me" mark. Accent while the row
+/// is lifted so the gesture reads as engaged even though the finger covers the icon.
+fn grip(c: &mut Canvas, t: &Theme, y: i32, lifted: bool) {
+    let col = if lifted { t.acc } else { t.faint };
+    let x = GRIP_X0 + 14;
+    let cy = y + RH / 2;
+    for k in -1..=1 {
+        fill_rect(c, x, cy + k * 7 - 1, 26, 2, col);
+    }
+}
+
 /// Render the USER queue (songs added by the Spotify-style right-swipe), in add order. No
 /// "now playing" highlight — these are upcoming picks, not the live album window.
-pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow], lib: &crate::model::Library) {
+///
+/// `drag` is the row being reordered, if any: the list is drawn in its would-be order with that
+/// row's slot left empty, and the row itself floats under the finger on top.
+pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow],
+                    lib: &crate::model::Library, scroll_px: i32, drag: Option<QueueDrag>) {
     c.fill(t.bg);
-    let sub = format!("QUEUE · {} TRACKS", queue.len());
+    let scroll_px = scroll_px.clamp(0, queue_max_scroll_px(queue.len()));
+    let sub = if drag.is_some() {
+        String::from("DRAG TO REORDER")
+    } else {
+        format!("QUEUE · {} TRACKS", queue.len())
+    };
     let y0 = crate::chrome::header(c, t, f, "Up Next", Some(&sub));
 
-    let mut y = y0;
-    let mut shown = 0;
-    for (i, song) in queue.iter().enumerate() {
-        if y + RH > LIST_BOTTOM {
+    let order = drag_order(queue.len(), drag);
+    let first = (scroll_px / RH) as usize;
+    let mut y = y0 - (scroll_px % RH);
+    c.set_clip_y(y0, LIST_BOTTOM);
+    for slot in first..order.len() {
+        if y >= LIST_BOTTOM {
             break;
         }
-        let cy = (y + RH / 2) as f32;
-        text::draw(c, f, 22.0, cy + 4.0, &format!("{:02}", i + 1),
-            &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
-        // Real cover here too — the user queue had the same gradient-only problem as the album
-        // window above it.
-        crate::library::thumb(c, t, lib, song.album_id, &song.art,
-                              46, y + (RH - 48) / 2, 48, if t.night { 0.30 } else { 1.0 });
-        let tst = sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0);
-        text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 306.0), &tst);
-        let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
-        text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, 320.0), &ast);
-        right(c, f, 458.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
+        let i = order[slot];
+        // The lifted row is drawn floating below, not in the list — leave its slot as a well, so
+        // there is somewhere for the eye (and the row) to land.
+        if drag.map(|d| d.from) == Some(i) {
+            fill_rect(c, 0, y, W as i32, RH, t.panel);
+        } else {
+            queue_row(c, t, f, &queue[i], lib, y, slot + 1);
+        }
         hline(c, y + RH, t.line);
         y += RH;
-        shown += 1;
     }
-    if queue.len() > shown {
-        crate::library::scrollbar(c, t, y0, 0, queue.len() as i32 * RH);
+    c.clear_clip();
+
+    // The floating row, last so it sits over everything, and clipped to the list so it cannot
+    // smear across the header on an over-drag.
+    if let Some(d) = drag {
+        if let Some(song) = queue.get(d.from) {
+            let ft = d.float_top().clamp(y0 - RH / 2, LIST_BOTTOM - RH / 2);
+            c.set_clip_y(y0, LIST_BOTTOM);
+            fill_rect(c, 0, ft, W as i32, RH, t.row_sel);
+            fill_rect(c, 0, ft, 4, RH, t.acc);       // lifted marker down the leading edge
+            hline(c, ft, t.line);
+            hline(c, ft + RH, t.line);
+            queue_row(c, t, f, song, lib, ft, d.to + 1);
+            grip(c, t, ft, true);
+            c.clear_clip();
+        }
+    }
+
+    if queue_max_scroll_px(queue.len()) > 0 {
+        crate::library::scrollbar(c, t, y0, scroll_px, queue.len() as i32 * RH);
     }
 }

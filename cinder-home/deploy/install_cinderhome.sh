@@ -366,8 +366,125 @@ done
 LOGF=/contents/cinderhome.log
 can_write "$LOGF" || LOGF=/data/cinder/cinderhome.log
 can_write "$LOGF" || LOGF=""
-[ -n "$LOGF" ] && exec "$HOME_BIN" "$@" >"$LOGF" 2>&1
-exec "$HOME_BIN" "$@"
+
+# ── CRASH SUPERVISOR ──────────────────────────────────────────────────────────────────────────
+# WHY THIS EXISTS: until now the launcher `exec`'d cinder-home, so the shell was GONE. When the
+# app died — a segfault, an allocation failure under fragmentation (this process has died that way
+# before) — there was nothing left to restart it. appmgr installs a SIGCHLD handler
+# (AppManagerService::OnInit: `sigaction(17, ...)`, SA_SIGINFO|SA_RESETHAND) and reboots the device
+# on `Application process is killed! appmgrservice will exit...`. So one crash cost a full reboot,
+# the user's place in the queue, and a bad-boot life.
+#
+# WHY STAYING ALIVE WORKS: appmgr's SIGCHLD only fires for its OWN direct child. It fork+execvp's
+# THIS SCRIPT (ProcessController::Invoke), and waits on that pid (ProcessController::WaitFinished).
+# If the shell stays alive and reaps cinder-home itself, appmgr sees a live, foreground child and
+# stays satisfied — the same reason SIGSTOP on the stock Qt app was safe where SIGKILL was not
+# (analysis/F_appmgr_home/RE_findings.md §3).
+#
+# WHAT IT DOES NOT TOUCH: every escape above this line is evaluated BEFORE the first launch and is
+# unchanged. The ladder rule still holds — the supervisor is the shell we already are, so it adds
+# no dependency the app did not already have, and rung 0 (cable) does not go through it at all.
+#
+# THE RESPAWN SET IS A WHITELIST, NOT A BLACKLIST. Only deaths that mean "crashed" are respawned;
+# an rc we do not recognise falls through to `exit`, which is EXACTLY today's behaviour. So a bug
+# in the accounting below degrades to the old reboot-and-count net rather than disabling it.
+#   respawn:     132 ILL  133 TRAP  134 ABRT  135 BUS  136 FPE  139 SEGV  141 PIPE  158/159
+#   hand back:   0   deliberate exit (Settings ▸ Boot to stock arms its flag then _exit(0), and
+#                    relies on appmgr rebooting us — respawning would break it)
+#                42  self-diagnosed fatal (guard/watchdog `_exit(42)`), whose whole contract is
+#                    "die fast so the bad-boot counter reverts to stock"
+#                143/137 SIGTERM/SIGKILL — somebody killed us ON PURPOSE (appmgr's
+#                    DoKillAndWait, a shutdown, or `kill` from an adb shell). Fighting that would
+#                    make the app unkillable.
+NO_RESPAWN=$STATE/no_respawn              # kill switch, /data
+MSC_NO_RESPAWN=/contents/cinderhome_norespawn   # same, settable over USB-MSC
+RESPAWN_MAX_FAST=3        # consecutive crashes inside the healthy window before giving up
+RESPAWN_HEALTHY_S=30      # a run at least this long "counts" — it resets the consecutive tally
+RESPAWN_MAX_TOTAL=10      # absolute cap per boot, so a 31-s crash cycle cannot loop forever
+
+# Kill switch: restores the pre-supervisor `exec`. The escape for the escape — a file drop over
+# USB-MSC needs strictly less than the supervisor it disables.
+if [ -f "$NO_RESPAWN" ] || [ -f "$MSC_NO_RESPAWN" ]; then
+    [ -n "$LOGF" ] && exec "$HOME_BIN" "$@" >"$LOGF" 2>&1
+    exec "$HOME_BIN" "$@"
+fi
+
+# Clock with the fewest dependencies available: procfs, which the kernel guarantees. Contained in
+# a command substitution so a read failure cannot take the shell down (the `:`-special-builtin
+# lesson). Unreadable -> 0 -> every run looks "fast" -> we escalate to stock sooner, which is the
+# safe direction to fail.
+uptime_s() {
+    s=$( (read u _ < /proc/uptime && echo "${u%%.*}") 2>/dev/null )
+    case "$s" in ''|*[!0-9]*) s=0;; esac
+    echo "$s"
+}
+can_append() { ( : >> "$1" ) 2>/dev/null; }
+log_sv() {
+    echo "cinderhome-launch: $*"
+    [ -n "$LOGF" ] && ( echo "cinderhome-launch: $*" >> "$LOGF" ) 2>/dev/null
+    true
+}
+# The redirect rides on a SIMPLE COMMAND, never on `exec`. A redirection failure on a simple
+# command is just a non-zero rc; on `exec` it makes sh exit WITHOUT running anything, which is the
+# precise shape of the 2026-07-26 brick. /contents also legitimately disappears mid-session during
+# USB-MSC, so this path has to survive the log going away — hence the re-probe every launch.
+run_home() {
+    if [ -n "$LOGF" ] && can_append "$LOGF"; then
+        "$HOME_BIN" "$@" >>"$LOGF" 2>&1
+    else
+        "$HOME_BIN" "$@"
+    fi
+}
+
+fast=0
+total=0
+while : ; do
+    # A hot-swap (`mv` a new binary over the live one) can land between two launches. Missing or
+    # non-executable is not a crash to respawn into — hand the boot to stock instead of burning
+    # the whole budget on rc=126/127.
+    [ -x "$HOME_BIN" ] || { log_sv "$HOME_BIN vanished mid-session — falling back to stock"; run_stock "$@"; }
+
+    t0=$(uptime_s)
+    run_home "$@"
+    rc=$?
+    t1=$(uptime_s)
+    ran=$((t1 - t0))
+    [ "$ran" -lt 0 ] && ran=0
+
+    case "$rc" in
+        132|133|134|135|136|139|141|158|159) ;;    # a crash — fall through and respawn
+        *) log_sv "cinder-home exited rc=$rc after ${ran}s (not a crash) — handing back to appmgr"
+           exit "$rc" ;;
+    esac
+
+    total=$((total + 1))
+    if [ "$ran" -ge "$RESPAWN_HEALTHY_S" ]; then fast=0; else fast=$((fast + 1)); fi
+    log_sv "cinder-home CRASHED rc=$rc after ${ran}s (respawn $total, $fast consecutive fast)"
+
+    # Give up for THIS BOOT ONLY — deliberately not a latch. A crash after the app has already run
+    # healthily is a different animal from one that never paints: the bad-boot counter above is the
+    # net for "never paints", and latching on a runtime crash is how a device ends up stuck on
+    # stock forever (2026-07-26). The next boot tries Cinder again.
+    #   Handing over mid-session is itself unproven — appmgr already has its Foreground ACK from
+    # the instance that just died. If the Qt app cannot re-handshake, appmgr times out and reboots,
+    # which lands on the bad-boot counter. That is the failure branch of a failure branch, and it
+    # ends at stock either way.
+    if [ "$fast" -ge "$RESPAWN_MAX_FAST" ]; then
+        log_sv "$fast crashes each under ${RESPAWN_HEALTHY_S}s — handing this boot to the Sony player"
+        run_stock "$@"
+    fi
+    if [ "$total" -ge "$RESPAWN_MAX_TOTAL" ]; then
+        log_sv "$total crashes this boot — handing this boot to the Sony player"
+        run_stock "$@"
+    fi
+
+    # Drop the GPU present path from the first respawn on. The Mali fbdev EGL stack is the least
+    # proven code in the process and a plausible source of a SIGSEGV/SIGBUS; the software
+    # framebuffer is the proven path and CINDER_GPU=0 wins over every opt-in. Costs frame rate,
+    # buys a much better chance the retry survives.
+    CINDER_GPU=0; export CINDER_GPU
+    sleep 1
+done
 LAUNCH_EOF
 # verify the launcher wrote fully (must contain its final exec line) before activating it
 if ! "$BB" grep -q 'exec "\$HOME_BIN"' "$LAUNCH.tmp" 2>/dev/null; then

@@ -151,7 +151,7 @@ fn bench_library_tabs() {
     }
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Artists, "artists")] {
         time_it(&format!("az_render {name}"), n, || {
-            library::az_render(&mut c, &t, &f, tab, &lib, 0)
+            library::az_render(&mut c, &t, &f, tab, &lib, 0, 0)
         });
     }
 

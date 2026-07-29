@@ -38,8 +38,43 @@ Other guardrails:
 - **Verified copies.** Install is atomic (temp → verify → mv) with a final sanity gate that
   reverts to stock if any piece is wrong.
 - **Recovery gate in the build.** `cinder-home/tools/test_launcher.sh` drives the generated
-  launcher through all 18 escape/failure paths in a sandbox; `build.sh` refuses to pack if any
-  fail. It is what caught the special-builtin `exec`-redirect bug above.
+  launcher through all 44 escape/failure/supervisor checks in a sandbox; `build.sh` refuses to
+  pack if any fail. It is what caught the special-builtin `exec`-redirect bug above.
+
+### The crash supervisor (added 2026-07-29)
+
+The launcher no longer `exec`s cinder-home — it **stays alive and respawns it**. Before this, a
+single segfault or allocation failure cost a full reboot: appmgr installs a `SIGCHLD` handler
+(`AppManagerService::OnInit` → `sigaction(17, …)`) and `android_reboot`s on
+*"Application process is killed! appmgrservice will exit…"*. Staying alive suppresses that
+entirely, because appmgr's `SIGCHLD` only fires for **its own direct child** — it
+`fork()`+`execvp()`s the launcher and waits on that pid (`ProcessController::WaitFinished`), so a
+live shell reaping cinder-home itself looks exactly like a healthy foreground app. Same reason
+`SIGSTOP` on the stock Qt app was safe where `SIGKILL` was not.
+
+Only deaths that mean *"crashed"* are respawned — it is a **whitelist**, so an unrecognised exit
+code falls through to the old reboot-and-count behaviour rather than disabling the net:
+
+| Exit | Meaning | Supervisor |
+|---|---|---|
+| 132–136, 139, 141, 158/159 | ILL / TRAP / ABRT / BUS / FPE / SEGV / PIPE / XCPU-XFSZ | **respawn** |
+| 0 | deliberate exit — Settings ▸ Boot to stock arms its flag then `_exit(0)` and *relies* on appmgr rebooting | hand back |
+| 42 | self-diagnosed fatal (guard / watchdog), whose contract is "die fast so the counter reverts" | hand back |
+| 143 / 137 | SIGTERM / SIGKILL — somebody killed us on purpose | hand back |
+| anything else | unknown | hand back |
+
+Escalation: **3 consecutive crashes inside 30 s**, or **10 crashes in one boot**, hands that boot
+to the Sony player. Deliberately **not** a latch — the next boot tries Cinder again, because
+latching on a runtime crash is how a device ends up stuck on stock forever. From the first respawn
+onward the GPU present path is dropped (`CINDER_GPU=0`), since the Mali fbdev EGL stack is the
+least proven code in the process and the software framebuffer is the proven one.
+
+**Kill switch** — restores the pre-supervisor `exec`, and depends on strictly less than the
+supervisor it disables:
+```bash
+: > /tmp/cinderhome_norespawn
+tools/flash.sh --push /tmp/cinderhome_norespawn   # or: touch /data/cinder/no_respawn
+```
 
 ## Step 0 — plug in the USB cable and power on
 That is the escape. You land on stock. If you want the counter to do it instead, leave the device

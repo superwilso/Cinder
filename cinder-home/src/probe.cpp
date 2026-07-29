@@ -28,6 +28,11 @@
 #include <initializer_list>
 #include <pthread.h>
 #include <functional>
+#include <cerrno>
+#include <stddef.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <alsa/asoundlib.h>
 
 static void clog_(const char* m) { std::fprintf(stderr, "[cinder-probe] %s\n", m); std::fflush(stderr); }
 
@@ -295,7 +300,164 @@ static void pump_job() {
     _exit(pr == 0 ? 0 : 1);
 }
 
+// ── --ldac : USB-DAC -> LDAC bring-up, the two questions ldac-bridge/TEST.md asks ────────────
+//
+// WHY IT LIVES HERE AND NOT IN ldac-bridge. The standalone bridge cannot answer either question
+// as written: `libBtTransmitterService` is a `pst::services::*` client, so like every other one on
+// this device its calls are ASYNC and their replies are delivered by pst::core::Framework's event
+// looper. `ldac-bridge/main.c` starts no framework and pumps nothing, so SetLdac/SetCurrentSource
+// never leave the process and GetSocketName returns UNINITIALISED STACK. That failure looks exactly
+// like TEST.md's third outcome ("control plane assumption wrong -> go re-do Ghidra"), which is the
+// same trap that cost weeks on PlayerService (Connect "returned" 0xb6xxxxxx; IsConnected
+// true-from-garbage). Answering it here reuses the framework + pump + watchdog + backtrace that are
+// already proven in this binary, and it needs no .UPG flash and no reboot — just an adb push.
+//
+//   adb push cinder-home/dist/dev/cinder-probe /tmp/cinder-probe
+//   adb shell 'chmod 755 /tmp/cinder-probe && LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/lib \
+//              /tmp/cinder-probe --ldac'
+//
+// Q1: does the control plane make BtTransmitterService open its audio socket?
+// Q2: can we open the USB-DAC capture PCM, or does Sony's UAC service hold it (-EBUSY)?
+// The two are independent, and the whole point is to come back with an answer to EACH — a run that
+// dies on Q1 still reports what Q2 would have said.
+extern "C" {
+// Exported factory. Ghidra typed it void; it returns the client*.
+void* _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv(void);
+}
+
+// Vtable indices into the BtTransmitterServiceClient primary vtable, from
+// analysis/E_usbdac_ldac/ghidra/DumpVtable.java (vptr = group_base+8, confirmed against
+// CreateInstance; slot 0 = first virtual after the [0,typeinfo] header). Same table
+// ldac-bridge/src/btclient.c uses — keep the two in step.
+enum {
+    VIDX_SetCurrentSource    = 12,   // SetCurrentSource(const bool&)
+    VIDX_SetLdacSoundQuality = 18,   // SetLdacSoundQuality(const enum&)
+    VIDX_SetLdac             = 20,   // SetLdac(const bool&)
+    VIDX_GetSocketName       = 29,   // GetSocketName() -> std::string (sret)
+};
+
+static void* vslot(void* obj, int idx) { return (*(void***)obj)[idx]; }
+
+static int ldac_probe() {
+    install_diagnostics();
+
+    // 1. The framework FIRST. Without it every call below reads back stack garbage, and the pump
+    //    thread must exist before the first request or its reply has nobody to deliver it.
+    clog_("ldac: Framework::GetReference() …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] ldac: Framework=%p BinderLastError=%d\n",
+                 (void*)&fw, pst::core::Framework::GetBinderLastError());
+    clog_("ldac: StartForApplication(finish_job, true) …");
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] ldac: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+
+    // 2. Control plane. Each call is watchdog-bounded, so a HANG names itself instead of looking
+    //    like a silent failure.
+    clog_("ldac: BtTransmitterServiceClientFactory::CreateInstance() …");
+    wd_arm(12);
+    void* bt = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] ldac: client=%p (pump ticks so far %u)\n",
+                 bt, g_pump_ticks);
+    if (!bt) { clog_("ldac: CreateInstance returned NULL — STOP"); return 1; }
+
+    typedef void (*fn_b)(void*, const bool*);
+    typedef void (*fn_i)(void*, const int*);
+    bool t = true, f = false;
+    int  q = 0;   // BtLdacSoundQuality::Auto
+    clog_("ldac: SetLdac(true) …");
+    wd_arm(12); ((fn_b)vslot(bt, VIDX_SetLdac))(bt, &t); wd_disarm();
+    clog_("ldac: SetLdacSoundQuality(Auto) …");
+    wd_arm(12); ((fn_i)vslot(bt, VIDX_SetLdacSoundQuality))(bt, &q); wd_disarm();
+    clog_("ldac: SetCurrentSource(true) …");
+    wd_arm(12); ((fn_b)vslot(bt, VIDX_SetCurrentSource))(bt, &t); wd_disarm();
+
+    // GetSocketName returns a libc++ std::string BY VALUE (sret): hidden result ptr is arg0.
+    // libc++ 3.9 layout, 12 bytes: (bytes[0] & 1) == 0 -> short, size = bytes[0] >> 1, data =
+    // &bytes[1]; otherwise long, {cap, size, data} as words.
+    clog_("ldac: GetSocketName() …");
+    typedef void (*fn_s)(void*, void*);
+    unsigned char s[12] = {0};
+    wd_arm(12); ((fn_s)vslot(bt, VIDX_GetSocketName))(s, bt); wd_disarm();
+    char name[128] = {0};
+    {
+        const char* data; size_t n;
+        if ((s[0] & 1) == 0) { n = s[0] >> 1; data = (const char*)&s[1]; }
+        else { unsigned* w = (unsigned*)s; n = w[1]; data = (const char*)(uintptr_t)w[2]; }
+        if (n >= sizeof name) n = sizeof name - 1;
+        std::memcpy(name, data, n);
+        name[n] = '\0';
+    }
+    std::fprintf(stderr, "[cinder-probe] ldac: Q1 socket name = '%s' (len %zu, pump ticks %u)\n",
+                 name, std::strlen(name), g_pump_ticks);
+    if (g_pump_ticks == 0)
+        clog_("ldac: *** pump never ticked — the framework is NOT running; nothing below is "
+              "trustworthy ***");
+
+    // 3. Q1 proper: can we connect to the socket the server should now be listening on? The open is
+    //    async after SetCurrentSource, so retry ~2 s before calling it a no.
+    int sock = -1;
+    if (name[0] == '\0') {
+        clog_("ldac: Q1 FAIL — GetSocketName empty (with a live pump this really is the control "
+              "plane, so re-check the open trigger in FUN_00019aa0's callers)");
+    } else {
+        for (int i = 0; i < 20 && sock < 0; i++) {
+            sock = socket(AF_UNIX, SOCK_STREAM, 0);
+            struct sockaddr_un a; std::memset(&a, 0, sizeof a);
+            a.sun_family = AF_UNIX;
+            size_t n = std::strlen(name);
+            std::memcpy(a.sun_path + 1, name, n);   // abstract namespace: sun_path[0] stays NUL
+            socklen_t len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
+            if (connect(sock, (struct sockaddr*)&a, len) < 0) { close(sock); sock = -1; usleep(100000); }
+        }
+        if (sock >= 0) clog_("ldac: Q1 PASS — connected to the transmitter's audio socket");
+        else std::fprintf(stderr, "[cinder-probe] ldac: Q1 FAIL — connect(@%s): %s\n",
+                          name, std::strerror(errno));
+    }
+
+    // 4. Q2, asked REGARDLESS of Q1's answer — the two failures need different fixes and one run
+    //    should classify both. Card index is dynamic (card4 only exists in UAC mode), so walk the
+    //    capture PCMs rather than assuming hw:4,0.
+    clog_("ldac: Q2 — probing USB-DAC capture PCMs …");
+    bool opened = false;
+    for (int card = 0; card < 8 && !opened; card++) {
+        char dev[32];
+        std::snprintf(dev, sizeof dev, "hw:%d,0", card);
+        snd_pcm_t* pcm = nullptr;
+        int rc = snd_pcm_open(&pcm, dev, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK);
+        if (rc == 0) {
+            std::fprintf(stderr, "[cinder-probe] ldac: Q2 PASS — %s opened for capture\n", dev);
+            snd_pcm_close(pcm);
+            opened = true;
+        } else if (rc == -EBUSY) {
+            std::fprintf(stderr, "[cinder-probe] ldac: Q2 FAIL — %s is BUSY (Sony's "
+                         "UsbDeviceAudioPlayerService owns it; the fix is contention, not RE)\n", dev);
+            opened = true;   // classified: stop walking
+        } else if (rc != -ENOENT && rc != -ENODEV) {
+            std::fprintf(stderr, "[cinder-probe] ldac: %s -> %s\n", dev, snd_strerror(rc));
+        }
+    }
+    if (!opened)
+        clog_("ldac: Q2 INCONCLUSIVE — no capture PCM at all. Is the gadget in UAC mode "
+              "(sys.sony.config uac) with a PC actually feeding audio?");
+
+    if (sock >= 0) close(sock);
+    clog_("ldac: releasing the source …");
+    wd_arm(12); ((fn_b)vslot(bt, VIDX_SetCurrentSource))(bt, &f); wd_disarm();
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] ldac: done (%u pump ticks)\n", g_pump_ticks);
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--ldac") == 0) {
+        return ldac_probe();
+    }
     if (argc > 1 && std::strcmp(argv[1], "--analyzer") == 0) {
         int mode = argc > 2 ? std::atoi(argv[2]) : 1;
         return analyzer_probe(mode);

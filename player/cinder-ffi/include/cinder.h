@@ -126,6 +126,15 @@ int  cinder_swipe(int dir, int x, int y);
  * cinder_swipe_release() when the finger lifts so the row animates back to rest. */
 int  cinder_swipe_track(int dx_px, int y);
 void cinder_swipe_release(void);
+/* Up Next queue REORDER, the vertical counterpart of the swipe above. Asked once, when the shell
+ * classifies a contact as mostly-vertical: cinder_reorder_begin() returns 1 if the finger LANDED on
+ * a queue row's grab handle, in which case that row owns the contact for the rest of its life — the
+ * shell streams total travel to cinder_reorder_track() instead of to cinder_touch_drag(), and calls
+ * cinder_reorder_release() on lift to drop the row where it sits. Start-point ownership, same rule
+ * as the scrub rail: a drag that begins elsewhere scrolls even if it wanders over the handle. */
+int  cinder_reorder_begin(int x, int y);
+void cinder_reorder_track(int dy_px);
+void cinder_reorder_release(void);
 /* The Hold/lock SWITCH changed state (held = 1 locked, 0 unlocked). When locked the touchscreen is
  * ignored but the transport/volume buttons still work; ONLY the switch going off (held=0) unlocks.
  * Power is a screen on/off toggle (CINDER_ACT_SLEEP) and does NOT unlock. Call on every edge. */

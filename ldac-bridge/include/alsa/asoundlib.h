@@ -15,6 +15,11 @@ extern "C" {
 #endif
 
 typedef struct _snd_pcm snd_pcm_t;          /* opaque */
+
+/* snd_pcm_open() mode flags. Only NONBLOCK matters here: an availability probe must never park
+   on a device another process owns. */
+#define SND_PCM_NONBLOCK 0x00000001
+
 typedef unsigned long  snd_pcm_uframes_t;
 typedef signed long    snd_pcm_sframes_t;
 

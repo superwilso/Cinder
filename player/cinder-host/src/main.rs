@@ -98,6 +98,8 @@ fn main() {
         println!("preview: using real device thumbnails");
     }
     let lib = lib;
+    // A stand-in USER queue for the Up Next previews (the real one is built by swiping rows in).
+    let queue: Vec<cinder_ui::model::SongRow> = lib.songs.iter().take(9).cloned().collect();
 
     for (name, theme) in [("day", Theme::day()), ("night", Theme::night())] {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
@@ -125,6 +127,25 @@ fn main() {
                     Some(al) => up_next::render(c, &theme, &fonts, &al.name, &al.track_list, 1, &lib),
                     None => up_next::render(c, &theme, &fonts, "", &[], 0, &lib),
                 }
+            }),
+            // The USER queue, at rest and mid-reorder. The second one is the gesture the device
+            // can't be screenshotted through: the row is lifted under a finger that isn't there.
+            ("up_next_queue", &|c: &mut Canvas| {
+                up_next::render_queue(c, &theme, &fonts, &queue, &lib, 0, None);
+            }),
+            ("up_next_reorder", &|c: &mut Canvas| {
+                let from = 1usize;
+                let grab_off = up_next::RH / 2;
+                let start_y = cinder_ui::chrome::HEADER_BOTTOM + from as i32 * up_next::RH + grab_off;
+                let y = start_y + 2 * up_next::RH + 14;   // dragged down past two rows
+                let d = up_next::QueueDrag {
+                    from,
+                    to: up_next::queue_slot_for(y - grab_off, 0, queue.len()),
+                    start_y,
+                    y,
+                    grab_off,
+                };
+                up_next::render_queue(c, &theme, &fonts, &queue, &lib, 0, Some(d));
             }),
             ("library_songs", &|c: &mut Canvas| {
                 library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib, None);

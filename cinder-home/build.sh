@@ -165,8 +165,11 @@ echo "built: $OUT  ($(stat -c%s "$OUT") bytes)"; file "$OUT" | cut -d, -f1-3
 
 echo "[5] build cinder-probe (standalone diagnostic — no easel lifecycle, no boot impact)…"
 PROBE="$HERE/cinder-probe"
+# -I../ldac-bridge/include: the minimal ALSA shim, so --ldac can probe capture-PCM availability
+# without an armhf libasound2-dev on the host. The DEVICE's libasound.so is what gets linked.
 $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
      -fPIC -O2 -Wall -std=c++14 -fno-rtti "${CHANNEL_DEF[@]}" "${INCLUDES[@]}" \
+     -I"$HERE/../ldac-bridge/include" \
      -c "$HERE/src/probe.cpp" -o "$HERE/probe.o"
 # Links WITHOUT easelcore/easelcui/appmgrservice — the probe never does the app lifecycle, only
 # the render/DB/PlayerService calls, so it can't register as the Home app. It DOES link pstcore
@@ -178,6 +181,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -lPlayerServiceClient -lPlayerServiceClientUtil -lpstcore -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
+     -lBtTransmitterService "$REPO/artifacts/rootfs_mnt/lib/libasound.so" \
      -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$PROBE"
