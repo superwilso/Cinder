@@ -87,7 +87,12 @@ typedef enum {
      * Cinder, unlike CINDER_ACT_BOOT_TO_STOCK which arms the one-shot stock flag first. */
     CINDER_ACT_RESTART = 24,
     /* Settings ▸ Power off, CONFIRMED in the modal: PowerMgrServiceClient::SetStatus(PowerOff). */
-    CINDER_ACT_POWER_OFF = 25
+    CINDER_ACT_POWER_OFF = 25,
+    /* Bluetooth toggled: drive the RADIO via BtCommonServiceClient::SetRfOnOff, and on enable also
+     * ask BtTransmitterServiceClient to reconnect the last device. Until 2026-07-29 this action did
+     * not exist and the toggle was dropped in cinder-ffi ("UI-only"), which is why the switch never
+     * affected the hardware and paired headphones never reconnected. */
+    CINDER_ACT_BT_TOGGLE = 26
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -257,6 +262,11 @@ int  cinder_get_brightness(void);
 int  cinder_get_screen_off_s(void);
 /* Is USB-DAC mode engaged? (1/0). Read after a CINDER_ACT_USBDAC_LDAC action to start/stop the LDAC
  * bridge + switch the USB gadget to UAC, without disconnecting Bluetooth. */
+/* Is the Bluetooth switch on? (1/0). Read after a CINDER_ACT_BT_TOGGLE action. */
+int  cinder_get_bt_on(void);
+/* Force the Bluetooth switch to match the radio's real state (from GetBtStatus). Sets state only,
+   raises no action. Call at startup so the switch cannot claim the radio is on when it is not. */
+void cinder_set_bt_on(int on);
 int  cinder_get_usb_dac(void);
 /* Force the USB-DAC toggle to match the gadget's real mode (from sys.sony.config). Sets state
    only — raises no action, since the gadget is already there. Call at startup to stop Settings

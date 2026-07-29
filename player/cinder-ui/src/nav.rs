@@ -3012,6 +3012,19 @@ impl App {
         self.usb_dac_on
     }
 
+    pub fn bt_on(&self) -> bool {
+        self.bt_on
+    }
+
+    /// Force the Bluetooth switch to match the radio's real state, without raising a `BtToggle`.
+    ///
+    /// Same reasoning as [`Self::set_usb_dac`]: the switch is intent, `GetBtStatus` is fact. The
+    /// shell reconciles at startup so the switch cannot claim the radio is on when it is off (or
+    /// wedged). Raises no action — the radio is already in this state.
+    pub fn set_bt_on(&mut self, on: bool) {
+        self.bt_on = on;
+    }
+
     /// Force the USB-DAC toggle to match reality, without raising a `UsbDacToggle` action.
     ///
     /// The toggle is our *intent*; the gadget's `sys.sony.config` is the *fact*, and they diverge

@@ -278,3 +278,45 @@ Together they turn a hagodaemon log line — every Sony service method logs `<Fi
 straight into the source that emitted it, which is how the connect path above was recovered. ARM
 PIC keeps string addresses in PC-relative literal pools, so grep and objdump cannot follow those
 references; Ghidra's reference model can.
+
+### Correction 2026-07-29 (evening) — `GetBtStatus == 7` means the radio is OFF, not wedged
+
+The section above concludes that 7 indicates a wedged MTK stack cured by a `SetRfOnOff(false)` /
+`(true)` power cycle. **That is wrong.** Once the toggle was wired into cinder-home and could be
+driven repeatedly, the device log settled it:
+
+```text
+bt: toggle ON  (GetBtStatus=7)     <- radio off
+bt: radio after cycle = 2
+bt: RequestLastDeviceConnection() sent
+bt: toggle OFF (GetBtStatus=2)     <- radio was on
+bt: toggle ON  (GetBtStatus=7)     <- reads 7 again, right after being switched OFF
+```
+
+`SetRfOnOff(false)` *produces* 7. So the enum is simply: **7 = off, 2 = on/idle, 3 = connected**,
+0 = unknown/error. There was never a wedge. The power cycle "worked" only because of its `true`
+leg, and the correct fix is one `SetRfOnOff(true)` whenever the status is not 2 or 3.
+
+Why the original reading was so convincing, and the trap to avoid next time: the first probe run
+only called `SetRfOnOff` when the status read `0`, so on a status of 7 it **never powered the radio
+up at all** — it went straight to `RequestLastDeviceConnection` against a dead radio and watched it
+vanish. Every layer reported success. The lesson is not about Bluetooth: a "quiet decline" on this
+platform usually means a precondition was never met, and the first thing to check is whether the
+code actually performed the setup step it claims to have performed.
+
+**The real defect was upstream of all of it.** cinder-ffi mapped the Settings switch to
+`Action::BtToggle` and then discarded it:
+
+```rust
+Action::BtToggle(_) => return None, // UI-only (RE follow-up)
+```
+
+The switch never touched hardware, which is the whole of "Bluetooth doesn't connect
+automatically". Now `CINDER_ACT_BT_TOGGLE` (26) → `apply_bt_toggle()`: `SetRfOnOff(true)` when the
+radio is down, then `RequestLastDeviceConnection()`, with `deferred_up` reconciling the switch
+against the real status at startup.
+
+One UI note worth keeping: the first version of `apply_bt_toggle` polled for up to 5 s on the
+render/input thread. That froze the UI, the user tapped again thinking the switch had failed, and
+the second tap turned Bluetooth back off — it read as "the toggle doesn't work". Anything on that
+thread must stay short; the polling is now capped at ~0.9 s and the guard budget at 8 s.

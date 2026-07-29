@@ -254,6 +254,8 @@ void start_pump_ticker();   // full worker defined just before main(), after the
 // FAST foreground bring-up: open the framebuffer ONLY, so we can paint immediately and the
 // appmgr Foreground handshake completes promptly. No DB, no IPC here (those can be slow/block).
 bool gadget_in_dac_mode();   // defined with the USB-DAC block below
+static int bt_status();      // defined with the Bluetooth block below
+static bool bt_radio_up(int st);
 
 void render_up() {
     if (g_render_ready) return;
@@ -399,6 +401,21 @@ void deferred_up() {
     // PowerMgrServiceClient ctor connects to the power service). Unavailable (-1) leaves the UI default.
     run_guarded("deferred_up: read battery care state", 8,
                 []() { cinder_set_battery_care(cinder_power_get_battery_care()); });
+    // Same treatment for the Bluetooth switch: sync it to the RADIO's real state instead of letting
+    // it default to on. Healthy statuses are 2 (idle) and 3 (connected); 0 is off and 7 is the
+    // wedged stack (see apply_bt_toggle). Anything that is not a healthy value reads as off, so the
+    // switch never claims a radio that is not actually up — and flipping it then performs the
+    // power-cycle that clears a wedge. Deferred, not in render_up, because this is Sony IPC and
+    // needs the framework pump started just above.
+    run_guarded("deferred_up: read Bluetooth radio state", 8,
+                []() {
+                    int st = bt_status();
+                    cinder_set_bt_on(bt_radio_up(st) ? 1 : 0);
+                    char m[96];
+                    std::snprintf(m, sizeof m, "deferred_up: BT radio status=%d -> switch %s",
+                                  st, bt_radio_up(st) ? "ON" : "OFF");
+                    clog_(m);
+                });
     // Re-apply the user's SAVED EQ + sound effects to the DSP (only if a settings file was restored —
     // no point pushing defaults on a fresh install). Guarded, like every effect-shim call.
     if (g_settings_loaded) {
@@ -1313,6 +1330,105 @@ void write_bt_pref() {
 // USB-MSC look like a race for weeks (see cinder-msc.c's header), in exactly the same place.
 //
 // cinder-msc now owns the verb, reads sys.usb.state back, and says which way it went.
+// ── Bluetooth: make the switch drive the RADIO ───────────────────────────────────────────────
+//
+// Until 2026-07-29 the Settings switch raised `Action::BtToggle`, cinder-ffi dropped it ("UI-only"),
+// and nothing ever reached the hardware. So the switch and the radio were independent, and paired
+// headphones never reconnected — which is what "Bluetooth doesn't connect automatically" actually
+// was. Two clients are involved, and they are different services:
+//
+//   BtCommonServiceClient      slot 3 GetBtStatus, slot 4 SetRfOnOff(const bool*)   — the RADIO
+//   BtTransmitterServiceClient slot 7 RequestLastDeviceConnection()  (genuinely zero-arg)
+//
+// THE STATUS ENUM: 7 means the radio is OFF. 2 is on/idle, 3 is connected.
+//
+// This was initially misread as "the stack is wedged", because a probe run saw 7, sent a connect,
+// and watched it vanish. The device log settles it — turning the radio OFF makes the next read
+// report 7:
+//     bt: toggle OFF (GetBtStatus=2)          <- was on
+//     bt: toggle ON  (GetBtStatus=7)          <- reads 7 immediately after being switched off
+// So SetRfOnOff(false) PRODUCES 7. There was never a wedge: the radio was simply off, Cinder's
+// switch claimed otherwise, and a connect against a powered-down radio is accepted and silently
+// dropped (the service logs "last device found [MAC]" and nothing more — MTK's stack logs nothing
+// to ANY logcat buffer, so there is no failure to observe). The original probe only called
+// SetRfOnOff when status was 0, so it never powered the radio up at all.
+//
+// Hence: anything that is not 2 or 3 is off, and the fix is one SetRfOnOff(true) — no power cycle.
+extern "C" void* _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv(void);
+extern "C" void* _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv(void);
+
+static void* g_bt_common = nullptr;
+static void* g_bt_xmit   = nullptr;
+
+static void* bt_slot(void* obj, int idx) {
+    void** vptr = *reinterpret_cast<void***>(obj);
+    return vptr[idx];
+}
+
+// Is this status a radio that is actually up? 2 = on/idle, 3 = connected; everything else (7 = off,
+// 0 = unknown/error, -1 = no client) is not. Single definition so the toggle, the startup reconcile
+// and the log all agree on what "on" means.
+static bool bt_radio_up(int st) { return st == 2 || st == 3; }
+
+// Current radio status, or -1 if the client could not be built.
+static int bt_status() {
+    enum { VIDX_GetBtStatus = 3 };
+    try {
+        if (!g_bt_common) g_bt_common = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+        if (!g_bt_common) return -1;
+        typedef int (*fn0)(void*);
+        return ((fn0)bt_slot(g_bt_common, VIDX_GetBtStatus))(g_bt_common);
+    } catch (...) { return -1; }
+}
+
+static void bt_set_rf(bool on) {
+    enum { VIDX_SetRfOnOff = 4 };
+    if (!g_bt_common) return;
+    typedef void (*fnb)(void*, const bool*);
+    ((fnb)bt_slot(g_bt_common, VIDX_SetRfOnOff))(g_bt_common, &on);
+}
+
+// Apply the Settings switch to the radio. Run ONLY via run_guarded — every call here is Sony IPC.
+void apply_bt_toggle() {
+    bool want = cinder_get_bt_on() != 0;
+    int st = bt_status();
+    char m[160];
+    std::snprintf(m, sizeof m, "bt: toggle %s (GetBtStatus=%d%s)",
+                  want ? "ON" : "OFF", st, bt_radio_up(st) ? " up" : " off");
+    clog_(m);
+    if (st < 0) { clog_("bt: BtCommonServiceClient unavailable — switch is UI-only this session"); return; }
+
+    if (!want) { bt_set_rf(false); return; }
+
+    // Power the radio up if it is not already. KEEP THIS SHORT: it runs on the render/input thread,
+    // so every millisecond here is a frozen UI. The first version polled for up to 5 s, and the
+    // freeze read as "the switch doesn't work" — the user tapped again, and the second tap turned
+    // Bluetooth straight back off. Poll briefly, then proceed regardless: the connect below is
+    // asynchronous anyway, and the reconcile on the next Settings entry will show the true state.
+    if (!bt_radio_up(st)) {
+        bt_set_rf(true);
+        for (int i = 0; i < 6 && !bt_radio_up(st); i++) { usleep(150000); st = bt_status(); }
+        std::snprintf(m, sizeof m, "bt: radio after SetRfOnOff(true) = %d%s", st,
+                      bt_radio_up(st) ? "" : "  (not up yet — connect may be dropped)");
+        clog_(m);
+    }
+
+    // Radio is up — reconnect whatever was last paired. Zero-arg: the service looks the address up
+    // itself (confirmed both by decompiling the stub, which makes no TransactionParam::Set* call,
+    // and by its own log line naming the MAC).
+    enum { VIDX_RequestLastDeviceConnection = 7 };
+    try {
+        if (!g_bt_xmit) g_bt_xmit = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+        if (g_bt_xmit) {
+            typedef int (*fn0)(void*);
+            ((fn0)bt_slot(g_bt_xmit, VIDX_RequestLastDeviceConnection))(g_bt_xmit);
+            clog_("bt: RequestLastDeviceConnection() sent");
+        }
+    } catch (...) {
+        clog_("bt: RequestLastDeviceConnection threw");
+    }
+}
+
 // ── the render half of USB-DAC ───────────────────────────────────────────────────────────────
 // Flipping the gadget to `uac` only makes the PC ENUMERATE a sound card. It does not make sound
 // come out of the 3.5 mm jack, because nothing has told Sony's player service to open the render
@@ -1384,6 +1500,33 @@ bool gadget_in_dac_mode() {
 
 void apply_usb_dac() {
     bool on = cinder_get_usb_dac() != 0;
+
+    // RELEASE THE RENDERER BEFORE ASKING FOR THE DAC.
+    //
+    // This is why DAC mode produced a sound card on the PC and silence at the jack, while local
+    // playback carried on regardless. `RendererDmpMaster` keeps a mode field at +0x118 —
+    // IsUsbDacMode() is `field == 1`, IsA2dpSnkMode() is `field == 2` — and it only enters DAC mode
+    // when a UAC track takes the renderer. It cannot, because our own playback still holds
+    // SoundService's single "Music" track; libSoundServiceFw's own log line is "Cannot create
+    // multiple tracks that have same type". So Start() was accepted and returned an all-zero
+    // stream_info: no stream was ever established.
+    //
+    // Pause is NOT enough (same lesson as USB-MSC, one layer down): a paused PlayerService still
+    // owns the track. Stop + drop the pinned sequence, then ClosePlayer, which is documented to
+    // release "SoundService's single Music track" — that is the thing standing in the way.
+    //
+    // Called directly, not via a nested run_guarded: this already runs under carry_out's guard,
+    // and the guard's jmp buffer does not nest.
+    if (on) {
+        set_transport(false);
+        cinder_audio_release_sequence();
+        int cp = cinder_audio_close_player();
+        char cm[96];
+        std::snprintf(cm, sizeof cm, "usb-dac: released Music track for the DAC (ClosePlayer rc=%d)",
+                      cp);
+        clog_(cm);
+    }
+
     int rc = std::system(on ? "/system/vendor/unknown321/bin/cinder-msc dac-on"
                             : "/system/vendor/unknown321/bin/cinder-msc dac-off");
     char m[128];
@@ -1408,6 +1551,18 @@ void apply_usb_dac() {
         } else {
             uac_render(false);
         }
+    }
+
+    // Leaving DAC mode: reclaim the player we closed on the way in. Without this the device is
+    // silent AFTER a DAC session too — we released the Music track and nothing ever took it back,
+    // which would turn one broken feature into two. Playback itself resumes on the next
+    // play_tracks; this only re-establishes the controller + listener.
+    if (!on) {
+        int ri = cinder_audio_init("cinder");
+        char rm[96];
+        std::snprintf(rm, sizeof rm, "usb-dac: reclaimed the player after DAC (init rc=%d)%s",
+                      ri, ri == 0 ? "" : "  (local playback may need a restart)");
+        clog_(rm);
     }
 }
 
@@ -1824,6 +1979,11 @@ void carry_out(int act) {
             // the gadget re-enumerating. A budget sized for the old body would fire the guard
             // mid-call and _exit a perfectly healthy app.
             run_guarded("carry_out: USB-DAC/LDAC toggle", 18, apply_usb_dac);
+            break;
+        case CINDER_ACT_BT_TOGGLE:
+            // 8 s: SetRfOnOff + at most ~0.9 s of polling + the connect request. Deliberately not
+            // generous — this runs on the render thread, and a long budget here buys a frozen UI.
+            run_guarded("carry_out: Bluetooth toggle", 8, apply_bt_toggle);
             break;
         case CINDER_ACT_SLEEP:         screen_toggle(); break; // Power = panel on/off (not lock)
         case CINDER_ACT_ENTER_USB_MSC:

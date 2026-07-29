@@ -1549,7 +1549,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::EnterUsbMsc => 11,
         Action::ExitUsbMsc => 19,
         Action::EqChanged(_) => 12,
-        Action::BtToggle(_) => return None, // UI-only (RE follow-up)
+        Action::BtToggle(_) => 26, // shell drives SetRfOnOff + reconnects the last device
         Action::SleepTimer(m) => {
             // internal: arm/cancel the countdown (no Sony service to start it)
             r.sleep_remaining_ms = *m as i64 * 60_000;
@@ -2000,6 +2000,25 @@ pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {
         Some(r) if r.app.usb_dac_on() => 1,
         _ => 0,
+    }
+}
+
+/// Is the Bluetooth switch on? (1/0). The shell reads this after a CINDER_ACT_BT_TOGGLE action to
+/// decide whether to power the radio up (and reconnect the last device) or down.
+#[no_mangle]
+pub extern "C" fn cinder_get_bt_on() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) if r.app.bt_on() => 1,
+        _ => 0,
+    }
+}
+
+/// Force the Bluetooth switch to match the radio's real state (from GetBtStatus). Sets state only;
+/// raises no action. Called at startup so the switch cannot claim the radio is on when it is not.
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_on(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_bt_on(on != 0);
     }
 }
 
