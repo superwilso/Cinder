@@ -334,7 +334,7 @@ enum {
     VIDX_SetCurrentSource    = 12,   // SetCurrentSource(const bool&)
     VIDX_SetLdacSoundQuality = 18,   // SetLdacSoundQuality(const enum&)
     VIDX_SetLdac             = 20,   // SetLdac(const bool&)
-    VIDX_GetSocketName       = 29,   // GetSocketName() -> std::string (sret)
+    VIDX_GetSocketName       = 29,   // void GetSocketName(std::string&)  — NOT sret; see below
 };
 
 static void* vslot(void* obj, int idx) { return (*(void***)obj)[idx]; }
@@ -384,33 +384,41 @@ static int ldac_probe() {
     clog_("ldac: SetCurrentSource(true) …");
     wd_arm(12); ((fn_b)vslot(bt, VIDX_SetCurrentSource))(bt, &t); wd_disarm();
 
-    // GetSocketName returns a libc++ std::string BY VALUE (sret): hidden result ptr is arg0.
-    // libc++ 3.9 layout, 12 bytes: (bytes[0] & 1) == 0 -> short, size = bytes[0] >> 1, data =
-    // &bytes[1]; otherwise long, {cap, size, data} as words.
-    // GetSocketName THREW on the first device run with no headphones connected: libcxxrt reported
-    // "Fatal error during phase 1 unwinding" and the process died at PC=0. Catch it, because "this
-    // call throws unless a link is up" is itself the answer to Q1 — and losing the run to it means
-    // Q2 never gets asked.
-    clog_("ldac: GetSocketName() …");
-    typedef void (*fn_s)(void*, void*);
-    unsigned char s[12] = {0};
+    // CORRECTED 2026-07-29. This used to be called as if it returned a std::string BY VALUE —
+    // `fn(s, bt)`, hidden sret pointer first, `this` second. It does not. The library states its
+    // own prototype in .rodata (see reference: __PRETTY_FUNCTION__ literals):
+    //
+    //     void pst::services::BtTransmitterService::GetSocketName(pst::base::string &)
+    //
+    // Void return, string by REFERENCE. So the old call handed a 12-byte stack array to the
+    // function as `this` and the client object as the out-param — which is why it "threw" with
+    // libcxxrt reporting "Fatal error during phase 1 unwinding" and died at PC=0. That was a
+    // swapped argument list, NOT evidence about the Bluetooth link, and the previous conclusion
+    // ("this call throws unless a link is up") should not be trusted.
+    //
+    // `pst::base::string` is a typedef, not a distinct class: the mangled form N3pst4base6stringE
+    // appears in no symbol anywhere in the vendor tree, while the marshaller's own PLT entry is
+    //     TransactionParam::GetStr(std::__1::basic_string<char, ...>&)
+    // so it is plain libc++ std::string. This translation unit is compiled against the libc++
+    // 3.9.0 headers that match the device runtime, so a real std::string is ABI-correct here and
+    // there is nothing left to hand-decode.
+    clog_("ldac: GetSocketName(std::string&) …");
+    typedef void (*fn_s)(void*, std::string*);
+    std::string sock_name;
     bool got_name = false;
     wd_arm(12);
     try {
-        ((fn_s)vslot(bt, VIDX_GetSocketName))(s, bt);
+        ((fn_s)vslot(bt, VIDX_GetSocketName))(bt, &sock_name);
         got_name = true;
     } catch (...) {
-        clog_("ldac: GetSocketName THREW — the transmitter has no open source (connect the LDAC "
-              "headphones first, per ldac-bridge/TEST.md §2)");
+        clog_("ldac: GetSocketName THREW");
     }
     wd_disarm();
     char name[128] = {0};
     if (got_name) {
-        const char* data; size_t n;
-        if ((s[0] & 1) == 0) { n = s[0] >> 1; data = (const char*)&s[1]; }
-        else { unsigned* w = (unsigned*)s; n = w[1]; data = (const char*)(uintptr_t)w[2]; }
+        size_t n = sock_name.size();
         if (n >= sizeof name) n = sizeof name - 1;
-        std::memcpy(name, data, n);
+        std::memcpy(name, sock_name.data(), n);
         name[n] = '\0';
     }
     std::fprintf(stderr, "[cinder-probe] ldac: Q1 socket name = '%s' (len %zu, pump ticks %u)\n",
@@ -423,21 +431,31 @@ static int ldac_probe() {
     //    async after SetCurrentSource, so retry ~2 s before calling it a no.
     int sock = -1;
     if (!got_name) {
-        clog_("ldac: Q1 INCONCLUSIVE — the call threw, which is what it does with no link up. "
-              "Re-run with the LDAC headphones connected; this is NOT evidence against the "
-              "control plane.");
+        clog_("ldac: Q1 INCONCLUSIVE — GetSocketName threw. With the argument order now corrected "
+              "this is NO LONGER the expected outcome, so treat it as a real fault: check the pump "
+              "tick count above before blaming the link.");
     } else if (name[0] == '\0') {
         clog_("ldac: Q1 FAIL — GetSocketName returned EMPTY with a live pump and a link up, so "
               "this really is the control plane: re-check the open trigger in FUN_00019aa0's "
               "callers");
     } else {
+        // ADDRLEN IS PART OF THE NAME. An abstract AF_UNIX address is a BYTE STRING of length
+        // (addrlen - offsetof(sun_path)), not a C string — the kernel compares those bytes exactly,
+        // trailing NULs included. BtTransmitterService binds with the FULL sockaddr_un (addrlen 110),
+        // so its real name is "pst::services::bttransmitterservice" followed by 72 NULs, and a
+        // connect() sized to strlen() asks for a *different* name and gets ECONNREFUSED.
+        //
+        // This is invisible in /proc/net/unix, which prints the name up to the first NUL and pads the
+        // column — the entry looks like an exact match. `od -c` on that line is what shows it: 107
+        // bytes after the '@', i.e. 110 - sizeof(sa_family_t) - 1. Measured on device 2026-07-29.
         for (int i = 0; i < 20 && sock < 0; i++) {
             sock = socket(AF_UNIX, SOCK_STREAM, 0);
             struct sockaddr_un a; std::memset(&a, 0, sizeof a);
             a.sun_family = AF_UNIX;
             size_t n = std::strlen(name);
+            if (n > sizeof a.sun_path - 1) n = sizeof a.sun_path - 1;
             std::memcpy(a.sun_path + 1, name, n);   // abstract namespace: sun_path[0] stays NUL
-            socklen_t len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
+            socklen_t len = (socklen_t)sizeof a;    // 110 — match the server's bind exactly
             if (connect(sock, (struct sockaddr*)&a, len) < 0) { close(sock); sock = -1; usleep(100000); }
         }
         if (sock >= 0) clog_("ldac: Q1 PASS — connected to the transmitter's audio socket");

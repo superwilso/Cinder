@@ -14,6 +14,13 @@ use crate::widgets::{fill_rect, sty};
 /// 'master volume' range) — the UI level maps 1:1 onto the mixer.
 pub const VOL_MAX: u8 = 120;
 
+/// Bluetooth output runs on its own, much coarser scale. AVRCP has no "set level" — the only
+/// volume verbs `BtTransmitterServiceClient` exposes are `SetVolumeUp`/`SetVolumeDown` (vtable
+/// slots 17/16), one sink step per call — so the UI level here has to BE the step count rather
+/// than something rescaled onto it. 30 is the usual A2DP sink granularity; the HUD stretches it
+/// back over the same 0..VOL_MAX bar so both routes look identical on screen.
+pub const BT_VOL_MAX: u8 = 30;
+
 /// How many pump frames the volume HUD stays up after the last change (~1.6 s at the 60 fps
 /// pump; the exact pump rate is the shell's, this is just "a moment").
 pub const VOL_FRAMES: u8 = 96;
