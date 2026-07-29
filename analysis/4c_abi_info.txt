@@ -1,0 +1,5 @@
+=== Phase 4c: ABI compatibility info ===
+
+Key question: clang/LLVM vs GCC C++ ABI — affects libstdc++ linkage
+for the replacement player's C shim.
+

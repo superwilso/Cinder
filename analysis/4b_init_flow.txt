@@ -1,0 +1,46 @@
+=== Phase 4b: HgrmMediaPlayerApp init service ===
+
+(not found in init.rc files)
+
+=== Binary location ===
+artifacts/rootfs_mnt/vendor/sony/etc/hgrm_setLcdValidateGradually.sh
+artifacts/rootfs_mnt/vendor/sony/bin/HgrmMediaPlayerApp
+
+=== Linked libraries (if readable) ===
+ 0x00000001 (NEEDED)                     Shared library: [libcxxrt.so.1]
+ 0x00000001 (NEEDED)                     Shared library: [libeaselcore.so]
+ 0x00000001 (NEEDED)                     Shared library: [libeaselqt.so]
+ 0x00000001 (NEEDED)                     Shared library: [libpstcore.so]
+ 0x00000001 (NEEDED)                     Shared library: [libPlayerServiceClient.so]
+ 0x00000001 (NEEDED)                     Shared library: [libPlayerServiceClientUtil.so]
+ 0x00000001 (NEEDED)                     Shared library: [libMediaStoreServiceClient.so]
+ 0x00000001 (NEEDED)                     Shared library: [libVolumeService.so]
+ 0x00000001 (NEEDED)                     Shared library: [libAudioInRecorderServiceClient.so]
+ 0x00000001 (NEEDED)                     Shared library: [libOneTrackPlayerServiceClient.so]
+ 0x00000001 (NEEDED)                     Shared library: [libPowerMgrServiceClient.so]
+ 0x00000001 (NEEDED)                     Shared library: [libConnMgrService.so]
+ 0x00000001 (NEEDED)                     Shared library: [libPathMgrService.so]
+ 0x00000001 (NEEDED)                     Shared library: [libStorageMgrService.so]
+ 0x00000001 (NEEDED)                     Shared library: [libConfigurationService.so]
+ 0x00000001 (NEEDED)                     Shared library: [libEffectCtrlDmp.so]
+ 0x00000001 (NEEDED)                     Shared library: [libNcAsmService.so]
+ 0x00000001 (NEEDED)                     Shared library: [libSoundServiceSettingsDmp.so]
+ 0x00000001 (NEEDED)                     Shared library: [libFuncMgrService.so]
+ 0x00000001 (NEEDED)                     Shared library: [libAudioAnalyzerServiceClient.so]
+ 0x00000001 (NEEDED)                     Shared library: [libjson.so]
+ 0x00000001 (NEEDED)                     Shared library: [libScreenshotShared.so]
+ 0x00000001 (NEEDED)                     Shared library: [libUsbMgrService.so]
+ 0x00000001 (NEEDED)                     Shared library: [libDmpConfig.so]
+ 0x00000001 (NEEDED)                     Shared library: [libRecFileEditUtil.so]
+ 0x00000001 (NEEDED)                     Shared library: [libFuncArchUtils.so]
+ 0x00000001 (NEEDED)                     Shared library: [libQt5Quick.so.5]
+ 0x00000001 (NEEDED)                     Shared library: [libQt5Qml.so.5]
+ 0x00000001 (NEEDED)                     Shared library: [libQt5Widgets.so.5]
+ 0x00000001 (NEEDED)                     Shared library: [libQt5Gui.so.5]
+ 0x00000001 (NEEDED)                     Shared library: [libQt5Core.so.5]
+ 0x00000001 (NEEDED)                     Shared library: [libc++.so.1]
+ 0x00000001 (NEEDED)                     Shared library: [libm.so.6]
+ 0x00000001 (NEEDED)                     Shared library: [libgcc_s.so.1]
+ 0x00000001 (NEEDED)                     Shared library: [libpthread.so.0]
+ 0x00000001 (NEEDED)                     Shared library: [libc.so.6]
+ 0x00000001 (NEEDED)                     Shared library: [ld-linux-armhf.so.3]

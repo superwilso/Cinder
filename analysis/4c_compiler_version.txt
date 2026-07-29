@@ -1,0 +1,33 @@
+=== Phase 4c: Compiler version strings ===
+
+--- HgrmMediaPlayerApp ---
+GCC_3.5
+libgcc_s.so.1
+kFuncLanguageStudy
+vgccce
+GCC: (4.9.2_cos_gg_4.9.2-r145-41f3e25635616c067b9ee272304e6f86ac8ee9db_4.9.2-r145) 4.9.x 20150123 (prerelease)
+Chromium OS 3.9_pre265926-r19 clang version 3.9.0 (/var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache/distfiles/host/egit-src/llvm.git 26a9873b72c6dbb425ae075fcf51caa9fc5e892b) (based on LLVM 3.9.0svn)
+-frecord-gcc-switches
+.GCC.command.line
+
+--- ELF header ---
+  Class:                             ELF32
+  OS/ABI:                            UNIX - System V
+  ABI Version:                       0
+  Type:                              DYN (Shared object file)
+  Machine:                           ARM
+  Entry point address:               0x12d5d5
+  Flags:                             0x5000400, Version5 EABI, hard-float ABI
+
+--- libSoundServiceFw.so ---
+GCC_3.5
+libgcc_s.so.1
+jenkins-MI-Release-master-docker-master-sonyav-clangllvm392-153
+GCC: (4.9.2_cos_gg_4.9.2-r145-41f3e25635616c067b9ee272304e6f86ac8ee9db_4.9.2-r145) 4.9.x 20150123 (prerelease)
+Chromium OS 3.9_pre265926-r19 clang version 3.9.0 (/var/cache/chromeos-cache/distfiles/host/egit-src/clang.git af6a0b98569cf7981fe27327ac4bf19bd0d6b162) (/var/cache/chromeos-cache/distfiles/host/egit-src/llvm.git 26a9873b72c6dbb425ae075fcf51caa9fc5e892b) (based on LLVM 3.9.0svn)
+GCC: (4.8.2_cos_gg_38c6bf0_4.8.2-r76) 4.8.x-google 20140307 (prerelease)
+GCC: (crosstool-NG linaro-1.13.1-4.8-2014.04 - Linaro GCC 4.8-2014.04) 4.8.3 20140401 (prerelease)
+-iprefix /home/hagoromo/work/toolchain--2015-04-27/armv7a-cros-linux-gnueabi-4.8/usr/x86_64-pc-linux-gnu/armv7a-cros-linux-gnueabi/gcc-bin/4.8.x-google/../../../../lib/gcc/armv7a-cros-linux-gnueabi/4.8.x-google/
+-isysroot /home/hagoromo/work/toolchain--2015-04-27/armv7a-cros-linux-gnueabi-4.8/usr/x86_64-pc-linux-gnu/armv7a-cros-linux-gnueabi/gcc-bin/4.8.x-google/../../../../armv7a-cros-linux-gnueabi
+-frecord-gcc-switches
+.GCC.command.line

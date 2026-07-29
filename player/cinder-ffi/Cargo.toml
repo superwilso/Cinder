@@ -1,0 +1,27 @@
+[package]
+name = "cinder-ffi"
+version = "0.1.0"
+edition = "2021"
+
+# Static C-ABI library. Built for arm-unknown-linux-gnueabihf (glibc) and linked into
+# the C++ easel shell `cinder-home`, so the whole Option-B Home app is ONE glibc process:
+#   [C++ easel/appmgr shell] + [this Rust UI] + [C/C++ Sony IPC shims].
+# The musl-static `cinder-device` (the SIGSTOP-overlay safe build) is unaffected.
+[lib]
+name = "cinder_ffi"
+crate-type = ["staticlib"]
+
+[features]
+# Forwarded to cinder-ui: `--features dev` selects the development channel marker. build.sh passes
+# it for the dev build; the stable build omits it. Same tree, one flag.
+dev = ["cinder-ui/dev"]
+
+[dependencies]
+cinder-ui = { path = "../cinder-ui" }
+cinder-db = { path = "../cinder-db" }
+libc = "0.2"
+# Album-cover decoders (pure Rust — must stay glibc-2.23-clean, no C deps).
+# JPEG covers the overwhelming majority of embedded art; PNG the rest; BMP is hand-rolled
+# in art_load.rs (the DB's pre-rendered `bmpfile` thumbnails).
+zune-jpeg = "0.4"
+png = "0.17"

@@ -1,0 +1,41 @@
+=== Phase 5: Stock vs Walkman One Diff ===
+Stock: artifacts/unpacked/stock
+Walkman One: artifacts/unpacked/walkmanone
+Date: Tue May 26 16:26:06 BST 2026
+
+=== Sector-level file list diff ===
+0a1
+> -rw-r--r-- 1 sony sony      4096 May 26 16:14 0.bin
+2,9c3,10
+< -rw-r--r-- 1 sony sony      8192 May 26 16:14 0.bin
+< -rw-r--r-- 1 sony sony      8192 May 26 16:14 8.bin
+< -rw-r--r-- 1 sony sony     24576 May 26 16:14 7.bin
+< -rw-r--r-- 1 sony sony    135168 May 26 16:14 3.bin
+< -rw-r--r-- 1 sony sony    278528 May 26 16:14 4.bin
+< -rw-r--r-- 1 sony sony    733184 May 26 16:14 5.bin
+< -rw-r--r-- 1 sony sony   7168000 May 26 16:14 2.bin
+< -rw-r--r-- 1 sony sony 838860800 May 26 16:14 6.bin
+---
+> -rw-r--r-- 1 sony sony     20480 May 26 16:14 8.bin
+> -rw-r--r-- 1 sony sony     49152 May 26 16:14 4.bin
+> -rw-r--r-- 1 sony sony    270336 May 26 16:14 5.bin
+> -rw-r--r-- 1 sony sony    770048 May 26 16:14 6.bin
+> -rw-r--r-- 1 sony sony    966656 May 26 16:14 9.bin
+> -rw-r--r-- 1 sony sony   7258112 May 26 16:14 2.bin
+> -rw-r--r-- 1 sony sony   7700480 May 26 16:14 3.bin
+> -rw-r--r-- 1 sony sony 838860800 May 26 16:14 7.bin
+12c13
+< total 827376
+---
+> total 835856
+
+=== Size changes ===
+  CHANGED: 0.bin (8192 → 4096 bytes, delta -4096)
+  CHANGED: 2.bin (7168000 → 7258112 bytes, delta 90112)
+  CHANGED: 3.bin (135168 → 7700480 bytes, delta 7565312)
+  CHANGED: 4.bin (278528 → 49152 bytes, delta -229376)
+  CHANGED: 5.bin (733184 → 270336 bytes, delta -462848)
+  CHANGED: 6.bin (838860800 → 770048 bytes, delta -838090752)
+  CHANGED: 7.bin (24576 → 838860800 bytes, delta 838836224)
+  CHANGED: 8.bin (8192 → 20480 bytes, delta 12288)
+  ADDED in W1: 9.bin

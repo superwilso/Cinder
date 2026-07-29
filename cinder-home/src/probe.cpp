@@ -1,0 +1,1110 @@
+// cinder-probe — standalone, ZERO-BOOT-RISK diagnostic.
+//
+// It runs ONLY the suspect cinder-home init calls (framebuffer open, library DB load,
+// PlayerService connect, a render+poll loop) in ISOLATION — it does NOT do the easel/appmgr
+// lifecycle, so it does NOT register as the Home app and CANNOT affect boot. The stock UI keeps
+// running; the probe just briefly touches /dev/graphics/fb0 (cosmetic flicker) and connects to
+// PlayerService as an extra client. Every call is watchdog-bounded: on a hang it logs the exact
+// PC + backtrace + maps and exits, so we learn precisely which call blocks WITHOUT a flash.
+//
+// Run it from a shell on the device, e.g. over adb (/tmp is the only writable exec mount —
+// /data and /contents are noexec; toolbox chmod needs octal):
+//   adb push cinder-home/dist/dev/cinder-probe /tmp/cinder-probe
+//   adb shell 'chmod 755 /tmp/cinder-probe && \
+//     LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib \
+//     /tmp/cinder-probe'
+// Watch the printed trace: the LAST line before it stops is the call that hangs.
+#include "cinder.h"
+#include "cinder_audio.h"
+#include "cinder_analyzer.h"
+#include "discover.h"
+#include <cstdio>
+#include <cstdlib>
+#include <csignal>
+#include <cstring>
+#include <string>
+#include <ucontext.h>
+#include <unistd.h>
+#include <execinfo.h>
+#include <initializer_list>
+#include <pthread.h>
+#include <functional>
+#include <cerrno>
+#include <stddef.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <alsa/asoundlib.h>
+
+static void clog_(const char* m) { std::fprintf(stderr, "[cinder-probe] %s\n", m); std::fflush(stderr); }
+
+// ── pst::core::Framework (libpstcore.so) — the missing event loop ────────────────────────────
+// Hypothesis under test (2026-07-27): every PlayerService call returns UNINITIALISED STACK
+// (Connect rc=0xb6xxxxxx, IsConnected true-from-garbage, SetTrackSequence "99") and the service
+// side logs NOTHING to /dev/log/main — so the binder transaction never completes. Sony's client
+// proxies are async: the reply is delivered by pst::core::Framework's event looper, which for a
+// Qt app libeaselqt pumps and which NOTHING in Cinder pumps (main.cpp:229 documents the dead
+// pump but never linked it to the dead IPC). If that is the cause, driving Framework::Pump()
+// makes the out-params fill in.
+// Declared by hand (no SDK headers) purely to link against the device .so — return types are
+// absent from the Itanium mangling, so only the names/params below have to match:
+//   _ZN3pst4core9Framework12GetReferenceEv   _ZN3pst4core9Framework4PumpEb
+//   _ZN3pst4core9Framework18GetBinderLastErrorEv
+// GetReference() is a static Meyers singleton; StartForApplication is a NON-static member —
+// easel::Framework's ctor (libeaselcore @0x5c18..0x5c46) does exactly
+// `GetReference().StartForApplication(job, /*bool*/ true)`, r0 = the singleton. That call is
+// how cinder-home's own Framework comes up today (ApplicationBase::run -> easel::Framework).
+namespace pst { namespace core {
+class Framework {
+public:
+    static Framework& GetReference();
+    static int  GetBinderLastError();
+    int  StartForApplication(std::function<void()> job, bool flag);
+    void StopForApplication();
+    bool Pump(bool short_timeout);
+};
+} }
+
+static volatile bool g_pump_run = false;
+static volatile unsigned g_pump_ticks = 0;
+static void* pump_thread(void* fwp) {
+    pst::core::Framework* fw = static_cast<pst::core::Framework*>(fwp);
+    while (g_pump_run) { fw->Pump(true); ++g_pump_ticks; }
+    return nullptr;
+}
+
+static int  g_pump_argc = 0;
+static char** g_pump_argv = nullptr;
+static void pump_job();      // the actual play test, run once the framework is up (below)
+static void pump_finish() { std::fprintf(stderr, "[cinder-probe] pump: finish-job fired\n"); }
+
+static void dump_maps() {
+    FILE* f = std::fopen("/proc/self/maps", "r");
+    if (!f) return;
+    char line[512];
+    std::fprintf(stderr, "--- /proc/self/maps (exec regions) ---\n");
+    while (std::fgets(line, sizeof line, f))
+        if (std::strstr(line, "r-xp")) std::fprintf(stderr, "%s", line);
+    std::fclose(f);
+    std::fflush(stderr);
+}
+
+static void crash_handler(int sig, siginfo_t* si, void* uc_) {
+    unsigned long pc = 0, lr = 0;
+#if defined(__arm__)
+    ucontext_t* uc = static_cast<ucontext_t*>(uc_);
+    pc = uc->uc_mcontext.arm_pc; lr = uc->uc_mcontext.arm_lr;
+#endif
+    std::fprintf(stderr, "[cinder-probe] *** %s : PC=0x%08lx LR=0x%08lx addr=%p ***\n",
+                 (sig == SIGALRM ? "WATCHDOG (this call HUNG — this is the culprit)" : "FATAL SIGNAL"),
+                 pc, lr, si ? si->si_addr : (void*)0);
+    void* bt[24];
+    int n = backtrace(bt, 24);
+    std::fprintf(stderr, "--- backtrace (%d frames) ---\n", n);
+    backtrace_symbols_fd(bt, n, 2);
+    std::fflush(stderr);
+    dump_maps();
+    _exit(42);
+}
+
+static void install_diagnostics() {
+    struct sigaction sa; std::memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = crash_handler; sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    for (int s : {SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE, SIGALRM}) sigaction(s, &sa, nullptr);
+}
+
+static void wd_arm(unsigned sec) { alarm(sec); }
+static void wd_disarm() { alarm(0); }
+
+// --analyzer [mode]: validate Sony's AudioAnalyzerService spectrum path in ISOLATION before it is
+// ever enabled in the boot shell. Connects, starts the stream, and reports whether frames flow +
+// the raw band values (so spectrum::from_bands can be calibrated). Play audio while running this.
+// `mode` defaults to 1 (SPECTRUM); pass 0 to try LEVEL if SPECTRUM yields no frames.
+static int g_an_mode = 1;
+
+// The analyzer body, run INSIDE Framework::StartForApplication with a Pump() thread going — see
+// analyzer_probe below for why that is not optional.
+static int analyzer_job(int mode) {
+    std::fprintf(stderr, "[cinder-probe] analyzer: cinder_analyzer_start(mode=%d, 20Hz, default) …\n", mode);
+    std::fflush(stderr);
+    wd_arm(12);
+    int rc = cinder_analyzer_start(mode, 20.0f, 0);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] analyzer: start returned %d (%s)\n", rc,
+        rc == 0 ? "OK" :
+        rc == -1 ? "dlopen failed (lib absent)" :
+        rc == -2 ? "missing symbol (dlsym)" :
+        rc == -3 ? "GetInstance returned NULL" :
+        rc == -4 ? "already started" : "?");
+    std::fflush(stderr);
+    if (rc != 0) return 1;
+
+    clog_("analyzer: watching for spectrum frames (8s) — play audio now …");
+    int vals[16];
+    for (int i = 0; i < 16; ++i) {
+        // Just wait — no render tick. See analyzer_job_entry: this process must not draw.
+        int frames = cinder_analyzer_frames();
+        if (i % 2 == 0) {
+            int n = cinder_analyzer_last(vals, 16);
+            std::fprintf(stderr, "[cinder-probe] analyzer: frames=%d bands=%d  vals[0..7]= %d %d %d %d %d %d %d %d\n",
+                frames, n, vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7]);
+            std::fflush(stderr);
+        }
+        usleep(500000);
+    }
+    int total = cinder_analyzer_frames();
+    wd_arm(8); cinder_analyzer_stop(); wd_disarm();
+    if (total > 0) {
+        clog_("analyzer: PASS — frames flowed. The visualiser will work; note the printed band range "
+              "(spectrum::from_bands auto-detects dBFS vs linear, so it should need no change). The "
+              "shell enables the analyzer BY DEFAULT — cinder_viz.conf only turns it OFF.");
+        return 0;
+    }
+    clog_("analyzer: started but NO frames — try the other mode (--analyzer 0), confirm audio is "
+          "playing, or the service emits only while its own screen is foregrounded.");
+    return 2;
+}
+
+static void analyzer_job_entry() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] analyzer: job running (fw=%p) — starting Pump() thread\n",
+                 (void*)&fw);
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) {
+        clog_("analyzer: pthread_create FAILED"); _exit(1);
+    }
+    usleep(300000);
+    std::fprintf(stderr, "[cinder-probe] analyzer: %u pump ticks before connect\n", g_pump_ticks);
+    // DELIBERATELY NO cinder_render_init(). The Home app is normally running while this probe is
+    // used, and it owns the framebuffer: opening fb0 a second time and then calling
+    // cinder_render_tick() would paint THIS process's (blank, Lock-screen) UI over the live app.
+    // The frame counter lives in the listener and increments whether or not a renderer exists —
+    // cinder_set_spectrum simply returns early when there is none — so the diagnostic loses
+    // nothing. The old version did init a renderer "so set_spectrum has a target", which was true
+    // and unnecessary.
+    _exit(analyzer_job(g_an_mode));
+}
+
+// --analyzer [mode] — THE ENTRY POINT.
+//
+// This MUST run with pst::core::Framework started and pumped, and for a long time it did not.
+// AudioAnalyzerService is a Sony service client exactly like PlayerService: the call marshals a
+// request and the REPLY is dispatched by the framework's event looper. With no looper the
+// out-params stay uninitialised and the service never does anything — which is the entire reason
+// playback appeared broken for weeks (Connect "returned" a pointer, IsConnected read true from
+// stack garbage, and the service logged nothing at all).
+//
+// So the old version of this probe would have reported "started but NO frames" on a perfectly good
+// device, and the obvious conclusion — that the SetPassband fix did not work — would have been
+// wrong. Same shape as the bug it was meant to help diagnose.
+static int analyzer_probe(int mode) {
+    g_an_mode = mode;
+    install_diagnostics();
+    clog_("analyzer: Framework::GetReference() …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] analyzer: got Framework=%p BinderLastError=%d\n",
+                 (void*)&fw, pst::core::Framework::GetBinderLastError());
+    clog_("analyzer: StartForApplication(finish_job, true) …");
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    std::fprintf(stderr, "[cinder-probe] analyzer: StartForApplication returned %d\n", sr);
+    analyzer_job_entry();
+    return 0; // unreachable: analyzer_job_entry _exit()s with the real status
+}
+
+// The --pump job: runs INSIDE pst::core::Framework::StartForApplication, i.e. with the framework
+// up, plus our own Pump() thread so binder replies get dispatched even though (unlike a Sony app)
+// nothing else is driving the loop. Everything else is identical to --play, so a difference in
+// outcome isolates exactly one variable: the event loop.
+static void pump_job() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] pump: job running (fw=%p) — starting Pump() thread\n",
+                 (void*)&fw);
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) {
+        clog_("pump: pthread_create FAILED"); _exit(1);
+    }
+    usleep(300000);
+    std::fprintf(stderr, "[cinder-probe] pump: %u ticks before connect\n", g_pump_ticks);
+    clog_("pump: cinder_audio_init(\"cinderprobe\") …");
+    wd_arm(12);
+    int ai = cinder_audio_init("cinderprobe");
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] pump: audio_init=%d BinderLastError=%d\n",
+                 ai, pst::core::Framework::GetBinderLastError());
+    int waited = 0;
+    while (!cinder_audio_is_connected() && waited < 50) { usleep(100000); ++waited; }
+    std::fprintf(stderr, "[cinder-probe] pump: IsConnected=%d after %d ms (%u ticks)\n",
+                 cinder_audio_is_connected(), waited * 100, g_pump_ticks);
+    // Reclaim a "Music" track leaked into hagodaemon by an earlier session that died without
+    // shutting down (SoundService allows exactly one per type). Harmless when nothing is open.
+    wd_arm(8);
+    cinder_audio_close_player();
+    wd_disarm();
+    wd_arm(15);
+    int pr = cinder_audio_play_tracks(
+        const_cast<const char* const*>(g_pump_argv + 2), g_pump_argc - 2, 0);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] pump: play_tracks=%d BinderLastError=%d\n",
+                 pr, pst::core::Framework::GetBinderLastError());
+    char uri[512];
+    bool resumed = false;
+    for (int i = 1; i <= 14; ++i) {
+        sleep(1);
+        int cur = -1, tot = -1;
+        cinder_audio_position(&cur, &tot);
+        wd_arm(8);
+        int n = cinder_audio_current_uri(uri, sizeof uri);
+        wd_disarm();
+        std::fprintf(stderr,
+                     "[cinder-probe] pump: t+%ds ticks=%u events=%u pos=%d/%d uri(%d)=%s\n",
+                     i, g_pump_ticks, cinder_audio_listener_events(), cur, tot,
+                     n, n > 0 ? uri : "(none)");
+        // The graph reaches OMX_StatePause and stays there: position never moves. Escalate ONCE
+        // to Resume() — the engine-level unpause — and keep watching the same counters, so the
+        // log shows unambiguously whether Resume is the missing Play transition.
+        if (!resumed && i >= 3 && cur <= 0) {
+            resumed = true;
+            clog_("pump: position not advancing — trying Resume() …");
+            wd_arm(8); cinder_audio_resume(); wd_disarm();
+        }
+        // Which PCM device did Sony's stack actually open? This is the CPU-vs-hardware-DAC
+        // answer: hw:0,4 = cxd3778gf-icx-lowpower (the low-power S-Master DAC path),
+        // 0 = hires-out, 1 = standard, 2/3 = DSD.
+        if (i == 5 || i == 12) {
+            for (int d = 0; d <= 5; ++d) {
+                char p[96];
+                std::snprintf(p, sizeof p, "/proc/asound/card0/pcm%dp/sub0/status", d);
+                FILE* f = std::fopen(p, "r");
+                if (!f) continue;
+                char st[64] = {0};
+                if (std::fgets(st, sizeof st, f)) {
+                    char* nl = std::strchr(st, '\n'); if (nl) *nl = 0;
+                    if (std::strcmp(st, "closed") != 0)
+                        std::fprintf(stderr, "[cinder-probe] pump:   ALSA pcm%dp = %s\n", d, st);
+                }
+                std::fclose(f);
+            }
+        }
+        std::fflush(stderr);
+    }
+    clog_("pump: DONE — is audio playing?");
+    // Release the player before dying, or the next run inherits a stuck Music track.
+    // CINDER_KEEPPLAYING=1 leaves it running (to listen to the result over the headphones).
+    const char* keep = getenv("CINDER_KEEPPLAYING");
+    if (!(keep && keep[0] == '1')) { wd_arm(8); cinder_audio_close_player(); wd_disarm(); }
+    std::fflush(stderr);
+    // _exit for the same reason as --play: static teardown runs through Sony's stale vtables.
+    _exit(pr == 0 ? 0 : 1);
+}
+
+// ── --ldac : USB-DAC -> LDAC bring-up, the two questions ldac-bridge/TEST.md asks ────────────
+//
+// WHY IT LIVES HERE AND NOT IN ldac-bridge. The standalone bridge cannot answer either question
+// as written: `libBtTransmitterService` is a `pst::services::*` client, so like every other one on
+// this device its calls are ASYNC and their replies are delivered by pst::core::Framework's event
+// looper. `ldac-bridge/main.c` starts no framework and pumps nothing, so SetLdac/SetCurrentSource
+// never leave the process and GetSocketName returns UNINITIALISED STACK. That failure looks exactly
+// like TEST.md's third outcome ("control plane assumption wrong -> go re-do Ghidra"), which is the
+// same trap that cost weeks on PlayerService (Connect "returned" 0xb6xxxxxx; IsConnected
+// true-from-garbage). Answering it here reuses the framework + pump + watchdog + backtrace that are
+// already proven in this binary, and it needs no .UPG flash and no reboot — just an adb push.
+//
+//   adb push cinder-home/dist/dev/cinder-probe /tmp/cinder-probe
+//   adb shell 'chmod 755 /tmp/cinder-probe && LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/lib \
+//              /tmp/cinder-probe --ldac'
+//
+// Q1: does the control plane make BtTransmitterService open its audio socket?
+// Q2: can we open the USB-DAC capture PCM, or does Sony's UAC service hold it (-EBUSY)?
+// The two are independent, and the whole point is to come back with an answer to EACH — a run that
+// dies on Q1 still reports what Q2 would have said.
+extern "C" {
+// Exported factory. Ghidra typed it void; it returns the client*.
+void* _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv(void);
+}
+
+// Vtable indices into the BtTransmitterServiceClient primary vtable, from
+// analysis/E_usbdac_ldac/ghidra/DumpVtable.java (vptr = group_base+8, confirmed against
+// CreateInstance; slot 0 = first virtual after the [0,typeinfo] header). Same table
+// ldac-bridge/src/btclient.c uses — keep the two in step.
+enum {
+    VIDX_SetCurrentSource    = 12,   // SetCurrentSource(const bool&)
+    VIDX_SetLdacSoundQuality = 18,   // SetLdacSoundQuality(const enum&)
+    VIDX_SetLdac             = 20,   // SetLdac(const bool&)
+    VIDX_GetSocketName       = 29,   // GetSocketName() -> std::string (sret)
+};
+
+static void* vslot(void* obj, int idx) { return (*(void***)obj)[idx]; }
+
+static int ldac_probe() {
+    install_diagnostics();
+
+    // 1. The framework FIRST. Without it every call below reads back stack garbage, and the pump
+    //    thread must exist before the first request or its reply has nobody to deliver it.
+    clog_("ldac: Framework::GetReference() …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] ldac: Framework=%p BinderLastError=%d\n",
+                 (void*)&fw, pst::core::Framework::GetBinderLastError());
+    clog_("ldac: StartForApplication(finish_job, true) …");
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] ldac: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    // WAIT for the looper to actually be turning before the first client call. The first run of
+    // this reported `pump ticks so far 0` at CreateInstance — the thread had not been scheduled
+    // yet — and a pst client call made with a dead looper returns uninitialised stack, which is
+    // the exact trap this probe exists to rule out.
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    std::fprintf(stderr, "[cinder-probe] ldac: pump running (%u ticks)\n", g_pump_ticks);
+
+    // 2. Control plane. Each call is watchdog-bounded, so a HANG names itself instead of looking
+    //    like a silent failure.
+    clog_("ldac: BtTransmitterServiceClientFactory::CreateInstance() …");
+    wd_arm(12);
+    void* bt = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] ldac: client=%p (pump ticks so far %u)\n",
+                 bt, g_pump_ticks);
+    if (!bt) { clog_("ldac: CreateInstance returned NULL — STOP"); return 1; }
+
+    typedef void (*fn_b)(void*, const bool*);
+    typedef void (*fn_i)(void*, const int*);
+    bool t = true, f = false;
+    int  q = 0;   // BtLdacSoundQuality::Auto
+    clog_("ldac: SetLdac(true) …");
+    wd_arm(12); ((fn_b)vslot(bt, VIDX_SetLdac))(bt, &t); wd_disarm();
+    clog_("ldac: SetLdacSoundQuality(Auto) …");
+    wd_arm(12); ((fn_i)vslot(bt, VIDX_SetLdacSoundQuality))(bt, &q); wd_disarm();
+    clog_("ldac: SetCurrentSource(true) …");
+    wd_arm(12); ((fn_b)vslot(bt, VIDX_SetCurrentSource))(bt, &t); wd_disarm();
+
+    // GetSocketName returns a libc++ std::string BY VALUE (sret): hidden result ptr is arg0.
+    // libc++ 3.9 layout, 12 bytes: (bytes[0] & 1) == 0 -> short, size = bytes[0] >> 1, data =
+    // &bytes[1]; otherwise long, {cap, size, data} as words.
+    // GetSocketName THREW on the first device run with no headphones connected: libcxxrt reported
+    // "Fatal error during phase 1 unwinding" and the process died at PC=0. Catch it, because "this
+    // call throws unless a link is up" is itself the answer to Q1 — and losing the run to it means
+    // Q2 never gets asked.
+    clog_("ldac: GetSocketName() …");
+    typedef void (*fn_s)(void*, void*);
+    unsigned char s[12] = {0};
+    bool got_name = false;
+    wd_arm(12);
+    try {
+        ((fn_s)vslot(bt, VIDX_GetSocketName))(s, bt);
+        got_name = true;
+    } catch (...) {
+        clog_("ldac: GetSocketName THREW — the transmitter has no open source (connect the LDAC "
+              "headphones first, per ldac-bridge/TEST.md §2)");
+    }
+    wd_disarm();
+    char name[128] = {0};
+    if (got_name) {
+        const char* data; size_t n;
+        if ((s[0] & 1) == 0) { n = s[0] >> 1; data = (const char*)&s[1]; }
+        else { unsigned* w = (unsigned*)s; n = w[1]; data = (const char*)(uintptr_t)w[2]; }
+        if (n >= sizeof name) n = sizeof name - 1;
+        std::memcpy(name, data, n);
+        name[n] = '\0';
+    }
+    std::fprintf(stderr, "[cinder-probe] ldac: Q1 socket name = '%s' (len %zu, pump ticks %u)\n",
+                 name, std::strlen(name), g_pump_ticks);
+    if (g_pump_ticks == 0)
+        clog_("ldac: *** pump never ticked — the framework is NOT running; nothing below is "
+              "trustworthy ***");
+
+    // 3. Q1 proper: can we connect to the socket the server should now be listening on? The open is
+    //    async after SetCurrentSource, so retry ~2 s before calling it a no.
+    int sock = -1;
+    if (!got_name) {
+        clog_("ldac: Q1 INCONCLUSIVE — the call threw, which is what it does with no link up. "
+              "Re-run with the LDAC headphones connected; this is NOT evidence against the "
+              "control plane.");
+    } else if (name[0] == '\0') {
+        clog_("ldac: Q1 FAIL — GetSocketName returned EMPTY with a live pump and a link up, so "
+              "this really is the control plane: re-check the open trigger in FUN_00019aa0's "
+              "callers");
+    } else {
+        for (int i = 0; i < 20 && sock < 0; i++) {
+            sock = socket(AF_UNIX, SOCK_STREAM, 0);
+            struct sockaddr_un a; std::memset(&a, 0, sizeof a);
+            a.sun_family = AF_UNIX;
+            size_t n = std::strlen(name);
+            std::memcpy(a.sun_path + 1, name, n);   // abstract namespace: sun_path[0] stays NUL
+            socklen_t len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n);
+            if (connect(sock, (struct sockaddr*)&a, len) < 0) { close(sock); sock = -1; usleep(100000); }
+        }
+        if (sock >= 0) clog_("ldac: Q1 PASS — connected to the transmitter's audio socket");
+        else std::fprintf(stderr, "[cinder-probe] ldac: Q1 FAIL — connect(@%s): %s\n",
+                          name, std::strerror(errno));
+    }
+
+    // 4. Q2, asked REGARDLESS of Q1's answer — the two failures need different fixes and one run
+    //    should classify both. Card index is dynamic (card4 only exists in UAC mode), so walk the
+    //    capture PCMs rather than assuming hw:4,0.
+    clog_("ldac: Q2 — probing USB-DAC capture PCMs …");
+    bool opened = false;
+    for (int card = 0; card < 8 && !opened; card++) {
+        char dev[32];
+        std::snprintf(dev, sizeof dev, "hw:%d,0", card);
+        snd_pcm_t* pcm = nullptr;
+        int rc = snd_pcm_open(&pcm, dev, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK);
+        if (rc == 0) {
+            std::fprintf(stderr, "[cinder-probe] ldac: Q2 PASS — %s opened for capture\n", dev);
+            snd_pcm_close(pcm);
+            opened = true;
+        } else if (rc == -EBUSY) {
+            std::fprintf(stderr, "[cinder-probe] ldac: Q2 FAIL — %s is BUSY (Sony's "
+                         "UsbDeviceAudioPlayerService owns it; the fix is contention, not RE)\n", dev);
+            opened = true;   // classified: stop walking
+        } else if (rc != -ENOENT && rc != -ENODEV) {
+            std::fprintf(stderr, "[cinder-probe] ldac: %s -> %s\n", dev, snd_strerror(rc));
+        }
+    }
+    if (!opened)
+        clog_("ldac: Q2 INCONCLUSIVE — no capture PCM at all. Is the gadget in UAC mode "
+              "(sys.sony.config uac) with a PC actually feeding audio?");
+
+    if (sock >= 0) close(sock);
+    clog_("ldac: releasing the source …");
+    wd_arm(12); ((fn_b)vslot(bt, VIDX_SetCurrentSource))(bt, &f); wd_disarm();
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] ldac: done (%u pump ticks)\n", g_pump_ticks);
+    std::fflush(nullptr);
+    _exit(0);   // same reason as eq_probe: do not unwind with the pump thread live
+}
+
+// ── --eq : what units does SetEq10BandValue actually take, and is the 10-band engine SELECTED? ──
+//
+// Two questions RE could not close, both of which decide whether the EQ screen does what it says:
+//
+//  1. UNITS. `libEffectCtrlDmp` exports BOTH `GetEq10BandValue` and `GetEq10BandValuedB`. Two
+//     getters means the raw value is NOT dB, so the -10..+10 the UI sends may not be the range
+//     Sony expects — and a value outside it would clip silently. Setting a known ladder and
+//     reading BOTH getters back answers it outright.
+//     The dB getter's RETURN TYPE is unknown too (mangling does not encode it), and this is armhf,
+//     so a float comes back in s0 and an int in r0 — reading the wrong one gives a plausible
+//     number from the wrong register. So the same address is called through both prototypes and
+//     both results printed; exactly one of them will make sense.
+//
+//  2. SELECTION. `SetSelectUsingEq(EqType)` / `GetSelectUsingEq()` exist and Cinder calls neither.
+//     `SetEq10Band(true)` may only arm the 10-band, not make the DSP USE it. Reading what stock
+//     leaves the selector at says whether that call is missing.
+//
+// Read-mostly: it restores every band it touched, and it does the easel lifecycle not at all, so
+// it cannot affect boot.
+namespace pst { namespace services { namespace sound { class EffectCtrlDmp; } } }
+extern "C" {
+void _ZN3pst8services5sound13EffectCtrlDmpC1Ev(void*);
+void _ZN3pst8services5sound13EffectCtrlDmp11SetEq10BandEb(void*, bool);
+void _ZN3pst8services5sound13EffectCtrlDmp16SetEq10BandValueENS1_8Eq10BandEi(void*, int, int);
+int  _ZN3pst8services5sound13EffectCtrlDmp16GetEq10BandValueENS1_8Eq10BandE(void*, int);
+void _ZN3pst8services5sound13EffectCtrlDmp18GetEq10BandValuedBENS1_8Eq10BandE(void);
+int  _ZN3pst8services5sound13EffectCtrlDmp16GetSelectUsingEqEv(void*);
+int  _ZN3pst8services5sound13EffectCtrlDmp12IsEq10BandOnEv(void*);
+}
+
+static int eq_probe() {
+    install_diagnostics();
+    clog_("eq: Framework::GetReference() + StartForApplication …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] eq: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+
+    // Same over-allocation care as the shim: the real object size is RE-confirmed in
+    // cinder-audio/src/effect_abi.hpp, and the 2026-06-25 heap corruption came from under-sizing.
+    static unsigned char obj[1024];
+    std::memset(obj, 0, sizeof obj);
+    clog_("eq: EffectCtrlDmp ctor …");
+    wd_arm(12);
+    _ZN3pst8services5sound13EffectCtrlDmpC1Ev(obj);
+    wd_disarm();
+
+    // Q2 first — it needs nothing set, so it reports the state STOCK left behind.
+    wd_arm(10);
+    int sel = _ZN3pst8services5sound13EffectCtrlDmp16GetSelectUsingEqEv(obj);
+    int on  = _ZN3pst8services5sound13EffectCtrlDmp12IsEq10BandOnEv(obj);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] eq: Q2 GetSelectUsingEq=%d  IsEq10BandOn=%d "
+                 "(pump ticks %u)\n", sel, on, g_pump_ticks);
+    if (g_pump_ticks == 0)
+        clog_("eq: *** pump never ticked — nothing below is trustworthy ***");
+
+    // Q1: set band 0 (32 Hz) across a ladder that brackets every plausible range and read back.
+    // A value the DSP rejects comes back CLAMPED, which is exactly what identifies the range.
+    void* dbfn = (void*)&_ZN3pst8services5sound13EffectCtrlDmp18GetEq10BandValuedBENS1_8Eq10BandE;
+    typedef int   (*db_i)(void*, int);
+    typedef float (*db_f)(void*, int);
+    int saved = _ZN3pst8services5sound13EffectCtrlDmp16GetEq10BandValueENS1_8Eq10BandE(obj, 0);
+    std::fprintf(stderr, "[cinder-probe] eq: band0 was %d — ladder (set -> raw / dB-as-int / "
+                 "dB-as-float):\n", saved);
+    _ZN3pst8services5sound13EffectCtrlDmp11SetEq10BandEb(obj, true);
+    for (int v : { -20, -12, -10, -6, 0, 6, 10, 12, 20 }) {
+        wd_arm(8);
+        _ZN3pst8services5sound13EffectCtrlDmp16SetEq10BandValueENS1_8Eq10BandEi(obj, 0, v);
+        int raw = _ZN3pst8services5sound13EffectCtrlDmp16GetEq10BandValueENS1_8Eq10BandE(obj, 0);
+        int di  = ((db_i)dbfn)(obj, 0);
+        float df = ((db_f)dbfn)(obj, 0);
+        wd_disarm();
+        std::fprintf(stderr, "    set %4d -> raw %4d   dB(int) %6d   dB(float) %8.3f%s\n",
+                     v, raw, di, (double)df, raw == v ? "" : "   <-- CLAMPED");
+    }
+    wd_arm(8);
+    _ZN3pst8services5sound13EffectCtrlDmp16SetEq10BandValueENS1_8Eq10BandEi(obj, 0, saved);
+    wd_disarm();
+    clog_("eq: band 0 restored");
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] eq: done (%u pump ticks)\n", g_pump_ticks);
+    // _exit, not return: the pump thread is still inside libpstcore, and letting the process unwind
+    // through static destructors while it is faults in the BT/effect libs. The measurement is
+    // already printed by here, so the crash was pure noise on top of a good run — but noise in a
+    // diagnostic's own output is exactly what makes the next one hard to read.
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// ── --bt : reconnect the last paired Bluetooth device ────────────────────────────────────────
+//
+// Headphones paired under stock stay paired under Cinder — the link key belongs to Sony's BT
+// service, not to whichever app is foreground. What does NOT happen is the CONNECT: stock calls it
+// at boot and Cinder calls nothing, so they sit paired and silent.
+//
+// `RequestLastDeviceConnection` (transmitter vtable slot 7) takes NO arguments — decompiled
+// 2026-07-29, `void(this)`. So this needs no device address, no pairing UI and no
+// BtCommonServiceClient. Same client the --ldac probe already proved constructs and responds.
+//
+// 2026-07-29 run 2: that connect returned quietly and the status never moved off 0. The pump was
+// turning and the radio read ON, so the call was delivered and declined. First candidate for why:
+// the --ldac path calls `SetCurrentSource(true)` and this one did not — the transmitter plausibly
+// refuses to connect while it is not the current source. One extra call to test it.
+//
+// `GetConnectInformation(this, int*)` (slot 5, decompiled) is read-only and tells us whether a
+// "last device" record exists at all; if SetCurrentSource does not fix it, that number is the
+// evidence for the addressed-connect fallback (GetPairedDeviceInfo -> RequestConnection).
+enum { VIDX_GetAvSrcConnectionStatus = 3, VIDX_GetConnectInformation = 5,
+       VIDX_RequestLastDeviceConnection = 7, VIDX_RequestDisconnection = 8,
+       VIDX_SetCurrentSourceBt = 12 };
+// BtCommonServiceClient — the RADIO, which is a different service from the transmitter. Cinder's
+// on/off toggle has always been UI-only (`SetRfOnOff` is never called), so the radio is in
+// whatever state something else left it, and a connect against a powered-down radio would look
+// exactly like the connect not working.
+extern "C" void* _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv(void);
+enum { VIDX_GetBtStatus = 3, VIDX_SetRfOnOff = 4 };
+
+static int bt_probe(bool disconnect, bool cycle) {
+    install_diagnostics();
+    clog_("bt: Framework::GetReference() + StartForApplication …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] bt: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    std::fprintf(stderr, "[cinder-probe] bt: pump running (%u ticks)\n", g_pump_ticks);
+
+    clog_("bt: BtTransmitterServiceClientFactory::CreateInstance() …");
+    wd_arm(12);
+    void* bt = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    if (!bt) { clog_("bt: CreateInstance returned NULL — STOP"); return 1; }
+
+    typedef int (*fn0)(void*);
+    typedef void (*fnb)(void*, const bool*);
+
+    // Radio first. Everything below is meaningless against a powered-down radio.
+    clog_("bt: BtCommonServiceClientFactory::CreateInstance() …");
+    wd_arm(12);
+    void* cmn = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    int rf = -1;
+    if (cmn) {
+        wd_arm(10); rf = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] bt: GetBtStatus = %d\n", rf);
+        if (rf == 0) {
+            clog_("bt: radio reads OFF — SetRfOnOff(true) …");
+            bool on = true;
+            wd_arm(15); ((fnb)vslot(cmn, VIDX_SetRfOnOff))(cmn, &on); wd_disarm();
+            for (int i = 0; i < 10; i++) {
+                usleep(500000);
+                wd_arm(10); rf = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); wd_disarm();
+                if (rf != 0) break;
+            }
+            std::fprintf(stderr, "[cinder-probe] bt: GetBtStatus after power-on = %d\n", rf);
+        }
+    } else {
+        clog_("bt: BtCommonServiceClient CreateInstance returned NULL");
+    }
+
+    // `cycle` exists to answer ONE question: is the BT middleware alive and acting on what we send
+    // it? The connect path is silent all the way down — the service logs "last device found" and
+    // then nothing, and MTK's stack (mtkbt + libBtMw, not BlueZ) logs nothing to any logcat buffer.
+    // So a declined connect and a dead middleware look identical from outside.
+    //
+    // Powering the radio down and back up is the strongest liveness test available WITHOUT guessing
+    // a new vtable signature: it reuses SetRfOnOff (slot 4) and GetBtStatus (slot 3), both already
+    // exercised. If GetBtStatus moves 7 -> 0 -> 7 the middleware is provably responsive and the
+    // connect failure lies with the peer or the profile, not with our call. If it does not move,
+    // the stack is wedged and that is the bug.
+    if (cycle && cmn) {
+        typedef void (*fnb2)(void*, const bool*);
+        bool off = false, on = true;
+        clog_("bt: cycle: SetRfOnOff(false) …");
+        wd_arm(15); ((fnb2)vslot(cmn, VIDX_SetRfOnOff))(cmn, &off); wd_disarm();
+        int low = rf;
+        for (int i = 0; i < 20; i++) {
+            usleep(500000);
+            wd_arm(10); low = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); wd_disarm();
+            if (low != rf) break;
+        }
+        std::fprintf(stderr, "[cinder-probe] bt: cycle: status after off = %d%s\n", low,
+                     low == rf ? "   <-- UNCHANGED: radio ignored the request" : "");
+        clog_("bt: cycle: SetRfOnOff(true) …");
+        wd_arm(15); ((fnb2)vslot(cmn, VIDX_SetRfOnOff))(cmn, &on); wd_disarm();
+        int back = low;
+        for (int i = 0; i < 30; i++) {
+            usleep(500000);
+            wd_arm(10); back = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); wd_disarm();
+            if (back != low) break;
+        }
+        std::fprintf(stderr, "[cinder-probe] bt: cycle: status after on = %d%s\n", back,
+                     back == low ? "   <-- STUCK: radio did not come back" : "");
+        sleep(2);
+    }
+
+    wd_arm(10);
+    int before = ((fn0)vslot(bt, VIDX_GetAvSrcConnectionStatus))(bt);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] bt: AvSrc status before = %d\n", before);
+
+    if (!disconnect) {
+        // Candidate 1: become the current source before asking for a connection.
+        clog_("bt: SetCurrentSource(true) …");
+        bool t = true;
+        wd_arm(15); ((fnb)vslot(bt, VIDX_SetCurrentSourceBt))(bt, &t); wd_disarm();
+        usleep(500000);
+    }
+
+    if (disconnect) {
+        clog_("bt: RequestDisconnection() …");
+        wd_arm(15); ((fn0)vslot(bt, VIDX_RequestDisconnection))(bt); wd_disarm();
+    } else {
+        clog_("bt: RequestLastDeviceConnection() …");
+        wd_arm(20); ((fn0)vslot(bt, VIDX_RequestLastDeviceConnection))(bt); wd_disarm();
+    }
+    // The connect is asynchronous — the reply and the state change both arrive on the looper, so
+    // poll the status rather than reading it once and calling it a failure.
+    for (int i = 0; i < 12; i++) {
+        usleep(1000000);
+        wd_arm(10);
+        int now = ((fn0)vslot(bt, VIDX_GetAvSrcConnectionStatus))(bt);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] bt: +%2ds status = %d%s\n", i + 1, now,
+                     now != before ? "   <-- CHANGED" : "");
+        if (now != before) break;
+    }
+
+    // NOT calling GetConnectInformation (slot 5). Two attempts crashed at a byte-identical fault
+    // address inside `TransactionParam::GetStr(std::string&)`, which is what a *wrong out-param
+    // shape* looks like, not a wrong slot. Reading the stub's marshalling settled it: 0xf7b0 makes
+    // no `TransactionParam::Set*` call before the send (so it takes no input), and unpacks the
+    // reply as Get, Get, GetStr, Get, Get — i.e. it fills a STRUCT containing a std::string at an
+    // offset we have not recovered. Passing an `int*` or a bare `std::string*` lands the GetStr
+    // write at a garbage offset inside that struct. Recover the layout before calling it again.
+    //
+    // It is not needed for the connect question anyway: logcat already proves the record exists —
+    // `BtTransmitterService.cc:257  last device found [00:00:5E:00:53:01]`.
+
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] bt: done (%u pump ticks)\n", g_pump_ticks);
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// ── --dac : make the USB-DAC actually audible ────────────────────────────────────────────────
+//
+// The gadget half already works: `cinder-msc dac-on` flips `sys.sony.config` to `uac` and the PC
+// enumerates a sound card. But nothing comes out of the 3.5 mm jack, because enumerating a gadget
+// is not the same as playing through it — something has to tell Sony's player service to open the
+// render path, and Cinder never did.
+//
+// That is `UsbDeviceAudioPlayerServiceClient::Start` (vtable slot 4). Its service-side signature is
+// exported in full, which is a rare luxury here:
+//
+//   UsbDeviceAudioPlayerService::Start(IUsbDeviceAudioPlayerService::stream_info_t&)
+//   UsbDeviceAudioPlayerService::GetStatus(IUsbDeviceAudioPlayerService::stream_info_t&)
+//
+// The ref is NON-const on both, so `stream_info_t` is an OUT param the service fills in. The client
+// stub at 0x235a4 unpacks the reply with six plain `TransactionParam::Get` calls and NO `GetStr`,
+// so every field is a scalar and a zeroed buffer is safe to hand it. (That distinction is not
+// pedantry: it is exactly what made `BtTransmitterServiceClient::GetConnectInformation` crash —
+// that one DOES contain a std::string, so a zeroed buffer put the GetStr write at a garbage
+// offset. Check for GetStr before trusting a buffer to any out-param on this platform.)
+extern "C" void* _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstanceEv(void);
+enum { VIDX_UacGetStatus = 3, VIDX_UacStart = 4, VIDX_UacStop = 5 };
+
+static void dump_stream_info(const char* tag, const unsigned* si) {
+    std::fprintf(stderr,
+                 "[cinder-probe] dac: %s stream_info = %u %u %u %u %u %u  (%08x %08x %08x)\n",
+                 tag, si[0], si[1], si[2], si[3], si[4], si[5], si[0], si[1], si[2]);
+}
+
+static int dac_probe(bool stop) {
+    install_diagnostics();
+    clog_("dac: Framework::GetReference() + StartForApplication …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] dac: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    std::fprintf(stderr, "[cinder-probe] dac: pump running (%u ticks)\n", g_pump_ticks);
+    if (g_pump_ticks == 0) {
+        clog_("dac: pump never ticked — NOTHING below this line is trustworthy");
+    }
+
+    clog_("dac: UsbDeviceAudioPlayerServiceClientFactory::CreateInstance() …");
+    wd_arm(12);
+    void* uac = _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    if (!uac) { clog_("dac: CreateInstance returned NULL — STOP"); return 1; }
+
+    typedef void (*fnp)(void*, void*);
+    // Oversized and zeroed: we know the field COUNT (six reads) but not the struct's true size,
+    // and over-allocating an out-param buffer is free while under-allocating corrupts the stack.
+    unsigned si[32];
+
+    std::memset(si, 0, sizeof si);
+    wd_arm(10); ((fnp)vslot(uac, VIDX_UacGetStatus))(uac, si); wd_disarm();
+    dump_stream_info("before ", si);
+
+    if (stop) {
+        clog_("dac: Stop() …");
+        std::memset(si, 0, sizeof si);
+        wd_arm(15); ((fnp)vslot(uac, VIDX_UacStop))(uac, si); wd_disarm();
+    } else {
+        clog_("dac: Start() …");
+        std::memset(si, 0, sizeof si);
+        wd_arm(15); ((fnp)vslot(uac, VIDX_UacStart))(uac, si); wd_disarm();
+        dump_stream_info("at Start", si);
+    }
+
+    for (int i = 0; i < 8; i++) {
+        usleep(1000000);
+        std::memset(si, 0, sizeof si);
+        wd_arm(10); ((fnp)vslot(uac, VIDX_UacGetStatus))(uac, si); wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] dac: +%ds status = %u %u %u %u %u %u\n",
+                     i + 1, si[0], si[1], si[2], si[3], si[4], si[5]);
+    }
+
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] dac: done (%u pump ticks)\n", g_pump_ticks);
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--dac") == 0) {
+        return dac_probe(argc > 2 && std::strcmp(argv[2], "stop") == 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--bt") == 0) {
+        return bt_probe(argc > 2 && std::strcmp(argv[2], "off") == 0,
+                        argc > 2 && std::strcmp(argv[2], "cycle") == 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--eq") == 0) {
+        return eq_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--ldac") == 0) {
+        return ldac_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--analyzer") == 0) {
+        int mode = argc > 2 ? std::atoi(argv[2]) : 1;
+        return analyzer_probe(mode);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--discover") == 0) {
+        // One-shot read-only device discovery → a report file you pull back. Inits PlayerService so
+        // the PlayStatus byte dump works (play a track first), then captures everything + the keymap.
+        const char* path = argc > 2 ? argv[2] : "/contents/cinder_discovery.txt";
+        install_diagnostics();
+        clog_("discover: connecting PlayerService (for the PlayStatus dump) …");
+        wd_arm(12); cinder_audio_init("cinder"); wd_disarm();
+        clog_("discover: capturing (amixer/asound/sysfs/usb/input + PlayStatus + 12s keymap) …");
+        wd_arm(40);
+        cinder_run_discovery(path, 1, 1);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] discover: DONE — report at %s (pull it back)\n", path);
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--gpu") == 0) {
+        // GPU present-path test in ISOLATION — no easel lifecycle, so it CANNOT trip the launcher's
+        // bad-boot counter (unlike enabling the GPU in cinder-home itself, which is what wedged the
+        // boot on 2026-07-26). cinder_render_init() honours CINDER_GPU=1 / /contents/cinder_gpu_on,
+        // and gpu.rs refuses to enter EGL unless every required /dev node is accessible, so the
+        // worst case here is a clean "GPU init failed" + software fallback.
+        setenv("CINDER_GPU", "1", 1);
+        install_diagnostics();
+        clog_("gpu: cinder_render_init with CINDER_GPU=1 (watch for 'GPU present path active') …");
+        wd_arm(20);
+        int gr = cinder_render_init();
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] gpu: render_init returned %d\n", gr); std::fflush(stderr);
+        if (gr != 0) { clog_("gpu: render init FAILED — see the error above"); return 1; }
+        clog_("gpu: painting 120 frames (~2s at vsync) — the panel should show the Cinder UI …");
+        for (int i = 0; i < 120; ++i) { wd_arm(8); cinder_render_tick(); wd_disarm(); }
+        cinder_render_shutdown();
+        clog_("gpu: DONE — no hang. Reboot to restore the normal UI.");
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--requeue") == 0) {
+        // DOES RE-ISSUING SetTrackSequence INTERRUPT THE CURRENT TRACK?
+        //
+        // This decides whether an Apple-style "Play Next" is even buildable. Cinder hands
+        // PlayerService one NodeTrackSequence; inserting a track after the current one means
+        // building a NEW sequence and calling SetTrackSequence again while audio is running. If
+        // that restarts or stops the track, Play Next would stutter playback every single time and
+        // the feature has to be designed completely differently (queue the insert until the track
+        // ends, say). Better to know before designing than after.
+        //
+        // Method: play A, let it settle, sample the position; re-issue a sequence with an extra
+        // track inserted after A, starting at the SAME index; sample again. A position that keeps
+        // climbing means the re-issue was transparent.
+        if (argc < 4) { clog_("requeue: need <playing-path> <insert-path>"); return 1; }
+        g_pump_argc = argc; g_pump_argv = argv;
+        install_diagnostics();
+        pst::core::Framework& fw = pst::core::Framework::GetReference();
+        int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+        std::fprintf(stderr, "[cinder-probe] requeue: StartForApplication=%d\n", sr);
+        g_pump_run = true;
+        pthread_t th;
+        if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) { clog_("requeue: thread failed"); return 1; }
+        usleep(300000);
+        wd_arm(12); cinder_audio_init("cinderprobe"); wd_disarm();
+        for (int i = 0; i < 50 && !cinder_audio_is_connected(); ++i) usleep(100000);
+        wd_arm(8); cinder_audio_close_player(); wd_disarm();
+
+        const char* first[1] = { argv[2] };
+        wd_arm(15);
+        int pr = cinder_audio_play_tracks(first, 1, 0);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] requeue: initial play_tracks=%d\n", pr);
+        int cur = -1, tot = -1;
+        for (int i = 0; i < 16; ++i) { usleep(500000); cinder_audio_position(&cur, &tot); }
+        std::fprintf(stderr, "[cinder-probe] requeue: BEFORE pos=%d/%d playing=%d\n",
+                     cur, tot, cinder_audio_is_playing());
+        int before = cur;
+
+        // Re-issue: same first track, one inserted behind it. start index stays 0.
+        const char* both[2] = { argv[2], argv[3] };
+        wd_arm(15);
+        int rr = cinder_audio_play_tracks(both, 2, 0);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] requeue: re-issue play_tracks=%d\n", rr);
+        for (int i = 0; i < 6; ++i) {
+            usleep(500000);
+            cinder_audio_position(&cur, &tot);
+            std::fprintf(stderr, "[cinder-probe] requeue: +%.1fs pos=%d/%d playing=%d\n",
+                         (i + 1) * 0.5, cur, tot, cinder_audio_is_playing());
+        }
+        std::fprintf(stderr,
+            "[cinder-probe] requeue: VERDICT %s (before=%d after=%d)\n",
+            (cur > before) ? "CONTINUED — re-issue is transparent, Play Next is buildable"
+                           : "RESTARTED/STOPPED — Play Next must not re-issue mid-track",
+            before, cur);
+        wd_arm(8); cinder_audio_shutdown(); wd_disarm();
+        _exit(0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--pump") == 0) {
+        // Same end-to-end playback test as --play, but with the pst::core::Framework STARTED and
+        // PUMPED. --play proved the calls fail with the framework dead; if this passes, the dead
+        // event loop is the root cause of "playback does nothing" and the fix goes in cinder-home.
+        // The play test runs INSIDE StartForApplication's job so it executes with the framework
+        // fully up, exactly like Sony's own apps.
+        if (argc < 3) { clog_("pump: need at least one absolute media path"); return 1; }
+        g_pump_argc = argc; g_pump_argv = argv;
+        clog_("pump: Framework::GetReference() …");
+        pst::core::Framework& fw = pst::core::Framework::GetReference();
+        std::fprintf(stderr, "[cinder-probe] pump: got Framework=%p BinderLastError=%d\n",
+                     (void*)&fw, pst::core::Framework::GetBinderLastError());
+        // StartForApplication brings the framework up and RETURNS (the std::function is the
+        // finish-job — cf. GetFinishJobFunc()); it is not a main loop. Driving the loop is
+        // Pump()'s job, which is exactly what nothing in Cinder does today.
+        clog_("pump: StartForApplication(finish_job, true) …");
+        int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+        std::fprintf(stderr, "[cinder-probe] pump: StartForApplication returned %d\n", sr);
+        pump_job();
+        _exit(0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--play") == 0) {
+        // END-TO-END PLAYBACK TEST — the one thing qemu could never prove. Connects PlayerService
+        // as an EXTRA client (own controller name; the service is multi-client by design — Sony's
+        // own apps + scrobbler coexist) and hands it a real NodeTrackSequence built from the paths
+        // on the command line. If audio comes out, the whole RE'd chain (JSON → Node →
+        // NodeTrackSequence → SetTrackSequence → ChangePlayState) is verified without a flash and
+        // without touching the running Home app — whose 1 Hz now-playing poll should visibly pick
+        // the track up, which tests THAT path for free.
+        //   --play <abs-path> [more paths…]     starts at the first path
+        if (argc < 3) { clog_("play: need at least one absolute media path"); return 1; }
+        install_diagnostics();
+        clog_("play: cinder_audio_init(\"cinderprobe\") (PlayerService connect) …");
+        wd_arm(12);
+        int ai = cinder_audio_init("cinderprobe");
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] play: audio_init returned %d\n", ai);
+        if (ai != 0) return 1;
+        // Registration is ASYNC: the service ACKs the Connect on its own time, and calls made
+        // before IsConnected flips are rejected (that was the entire first failure: rc -3 from
+        // SetTrackSequence ~0 ms after Connect). Wait up to 5 s and say what happened.
+        int waited = 0;
+        while (!cinder_audio_is_connected() && waited < 50) { usleep(100000); ++waited; }
+        std::fprintf(stderr, "[cinder-probe] play: IsConnected=%d after %d ms\n",
+                     cinder_audio_is_connected(), waited * 100);
+        clog_("play: SetTrackSequence + ChangePlayState(Play) …");
+        wd_arm(15);
+        int pr = cinder_audio_play_tracks(
+            const_cast<const char* const*>(argv + 2), argc - 2, 0);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] play: play_tracks returned %d\n", pr);
+        // Poll ~6 s: URI non-empty proves the sequence was accepted; listener events + position
+        // prove the RE'd PlayEventListener vtable is right (or dangerously wrong — watch for a
+        // crash here); the raw dump gives bytes for further offset RE.
+        char uri[512];
+        for (int i = 1; i <= 6; ++i) {
+            sleep(1);
+            int cur = -1, tot = -1;
+            cinder_audio_position(&cur, &tot);
+            wd_arm(8);
+            int n = cinder_audio_current_uri(uri, sizeof uri);
+            wd_disarm();
+            std::fprintf(stderr,
+                         "[cinder-probe] play: t+%ds events=%u pos=%d/%d uri(%d)=%s\n",
+                         i, cinder_audio_listener_events(), cur, tot, n, n > 0 ? uri : "(none)");
+            std::fflush(stderr);
+        }
+        char dump[4096];
+        wd_arm(8);
+        if (cinder_audio_dump_status(dump, sizeof dump) > 0) std::fprintf(stderr, "%s", dump);
+        wd_disarm();
+        clog_("play: DONE — is audio playing? (left playing on purpose; pause from the UI)");
+        std::fflush(stderr);
+        // _exit, not return: static teardown (g_ctrl's deleter lives in Sony's lib) jumps through
+        // a stale vtable and SIGSEGVs AFTER all results are printed. A diagnostic has nothing to
+        // gain from running that teardown; the OS reclaims everything.
+        _exit(pr == 0 ? 0 : 1);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--art") == 0) {
+        // Album-art pipeline test. The art path only runs on a track change, so on a device that
+        // has not played anything it leaves no trace in the log at all — this forces it.
+        install_diagnostics();
+        // ORDER MATTERS: cinder_db_open stores into the renderer's state and returns -2 if the
+        // renderer isn't up yet.
+        wd_arm(20); cinder_render_init(); wd_disarm();
+        wd_arm(40); cinder_db_open("/db/MTPDB.dat"); wd_disarm();
+        long long oid = argc > 2 ? std::atoll(argv[2]) : 0;
+        wd_arm(30);
+        int ar = cinder_art_probe(oid);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] art: returned %d\n", ar);
+        cinder_render_shutdown();
+        return ar;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--artcache") == 0) {
+        // Exercise the background cover-cache builder for N seconds (default 60) and report what
+        // it managed. Standalone: it writes only /data/cinder/artcache, which the running Home app
+        // also reads — a partially built cache is a valid cache, so this is safe to run live.
+        int secs = argc > 2 ? std::atoi(argv[2]) : 60;
+        install_diagnostics();
+        wd_arm(20); cinder_render_init(); wd_disarm();
+        wd_arm(60);
+        int rc = cinder_db_open("/db/MTPDB.dat");   // starts the builder thread
+        wd_disarm();
+        if (rc != 0) { clog_("artcache: db_open FAILED"); return 1; }
+        std::fprintf(stderr, "[cinder-probe] artcache: letting the builder run %d s …\n", secs);
+        std::fflush(stderr);
+        for (int i = 0; i < secs; ++i) { wd_arm(8); cinder_render_tick(); wd_disarm(); sleep(1); }
+        clog_("artcache: DONE (count the files in /data/cinder/artcache)");
+        return 0;
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--bench") == 0) {
+        // Frame-time bench, in isolation like --gpu. "Scrolling is choppy" can be a slow
+        // rasterizer, a slow present, or a loop that just isn't repainting — this separates them.
+        //   --bench           software present (what ships)
+        //   --bench gpu       EGL present, for the A/B
+        bool gpu = argc > 2 && std::strcmp(argv[2], "gpu") == 0;
+        if (gpu) setenv("CINDER_GPU", "1", 1);
+        install_diagnostics();
+        wd_arm(20);
+        int br = cinder_render_init();
+        wd_disarm();
+        if (br != 0) { clog_("bench: render init FAILED"); return 1; }
+        // A real library makes the rasterizer do real work (rows of text + art blocks) instead of
+        // an empty list. MUST come after render_init — cinder_db_open stores into the renderer's
+        // state and returns -2 if it isn't up, which silently benched an empty screen.
+        wd_arm(40);
+        int bdb = cinder_db_open("/db/MTPDB.dat");
+        wd_disarm();
+        if (bdb != 0) { clog_("bench: db_open FAILED — numbers would be for an empty list"); return 1; }
+        clog_(gpu ? "bench: 300 frames scrolling the library (GPU present) …"
+                  : "bench: 300 frames scrolling the library (software present) …");
+        wd_arm(60);
+        cinder_render_bench(300, 3);
+        wd_disarm();
+        cinder_render_shutdown();
+        clog_("bench: DONE");
+        return 0;
+    }
+    clog_("start — isolating the suspect init calls (no easel lifecycle, no boot impact)");
+    install_diagnostics();
+
+    clog_("[1/4] cinder_render_init (open /dev/graphics/fb0) …");
+    wd_arm(10);
+    int r = cinder_render_init();
+    wd_disarm();
+    clog_(r == 0 ? "[1/4] render init OK" : "[1/4] render init FAILED (returned <0) — continuing");
+
+    clog_("[2/4] cinder_db_open(/db/MTPDB.dat) + build library (slow on a big DB, not hung) …");
+    wd_arm(40);
+    int db = cinder_db_open("/db/MTPDB.dat");
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] [2/4] db_open returned %d\n", db); std::fflush(stderr);
+
+    clog_("[3/4] cinder_audio_init(\"cinder\") (PlayerService connect — prime hang suspect) …");
+    wd_arm(12);
+    int au = cinder_audio_init("cinder");
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] [3/4] audio_init returned %d\n", au); std::fflush(stderr);
+
+    clog_("[4/4] render + now-playing poll loop (6s) …");
+    char uri[1024];
+    for (int i = 0; i < 60; ++i) {
+        wd_arm(8);
+        cinder_render_tick();
+        int n = cinder_audio_current_uri(uri, sizeof uri);
+        wd_disarm();
+        if (i == 0 || i == 30) {
+            std::fprintf(stderr, "[cinder-probe] poll[%d]: current_uri len=%d uri='%s'\n",
+                         i, n, n > 0 ? uri : "");
+            std::fflush(stderr);
+        }
+        usleep(100000);
+    }
+
+    cinder_render_shutdown();
+    clog_("DONE — every call returned with no hang. The hang is NOT in these calls.");
+    return 0;
+}

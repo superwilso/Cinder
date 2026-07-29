@@ -1,0 +1,46 @@
+# cinder_viz.conf — OPTIONAL. The ONLY thing this file does is TURN THE VISUALISER OFF.
+#
+# You do not need it to enable anything. Since 2026-07-27 the visualiser is ON by default and is
+# driven entirely by Sony's built-in spectrum analyzer (AudioAnalyzerService) — there is no longer
+# a synthetic fallback, because one animated identically for silence, a ballad and a drum solo, so
+# it looked like a representation of the audio without being one. With no analyzer there are simply
+# no bars.
+#
+# It is also no longer started at boot. cinder-home starts the analyzer ON DEMAND and only while
+# ALL of these hold: the panel is on, Now Playing is the current screen, and audio is actually
+# playing. It stops the moment any of them stops being true. So a Sony-service connect is off the
+# boot path entirely (by the time it can run, the app has painted and cleared the bad-boot counter),
+# and there is no FFT, no IPC and no wakeups while the screen is dark or you are browsing.
+#
+# ── TO DISABLE ────────────────────────────────────────────────────────────────────────────────
+# Copy this file to /contents/cinder_viz.conf. The check is a deliberately dumb substring match for
+# the exact text `analyzer=0`, so a malformed file can never do anything except disable the feature.
+
+analyzer=0
+
+# ── TO RE-ENABLE ──────────────────────────────────────────────────────────────────────────────
+# DELETE /contents/cinder_viz.conf, or change the line above to `analyzer=1`.
+#
+# Deleting is the reliable move. Do NOT assume that some other value turns it back on: the match
+# looks for `analyzer=0` anywhere in the file, so a stray commented-out `# analyzer=0` further down
+# would keep it disabled. (An older version of this file said "change the line to anything other
+# than analyzer=1" — that instruction was wrong and would have left the visualiser off.)
+#
+# The setting is read once and cached; it is re-read after a USB mass-storage session, which is the
+# only way the file can change without a reboot.
+#
+# ── VALIDATING THE ANALYZER ───────────────────────────────────────────────────────────────────
+# If the visualiser shows nothing, the analyzer is the thing to check. This has NEVER been run on
+# hardware — see docs/PRODUCTION_READINESS.md:
+#
+#     adb push cinder-home/dist/dev/cinder-probe /data/local/tmp/
+#     # start music playing on the device, then:
+#     adb shell 'cd /data/local/tmp && \
+#       LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib \
+#       ./cinder-probe --analyzer'
+#
+# A PASS prints "frames flowed" plus the raw band values. If you see "started but NO frames", try
+# `./cinder-probe --analyzer 0` (LEVEL mode) and confirm audio is really playing. Note the raw band
+# range it prints — spectrum::from_bands in cinder-ffi auto-detects dBFS (any negative value) vs
+# linear magnitude, so most encodings work as-is, but a range far outside 0..(a few hundred) linear
+# or 0..-60 dB is worth calibrating against.
