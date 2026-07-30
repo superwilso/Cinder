@@ -859,3 +859,38 @@ Two display bugs in the same pass, both of which made a working pairing look wor
 * **A name arriving after the address never reached the screen.** Devices are reported repeatedly and
   often nameless on the first report; the code kept the better name but only marked the list dirty for
   *new* devices, so a row that started as "(unnamed)" stayed that way for the whole scan.
+
+## Round 2026-07-30e — the four prompt callbacks, read by hand
+
+Same method as `OnNotifySearchedDevice`: find the handler's prologue, read the `TransactionParam`
+unpack sequence, then read which stack objects the vtable call actually passes. The slot index in each
+call site double-checks the map (`ldr r4, [r1, #N]` → N/4).
+
+| listener slot | signature | verified by |
+|---|---|---|
+| 3 `OnNotifyNumericComparison` | `(const vector<uint8_t>& addr, const uint32_t&, const uint32_t&, const string& name)` | `[r1,#0xc]`; args r1=sp+0x30 (push_back loop), r2=sp+0x2c, r3=sp+0x28, **[sp]=sp+0x18** (GetStr) |
+| 4 `OnNotifyPairingComplete` | `(const vector<uint8_t>& addr, const uint8_t& result, …)` | `[r1,#0x10]`; r1=sp+0x48, r2=r7-0x31 (a single byte), r3=sp+0x10. **No `GetStr` in this handler**, so the third argument is not a string — left undecoded because Cinder only needs the fact that it fired |
+| 5 `OnNotifyPasskey` | `(const vector<uint8_t>& addr, const uint32_t& passkey, const string& name)` | `[r1,#0x14]`; r1=sp+0x20, r2=sp+0x1c, r3=sp+0x10 |
+| 14 `OnNotifySspRequest` | `(const vector<uint8_t>& addr, const string& name, const uint32_t&, const uint32_t&, const uint32_t&)` | `[r1,#0x38]`; r1=sp+0x30, r2=sp+0x20 (GetStr), r3=sp+0x1c, **[sp]=sp+0x18, [sp+4]=sp+0x14** |
+
+Note the four-and-five-argument cases spill onto the STACK (`str.w r8,[sp]` / `strd r2,r1,[sp]`), which
+is why the earlier placeholder declarations took three word-sized parameters and never dereferenced
+anything — a placeholder that guessed at arity would have read rubbish.
+
+**Two values are still uninterpreted, deliberately:**
+
+* `NumericComparison` hands over **two** 32-bit words and nothing says which is the six digits the peer
+  displays. Cinder logs both and shows the one that looks like a 6-digit code. Being wrong here shows
+  the wrong number; it cannot corrupt anything, because the reply is a yes/no.
+* `SspRequest`'s three words map onto
+  `RequestSspReply(const vector<uint8_t>&, const SspVariant&, const bool&, const uint32_t&)`, but
+  `SspVariant`'s enumerators are not decoded. So Cinder **echoes back the words it received** rather
+  than interpreting them — the one choice that cannot be wrong about an undecoded enum.
+
+### What shipped
+
+A modal panel on the Devices screen: device name, the code in large digits, YES, PAIR / CANCEL. A
+`Passkey` prompt is display-only (that code is for the *other* device's user to type), so it offers a
+single DISMISS which sends `CancelPairing`, and a unit test pins that a passkey panel can never report
+Confirm. The prompt is modal in the tap handler too — while the radio is blocked waiting for an answer,
+nothing else on the screen is reachable.
