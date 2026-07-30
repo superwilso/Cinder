@@ -687,15 +687,21 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   Standard/Low A/B) is on/off-only — the mode enum values are device-gated (TBD).
 - **Power button**: toggles the **screen/backlight on/off** (panel dark, app keeps running); it does
   not trigger appmgr-owned device suspend. (Locking is the Hold switch, not Power — see Functional.)
-- **Pairing a NEW (unpaired) device**: everything about an *already paired* device works (see the
-  Devices screen under Functional), but discovery does not. `SetSearchMode(const bool&, const
-  uint16_t&)` (slot 14) starts a scan happily; the results arrive on
-  `BtCommonServiceListener::OnNotifySearchedDevice`, and Cinder implements **no Sony listener vtable
-  at all** yet — the player path passes `NULL` to `Connect()` and polls instead. `Pairing`,
-  `SetNumericComparison`, `SetPasskey` and `RequestSspReply` are all located with exact signatures,
-  so this is one RE task (the listener ABI) rather than several. Until then the Devices screen says so
-  in its footer instead of drawing a scanner that can never find anything. **NFC tap-to-pair is
-  blocked behind the same wall** — `FireOnBluetoothOob` is a listener-side callback.
+- **Pairing a NEW (unpaired) device** — *no longer blocked on RE; the listener ABI was recovered
+  2026-07-30, only the code is outstanding*: everything about an *already paired* device works (see the
+  Devices screen under Functional). For discovery, `SetSearchMode(const bool&, const uint16_t&)`
+  (slot 14) starts a scan and the results arrive on `BtCommonServiceListener::OnNotifySearchedDevice`
+  — and it turns out Cinder does **not** need to implement `IBinderObject` to receive it: the client
+  library builds the binder proxy and holds a raw pointer to our object, so a plain C++ class with the
+  virtuals in slot order is enough. Registration is `BtCommonServiceClient` slot **30**
+  `AddListener(IListener*, const std::string&)` → id, and slot **31** `RemoveListener(unsigned)`;
+  `OnNotifySearchedDevice` is listener slot **6**, `(const vector<uint8_t>& addr, const uint32_t& cod,
+  const string& name)`. What is left is ordinary work: the listener class, the scan section on the
+  Devices screen, `Pairing` (slot 7), and the prompt dialogs — whose four signatures still need the
+  same by-hand read. Until that ships the Devices screen states the limit in its footer rather than
+  drawing a scanner that cannot find anything. **NFC tap-to-pair rides the same code** — it is one
+  implementation task now, not two RE walls. Detail: `analysis/G_bt_nfc/RE_findings.md` round
+  2026-07-30b.
 - **USB-DAC → LDAC bridge**: the pipeline is implemented **in cinder-home** (not the standalone
   `ldac-bridge` daemon, which is retired as a delivery vehicle — it has no `pst::core::Framework`
   pump, so every client call returned uninitialised stack). What is **proven on device**
