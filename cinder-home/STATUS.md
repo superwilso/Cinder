@@ -699,10 +699,14 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   FOUND row calls `Pairing` (slot 7); `OnNotifyPairingComplete` re-reads the paired list and ends the
   scan. Callbacks arrive on the framework looper, so they only append to a mutex-guarded list and the
   main loop pushes it into the UI.
-  **The one real gap, stated on the screen itself:** a device that answers with a numeric-comparison or
-  passkey prompt cannot be confirmed yet — those four callback signatures are still unrecovered, so the
-  footer says such devices need the Sony player. `SetNumericComparison`, `SetPasskey` and
-  `RequestSspReply` are already located for when they are.
+  **Pairing prompts now work too** (2026-07-30, built and installed, not yet triggered by a real
+  device): the four prompt callbacks were read by hand, so a device asking to confirm a code raises a
+  **modal panel** — name, six digits, YES, PAIR / CANCEL — answered with `SetNumericComparison` (slot 9)
+  or `RequestSspReply` (slot 28). A `Passkey` prompt is display-only (that code is for the other
+  device's user to type), so it offers DISMISS, which sends `CancelPairing`. Two values are left
+  uninterpreted on purpose: which of `NumericComparison`'s two words is the displayed code (both are
+  logged; showing the wrong one misleads but cannot corrupt a yes/no reply), and `SspVariant`'s
+  enumerators — so the SSP reply **echoes back the words it received** rather than guessing.
   *(Fixed after the first live pairing: `OnNotifyPairingComplete` fires BEFORE `GetPairedDeviceInfo`
   reports the new link key, so the one refresh on the callback showed the old list — it now re-reads on
   a schedule until the address appears. Already-paired devices are also filtered out of the FOUND
