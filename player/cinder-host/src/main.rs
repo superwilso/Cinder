@@ -188,7 +188,15 @@ fn main() {
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
                 &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY", accent: cinder_ui::Accent::Amber })),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
-            ("pairing", &|c: &mut Canvas| pairing::render(c, &theme, &fonts, 2, Some(1))),
+            // Two real pairings from the device (the same two the 07-29 GetPairedDeviceInfo pass
+            // read back), one connected, one with FORGET armed — the preview covers both row states.
+            ("pairing", &|c: &mut Canvas| {
+                let paired = vec![
+                    pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: true },
+                    pairing::PairedDevice { name: "CMF Buds Pro 2".into(), kind: "Headphones".into(), connected: false },
+                ];
+                pairing::render(c, &theme, &fonts, &paired, Some(1), None)
+            }),
             ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, true)),
             ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, 88.6)),
             ("usbdac", &|c: &mut Canvas| usbdac::render(c, &theme, &fonts, true, true, "LDAC", Some("WH-1000XM5"), "A1", true)),

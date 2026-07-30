@@ -23,8 +23,10 @@
 #include <csignal>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <ucontext.h>
 #include <unistd.h>
+#include <dlfcn.h>   // --btinfo checks the same lazy dlopen(libasound) the LDAC bridge relies on
 #include <execinfo.h>
 #include <initializer_list>
 #include <pthread.h>
@@ -498,6 +500,371 @@ static int ldac_probe() {
     _exit(0);   // same reason as eq_probe: do not unwind with the pump thread live
 }
 
+// ── --btinfo : confirm on device what static analysis says about the container-shaped calls ─────
+//
+// Three things were recovered by reading the libraries rather than by running them. This mode is the
+// device half — each one either prints a plausible value or faults, and a fault here costs a probe
+// process rather than the Home app.
+//
+// 1. `GetConnectInformation` takes TWO out-params, both by reference:
+//
+//        bool GetConnectInformation(pst::base::vector<uint8_t>& addr, pst::base::string& name)
+//
+//    Recovered from the stub's prologue (`sl = r1`, `r8 = r2`) plus what each register is then used
+//    for: `r8` is handed to `TransactionParam::GetStr`, while `sl` is walked as {begin,end,cap} and
+//    grown one byte at a time by a `Get(1)` loop counted by a preceding `Get(4)` — a push_back of a
+//    MAC address. Every earlier attempt passed a SINGLE pointer (an int*, then a std::string*), so
+//    the push_back wrote through whatever followed it. That is why the fault address was IDENTICAL
+//    across two runs: not a bad buffer, a missing second argument.
+//
+// 2. `pst::base::vector<T>` is libc++ `std::__1::vector<T>` and `pst::base::string` is libc++
+//    `std::string` — both typedefs, not distinct classes. Evidence: the mangled forms
+//    `N3pst4base6stringE` / `N3pst4base6vectorI…E` appear in NO symbol anywhere in the vendor tree
+//    (a real class would mangle as itself), the marshaller's own PLT entry is
+//    `TransactionParam::GetStr(std::__1::basic_string<char,…>&)`, and the push_back above touches
+//    exactly three pointers at +0/+4/+8, which is libc++'s vector layout. This file compiles against
+//    the libc++ 3.9.0 headers matching the device runtime, so real containers are ABI-correct.
+//
+// 3. `BtLdacSoundQuality`'s numeric values are still unknown. Cinder passes its own UI index
+//    (0 Auto, 1 990, 2 660, 3 330); the service logs whatever it receives as `ldac quality:%d`, so
+//    this walks 0..3 and the answer comes from logcat.
+// Declared here as well as at --bt's own block below: this mode comes first in the file and needs it.
+extern "C" void* _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv(void);
+
+// The element of `GetPairedDeviceInfo`'s vector, recovered from the raw dump this mode prints (2
+// devices in 96 bytes → a 48-byte stride) and confirmed by both libc++ string forms decoding through
+// it. File-scope because --btconnect needs the same declaration; cinder-home carries its own copy.
+struct BtPairedDeviceInformation {
+    std::vector<unsigned char> addr;    // +0   end-begin == 6 → the MAC
+    unsigned                   cod;     // +12  Bluetooth Class of Device (0x240404 = A/V headset)
+    std::vector<unsigned char> key;     // +16  16 bytes — link key; the UI never needs it
+    std::string                name;    // +28  SSO on one real device, heap on the other
+    unsigned char              f0, f1;  // +40  flags — 1,1 on both
+    unsigned char              pad[6];  // +42 -> 48
+};
+static_assert(sizeof(BtPairedDeviceInformation) == 48, "paired-device stride is not 48");
+
+// Format a BD address for the log. Empty in → "(none)".
+static void mac_str(const std::vector<unsigned char>& a, char* out, size_t cap) {
+    if (a.empty()) { std::snprintf(out, cap, "(none)"); return; }
+    size_t n = 0;
+    for (size_t b = 0; b < a.size() && n + 4 < cap; b++)
+        n += std::snprintf(out + n, cap - n, b ? ":%02X" : "%02X", a[b]);
+}
+
+static int btinfo_probe() {
+    install_diagnostics();
+
+    // Framework + pump FIRST, and wait for the looper to actually turn — same invariant as every
+    // other mode here. A pst client call made with a dead looper returns uninitialised stack, so a
+    // "plausible" answer from an unpumped process is worth nothing.
+    clog_("btinfo: Framework::GetReference() + StartForApplication …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] btinfo: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    std::fprintf(stderr, "[cinder-probe] btinfo: pump running (%u ticks)\n", g_pump_ticks);
+
+    // dlopen(libasound) — the same call cinder-home's LDAC bridge makes. Checked here because
+    // cinder-home resolves it LAZILY (deliberately: a DT_NEEDED on the Home app would turn a missing
+    // library into a device that boots to nothing), so nothing else proves it can be found.
+    {
+        const char* cands[] = { "libasound.so.2", "libasound.so", "/lib/libasound.so.2",
+                                "/lib/libasound.so", "/system/lib/libasound.so" };
+        bool got = false;
+        for (const char* c : cands) {
+            void* h = dlopen(c, RTLD_NOW | RTLD_LOCAL);
+            if (h) {
+                std::fprintf(stderr, "[cinder-probe] btinfo: dlopen('%s') OK, snd_pcm_open=%p\n",
+                             c, dlsym(h, "snd_pcm_open"));
+                got = true;
+                break;
+            }
+        }
+        if (!got) clog_("btinfo: dlopen(libasound) FAILED on every candidate — the LDAC bridge "
+                        "would report itself unavailable");
+    }
+
+    void* xmit = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    void* cmn  = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    std::fprintf(stderr, "[cinder-probe] btinfo: xmit=%p cmn=%p\n", xmit, cmn);
+
+    // (1) GetConnectInformation — the two-out-param call.
+    if (xmit) {
+        enum { VIDX_GetConnectInformation = 5 };
+        typedef int (*fn2)(void*, std::vector<unsigned char>*, std::string*);
+        std::vector<unsigned char> addr;
+        std::string name;
+        int rc = -1;
+        wd_arm(12);
+        try {
+            rc = ((fn2)vslot(xmit, VIDX_GetConnectInformation))(xmit, &addr, &name);
+        } catch (...) { clog_("btinfo: GetConnectInformation threw"); }
+        wd_disarm();
+        char mac[64] = {0};
+        for (size_t i = 0; i < addr.size() && i * 3 + 3 < sizeof mac; i++)
+            std::snprintf(mac + i * 3, 4, "%02X:", addr[i]);
+        size_t l = std::strlen(mac);
+        if (l) mac[l - 1] = '\0';
+        std::fprintf(stderr, "[cinder-probe] btinfo: GetConnectInformation rc=%d addr=[%s] (%zu bytes) name='%s'\n",
+                     rc, mac, addr.size(), name.c_str());
+        if (addr.size() == 6)
+            clog_("btinfo: *** CONFIRMED — 6-byte MAC via vector<uint8_t>, so the two-out-param "
+                  "signature and the libc++ container ABI are both right ***");
+    }
+
+    // (2) GetPairedDeviceInfo — the call the pairing screen needs. The ELEMENT type
+    // (BtPairedDeviceInformation) is still unrecovered, so this deliberately passes a
+    // vector<unsigned char> and reports raw sizes: the service resizes through the vector's own
+    // three-pointer header, which is element-type independent, so begin/end tell us the total byte
+    // count even though we cannot yet name the fields. That is the next thing to decode, and doing it
+    // from real bytes beats guessing.
+    if (cmn) {
+        enum { VIDX_GetPairedDeviceInfo = 20 };
+        typedef int (*fn1)(void*, std::vector<unsigned char>*);
+        std::vector<unsigned char> raw;
+        int rc = -1;
+        wd_arm(12);
+        try {
+            rc = ((fn1)vslot(cmn, VIDX_GetPairedDeviceInfo))(cmn, &raw);
+        } catch (...) { clog_("btinfo: GetPairedDeviceInfo threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btinfo: GetPairedDeviceInfo rc=%d bytes=%zu (=%zu "
+                     "devices at the 48-byte stride)\n", rc, raw.size(), raw.size() / 48);
+        // Hex the first 128 bytes so the element stride is readable by eye (repeating string
+        // headers / MACs stand out).
+        char line[3 * 16 + 1];
+        for (size_t off = 0; off < raw.size() && off < 128; off += 16) {
+            line[0] = 0;
+            for (size_t i = 0; i < 16 && off + i < raw.size(); i++)
+                std::snprintf(line + i * 3, 4, "%02x ", raw[off + i]);
+            std::fprintf(stderr, "[cinder-probe] btinfo:   +%03zu  %s\n", off, line);
+        }
+    }
+
+    // (2b) The same call again, but TYPED — the payoff. If the layout below is right this prints real
+    // MACs and names; if it is wrong it faults here in a throwaway process instead of in the Home app.
+    //
+    // Recovered from the raw dump above (2 devices, 96 bytes, so a 48-byte stride):
+    //   +0   vector<uint8_t> addr    end-begin == 6  -> the MAC
+    //   +12  uint32                  0x00240404      -> Bluetooth Class of Device (A/V headset)
+    //   +16  vector<uint8_t>         16 bytes        -> link key / UUID (not needed by the UI)
+    //   +28  std::string name        first record was SSO ("\x14" = 10 chars, "WH-1000XM4"); the
+    //                                second was a LONG string (cap 0x11 has libc++'s long bit set,
+    //                                size 0x0e) — both forms present, which is the strongest single
+    //                                confirmation that this really is libc++ std::string
+    //   +40  two bytes of flags, then padding to 48
+    if (cmn) {
+        enum { VIDX_GetPairedDeviceInfo = 20 };
+        typedef int (*fnv)(void*, std::vector<BtPairedDeviceInformation>*);
+        std::vector<BtPairedDeviceInformation> devs;
+        int rc = -1;
+        wd_arm(12);
+        try {
+            rc = ((fnv)vslot(cmn, VIDX_GetPairedDeviceInfo))(cmn, &devs);
+        } catch (...) { clog_("btinfo: typed GetPairedDeviceInfo threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btinfo: typed rc=%d count=%zu\n", rc, devs.size());
+        for (size_t i = 0; i < devs.size(); i++) {
+            const BtPairedDeviceInformation& d = devs[i];
+            char mac[32] = {0};
+            for (size_t b = 0; b < d.addr.size() && b * 3 + 3 < sizeof mac; b++)
+                std::snprintf(mac + b * 3, 4, "%02X:", d.addr[b]);
+            size_t l = std::strlen(mac);
+            if (l) mac[l - 1] = '\0';
+            std::fprintf(stderr, "[cinder-probe] btinfo:   [%zu] %s  '%s'  cod=0x%06x key=%zuB "
+                         "flags=%u,%u\n", i, mac, d.name.c_str(), d.cod, d.key.size(), d.f0, d.f1);
+        }
+        if (!devs.empty() && devs[0].addr.size() == 6 && !devs[0].name.empty())
+            clog_("btinfo: *** CONFIRMED — paired-device list decodes: 6-byte MAC + non-empty name. "
+                  "pst::base::vector/string ARE libc++, and the pairing UI is unblocked ***");
+    }
+
+    // (3) LDAC quality enum — walk the values and let the service name them in logcat.
+    if (xmit) {
+        enum { VIDX_SetLdacSoundQuality = 18 };
+        typedef int (*fne)(void*, const unsigned*);
+        for (unsigned q = 0; q < 4; q++) {
+            std::fprintf(stderr, "[cinder-probe] btinfo: SetLdacSoundQuality(%u) — expect "
+                                 "'ldac quality:' in logcat\n", q);
+            wd_arm(10);
+            try { ((fne)vslot(xmit, VIDX_SetLdacSoundQuality))(xmit, &q); }
+            catch (...) { clog_("btinfo: SetLdacSoundQuality threw"); }
+            wd_disarm();
+            usleep(300000);
+        }
+        // Put it back to Auto. Walking to 3 and leaving it there would quietly pin the radio at
+        // 330 kbps for whoever uses the device next — a probe should not change what it measures.
+        unsigned back = 0;
+        wd_arm(10);
+        try { ((fne)vslot(xmit, VIDX_SetLdacSoundQuality))(xmit, &back); }
+        catch (...) {}
+        wd_disarm();
+        clog_("btinfo: LDAC quality restored to 0 (Auto)");
+    }
+
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] btinfo: done (%u pump ticks)\n", g_pump_ticks);
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// ── --btconnect [row] : does a `const pst::base::vector<uint8_t>&` IN-param marshal correctly? ───
+//
+// The Devices screen (Bluetooth ▸ paired list) rests on two calls that pass a BD address INTO the
+// service — `BtTransmitterService::RequestConnection(const vector<uint8_t>&)` and
+// `BtCommonService::DeleteLinkkey(const vector<uint8_t>&)`. Everything proven so far went the other
+// way: the service filled containers we handed it. An in-param exercises the opposite direction
+// (`TransactionParam::Set*` over our bytes), so it is worth one throwaway process rather than finding
+// out inside the Home app.
+//
+// RequestConnection is the safe half of the pair to test with: it is reversible (disconnect, or just
+// walk away) whereas DeleteLinkkey destroys a pairing the device cannot recreate — Cinder cannot scan
+// yet. So this mode tests the connect and reasons about the delete by identical signature.
+//
+// If the radio was OFF, it is powered up for the attempt and **put back** afterwards: a probe should
+// leave the device as it found it.
+static int btconnect_probe(int row) {
+    install_diagnostics();
+
+    clog_("btconnect: Framework::GetReference() + StartForApplication …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] btconnect: StartForApplication returned %d\n", sr);
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* xmit = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    void* cmn  = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    if (!xmit || !cmn) {
+        std::fprintf(stderr, "[cinder-probe] btconnect: client build failed (xmit=%p cmn=%p)\n", xmit, cmn);
+        _exit(1);
+    }
+
+    enum { VIDX_GetBtStatus = 3, VIDX_SetRfOnOff = 4, VIDX_GetConnectInformation = 5,
+           VIDX_RequestConnection = 6, VIDX_GetPairedDeviceInfo = 20 };
+    typedef int  (*fn0)(void*);
+    typedef void (*fnb)(void*, const bool*);
+    typedef int  (*fnv)(void*, std::vector<BtPairedDeviceInformation>*);
+    typedef int  (*fna)(void*, const std::vector<unsigned char>*);
+    typedef int  (*fn2)(void*, std::vector<unsigned char>*, std::string*);
+
+    // The list first — the row index is only meaningful against it.
+    std::vector<BtPairedDeviceInformation> devs;
+    wd_arm(12);
+    try { ((fnv)vslot(cmn, VIDX_GetPairedDeviceInfo))(cmn, &devs); }
+    catch (...) { clog_("btconnect: GetPairedDeviceInfo threw"); }
+    wd_disarm();
+    for (size_t i = 0; i < devs.size(); i++) {
+        char mac[24];
+        mac_str(devs[i].addr, mac, sizeof mac);
+        std::fprintf(stderr, "[cinder-probe] btconnect:   [%zu] %s  '%s'\n", i, mac, devs[i].name.c_str());
+    }
+    if (row < 0 || (size_t)row >= devs.size() || devs[(size_t)row].addr.size() != 6) {
+        std::fprintf(stderr, "[cinder-probe] btconnect: row %d is not a usable device (%zu paired) — "
+                     "pass a row from the list above\n", row, devs.size());
+        _exit(1);
+    }
+    const std::vector<unsigned char> addr = devs[(size_t)row].addr;
+
+    int st0 = -1;
+    wd_arm(10);
+    try { st0 = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); } catch (...) {}
+    wd_disarm();
+    bool we_powered = false;
+    std::fprintf(stderr, "[cinder-probe] btconnect: GetBtStatus=%d (2 idle / 3 connected / 7 off)\n", st0);
+    if (st0 != 2 && st0 != 3) {
+        clog_("btconnect: radio is not up — powering it on for this test, and back off at the end");
+        bool on = true;
+        wd_arm(10);
+        try { ((fnb)vslot(cmn, VIDX_SetRfOnOff))(cmn, &on); we_powered = true; } catch (...) {}
+        wd_disarm();
+        for (int i = 0; i < 20; i++) {
+            usleep(200000);
+            int st = -1;
+            try { st = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); } catch (...) {}
+            if (st == 2 || st == 3) { std::fprintf(stderr, "[cinder-probe] btconnect: radio up (status=%d)\n", st); break; }
+        }
+    }
+
+    // The call under test.
+    char mac[24];
+    mac_str(addr, mac, sizeof mac);
+    std::fprintf(stderr, "[cinder-probe] btconnect: RequestConnection(%s) …\n", mac);
+    int rc = -1;
+    wd_arm(15);
+    try { rc = ((fna)vslot(xmit, VIDX_RequestConnection))(xmit, &addr); }
+    catch (...) { clog_("btconnect: RequestConnection THREW — the in-param marshalling is wrong"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] btconnect: RequestConnection rc=%d\n", rc);
+
+    // Connection setup is asynchronous, so watch the status for a while. A2DP + AVRCP on this stack
+    // takes a couple of seconds when the headphones are awake and nothing at all when they are not.
+    //
+    // The link is only ATTRIBUTABLE to our request if there wasn't one already: measured 2026-07-30,
+    // `SetRfOnOff(true)` makes the stack reconnect the last device by itself, so the status was
+    // already 3 before RequestConnection was called. The first version of this loop printed
+    // "*** LINKED after 1s ***" off exactly that pre-existing link — a diagnostic that credits the
+    // call under test with something it didn't do is worse than one that reports nothing.
+    bool baseline_linked = false;
+    {
+        std::vector<unsigned char> live;
+        std::string nm;
+        try { ((fn2)vslot(xmit, VIDX_GetConnectInformation))(xmit, &live, &nm); } catch (...) {}
+        baseline_linked = !live.empty();
+    }
+    bool linked = false;
+    for (int i = 0; i < 15; i++) {
+        usleep(1000000);
+        int st = -1;
+        std::vector<unsigned char> live;
+        std::string nm;
+        try {
+            st = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn);
+            ((fn2)vslot(xmit, VIDX_GetConnectInformation))(xmit, &live, &nm);
+        } catch (...) {}
+        if (!live.empty() && live == addr) {
+            char who[24];
+            mac_str(live, who, sizeof who);
+            std::fprintf(stderr, "[cinder-probe] btconnect: %s after %ds — %s '%s' status=%d\n",
+                         baseline_linked ? "linked, but it ALREADY WAS before the request"
+                                         : "*** LINKED by our request ***",
+                         i + 1, who, nm.c_str(), st);
+            linked = true;
+            break;
+        }
+        if (i % 3 == 0) std::fprintf(stderr, "[cinder-probe] btconnect:   t+%ds status=%d\n", i + 1, st);
+    }
+    if (!linked)
+        clog_("btconnect: no link to THAT address inside 15 s. rc above still answers the ABI "
+              "question — a rejected or ignored request is a headphones/radio outcome, whereas a "
+              "THROW would have been our bug. Check logcat for 'RequestConnection [mac]': the "
+              "service echoes the address it received, which is the real proof the bytes arrived.");
+
+    // Leave the radio as we found it. Deliberately does NOT disconnect a link the user already had.
+    if (we_powered) {
+        bool off = false;
+        wd_arm(10);
+        try { ((fnb)vslot(cmn, VIDX_SetRfOnOff))(cmn, &off); } catch (...) {}
+        wd_disarm();
+        clog_("btconnect: radio powered back OFF (it was off when this started)");
+    }
+
+    g_pump_run = false;
+    std::fprintf(stderr, "[cinder-probe] btconnect: done (%u pump ticks)\n", g_pump_ticks);
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 // ── --eq : what units does SetEq10BandValue actually take, and is the 10-band engine SELECTED? ──
 //
 // Two questions RE could not close, both of which decide whether the EQ screen does what it says:
@@ -850,6 +1217,13 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--ldac") == 0) {
         return ldac_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
+        return btinfo_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btconnect") == 0) {
+        // Row index into the paired list (default 0). Run --btinfo first to see the rows.
+        return btconnect_probe(argc > 2 ? std::atoi(argv[2]) : 0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--analyzer") == 0) {
         int mode = argc > 2 ? std::atoi(argv[2]) : 1;

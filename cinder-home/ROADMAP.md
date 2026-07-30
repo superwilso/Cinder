@@ -120,7 +120,7 @@ never repoint the `.appcfg` before the probe run looks clean.
   and is setting it live on an in-use sequence safe. **Repeat-all** stays open — the shape would be
   to detect end-of-queue and re-issue the sequence, which needs one device session to observe what
   the play state actually does when a queue runs out.
-- **Remaining inert controls** (deliberate, tracked): FM / BT Receiver / Pairing (backends not wired, P2 below),
+- **Remaining inert controls** (deliberate, tracked): FM / BT Receiver (backends not wired, P2 below),
   Settings ▸ Database, and the EQ footer's **"Save Sound Preset"** — the EQ already persists on
   every change, so that button has nothing to do; reword it or give it a real named-preset store.
 - **Repo hygiene — now materially worse, and worth doing.** `.git` has grown from 116 MB to
@@ -183,7 +183,11 @@ never repoint the `.appcfg` before the probe run looks clean.
   `SetTrackSequence` for the user swipe-queue — rides the same code, gated on device verify.)*
 
 ### P2 — device-gated, lower priority
-- **Bluetooth radio on/off** — UI toggle exists; wire `BtTransmitterService` (SetCurrentSource/SetLdac).
+- ~~**Bluetooth radio on/off**~~ / ~~**route-aware volume**~~ / ~~**live codec apply**~~ — **DONE
+  2026-07-28/29, verified on hardware.** The radio toggle drives `SetRfOnOff` + reconnects the last
+  device, the rocker follows the live route (two separate levels, absolute AVRCP preferred over
+  up/down steps), and the codec choice reaches the radio before the connect. The note below survives
+  because its analysis was right and is the reason the volume shipped WITH the BT client, not after.
 - **Volume must become route-aware BEFORE BT ships.** `apply_volume()` writes
   `amixer -c0 'master volume'`, a CXD3778GF codec register — and the BT transmit path never touches
   that codec (decode → we `write()` raw PCM into the `GetSocketName` AF_UNIX socket → the MTK BT
@@ -226,7 +230,16 @@ never repoint the `.appcfg` before the probe run looks clean.
   `ldac-bridge/TEST.md` + `analysis/RE_playerservice_sound.md §5`.
 - **USB-mode switch** (enter MSC) — wired to **Settings ▸ USB mode** (`setprop sys.sony.config msc`,
   guarded; disruptive — validate live).
-- **FM radio / BT receiver / Pairing** screens — Sony tuner/BT services (currently static).
+- **FM radio / BT receiver** screens — Sony tuner/BT services (currently static).
+- **Scan-and-pair a NEW device + NFC tap-to-pair — ONE blocker, not two.** The Devices screen
+  (2026-07-30) does connect / disconnect / forget on already-paired devices, and every remaining call
+  is located with an exact signature (`SetSearchMode`, `Pairing`, `SetNumericComparison`,
+  `SetPasskey`, `RequestSspReply`, and NFC's `Open`/`Start`). What is missing is that scan results and
+  pairing prompts are **pushed to a listener** — `BtCommonServiceListener::OnNotifySearchedDevice`
+  and friends — and Cinder implements no Sony listener vtable anywhere (the player path passes `NULL`
+  and polls). Recover that one ABI (vtable order + the client's `AddListener`) and both features
+  unblock at once, including `pairing.rs`'s numeric-comparison and passkey dialogs, which are already
+  drawn. See `analysis/G_bt_nfc/RE_findings.md` (round 2026-07-30).
 - **FM radio, and FM → Bluetooth** — designed end to end 2026-07-28, none of it built. Full write-up
   with the evidence: [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md).
   Short version: the Si4708 is a V4L2 *control* device with no ALSA symbols, so its audio is analog

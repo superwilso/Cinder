@@ -459,3 +459,201 @@ Everything taking or returning a **`pst::base::vector<…>`** — `GetPairedDevi
 (0 Auto, 1 990, 2 660, 3 330 — Sony's own menu order). Safe to be wrong: it is a by-value scalar, so
 the failure mode is the wrong bitrate, not memory corruption. The service logs the value it received
 as `ldac quality:%d`, so cycling the row while watching logcat settles it.
+
+---
+
+## 2026-07-29 (night) — the container calls are open: `pst::base::vector`/`string` are libc++
+
+Three unknowns closed, all verified on device with `cinder-probe --btinfo`. Together they unblock the
+pairing screen, which was the last thing gating tasks #17 and #18.
+
+### `pst::base::vector<T>` is `std::__1::vector<T>`; `pst::base::string` is `std::string`
+
+Both are **typedefs, not classes**. Three independent lines of evidence:
+
+1. The mangled forms `N3pst4base6stringE` and `N3pst4base6vectorI…E` appear in **no symbol anywhere**
+   in the vendor lib tree. A real class would mangle as itself.
+2. The marshaller's own PLT entry is
+   `TransactionParam::GetStr(std::__1::basic_string<char, char_traits<char>, allocator<char>>&)`.
+3. The `push_back` loop inside `GetConnectInformation` touches exactly three pointers at +0/+4/+8 —
+   libc++'s `{__begin_, __end_, __cap_}`.
+
+`cinder-home` and `cinder-probe` compile against the **libc++ 3.9.0 headers that match the device
+runtime**, so real `std::vector` / `std::string` can be passed straight across. There is nothing to
+emulate, and the "container out-params are too dangerous to touch" blocker is gone.
+
+### `GetConnectInformation` — it was never a struct
+
+```c
+bool GetConnectInformation(pst::base::vector<uint8_t>& addr, pst::base::string& name)
+```
+
+**Two** out-params, by reference. Recovered from the prologue (`sl = r1`, `r8 = r2`) plus what each
+register is used for: `r8` goes to `GetStr`, while `sl` is walked as `{begin,end,cap}` and grown one
+byte at a time by a `Get(1)` loop counted by a preceding `Get(4)` — a MAC address being pushed back.
+
+This retires the old note about "a struct containing a std::string at an unrecovered offset". The two
+crashes at an **identical** fault address were not a bad buffer: they were a **missing second
+argument**, so the `push_back` wrote through whatever happened to follow the one pointer we passed.
+Device check now returns `rc=0` cleanly with empty out-params when nothing is connected.
+
+### `BtPairedDeviceInformation` — 48-byte stride
+
+| off | type | meaning |
+|---|---|---|
+| +0 | `std::vector<uint8_t>` | address — `end-begin == 6`, the MAC |
+| +12 | `uint32` | Bluetooth Class of Device (`0x240404` = A/V headset) |
+| +16 | `std::vector<uint8_t>` | 16 bytes — link key / UUID; the UI does not need it |
+| +28 | `std::string` | device name |
+| +40 | 2 × `uint8` | flags (both `1` for a normally-paired device) |
+| +42 | — | padding to 48 |
+
+Typed read on device:
+
+```text
+btinfo: typed rc=1 count=2
+  [0] 00:00:5E:00:53:01  'WH-1000XM4'      cod=0x240404 key=16B flags=1,1
+  [1] 00:00:5E:00:53:02  'CMF Buds Pro 2'  cod=0x240404 key=16B flags=1,1
+```
+
+The single strongest confirmation of the ABI is in that output: the 10-character name arrived as a
+libc++ **SSO** string (`0x14 >> 1 == 10`, characters inline) and the 14-character one as a **long**
+string (`__cap_ = 0x11` with the long bit set, `__size_ = 0x0e`, heap pointer). Both representations
+decoded correctly through the same declaration, which a merely-plausible layout would not manage.
+
+### `BtLdacSoundQuality` — the value goes through intact
+
+`SetLdacSoundQuality(0..3)` makes the service log `BtTransmitterService.cc:445  ldac quality:0/1/2/3`
+— exactly what was sent. Cinder's UI index therefore reaches the wire unchanged. What this does *not*
+prove is that `0` semantically means *Auto*; that still rests on Cinder's list mirroring Sony's own
+menu order, and being wrong there would mislabel rows rather than misbehave.
+
+### Also confirmed: `dlopen("libasound.so")` works
+
+`/lib/libasound.so` does **not** exist on the device; the library is at `/system/lib/libasound.so`,
+and the launcher exports an `LD_LIBRARY_PATH` that includes `/system/lib`, so the bare SONAME
+resolves. This matters because cinder-home resolves libasound **lazily and deliberately** — a
+`DT_NEEDED` entry on the Home app would turn a missing audio library into a device that boots to
+nothing, so the LDAC bridge must degrade to "unavailable" instead.
+
+---
+
+## Round 2026-07-30 — the paired-device path (Devices screen), and where pairing stops
+
+### Every signature the pairing flow needs, straight from `.rodata`
+
+`strings -a vendor/sony/lib/libBtCommonService.so | grep '^virtual '` again — no decompiler needed.
+Note that **every one of these takes its arguments by const reference**, including the scalars, and
+that the containers are the `pst::base` typedefs (= the libc++ ones, established last round):
+
+| slot | signature |
+|---|---|
+| 6 | `bool SetDiscoverableMode(const bool &)` |
+| 7 | `bool Pairing(const pst::base::vector<uint8_t> &)` |
+| 8 | `bool CancelPairing()` |
+| 9 | `bool SetNumericComparison(const pst::base::vector<uint8_t> &, const bool &)` |
+| 10 | `bool SetPasskey(const pst::base::vector<uint8_t> &, const pst::base::string &)` |
+| 11 | `bool CancelPasskey(const pst::base::vector<uint8_t> &)` |
+| 14 | `bool SetSearchMode(const bool &, const uint16_t &)` |
+| 15 | `bool DeleteLinkkey(const pst::base::vector<uint8_t> &)` |
+| 16 | `bool DeleteLinkkeys(const pst::base::vector<pst::base::vector<uint8_t> > &)` |
+| 20 | `bool GetPairedDeviceInfo(pst::base::vector<BtPairedDeviceInformation> &)` |
+| 21 | `bool GetPairedDeviceInfo(pst::base::vector<BtPairedDeviceInformation> &, const IBtCommonService::BtDeviceListProfile &)` |
+| 25 | `bool GetRssi()` |
+| 28 | `bool RequestSspReply(const pst::base::vector<uint8_t> &, const IBtCommonService::SspVariant &, const bool &, const uint32_t &)` |
+
+And on the transmitter side, the call that connects **one named device** rather than "whatever was
+last used" — the distinction the Devices screen is built on:
+
+```
+virtual bool pst::services::BtTransmitterService::RequestConnection(const pst::base::vector<uint8_t> &)
+virtual bool pst::services::BtTransmitterService::RequestCancelConnection()
+virtual bool pst::services::BtTransmitterService::RequestStartConnectWait()
+virtual bool pst::services::BtTransmitterService::RequestStopConnectWait()
+```
+
+`RequestLastDeviceConnection` (slot 7) takes nothing, `RequestConnection` (slot 6) takes the BD
+address. Cinder now uses the first for the radio toggle and the second for a row tap.
+
+### What is wired (cinder-home, 2026-07-30)
+
+`refresh_bt_paired()` reads slot 20 into a `std::vector<BtPairedDeviceInformation>`, marks the row
+whose address equals the one `GetConnectInformation` reports, and pushes names + CoD-derived labels
+into the UI. The **addresses never enter the UI** — it holds a row index, the shell holds a parallel
+address vector, and the list is re-read after every action so the two cannot drift. `DeleteLinkkey`
+sits behind a two-tap confirm for the obvious reason: nothing in Cinder can undo it.
+
+One ordering rule carried over from the radio toggle: `apply_bt_codec()` runs **before**
+`RequestConnection`, because A2DP negotiates the codec during connection setup.
+
+### Where pairing stops: there is no listener implementation anywhere in Cinder
+
+Starting a scan is trivial (`SetSearchMode(true, timeout)`), but the results are **pushed**, not
+pollable:
+
+```
+BtCommonServiceListener::OnNotifySearchedDevice     <- scan results
+BtCommonServiceListener::OnNotifyPairingComplete
+BtCommonServiceListener::OnNotifyNumericComparison  <- the dialogs pairing.rs already draws
+BtCommonServiceListener::OnNotifyPasskey
+BtCommonServiceListener::OnNotifySspRequest
+BtCommonServiceListener::OnNotifyServiceUuids
+BtCommonServiceListener::OnNotifyRssi
+BtCommonServiceListener::OnNotifyAclStateChanged
+BtCommonServiceListener::OnNotifyBtStatus
+BtCommonServiceListener::OnNotifyError
+```
+
+There is no `Get`-style call for "devices seen so far", so **implementing a Sony listener vtable is
+the single blocker** for both scan-and-pair and NFC tap-to-pair (`FireOnBluetoothOob` is also a
+listener-side callback). Cinder has never done this: the player path hands `Connect()` a `NULL`
+`PlayEventListener` and polls instead, which is why nothing in the tree can be copied as a template.
+That makes it one contained RE task — recover the listener's vtable order and the client's
+`AddListener` signature — and not a series of them, since every method above is already located.
+
+Until it exists, the Devices screen states the limit in its footer rather than drawing a scanner
+that would spin forever. An inert control teaches the user it doesn't work; a scanner that never
+finds anything teaches them the radio is broken.
+
+### Measured 2026-07-30: a `const vector<uint8_t>&` IN-param marshals correctly
+
+Everything proven before this went one way — the service filling containers we handed it.
+`RequestConnection`/`DeleteLinkkey`/`Pairing` go the other way, so `cinder-probe --btconnect <row>`
+was added to test the safe one of the three (a connect is reversible; `DeleteLinkkey` destroys a
+pairing this firmware's Cinder cannot recreate). Result:
+
+```
+[cinder-probe] btconnect: RequestConnection(00:00:5E:00:53:01) …
+[cinder-probe] btconnect: RequestConnection rc=1
+```
+
+and, from the service side, the address **echoed back byte for byte**:
+
+```
+I/hagodaemon: [BT] BtTransmitterService.cc:229] RequestConnection [00:00:5e:00:53:01]
+```
+
+That is the proof — not `rc=1`, which only says the stub returned true. Since `DeleteLinkkey`,
+`Pairing`, `SetNumericComparison` and `CancelPasskey` all take the same `const vector<uint8_t>&`, this
+closes the marshalling question for the whole pairing family in one shot.
+
+### Two side facts worth having
+
+**`SetRfOnOff(true)` reconnects the last device by itself.** Powering the radio up produced, with no
+further calls from us:
+
+```
+BtTransmitterService.cc:951] AVSRC status change to (1)
+BtTransmitterService.cc:980] AVRCP status change to (1)
+BtCommonService.cc:523]      BT status change to (2)   then   (3)
+```
+
+So `RequestLastDeviceConnection` in Cinder's toggle path is belt-and-braces rather than the thing that
+makes reconnect work. Keep it — an explicit request costs nothing and covers the case where the stack
+declines to do it — but do not read a successful reconnect as evidence that call did anything.
+
+**`GetBtStatus` has more values than the three we knew.** Alongside 7 = off, 2 = on/idle,
+3 = connected, a `RequestConnection` in flight produced `BT status change to (6)` — a transient during
+connection setup. Anything that treats "not 2 and not 3" as *off* (Cinder's `bt_radio_up`) will
+therefore read a connecting radio as off for a moment. Harmless where it is used today (the route poll
+re-reads every 3 s) but it is the kind of thing that becomes a bug in a retry loop.
