@@ -776,3 +776,86 @@ Three things made it tractable and are worth reusing:
 3. **PLT entry → symbol** is positional: entry *i* is at `plt + 20 + 12*i` and corresponds to
    `.rel.plt` entry *i*. Do this before reading any call, or you will attribute a call to the wrong
    function — the first pass here mis-identified `AddListener` as an unrelated stub.
+
+---
+
+## Round 2026-07-30c — the listener ABI, PROVEN on hardware (`cinder-probe --btscan`)
+
+The round-b recovery was static analysis. This is the device confirming it, and it corrected two
+things static analysis got wrong.
+
+```
+btscan: radio status=3
+btscan: AddListener(key='') -> 0
+btscan: SetSearchMode(true, 6) rc=1
+btscan: callback BtStatus                      <-- a notification arriving on OUR vtable
+btscan: RemoveListener(0xb6ffd508 /* &listener */) rc=0
+btscan: post-remove callbacks 1 -> 1
+btscan: re-registered (rc=0) same toggle: 1 -> 3
+btscan: *** RemoveListener CONFIRMED — the unsigned IS the listener pointer ***
+```
+
+**Correction 1 — `AddListener` returns 0 on SUCCESS.** Round b read the disassembly's fall-through
+return as "the listener id" (because `RemoveListener` takes an `unsigned` and rejects 0). Wrong: the
+call returns 0 and the listener demonstrably works. 1 and 4 remain the documented failures.
+
+**Correction 2 — `RemoveListener`'s `unsigned` is the LISTENER POINTER**, which follows once there is
+no id to pass. Cast the object's address and hand it over.
+
+**The negative control is the part worth copying.** Silence after a remove proves nothing on its own —
+the stimulus might simply have changed no state. So: remove → repeat the identical stimulus (0 new
+callbacks) → re-register → repeat it again (2 new callbacks). Only the pair of results is evidence.
+On a stack with no failure channel (see the MTK notes above) this is the only honest way to test a
+teardown path.
+
+**Confirmed as recovered:** the filter key `""` works; the slot map is right (`OnNotifyBtStatus` at
+slot 2 fired, named correctly, which a one-off error would have shown as the wrong name printing);
+`SetSearchMode(const bool&, const uint16_t&)` returns 1 on acceptance.
+
+**Still unknown:** the second `SetSearchMode` argument's units (30 is used as "seconds" and behaves
+sensibly), and `GetRssi()` returned 0 with no `OnNotifyRssi` — so either it needs a connected device
+argument or that reply path differs. Neither blocks discovery.
+
+### What shipped on top of it
+
+`cinder-home` now registers `CinderBtListener` (16 virtuals, slots 2..17, **static storage** because
+the proxy holds a raw pointer), starts/stops discovery from a SCAN button on the Devices screen, and
+pairs with a FOUND row via `Pairing` (slot 7). Callbacks land on the framework looper, so they only
+append to a mutex-guarded vector and set a flag; the render loop is what pushes it to the UI. A
+`OnNotifyPairingComplete` re-reads the paired list and ends the scan.
+
+The four prompt callbacks (`NumericComparison`, `Passkey`, `SspRequest`, `PairingComplete`'s arguments)
+are declared but take unnamed word-sized parameters that are **never dereferenced** — ABI-safe on armhf
+and enough to log that a device is waiting on a prompt Cinder cannot show yet. That is the remaining
+gap, and the Devices screen says so in its footer rather than failing silently.
+
+### Measured 2026-07-30d: `OnNotifyPairingComplete` fires BEFORE the pairing table is updated
+
+First real pairing on the device worked, but looked broken. The log is unambiguous:
+
+```
+bt-scan: Pairing(row 0) rc=1
+bt-scan: pairing complete — refreshing the paired list, scan off
+bt-paired: 1 device(s)          <-- the read right after the callback: still the OLD count
+bt-scan: Pairing(row 0) rc=1    <-- so the user tapped PAIR again
+bt-paired: 2 device(s)          <-- and THAT is what made it appear
+```
+
+So `OnNotifyPairingComplete` is not a promise that `GetPairedDeviceInfo` will report the new link key
+yet. **Do not refresh once on the callback.** Cinder now schedules re-reads (~700 ms apart, up to 8)
+and stops the moment the address it just paired shows up, then gives up quietly rather than inventing
+a row.
+
+Same shape as the pattern noted earlier in this file: on this stack a call returning cleanly is not
+evidence that the state behind it has moved. Poll for the side effect.
+
+Two display bugs in the same pass, both of which made a working pairing look worse than it was:
+
+* **An already-paired device kept appearing in the scan results**, still offering "TAP TO PAIR" — a
+  scan reports paired devices like any other. They are now filtered out of the FOUND list. That
+  filtering is also why the shell keeps a *second* address list in UI-row order: the index the UI hands
+  back addresses the FILTERED list, and reusing the raw scan list would pair with the wrong device
+  whenever anything was hidden.
+* **A name arriving after the address never reached the screen.** Devices are reported repeatedly and
+  often nameless on the first report; the code kept the better name but only marked the list dirty for
+  *new* devices, so a row that started as "(unnamed)" stayed that way for the whole scan.

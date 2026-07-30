@@ -265,6 +265,9 @@ void refresh_bt_route();     // ditto — points the volume rocker at whichever 
 void apply_bt_codec();       // ditto — pushes the codec choice to the radio (not just the conf file)
 static void refresh_bt_connected();  // ditto — names the linked device for the Bluetooth screen
 void refresh_bt_paired();    // ditto — reads the radio's pairing table for the Devices screen
+void apply_bt_scan();        // ditto — starts/stops discovery (SetSearchMode + the listener)
+void apply_bt_prompt_reply(bool accept); // ditto — answers a numeric-comparison / SSP prompt
+void apply_bt_pair_device(); // ditto — pairs with a device the scan turned up
 
 void render_up() {
     if (g_render_ready) return;
@@ -1726,6 +1729,324 @@ void refresh_bt_paired() {
     clog_(m);
 }
 
+// ── Bluetooth listener: scan results ─────────────────────────────────────────────────────────────
+// Recovered + PROVEN on device 2026-07-30 (analysis/G_bt_nfc/RE_findings.md round b, and
+// `cinder-probe --btscan`). Three facts this code depends on, each measured rather than assumed:
+//
+//   * We do NOT implement `IBinderObject`. `AddListener` (client vtable slot 30) allocates the binder
+//     proxy itself and stores a RAW pointer to our object, so a plain C++ class is the whole listener.
+//     Because the pointer is raw and unowned, the listener MUST have static storage duration — see
+//     `g_bt_listener` below. A stack or heap listener would be a use-after-free on the next
+//     notification.
+//   * `AddListener(listener, name)` returns **0 on success** (1 = bad argument, 4 = no service). It
+//     does not return an id, which is why unregistering takes the LISTENER POINTER as its `unsigned`
+//     handle — verified with a negative control: an identical stimulus fired callbacks while
+//     registered and was silent after `RemoveListener`.
+//   * The `name` argument is a `NotifyListeners` FILTER KEY, not a label. `""` works; a wrong key
+//     would give a listener that never fires while looking perfectly healthy.
+//
+// Everything here runs on the framework looper, NOT the render thread. So the callbacks only append to
+// a mutex-guarded list and set a flag; the main loop is what pushes anything into the UI.
+struct BtFound {
+    std::vector<unsigned char> addr;
+    unsigned                   cod;
+    std::string                name;
+};
+static pthread_mutex_t g_bt_found_mx = PTHREAD_MUTEX_INITIALIZER;
+static std::vector<BtFound> g_bt_found;                 // guarded by g_bt_found_mx
+static volatile sig_atomic_t g_bt_found_dirty  = 0;
+static volatile sig_atomic_t g_bt_pairing_done = 0;
+// The addresses actually PUSHED to the UI, in UI row order — see flush_bt_found for why this is not
+// the same list as g_bt_found. Main-loop thread only, so it needs no lock.
+static std::vector<std::vector<unsigned char>> g_bt_found_ui;
+// A pairing we asked for, and the re-read schedule that waits for the radio to admit it happened.
+// `OnNotifyPairingComplete` fires BEFORE the link key is visible to GetPairedDeviceInfo (measured
+// 2026-07-30: the read right after the callback still returned the old count), so one immediate
+// refresh is not enough — the device only appeared when the user tapped PAIR a second time.
+static std::vector<unsigned char> g_bt_pairing_addr;
+// A pairing prompt the radio is waiting on. Recovered by hand 2026-07-30 (round e): these three
+// callbacks carry real arguments, so unlike the placeholder versions this code DOES dereference them —
+// which is only safe because each signature was read off the handler that builds the stack objects.
+//   slot 3  OnNotifyNumericComparison(const vector<uint8_t>&, const uint32_t&, const uint32_t&, const string&)
+//   slot 5  OnNotifyPasskey(const vector<uint8_t>&, const uint32_t&, const string&)
+//   slot 14 OnNotifySspRequest(const vector<uint8_t>&, const string&, const uint32_t&, const uint32_t&, const uint32_t&)
+enum { BT_PROMPT_NONE = 0, BT_PROMPT_NUMERIC = 1, BT_PROMPT_PASSKEY = 2, BT_PROMPT_SSP = 3 };
+struct BtPrompt {
+    int                        kind = BT_PROMPT_NONE;
+    std::vector<unsigned char> addr;
+    std::string                name;
+    unsigned                   code = 0;          // the digits to show the user
+    unsigned                   v1 = 0, v2 = 0;    // the other raw values, echoed back on reply
+};
+static pthread_mutex_t g_bt_prompt_mx = PTHREAD_MUTEX_INITIALIZER;
+static BtPrompt g_bt_prompt;                        // guarded by g_bt_prompt_mx
+static volatile sig_atomic_t g_bt_prompt_dirty = 0;
+static long g_bt_paired_recheck_at   = 0;
+static int  g_bt_paired_recheck_left = 0;
+
+struct CinderBtListener {
+    // Virtual destructor FIRST: with the Itanium ABI that puts D1/D0 in slots 0/1 and the methods
+    // below at 2..17, which is the layout the library dispatches through.
+    virtual ~CinderBtListener() {}
+    // Stash a prompt for the main loop to show. Runs on the framework looper, so it touches nothing
+    // but the guarded struct.
+    static void push_prompt(int kind, const std::vector<unsigned char>& addr, const std::string& name,
+                            unsigned code, unsigned v1, unsigned v2) {
+        pthread_mutex_lock(&g_bt_prompt_mx);
+        g_bt_prompt.kind = kind;
+        g_bt_prompt.addr = addr;
+        g_bt_prompt.name = name;
+        g_bt_prompt.code = code;
+        g_bt_prompt.v1   = v1;
+        g_bt_prompt.v2   = v2;
+        pthread_mutex_unlock(&g_bt_prompt_mx);
+        g_bt_prompt_dirty = 1;
+    }
+    virtual void OnNotifyBtStatus(const void*, const void*, const void*) {}
+    virtual void OnNotifyNumericComparison(const std::vector<unsigned char>& addr,
+                                           const unsigned& a, const unsigned& b,
+                                           const std::string& name) {
+        // Which of the two words is the six digits the other device shows is not settled by the
+        // disassembly, so BOTH are logged and the plausible one is displayed. Getting this wrong shows
+        // the user the wrong number; it cannot corrupt the pairing, because the reply is a yes/no.
+        char m[128];
+        std::snprintf(m, sizeof m, "bt-scan: NumericComparison '%s' a=%u b=%u", name.c_str(), a, b);
+        clog_(m);
+        unsigned shown = (a && a < 1000000u) ? a : b;
+        push_prompt(BT_PROMPT_NUMERIC, addr, name, shown, a, b);
+    }
+    virtual void OnNotifyPairingComplete(const void*, const void*, const void*) {
+        g_bt_pairing_done = 1;
+    }
+    virtual void OnNotifyPasskey(const std::vector<unsigned char>& addr,
+                                 const unsigned& passkey, const std::string& name) {
+        char m[112];
+        std::snprintf(m, sizeof m, "bt-scan: Passkey '%s' %06u", name.c_str(), passkey);
+        clog_(m);
+        // Display only: this is the code the REMOTE device asks its user to enter, so there is nothing
+        // for Cinder to reply. The panel is dismissable and pairing completes on its own.
+        push_prompt(BT_PROMPT_PASSKEY, addr, name, passkey, 0, 0);
+    }
+    virtual void OnNotifySearchedDevice(const std::vector<unsigned char>& addr,
+                                        const unsigned& cod,
+                                        const std::string& name) {
+        if (addr.size() != 6) return;                   // not an address we can do anything with
+        pthread_mutex_lock(&g_bt_found_mx);
+        bool dup = false, renamed = false;
+        for (size_t i = 0; i < g_bt_found.size(); i++) {
+            if (g_bt_found[i].addr == addr) {
+                // A device is reported repeatedly during a scan, and the name often arrives empty the
+                // first time and filled later. Keep the better one rather than adding a second row —
+                // and mark the list dirty for that too, or the row stays "(unnamed)" for the whole
+                // scan even though the radio told us the name a moment later.
+                if (g_bt_found[i].name.empty() && !name.empty()) {
+                    g_bt_found[i].name = name;
+                    renamed = true;
+                }
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) {
+            BtFound f;
+            f.addr = addr;
+            f.cod  = cod;
+            f.name = name;
+            g_bt_found.push_back(f);
+        }
+        pthread_mutex_unlock(&g_bt_found_mx);
+        if (!dup || renamed) g_bt_found_dirty = 1;
+    }
+    virtual void OnNotifyDisconnectEnd(const void*, const void*, const void*) {}
+    virtual void OnNotifyCoexistenceBtWifiRatio(const void*, const void*, const void*) {}
+    virtual void OnNotifyUpdateSupportProfile(const void*, const void*, const void*) {}
+    virtual void OnNotifyUpdateOSInfo(const void*, const void*, const void*) {}
+    virtual void OnNotifyRssi(const void*, const void*, const void*) {}
+    virtual void OnNotifyStartSwitchDevice(const void*, const void*, const void*) {}
+    virtual void OnNotifyAclStateChanged(const void*, const void*, const void*) {}
+    virtual void OnNotifySspRequest(const std::vector<unsigned char>& addr, const std::string& name,
+                                   const unsigned& x, const unsigned& y, const unsigned& z) {
+        char m[144];
+        std::snprintf(m, sizeof m, "bt-scan: SspRequest '%s' x=%u y=%u z=%u", name.c_str(), x, y, z);
+        clog_(m);
+        // `RequestSspReply(addr, SspVariant, bool accept, uint32)` wants the variant and value back, so
+        // keep the raw words rather than interpreting them — echoing what arrived is the one choice
+        // that cannot be wrong about an enum we have not decoded.
+        push_prompt(BT_PROMPT_SSP, addr, name, y, x, z);
+    }
+    virtual void OnNotifyServiceUuids(const void*, const void*, const void*) {}
+    virtual void OnNotifyServiceResume(const void*, const void*, const void*) {}
+    virtual void OnNotifyError(const void*, const void*, const void*) {
+        clog_("bt-scan: OnNotifyError from BtCommonService");
+    }
+};
+
+// STATIC on purpose — the binder proxy keeps a raw pointer to this object for as long as the
+// registration lives. Never make this a local or a `new` that anything can free.
+static CinderBtListener g_bt_listener;
+static bool g_bt_listener_on = false;
+
+// Register once and stay registered for the life of the process. Churning registration per screen
+// would buy nothing and add a window where a notification races the removal.
+static bool bt_listener_register() {
+    enum { VIDX_AddListener = 30 };
+    if (g_bt_listener_on) return true;
+    void* c = bt_common();
+    if (!c) return false;
+    try {
+        std::string key("");     // the filter key — "" is the one measured to work
+        typedef int (*fnadd)(void*, void*, const std::string*);
+        int rc = ((fnadd)bt_slot(c, VIDX_AddListener))(c, (void*)&g_bt_listener, &key);
+        g_bt_listener_on = (rc == 0);
+        char m[112];
+        std::snprintf(m, sizeof m, "bt-scan: AddListener rc=%d (%s)", rc,
+                      g_bt_listener_on ? "registered" : "FAILED — 1 = bad arg, 4 = no service");
+        clog_(m);
+    } catch (...) { clog_("bt-scan: AddListener threw"); }
+    return g_bt_listener_on;
+}
+
+// Start/stop discovery. Run ONLY via run_guarded.
+void apply_bt_scan() {
+    enum { VIDX_SetSearchMode = 14 };
+    bool want = cinder_get_bt_scanning() != 0;
+    if (want && !bt_listener_register()) {
+        // Without the listener a scan is a lie: the radio would search and nothing would ever arrive.
+        clog_("bt-scan: no listener, so refusing to pretend — scan switched back off");
+        cinder_set_bt_scanning(0);
+        return;
+    }
+    if (want) {
+        pthread_mutex_lock(&g_bt_found_mx);
+        g_bt_found.clear();
+        pthread_mutex_unlock(&g_bt_found_mx);
+        cinder_bt_found_clear();
+    }
+    try {
+        void* c = bt_common();
+        if (!c) return;
+        // `SetSearchMode(const bool&, const uint16_t&)`. The second argument is a duration; 30 is a
+        // guess at seconds that behaves sensibly, and the radio stopping on its own is harmless
+        // because the UI's scan state is reconciled from the found-list poll, not from this call.
+        bool on = want;
+        unsigned short dur = 30;
+        typedef int (*fnsearch)(void*, const bool*, const unsigned short*);
+        int rc = ((fnsearch)bt_slot(c, VIDX_SetSearchMode))(c, &on, &dur);
+        char m[96];
+        std::snprintf(m, sizeof m, "bt-scan: SetSearchMode(%s, %u) rc=%d", want ? "on" : "off", dur, rc);
+        clog_(m);
+    } catch (...) { clog_("bt-scan: SetSearchMode threw"); }
+}
+
+// Push whatever the listener has collected into the UI. Called from the main loop — never from a
+// callback, which runs on the looper thread.
+//
+// Devices that are ALREADY PAIRED are dropped here rather than shown twice. A scan reports them like
+// anything else, so without this the just-paired device sat in the FOUND section still offering "TAP
+// TO PAIR" while also appearing under PAIRED — which is exactly what made a working pairing look
+// broken on 2026-07-30, because the obvious response is to tap PAIR again.
+//
+// The filtering is why `g_bt_found_ui` exists: the UI's row index must address the FILTERED list, or
+// row 2 on screen would pair with whatever the unfiltered list happens to hold at index 2.
+static void flush_bt_found() {
+    g_bt_found_dirty = 0;
+    pthread_mutex_lock(&g_bt_found_mx);
+    std::vector<BtFound> snap = g_bt_found;
+    pthread_mutex_unlock(&g_bt_found_mx);
+    g_bt_found_ui.clear();
+    cinder_bt_found_clear();
+    unsigned hidden = 0;
+    for (size_t i = 0; i < snap.size(); i++) {
+        bool paired = false;
+        for (size_t j = 0; j < g_bt_paired.size(); j++)
+            if (g_bt_paired[j] == snap[i].addr) { paired = true; break; }
+        if (paired) { hidden++; continue; }
+        cinder_bt_found_add(snap[i].name.c_str(), bt_kind_from_cod(snap[i].cod));
+        g_bt_found_ui.push_back(snap[i].addr);
+    }
+    char m[112];
+    std::snprintf(m, sizeof m, "bt-scan: %u device(s) found%s", (unsigned)g_bt_found_ui.size(),
+                  hidden ? " (already-paired ones hidden)" : "");
+    clog_(m);
+}
+
+// Answer a pairing prompt. `accept` false = decline, which is also what a Cancel tap sends.
+//
+// Both replies pass the SAME address the notification carried, not anything the UI chose — the UI only
+// ever says yes or no. Signatures come from the library's own strings:
+//   bool SetNumericComparison(const pst::base::vector<uint8_t>&, const bool&)                   slot 9
+//   bool RequestSspReply(const pst::base::vector<uint8_t>&, const SspVariant&, const bool&,
+//                        const uint32_t&)                                                      slot 28
+void apply_bt_prompt_reply(bool accept) {
+    enum { VIDX_SetNumericComparison = 9, VIDX_CancelPairing = 8, VIDX_RequestSspReply = 28 };
+    BtPrompt p;
+    pthread_mutex_lock(&g_bt_prompt_mx);
+    p = g_bt_prompt;
+    g_bt_prompt = BtPrompt();
+    pthread_mutex_unlock(&g_bt_prompt_mx);
+    cinder_bt_prompt_clear();
+    if (p.kind == BT_PROMPT_NONE || p.addr.size() != 6) return;
+    try {
+        void* c = bt_common();
+        if (!c) return;
+        char m[128];
+        if (p.kind == BT_PROMPT_NUMERIC) {
+            typedef int (*fnn)(void*, const std::vector<unsigned char>*, const bool*);
+            int rc = ((fnn)bt_slot(c, VIDX_SetNumericComparison))(c, &p.addr, &accept);
+            std::snprintf(m, sizeof m, "bt-scan: SetNumericComparison(%s) rc=%d", accept ? "yes" : "no", rc);
+            clog_(m);
+        } else if (p.kind == BT_PROMPT_SSP) {
+            // v1 = the variant word as received, code = the value word. Echoed back rather than
+            // interpreted, because `SspVariant`'s enumerators are not decoded.
+            unsigned variant = p.v1, value = p.code;
+            typedef int (*fns)(void*, const std::vector<unsigned char>*, const unsigned*, const bool*,
+                              const unsigned*);
+            int rc = ((fns)bt_slot(c, VIDX_RequestSspReply))(c, &p.addr, &variant, &accept, &value);
+            std::snprintf(m, sizeof m, "bt-scan: RequestSspReply(variant=%u, %s, value=%u) rc=%d",
+                          variant, accept ? "yes" : "no", value, rc);
+            clog_(m);
+        } else if (!accept) {
+            // A passkey panel has nothing to confirm, so Cancel is the only meaningful answer and it
+            // means "stop trying".
+            typedef int (*fn0)(void*);
+            int rc = ((fn0)bt_slot(c, VIDX_CancelPairing))(c);
+            std::snprintf(m, sizeof m, "bt-scan: CancelPairing() rc=%d", rc);
+            clog_(m);
+        }
+    } catch (...) { clog_("bt-scan: prompt reply threw"); }
+}
+
+// Push a pending prompt into the UI. Main loop only.
+static void flush_bt_prompt() {
+    g_bt_prompt_dirty = 0;
+    pthread_mutex_lock(&g_bt_prompt_mx);
+    BtPrompt p = g_bt_prompt;
+    pthread_mutex_unlock(&g_bt_prompt_mx);
+    if (p.kind == BT_PROMPT_NONE) { cinder_bt_prompt_clear(); return; }
+    cinder_bt_prompt_set(p.kind, p.name.c_str(), p.code);
+}
+
+// Pair with a device the scan turned up (Devices ▸ a SCAN row).
+void apply_bt_pair_device() {
+    enum { VIDX_Pairing = 7 };
+    int i = cinder_pending_bt_device();
+    // Index into the list the UI was SHOWN (g_bt_found_ui), not the raw scan list — they differ
+    // whenever an already-paired device was filtered out.
+    std::vector<unsigned char> addr;
+    if (i >= 0 && (size_t)i < g_bt_found_ui.size()) addr = g_bt_found_ui[(size_t)i];
+    if (addr.size() != 6) { clog_("bt-scan: pair for an unknown row"); return; }
+    g_bt_pairing_addr = addr;
+    try {
+        void* c = bt_common();
+        if (!c) return;
+        typedef int (*fna)(void*, const std::vector<unsigned char>*);
+        int rc = ((fna)bt_slot(c, VIDX_Pairing))(c, &addr);
+        char m[96];
+        std::snprintf(m, sizeof m, "bt-scan: Pairing(row %d) rc=%d", i, rc);
+        clog_(m);
+    } catch (...) { clog_("bt-scan: Pairing threw"); }
+}
+
 // Connect one specific paired device (Devices ▸ row). `RequestConnection` takes the BD address by
 // const reference — unlike RequestLastDeviceConnection, which takes nothing and picks for itself.
 void apply_bt_connect_device() {
@@ -2697,6 +3018,19 @@ void carry_out(int act) {
         case CINDER_ACT_BT_FORGET_DEVICE:
             run_guarded("carry_out: Bluetooth forget device", 6, apply_bt_forget_device);
             break;
+        case CINDER_ACT_BT_SCAN_TOGGLE:
+            // Registers the listener on first use, then one SetSearchMode call — nothing waits here.
+            run_guarded("carry_out: Bluetooth scan", 6, apply_bt_scan);
+            break;
+        case CINDER_ACT_BT_PAIR_DEVICE:
+            run_guarded("carry_out: Bluetooth pair device", 8, apply_bt_pair_device);
+            break;
+        case CINDER_ACT_BT_PROMPT_CONFIRM:
+            run_guarded("carry_out: Bluetooth prompt confirm", 6, []() { apply_bt_prompt_reply(true); });
+            break;
+        case CINDER_ACT_BT_PROMPT_CANCEL:
+            run_guarded("carry_out: Bluetooth prompt cancel", 6, []() { apply_bt_prompt_reply(false); });
+            break;
         case CINDER_ACT_SLEEP:         screen_toggle(); break; // Power = panel on/off (not lock)
         case CINDER_ACT_ENTER_USB_MSC:
             // device-gated USB-mode switch (hands storage to the PC; disruptive — validate live).
@@ -3383,6 +3717,53 @@ void* render_driver(void*) {
             if (now_ms() - last_route_ms >= 3000) {
                 last_route_ms = now_ms();
                 run_guarded("loop: BT route poll", 4, refresh_bt_route);
+            }
+            // Scan results. The listener runs on the framework looper and only appends to a guarded
+            // list; THIS is where they reach the UI, on the thread that owns it.
+            if (g_bt_found_dirty) {
+                run_guarded("loop: BT found list", 4, flush_bt_found);
+            }
+            // A pairing prompt arrived on the looper; show it from the thread that owns the UI.
+            if (g_bt_prompt_dirty) {
+                run_guarded("loop: BT pairing prompt", 4, flush_bt_prompt);
+            }
+            // A pairing finished (OnNotifyPairingComplete). Re-read the paired list — the new device
+            // belongs in it now — and end the scan, since what you came to do is done.
+            if (g_bt_pairing_done) {
+                g_bt_pairing_done = 0;
+                run_guarded("loop: BT pairing complete", 8, []() {
+                    clog_("bt-scan: pairing complete — scan off, waiting for the link key to appear");
+                    cinder_set_bt_scanning(0);
+                    apply_bt_scan();
+                    refresh_bt_paired();
+                    // The callback runs ahead of the pairing table, so schedule re-reads instead of
+                    // trusting that one. Stops early the moment the new address shows up.
+                    g_bt_paired_recheck_left = 8;
+                    g_bt_paired_recheck_at   = now_ms() + 700;
+                });
+            }
+            // Waiting for a just-paired device to appear in GetPairedDeviceInfo. ~700 ms apart, up to
+            // 8 tries (~5.5 s), then give up quietly — the list is also re-read whenever the screen is
+            // opened, so a slow radio costs a stale row and not a wrong one.
+            if (g_bt_paired_recheck_left > 0 && now_ms() >= g_bt_paired_recheck_at) {
+                g_bt_paired_recheck_at = now_ms() + 700;
+                g_bt_paired_recheck_left--;
+                run_guarded("loop: BT paired recheck", 6, []() {
+                    refresh_bt_paired();
+                    bool there = false;
+                    for (size_t i = 0; i < g_bt_paired.size(); i++)
+                        if (g_bt_paired[i] == g_bt_pairing_addr) { there = true; break; }
+                    if (there) {
+                        g_bt_paired_recheck_left = 0;
+                        g_bt_pairing_addr.clear();
+                        // It is paired now, so it must stop offering "TAP TO PAIR" in the FOUND list.
+                        flush_bt_found();
+                        clog_("bt-scan: the new device is in the paired list");
+                    } else if (g_bt_paired_recheck_left == 0) {
+                        clog_("bt-scan: paired list never showed the new device — leaving it to the "
+                              "next refresh rather than inventing a row");
+                    }
+                });
             }
         }
 
