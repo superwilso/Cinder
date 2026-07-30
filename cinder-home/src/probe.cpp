@@ -714,6 +714,64 @@ static int btinfo_probe() {
     _exit(0);
 }
 
+// ── --btwho : read-only snapshot of who is connected right now ───────────────────────────────────
+//
+// Added 2026-07-30 to diagnose "headphones are playing but the Bluetooth screen says nothing is
+// connected". Deliberately makes NO setter call of any kind: the user may be listening while this
+// runs, and --btinfo's LDAC-quality walk would be audible. Four reads, then out.
+//
+// The point is to separate two very different causes: `GetConnectInformation` returning false (the
+// shell asked correctly and the service said no) versus the shell asking at the wrong moment.
+static int btwho_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* xmit = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    void* cmn  = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    enum { VIDX_GetBtStatus = 3, VIDX_GetAvSrcConnectionStatus = 3, VIDX_GetAvrcpConnectionStatus = 4,
+           VIDX_GetConnectInformation = 5 };
+    typedef int (*fn0)(void*);
+    typedef int (*fn2)(void*, std::vector<unsigned char>*, std::string*);
+
+    int st = -1, avsrc = -1, avrcp = -1, rc = -1;
+    std::vector<unsigned char> addr;
+    std::string name;
+    wd_arm(12);
+    try {
+        if (cmn)  st    = ((fn0)vslot(cmn,  VIDX_GetBtStatus))(cmn);
+        if (xmit) avsrc = ((fn0)vslot(xmit, VIDX_GetAvSrcConnectionStatus))(xmit);
+        if (xmit) avrcp = ((fn0)vslot(xmit, VIDX_GetAvrcpConnectionStatus))(xmit);
+        if (xmit) rc    = ((fn2)vslot(xmit, VIDX_GetConnectInformation))(xmit, &addr, &name);
+    } catch (...) { clog_("btwho: a read threw"); }
+    wd_disarm();
+
+    char mac[24];
+    mac_str(addr, mac, sizeof mac);
+    std::fprintf(stderr, "[cinder-probe] btwho: GetBtStatus=%d  AvSrc=%d  Avrcp=%d\n", st, avsrc, avrcp);
+    std::fprintf(stderr, "[cinder-probe] btwho: GetConnectInformation rc=%d addr=%s name='%s'\n",
+                 rc, mac, name.c_str());
+    // The ADDRESS decides, not `rc`. Measured on the run that motivated this mode: rc=0 came back
+    // together with a valid MAC and 'WH-1000XM4', so the stub's int is a transaction status (0 = OK)
+    // and not the service method's bool. Judging by rc is what made the Bluetooth screen claim
+    // nothing was connected while audio was playing.
+    if (!addr.empty())
+        clog_("btwho: CONNECTED — and note rc above: a zero return with a filled address means rc is "
+              "NOT a connected flag. Gate on the address.");
+    else
+        clog_("btwho: the service reports nothing connected");
+
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 // ── --btconnect [row] : does a `const pst::base::vector<uint8_t>&` IN-param marshal correctly? ───
 //
 // The Devices screen (Bluetooth ▸ paired list) rests on two calls that pass a BD address INTO the
@@ -1220,6 +1278,9 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
         return btinfo_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btwho") == 0) {
+        return btwho_probe();   // read-only; safe to run while audio is playing
     }
     if (argc > 1 && std::strcmp(argv[1], "--btconnect") == 0) {
         // Row index into the paired list (default 0). Run --btinfo first to see the rows.

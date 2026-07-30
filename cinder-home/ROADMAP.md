@@ -231,15 +231,20 @@ never repoint the `.appcfg` before the probe run looks clean.
 - **USB-mode switch** (enter MSC) — wired to **Settings ▸ USB mode** (`setprop sys.sony.config msc`,
   guarded; disruptive — validate live).
 - **FM radio / BT receiver** screens — Sony tuner/BT services (currently static).
-- **Scan-and-pair a NEW device + NFC tap-to-pair — ONE blocker, not two.** The Devices screen
-  (2026-07-30) does connect / disconnect / forget on already-paired devices, and every remaining call
-  is located with an exact signature (`SetSearchMode`, `Pairing`, `SetNumericComparison`,
-  `SetPasskey`, `RequestSspReply`, and NFC's `Open`/`Start`). What is missing is that scan results and
-  pairing prompts are **pushed to a listener** — `BtCommonServiceListener::OnNotifySearchedDevice`
-  and friends — and Cinder implements no Sony listener vtable anywhere (the player path passes `NULL`
-  and polls). Recover that one ABI (vtable order + the client's `AddListener`) and both features
-  unblock at once, including `pairing.rs`'s numeric-comparison and passkey dialogs, which are already
-  drawn. See `analysis/G_bt_nfc/RE_findings.md` (round 2026-07-30).
+- **Scan-and-pair a NEW device + NFC tap-to-pair — the RE is DONE, only the code is left.** The
+  Devices screen (2026-07-30) already does connect / disconnect / forget on paired devices. The listener
+  ABI that gated discovery was **recovered the same day** and is smaller than feared: Cinder does *not*
+  have to implement `IBinderObject` — the client library builds the binder proxy and keeps a raw pointer
+  to our object, so a plain C++ class with the virtuals in the right order is enough.
+  `BtCommonServiceClient` slot **30** = `AddListener(IListener*, const std::string&)` → id, slot **31** =
+  `RemoveListener(unsigned)`; the listener's own slots are 2..17 with `OnNotifySearchedDevice` at **6**,
+  signature `(const vector<uint8_t>& addr, const uint32_t& cod, const string& name)`. Remaining work is
+  ordinary: the listener class, `SetSearchMode` to start a scan, a SCAN section on the Devices screen,
+  then `Pairing` + the prompt dialogs (whose four signatures still need the same by-hand read).
+  **One trap to remember:** `AddListener`'s name argument is a `NotifyListeners` *filter key*, so a
+  wrong value gives a listener that never fires while looking healthy — try `""` first. Callbacks also
+  arrive on the framework looper, not the render thread. Full detail:
+  `analysis/G_bt_nfc/RE_findings.md` (round 2026-07-30b).
 - **FM radio, and FM → Bluetooth** — designed end to end 2026-07-28, none of it built. Full write-up
   with the evidence: [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md).
   Short version: the Si4708 is a V4L2 *control* device with no ALSA symbols, so its audio is analog
