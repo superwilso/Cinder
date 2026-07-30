@@ -530,6 +530,7 @@ static int ldac_probe() {
 //    this walks 0..3 and the answer comes from logcat.
 // Declared here as well as at --bt's own block below: this mode comes first in the file and needs it.
 extern "C" void* _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv(void);
+extern "C" void* _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv(void);
 
 // The element of `GetPairedDeviceInfo`'s vector, recovered from the raw dump this mode prints (2
 // devices in 96 bytes → a 48-byte stride) and confirmed by both libc++ string forms decoding through
@@ -710,6 +711,131 @@ static int btinfo_probe() {
 
     g_pump_run = false;
     std::fprintf(stderr, "[cinder-probe] btinfo: done (%u pump ticks)\n", g_pump_ticks);
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// ── --nfc : tap-to-pair. Does the NFC listener fire, and what does the OOB tag carry? ────────────
+//
+// Recovered 2026-07-30 the same way as the BT listener (analysis/G_bt_nfc/RE_findings.md round f):
+//   * `NfcServiceClient` vtable: 3/4 `Open` (two overloads), 5/6 `Start`, 7 `Stop`, 8 `Close`,
+//     9 `GetCurrentMode`, then **10 `AddListener`, 11 `RemoveListener`** — registration sits right
+//     after the last service method, exactly as it does on BtCommonServiceClient.
+//   * `NfcServiceListener` vtable: 2 `OnBluetoothOob`, 3 `OnUnknownTag`, 4 `OnHostCardEmulation`.
+//   * `OnBluetoothOob` takes ONE argument: a pointer to a struct whose first field is the peer's BD
+//     address as a `vector<uint8_t>` (+0), followed by a uint32 (+0xC) and strings. Only the prefix is
+//     read here — declaring a tail that has not been verified is how you get a crash for no benefit,
+//     and the address is the only field tap-to-pair needs.
+//
+// What this mode CANNOT settle by reading: which `Open`/`Start` overload to call. The alloc histogram
+// says `Open` slot 4 and `Stop`/`Close`/`GetCurrentMode` marshal no arguments, while `Start` slot 5
+// marshals one and slot 6 marshals two. So it tries the no-argument `Open` first and passes 0 for
+// `Start`'s single argument (0 being the likeliest "default mode"), and reports every return code.
+struct ProbeNfcListener {
+    virtual ~ProbeNfcListener() {}                                  // slots 0, 1
+    virtual void OnBluetoothOob(const void* oob) {                  // slot 2
+        taps++;
+        if (!oob) { clog_("nfc: OnBluetoothOob with a null payload"); return; }
+        // +0 is a libc++ vector<uint8_t>; reading its three pointers is safe whatever follows.
+        const std::vector<unsigned char>* addr =
+            reinterpret_cast<const std::vector<unsigned char>*>(oob);
+        char mac[24];
+        mac_str(*addr, mac, sizeof mac);
+        std::fprintf(stderr, "[cinder-probe] nfc: *** BLUETOOTH OOB TAG — addr=%s (%zu bytes) ***\n",
+                     mac, addr->size());
+    }
+    virtual void OnUnknownTag(const void*) {                        // slot 3
+        taps++;
+        clog_("nfc: OnUnknownTag — a tag was read but it is not a Bluetooth OOB record");
+    }
+    virtual void OnHostCardEmulation(const void*) {                 // slot 4
+        taps++;
+        clog_("nfc: OnHostCardEmulation");
+    }
+    int taps = 0;
+};
+
+static int nfc_probe(int secs) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* nfc = _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv();
+    std::fprintf(stderr, "[cinder-probe] nfc: client=%p\n", nfc);
+    if (!nfc) { clog_("nfc: NfcServiceClientFactory returned NULL"); _exit(1); }
+
+    enum { VIDX_Open1 = 3, VIDX_Open2 = 4, VIDX_Start1 = 5, VIDX_Start2 = 6,
+           VIDX_Stop = 7, VIDX_Close = 8, VIDX_GetCurrentMode = 9,
+           VIDX_AddListener = 10, VIDX_RemoveListener = 11 };
+    typedef int (*fn0)(void*);
+    typedef int (*fnu)(void*, const unsigned*);
+    typedef int (*fnadd)(void*, void*, const std::string*);
+    typedef int (*fnrem)(void*, unsigned);
+
+    static ProbeNfcListener listener;   // static: the proxy keeps a RAW pointer
+    std::string key("");
+    int reg = -1;
+    wd_arm(12);
+    try { reg = ((fnadd)vslot(nfc, VIDX_AddListener))(nfc, (void*)&listener, &key); }
+    catch (...) { clog_("nfc: AddListener THREW"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] nfc: AddListener -> %d (0 = registered, as on BtCommon)\n", reg);
+
+    int mode0 = -1;
+    wd_arm(10);
+    try { mode0 = ((fn0)vslot(nfc, VIDX_GetCurrentMode))(nfc); } catch (...) {}
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] nfc: GetCurrentMode (before) = %d\n", mode0);
+
+    int rc_open = -1;
+    wd_arm(12);
+    try { rc_open = ((fn0)vslot(nfc, VIDX_Open2))(nfc); }
+    catch (...) { clog_("nfc: Open (slot 4) threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] nfc: Open() slot4 rc=%d\n", rc_open);
+
+    unsigned zero = 0;
+    int rc_start = -1;
+    wd_arm(12);
+    try { rc_start = ((fnu)vslot(nfc, VIDX_Start1))(nfc, &zero); }
+    catch (...) { clog_("nfc: Start (slot 5) threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] nfc: Start(0) slot5 rc=%d\n", rc_start);
+
+    int mode1 = -1;
+    wd_arm(10);
+    try { mode1 = ((fn0)vslot(nfc, VIDX_GetCurrentMode))(nfc); } catch (...) {}
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] nfc: GetCurrentMode (after) = %d%s\n", mode1,
+                 mode1 != mode0 ? "  <== the mode CHANGED, so Open/Start took effect" : "");
+
+    std::fprintf(stderr, "[cinder-probe] nfc: TAP A DEVICE ON THE REAR PANEL NOW (%d s) …\n", secs);
+    for (int i = 0; i < secs; i++) {
+        usleep(1000000);
+        if (i % 5 == 4) std::fprintf(stderr, "[cinder-probe] nfc:   t+%ds taps=%d\n", i + 1, listener.taps);
+    }
+
+    if (listener.taps == 0)
+        clog_("nfc: no tag callbacks. Either Open/Start needs the other overload, the radio is off in "
+              "settings, or nothing was tapped — check GetCurrentMode above before blaming the ABI");
+    else
+        clog_("nfc: *** the NFC listener FIRES — tap-to-pair is reachable ***");
+
+    wd_arm(12);
+    try { ((fn0)vslot(nfc, VIDX_Stop))(nfc); ((fn0)vslot(nfc, VIDX_Close))(nfc); } catch (...) {}
+    wd_disarm();
+    wd_arm(12);
+    try { ((fnrem)vslot(nfc, VIDX_RemoveListener))(nfc, (unsigned)(uintptr_t)&listener); } catch (...) {}
+    wd_disarm();
+    clog_("nfc: stopped + closed + unregistered");
+
+    g_pump_run = false;
     std::fflush(nullptr);
     _exit(0);
 }
@@ -1513,6 +1639,10 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--btscan") == 0) {
         // Seconds to scan (default 20). Powers the radio up if needed and restores it.
         return btscan_probe(argc > 2 ? std::atoi(argv[2]) : 20);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--nfc") == 0) {
+        // Seconds to wait for a tap (default 30).
+        return nfc_probe(argc > 2 ? std::atoi(argv[2]) : 30);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btwho") == 0) {
         return btwho_probe();   // read-only; safe to run while audio is playing
