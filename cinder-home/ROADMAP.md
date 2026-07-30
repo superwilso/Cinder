@@ -231,20 +231,19 @@ never repoint the `.appcfg` before the probe run looks clean.
 - **USB-mode switch** (enter MSC) — wired to **Settings ▸ USB mode** (`setprop sys.sony.config msc`,
   guarded; disruptive — validate live).
 - **FM radio / BT receiver** screens — Sony tuner/BT services (currently static).
-- **Scan-and-pair a NEW device + NFC tap-to-pair — the RE is DONE, only the code is left.** The
-  Devices screen (2026-07-30) already does connect / disconnect / forget on paired devices. The listener
-  ABI that gated discovery was **recovered the same day** and is smaller than feared: Cinder does *not*
-  have to implement `IBinderObject` — the client library builds the binder proxy and keeps a raw pointer
-  to our object, so a plain C++ class with the virtuals in the right order is enough.
-  `BtCommonServiceClient` slot **30** = `AddListener(IListener*, const std::string&)` → id, slot **31** =
-  `RemoveListener(unsigned)`; the listener's own slots are 2..17 with `OnNotifySearchedDevice` at **6**,
-  signature `(const vector<uint8_t>& addr, const uint32_t& cod, const string& name)`. Remaining work is
-  ordinary: the listener class, `SetSearchMode` to start a scan, a SCAN section on the Devices screen,
-  then `Pairing` + the prompt dialogs (whose four signatures still need the same by-hand read).
-  **One trap to remember:** `AddListener`'s name argument is a `NotifyListeners` *filter key*, so a
-  wrong value gives a listener that never fires while looking healthy — try `""` first. Callbacks also
-  arrive on the framework looper, not the render thread. Full detail:
-  `analysis/G_bt_nfc/RE_findings.md` (round 2026-07-30b).
+- **Scan-and-pair — BUILT 2026-07-30, wants a hands-on pairing attempt.** The Devices screen has a
+  SCAN button and a FOUND section, driven by a real Sony listener. The ABI was recovered *and proven on
+  hardware* the same day (`cinder-probe --btscan`): a plain C++ object registered with
+  `AddListener` (client slot 30, `""` filter key, **0 = success**) receives live callbacks on its own
+  vtable, and `RemoveListener((unsigned)&listener)` stops them — verified with a negative control, not
+  by assuming. No `IBinderObject` implementation needed; the client builds the proxy and keeps a RAW
+  pointer, so the listener object must be static. **What is left is one contained RE step:** the four
+  prompt callbacks (`NumericComparison`, `Passkey`, `SspRequest`, and `PairingComplete`'s arguments) are
+  declared but never dereferenced, so a device that asks for a PIN or a confirmation still cannot be
+  paired — read those four signatures the same way `OnNotifySearchedDevice` was read, then wire
+  `pairing.rs`'s already-drawn dialogs. `SetNumericComparison`, `SetPasskey` and `RequestSspReply` are
+  located. **NFC tap-to-pair** now rides the same listener; it is ordinary work, not a wall.
+  Detail: `analysis/G_bt_nfc/RE_findings.md` rounds 2026-07-30b and c.
 - **FM radio, and FM → Bluetooth** — designed end to end 2026-07-28, none of it built. Full write-up
   with the evidence: [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md).
   Short version: the Si4708 is a V4L2 *control* device with no ALSA symbols, so its audio is analog

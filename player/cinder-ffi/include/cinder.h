@@ -105,7 +105,21 @@ typedef enum {
      * BtCommonServiceClient::DeleteLinkkey(const vector<uint8_t>&) (slot 15). */
     CINDER_ACT_BT_FORGET_DEVICE = 29,
     /* Re-read GetPairedDeviceInfo (slot 20) and push the list back with cinder_bt_paired_*. */
-    CINDER_ACT_BT_PAIRED_REFRESH = 30
+    CINDER_ACT_BT_PAIRED_REFRESH = 30,
+    /* Start/stop discovery: read cinder_get_bt_scanning(), then
+     * BtCommonServiceClient::SetSearchMode(const bool&, const uint16_t&) (slot 14). Results arrive on
+     * BtCommonServiceListener::OnNotifySearchedDevice (listener slot 6) and are pushed back with
+     * cinder_bt_found_*. */
+    CINDER_ACT_BT_SCAN_TOGGLE = 31,
+    /* Pair with a DISCOVERED device: row via cinder_pending_bt_device(), then
+     * BtCommonServiceClient::Pairing(const vector<uint8_t>&) (slot 7). */
+    CINDER_ACT_BT_PAIR_DEVICE = 32,
+    /* Pairing prompt answered. CONFIRM -> SetNumericComparison(addr, true) (slot 9) or
+     * RequestSspReply(addr, variant, true, value) (slot 28); CANCEL -> the same with false, or
+     * CancelPairing (slot 8) for a display-only passkey. The address comes from the notification the
+     * shell received, never from the UI. */
+    CINDER_ACT_BT_PROMPT_CONFIRM = 33,
+    CINDER_ACT_BT_PROMPT_CANCEL = 34
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -257,6 +271,20 @@ void cinder_bt_paired_clear(void);
 void cinder_bt_paired_add(const char* name, const char* kind, int connected);
 int  cinder_bt_paired_count(void);
 int  cinder_pending_bt_device(void);
+/* Discovered-device list for the Devices screen's FOUND section — same index-is-the-handle contract as
+ * the paired list. Clear when a scan starts, then one _add per device the listener reports. */
+void cinder_bt_found_clear(void);
+void cinder_bt_found_add(const char* name, const char* kind);
+int  cinder_bt_found_count(void);
+/* Scan state: the shell reads it to know which way to drive SetSearchMode, and writes it when the
+ * radio's own search window expires (the UI does not assume its tap stuck). */
+/* Pairing prompt: kind 1 = numeric comparison (yes/no), 2 = passkey (display only), 3 = SSP request.
+ * _clear() takes the panel down. _kind() reports what is showing (0 = nothing). */
+void cinder_bt_prompt_set(int kind, const char* name, unsigned code);
+void cinder_bt_prompt_clear(void);
+int  cinder_bt_prompt_kind(void);
+int  cinder_get_bt_scanning(void);
+void cinder_set_bt_scanning(int on);
 /* Top of the Bluetooth volume scale (must match cinder_ui::overlay::BT_VOL_MAX). Coarser than the
  * 0..120 codec scale because it is a step count, not a mixer value. */
 #define CINDER_BT_VOL_MAX 30

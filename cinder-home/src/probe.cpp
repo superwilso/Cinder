@@ -722,6 +722,237 @@ static int btinfo_probe() {
 //
 // The point is to separate two very different causes: `GetConnectInformation` returning false (the
 // shell asked correctly and the service said no) versus the shell asking at the wrong moment.
+// ── --btscan : the listener ABI, exercised end to end ────────────────────────────────────────────
+//
+// Recovered 2026-07-30 (analysis/G_bt_nfc/RE_findings.md round b): Cinder does NOT have to implement
+// `IBinderObject`. `BtCommonServiceClient::AddListener` (vtable slot 30) allocates the binder proxy
+// itself and stores a RAW pointer to our object at proxy+0x24; dispatch is then a plain vtable call.
+// So a C++ class with the virtuals in the right order is the whole listener.
+//
+// Two things this mode is here to settle, both of which would be expensive to discover inside the
+// Home app:
+//   1. Is the slot order right? Every method logs its own name, so a one-off error shows up as the
+//      WRONG name printing rather than as a crash.
+//   2. What is `AddListener`'s name argument? The notify side is
+//      `NotifyListeners(id, param, bool, const string&, bool(*filter)(const string&, const string&))`,
+//      so that string is a FILTER KEY — register the wrong one and the listener never fires while
+//      looking perfectly healthy. This tries "" first and a service-name candidate second.
+//
+// The vtable layout relies on the Itanium ABI: with a virtual destructor declared FIRST, the address
+// point is [D1, D0, then the virtuals in declaration order] — which puts OnNotifyBtStatus at 2 and
+// OnNotifySearchedDevice at 6, matching the disassembly.
+struct ProbeBtListener {
+    virtual ~ProbeBtListener() {}                                            // slots 0, 1
+    // Only SearchedDevice's signature is recovered; the rest take three word-sized args and are
+    // never dereferenced, which is ABI-safe on armhf (surplus registers are simply ignored) and keeps
+    // a mis-slotted call from turning into a wild pointer read.
+    virtual void OnNotifyBtStatus(const void*, const void*, const void*)            { hit("BtStatus"); }
+    virtual void OnNotifyNumericComparison(const void*, const void*, const void*)   { hit("NumericComparison"); }
+    virtual void OnNotifyPairingComplete(const void*, const void*, const void*)     { hit("PairingComplete"); }
+    virtual void OnNotifyPasskey(const void*, const void*, const void*)             { hit("Passkey"); }
+    virtual void OnNotifySearchedDevice(const std::vector<unsigned char>& addr,
+                                        const unsigned& cod,
+                                        const std::string& name) {
+        char mac[24];
+        mac_str(addr, mac, sizeof mac);
+        std::fprintf(stderr, "[cinder-probe] btscan: *** FOUND %s  '%s'  cod=%#x (%zu addr bytes) ***\n",
+                     mac, name.c_str(), cod, addr.size());
+        found++;
+    }
+    virtual void OnNotifyDisconnectEnd(const void*, const void*, const void*)       { hit("DisconnectEnd"); }
+    virtual void OnNotifyCoexistenceBtWifiRatio(const void*, const void*, const void*) { hit("CoexistenceBtWifiRatio"); }
+    virtual void OnNotifyUpdateSupportProfile(const void*, const void*, const void*){ hit("UpdateSupportProfile"); }
+    virtual void OnNotifyUpdateOSInfo(const void*, const void*, const void*)        { hit("UpdateOSInfo"); }
+    virtual void OnNotifyRssi(const void*, const void*, const void*)                { hit("Rssi"); }
+    virtual void OnNotifyStartSwitchDevice(const void*, const void*, const void*)   { hit("StartSwitchDevice"); }
+    virtual void OnNotifyAclStateChanged(const void*, const void*, const void*)     { hit("AclStateChanged"); }
+    virtual void OnNotifySspRequest(const void*, const void*, const void*)          { hit("SspRequest"); }
+    virtual void OnNotifyServiceUuids(const void*, const void*, const void*)        { hit("ServiceUuids"); }
+    virtual void OnNotifyServiceResume(const void*, const void*, const void*)       { hit("ServiceResume"); }
+    virtual void OnNotifyError(const void*, const void*, const void*)               { hit("Error"); }
+
+    int found = 0, calls = 0;
+    void hit(const char* what) {
+        calls++;
+        std::fprintf(stderr, "[cinder-probe] btscan: callback %s\n", what);
+    }
+};
+
+static int btscan_probe(int secs) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* cmn = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    if (!cmn) { clog_("btscan: no BtCommonServiceClient"); _exit(1); }
+
+    enum { VIDX_GetBtStatus = 3, VIDX_SetRfOnOff = 4, VIDX_SetSearchMode = 14,
+           VIDX_AddListener = 30, VIDX_RemoveListener = 31 };
+    typedef int  (*fn0)(void*);
+    typedef void (*fnb)(void*, const bool*);
+    typedef int  (*fnadd)(void*, void*, const std::string*);
+    typedef int  (*fnrem)(void*, unsigned);
+    typedef int  (*fnsearch)(void*, const bool*, const unsigned short*);
+
+    // Radio up, restored at the end if we powered it.
+    int st = -1;
+    try { st = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); } catch (...) {}
+    bool we_powered = false;
+    if (st != 2 && st != 3) {
+        bool on = true;
+        wd_arm(10);
+        try { ((fnb)vslot(cmn, VIDX_SetRfOnOff))(cmn, &on); we_powered = true; } catch (...) {}
+        wd_disarm();
+        for (int i = 0; i < 20; i++) { usleep(200000);
+            try { st = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); } catch (...) {}
+            if (st == 2 || st == 3) break; }
+    }
+    std::fprintf(stderr, "[cinder-probe] btscan: radio status=%d\n", st);
+
+    static ProbeBtListener listener;   // must outlive the registration — the proxy keeps a RAW pointer
+    const char* keys[] = { "", "BtCommonService" };
+    int total = 0;
+    for (int k = 0; k < 2 && total == 0; k++) {
+        std::string key(keys[k]);
+        int id = -1;
+        wd_arm(12);
+        try { id = ((fnadd)vslot(cmn, VIDX_AddListener))(cmn, (void*)&listener, &key); }
+        catch (...) { clog_("btscan: AddListener THREW"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btscan: AddListener(key='%s') -> %d  "
+                     "(1 = bad arg, 4 = no service; 0 is either failure or an OK-status)\n", keys[k], id);
+        if (id == 1 || id == 4) continue;   // documented failures; anything else, carry on and MEASURE
+        // Whether 0 means "registered" is exactly what the disassembly could not settle, so ask the
+        // radio for something that answers over a NOTIFICATION rather than a return value. `GetRssi()`
+        // (slot 25) is the ideal probe: it returns bool and its actual answer arrives as
+        // OnNotifyRssi, so one callback proves the whole path without needing a discoverable device
+        // in the room — and unlike a scan it cannot disturb audio that is already playing.
+        {
+            enum { VIDX_GetRssi = 25 };
+            int rr = -1;
+            wd_arm(10);
+            try { rr = ((fn0)vslot(cmn, VIDX_GetRssi))(cmn); } catch (...) { clog_("btscan: GetRssi threw"); }
+            wd_disarm();
+            std::fprintf(stderr, "[cinder-probe] btscan: GetRssi() rc=%d — expecting OnNotifyRssi\n", rr);
+            for (int i = 0; i < 20 && listener.calls == 0; i++) usleep(100000);
+            std::fprintf(stderr, "[cinder-probe] btscan: after GetRssi: %d callback(s)%s\n",
+                         listener.calls,
+                         listener.calls ? "  <== REGISTRATION WORKS" : "  (no callback yet)");
+        }
+
+        bool on = true;
+        unsigned short dur = (unsigned short)secs;
+        int rc = -1;
+        wd_arm(12);
+        try { rc = ((fnsearch)vslot(cmn, VIDX_SetSearchMode))(cmn, &on, &dur); }
+        catch (...) { clog_("btscan: SetSearchMode THREW"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btscan: SetSearchMode(true, %u) rc=%d — put a device in "
+                     "pairing mode NOW\n", dur, rc);
+
+        for (int i = 0; i < secs; i++) {
+            usleep(1000000);
+            if (i % 5 == 4) std::fprintf(stderr, "[cinder-probe] btscan:   t+%ds callbacks=%d found=%d\n",
+                                         i + 1, listener.calls, listener.found);
+        }
+        bool off = false;
+        wd_arm(12);
+        try { ((fnsearch)vslot(cmn, VIDX_SetSearchMode))(cmn, &off, &dur); } catch (...) {}
+        wd_disarm();
+        total = listener.calls + listener.found;
+        std::fprintf(stderr, "[cinder-probe] btscan: key='%s' -> %d callbacks, %d devices\n",
+                     keys[k], listener.calls, listener.found);
+
+        // UNREGISTRATION, and it matters more than it looks: the proxy holds a RAW pointer to our
+        // object, so a listener that outlives its registration is a use-after-free in the Home app
+        // the moment a notification arrives.
+        //
+        // AddListener hands back no id (0 = OK), yet the client's RemoveListener takes an `unsigned`
+        // and rejects 0 with rc 1 — so that argument can only be the LISTENER POINTER itself. Test it
+        // instead of assuming: remove, then toggle the scan again (which reliably produced an
+        // OnNotifyBtStatus above) and require the callback count to stop moving.
+        {
+            unsigned handle = (unsigned)(uintptr_t)&listener;
+            int rrc = -1;
+            wd_arm(12);
+            try { rrc = ((fnrem)vslot(cmn, VIDX_RemoveListener))(cmn, handle); }
+            catch (...) { clog_("btscan: RemoveListener threw"); }
+            wd_disarm();
+            std::fprintf(stderr, "[cinder-probe] btscan: RemoveListener(%#x /* &listener */) rc=%d\n",
+                         handle, rrc);
+            int before = listener.calls + listener.found;
+            bool on2 = true, off2 = false;
+            unsigned short d2 = 2;
+            wd_arm(12);
+            try {
+                ((fnsearch)vslot(cmn, VIDX_SetSearchMode))(cmn, &on2, &d2);
+                usleep(1500000);
+                ((fnsearch)vslot(cmn, VIDX_SetSearchMode))(cmn, &off2, &d2);
+            } catch (...) {}
+            wd_disarm();
+            usleep(500000);
+            int after = listener.calls + listener.found;
+            std::fprintf(stderr, "[cinder-probe] btscan: post-remove callbacks %d -> %d\n", before, after);
+
+            // NEGATIVE CONTROL. Silence after a remove proves nothing unless the same stimulus DOES
+            // produce a callback while registered — otherwise "no callbacks" might just mean the
+            // toggle changed no state. Re-register and repeat the identical toggle.
+            std::string k2("");
+            int id2 = -1;
+            wd_arm(12);
+            try { id2 = ((fnadd)vslot(cmn, VIDX_AddListener))(cmn, (void*)&listener, &k2); } catch (...) {}
+            wd_disarm();
+            int mid = listener.calls + listener.found;
+            wd_arm(12);
+            try {
+                ((fnsearch)vslot(cmn, VIDX_SetSearchMode))(cmn, &on2, &d2);
+                usleep(1500000);
+                ((fnsearch)vslot(cmn, VIDX_SetSearchMode))(cmn, &off2, &d2);
+            } catch (...) {}
+            wd_disarm();
+            usleep(500000);
+            int again = listener.calls + listener.found;
+            std::fprintf(stderr, "[cinder-probe] btscan: re-registered (rc=%d) same toggle: %d -> %d\n",
+                         id2, mid, again);
+            if (again > mid && after == before)
+                clog_("btscan: *** RemoveListener CONFIRMED — the unsigned IS the listener pointer: "
+                      "identical stimulus fired while registered and was silent while removed ***");
+            else if (after > before)
+                clog_("btscan: RemoveListener did NOT unregister — that argument is not the pointer");
+            else
+                clog_("btscan: inconclusive — the toggle produced no callback even while registered, "
+                      "so the earlier silence proves nothing. Needs a different stimulus.");
+            wd_arm(12);
+            try { ((fnrem)vslot(cmn, VIDX_RemoveListener))(cmn, handle); } catch (...) {}
+            wd_disarm();
+        }
+    }
+
+    if (total == 0)
+        clog_("btscan: NO callbacks on either key. Either the filter key is something else again, or "
+              "nothing was discoverable nearby — rerun with a phone in pairing mode before blaming "
+              "the ABI");
+    else
+        clog_("btscan: *** the listener ABI WORKS — raw pointer + vtable slots, no IBinderObject ***");
+
+    if (we_powered) {
+        bool off = false;
+        wd_arm(10);
+        try { ((fnb)vslot(cmn, VIDX_SetRfOnOff))(cmn, &off); } catch (...) {}
+        wd_disarm();
+        clog_("btscan: radio powered back OFF (it was off when this started)");
+    }
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 static int btwho_probe() {
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
@@ -1278,6 +1509,10 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
         return btinfo_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btscan") == 0) {
+        // Seconds to scan (default 20). Powers the radio up if needed and restores it.
+        return btscan_probe(argc > 2 ? std::atoi(argv[2]) : 20);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btwho") == 0) {
         return btwho_probe();   // read-only; safe to run while audio is playing
