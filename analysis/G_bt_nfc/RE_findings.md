@@ -894,3 +894,78 @@ A modal panel on the Devices screen: device name, the code in large digits, YES,
 single DISMISS which sends `CancelPairing`, and a unit test pins that a passkey panel can never report
 Confirm. The prompt is modal in the tap handler too — while the radio is blocked waiting for an answer,
 nothing else on the screen is reachable.
+
+---
+
+## Round 2026-07-30f — NFC tap-to-pair: the ABI, and the NFC controller powering up on demand
+
+`libNfcService.so` has **no `virtual …` prototype strings** (it is a much smaller library and logs
+differently), so this one came entirely from the vtables and the disassembly. The generic listener
+pattern from round b held, which is the main structural result: *registration sits immediately after
+the last service method on every `pst` client*, not at a fixed slot.
+
+### `NfcServiceClient` vtable (`.data.rel.ro` word 83, vaddr 0xab4c)
+
+| slot | method | slot | method |
+|---|---|---|---|
+| 0, 1 | destructors | 7 | `Stop` |
+| 3, 4 | `Open` (two overloads) | 8 | `Close` |
+| 5, 6 | `Start` (two overloads) | 9 | `GetCurrentMode` |
+| | | **10** | **`AddListener`** |
+| | | **11** | **`RemoveListener`** |
+
+Slot 13 is `-4`, the start of a secondary base's vtable — same shape as `BtCommonServiceClient`.
+
+An alloc histogram over the stubs (base = 3 × `TransactionParam::Alloc`) says `Open` slot 4, `Stop`,
+`Close` and `GetCurrentMode` marshal **no** arguments, `Start` slot 5 marshals **one**, and `Start`
+slot 6 marshals **two**. That is what picked the calls used below.
+
+### `NfcServiceListener` vtable
+
+| slot | method |
+|---|---|
+| 2 | `OnBluetoothOob` |
+| 3 | `OnUnknownTag` |
+| 4 | `OnHostCardEmulation` |
+
+`OnBluetoothOob` takes **one** argument (`ldr r2,[r1,#0x8]` = slot 2, `r1 = sp+0x10`): a pointer to a
+struct the client fills from the transaction. The filler (0x4dd8) unpacks, in order, a `Get(4)` count
+followed by a `Get(1)` push_back loop into a vector at **+0x00**, then a `Get(4)` stored at **+0x0C**,
+then more fields from +0x10 (strings — the caller destroys one at +0x1C).
+
+So the struct starts `{ vector<uint8_t> addr; uint32 cod; … }`. **Only that prefix is read.** Declaring
+the unverified tail would risk a crash for no benefit, since the address is the one field tap-to-pair
+needs — and the notification's own name already tells us it is a Bluetooth OOB record.
+
+### Measured on device (`cinder-probe --nfc`)
+
+```
+nfc: client=0xb724ec10
+nfc: AddListener -> 0            (same convention as BtCommon: 0 = registered)
+nfc: GetCurrentMode (before) = 0
+nfc: Open() slot4 rc=0
+nfc: Start(0) slot5 rc=1
+nfc: GetCurrentMode (after) = 0
+```
+
+`GetCurrentMode` did not move, which on its own would be discouraging — but logcat shows the calls
+reaching the service and **the NFC controller coming up**:
+
+```
+D/NfcAdaptation: NfcAdaptation::Initialize: enter
+I/BrcmNfcNfa:    NFA_Init () / nfa_rw_init () / nfa_ce_init () / NFA_Enable ()
+E/NfcNciHal:     prmFileOpen Unable to open updatefile /vendor/firmware/cxd225x_firmware.bin
+```
+
+So `Open`/`Start` work, and this is another instance of the rule that keeps recurring on this device:
+judge by side effects, not by return values. (The missing `cxd225x_firmware.bin` is a patch-update
+file; the stack proceeds without it. Worth remembering if reads turn out flaky.)
+
+**Not yet proven: a tag callback.** Nothing was tapped during that run, so `OnBluetoothOob` firing —
+and therefore the struct-prefix read — is still unverified. Cinder is **not** wired to NFC until it is:
+`libNfcService` is linked into `cinder-probe` only, and `readelf -d cinder-home | grep NfcService`
+returns nothing, deliberately. The Home app does not take a dependency on a path whose payload read has
+never executed.
+
+Next step is one command with a phone against the rear panel:
+`cinder-probe --nfc 30`.
