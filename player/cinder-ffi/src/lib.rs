@@ -1569,6 +1569,18 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             29
         }
         Action::BtPairedRefresh => 30, // shell re-reads GetPairedDeviceInfo + pushes the list back
+        Action::BtScanToggle(_) => {
+            // The shell reads cinder_get_bt_scanning() and calls SetSearchMode. It may also push the
+            // state back (the radio's search window expires on its own), which is why the UI does not
+            // treat its own tap as the last word.
+            31
+        }
+        Action::BtPairDevice(i) => {
+            r.pending_bt_device = Some(*i);
+            32
+        }
+        Action::BtPromptConfirm => 33,
+        Action::BtPromptCancel => 34,
         Action::SleepTimer(m) => {
             // internal: arm/cancel the countdown (no Sony service to start it)
             r.sleep_remaining_ms = *m as i64 * 60_000;
@@ -2145,6 +2157,85 @@ pub extern "C" fn cinder_bt_paired_add(
     let kind = cstr(kind);
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.bt_paired_add(&name, &kind, connected != 0);
+    }
+}
+
+/// Discovered-device list (the FOUND section). Cleared when a scan starts, then one _add per device
+/// the listener reports — in the same order the shell keeps its addresses, because the UI hands back
+/// a row index and nothing else. `kind` may be NULL.
+#[no_mangle]
+pub extern "C" fn cinder_bt_found_clear() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.bt_found_clear();
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_bt_found_add(name: *const libc::c_char, kind: *const libc::c_char) {
+    let cstr = |p: *const libc::c_char| -> String {
+        if p.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
+    };
+    // A scan very often reports an address before the name resolves. Showing "(unnamed)" beats
+    // dropping the row, because an unnamed device is still pairable — and the shell replaces the
+    // whole list as better names arrive.
+    let mut name = cstr(name);
+    if name.is_empty() {
+        name = "(unnamed)".to_string();
+    }
+    let kind = cstr(kind);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.bt_found_add(&name, &kind);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_bt_found_count() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_found_len() as libc::c_int)
+}
+
+/// Raise a pairing prompt on the Devices screen. `kind`: 1 = numeric comparison (yes/no),
+/// 2 = passkey (display only — nothing to accept), 3 = SSP request. The shell pushes whatever the
+/// listener reported; the UI answers with CONFIRM/CANCEL and never sees the address.
+#[no_mangle]
+pub extern "C" fn cinder_bt_prompt_set(kind: libc::c_int, name: *const libc::c_char, code: libc::c_uint) {
+    let name = if name.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned()
+    };
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_bt_prompt(kind as u8, &name, code as u32);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_bt_prompt_clear() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_bt_prompt(0, "", 0);
+    }
+}
+
+/// Which prompt is up (0 = none). Lets the shell avoid re-pushing one it already showed.
+#[no_mangle]
+pub extern "C" fn cinder_bt_prompt_kind() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_prompt_kind() as libc::c_int)
+}
+
+/// Scan state. The shell reads this after a CINDER_ACT_BT_SCAN_TOGGLE to know which way to drive
+/// SetSearchMode, and writes it when the radio's own search window ends.
+#[no_mangle]
+pub extern "C" fn cinder_get_bt_scanning() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_scanning() as libc::c_int)
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_scanning(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_bt_scanning(on != 0);
     }
 }
 

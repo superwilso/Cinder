@@ -138,6 +138,16 @@ pub enum Action {
     /// Re-read the paired list off the radio (`GetPairedDeviceInfo`) and push it back. Emitted when
     /// the Devices screen opens and after a connect/forget, so the list is never stale on screen.
     BtPairedRefresh,
+    /// Start (true) or stop (false) discovery → `SetSearchMode`. Results arrive asynchronously on the
+    /// `BtCommonServiceListener` and are pushed back as the found-list.
+    BtScanToggle(bool),
+    /// Pair with a DISCOVERED device by its row in the found-list → `BtCommonServiceClient::Pairing`.
+    BtPairDevice(usize),
+    /// Answer the pairing prompt: yes → `SetNumericComparison(addr, true)` / `RequestSspReply(…, true)`,
+    /// no → the same with false (or `CancelPairing` for a display-only passkey). The UI never handles
+    /// the address — the shell replies to whatever the notification carried.
+    BtPromptConfirm,
+    BtPromptCancel,
     BatteryCareChanged(bool), // shell calls PowerMgrServiceClient::EnableItawariCharging
     SoundChanged,             // shell reads cinder_get_sound_flags + applies via EffectCtrlDmp
     SoundBypass(bool),        // A/B: true = bypass whole chain (B), false = re-enable (A)
@@ -310,6 +320,14 @@ pub struct App {
     /// keeps its own address vector in the same order, so the two cannot disagree unless the list is
     /// re-read between the tap and the call (which is why a refresh follows every action).
     bt_paired: Vec<crate::pairing::PairedDevice>,
+    /// Devices the radio has *discovered* but not paired with, pushed by the shell from
+    /// `OnNotifySearchedDevice`, plus whether a scan is currently running. Same index-is-the-handle
+    /// arrangement as `bt_paired`, against the shell's own found-list.
+    bt_found: Vec<crate::pairing::PairedDevice>,
+    bt_scanning: bool,
+    /// A pairing prompt the radio is waiting on, pushed by the shell from the listener. While this is
+    /// `Some` the Devices screen is modal — see `pairing::hit_prompt`.
+    bt_prompt: Option<crate::pairing::Prompt>,
     /// Row whose FORGET is armed (two-tap), and the row with a connect in flight. Both are transient
     /// UI state, cleared whenever the list is replaced.
     bt_forget_armed: Option<usize>,
@@ -452,6 +470,9 @@ impl Default for App {
             bt_route: false,
             bt_connected: None,
             bt_paired: Vec::new(),
+            bt_found: Vec::new(),
+            bt_scanning: false,
+            bt_prompt: None,
             bt_forget_armed: None,
             bt_connecting: None,
             eq_bands: data::EQ_PRESETS[3].1, // "A1"
@@ -1157,7 +1178,38 @@ impl App {
             }
             Screen::Pairing => {
                 use crate::pairing::PairHit;
-                match crate::pairing::hit(x, y, self.bt_paired.len()) {
+                // A prompt takes the whole screen: the radio is blocked waiting for an answer, so
+                // nothing else on this screen may be tapped until it gets one.
+                if let Some(p) = self.bt_prompt.clone() {
+                    return match crate::pairing::hit_prompt(x, y, p.kind) {
+                        PairHit::PromptConfirm => {
+                            self.bt_prompt = None;
+                            vec![Action::BtPromptConfirm]
+                        }
+                        PairHit::PromptCancel => {
+                            self.bt_prompt = None;
+                            vec![Action::BtPromptCancel]
+                        }
+                        _ => vec![],
+                    };
+                }
+                match crate::pairing::hit(x, y, self.bt_paired.len(), self.bt_found.len()) {
+                    PairHit::Scan => {
+                        self.bt_forget_armed = None;
+                        self.bt_scanning = !self.bt_scanning;
+                        if self.bt_scanning {
+                            self.bt_found.clear();
+                        }
+                        vec![Action::BtScanToggle(self.bt_scanning)]
+                    }
+                    PairHit::Pair(i) => {
+                        self.bt_forget_armed = None;
+                        if i < self.bt_found.len() {
+                            vec![Action::BtPairDevice(i)]
+                        } else {
+                            vec![]
+                        }
+                    }
                     PairHit::Row(i) => {
                         self.bt_forget_armed = None; // any other tap disarms a pending FORGET
                         match self.bt_paired.get(i) {
@@ -1186,7 +1238,9 @@ impl App {
                             vec![]
                         }
                     }
-                    PairHit::None => vec![],
+                    // `hit()` never returns these — the prompt has its own hit test above, and it
+                    // runs first because a prompt is modal.
+                    PairHit::PromptConfirm | PairHit::PromptCancel | PairHit::None => vec![],
                 }
             }
             Screen::UsbDac => {
@@ -2716,14 +2770,22 @@ impl App {
                 };
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
-            Screen::Pairing => crate::pairing::render(
-                c,
-                &theme,
-                fonts,
-                &self.bt_paired,
-                self.bt_forget_armed,
-                self.bt_connecting,
-            ),
+            Screen::Pairing => {
+                crate::pairing::render(
+                    c,
+                    &theme,
+                    fonts,
+                    &self.bt_paired,
+                    &self.bt_found,
+                    self.bt_forget_armed,
+                    self.bt_connecting,
+                    self.bt_scanning,
+                );
+                // Drawn last so it sits over the list, matching how the tap handler treats it.
+                if let Some(p) = &self.bt_prompt {
+                    crate::pairing::render_prompt(c, &theme, fonts, p);
+                }
+            }
             Screen::Settings => {
                 let sleep_lbl = self.sleep_label();
                 let brightness_lbl = format!("{} / 5", self.brightness);
@@ -3015,6 +3077,48 @@ impl App {
 
     pub fn bt_paired_len(&self) -> usize {
         self.bt_paired.len()
+    }
+
+    /// Replace the discovered-device list. Cleared when a scan starts, then appended to as the
+    /// listener reports devices; the shell keeps the addresses in the same order.
+    pub fn bt_found_clear(&mut self) {
+        self.bt_found.clear();
+    }
+
+    pub fn bt_found_add(&mut self, name: &str, kind: &str) {
+        self.bt_found.push(crate::pairing::PairedDevice {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            connected: false,
+        });
+    }
+
+    pub fn bt_found_len(&self) -> usize {
+        self.bt_found.len()
+    }
+
+    /// Scan state. The shell owns the truth (the radio stops on its own when the search window
+    /// expires), so it pushes the answer here rather than the UI assuming its own tap stuck.
+    pub fn bt_scanning(&self) -> bool {
+        self.bt_scanning
+    }
+
+    pub fn set_bt_scanning(&mut self, on: bool) {
+        self.bt_scanning = on;
+    }
+
+    /// Raise (or clear) the pairing prompt. `kind` 0 clears; otherwise 1 = numeric comparison,
+    /// 2 = passkey (display only), 3 = SSP request.
+    pub fn set_bt_prompt(&mut self, kind: u8, name: &str, code: u32) {
+        self.bt_prompt = if kind == 0 {
+            None
+        } else {
+            Some(crate::pairing::Prompt { kind, name: name.to_string(), code })
+        };
+    }
+
+    pub fn bt_prompt_kind(&self) -> u8 {
+        self.bt_prompt.as_ref().map_or(0, |p| p.kind)
     }
 
     /// The shell polls the radio and pushes the answer here; the rocker follows it from the next

@@ -195,7 +195,24 @@ fn main() {
                     pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: true },
                     pairing::PairedDevice { name: "CMF Buds Pro 2".into(), kind: "Headphones".into(), connected: false },
                 ];
-                pairing::render(c, &theme, &fonts, &paired, Some(1), None)
+                let found = vec![
+                    pairing::PairedDevice { name: "Pixel 8".into(), kind: "Phone".into(), connected: false },
+                    pairing::PairedDevice { name: "(unnamed)".into(), kind: String::new(), connected: false },
+                ];
+                pairing::render(c, &theme, &fonts, &paired, &found, Some(1), None, true)
+            }),
+            // The modal pairing prompt over the list — the numeric-comparison case, which is what a
+            // phone or a modern pair of headphones actually asks for.
+            ("pairing_prompt", &|c: &mut Canvas| {
+                let paired = vec![
+                    pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: true },
+                ];
+                let found = vec![
+                    pairing::PairedDevice { name: "Pixel 8".into(), kind: "Phone".into(), connected: false },
+                ];
+                pairing::render(c, &theme, &fonts, &paired, &found, None, None, false);
+                pairing::render_prompt(c, &theme, &fonts,
+                    &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "Pixel 8".into(), code: 428913 });
             }),
             ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, true)),
             ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, 88.6)),

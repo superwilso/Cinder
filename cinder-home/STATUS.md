@@ -687,21 +687,26 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   Standard/Low A/B) is on/off-only — the mode enum values are device-gated (TBD).
 - **Power button**: toggles the **screen/backlight on/off** (panel dark, app keeps running); it does
   not trigger appmgr-owned device suspend. (Locking is the Hold switch, not Power — see Functional.)
-- **Pairing a NEW (unpaired) device** — *no longer blocked on RE; the listener ABI was recovered
-  2026-07-30, only the code is outstanding*: everything about an *already paired* device works (see the
-  Devices screen under Functional). For discovery, `SetSearchMode(const bool&, const uint16_t&)`
-  (slot 14) starts a scan and the results arrive on `BtCommonServiceListener::OnNotifySearchedDevice`
-  — and it turns out Cinder does **not** need to implement `IBinderObject` to receive it: the client
-  library builds the binder proxy and holds a raw pointer to our object, so a plain C++ class with the
-  virtuals in slot order is enough. Registration is `BtCommonServiceClient` slot **30**
-  `AddListener(IListener*, const std::string&)` → id, and slot **31** `RemoveListener(unsigned)`;
-  `OnNotifySearchedDevice` is listener slot **6**, `(const vector<uint8_t>& addr, const uint32_t& cod,
-  const string& name)`. What is left is ordinary work: the listener class, the scan section on the
-  Devices screen, `Pairing` (slot 7), and the prompt dialogs — whose four signatures still need the
-  same by-hand read. Until that ships the Devices screen states the limit in its footer rather than
-  drawing a scanner that cannot find anything. **NFC tap-to-pair rides the same code** — it is one
-  implementation task now, not two RE walls. Detail: `analysis/G_bt_nfc/RE_findings.md` round
-  2026-07-30b.
+- **Scan-and-pair a NEW device** — *works on hardware 2026-07-30 (a real device paired from the
+  Devices screen); three follow-up fixes are installed but not yet re-tested*: the
+  Devices screen has a **SCAN** button and a FOUND section. Discovery runs on a real Sony listener —
+  the ABI was recovered AND proven on hardware the same day (`cinder-probe --btscan`): registering a
+  plain C++ object with `BtCommonServiceClient::AddListener` (slot 30, `""` filter key, returns **0 on
+  success**) produced live callbacks on our vtable, and `RemoveListener((unsigned)&listener)` was shown
+  to stop them with a negative control (identical stimulus fired while registered, silent after
+  removal). Cinder does **not** implement `IBinderObject` — the client library builds the binder proxy
+  and keeps a raw pointer, which is why the listener object has static storage duration. Tapping a
+  FOUND row calls `Pairing` (slot 7); `OnNotifyPairingComplete` re-reads the paired list and ends the
+  scan. Callbacks arrive on the framework looper, so they only append to a mutex-guarded list and the
+  main loop pushes it into the UI.
+  **The one real gap, stated on the screen itself:** a device that answers with a numeric-comparison or
+  passkey prompt cannot be confirmed yet — those four callback signatures are still unrecovered, so the
+  footer says such devices need the Sony player. `SetNumericComparison`, `SetPasskey` and
+  `RequestSspReply` are already located for when they are.
+  *(Fixed after the first live pairing: `OnNotifyPairingComplete` fires BEFORE `GetPairedDeviceInfo`
+  reports the new link key, so the one refresh on the callback showed the old list — it now re-reads on
+  a schedule until the address appears. Already-paired devices are also filtered out of the FOUND
+  section, and a name that arrives after the address now reaches the screen.)*
 - **USB-DAC → LDAC bridge**: the pipeline is implemented **in cinder-home** (not the standalone
   `ldac-bridge` daemon, which is retired as a delivery vehicle — it has no `pst::core::Framework`
   pump, so every client call returned uninitialised stack). What is **proven on device**
