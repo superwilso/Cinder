@@ -657,3 +657,122 @@ declines to do it — but do not read a successful reconnect as evidence that ca
 connection setup. Anything that treats "not 2 and not 3" as *off* (Cinder's `bt_radio_up`) will
 therefore read a connecting radio as off for a moment. Harmless where it is used today (the route poll
 re-reads every 3 s) but it is the kind of thing that becomes a bug in a retry loop.
+
+---
+
+## Round 2026-07-30b — the listener ABI (task #24), recovered
+
+**Result: implementing a Sony listener does NOT require implementing `IBinderObject`.** The client
+library builds the binder proxy itself and only needs a raw pointer to an object whose vtable has the
+notification methods in the right slots. That is the difference between a day of binder work and an
+afternoon of writing one C++ class.
+
+### How the mechanism is put together
+
+Nothing about it is Bluetooth-specific — the machinery lives in `libpstcore.so`:
+
+```
+pst::services::binder::ServiceClientBase::AddListener(shared_ptr<IBinderObject>&, shared_ptr<IBinderObject>&)
+pst::services::binder::ServiceClientBase::RemoveListener(shared_ptr<IBinderObject>&, unsigned)
+pst::services::binder::ServiceClientBase::ServiceListenerProxyBase::{ctor,AddNotifyJob,Disable}
+pst::services::binder::ServiceBase::NotifyListeners(unsigned id, TransactionParam&, bool,
+                                                    const string&, bool(*)(const string&, const string&))
+```
+
+`libBtCommonService.so` imports all of them, so the same pattern should hold for every `pst` service
+(NFC and PlayerService included — worth checking before assuming).
+
+### `BtCommonServiceClient`: two more vtable slots than we had mapped
+
+The client vtable was recovered from `.data.rel.ro` (word 127 onwards, `vaddr 0x1bab4`). Slots 0/1 are
+the two destructors, slots 3–29 are the 27 service methods already documented, and then:
+
+| slot | method |
+|---|---|
+| **30** | `int AddListener(IBtCommonServiceListener* listener, const std::string& name)` |
+| **31** | `int RemoveListener(unsigned id)` |
+
+Both were read from the disassembly, not guessed. `AddListener` (0xd540 → 0xd590):
+
+1. `ServiceClientBase::GetService()`; if the service is absent → **return 4**.
+2. if `listener == nullptr` → **return 1**.
+3. `operator new(0x34)` — the proxy. `ServiceListenerProxyBase` ctor, then
+   `[proxy+0x00] = vtable`, `[proxy+0x04] = the client`, **`[proxy+0x24] = listener` (raw pointer)**,
+   `[proxy+0x28] = std::string(name)` (copy ctor). 0x34 = 52 bytes accounts for exactly that layout,
+   which is the cross-check that +0x24 holds a bare pointer and not a `shared_ptr`.
+4. `operator new(0x10)` for the shared_ptr control block, then
+   `ServiceClientBase::AddListener(service, proxy)` and **return its value — the listener id**.
+
+`RemoveListener` (0xd658) mirrors it: 4 if no service, 1 if `id == 0`, else
+`ServiceClientBase::RemoveListener(service, id)`.
+
+### `IBtCommonServiceListener` vtable — the whole map
+
+Recovered by decoding the PIC string references (Thumb-2 `ldr rX,[pc,#imm]` + `add rX, pc`) to the 16
+`BtCommonServiceListener::OnNotify*` log strings, then reading the vtable dispatch that follows each
+one. Every case has the same shape, e.g. for SearchedDevice:
+
+```
+cb3a: ldr.w r0, [r8, #0x24]   ; the listener we registered
+cb42: ldr   r1, [r0]          ; its vptr
+cb44: ldr   r4, [r1, #0x18]   ; vtable[6]
+cb48: blx   r4
+```
+
+| slot | method | slot | method |
+|---|---|---|---|
+| 0, 1 | destructors | 10 | `OnNotifyUpdateOSInfo` |
+| 2 | `OnNotifyBtStatus` | 11 | `OnNotifyRssi` |
+| 3 | `OnNotifyNumericComparison` | 12 | `OnNotifyStartSwitchDevice` |
+| 4 | `OnNotifyPairingComplete` | 13 | `OnNotifyAclStateChanged` |
+| 5 | `OnNotifyPasskey` | 14 | `OnNotifySspRequest` |
+| 6 | **`OnNotifySearchedDevice`** | 15 | `OnNotifyServiceUuids` |
+| 7 | `OnNotifyDisconnectEnd` | 16 | `OnNotifyServiceResume` |
+| 8 | `OnNotifyCoexistenceBtWifiRatio` | 17 | `OnNotifyError` |
+| 9 | `OnNotifyUpdateSupportProfile` | | |
+
+Contiguous 2..17, in `.rodata` string order, no gaps — which is itself corroboration, since a wrong
+anchor would produce a scattered map.
+
+### The one signature needed first, read by hand
+
+`OnNotifySearchedDevice` — slot 6, three arguments, all by const reference (the house style):
+
+```cpp
+void OnNotifySearchedDevice(const std::vector<uint8_t>& addr,   // r1 = sp+0x20
+                            const uint32_t&            cod,    // r2 = sp+0x1c
+                            const std::string&         name);  // r3 = sp+0x10
+```
+
+Read off how the handler *builds* those stack objects rather than from any declaration: `sp+0x20` is a
+three-word vector header zeroed and then grown by a `Get(1)` push_back loop counted by a preceding
+`Get(4)` (the MAC), `sp+0x1c` takes a single `Get(4)`, and `sp+0x10` is filled by `GetStr`. The middle
+value is *probably* class-of-device (it would match the 0x240404 seen in the paired list) — log it on
+the first run rather than trusting that.
+
+The remaining 15 signatures were NOT recovered this round. A per-case unpack scan produced sequences
+that bleed across function boundaries, so anything it printed is unusable; each case needs the same
+by-hand read as above. Do them when a feature needs them, starting with `OnNotifySspRequest`,
+`OnNotifyNumericComparison`, `OnNotifyPasskey` and `OnNotifyPairingComplete` for the pairing dialogs.
+
+### Open question before writing the code
+
+`AddListener` takes a **name string**, stored in the proxy, and the notify side is
+`NotifyListeners(id, param, bool, const string&, bool(*filter)(const string&, const string&))` — i.e.
+that string is a **filter key** compared against each listener's registered name. Registering with the
+wrong key would mean a listener that never fires while looking perfectly healthy. The empty string is
+the obvious candidate for "match everything"; the alternative is the app/module name. Try `""` first
+and confirm with a real scan, and treat "no callbacks" as a key mismatch rather than a broken vtable.
+
+### Reproducing any of this
+
+Three things made it tractable and are worth reusing:
+
+1. **The libs are Thumb-2, not ARM.** Exported symbol addresses are odd (`0xc28d`), which is the
+   giveaway. Disassembling with `--triple=armv7` yields plausible-looking garbage; use `thumbv7a`.
+2. **PIC string references** are `ldr rX, [pc, #imm]` + `add rX, pc`; llvm-objdump annotates the
+   literal's address, so target = `word(literal) + addr(add) + 4`. Decoding that gave exact xrefs for
+   all 16 strings.
+3. **PLT entry → symbol** is positional: entry *i* is at `plt + 20 + 12*i` and corresponds to
+   `.rel.plt` entry *i*. Do this before reading any call, or you will attribute a call to the wrong
+   function — the first pass here mis-identified `AddListener` as an unrelated stub.

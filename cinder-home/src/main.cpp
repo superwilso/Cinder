@@ -1587,6 +1587,12 @@ void apply_bt_codec() {
 // nowhere in the vendor tree, and the marshaller's own PLT entry names std::__1::basic_string), and
 // this file is compiled against the libc++ 3.9.0 headers matching the device runtime — so real
 // containers go straight across. Verified on device: returns a 6-byte MAC and the device name.
+// Did the last read actually yield a device? The link comes up in stages — the service logs
+// `AVSRC status change to` 3, then 4, then 5 — and `GetBtStatus` reaches 3 at the FIRST of those,
+// while `GetConnectInformation` only has an address to give near the last. So the read that fires on
+// the route change can legitimately come back empty, and something has to ask again.
+static bool g_bt_have_name = false;
+
 static void refresh_bt_connected() {
     enum { VIDX_GetConnectInformation = 5 };
     try {
@@ -1595,9 +1601,17 @@ static void refresh_bt_connected() {
         typedef int (*fn2)(void*, std::vector<unsigned char>*, std::string*);
         std::vector<unsigned char> addr;
         std::string name;
-        int rc = ((fn2)bt_slot(x, VIDX_GetConnectInformation))(x, &addr, &name);
-        // rc false, or no address, means nothing is linked — report that rather than a stale name.
-        cinder_set_bt_connected((rc && !addr.empty()) ? name.c_str() : "");
+        ((fn2)bt_slot(x, VIDX_GetConnectInformation))(x, &addr, &name);
+        // THE ADDRESS IS THE SIGNAL, NOT THE RETURN VALUE. Measured 2026-07-30 with a WH-1000XM4
+        // connected and playing: `cinder-probe --btwho` reported
+        //   GetBtStatus=3  AvSrc=5  Avrcp=2
+        //   GetConnectInformation rc=0 addr=00:00:5E:00:53:01 name='WH-1000XM4'
+        // — a filled address and name alongside a ZERO return. The client stub's int is a transaction
+        // status (0 = OK), not the service method's `bool`. This code used to gate on
+        // `rc && !addr.empty()`, so it threw away a perfectly good name on every real connection and
+        // the Bluetooth screen stayed on "No device connected" while audio played.
+        cinder_set_bt_connected(!addr.empty() ? name.c_str() : "");
+        g_bt_have_name = !addr.empty();
     } catch (...) {
         clog_("bt: GetConnectInformation threw");
     }
@@ -1678,7 +1692,10 @@ void refresh_bt_paired() {
         if (x) {
             typedef int (*fn2)(void*, std::vector<unsigned char>*, std::string*);
             std::string nm;
-            if (!((fn2)bt_slot(x, VIDX_GetConnectInformation))(x, &live, &nm)) live.clear();
+            // Same rule as refresh_bt_connected: the filled address decides, not the return value,
+            // which is 0 even on a live link. Clearing `live` on a zero return marked NOTHING as
+            // connected in this list, every time.
+            ((fn2)bt_slot(x, VIDX_GetConnectInformation))(x, &live, &nm);
         }
     } catch (...) { clog_("bt-paired: GetConnectInformation threw"); live.clear(); }
 
@@ -1759,7 +1776,15 @@ void apply_bt_forget_device() {
 void refresh_bt_route() {
     int st = bt_status();
     int on = (st == 3) ? 1 : 0;
-    if (on == cinder_get_bt_route()) return;      // no change — don't log every poll
+    if (on == cinder_get_bt_route()) {
+        // No route change — but if we are on Bluetooth and still have no device NAME, ask again. The
+        // first read happens the instant GetBtStatus hits 3, which is the START of connection setup
+        // (`AVSRC status change to (3)`), and the address only becomes readable a couple of stages
+        // later. Without this retry a single early empty read left the Bluetooth screen saying "No
+        // device connected" for the whole session while audio played into the headphones.
+        if (on && !g_bt_have_name) refresh_bt_connected();
+        return;                                   // otherwise: don't log every poll
+    }
     cinder_set_bt_route(on);
     // Absolute-volume support is a property of the SINK, so a new connection has to re-ask. Clearing
     // it here rather than caching once is what makes swapping between two different pairs of
