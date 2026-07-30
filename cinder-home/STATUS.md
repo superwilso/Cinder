@@ -16,25 +16,36 @@
 > a device the owner can rely on with no PC in the room. This file says what *is*; that one says
 > what is *missing*.
 
-> **RESUME POINT (2026-07-26).** Two device sessions have run since the 07-03 round (07-25 and
-> 07-26) and three commits have landed on top of it. The workspace is clean and every offline gate
-> passes: **71 host tests** (40 UI + 21 FFI + 8 DB + 2 font), the 18-case launcher recovery matrix,
-> the GLIBC ≤2.23 ceiling on both channels, and the qemu construction preflight.
+> **RESUME POINT (2026-07-30).** Cinder **is installed and running as the Home app** —
+> `/system/vendor/unknown321/bin/cinder-home`, the 2026-07-29 22:32 build, confirmed live after the
+> 07-30 08:56 boot. Offline gates all pass: **219 host tests** across the workspace (0 failed), the
+> **44-case** launcher recovery matrix, the GLIBC ≤2.23 ceiling on both channels, and the qemu
+> construction preflight. *(The "Cinder is NOT installed" note that stood here after the 2026-07-26
+> wbrt restore is obsolete — it was reinstalled in the 07-27/28 sessions.)*
 >
-> **Two facts that change what the next flash means:**
-> 1. **Cinder is NOT installed on the device.** The 2026-07-26 brick was recovered with a wbrt
->    restore, which rolled the whole eMMC back to the 2026-06-18 image — no `cinder-home`, no
->    launcher, no `/contents` flags, and the music library is whatever that image held.
-> 2. **The next flash carries a large unverified batch.** Everything from 07-26 is code-complete
->    and offline-proven but has never run on hardware: the **+2 type-scale pass**, the **non-Latin
->    font fallback**, the **GPU/EGL present path** (opt-in, default off), **screenshot capture**,
->    the **rewritten escape ladder** (state on `/data`, cable-at-boot as rung 0, `MAXBAD=4`,
->    self-healing latch), and the new **`cinder-gpunode`** setuid helper. Play-by-index (07-03) is
->    also still device-unverified.
+> **Where Bluetooth stands (the 07-28/29 sessions turned most of it green).** The radio, reconnect,
+> A2DP playback, the headphones' own transport buttons, and the live codec apply are **verified on
+> hardware** with a WH-1000XM4 and CMF Buds Pro 2 — the codec apply is proven from the service side,
+> not inferred: `hagodaemon` logs `BtTransmitterService.cc:484] ldac support:1` /
+> `:496] aptx hd support:0` / `:490] aptx classic support:0` / `:445] ldac quality:0` as Cinder sets
+> them at boot. Per-route volume (jack vs BT are two different attenuators) and the Disconnect fix
+> are in the running build but **still want a hands-on check with headphones connected**.
 >
-> Because of (2), **run `cinder-probe` before flashing** (STEP 1) — it exercises render/db/audio
-> with no easel lifecycle, so it cannot affect boot, and it shrinks the bisect surface if the
-> flash misbehaves. Reinstall now needs **three** pushes, not one (STEP 2).
+> **The one big thing that cannot be tested over adb alone:** the **USB-DAC → LDAC** audio path.
+> Its control plane is proven (`cinder-probe --ldac`: `GetSocketName` →
+> `pst::services::bttransmitterservice`, `connect()` succeeds) and the bridge now runs inside
+> cinder-home, but the data plane needs the gadget in `uac` mode with a PC feeding audio — and
+> entering `uac` changes the USB identity and **drops adb**, so it takes a hands-on session. Watch
+> for `-EBUSY` on the capture PCM: that would mean Sony's `UsbDeviceAudioPlayerService` is holding
+> it and the fix is stopping that service.
+>
+> **Still device-unverified from the 07-26 batch:** play-by-index (07-03), the GPU/EGL present path
+> (opt-in, default off), and screenshot capture.
+>
+> Before any *flash* (as opposed to an adb push of `cinder-home` alone), **run `cinder-probe` first**
+> (STEP 1) — it exercises render/db/audio with no easel lifecycle, so it cannot affect boot, and it
+> shrinks the bisect surface if the flash misbehaves. A full reinstall needs **three** pushes, not
+> one (STEP 2).
 >
 > Forward plan + priorities: [`ROADMAP.md`](ROADMAP.md). Full audit incl. known doc drift:
 > [`../docs/AUDIT_2026-07-26.md`](../docs/AUDIT_2026-07-26.md).
@@ -181,7 +192,7 @@ preflight PASS; both channels rebuilt + UPGs packed):
 
 ## Feature status — fully functional vs partial vs stationary
 
-Authoritative, code-verified (2026-06-29). Three tiers:
+Authoritative, code-verified (matrix re-audited 2026-07-30 for Bluetooth + USB-DAC). Three tiers:
 **✅ Functional** = wired to the device / real data, end-to-end. **◐ Partial** = the UI works but the
 backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a placeholder / no action
 (display-only). The matrix below is the single source of truth; the per-feature RE detail lives in
@@ -300,17 +311,53 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   **Sound effects** are saved to `/contents/cinder_settings.conf` and restored at boot — the UI is
   restored before the first paint, and the saved EQ/sound are **re-applied to the DSP** once audio is
   up (guarded). Your full audio + display config survives a reboot.
+- **Bluetooth: radio, reconnect, playback, transport** *(verified on device 2026-07-29 with
+  WH-1000XM4 and CMF Buds Pro 2)*: the header toggle drives the real radio
+  (`BtCommonServiceClient::SetRfOnOff`), and turning it on then calls
+  `RequestLastDeviceConnection` so a known pair comes back by itself. **Audio actually plays over
+  A2DP**, and the headphones' own **play / pause / skip** buttons reach Cinder's transport (AVRCP →
+  `BtPlayerService` → the same actions the on-screen buttons use). The connected device's **real
+  name** is polled from `GetConnectInformation` every 3 s and shown on the Bluetooth screen and the
+  Menu — no more hardcoded model string. **Disconnect** hangs up on the current device and leaves the
+  radio on (it powered the radio down until 2026-07-29).
+- **Devices screen — switch between paired headphones** *(new 2026-07-30. Every call underneath it is
+  proven on hardware — `cinder-probe --btconnect` got `rc=1` and, more to the point, the service
+  echoed the address back: `BtTransmitterService.cc:229 RequestConnection [ac:80:0a:56:a9:91]`. The
+  screen itself still wants one hands-on tap-through.)*:
+  Bluetooth ▸ "Pair new device" opens a list of every
+  device the radio holds a link key for, read from `BtCommonServiceClient::GetPairedDeviceInfo`
+  (slot 20) — the call whose 48-byte element layout was verified against both real pairings on the
+  device. A row taps to **connect** (`RequestConnection(const vector<uint8_t>&)`, slot 6 — the
+  by-address form, not the "reconnect whatever was last used" one), the connected row taps to
+  **disconnect**, and **FORGET** drops the link key (`DeleteLinkkey`, slot 15) behind a two-tap
+  confirm, because re-pairing needs the stock player. The device class is turned into a short label
+  ("Headphones", "Speaker") from the CoD word, trusting only the unambiguous minor classes.
+- **Bluetooth volume, separate from the 3.5 mm jack** *(this is two different attenuators, not one
+  scale)*: the jack level is the CXD3778GF codec's ALSA `master volume` (0..120); the BT level lives
+  **in the headphones** and is driven over AVRCP. Cinder keeps **two independent levels** — separate
+  UI state, separate persisted keys (`volume` / `bt_volume`), separate hardware calls — and the side
+  rocker drives whichever route is live. Absolute AVRCP is preferred
+  (`IsSupportedAbsoluteVolume` → `SetCurrentVolume`, 0..127, closed loop), with
+  `SetVolumeUp`/`SetVolumeDown` as the fallback for sinks that don't support it; support is
+  re-queried on every reconnect because it's a property of the sink, not of us. The saved BT level is
+  pushed to the headphones when they connect. The HUD stretches the coarser BT scale over the same
+  bar, so both routes look identical on screen.
 - **Bluetooth transmit codec selector**: choose **LDAC · aptX HD · aptX · SBC** (the codecs this
   hardware can transmit; AAC is receive-only, excluded) from a checked list, with an **LDAC quality**
   sub-row (Auto/990/660/330, Auto default). It's **one device-wide preference**, persisted to
   `/contents/cinder_settings.conf` and published to `/contents/cinder_bt.conf` so **both normal BT
-  playback and the USB-DAC→LDAC bridge use the same codec**. *(The live `BtTransmitterService` apply —
-  SetLdac/SetAptxHD/SetSbc + SetLdacSoundQuality — is device-gated, same C++ boundary as `ldac-bridge`.)*
-- **USB-DAC → LDAC (the headline feature)**: the USB-DAC screen toggle **engages USB-DAC input and
-  routes it to the 3.5 mm jack AND Bluetooth/LDAC at once, without disconnecting BT** (stock forces a
-  disconnect). The shell starts the LDAC bridge (`/contents/ldac_on`) + switches the USB gadget to
-  UAC. *(The bridge daemon + the `setprop` USB-mode switch are device-gated — validate live; the UI,
-  the toggle, and the bridge-engage signalling are wired.)* Mass-storage moved to **Settings ▸ USB mode**.
+  playback and the USB-DAC→LDAC bridge use the same codec**. The choice is now **applied live to the
+  radio** — `SetLdac` / `SetAptxHD` / `SetAptxClassic` (+ `SetLdacSoundQuality` when LDAC is picked) —
+  at boot, on every change, and **before** `RequestLastDeviceConnection`, because A2DP negotiates the
+  codec at connection setup. Until 2026-07-29 the selector only wrote the conf file and never told the
+  radio, which is the same defect shape the BT switch had.
+- **USB-DAC → LDAC (the headline feature)** — *control plane proven on device, data plane written and
+  building, end-to-end still unverified*: the USB-DAC screen toggle **engages USB-DAC input and routes
+  it to the 3.5 mm jack AND Bluetooth/LDAC at once, without disconnecting BT** (stock forces a
+  disconnect). The bridge now lives **inside cinder-home** as a thread (ALSA capture on the gadget's
+  UAC card → the transmitter's abstract AF_UNIX socket), not the standalone `ldac-bridge` daemon and
+  not the retired `/contents/ldac_on` file trigger — see the Partial entry for exactly what is and
+  isn't proven. Mass-storage moved to **Settings ▸ USB mode**.
 - **Status bar**: live clock (local time) + battery % (sysfs); **tap anywhere on it → Menu**.
 - **Scrobbler**: appends `/contents/.scrobbler.log` (Audioscrobbler/1.1) as you listen.
 - **Safety**: bad-boot counter → auto-revert to stock after **2** bad boots; per-frame + construction
@@ -640,10 +687,28 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   Standard/Low A/B) is on/off-only — the mode enum values are device-gated (TBD).
 - **Power button**: toggles the **screen/backlight on/off** (panel dark, app keeps running); it does
   not trigger appmgr-owned device suspend. (Locking is the Hold switch, not Power — see Functional.)
-- **Bluetooth codec apply**: the selector + device-wide preference are functional and persisted, but
-  the **live `BtTransmitterService` apply** of the chosen codec is device-gated (C++ BT client shim).
-- **USB-DAC → LDAC bridge**: the UI/toggle/signalling are wired; the **`ldac-bridge` daemon engaging
-  on device** (capture card4 → LDAC socket) + the UAC `setprop` switch need on-device validation.
+- **Pairing a NEW (unpaired) device**: everything about an *already paired* device works (see the
+  Devices screen under Functional), but discovery does not. `SetSearchMode(const bool&, const
+  uint16_t&)` (slot 14) starts a scan happily; the results arrive on
+  `BtCommonServiceListener::OnNotifySearchedDevice`, and Cinder implements **no Sony listener vtable
+  at all** yet — the player path passes `NULL` to `Connect()` and polls instead. `Pairing`,
+  `SetNumericComparison`, `SetPasskey` and `RequestSspReply` are all located with exact signatures,
+  so this is one RE task (the listener ABI) rather than several. Until then the Devices screen says so
+  in its footer instead of drawing a scanner that can never find anything. **NFC tap-to-pair is
+  blocked behind the same wall** — `FireOnBluetoothOob` is a listener-side callback.
+- **USB-DAC → LDAC bridge**: the pipeline is implemented **in cinder-home** (not the standalone
+  `ldac-bridge` daemon, which is retired as a delivery vehicle — it has no `pst::core::Framework`
+  pump, so every client call returned uninitialised stack). What is **proven on device**
+  (`cinder-probe --ldac`, 2026-07-29): `GetSocketName` returns `pst::services::bttransmitterservice`
+  and `connect()` to that abstract socket **succeeds** — the control plane works. What is **not yet
+  proven**: the actual audio path, because it needs the USB gadget in `uac` mode with a PC feeding
+  audio, and switching to `uac` changes the USB identity and drops adb. Two specific unknowns:
+  (1) end-to-end audio; (2) **capture contention** — whether Sony's `UsbDeviceAudioPlayerService`
+  grabs the gadget capture PCM even though Cinder deliberately skips its local render when a BT link
+  is up. If it does, expect `-EBUSY` in the log; the fix is stopping that service, not more RE.
+  The UAC `setprop` switch itself also still needs a live check.
+- *(moved to Functional 2026-07-29: the Bluetooth radio/reconnect/playback/transport, the per-route
+  volume split, and the live codec apply.)*
 - *(moved to Functional 2026-07-26: the Playlists tab is populated and playable.)*
 
 ### ▢ Stationary (placeholder render / no action — not wired)
@@ -672,14 +737,22 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 >   and `return None`. PlayerService is never told, so play order and repeat behaviour don't change.
 >   Now cheap to finish: `NodeTrackSequence::SetOneTrackMode` is exported for repeat-one, and Cinder
 >   already pre-shuffles queues itself for the Library shuffle bands.
-> - **Bluetooth radio toggle / Disconnect**: `Action::BtToggle` maps to no `CINDER_ACT_*` at all.
-> - **Bluetooth "Pair new device"**: `BtHit::Pair` is hit-tested and returns `vec![]`.
+> - ~~**Bluetooth radio toggle / Disconnect**: `Action::BtToggle` maps to no `CINDER_ACT_*` at all.~~
+>   **FIXED 2026-07-28/29.** `BtToggle` → `CINDER_ACT_BT_TOGGLE` (26) → `SetRfOnOff`, and Disconnect
+>   got its own `CINDER_ACT_BT_DISCONNECT` (27) → `RequestDisconnection` — it had been sharing the
+>   toggle's arm, so it powered the radio down instead of hanging up on one device.
+> - ~~**Bluetooth "Pair new device"**: `BtHit::Pair` is hit-tested and returns `vec![]`.~~
+>   **FIXED 2026-07-30.** It pushes `Screen::Pairing` and emits `BtPairedRefresh`, so the button now
+>   opens a list of the devices the radio actually holds link keys for.
 > - Settings **Database**: no arm in `settings_activate`. (**Brightness** and the **Screen-off
 >   timer** are now wired — see Functional.)
 >
 > **Unreachable / dead plumbing:**
-> - `pairing.rs` renders a complete pairing screen, but **there is no `Screen::Pairing`** — it is
->   reachable only from the host preview harness and the sim. Designed, not wired.
+> - ~~`pairing.rs` renders a complete pairing screen, but **there is no `Screen::Pairing`** — it is
+>   reachable only from the host preview harness and the sim. Designed, not wired.~~ **FIXED
+>   2026-07-30**: `Screen::Pairing` exists, Bluetooth ▸ "Pair new device" pushes it, and the three
+>   hardcoded "discoverable" devices it used to draw are gone — every row is now a real pairing read
+>   from the radio.
 > - `Screen::Fm` and `Screen::Receiver` have no `tap()` branch (they fall to `_ => vec![]`); only
 >   Back does anything. `Screen::Fm` also renders a hardcoded `88.6`.
 > - `NowPlaying.liked` is threaded through four crates and `icons::heart` exists, but the heart is
@@ -696,11 +769,15 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   Songs row / Album track / "Play album" band resolves the album context through the DB and hands
   PlayerService a real `NodeTrackSequence` (see the eighth-round notes below). Playlist rows play
   too, since 2026-07-26.
-- **Bluetooth radio on/off**: the toggle flips **UI state only**; it doesn't power the radio
-  (BtTransmitterService not wired). *(The codec selector beneath it IS functional — see Functional.)*
+- *(moved to Functional 2026-07-29: **Bluetooth radio on/off** — the toggle now drives the real radio
+  via `BtCommonServiceClient::SetRfOnOff` and reconnects the last device, and **Disconnect** hangs up
+  without powering the radio down.)*
 - **FM Radio** screen: static (88.6 MHz placeholder).
 - **BT Receiver** screen: static (off).
-- **Pairing** screen: static (the "Pair new device" button is inert).
+- *(moved to Functional 2026-07-30: the **Devices** screen — `pairing.rs` is a real route with real
+  paired devices, connect / disconnect / forget. Discovering an **unpaired** device is the one part
+  still missing, and it is listed under Partial rather than here because the screen says so on
+  screen instead of drawing a scanner that cannot work.)*
 - **Settings (info/placeholder rows)**: Screen-off timer, Database "REBUILD" take no action. The
   manual **Brightness** slider row is still static (but night-mode backlight dimming IS wired — see
   Functional). **USB mode** row now enters mass-storage **with a modal UsbStorage screen and a clean

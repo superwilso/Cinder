@@ -369,6 +369,10 @@ struct Render {
     // cinder_pending_play_* after a CINDER_ACT_PLAY_INDEX action and hands it to PlayerService
     // (NodeTrackSequence). Replaced wholesale on every new PlayIndex.
     pending_play: Vec<String>,
+    /// Row index carried by the last CINDER_ACT_BT_CONNECT_DEVICE / _BT_FORGET_DEVICE action. The
+    /// shell drains it with `cinder_pending_bt_device()`; -1 there means "no request", so a stale
+    /// index can never be mistaken for row 0.
+    pending_bt_device: Option<usize>,
     // ── Liked songs ────────────────────────────────────────────────────────────────────────
     // Track object_ids the user has hearted. Kept as a set so the Now Playing heart is an O(log n)
     // lookup per track change, and persisted to its own file rather than the settings blob — it
@@ -534,6 +538,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         queue_pending: false,
         queue_flush: false,
         pending_play: Vec::new(),
+        pending_bt_device: None,
         duration_checked: false,
         last_tick: std::time::Instant::now(),
         last_scrob: std::time::Instant::now(),
@@ -823,10 +828,10 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 18] = [
+const SCREEN_NAMES: [&str; 19] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
-    "Shelf",
+    "Shelf", "Pairing",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -837,7 +842,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Lock => 0, S::NowPlaying => 1, S::Menu => 2, S::Library => 3, S::Album => 4,
         S::Artist => 5, S::Playlist => 6, S::UpNext => 7, S::Eq => 8, S::Sound => 9,
         S::Bluetooth => 10, S::Settings => 11, S::Fm => 12, S::UsbDac => 13, S::Receiver => 14,
-        S::Onboarding => 15, S::UsbStorage => 16, S::Shelf => 17,
+        S::Onboarding => 15, S::UsbStorage => 16, S::Shelf => 17, S::Pairing => 18,
     }
 }
 
@@ -1551,6 +1556,19 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::ExitUsbMsc => 19,
         Action::EqChanged(_) => 12,
         Action::BtToggle(_) => 26, // shell drives SetRfOnOff + reconnects the last device
+        Action::BtDisconnect => 27, // shell calls RequestDisconnection; radio stays on
+        // The row index travels in `pending_bt_device`, not in the action code — same one-value
+        // side-channel the play-by-index path uses. The shell reads it with
+        // cinder_pending_bt_device() and looks up the BD address in its own copy of the list.
+        Action::BtConnectDevice(i) => {
+            r.pending_bt_device = Some(*i);
+            28
+        }
+        Action::BtForgetDevice(i) => {
+            r.pending_bt_device = Some(*i);
+            29
+        }
+        Action::BtPairedRefresh => 30, // shell re-reads GetPairedDeviceInfo + pushes the list back
         Action::SleepTimer(m) => {
             // internal: arm/cancel the countdown (no Sony service to start it)
             r.sleep_remaining_ms = *m as i64 * 60_000;
@@ -2075,6 +2093,75 @@ pub extern "C" fn cinder_get_volume() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {
         Some(r) => r.app.volume_level() as libc::c_int,
         None => 0,
+    }
+}
+
+/// Push the name of the connected Bluetooth device into the UI (NULL or "" = nothing connected).
+/// The shell reads it from GetConnectInformation and calls this; the Bluetooth screen's CONNECTED
+/// card shows it.
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_connected(name: *const libc::c_char) {
+    let owned: Option<String> = if name.is_null() {
+        None
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(name) }.to_str().ok().map(|s| s.to_string())
+    };
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_bt_connected(owned.as_deref());
+    }
+}
+
+/// Start a fresh paired-device list. Call this, then `cinder_bt_paired_add` once per device **in the
+/// order the shell will index them** — the UI hands back a row index, never an address, so the two
+/// orderings are the same object seen from two sides.
+#[no_mangle]
+pub extern "C" fn cinder_bt_paired_clear() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.bt_paired_clear();
+    }
+}
+
+/// Append one paired device. `kind` may be NULL/"" (the row then just says "TAP TO CONNECT").
+/// `connected` != 0 marks the device the radio is currently linked to.
+#[no_mangle]
+pub extern "C" fn cinder_bt_paired_add(
+    name: *const libc::c_char,
+    kind: *const libc::c_char,
+    connected: libc::c_int,
+) {
+    // A device with no readable name is still a device — showing its row as "(unnamed)" beats
+    // dropping it, because the row is the only way to forget a bad pairing.
+    let cstr = |p: *const libc::c_char| -> String {
+        if p.is_null() {
+            String::new()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
+    };
+    let mut name = cstr(name);
+    if name.is_empty() {
+        name = "(unnamed)".to_string();
+    }
+    let kind = cstr(kind);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.bt_paired_add(&name, &kind, connected != 0);
+    }
+}
+
+/// How many paired devices the UI is currently showing.
+#[no_mangle]
+pub extern "C" fn cinder_bt_paired_count() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_paired_len() as libc::c_int)
+}
+
+/// Drain the row index that came with the last CINDER_ACT_BT_CONNECT_DEVICE / _BT_FORGET_DEVICE.
+/// Returns -1 when there is no pending request. Draining (rather than peeking) is deliberate: a
+/// forget must never be replayed against whatever device later occupies that row.
+#[no_mangle]
+pub extern "C" fn cinder_pending_bt_device() -> libc::c_int {
+    match cell().lock().unwrap().as_mut() {
+        Some(r) => r.pending_bt_device.take().map_or(-1, |i| i as libc::c_int),
+        None => -1,
     }
 }
 
@@ -3022,7 +3109,7 @@ mod tests {
         let all = [
             S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::Artist, S::Playlist, S::UpNext, S::Eq,
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
-            S::UsbStorage, S::Shelf,
+            S::UsbStorage, S::Shelf, S::Pairing,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();

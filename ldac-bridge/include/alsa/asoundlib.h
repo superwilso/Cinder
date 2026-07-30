@@ -51,6 +51,9 @@ int  snd_pcm_set_params(snd_pcm_t *pcm, snd_pcm_format_t format, snd_pcm_access_
                         int soft_resample, unsigned int latency);
 snd_pcm_sframes_t snd_pcm_readi(snd_pcm_t *pcm, void *buffer, snd_pcm_uframes_t size);
 int  snd_pcm_recover(snd_pcm_t *pcm, int err, int silent);
+/* Re-arm a stream after an overrun (-EPIPE). The capture loop in cinder-home resyncs with this
+   rather than tearing the stream down, so a momentary overrun costs a buffer, not the session. */
+int  snd_pcm_prepare(snd_pcm_t *pcm);
 int  snd_pcm_close(snd_pcm_t *pcm);
 const char *snd_strerror(int errnum);
 
