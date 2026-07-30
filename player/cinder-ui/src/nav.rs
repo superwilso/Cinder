@@ -51,6 +51,9 @@ pub enum Screen {
     Eq,
     Sound,
     Bluetooth,
+    /// Paired-device picker (connect / disconnect / forget). Pushed from Bluetooth ▸ "Pair new
+    /// device"; before 2026-07-30 `pairing.rs` rendered but had no route at all.
+    Pairing,
     Settings,
     Fm,
     UsbDac,
@@ -121,6 +124,20 @@ pub enum Action {
     ExitUsbMsc, // leave USB mass-storage: the shell remounts the volume + restores the USB mode
     EqChanged([i8; 10]), // shell applies the band gains to the sound DSP
     BtToggle(bool),      // shell turns the BT transmitter on/off
+    /// Drop the CURRENT link but leave the radio on, so the device stays paired and reconnectable.
+    /// Distinct from `BtToggle(false)`, which powers the radio down — the Disconnect button used to
+    /// emit that, so tapping it turned Bluetooth off entirely instead of hanging up on one device.
+    BtDisconnect,
+    /// Connect a specific PAIRED device by its row on the Devices screen. The shell keeps the BD
+    /// addresses in the same order it pushed the names, so the index is the whole payload — the UI
+    /// never handles a raw address. → `BtTransmitterServiceClient::RequestConnection`.
+    BtConnectDevice(usize),
+    /// Drop a device's link key → `BtCommonServiceClient::DeleteLinkkey`. Two-tap confirmed in the
+    /// UI, because re-pairing needs the stock player (Cinder cannot scan yet).
+    BtForgetDevice(usize),
+    /// Re-read the paired list off the radio (`GetPairedDeviceInfo`) and push it back. Emitted when
+    /// the Devices screen opens and after a connect/forget, so the list is never stale on screen.
+    BtPairedRefresh,
     BatteryCareChanged(bool), // shell calls PowerMgrServiceClient::EnableItawariCharging
     SoundChanged,             // shell reads cinder_get_sound_flags + applies via EffectCtrlDmp
     SoundBypass(bool),        // A/B: true = bypass whole chain (B), false = re-enable (A)
@@ -283,6 +300,20 @@ pub struct App {
     /// only reads it.
     bt_volume: u8,
     bt_route: bool,
+    /// Name of the currently connected Bluetooth device, as the shell last read it from
+    /// `BtTransmitterServiceClient::GetConnectInformation`. `None` = nothing connected. This was
+    /// pinned to `None` for as long as there was no safe way to make that call — it takes TWO
+    /// out-params by reference and passing one crashed the service client twice.
+    bt_connected: Option<String>,
+    /// Every device the radio holds a link key for, pushed by the shell from
+    /// `GetPairedDeviceInfo`. The UI owns no addresses — a row's index IS the handle, and the shell
+    /// keeps its own address vector in the same order, so the two cannot disagree unless the list is
+    /// re-read between the tap and the call (which is why a refresh follows every action).
+    bt_paired: Vec<crate::pairing::PairedDevice>,
+    /// Row whose FORGET is armed (two-tap), and the row with a connect in flight. Both are transient
+    /// UI state, cleared whenever the list is replaced.
+    bt_forget_armed: Option<usize>,
+    bt_connecting: Option<usize>,
     /// Equalizer: 10 band gains (dB), selected band, active preset index.
     eq_bands: [i8; 10],
     eq_sel: usize,
@@ -419,6 +450,10 @@ impl Default for App {
             vol_overlay: 0,
             bt_volume: 15,
             bt_route: false,
+            bt_connected: None,
+            bt_paired: Vec::new(),
+            bt_forget_armed: None,
+            bt_connecting: None,
             eq_bands: data::EQ_PRESETS[3].1, // "A1"
             eq_sel: 0,
             eq_preset: 3,
@@ -1095,10 +1130,14 @@ impl App {
             Screen::Bluetooth => {
                 use crate::bluetooth::BtHit;
                 match crate::bluetooth::hit(x, y, self.bt_on, self.bt_codec == crate::bluetooth::LDAC) {
-                    BtHit::Toggle | BtHit::Disconnect => {
+                    BtHit::Toggle => {
                         self.bt_on = !self.bt_on;
                         vec![Action::BtToggle(self.bt_on)]
                     }
+                    // Hang up on the device, leave the radio ON. This shared the Toggle arm until
+                    // 2026-07-29, which meant the Disconnect button powered Bluetooth down — the
+                    // device then also stopped being reconnectable without re-enabling the radio.
+                    BtHit::Disconnect => vec![Action::BtDisconnect],
                     BtHit::Codec(i) => {
                         self.bt_codec = i as u8;
                         vec![Action::BtCodecChanged]
@@ -1107,7 +1146,47 @@ impl App {
                         self.bt_ldac_quality = i as u8;
                         vec![Action::BtCodecChanged]
                     }
-                    BtHit::Pair | BtHit::None => vec![],
+                    // Open the paired-device picker and re-read the list on the way in, so what is
+                    // on screen is what the radio actually holds link keys for right now.
+                    BtHit::Pair => {
+                        self.push(Screen::Pairing);
+                        vec![Action::BtPairedRefresh]
+                    }
+                    BtHit::None => vec![],
+                }
+            }
+            Screen::Pairing => {
+                use crate::pairing::PairHit;
+                match crate::pairing::hit(x, y, self.bt_paired.len()) {
+                    PairHit::Row(i) => {
+                        self.bt_forget_armed = None; // any other tap disarms a pending FORGET
+                        match self.bt_paired.get(i) {
+                            // Already connected → hang up. Same call the Bluetooth screen's
+                            // Disconnect makes, so there is one code path for "drop the link".
+                            Some(d) if d.connected => vec![Action::BtDisconnect],
+                            Some(_) => {
+                                self.bt_connecting = Some(i);
+                                vec![Action::BtConnectDevice(i)]
+                            }
+                            None => vec![],
+                        }
+                    }
+                    PairHit::Forget(i) => {
+                        if i >= self.bt_paired.len() {
+                            return vec![];
+                        }
+                        if self.bt_forget_armed == Some(i) {
+                            self.bt_forget_armed = None;
+                            // The refresh is emitted by the shell side after the delete lands; we
+                            // do not remove the row locally, because a failed DeleteLinkkey would
+                            // then show a device as gone while the radio still has it.
+                            vec![Action::BtForgetDevice(i)]
+                        } else {
+                            self.bt_forget_armed = Some(i);
+                            vec![]
+                        }
+                    }
+                    PairHit::None => vec![],
                 }
             }
             Screen::UsbDac => {
@@ -2625,16 +2704,26 @@ impl App {
             Screen::Bluetooth => {
                 let bt = Bt {
                     on: self.bt_on,
-                    // No connected-device name until there is a real BtCommonService client to ask.
-                    // This used to report a hardcoded "WH-1000XM5" whenever the (UI-only) radio
-                    // toggle was on, i.e. it invented a paired device that was never there.
-                    // bluetooth::render already draws an honest "No device connected" for None.
-                    connected: None,
+                    // The REAL connected device, pushed by the shell from
+                    // GetConnectInformation(vector<uint8_t>& addr, string& name). Before that call
+                    // was safe to make this was pinned to None, and before THAT it reported a
+                    // hardcoded "WH-1000XM5" whenever the UI-only radio toggle was on — i.e. it
+                    // invented a paired device that was never there. bluetooth::render still draws
+                    // an honest "No device connected" when it is None.
+                    connected: self.bt_connected.as_deref(),
                     codec_sel: self.bt_codec,
                     ldac_quality: self.bt_ldac_quality,
                 };
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
+            Screen::Pairing => crate::pairing::render(
+                c,
+                &theme,
+                fonts,
+                &self.bt_paired,
+                self.bt_forget_armed,
+                self.bt_connecting,
+            ),
             Screen::Settings => {
                 let sleep_lbl = self.sleep_label();
                 let brightness_lbl = format!("{} / 5", self.brightness);
@@ -2891,6 +2980,41 @@ impl App {
 
     pub fn bt_route(&self) -> bool {
         self.bt_route
+    }
+
+    /// Push the connected device's name (empty = nothing connected). The shell polls
+    /// GetConnectInformation and calls this; the Bluetooth screen shows it on the CONNECTED card.
+    pub fn set_bt_connected(&mut self, name: Option<&str>) {
+        self.bt_connected = match name {
+            Some(n) if !n.is_empty() => Some(n.to_string()),
+            _ => None,
+        };
+    }
+
+    pub fn bt_connected(&self) -> Option<&str> {
+        self.bt_connected.as_deref()
+    }
+
+    /// Replace the paired list wholesale. The shell calls `bt_paired_clear()` then one
+    /// `bt_paired_add()` per device, in the order it will index them — so this also drops the
+    /// transient row state, which belonged to the OLD ordering and would otherwise point at the
+    /// wrong device after a refresh.
+    pub fn bt_paired_clear(&mut self) {
+        self.bt_paired.clear();
+        self.bt_forget_armed = None;
+        self.bt_connecting = None;
+    }
+
+    pub fn bt_paired_add(&mut self, name: &str, kind: &str, connected: bool) {
+        self.bt_paired.push(crate::pairing::PairedDevice {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            connected,
+        });
+    }
+
+    pub fn bt_paired_len(&self) -> usize {
+        self.bt_paired.len()
     }
 
     /// The shell polls the radio and pushes the answer here; the rocker follows it from the next

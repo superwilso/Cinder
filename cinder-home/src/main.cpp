@@ -35,6 +35,11 @@
 #include <sys/ioctl.h>
 #include <sys/mount.h>   // umount/umount2 (we unmount /contents ourselves before the MSC handoff)
 #include <cerrno>
+#include <string>            // std::string — Sony's pst::base::string IS libc++ std::string
+#include <vector>            // ditto for pst::base::vector (GetConnectInformation's MAC out-param)
+#include <sys/socket.h>      // the USB-DAC -> LDAC bridge writes PCM to an abstract AF_UNIX socket
+#include <sys/un.h>
+#include <dlfcn.h>           // libasound is dlopen'd, NOT linked — see the LDAC bridge block
 
 // The render core: the Rust Cinder UI, built as a glibc C-ABI staticlib
 // (player/cinder-ffi -> libcinder_ffi.a). C ABI, so the renderer stays in Rust while
@@ -258,6 +263,8 @@ static int bt_status();      // defined with the Bluetooth block below
 static bool bt_radio_up(int st);
 void refresh_bt_route();     // ditto — points the volume rocker at whichever output is live
 void apply_bt_codec();       // ditto — pushes the codec choice to the radio (not just the conf file)
+static void refresh_bt_connected();  // ditto — names the linked device for the Bluetooth screen
+void refresh_bt_paired();    // ditto — reads the radio's pairing table for the Devices screen
 
 void render_up() {
     if (g_render_ready) return;
@@ -415,6 +422,9 @@ void deferred_up() {
                     // Same read decides where the volume rocker points, so headphones that were
                     // already connected at launch get the rocker from the very first press.
                     refresh_bt_route();
+                    // …and names whatever is already linked, so the Bluetooth screen is correct on
+                    // first open rather than after the first 3 s poll.
+                    refresh_bt_connected();
                     char m[96];
                     std::snprintf(m, sizeof m, "deferred_up: BT radio status=%d -> switch %s",
                                   st, bt_radio_up(st) ? "ON" : "OFF");
@@ -1562,6 +1572,186 @@ void apply_bt_codec() {
     }
 }
 
+// ── who is connected ────────────────────────────────────────────────────────────────────────
+// `GetConnectInformation` takes TWO out-params, both by reference:
+//
+//     bool GetConnectInformation(pst::base::vector<uint8_t>& addr, pst::base::string& name)
+//
+// Recovered from the stub's prologue (arg1 lands in sl, arg2 in r8) plus what each is used for: r8
+// goes to TransactionParam::GetStr, while sl is walked as {begin,end,cap} and grown a byte at a time
+// by a Get(1) loop counted by a preceding Get(4) — a MAC being push_back'd. Two earlier attempts
+// passed a SINGLE pointer and crashed at an IDENTICAL address both times; that identity was the
+// clue, because a merely-wrong buffer moves and a missing argument does not.
+//
+// `pst::base::vector`/`string` are typedefs for the libc++ containers (the mangled forms exist
+// nowhere in the vendor tree, and the marshaller's own PLT entry names std::__1::basic_string), and
+// this file is compiled against the libc++ 3.9.0 headers matching the device runtime — so real
+// containers go straight across. Verified on device: returns a 6-byte MAC and the device name.
+static void refresh_bt_connected() {
+    enum { VIDX_GetConnectInformation = 5 };
+    try {
+        void* x = bt_xmit();
+        if (!x) return;
+        typedef int (*fn2)(void*, std::vector<unsigned char>*, std::string*);
+        std::vector<unsigned char> addr;
+        std::string name;
+        int rc = ((fn2)bt_slot(x, VIDX_GetConnectInformation))(x, &addr, &name);
+        // rc false, or no address, means nothing is linked — report that rather than a stale name.
+        cinder_set_bt_connected((rc && !addr.empty()) ? name.c_str() : "");
+    } catch (...) {
+        clog_("bt: GetConnectInformation threw");
+    }
+}
+
+// Hang up on the current device, radio untouched. RequestDisconnection is slot 8 and takes no
+// arguments (`virtual bool RequestDisconnection()` straight out of the library's own strings).
+void apply_bt_disconnect() {
+    enum { VIDX_RequestDisconnection = 8 };
+    try {
+        void* x = bt_xmit();
+        if (!x) { clog_("bt: no transmitter client — cannot disconnect"); return; }
+        typedef int (*fn0)(void*);
+        int rc = ((fn0)bt_slot(x, VIDX_RequestDisconnection))(x);
+        char m[96];
+        std::snprintf(m, sizeof m, "bt: RequestDisconnection() rc=%d (radio stays on)", rc);
+        clog_(m);
+    } catch (...) { clog_("bt: RequestDisconnection threw"); }
+    refresh_bt_connected();
+    refresh_bt_route();
+}
+
+// ── paired devices (the Devices screen) ──────────────────────────────────────────────────────
+// `virtual bool GetPairedDeviceInfo(pst::base::vector<BtPairedDeviceInformation> &)` — slot 20 on
+// BtCommonServiceClient. The element layout was recovered on device 2026-07-29 and then confirmed
+// the hard way: the 10-char name arrived as a libc++ SSO string and the 14-char one as a heap
+// string, and BOTH decoded through this one declaration, which is only possible if the container
+// really is std::__1::string. `bytes/48` matched the typed count exactly for two real pairings.
+struct BtPairedDeviceInformation {
+    std::vector<unsigned char> addr;    // +0   BD address, 6 bytes, MSB first
+    unsigned                   cod;     // +12  class of device
+    std::vector<unsigned char> key;     // +16  link key (16 B)
+    std::string                name;    // +28  friendly name
+    unsigned char              f0, f1;  // +40  flags — 1,1 on both real pairings
+    unsigned char              pad[6];  // +42 -> 48
+};
+static_assert(sizeof(BtPairedDeviceInformation) == 48, "paired-device stride is not 48");
+
+// The BD addresses, in the SAME ORDER they were pushed into the UI. A row index is the only handle
+// the UI ever holds, so this vector is the other half of that agreement: index in, address out.
+static std::vector<std::vector<unsigned char>> g_bt_paired;
+
+static void* bt_common() {
+    if (!g_bt_common) g_bt_common = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    return g_bt_common;
+}
+
+// A short, honest descriptor from the class-of-device word. Only the major class is trusted plus the
+// handful of audio minor classes that are unambiguous — a wrong-but-specific label ("Speaker" on a
+// pair of headphones) is worse than none, and an empty string simply draws nothing.
+static const char* bt_kind_from_cod(unsigned cod) {
+    unsigned major = (cod >> 8) & 0x1F;
+    unsigned minor = (cod >> 2) & 0x3F;
+    if (major == 4) {                       // Audio / Video
+        switch (minor) {
+            case 1: case 2: return "Headset";
+            case 5:         return "Speaker";
+            case 6:         return "Headphones";
+            case 7:         return "Portable audio";
+            case 8:         return "Car audio";
+            case 0x0A:      return "Hi-Fi audio";
+            default:        return "Audio device";
+        }
+    }
+    if (major == 2) return "Phone";
+    if (major == 1) return "Computer";
+    return "";
+}
+
+// Read the radio's pairing table and push it into the UI. Run ONLY via run_guarded.
+void refresh_bt_paired() {
+    enum { VIDX_GetPairedDeviceInfo = 20, VIDX_GetConnectInformation = 5 };
+    std::vector<BtPairedDeviceInformation> list;
+    // Which one is live, so the row can say CONNECTED instead of offering to connect it again.
+    std::vector<unsigned char> live;
+    try {
+        void* x = bt_xmit();
+        if (x) {
+            typedef int (*fn2)(void*, std::vector<unsigned char>*, std::string*);
+            std::string nm;
+            if (!((fn2)bt_slot(x, VIDX_GetConnectInformation))(x, &live, &nm)) live.clear();
+        }
+    } catch (...) { clog_("bt-paired: GetConnectInformation threw"); live.clear(); }
+
+    try {
+        void* c = bt_common();
+        if (!c) { clog_("bt-paired: no BtCommonServiceClient — list stays empty"); return; }
+        typedef int (*fnv)(void*, std::vector<BtPairedDeviceInformation>*);
+        int rc = ((fnv)bt_slot(c, VIDX_GetPairedDeviceInfo))(c, &list);
+        if (!rc) { clog_("bt-paired: GetPairedDeviceInfo returned false"); return; }
+    } catch (...) {
+        clog_("bt-paired: GetPairedDeviceInfo threw — list left as it was");
+        return;
+    }
+
+    // Only replace what is on screen once the read succeeded: a failed poll must not blank the list
+    // the user is looking at, because the FORGET rows are the only way out of a bad pairing.
+    g_bt_paired.clear();
+    cinder_bt_paired_clear();
+    for (size_t i = 0; i < list.size(); i++) {
+        const BtPairedDeviceInformation& d = list[i];
+        bool connected = !live.empty() && d.addr == live;
+        cinder_bt_paired_add(d.name.c_str(), bt_kind_from_cod(d.cod), connected ? 1 : 0);
+        g_bt_paired.push_back(d.addr);
+    }
+    char m[96];
+    std::snprintf(m, sizeof m, "bt-paired: %u device(s)%s", (unsigned)list.size(),
+                  live.empty() ? "" : ", one connected");
+    clog_(m);
+}
+
+// Connect one specific paired device (Devices ▸ row). `RequestConnection` takes the BD address by
+// const reference — unlike RequestLastDeviceConnection, which takes nothing and picks for itself.
+void apply_bt_connect_device() {
+    enum { VIDX_RequestConnection = 6 };
+    int i = cinder_pending_bt_device();
+    if (i < 0 || (size_t)i >= g_bt_paired.size()) { clog_("bt-paired: connect for an unknown row"); return; }
+    const std::vector<unsigned char> addr = g_bt_paired[(size_t)i];
+    try {
+        void* x = bt_xmit();
+        if (!x) { clog_("bt-paired: no transmitter client — cannot connect"); return; }
+        // The codec has to be set before the link comes up, same as the radio toggle path: A2DP
+        // negotiates it during connection setup.
+        apply_bt_codec();
+        typedef int (*fna)(void*, const std::vector<unsigned char>*);
+        int rc = ((fna)bt_slot(x, VIDX_RequestConnection))(x, &addr);
+        char m[96];
+        std::snprintf(m, sizeof m, "bt-paired: RequestConnection(row %d) rc=%d", i, rc);
+        clog_(m);
+    } catch (...) { clog_("bt-paired: RequestConnection threw"); }
+    // The connection completes asynchronously; the 3 s route poll notices it and refreshes the name.
+    refresh_bt_paired();
+}
+
+// Drop a device's link key. Nothing here is recoverable from Cinder — re-pairing needs a scan, which
+// waits on the BtCommonService listener — so the UI confirms with a second tap before we get here.
+void apply_bt_forget_device() {
+    enum { VIDX_DeleteLinkkey = 15 };
+    int i = cinder_pending_bt_device();
+    if (i < 0 || (size_t)i >= g_bt_paired.size()) { clog_("bt-paired: forget for an unknown row"); return; }
+    const std::vector<unsigned char> addr = g_bt_paired[(size_t)i];
+    try {
+        void* c = bt_common();
+        if (!c) { clog_("bt-paired: no common client — cannot forget"); return; }
+        typedef int (*fna)(void*, const std::vector<unsigned char>*);
+        int rc = ((fna)bt_slot(c, VIDX_DeleteLinkkey))(c, &addr);
+        char m[96];
+        std::snprintf(m, sizeof m, "bt-paired: DeleteLinkkey(row %d) rc=%d", i, rc);
+        clog_(m);
+    } catch (...) { clog_("bt-paired: DeleteLinkkey threw"); }
+    refresh_bt_paired();
+    refresh_bt_connected();
+}
+
 // Which output owns the rocker. GetBtStatus == 3 is the measured "connected" value (see
 // reference_bt_radio_wedge: 7 = off, 2 = on/idle, 3 = connected), and a connected transmitter is
 // where the audio is going, so that is the whole test. Pushed into the UI, which uses it to pick
@@ -1575,6 +1765,9 @@ void refresh_bt_route() {
     // it here rather than caching once is what makes swapping between two different pairs of
     // headphones pick the right mechanism for each.
     g_bt_abs_vol = -1;
+    // The link changed, so the name on the CONNECTED card is stale. This poll is the only place that
+    // notices a device connecting or dropping on its own, so it owns refreshing the card too.
+    refresh_bt_connected();
     char m[128];
     std::snprintf(m, sizeof m, "bt-vol: rocker now drives %s (GetBtStatus=%d)",
                   on ? "BLUETOOTH" : "the 3.5 mm jack", st);
@@ -1655,6 +1848,307 @@ bool gadget_in_dac_mode() {
     return std::strncmp(buf, "uac", 3) == 0;
 }
 
+// ── USB-DAC → LDAC bridge ───────────────────────────────────────────────────────────────────
+// The headline feature: PCM arriving from the PC over USB is re-encoded to LDAC and sent to the
+// headphones, which stock refuses to do (its block is pure app policy — a "disconnect Bluetooth"
+// overlay plus an explicit RequestDisconnection; we simply never do either).
+//
+// Data path, all of it proven on device 2026-07-29 by `cinder-probe --ldac`:
+//
+//   PC --USB--> UAC gadget ALSA capture card --> this thread --> abstract AF_UNIX socket
+//               --> BtTransmitterService (LDAC encode) --> MTK BT chip --> headphones
+//
+// Control plane: SetLdac(true) -> SetLdacSoundQuality -> SetCurrentSource(true) makes the service
+// bind and listen on the socket, then GetSocketName(std::string&) names it. Two traps, both already
+// paid for and both documented at their call sites below: GetSocketName takes its string BY
+// REFERENCE and is not sret, and the abstract socket's addrlen is part of its NAME.
+//
+// WHY THIS LIVES IN CINDER-HOME and not in ldac-bridge, which was written for it: these are
+// `pst::services::*` clients, so every call is asynchronous and the reply arrives on
+// pst::core::Framework's looper. A standalone daemon pumps nothing, so its calls do not fail — they
+// return uninitialised stack, which is the trap that cost weeks on PlayerService. cinder-home is an
+// easel app with a live framework and an already-working BtTransmitterServiceClient, so it is the
+// only process here that can drive this correctly.
+//
+// THREADING: the capture/write loop blocks on ALSA, so it gets its OWN pthread. It must never run on
+// the render thread — a stalled USB host would freeze the UI and then trip the frame watchdog into a
+// fatal _exit. Nothing here touches the renderer or the navigator; the only shared state is two
+// flags and the log.
+static volatile sig_atomic_t g_ldac_run   = 0;   // 1 = the bridge should keep going
+static volatile sig_atomic_t g_ldac_alive = 0;   // 1 = the thread exists (don't spawn a second)
+
+// libasound is dlopen'd, NOT linked. This is a boot-safety decision, not a style one: cinder-home is
+// the HOME app, so a DT_NEEDED entry that fails to resolve does not disable a feature — it stops the
+// only user-facing process on the device from starting at all, and the device then boots to nothing.
+// The same reasoning as the escape-ladder rule (an escape must depend on less than what it rescues):
+// the UI must not depend on the audio library that one optional feature wants. Resolved lazily on
+// first use, so a device without libasound simply reports the bridge unavailable and keeps running.
+//
+// Types and constants are declared here rather than pulled from <alsa/asoundlib.h> so this needs no
+// armhf libasound2-dev on the host. The values are ALSA-ABI-stable.
+typedef struct _snd_pcm snd_pcm_t;
+enum { SND_PCM_STREAM_CAPTURE = 1 };
+enum { SND_PCM_ACCESS_RW_INTERLEAVED = 3 };
+enum { SND_PCM_FORMAT_S32_LE = 10 };
+
+struct AlsaApi {
+    void* h = nullptr;
+    int  (*open)(snd_pcm_t**, const char*, int, int) = nullptr;
+    int  (*set_params)(snd_pcm_t*, int, int, unsigned, unsigned, int, unsigned) = nullptr;
+    long (*readi)(snd_pcm_t*, void*, unsigned long) = nullptr;
+    int  (*prepare)(snd_pcm_t*) = nullptr;
+    int  (*close)(snd_pcm_t*) = nullptr;
+    const char* (*strerr)(int) = nullptr;
+    bool ok() const { return open && set_params && readi && prepare && close; }
+};
+static AlsaApi g_alsa;
+
+static bool alsa_load() {
+    if (g_alsa.h) return g_alsa.ok();
+    // Try the versioned SONAME first: that is what actually exists on a stock rootfs, while the bare
+    // .so is a dev symlink that may not be shipped.
+    const char* cands[] = { "libasound.so.2", "libasound.so", "/lib/libasound.so.2",
+                            "/lib/libasound.so", "/system/lib/libasound.so" };
+    for (const char* c : cands) {
+        g_alsa.h = dlopen(c, RTLD_NOW | RTLD_LOCAL);
+        if (g_alsa.h) break;
+    }
+    if (!g_alsa.h) { clog_("ldac: dlopen(libasound) FAILED — bridge unavailable"); return false; }
+    g_alsa.open       = (int  (*)(snd_pcm_t**, const char*, int, int))dlsym(g_alsa.h, "snd_pcm_open");
+    g_alsa.set_params = (int  (*)(snd_pcm_t*, int, int, unsigned, unsigned, int, unsigned))
+                        dlsym(g_alsa.h, "snd_pcm_set_params");
+    g_alsa.readi      = (long (*)(snd_pcm_t*, void*, unsigned long))dlsym(g_alsa.h, "snd_pcm_readi");
+    g_alsa.prepare    = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_prepare");
+    g_alsa.close      = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_close");
+    g_alsa.strerr     = (const char* (*)(int))dlsym(g_alsa.h, "snd_strerror");
+    if (!g_alsa.ok()) { clog_("ldac: libasound is missing a PCM symbol — bridge unavailable"); return false; }
+    return true;
+}
+
+// snd_strerror is optional (only used for messages), so don't let a missing one break anything.
+static const char* alsa_err(int e) {
+    return g_alsa.strerr ? g_alsa.strerr(e) : "(errno)";
+}
+
+// Connect to the transmitter's PCM socket. Returns a connected fd, or -1.
+static int ldac_connect_socket() {
+    enum { VIDX_GetSocketName = 29 };
+    void* x = bt_xmit();
+    if (!x) { clog_("ldac: BtTransmitterServiceClient unavailable"); return -1; }
+
+    // void GetSocketName(pst::base::string&) — READ from the library's own __PRETTY_FUNCTION__
+    // literal, not inferred. It is NOT sret: calling it as `fn(sret, this)` hands a stack buffer to
+    // the function as `this`, which is what used to die at PC=0 with libcxxrt reporting "Fatal error
+    // during phase 1 unwinding" — a swapped argument list that got misread as evidence about the
+    // Bluetooth link. `pst::base::string` is a typedef for libc++ std::string (the mangled form
+    // N3pst4base6stringE exists nowhere in the vendor tree, and the marshaller's own PLT entry is
+    // TransactionParam::GetStr(std::__1::basic_string<char,...>&)); this file compiles against the
+    // libc++ 3.9.0 headers matching the device runtime, so a real std::string is ABI-correct.
+    std::string name;
+    try {
+        typedef void (*fns)(void*, std::string*);
+        ((fns)bt_slot(x, VIDX_GetSocketName))(x, &name);
+    } catch (...) { clog_("ldac: GetSocketName threw"); return -1; }
+    if (name.empty()) { clog_("ldac: GetSocketName returned empty — source not open"); return -1; }
+
+    char m[192];
+    std::snprintf(m, sizeof m, "ldac: socket name '%s'", name.c_str());
+    clog_(m);
+
+    // ADDRLEN IS PART OF THE NAME. An abstract AF_UNIX address is a byte string of length
+    // (addrlen - offsetof(sun_path)), compared exactly, trailing NULs included. The service binds
+    // with the FULL sockaddr_un (addrlen 110), so its real name is the 35-character string followed
+    // by 72 NULs; sizing addrlen to strlen() asks for a different name and earns ECONNREFUSED from a
+    // socket that /proc/net/unix plainly shows as listening (flags 00010000 = SO_ACCEPTCON).
+    // The bind is also ASYNC after SetCurrentSource, hence the retry.
+    for (int i = 0; i < 30 && g_ldac_run; i++) {
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) return -1;
+        struct sockaddr_un a;
+        std::memset(&a, 0, sizeof a);
+        a.sun_family = AF_UNIX;
+        size_t n = name.size();
+        if (n > sizeof a.sun_path - 1) n = sizeof a.sun_path - 1;
+        std::memcpy(a.sun_path + 1, name.data(), n);   // abstract: sun_path[0] stays NUL
+        if (connect(fd, (struct sockaddr*)&a, (socklen_t)sizeof a) == 0) return fd;
+        close(fd);
+        usleep(100000);
+    }
+    clog_("ldac: connect to the transmitter socket FAILED");
+    return -1;
+}
+
+// Find the UAC gadget's capture PCM. The gadget registers a SEPARATE ALSA card only while it is in
+// UAC mode, and the kernel gives it the next free index — so "hw:4,0" is a guess, not a fact. Scan
+// for a capture-capable card that is not the built-in codec instead.
+static bool ldac_find_capture(char* out, size_t outn) {
+    FILE* f = std::fopen("/proc/asound/cards", "r");
+    if (!f) return false;
+    char line[256];
+    bool found = false;
+    while (!found && std::fgets(line, sizeof line, f)) {
+        int idx; char id[64];
+        if (std::sscanf(line, " %d [%63[^]]", &idx, id) != 2) continue;
+        char* e = id + std::strlen(id);
+        while (e > id && e[-1] == ' ') *--e = 0;              // trim the pad spaces
+        if (std::strcmp(id, "sonysoccard") == 0) continue;    // built-in codec, not the gadget
+        for (int d = 0; d < 8 && !found; ++d) {
+            char p[64];
+            std::snprintf(p, sizeof p, "/proc/asound/card%d/pcm%dc", idx, d);
+            if (access(p, F_OK) == 0) {
+                std::snprintf(out, outn, "hw:%d,%d", idx, d);
+                found = true;
+            }
+        }
+    }
+    std::fclose(f);
+    return found;
+}
+
+static void* ldac_thread(void*) {
+    g_ldac_alive = 1;
+    clog_("ldac: bridge thread up");
+
+    int fd = ldac_connect_socket();
+    snd_pcm_t* pcm = nullptr;
+
+    if (fd >= 0) {
+        // Wait for the gadget's capture card. It only appears once the gadget is in UAC mode AND the
+        // host has opened the stream, so "not there yet" is the normal state for the first seconds
+        // after the toggle — poll rather than failing.
+        char dev[32] = {0};
+        for (int i = 0; i < 100 && g_ldac_run && !ldac_find_capture(dev, sizeof dev); i++)
+            usleep(100000);
+
+        if (dev[0] == '\0') {
+            clog_("ldac: no UAC capture card appeared — is the PC actually playing to the Walkman?");
+        } else {
+            char m[128];
+            std::snprintf(m, sizeof m, "ldac: capture device %s", dev);
+            clog_(m);
+            // 44100 S32_LE stereo — what the UAC gadget presents, and what the transmitter expects.
+            int rc = g_alsa.open(&pcm, dev, SND_PCM_STREAM_CAPTURE, 0);
+            if (rc < 0) {
+                pcm = nullptr;
+                std::snprintf(m, sizeof m, "ldac: snd_pcm_open(%s) -> %s%s", dev, alsa_err(rc),
+                              rc == -EBUSY ? "  (Sony's UsbDeviceAudioPlayerService holds it — this "
+                                             "is contention, not RE)" : "");
+                clog_(m);
+            } else {
+                rc = g_alsa.set_params(pcm, SND_PCM_FORMAT_S32_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+                                       2, 44100, 1, 100000);
+                if (rc < 0) {
+                    std::snprintf(m, sizeof m, "ldac: set_params -> %s", alsa_err(rc));
+                    clog_(m);
+                    g_alsa.close(pcm);
+                    pcm = nullptr;
+                }
+            }
+        }
+    }
+
+    // The pump. 512 frames × 8 bytes = 4 KB a go, which is ~11.6 ms of audio — small enough to keep
+    // latency sane, large enough that the syscall rate stays negligible on one ARMv7 core.
+    if (fd >= 0 && pcm) {
+        clog_("ldac: streaming");
+        static unsigned char buf[512 * 8];
+        unsigned long long frames = 0;
+        while (g_ldac_run) {
+            long got = g_alsa.readi(pcm, buf, 512);
+            if (got == -EPIPE) { g_alsa.prepare(pcm); continue; }    // overrun: resync, keep going
+            if (got == -EAGAIN || got == -EINTR) continue;
+            if (got < 0) {
+                char m[96];
+                std::snprintf(m, sizeof m, "ldac: readi -> %s", alsa_err((int)got));
+                clog_(m);
+                break;
+            }
+            size_t want = (size_t)got * 8;
+            const unsigned char* p = buf;
+            bool broken = false;
+            while (want && !broken) {
+                ssize_t w = write(fd, p, want);
+                if (w < 0) {
+                    if (errno == EINTR) continue;
+                    // The transmitter closed its end — headphones dropped, or the source was
+                    // released. EPIPE here is normal shutdown, not a bug.
+                    clog_(errno == EPIPE ? "ldac: transmitter closed the socket"
+                                         : "ldac: socket write failed");
+                    broken = true;
+                    break;
+                }
+                p += w;
+                want -= (size_t)w;
+            }
+            if (broken) break;
+            frames += (unsigned long long)got;
+        }
+        char m[96];
+        std::snprintf(m, sizeof m, "ldac: stopped after %llu frames (%llu s)",
+                      frames, frames / 44100);
+        clog_(m);
+    }
+
+    if (pcm) g_alsa.close(pcm);
+    if (fd >= 0) close(fd);
+    clog_("ldac: bridge thread down");
+    g_ldac_alive = 0;
+    g_ldac_run = 0;
+    return nullptr;
+}
+
+// Bring the bridge up. Returns immediately — everything slow happens on the thread.
+static void ldac_start() {
+    if (g_ldac_alive) { clog_("ldac: already running"); return; }
+    // Resolve libasound BEFORE touching the control plane. If the capture side can't work there is no
+    // point declaring a source to the transmitter and then having to walk it back.
+    if (!alsa_load()) return;
+    // Control plane on THIS thread: it is the one with the live framework, and it is three quick IPC
+    // calls. The codec choice comes from Settings via apply_bt_codec, which also runs SetLdac — this
+    // adds only the source declaration, which is what makes the service open its socket.
+    enum { VIDX_SetCurrentSource = 12 };
+    apply_bt_codec();
+    try {
+        void* x = bt_xmit();
+        if (x) {
+            bool t = true;
+            typedef int (*fnb)(void*, const bool*);
+            ((fnb)bt_slot(x, VIDX_SetCurrentSource))(x, &t);
+            clog_("ldac: SetCurrentSource(true)");
+        }
+    } catch (...) { clog_("ldac: SetCurrentSource threw"); return; }
+
+    g_ldac_run = 1;
+    pthread_t th;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);   // fire and forget; it self-reaps
+    pthread_attr_setstacksize(&at, 256 * 1024);
+    if (pthread_create(&th, &at, ldac_thread, nullptr) != 0) {
+        g_ldac_run = 0;
+        clog_("ldac: pthread_create FAILED");
+    }
+    pthread_attr_destroy(&at);
+}
+
+// Ask the bridge to stop. Deliberately does NOT join: this runs on the render thread under a
+// watchdog, and the thread can be parked in a blocking ALSA read. Clearing the flag makes it unwind
+// on its own within one buffer period (~12 ms), and g_ldac_alive keeps a restart from racing it.
+static void ldac_stop() {
+    if (!g_ldac_alive) return;
+    g_ldac_run = 0;
+    clog_("ldac: stop requested");
+    enum { VIDX_SetCurrentSource = 12 };
+    try {
+        void* x = bt_xmit();
+        if (x) {
+            bool f = false;
+            typedef int (*fnb)(void*, const bool*);
+            ((fnb)bt_slot(x, VIDX_SetCurrentSource))(x, &f);
+        }
+    } catch (...) { clog_("ldac: SetCurrentSource(false) threw"); }
+}
+
 void apply_usb_dac() {
     bool on = cinder_get_usb_dac() != 0;
 
@@ -1691,23 +2185,29 @@ void apply_usb_dac() {
                   on ? "engage" : "release", on ? "on" : "off", rc,
                   rc == 0 ? "" : "  (FAILED — is the helper setuid root?)");
     clog_(m);
-    // The LDAC bridge trigger rides along, but only when the gadget actually came up: arming the
-    // bridge for a UAC mode that never engaged is how the last round of this looked like it worked.
-    if (on && rc == 0) {
-        std::system("touch /contents/ldac_on 2>/dev/null");
-    } else {
-        std::system("rm -f /contents/ldac_on 2>/dev/null");
-    }
-
-    // Open (or close) the render path. Only when the gadget actually went where we asked — calling
-    // Start() against a gadget still on `adb` is how the previous round looked like it worked.
+    // WHERE THE DAC AUDIO GOES. Only ever decided when the gadget actually came up — arming any of
+    // this for a UAC mode that never engaged is how the last round of this looked like it worked.
+    //
+    // Two destinations, and they are mutually exclusive because a capture PCM substream is exclusive:
+    // either Sony's UsbDeviceAudioPlayerService owns the gadget's capture and renders it to the
+    // 3.5 mm codec, or OUR bridge owns it and re-encodes to LDAC. Running both means one of them gets
+    // -EBUSY. So the route is chosen by where the audio should be heard: headphones connected ->
+    // LDAC, otherwise the jack.
     if (rc == 0) {
         if (on) {
-            if (!uac_render(true))
+            if (cinder_get_bt_route()) {
+                clog_("usb-dac: headphones connected -> bridging the DAC to LDAC (skipping the "
+                      "local render, which would hold the capture PCM)");
+                ldac_start();
+            } else if (!uac_render(true)) {
                 clog_("usb-dac: gadget is up but Start() failed — expect silence at the jack");
+            }
         } else {
+            ldac_stop();
             uac_render(false);
         }
+    } else if (!on) {
+        ldac_stop();
     }
 
     // Leaving DAC mode: reclaim the player we closed on the way in. Without this the device is
@@ -2156,6 +2656,21 @@ void carry_out(int act) {
             // 8 s: SetRfOnOff + at most ~0.9 s of polling + the connect request. Deliberately not
             // generous — this runs on the render thread, and a long budget here buys a frozen UI.
             run_guarded("carry_out: Bluetooth toggle", 8, apply_bt_toggle);
+            break;
+        case CINDER_ACT_BT_DISCONNECT:
+            // One no-arg IPC call plus two status reads — nothing here polls, so 6 s is plenty.
+            run_guarded("carry_out: Bluetooth disconnect", 6, apply_bt_disconnect);
+            break;
+        case CINDER_ACT_BT_PAIRED_REFRESH:
+            run_guarded("carry_out: Bluetooth paired list", 6, refresh_bt_paired);
+            break;
+        case CINDER_ACT_BT_CONNECT_DEVICE:
+            // Codec apply + one connect request, then a list re-read. The connect itself is async, so
+            // this does not wait for the link — 8 s matches the toggle path for the same reason.
+            run_guarded("carry_out: Bluetooth connect device", 8, apply_bt_connect_device);
+            break;
+        case CINDER_ACT_BT_FORGET_DEVICE:
+            run_guarded("carry_out: Bluetooth forget device", 6, apply_bt_forget_device);
             break;
         case CINDER_ACT_SLEEP:         screen_toggle(); break; // Power = panel on/off (not lock)
         case CINDER_ACT_ENTER_USB_MSC:

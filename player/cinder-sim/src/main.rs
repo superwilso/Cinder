@@ -387,7 +387,19 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             codec_sel: app.bt_codec as u8,
             ldac_quality: 0,
         }),
-        Screen::Pairing => pairing::render(c, theme, fonts, 3, Some(1)),
+        Screen::Pairing => {
+            // The sim has no radio, so its mock "paired" set stands in for GetPairedDeviceInfo.
+            let paired: Vec<pairing::PairedDevice> = PAIRED
+                .iter()
+                .enumerate()
+                .map(|(i, p)| pairing::PairedDevice {
+                    name: p.name.to_string(),
+                    kind: p.kind.to_string(),
+                    connected: app.bt_conn == Some(i),
+                })
+                .collect();
+            pairing::render(c, theme, fonts, &paired, None, None)
+        }
         Screen::Receiver => receiver::render(c, theme, fonts, app.rx),
         Screen::Fm => fm::render(c, theme, fonts, app.fm_freq),
         Screen::UsbDac => usbdac::render(c, theme, fonts, app.usb_dac, app.usb_dac && app.bt_on,

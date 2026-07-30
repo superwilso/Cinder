@@ -204,3 +204,81 @@ Needs `g++-arm-linux-gnueabihf` (apt) + link stubs copied from `artifacts/rootfs
 - `.../libSoundServiceFw.so` (wired/USB-DAC/BT-receive render engine)
 - `.../libBtCompIf.so` (BT → MTK glue)
 - `amixer` + `aplay` exist on-device at `/bin` (useful for a Strategy-B test harness)
+
+---
+
+## 2026-07-29 — Q1 ANSWERED ON DEVICE: the USB-DAC→LDAC data path is open
+
+`cinder-probe --ldac`, headphones connected (`GetBtStatus` 3, `GetAvSrcConnectionStatus` 1):
+
+```text
+ldac: SetLdac(true) … SetLdacSoundQuality(Auto) … SetCurrentSource(true) …
+ldac: GetSocketName(std::string&) …
+ldac: Q1 socket name = 'pst::services::bttransmitterservice' (len 35, pump ticks 3491)
+ldac: Q1 PASS — connected to the transmitter's audio socket
+```
+
+**Both halves of Q1 pass.** The control plane opens the transmitter's audio socket, and a client can
+connect to it. TEST.md's third outcome ("control-plane assumption wrong → redo Ghidra") is ruled out.
+Two separate bugs had to be fixed to get here, and both were in OUR code, not the RE.
+
+### Bug 1 — `GetSocketName` was called with its arguments swapped
+
+The probe treated it as returning a `std::string` **by value**: `fn(sret_buf, this)`. It does not.
+The library states its own prototype in `.rodata`:
+
+```text
+void pst::services::BtTransmitterService::GetSocketName(pst::base::string &)
+```
+
+Void return, string by **reference** — so the old call passed a 12-byte stack array as `this`. That
+is why it "threw", with libcxxrt reporting *"Fatal error during phase 1 unwinding"* and the process
+dying at `PC=0`. The previous conclusion drawn from that — *"this call throws unless a BT link is
+up"* — was wrong and has been struck from the notes.
+
+`pst::base::string` is a **typedef, not a class**: the mangled form `N3pst4base6stringE` appears in no
+symbol anywhere in the vendor tree, while the marshaller's own PLT entry is
+`TransactionParam::GetStr(std::__1::basic_string<char, ...>&)`. It is plain libc++ `std::string`, and
+`cinder-home`/`cinder-probe` compile against the libc++ 3.9.0 headers that match the device runtime —
+so a real `std::string` is ABI-correct and there is nothing to hand-decode. (Same conclusion for
+`pst::base::vector<T>` = `std::__1::vector<T>`, which is what task #22 needs.)
+
+### Bug 2 — abstract socket `addrlen` IS part of the name
+
+With the name finally in hand, `connect()` returned **ECONNREFUSED** — against a socket
+`/proc/net/unix` plainly showed as listening (flags `00010000` = `SO_ACCEPTCON`).
+
+An abstract AF_UNIX address is a **byte string** of length `addrlen - offsetof(sun_path)`, compared
+exactly, trailing NULs included. `BtTransmitterService` binds with the **full `sockaddr_un`,
+addrlen 110**, so its real name is the 35-character string followed by 72 NULs. Sizing `addrlen` to
+`strlen()` asks the kernel for a *different* name.
+
+```c
+socklen_t len = sizeof a;   /* 110 — NOT offsetof(sun_path) + 1 + strlen(name) */
+```
+
+`/proc/net/unix` hides this: it prints the name up to the first NUL and pads the column, so the entry
+looks like an exact match and the failure reads as "the server hasn't opened it yet" — which sends
+you off hunting the wrong trigger. `od -c` on that line is what shows it:
+
+```console
+$ adb shell cat /proc/net/unix | grep -a bttransmitter | sed 's/.*@//' | od -c
+0000000   p s t : : s e r v i c e s : : b t t r a n s m i t t e r s e r v i c e
+0000043  \0  \0 …                                     # 107 bytes total = 110 - 2 - 1
+```
+
+**Rule:** ECONNREFUSED against a socket listed with `SO_ACCEPTCON` is an addrlen/name mismatch, not a
+missing listener.
+
+### What is still open
+
+**Q2 — capture contention — remains unanswered**, and cannot be answered from an adb shell: it needs
+the gadget in `uac` mode with a PC actually feeding audio, and entering `uac` changes the USB identity
+(idProduct `0B8C`), which drops adb. So Q2 is a UI-driven test from inside cinder-home, with the
+answer read out of `/contents/cinderhome.log` afterwards.
+
+The standalone `ldac-bridge` daemon is **retired** as a delivery vehicle. Its own banner already said
+why — it starts no `pst::core::Framework`, so nothing pumps the looper and every client call returns
+uninitialised stack. cinder-home is an easel app with a live framework and an already-working
+`BtTransmitterServiceClient`, so the pipeline belongs there. `ldac-bridge/src/` stays as the reference
+implementation of the socket writer and the ALSA capture loop.

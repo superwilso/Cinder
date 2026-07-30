@@ -92,7 +92,20 @@ typedef enum {
      * ask BtTransmitterServiceClient to reconnect the last device. Until 2026-07-29 this action did
      * not exist and the toggle was dropped in cinder-ffi ("UI-only"), which is why the switch never
      * affected the hardware and paired headphones never reconnected. */
-    CINDER_ACT_BT_TOGGLE = 26
+    CINDER_ACT_BT_TOGGLE = 26,
+    /* Hang up on the connected device but LEAVE THE RADIO ON: call
+     * BtTransmitterServiceClient::RequestDisconnection (slot 8, no args). Distinct from
+     * BT_TOGGLE off, which powers the radio down and makes the device unreconnectable. */
+    CINDER_ACT_BT_DISCONNECT = 27,
+    /* Connect a specific PAIRED device: read the row with cinder_pending_bt_device(), look up the
+     * BD address in the shell's own copy of the list, and call
+     * BtTransmitterServiceClient::RequestConnection(const vector<uint8_t>&) (slot 6). */
+    CINDER_ACT_BT_CONNECT_DEVICE = 28,
+    /* Forget a paired device: same row channel, then
+     * BtCommonServiceClient::DeleteLinkkey(const vector<uint8_t>&) (slot 15). */
+    CINDER_ACT_BT_FORGET_DEVICE = 29,
+    /* Re-read GetPairedDeviceInfo (slot 20) and push the list back with cinder_bt_paired_*. */
+    CINDER_ACT_BT_PAIRED_REFRESH = 30
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -232,6 +245,18 @@ int  cinder_get_volume(void);
 /* Seed the UI volume from the device's real level (raw 0..120 steps), no HUD pop. Call at boot
  * after restoring the saved level (or reading the mixer), so Vol± nudges from the actual level. */
 void cinder_set_volume(int level);
+/* Push the connected Bluetooth device's name into the UI (NULL or "" = nothing connected). Read it
+ * from GetConnectInformation(vector<uint8_t>& addr, string& name). */
+void cinder_set_bt_connected(const char* name);
+/* Paired-device list for the Devices screen. Call cinder_bt_paired_clear(), then _add() once per
+ * device from GetPairedDeviceInfo — IN THE SAME ORDER the shell keeps its BD addresses, because the
+ * UI hands back a row index and nothing else. `kind` may be NULL. connected != 0 marks the live link.
+ * cinder_pending_bt_device() DRAINS the row index that came with the last CONNECT/FORGET action and
+ * returns -1 when there is none (never replay a forget against whatever later occupies that row). */
+void cinder_bt_paired_clear(void);
+void cinder_bt_paired_add(const char* name, const char* kind, int connected);
+int  cinder_bt_paired_count(void);
+int  cinder_pending_bt_device(void);
 /* Top of the Bluetooth volume scale (must match cinder_ui::overlay::BT_VOL_MAX). Coarser than the
  * 0..120 codec scale because it is a step count, not a mixer value. */
 #define CINDER_BT_VOL_MAX 30
