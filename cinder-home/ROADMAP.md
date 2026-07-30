@@ -237,12 +237,12 @@ never repoint the `.appcfg` before the probe run looks clean.
   `AddListener` (client slot 30, `""` filter key, **0 = success**) receives live callbacks on its own
   vtable, and `RemoveListener((unsigned)&listener)` stops them — verified with a negative control, not
   by assuming. No `IBinderObject` implementation needed; the client builds the proxy and keeps a RAW
-  pointer, so the listener object must be static. **What is left is one contained RE step:** the four
-  prompt callbacks (`NumericComparison`, `Passkey`, `SspRequest`, and `PairingComplete`'s arguments) are
-  declared but never dereferenced, so a device that asks for a PIN or a confirmation still cannot be
-  paired — read those four signatures the same way `OnNotifySearchedDevice` was read, then wire
-  `pairing.rs`'s already-drawn dialogs. `SetNumericComparison`, `SetPasskey` and `RequestSspReply` are
-  located. **NFC tap-to-pair** now rides the same listener; it is ordinary work, not a wall.
+  pointer, so the listener object must be static. The four prompt callbacks were then read the same way and
+  **the confirm flow is built**: a device asking to confirm a code raises a modal panel answered with
+  `SetNumericComparison` (slot 9) or `RequestSspReply` (slot 28); a display-only `Passkey` offers
+  DISMISS → `CancelPairing`. What remains is a **hands-on trigger** — pair a phone rather than
+  headphones — which also settles which of `NumericComparison`'s two words is the displayed code, and
+  whether the echoed `SspVariant` is accepted. **NFC tap-to-pair** now rides the same listener; it is ordinary work, not a wall.
   Detail: `analysis/G_bt_nfc/RE_findings.md` rounds 2026-07-30b and c.
 - **FM radio, and FM → Bluetooth** — designed end to end 2026-07-28, none of it built. Full write-up
   with the evidence: [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md).
