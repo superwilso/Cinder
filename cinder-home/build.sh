@@ -183,6 +183,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -lPlayerServiceClient -lPlayerServiceClientUtil -lpstcore -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
      -lBtTransmitterService -lBtCommonService -lUsbDeviceAudioPlayerService \
+     -lNfcService \
      -lEffectCtrlDmp "$REPO/artifacts/rootfs_mnt/lib/libasound.so" \
      -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
