@@ -19,6 +19,10 @@ fn save(c: &Canvas, name: &str) {
 fn main() {
     let fonts = FontSet::load();
     std::fs::create_dir_all("out").ok();
+    // The status bar is now published once per frame instead of being passed (and hardcoded) by
+    // every screen — see chrome::set_status. On device nav::render sets it from the live
+    // now-playing data; the host harness sets it here so previews look the same as before.
+    cinder_ui::chrome::set_status("14:32", "FLAC 24/96", 78);
 
     let np = now_playing::NowPlaying {
         title: "Atlas Hands",
@@ -41,6 +45,7 @@ fn main() {
         viz_kind: 0,
         viz_on: true,
         viz_levels: None,
+        scrubbing: false,
     };
     let lk = lock::Lock {
         clock: "14:32",
@@ -76,7 +81,7 @@ fn main() {
         eq_preset: "A1",
         bt_codec: Some("LDAC"),
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), codec_sel: 0, ldac_quality: 0 };
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0 };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let lib = Library::sample();
 
@@ -99,6 +104,21 @@ fn main() {
                 shelf::render(c, &theme, &fonts, "Now Playing · Atlas Hands", "1:47 / 4:32",
                     &[Some(shelf::Pin { title: "Library · Albums", sub: "Saved 2 min ago" }), None, None]);
             }),
+            // Shelf with every slot filled — shows the GO / × split that replaced the old
+            // "tap the row body and it silently pins somewhere else" behaviour.
+            ("shelf_full", &|c: &mut Canvas| {
+                now_playing::render(c, &theme, &fonts, &np);
+                shelf::render(c, &theme, &fonts, "Library · Songs", "sorted by ARTIST A-Z",
+                    &[
+                        Some(shelf::Pin { title: "Library · Albums", sub: "row 42 · ORDER YEAR" }),
+                        Some(shelf::Pin { title: "Harvest Moon", sub: "Cold Stone & Sea" }),
+                        Some(shelf::Pin { title: "Equalizer", sub: "Custom A1" }),
+                    ]);
+            }),
+            // Now Playing mid-scrub: the rail has a knob and swells under the finger. Before this
+            // there was no seek control anywhere in the player.
+            ("now_playing_scrub", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts,
+                &now_playing::NowPlaying { progress: 0.62, scrubbing: true, ..np })),
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
             ("up_next", &|c: &mut Canvas| {
@@ -121,7 +141,12 @@ fn main() {
             ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4)),
             ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, false)),
             ("sound_bypass", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, true)),
-            ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1,
+            ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, settings::ROW_UI_SCALE, 0,
+                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_on: true, usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN" })),
+            // Scrolled to the end: the ABOUT rows used to be laid out past y=800 and were
+            // literally undrawable and untappable.
+            ("settings_bottom", &|c: &mut Canvas| settings::render(c, &theme, &fonts, settings::ROW_MODEL,
+                settings::max_scroll_px(),
                 &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_on: true, usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN" })),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
             ("pairing", &|c: &mut Canvas| pairing::render(c, &theme, &fonts, 2, Some(1))),
@@ -354,6 +379,32 @@ fn main() {
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
         save(&c, "eq_interactive");
+    }
+
+    // ── UI scale (Settings ▸ UI scale) ────────────────────────────────────────────────────────
+    // One global multiplier on every TextStyle size, applied by BOTH measure() and draw() so
+    // truncation/centring/alignment stay exact. Row heights and hit targets are untouched, which
+    // is what makes it safe: no hit test can drift out of step with the render.
+    {
+        use cinder_ui::nav::{App, Button};
+        for pct in [80u32, 100, 140] {
+            cinder_ui::text::set_scale_pct(pct);
+            let mut app = App::unlocked();
+            app.press(Button::Up); // Menu
+            app.press(Button::Down);
+            app.press(Button::Select); // Library
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, &format!("uiscale_{pct}_library"));
+
+            let mut c2 = Canvas::new();
+            settings::render(&mut c2, &Theme::day(), &fonts, settings::ROW_UI_SCALE, 0,
+                &settings::SettingsView { night: false, viz_name: "Bars", viz_on: true,
+                                          usb_dac: false, battery_care: true,
+                                          storage: "12.4 / 58 GB", sleep: "30 MIN" });
+            save(&c2, &format!("uiscale_{pct}_settings"));
+        }
+        cinder_ui::text::set_scale_pct(100);
     }
 
     // Visualiser TYPES: render Now Playing with each viz kind (mid-animation) so they can be diffed.

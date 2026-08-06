@@ -71,7 +71,7 @@ fn wrap(c: &mut Canvas, f: &FontSet, t: &Theme, x: f32, y0: f32, max_w: f32, tex
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_bypass: bool) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
     // No subtitle here — the A/B compare control occupies the header's right side.
     let y0 = crate::chrome::header(c, t, f, "Sound", None);
 

@@ -61,6 +61,7 @@ fn main() {
         viz_kind: 0,
         viz_on: true,
         viz_levels: None,
+        scrubbing: false,
     };
 
     let mut window = Window::new(

@@ -111,6 +111,8 @@ struct Framebuffer {
     stride: usize,
     pages: usize,
     map_len: usize,
+    /// Write every mapped page instead of just the displayed one (escape hatch — see `blit`).
+    all_pages: bool,
 }
 
 impl Framebuffer {
@@ -153,14 +155,28 @@ impl Framebuffer {
             return Err("mmap fb0 failed".into());
         }
         let pages = (var.yres_virtual / var.yres.max(1)).max(1) as usize;
+        let all_pages = std::path::Path::new("/contents/cinder_fb_allpages").exists();
         println!(
-            "cinder-ffi: fb {}x{} {}bpp stride {} pages {} — flip-on-blit active (FBIOPUT+FORCE)",
-            var.xres, var.yres, var.bits_per_pixel, stride, pages
+            "cinder-ffi: fb {}x{} {}bpp stride {} pages {} (writing {}) — flip-on-blit active (FBIOPUT+FORCE)",
+            var.xres,
+            var.yres,
+            var.bits_per_pixel,
+            stride,
+            pages,
+            if all_pages { "ALL" } else { "page 0 only" }
         );
-        Ok(Framebuffer { _file: file, fd, var, base: ptr as usize, stride, pages, map_len })
+        Ok(Framebuffer { _file: file, fd, var, base: ptr as usize, stride, pages, map_len, all_pages })
     }
 
-    /// Blit one canvas to every page (the panel is triple-buffered).
+    /// Blit one canvas to the framebuffer.
+    ///
+    /// **Pages.** The panel maps 3 pages (yres_virtual = 3×800), and this used to memcpy the
+    /// canvas into ALL of them — ~4.6 MB per frame instead of ~1.5 MB. But we never pan: both the
+    /// open sequence and every flip below pin `yoffset = 0`, so page 0 is the only one the panel
+    /// ever scans. Writing the other two was pure memory bandwidth (and heat) for pixels nothing
+    /// displays. Default is now page 0 only; `/contents/cinder_fb_allpages` restores the old
+    /// behaviour if a unit ever turns out to page-flip internally (symptom would be visible
+    /// tearing/flicker, and the mode is logged at open).
     ///
     /// Bullet-proofing: we NEVER write past the mapped region. On the confirmed panel
     /// (480x800, virtual 2400 = 3x800) every row fits exactly, but if a unit/firmware ever reports
@@ -171,7 +187,8 @@ impl Framebuffer {
     fn blit(&mut self, canvas: &Canvas) {
         let base = self.base as *mut u8;
         let copy_bytes = (W * 4).min(self.stride);
-        for page in 0..self.pages {
+        let write_pages = if self.all_pages { self.pages } else { 1 };
+        for page in 0..write_pages {
             for y in 0..H {
                 let dst_row = (page * H + y) * self.stride;
                 if dst_row + copy_bytes > self.map_len {
@@ -302,6 +319,14 @@ struct Render {
     // (NodeTrackSequence). Replaced wholesale on every new PlayIndex.
     pending_play: Vec<String>,
     pending_play_start: usize,
+    // Pending SEEK target in ms, drained by the shell after a CINDER_ACT_SEEK action.
+    pending_seek_ms: i64,
+    // Is the panel backlight on? The shell pushes this on every Power-button toggle. While the
+    // screen is OFF we must not animate: the visualiser used to keep forcing a full 480×800
+    // software re-render + framebuffer blit ~20x/s into a panel nobody can see. That is pure heat
+    // and battery, and it is exactly the load that stacks on top of the LDAC encoder over
+    // Bluetooth (the "device gets hot" report).
+    screen_on: bool,
     // Decoded album cover for the CURRENT track, pre-scaled to the two draw sizes (480 full-bleed,
     // 92 thumb). art_key = the object_id we last decoded for (skip re-decode on same-track polls);
     // None images = no art found → the UI draws its gradient fallback.
@@ -413,6 +438,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         viz_peak: 0.0,
         pending_play: Vec::new(),
         pending_play_start: 0,
+        pending_seek_ms: 0,
+        screen_on: true,
         art_full: None,
         art_thumb: None,
         art_key: None,
@@ -463,8 +490,8 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 // Serialise the persisted UI preferences (theme + visualiser + EQ + sound effects) to the file body.
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
-    format!(
-        "night={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\n",
+    let mut body = format!(
+        "night={}\nviz_kind={}\nviz_on={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nui_scale={}\n",
         r.app.night as u8,
         r.app.viz_kind(),
         r.app.viz_on() as u8,
@@ -474,7 +501,17 @@ fn settings_body(r: &Render) -> String {
         r.app.bt_codec(),
         r.app.bt_ldac_quality(),
         r.app.volume_level(),
-    )
+        r.app.ui_scale_pct(),
+    );
+    // Shelf pins were session-scoped, so every reboot silently wiped the user's bookmarks —
+    // the one thing a "pin this place" feature must not do.
+    for i in 0..cinder_ui::shelf::SLOTS {
+        let enc = r.app.shelf_pin_encode(i);
+        if !enc.is_empty() {
+            body.push_str(&format!("pin{i}={enc}\n"));
+        }
+    }
+    body
 }
 
 // Write the preferences to the configured file IF they changed since the last write (cheap body
@@ -639,7 +676,10 @@ pub extern "C" fn cinder_render_tick() {
     }
     // Visualiser: advance + force a repaint ONLY while playing on the Now Playing screen (and
     // enabled), and at most ~20 fps (the pump may tick at 60) — that bounds the battery cost.
-    let animate = r.app.viz_on() && r.np.playing && r.app.is_now_playing();
+    // `screen_on` is the addition: with the panel dark this was still re-rendering + blitting the
+    // whole framebuffer 20x/s into pixels nobody can see. Pocket playback (the normal way you use
+    // a Walkman over Bluetooth) therefore ran the CPU flat out for the entire album.
+    let animate = r.screen_on && r.app.viz_on() && r.np.playing && r.app.is_now_playing();
     if animate && r.last_viz.elapsed() >= std::time::Duration::from_millis(50) {
         r.viz_phase += 0.18;
         r.last_viz = std::time::Instant::now();
@@ -647,6 +687,13 @@ pub extern "C" fn cinder_render_tick() {
     }
     if !r.dirty {
         return; // nothing changed — skip the render + framebuffer blit entirely
+    }
+    // Panel dark → nothing to present. Hold the dirty flag so the pending frame is painted the
+    // instant the screen comes back (otherwise the wake would show a stale frame until the next
+    // state change). A screenshot request still goes through — it's the agent-facing capture path
+    // and must work regardless of the backlight.
+    if !r.screen_on && r.pending_screenshot.is_none() {
+        return;
     }
     let mut canvas = Canvas::new();
     let np = NowPlaying {
@@ -671,6 +718,7 @@ pub extern "C" fn cinder_render_tick() {
         viz_on: r.app.viz_on(), // nav re-injects this too; kept honest here
         // real FFT spectrum if the shell is feeding PCM AND we're animating; else None (synthetic)
         viz_levels: if animate && !r.viz_levels.is_empty() { Some(&r.viz_levels) } else { None },
+        scrubbing: false, // nav overrides this (and `progress`) while the rail is being dragged
     };
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
     // the list/menu screens from their own state.
@@ -769,6 +817,28 @@ pub extern "C" fn cinder_input(button: libc::c_int) -> libc::c_int {
     0
 }
 
+/// `cinder_action_t` for "seek to `cinder_pending_seek_ms()`" (keep in step with cinder.h).
+const CINDER_ACT_SEEK: libc::c_int = 20;
+/// How far into a track ◁ stops meaning "previous track" and starts meaning "rewind to the
+/// start". 3 s is the near-universal convention (iPod, Walkman, phones).
+const PREV_RESTART_MS: i64 = 3_000;
+
+/// Does ◁ mean "restart this track" rather than "previous track" at this position? Pure, so the
+/// rule is unit-testable without a framebuffer.
+fn prev_means_restart(pos_ms: i64, dur_ms: i64) -> bool {
+    dur_ms > 0 && pos_ms > PREV_RESTART_MS
+}
+
+/// Move the local play-clock to `ms` and refresh the progress display. Called for both the rail
+/// scrub and the ◁ restart so the bar snaps immediately instead of waiting for the next poll.
+fn seek_to(r: &mut Render, ms: i64) {
+    r.play_pos_ms = ms.clamp(0, r.cur_duration_ms.max(0));
+    r.pending_seek_ms = r.play_pos_ms;
+    let (pos, dur) = (r.play_pos_ms, r.cur_duration_ms);
+    set_progress(&mut r.np, pos, dur);
+    r.dirty = true;
+}
+
 /// Map a navigator `Action` to the `cinder_action_t` the shell carries out (Some = return this
 /// code), applying the internal-only ones in place and returning None for them (theme is applied by
 /// the caller; the sleep timer arms here; BtToggle is UI-only). Shared by cinder_input + cinder_tap.
@@ -777,7 +847,58 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
     Some(match a {
         Action::PlayPause => 1,
         Action::Next => 2,
-        Action::Prev => 3,
+        Action::Prev => {
+            // Standard music-player ◁ semantics, which Cinder never had: past the first few
+            // seconds of a track, ◁ REWINDS to the start; only near the beginning does it step to
+            // the previous track. Before this, ◁ was always `PlayController::PrevTrack()`, so at
+            // the head of a queue (a single-track queue, or the first track of an album you just
+            // tapped) there was no previous track and the button did nothing at all — the
+            // "no rewind in some queue situations" report. The shell has the matching guard for
+            // the other half of it: if PrevTrack fails, it seeks to 0 instead of silently no-oping.
+            if prev_means_restart(r.play_pos_ms, r.cur_duration_ms) {
+                seek_to(r, 0);
+                CINDER_ACT_SEEK
+            } else {
+                3
+            }
+        }
+        Action::Seek(permille) => {
+            // Rail scrub → absolute ms. Unknown duration (track not in the DB) → nothing to seek in.
+            if r.cur_duration_ms <= 0 {
+                return None;
+            }
+            let ms = r.cur_duration_ms * (*permille).min(1000) as i64 / 1000;
+            seek_to(r, ms);
+            CINDER_ACT_SEEK
+        }
+        Action::PlayQueueAt(n) => {
+            // Play the USER queue (swipe-to-queue) as a real track sequence, starting at the
+            // tapped row. Until now the queue was display-only: Up Next showed one list while
+            // PlayerService played another, so ◁/▷ stepped through something the user couldn't
+            // see. Reuses the album-play machinery wholesale (pending_play → the shell's
+            // NodeTrackSequence path), so there is no new device-facing surface.
+            let ids: Vec<i64> = r.app.queue().iter().map(|s| s.object_id).collect();
+            let uris: Vec<String> = match r.db.as_ref() {
+                Some(db) => ids
+                    .iter()
+                    .filter_map(|id| db.track_by_object_id(*id).ok().flatten())
+                    .map(|t| t.filename)
+                    .collect(),
+                None => Vec::new(),
+            };
+            if uris.is_empty() {
+                eprintln!("cinder-ffi: PlayQueueAt({n}): queue did not resolve to any file — ignored");
+                return None;
+            }
+            r.pending_play_start = (*n).min(uris.len() - 1);
+            r.pending_play = uris;
+            8
+        }
+        Action::UiScaleChanged => {
+            // Pure UI: the text scale is already applied globally; just repaint + persist.
+            r.dirty = true;
+            return None;
+        }
         Action::NextAlbum => 4,
         Action::PrevAlbum => 5,
         Action::VolUp => 6,
@@ -893,6 +1014,145 @@ pub extern "C" fn cinder_touch_fling(velocity_px_s: libc::c_int) {
 pub extern "C" fn cinder_touch_down() {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.stop_fling();
+    }
+}
+
+// ── Horizontal scrub: the progress rail (seek) and the UI-scale slider ──────────────────────
+// The shell offers every touch-down to `cinder_touch_scrub_begin`. A non-zero answer means the
+// UI claimed the gesture: the shell then streams x to `cinder_touch_scrub` and finishes with
+// `cinder_touch_scrub_end`, skipping its tap/swipe/vertical-drag classification entirely.
+
+/// Did the contact at (x, y) grab a horizontal slider? 1 = yes, the shell should route this
+/// whole gesture through cinder_touch_scrub/_end.
+#[no_mangle]
+pub extern "C" fn cinder_touch_scrub_begin(x: libc::c_int, y: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let grabbed = r.app.scrub_begin(x as i32, y as i32);
+    if grabbed {
+        r.dirty = true;
+    }
+    grabbed as libc::c_int
+}
+
+/// The finger moved to `x` during a scrub. Returns a cinder_action_t (usually 0 — the rail only
+/// previews while the finger is down; the seek commits at release).
+#[no_mangle]
+pub extern "C" fn cinder_touch_scrub(x: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let actions = r.app.scrub_move(x as i32);
+    r.dirty = true;
+    for a in &actions {
+        if let Some(code) = carry_action(r, a) {
+            return code;
+        }
+    }
+    0
+}
+
+/// The finger lifted: commit the scrub. Returns the cinder_action_t to carry out (e.g.
+/// CINDER_ACT_SEEK, whose target is then read from cinder_pending_seek_ms()).
+#[no_mangle]
+pub extern "C" fn cinder_touch_scrub_end() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let actions = r.app.scrub_end();
+    r.dirty = true;
+    save_settings(r);
+    for a in &actions {
+        if let Some(code) = carry_action(r, a) {
+            return code;
+        }
+    }
+    0
+}
+
+/// The seek target in ms for a CINDER_ACT_SEEK action (pass to cinder_audio_seek_ms).
+#[no_mangle]
+pub extern "C" fn cinder_pending_seek_ms() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.pending_seek_ms as libc::c_int)
+}
+
+/// The UI's current play position estimate in ms (−1 if unknown). The shell reads it to decide
+/// whether ◁ should rewind or step back a track when it has to make that call itself.
+#[no_mangle]
+pub extern "C" fn cinder_play_position_ms() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) if r.cur_duration_ms > 0 => r.play_pos_ms as libc::c_int,
+        _ => -1,
+    }
+}
+
+/// Tell the UI that playback jumped to `ms` (the shell calls this after it seeks on its own —
+/// e.g. its ◁-at-the-head-of-the-queue fallback) so the progress bar follows immediately.
+#[no_mangle]
+pub extern "C" fn cinder_notify_seek_ms(ms: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        seek_to(r, ms.max(0) as i64);
+    }
+}
+
+/// Panel backlight state (1 = on). The shell pushes this on every Power-button toggle. While the
+/// screen is off the UI stops animating entirely: no visualiser advance, no forced repaints, so
+/// an idle pocket device costs nothing. See `cinder_needs_frame`.
+#[no_mangle]
+pub extern "C" fn cinder_set_screen_on(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        let on = on != 0;
+        if on && !r.screen_on {
+            r.dirty = true; // waking: repaint whatever is current
+        }
+        r.screen_on = on;
+    }
+}
+
+/// How long until the UI wants its next self-driven frame, in ms?
+///   `-1` = nothing to draw (idle) — the pump should just block on input until its next deadline
+///   ` 0` = paint now (something is dirty)
+///   ` n` = paint in n ms (an animation is pacing itself)
+///
+/// This is what turns the render loop from a fixed 60 Hz spin into an event-driven one, and it is
+/// the single biggest lever on the "device gets hot with Bluetooth" report. Before: the pump woke
+/// 60×/s forever, re-read up to 16 input fds every 16 ms, and forced a full-screen software
+/// re-render + framebuffer blit once a second for the life of the process — screen on or off,
+/// playing or not. With Bluetooth the SoC is already busy encoding LDAC, so that constant floor is
+/// exactly what tips it into getting hot. After: idle costs one wakeup per second (the
+/// housekeeping tick), the visualiser paces itself at its own 20 fps rather than dragging the
+/// whole loop to 60, and a dark screen asks for no frames at all.
+#[no_mangle]
+pub extern "C" fn cinder_frame_delay_ms() -> libc::c_int {
+    let guard = cell().lock().unwrap();
+    let Some(r) = guard.as_ref() else { return -1 };
+    if !r.screen_on {
+        return -1; // panel dark: nothing we draw can be seen
+    }
+    if r.dirty {
+        return 0;
+    }
+    if r.app.is_animating() {
+        return 16; // fling / volume HUD / toast — full rate, briefly
+    }
+    if r.app.viz_on() && r.np.playing && r.app.is_now_playing() {
+        // The visualiser paces itself at ~20 fps; wake exactly when its next frame is due.
+        let due = std::time::Duration::from_millis(50);
+        let since = r.last_viz.elapsed();
+        return if since >= due { 0 } else { (due - since).as_millis() as libc::c_int };
+    }
+    -1
+}
+
+/// Push the REAL Bluetooth state: `connected` < 0 = unknown (this firmware exposes no link
+/// detector), 0 = disconnected, 1 = connected; `name` is the peer's name (NULL/empty = unresolved).
+/// The Bluetooth screen used to hard-code a connected "WH-1000XM5" whenever the UI toggle was on,
+/// which meant the screen said "CONNECTED" with a device name the user may never have owned.
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_status(connected: libc::c_int, name: *const c_char) {
+    let n = unsafe { cstr(name) };
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if r.app.set_bt_link(connected as i32, &n) {
+            r.dirty = true;
+        }
     }
 }
 
@@ -1344,6 +1604,16 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             loaded |= 2; // bit1: a persisted volume level was restored
                         }
                     }
+                    "ui_scale" => {
+                        if let Ok(n) = v.parse::<u32>() {
+                            r.app.set_ui_scale_pct(n);
+                        }
+                    }
+                    k if k.starts_with("pin") => {
+                        if let Ok(i) = k[3..].parse::<usize>() {
+                            r.app.shelf_pin_decode(i, v);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1648,6 +1918,18 @@ mod tests {
         assert_eq!(np.elapsed, "0:00");
         assert_eq!(np.remaining, "");
         assert_eq!(np.progress, 0.0);
+    }
+
+    #[test]
+    fn prev_rewinds_past_the_grace_window() {
+        // ◁ used to be an unconditional PlayController::PrevTrack(), so mid-track it jumped away
+        // instead of rewinding, and at the head of a queue it did nothing at all.
+        assert!(!prev_means_restart(0, 240_000), "at the very start ◁ steps back a track");
+        assert!(!prev_means_restart(2_999, 240_000), "inside the 3 s grace window");
+        assert!(prev_means_restart(3_001, 240_000), "past it, ◁ rewinds to the start");
+        assert!(prev_means_restart(200_000, 240_000));
+        // Unknown duration (track not in the DB) → no position to rewind within.
+        assert!(!prev_means_restart(90_000, 0));
     }
 
     #[test]

@@ -27,6 +27,11 @@ pub const LDAC: u8 = 0; // codec index whose quality sub-row is shown
 pub struct Bt<'a> {
     pub on: bool,
     pub connected: Option<&'a str>,
+    /// Does the shell actually KNOW the link state on this firmware? False = no detector was
+    /// found, so we say so rather than claiming "No device connected" (which would be a guess) —
+    /// and certainly rather than the hard-coded "WH-1000XM5 · CONNECTED" this screen used to show
+    /// whenever the on/off toggle happened to be on.
+    pub link_known: bool,
     pub codec_sel: u8,    // index into CODECS
     pub ldac_quality: u8, // index into QUALITIES (only meaningful when codec_sel == LDAC)
 }
@@ -98,7 +103,7 @@ fn radio(c: &mut Canvas, cx: i32, cy: i32, on: bool, t: &Theme) {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
     let _y0 = crate::chrome::header(c, t, f, "Bluetooth", None);
     // header right: ON/OFF + toggle
     let onoff = if bt.on { "ON" } else { "OFF" };
@@ -123,7 +128,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             fill_rect(c, dx, CARD_Y + CARD_H - 8, 5, 1, t.line);
             dx += 11;
         }
-        let msg = if bt.on { "No device connected" } else { "Bluetooth is off" };
+        let msg = if !bt.on {
+            "Bluetooth is off"
+        } else if bt.link_known {
+            "No device connected"
+        } else {
+            "Link state unavailable on this firmware"
+        };
         center(c, f, 240.0, (CARD_Y + CARD_H / 2 + 4) as f32, msg, &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
     }
 

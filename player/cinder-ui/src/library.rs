@@ -373,17 +373,57 @@ fn art_stack(c: &mut Canvas, t: &Theme, x: i32, cy: i32, arts: &[&str]) {
 }
 
 /// Tab bar; returns the y where the shuffle row begins.
-fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab) -> i32 {
+/// Y band of the tab strip (screen coords) — the header ends at 91 and the strip is 35px tall.
+pub const TAB_TOP: i32 = 91;
+pub const TAB_BOT: i32 = 126;
+
+/// Where each tab label is DRAWN: (tab, x, width) in screen coords. Both `tabs()` (render) and
+/// `tab_at()` (hit test) read this, so the two can't disagree.
+///
+/// They used to. `tabs()` laid the labels out from their MEASURED widths starting at x=22, while
+/// the navigator hit-tested against hardcoded thresholds (x<120 → Songs, <220 → Albums, <330 →
+/// Artists, else Playlists). At the default size "ALBUMS" is drawn at x≈94..154, so tapping its
+/// left half selected SONGS; "ARTISTS" (≈176..247) and "PLAYLISTS" (≈269..360) were off in the
+/// same direction. Deriving both from one function fixes that — and keeps it fixed at any UI
+/// text scale, where fixed thresholds would drift much further.
+pub fn tab_layout(f: &FontSet) -> Vec<(Tab, f32, f32)> {
+    let mut out = Vec::with_capacity(TABS.len());
     let mut x = 22.0;
     for (tab, label) in TABS {
+        let st = sty(Family::Mono, Weight::Regular, 14.0, Rgb888::new(0, 0, 0), 0.12);
+        let w = text::measure(f, label, &st);
+        out.push((tab, x, w));
+        x += w + 22.0;
+    }
+    out
+}
+
+/// Which tab is at screen-x `x` in the tab strip? Splits the inter-label gaps down the middle so
+/// every pixel of the strip belongs to its nearest label (no dead zones between tabs).
+pub fn tab_at(f: &FontSet, x: i32) -> Option<Tab> {
+    let zones = tab_layout(f);
+    let x = x as f32;
+    for (i, &(tab, tx, tw)) in zones.iter().enumerate() {
+        let left = if i == 0 { 0.0 } else { let (_, px, pw) = zones[i - 1]; (px + pw + tx) / 2.0 };
+        let right = match zones.get(i + 1) {
+            Some(&(_, nx, _)) => (tx + tw + nx) / 2.0,
+            None => W as f32,
+        };
+        if x >= left && x < right {
+            return Some(tab);
+        }
+    }
+    None
+}
+
+fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab) -> i32 {
+    for (tab, x, w) in tab_layout(f) {
         let on = tab == active;
         let st = sty(Family::Mono, Weight::Regular, 14.0, if on { t.acc } else { t.faint }, 0.12);
-        let w = text::measure(f, label, &st);
-        text::draw(c, f, x, (y0 + 20) as f32, label, &st);
+        text::draw(c, f, x, (y0 + 20) as f32, TABS.iter().find(|(tt, _)| *tt == tab).map(|(_, l)| *l).unwrap_or(""), &st);
         if on {
             fill_rect(c, x as i32, y0 + 32, w as i32, 2, t.acc);
         }
-        x += w + 22.0;
     }
     hline(c, y0 + 34, t.line);
     y0 + 34
@@ -396,8 +436,11 @@ fn shuffle_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str, sub:
     fill_rect(c, 22, top, (W as i32) - 44, h, t.acc);
     let cy = top + h / 2;
     icons::shuffle(c, 42.0, cy as f32, 20.0, t.acc_ink);
-    text::draw(c, f, 64.0, (cy - 4) as f32, label, &sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0));
-    text::draw(c, f, 64.0, (cy + 14) as f32, sub, &sty(Family::Mono, Weight::Regular, 12.0, t.acc_ink, 0.06));
+    // Fit inside the accent band (64 → the play glyph at 428), or the caption spills past it.
+    let lst = sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0);
+    let sst = sty(Family::Mono, Weight::Regular, 12.0, t.acc_ink, 0.06);
+    text::draw(c, f, 64.0, (cy - 4) as f32, &crate::widgets::fit(f, label, &lst, 364.0), &lst);
+    text::draw(c, f, 64.0, (cy + 14) as f32, &crate::widgets::fit(f, sub, &sst, 364.0), &sst);
     icons::play(c, 438.0, cy as f32, 18.0, t.acc_ink);
     top + h
 }
@@ -437,7 +480,7 @@ pub fn render(
 ) {
     let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib, album_sort, album_expanded));
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
     // Songs shows a tappable SORT chip; Albums an ORDER chip; the others show their count.
     let rc = match tab {
         Tab::Songs => format!("SORT \u{00b7} {}", SORTS[sort.min(SORTS.len() - 1)]),
@@ -509,8 +552,9 @@ pub fn render(
                 match *row {
                     AlbumsRow::Group { flat: fi } => {
                         let label = flat[fi].artist.to_uppercase();
-                        text::draw(c, f, 22.0, (y + 20) as f32, &label,
-                            &sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.16));
+                        let gst = sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.16);
+                        text::draw(c, f, 22.0, (y + 20) as f32,
+                            &crate::widgets::fit(f, &label, &gst, 436.0), &gst);
                     }
                     AlbumsRow::Album { flat: fi, expanded } => {
                         let al = flat[fi];
@@ -522,15 +566,20 @@ pub fn render(
                         }
                         art::block(c, t, 22, y + (ALBUM_ROW_H - 48) / 2, 48, 48, &al.art, artdim(t));
                         let tcol = if now { t.acc } else { t.ink };
-                        text::draw(c, f, 80.0, (cy - 2) as f32, &al.name,
-                            &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
+                        // Truncate against the space actually available (art at 80 → caret at 444).
+                        // These two were drawn untruncated, so a long album name simply ran off the
+                        // right edge of the panel.
+                        let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
+                        text::draw(c, f, 80.0, (cy - 2) as f32,
+                            &crate::widgets::fit(f, &al.name, &tst, 356.0), &tst);
                         let sub = if al.year.is_empty() {
                             format!("{} tracks", al.tracks)
                         } else {
                             format!("{} · {} tracks", al.year, al.tracks)
                         };
-                        text::draw(c, f, 80.0, (cy + 16) as f32, &sub,
-                            &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
+                        let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
+                        text::draw(c, f, 80.0, (cy + 16) as f32,
+                            &crate::widgets::fit(f, &sub, &sst, 356.0), &sst);
                         // Accordion caret (right): points down when open, right when closed.
                         let caret = if expanded { t.acc } else { t.faint };
                         icons::chevron(c, 452.0, cy as f32, 13.0, caret);
@@ -631,7 +680,7 @@ pub fn album_view(
 ) {
     let scroll_px = scroll_px.clamp(0, album_max_scroll_px(album));
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
     // back chevron + ALBUM eyebrow
     icons::back(c, 30.0, 110.0, 20.0, t.dim);
     text::draw(c, f, 50.0, 114.0, "ALBUM", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
@@ -686,7 +735,7 @@ pub fn album_view(
 /// Artist drill-in page (`CArtist`).
 pub fn artist(c: &mut Canvas, t: &Theme, f: &FontSet) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
     // back + ARTIST eyebrow
     icons::back(c, 30.0, 110.0, 20.0, t.dim);
     text::draw(c, f, 50.0, 114.0, "ARTIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));

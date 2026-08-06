@@ -11,15 +11,38 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline, right, sty};
 use crate::Canvas;
 
-const RH: i32 = 62;
+pub const RH: i32 = 62;
 const LIST_BOTTOM: i32 = 736; // leave room for the footer rule
+/// Row area top — `chrome::header` always returns 91, and both render paths start there.
+pub const LIST_TOP: i32 = 91;
+
+/// How many rows fit in the window (shared by render + the window calculation).
+pub fn visible_rows() -> usize {
+    (((LIST_BOTTOM - LIST_TOP) / RH).max(1)) as usize
+}
+
+/// First drawn index for a `len`-row list following the playing row `current`. Shared by
+/// `render` and the tap hit-test so they can't drift.
+pub fn window_scroll(len: usize, current: usize) -> usize {
+    let max_scroll = len.saturating_sub(visible_rows());
+    current.saturating_sub(4).min(max_scroll)
+}
+
+/// Which DRAWN row (0-based, from the top of the list area) is at screen-y `y`?
+/// `None` for the header/chrome. Add `window_scroll(..)` to get the list index.
+pub fn drawn_row_at(y: i32) -> Option<usize> {
+    if !(LIST_TOP..LIST_BOTTOM).contains(&y) {
+        return None;
+    }
+    Some(((y - LIST_TOP) / RH) as usize)
+}
 
 /// Render the queue: `tracks` = the current album's tracks (play order), `current` = the playing
 /// index within it. `album` is shown in the header. The window auto-scrolls to keep the playing
 /// track visible (no cursor state needed — the queue follows playback).
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[SongRow], current: usize) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
 
     if tracks.is_empty() {
         let _ = crate::chrome::header(c, t, f, "Up Next", None);
@@ -33,9 +56,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
     let y0 = crate::chrome::header(c, t, f, "Up Next", Some(&sub));
 
     // Window that keeps the playing row visible: ~4 rows of lead-in, clamped to the list end.
-    let visible = ((LIST_BOTTOM - y0) / RH).max(1) as usize;
-    let max_scroll = tracks.len().saturating_sub(visible);
-    let scroll = current.saturating_sub(4).min(max_scroll);
+    let scroll = window_scroll(tracks.len(), current);
 
     let mut y = y0;
     let mut shown = 0;
@@ -78,7 +99,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[Son
 /// "now playing" highlight — these are upcoming picks, not the live album window.
 pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow]) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
     let sub = format!("QUEUE · {} TRACKS", queue.len());
     let y0 = crate::chrome::header(c, t, f, "Up Next", Some(&sub));
 

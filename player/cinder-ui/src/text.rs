@@ -8,6 +8,56 @@ use embedded_graphics::pixelcolor::Rgb888;
 use fontdue::{Font, FontSettings, Metrics};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+// ── UI text scale (Settings ▸ UI scale) ─────────────────────────────────────────────────────
+// One global multiplier applied to every `TextStyle::size`, by BOTH `measure` and `draw`. Doing
+// it here (rather than scaling the call sites) is what keeps truncation, centring and
+// right-alignment exact at any scale: the two functions can never disagree about a glyph's width.
+// Row heights and hit-test geometry are deliberately NOT scaled — the panel is 480×800 and the
+// tap targets are tuned to it, so scaling layout would silently desync every hit test. What the
+// slider gives you is bigger (or denser) TYPE inside the same, already-correct rows.
+
+/// Scale steps, in percent. Discrete on purpose: the glyph cache is keyed on rasterised pixel
+/// size, so a continuous scale would grow it without bound. Seven stops still read as a slider.
+pub const SCALE_STEPS: [u32; 7] = [80, 90, 100, 110, 120, 130, 140];
+/// Index into `SCALE_STEPS` for the native (100%) size — the default.
+pub const SCALE_DEFAULT_IDX: usize = 2;
+
+static SCALE_PCT: AtomicU32 = AtomicU32::new(100);
+
+/// Set the global UI text scale in percent (clamped to the `SCALE_STEPS` range).
+pub fn set_scale_pct(pct: u32) {
+    let lo = SCALE_STEPS[0];
+    let hi = SCALE_STEPS[SCALE_STEPS.len() - 1];
+    SCALE_PCT.store(pct.clamp(lo, hi), Ordering::Relaxed);
+}
+
+/// The global UI text scale in percent (100 = native).
+pub fn scale_pct() -> u32 {
+    SCALE_PCT.load(Ordering::Relaxed)
+}
+
+/// Nearest `SCALE_STEPS` index for the current scale (for the Settings slider knob).
+pub fn scale_idx() -> usize {
+    let cur = scale_pct();
+    SCALE_STEPS
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, &s)| s.abs_diff(cur))
+        .map(|(i, _)| i)
+        .unwrap_or(SCALE_DEFAULT_IDX)
+}
+
+/// Apply `SCALE_STEPS[idx]` (index clamped into range).
+pub fn set_scale_idx(idx: usize) {
+    set_scale_pct(SCALE_STEPS[idx.min(SCALE_STEPS.len() - 1)]);
+}
+
+#[inline]
+fn scaled(size: f32) -> f32 {
+    size * scale_pct() as f32 / 100.0
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Family {
@@ -216,21 +266,23 @@ pub struct TextStyle {
 /// the primary's `.notdef` is half — measuring against the primary while drawing from the
 /// fallback would silently desync every truncation, centring and right-alignment on the screen.
 pub fn measure(fonts: &FontSet, s: &str, st: &TextStyle) -> f32 {
-    let track = st.tracking * st.size;
+    let size = scaled(st.size);
+    let track = st.tracking * size;
     s.chars()
         .map(|ch| {
             let (_, font) = fonts.resolve(st.fam, st.weight, ch);
-            font.metrics(ch, st.size).advance_width + track
+            font.metrics(ch, size).advance_width + track
         })
         .sum()
 }
 
 /// Draw `s` with its baseline at (`x`, `baseline`). Returns the pen x after.
 pub fn draw(canvas: &mut Canvas, fonts: &FontSet, x: f32, baseline: f32, s: &str, st: &TextStyle) -> f32 {
-    let track = st.tracking * st.size;
+    let size = scaled(st.size);
+    let track = st.tracking * size;
     let mut pen = x;
     for ch in s.chars() {
-        let (m, bitmap) = fonts.glyph(st.fam, st.weight, ch, st.size); // cached rasterise
+        let (m, bitmap) = fonts.glyph(st.fam, st.weight, ch, size); // cached rasterise
         let gx0 = (pen + m.xmin as f32).round() as i32;
         // fontdue: bitmap top is `ymin + height` above the baseline.
         let gy0 = (baseline - (m.height as f32 + m.ymin as f32)).round() as i32;

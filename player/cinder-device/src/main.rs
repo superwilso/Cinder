@@ -148,6 +148,7 @@ fn main() {
         viz_kind: 0,
         viz_on: true,
         viz_levels: None,
+        scrubbing: false,
     };
     now_playing::render(&mut canvas, &Theme::day(), &fonts, &np);
 

@@ -4,14 +4,32 @@ Forward-looking companion to [`STATUS.md`](STATUS.md) (which is the *current-sta
 This is **what's left and in what order**, written so the next working session — especially the
 first one with the device — is a straight line, not a guessing game.
 
-Last audited: **2026-07-25** (full project audit). Prior: 2026-06-30; STATUS.md is current to
-2026-07-03 (rounds 9–10). No code has changed since 2026-07-03 — the tree is clean and this
-roadmap is the resume point.
+Last audited: **2026-07-25** (full project audit). Prior: 2026-06-30. STATUS.md is current to
+**2026-08-05 (eleventh round — bug + usability audit)**; the device-session critical path below is
+unchanged by that round, which was entirely offline.
+
+> **2026-08-05 — what the audit round changed, and what it adds to the device session.**
+> Fixes: rewind/seek (◁ semantics + a scrubbable progress rail), the user queue made playable, six
+> Shelf defects, BT volume re-assert on reconnect, and the render loop's constant-load "gets hot"
+> floor. Plus a UI-scale slider. Full detail in STATUS.md's eleventh-round TL;DR. Host tests: 95
+> green (was 71).
+>
+> **Three new things to verify in the SAME device session** (all cheap, none blocking):
+> - **Seek**: confirm `PlayController::SeekTime(Begin, ms)` actually moves playback (the rail and ◁
+>   both route through it; it was never called before, so it is RE'd but unexercised).
+> - **BT link detection**: `cinderhome.log` prints `bt: link detection = …` at first poll. If it
+>   says `NONE`, capture `ls /sys/class/bluetooth` and `hcitool con` so the detector can be taught
+>   the right path. Everything else degrades cleanly (the screen says "link state unavailable").
+> - **Framebuffer pages**: the blit now writes only the displayed page (yoffset is pinned to 0 on
+>   every flip, so pages 1–2 were never scanned) — ~3× less memory traffic per frame. If the panel
+>   tears or flickers, `touch /contents/cinder_fb_allpages` restores the old behaviour; the mode is
+>   logged at fb open.
+
 
 ## Audit summary — where we are
 Per the STATUS.md matrix: the player is daily-usable and **all genuinely-offline work is done**
-(host tests green: 39 UI + 8 DB; qemu preflight passes; both channels' `.UPG`s packed in
-`dist/`). The Option-B IPC reverse-engineering that used to be "next" is **complete and realized
+(host tests green: 63 UI + 22 FFI + 8 DB + 2 font; qemu preflight passes; both channels' `.UPG`s
+packed in `dist/` — note the packed artifacts predate the 2026-08-05 round and need a rebuild). The Option-B IPC reverse-engineering that used to be "next" is **complete and realized
 in code**: PlayerService transport + now-playing (`analysis/G_player_ipc/`) and the SQLite
 MediaStore library/metadata (`analysis/H_mediastore/`) are both implemented (`cinder-audio` drives
 `PlayerService`; `cinder-db` reads `/db/MTPDB.dat`; **play-by-index is wired**, not a gap anymore).
