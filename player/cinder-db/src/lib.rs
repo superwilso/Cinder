@@ -166,6 +166,17 @@ impl Db {
         Ok(v.into_iter().next())
     }
 
+    /// One track by its library object id. Used to turn the UI's own play queue (built by
+    /// swipe-to-queue, which only carries object ids) back into the file URIs PlayerService needs.
+    pub fn track_by_object_id(&self, object_id: i64) -> Result<Option<Track>> {
+        let v = self.query_tracks(
+            &format!("WHERE {TRACK_WHERE} AND ob.object_id = ?1"),
+            "ob.object_id",
+            [object_id],
+        )?;
+        Ok(v.into_iter().next())
+    }
+
     /// The play context for a chosen track: its album's tracks in disc/track order plus the
     /// track's index within them. Falls back to just the track itself if it has no album (or
     /// somehow isn't in its own album's list). This is what "tap a song" hands PlayerService,

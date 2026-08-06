@@ -33,6 +33,7 @@
 #include <sys/statvfs.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>   // umount/umount2 (we unmount /contents ourselves before the MSC handoff)
+#include <poll.h>        // the render loop blocks on the input fds instead of spinning at 60 Hz
 #include <cerrno>
 
 // The render core: the Rust Cinder UI, built as a glibc C-ABI staticlib
@@ -272,6 +273,8 @@ void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, 
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
 void sync_volume_from_hw(); // defined below (volume backend); seeds the UI level from the mixer
 void apply_volume();        // defined below (volume backend); writes the UI level to the mixer
+void bt_resync_volume(const char* why); // re-assert the UI volume level if the mixer has drifted
+void bt_watch_tick();       // poll the BT link; re-assert volume/codec/DSP on a reconnect edge
 
 // Stop the analyzer stream (guarded — Stop() is a Sony-service call). No-op if it was never
 // started, so it's safe to call unconditionally from the lifecycle hooks.
@@ -508,6 +511,10 @@ static bool  g_drag_active = false;
 static int   g_drag_last_uy = 0;
 static float g_drag_vel = 0.0f;
 static long  g_drag_last_ms = 0;
+// HORIZONTAL SCRUB: the UI claimed this contact for a slider (the Now Playing progress rail =
+// seek/rewind, or the Settings UI-scale slider). While set, motion streams straight to
+// cinder_touch_scrub() and the tap/swipe/vertical-drag classifier is bypassed for this gesture.
+static bool  g_scrub_active = false;
 static long now_ms() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -759,15 +766,17 @@ void load_vol_cfg() {
 // Read the device's CURRENT hardware volume and seed the UI level from it (once, at boot), so the
 // first Vol± press nudges from the real level instead of jumping the hardware to the UI default.
 // amixer backend only (cget + parse "values="); sysfs backend reads the node directly. Guarded.
-void sync_volume_from_hw() {
+// Read the raw hardware volume via the configured backend. Returns -1 if it can't be read.
+// (Split out of sync_volume_from_hw so the BT-reconnect resync can VERIFY before it writes.)
+long read_volume_hw() {
     if (!g_vol_read) load_vol_cfg();
-    if (!g_vol.valid) return;
+    if (!g_vol.valid) return -1;
     long val = -1;
     if (g_vol.amixer) {
         char cmd[384];
         std::snprintf(cmd, sizeof cmd, "amixer -c %d cget name='%s' 2>/dev/null", g_vol.card, g_vol.control);
         FILE* p = popen(cmd, "r");
-        if (!p) return;
+        if (!p) return -1;
         char line[256];
         while (std::fgets(line, sizeof line, p)) {
             const char* v = std::strstr(line, ": values=");
@@ -776,14 +785,25 @@ void sync_volume_from_hw() {
         pclose(p);
     } else {
         FILE* f = std::fopen(g_vol.path, "r");
-        if (!f) return;
+        if (!f) return -1;
         char buf[32] = {0};
         if (std::fgets(buf, sizeof buf, f)) val = std::strtol(buf, nullptr, 10);
         std::fclose(f);
     }
-    if (val < g_vol.min || val > g_vol.max) return;   // parse failed / out of range — keep UI default
+    if (val < g_vol.min || val > g_vol.max) return -1;  // parse failed / out of range
+    return val;
+}
+
+// Raw hardware value -> the UI's 0..120 step level.
+int volume_hw_to_level(long val) {
+    return (int)((val - g_vol.min) * 120 / (g_vol.max - g_vol.min));
+}
+
+void sync_volume_from_hw() {
+    long val = read_volume_hw();
+    if (val < 0) return;   // unreadable — keep the UI default
     // UI level is the stock 0..120 scale; with the default backend (min 0, max 120) this is 1:1.
-    int level = (int)((val - g_vol.min) * 120 / (g_vol.max - g_vol.min));
+    int level = volume_hw_to_level(val);
     cinder_set_volume(level);
     char m[96];
     std::snprintf(m, sizeof m, "volume: hw %ld -> UI level %d/120", val, level);
@@ -937,7 +957,12 @@ void screen_toggle() {
     // Drop any in-flight contact: the sleeping controller never sends its lift, and a stale
     // "down" would make the next touch classify as a drag from the old start point.
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
-    if (g_screen_on) { apply_backlight(); return; }
+    g_drag_active = false; g_drag_vel = 0.0f; g_scrub_active = false;
+    // Tell the renderer. With the panel dark it stops animating AND stops presenting entirely —
+    // previously the visualiser kept re-rendering + blitting the whole framebuffer ~20x/s into a
+    // screen nobody could see, which is most of the "gets hot" load during pocket BT playback.
+    cinder_set_screen_on(g_screen_on ? 1 : 0);
+    if (g_screen_on) { apply_backlight(); bt_resync_volume("screen wake"); return; }
     if (!g_bl_read) load_bl_cfg();
     if (g_bl.valid) {
         FILE* f = std::fopen(g_bl.path, "w");
@@ -960,6 +985,194 @@ void write_bt_pref() {
         std::fprintf(f, "codec=%s\nldac_quality=%s\n", codecs[ci], quals[qi]);
         std::fclose(f);
     }
+}
+
+// ── Bluetooth link watcher ──────────────────────────────────────────────────────────────────
+// Report: "Bluetooth volume can become disconnected after it reconnects."
+//
+// Mechanism. Cinder OWNS the hardware volume: Vol± writes the UI's 0..120 level to the CXD3778GF
+// 'master volume' ALSA control, and that was a one-shot write with nothing ever re-asserting it.
+// The level was pushed exactly twice per boot — once at startup, once per key press. So when a
+// headphone drops and re-connects, the audio path re-opens its output and the mixer no longer
+// holds what the UI believes it holds: the on-screen level is stale, and Vol± either appears dead
+// (the first press just re-lands on a value the hardware already has) or jumps. Nothing in the
+// player noticed the link had changed at all — the Bluetooth screen didn't even track connection
+// state, it drew a hard-coded "WH-1000XM5 · CONNECTED" whenever the toggle was on.
+//
+// Fix, three parts:
+//   1. WATCH the link (this file) and push the real state to the UI, so the Bluetooth screen tells
+//      the truth and the shell gets an edge to act on.
+//   2. On every disconnect→connect EDGE, re-assert what a re-opened output can have reset: the
+//      volume level, the codec preference file, and the saved EQ / sound-effect chain.
+//   3. VERIFY before writing — read the mixer back and only push when it has drifted from the UI's
+//      level, so a resync can never fight a volume the user just set.
+//
+// Detection is layered and best-effort, in the same style as the volume/backlight backends: probe
+// each source ONCE, keep whichever answers, and no-op forever if none do (the feature then simply
+// never fires and everything behaves exactly as it did before). The chosen method is logged, so
+// one log pull from a device session says which path this firmware supports.
+enum BtMethod { BT_UNPROBED = -1, BT_NONE = 0, BT_SYSFS = 1, BT_HCITOOL = 2 };
+int  g_bt_method = BT_UNPROBED;
+int  g_bt_last = -1;               // last reported link state (-1 = unknown)
+char g_bt_addr[24] = {0};          // peer address, when the detector gives us one
+char g_bt_name[96] = {0};          // resolved peer name (cached per address)
+
+// A connected ACL link shows up as an `hci0:NN` child of the adapter in sysfs. Pure /sys walk —
+// no fork, so this is cheap enough to poll.
+bool bt_sysfs_connected(char* addr, size_t cap) {
+    DIR* d = opendir("/sys/class/bluetooth");
+    if (!d) return false;
+    bool up = false;
+    while (dirent* e = readdir(d)) {
+        // adapters are "hciN"; connections are "hciN:MMM"
+        if (std::strncmp(e->d_name, "hci", 3) != 0 || !std::strchr(e->d_name, ':')) continue;
+        up = true;
+        char ap[160];
+        std::snprintf(ap, sizeof ap, "/sys/class/bluetooth/%s/address", e->d_name);
+        if (FILE* f = std::fopen(ap, "r")) {
+            if (std::fgets(addr, (int)cap, f)) addr[std::strcspn(addr, "\r\n")] = 0;
+            std::fclose(f);
+        }
+        break;
+    }
+    closedir(d);
+    return up;
+}
+
+// Fallback: `hcitool con` lists ACL links ("> ACL AA:BB:CC:DD:EE:FF handle 1 state 1 ..."). Forks,
+// so it is polled far less often (see bt_watch_tick).
+int bt_hcitool_connected(char* addr, size_t cap) {
+    FILE* p = popen("hcitool con 2>/dev/null", "r");
+    if (!p) return -1;
+    char line[256];
+    int state = 0, lines = 0;
+    while (std::fgets(line, sizeof line, p)) {
+        ++lines;
+        const char* acl = std::strstr(line, "ACL ");
+        if (!acl) continue;
+        state = 1;
+        std::snprintf(addr, cap, "%.17s", acl + 4);
+        break;
+    }
+    int rc = pclose(p);
+    if (rc != 0 && lines == 0) return -1;   // no hcitool on this firmware
+    return state;
+}
+
+// BlueZ 4 keeps "ADDR Name" pairs in /var/lib/bluetooth/<adapter>/names. Best-effort: an
+// unresolvable address just leaves the name empty and the UI says "Connected device".
+void bt_resolve_name(const char* addr, char* out, size_t cap) {
+    out[0] = 0;
+    if (!addr || !addr[0]) return;
+    DIR* d = opendir("/var/lib/bluetooth");
+    if (!d) return;
+    while (dirent* e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        char p[192];
+        std::snprintf(p, sizeof p, "/var/lib/bluetooth/%s/names", e->d_name);
+        FILE* f = std::fopen(p, "r");
+        if (!f) continue;
+        char line[256];
+        while (std::fgets(line, sizeof line, f)) {
+            if (std::strncmp(line, addr, std::strlen(addr)) != 0) continue;
+            const char* sp = std::strchr(line, ' ');
+            if (!sp) continue;
+            std::snprintf(out, cap, "%s", sp + 1);
+            out[std::strcspn(out, "\r\n")] = 0;
+            break;
+        }
+        std::fclose(f);
+        if (out[0]) break;
+    }
+    closedir(d);
+}
+
+// Current link state: 1 connected, 0 not, -1 undetectable on this firmware.
+int bt_link_state(char* addr, size_t cap) {
+    addr[0] = 0;
+    if (g_bt_method == BT_UNPROBED) {
+        // One probe pass, then remember. Prefer sysfs (no fork).
+        if (::access("/sys/class/bluetooth", F_OK) == 0) {
+            g_bt_method = BT_SYSFS;
+        } else if (bt_hcitool_connected(addr, cap) >= 0) {
+            g_bt_method = BT_HCITOOL;
+        } else {
+            g_bt_method = BT_NONE;
+        }
+        char m[96];
+        std::snprintf(m, sizeof m, "bt: link detection = %s",
+                      g_bt_method == BT_SYSFS ? "sysfs (/sys/class/bluetooth)"
+                      : g_bt_method == BT_HCITOOL ? "hcitool con"
+                      : "NONE (link state unavailable on this firmware)");
+        clog_(m);
+    }
+    switch (g_bt_method) {
+        case BT_SYSFS:   return bt_sysfs_connected(addr, cap) ? 1 : 0;
+        case BT_HCITOOL: return bt_hcitool_connected(addr, cap);
+        default:         return -1;
+    }
+}
+
+// Re-assert the UI's volume level on the hardware IF the mixer has drifted from it. Verify-first,
+// so this can never stomp a level the user just chose.
+void bt_resync_volume(const char* why) {
+    if (!g_vol_read) load_vol_cfg();
+    if (!g_vol.valid) return;
+    long hw = read_volume_hw();
+    if (hw < 0) return;
+    int have = volume_hw_to_level(hw);
+    int want = cinder_get_volume();
+    if (have == want) return;   // already in step — nothing to do
+    char m[128];
+    std::snprintf(m, sizeof m, "volume: resync after %s — hw %d/120 != UI %d/120, re-applying",
+                  why, have, want);
+    clog_(m);
+    apply_volume();
+}
+
+// Poll the link and act on the edges. Called from the ~1x/sec housekeeping block.
+void bt_watch_tick() {
+    if (g_bt_method == BT_NONE) {
+        // No detector on this firmware. Tell the UI we DON'T KNOW (state < 0) exactly once, so the
+        // Bluetooth screen says so rather than claiming a disconnect it can't observe — or, as it
+        // used to, inventing a connected "WH-1000XM5" out of the on/off toggle.
+        static bool told = false;
+        if (!told) { told = true; cinder_set_bt_status(-1, ""); }
+        return;
+    }
+    // hcitool forks, so poll it every ~10 s; the sysfs walk is cheap enough for ~2 s.
+    static int tick = 0;
+    int period = (g_bt_method == BT_HCITOOL) ? 10 : 2;
+    if (g_bt_method != BT_UNPROBED && (++tick % period) != 0) return;
+
+    char addr[24] = {0};
+    int st = bt_link_state(addr, sizeof addr);
+    if (st < 0) return;
+    if (st == 1 && std::strcmp(addr, g_bt_addr) != 0) {
+        std::snprintf(g_bt_addr, sizeof g_bt_addr, "%s", addr);
+        bt_resolve_name(g_bt_addr, g_bt_name, sizeof g_bt_name);
+    }
+    if (st == 0) { g_bt_addr[0] = 0; g_bt_name[0] = 0; }
+    cinder_set_bt_status(st, g_bt_name);
+
+    if (st == g_bt_last) return;
+    if (st == 1) {
+        char m[160];
+        std::snprintf(m, sizeof m, "bt: link UP (%s%s%s) — re-asserting volume + codec + DSP chain",
+                      g_bt_addr[0] ? g_bt_addr : "?",
+                      g_bt_name[0] ? " " : "", g_bt_name);
+        clog_(m);
+        // A re-opened output can leave the mixer and the effect chain where WE didn't put them.
+        // Guarded like every other IPC/shell-out on the pump thread.
+        run_guarded("bt: resync volume after reconnect", 8,
+                    []() { bt_resync_volume("bt reconnect"); });
+        write_bt_pref();
+        run_guarded("bt: re-apply EQ after reconnect", 6, apply_eq_fn);
+        run_guarded("bt: re-apply sound after reconnect", 6, apply_sound_fn);
+    } else if (g_bt_last == 1) {
+        clog_("bt: link DOWN");
+    }
+    g_bt_last = st;
 }
 
 // USB-DAC → LDAC (the headline feature): engage USB-DAC input and route it to 3.5mm + BT/LDAC at
@@ -1186,7 +1399,24 @@ void carry_out(int act) {
                         []() { if (g_playing) cinder_audio_play(); else cinder_audio_pause(); });
             break;
         case CINDER_ACT_NEXT:       run_guarded("carry_out: next",  6, []() { cinder_audio_next_track(); }); break;
-        case CINDER_ACT_PREV:       run_guarded("carry_out: prev",  6, []() { cinder_audio_prev_track(); }); break;
+        case CINDER_ACT_PREV:
+            // ◁ with a REWIND fallback. The UI already turns "more than 3 s into the track" into a
+            // seek-to-0 (CINDER_ACT_SEEK); this handles the other half of the same report: at the
+            // HEAD of a sequence PlayController::PrevTrack() has nowhere to go, returns non-zero
+            // and the button did nothing at all. Now it restarts the current track instead — ◁
+            // always does something, in every queue state.
+            run_guarded("carry_out: prev", 6, []() {
+                if (cinder_audio_prev_track() != 0) {
+                    cinder_audio_seek_ms(0);
+                    cinder_notify_seek_ms(0);   // snap the progress bar to the restart
+                }
+            });
+            break;
+        case CINDER_ACT_SEEK:
+            // Progress-rail scrub (or the ◁ restart): seek to the position the UI resolved.
+            run_guarded("carry_out: seek", 6,
+                        []() { cinder_audio_seek_ms(cinder_pending_seek_ms()); });
+            break;
         case CINDER_ACT_NEXT_ALBUM: run_guarded("carry_out: next album", 6, []() { cinder_audio_next_group(); }); break;
         case CINDER_ACT_PREV_ALBUM: run_guarded("carry_out: prev album", 6, []() { cinder_audio_prev_group(); }); break;
         case CINDER_ACT_VOLUP:
@@ -1248,7 +1478,11 @@ void carry_out(int act) {
         case CINDER_ACT_USBDAC_LDAC:
             run_guarded("carry_out: USB-DAC/LDAC toggle", 6, apply_usb_dac);
             break;
-        case CINDER_ACT_SLEEP:         screen_toggle(); break; // Power = panel on/off (not lock)
+        // Power = panel on/off (not lock). Guarded: waking now also verifies the mixer against the
+        // UI level (a popen), so a wedged amixer can't stall the pump.
+        case CINDER_ACT_SLEEP:
+            run_guarded("carry_out: screen toggle", 8, screen_toggle);
+            break;
         case CINDER_ACT_ENTER_USB_MSC:
             // device-gated USB-mode switch (hands storage to the PC; disruptive — validate live).
             // 25 s budget: Stop IPC + the 5 s umount verify + recovery + the 3 s gadget-state
@@ -1266,6 +1500,15 @@ void carry_out(int act) {
 // Drain pending input from every node; map raw code -> logical button -> navigator -> action.
 // Classify a finished contact (finger-up), from BTN_TOUCH=0 or a type-A empty-frame lift.
 static void touch_release() {
+    if (g_scrub_active) {
+        // A slider owned this gesture: commit it (seek / UI scale) and skip classification.
+        int act = cinder_touch_scrub_end();
+        if (act != CINDER_ACT_NONE) carry_out(act);
+        g_scrub_active = false;
+        g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
+        g_drag_active = false; g_drag_vel = 0.0f;
+        return;
+    }
     if (g_touch_down && g_drag_active) {
         // Live drag ends: hand the measured velocity to the fling (unless the finger held
         // still before lifting — stale velocity must not fling).
@@ -1299,6 +1542,12 @@ static void touch_release() {
 // Called on every touch position update while the contact is down: promote a mostly-vertical
 // move past a small slop into a LIVE DRAG, then stream pixel deltas + track velocity.
 static void touch_drag_motion() {
+    if (g_scrub_active) {
+        // Slider drag: horizontal position is the whole signal.
+        int act = cinder_touch_scrub(touch_ui_x(g_touch_cur_x));
+        if (act != CINDER_ACT_NONE) carry_out(act);
+        return;
+    }
     if (!g_touch_down || g_touch_start_x < 0 || g_touch_start_y < 0 || g_touch_cur_y < 0) return;
     int uy = touch_ui_y(g_touch_cur_y);
     if (!g_drag_active) {
@@ -1377,7 +1626,7 @@ void input_pump() {
                     if (!g_screen_on) {
                         g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
                         g_touch_saw_pos = false;
-                        g_drag_active = false; g_drag_vel = 0.0f;
+                        g_drag_active = false; g_drag_vel = 0.0f; g_scrub_active = false;
                         continue;
                     }
                     if (type == EV_ABS_ && (code == ABS_X_ || code == ABS_MT_POSITION_X_)) {
@@ -1390,7 +1639,15 @@ void input_pump() {
                     }
                     if (type == EV_ABS_ && (code == ABS_Y_ || code == ABS_MT_POSITION_Y_)) {
                         g_touch_cur_y = val; g_touch_saw_pos = true;
-                        if (g_touch_down && g_touch_start_y < 0) g_touch_start_y = val;
+                        if (g_touch_down && g_touch_start_y < 0) {
+                            g_touch_start_y = val;
+                            // First complete (x,y) of this contact: offer it to the UI's
+                            // horizontal sliders (progress rail = seek, UI-scale). A claim routes
+                            // the whole gesture to cinder_touch_scrub*, bypassing tap/swipe/drag.
+                            if (g_touch_start_x >= 0)
+                                g_scrub_active = cinder_touch_scrub_begin(
+                                    touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y)) != 0;
+                        }
                         touch_drag_motion();       // live drag: stream deltas + velocity
                         continue;
                     }
@@ -1526,24 +1783,49 @@ public:
 
 // ── the render+input worker (Option-B) ──────────────────────────────────────────────────────
 // Runs everything the (blocked) easel pump would have: paint, stop the boot-anim overlay, the
-// deferred DB/PlayerService/adb init, touch + button input, and periodic housekeeping — at ~60fps
-// on its own thread. Mirrors the (now-dead) `pump` lambda body; SIGALRM is delivered to THIS thread.
+// deferred DB/PlayerService/adb init, touch + button input, and periodic housekeeping — on its own
+// thread. Mirrors the (now-dead) `pump` lambda body; SIGALRM is delivered to THIS thread.
+//
+// ── EVENT-DRIVEN, not a 60 Hz spin (2026-08-05, the "gets hot with Bluetooth" fix) ───────────
+// This loop used to `usleep(16000)` unconditionally: 60 wakeups a second for the life of the
+// process, each re-reading up to 16 input fds, plus a FORCED full-screen software re-render +
+// framebuffer blit once a second FOREVER — with the screen off, in your pocket, on battery, while
+// the SoC was also encoding LDAC. That constant floor is the load the heat report describes.
+//
+// Now the loop blocks in poll() on the input fds and wakes on one of three things:
+//   • a real input event (latency unchanged — poll returns immediately),
+//   • the UI asking for its next animation frame (cinder_frame_delay_ms paces itself; the
+//     visualiser asks for 20 fps, not 60, and a dark screen asks for nothing),
+//   • its own next housekeeping deadline (~1 Hz).
+// Cadences are wall-clock (monotonic ms) rather than frame counts, so they stay correct however
+// often the loop happens to wake.
+static long g_house_due = 0, g_batt_due = 0, g_force_due = 0;
+
 void* render_driver(void*) {
     // This thread owns the watchdog now — UNBLOCK SIGALRM (render_up blocked it on the stuck main
     // thread). The per-frame alarm(8) and run_guarded (in deferred_up / carry_out) fire here.
     sigset_t s; sigemptyset(&s); sigaddset(&s, SIGALRM);
     pthread_sigmask(SIG_UNBLOCK, &s, nullptr);
-    long n = 0;
+    const long t_start = now_ms();
+    long anim_kill_15 = t_start + 15000, anim_kill_30 = t_start + 30000;
     bool first_painted = false, boot_anim_stopped = false;
     while (g_pump_ticker_run) {
         if (!g_render_ready) { usleep(16000); continue; }
+        const long now = now_ms();
+        const long up = now - t_start;
 
         // FORCED REPAINTS: the renderer is dirty-flag gated, so once our first blit lands it would
         // never paint again until state changes — and anything an external process scribbled on the
         // framebuffer after that blit (the boot animation's last video frame survives its kill)
-        // would sit on screen forever. Repaint every frame for the first ~10 s, then 1×/s for life.
-        if (n < 600) cinder_force_dirty();
-        else if (n % 60 == 0) cinder_force_dirty();
+        // would sit on screen forever. Every frame for the first ~10 s (the boot handover), then
+        // 1×/s until ~60 s, then a slow 30 s safety sweep. It used to force a full re-render +
+        // ~4.6 MB blit once a second for the entire uptime, long after anything could scribble.
+        if (up < 10000) {
+            cinder_force_dirty();
+        } else if (now >= g_force_due) {
+            cinder_force_dirty();
+            g_force_due = now + (up < 60000 ? 1000 : 30000);
+        }
 
         // PER-FRAME WATCHDOG around OUR paint: a real render hang -> _exit -> launcher counter -> stock.
         alarm(8);
@@ -1573,20 +1855,20 @@ void* render_driver(void*) {
         // this thread for several seconds). Re-issue StopBootAnimation afterward as insurance
         // against a race with init (re)starting bootanimation.
         if (!g_deferred_done) {
-            if (n < 30) { ++n; usleep(16000); continue; }   // warm-up paints first
+            if (up < 500) { usleep(16000); continue; }   // warm-up paints first
             deferred_up();
-            if (g_app) g_app->StopBootAnimation();          // re-kill in case init respawned it
-            ++n; usleep(16000); continue;
+            if (g_app) g_app->StopBootAnimation();       // re-kill in case init respawned it
+            usleep(16000); continue;
         }
         // Straggler sweep: if the anim somehow survived (or respawned), re-kill at ~15 s and
         // ~30 s after render start. killall on a dead process is a harmless no-op.
-        if (n == 900 || n == 1800) {
-            if (g_app) g_app->StopBootAnimation();
-        }
+        if (anim_kill_15 && now >= anim_kill_15) { if (g_app) g_app->StopBootAnimation(); anim_kill_15 = 0; }
+        if (anim_kill_30 && now >= anim_kill_30) { if (g_app) g_app->StopBootAnimation(); anim_kill_30 = 0; }
 
         if (!g_input_started) { input_open(); g_input_started = true; }
         alarm(8); input_pump(); alarm(0);     // touch + buttons -> navigator -> actions -> carry_out
-        if (n % 60 == 0) {                    // ~1x/sec housekeeping
+        if (now >= g_house_due) {             // ~1x/sec housekeeping (wall-clock, not frame count)
+            g_house_due = now + 1000;
             cinder_clock_tick();
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             // Scrobble writes /contents — skip while it's handed to the PC (stale mountpoint).
@@ -1629,6 +1911,9 @@ void* render_driver(void*) {
                 g_usb_hi = 0;
             }
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
+            // Bluetooth link: publish the real state to the UI and, on a reconnect edge,
+            // re-assert the volume / codec / DSP chain the re-opened output may have reset.
+            bt_watch_tick();
             // Screenshot-on-demand: drop /tmp/cinder_screenshot.req and the next frame is written
             // to /tmp/cinder_screen.png. Same polled-flag idiom as ldac_on above (no new IPC
             // primitive — the safety model here is best-effort polled file I/O).
@@ -1650,12 +1935,57 @@ void* render_driver(void*) {
             // (cinderhome.log, cinder_discovery.txt, MTPDB_copy.dat, cinder_settings.conf) are
             // readable over USB-MSC without a reboot. The host reads the raw block device, which
             // lags the device's live rw mount until a sync — hence the earlier 0-byte/short reads.
-            if (n % 120 == 0) ::sync();
+            static long dev_sync_due = 0;
+            if (now >= dev_sync_due) { ::sync(); dev_sync_due = now + 2000; }
 #endif
         }
-        if (n % 600 == 0) cinder_set_battery(read_battery());
-        ++n;
-        usleep(16000);   // ~60 fps (the blit+flip is ~2 ms; dirty-flag keeps idle frames free)
+        if (now >= g_batt_due) { cinder_set_battery(read_battery()); g_batt_due = now + 10000; }
+
+        // ── SLEEP: block on input until the earliest of (next animation frame, next deadline) ──
+        // The UI's own pacing comes from cinder_frame_delay_ms: -1 = idle, 0 = paint now,
+        // n = paint in n ms. Whatever it says, we never sleep past our own housekeeping deadline,
+        // and an input event wakes us instantly (that is what keeps taps as responsive as the old
+        // 60 Hz spin while an IDLE device now wakes about once a second instead of sixty times).
+        long after = now_ms();
+        long budget = -1;
+        long until_house = g_house_due - after;
+        long until_batt = g_batt_due - after;
+        long until_force = (up < 10000) ? 0 : g_force_due - after;
+        for (long d : { until_house, until_batt, until_force })
+            if (d >= 0 && (budget < 0 || d < budget)) budget = d;
+        int want = cinder_frame_delay_ms();
+        if (want >= 0 && (budget < 0 || want < budget)) budget = want;
+        if (budget < 0) budget = 1000;        // nothing pending — a 1 s heartbeat is plenty
+        if (budget > 1000) budget = 1000;
+        if (budget == 0) continue;            // a frame is due right now: straight round again
+
+        if (g_evn > 0) {
+            // poll() the real input nodes so a touch/button wakes us with no added latency.
+            struct pollfd pfds[16];
+            int nf = 0;
+            for (int i = 0; i < g_evn && nf < 16; ++i) {
+                pfds[nf].fd = g_evfds[i];
+                pfds[nf].events = POLLIN;
+                pfds[nf].revents = 0;
+                ++nf;
+            }
+            // EINTR is expected (SIGALRM/guard alarms land on this thread) — just loop.
+            poll(pfds, (nfds_t)nf, (int)budget);
+        } else {
+            usleep((useconds_t)budget * 1000);
+        }
+        // FLOOR the iteration rate at the old ~60 Hz. We poll EVERY input node, and one of them
+        // (`m_batch_input`, event3) is a sensor that streams ABS_X/ABS_Y on its own — poll() would
+        // return instantly for it as fast as the sensor fires, which could spin this loop *faster*
+        // than the fixed sleep it replaced. This makes the new pacing strictly no worse than the
+        // old one in the worst case, while the idle case still drops from 60 wakeups/s to ~1.
+        {
+            static long last_iter = 0;
+            long t = now_ms();
+            long since = t - last_iter;
+            if (last_iter && since >= 0 && since < 16) usleep((useconds_t)(16 - since) * 1000);
+            last_iter = now_ms();
+        }
     }
     return nullptr;
 }
@@ -1666,7 +1996,7 @@ void start_pump_ticker() {
         g_pump_ticker_run = false;
         clog_("render_up: WARN render-driver thread failed to start (UI will not paint)");
     } else {
-        clog_("render_up: render driver started (~60fps, our own loop)");
+        clog_("render_up: render driver started (event-driven: poll on input + UI-paced frames)");
     }
 }
 

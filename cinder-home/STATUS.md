@@ -61,6 +61,58 @@ is still preferred.
 
 ---
 
+## TL;DR — eleventh round (2026-08-05): bug + usability audit
+
+Five reported problems, root-caused and fixed offline, plus the defects the audit turned up on the
+way. All host-verified (95 tests green, was 71; qemu preflight unaffected — no ABI change to any
+existing FFI symbol, only additions).
+
+1. **Rewind now exists.** ◁ was an unconditional `PlayController::PrevTrack()`, and **no code path
+   in the player ever called `cinder_audio_seek_ms`** — the progress rail was a 4px decoration with
+   no tap target anywhere on the screen. So at the head of a queue (a one-track queue, or the first
+   track of an album you just tapped) ◁ did *nothing at all*, and mid-track it jumped away instead
+   of rewinding. Three fixes: ◁ past 3 s restarts the track; ◁ at the head of a sequence falls back
+   to a seek-to-0 when `PrevTrack()` reports it has nowhere to go; and the rail became a real
+   **scrub control** (tap or drag, 42px touch band, knob that swells under the finger).
+2. **The user queue is playable.** Swipe-to-queue built a list that Up Next displayed but
+   PlayerService knew nothing about, so ◁/▷ stepped through something the user could not see.
+   Tapping a queue row now hands PlayerService the whole queue as a `NodeTrackSequence` starting at
+   that row — reusing the album-play path, no new device surface.
+3. **Shelf.** Tapping a bookmark's row *pinned the current place into a different slot* instead of
+   going there; the "GO" column of an EMPTY slot silently dismissed the sheet; jumping to a pin
+   called `go()`, which **replaced the whole route stack** and left Back dead; drags on the modal
+   sheet scrolled the list behind it; and pins restored only the screen (not the tab, sort, scroll
+   or open accordion) and were wiped by every reboot. All fixed; pins now persist in
+   `cinder_settings.conf`.
+4. **Bluetooth volume after a reconnect.** Cinder owns the hardware volume but pushed it exactly
+   twice per boot, so a headphone dropping and re-connecting left the mixer out of step with the UI
+   and Vol± looked dead. The shell now **watches the link** (layered sysfs → `hcitool` detection,
+   no-op if neither exists) and on a disconnect→connect edge re-asserts the volume (verify-first, so
+   it never fights a level the user just set), the codec preference and the saved EQ/sound chain.
+5. **Heat.** The render loop `usleep(16000)`'d unconditionally — 60 wakeups/s for the life of the
+   process — re-read up to 16 input fds every 16 ms, and **forced a full-screen software re-render +
+   framebuffer blit once a second forever, screen on or off**. On top of the LDAC encoder that is
+   the heat. The loop is now event-driven (`poll()` on the input fds; the UI paces its own frames
+   via `cinder_frame_delay_ms`), rendering **stops entirely while the panel is dark**, the forced
+   repaint tapers to 30 s after the boot handover, and the blit writes the one displayed page
+   instead of all three (~3× less memory traffic per frame).
+6. **UI scale slider** (Settings ▸ UI scale, 80–140% in 7 stops, persisted). One global multiplier
+   applied by **both** `text::measure` and `text::draw`, so truncation/centring/alignment stay exact;
+   row heights and tap targets are deliberately unscaled so no hit test can drift.
+
+Also fixed, found during the audit:
+- **13 of the 15 screens drew a hardcoded status bar** (`"14:32" · "FLAC 24/96" · 78%`). Only Now
+  Playing and Lock showed the real clock and battery. It is now published once per frame.
+- **Settings ran off the bottom of the panel**: 863px of rows on an 800px screen, so "Firmware" was
+  half off-screen and "Model" entirely off — and `row_at` agreed, so they were untappable while the
+  button cursor could still move onto them. The list now scrolls.
+- **The library tab strip mis-selected**: labels were laid out from measured widths but hit-tested
+  against hardcoded thresholds, so tapping the left part of "ALBUMS" selected SONGS (and so on).
+  Render and hit now read one layout function.
+- **The Bluetooth screen invented a connected "WH-1000XM5"** whenever the toggle was on. It shows
+  the real peer, "No device connected", or "Link state unavailable on this firmware".
+- **Album names and the shuffle-band caption were drawn untruncated** and ran off the right edge.
+
 ## TL;DR — tenth round (2026-07-03): library ordering + Albums accordion
 
 Library browse gained sort/order options and an inline album view (all 39 UI tests + 8 DB tests
@@ -184,10 +236,16 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 - **Transport**: Play/Pause, Next, Prev, Next/Prev **Album** → PlayerService `PlayController`
   (each call guarded). Album step = the shuffle-by-album primitive. **Shuffle + repeat are tappable**
   on the transport row (repeat cycles off→all→one); the queue-reorder wiring is device-gated.
-- **Shelf**: a bottom-sheet overlay to **pin the current place to 3 slots and jump back**, plus Undo
-  — fully wired (open/pin/go/clear/close), session-scoped. Opened from the **bookmark glyph in the
-  top-right of the status bar** (per the prototype — it overlays wherever you are; the rest of the bar
-  opens the Menu).
+- **Rewind / seek** (2026-08-05): the Now Playing progress rail is a **scrub control** — tap or drag
+  it to seek (`PlayController::SeekTime`, guarded). ◁ follows the standard convention: past 3 s into
+  a track it restarts the track, otherwise it steps back, and at the head of a sequence (where
+  `PrevTrack()` has nowhere to go) it restarts instead of doing nothing.
+- **Shelf**: a bottom-sheet overlay to **pin the current place to 3 slots and jump back**, plus a
+  one-step Back. Opened from the **bookmark glyph in the top-right of the status bar** (it overlays
+  wherever you are; the rest of the bar opens the Menu). A pin captures the *whole* place — screen,
+  library tab, sort/order, scroll position and open accordion — and **persists across reboots**
+  (`cinder_settings.conf`). Empty slot row = pin there; filled slot row = go there; the `×` column
+  forgets. Jumping to a pin leaves Now Playing beneath it, so Back still works.
 - **Library browse**: Songs / Albums / Artists tabs, **real DB data**, windowed **scrolling**
   (thousands of rows), Songs sort chip (Title/Artist/Length), grouped album headers, **album drill-in**
   (album → track list), hashed-gradient art until real thumbnails decode.
@@ -196,7 +254,9 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   live On/Off toggles → `EffectCtrlDmp`; **A/B compare** (Option = Disable/Reenable whole chain).
 - **Battery care**: On/Off → Sony "Itawari" charging (`PowerMgrServiceClient::EnableItawariCharging`);
   real device state read at boot.
-- **Settings (live rows)**: Theme day/night, Visualiser **type** (5), Visualiser **animation** on/off.
+- **Settings (live rows)**: Theme day/night, **UI scale** (a real slider: 80–140% in 7 stops, tap or
+  drag, persisted), Visualiser **type** (5), Visualiser **animation** on/off. The list **scrolls**
+  (13 rows + 3 section headers = 828px of content on an 800px panel).
 - **Sleep timer** (Settings): cycles Off/15/30/45/60 min, counts down, shows a live "SLEEP {n}M"
   badge on Now Playing, and **pauses playback on expiry** — pure app logic, no Sony service.
 - **Visualiser**: Bars / Mirror / Segments / Dots / Wave; always animates (synthetic), with an optional
@@ -204,7 +264,9 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   --analyzer` to validate, then `/contents/cinder_viz.conf: analyzer=1`).
 - **Up Next**: the queue = the **current album** (resolved from the library by the now-playing
   track), playing row highlighted, auto-scrolls to follow playback; clean empty state otherwise.
-  When the user queue (below) is non-empty, Up Next shows it instead, in add order.
+  When the user queue (below) is non-empty, Up Next shows it instead, in add order. **Tapping a row
+  plays it** — for the user queue that hands PlayerService the whole queue starting at that row, so
+  what Up Next shows and what ◁/▷ step through are finally the same list.
 - **Swipe-to-queue (Spotify-style)**: rightward swipe on a Library-Songs/Album-track row adds it
   to the user queue — "Added to queue" toast + a "+ QUEUED" chip slides off the row (~0.4 s).
   Left-edge→right is still Back (classified first); the two rightward gestures coexist. *(Queue
@@ -244,7 +306,9 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   (`sync_volume_from_hw` → `cinder_set_volume`), so the first Vol± nudges from the actual volume.
   `/contents/cinder_volume.conf` still fully overrides (see `deploy/cinder_volume.conf.example`);
   wrong-hardware safety: an unknown control name makes `amixer cset` fail → keys stay HUD-only.
-  *Pending: one on-device verify that Vol± audibly changes output.*
+  **Re-asserted on a Bluetooth reconnect and on screen wake** (verify-first: the mixer is read back
+  and only rewritten if it has drifted from the UI level), which is what fixes "BT volume comes
+  disconnected after it reconnects". *Pending: one on-device verify that Vol± audibly changes output.*
 - **Now Playing progress bar**: now a **live play-through estimate** (DB duration + a local
   play-clock that advances 1 s/tick while playing, resets on track change) — moves the bar +
   elapsed/remaining. It can't see seeks or a mid-track start; the exact PlayStatus position offsets
@@ -266,6 +330,9 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   still not playable (playlists themselves unpopulated).
 - **Bluetooth radio on/off**: the toggle flips **UI state only**; it doesn't power the radio
   (BtTransmitterService not wired). *(The codec selector beneath it IS functional — see Functional.)*
+  The **connection state is now real**, though: the shell watches the link and the screen shows the
+  actual peer, "No device connected", or "Link state unavailable on this firmware" — it no longer
+  fabricates a connected "WH-1000XM5" from the toggle.
 - **FM Radio** screen: static (88.6 MHz placeholder).
 - **BT Receiver** screen: static (off).
 - **Pairing** screen: static (the "Pair new device" button is inert).
