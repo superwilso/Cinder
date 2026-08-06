@@ -1914,21 +1914,14 @@ impl App {
             // it somehow becomes current (it shouldn't).
             Screen::Shelf => crate::now_playing::render(c, &theme, fonts, np),
         }
-        // Transient HUD on top of any screen (except the lock screen, which owns the panel).
-        if self.vol_overlay > 0 && self.current() != Screen::Lock {
-            crate::overlay::volume(c, &theme, fonts, self.volume);
-        }
-        // Confirmation toast (e.g. "Added to queue — …"), same rules as the volume HUD.
-        if self.toast_frames > 0 && self.current() != Screen::Lock {
-            crate::overlay::toast(c, &theme, fonts, &self.toast);
-        }
         // Swipe-to-queue chip riding the flicked row (list screens only — if the user navigates
-        // away mid-animation the anchor row is gone, so it just stops).
+        // away mid-animation the anchor row is gone, so it just stops). It is anchored to a ROW,
+        // so it belongs with the screen, under any overlay.
         if self.queue_anim_frames > 0 && matches!(self.current(), Screen::Library | Screen::Album) {
             let p = self.queue_anim_frames as f32 / QUEUE_ANIM_FRAMES as f32;
             crate::overlay::queue_chip(c, &theme, fonts, self.queue_anim_y, p);
         }
-        // Shelf bottom-sheet sits above everything: dims the screen behind + draws the sheet.
+        // Shelf bottom-sheet: dims the screen behind + draws the sheet over the lower half.
         if self.shelf_open {
             let (title, sub) = self.place_label();
             let pins = [
@@ -1937,6 +1930,16 @@ impl App {
                 self.pins[2].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub }),
             ];
             crate::shelf::render(c, &theme, fonts, &title, &sub, &pins);
+        }
+        // TRANSIENTS LAST — above the Shelf sheet too. Drawn before it, the sheet (which fills
+        // y 406..800 opaquely) painted straight over both: the pin/clear confirmation was
+        // invisible in the one place it fires, and the volume HUD — which still responds to Vol±
+        // while the sheet is open — came up half-covered.
+        if self.vol_overlay > 0 && self.current() != Screen::Lock {
+            crate::overlay::volume(c, &theme, fonts, self.volume);
+        }
+        if self.toast_frames > 0 && self.current() != Screen::Lock {
+            crate::overlay::toast(c, &theme, fonts, &self.toast);
         }
     }
 
