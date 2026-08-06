@@ -61,7 +61,11 @@ typedef enum {
      * gadget to UAC, WITHOUT disconnecting Bluetooth (the headline USB-DAC→LDAC feature). */
     CINDER_ACT_USBDAC_LDAC = 18,
     /* User left the USB mass-storage modal (Back): remount /contents and restore the USB mode. */
-    CINDER_ACT_EXIT_USB_MSC = 19
+    CINDER_ACT_EXIT_USB_MSC = 19,
+    /* SEEK within the current track: read cinder_pending_seek_ms() and call cinder_audio_seek_ms().
+     * Emitted by the Now Playing progress rail (tap or drag) and by ◁ when it means "restart the
+     * current track" rather than "previous track". */
+    CINDER_ACT_SEEK = 20
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -78,6 +82,31 @@ int  cinder_tap(int x, int y);
 void cinder_touch_drag(int dy_px);
 void cinder_touch_fling(int velocity_px_s);
 void cinder_touch_down(void);
+/* HORIZONTAL SCRUB (the Now Playing progress rail = seek/rewind, and the Settings UI-scale
+ * slider). Offer every touch-down to cinder_touch_scrub_begin FIRST: a non-zero return means the
+ * UI claimed the whole gesture, so stream x to cinder_touch_scrub() on each motion and finish with
+ * cinder_touch_scrub_end(); skip the tap/swipe/vertical-drag classification for that contact.
+ * Both return a cinder_action_t to carry out (0 = nothing). */
+int  cinder_touch_scrub_begin(int x, int y);
+int  cinder_touch_scrub(int x);
+int  cinder_touch_scrub_end(void);
+/* The seek target in ms for a CINDER_ACT_SEEK action. */
+int  cinder_pending_seek_ms(void);
+/* The UI's play-position estimate in ms, or -1 if unknown (no track / no duration). */
+int  cinder_play_position_ms(void);
+/* Tell the UI playback jumped to `ms` (after the shell seeks on its own) so the bar follows. */
+void cinder_notify_seek_ms(int ms);
+/* Panel backlight state (1 = on). Push on every Power-button toggle: with the screen off the UI
+ * stops animating and presenting entirely, so an idle/pocket device costs no CPU. */
+void cinder_set_screen_on(int on);
+/* How long until the UI wants its next self-driven frame, in ms: -1 = idle (block on input until
+ * the pump's own next deadline), 0 = paint now, n = paint in n ms (an animation is pacing itself).
+ * Drives the event-driven render loop — see the note on cinder_frame_delay_ms in lib.rs. */
+int  cinder_frame_delay_ms(void);
+/* Push the REAL Bluetooth link state: connected < 0 = unknown (no detector on this firmware),
+ * 0 = disconnected, 1 = connected; name = the peer (NULL/empty = unresolved). The Bluetooth and
+ * USB-DAC screens show this instead of assuming a connected device whenever the toggle is on. */
+void cinder_set_bt_status(int connected, const char *name);
 /* Pending play request, populated when CINDER_ACT_PLAY_INDEX is returned: the tapped track's
  * album context as file URIs in play order + the index to start at. The shell reads these and
  * hands PlayerService a NodeTrackSequence (cinder_audio_play_tracks). */

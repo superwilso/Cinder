@@ -37,10 +37,56 @@ pub struct NowPlaying<'a> {
     pub viz_kind: u8,  // which visualiser type (index into viz::from_index)
     pub viz_on: bool,  // master enable — false hides the visualiser entirely (nav injects UI state)
     pub viz_levels: Option<&'a [f32]>, // real per-bar spectrum (0..1) from FFT; None = synthetic
+    /// The user's finger is on the progress rail right now (nav sets this while scrubbing):
+    /// `progress` is the LIVE preview position, and the knob swells for feedback.
+    pub scrubbing: bool,
 }
 
 fn s(fam: Family, weight: Weight, size: f32, color: embedded_graphics::pixelcolor::Rgb888, tracking: f32) -> TextStyle {
     sty(fam, weight, size, color, tracking)
+}
+
+// ── Progress rail = the SCRUB control (shared by render + hit) ───────────────────────────────
+// The rail used to be a 4px decorative line with no tap target anywhere on the screen, and the
+// only "go back" control was the ◁ key → PlayController::PrevTrack(). At the head of a queue
+// PrevTrack has nothing to go to, so ◁ did *nothing* — "no rewind in some queue situations".
+// The rail is now the primary rewind affordance: tap or drag it to seek. It gets a knob so it
+// reads as draggable and a generous 36px-tall touch band (the drawn rail stays slim).
+pub const RAIL_Y: i32 = 612;
+pub const RAIL_X0: i32 = 24;
+pub const RAIL_W: i32 = 432;
+const RAIL_H: i32 = 6;
+/// Touch band around the rail (44px-class target; the rail itself is 6px).
+const RAIL_HIT_TOP: i32 = RAIL_Y - 18;
+const RAIL_HIT_BOT: i32 = RAIL_Y + 24;
+
+/// Does (x, y) land on the progress rail? Returns the scrub position in permille (0..1000).
+/// x is clamped to the rail, so a slightly-off grab still starts at a sane place.
+pub fn hit_progress(x: i32, y: i32) -> Option<u16> {
+    if !(RAIL_HIT_TOP..RAIL_HIT_BOT).contains(&y) {
+        return None;
+    }
+    // Horizontal slop matches the rail's own margins — the whole width of the screen at this
+    // height is the control (there is nothing else on that row).
+    Some(permille_at(x))
+}
+
+/// Map an x coordinate to a permille position along the rail (clamped at both ends).
+pub fn permille_at(x: i32) -> u16 {
+    let dx = (x - RAIL_X0).clamp(0, RAIL_W);
+    ((dx as i64 * 1000) / RAIL_W as i64) as u16
+}
+
+/// Draw the rail at `progress` (0..1). `scrubbing` swells the knob so the finger has feedback.
+fn rail(c: &mut Canvas, t: &Theme, progress: f32, scrubbing: bool) {
+    let p = progress.clamp(0.0, 1.0);
+    fill_rect(c, RAIL_X0, RAIL_Y, RAIL_W, RAIL_H, t.line);
+    let fillw = (RAIL_W as f32 * p) as i32;
+    fill_rect(c, RAIL_X0, RAIL_Y, fillw, RAIL_H, t.acc);
+    // Knob: the "this is draggable" cue. Square (the design language is flat rectangles).
+    let k = if scrubbing { 18 } else { 12 };
+    let kx = (RAIL_X0 + fillw - k / 2).clamp(RAIL_X0 - k / 2, RAIL_X0 + RAIL_W - k / 2);
+    fill_rect(c, kx, RAIL_Y + RAIL_H / 2 - k / 2, k, k, t.acc);
 }
 
 /// Small accent "SLEEP {n}M" badge, top-right under the status bar, shown while a sleep timer runs.
@@ -62,7 +108,7 @@ pub fn sleep_badge(c: &mut Canvas, t: &Theme, f: &FontSet, min: u32) {
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, np.clock, np.badge, np.battery);
+    crate::chrome::status_bar(c, t, f);
     let seed = np.viz_seed; // animated by the shell while playing; constant when paused/host
 
     // Nothing loaded — the state the device sits in from boot until the first track is picked.
@@ -108,11 +154,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         right(c, f, 456.0, 583.0, np.codec, &s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08));
     }
 
-    // ---------- progress (shared) ----------
-    let (py, px0, pw) = (612, 24, 432);
-    fill_rect(c, px0, py, pw, 4, t.line);
-    let fillw = (pw as f32 * np.progress.clamp(0.0, 1.0)) as i32;
-    fill_rect(c, px0, py, fillw, 4, t.acc);
+    // ---------- progress (shared) — tap/drag to seek ----------
+    rail(c, t, np.progress, np.scrubbing);
     text::draw(c, f, 24.0, 636.0, np.elapsed, &s(Family::Mono, Weight::Regular, 13.0, t.dim, 0.0));
     right(c, f, 456.0, 636.0, np.remaining, &s(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
 
@@ -152,7 +195,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
 /// idle screen has to put them in exactly the same places or the controls stop working when
 /// nothing is loaded. Only the *state* differs — empty rail, no times, transport shows play.
 fn idle_chrome(c: &mut Canvas, t: &Theme, f: &FontSet) {
-    fill_rect(c, 24, 612, 432, 4, t.line);
+    rail(c, t, 0.0, false);
 
     let ty = 692.0;
     icons::shuffle(c, 44.0, ty, 24.0, t.faint);

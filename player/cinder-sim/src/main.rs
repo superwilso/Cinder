@@ -107,18 +107,17 @@ fn header_back(x: i32, y: i32) -> bool {
 fn handle_click(app: &mut App, x: i32, y: i32) {
     // Shelf overlay intercepts every click while open.
     if app.shelf_open {
-        match shelf::hit(x, y) {
+        let filled = [app.pins[0].is_some(), app.pins[1].is_some(), app.pins[2].is_some()];
+        match shelf::hit(x, y, filled) {
             shelf::ShelfHit::Close => app.shelf_open = false,
-            shelf::ShelfHit::Undo => {
+            shelf::ShelfHit::Back => {
                 app.shelf_open = false;
                 if let Some(s) = app.history.pop() {
                     app.screen = s;
                 }
             }
-            shelf::ShelfHit::Pin => {
-                if let Some(slot) = app.pins.iter().position(|p| p.is_none()) {
-                    app.pins[slot] = Some((format!("Now Playing · {}", SONGS[app.track].t), "Just now".into()));
-                }
+            shelf::ShelfHit::PinTo(slot) => {
+                app.pins[slot] = Some((format!("Now Playing · {}", SONGS[app.track].t), "Just now".into()));
             }
             shelf::ShelfHit::Go(_) => {
                 app.shelf_open = false;
@@ -321,7 +320,7 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
             } else if y >= 418 {
                 // preset grid (cols 22/170/318, rows 418 & 480, h52)
                 let col = if x < 160 { 0 } else if x < 308 { 1 } else { 2 };
-                let r = if (418..470).contains(&y) { 0 } else if (480..532).contains(&y) { 1 } else { -1 };
+                let r: i32 = if (418..470).contains(&y) { 0 } else if (480..532).contains(&y) { 1 } else { -1 };
                 if r >= 0 {
                     let idx = (r as usize) * 3 + col;
                     if idx < FM_PRESETS.len() {
@@ -345,6 +344,9 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
 fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
     let i = app.track;
     let (codec, badge) = CODECS[i];
+    // The status bar is published once per frame now (chrome::set_status) instead of every
+    // screen passing — and, on 13 of 15 screens, hardcoding — its own clock/badge/battery.
+    cinder_ui::chrome::set_status("14:32", badge, 78);
     match app.screen {
         Screen::Lock => lock::render(c, theme, fonts, &lock::Lock {
             clock: "14:32", big_clock: "23:41", title: SONGS[i].t, artist: SONGS[i].a, badge, battery: 78, progress: 0.39,
@@ -353,6 +355,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             title: SONGS[i].t, artist: SONGS[i].a, codec, badge, clock: "14:32", battery: 78,
             elapsed: "1:47", remaining: "-2:45", progress: 0.39, art: SONGS[i].art, art_full: None, art_thumb: None, liked: app.liked, playing: app.playing,
             shuffle: app.shuffle, repeat: app.repeat, viz_seed: 2.0, viz_kind: 0, viz_on: true, viz_levels: None,
+        scrubbing: false,
         }),
         Screen::Menu => menu::render(c, theme, fonts, &menu_items(app)),
         Screen::UpNext => {
@@ -374,11 +377,12 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             normalizer: app.normalizer, clearaudio: app.clearaudio, eq_preset: EQ_PRESETS[app.eq_preset].0,
             bt_codec: if app.bt_on && app.bt_conn.is_some() { Some(BT_CODECS[app.bt_codec]) } else { None },
         }, 0, false),
-        Screen::Settings => settings::render(c, theme, fonts, 0,
+        Screen::Settings => settings::render(c, theme, fonts, 0, 0,
             &settings::SettingsView { night: app.night, viz_name: "Bars", viz_on: true, usb_dac: app.usb_dac, battery_care: false, storage: "12.4 / 58 GB", sleep: "OFF" }),
         Screen::Bluetooth => bluetooth::render(c, theme, fonts, &Bt {
             on: app.bt_on,
             connected: app.bt_conn.map(|r| PAIRED[r].name),
+            link_known: true,
             codec_sel: app.bt_codec as u8,
             ldac_quality: 0,
         }),

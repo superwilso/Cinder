@@ -14,7 +14,7 @@ use crate::Canvas;
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, codec: &str,
               bt_device: Option<&str>, eq_preset: &str, dsee: bool) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
     crate::chrome::header(c, t, f, "USB-DAC", None);
     let onoff = if on { "ON" } else { "OFF" };
     crate::widgets::right(c, f, 416.0, 65.0, onoff, &sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc } else { t.faint }, 0.12));

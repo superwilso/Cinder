@@ -22,7 +22,7 @@ pub const DISCOVERABLE: &[Discoverable] = &[
 /// `found` = how many devices have appeared (0..=3); `pairing` = index mid-pair.
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, found: usize, pairing: Option<usize>) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
     crate::chrome::header(c, t, f, "Pair new", Some("SCANNING…"));
 
     // NFC card

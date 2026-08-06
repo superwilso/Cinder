@@ -21,7 +21,46 @@ fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32) -> 
     TextStyle { fam, weight, size, color, tracking }
 }
 
-pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &str, battery: u8) {
+/// The live status-bar payload (clock, codec badge, battery %). Set ONCE per frame — by
+/// `nav::App::render` on device, and by the host harness for previews — then read by every
+/// screen's `status_bar()` call.
+///
+/// This used to be three parameters, and **13 of the 15 screens passed the literals
+/// `"14:32" / "FLAC 24/96" / 78`**: outside Now Playing and the Lock screen the device showed a
+/// frozen fake clock and a fake 78% battery. Routing it through one per-frame slot means a screen
+/// physically cannot draw a stale status bar — there is nowhere left to hardcode one.
+#[derive(Clone, Default)]
+pub struct Status {
+    pub clock: String,
+    pub badge: String,
+    pub battery: u8,
+}
+
+thread_local! {
+    static STATUS: core::cell::RefCell<Status> = const { core::cell::RefCell::new(
+        Status { clock: String::new(), badge: String::new(), battery: 0 }
+    ) };
+}
+
+/// Publish this frame's status-bar values. Rendering is single-threaded (device: under the
+/// cinder-ffi mutex; host: the main thread), so a thread-local needs no locking.
+pub fn set_status(clock: &str, badge: &str, battery: u8) {
+    STATUS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.clock.clear();
+        s.clock.push_str(clock);
+        s.badge.clear();
+        s.badge.push_str(badge);
+        s.battery = battery;
+    });
+}
+
+pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet) {
+    let st = STATUS.with(|s| s.borrow().clone());
+    status_bar_with(c, t, f, &st.clock, &st.badge, st.battery)
+}
+
+fn status_bar_with(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &str, battery: u8) {
     // left: clock + codec badge + (NIGHT)
     let cx = text::draw(c, f, 18.0, 22.0, clock, &sty(Family::Mono, Weight::Regular, 13.0, t.dim, 0.06));
     // Skip the whole badge when there is no codec string. Drawing it unconditionally left a bare

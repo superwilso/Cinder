@@ -20,7 +20,7 @@ fn disc(c: &mut Canvas, cx: i32, cy: i32, d: u32, col: embedded_graphics::pixelc
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: &str, sel: usize) {
     c.fill(t.bg);
-    crate::chrome::status_bar(c, t, f, "14:32", "FLAC 24/96", 78);
+    crate::chrome::status_bar(c, t, f);
     let y0 = crate::chrome::header(c, t, f, "Equalizer", None);
     // header-right pill: CUSTOM <preset>
     let plabel = format!("CUSTOM {}", preset);

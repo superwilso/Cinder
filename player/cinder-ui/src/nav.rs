@@ -86,6 +86,15 @@ pub enum Action {
     RepeatCycle,              // Now Playing repeat: off → all → one (FFI holds the state)
     BtCodecChanged,           // device-wide BT transmit codec / LDAC quality changed; shell reads + applies
     UsbDacToggle(bool),       // engage/disengage USB-DAC input routed to 3.5mm + BT/LDAC (the headline feature)
+    /// SEEK within the current track, as permille (0..1000) of its duration. Emitted by the
+    /// Now Playing progress rail (tap or drag). cinder-ffi turns it into ms using the DB duration.
+    /// This is the rewind path the player was missing entirely — see `now_playing::hit_progress`.
+    Seek(u16),
+    /// Play the USER queue (swipe-to-queue) starting at index `n`. The shell resolves the whole
+    /// queue to a track sequence, so ◁/▷ then step through what Up Next is actually showing.
+    PlayQueueAt(usize),
+    /// The UI text scale changed (Settings ▸ UI scale). Internal + persisted; no device call.
+    UiScaleChanged,
 }
 
 /// The Menu rows, in display order — index ↔ destination Screen. Matches the prototype's 10 rows;
@@ -105,15 +114,107 @@ const MENU: [(Screen, &str, &str, &str); 11] = [
     (Screen::Onboarding, "note", "Help & Controls", "Button map · features"),
 ];
 
-/// A pinned place on the Shelf: enough route context to jump straight back. Session-scoped (held in
-/// the navigator; persisting across boots is a later refinement).
-#[derive(Clone)]
-struct ShelfPin {
+/// A pinned place on the Shelf: enough route context to jump straight back — and that means the
+/// *whole* place, not just the screen. It used to store only `screen`/`lib_tab`/`album_view`, so
+/// "jump back to where I was" dropped you at the top of the list with the wrong sort and no
+/// accordion, which is most of why the Shelf felt broken. Pins now persist across boots too
+/// (serialised into cinder_settings.conf by the shell).
+#[derive(Clone, PartialEq, Debug)]
+pub struct ShelfPin {
     screen: Screen,
     lib_tab: Tab,
+    lib_sort: usize,
+    album_sort: usize,
+    album_expanded: Option<usize>,
+    lib_scroll_px: i32,
     album_view: usize,
+    album_scroll_px: i32,
     title: String,
     sub: String,
+}
+
+/// Screens a Shelf pin may point at. Anything else (modals, onboarding, the lock screen) is not a
+/// "place" — restoring one would drop the user into a mode they never asked for.
+fn pinnable(s: Screen) -> bool {
+    matches!(
+        s,
+        Screen::NowPlaying
+            | Screen::Library
+            | Screen::Album
+            | Screen::UpNext
+            | Screen::Eq
+            | Screen::Sound
+            | Screen::Bluetooth
+            | Screen::Settings
+            | Screen::Fm
+            | Screen::UsbDac
+            | Screen::Receiver
+    )
+}
+
+/// A short stable token for a Screen, for persisting Shelf pins across boots.
+fn screen_token(s: Screen) -> &'static str {
+    match s {
+        Screen::NowPlaying => "np",
+        Screen::Library => "lib",
+        Screen::Album => "album",
+        Screen::UpNext => "queue",
+        Screen::Eq => "eq",
+        Screen::Sound => "sound",
+        Screen::Bluetooth => "bt",
+        Screen::Settings => "settings",
+        Screen::Fm => "fm",
+        Screen::UsbDac => "usbdac",
+        Screen::Receiver => "rx",
+        _ => "np",
+    }
+}
+
+fn screen_from_token(t: &str) -> Option<Screen> {
+    Some(match t {
+        "np" => Screen::NowPlaying,
+        "lib" => Screen::Library,
+        "album" => Screen::Album,
+        "queue" => Screen::UpNext,
+        "eq" => Screen::Eq,
+        "sound" => Screen::Sound,
+        "bt" => Screen::Bluetooth,
+        "settings" => Screen::Settings,
+        "fm" => Screen::Fm,
+        "usbdac" => Screen::UsbDac,
+        "rx" => Screen::Receiver,
+        _ => return None,
+    })
+}
+
+fn tab_token(t: Tab) -> &'static str {
+    match t {
+        Tab::Songs => "songs",
+        Tab::Albums => "albums",
+        Tab::Artists => "artists",
+        Tab::Playlists => "playlists",
+    }
+}
+
+fn tab_from_token(t: &str) -> Tab {
+    match t {
+        "songs" => Tab::Songs,
+        "artists" => Tab::Artists,
+        "playlists" => Tab::Playlists,
+        _ => Tab::Albums,
+    }
+}
+
+/// What the user's finger is currently dragging along a horizontal control. The shell asks
+/// `scrub_begin` on every touch-down; a `true` answer routes the whole gesture here instead of
+/// through the tap/swipe/vertical-drag classifier.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Scrub {
+    None,
+    /// Now Playing progress rail → seek (the rewind control).
+    Progress,
+    /// Settings ▸ UI scale slider.
+    UiScale,
 }
 
 pub struct App {
@@ -147,6 +248,13 @@ pub struct App {
     eq_preset: usize,
     /// Bluetooth on/off (transmit). The shell drives the radio + codec.
     bt_on: bool,
+    /// The REAL link state, pushed by the shell (`cinder_set_bt_status`): -1 unknown (no detector
+    /// on this firmware), 0 disconnected, 1 connected. The Bluetooth screen used to invent a
+    /// connected "WH-1000XM5" whenever the UI toggle was on — it claimed a peer that may not
+    /// exist, and gave no way to see that a headphone had dropped. An empty `bt_device` with
+    /// `bt_link == 1` means "connected, name unresolved" (address-less link).
+    bt_link: i8,
+    bt_device: String,
     /// Device-wide BT transmit codec preference + LDAC quality tier. Used for BOTH normal BT
     /// playback and the USB-DAC→LDAC bridge. `bt_codec` indexes bluetooth::CODECS (0 = LDAC);
     /// `bt_ldac_quality` indexes bluetooth::QUALITIES (0 = Auto). Persisted; applied by the shell.
@@ -157,8 +265,10 @@ pub struct App {
     /// Now Playing visualiser type (cinder_ui::viz index) + animation on/off (UI settings).
     viz_kind: u8,
     viz_on: bool,
-    /// Settings screen cursor.
+    /// Settings screen cursor + its pixel scroll (the list is 828px tall on an 800px panel —
+    /// without scrolling the whole ABOUT section was drawn off the bottom edge).
     settings_sel: usize,
+    settings_scroll_px: i32,
     /// Battery care (Sony "Itawari" charging, ~90% cap). Mirrors the device state; the shell reads
     /// the real value at boot via cinder_set_battery_care and applies toggles via the action.
     battery_care: bool,
@@ -205,6 +315,22 @@ pub struct App {
     /// fades. `queue_anim_y` = the row's y (UI coords); frames count down via tick().
     queue_anim_y: i32,
     queue_anim_frames: u8,
+    /// Active horizontal scrub (progress rail / UI-scale slider) + the rail's LIVE preview
+    /// position while the finger is down, so the bar tracks the finger before the seek commits.
+    scrub: Scrub,
+    scrub_permille: u16,
+    /// What the Up Next screen last DREW: the list index + track object_id of each visible row.
+    /// `tap` resolves through this, so a tap can never land on a different row than the one under
+    /// the finger — the same render-mirrors-hit rule the library lists follow. (`render` takes
+    /// `&self`, hence the interior mutability.)
+    up_next_rows: std::cell::RefCell<Vec<(usize, i64)>>,
+    /// Is the drawn Up Next list the USER queue (true) or the current-album window (false)?
+    up_next_is_queue: std::cell::Cell<bool>,
+    /// The library tab strip as last DRAWN: (tab, x, width). Taps resolve through this, so the
+    /// zones always match the labels on screen. They used to be hardcoded x thresholds that did
+    /// NOT match the measured layout — tapping the left part of "ALBUMS" selected Songs, and so on
+    /// down the strip (see `library::tab_layout`).
+    lib_tab_zones: std::cell::RefCell<Vec<(Tab, f32, f32)>>,
 }
 
 /// How long the toast stays up (~1.8 s at the 60 fps pump).
@@ -236,12 +362,15 @@ impl Default for App {
             eq_sel: 0,
             eq_preset: 3,
             bt_on: true,
+            bt_link: -1, // unknown until the shell reports
+            bt_device: String::new(),
             bt_codec: 0,        // LDAC
             bt_ldac_quality: 0, // Auto
             usb_dac_on: false,
             viz_kind: 0,
             viz_on: true,
             settings_sel: 0,
+            settings_scroll_px: 0,
             battery_care: false,
             snd_dsee: false,
             snd_vinyl: false,
@@ -264,6 +393,11 @@ impl Default for App {
             toast_frames: 0,
             queue_anim_y: 0,
             queue_anim_frames: 0,
+            scrub: Scrub::None,
+            scrub_permille: 0,
+            up_next_rows: std::cell::RefCell::new(Vec::new()),
+            up_next_is_queue: std::cell::Cell::new(false),
+            lib_tab_zones: std::cell::RefCell::new(Vec::new()),
         }
     }
 }
@@ -351,46 +485,155 @@ impl App {
         }
     }
 
+    /// Capture the current place as a pin (full route context, so restoring it actually lands
+    /// where you were — same tab, same sort, same scroll, same open accordion).
+    fn capture_pin(&self) -> ShelfPin {
+        let (title, sub) = self.place_label();
+        ShelfPin {
+            screen: self.current(),
+            lib_tab: self.lib_tab,
+            lib_sort: self.lib_sort,
+            album_sort: self.album_sort,
+            album_expanded: self.album_expanded,
+            lib_scroll_px: self.lib_scroll_px,
+            album_view: self.album_view,
+            album_scroll_px: self.album_scroll_px,
+            title,
+            sub,
+        }
+    }
+
+    /// Restore a pinned place. Two things this deliberately does NOT do any more:
+    /// it no longer calls `go()` (which replaced the whole route stack, stranding the user with a
+    /// dead Back button), and it no longer restores only the screen — the list position, sort and
+    /// expansion come back too. Back from a restored pin returns to Now Playing.
+    fn restore_pin(&mut self, p: &ShelfPin) {
+        self.lib_tab = p.lib_tab;
+        self.lib_sort = p.lib_sort.min(library::SORTS.len().saturating_sub(1));
+        self.album_sort = p.album_sort.min(library::ALBUM_SORTS.len().saturating_sub(1));
+        self.album_expanded = p.album_expanded;
+        self.album_view = p.album_view;
+        self.lib_idx = 0;
+        self.fling_v = 0.0;
+        self.stack = if p.screen == Screen::NowPlaying {
+            vec![Screen::NowPlaying]
+        } else {
+            vec![Screen::NowPlaying, p.screen]
+        };
+        // Clamp the restored scroll against the CURRENT library (it may have been rebuilt since).
+        self.lib_scroll_px = p.lib_scroll_px.clamp(0, self.lib_max_scroll());
+        self.album_scroll_px = self
+            .lib
+            .albums_flat()
+            .get(self.album_view)
+            .map(|al| p.album_scroll_px.clamp(0, library::album_max_scroll_px(al)))
+            .unwrap_or(0);
+        self.settings_scroll_px = self.settings_scroll_px.clamp(0, crate::settings::max_scroll_px());
+    }
+
     /// Handle a tap while the Shelf overlay is open (geometry comes from `shelf::hit`).
     fn shelf_tap(&mut self, x: i32, y: i32) -> Vec<Action> {
         use crate::shelf::ShelfHit;
-        match crate::shelf::hit(x, y) {
+        let filled = [self.pins[0].is_some(), self.pins[1].is_some(), self.pins[2].is_some()];
+        match crate::shelf::hit(x, y, filled) {
             ShelfHit::Close => self.shelf_open = false,
-            ShelfHit::Undo => {
+            ShelfHit::Back => {
                 self.shelf_open = false;
                 self.pop();
             }
-            ShelfHit::Pin => {
-                let (title, sub) = self.place_label();
-                let pin = ShelfPin {
-                    screen: self.current(),
-                    lib_tab: self.lib_tab,
-                    album_view: self.album_view,
-                    title,
-                    sub,
-                };
-                // first empty slot, else overwrite the oldest (slot 0)
-                match self.pins.iter_mut().find(|p| p.is_none()) {
-                    Some(slot) => *slot = Some(pin),
-                    None => self.pins[0] = Some(pin),
+            ShelfHit::PinTo(i) => {
+                if !pinnable(self.current()) {
+                    self.notify("Nothing to pin here");
+                } else {
+                    let replaced = self.pins[i].is_some();
+                    self.pins[i] = Some(self.capture_pin());
+                    let name = self.pins[i].as_ref().map(|p| p.title.clone()).unwrap_or_default();
+                    // Say what happened AND which slot — the old silent "first empty, else
+                    // clobber slot 0" left the user guessing.
+                    self.notify(&if replaced {
+                        format!("Slot {} replaced — {}", i + 1, name)
+                    } else {
+                        format!("Pinned to slot {} — {}", i + 1, name)
+                    });
                 }
             }
             ShelfHit::Go(i) => {
                 if let Some(p) = self.pins.get(i).and_then(|p| p.clone()) {
-                    self.lib_tab = p.lib_tab;
-                    self.album_view = p.album_view;
-                    self.go(p.screen);
+                    self.restore_pin(&p);
                 }
                 self.shelf_open = false;
             }
             ShelfHit::Clear(i) => {
                 if let Some(slot) = self.pins.get_mut(i) {
-                    *slot = None;
+                    if slot.take().is_some() {
+                        self.notify(&format!("Slot {} cleared", i + 1));
+                    }
                 }
             }
             ShelfHit::None => {}
         }
         vec![]
+    }
+
+    /// Pop a transient toast (also used for shelf feedback and queue confirmations).
+    fn notify(&mut self, msg: &str) {
+        self.toast = msg.to_string();
+        self.toast_frames = TOAST_FRAMES;
+    }
+
+    // ── Shelf pin persistence ───────────────────────────────────────────────────────────────
+    // Pins were session-scoped, so every reboot wiped the user's bookmarks. They serialise to one
+    // line per slot; the shell stores them in cinder_settings.conf alongside the rest.
+
+    /// Serialise slot `i` as `screen|tab|lib_sort|album_sort|expanded|lib_scroll|album|album_scroll|title|sub`.
+    /// Empty string = the slot is empty. `|` is stripped from the labels so a title can't corrupt the record.
+    pub fn shelf_pin_encode(&self, i: usize) -> String {
+        let Some(p) = self.pins.get(i).and_then(|p| p.as_ref()) else { return String::new() };
+        let clean = |s: &str| s.replace(['|', '\n'], " ");
+        format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            screen_token(p.screen),
+            tab_token(p.lib_tab),
+            p.lib_sort,
+            p.album_sort,
+            p.album_expanded.map(|e| e as i64).unwrap_or(-1),
+            p.lib_scroll_px,
+            p.album_view,
+            p.album_scroll_px,
+            clean(&p.title),
+            clean(&p.sub),
+        )
+    }
+
+    /// Restore slot `i` from `shelf_pin_encode` output. A malformed/empty record clears the slot
+    /// rather than failing — a corrupt config must never keep the player from booting.
+    pub fn shelf_pin_decode(&mut self, i: usize, s: &str) {
+        if i >= self.pins.len() {
+            return;
+        }
+        let f: Vec<&str> = s.split('|').collect();
+        if f.len() < 10 {
+            self.pins[i] = None;
+            return;
+        }
+        let Some(screen) = screen_from_token(f[0]) else {
+            self.pins[i] = None;
+            return;
+        };
+        let num = |s: &str| s.trim().parse::<i64>().unwrap_or(0);
+        let exp = num(f[4]);
+        self.pins[i] = Some(ShelfPin {
+            screen,
+            lib_tab: tab_from_token(f[1]),
+            lib_sort: (num(f[2]).max(0) as usize).min(library::SORTS.len() - 1),
+            album_sort: (num(f[3]).max(0) as usize).min(library::ALBUM_SORTS.len() - 1),
+            album_expanded: if exp < 0 { None } else { Some(exp as usize) },
+            lib_scroll_px: num(f[5]).max(0) as i32,
+            album_view: num(f[6]).max(0) as usize,
+            album_scroll_px: num(f[7]).max(0) as i32,
+            title: f[8].to_string(),
+            sub: f[9].to_string(),
+        });
     }
 
     /// True when the Now Playing screen is showing (so the shell only animates the visualiser
@@ -425,9 +668,32 @@ impl App {
         }
     }
 
+    /// Step the UI text scale by `d` stops (Left/Right on the Settings slider row).
+    fn step_ui_scale(&mut self, d: i32) -> Vec<Action> {
+        let n = crate::text::SCALE_STEPS.len() as i32;
+        let idx = (crate::text::scale_idx() as i32 + d).clamp(0, n - 1) as usize;
+        crate::text::set_scale_idx(idx);
+        vec![Action::UiScaleChanged]
+    }
+
+    /// Set the UI text scale from a slider stop index.
+    fn set_ui_scale_idx(&mut self, idx: usize) -> Vec<Action> {
+        crate::text::set_scale_idx(idx);
+        vec![Action::UiScaleChanged]
+    }
+
+    /// The UI text scale in percent — the shell persists this and restores it at boot.
+    pub fn ui_scale_pct(&self) -> u32 {
+        crate::text::scale_pct()
+    }
+    pub fn set_ui_scale_pct(&mut self, pct: u32) {
+        crate::text::set_scale_pct(pct);
+    }
+
     // Activate the focused Settings row (shared by the Select button and a tap).
     fn settings_activate(&mut self) -> Vec<Action> {
         match self.settings_sel {
+            crate::settings::ROW_UI_SCALE => self.step_ui_scale(1),
             crate::settings::ROW_THEME => {
                 self.night = !self.night;
                 vec![Action::ThemeChanged(self.night)]
@@ -610,14 +876,31 @@ impl App {
                 vec![]
             }
             Screen::UpNext => {
-                // The queue window auto-scrolls to the playing track, so we can't map an exact row
-                // without `np`; a tap returns to Now Playing (the natural "done with the queue").
-                self.go(Screen::NowPlaying);
-                vec![]
+                // Tapping a row PLAYS it. Previously the whole screen was one "go back to Now
+                // Playing" target, so the queue was a dead list you could look at but not use.
+                // `up_next_rows` is what the last render actually drew, so the tap can't drift.
+                let hit = crate::up_next::drawn_row_at(y)
+                    .and_then(|d| self.up_next_rows.borrow().get(d).copied());
+                match hit {
+                    Some((idx, _)) if self.up_next_is_queue.get() => vec![Action::PlayQueueAt(idx)],
+                    Some((_, object_id)) => vec![Action::PlayIndex(object_id)],
+                    // Empty area below the list: the old "done with the queue" gesture, but via
+                    // pop() so the route stack (and therefore Back) survives.
+                    None => {
+                        self.pop();
+                        vec![]
+                    }
+                }
             }
             Screen::Settings => {
-                if let Some(row) = crate::settings::row_at(y) {
+                if let Some(row) = crate::settings::row_at(y, self.settings_scroll_px) {
                     self.settings_sel = row;
+                    // The UI-scale row is a SLIDER: the tap's x picks the stop directly (the
+                    // Android SeekBar idiom) rather than cycling one step per tap.
+                    if row == crate::settings::ROW_UI_SCALE {
+                        let idx = crate::settings::ui_scale_idx_at(x);
+                        return self.set_ui_scale_idx(idx);
+                    }
                     return self.settings_activate();
                 }
                 vec![]
@@ -704,16 +987,9 @@ impl App {
             self.fling_v = 0.0;
             return vec![];
         }
-        if (91..126).contains(&y) {
-            self.lib_tab = if x < 120 {
-                Tab::Songs
-            } else if x < 220 {
-                Tab::Albums
-            } else if x < 330 {
-                Tab::Artists
-            } else {
-                Tab::Playlists
-            };
+        if (library::TAB_TOP..library::TAB_BOT).contains(&y) {
+            let Some(tab) = self.tab_at_cached(x) else { return vec![] };
+            self.lib_tab = tab;
             self.lib_idx = 0;
             self.lib_scroll_px = 0;
             self.fling_v = 0.0;
@@ -780,6 +1056,38 @@ impl App {
         }
     }
 
+    /// Which library tab is at screen-x `x`, using the strip as it was last drawn? Splits the
+    /// gaps between labels down the middle. Falls back to an even quarter split if nothing has
+    /// been rendered yet (a tap before the first paint isn't reachable in practice).
+    fn tab_at_cached(&self, x: i32) -> Option<Tab> {
+        let zones = self.lib_tab_zones.borrow();
+        if zones.is_empty() {
+            return Some(match x * 4 / crate::canvas::W as i32 {
+                0 => Tab::Songs,
+                1 => Tab::Albums,
+                2 => Tab::Artists,
+                _ => Tab::Playlists,
+            });
+        }
+        let xf = x as f32;
+        for (i, &(tab, tx, tw)) in zones.iter().enumerate() {
+            let left = if i == 0 {
+                0.0
+            } else {
+                let (_, px, pw) = zones[i - 1];
+                (px + pw + tx) / 2.0
+            };
+            let right = match zones.get(i + 1) {
+                Some(&(_, nx, _)) => (tx + tw + nx) / 2.0,
+                None => crate::canvas::W as f32,
+            };
+            if xf >= left && xf < right {
+                return Some(tab);
+            }
+        }
+        None
+    }
+
     /// Advance the Albums ORDER chip and collapse any open accordion (its identity is still valid,
     /// but the position shift is less confusing when it re-opens deliberately).
     fn cycle_album_sort(&mut self) {
@@ -808,6 +1116,12 @@ impl App {
     /// show later rows). Called per pump tick while a vertical drag is in progress, so the list
     /// tracks the finger; clamped to the content height.
     pub fn scroll_px(&mut self, dy_px: i32) {
+        // The Shelf is a MODAL bottom sheet: it owns the gesture. Without this guard a drag that
+        // started on the sheet scrolled (and flung) the library list behind it, which read as the
+        // Shelf "not working" — the sheet sat still while the screen moved underneath it.
+        if self.shelf_open || self.locked {
+            return;
+        }
         match self.current() {
             Screen::Library => {
                 let max = self.lib_max_scroll();
@@ -819,6 +1133,10 @@ impl App {
                     self.album_scroll_px = (self.album_scroll_px + dy_px).clamp(0, max);
                 }
             }
+            Screen::Settings => {
+                let max = crate::settings::max_scroll_px();
+                self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
+            }
             _ => {}
         }
     }
@@ -826,9 +1144,93 @@ impl App {
     /// Momentum fling: the release velocity (px/s, same sign convention as `scroll_px`). The
     /// per-frame `tick()` integrates and decays it, keeping frames dirty until it stops.
     pub fn fling(&mut self, velocity_px_s: f32) {
-        if matches!(self.current(), Screen::Library | Screen::Album) {
+        if self.shelf_open || self.locked {
+            return;
+        }
+        if matches!(self.current(), Screen::Library | Screen::Album | Screen::Settings) {
             self.fling_v = velocity_px_s.clamp(-8000.0, 8000.0);
         }
+    }
+
+    // ── Horizontal scrub (progress rail / UI-scale slider) ──────────────────────────────────
+    // The shell offers every touch-down here first. Answering `true` claims the whole gesture:
+    // motion streams to `scrub_move`, release commits in `scrub_end`, and the tap/swipe/vertical
+    // -drag classifier never sees it. That is what makes the two horizontal controls in the UI
+    // (seek and UI scale) behave like real sliders rather than tap-only targets.
+
+    /// A finger went down at (x, y). Returns true if it grabbed a scrubbable control.
+    pub fn scrub_begin(&mut self, x: i32, y: i32) -> bool {
+        self.scrub = Scrub::None;
+        if self.locked || self.shelf_open {
+            return false;
+        }
+        match self.current() {
+            Screen::NowPlaying => match crate::now_playing::hit_progress(x, y) {
+                Some(p) => {
+                    self.scrub = Scrub::Progress;
+                    self.scrub_permille = p;
+                    true
+                }
+                None => false,
+            },
+            Screen::Settings => {
+                if crate::settings::row_at(y, self.settings_scroll_px) == Some(crate::settings::ROW_UI_SCALE) {
+                    self.scrub = Scrub::UiScale;
+                    self.settings_sel = crate::settings::ROW_UI_SCALE;
+                    crate::text::set_scale_idx(crate::settings::ui_scale_idx_at(x));
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// The finger moved to `x` during a scrub. The progress rail only PREVIEWS here (committing a
+    /// seek per motion event would hammer PlayerService); the UI-scale slider applies live.
+    pub fn scrub_move(&mut self, x: i32) -> Vec<Action> {
+        match self.scrub {
+            Scrub::Progress => {
+                self.scrub_permille = crate::now_playing::permille_at(x);
+                vec![]
+            }
+            Scrub::UiScale => {
+                crate::text::set_scale_idx(crate::settings::ui_scale_idx_at(x));
+                vec![]
+            }
+            Scrub::None => vec![],
+        }
+    }
+
+    /// The finger lifted: commit the scrub.
+    pub fn scrub_end(&mut self) -> Vec<Action> {
+        let acts = match self.scrub {
+            Scrub::Progress => vec![Action::Seek(self.scrub_permille)],
+            Scrub::UiScale => vec![Action::UiScaleChanged],
+            Scrub::None => vec![],
+        };
+        self.scrub = Scrub::None;
+        acts
+    }
+
+    /// Is a scrub in progress? (The shell keeps routing motion here while true.)
+    pub fn is_scrubbing(&self) -> bool {
+        self.scrub != Scrub::None
+    }
+
+    /// Keep the Settings cursor's row inside the scrolled window (button nav).
+    fn settings_ensure_visible(&mut self) {
+        let top = crate::settings::row_top_px(self.settings_sel);
+        let rh = crate::settings::row_h();
+        let view = crate::settings::LIST_BOTTOM - crate::settings::LIST_TOP;
+        let max = crate::settings::max_scroll_px();
+        if top < self.settings_scroll_px {
+            self.settings_scroll_px = top;
+        } else if top + rh > self.settings_scroll_px + view {
+            self.settings_scroll_px = top + rh - view;
+        }
+        self.settings_scroll_px = self.settings_scroll_px.clamp(0, max);
     }
 
     /// A finger touching down kills any in-flight momentum (standard scroll UX).
@@ -898,8 +1300,7 @@ impl App {
     /// Append a song to the user queue + pop the confirmation toast + start the row chip
     /// animation (`y` = the gesture y, so the chip rides the row the user flicked).
     fn enqueue(&mut self, s: SongRow, y: i32) {
-        self.toast = format!("Added to queue — {}", s.title);
-        self.toast_frames = TOAST_FRAMES;
+        self.notify(&format!("Added to queue — {}", s.title));
         self.queue_anim_y = y;
         self.queue_anim_frames = QUEUE_ANIM_FRAMES;
         self.queue.push(s);
@@ -1232,14 +1633,19 @@ impl App {
             Screen::Settings => match b {
                 Button::Up => {
                     self.settings_sel = self.settings_sel.saturating_sub(1);
+                    self.settings_ensure_visible();
                     vec![]
                 }
                 Button::Down => {
                     if self.settings_sel + 1 < crate::settings::ROWS {
                         self.settings_sel += 1;
+                        self.settings_ensure_visible();
                     }
                     vec![]
                 }
+                // On the UI-scale slider, Left/Right step the value (Select still steps up).
+                Button::Left if self.settings_sel == crate::settings::ROW_UI_SCALE => self.step_ui_scale(-1),
+                Button::Right if self.settings_sel == crate::settings::ROW_UI_SCALE => self.step_ui_scale(1),
                 // Select (or Left/Right) acts on the focused row.
                 Button::Select | Button::Right | Button::Left => self.settings_activate(),
                 Button::Back => {
@@ -1343,6 +1749,9 @@ impl App {
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
         let theme = if self.night { Theme::night() } else { Theme::day() };
+        // Publish the LIVE status bar for every screen. This used to be per-screen literals, so
+        // outside Now Playing / Lock the device showed a frozen "14:32 · FLAC 24/96 · 78%".
+        crate::chrome::set_status(np.clock, np.badge, np.battery);
         match self.current() {
             Screen::Lock => {
                 let lk = crate::lock::Lock {
@@ -1357,8 +1766,17 @@ impl App {
                 crate::lock::render(c, &theme, fonts, &lk);
             }
             Screen::NowPlaying => {
-                // inject the selected visualiser type + on/off (UI state) into the now-playing data
-                let np2 = NowPlaying { viz_kind: self.viz_kind, viz_on: self.viz_on, ..*np };
+                // inject the selected visualiser type + on/off (UI state) into the now-playing
+                // data; while the finger is on the progress rail the bar shows the LIVE scrub
+                // position instead of playback's, so the seek has visible feedback before it lands.
+                let scrubbing = self.scrub == Scrub::Progress;
+                let np2 = NowPlaying {
+                    viz_kind: self.viz_kind,
+                    viz_on: self.viz_on,
+                    scrubbing,
+                    progress: if scrubbing { self.scrub_permille as f32 / 1000.0 } else { np.progress },
+                    ..*np
+                };
                 crate::now_playing::render(c, &theme, fonts, &np2);
                 // sleep-timer countdown badge (nav owns the live remaining minutes)
                 crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min);
@@ -1391,10 +1809,14 @@ impl App {
                     .collect();
                 crate::menu::render(c, &theme, fonts, &items);
             }
-            Screen::Library => crate::library::render(
-                c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
-                self.album_sort, self.album_expanded, &self.lib,
-            ),
+            Screen::Library => {
+                // Record the tab strip exactly as drawn, so `tap` hits the labels the user sees.
+                *self.lib_tab_zones.borrow_mut() = crate::library::tab_layout(fonts);
+                crate::library::render(
+                    c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
+                    self.album_sort, self.album_expanded, &self.lib,
+                )
+            }
             Screen::Album => {
                 let flat = self.lib.albums_flat();
                 if let Some(al) = flat.get(self.album_view) {
@@ -1411,18 +1833,32 @@ impl App {
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
             Screen::UsbStorage => crate::usb_storage::render(c, &theme, fonts),
             Screen::UpNext => {
+                // Record exactly which list rows land on which drawn rows, so `tap` resolves the
+                // row under the finger rather than guessing (the window scroll depends on `np`,
+                // which tap never sees).
+                let mut drawn: Vec<(usize, i64)> = Vec::new();
                 if !self.queue.is_empty() {
                     // The user's own queue (swipe-to-queue) takes precedence over the derived
                     // current-album list.
+                    self.up_next_is_queue.set(true);
                     crate::up_next::render_queue(c, &theme, fonts, &self.queue);
+                    for (i, s) in self.queue.iter().enumerate().take(crate::up_next::visible_rows()) {
+                        drawn.push((i, s.object_id));
+                    }
                 } else {
+                    self.up_next_is_queue.set(false);
                     match self.now_playing_queue(np.title, np.artist) {
                         Some((album, tracks, cur)) => {
-                            crate::up_next::render(c, &theme, fonts, album, tracks, cur)
+                            crate::up_next::render(c, &theme, fonts, album, tracks, cur);
+                            let scroll = crate::up_next::window_scroll(tracks.len(), cur);
+                            for (i, s) in tracks.iter().enumerate().skip(scroll).take(crate::up_next::visible_rows()) {
+                                drawn.push((i, s.object_id));
+                            }
                         }
                         None => crate::up_next::render(c, &theme, fonts, "", &[], 0),
                     }
                 }
+                *self.up_next_rows.borrow_mut() = drawn;
             }
             Screen::Eq => crate::eq::render(
                 c, &theme, fonts, &self.eq_bands, data::EQ_PRESETS[self.eq_preset].0, self.eq_sel,
@@ -1436,14 +1872,15 @@ impl App {
                     normalizer: self.snd_norm,
                     clearaudio: self.snd_clear,
                     eq_preset: data::EQ_PRESETS[self.eq_preset].0,
-                    bt_codec: if self.bt_on { Some(crate::bluetooth::CODECS[self.bt_codec as usize].0) } else { None },
+                    bt_codec: self.bt_peer().map(|_| crate::bluetooth::CODECS[self.bt_codec as usize].0),
                 };
                 crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.snd_ab_bypass)
             }
             Screen::Bluetooth => {
                 let bt = Bt {
                     on: self.bt_on,
-                    connected: if self.bt_on { Some("WH-1000XM5") } else { None },
+                    connected: self.bt_peer(),
+                    link_known: self.bt_link_known(),
                     codec_sel: self.bt_codec,
                     ldac_quality: self.bt_ldac_quality,
                 };
@@ -1460,13 +1897,13 @@ impl App {
                     storage: self.storage_label(),
                     sleep: &sleep_lbl,
                 };
-                crate::settings::render(c, &theme, fonts, self.settings_sel, &view)
+                crate::settings::render(c, &theme, fonts, self.settings_sel, self.settings_scroll_px, &view)
             }
             Screen::Fm => crate::fm::render(c, &theme, fonts, 88.6),
             Screen::UsbDac => {
-                let ldac = self.usb_dac_on && self.bt_on;
+                let dev = self.bt_peer();
+                let ldac = self.usb_dac_on && dev.is_some();
                 let codec = crate::bluetooth::CODECS[self.bt_codec as usize].0;
-                let dev = if self.bt_on { Some("WH-1000XM5") } else { None };
                 crate::usbdac::render(
                     c, &theme, fonts, self.usb_dac_on, ldac, codec, dev,
                     data::EQ_PRESETS[self.eq_preset].0, self.snd_dsee,
@@ -1513,18 +1950,16 @@ impl App {
         // Fling momentum: integrate at the ~60 fps tick, exponential decay, stop below a
         // threshold. Hitting the clamp (top/bottom) kills it immediately.
         if self.fling_v != 0.0 {
-            let before = match self.current() {
-                Screen::Library => self.lib_scroll_px,
-                Screen::Album => self.album_scroll_px,
+            let pos = |a: &Self| match a.current() {
+                Screen::Library => a.lib_scroll_px,
+                Screen::Album => a.album_scroll_px,
+                Screen::Settings => a.settings_scroll_px,
                 _ => 0,
             };
+            let before = pos(self);
             let step = self.fling_v / 60.0;
             self.scroll_px(step as i32);
-            let after = match self.current() {
-                Screen::Library => self.lib_scroll_px,
-                Screen::Album => self.album_scroll_px,
-                _ => 0,
-            };
+            let after = pos(self);
             self.fling_v *= 0.92;
             if self.fling_v.abs() < 30.0 || (step as i32 != 0 && after == before) {
                 self.fling_v = 0.0;
@@ -1544,6 +1979,47 @@ impl App {
             animating = true;
         }
         animating
+    }
+
+    /// Is anything time-driven still on screen? The shell uses this (via `cinder_needs_frame`)
+    /// to decide between a full-rate frame and an idle sleep, so a still UI costs nothing.
+    pub fn is_animating(&self) -> bool {
+        self.fling_v != 0.0 || self.vol_overlay > 0 || self.toast_frames > 0 || self.queue_anim_frames > 0
+    }
+
+    /// Push the real Bluetooth link state from the shell: `state` < 0 = unknown (this firmware
+    /// exposes no way to tell), 0 = disconnected, 1 = connected. Returns true if anything changed,
+    /// so the caller only repaints when it must. A live link also implies the radio is on.
+    pub fn set_bt_link(&mut self, state: i32, name: &str) -> bool {
+        let st: i8 = if state < 0 { -1 } else if state > 0 { 1 } else { 0 };
+        let changed = st != self.bt_link || name != self.bt_device;
+        if changed {
+            self.bt_link = st;
+            self.bt_device = name.to_string();
+            if st == 1 {
+                self.bt_on = true;
+            }
+        }
+        changed
+    }
+
+    /// Is a Bluetooth sink actually connected right now? (False when unknown.)
+    pub fn bt_connected(&self) -> bool {
+        self.bt_link == 1
+    }
+
+    /// Does the shell know the link state at all?
+    pub fn bt_link_known(&self) -> bool {
+        self.bt_link >= 0
+    }
+
+    /// The connected peer's label for the Bluetooth/USB-DAC screens, or None when nothing is
+    /// linked (or we can't tell). Honest: no confirmed link → no card, whatever the toggle says.
+    fn bt_peer(&self) -> Option<&str> {
+        if !(self.bt_on && self.bt_link == 1) {
+            return None;
+        }
+        Some(if self.bt_device.is_empty() { "Connected device" } else { self.bt_device.as_str() })
     }
 
     /// Sync the UI volume to the device's real level (the shell pushes this after it reads/sets
@@ -1764,6 +2240,49 @@ mod tests {
         App::unlocked()
     }
 
+    /// The UI text scale is a process-wide global (there is exactly one UI per process on the
+    /// device). `cargo test` runs tests on several threads, so every test that changes or depends
+    /// on the scale takes this lock — otherwise one test's 140% leaks into another's measurements.
+    static SCALE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take the scale lock and restore 100% on the way out, even if the test panics.
+    struct ScaleGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    impl Drop for ScaleGuard {
+        fn drop(&mut self) {
+            crate::text::set_scale_pct(100);
+        }
+    }
+    fn lock_scale() -> ScaleGuard {
+        ScaleGuard(SCALE_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// A minimal live now-playing payload for tests that need `render` to run.
+    fn sample_np() -> NowPlaying<'static> {
+        NowPlaying {
+            title: "",
+            artist: "",
+            codec: "",
+            badge: "",
+            clock: "14:32",
+            battery: 78,
+            elapsed: "",
+            remaining: "",
+            progress: 0.0,
+            art: "",
+            art_full: None,
+            art_thumb: None,
+            liked: false,
+            playing: true,
+            shuffle: false,
+            repeat: 0,
+            viz_seed: 2.0,
+            viz_kind: 0,
+            viz_on: false,
+            viz_levels: None,
+            scrubbing: false,
+        }
+    }
+
     #[test]
     fn hold_switch_is_the_only_unlock() {
         // The Hold SWITCH locks/unlocks; the touchscreen and nav buttons never do.
@@ -1936,8 +2455,10 @@ mod tests {
         }
         a.press(Button::Select);
         assert_eq!(a.current(), Screen::Settings);
-        // cursor down to the Visualiser row (ROW_VIZ=1) and cycle it
-        a.press(Button::Down); // sel 0 -> 1 (Visualiser)
+        // cursor down to the Visualiser row and cycle it (index-agnostic — rows get inserted)
+        for _ in 0..crate::settings::ROW_VIZ {
+            a.press(Button::Down);
+        }
         assert_eq!(a.settings_sel, crate::settings::ROW_VIZ);
         let k1 = a.viz_kind();
         a.press(Button::Select);
@@ -2324,6 +2845,341 @@ mod tests {
         assert_eq!(qa, album);
         assert_eq!(idx, 0);
         assert!(!tracks.is_empty());
+    }
+
+    // ── Rewind / seek ───────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn progress_rail_is_a_scrub_target() {
+        // The regression: the rail was drawn but was NOT a tap target anywhere, and no code path
+        // in the whole player ever called seek. Rewinding within a track was impossible.
+        let mut a = unlocked(); // Now Playing
+        let y = crate::now_playing::RAIL_Y;
+        assert!(a.scrub_begin(crate::now_playing::RAIL_X0, y), "rail must claim the gesture");
+        assert!(a.is_scrubbing());
+        // Drag to the middle, then release → one Seek at the released position.
+        a.scrub_move(crate::now_playing::RAIL_X0 + crate::now_playing::RAIL_W / 2);
+        let acts = a.scrub_end();
+        assert!(matches!(acts.as_slice(), [Action::Seek(p)] if (480..=520).contains(p)), "{acts:?}");
+        assert!(!a.is_scrubbing());
+    }
+
+    #[test]
+    fn rail_scrub_is_generous_and_clamped() {
+        let mut a = unlocked();
+        // 44px-class band: a tap well above/below the 6px rail still grabs it.
+        assert!(a.scrub_begin(240, crate::now_playing::RAIL_Y - 14));
+        a.scrub_end();
+        assert!(a.scrub_begin(240, crate::now_playing::RAIL_Y + 20));
+        // Dragging past either end pins to 0 / 1000 instead of doing nothing.
+        a.scrub_move(-500);
+        assert_eq!(a.scrub_end(), vec![Action::Seek(0)]);
+        assert!(a.scrub_begin(240, crate::now_playing::RAIL_Y));
+        a.scrub_move(9999);
+        assert_eq!(a.scrub_end(), vec![Action::Seek(1000)]);
+        // Off the rail entirely → not a scrub (the transport row must still work).
+        assert!(!a.scrub_begin(240, 692));
+    }
+
+    #[test]
+    fn locked_or_shelf_open_never_scrubs() {
+        let mut a = unlocked();
+        a.open_shelf();
+        assert!(!a.scrub_begin(240, crate::now_playing::RAIL_Y));
+        let mut b = unlocked();
+        b.set_hold(true);
+        assert!(!b.scrub_begin(240, crate::now_playing::RAIL_Y));
+    }
+
+    // ── Up Next: the queue is playable ──────────────────────────────────────────────────────
+
+    #[test]
+    fn up_next_row_tap_plays_the_row_under_the_finger() {
+        let mut a = unlocked();
+        // Queue three songs (the Spotify-style right-swipe), then open Up Next.
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        for i in 0..3 {
+            a.swipe(1, 240, 220 + i * library::row_h(Tab::Songs));
+        }
+        assert_eq!(a.queue().len(), 3);
+        a.push(Screen::UpNext);
+        // Render first — `tap` resolves through what was actually drawn.
+        let fonts = FontSet::load();
+        let mut c = Canvas::new();
+        a.render(&mut c, &fonts, &NowPlaying { title: "", artist: "", ..sample_np() });
+        // Row 1 of the queue → play the queue from index 1 (previously: the whole screen was one
+        // "go back to Now Playing" target and the queue could not be played at all).
+        let y = crate::up_next::LIST_TOP + crate::up_next::RH + 10;
+        assert_eq!(a.tap(240, y), vec![Action::PlayQueueAt(1)]);
+    }
+
+    #[test]
+    fn up_next_album_row_tap_plays_that_track() {
+        let mut a = unlocked();
+        a.push(Screen::UpNext);
+        // A track that IS in the sample library, so now_playing_queue resolves its album.
+        let (title, artist, ids) = a
+            .lib
+            .album_groups
+            .iter()
+            .flat_map(|g| &g.albums)
+            .find(|al| al.track_list.len() > 2)
+            .map(|al| {
+                (
+                    al.track_list[0].title.clone(),
+                    al.track_list[0].artist.clone(),
+                    al.track_list.iter().map(|s| s.object_id).collect::<Vec<_>>(),
+                )
+            })
+            .expect("sample album");
+        let fonts = FontSet::load();
+        let mut c = Canvas::new();
+        a.render(&mut c, &fonts, &NowPlaying { title: &title, artist: &artist, ..sample_np() });
+        let y = crate::up_next::LIST_TOP + 2 * crate::up_next::RH + 10;
+        assert_eq!(a.tap(240, y), vec![Action::PlayIndex(ids[2])]);
+    }
+
+    // ── Shelf ───────────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn shelf_go_leaves_a_working_back_button() {
+        // Regression: `Go` called go(), which REPLACED the route stack with a single screen, so
+        // Back (and the left-edge swipe) did nothing and the user was stranded.
+        let mut a = unlocked();
+        a.tap(372, 16); // Menu
+        a.tap(200, 91 + 63 + 8); // Library
+        assert_eq!(a.current(), Screen::Library);
+        a.open_shelf();
+        a.tap(420, 582); // header Pin → slot 0
+        a.tap(240, 200); // close
+        a.go(Screen::NowPlaying);
+        a.open_shelf();
+        a.tap(200, 640 + 12); // slot 0 row body → GO
+        assert_eq!(a.current(), Screen::Library);
+        assert!(!a.shelf_is_open());
+        assert_eq!(a.press(Button::Back), vec![]);
+        assert_eq!(a.current(), Screen::NowPlaying, "Back must work after a pin jump");
+    }
+
+    #[test]
+    fn shelf_empty_slot_pins_and_filled_slot_goes() {
+        let mut a = unlocked();
+        a.tap(372, 16);
+        a.tap(200, 91 + 63 + 8); // Library
+        a.open_shelf();
+        // Tap the BODY of empty slot 2 → pins there specifically (it used to pin into slot 0 or,
+        // in the "GO" column, silently close the sheet).
+        a.tap(200, 640 + 2 * 46 + 12);
+        assert!(a.pins[2].is_some());
+        assert!(a.pins[0].is_none());
+        assert!(a.toast.starts_with("Pinned to slot 3"), "{}", a.toast);
+        assert!(a.shelf_is_open(), "pinning must not dismiss the sheet");
+        // The × column forgets it.
+        a.tap(440, 640 + 2 * 46 + 12);
+        assert!(a.pins[2].is_none());
+    }
+
+    #[test]
+    fn shelf_restores_the_whole_place_not_just_the_screen() {
+        let mut a = unlocked();
+        // A library tall enough to actually scroll (the design sample fits on one screen).
+        let mut lib = Library::sample();
+        lib.songs = (0..120)
+            .map(|i| SongRow { title: format!("Track {i:03}"), object_id: i, ..Default::default() })
+            .collect();
+        a.set_library(lib);
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        a.lib_sort = 2;
+        a.scroll_px(140);
+        let scroll = a.lib_scroll_px;
+        assert!(scroll > 0);
+        a.open_shelf();
+        a.tap(420, 582); // Pin
+        a.tap(240, 200); // close
+        // Wander off: different tab, different sort, scrolled back to the top.
+        a.lib_tab = Tab::Albums;
+        a.lib_sort = 0;
+        a.lib_scroll_px = 0;
+        a.go(Screen::NowPlaying);
+        a.open_shelf();
+        a.tap(200, 640 + 12); // GO
+        assert_eq!(a.current(), Screen::Library);
+        assert_eq!(a.lib_tab, Tab::Songs);
+        assert_eq!(a.lib_sort, 2);
+        assert_eq!(a.lib_scroll_px, scroll, "the list position is part of 'the place'");
+    }
+
+    #[test]
+    fn shelf_pins_survive_a_reboot() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Artists;
+        a.lib_sort = 1;
+        a.lib_scroll_px = 96;
+        a.open_shelf();
+        a.tap(420, 582);
+        let encoded = a.shelf_pin_encode(0);
+        assert!(!encoded.is_empty());
+        // A fresh boot restores it from the config line.
+        let mut b = unlocked();
+        b.shelf_pin_decode(0, &encoded);
+        assert_eq!(b.pins[0], a.pins[0]);
+        // Garbage in a hand-edited config clears the slot rather than panicking.
+        b.shelf_pin_decode(0, "not|a|pin");
+        assert!(b.pins[0].is_none());
+        b.shelf_pin_decode(1, "");
+        assert!(b.pins[1].is_none());
+    }
+
+    #[test]
+    fn shelf_swallows_drags_meant_for_the_sheet() {
+        // Regression: a drag on the modal sheet scrolled (and flung) the list behind it, so the
+        // Shelf appeared frozen while the screen moved underneath.
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.scroll_px(200);
+        let before = a.lib_scroll_px;
+        a.open_shelf();
+        a.scroll_px(300);
+        a.fling(2000.0);
+        a.tick();
+        assert_eq!(a.lib_scroll_px, before, "the sheet must own the gesture");
+    }
+
+    // ── Settings: scroll + UI scale slider ──────────────────────────────────────────────────
+
+    #[test]
+    fn settings_about_rows_are_reachable() {
+        // Regression: the ABOUT section was laid out past y=800 with no scrolling, so "Firmware"
+        // was half off the panel and "Model" was entirely off it — and `row_at` agreed, so they
+        // could never be tapped either.
+        let mut a = unlocked();
+        a.stack = vec![Screen::Settings];
+        for _ in 0..crate::settings::ROWS {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.settings_sel, crate::settings::ROW_MODEL);
+        assert!(a.settings_scroll_px > 0, "the cursor must scroll the list");
+        // The last row is now inside the window and hit-testable.
+        let top = crate::settings::row_top_px(crate::settings::ROW_MODEL);
+        let y = crate::settings::LIST_TOP + top - a.settings_scroll_px + 10;
+        assert!(y < crate::settings::LIST_BOTTOM);
+        assert_eq!(crate::settings::row_at(y, a.settings_scroll_px), Some(crate::settings::ROW_MODEL));
+    }
+
+    #[test]
+    fn settings_scrolls_by_drag_and_clamps() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Settings];
+        let max = crate::settings::max_scroll_px();
+        assert!(max > 0, "the settings list is taller than the panel");
+        a.scroll_px(10_000);
+        assert_eq!(a.settings_scroll_px, max);
+        a.scroll_px(-10_000);
+        assert_eq!(a.settings_scroll_px, 0);
+    }
+
+    #[test]
+    fn ui_scale_slider_scrubs_taps_and_steps() {
+        let _scale = lock_scale();
+        let mut a = unlocked();
+        crate::text::set_scale_pct(100);
+        a.stack = vec![Screen::Settings];
+        let row_y = crate::settings::LIST_TOP + crate::settings::row_top_px(crate::settings::ROW_UI_SCALE) + 10;
+        // A tap on the track jumps straight to that stop (SeekBar idiom, not tap-to-cycle).
+        let acts = a.tap(460, row_y);
+        assert_eq!(acts, vec![Action::UiScaleChanged]);
+        assert_eq!(crate::text::scale_pct(), *crate::text::SCALE_STEPS.last().unwrap());
+        // Dragging it scrubs live.
+        assert!(a.scrub_begin(100, row_y));
+        a.scrub_move(100);
+        assert_eq!(crate::text::scale_pct(), crate::text::SCALE_STEPS[0]);
+        assert_eq!(a.scrub_end(), vec![Action::UiScaleChanged]);
+        // Buttons step one stop and clamp at both ends.
+        a.settings_sel = crate::settings::ROW_UI_SCALE;
+        a.press(Button::Right);
+        assert_eq!(crate::text::scale_pct(), crate::text::SCALE_STEPS[1]);
+        for _ in 0..20 {
+            a.press(Button::Left);
+        }
+        assert_eq!(crate::text::scale_pct(), crate::text::SCALE_STEPS[0]);
+        for _ in 0..20 {
+            a.press(Button::Right);
+        }
+        assert_eq!(crate::text::scale_pct(), *crate::text::SCALE_STEPS.last().unwrap());
+    }
+
+    #[test]
+    fn text_scale_keeps_measure_and_draw_in_step() {
+        let _scale = lock_scale();
+        // The safety property behind the slider: `fit`/`center`/`right` all resolve through
+        // measure(), so a scale that measure() ignored would silently break every truncation.
+        let fonts = FontSet::load();
+        let st = crate::widgets::sty(crate::text::Family::Sans, crate::text::Weight::Bold, 20.0,
+                                     Theme::day().ink, 0.0);
+        crate::text::set_scale_pct(100);
+        let base = crate::text::measure(&fonts, "Atlas Hands", &st);
+        crate::text::set_scale_pct(140);
+        let big = crate::text::measure(&fonts, "Atlas Hands", &st);
+        assert!(big > base * 1.3, "measure() must follow the scale ({base} -> {big})");
+        // draw() advances the pen by the same amount it measured.
+        let mut c = Canvas::new();
+        let pen = crate::text::draw(&mut c, &fonts, 0.0, 40.0, "Atlas Hands", &st);
+        assert!((pen - big).abs() < 0.01, "draw() pen {pen} != measure() {big}");
+        crate::text::set_scale_pct(100);
+    }
+
+    #[test]
+    fn library_tab_taps_land_on_the_labels_that_are_drawn() {
+        let _scale = lock_scale();
+        // Regression: the tab strip was LAID OUT from measured label widths but HIT-TESTED
+        // against hardcoded thresholds (x<120/220/330). At the default size "ALBUMS" is drawn at
+        // x≈94..154, so tapping its left half selected SONGS. This checks the midpoint of every
+        // drawn label selects that label — at three UI scales, since the labels move with the
+        // scale and fixed thresholds could not have followed.
+        let fonts = FontSet::load();
+        for pct in [80u32, 100, 140] {
+            crate::text::set_scale_pct(pct);
+            let mut a = unlocked();
+            a.stack = vec![Screen::Library];
+            let mut c = Canvas::new();
+            a.render(&mut c, &fonts, &sample_np()); // caches the drawn strip
+            for (tab, x, w) in library::tab_layout(&fonts) {
+                let mid = (x + w / 2.0) as i32;
+                a.tap(mid, library::TAB_TOP + 10);
+                assert_eq!(a.lib_tab, tab, "scale {pct}%: tap at x={mid} picked the wrong tab");
+            }
+        }
+        crate::text::set_scale_pct(100);
+    }
+
+    // ── Bluetooth: real link state ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn bluetooth_screen_reports_the_real_link() {
+        // Regression: the screen showed a CONNECTED card naming "WH-1000XM5" whenever the UI
+        // toggle was on, whether or not anything was actually connected.
+        let mut a = unlocked();
+        assert!(a.bt_on);
+        assert!(!a.bt_connected(), "no link until the shell reports one");
+        assert!(!a.bt_link_known(), "and we say we don't know, rather than guessing");
+        assert_eq!(a.bt_peer(), None);
+        assert!(a.set_bt_link(1, "WH-1000XM4"));
+        assert_eq!(a.bt_peer(), Some("WH-1000XM4"));
+        assert!(a.bt_link_known());
+        assert!(!a.set_bt_link(1, "WH-1000XM4"), "no change → no repaint");
+        // A link with no resolvable name still reads as connected, honestly.
+        assert!(a.set_bt_link(1, ""));
+        assert_eq!(a.bt_peer(), Some("Connected device"));
+        // Dropping the link clears the card.
+        assert!(a.set_bt_link(0, ""));
+        assert_eq!(a.bt_peer(), None);
+        assert!(a.bt_link_known());
+        // And "we can't tell on this firmware" is its own state, not a fake disconnect.
+        assert!(a.set_bt_link(-1, ""));
+        assert!(!a.bt_link_known());
     }
 
     #[test]
