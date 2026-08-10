@@ -210,6 +210,18 @@ int  cinder_liked_count(void);
  * cinder_scrub_end() at release returns the ms to hand to cinder_audio_seek_ms (-1 = nothing to
  * do). While a scrub is active, incoming position updates are ignored so the bar can't fight the
  * finger. */
+/* ◁ semantics. Returns 1 when the current position is far enough into the track that ◁ should
+ * REWIND to the start rather than step to the previous track (the standard 3 s convention).
+ * The shell also falls back to a seek(0) when PlayController::PrevTrack() reports failure — at
+ * the head of a sequence there is nothing to step back to, and ◁ used to do nothing at all. */
+/* Leave the transient backlight-off state (brightness level 0) and return to the last visible
+ * level. Returns 1 if it changed. The shell calls this on the next input after it applied 0, so a
+ * fully dark panel is always one touch from coming back and is never persisted. */
+int  cinder_brightness_wake(void);
+int  cinder_prev_means_restart(void);
+/* Tell the UI that the SHELL seeked playback to `ms` (the ◁ rewind paths), so the progress bar
+ * snaps there instead of extrapolating from the pre-seek anchor for ~1 s. */
+void cinder_notify_seek_ms(int ms);
 int  cinder_scrub_hit(int x, int y);
 int  cinder_scrub_to(int x);
 int  cinder_scrub_end(void);

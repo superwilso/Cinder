@@ -46,6 +46,38 @@ pub fn center(c: &mut Canvas, f: &FontSet, cx: f32, baseline: f32, s: &str, st: 
 }
 
 /// Truncate `s` (with a trailing ellipsis) so it fits within `max_w` px.
+/// Draw a LEFT label and a RIGHT value on the same baseline without ever letting them collide.
+///
+/// The right item is measured first and keeps its full width (it is the value — truncating
+/// "FLAC 24-bit / 96.0 kHz" to "FLAC 24-bit / 96.0…" would be worse than shortening the artist);
+/// the left item is then `fit()` into whatever is left, minus `gap`.
+///
+/// This exists because a fixed left x plus a fixed right edge is only safe at ONE text size. With
+/// the UI-scale slider both runs grow, and at 140% the Now Playing artist ran straight through the
+/// codec string in the middle of the line. Anywhere two runs share a baseline, they have to be
+/// laid out from their MEASURED widths — the same single-source rule the tab strip and the lists
+/// already follow.
+#[allow(clippy::too_many_arguments)]
+pub fn row_pair(
+    c: &mut Canvas,
+    f: &FontSet,
+    left_x: f32,
+    right_x: f32,
+    baseline: f32,
+    left: &str,
+    left_st: &TextStyle,
+    right: &str,
+    right_st: &TextStyle,
+    gap: f32,
+) {
+    let rw = if right.is_empty() { 0.0 } else { text::measure(f, right, right_st) };
+    let avail = (right_x - rw - gap - left_x).max(0.0);
+    text::draw(c, f, left_x, baseline, &fit(f, left, left_st, avail), left_st);
+    if !right.is_empty() {
+        self::right(c, f, right_x, baseline, right, right_st);
+    }
+}
+
 pub fn fit(f: &FontSet, s: &str, st: &TextStyle, max_w: f32) -> String {
     if text::measure(f, s, st) <= max_w {
         return s.to_string();
