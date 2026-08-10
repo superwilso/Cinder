@@ -7,13 +7,95 @@
 //!
 //! Keys → device buttons:
 //!   Arrows = Up/Down/Left/Right   Enter = Select   Backspace = Back   Tab = Option
-//!   Space = Play/Pause   = / -    = Volume +/-     H = Home   P = Power (lock/sleep)
-//!   (the navigator boots LOCKED — press any key to wake, like the device)   Q/Esc = quit
+//!   Space = Play/Pause   = / -    = Volume +/-     H = Home   P = Power (screen on/off)
+//!   L = the HOLD SWITCH (lock/unlock) — the navigator boots LOCKED, and per the device only the
+//!   Hold switch unlocks (Power just toggles the panel), so without this key the sim could not be
+//!   woken at all. Q/Esc = quit
+//!
+//! **Mouse = the touchscreen.** The NW-A55 has no d-pad — touch is its primary navigation — so a
+//! keyboard-only sim could not reach most of the UI (the Shelf sheet, the progress rail, list rows,
+//! the library tabs, the Settings sliders). The pointer is wired through the SAME classifier
+//! `cinder-home/src/main.cpp` runs on real evdev frames, with the same thresholds, so a gesture
+//! here takes the same path it takes on the panel:
+//!   left-edge → right = Back · ~stationary = tap · mostly-vertical past slop = live drag + fling
+//!   · horizontal = swipe · and a contact the UI CLAIMS (`scrub_begin`) drives a slider instead.
 
 use cinder_ui::nav::{App, Button};
 use cinder_ui::now_playing::NowPlaying;
 use cinder_ui::{Canvas, FontSet, Library, H, W};
-use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Window, WindowOptions};
+
+/// Pointer state for the touch classifier — mirrors the shell's `g_touch_*` / `g_drag_*` globals.
+#[derive(Default)]
+struct Touch {
+    down: bool,
+    start: (i32, i32),
+    cur: (i32, i32),
+    drag: bool,
+    last_y: i32,
+    scrub: bool,
+}
+
+impl Touch {
+    /// Contact begins. The UI gets first refusal on the gesture (progress rail / UI-scale slider);
+    /// a claim routes everything to `scrub_*` and skips tap/swipe/drag entirely.
+    fn press(&mut self, app: &mut App, x: i32, y: i32) {
+        app.stop_fling();
+        *self = Touch { down: true, start: (x, y), cur: (x, y), last_y: y, ..Default::default() };
+        self.scrub = app.scrub_begin(x, y);
+    }
+
+    /// Contact moves. Vertical past a 12px slop promotes to a live drag (streams pixel deltas).
+    fn motion(&mut self, app: &mut App, x: i32, y: i32) {
+        if !self.down {
+            return;
+        }
+        self.cur = (x, y);
+        if self.scrub {
+            app.scrub_move(x);
+            return;
+        }
+        if !self.drag {
+            let (dx, dy) = (x - self.start.0, y - self.start.1);
+            if dy.abs() > 12 && dy.abs() > dx.abs() {
+                self.drag = true;
+                self.last_y = y;
+            }
+            return;
+        }
+        let d = y - self.last_y;
+        if d != 0 {
+            app.scroll_px(-d); // finger up = show later rows
+            self.last_y = y;
+        }
+    }
+
+    /// Contact ends — classify exactly as the shell does at finger-up.
+    fn release(&mut self, app: &mut App) -> Vec<cinder_ui::nav::Action> {
+        let acts = if !self.down {
+            vec![]
+        } else if self.scrub {
+            app.scrub_end()
+        } else if self.drag {
+            vec![] // (the shell hands the release velocity to cinder_touch_fling here)
+        } else {
+            let (sx, sy) = self.start;
+            let (cx, cy) = self.cur;
+            let (dx, dy) = (cx - sx, cy - sy);
+            if sx <= 38 && dx >= 120 {
+                app.press(Button::Back) // left-edge → rightward
+            } else if dx.abs() < 26 && dy.abs() < 26 {
+                app.tap(cx, cy) // ~stationary (26px: sloppy thumbs read as micro-drags)
+            } else if dx.abs() > dy.abs() && dx.abs() >= 60 {
+                app.swipe(if dx < 0 { -1 } else { 1 }, sx, sy)
+            } else {
+                vec![]
+            }
+        };
+        *self = Touch::default();
+        acts
+    }
+}
 
 fn key_to_button(k: Key) -> Option<Button> {
     Some(match k {
@@ -35,8 +117,12 @@ fn key_to_button(k: Key) -> Option<Button> {
 
 fn main() {
     let fonts = FontSet::load();
-    // Boot LOCKED, like the device. A bigger sample library so scrolling is visible.
-    let mut app = App::new();
+    // Boot LOCKED, like the device — unless `--unlocked` is passed, which matches what the real
+    // shell actually does at bring-up (`render_up()` constructs `App::unlocked()`). Needed for
+    // scripted/headless runs: only the Hold switch unlocks, and a synthetic X server with no
+    // window manager can't deliver the keystroke.
+    let unlocked = std::env::args().any(|a| a == "--unlocked");
+    let mut app = if unlocked { App::unlocked() } else { App::new() };
     app.set_library(big_library());
 
     // Sample now-playing (on the device this is pushed from PlayerService each second).
@@ -74,14 +160,37 @@ fn main() {
     window.set_target_fps(60);
 
     let mut c = Canvas::new();
+    let mut touch = Touch::default();
+    let mut was_down = false;
     while window.is_open() && !window.is_key_down(Key::Q) && !window.is_key_down(Key::Escape) {
         for k in window.get_keys_pressed(KeyRepeat::Yes) {
-            if let Some(b) = key_to_button(k) {
+            if k == Key::L {
+                app.set_hold(!app.locked); // the physical Hold switch — the ONLY unlock
+            } else if let Some(b) = key_to_button(k) {
                 app.press(b);
             } else if k == Key::V {
                 app.set_viz_kind((app.viz_kind() + 1) % cinder_ui::viz::COUNT); // cycle visualiser type
             }
         }
+        // ── touchscreen ──
+        let down = window.get_mouse_down(MouseButton::Left);
+        let pos = window.get_mouse_pos(MouseMode::Clamp).map(|(x, y)| (x as i32, y as i32));
+        if let Some((mx, my)) = pos {
+            if down && !was_down {
+                touch.press(&mut app, mx, my);
+            } else if down {
+                touch.motion(&mut app, mx, my);
+            }
+        }
+        if !down && was_down {
+            let acts = touch.release(&mut app);
+            // The device shell hands these to PlayerService; here, print them so a scripted run
+            // can see WHICH action a gesture produced, not just the frame it left behind.
+            for a in &acts {
+                println!("action: {a:?}");
+            }
+        }
+        was_down = down;
         app.tick(); // advance HUD/overlay countdowns (volume), like the device pump
         // Animate the visualiser while "playing" on Now Playing (mirrors cinder-ffi on device).
         if np.playing && app.is_now_playing() && app.viz_on() {
