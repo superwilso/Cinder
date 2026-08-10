@@ -116,6 +116,8 @@ struct Framebuffer {
     stride: usize,
     pages: usize,
     map_len: usize,
+    /// Write every mapped page instead of just the displayed one (escape hatch — see `blit`).
+    all_pages: bool,
 }
 
 impl Framebuffer {
@@ -158,11 +160,17 @@ impl Framebuffer {
             return Err("mmap fb0 failed".into());
         }
         let pages = (var.yres_virtual / var.yres.max(1)).max(1) as usize;
+        let all_pages = std::path::Path::new("/contents/cinder_fb_allpages").exists();
         println!(
-            "cinder-ffi: fb {}x{} {}bpp stride {} pages {} — flip-on-blit active (FBIOPUT+FORCE)",
-            var.xres, var.yres, var.bits_per_pixel, stride, pages
+            "cinder-ffi: fb {}x{} {}bpp stride {} pages {} (writing {}) — flip-on-blit active (FBIOPUT+FORCE)",
+            var.xres,
+            var.yres,
+            var.bits_per_pixel,
+            stride,
+            pages,
+            if all_pages { "ALL" } else { "page 0 only" }
         );
-        Ok(Framebuffer { _file: file, fd, var, base: ptr as usize, stride, pages, map_len })
+        Ok(Framebuffer { _file: file, fd, var, base: ptr as usize, stride, pages, map_len, all_pages })
     }
 
     /// Blit one canvas to every page (the panel is triple-buffered).
@@ -176,7 +184,15 @@ impl Framebuffer {
     fn blit(&mut self, buf: &[u32]) {
         let base = self.base as *mut u8;
         let copy_bytes = (W * 4).min(self.stride);
-        for page in 0..self.pages {
+        // PAGES. The panel maps 3 (yres_virtual = 3×800) and this used to memcpy the canvas into
+        // ALL of them — ~4.6 MB per frame instead of ~1.5 MB. But we never pan: both the open
+        // sequence and every flip below pin `yoffset = 0`, so page 0 is the only one the panel
+        // ever scans. Writing the other two was memory bandwidth (and heat) spent on pixels
+        // nothing displays. `/contents/cinder_fb_allpages` restores the old behaviour if a unit
+        // ever turns out to page-flip internally — the symptom would be tearing or flicker, and
+        // the active mode is logged at open.
+        let write_pages = if self.all_pages { self.pages } else { 1 };
+        for page in 0..write_pages {
             for y in 0..H {
                 let dst_row = (page * H + y) * self.stride;
                 if dst_row + copy_bytes > self.map_len || (y + 1) * W > buf.len() {
@@ -596,8 +612,8 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 // Serialise the persisted UI preferences (theme + visualiser + EQ + sound effects) to the file body.
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
-    format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbt_volume={}\nbrightness={}\nscreen_off={}\n",
+    let mut body = format!(
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbt_volume={}\nbrightness={}\nscreen_off={}\nui_scale={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -612,9 +628,19 @@ fn settings_body(r: &Render) -> String {
         r.app.bt_ldac_quality(),
         r.app.volume_level(),
         r.app.bt_volume_level(),
-        r.app.brightness(),
+        r.app.brightness_restore(), // never 0: backlight-off is transient, not a setting
         r.app.screen_off_s(),
-    )
+        r.app.ui_scale_pct(),
+    );
+    // Shelf pins were session-scoped, so every reboot silently wiped the user's bookmarks — the
+    // one thing a "pin this place" feature must not do. One line per occupied slot.
+    for i in 0..cinder_ui::shelf::SLOTS {
+        let enc = r.app.shelf_pin_encode(i);
+        if !enc.is_empty() {
+            body.push_str(&format!("pin{i}={enc}\n"));
+        }
+    }
+    body
 }
 
 // Write the preferences to the configured file IF they changed since the last write (cheap body
@@ -1479,6 +1505,50 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 }
             }
         }
+        Action::PlayQueueAt(n) => {
+            // Play the USER queue (swipe-to-queue) as a real track sequence, starting at the
+            // tapped row. Until now a queue row played that track's ALBUM context, so Up Next
+            // displayed one list while the transport stepped through another — the queue was
+            // visible but not actually playable. Reuses the album-play channel wholesale
+            // (pending_play → the shell's NodeTrackSequence path): no new device-facing surface.
+            // Resolve in the queue's CURRENT order — the user may have reordered it, and the row
+            // they tapped is an index into what Up Next is showing, not into any original order.
+            let ids: Vec<i64> = r.app.queue().iter().map(|s| s.object_id).collect();
+            let seq: Vec<cinder_db::Track> = match r.db.as_ref() {
+                Some(db) => ids
+                    .iter()
+                    .filter_map(|id| db.track_by_object_id(*id).ok().flatten())
+                    .collect(),
+                None => Vec::new(),
+            };
+            if seq.is_empty() {
+                eprintln!("cinder-ffi: PlayQueueAt({n}): queue did not resolve to any file — ignored");
+                return None;
+            }
+            set_pending(r, seq, (*n).min(ids.len().saturating_sub(1)));
+            8
+        }
+        Action::Seek(permille) => {
+            // Only reachable from the HOST sim, which drives `nav::App` directly. On device the
+            // rail is routed through cinder_scrub_hit/_to/_end, which owns the millisecond math
+            // and the "ignore incoming positions mid-drag" rule; that path never produces this
+            // action. Preview the position so the sim's bar still tracks the gesture.
+            if r.cur_duration_ms > 0 {
+                let target = r.cur_duration_ms * (*permille).min(1000) as i64 / 1000;
+                r.play_pos_ms = target;
+                let dur = r.cur_duration_ms;
+                set_progress(&mut r.np, target, dur);
+                r.dirty = true;
+            }
+            return None;
+        }
+        Action::UiScaleChanged => {
+            // Pure UI: the text scale is a global already applied by measure+draw. Repaint and
+            // persist. (A scrub-driven change is saved by cinder_scrub_end instead.)
+            r.dirty = true;
+            save_settings(r);
+            return None;
+        }
         Action::PlayPlaylist(playlist_id) => {
             // Same channel as PlayIndex — the members become the pending sequence, starting at
             // the top — so the shell keeps handling exactly one "play these URIs" action and
@@ -2065,7 +2135,26 @@ pub extern "C" fn cinder_set_usb_dac(on: libc::c_int) {
     }
 }
 
-/// The UI's panel-brightness level, 1..=5. Read after a CINDER_ACT_BRIGHTNESS_CHANGED action (and
+/// Leave the transient backlight-off state (brightness 0) and return to the last visible level.
+/// Returns 1 if it changed, so the shell only rewrites the backlight node when it must.
+///
+/// Level 0 turns the panel's backlight fully off while the app keeps running — useful in the dark,
+/// and it costs nothing to leave because ANY input restores it. That is what makes a setting the
+/// Settings screen itself cannot be read at safe to offer: it is not persisted, it does not
+/// survive a reboot, and the next thing you touch undoes it.
+#[no_mangle]
+pub extern "C" fn cinder_brightness_wake() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    if r.app.brightness_wake() {
+        r.dirty = true;
+        1
+    } else {
+        0
+    }
+}
+
+/// The UI's panel-brightness level, 0..=5 (0 = backlight off, transient — see cinder_brightness_wake). Read after a CINDER_ACT_BRIGHTNESS_CHANGED action (and
 /// at boot) and map it onto the backlight node. Never returns 0 — the shell's lowest level must
 /// stay readable, or the screen you'd use to turn it back up is unreadable. Defaults to 4 (which
 /// matches the shell's ~70% day level) if the renderer isn't up yet.
@@ -2626,6 +2715,19 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_brightness(n);
                         }
                     }
+                    "ui_scale" => {
+                        // set_ui_scale_pct clamps into the SCALE_STEPS range.
+                        if let Ok(n) = v.parse::<u32>() {
+                            r.app.set_ui_scale_pct(n);
+                        }
+                    }
+                    // Shelf pins: `pin0=`…`pin2=`. A malformed record clears that slot rather
+                    // than failing the whole load — a hand-edited config must never stop a boot.
+                    k if k.starts_with("pin") => {
+                        if let Ok(i) = k[3..].parse::<usize>() {
+                            r.app.shelf_pin_decode(i, v);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -2836,17 +2938,65 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
 /// whole contact to the scrub instead of the usual tap / list-drag / swipe classification.
 #[no_mangle]
 pub extern "C" fn cinder_scrub_hit(x: libc::c_int, y: libc::c_int) -> libc::c_int {
-    let guard = cell().lock().unwrap();
-    let Some(r) = guard.as_ref() else { return 0 };
-    if !r.app.is_now_playing() || r.cur_duration_ms <= 0 {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    // The CLAIM lives in nav (`App::scrub_begin`) — one place that knows which horizontal
+    // controls exist and where they are drawn, shared with the host sim. What stays here is the
+    // millisecond math for the rail, which needs the track duration the UI doesn't carry.
+    if !r.app.scrub_begin(x as i32, y as i32) {
         return 0;
     }
-    let (x, y) = (x as i32, y as i32);
-    let in_band = y >= cinder_ui::now_playing::RAIL_GRAB_TOP
-        && y <= cinder_ui::now_playing::RAIL_GRAB_BOT;
-    // Horizontally generous: the full width is the rail plus its end caps, so a finger slightly
-    // past either end still scrubs to 0% / 100% rather than doing nothing.
-    if in_band && x >= 0 && x <= 480 { 1 } else { 0 }
+    if r.app.scrub_is_ui_scale() {
+        r.dirty = true;
+        return 1;
+    }
+    // Progress rail: a track with no known duration has nothing to seek within, so decline the
+    // gesture and let it classify as a normal tap/drag instead of dead-ending in a scrub.
+    if r.cur_duration_ms <= 0 {
+        r.app.scrub_end();
+        return 0;
+    }
+    1
+}
+
+/// How far into a track ◁ stops meaning "previous track" and starts meaning "rewind to the
+/// start". 3 s is the near-universal convention (iPod, Walkman, phones).
+const PREV_RESTART_MS: i64 = 3_000;
+
+/// Does ◁ mean "restart this track" rather than "step to the previous one" at this position?
+/// Pure, so the rule is unit-testable without a device or a framebuffer.
+fn prev_means_restart(pos_ms: i64, dur_ms: i64) -> bool {
+    dur_ms > 0 && pos_ms > PREV_RESTART_MS
+}
+
+/// Should the shell treat ◁ as a rewind-to-start instead of `PlayController::PrevTrack()`?
+///
+/// The reported bug: ◁ was an unconditional PrevTrack(), and at the HEAD of a sequence — a
+/// single-track queue, or the first track of an album you just tapped — there is nowhere to step
+/// back to, so the button did nothing at all. Mid-track it had the opposite problem: it jumped
+/// away when the user meant "start this again". Both halves are handled: this decides the common
+/// case up front, and the shell falls back to a seek(0) when PrevTrack itself reports failure.
+#[no_mangle]
+pub extern "C" fn cinder_prev_means_restart() -> libc::c_int {
+    let guard = cell().lock().unwrap();
+    let Some(r) = guard.as_ref() else { return 0 };
+    prev_means_restart(r.play_pos_ms, r.cur_duration_ms) as libc::c_int
+}
+
+/// Tell the UI that playback jumped to `ms` because the SHELL seeked on its own (the ◁ rewind
+/// paths). Re-anchors the position interpolator exactly as `cinder_scrub_end` does, so the bar
+/// snaps to the new position instead of extrapolating from the pre-seek anchor for ~1 s.
+#[no_mangle]
+pub extern "C" fn cinder_notify_seek_ms(ms: libc::c_int) {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return };
+    let target = (ms.max(0) as i64).min(r.cur_duration_ms.max(0));
+    r.play_pos_ms = target;
+    r.real_pos_ms = target;
+    r.real_pos_at = std::time::Instant::now();
+    let dur = r.cur_duration_ms;
+    set_progress(&mut r.np, target, dur);
+    r.dirty = true;
 }
 
 /// Move an in-progress drag-to-seek to UI x. Returns the target position in ms (>= 0), or -1 if
@@ -2856,6 +3006,12 @@ pub extern "C" fn cinder_scrub_hit(x: libc::c_int, y: libc::c_int) -> libc::c_in
 pub extern "C" fn cinder_scrub_to(x: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -1 };
+    if r.app.scrub_is_ui_scale() {
+        // Settings ▸ UI scale: applies live as the finger moves. No seek target to report.
+        r.app.scrub_move(x as i32);
+        r.dirty = true;
+        return -1;
+    }
     if r.cur_duration_ms <= 0 {
         return -1;
     }
@@ -2876,6 +3032,13 @@ pub extern "C" fn cinder_scrub_to(x: libc::c_int) -> libc::c_int {
 pub extern "C" fn cinder_scrub_end() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -1 };
+    if r.app.scrub_is_ui_scale() {
+        r.app.scrub_end();
+        r.dirty = true;
+        save_settings(r); // the scale is persisted, so it survives the next boot
+        return -1;
+    }
+    r.app.scrub_end(); // release nav's claim; the ms target below is this layer's business
     match r.scrub_ms.take() {
         Some(target) => {
             // Re-anchor the interpolator on the seek target. Without this, clock_tick would keep
@@ -3614,6 +3777,19 @@ mod tests {
         // A missing file is an empty list, not an error — first run has no file.
         assert!(liked_load("/nonexistent/cinder/liked.conf").is_empty());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prev_rewinds_past_the_grace_window() {
+        // The reported bug: ◁ was an unconditional PlayController::PrevTrack(), so at the head of
+        // a queue it did nothing at all, and mid-track it jumped away instead of restarting.
+        assert!(!prev_means_restart(0, 240_000), "at the very start ◁ steps back a track");
+        assert!(!prev_means_restart(3_000, 240_000), "the grace window itself still steps back");
+        assert!(prev_means_restart(3_001, 240_000), "past it, ◁ rewinds to the start");
+        assert!(prev_means_restart(200_000, 240_000));
+        // Unknown duration (track not in the DB) → no position to rewind within, so step back and
+        // let the shell's PrevTrack-failed fallback cover the head-of-sequence case.
+        assert!(!prev_means_restart(90_000, 0));
     }
 
     #[test]

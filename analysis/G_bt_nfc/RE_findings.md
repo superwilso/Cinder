@@ -969,3 +969,93 @@ never executed.
 
 Next step is one command with a phone against the rear panel:
 `cinder-probe --nfc 30`.
+
+---
+
+## Round g (2026-08-10) — the negotiated codec, and Sony's OTHER Bluetooth mode
+
+### The codec the UI shows was never the codec in use
+
+Everything the Bluetooth screen displays is the user's **preference** — `SetLdac` / `SetAptxHD` /
+`SetAptxClassic`, applied before `RequestConnection`. But A2DP **negotiates**, so a sink that
+cannot do LDAC silently lands on SBC while the UI still says "LDAC". Nothing ever asked what was
+actually agreed.
+
+`BtTransmitterServiceClient` **slot 26** is the answer:
+
+```
+virtual void GetSoundStatus(BtSoundCodec&, BtSoundFrequency&, BtSoundChannel&, bool&)
+```
+
+Four OUT params, **all scalars** (three enums + a bool). That is what makes it safe to call blind,
+unlike `GetCapabilities` (takes a `pst::base::vector`) or `GetConnectInformation` (holds a
+`std::string`) — the call that crashed twice before the container layout was recovered.
+
+Exercised on device via `cinder-probe --btwho`, radio OFF: all four out-params were **written**
+(0xDEAD sentinels came back as 0), so the ABI is right. The enumerators are NOT yet mapped — with
+nothing connected every field is 0, and `0` is therefore "none/unset" rather than SBC. The service's
+own log line is the key to the map:
+
+```
+codec:0x%02x channel:0x%02x frequency:0x%02x bit_per_sample:0x%02x
+```
+
+so one run with a known headphone connected settles it. **Do not guess the enumerators** — same
+rule as `BtLdacSoundQuality`.
+
+### Sony's alternative Bluetooth mode = RECEIVER (the Walkman as an A2DP SINK)
+
+`BtTransmitterService` sends audio OUT to headphones. **`BtPlayerService` is the mirror image**: a
+phone streams TO the Walkman, and the CXD3778GF DAC/amp drives whatever is in the 3.5 mm jack. The
+HAL half is `libaudiohal-a2dpsnksingletrack.so` ("a2dp **snk**"), catalogued back in CLAUDE.md §H3
+as "BT-receive sink, Walkman as BT speaker".
+
+It is worth having: the amp is the expensive part of this device and a phone has nothing like it.
+Note `SetLDAC` on the **sink** side — this can RECEIVE LDAC, which few receivers do.
+
+**`BtPlayerServiceClient` vtable**, recovered from `_ZTVN3pst8services21BtPlayerServiceClientE` at
+`0x313dc`. `.data.rel.ro` is relocated at load, so the file words are all zero — the slot map comes
+from the `R_ARM_ABS32` relocation entries covering that range, not from the raw bytes. (Reading the
+bytes gives 34 zeros and looks like a dead end.)
+
+| slot | method | slot | method |
+|---|---|---|---|
+| 4 | `GetServiceName` | 19 | `GetPlayStatus` |
+| 5 | `GetAvSnkConnectionStatus` | 20 | `SendCommand(BtPlayControl&, bool&)` |
+| 6 | `GetAvrcpConnectionStatus` | 21 | `SendCommand(uint8&, bool&)` |
+| 7 | `GetConnectInformation` | 22 | `SetAAC` |
+| 8 | `RequestConnection` | 23 | `SetLDAC` |
+| 9 | `RequestConnectionWithRoleSwitch` | 24 | `SetLDACBufferControl` |
+| 10 | `RequestLastDeviceConnection` | 25 | `SetDriftControl` |
+| 11 | `RequestDisconnection` | 26 | `GetTrackCodec` |
+| 12 | `RequestCancelConnection` | 27 | `GetTrackFreq` |
+| 13 | `RequestStartConnectWait` | 28 | `GetTrackChannel` |
+| 14 | `RequestStopConnectWait` | 29 | `GetTrackScmst` |
+| 15 | `StartSound` | 30 | `GetBitrate` |
+| 16 | `StopSound` | **31** | **`AddListener`** |
+| 17 | `SetCurrentVolume` | **32** | **`RemoveListener`** |
+| 18 | `GetMedia(BtMetadataType&)` | 33 | `GetName` |
+
+Third independent confirmation of the general rule: **registration sits immediately after the last
+service method**, not at a fixed slot (BtCommon 30/31, Nfc 10/11, BtPlayer 31/32).
+
+Listener slots, in declaration order from the exported names: `OnNotifyAvSnkConnectionStatus`,
+`OnNotifyAvrcpConnectionStatus`, `OnNotifyConnectInformation`, `OnNotifyReceiveMedia`,
+`OnNotifyPlayStatus`, `OnNotifyTrackNumber`, `OnNotifyVolumeDown`, `OnNotifyVolumeUp`,
+`OnNotifyChangeVolume`, `OnNotifyRemoteVersion`, `OnNotifySoundStatus`, `OnNotifyBitrate`,
+`OnNotifyError`, `OnNotifyAudioSetting`, `OnNotifyReceiveMediaComplete`, `OnNotifyAudioState`,
+`OnNotifyRegisterForAbsVolume`.
+
+`GetTrackCodec` / `GetTrackFreq` / `GetTrackChannel` / `GetBitrate` are **no-arg scalar returns** —
+the receive-side equivalent of `GetSoundStatus`, and just as safe to call.
+
+**Not yet proven: an actual sink connection.** `cinder-probe --btrx <secs>` is written and linked
+(into the PROBE ONLY — `readelf -d cinder-home | grep -c BtPlayerService` = 0, same rule as
+NfcService: no `DT_NEEDED` on the Home app for a path nothing has exercised). It powers the radio
+if needed, `AddListener`, `RequestStartConnectWait` + `SetDiscoverableMode(true)`, polls the track
+codec/freq/bitrate while it waits, then **puts everything back** — StopSound, disconnect,
+StopConnectWait, discoverable off, and the radio off again if it was the one that powered it.
+
+Next step is one run with a phone: `cinder-probe --btrx 40`, pair the Walkman from the phone's
+Bluetooth list, play something. If `OnNotifyReceiveMedia` / `GetBitrate` come back non-zero, the
+sink path is live and the Receiver screen can be wired to it.

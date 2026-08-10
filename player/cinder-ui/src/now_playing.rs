@@ -353,8 +353,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         page_dots(c, t, np.page);
         // title / artist / codec
         text::draw(c, f, 24.0, 558.0, &crate::widgets::fit(f, np.title, &s(Family::Sans, Weight::Bold, 29.0, t.ink, 0.0), 372.0), &s(Family::Sans, Weight::Bold, 29.0, t.ink, 0.0));
-        text::draw(c, f, 24.0, 583.0, np.artist, &s(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0));
-        right(c, f, 456.0, 583.0, np.codec, &s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08));
+        // Artist (left) and codec (right) share this baseline, so they are laid out against each
+        // other rather than against two fixed x values — at 140% the artist used to run straight
+        // through the codec string.
+        crate::widgets::row_pair(
+            c, f, 24.0, 456.0, 583.0,
+            np.artist, &s(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0),
+            np.codec, &s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08),
+            12.0,
+        );
     }
 
     // ---------- like (heart) ----------
@@ -529,6 +536,8 @@ mod tests {
     /// That is the whole reason the row is named "Cover visualiser" rather than "Visualiser".
     #[test]
     fn the_spectrum_page_still_draws_with_the_cover_visualiser_off() {
+        // Draws text, so it shares the crate-wide UI-scale lock (see text::scale_guard).
+        let _scale = crate::text::scale_guard();
         let t = Theme::day();
         let f = FontSet::load();
         let levels: Vec<f32> = (0..36).map(|i| 0.2 + 0.7 * (i as f32 / 36.0)).collect();

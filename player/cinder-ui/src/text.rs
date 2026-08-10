@@ -54,6 +54,33 @@ pub fn set_scale_idx(idx: usize) {
     set_scale_pct(SCALE_STEPS[idx.min(SCALE_STEPS.len() - 1)]);
 }
 
+/// Test-only serialisation for the scale.
+///
+/// `SCALE_PCT` is process-global — there is exactly one UI per process on the device, so that is
+/// the right shape for production. But `cargo test` runs tests on several threads, so a test that
+/// sets 140% will corrupt any concurrent test that measures or renders TEXT, wherever it lives.
+/// (Observed: `settings::tests::scrolling_never_paints_over_the_header` passed alone and failed in
+/// the full run.) Every test that changes the scale — or depends on it, which means every test
+/// that renders — takes this ONE crate-wide lock, and the guard restores 100% on the way out even
+/// if the test panics.
+#[cfg(test)]
+pub fn scale_guard() -> ScaleGuard {
+    static SCALE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let g = ScaleGuard(SCALE_LOCK.lock().unwrap_or_else(|e| e.into_inner()));
+    set_scale_pct(100);
+    g
+}
+
+#[cfg(test)]
+pub struct ScaleGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+impl Drop for ScaleGuard {
+    fn drop(&mut self) {
+        set_scale_pct(100);
+    }
+}
+
 #[inline]
 fn scaled(size: f32) -> f32 {
     size * scale_pct() as f32 / 100.0

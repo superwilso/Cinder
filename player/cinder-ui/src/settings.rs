@@ -13,31 +13,35 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 16;
-/// The actionable rows: Theme / Accent / Visualiser / Visualiser animation / Sleep timer (DISPLAY)
-/// + Battery care (SYSTEM).
+pub const ROWS: usize = 17;
+/// The actionable rows: Theme / Accent / UI scale / Visualiser / Visualiser animation / Sleep
+/// timer (DISPLAY) + Battery care (SYSTEM).
 pub const ROW_THEME: usize = 0;
 /// Accent colour — six swatches, tap one directly (Select cycles).
 pub const ROW_ACCENT: usize = 1;
-pub const ROW_VIZ: usize = 2;
-pub const ROW_VIZ_ANIM: usize = 3;
-pub const ROW_SLEEP: usize = 4;
-pub const ROW_SCREEN_OFF: usize = 5;
-pub const ROW_BRIGHTNESS: usize = 6;
-pub const ROW_BATTERY: usize = 9;
-pub const ROW_USB_MODE: usize = 10; // tapping enters USB mass-storage (file transfer to a PC)
+/// UI text scale — a real slider (tap a stop, or drag it). See `ui_scale_idx_at`.
+pub const ROW_UI_SCALE: usize = 2;
+pub const ROW_VIZ: usize = 3;
+pub const ROW_VIZ_ANIM: usize = 4;
+pub const ROW_SLEEP: usize = 5;
+pub const ROW_SCREEN_OFF: usize = 6;
+pub const ROW_BRIGHTNESS: usize = 7;
+pub const ROW_STORAGE: usize = 8;
+pub const ROW_DATABASE: usize = 9;
+pub const ROW_BATTERY: usize = 10;
+pub const ROW_USB_MODE: usize = 11; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 11;
+pub const ROW_BOOT_STOCK: usize = 12;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 12;
-pub const ROW_POWER_OFF: usize = 13;
+pub const ROW_RESTART: usize = 13;
+pub const ROW_POWER_OFF: usize = 14;
 
 const RH: i32 = 56;
 /// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
 /// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [7, 7, 2];
+const SECTIONS: [usize; 3] = [8, 7, 2];
 
 /// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
 /// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
@@ -82,7 +86,7 @@ pub struct SettingsView<'a> {
 pub fn content_height() -> i32 {
     // header, then each section: eyebrow (24) + its rows, with a 14px gap before every eyebrow
     // after the first.
-    let mut h = 91;
+    let mut h = LIST_TOP;
     for (i, n) in SECTIONS.iter().enumerate() {
         if i > 0 {
             h += 14;
@@ -108,7 +112,7 @@ pub fn row_at(y: i32, scroll: i32) -> Option<usize> {
 /// expressed. `render` walks the same section table, so the two cannot drift.
 fn row_span(scroll: i32) -> impl Iterator<Item = (usize, i32)> {
     let mut out = Vec::with_capacity(ROWS);
-    let mut yy = 91 - scroll;
+    let mut yy = LIST_TOP - scroll;
     let mut r = 0;
     for (i, n) in SECTIONS.iter().enumerate() {
         if i > 0 {
@@ -122,6 +126,15 @@ fn row_span(scroll: i32) -> impl Iterator<Item = (usize, i32)> {
         }
     }
     out.into_iter()
+}
+
+/// Screen-y of the top of the row list (before scrolling). Exposed for tests and for nav's
+/// "keep the cursor visible" arithmetic — the layout constant lives here, not in the caller.
+pub const LIST_TOP: i32 = 91;
+
+/// Content-space top y of row `r` (i.e. at scroll 0, measured from LIST_TOP).
+pub fn row_top_px(r: usize) -> i32 {
+    row_span(0).find(|(i, _)| *i == r).map(|(_, top)| top - 91).unwrap_or(0)
 }
 
 /// Which accent swatch is under `(x, y)`, if any. Returns an index into `Accent::ALL`.
@@ -144,6 +157,53 @@ pub fn accent_hit(x: i32, y: i32, scroll: i32) -> Option<usize> {
 fn eyebrow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str) -> i32 {
     text::draw(c, f, 22.0, (y + 14) as f32, label, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
     y + 24
+}
+
+// ── UI scale slider ─────────────────────────────────────────────────────────────────────────
+// A real slider (track + detents + knob), not a value that cycles on tap: tapping anywhere on the
+// track jumps to that stop, and dragging scrubs live (nav routes the gesture through
+// `App::scrub_*`). Left/Right on the buttons step one stop.
+// The track stops short of the right edge to reserve a gutter for the "NNN%" readout.
+const SLIDER_X0: i32 = 176;
+const SLIDER_W: i32 = 196;
+
+/// Map a tap/drag x on the UI-scale row to a `text::SCALE_STEPS` index. x is clamped, so grabbing
+/// past either end pins to the min/max stop rather than doing nothing.
+pub fn ui_scale_idx_at(x: i32) -> usize {
+    let n = text::SCALE_STEPS.len() as i32;
+    let dx = (x - SLIDER_X0).clamp(0, SLIDER_W);
+    // Round to the nearest stop so the knob lands under the finger.
+    ((dx * (n - 1) * 2 + SLIDER_W) / (SLIDER_W * 2)).clamp(0, n - 1) as usize
+}
+
+/// The UI-scale row. Returns the next y, like `srow`.
+fn slider_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str) -> i32 {
+    let cy = y + RH / 2;
+    if sel {
+        fill_rect(c, 0, y, crate::canvas::W as i32, RH, t.row_sel);
+    }
+    let lc = if sel { t.acc } else { t.ink };
+    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, 20.0, lc, 0.0));
+
+    let n = text::SCALE_STEPS.len() as i32;
+    let idx = text::scale_idx() as i32;
+    fill_rect(c, SLIDER_X0, cy - 1, SLIDER_W, 2, t.line);
+    for i in 0..n {
+        let x = SLIDER_X0 + i * SLIDER_W / (n - 1);
+        fill_rect(c, x - 1, cy - 4, 2, 8, if i <= idx { t.acc } else { t.line });
+    }
+    let kx = SLIDER_X0 + idx * SLIDER_W / (n - 1);
+    fill_rect(c, SLIDER_X0, cy - 1, kx - SLIDER_X0, 2, t.acc);
+    fill_rect(c, kx - 7, cy - 9, 14, 18, t.acc);
+    // The readout is drawn at a CONSTANT pixel size: it is the control that SETS the scale, so
+    // letting it grow with the scale both crowds the knob at 140% and makes this one row the
+    // widest thing on the screen. Compensating here keeps the slider's geometry identical at
+    // every stop — and `ui_scale_idx_at` is scale-independent to match.
+    let unscaled = 14.0 * 100.0 / text::scale_pct() as f32;
+    right(c, f, 458.0, (cy + 4) as f32, &format!("{}%", text::scale_pct()),
+          &sty(Family::Mono, Weight::Regular, unscaled, t.faint, 0.04));
+    hline(c, y + RH, t.line);
+    y + RH
 }
 
 /// A label/value row; highlights when selected. Returns the next y.
@@ -230,7 +290,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     hline(c, y + RH, t.line);
     y += RH;
 
-    // Rows 2-3: the two visualiser axes. ROW_VIZ picks the STYLE (used by the cover overlay AND
+    // Row 2: UI text scale. One global multiplier on every TextStyle size, applied by BOTH
+    // text::measure and text::draw — which is what keeps truncation, centring and right-alignment
+    // exact at any stop. Row heights and tap targets are deliberately NOT scaled, so no hit test
+    // can drift out of step with the render.
+    y = slider_row(c, t, f, y, sel == ROW_UI_SCALE, "UI scale");
+
+    // Rows 3-4: the two visualiser axes. ROW_VIZ picks the STYLE (used by the cover overlay AND
     // by the Now Playing spectrum page); ROW_VIZ_ANIM picks how much of the COVER it takes, where
     // OFF means a completely clean cover.
     y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser style", v.viz_name, false);
@@ -249,11 +315,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
 
     y = eyebrow(c, t, f, y + 14, "SYSTEM");
     // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
-    y = srow(c, t, f, y, sel == 7, "Storage", v.storage, false);
+    y = srow(c, t, f, y, sel == ROW_STORAGE, "Storage", v.storage, false);
     // Database: no chevron. The chevron is this screen's affordance for "tapping does something"
     // (USB mode has one and acts), and this row has no arm in settings_activate — so a chevron here
     // promised a rebuild that never ran.
-    y = srow(c, t, f, y, sel == 8, "Database", "—", false);
+    y = srow(c, t, f, y, sel == ROW_DATABASE, "Database", "—", false);
     // Battery care = Sony "Itawari" charging (caps ~90%). Live On/Off toggle (no chevron — it acts
     // in place), wired to PowerMgrServiceClient::EnableItawariCharging via the shell.
     y = srow(c, t, f, y, sel == ROW_BATTERY, "Battery care", if v.battery_care { "ON · 90%" } else { "OFF" }, false);
@@ -301,6 +367,8 @@ mod tests {
     /// catch any future control that reaches up there, not just the rows that did.
     #[test]
     fn scrolling_never_paints_over_the_header() {
+        // Renders text, so it must not run concurrently with a test that moves the UI scale.
+        let _scale = crate::text::scale_guard();
         let t = Theme::day();
         let f = FontSet::load();
         let mut base = Canvas::new();
@@ -325,6 +393,7 @@ mod tests {
     /// it. The navigator draws the status bar and the Now Playing bar after the screen.
     #[test]
     fn the_clip_is_released_after_rendering() {
+        let _scale = crate::text::scale_guard();
         let t = Theme::day();
         let f = FontSet::load();
         let mut c = Canvas::new();
@@ -337,6 +406,7 @@ mod tests {
     /// Scrolling still has to actually move the rows — otherwise the test above passes trivially.
     #[test]
     fn scrolling_moves_the_content() {
+        let _scale = crate::text::scale_guard();
         let t = Theme::day();
         let f = FontSet::load();
         let mut a = Canvas::new();

@@ -107,6 +107,70 @@ is still preferred.
 
 ---
 
+## TL;DR — 2026-08-10: merged the bug/usability-audit branch (5 reported issues)
+
+Merged `claude/bug-usability-audit-2u2pd6`. Host tests **238 green**; qemu preflight PASS; 44/44
+launcher escape matrix. Much of that branch had already been fixed here independently and usually
+better, so the merge kept OUR version of the status bar (drawn once in `nav::render`, not a
+per-screen thread-local), Settings scrolling (16 rows, already pixel-scrolled), drag-to-seek (at
+the FFI layer, where the track duration and the "ignore incoming positions mid-drag" rule live),
+and Up Next row taps (plus reorder). Ported on top:
+
+1. **◁ rewind** (`main.cpp` `CINDER_ACT_PREV`, `cinder_prev_means_restart`). ◁ was an
+   unconditional `PlayController::PrevTrack()`, which fails two ways: at the HEAD of a sequence
+   there is nowhere to step back to, so the button did NOTHING; mid-track it jumped away when the
+   user meant "start this again". Now: past a 3 s grace window ◁ restarts the track, and a
+   PrevTrack that reports failure falls back to `seek(0)` instead of no-oping.
+2. **Shelf** — six defects. A filled slot's row BODY now GOes (it used to pin the current place
+   into a different slot); an empty slot pins across its whole width (its "GO" column used to
+   return `Go(i)`, which did nothing but still dismissed the sheet); `Go` no longer calls `go()`,
+   so Back survives a pin jump; a pin captures the WHOLE place (tab, sort, scroll, accordion,
+   artist/playlist view) and **persists in `cinder_settings.conf`**; the modal sheet swallows
+   drags meant for it instead of scrolling the list behind; and the volume HUD + toasts now draw
+   ABOVE the sheet, which is the one context where the pin confirmation actually fires.
+3. **Bluetooth volume after reconnect** — Cinder owns the hardware volume but pushed it twice per
+   boot, so a re-opened output left the mixer out of step with the UI. `refresh_bt_route`'s
+   connect edge now re-asserts the volume, the codec preference and the EQ/sound chain, and the
+   volume re-assert is **verify-first** (read the mixer back, write only on drift) so it can never
+   fight a level the user just set. Also runs on screen wake; `CINDER_ACT_SLEEP` is now guarded
+   because waking does a popen.
+   *The edge is driven by pst (`GetBtStatus`/`GetConnectInformation`) — the only link source this
+   firmware has. Measured on device 2026-08-10: `/sys/class/bluetooth`, `hcitool` and
+   `/var/lib/bluetooth` are ALL absent, so a sysfs/BlueZ-shaped detector would never fire here.*
+4. **Heat with Bluetooth** — the framebuffer blit now writes only the displayed page: ~4.6 MB →
+   ~1.5 MB per painted frame. `yoffset` is pinned to 0 at open and on every flip, so pages 1–2
+   were never scanned and writing them was pure memory traffic. Escape hatch
+   `/contents/cinder_fb_allpages`; the mode is logged at fb open (confirmed on device:
+   `pages 3 (writing page 0 only)`). This stacks on the pacing work already here (16 ms awake /
+   100 ms dark, painting skipped entirely while the panel is dark).
+   **Not taken:** the branch's `poll()`-based render loop. Ours already paces on remainder-of-
+   budget and skips the paint when dark; theirs also busy-spins for the first 10 s (`until_force`
+   is forced to 0, `budget == 0` then `continue`s past both the sleep AND its own 16 ms floor).
+   Small idle win, real risk to a boot-critical loop.
+5. **UI scale slider** — Settings ▸ UI scale, 7 stops 80–140%, tap a stop or drag it, persisted.
+   One global multiplier applied by BOTH `text::measure` and `text::draw`, which is what keeps
+   truncation, centring and alignment exact at any scale. Row heights and tap targets are
+   deliberately NOT scaled, so no hit test can drift out of step with the render.
+
+Also merged from that branch: the library tab strip is hit-tested against its MEASURED layout
+(`library::tab_layout`) instead of hardcoded `x<120/220/330` — at the default size "ALBUMS" is
+drawn at x≈94..154, so tapping its left half selected SONGS — plus `fit()` truncation on album
+names, the artist section header and the shuffle-band caption, and a queue row now plays the
+QUEUE from that row (in its reordered order) rather than the tapped track's album, which is what
+made Up Next a display-only list.
+
+**Device-verified so far:** page-0 blit active. **Still unverified:** everything else on this
+list — the device was rebooted mid-session and the BT radio came back off (`GetBtStatus=7`), so
+the reconnect edge has not fired yet.
+
+> **Restarting the Home app: reboot, do NOT `pkill`.** Killing cinder-home makes the launcher log
+> `exited rc=143 (not a crash) — handing back to appmgr`, and appmgr does **not** respawn it: the
+> device is left with no Home app and a zombie launcher until it reboots. Push the binary, then
+> reboot. (Check the latch first — `/data/cinder/bootcount` and the absence of `off` /
+> `DISABLED_badboot` / `cinderhome_off` mean the reboot returns to Cinder, not stock.)
+
+---
+
 ## TL;DR — tenth round (2026-07-03): library ordering + Albums accordion
 
 Library browse gained sort/order options and an inline album view (all 39 UI tests + 8 DB tests
