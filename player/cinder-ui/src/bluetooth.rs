@@ -166,8 +166,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             let col = if on { t.acc_ink } else { t.dim };
             center(c, f, (x + 51) as f32, (QUAL_Y + QUAL_H / 2 + 4) as f32, q, &sty(Family::Sans, Weight::SemiBold, 15.0, col, 0.0));
         }
-        center(c, f, 240.0, (QUAL_Y + QUAL_H + 22) as f32, "Auto adapts the bitrate to the link. Used everywhere, incl. USB-DAC.",
-               &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.04));
+        // Centred text has no fixed edge to truncate against, so it overflows BOTH sides once the
+        // UI scale grows it — at 140% this caption ran off the panel at each end and read as
+        // "…s the bitrate to the link. Used everywhere, incl…". Fit it to the panel width first.
+        let cst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.04);
+        let cap = crate::widgets::fit(f, "Auto adapts the bitrate to the link. Used everywhere, incl. USB-DAC.",
+                                      &cst, (crate::canvas::W as f32) - 44.0);
+        center(c, f, 240.0, (QUAL_Y + QUAL_H + 22) as f32, &cap, &cst);
     }
 
     // pair new device + NFC hint
@@ -175,7 +180,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     let plabel_col = if bt.on { t.acc_ink } else { t.faint };
     icons::bt(c, 178.0, (PAIR_Y + 26) as f32, 17.0, plabel_col);
     text::draw(c, f, 196.0, (PAIR_Y + 31) as f32, "Pair new device", &sty(Family::Sans, Weight::Bold, 17.0, plabel_col, 0.0));
+    // Footer: an NFC hint on the left and the Receiver-mode link on the right, on ONE baseline.
+    // Both were drawn at fixed x, so at 140% "…TO REAR PANEL" ran straight through "RECEIVER
+    // MODE ›". The link keeps its width (it names a destination); the hint gives way.
     icons::rx(c, 30.0, 776.0, 14.0, t.faint);
-    text::draw(c, f, 46.0, 780.0, "NFC · TOUCH DEVICE TO REAR PANEL", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08));
-    right(c, f, 458.0, 780.0, "RECEIVER MODE ›", &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08));
+    crate::widgets::row_pair(
+        c, f, 46.0, 458.0, 780.0,
+        "NFC · TOUCH DEVICE TO REAR PANEL", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
+        "RECEIVER MODE \u{203a}", &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08),
+        14.0,
+    );
 }

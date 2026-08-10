@@ -208,7 +208,8 @@ int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
 bool g_settings_loaded = false; // did cinder_settings_load find a saved file? (→ re-apply EQ/sound)
 bool g_volume_restored = false; // did it restore a persisted volume level? (→ push to hw, not seed)
 void set_backlight(int night); // night=minimal/day=normal; boot forces day, toggle matches theme
-void recompute_day_level();   // map the UI's 1..5 brightness onto the node's day level (no write)
+void recompute_day_level();   // map the UI's 0..5 brightness onto the node's day level (no write)
+void brightness_wake_on_input(); // leave a level-0 blank on the next input (defined with the backlight)
 extern bool g_screen_on;      // panel lit? (defined with the screen state, below)
 extern long g_last_input_ms;  // idle-screen-off clock; seeded by render_up, defined with the input state
 long now_ms();                // CLOCK_MONOTONIC ms (defined with the touch state, below)
@@ -353,6 +354,7 @@ void write_bt_pref();    // defined below (carry_out helpers); published once at
 extern bool g_np_poll_now;  // defined with the pump state: force the next now-playing poll (see below)
 extern bool g_house_due;    // defined with the pump state: run the ~1 Hz housekeeping on the next frame
 void sync_volume_from_hw(); // defined below (volume backend); seeds the UI level from the mixer
+void bt_resync_volume(const char* why); // ditto — re-asserts the UI level if the mixer drifted
 void apply_volume();        // defined below (volume backend); writes the UI level to the mixer
 
 // Start/stop Sony's spectrum analyzer to match what the screen is actually showing.
@@ -940,15 +942,18 @@ void load_vol_cfg() {
 // Read the device's CURRENT hardware volume and seed the UI level from it (once, at boot), so the
 // first Vol± press nudges from the real level instead of jumping the hardware to the UI default.
 // amixer backend only (cget + parse "values="); sysfs backend reads the node directly. Guarded.
-void sync_volume_from_hw() {
+// Read the raw hardware volume through the configured backend. -1 = unreadable (no backend, the
+// node/control is missing, or the value parsed out of range). Split out of sync_volume_from_hw so
+// the reconnect resync can VERIFY the mixer before it writes anything to it.
+long read_volume_hw() {
     if (!g_vol_read) load_vol_cfg();
-    if (!g_vol.valid) return;
+    if (!g_vol.valid) return -1;
     long val = -1;
     if (g_vol.amixer) {
         char cmd[384];
         std::snprintf(cmd, sizeof cmd, "amixer -c %d cget name='%s' 2>/dev/null", g_vol.card, g_vol.control);
         FILE* p = popen(cmd, "r");
-        if (!p) return;
+        if (!p) return -1;
         char line[256];
         while (std::fgets(line, sizeof line, p)) {
             const char* v = std::strstr(line, ": values=");
@@ -957,18 +962,59 @@ void sync_volume_from_hw() {
         pclose(p);
     } else {
         FILE* f = std::fopen(g_vol.path, "r");
-        if (!f) return;
+        if (!f) return -1;
         char buf[32] = {0};
         if (std::fgets(buf, sizeof buf, f)) val = std::strtol(buf, nullptr, 10);
         std::fclose(f);
     }
-    if (val < g_vol.min || val > g_vol.max) return;   // parse failed / out of range — keep UI default
+    if (val < g_vol.min || val > g_vol.max) return -1;   // parse failed / out of range
+    return val;
+}
+
+// Raw hardware value -> the UI's 0..120 step level. Guarded against a degenerate conf range
+// (min == max), which would otherwise divide by zero.
+int volume_hw_to_level(long val) {
+    long span = g_vol.max - g_vol.min;
+    if (span <= 0) return 0;
+    return (int)((val - g_vol.min) * 120 / span);
+}
+
+void sync_volume_from_hw() {
+    long val = read_volume_hw();
+    if (val < 0) return;   // unreadable — keep the UI's default
     // UI level is the stock 0..120 scale; with the default backend (min 0, max 120) this is 1:1.
-    int level = (int)((val - g_vol.min) * 120 / (g_vol.max - g_vol.min));
+    int level = volume_hw_to_level(val);
     cinder_set_volume(level);
     char m[96];
     std::snprintf(m, sizeof m, "volume: hw %ld -> UI level %d/120", val, level);
     clog_(m);
+}
+
+// Re-assert the UI's volume level on the 3.5 mm mixer IF the hardware has drifted from it.
+//
+// Report: "Bluetooth volume can become disconnected after it reconnects." Cinder OWNS the
+// hardware volume — Vol± writes the UI's 0..120 level to the CXD3778GF master control — but that
+// was a one-shot write with nothing ever re-asserting it. When an output is torn down and
+// re-opened (a headphone drops and reconnects, the panel wakes), the mixer no longer necessarily
+// holds what the UI believes it holds, so the on-screen level is a lie and the first Vol± press
+// either does nothing visible or jumps.
+//
+// VERIFY-FIRST is what makes this safe to call often: read the mixer back and only write when it
+// disagrees with the UI. A resync can therefore never fight a level the user just set, and costs
+// one read when everything is already in step.
+void bt_resync_volume(const char* why) {
+    if (!g_vol_read) load_vol_cfg();
+    if (!g_vol.valid) return;
+    long hw = read_volume_hw();
+    if (hw < 0) return;
+    int have = volume_hw_to_level(hw);
+    int want = cinder_get_volume();
+    if (have == want) return;   // already in step — nothing to do
+    char m[128];
+    std::snprintf(m, sizeof m, "volume: resync after %s — hw %d/120 != UI %d/120, re-applying",
+                  why, have, want);
+    clog_(m);
+    apply_volume();
 }
 
 // Apply the UI's 0..120 volume level to the device via the configured backend (1:1 with the
@@ -1127,14 +1173,47 @@ void recompute_day_level() {
     // the UI you would use to fix it is the thing that is unreadable.
     if (g_bl.day_pinned) return;
     static const int pct[5] = { 15, 30, 50, 70, 100 };
-    int lvl = cinder_get_brightness();          // already clamped to 1..5 by cinder-ffi
+    int lvl = cinder_get_brightness();          // 0..5 from cinder-ffi
+    // LEVEL 0 = BACKLIGHT FULLY OFF, with the app still running and still taking input.
+    //
+    // Every other level is floored at 1 raw unit for the reason the comment above gives: a
+    // *persisted* setting that blanks the panel would hide the Settings screen you need to undo
+    // it, across reboots. Level 0 sidesteps that instead of ignoring it — it is TRANSIENT. It is
+    // never written to cinder_settings.conf (cinder-ffi persists `brightness_restore`), and the
+    // next input event restores the previous level (see the g_bl_zero_at handling in input_pump).
+    // So the escape does not depend on being able to see anything.
+    if (lvl == 0) { g_bl.day = 0; return; }
     if (lvl < 1 || lvl > 5) lvl = 4;
     g_bl.day = g_bl.max * pct[lvl - 1] / 100;
     if (g_bl.day < 1) g_bl.day = 1;             // never fully dark
 }
 
+// When the backlight was last taken to 0 by the brightness row. The restore is debounced against
+// this: the very gesture that SELECTS level 0 also generates a touch release, and restoring on
+// that would make the setting impossible to reach.
+long g_bl_zero_at = 0;
+
+// Next input after a level-0 blank: come back. Cheap and unconditional — cinder_brightness_wake
+// returns 0 immediately unless the UI is actually in the transient state.
+void brightness_wake_on_input() {
+    if (g_bl_zero_at == 0) return;
+    if (now_ms() - g_bl_zero_at < 400) return;   // debounce the selecting gesture's own release
+    g_bl_zero_at = 0;
+    if (cinder_brightness_wake()) {
+        clog_("backlight: input -> restoring from BACKLIGHT OFF");
+        recompute_day_level();
+        set_backlight(cinder_get_night());
+    }
+}
+
 // Live change from the Settings row: recompute, then write at the CURRENT theme's level.
-void apply_brightness() { recompute_day_level(); set_backlight(cinder_get_night()); }
+void apply_brightness() {
+    recompute_day_level();
+    set_backlight(cinder_get_night());
+    // Arm (or disarm) the "any input brings it back" escape.
+    g_bl_zero_at = (cinder_get_brightness() == 0) ? now_ms() : 0;
+    if (g_bl_zero_at) clog_("backlight: BACKLIGHT OFF (transient — next input restores it)");
+}
 
 // ── Boot to stock (Settings ▸ Boot to stock, after the row's two-tap confirm) ─────────────────
 // Arms the launcher's ONE-SHOT flag and then restarts into Sony's player.
@@ -1309,7 +1388,15 @@ void screen_toggle() {
     // "down" would make the next touch classify as a drag from the old start point.
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
     cinder_audio_pump_set_interval(g_screen_on ? 20 : 100);
-    if (g_screen_on) { apply_backlight(); cinder_force_dirty(); return; }
+    if (g_screen_on) {
+        apply_backlight();
+        cinder_force_dirty();
+        // Waking is the other moment the mixer can have drifted from the level the UI is about to
+        // show — the panel comes back with a number on it, and that number had better be true.
+        // Verify-first, so this costs one read when nothing has changed.
+        bt_resync_volume("screen wake");
+        return;
+    }
     if (!g_bl_read) load_bl_cfg();
     if (g_bl.valid) {
         FILE* f = std::fopen(g_bl.path, "w");
@@ -2123,6 +2210,26 @@ void refresh_bt_route() {
     // volume — there is no way to command a level with up/down steps, so a step-only sink just keeps
     // its own and the UI count stays a belief until the next press.
     if (on && bt_abs_volume_supported()) apply_bt_volume(true);
+
+    // ── RECONNECT EDGE: re-assert everything a re-opened output can have reset ────────────────
+    // Report: "Bluetooth volume can become disconnected after it reconnects." Cinder pushes the
+    // volume, the codec preference and the DSP chain when the USER changes them — which meant
+    // exactly twice per boot for most of them. Tearing the sink down and bringing it back up is
+    // the one event that can undo all three behind our back, and nothing was watching for it.
+    //
+    // This is the right place to watch from: `GetBtStatus`/`GetConnectInformation` are the only
+    // link source this firmware has. There is no /sys/class/bluetooth, no hcitool and no
+    // /var/lib/bluetooth on it (checked on device 2026-08-10 — all three absent), so a sysfs or
+    // BlueZ-shaped detector would simply never fire here.
+    if (on) {
+        // Guarded individually: each is either a shell-out or a Sony IPC call, on the render
+        // thread. Verify-first, so a resync can never fight a level the user just set.
+        run_guarded("bt: resync volume after reconnect", 8,
+                    []() { bt_resync_volume("bt reconnect"); });
+        write_bt_pref();
+        run_guarded("bt: re-apply EQ after reconnect", 6, apply_eq_fn);
+        run_guarded("bt: re-apply sound after reconnect", 6, apply_sound_fn);
+    }
 }
 
 // ── the render half of USB-DAC ───────────────────────────────────────────────────────────────
@@ -2875,7 +2982,34 @@ void carry_out(int act) {
                         []() { if (g_playing) cinder_audio_play(); else cinder_audio_pause(); });
             break;
         case CINDER_ACT_NEXT:       run_guarded("carry_out: next",  6, []() { cinder_audio_next_track(); }); break;
-        case CINDER_ACT_PREV:       run_guarded("carry_out: prev",  6, []() { cinder_audio_prev_track(); }); break;
+        case CINDER_ACT_PREV:
+            // ◁ WITH A REWIND. The report was "no rewind in some queue situations", and this
+            // button is the whole of it. It used to be an unconditional PrevTrack(), which has
+            // two failure modes that look opposite but are the same missing rule:
+            //   • at the HEAD of a sequence (single-track queue, or track 1 of an album you just
+            //     tapped) there is nowhere to step back to, so ◁ did NOTHING;
+            //   • mid-track it jumped to the previous track when the user meant "start this over".
+            // Both are handled here: past the 3 s grace window ◁ restarts the track, and if
+            // PrevTrack itself fails we restart rather than silently no-op. cinder_audio_seek_ms
+            // is the proven path (it pauses, seeks and resumes — the engine refuses to seek while
+            // streaming), and notify_seek re-anchors the bar so it doesn't drift back for a second.
+            run_guarded("carry_out: prev", 8, []() {
+                if (cinder_prev_means_restart()) {
+                    cinder_notify_seek_ms(0);
+                    cinder_audio_seek_ms(0);
+                    clog_("transport: prev -> restart current track (past the 3 s grace)");
+                    return;
+                }
+                int rc = cinder_audio_prev_track();
+                if (rc != 0) {
+                    cinder_notify_seek_ms(0);
+                    cinder_audio_seek_ms(0);
+                    char m[96];
+                    std::snprintf(m, sizeof m, "transport: PrevTrack rc=%d (head of sequence) -> restart", rc);
+                    clog_(m);
+                }
+            });
+            break;
         case CINDER_ACT_NEXT_ALBUM: run_guarded("carry_out: next album", 6, []() { cinder_audio_next_group(); }); break;
         case CINDER_ACT_PREV_ALBUM: run_guarded("carry_out: prev album", 6, []() { cinder_audio_prev_group(); }); break;
         case CINDER_ACT_VOLUP:
@@ -3031,7 +3165,12 @@ void carry_out(int act) {
         case CINDER_ACT_BT_PROMPT_CANCEL:
             run_guarded("carry_out: Bluetooth prompt cancel", 6, []() { apply_bt_prompt_reply(false); });
             break;
-        case CINDER_ACT_SLEEP:         screen_toggle(); break; // Power = panel on/off (not lock)
+        // Power = panel on/off (not lock). GUARDED: waking now also verifies the mixer against the
+        // UI level, which on the amixer backend is a popen — a wedged amixer must not stall the
+        // render/input thread with the panel half-woken.
+        case CINDER_ACT_SLEEP:
+            run_guarded("carry_out: screen toggle", 8, screen_toggle);
+            break;
         case CINDER_ACT_ENTER_USB_MSC:
             // device-gated USB-mode switch (hands storage to the PC; disruptive — validate live).
             // 25 s budget: Stop IPC + the 5 s umount verify + recovery + the 3 s gadget-state
@@ -3315,6 +3454,7 @@ void input_pump() {
     ev_event evs[32];
     static long g_ev_total = 0;   // events ever seen (any node) — for the silent-input heartbeat
     static long g_pump_calls = 0;
+    const long ev_before = g_ev_total;
     // HEARTBEAT: if the input system is silent (foreign grab / dead driver), say so in the log
     // every ~15 s instead of leaving "no events" indistinguishable from "nobody touched it".
     if (g_ev_total == 0 && ++g_pump_calls % 450 == 0)
@@ -3534,6 +3674,11 @@ void input_pump() {
     vol_repeat_tick();
     // Same idea for Power: the menu opens on elapsed time, not on an event, so it needs a tick.
     power_hold_tick();
+    // ANY input at all cancels a level-0 (backlight off) blank. Checked here — once, after the
+    // drain — rather than at each of the seven places that stamp g_last_input_ms, so no input
+    // path can be added later that forgets to provide the escape. It reads a single global and
+    // returns immediately unless the blank is actually armed.
+    if (g_ev_total != ev_before) brightness_wake_on_input();
 }
 
 // Battery percent from sysfs (best-effort; 100 if unavailable).

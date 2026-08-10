@@ -86,7 +86,7 @@ fn main() {
         eq_preset: "A1",
         bt_codec: Some("LDAC"),
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), codec_sel: 0, ldac_quality: 0 };
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0 };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
@@ -604,6 +604,40 @@ fn main() {
                 save(&c, &format!("swipe_{tag}_{i}_{}px_{armed}", dx.abs()));
             }
         }
+    }
+
+    // ── UI SCALE sweep ────────────────────────────────────────────────────────────────────────
+    // Every screen at every stop. The scale multiplies TYPE only (row heights and tap targets are
+    // fixed), so the failure mode to look for here is text colliding with a neighbour or running
+    // past a fixed-position value — which is exactly what these frames are for.
+    {
+        use cinder_ui::nav::{App, Button, Screen};
+        for pct in [80u32, 100, 120, 140] {
+            cinder_ui::text::set_scale_pct(pct);
+            for (name, screen) in [
+                ("library", Screen::Library),
+                ("settings", Screen::Settings),
+                ("bluetooth", Screen::Bluetooth),
+                ("sound", Screen::Sound),
+                ("nowplaying", Screen::NowPlaying),
+                ("upnext", Screen::UpNext),
+                ("eq", Screen::Eq),
+            ] {
+                let mut app = App::unlocked();
+                app.go_for_preview(screen);
+                let mut c = Canvas::new();
+                app.render(&mut c, &fonts, &np);
+                save(&c, &format!("uiscale_{pct}_{name}"));
+            }
+            // Settings scrolled to the end, where the value column is densest.
+            let mut app = App::unlocked();
+            app.go_for_preview(Screen::Settings);
+            app.scroll_px(10_000);
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, &format!("uiscale_{pct}_settings_bottom"));
+        }
+        cinder_ui::text::set_scale_pct(100);
     }
 
     // Visualiser TYPES: render Now Playing with each viz kind (mid-animation) so they can be diffed.

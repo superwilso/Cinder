@@ -904,6 +904,165 @@ struct ProbeBtListener {
     }
 };
 
+// ── --btrx : Bluetooth RECEIVER mode (Walkman as an A2DP SINK) ───────────────────────────────
+// Sony's "other" Bluetooth mode. The transmitter path (BtTransmitterService) sends audio OUT to
+// headphones; BtPlayerService is the mirror image — a phone streams TO the Walkman, and the
+// CXD3778GF DAC/amp drives whatever is in the 3.5 mm jack. That is a real use for this hardware:
+// the amp is the expensive part and a phone has nowhere near it.
+//
+// Client vtable recovered 2026-08-10 from `_ZTVN3pst8services21BtPlayerServiceClientE` at 0x313dc
+// (.data.rel.ro is relocated at load, so the file words are zero — the slot map comes from the
+// R_ARM_ABS32 entries covering that range, not from the raw bytes). It confirms the same rule the
+// NFC and BtCommon clients follow: AddListener/RemoveListener are the LAST two methods.
+//
+// This mode is deliberately read-mostly and REVERSIBLE: it enters connect-wait, watches, then
+// stops sound, disconnects and leaves connect-wait again. It never touches the transmitter side,
+// so headphones that are already playing are unaffected.
+struct ProbeRxListener {
+    virtual ~ProbeRxListener() {}                                        // slots 0, 1
+    // Slot order mirrors the listener names exported by libBtPlayerService.so, in declaration
+    // order. Unrecovered signatures take three word-sized args and are never dereferenced —
+    // ABI-safe on armhf (surplus registers are ignored) and a mis-slot can't become a wild read.
+    virtual void OnNotifyAvSnkConnectionStatus(const void* a, const void*, const void*) { hit("AvSnkConnectionStatus", a); }
+    virtual void OnNotifyAvrcpConnectionStatus(const void* a, const void*, const void*) { hit("AvrcpConnectionStatus", a); }
+    virtual void OnNotifyConnectInformation(const void*, const void*, const void*)      { hit("ConnectInformation", nullptr); }
+    virtual void OnNotifyReceiveMedia(const void*, const void*, const void*)            { hit("ReceiveMedia", nullptr); }
+    virtual void OnNotifyPlayStatus(const void* a, const void*, const void*)            { hit("PlayStatus", a); }
+    virtual void OnNotifyTrackNumber(const void* a, const void*, const void*)           { hit("TrackNumber", a); }
+    virtual void OnNotifyVolumeDown(const void*, const void*, const void*)              { hit("VolumeDown", nullptr); }
+    virtual void OnNotifyVolumeUp(const void*, const void*, const void*)                { hit("VolumeUp", nullptr); }
+    virtual void OnNotifyChangeVolume(const void* a, const void*, const void*)          { hit("ChangeVolume", a); }
+    virtual void OnNotifyRemoteVersion(const void*, const void*, const void*)           { hit("RemoteVersion", nullptr); }
+    virtual void OnNotifySoundStatus(const void*, const void*, const void*)             { hit("SoundStatus", nullptr); }
+    virtual void OnNotifyBitrate(const void* a, const void*, const void*)               { hit("Bitrate", a); }
+    virtual void OnNotifyError(const void* a, const void*, const void*)                 { hit("Error", a); }
+    virtual void OnNotifyAudioSetting(const void*, const void*, const void*)            { hit("AudioSetting", nullptr); }
+    virtual void OnNotifyReceiveMediaComplete(const void*, const void*, const void*)    { hit("ReceiveMediaComplete", nullptr); }
+    virtual void OnNotifyAudioState(const void* a, const void*, const void*)            { hit("AudioState", a); }
+    virtual void OnNotifyRegisterForAbsVolume(const void*, const void*, const void*)    { hit("RegisterForAbsVolume", nullptr); }
+
+    int calls = 0;
+    // `a` is printed as a WORD, not dereferenced: for the callbacks whose first parameter really is
+    // a `const uint32&` this is the value; for the rest it is a pointer we make no claim about.
+    void hit(const char* what, const void* a) {
+        calls++;
+        if (a) std::fprintf(stderr, "[cinder-probe] btrx: <- On%s  arg0(as word)=%u\n", what, *(const unsigned*)a);
+        else   std::fprintf(stderr, "[cinder-probe] btrx: <- On%s\n", what);
+    }
+};
+
+extern "C" void* _ZN3pst8services28BtPlayerServiceClientFactory14CreateInstanceEv(void);
+
+static int btrx_probe(int secs) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* rx  = _ZN3pst8services28BtPlayerServiceClientFactory14CreateInstanceEv();
+    void* cmn = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    if (!rx) { clog_("btrx: no BtPlayerServiceClient"); _exit(1); }
+    std::fprintf(stderr, "[cinder-probe] btrx: client=%p\n", rx);
+
+    enum { RX_GetAvSnkConnectionStatus = 5, RX_GetAvrcpConnectionStatus = 6,
+           RX_RequestDisconnection = 11, RX_RequestStartConnectWait = 13,
+           RX_RequestStopConnectWait = 14, RX_StartSound = 15, RX_StopSound = 16,
+           RX_GetPlayStatus = 19, RX_GetTrackCodec = 26, RX_GetTrackFreq = 27,
+           RX_GetTrackChannel = 28, RX_GetTrackScmst = 29, RX_GetBitrate = 30,
+           RX_AddListener = 31, RX_RemoveListener = 32 };
+    enum { VIDX_GetBtStatus = 3, VIDX_SetRfOnOff = 4, VIDX_SetDiscoverableMode = 6 };
+    typedef int  (*fn0)(void*);
+    typedef void (*fnb)(void*, const bool*);
+    typedef int  (*fnadd)(void*, void*, const std::string*);
+    typedef int  (*fnrem)(void*, unsigned);
+
+    // Radio up if it is not already. Restored at the end only if WE powered it.
+    int st = -1;
+    try { if (cmn) st = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); } catch (...) {}
+    bool we_powered = false;
+    if (cmn && st != 2 && st != 3) {
+        bool on = true;
+        wd_arm(10);
+        try { ((fnb)vslot(cmn, VIDX_SetRfOnOff))(cmn, &on); we_powered = true; } catch (...) {}
+        wd_disarm();
+        for (int i = 0; i < 20; i++) { usleep(200000);
+            try { st = ((fn0)vslot(cmn, VIDX_GetBtStatus))(cmn); } catch (...) {}
+            if (st == 2 || st == 3) break; }
+    }
+    std::fprintf(stderr, "[cinder-probe] btrx: radio status=%d%s\n", st, we_powered ? " (we powered it)" : "");
+
+    static ProbeRxListener listener;   // STATIC: the proxy keeps a RAW pointer to it
+    std::string key("");
+    int add = -1;
+    wd_arm(12);
+    try { add = ((fnadd)vslot(rx, RX_AddListener))(rx, (void*)&listener, &key); }
+    catch (...) { clog_("btrx: AddListener THREW"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] btrx: AddListener -> %d (0 = registered, as on BtCommon)\n", add);
+
+    int snk0 = -1, avrcp0 = -1;
+    try { snk0   = ((fn0)vslot(rx, RX_GetAvSnkConnectionStatus))(rx); } catch (...) {}
+    try { avrcp0 = ((fn0)vslot(rx, RX_GetAvrcpConnectionStatus))(rx); } catch (...) {}
+    std::fprintf(stderr, "[cinder-probe] btrx: before: AvSnk=%d Avrcp=%d\n", snk0, avrcp0);
+
+    // Become connectable AND discoverable, then wait. RequestStartConnectWait is the sink-side
+    // "listen for a phone"; SetDiscoverableMode is what makes the Walkman show up in the phone's
+    // Bluetooth list at all if it has never been paired as a sink.
+    int rcw = -1;
+    wd_arm(10);
+    try { rcw = ((fn0)vslot(rx, RX_RequestStartConnectWait))(rx); } catch (...) { clog_("btrx: StartConnectWait threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] btrx: RequestStartConnectWait() rc=%d\n", rcw);
+    if (cmn) {
+        bool disc = true;
+        wd_arm(8);
+        try { ((fnb)vslot(cmn, VIDX_SetDiscoverableMode))(cmn, &disc); } catch (...) {}
+        wd_disarm();
+        clog_("btrx: SetDiscoverableMode(true) — pair the Walkman from your PHONE now");
+    }
+
+    std::fprintf(stderr, "[cinder-probe] btrx: waiting %ds — connect from a phone and PLAY something\n", secs);
+    for (int i = 0; i < secs * 4; i++) {
+        usleep(250000);
+        if (i % 8 != 7) continue;                       // report ~2 s apart
+        int snk = -1, codec = -1, freq = -1, chan = -1, rate = -1, play = -1;
+        try { snk   = ((fn0)vslot(rx, RX_GetAvSnkConnectionStatus))(rx); } catch (...) {}
+        if (snk == snk0 && listener.calls == 0) continue;   // nothing has changed yet
+        try { play  = ((fn0)vslot(rx, RX_GetPlayStatus))(rx);  } catch (...) {}
+        try { codec = ((fn0)vslot(rx, RX_GetTrackCodec))(rx);  } catch (...) {}
+        try { freq  = ((fn0)vslot(rx, RX_GetTrackFreq))(rx);   } catch (...) {}
+        try { chan  = ((fn0)vslot(rx, RX_GetTrackChannel))(rx);} catch (...) {}
+        try { rate  = ((fn0)vslot(rx, RX_GetBitrate))(rx);     } catch (...) {}
+        // Raw values on purpose: the enumerators are NOT recovered, and this run is how the map
+        // gets built. The service's own log prints codec/channel/frequency as 0x%02x.
+        std::fprintf(stderr, "[cinder-probe] btrx: AvSnk=%d play=%d codec=0x%02x freq=0x%02x chan=0x%02x bitrate=%d\n",
+                     snk, play, codec, freq, chan, rate);
+    }
+
+    // Put everything back. StopSound before StopConnectWait, and disconnect whatever attached, so
+    // the device is not left silently discoverable or holding a sink link.
+    wd_arm(12);
+    try { ((fn0)vslot(rx, RX_StopSound))(rx); } catch (...) {}
+    try { ((fn0)vslot(rx, RX_RequestDisconnection))(rx); } catch (...) {}
+    try { ((fn0)vslot(rx, RX_RequestStopConnectWait))(rx); } catch (...) {}
+    if (cmn) { bool off = false; try { ((fnb)vslot(cmn, VIDX_SetDiscoverableMode))(cmn, &off); } catch (...) {} }
+    try { ((fnrem)vslot(rx, RX_RemoveListener))(rx, (unsigned)(uintptr_t)&listener); } catch (...) {}
+    if (we_powered && cmn) { bool off = false; try { ((fnb)vslot(cmn, VIDX_SetRfOnOff))(cmn, &off); } catch (...) {} }
+    wd_disarm();
+
+    std::fprintf(stderr, "[cinder-probe] btrx: %d listener callback(s) total%s\n", listener.calls,
+                 listener.calls ? "" : "  <== nothing arrived: either no phone connected, or the sink path is not live");
+    clog_("btrx: restored (sound stopped, disconnected, connect-wait off, discoverable off)");
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 static int btscan_probe(int secs) {
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
@@ -1093,19 +1252,31 @@ static int btwho_probe() {
     void* xmit = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
     void* cmn  = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
     enum { VIDX_GetBtStatus = 3, VIDX_GetAvSrcConnectionStatus = 3, VIDX_GetAvrcpConnectionStatus = 4,
-           VIDX_GetConnectInformation = 5 };
+           VIDX_GetConnectInformation = 5, VIDX_GetSoundStatus = 26 };
     typedef int (*fn0)(void*);
     typedef int (*fn2)(void*, std::vector<unsigned char>*, std::string*);
+    // virtual void GetSoundStatus(BtSoundCodec&, BtSoundFrequency&, BtSoundChannel&, bool&)
+    // — four OUT params, every one a scalar (three enums + a bool), so there is no container to
+    // get wrong here. That is the whole reason this is safe to call blind, unlike GetCapabilities
+    // (which takes a pst::base::vector) or GetConnectInformation (which holds a std::string).
+    // Declared `unsigned` rather than the real enum types: an enum's underlying type is int-sized
+    // on this ABI, and we want to print whatever arrives rather than assume the enumerators.
+    typedef void (*fn4)(void*, unsigned*, unsigned*, unsigned*, bool*);
 
     int st = -1, avsrc = -1, avrcp = -1, rc = -1;
     std::vector<unsigned char> addr;
     std::string name;
+    // Sentinels: GetSoundStatus returns void, so an untouched buffer is the only way to tell
+    // "the service wrote nothing" from "the service wrote 0" (0 is a legitimate codec value).
+    unsigned codec = 0xDEADu, freq = 0xDEADu, chan = 0xDEADu;
+    bool scmst = false;
     wd_arm(12);
     try {
         if (cmn)  st    = ((fn0)vslot(cmn,  VIDX_GetBtStatus))(cmn);
         if (xmit) avsrc = ((fn0)vslot(xmit, VIDX_GetAvSrcConnectionStatus))(xmit);
         if (xmit) avrcp = ((fn0)vslot(xmit, VIDX_GetAvrcpConnectionStatus))(xmit);
         if (xmit) rc    = ((fn2)vslot(xmit, VIDX_GetConnectInformation))(xmit, &addr, &name);
+        if (xmit) ((fn4)vslot(xmit, VIDX_GetSoundStatus))(xmit, &codec, &freq, &chan, &scmst);
     } catch (...) { clog_("btwho: a read threw"); }
     wd_disarm();
 
@@ -1118,11 +1289,20 @@ static int btwho_probe() {
     // together with a valid MAC and 'WH-1000XM4', so the stub's int is a transaction status (0 = OK)
     // and not the service method's bool. Judging by rc is what made the Bluetooth screen claim
     // nothing was connected while audio was playing.
+    // THE NEGOTIATED CODEC. Everything the Bluetooth screen shows today is the user's PREFERENCE
+    // (SetLdac/SetAptxHD/SetAptxClassic, applied before connecting) — but A2DP negotiates, so a
+    // sink that cannot do LDAC silently lands on SBC while the UI still reads "LDAC". This is the
+    // call that says what actually happened. Enumerators are printed raw and NOT interpreted:
+    // the service's own log line is `codec:0x%02x channel:0x%02x frequency:0x%02x`, so the map
+    // gets built from a run with a known headphone rather than from a guess.
+    std::fprintf(stderr, "[cinder-probe] btwho: GetSoundStatus codec=0x%02x freq=0x%02x chan=0x%02x scmst=%d%s\n",
+                 codec, freq, chan, (int)scmst,
+                 codec == 0xDEADu ? "   <-- UNTOUCHED: the service wrote nothing" : "");
     if (!addr.empty())
         clog_("btwho: CONNECTED — and note rc above: a zero return with a filled address means rc is "
               "NOT a connected flag. Gate on the address.");
     else
-        clog_("btwho: the service reports nothing connected");
+        clog_("btwho: the service reports nothing connected (so the codec fields above are stale/unset)");
 
     g_pump_run = false;
     std::fflush(nullptr);
@@ -1635,6 +1815,9 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
         return btinfo_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btrx") == 0) {
+        return btrx_probe(argc > 2 ? std::atoi(argv[2]) : 40);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btscan") == 0) {
         // Seconds to scan (default 20). Powers the radio up if needed and restores it.

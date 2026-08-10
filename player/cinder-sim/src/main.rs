@@ -108,18 +108,17 @@ fn header_back(x: i32, y: i32) -> bool {
 fn handle_click(app: &mut App, x: i32, y: i32) {
     // Shelf overlay intercepts every click while open.
     if app.shelf_open {
-        match shelf::hit(x, y) {
+        let filled = [app.pins[0].is_some(), app.pins[1].is_some(), app.pins[2].is_some()];
+        match shelf::hit(x, y, filled) {
             shelf::ShelfHit::Close => app.shelf_open = false,
-            shelf::ShelfHit::Undo => {
+            shelf::ShelfHit::Back => {
                 app.shelf_open = false;
                 if let Some(s) = app.history.pop() {
                     app.screen = s;
                 }
             }
-            shelf::ShelfHit::Pin => {
-                if let Some(slot) = app.pins.iter().position(|p| p.is_none()) {
-                    app.pins[slot] = Some((format!("Now Playing · {}", SONGS[app.track].t), "Just now".into()));
-                }
+            shelf::ShelfHit::PinTo(slot) => {
+                app.pins[slot] = Some((format!("Now Playing · {}", SONGS[app.track].t), "Just now".into()));
             }
             shelf::ShelfHit::Go(_) => {
                 app.shelf_open = false;
@@ -322,7 +321,7 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
             } else if y >= 418 {
                 // preset grid (cols 22/170/318, rows 418 & 480, h52)
                 let col = if x < 160 { 0 } else if x < 308 { 1 } else { 2 };
-                let r = if (418..470).contains(&y) { 0 } else if (480..532).contains(&y) { 1 } else { -1 };
+                let r: i32 = if (418..470).contains(&y) { 0 } else if (480..532).contains(&y) { 1 } else { -1 };
                 if r >= 0 {
                     let idx = (r as usize) * 3 + col;
                     if idx < FM_PRESETS.len() {
@@ -384,6 +383,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         Screen::Bluetooth => bluetooth::render(c, theme, fonts, &Bt {
             on: app.bt_on,
             connected: app.bt_conn.map(|r| PAIRED[r].name),
+            link_known: true, // the sim always "knows" — it owns its own mock link state
             codec_sel: app.bt_codec as u8,
             ldac_quality: 0,
         }),
