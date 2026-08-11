@@ -1660,44 +1660,117 @@ static void* bt_xmit() {
     return g_bt_xmit;
 }
 
-// -1 = not asked yet, 0 = sink is step-only, 1 = sink takes absolute volume. Cached because it is a
-// property of the connected headphones, and re-queried on every route change (below) so swapping to
-// a different pair re-decides it.
+// Last answer we LOGGED, so the transition is reported once rather than on every press. It is not
+// a cache — nothing reads it to make a decision (see bt_abs_volume_supported).
 static int g_bt_abs_vol = -1;
 
-// When the last negative answer was taken. A NEGATIVE IS NOT CACHEABLE — see below.
-static long g_bt_abs_vol_at = 0;
+// ── Bluetooth listener: the sink's OWN volume ────────────────────────────────────────────────────
+// The headphones are the authority on their own level, and until now Cinder never asked. It kept an
+// absolute 0..CINDER_BT_VOL_MAX counter and assumed the sink followed it — which is only true while
+// SetCurrentVolume is being accepted. On a link that refuses absolute volume (measured: CMF Buds
+// Pro 2 refusing EVERY press) each press becomes a blind relative step, the counter and the sink
+// drift apart, and the UI ends up reading mute while audio plays. That was the report.
+//
+// Recovered + PROVEN on device 2026-08-11 with `cinder-probe --btvollisten`:
+//   * `AddListener` / `RemoveListener` are client slots 39 / 40 — immediately after the last
+//     service method (38, SetEnableLowLatency), the same rule BtCommon and Nfc both follow.
+//   * `OnNotifyChangeVolume(const uint8_t&)` is listener slot 10, after the virtual destructor and
+//     eight earlier callbacks. Verified by instrumenting every slot and moving the volume: only 10
+//     fired, carrying 19 -> 15 -> 19 -> 15 against two up and two down steps.
+//   * Sony's own relative step is 4 units of AVRCP's 0..127.
+//
+// The callback runs on the FRAMEWORK LOOPER, so it only stores a byte; the render loop applies it.
+static volatile sig_atomic_t g_bt_vol_notify = -1;   // 0..127 from the sink, -1 = nothing new
 
+struct CinderBtVolListener {
+    // Virtual destructor first: Itanium ABI puts D1/D0 in slots 0/1 and the callbacks at 2+.
+    virtual ~CinderBtVolListener() {}
+    virtual void OnNotifyAvSrcConnectionStatus(const void*, const void*, const void*) {}
+    virtual void OnNotifyAvrcpConnectionStatus(const void*, const void*, const void*) {}
+    virtual void OnNotifyConnectInformation(const void*, const void*, const void*) {}
+    virtual void OnNotifyAvrcpGetPlayStatus(const void*, const void*, const void*) {}
+    virtual void OnNotifyAvrcpGetMediaAttribute(const void*, const void*, const void*) {}
+    virtual void OnNotifyError(const void*, const void*, const void*) {}
+    virtual void NotifyConfigiration(const void*, const void*, const void*) {}
+    virtual void OnNotifySoundStatus(const void*, const void*, const void*) {}
+    // Slot 10 — the one that matters. Everything above is a placeholder whose only job is to put
+    // this at the right index; none of them dereference their arguments, because their real
+    // signatures carry containers and a wrong guess would be a crash rather than a no-op.
+    virtual void OnNotifyChangeVolume(const unsigned char& v) {
+        g_bt_vol_notify = (sig_atomic_t)v;
+    }
+    virtual void OnNotifyUpdateCapabilities(const void*, const void*, const void*) {}
+};
+// MUST be static: AddListener stores a RAW, unowned pointer (see CinderBtListener above).
+static CinderBtVolListener g_bt_vol_listener;
+static bool g_bt_vol_listener_on = false;
+
+// Subscribe once. Cheap to call repeatedly — it no-ops after the first success.
+static void bt_vol_listener_start() {
+    enum { VIDX_AddListener = 39 };
+    if (g_bt_vol_listener_on) return;
+    try {
+        void* x = bt_xmit();
+        if (!x) return;
+        typedef int (*fnadd)(void*, void*, const std::string*);
+        std::string key;                    // "" — a NotifyListeners FILTER KEY, not a label
+        int rc = ((fnadd)bt_slot(x, VIDX_AddListener))(x, (void*)&g_bt_vol_listener, &key);
+        g_bt_vol_listener_on = (rc == 0);
+        char m[96];
+        std::snprintf(m, sizeof m, "bt-vol: volume listener AddListener rc=%d (%s)", rc,
+                      rc == 0 ? "registered" : "FAILED — the UI level stays a belief");
+        clog_(m);
+    } catch (...) { clog_("bt-vol: AddListener threw"); }
+}
+
+// Apply whatever the sink last reported. Render-thread only. Returns true if the UI changed.
+static bool bt_vol_drain_notify() {
+    int v = g_bt_vol_notify;
+    if (v < 0) return false;
+    g_bt_vol_notify = -1;
+    if (v > 127) v = 127;
+    // 0..127 -> 0..CINDER_BT_VOL_MAX, rounded rather than truncated so the top of the sink's scale
+    // reaches the top of ours instead of stopping one step short.
+    int lvl = (v * CINDER_BT_VOL_MAX + 63) / 127;
+    if (lvl == cinder_get_bt_volume()) return false;
+    cinder_set_bt_volume(lvl);
+    char m[96];
+    std::snprintf(m, sizeof m, "bt-vol: sink reports %d/127 -> UI level %d", v, lvl);
+    clog_(m);
+    return true;
+}
+
+// Does the CONNECTED sink accept absolute volume right now? ASKED EVERY TIME, never cached.
+//
+// Both directions of caching have now been wrong on real hardware:
+//   * Caching the first answer cached a NO. GetBtStatus hits 3 at the START of connection setup,
+//     before the sink's AVRCP capabilities are readable, so the first ask reliably said "no" and
+//     the session then used the step path forever.
+//   * Caching only the YES was just as wrong. Measured 2026-08-11 on CMF Buds Pro 2 inside one
+//     session: IsSupportedAbsoluteVolume read 1, then 0, on the same unbroken link (and
+//     IsAvrcpTgVolumeSupported with it). With the YES sticky, Cinder kept calling SetCurrentVolume
+//     into a service that refuses it — the call returns false and transmits nothing — and never
+//     fell back. The UI level moved and the headphones did not, which is what was reported.
+//
+// So there is no cacheable answer here: support is a property of the AVRCP session, which
+// renegotiates. It is one cheap IPC read per volume press, which is a rounding error next to the
+// press itself, and `apply_bt_volume` treats even a YES as provisional.
 static bool bt_abs_volume_supported() {
     enum { VIDX_IsSupportedAbsoluteVolume = 33 };
-    if (g_bt_abs_vol == 1) return true;          // a YES cannot become a NO on the same link
-    // A "no" almost always means "not yet". GetBtStatus hits 3 at the START of connection setup,
-    // which is the same lag that already forces the device NAME to be re-read a few polls later —
-    // the sink's AVRCP capabilities are not readable that early. The old code asked once at that
-    // exact moment, got 0, and believed it for the rest of the session.
-    //
-    // Measured 2026-08-11 with CMF Buds Pro 2 connected: cinderhome.log said
-    //   bt-vol: sink is step-only (SetVolumeUp/Down)
-    // while cinder-probe --btwho read IsSupportedAbsoluteVolume=1 on that very link. So every
-    // volume press was going out as AVRCP VOLUME_UP/VOLUME_DOWN — the path that makes the buds
-    // beep — even though "Use Enhanced Mode" was on and the sink supported absolute volume.
-    // Re-ask instead, rate-limited to once a second so a step-only sink costs one cheap IPC call
-    // per second of held volume rather than one per press.
-    if (g_bt_abs_vol == 0 && now_ms() - g_bt_abs_vol_at < 1000) return false;
-    const int was = g_bt_abs_vol;
-    g_bt_abs_vol = 0;
-    g_bt_abs_vol_at = now_ms();
+    int sup = 0;
     try {
         void* x = bt_xmit();
         if (!x) return false;
         typedef int (*fn0)(void*);
-        g_bt_abs_vol = ((fn0)bt_slot(x, VIDX_IsSupportedAbsoluteVolume))(x) ? 1 : 0;
-    } catch (...) { clog_("bt-vol: IsSupportedAbsoluteVolume threw"); }
-    if (g_bt_abs_vol != was)                     // log the transition, not every retry
-        clog_(g_bt_abs_vol == 1 ? "bt-vol: sink takes ABSOLUTE volume (SetCurrentVolume)"
-                                : "bt-vol: sink is step-only (SetVolumeUp/Down)");
-    cinder_set_bt_enhanced_supported(g_bt_abs_vol == 1);
-    return g_bt_abs_vol == 1;
+        sup = ((fn0)bt_slot(x, VIDX_IsSupportedAbsoluteVolume))(x) ? 1 : 0;
+    } catch (...) { clog_("bt-vol: IsSupportedAbsoluteVolume threw"); return false; }
+    if (sup != g_bt_abs_vol) {                   // log the transition, not every press
+        g_bt_abs_vol = sup;
+        clog_(sup ? "bt-vol: sink takes ABSOLUTE volume (SetCurrentVolume)"
+                  : "bt-vol: sink is step-only (SetVolumeUp/Down)");
+    }
+    cinder_set_bt_enhanced_supported(sup == 1);
+    return sup == 1;
 }
 
 // Absolute volume needs BOTH: a sink that supports it, and Sony's "Use Enhanced Mode" preference
@@ -1710,9 +1783,7 @@ static bool bt_use_absolute_volume() {
 // The AVRCP absolute-volume switch. Sony's own SetCurrentVolume refuses to transmit unless this
 // preference is set — libBtTransmitterService.so logs "Not control absolute volume mode" and
 // returns — so IsSupportedAbsoluteVolume() alone was never enough: Cinder's absolute path was a
-// no-op whenever stock had last left the preference off, and every volume step fell through to
-// SetVolumeUp/SetVolumeDown. Those are AVRCP passthrough VOLUME_UP/VOLUME_DOWN key events, which
-// sinks like the CMF Buds answer with their own feedback beep.
+// no-op whenever stock had last left the preference off.
 //
 // The radio does not carry the preference across a link, so this is re-applied on every connect.
 static void bt_apply_enhanced_mode(const char* why) {
@@ -1740,6 +1811,11 @@ static void apply_bt_volume(bool up) {
     try {
         void* x = bt_xmit();
         if (!x) { clog_("bt-vol: BtTransmitterServiceClient unavailable"); return; }
+        // `sent` is decided by the SERVICE, not by the capability read above it. SetCurrentVolume
+        // is `virtual bool` and returns false when it declines to transmit — which it does, on a
+        // sink whose support flipped between the read and the call. Falling through to the step
+        // call in the same press is what makes a flapping link still track the rocker.
+        bool sent = false;
         if (bt_use_absolute_volume()) {
             // UI steps -> the AVRCP 0..127 scale. Integer maths, and the top step must land on 127
             // exactly or full volume would be unreachable.
@@ -1748,8 +1824,10 @@ static void apply_bt_volume(bool up) {
             if (lvl > CINDER_BT_VOL_MAX) lvl = CINDER_BT_VOL_MAX;
             unsigned char v = (unsigned char)(lvl * 127 / CINDER_BT_VOL_MAX);
             typedef int (*fnu)(void*, const unsigned char*);
-            ((fnu)bt_slot(x, VIDX_SetCurrentVolume))(x, &v);
-        } else {
+            sent = ((fnu)bt_slot(x, VIDX_SetCurrentVolume))(x, &v) != 0;
+            if (!sent) clog_("bt-vol: SetCurrentVolume REFUSED — falling back to a step");
+        }
+        if (!sent) {
             typedef int (*fn0)(void*);
             ((fn0)bt_slot(x, up ? VIDX_SetVolumeUp : VIDX_SetVolumeDown))(x);
         }
@@ -2346,8 +2424,7 @@ void refresh_bt_route() {
     // Absolute-volume support is a property of the SINK, so a new connection has to re-ask. Clearing
     // it here rather than caching once is what makes swapping between two different pairs of
     // headphones pick the right mechanism for each.
-    g_bt_abs_vol = -1;
-    g_bt_abs_vol_at = 0;
+    g_bt_abs_vol = -1;   // re-log the sink's answer on the new link
     // The link changed, so the name on the CONNECTED card is stale. This poll is the only place that
     // notices a device connecting or dropping on its own, so it owns refreshing the card too.
     refresh_bt_connected();
@@ -2363,7 +2440,32 @@ void refresh_bt_route() {
     // link, and Sony's SetCurrentVolume checks it before transmitting, so pushing the level before
     // this would be a silent no-op on a fresh connection.
     if (on) bt_apply_enhanced_mode("bt connect");
+    // Subscribe to the sink's own volume reports. Done on CONNECT because that is when there is a
+    // sink to report, and it is what keeps the UI honest on a link that refuses absolute volume.
+    if (on) run_guarded("bt: volume listener", 6, bt_vol_listener_start);
     if (on && bt_use_absolute_volume()) apply_bt_volume(true);
+    // PROVOKE THE FIRST REPORT. There is no getter for the sink's level — OnNotifyChangeVolume is
+    // the only route — so until the sink volunteers one, the bar is still the stale persisted
+    // belief from the last session. Reported as "3 was mute until I went to mute, then it worked":
+    // going to mute forced a change, the sink reported, and the bar corrected itself.
+    //
+    // One step up and straight back down is a net-zero change to what the user hears, and it makes
+    // the sink report its real level within a second of connecting. Only needed on the step path;
+    // when absolute volume is accepted the push above already tells us where it landed.
+    if (on && !bt_use_absolute_volume()) {
+        run_guarded("bt: provoke a volume report", 6, []() {
+            enum { VIDX_SetVolumeDown = 16, VIDX_SetVolumeUp = 17 };
+            try {
+                void* x = bt_xmit();
+                if (!x) return;
+                typedef int (*fn0)(void*);
+                ((fn0)bt_slot(x, VIDX_SetVolumeUp))(x);
+                usleep(150000);
+                ((fn0)bt_slot(x, VIDX_SetVolumeDown))(x);
+                clog_("bt-vol: nudged the sink to report its level (net zero)");
+            } catch (...) { clog_("bt-vol: volume nudge threw"); }
+        });
+    }
 
     // ── RECONNECT EDGE: re-assert everything a re-opened output can have reset ────────────────
     // Report: "Bluetooth volume can become disconnected after it reconnects." Cinder pushes the
@@ -4057,6 +4159,9 @@ void* render_driver(void*) {
             if (g_bt_found_dirty) {
                 run_guarded("loop: BT found list", 4, flush_bt_found);
             }
+            // The sink told us its real level (its own buttons, or an echo of ours). Adopting it
+            // is the whole fix for the UI and the headphones disagreeing.
+            if (g_bt_vol_notify >= 0 && bt_vol_drain_notify()) cinder_force_dirty();
             // A pairing prompt arrived on the looper; show it from the thread that owns the UI.
             if (g_bt_prompt_dirty) {
                 run_guarded("loop: BT pairing prompt", 4, flush_bt_prompt);

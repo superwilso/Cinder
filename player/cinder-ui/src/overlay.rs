@@ -19,7 +19,17 @@ pub const VOL_MAX: u8 = 120;
 /// slots 17/16), one sink step per call — so the UI level here has to BE the step count rather
 /// than something rescaled onto it. 30 is the usual A2DP sink granularity; the HUD stretches it
 /// back over the same 0..VOL_MAX bar so both routes look identical on screen.
-pub const BT_VOL_MAX: u8 = 30;
+///
+/// 64, not 30. AVRCP's own scale is 0..127, so 30 steps meant one press moved the sink by ~4.2 of
+/// its units — audibly coarse, and the finest control the rocker could offer was about 3.5% of
+/// full scale per press. 64 halves that to ~2 units without making the rocker unusable: a full
+/// sweep is 64 presses, and the rocker repeats while held.
+pub const BT_VOL_MAX: u8 = 64;
+/// The scale `bt_volume` was persisted on before 2026-08-11. A settings file written by an older
+/// build stores a 0..30 value, and reading it as 0..64 would halve everyone's volume on upgrade —
+/// so `cinder_ffi::settings_load` rescales when it sees the old key. Kept here next to the new
+/// value because the two only make sense together.
+pub const BT_VOL_MAX_LEGACY: u8 = 30;
 
 /// How many pump frames the volume HUD stays up after the last change (~1.6 s at the 60 fps
 /// pump; the exact pump rate is the shell's, this is just "a moment").

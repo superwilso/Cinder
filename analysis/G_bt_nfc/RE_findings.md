@@ -1184,3 +1184,144 @@ DisplayService slot 13, reached by `dlopen` rather than a link (a `DT_NEEDED` on
 path this thin is the `libNfcService` boot-to-nothing rule), and only from the **Power-button**
 blank, never the idle blank — the idle blank must stay wakeable by touch. Re-validated on every
 wake and at `input_open()`, so a stuck "invalid" cannot outlive one Power press or one reboot.
+
+---
+
+## Round j (2026-08-11) — the sink's own volume, and why the bar read mute while audio played
+
+Round h found the *preference* (`SetControlAbsoluteVolume`, "Use Enhanced Mode"). This round is the
+consequence: with absolute volume in play, **Cinder's volume number stopped being the truth**. The
+sink owns its level, and there is no getter for it — only a notification.
+
+### The bug, stated precisely
+
+Cinder kept an absolute `0..CINDER_BT_VOL_MAX` counter and assumed the sink followed it. That
+assumption holds only while `SetCurrentVolume` is actually being transmitted. Three separate things
+break it, and all three were observed on the CMF Buds Pro 2:
+
+1. **The preference is off** → `SetCurrentVolume` transmits nothing (round h) and every press
+   silently degrades to an AVRCP passthrough step.
+2. **The sink refuses absolute volume mid-session** (below) → same outcome, but intermittently.
+3. **The user turns the volume up on the headphones themselves** → nothing tells Cinder at all.
+
+Once the counter and the sink drift apart, the UI shows one thing and the ears hear another. The
+report — *"I have it on mute but it has audio"* — is exactly that drift, and it is not fixable by
+being more careful with the counter. The sink has to be asked.
+
+### `IsSupportedAbsoluteVolume` (slot 33) is NOT a stable property
+
+This is the finding that cost the most time, because caching it is wrong in **both** directions:
+
+| what was cached | why it looked right | how it failed on device |
+|---|---|---|
+| the first answer | one IPC read per session | `GetBtStatus` reaches 3 *before* the sink's AVRCP capabilities are readable, so the first ask reliably answers **no** — and the whole session then used the step path |
+| only a `true` ("a YES can't become a NO on one link") | AVRCP capability is negotiated at connect | **measured 1, then 0, on the same unbroken link**, `IsAvrcpTgVolumeSupported` moving with it. Cinder held the stale YES, `SetCurrentVolume` was refused on every press, the step fallback never ran → UI moved, headphones didn't |
+
+Support is a property of the **AVRCP session**, which renegotiates underneath a connection that
+never drops. So it is read on every press, and even a `true` is treated as provisional:
+`SetCurrentVolume`'s return is checked, and a `false` falls through to a step in the same press.
+
+> **Rule this generalises to:** on this stack, a capability read is a *reading*, not a fact. Judge
+> by side effects — the same rule that BT radio state (`GetBtStatus`) already taught us.
+
+### The volume notification — recovered and proven
+
+Read with `cinder-probe --btvollisten <secs>`, which registers a listener whose every slot logs its
+index, then moving the volume by hand.
+
+| what | index | evidence |
+|---|---|---|
+| `BtTransmitterServiceClient::AddListener` | **client slot 39** | immediately after the last service method (38 `SetEnableLowLatency`) — the same placement BtCommon (30) and Nfc both use |
+| `RemoveListener` | client slot 40 | the pair is always the last two |
+| `OnNotifyChangeVolume(const uint8_t&)` | **listener slot 10** | instrumented every slot; only 10 fired, carrying **19 → 15 → 19 → 15** against two down and two up presses |
+
+Two facts fall straight out of those numbers:
+
+* **Sony's relative step is 4 units** of AVRCP's 0..127 — i.e. stock's own volume granularity over
+  Bluetooth is ~32 steps, not the 30 Cinder happened to use.
+* The buds were sitting at **15/127 ≈ 12%** while Cinder's bar read near the bottom of a 0..30
+  scale. Same direction, different scale, drifting — the reported symptom.
+
+The listener object must be **static**: `AddListener` stores a raw, unowned pointer (round 30b).
+The callback arrives on the framework looper, so it stores one byte and the render thread applies
+it — `0..127 → 0..N` with `(v * N + 63) / 127`, rounded rather than truncated so the top of the
+sink's scale reaches the top of ours instead of stopping one step short.
+
+The eight callbacks above slot 10 are placeholders that **never dereference their arguments**.
+Their real signatures carry `pst::base` containers, and a wrong guess there is a crash rather than
+a no-op; all they exist to do is put `OnNotifyChangeVolume` at index 10.
+
+### The first-connect transient
+
+There is no getter, so until the sink volunteers a notification the bar is still last session's
+persisted belief. Reported as *"3 was mute until I went to mute, then it worked properly"* — going
+to mute forced a real change, the sink reported, and the bar corrected itself.
+
+Fixed by provoking the first report at connect: one `SetVolumeUp` (17), 150 ms, one `SetVolumeDown`
+(16). Net zero to what the user hears, and the sink reports its real level within a second. Only
+needed on the step path — when absolute volume is accepted, the push at connect already establishes
+where the level landed.
+
+### Volume granularity: 30 → 64
+
+With the sink reporting in units of 127 there is no reason to quantise to 30. `BT_VOL_MAX` is now
+**64**, so one press moves ~2 AVRCP units instead of ~4.2 — finer than stock's own 4-unit step.
+Persisted under a new key `bt_volume64`; the legacy `bt_volume` is read once and rescaled, so an
+existing install doesn't wake up at half volume.
+
+### Slot map delta (BtTransmitterServiceClient)
+
+| slot | method | how known |
+|---|---|---|
+| 16 | `SetVolumeDown()` | in use |
+| 17 | `SetVolumeUp()` | in use |
+| 31 | `SetControlAbsoluteVolume(const bool&)` | round h |
+| 32 | `GetControlAbsoluteVolume()` | round h |
+| 33 | `IsSupportedAbsoluteVolume()` | round h; **flaps — see above** |
+| 34 | `SetCurrentVolume(const uint8_t&)` | proven this round: return value distinguishes transmitted from refused |
+| 38 | `SetEnableLowLatency(const bool&)` | last service method |
+| **39** | **`AddListener(listener*, const string& key)`** | this round |
+| **40** | **`RemoveListener(...)`** | this round (position, not exercised) |
+
+A note on method, since it burned an hour: an early slot scan produced no service-side log and I
+read that as "34 is not `SetCurrentVolume`". It proved nothing — hagodaemon's file log had stopped
+writing twelve minutes earlier. **Check that the log is live before treating its silence as
+evidence.**
+
+### Addendum — the BT stack's idle-connected CPU cost is the link, not us (task #31)
+
+Round i left an open number: with the CMF Buds connected and **nothing playing**, `mtkbt` 6.15% +
+`BtCommonService` 5.50% + `btif_rxd` 1.80% ≈ **13.5% of the single online core**. The question was
+whether that is the intrinsic cost of an A2DP link or something Cinder keeps busy — the obvious
+suspect being the 3 s BT route poll.
+
+Answered with the control measurement: **radio OFF, playback running**, 161.7 s cumulative window,
+per-thread `utime+stime` deltas (`adb shell` wakes the core, so instantaneous reads are useless —
+see the power-measurement rule).
+
+| process | %core, radio OFF | %core, connected-idle (round i) |
+|---|---|---|
+| `mtkbt` (all threads, incl. `btif_rxd`) | **0.00%** | 7.95% |
+| `hagodaemon` hosting `BtCommonService`/`BtTransmitterService`/`BtBle*`/`BtPlayerService` | **0.01%** | 5.50% |
+| system busy | 35.77% (SoundServiceFw decoding) | — |
+| system ctxt | 735/s (screen on) | — |
+
+**The BT stack is genuinely asleep with the radio down.** So the 13.5% is link-attributable, and
+the only remaining question is how much of it Cinder causes. That is now bounded by arithmetic
+rather than argument:
+
+* In steady state Cinder's *entire* BT traffic is **one zero-arg `GetBtStatus` per 3 s** —
+  `refresh_bt_route()` early-returns before touching anything else once the route is unchanged and
+  the device name has resolved.
+* The 0.01% above is ~16 ms of service CPU across the ~11 polls that fired at the radio-off 15 s
+  cadence — **~1.5 ms per round trip**.
+* At the connected 3 s cadence that is ~0.5 ms/s ≈ **0.05% of a core**, i.e. about **1%** of
+  `BtCommonService`'s 5.50%.
+
+**Verdict: not ours, and not reachable from Cinder.** The other ~99% is Sony's service and the MTK
+stack servicing the link itself. Dropping the poll to 10 s would save ~0.035% — noise. Task closed.
+
+One genuine follow-up, filed rather than done: now that the volume listener is registered,
+`OnNotifyAvSrcConnectionStatus` (listener slot 2) would deliver connect/disconnect **as events**,
+so the 3 s poll could be retired for the connected case entirely rather than merely tuned. Worth
+doing for the architecture, not for the power.
