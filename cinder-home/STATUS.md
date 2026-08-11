@@ -107,6 +107,82 @@ is still preferred.
 
 ---
 
+## TL;DR — 2026-08-11: Sony's "Use Enhanced Mode", and a measured standby/BT power sweep
+
+### 1. The BT setting that stops headphones beeping at every volume step
+
+Sony's stock Bluetooth screen has a checkbox the firmware calls **"Use Enhanced Mode"** (message
+`230077`; help text `230079` is *"Select this check box if you cannot change the volume."*). It is
+the **AVRCP absolute-volume switch** — `BtTransmitterService::SetControlAbsoluteVolume`, client
+vtable slot 31 — and nothing else. Full evidence in
+[`../analysis/G_bt_nfc/RE_findings.md`](../analysis/G_bt_nfc/RE_findings.md) round h, including the
+three log strings in `libBtTransmitterService.so` that show the state machine.
+
+**Why it stops the beep.** With the preference off, `SetCurrentVolume` transmits nothing, so a
+volume press goes out as AVRCP passthrough `VOLUME_UP`/`VOLUME_DOWN` key events — which sinks like
+the CMF Buds answer with their own feedback tone. With it on, the player sends the level and the
+sink adopts it silently.
+
+**The defect this exposed.** Cinder gated only on `IsSupportedAbsoluteVolume` (slot 33) and never
+set the preference. Sony's service checks the preference *itself* before transmitting, so wherever
+stock had last left the box unticked, Cinder's absolute-volume path was a **silent no-op** and every
+volume step fell through to the beeping one. Now:
+
+* Bluetooth screen carries a **VOLUME CONTROL ▸ Use Enhanced Mode** row (default ON), persisted as
+  `bt_enhanced` and reported back as unsupported when the sink can't do it.
+* `bt_apply_enhanced_mode()` pushes it at boot, on the user toggle, and **on every reconnect** — the
+  radio does not carry the preference across a link, so pushing the level first would have been a
+  no-op on a fresh connection.
+* `bt_use_absolute_volume()` now requires both halves, so the fallback is chosen honestly.
+* `cinder-probe --btwho` prints slots 30/32/33 next to the negotiated codec, so the state is
+  readable rather than assumed.
+
+### 2. Efficiency sweep — measured, not guessed
+
+Numbers, methodology and the display-pipeline dead end are in RE_findings round i. Headlines,
+30-second windows on device:
+
+| state | system CPU | system ctxt | cinder-home |
+|---|---|---|---|
+| dark, idle, not playing | 1.17% of a core | ~354/s | 0.25% of a core, 20.9 ctxt/s |
+| dark, **playing** | 37.5% of a core | ~604/s | 0.43% of a core |
+
+CPU frequency residency is already correct: 2997 of 3009 jiffies at the **minimum** 598 MHz. (Reads
+that appear to show a pinned 1.3 GHz are the observer effect — `adb shell` wakes the core. Use
+`cpufreq/stats/time_in_state`.) While playing, `SoundServiceFw` is 33.8% of a core and Cinder is
+about **1% of the total**; the decoder dominates and always will.
+
+**Two of the ~354 standby switches per second are ours per 20 — the biggest single source is not.**
+`disp_ovl_engine_rdma0_update_kthread` + `_DISP_ConfigUpdateKThread` account for ~230/s. That is not
+reachable from userspace here: `echo 4 > /sys/class/graphics/fb0/blank` is accepted and ignored
+(`fb0/state` stays 0, same CPU), and Sony's own `DisplayService::SetLCDValidate(false)` — which
+demonstrably works and reverses, verified with `cinder-probe --dispoff` — leaves those threads at an
+identical rate. Treat 230/s as the floor.
+
+**What changed in Cinder** (all four measured against the table above; re-measure after the reboot):
+
+* **Render loop sleeps in `poll()` on the input nodes** instead of `usleep`. This decouples wake
+  rate from input latency, so the dark budget went 100 ms → 1000 ms *and touch response improved*
+  (an event returns immediately at any budget). ~10.2 → ~1 ctxt/s, and the sleep now targets the
+  next housekeeping deadline so the 1 Hz work can't drift.
+* **Audio pump rate is state-aware**: 20 ms awake, 100 ms dark+playing, **250 ms dark+idle**. It was
+  the joint-largest source of our standby wakeups and the half `poll()` doesn't touch.
+* **BT route poll backs off 3 s → 15 s while the radio is off.** Nothing can connect while it is
+  down and every power-up path refreshes the route itself, so that IPC round trip was buying
+  nothing at all for anyone who leaves Bluetooth off.
+* **The touch controller now actually sleeps.** `touch_set_sleep()` has logged *"no touch sleep node
+  found"* on every screen toggle since 2026-07-02 — Wampy's himax paths don't exist on this unit —
+  so the capacitive panel had **never** stopped scanning with the screen off. It is now driven
+  through `DisplayService::SetTouchPanelValidate` (slot 13), reached by **`dlopen`, not a link** (a
+  `DT_NEEDED` on the Home app for a path this thin is the `libNfcService` boot-to-nothing rule), and
+  only from the **Power-button** blank — never the idle blank, which must stay wakeable by touch.
+  Re-validated on every wake and at `input_open()`, so a stuck "invalid" cannot outlive one Power
+  press or one reboot.
+
+Left alone deliberately: the idle blank keeps the touch controller powered (that is what wakes it),
+and BT discovery is bounded by the radio's own 30 s duration, so a Pairing screen left open costs
+nothing after that — the UI just keeps saying "scanning", which is cosmetic.
+
 ## TL;DR — 2026-08-10: merged the bug/usability-audit branch (5 reported issues)
 
 Merged `claude/bug-usability-audit-2u2pd6`. Host tests **238 green**; qemu preflight PASS; 44/44

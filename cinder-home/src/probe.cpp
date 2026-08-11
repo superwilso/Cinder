@@ -1238,6 +1238,123 @@ static int btscan_probe(int secs) {
     _exit(0);
 }
 
+// ── --disp / --dispoff : the PANEL POWER path (battery) ─────────────────────────────────────────
+// Measured 2026-08-11, screen dark + idle + not playing: the system does ~354 context switches a
+// second, and 230 of them belong to two MediaTek kernel threads —
+//   /proc/<pid>/wchan = disp_ovl_engine_rdma0_update_kthread   (~120/s)
+//   /proc/<pid>/wchan = _DISP_ConfigUpdateKThread              (~109/s)
+// i.e. the display pipeline is still running with the backlight at 0, because Cinder's screen-off
+// writes /sys/class/leds/lcd-backlight/brightness and nothing else. `echo 4 > fb0/blank` does NOT
+// help: the write is accepted (rc=0) but `fb0/state` stays 0 and the two kthreads keep the same
+// CPU (measured +5 jiffies/15 s blanked vs +7 unblanked — noise).
+//
+// Sony's own panel switch is a service call, not a node: DisplayService::SetLCDValidate(bool).
+// Vtable recovered from the R_ARM_ABS32 relocations covering libDisplayService.so's .data.rel.ro
+// (the words on disk are zero — see the same technique in RE_findings.md round g):
+//   8 SetLCDValidate  9 SetLCDValidateGradually  10 GetLCDValidate
+//  11 SetLCDBacklightBrightness  12 GetLCDBacklightBrightness
+//  13 SetTouchPanelValidate  14 GetTouchPanelValidate  15 SetDimmer
+//
+// SetTouchPanelValidate matters too: the log line "input: touch WAKE — no touch sleep node found"
+// means cinder-home's himax sleep-node path is a NO-OP on this unit, so the touch controller has
+// never actually slept. This is the service that does it.
+//
+// TWO MODES ON PURPOSE. `--disp` is READ-ONLY and always safe. `--dispoff` is the experiment, and
+// it can leave the panel dark if the service refuses to bring it back — so it forks a restore
+// child FIRST. That child re-validates the LCD and the touch panel after the window regardless of
+// what happens to the parent (crash, watchdog _exit, adb drop). Same rule as the boot ladder: the
+// escape must depend on less than the thing it rescues, and a forked child that only calls
+// SetLCDValidate(true) depends on less than the probe that turned it off.
+extern "C" void* _ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv(void);
+
+enum { VIDX_SetLCDValidate = 8, VIDX_GetLCDValidate = 10,
+       VIDX_SetLCDBacklightBrightness = 11, VIDX_GetLCDBacklightBrightness = 12,
+       VIDX_SetTouchPanelValidate = 13, VIDX_GetTouchPanelValidate = 14 };
+
+static int disp_probe(int off_secs) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* d = _ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv();
+    if (!d) { clog_("disp: DisplayServiceClientFactory returned null"); g_pump_run = false; _exit(1); }
+    typedef void (*fnrb)(void*, bool*);
+    typedef int  (*frtb)(void*, bool*);      // Set/GetTouchPanelValidate return bool
+    typedef void (*fnwb)(void*, const bool*);
+    typedef int  (*fwtb)(void*, const bool*);
+    typedef void (*fnru)(void*, unsigned*);
+
+    bool lcd = false, tp = false;
+    unsigned bl = 0xDEADu;
+    wd_arm(10);
+    try {
+        ((fnrb)vslot(d, VIDX_GetLCDValidate))(d, &lcd);
+        ((frtb)vslot(d, VIDX_GetTouchPanelValidate))(d, &tp);
+        ((fnru)vslot(d, VIDX_GetLCDBacklightBrightness))(d, &bl);
+    } catch (...) { clog_("disp: a read threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] disp: GetLCDValidate=%d  GetTouchPanelValidate=%d  "
+                         "backlight=%u%s\n", (int)lcd, (int)tp, bl,
+                 bl == 0xDEADu ? "  <-- UNTOUCHED: the service wrote nothing" : "");
+    if (off_secs <= 0) {
+        clog_("disp: read-only. Re-run as --dispoff <secs> to measure the panel actually powered "
+              "down (that mode arms a restore child first).");
+        g_pump_run = false;
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    // ARM THE ESCAPE BEFORE TAKING THE RISK. This child holds its own client, so it does not share
+    // a single object (or a single crash) with the parent.
+    pid_t kid = fork();
+    if (kid == 0) {
+        for (int i = 0; i < off_secs + 10; i++) sleep(1);
+        void* d2 = _ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv();
+        const bool on = true;
+        if (d2) {
+            try { ((fnwb)vslot(d2, VIDX_SetLCDValidate))(d2, &on); } catch (...) {}
+            try { ((fwtb)vslot(d2, VIDX_SetTouchPanelValidate))(d2, &on); } catch (...) {}
+        }
+        // Belt and braces: the backlight node is not a service call and cannot fail the same way.
+        FILE* f = std::fopen("/sys/class/leds/lcd-backlight/brightness", "w");
+        if (f) { std::fputs("5", f); std::fclose(f); }
+        _exit(0);
+    }
+    std::fprintf(stderr, "[cinder-probe] disp: restore child pid=%d armed (+%ds)\n", (int)kid,
+                 off_secs + 10);
+
+    const bool off = false;
+    wd_arm(10);
+    try { ((fnwb)vslot(d, VIDX_SetLCDValidate))(d, &off); } catch (...) { clog_("disp: SetLCDValidate threw"); }
+    try { ((fwtb)vslot(d, VIDX_SetTouchPanelValidate))(d, &off); } catch (...) { clog_("disp: SetTouchPanelValidate threw"); }
+    wd_disarm();
+    clog_("disp: LCD + touch panel INVALIDATED — measure now");
+
+    for (int i = 0; i < off_secs; i++) sleep(1);
+
+    bool lcd2 = false, tp2 = false;
+    const bool on = true;
+    wd_arm(10);
+    try { ((fnwb)vslot(d, VIDX_SetLCDValidate))(d, &on); } catch (...) {}
+    try { ((fwtb)vslot(d, VIDX_SetTouchPanelValidate))(d, &on); } catch (...) {}
+    try {
+        ((fnrb)vslot(d, VIDX_GetLCDValidate))(d, &lcd2);
+        ((frtb)vslot(d, VIDX_GetTouchPanelValidate))(d, &tp2);
+    } catch (...) {}
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] disp: restored — GetLCDValidate=%d GetTouchPanelValidate=%d\n",
+                 (int)lcd2, (int)tp2);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 static int btwho_probe() {
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
@@ -1252,7 +1369,9 @@ static int btwho_probe() {
     void* xmit = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
     void* cmn  = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
     enum { VIDX_GetBtStatus = 3, VIDX_GetAvSrcConnectionStatus = 3, VIDX_GetAvrcpConnectionStatus = 4,
-           VIDX_GetConnectInformation = 5, VIDX_GetSoundStatus = 26 };
+           VIDX_GetConnectInformation = 5, VIDX_GetSoundStatus = 26,
+           VIDX_IsAvrcpTgVolumeSupported = 30, VIDX_GetControlAbsoluteVolume = 32,
+           VIDX_IsSupportedAbsoluteVolume = 33 };
     typedef int (*fn0)(void*);
     typedef int (*fn2)(void*, std::vector<unsigned char>*, std::string*);
     // virtual void GetSoundStatus(BtSoundCodec&, BtSoundFrequency&, BtSoundChannel&, bool&)
@@ -1270,6 +1389,10 @@ static int btwho_probe() {
     // "the service wrote nothing" from "the service wrote 0" (0 is a legitimate codec value).
     unsigned codec = 0xDEADu, freq = 0xDEADu, chan = 0xDEADu;
     bool scmst = false;
+    // The three reads behind Sony's "Use Enhanced Mode" checkbox (firmware message 230077, help
+    // text 230079 "Select this check box if you cannot change the volume"). All three take no
+    // arguments and return bool, so they are as safe to call blind as GetAvSrcConnectionStatus.
+    int tgvol = -1, ctrlabs = -1, supabs = -1;
     wd_arm(12);
     try {
         if (cmn)  st    = ((fn0)vslot(cmn,  VIDX_GetBtStatus))(cmn);
@@ -1277,6 +1400,9 @@ static int btwho_probe() {
         if (xmit) avrcp = ((fn0)vslot(xmit, VIDX_GetAvrcpConnectionStatus))(xmit);
         if (xmit) rc    = ((fn2)vslot(xmit, VIDX_GetConnectInformation))(xmit, &addr, &name);
         if (xmit) ((fn4)vslot(xmit, VIDX_GetSoundStatus))(xmit, &codec, &freq, &chan, &scmst);
+        if (xmit) tgvol   = ((fn0)vslot(xmit, VIDX_IsAvrcpTgVolumeSupported))(xmit);
+        if (xmit) ctrlabs = ((fn0)vslot(xmit, VIDX_GetControlAbsoluteVolume))(xmit);
+        if (xmit) supabs  = ((fn0)vslot(xmit, VIDX_IsSupportedAbsoluteVolume))(xmit);
     } catch (...) { clog_("btwho: a read threw"); }
     wd_disarm();
 
@@ -1298,6 +1424,18 @@ static int btwho_probe() {
     std::fprintf(stderr, "[cinder-probe] btwho: GetSoundStatus codec=0x%02x freq=0x%02x chan=0x%02x scmst=%d%s\n",
                  codec, freq, chan, (int)scmst,
                  codec == 0xDEADu ? "   <-- UNTOUCHED: the service wrote nothing" : "");
+    // VOLUME PATH. `GetControlAbsoluteVolume` is the preference behind Sony's "Use Enhanced Mode";
+    // `IsSupportedAbsoluteVolume` is what the SINK can do. libBtTransmitterService.so refuses to
+    // transmit unless BOTH are true — it logs "Not control absolute volume mode" for a false
+    // preference and "Not support absolute volume" for an incapable sink, and only then
+    // "Send absolute volute(%u)". With the preference off, volume goes out as AVRCP
+    // VOLUME_UP/VOLUME_DOWN key events instead, which is what makes sinks play their own beep.
+    std::fprintf(stderr,
+                 "[cinder-probe] btwho: IsAvrcpTgVolumeSupported=%d  GetControlAbsoluteVolume=%d "
+                 "(Sony 'Use Enhanced Mode')  IsSupportedAbsoluteVolume=%d  -> volume goes out as %s\n",
+                 tgvol, ctrlabs, supabs,
+                 (ctrlabs == 1 && supabs == 1) ? "ABSOLUTE (SetCurrentVolume)"
+                                               : "VOLUME_UP/DOWN key events (sink may beep)");
     if (!addr.empty())
         clog_("btwho: CONNECTED — and note rc above: a zero return with a filled address means rc is "
               "NOT a connected flag. Gate on the address.");
@@ -1815,6 +1953,13 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
         return btinfo_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--disp") == 0) {
+        return disp_probe(0);   // read-only
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--dispoff") == 0) {
+        // Seconds to hold the panel powered down (default 20). Arms a restore child first.
+        return disp_probe(argc > 2 ? std::atoi(argv[2]) : 20);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btrx") == 0) {
         return btrx_probe(argc > 2 ? std::atoi(argv[2]) : 40);

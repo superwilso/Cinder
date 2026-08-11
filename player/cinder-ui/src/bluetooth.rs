@@ -34,6 +34,15 @@ pub struct Bt<'a> {
     pub link_known: bool,
     pub codec_sel: u8,    // index into CODECS
     pub ldac_quality: u8, // index into QUALITIES (only meaningful when codec_sel == LDAC)
+    /// Sony's "Use Enhanced Mode" (firmware message 230077, helped by 230079 "Select this check
+    /// box if you cannot change the volume"). It is the AVRCP **absolute-volume** switch:
+    /// `BtTransmitterService::SetControlAbsoluteVolume`. On, the player sends the headphone the
+    /// level it should sit at; off, it sends VOLUME_UP/VOLUME_DOWN key events, which many sinks
+    /// answer with their own volume beep.
+    pub enhanced: bool,
+    /// Does the CONNECTED sink accept absolute volume (`IsSupportedAbsoluteVolume`)? Pushed by the
+    /// shell. False = the row still shows, but says the sink can't do it rather than pretending.
+    pub enhanced_supported: bool,
 }
 
 // ---- layout (shared by render + hit) ----
@@ -44,6 +53,8 @@ const CODEC_Y0: i32 = 212;
 const CODEC_RH: i32 = 44;
 const QUAL_Y: i32 = 420;
 const QUAL_H: i32 = 40;
+const ENH_Y: i32 = 556; // "Use Enhanced Mode" row (absolute volume)
+const ENH_H: i32 = 64;
 const PAIR_Y: i32 = 700;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -53,6 +64,8 @@ pub enum BtHit {
     Disconnect,
     Codec(usize),
     Quality(usize),
+    /// "Use Enhanced Mode" toggled — the absolute-volume switch.
+    Enhanced,
     Pair,
 }
 
@@ -75,6 +88,11 @@ pub fn hit(x: i32, y: i32, on: bool, codec_is_ldac: bool) -> BtHit {
     if codec_is_ldac && (QUAL_Y..QUAL_Y + QUAL_H).contains(&y) {
         let i = ((x - 22).max(0) / 109).min(3) as usize;
         return BtHit::Quality(i);
+    }
+    // The whole row is the target, not just the switch — it is a 34x18 graphic and this panel has
+    // no other tappable thing on that band.
+    if (ENH_Y..ENH_Y + ENH_H).contains(&y) {
+        return BtHit::Enhanced;
     }
     if (PAIR_Y..PAIR_Y + 52).contains(&y) {
         return BtHit::Pair;
@@ -174,6 +192,34 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
                                       &cst, (crate::canvas::W as f32) - 44.0);
         center(c, f, 240.0, (QUAL_Y + QUAL_H + 22) as f32, &cap, &cst);
     }
+
+    // ENHANCED MODE — Sony's own name for the AVRCP absolute-volume switch. With it on, a volume
+    // step sends the headphone the level to sit at (SetCurrentVolume); with it off, the player
+    // sends VOLUME_UP/VOLUME_DOWN key events instead and sinks like the CMF Buds answer each one
+    // with their own feedback beep. Sony gates SetCurrentVolume on this preference internally
+    // ("Not control absolute volume mode"), so the shell must set it — reading
+    // IsSupportedAbsoluteVolume alone is not enough.
+    text::draw(c, f, 22.0, (ENH_Y - 12) as f32, "VOLUME CONTROL",
+               &sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.acc } else { t.faint }, 0.18));
+    crate::widgets::hline(c, ENH_Y, t.line);
+    let enh_on = bt.on && bt.enhanced;
+    let tcol = if bt.on { t.ink } else { t.faint };
+    let tst = sty(Family::Sans, Weight::SemiBold, 17.0, tcol, 0.0);
+    let sst = sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.dim } else { t.faint }, 0.04);
+    // 22 → the switch's left edge (422) less a gap; both strings truncate rather than run under it.
+    let avail = (422 - 22 - 14) as f32;
+    text::draw(c, f, 22.0, (ENH_Y + 26) as f32,
+               &crate::widgets::fit(f, "Use Enhanced Mode", &tst, avail), &tst);
+    let sub = if !bt.enhanced_supported {
+        "Not supported by the connected device"
+    } else if bt.enhanced {
+        "Sets the headphone's level directly \u{b7} no button beep"
+    } else {
+        "Sends volume key presses \u{b7} turn on if volume won't change"
+    };
+    text::draw(c, f, 22.0, (ENH_Y + 46) as f32, &crate::widgets::fit(f, sub, &sst, avail), &sst);
+    crate::widgets::toggle(c, t, 422, ENH_Y + 20, 34, 18, 12, enh_on);
+    crate::widgets::hline(c, ENH_Y + ENH_H, t.line);
 
     // pair new device + NFC hint
     fill_rect(c, 22, PAIR_Y, 436, 52, if bt.on { t.acc } else { t.line });

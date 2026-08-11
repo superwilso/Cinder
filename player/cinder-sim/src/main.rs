@@ -386,6 +386,8 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             link_known: true, // the sim always "knows" — it owns its own mock link state
             codec_sel: app.bt_codec as u8,
             ldac_quality: 0,
+            enhanced: true,
+            enhanced_supported: true,
         }),
         Screen::Pairing => {
             // The sim has no radio, so its mock "paired" set stands in for GetPairedDeviceInfo.

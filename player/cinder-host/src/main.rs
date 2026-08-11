@@ -86,7 +86,7 @@ fn main() {
         eq_preset: "A1",
         bt_codec: Some("LDAC"),
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0 };
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —

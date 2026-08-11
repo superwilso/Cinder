@@ -23,6 +23,7 @@
 #include <cstring>
 #include <ucontext.h>
 #include <unistd.h>
+#include <poll.h>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <dirent.h>
@@ -262,8 +263,11 @@ void start_pump_ticker();   // full worker defined just before main(), after the
 bool gadget_in_dac_mode();   // defined with the USB-DAC block below
 static int bt_status();      // defined with the Bluetooth block below
 static bool bt_radio_up(int st);
+static void apply_pump_interval();  // defined with poll_now_playing — audio-pump rate for the current state
 void refresh_bt_route();     // ditto — points the volume rocker at whichever output is live
+extern bool g_bt_radio_seen_up;  // ditto — last GetBtStatus said the radio was up (poll back-off)
 void apply_bt_codec();       // ditto — pushes the codec choice to the radio (not just the conf file)
+static void bt_apply_enhanced_mode(const char* why); // ditto — Sony's "Use Enhanced Mode" (absolute volume)
 static void refresh_bt_connected();  // ditto — names the linked device for the Bluetooth screen
 void refresh_bt_paired();    // ditto — reads the radio's pairing table for the Devices screen
 void apply_bt_scan();        // ditto — starts/stops discovery (SetSearchMode + the listener)
@@ -438,6 +442,10 @@ void deferred_up() {
     // Push the saved codec preference at the radio too. Same reasoning as the EQ re-apply below: a
     // preference that only lives in a file is a preference the hardware never hears about.
     run_guarded("deferred_up: apply saved BT codec", 6, apply_bt_codec);
+    // Same for "Use Enhanced Mode" — the radio boots with whatever stock last left, and a stale OFF
+    // makes every absolute-volume call a silent no-op (see bt_apply_enhanced_mode).
+    run_guarded("deferred_up: apply saved BT enhanced mode", 6,
+                []() { bt_apply_enhanced_mode("boot"); });
     // Re-apply the user's SAVED EQ + sound effects to the DSP (only if a settings file was restored —
     // no point pushing defaults on a fresh install). Guarded, like every effect-shim call.
     if (g_settings_loaded) {
@@ -1297,6 +1305,38 @@ bool g_screen_on = true;      // see the fwd decl above
 // it; with cinder-home as the Home app nothing did. Wampy has the same problem and the same fix
 // (write "0" = awake, "1" = sleep): src/connector/hagoromo.cpp enableTouchscreen(). Paths are
 // the A50-family node with the WM1Z variant as fallback (Wampy's pair, verbatim).
+// Sony's touch-panel power switch, reached by dlopen so cinder-home gains no DT_NEEDED for it.
+// Returns true if the service accepted the call; false means "not available, use the node path".
+// The client is built once and kept — CreateInstance is a binder handshake, and this is called on
+// every screen toggle.
+static bool touch_panel_service(bool valid) {
+    enum { VIDX_SetTouchPanelValidate = 13 };
+    static void* cli = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        void* h = dlopen("libDisplayService.so", RTLD_NOW);
+        if (!h) { clog_("touch: libDisplayService.so unavailable — falling back to the sysfs node"); return false; }
+        typedef void* (*mk)(void);
+        mk f = (mk)dlsym(h, "_ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv");
+        if (!f) { clog_("touch: DisplayServiceClientFactory symbol missing"); return false; }
+        try { cli = f(); } catch (...) { cli = nullptr; }
+        clog_(cli ? "touch: DisplayServiceClient ready (SetTouchPanelValidate)"
+                  : "touch: DisplayServiceClientFactory returned null");
+    }
+    if (!cli) return false;
+    try {
+        typedef int (*fnb)(void*, const bool*);
+        void** vt = *(void***)cli;
+        ((fnb)vt[VIDX_SetTouchPanelValidate])(cli, &valid);
+    } catch (...) { clog_("touch: SetTouchPanelValidate threw"); return false; }
+    char m[96];
+    std::snprintf(m, sizeof m, "input: touch %s via DisplayService::SetTouchPanelValidate(%d)",
+                  valid ? "WAKE" : "SLEEP", (int)valid);
+    clog_(m);
+    return true;
+}
+
 void touch_set_sleep(int slp) {
     static const char* paths[] = {
         "/sys/devices/platform/mt-i2c.1/i2c-1/1-0048/sleep",  // nw-a50/40/30/zx300
@@ -1329,6 +1369,26 @@ void touch_set_sleep(int slp) {
         closedir(d);
         if (hit) return;
     }
+    // No node on this unit — measured 2026-08-11, and the log line below has been printing on
+    // every screen toggle since 2026-07-02, which means the touch controller has NEVER slept. It
+    // is a capacitive panel scanning continuously with the screen off, so this was a real standby
+    // cost hiding behind a "harmless" message.
+    //
+    // Sony does it through a service, not a node: DisplayService::SetTouchPanelValidate(bool),
+    // vtable slot 13 (recovered from libDisplayService.so's .data.rel.ro relocations; see
+    // cinder-probe --disp, which also proved the round trip reverses — GetTouchPanelValidate went
+    // 1 → 0 → 1 across a --dispoff window on device).
+    //
+    // dlopen, NOT a link. A DT_NEEDED on the Home app for a path this thin is how you get a device
+    // that boots to nothing (the libNfcService rule), and there is nothing to gain: if the handle
+    // or the symbol is missing we simply fall through to the old no-op, exactly as today.
+    //
+    // Escape ladder: this only ever runs from screen_toggle() — the POWER-BUTTON blank — never
+    // from the idle blank, which must keep touch alive to be woken by it. So the thing that
+    // rescues a sleeping touch panel is a key event, which depends on strictly less than touch.
+    // apply_touch_panel_valid(true) additionally runs on every wake and once at boot, so a stuck
+    // "invalid" cannot outlive the next Power press or the next reboot.
+    if (touch_panel_service(!slp)) return;
     if (!slp) clog_("input: touch WAKE — no touch sleep node found (harmless: the held evdev grab keeps events flowing; screen-off tap-drop is handled in input_pump)");
 }
 
@@ -1364,7 +1424,7 @@ static void screen_auto_off() {
         FILE* f = std::fopen(g_bl.path, "w");
         if (f) { std::fputc('0', f); std::fclose(f); }
     }
-    cinder_audio_pump_set_interval(100);   // nothing on screen needs 50 Hz IPC latency
+    apply_pump_interval();   // nothing on screen needs 50 Hz IPC latency
     clog_("screen: idle timeout -> panel off (touch or Power wakes it)");
 }
 
@@ -1374,9 +1434,14 @@ static void screen_auto_wake() {
     if (!g_screen_auto_off) return;
     g_screen_auto_off = false;
     g_screen_on = true;
+    // Self-heal: the idle blank never sleeps the touch panel (it is what wakes us), but a Power
+    // blank does now — and if the user Power-blanked, woke with Power, and the panel is dark again
+    // by the idle timer, re-validating here costs one call and closes the only window where a
+    // stuck "invalid" could survive.
+    touch_set_sleep(0);
     apply_backlight();
     cinder_force_dirty();   // the render loop skipped painting while dark — repaint immediately
-    cinder_audio_pump_set_interval(20);
+    apply_pump_interval();
     clog_("screen: woken by input");
 }
 
@@ -1387,7 +1452,7 @@ void screen_toggle() {
     // Drop any in-flight contact: the sleeping controller never sends its lift, and a stale
     // "down" would make the next touch classify as a drag from the old start point.
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
-    cinder_audio_pump_set_interval(g_screen_on ? 20 : 100);
+    apply_pump_interval();
     if (g_screen_on) {
         apply_backlight();
         cinder_force_dirty();
@@ -1586,7 +1651,41 @@ static bool bt_abs_volume_supported() {
     } catch (...) { clog_("bt-vol: IsSupportedAbsoluteVolume threw"); }
     clog_(g_bt_abs_vol == 1 ? "bt-vol: sink takes ABSOLUTE volume (SetCurrentVolume)"
                             : "bt-vol: sink is step-only (SetVolumeUp/Down)");
+    cinder_set_bt_enhanced_supported(g_bt_abs_vol == 1);
     return g_bt_abs_vol == 1;
+}
+
+// Absolute volume needs BOTH: a sink that supports it, and Sony's "Use Enhanced Mode" preference
+// set — the service checks the preference itself before transmitting.
+static bool bt_use_absolute_volume() {
+    return cinder_get_bt_enhanced() != 0 && bt_abs_volume_supported();
+}
+
+// ── "Use Enhanced Mode" (Sony's name; message 230077, help text 230079) ─────────────────────────
+// The AVRCP absolute-volume switch. Sony's own SetCurrentVolume refuses to transmit unless this
+// preference is set — libBtTransmitterService.so logs "Not control absolute volume mode" and
+// returns — so IsSupportedAbsoluteVolume() alone was never enough: Cinder's absolute path was a
+// no-op whenever stock had last left the preference off, and every volume step fell through to
+// SetVolumeUp/SetVolumeDown. Those are AVRCP passthrough VOLUME_UP/VOLUME_DOWN key events, which
+// sinks like the CMF Buds answer with their own feedback beep.
+//
+// The radio does not carry the preference across a link, so this is re-applied on every connect.
+static void bt_apply_enhanced_mode(const char* why) {
+    enum { VIDX_SetControlAbsoluteVolume = 31, VIDX_GetControlAbsoluteVolume = 32 };
+    try {
+        void* x = bt_xmit();
+        if (!x) { clog_("bt-enh: BtTransmitterServiceClient unavailable"); return; }
+        const bool want = cinder_get_bt_enhanced() != 0;
+        typedef void (*fnb)(void*, const bool*);
+        typedef int  (*fn0)(void*);
+        ((fnb)bt_slot(x, VIDX_SetControlAbsoluteVolume))(x, &want);
+        // Judge by side effect, not by the setter's return: read it straight back.
+        const bool got = ((fn0)bt_slot(x, VIDX_GetControlAbsoluteVolume))(x) != 0;
+        char buf[128];
+        std::snprintf(buf, sizeof buf, "bt-enh: enhanced mode %s (%s) -> readback %s",
+                      want ? "ON" : "OFF", why, got ? "ON" : "OFF");
+        clog_(buf);
+    } catch (...) { clog_("bt-enh: SetControlAbsoluteVolume threw"); }
 }
 
 // Push the UI's Bluetooth level at the sink. `up` only matters on the step fallback — with absolute
@@ -1596,7 +1695,7 @@ static void apply_bt_volume(bool up) {
     try {
         void* x = bt_xmit();
         if (!x) { clog_("bt-vol: BtTransmitterServiceClient unavailable"); return; }
-        if (bt_abs_volume_supported()) {
+        if (bt_use_absolute_volume()) {
             // UI steps -> the AVRCP 0..127 scale. Integer maths, and the top step must land on 127
             // exactly or full volume would be unreachable.
             int lvl = cinder_get_bt_volume();
@@ -2181,8 +2280,13 @@ void apply_bt_forget_device() {
 // reference_bt_radio_wedge: 7 = off, 2 = on/idle, 3 = connected), and a connected transmitter is
 // where the audio is going, so that is the whole test. Pushed into the UI, which uses it to pick
 // WHICH of its two stored levels the next press moves — it never moves either one by itself.
+// Last radio state this poll observed (7 = off). Read by the render loop to decide how often to
+// come back — see the back-off there. Starts `true` so a first poll always happens promptly.
+bool g_bt_radio_seen_up = true;
+
 void refresh_bt_route() {
     int st = bt_status();
+    g_bt_radio_seen_up = bt_radio_up(st);
     int on = (st == 3) ? 1 : 0;
     if (on == cinder_get_bt_route()) {
         // No route change — but if we are on Bluetooth and still have no device NAME, ask again. The
@@ -2209,7 +2313,11 @@ void refresh_bt_route() {
     // off instead of at whatever the headphones happen to remember. Only meaningful with absolute
     // volume — there is no way to command a level with up/down steps, so a step-only sink just keeps
     // its own and the UI count stays a belief until the next press.
-    if (on && bt_abs_volume_supported()) apply_bt_volume(true);
+    // …but first re-assert "Use Enhanced Mode". The radio does not carry the preference across a
+    // link, and Sony's SetCurrentVolume checks it before transmitting, so pushing the level before
+    // this would be a silent no-op on a fresh connection.
+    if (on) bt_apply_enhanced_mode("bt connect");
+    if (on && bt_use_absolute_volume()) apply_bt_volume(true);
 
     // ── RECONNECT EDGE: re-assert everything a re-opened output can have reset ────────────────
     // Report: "Bluetooth volume can become disconnected after it reconnects." Cinder pushes the
@@ -3125,6 +3233,14 @@ void carry_out(int act) {
             // …and apply it to the live radio, which the conf file alone never did.
             run_guarded("carry_out: BT codec apply", 6, apply_bt_codec);
             break;
+        case CINDER_ACT_BT_ENHANCED_CHANGED:
+            // "Use Enhanced Mode" toggled → hand the preference to the radio, then re-push the
+            // level so the change is audible immediately rather than at the next volume press.
+            run_guarded("carry_out: BT enhanced mode", 6, []() {
+                bt_apply_enhanced_mode("user toggle");
+                if (bt_use_absolute_volume()) apply_bt_volume(true);
+            });
+            break;
         case CINDER_ACT_USBDAC_LDAC:
             // 18 s, not 6: this used to be one setprop via cinder-msc, but it now also builds a
             // UsbDeviceAudioPlayerServiceClient and makes a Start()/Stop() IPC round trip on top of
@@ -3736,6 +3852,20 @@ bool g_np_poll_now = false;  // fwd-declared above
 // than up to a second later.
 bool g_house_due = false;    // fwd-declared above
 
+// How fast the audio shim's Framework::Pump() loop spins. It exists to deliver binder replies, so
+// the right rate is "as slow as the thing waiting on a reply can tolerate".
+//   awake                 20 ms — the UI shows a moving progress bar and answers presses.
+//   dark + playing       100 ms — nothing is drawn, but track boundaries and the scrobbler ride on it.
+//   dark + NOT playing   250 ms — nothing is waiting on it at all; the only callers are the 1 Hz
+//                                 housekeeping poll and the 15 s BT route poll, both guarded at
+//                                 seconds. Measured 2026-08-11: the pump thread was the joint-
+//                                 largest source of cinder-home's standby wakeups (10.2 ctxt/s of
+//                                 20.9 total), and this is the half of that pair the poll() change
+//                                 in the render loop does not touch.
+static void apply_pump_interval() {
+    cinder_audio_pump_set_interval(g_screen_on ? 20 : (g_playing ? 100 : 250));
+}
+
 void poll_now_playing() {
     static char last[1024];
     static unsigned last_events = 0;
@@ -3858,8 +3988,15 @@ void* render_driver(void*) {
             // a route learned only at carry_out time would always be one press stale.
             // 3 s is chosen against the cost — this is a synchronous IPC round trip on the render
             // thread, and it is guarded like every other one.
+            //
+            // …and back off hard when the RADIO IS OFF. Nothing can connect while it is down, and
+            // every path that powers it up (CINDER_ACT_BT_TOGGLE, deferred_up) refreshes the route
+            // itself — so a 3 s IPC round trip there was buying nothing at all, forever, for the
+            // majority of users who leave Bluetooth off. `g_bt_radio_seen_up` is the last answer this
+            // poll got, so the first poll after a power-up snaps straight back to 3 s.
             static long last_route_ms = 0;
-            if (now_ms() - last_route_ms >= 3000) {
+            const long route_every = g_bt_radio_seen_up ? 3000 : 15000;
+            if (now_ms() - last_route_ms >= route_every) {
                 last_route_ms = now_ms();
                 run_guarded("loop: BT route poll", 4, refresh_bt_route);
             }
@@ -3983,6 +4120,9 @@ void* render_driver(void*) {
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             // Scrobble writes /contents — skip while it's handed to the PC (stale mountpoint).
             if (!g_msc_active) cinder_scrobble_tick(g_playing ? 1 : 0);
+            // g_playing changes on its own (a track ends, the sleep timer pauses), and the screen
+            // transitions are not the only way into "dark + idle" — so re-evaluate here too.
+            apply_pump_interval();
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");
                 set_transport(false);
@@ -4228,10 +4368,35 @@ void* render_driver(void*) {
         // 60 thread wakeups, sustained. Dark is also the LONGEST-lived state on a music player —
         // screen off, in a pocket, playing for hours — so this is where the cost actually adds up.
         // 60 -> 10 Hz cuts it to ~80 syscalls/second.
-        const long budget = g_screen_on ? 16 : 100;
-        long spent = now_ms() - frame_start;
-        long left = budget - spent;
-        usleep((left > 0 ? left : 1) * 1000);
+        //
+        // …and the sleep is a poll() ON THE INPUT NODES, not a usleep. That decouples the two
+        // things the budget used to conflate — how often we wake, and how fast we answer a touch.
+        // With poll(), an event returns immediately at ANY budget, so the dark budget can be a
+        // full second without costing wake latency: the finger that wakes the device now lands in
+        // the very next iteration instead of up to 100 ms later. Measured on device 2026-08-11,
+        // dark + idle: the render thread was doing 10.2 context switches/s (one per 100 ms tick)
+        // and this takes it to ~1/s, with better touch response, not worse.
+        //   Housekeeping is what sets the floor: it runs at 1 Hz and owns the sleep timer, the
+        // scrobbler and the USB-host debounce, so 1000 ms is the longest we may ever sleep. The
+        // awake budget stays 16 ms — a drag has to follow the finger, and there poll() only helps.
+        long left;
+        if (g_screen_on) {
+            left = 16 - (now_ms() - frame_start);
+        } else {
+            // Sleep to the NEXT housekeeping deadline, not a flat second — a flat 1000 ms would
+            // drift past the 1 Hz check and silently halve the housekeeping rate (the sleep timer
+            // and the scrobbler both ride on it).
+            left = last_house_ms + 1000 - now_ms();
+            if (left > 1000) left = 1000;
+        }
+        if (left < 1) left = 1;
+        if (g_evn > 0 && g_deferred_done) {
+            struct pollfd pfd[16];
+            for (int i = 0; i < g_evn; ++i) { pfd[i].fd = g_evfds[i]; pfd[i].events = POLLIN; pfd[i].revents = 0; }
+            poll(pfd, g_evn, (int)left);   // returns early on ANY input; EINTR is fine, we just loop
+        } else {
+            usleep(left * 1000);           // pre-init, or no input nodes at all: nothing to wait on
+        }
     }
     return nullptr;
 }

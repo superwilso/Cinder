@@ -613,7 +613,7 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nvolume={}\nbt_volume={}\nbrightness={}\nscreen_off={}\nui_scale={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume={}\nbrightness={}\nscreen_off={}\nui_scale={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -626,6 +626,7 @@ fn settings_body(r: &Render) -> String {
         r.app.onboarding_seen() as u8,
         r.app.bt_codec(),
         r.app.bt_ldac_quality(),
+        r.app.bt_enhanced() as u8,
         r.app.volume_level(),
         r.app.bt_volume_level(),
         r.app.brightness_restore(), // never 0: backlight-off is transient, not a setting
@@ -1673,6 +1674,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             r.np.repeat = if r.np.repeat == 0 { 1 } else { 0 };
             23
         }
+        Action::BtEnhancedChanged => 35, // shell reads cinder_get_bt_enhanced + SetControlAbsoluteVolume
         Action::BtCodecChanged => 17, // shell reads cinder_get_bt_codec/quality + applies via BtTransmitter
         Action::UsbDacToggle(_) => 18, // shell reads cinder_get_usb_dac() + starts/stops the LDAC bridge
         Action::BrightnessChanged(_) => 20, // shell reads cinder_get_brightness() + writes the backlight
@@ -2091,6 +2093,33 @@ pub extern "C" fn cinder_get_bt_ldac_quality() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {
         Some(r) => r.app.bt_ldac_quality() as libc::c_int,
         None => 0,
+    }
+}
+
+/// "Use Enhanced Mode" (1/0) — Sony's name for AVRCP absolute volume. The shell reads this after
+/// CINDER_ACT_BT_ENHANCED_CHANGED *and* after every reconnect, and hands it to
+/// `BtTransmitterServiceClient::SetControlAbsoluteVolume` (slot 31). Sony's service gates
+/// `SetCurrentVolume` on this preference internally, so leaving it unset makes absolute volume a
+/// silent no-op.
+#[no_mangle]
+pub extern "C" fn cinder_get_bt_enhanced() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.bt_enhanced() as libc::c_int,
+        None => 1,
+    }
+}
+
+/// Report whether the CONNECTED sink accepts absolute volume (`IsSupportedAbsoluteVolume`, slot
+/// 33). Returns 1 if the Bluetooth screen needs a repaint.
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_enhanced_supported(on: libc::c_int) -> libc::c_int {
+    let mut g = cell().lock().unwrap();
+    let r = match g.as_mut() { Some(r) => r, None => return 0 };
+    if r.app.set_bt_enhanced_supported(on != 0) {
+        r.dirty = true;
+        1
+    } else {
+        0
     }
 }
 
@@ -2685,6 +2714,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_bt_ldac_quality(n);
                         }
                     }
+                    "bt_enhanced" => r.app.set_bt_enhanced(v == "1"),
                     "volume" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_volume(n);
