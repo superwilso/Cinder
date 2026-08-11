@@ -370,6 +370,13 @@ int  cinder_get_usb_dac(void);
    only — raises no action, since the gadget is already there. Call at startup to stop Settings
    reporting the opposite of the hardware after a mode change made outside Cinder. */
 void cinder_set_usb_dac(int on);
+/* Publish the host's live USB stream format for the USB-DAC panel: rate in Hz, bit depth, channels
+   (from Sony's stream_info_t, the three words GetStatus fills in). rate 0 = not streaming, which
+   clears the panel back to its generic line. Sets state only, raises no action. */
+void cinder_set_usb_dac_format(unsigned rate, unsigned bits, unsigned chans);
+/* Publish the codec A2DP actually negotiated (raw BtSoundCodec word from GetSoundStatus; 0 = not
+   known). The UI shows a neutral label until the enumerators are tied to a real headphone. */
+void cinder_set_bt_negotiated_codec(int raw);
 /* Read the Sound A/B compare state (1 = B/bypassed, 0 = A/active). Call after a
  * CINDER_ACT_SOUND_BYPASS action, then apply via cinder_effects_set_bypass. */
 int  cinder_get_sound_bypass(void);

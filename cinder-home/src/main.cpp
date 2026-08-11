@@ -2088,6 +2088,14 @@ static std::vector<unsigned char> g_bt_pairing_addr;
 //   slot 3  OnNotifyNumericComparison(const vector<uint8_t>&, const uint32_t&, const uint32_t&, const string&)
 //   slot 5  OnNotifyPasskey(const vector<uint8_t>&, const uint32_t&, const string&)
 //   slot 14 OnNotifySspRequest(const vector<uint8_t>&, const string&, const uint32_t&, const uint32_t&, const uint32_t&)
+//
+// SSPVARIANT IS SETTLED (2026-08-11): the service's own range check says so. In
+// `FireOnNotifySspRequest` (libBtCommonService.so @0x86f4) the incoming variant is tested
+// `if (v > 3) log "NotifySspRequest : SspVariant value out of range!!"` and otherwise passed through
+// a 4-entry `tbb` jump table that maps 0->0, 1->1, 2->2, 3->3. So the enum has exactly four
+// enumerators, 0..3, and Sony's own translation is the identity. Echoing back the value we were
+// handed — which is what RequestSspReply does below — is therefore provably correct rather than a
+// guess, and no name table is needed to be right about it.
 enum { BT_PROMPT_NONE = 0, BT_PROMPT_NUMERIC = 1, BT_PROMPT_PASSKEY = 2, BT_PROMPT_SSP = 3 };
 struct BtPrompt {
     int                        kind = BT_PROMPT_NONE;
@@ -2124,9 +2132,21 @@ struct CinderBtListener {
     virtual void OnNotifyNumericComparison(const std::vector<unsigned char>& addr,
                                            const unsigned& a, const unsigned& b,
                                            const std::string& name) {
-        // Which of the two words is the six digits the other device shows is not settled by the
-        // disassembly, so BOTH are logged and the plausible one is displayed. Getting this wrong shows
-        // the user the wrong number; it cannot corrupt the pairing, because the reply is a yes/no.
+        // Which of the two words is the six digits the other device shows is still not settled, but
+        // the field list now is. libBtCompIf.so keeps demangled prototypes for the layer below:
+        //
+        //   BtCommonComponentIfReceiver::NotifyNumericComparison(btmw_bdaddr_t*, unsigned int,
+        //                                unsigned char, unsigned char*, unsigned int)
+        //   BtCommonComponentIfReceiver::NotifySspRequest(btmw_bdaddr_t*, unsigned char,
+        //                                unsigned char*, unsigned int, btmw_ssp_variant_t,
+        //                                unsigned int)
+        //
+        // The `unsigned char*` is the device name and the `unsigned char` its length, which leaves
+        // exactly two uint32s here: a class-of-device word and the comparison value. That is what
+        // the test below actually discriminates — a CoD is a packed 24-bit field (0x240404 for
+        // headphones, i.e. 2360324) while a numeric comparison value is six decimal digits, so
+        // "under a million" separates them. Both are still logged, and getting it wrong shows the
+        // wrong number without being able to corrupt the pairing, because the reply is a yes/no.
         char m[128];
         std::snprintf(m, sizeof m, "bt-scan: NumericComparison '%s' a=%u b=%u", name.c_str(), a, b);
         clog_(m);
@@ -2363,6 +2383,191 @@ void apply_bt_pair_device() {
         std::snprintf(m, sizeof m, "bt-scan: Pairing(row %d) rc=%d", i, rc);
         clog_(m);
     } catch (...) { clog_("bt-scan: Pairing threw"); }
+}
+
+// ── the codec that was actually NEGOTIATED ──────────────────────────────────────────────────────
+//
+// Everything the UI shows today is the user's PREFERENCE — SetLdac / SetAptxHD / SetAptxClassic,
+// applied before RequestConnection. But A2DP negotiates, so a sink that cannot do LDAC lands on SBC
+// while the screen still says LDAC. `BtTransmitterServiceClient` slot 26 is the only call that
+// knows:
+//
+//     virtual void GetSoundStatus(BtSoundCodec&, BtSoundFrequency&, BtSoundChannel&, bool&)
+//
+// Four OUT params, all scalars, which is what makes it safe to call blind — unlike GetCapabilities
+// (takes a pst::base::vector) or GetConnectInformation (holds a std::string), the two that crashed
+// before the container layout was recovered. Exercised with the radio off via `--btwho`: all four
+// were written, so the ABI is right.
+//
+// THE ENUMERATORS ARE NOT MAPPED, and this does not guess them — the rule BtLdacSoundQuality earned.
+// With nothing connected every field reads 0, so 0 means "none/unset", not SBC. What this does is
+// publish the raw word and log all four whenever they change, in the service's own format: one
+// session with a known headphone connected settles the map for free. Until then the UI shows a
+// neutral "BLUETOOTH" rather than a codec name it cannot stand behind.
+static void bt_poll_sound_status() {
+    enum { VIDX_GetSoundStatus = 26 };
+    static unsigned last = 0xffffffffu;
+    void* x = bt_xmit();
+    if (!x) return;
+    unsigned codec = 0, freq = 0, chan = 0;
+    bool ok = false;
+    try {
+        typedef void (*fn4)(void*, unsigned*, unsigned*, unsigned*, bool*);
+        ((fn4)bt_slot(x, VIDX_GetSoundStatus))(x, &codec, &freq, &chan, &ok);
+    } catch (...) { return; }
+    const unsigned key = (codec & 0xff) | ((freq & 0xff) << 8) | ((chan & 0xff) << 16)
+                       | ((unsigned)ok << 24);
+    if (key == last) return;
+    last = key;
+    char m[192];
+    std::snprintf(m, sizeof m, "bt-sound: codec:0x%02x channel:0x%02x frequency:0x%02x flag:%d "
+                  "(enumerators still unmapped — this line is the map)", codec, chan, freq, ok);
+    clog_(m);
+    cinder_set_bt_negotiated_codec((int)codec);
+}
+
+// ── NFC tap-to-pair ─────────────────────────────────────────────────────────────────────────────
+//
+// PROVEN ON DEVICE 2026-08-11, with a WH-1000XM4 held against the rear panel. Until that tap the
+// Home app deliberately had no NFC dependency at all (the libNfcService rule: no DT_NEEDED for a
+// path whose payload read has never executed). It has now executed, so this wires it — still by
+// dlopen, because the rule's second half stands: a library this optional must never be able to stop
+// the launcher.
+//
+// WHAT THE PREVIOUS ROUNDS GOT WRONG. `Start(0)` was called for a fortnight and read as working
+// because it "returned 1" and the controller appeared in logcat. `NfcService::Start`
+// (libNfcService.so @0x7a40) says otherwise:
+//
+//     if (state == 3) return 3;                  // already started
+//     ret = 1;                                   // the DEFAULT is failure
+//     if (mode==1) nf=1; else if (mode==2) nf=2; else if (mode==3) nf=0; else goto out;
+//     NF_start2(.., nf); state = 2; ret = 0;
+//
+// Valid modes are 1, 2, 3 and nothing else; 0 falls straight to the failure exit. The controller
+// powering up was `Open`'s NF_initialize, not Start. Mode 1 is the one that reads tags: measured
+// rc=0 with GetCurrentMode moving 0 -> 1, and a tag callback within seconds.
+//
+// The payload, recovered from that tap rather than guessed:
+//
+//     +0x00  std::vector<uint8_t> addr    00:00:5E:00:53:01
+//     +0x0c  uint32               cod     0x240404 (class-of-device: headphones)
+//     +0x10  std::vector<uint8_t>         16 bytes — the OOB block
+//     +0x1c  std::string          name    "WH-1000XM4"
+//
+// Only `addr` and `name` are read here. The 16-byte block at +0x10 is almost certainly the OOB
+// pairing material, but nothing needs it: `Pairing(addr)` is the same call the Devices screen's
+// FOUND rows already use, and it is proven. Reading a field we have no use for would be risk
+// without benefit.
+static pthread_mutex_t g_nfc_mx = PTHREAD_MUTEX_INITIALIZER;
+static std::vector<unsigned char> g_nfc_addr;      // guarded by g_nfc_mx
+static std::string                g_nfc_name;      // guarded by g_nfc_mx
+static volatile sig_atomic_t      g_nfc_tapped = 0;
+
+struct CinderNfcListener {
+    virtual ~CinderNfcListener() {}                                  // slots 0, 1
+    virtual void OnBluetoothOob(const void* oob) {                   // slot 2
+        if (!oob) return;
+        const unsigned char* b = (const unsigned char*)oob;
+        const std::vector<unsigned char>* addr =
+            reinterpret_cast<const std::vector<unsigned char>*>(oob);
+        const std::string* name = reinterpret_cast<const std::string*>(b + 0x1c);
+        // Runs on the framework looper: copy under the lock and get out. Everything that talks to a
+        // pst client happens on the render thread, same rule as the BT listener.
+        pthread_mutex_lock(&g_nfc_mx);
+        try {
+            g_nfc_addr = *addr;
+            g_nfc_name = *name;
+        } catch (...) { g_nfc_addr.clear(); g_nfc_name.clear(); }
+        pthread_mutex_unlock(&g_nfc_mx);
+        g_nfc_tapped = 1;
+    }
+    virtual void OnUnknownTag(const void*) {                         // slot 3
+        clog_("nfc: a tag was read but it is not a Bluetooth OOB record — ignoring");
+    }
+    virtual void OnHostCardEmulation(const void*) {}                 // slot 4
+};
+static CinderNfcListener g_nfc_listener;   // static: the proxy keeps a RAW pointer
+static void* g_nfc_client = nullptr;
+static bool  g_nfc_running = false;
+static int   g_nfc_arm_tries = 0;   // bounds the retry; see the render loop
+
+enum { VIDX_NfcOpen = 4, VIDX_NfcStart = 5, VIDX_NfcStop = 7, VIDX_NfcClose = 8,
+       VIDX_NfcGetCurrentMode = 9, VIDX_NfcAddListener = 10, VIDX_NfcRemoveListener = 11 };
+
+// Bring the reader up. Safe to call repeatedly; returns false and stays quiet on a device where the
+// library is missing, which is the whole reason it is dlopen'd.
+static bool nfc_start() {
+    if (g_nfc_running) return true;
+    static bool tried = false;
+    if (!g_nfc_client && !tried) {
+        tried = true;
+        void* h = dlopen("libNfcService.so", RTLD_NOW);
+        if (!h) { clog_("nfc: libNfcService.so unavailable — tap-to-pair off"); return false; }
+        typedef void* (*mk)(void);
+        mk f = (mk)dlsym(h, "_ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv");
+        if (!f) { clog_("nfc: NfcServiceClientFactory symbol missing"); return false; }
+        try { g_nfc_client = f(); } catch (...) { g_nfc_client = nullptr; }
+    }
+    if (!g_nfc_client) return false;
+    void** vt = *(void***)g_nfc_client;
+    typedef int (*fn0)(void*);
+    typedef int (*fnu)(void*, const unsigned*);
+    typedef int (*fnadd)(void*, void*, const std::string*);
+    try {
+        std::string key("");
+        ((fnadd)vt[VIDX_NfcAddListener])(g_nfc_client, (void*)&g_nfc_listener, &key);
+        ((fn0)vt[VIDX_NfcOpen])(g_nfc_client);
+        unsigned mode = 1;                      // the tag-reading mode; see the note above
+        int rc = ((fnu)vt[VIDX_NfcStart])(g_nfc_client, &mode);
+        int md = ((fn0)vt[VIDX_NfcGetCurrentMode])(g_nfc_client);
+        char m[128];
+        std::snprintf(m, sizeof m, "nfc: Start(1) rc=%d mode=%d%s", rc, md,
+                      (rc == 0 || rc == 3) ? " — tap-to-pair armed" : " — NOT armed");
+        clog_(m);
+        g_nfc_running = (rc == 0 || rc == 3);
+    } catch (...) { clog_("nfc: bring-up threw"); g_nfc_running = false; }
+    return g_nfc_running;
+}
+
+static void nfc_stop() {
+    if (!g_nfc_client || !g_nfc_running) return;
+    void** vt = *(void***)g_nfc_client;
+    typedef int (*fn0)(void*);
+    typedef int (*fnrem)(void*, unsigned);
+    try {
+        ((fn0)vt[VIDX_NfcStop])(g_nfc_client);
+        ((fn0)vt[VIDX_NfcClose])(g_nfc_client);
+        ((fnrem)vt[VIDX_NfcRemoveListener])(g_nfc_client, (unsigned)(uintptr_t)&g_nfc_listener);
+    } catch (...) {}
+    g_nfc_running = false;
+    clog_("nfc: reader stopped");
+}
+
+// Called from the render loop when a tap landed. Pairs with whatever was tapped, which is the whole
+// feature: hold the headphones to the back of the player and they pair.
+static void nfc_service_tap() {
+    enum { VIDX_Pairing = 7 };
+    std::vector<unsigned char> addr;
+    std::string name;
+    pthread_mutex_lock(&g_nfc_mx);
+    addr.swap(g_nfc_addr);
+    name.swap(g_nfc_name);
+    pthread_mutex_unlock(&g_nfc_mx);
+    if (addr.size() != 6) { clog_("nfc: tap with no usable address"); return; }
+    char m[160];
+    std::snprintf(m, sizeof m, "nfc: tapped %02X:%02X:%02X:%02X:%02X:%02X '%s' — pairing",
+                  addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], name.c_str());
+    clog_(m);
+    // Same call the FOUND rows use, and it is the one that has already paired a real device.
+    g_bt_pairing_addr = addr;
+    try {
+        void* c = bt_common();
+        if (!c) return;
+        typedef int (*fna)(void*, const std::vector<unsigned char>*);
+        int rc = ((fna)bt_slot(c, VIDX_Pairing))(c, &addr);
+        std::snprintf(m, sizeof m, "nfc: Pairing rc=%d", rc);
+        clog_(m);
+    } catch (...) { clog_("nfc: Pairing threw"); }
 }
 
 // Connect one specific paired device (Devices ▸ row). `RequestConnection` takes the BD address by
@@ -2754,8 +2959,27 @@ static bool g_uac_playing = false;
 // that cost weeks on PlayerService. One reader, one writer, one word.
 static volatile sig_atomic_t g_uac_host_fmt = 0;
 
+// The other two words of the same stream_info_t, published on the same terms and for the same
+// reader. `freq` matters: the bridge has to open the capture at the rate the HOST chose and put
+// that same rate in the transmitter handshake, and until 2026-08-11 it hardcoded 44100 in both
+// places. That happened to be right for the PC it was proven on, and would have played ~9% sharp on
+// any of the many hosts that default to 48 kHz. Sony's own service reads these to configure its
+// renderer, so they are the intended source; the bridge still prefers what ALSA reports about the
+// live PCM when it can get it, because that is the hardware's own answer rather than a service's.
+static volatile sig_atomic_t g_uac_host_freq = 0;
+static volatile sig_atomic_t g_uac_host_bits = 0;
+
 // One-shot latch for the "what does a WORKING capture look like?" dump — see the render loop.
 static bool g_uac_ref_dumped = false;
+
+// Which output the USB-DAC session is currently rendering to: 1 = the LDAC bridge, 0 = the jack,
+// -1 = not in DAC mode. Kept because the route can change WITHOUT the toggle being touched — the
+// headphones can be switched off, run flat, or walk out of range in the middle of a session — and
+// `apply_usb_dac` only ever ran on the toggle. Before this, turning the headphones off during
+// USB-DAC left the bridge owning the capture with nowhere to send it and the jack silent until the
+// user toggled the mode off and on again.
+static int  g_uac_route = -1;
+static bool g_uac_want_jack = false;   // route fell back to the jack; waiting for the bridge to let go
 
 // Returns false if the client could not be built; caller logs. Never throws out.
 static bool uac_render(bool start) {
@@ -2920,8 +3144,29 @@ static void uac_poll_status() {
     } catch (...) { return; }
     // si[0] is the format word — see the layout note in uac_render(). This used to test si[1], the
     // FREQUENCY, which only ever behaved because a live stream has a nonzero rate.
-    g_uac_host_fmt = (sig_atomic_t)si[0];           // publish for the bridge thread
-    if (bridging) { ticks = 0; return; }            // the bridge opens the PCM, not us
+    g_uac_host_fmt  = (sig_atomic_t)si[0];          // publish for the bridge thread
+    g_uac_host_freq = (sig_atomic_t)si[1];
+    g_uac_host_bits = (sig_atomic_t)si[2];
+    // And publish it to the UI, so the USB-DAC panel reads out the real stream instead of a
+    // generic line. Guarded on the freq word looking like Hz: if it turns out to be an enum we
+    // have not decoded, the panel keeps its honest generic line rather than printing "0.0 KHZ".
+    // Channels are not in stream_info_t, so nothing is claimed about them.
+    cinder_set_usb_dac_format(si[0] && si[1] >= 8000 && si[1] <= 384000 ? si[1] : 0, si[2], 0);
+    if (bridging) {
+        // Say what the host actually picked, once per change. The bridge acts on this, so when a
+        // session comes out at the wrong pitch the log has to already contain the reason.
+        static unsigned last = 0;
+        unsigned now = si[0] ? si[1] : 0;
+        if (now != last) {
+            last = now;
+            char m[160];
+            std::snprintf(m, sizeof m, "usb-dac: host stream format=%u freq=%u bits=%u",
+                          si[0], si[1], si[2]);
+            clog_(m);
+        }
+        ticks = 0;
+        return;                                     // the bridge opens the PCM, not us
+    }
     if (si[0] == 0) {
         // HEARTBEAT. Silence in the log is ambiguous — it reads the same whether the host never
         // streamed or the service never noticed, and that ambiguity has already cost two test
@@ -3019,7 +3264,15 @@ struct AlsaApi {
     int  (*start)(snd_pcm_t*) = nullptr;
     long (*avail_update)(snd_pcm_t*) = nullptr;
     int  (*wait)(snd_pcm_t*, int) = nullptr;
+    // Rate/channel interrogation. Also optional: without these the bridge falls back to the rate
+    // Sony's service reports, and then to 44100.
+    size_t (*hwp_sizeof)(void) = nullptr;
+    int  (*hwp_any)(snd_pcm_t*, void*) = nullptr;
+    int  (*hwp_rate_min)(const void*, unsigned*, int*) = nullptr;
+    int  (*hwp_rate_max)(const void*, unsigned*, int*) = nullptr;
+    int  (*hwp_chan_min)(const void*, unsigned*) = nullptr;
     bool ok() const { return open && set_params && readi && prepare && close; }
+    bool can_query() const { return hwp_sizeof && hwp_any && hwp_rate_min && hwp_rate_max; }
 };
 static AlsaApi g_alsa;
 
@@ -3045,6 +3298,14 @@ static bool alsa_load() {
     g_alsa.start        = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_start");
     g_alsa.avail_update = (long (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_avail_update");
     g_alsa.wait         = (int  (*)(snd_pcm_t*, int))dlsym(g_alsa.h, "snd_pcm_wait");
+    g_alsa.hwp_sizeof   = (size_t (*)(void))dlsym(g_alsa.h, "snd_pcm_hw_params_sizeof");
+    g_alsa.hwp_any      = (int (*)(snd_pcm_t*, void*))dlsym(g_alsa.h, "snd_pcm_hw_params_any");
+    g_alsa.hwp_rate_min = (int (*)(const void*, unsigned*, int*))
+                          dlsym(g_alsa.h, "snd_pcm_hw_params_get_rate_min");
+    g_alsa.hwp_rate_max = (int (*)(const void*, unsigned*, int*))
+                          dlsym(g_alsa.h, "snd_pcm_hw_params_get_rate_max");
+    g_alsa.hwp_chan_min = (int (*)(const void*, unsigned*))
+                          dlsym(g_alsa.h, "snd_pcm_hw_params_get_channels_min");
     if (!g_alsa.ok()) { clog_("ldac: libasound is missing a PCM symbol — bridge unavailable"); return false; }
     return true;
 }
@@ -3120,8 +3381,9 @@ static bool ldac_handshake(int fd, unsigned rate, unsigned chans) {
     return true;
 }
 
-// Connect to the transmitter's PCM socket and complete the handshake. Returns a ready fd, or -1.
-static int ldac_connect_socket() {
+// Connect to the transmitter's PCM socket and complete the handshake at the host's actual format.
+// Returns a ready fd, or -1.
+static int ldac_connect_socket(unsigned rate, unsigned chans) {
     enum { VIDX_GetSocketName = 29 };
     void* x = bt_xmit();
     if (!x) { clog_("ldac: BtTransmitterServiceClient unavailable"); return -1; }
@@ -3161,9 +3423,10 @@ static int ldac_connect_socket() {
         if (n > sizeof a.sun_path - 1) n = sizeof a.sun_path - 1;
         std::memcpy(a.sun_path + 1, name.data(), n);   // abstract: sun_path[0] stays NUL
         if (connect(fd, (struct sockaddr*)&a, (socklen_t)sizeof a) == 0) {
-            // 44100/stereo: the rate the capture is opened at below, and the only one the gadget
-            // has ever presented. A mismatch here is rejected by the service rather than mishandled.
-            if (ldac_handshake(fd, 44100, 2)) return fd;
+            // The rate here MUST be the one the capture is opened at — the service checks it
+            // against the negotiated BtSoundFrequency, and a mismatch is rejected rather than
+            // silently mishandled, which is the behaviour we want.
+            if (ldac_handshake(fd, rate, chans)) return fd;
             close(fd);
             return -1;      // rejected is a real answer — retrying the same frame gets the same one
         }
@@ -3291,6 +3554,53 @@ static unsigned ldac_wait_for_host() {
     return 0;
 }
 
+// What rate is the host ACTUALLY running the gadget at?
+//
+// Ask ALSA before configuring anything: on a freshly opened PCM, snd_pcm_hw_params_any gives the
+// endpoint's full capability set, and a USB gadget whose host has selected an altsetting reports a
+// single rate (min == max). That is the hardware's own answer. Once set_params has run the query
+// only reads back whatever we ourselves asked for, so this must happen first.
+//
+// Returns 0 if it cannot tell, in which case the caller falls back to Sony's reported freq and then
+// to 44100. `chans_out` is advisory and only ever set to something this bridge can carry.
+static unsigned ldac_capture_rate(snd_pcm_t* pcm, unsigned* chans_out) {
+    if (chans_out) *chans_out = 2;
+    if (!g_alsa.can_query()) return 0;
+    std::vector<unsigned char> hwp(g_alsa.hwp_sizeof(), 0);
+    if (g_alsa.hwp_any(pcm, hwp.data()) < 0) return 0;
+    unsigned lo = 0, hi = 0;
+    int dir = 0;
+    if (g_alsa.hwp_rate_min(hwp.data(), &lo, &dir) < 0) return 0;
+    dir = 0;
+    if (g_alsa.hwp_rate_max(hwp.data(), &hi, &dir) < 0) return 0;
+    if (chans_out && g_alsa.hwp_chan_min) {
+        unsigned c = 0;
+        if (g_alsa.hwp_chan_min(hwp.data(), &c) == 0 && c >= 1) *chans_out = c;
+    }
+    char m[160];
+    std::snprintf(m, sizeof m, "ldac: capture advertises rate %u..%u Hz, %u ch", lo, hi,
+                  chans_out ? *chans_out : 2);
+    clog_(m);
+    // A pinned endpoint says one rate. A range means the gadget has not committed and the query
+    // cannot answer the question — say so rather than picking an end of the range at random.
+    return (lo == hi) ? lo : 0;
+}
+
+// Sony's stream_info_t freq word, if it looks like a rate in Hz rather than an enum we have not
+// decoded. Deliberately conservative: a value outside audio range is treated as "no answer".
+static unsigned uac_host_rate_hint() {
+    unsigned f = (unsigned)g_uac_host_freq;
+    return (f >= 8000 && f <= 384000) ? f : 0;
+}
+
+// The transmitter negotiates one of exactly four rates — the table at libBtTransmitterService.so
+// .rodata 0x1c130, indexed by BtSoundFrequency: 1->44100, 2->48000, 4->88200, 8->96000. There is no
+// resampler anywhere in this path, so a host at any other rate cannot be carried: sending 32000 Hz
+// audio through a stream negotiated at 44100 plays it sharp, which is worse than not playing it.
+static bool ldac_rate_supported(unsigned r) {
+    return r == 44100 || r == 48000 || r == 88200 || r == 96000;
+}
+
 // Why a capture session ended. The distinction is what lets the bridge survive a PC that stops and
 // restarts playback: only a dead socket (or an explicit stop) ends the thread.
 enum ldac_end {
@@ -3302,7 +3612,7 @@ enum ldac_end {
 
 // The pump. 512 frames × 8 bytes = 4 KB a go, which is ~11.6 ms of audio — small enough to keep
 // latency sane, large enough that the syscall rate stays negligible on one ARMv7 core.
-static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev,
+static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev, unsigned rate,
                           unsigned long long* frames_out) {
     static unsigned char buf[512 * 8];
     unsigned long long frames = 0;
@@ -3438,7 +3748,7 @@ static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev,
                 std::snprintf(m, sizeof m, "ldac: %s after %llu frames (%llu s)",
                               errno == EPIPE ? "transmitter closed the socket"
                                              : "socket write failed",
-                              frames, frames / 44100);
+                              frames, frames / (rate ? rate : 44100));
                 clog_(m);
                 broken = true;
                 break;
@@ -3458,9 +3768,14 @@ static void* ldac_thread(void*) {
     g_ldac_alive = 1;
     clog_("ldac: bridge thread up");
 
-    int fd = ldac_connect_socket();
+    // THE SOCKET IS OPENED LATE, AND THAT ORDER IS LOAD-BEARING. The handshake declares the stream
+    // format, so it cannot be sent until the capture has told us what the host actually chose. This
+    // used to connect first and hardcode 44100 in both the handshake and set_params, which was right
+    // only for a host that happened to pick 44.1 kHz and would have played ~9% sharp on a 48 kHz one.
+    int fd = -1;
+    unsigned fd_rate = 0;      // the rate the current connection was handshaken at
 
-    if (fd >= 0) {
+    {
         // Wait for the gadget's capture card. It only appears once the gadget is in UAC mode, so
         // "not there yet" is the normal state for the first seconds after the toggle — poll rather
         // than failing.
@@ -3488,8 +3803,6 @@ static void* ldac_thread(void*) {
                               fmt, dev);
                 clog_(m);
 
-                // 44100 S32_LE stereo — what the UAC gadget presents, and what the transmitter
-                // expects.
                 snd_pcm_t* pcm = nullptr;
                 int rc = g_alsa.open(&pcm, dev, SND_PCM_STREAM_CAPTURE, 0);
                 if (rc == -ENOENT || rc == -ENODEV) {
@@ -3517,16 +3830,70 @@ static void* ldac_thread(void*) {
                     clog_(m);
                     break;
                 }
-                // soft_resample = 0. We do not want a rate conversion — the gadget runs at whatever
-                // the host negotiated and the transmitter takes 44100 — and asking a bare hw: device
-                // for resampling only adds a way for this call to half-succeed.
-                rc = g_alsa.set_params(pcm, SND_PCM_FORMAT_S32_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                                       2, 44100, 0, 100000);
-                if (rc < 0) {
-                    std::snprintf(m, sizeof m, "ldac: set_params -> %s", alsa_err(rc));
+                // RATE FIRST, on the untouched handle: hw_params_any reports what the endpoint can
+                // do, and once set_params has run it only reports back what we asked for.
+                unsigned chans = 2;
+                unsigned rate = ldac_capture_rate(pcm, &chans);
+                if (!rate) {
+                    rate = uac_host_rate_hint();
+                    if (rate) {
+                        std::snprintf(m, sizeof m, "ldac: ALSA would not name a single rate — using "
+                                      "the service's freq (%u Hz)", rate);
+                        clog_(m);
+                    }
+                }
+                if (!rate) {
+                    rate = 44100;
+                    clog_("ldac: no rate from ALSA or the service — assuming 44100");
+                }
+                // Only stereo is carried. The gadget is stereo and the conversion buffer below is
+                // sized for it; quietly reinterpreting some other channel count would come out as
+                // noise, so fix it here and say so.
+                if (chans != 2) {
+                    std::snprintf(m, sizeof m, "ldac: capture reports %u channels — forcing stereo",
+                                  chans);
+                    clog_(m);
+                    chans = 2;
+                }
+                if (!ldac_rate_supported(rate)) {
+                    // Nothing in this path resamples: not the gadget, not us, not the transmitter,
+                    // which negotiates one of 44100/48000/88200/96000 at connection setup. Carrying
+                    // the audio anyway would mean playing it at the wrong pitch.
+                    std::snprintf(m, sizeof m, "ldac: host is at %u Hz and the transmitter only "
+                                  "negotiates 44100/48000/88200/96000 — cannot bridge this stream "
+                                  "without resampling, so it is not being carried", rate);
                     clog_(m);
                     g_alsa.close(pcm);
                     break;
+                }
+                // soft_resample = 0. We do not want a rate conversion — the gadget runs at whatever
+                // the host negotiated and the transmitter is told that same rate in the handshake —
+                // and asking a bare hw: device for resampling only adds a way for this call to
+                // half-succeed.
+                rc = g_alsa.set_params(pcm, SND_PCM_FORMAT_S32_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+                                       chans, rate, 0, 100000);
+                if (rc < 0) {
+                    std::snprintf(m, sizeof m, "ldac: set_params(%u ch, %u Hz) -> %s", chans, rate,
+                                  alsa_err(rc));
+                    clog_(m);
+                    g_alsa.close(pcm);
+                    break;
+                }
+
+                // Now — and only now — is there something true to tell the transmitter. A rate
+                // change between sessions means the old handshake described a different stream, so
+                // the connection is torn down and remade rather than reused.
+                if (fd >= 0 && fd_rate != rate) {
+                    std::snprintf(m, sizeof m, "ldac: host changed rate %u -> %u Hz — re-opening "
+                                  "the transmitter stream", fd_rate, rate);
+                    clog_(m);
+                    close(fd);
+                    fd = -1;
+                }
+                if (fd < 0) {
+                    fd = ldac_connect_socket(rate, chans);
+                    if (fd < 0) { g_alsa.close(pcm); break; }
+                    fd_rate = rate;
                 }
                 ldac_dump_pcm(dev, "after set_params");
                 ldac_log_state(pcm, "after set_params");
@@ -3543,16 +3910,34 @@ static void* ldac_thread(void*) {
                     ldac_log_state(pcm, "after start");
                 }
 
-                clog_("ldac: streaming");
+                std::snprintf(m, sizeof m, "ldac: streaming %u Hz %u ch", rate, chans);
+                clog_(m);
                 unsigned long long frames = 0;
-                ldac_end why = ldac_pump(fd, pcm, dev, &frames);
+                ldac_end why = ldac_pump(fd, pcm, dev, rate, &frames);
                 g_alsa.close(pcm);
                 total += frames;
-                std::snprintf(m, sizeof m, "ldac: session ended after %llu frames (%llu s)",
-                              frames, frames / 44100);
+                std::snprintf(m, sizeof m, "ldac: session ended after %llu frames (%llu s at %u Hz)",
+                              frames, frames / rate, rate);
                 clog_(m);
 
                 if (why == LDAC_END_STOPPED) break;
+                // A session that actually carried audio earns back the error budgets. Without this
+                // the counters are cumulative over the life of the bridge, so a long listening
+                // session with a few pauses in it would exhaust `reconnects` and give up on a
+                // feature that had just been working for an hour.
+                if (frames > 0) { reconnects = 0; reopens = 0; }
+                if (why == LDAC_END_HOST_GONE && fd >= 0) {
+                    // GIVE THE SOCKET BACK WHEN THE MUSIC STOPS. While our connection is the ExHal's
+                    // PCM reader, its stream thread is blocked in Read on our fd and Sony's own
+                    // WriteSilent() is NOT running — so a paused PC leaves the A2DP stream with no
+                    // data at all rather than with silence, which is what the sink expects and what
+                    // keeps the link from stalling. Closing hands the stream back; the next session
+                    // re-handshakes, which is cheap and exactly what the probe did repeatedly.
+                    clog_("ldac: host paused — handing the transmitter stream back");
+                    close(fd);
+                    fd = -1;
+                    fd_rate = 0;
+                }
                 if (why == LDAC_END_SOCKET_GONE) {
                     // The transmitter dropped us. That is normal at the end of a stream, so try to
                     // get back in rather than ending the feature — bounded, because a service that
@@ -3566,8 +3951,9 @@ static void* ldac_thread(void*) {
                     }
                     clog_("ldac: reconnecting to the transmitter");
                     usleep(300000);
-                    fd = ldac_connect_socket();
+                    fd = ldac_connect_socket(rate, chans);
                     if (fd < 0) break;
+                    fd_rate = rate;
                     continue;
                 }
                 if (why == LDAC_END_PCM_DEAD && ++reopens > 8) {
@@ -3576,8 +3962,7 @@ static void* ldac_thread(void*) {
                 }
                 usleep(200000);
             }
-            std::snprintf(m, sizeof m, "ldac: bridge carried %llu frames (%llu s) in total",
-                          total, total / 44100);
+            std::snprintf(m, sizeof m, "ldac: bridge carried %llu frames in total", total);
             clog_(m);
         }
         if (fd >= 0) close(fd);        // the reconnect path may already have closed and given up
@@ -3776,6 +4161,7 @@ void apply_usb_dac() {
                 clog_("usb-dac: headphones connected — bridging the capture to LDAC");
                 g_uac_playing = false;
                 g_uac_ref_dumped = false;
+                g_uac_route = 1;
                 uac_listener_start();
                 ldac_start();
             } else {
@@ -3789,6 +4175,7 @@ void apply_usb_dac() {
                 // went quiet forever, which read like a service problem and was ours.
                 g_uac_playing = false;
                 g_uac_ref_dumped = false;
+                g_uac_route = 0;
                 uac_listener_start();
                 if (!uac_render(true)) {
                     clog_("usb-dac: gadget is up but Start() failed — expect silence at the jack");
@@ -3797,6 +4184,8 @@ void apply_usb_dac() {
         } else {
             ldac_stop();
             uac_render(false);
+            g_uac_route = -1;
+            g_uac_want_jack = false;
         }
     } else if (!on) {
         ldac_stop();
@@ -5071,6 +5460,76 @@ void* render_driver(void*) {
                     char dev[32] = {0};
                     if (ldac_find_capture(dev, sizeof dev)) ldac_dump_pcm(dev, "SONY-REFERENCE");
                 });
+            }
+            // What A2DP actually agreed on. Cheap (four scalar out-params) and self-limiting: it
+            // only logs when the answer changes.
+            if (cinder_get_bt_route()) run_guarded("loop: BT sound status", 6, bt_poll_sound_status);
+            // THE OUTPUT ROUTE CAN CHANGE WITHOUT THE TOGGLE. Headphones get switched off, run flat,
+            // or walk out of range mid-session. `apply_usb_dac` only runs when the user flips the
+            // switch, so before this the session was stuck on whichever route it started with: turn
+            // the headphones off during USB-DAC and the bridge kept the capture with nowhere to send
+            // it while the jack stayed silent, until the mode was toggled off and on.
+            if (g_uac_route >= 0 && cinder_get_usb_dac()) {
+                const int now = cinder_get_bt_route() ? 1 : 0;
+                if (now != g_uac_route) {
+                    g_uac_route = now;
+                    if (now == 1) {
+                        clog_("usb-dac: headphones connected mid-session — moving to the LDAC bridge");
+                        run_guarded("loop: DAC route -> LDAC", 8, []() {
+                            uac_render(false);      // let go of the capture before the bridge wants it
+                            g_uac_playing = false;
+                            ldac_start();
+                        });
+                    } else {
+                        clog_("usb-dac: headphones gone — falling back to the 3.5 mm jack");
+                        run_guarded("loop: DAC route -> jack", 8, []() { ldac_stop(); });
+                        // ldac_stop() only asks; the thread closes the PCM on its own schedule, and
+                        // opening the capture before it lets go is the -EBUSY case. So defer.
+                        g_uac_want_jack = true;
+                    }
+                }
+            }
+            // The bridge has let go of the capture, so Sony's renderer can have it.
+            if (g_uac_want_jack && !g_ldac_alive) {
+                g_uac_want_jack = false;
+                run_guarded("loop: DAC jack handover", 8, []() {
+                    g_uac_playing = false;
+                    g_uac_ref_dumped = false;
+                    if (!uac_render(true))
+                        clog_("usb-dac: jack handover — Start() failed, waiting for the next format "
+                              "notify");
+                });
+            }
+            // NFC tap-to-pair. The reader is armed whenever the radio is on and stopped when it is
+            // off — a tap is only useful if there is a Bluetooth stack to hand the address to, and
+            // leaving the NFC controller running with the radio down would burn power for nothing.
+            // Both calls are cheap no-ops once they have taken effect.
+            {
+                const bool want_nfc = cinder_get_bt_on() != 0;
+                if (want_nfc != g_nfc_running) {
+                    if (!want_nfc) {
+                        run_guarded("loop: NFC disarm", 8, nfc_stop);
+                    } else if (g_nfc_arm_tries < 5) {
+                        // BOUNDED. `nfc_start()` leaves g_nfc_running false when it fails, and the
+                        // test above is "want != have" — so a permanent failure (no libNfcService,
+                        // a service that refuses every mode) would re-run three IPC calls on EVERY
+                        // frame, which is the poll-storm shape that caused the audio stutter in
+                        // task #26. Five attempts is enough to ride out a service that is still
+                        // coming up at boot; after that it stays off until the radio is toggled.
+                        g_nfc_arm_tries++;
+                        run_guarded("loop: NFC arm", 8, []() { nfc_start(); });
+                        if (!g_nfc_running && g_nfc_arm_tries >= 5)
+                            clog_("nfc: reader would not start — tap-to-pair off for this session");
+                    }
+                }
+                // A radio toggle is the user asking again, so it re-earns the attempts.
+                if (!want_nfc) g_nfc_arm_tries = 0;
+            }
+            // Something was tapped. The callback ran on the framework looper and only copied the
+            // address out; the Pairing call happens here, on the thread that owns the clients.
+            if (g_nfc_tapped) {
+                g_nfc_tapped = 0;
+                run_guarded("loop: NFC tap", 8, nfc_service_tap);
             }
             // A pairing prompt arrived on the looper; show it from the thread that owns the UI.
             if (g_bt_prompt_dirty) {

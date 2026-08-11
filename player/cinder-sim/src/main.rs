@@ -417,7 +417,10 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         Screen::Receiver => receiver::render(c, theme, fonts, app.rx),
         Screen::Fm => fm::render(c, theme, fonts, app.fm_freq),
         Screen::UsbDac => usbdac::render(c, theme, fonts, app.usb_dac, app.usb_dac && app.bt_on,
-            BT_CODECS[app.bt_codec], app.bt_conn.map(|r| PAIRED[r].name), EQ_PRESETS[app.eq_preset].0, app.dsee),
+            BT_CODECS[app.bt_codec], app.bt_conn.map(|r| PAIRED[r].name), EQ_PRESETS[app.eq_preset].0, app.dsee,
+            // The sim has no USB host, so it shows what a live 44.1/32 stream looks like rather
+            // than the not-streaming line — the format readout is the part worth previewing.
+            if app.usb_dac { Some((44100, 32, 2)) } else { None }, None),
     }
 
     // Shelf is an overlay drawn on top of the current screen.
