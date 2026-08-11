@@ -26,6 +26,10 @@
 #include <vector>
 #include <ucontext.h>
 #include <unistd.h>
+#include <poll.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <sys/ioctl.h>
 #include <dlfcn.h>   // --btinfo checks the same lazy dlopen(libasound) the LDAC bridge relies on
 #include <execinfo.h>
 #include <initializer_list>
@@ -1238,6 +1242,67 @@ static int btscan_probe(int secs) {
     _exit(0);
 }
 
+// ── --pollnodes : which /dev/input node makes poll() spin? ──────────────────────────────────────
+// The render loop's dark sleep became poll() on every input node (2026-08-11) and cinder-home's
+// standby cost went the WRONG way — 0.25% of a core to 1.90%, system context switches 354/s to
+// 1337/s, with the render thread's time 23 sys : 5 user. That ratio is a syscall storm, i.e. poll()
+// returning immediately every iteration. Either a node is streaming events, or one is reporting
+// POLLERR/POLLHUP — which poll() delivers whether or not you asked for it, forever, on every call.
+// This says which, per node, without a rebuild-and-reboot cycle.
+// EVIOCGNAME(64) = _IOC(READ, 'E', 0x06, 64) — same constant main.cpp derives, repeated here so
+// the probe stays standalone.
+static const unsigned PROBE_EVIOCGNAME_64 =
+    (2u << 30) | (64u << 16) | ((unsigned)'E' << 8) | 0x06;
+
+static int pollnodes_probe(int secs) {
+    struct { int fd; char name[64]; char path[32]; long ready; long bytes; int err; } n[16];
+    int cnt = 0;
+    DIR* d = opendir("/dev/input");
+    if (!d) { clog_("pollnodes: /dev/input missing"); return 1; }
+    struct dirent* de;
+    while ((de = readdir(d)) && cnt < 16) {
+        if (std::strncmp(de->d_name, "event", 5) != 0) continue;
+        std::snprintf(n[cnt].path, sizeof n[cnt].path, "/dev/input/%s", de->d_name);
+        int fd = open(n[cnt].path, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        n[cnt].fd = fd; n[cnt].ready = 0; n[cnt].bytes = 0; n[cnt].err = 0;
+        std::snprintf(n[cnt].name, sizeof n[cnt].name, "?");
+        ioctl(fd, PROBE_EVIOCGNAME_64, n[cnt].name);
+        cnt++;
+    }
+    closedir(d);
+
+    // Poll each node ON ITS OWN with a 50 ms timeout, exactly as the render loop would, and drain
+    // whatever it offers. A node that answers instantly every time and yields no bytes is the one.
+    const long deadline = (long)secs * 1000;
+    long spent = 0;
+    unsigned char buf[4096];
+    while (spent < deadline) {
+        for (int i = 0; i < cnt; i++) {
+            struct pollfd p; p.fd = n[i].fd; p.events = POLLIN; p.revents = 0;
+            if (poll(&p, 1, 0) > 0) {           // 0 ms: "is it ready RIGHT NOW"
+                n[i].ready++;
+                n[i].err |= (p.revents & ~POLLIN);
+                ssize_t r = read(n[i].fd, buf, sizeof buf);
+                if (r > 0) n[i].bytes += r;
+            }
+        }
+        usleep(50000);
+        spent += 50;
+    }
+    std::fprintf(stderr, "[cinder-probe] pollnodes: %d nodes, %d s\n", cnt, secs);
+    for (int i = 0; i < cnt; i++) {
+        const char* verdict = "quiet (poll blocks — good)";
+        if (n[i].ready && n[i].bytes == 0)  verdict = "*** READY WITH NO DATA — this is the spinner";
+        else if (n[i].ready)                verdict = "streaming events";
+        std::fprintf(stderr, "[cinder-probe] pollnodes: %-20s %-24s ready=%-5ld bytes=%-6ld revents_extra=0x%x  %s\n",
+                     n[i].path, n[i].name, n[i].ready, n[i].bytes, n[i].err, verdict);
+    }
+    for (int i = 0; i < cnt; i++) close(n[i].fd);
+    std::fflush(nullptr);
+    return 0;
+}
+
 // ── --disp / --dispoff : the PANEL POWER path (battery) ─────────────────────────────────────────
 // Measured 2026-08-11, screen dark + idle + not playing: the system does ~354 context switches a
 // second, and 230 of them belong to two MediaTek kernel threads —
@@ -1953,6 +2018,9 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
         return btinfo_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--pollnodes") == 0) {
+        return pollnodes_probe(argc > 2 ? std::atoi(argv[2]) : 10);
     }
     if (argc > 1 && std::strcmp(argv[1], "--disp") == 0) {
         return disp_probe(0);   // read-only

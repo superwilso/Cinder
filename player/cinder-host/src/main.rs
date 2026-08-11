@@ -122,30 +122,54 @@ fn main() {
             }),
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
+            // The unified queue: history above the playing track, then the user's own queue,
+            // then the rest of the album. `current: Some(2)` so the PREVIOUSLY PLAYED section is
+            // actually populated in the preview — at track 0 it is omitted entirely.
             ("up_next", &|c: &mut Canvas| {
-                match lib.album_groups.first().and_then(|g| g.albums.iter().find(|a| !a.track_list.is_empty())) {
-                    Some(al) => up_next::render(c, &theme, &fonts, &al.name, &al.track_list, 1, &lib),
-                    None => up_next::render(c, &theme, &fonts, "", &[], 0, &lib),
-                }
+                let al = lib.album_groups.first()
+                    .and_then(|g| g.albums.iter().find(|a| !a.track_list.is_empty()));
+                let (album, tracks) = match al {
+                    Some(a) => (a.name.as_str(), &a.track_list[..]),
+                    None => ("", &[][..]),
+                };
+                up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
+                    album, tracks,
+                    current: (!tracks.is_empty()).then(|| 2.min(tracks.len() - 1)),
+                    queue: &[], lib: &lib, scroll_px: 0,
+                    drag: None, swipe: None, sbar_active: false,
+                });
             }),
             // The USER queue, at rest and mid-reorder. The second one is the gesture the device
             // can't be screenshotted through: the row is lifted under a finger that isn't there.
             ("up_next_queue", &|c: &mut Canvas| {
-                up_next::render_queue(c, &theme, &fonts, &queue, &lib, 0, None, None, false);
+                up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
+                    album: "", tracks: &[], current: None,
+                    queue: &queue, lib: &lib, scroll_px: 0,
+                    drag: None, swipe: None, sbar_active: false,
+                });
             }),
             ("up_next_reorder", &|c: &mut Canvas| {
+                let l = up_next::layout(0, None, queue.len());
                 let from = 1usize;
                 let grab_off = up_next::RH / 2;
-                let start_y = cinder_ui::chrome::HEADER_BOTTOM + from as i32 * up_next::RH + grab_off;
+                // The queue no longer starts at the top of the list, so the row's screen y comes
+                // from the layout — the same rule nav's reorder_begin follows.
+                let row_top = cinder_ui::chrome::HEADER_BOTTOM
+                    + l.top_of(up_next::Slot::Queued(from)).unwrap_or(0);
+                let start_y = row_top + grab_off;
                 let y = start_y + 2 * up_next::RH + 14;   // dragged down past two rows
                 let d = up_next::QueueDrag {
                     from,
-                    to: up_next::queue_slot_for(y - grab_off, 0, queue.len()),
+                    to: l.queue_slot_for(y - grab_off, 0),
                     start_y,
                     y,
                     grab_off,
                 };
-                up_next::render_queue(c, &theme, &fonts, &queue, &lib, 0, Some(d), None, false);
+                up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
+                    album: "", tracks: &[], current: None,
+                    queue: &queue, lib: &lib, scroll_px: 0,
+                    drag: Some(d), swipe: None, sbar_active: false,
+                });
             }),
             ("playlist_page", &|c: &mut Canvas| {
                 match lib.playlists.first() {
@@ -154,9 +178,16 @@ fn main() {
                 }
             }),
             ("up_next_remove", &|c: &mut Canvas| {
-                let row_y = cinder_ui::chrome::HEADER_BOTTOM + 2 * up_next::RH + up_next::RH / 2;
-                up_next::render_queue(c, &theme, &fonts, &queue, &lib, 0, None,
-                    Some(cinder_ui::library::SwipeRow { y: row_y, dx: 110 }), false);
+                let l = up_next::layout(0, None, queue.len());
+                let row_y = cinder_ui::chrome::HEADER_BOTTOM
+                    + l.top_of(up_next::Slot::Queued(2)).unwrap_or(0) + up_next::RH / 2;
+                up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
+                    album: "", tracks: &[], current: None,
+                    queue: &queue, lib: &lib, scroll_px: 0,
+                    drag: None,
+                    swipe: Some(cinder_ui::library::SwipeRow { y: row_y, dx: 110 }),
+                    sbar_active: false,
+                });
             }),
             ("library_songs", &|c: &mut Canvas| {
                 library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib, None, false);
@@ -611,7 +642,7 @@ fn main() {
     // fixed), so the failure mode to look for here is text colliding with a neighbour or running
     // past a fixed-position value — which is exactly what these frames are for.
     {
-        use cinder_ui::nav::{App, Button, Screen};
+        use cinder_ui::nav::{App, Screen};
         for pct in [80u32, 100, 120, 140] {
             cinder_ui::text::set_scale_pct(pct);
             for (name, screen) in [

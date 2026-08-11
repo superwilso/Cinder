@@ -364,7 +364,17 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                     ..Default::default()
                 })
                 .collect();
-            up_next::render(c, theme, fonts, "Now Playing", &tracks, app.track, &app.lib)
+            up_next::render_view(c, theme, fonts, &up_next::QueueView {
+                album: "Now Playing",
+                tracks: &tracks,
+                current: (!tracks.is_empty()).then(|| app.track.min(tracks.len() - 1)),
+                queue: &[],
+                lib: &app.lib,
+                scroll_px: 0,
+                drag: None,
+                swipe: None,
+                sbar_active: false,
+            });
         }
         Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, 0, None, &app.lib, None, false),
         Screen::Artist => {
