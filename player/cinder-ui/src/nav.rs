@@ -162,6 +162,9 @@ pub enum Action {
     Restart,                  // confirmed in the modal: shell calls PowerMgrServiceClient::Reboot
     PowerOff,                 // confirmed in the modal: shell calls SetStatus(PowerOff)
     BtCodecChanged,           // device-wide BT transmit codec / LDAC quality changed; shell reads + applies
+    /// "Use Enhanced Mode" toggled: shell reads `bt_enhanced()` and calls
+    /// `BtTransmitterServiceClient::SetControlAbsoluteVolume` (slot 31).
+    BtEnhancedChanged,
     UsbDacToggle(bool),       // engage/disengage USB-DAC input routed to 3.5mm + BT/LDAC (the headline feature)
     /// SEEK within the current track, as permille (0..1000) of its duration. Emitted by the Now
     /// Playing progress rail. On device the shell drives the rail through cinder-ffi (which knows
@@ -484,6 +487,14 @@ pub struct App {
     /// `bt_ldac_quality` indexes bluetooth::QUALITIES (0 = Auto). Persisted; applied by the shell.
     bt_codec: u8,
     bt_ldac_quality: u8,
+    /// Sony's "Use Enhanced Mode" — `BtTransmitterService::SetControlAbsoluteVolume`. Persisted
+    /// intent; the shell pushes it at the radio on change and after every reconnect. Default ON:
+    /// Sony's own help text is "select this check box if you cannot change the volume", and the
+    /// off path (VOLUME_UP/VOLUME_DOWN key events) makes sinks beep at every step.
+    bt_enhanced: bool,
+    /// Runtime fact, not intent: does the connected sink accept absolute volume
+    /// (`IsSupportedAbsoluteVolume`)? Pushed by the shell, like `bt_link_known`.
+    bt_enhanced_supported: bool,
     /// USB-DAC mode engaged (input from a USB host → 3.5mm + BT/LDAC). Transient (not persisted).
     usb_dac_on: bool,
     /// Now Playing visualiser type (cinder_ui::viz index) + animation on/off (UI settings).
@@ -637,6 +648,8 @@ impl Default for App {
             bt_on: true,
             bt_codec: 0,        // LDAC
             bt_ldac_quality: 0, // Auto
+            bt_enhanced: true,
+            bt_enhanced_supported: true,
             usb_dac_on: false,
             viz_kind: 0,
             viz_size: 1, // VEIL on the cover page; the big spectrum has its own page
@@ -1467,6 +1480,10 @@ impl App {
                     BtHit::Quality(i) => {
                         self.bt_ldac_quality = i as u8;
                         vec![Action::BtCodecChanged]
+                    }
+                    BtHit::Enhanced => {
+                        self.bt_enhanced = !self.bt_enhanced;
+                        vec![Action::BtEnhancedChanged]
                     }
                     // Open the paired-device picker and re-read the list on the way in, so what is
                     // on screen is what the radio actually holds link keys for right now.
@@ -3203,6 +3220,8 @@ impl App {
                     link_known: self.bt_link_known,
                     codec_sel: self.bt_codec,
                     ldac_quality: self.bt_ldac_quality,
+                    enhanced: self.bt_enhanced,
+                    enhanced_supported: self.bt_enhanced_supported,
                 };
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
@@ -3774,6 +3793,21 @@ impl App {
     }
     pub fn set_bt_ldac_quality(&mut self, v: u8) {
         self.bt_ldac_quality = (v as usize % crate::bluetooth::QUALITIES.len()) as u8;
+    }
+    /// "Use Enhanced Mode" — absolute volume. The shell reads this after `BtEnhancedChanged` and
+    /// after every reconnect, and hands it to `SetControlAbsoluteVolume`.
+    pub fn bt_enhanced(&self) -> bool {
+        self.bt_enhanced
+    }
+    pub fn set_bt_enhanced(&mut self, on: bool) {
+        self.bt_enhanced = on;
+    }
+    /// Report what the sink can actually do. Returns whether the screen needs a repaint, so the
+    /// shell's poll doesn't dirty a frame every tick.
+    pub fn set_bt_enhanced_supported(&mut self, on: bool) -> bool {
+        let changed = self.bt_enhanced_supported != on;
+        self.bt_enhanced_supported = on;
+        changed
     }
     /// USB-DAC mode engaged? The shell reads this after a UsbDacToggle action to start/stop the
     /// LDAC bridge + switch the USB gadget to UAC (without tearing down Bluetooth).
@@ -5271,6 +5305,36 @@ mod tests {
         assert_eq!(a.bt_codec, 3);
         // with SBC active there are no LDAC quality chips, so that band is now inert
         assert!(a.tap(260, 440).is_empty());
+    }
+
+    /// Sony's "Use Enhanced Mode" (firmware message 230077) is the AVRCP absolute-volume switch.
+    /// It defaults ON because the OFF path sends VOLUME_UP/VOLUME_DOWN key events, which sinks
+    /// like the CMF Buds answer with their own feedback beep — and because Sony's own
+    /// SetCurrentVolume refuses to transmit while the preference is clear.
+    #[test]
+    fn bluetooth_enhanced_mode_toggles_and_is_inert_while_off() {
+        let mut a = enter_bluetooth();
+        assert!(a.bt_enhanced(), "enhanced mode defaults on");
+        // 576 is inside the row (556..620) and clear of the LDAC chips above and Pair below.
+        assert_eq!(a.tap(240, 576), vec![Action::BtEnhancedChanged]);
+        assert!(!a.bt_enhanced());
+        assert_eq!(a.tap(240, 576), vec![Action::BtEnhancedChanged]);
+        assert!(a.bt_enhanced());
+        // Radio off ⇒ the whole panel below the header is inert, this row included.
+        a.tap(430, 64); // header toggle
+        assert!(!a.bt_on);
+        assert!(a.tap(240, 576).is_empty());
+        assert!(a.bt_enhanced(), "an inert tap must not flip the preference");
+    }
+
+    /// Support is a fact from the radio, not a preference: it only repaints when it CHANGES, so
+    /// the shell's per-connect push can't dirty a frame on every poll.
+    #[test]
+    fn bluetooth_enhanced_supported_reports_change_only() {
+        let mut a = enter_bluetooth();
+        assert!(!a.set_bt_enhanced_supported(true), "already true");
+        assert!(a.set_bt_enhanced_supported(false));
+        assert!(!a.set_bt_enhanced_supported(false));
     }
 
     #[test]
