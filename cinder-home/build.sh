@@ -186,6 +186,8 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -lNfcService \
      -lBtPlayerService \
      -lDisplayService \
+     -lUsbMgrServiceFw \
+     -lConnMgrService -lUsbDeviceConnectionService -lFuncMgrService \
      -lEffectCtrlDmp "$REPO/artifacts/rootfs_mnt/lib/libasound.so" \
      -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \

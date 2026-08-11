@@ -282,3 +282,679 @@ why — it starts no `pst::core::Framework`, so nothing pumps the looper and eve
 uninitialised stack. cinder-home is an easel app with a live framework and an already-working
 `BtTransmitterServiceClient`, so the pipeline belongs there. `ldac-bridge/src/` stays as the reference
 implementation of the socket writer and the ALSA capture loop.
+
+---
+
+## 2026-08-11 — the USB gadget has TWO owners, and that is the USB-DAC/MSC bug
+
+Reported: *"still have issues with USB mass storage mode, and I'm not sure USB-DAC mode has ever
+output audio."* Both turn out to be the same defect, and it is not in Cinder's logic — it is that
+**two independent subsystems configure the USB gadget and neither knows about the other.**
+
+### The two owners
+
+| owner | mechanism | what it sets | what it does NOT set |
+|---|---|---|---|
+| **init** (`/init.usbcfg.rc`) | `on property:sys.sony.config=adb\|uac\|msc` | `functions`, `idVendor`, `idProduct` (hardcoded `0B8B`/`0B8C`/`0B8D`), **`f_mass_storage/lun/file`**, and starts/stops `mount_msc1`/`unmount_msc1` | — |
+| **`UsbMgrServiceFw`** (hagodaemon, `UsbMgrImplWmport`) | `SetUsbFunction(UsbFunction)` → `UpdateUsbFunction()` → `SetUac()`/`SetMsc()` | `idVendor`, `idProduct` (from `DmpFeature::GetFeatureUsbVid/PidUac\|Msc`), `functions`, `MaxPower` | **`lun/file`, the `/contents` unmount, and the property** |
+
+Read live on device, and the disagreement is plain — `cinder-probe --usbmgr`, 2026-08-11:
+
+```
+service  GetUsbFunction = 2  (MSC)      <- what UsbMgrServiceFw believes
+gadget   functions=mass_storage,adb  enable=1  054c:0ca0
+msc      lun/file=<empty>   (sys.usb.msc1=/emmc@contents)
+init     sys.sony.config=adb   sys.usb.state=adb    <- what init believes
+init.svc.mount_msc1 = stopped ; /contents still mounted rw device-side
+```
+
+**The service says MSC, init says adb, and the medium was never attached.** `idProduct=0ca0`
+matches neither `0B8B`/`0B8C`/`0B8D`, confirming the service — not init — wrote the gadget last.
+This is no longer an inference from the disassembly; it is the measured state of the unit.
+
+`0ca0` comes from `DmpFeature`, so **`UsbMgrServiceFw` wrote the gadget last** and it believes the
+function is MSC. Meanwhile init's `adb` branch had already cleared `lun/file`.
+
+### Why mass storage is broken
+
+MSC needs four things, and they are split across the two owners:
+
+1. `umount /contents` — `unmount_msc1`, **init only**
+2. `lun/file = /emmc@contents` — **init only**
+3. gadget descriptor `functions=mass_storage,adb` + VID/PID — either owner
+4. on exit: clear `lun/file`, `mount_msc1` to remount `/contents` — **init only**
+
+Only (3) is currently happening. The host therefore enumerates a **USB Mass Storage device with no
+medium** — a drive that appears and then reports no disk. That is exactly the reported symptom, and
+no amount of retrying in Cinder fixes it, because Cinder is driving the half that doesn't own the
+medium.
+
+Verified from the init scripts on device:
+
+```
+service mount_msc1   /system/bin/mount_partition contents
+service unmount_msc1 /system/bin/umount /contents
+```
+
+Both `disabled` + `oneshot`, i.e. reachable **only** from init's property triggers.
+
+### Why USB-DAC has probably never output audio
+
+Same mechanism, worse consequence. Cinder sets `sys.sony.config=uac` through its setuid helper, so
+init writes `functions=audio_func,adb`, PID `0B8C`. But `UsbMgrServiceFw` still holds
+`UsbFunction=Msc`, and **any** of its own triggers — cable insert, `OnDeviceConnectedChanged`,
+`OnDeviceEnabledChanged`, `Resume()`, `ReconfigureUsbOtgMode()` — calls `UpdateUsbConfig()` →
+`UpdateUsbFunction()` and **rewrites the gadget back to mass storage**. The PC then never
+enumerates a sound card, or enumerates one that vanishes.
+
+`UpdateUsbFunction()` also `ExecuteCommand`s a **stop of adbd** around the switch (string
+`"!!! failed to stop adbd"` on the failure path), so the whole reconfiguration is disruptive and
+racy against init doing the same thing from the property.
+
+### The fix: use the owner Sony uses
+
+`UsbMgrServiceFwClient::SetUsbFunction` is a real IPC method, and the whole client vtable came out
+clean — this library keeps `R_ARM_ABS32` relocations that name every slot, so nothing is inferred:
+
+| slot | method |
+|---|---|
+| 0/1 | dtors |
+| 2 | `GetServiceName() const` |
+| **3** | **`SetUsbFunction(const ReqMsg_SetUsbFunction&, RspMsg_SetUsbFunction&)`** |
+| **4** | **`GetUsbFunction(const ReqMsg_GetUsbFunction&, RspMsg_GetUsbFunction&)`** |
+| 5/6 | `Set`/`GetUsbOtgMode` |
+| 7/8 | `Set`/`GetPowerSuppliedModeFromUacHost` |
+| 9 | `GetCurrentPowerSuppliedMode` |
+| 10/11 | `Set`/`GetAdbEnabled` |
+| 12/13 | `AddListener` / `RemoveListener` |
+| 14 | `GetName() const` (15 = `0xfffffffc`, the secondary-vtable marker) |
+
+`AddListener` sits immediately after the last service method for the **fourth** service in a row
+(BtCommon 30, BtTransmitter 39, UacPlayer 6, UsbMgr 12). Treat that as a law of this codebase.
+
+**Note the calling convention differs from the Bt clients.** These take Req/Rsp *message structs*,
+not bare scalars. Both are trivially small, read straight out of the marshalling:
+
+* `SizeOfReqMsg_SetUsbFunction` → returns **4**
+* `WriteReqMsg_SetUsbFunction` → one `TransactionParam::Alloc(4)`, then copies **one word from
+  offset 0** of the ReqMsg
+* `SizeOfRspMsg_SetUsbFunction` → returns **4**
+* `SizeOfRspMsg_GetUsbFunction` → returns **8** — the GET reply is *two* words
+
+```c
+struct ReqMsg_SetUsbFunction { uint32_t function; };                  /* 4 */
+struct RspMsg_SetUsbFunction { uint32_t result;   };                  /* 4 */
+struct RspMsg_GetUsbFunction { uint32_t result; uint32_t function; }; /* 8 — value at OFFSET 4 */
+```
+
+> The offset-4 detail was caught by the device, not the disassembly. The first `--usbmgr` run
+> printed `rsp 0 2 0 0` with the gadget sitting in mass storage; reading `rsp[0]` would have
+> reported "function 0 (??)" forever. The size functions then confirmed it (8 vs 4). **Print the
+> raw words on a first bring-up** — a getter that reports a plausible zero is the worst failure
+> mode on this platform.
+
+**The enum values are read from the dispatch switch**, not guessed —
+`UsbMgrImplWmport::UpdateUsbFunction()` at `0x10f80`:
+
+```
+r0 = [r4+0x2c]        ; the requested UsbFunction
+cmp r0, #2  -> SetMsc()
+cmp r0, #1  -> SetUac()
+else        -> log "invalid"
+```
+
+**`UsbFunction: 1 = UAC (USB-DAC), 2 = MSC.`**
+
+`SetUac()` and `SetMsc()` are structurally identical — `GetFeatureUsbVid{Uac,Msc}` → write
+`idVendor`, `GetFeatureUsbPid{Uac,Msc}` → write `idProduct`, write `functions`, write `MaxPower`.
+**Neither touches `lun/file`**, which is what makes the split above load-bearing:
+
+> **Switching to MSC needs BOTH owners.** `SetUsbFunction(2)` for the descriptor so `UsbMgr` stops
+> fighting, and the init property for the unmount + `lun/file` handoff. Switching to UAC needs
+> `SetUsbFunction(1)` so the gadget is not reverted underneath us.
+
+### And a second, independent USB-DAC bug: `Start()` is called too early
+
+`UsbDeviceAudioPlayerServiceClient`'s vtable also came out clean, and it **confirms Cinder's
+existing slot guesses** (they were right):
+
+| slot | method |
+|---|---|
+| 2 | `GetServiceName() const` |
+| 3 | `GetStatus(stream_info_t&)` |
+| **4** | **`Start(stream_info_t&)`** |
+| **5** | **`Stop()`** — *takes no argument; Cinder passes one. Harmless under AAPCS, still wrong.* |
+| 6/7 | `AddListener` / `RemoveListener` |
+| 8 | `GetName() const` |
+
+The important part is the **direction** of `Start`'s parameter: the ref is non-const, i.e. an
+**out** param. The service does not take the format from us — `UsbAudioStreamMonitor` learns it from
+a hotplug socket (`UacInitHotplugSock`, `RecvUACEvent`, `ParseStreamInfo(const std::string&,
+stream_info_t&)`) and only then can `UsbAudioPlayerCore::StartPlaying` open
+`OpenInhal` (UAC capture) + `OpenExhal` (an AudioTrack to the 3.5 mm chain).
+
+Cinder calls `Start()` **once, at the moment the user toggles USB-DAC** — before any PC is
+streaming. At that instant there is no valid stream_info, so `StartPlaying` has nothing to open,
+and **nothing ever retries**. That alone is sufficient to explain "recognised in audio, no output".
+
+The service publishes exactly the event needed, and the dispatcher gives its index without
+ambiguity. `UsbDeviceAudioPlayerServiceListenerProxy::OnChangedFormatBase` at `0x23148`:
+
+```
+r0 = [r4+0x24]     ; the user listener object
+r2 = sp+16         ; a 12-byte struct (three words unpacked from the transaction)
+r1 = [r0+0]        ; its vptr
+r3 = [r1+8]        ; vptr[2]
+r1 = sp+28         ; one further word
+blx r3
+```
+
+**`OnChangedFormat` is listener slot 2**, called as `(this, const uint32_t&, const struct{u32,u32,u32}&)`.
+Five `TransactionParam::Get(4)` calls feed it; the first return is discarded by the service itself.
+
+So the correct shape is: register a listener at DAC entry, and call `Start()` **when the format
+arrives**, not when the user flips the switch.
+
+### Confirmed healthy on device (so these are not the problem)
+
+* `/sys/class/android_usb/android0/f_audio_func/` exists and is populated:
+  `f_valid=1 f_allow=1 f_start=180 f_thresh=50 f_plus=1 f_minus=1`.
+  The UAC gadget function is compiled in and initialised.
+* The service is running: `hagodaemon UsbHostConnectionService UsbDeviceConnectionService
+  UsbDeviceAudioPlayerService … capabilities=1,12 nice=-10` (pid 311).
+* Only card 0 (`sonysoccard`) exists while not in UAC mode, which is expected — the UAC capture
+  card only appears once the gadget is in `audio_func` **and** the host is streaming.
+
+### Order of work this implies
+
+1. `cinder-probe --usbmgr` — read `GetUsbFunction` (slot 4) first. Read-only, settles whether the
+   service really believes MSC while the UI says otherwise.
+2. Switch via `SetUsbFunction` (slot 3) instead of the property alone; keep the property for the
+   MSC medium handoff only.
+3. Register the `OnChangedFormat` listener and move `Start()` behind it.
+4. Only then is USB-DAC → LDAC a data-path problem rather than a control-plane one.
+
+### `stream_info_t`, from the service's own formatter
+
+`Utils.cc` in `libUsbDeviceAudioPlayerService.so` carries the printer, so the field set is read
+rather than guessed:
+
+```
+--- stream_info_t: %s ---
+action: kActionStop | kActionPlay
+format: %s          -> kFormatNone | kFormatPCM | kFormatDSD | kFormatDOP   (0,1,2,3 in .rodata order)
+freq: %u Hz
+bitwidth: %u bits
+```
+
+Four fields, which is exactly the four values `OnChangedFormatBase` unpacks (five
+`TransactionParam::Get(4)` calls, the first return discarded by the service). It stores them at
+`sp+16, +20, +24` and `sp+28`, then calls the listener with `r1 = sp+28` (one word) and
+`r2 = sp+16` (three words) — so implement the callback as
+
+```c
+virtual void OnChangedFormat(const uint32_t& a, const uint32_t (&b)[3]) { ... }
+```
+
+and read no further than that; anything beyond is not written by the dispatcher.
+
+`kFormatDOP` and the `LibDsdToPcmConv_*` / `LibDsdCrossFade_*` imports confirm the service handles
+DSD-over-PCM from the host, and `snd_pcm_readi` confirms the input half is an ordinary ALSA
+**capture** from the UAC card — which is what a USB-DAC → LDAC bridge would tap.
+
+Incidental: `FileWriter.cc` will `mkdir` and dump to **`/contents/UDAP`** — a debug capture path
+that exists in the shipped service. Untested, but it is a free way to prove PCM is arriving if the
+audible path ever stays silent.
+
+### Bring-up note: the restore child must leave the session (2026-08-11)
+
+`cinder-probe --usbmgr uac` forks a child that puts the previous `UsbFunction` back after a window,
+so a switch made over adb can always be undone. The first version of that child **stayed in the
+parent's process group and session** — and switching to UAC re-enumerates the gadget, which kills
+adbd, which SIGHUPs the group. The restore child died with the shell it existed to rescue, and the
+device sat in UAC with no adb until it was power-cycled from the Windows side.
+
+This is the boot-escape ladder's rule (*an escape must depend on strictly less than the thing it
+rescues*) reappearing one layer down. The child now does, **before anything else**:
+
+```c
+signal(SIGHUP, SIG_IGN); signal(SIGINT, SIG_IGN); signal(SIGTERM, SIG_IGN);
+setsid();
+```
+
+Anything that reconfigures the gadget, the radio, or the display over adb needs the same treatment.
+
+---
+
+## Round k (2026-08-11) — the gate, and the third owner
+
+Two rounds of on-device testing ended the same way: the gadget switched, the PC enumerated a sound
+card (`card4 [UAC2Gadget]`, `04-00: UAC2 PCM : capture 1`), the `OnChangedFormat` listener
+registered with `rc=0` — and then `GetStatus format=0` for the entire session. Calling `Start()`
+harder was never going to fix it, because the service was not being told anything at all.
+
+### How the service learns a format (static RE of `libUsbDeviceAudioPlayerService.so`)
+
+It does **not** poll, and it does **not** learn from ALSA. The chain is three links:
+
+1. **connmgr says the device is enabled.**
+   `UsbAudioConnectionMonitor::Open` (`0x1e1d0`) calls
+   `funcarch::connmgr::ConnMgrService::GetDeviceStatus(Device = 7, DeviceStatus&)` and registers a
+   `DeviceListener`. Every change lands in `UsbAudioPlayerCore::NotifyChangeConnectionStatus`
+   (`0x16c44`), and that function is the gate:
+
+   ```
+   if (status == 1)  UsbAudioStreamMonitor::Open();      // opens the socket, starts the thread
+   else              ClearStreamInfo(); StopPlaying();   // and tears it all down
+   ```
+
+   Nothing else opens the stream monitor.
+
+2. **The stream monitor's socket.** `UsbAudioStreamMonitor::UacInitHotplugSock` (`0x1ebf4`),
+   instruction for instruction:
+
+   ```c
+   socket(AF_NETLINK /*16*/, SOCK_DGRAM /*2*/, 24);            // proto 24 — MTK/Sony private
+   setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE /*33*/, &2048, 4);
+   bind(fd, &(struct sockaddr_nl){ .nl_family = 16, .nl_pid = getpid(), .nl_groups = 1 }, 12);
+   ```
+
+3. **The kernel sends the format.** `RecvUACEvent` (`0x1ef00`) `recvmsg()`s into a 2048-byte
+   buffer, **skips the first 16 bytes** (the `nlmsghdr`), splits the rest on `'\n'`/`'\r'`, and
+   feeds each line to `ParseStreamInfo`, which matches `ACTION=` (`STOP`/`PLAY`/`NONE`), `FORMAT=`,
+   `FREQ=` (table `32000 … 11289600`) and `BITWIDTH=`.
+
+`UsbAudioPlayerInhal` then opens **`hw:4,0`** — hardcoded — for capture, and drives
+`/sys/class/android_usb/android0/f_audio_func/{f_allow,f_valid,f_start,f_thresh,f_plus,f_minus}`
+for its feedback control.
+
+### `funcarch::connmgr::ConnMgrService` (libConnMgrService.so)
+
+Stateless — the ctor at `0x60bc` only touches the stack guard; every method re-fetches the client
+with `Framework::GetServiceClient("ConnMgrServiceFw")` (a 16-char name) and calls it by vtable
+index. Slot 3 = `GetDeviceStatus`, slot 4 = `GetUsbHostSuspended`. Reply is
+`{ uint32 result; DeviceStatus }`, and `DeviceStatus` is 8 bytes — one `vst1.8 {d16}` out of the
+reply at offset 4 — i.e. `{ uint32 enabled; uint32 connected; }`.
+
+`Device` enum, from `ConnMgrServiceFw`'s own dump strings, **confirmed on device** (index 12 is the
+`Invalid` terminator and `GetDeviceStatus` rejects it with `rc=1`; index 6 read enabled with the
+gadget at `mass_storage,adb`):
+
+| # | name | # | name | # | name |
+|---|---|---|---|---|---|
+| 0 | LineIn | 4 | UacDevice | 8 | AvrcpTg |
+| 1 | BtlHeadphone | 5 | A2dpSink | 9 | HostCable |
+| 2 | SeHeadphone | 6 | MscHost | 10 | SdCard0 |
+| 3 | LineOut | 7 | **UacHost** ← the gate | 11 | SdCard1 |
+|   |  |   |  | 12 | Invalid (sentinel) |
+
+### Measured: every link was dark (`cinder-probe --uacgate`, 2026-08-11)
+
+Gadget at `mass_storage,adb`, `sys.sony.config=adb`, `lun/file` empty:
+
+```
+socket(AF_NETLINK, SOCK_DGRAM, 24) failed: Protocol not supported
+device  6 (MscHost )    enabled=1 connected=1
+device  7 (UacHost )    enabled=0 connected=0     <-- the gate
+GetUsbHostSuspended = 0
+f_audio_func f_allow=1 f_valid=1 f_start=180 f_thresh=50 f_plus=1 f_minus=1
+```
+
+Netlink protocol 24 **does not exist** unless the UAC function is loaded, so the socket open is
+itself a clean yes/no on the gadget's real state. And `f_valid=1` while the gadget is in mass
+storage proves those sysfs nodes are persistent configuration, not a streaming indicator — do not
+read them as one.
+
+### The third owner: `UsbDeviceConnectionService::SetDeviceType`
+
+`libUsbDeviceConnectionService.so` exports the client factory
+`_ZN3pst8services39UsbDeviceConnectionServiceClientFactory14CreateInstanceEv`. Vtable, recovered
+from `R_ARM_ABS32` relocations (no inference):
+
+| slot | method |
+|---|---|
+| 2/3 | `~UsbDeviceConnectionServiceClient` D2 / D0 |
+| 4 | `GetServiceName() const` |
+| **5** | **`SetDeviceType(const device_type_t&)`** |
+| 6 | `GetConnectionStatus()` |
+| 7 | `GetUsbSuspend()` |
+| 8 | `DisableConnection(const bool&)` |
+| 9 | `SetOtgType(const otg_type_t&)` |
+| 10 | `AddListener(IServiceListener*, const std::string&)` |
+| 11 | `RemoveListener(IServiceListener*)` |
+
+`AddListener`/`RemoveListener` are the last two again — that is now six services in a row.
+`SetDeviceType` takes the enum **by const reference** (a pointer to one word), not the Req/Rsp
+pattern.
+
+`device_type_t`, from the `cmp #1 / #2 / #3` dispatch in `UsbDeviceConnectionMonitor::SetDeviceType`
+(`0xab98`), with the branch targets resolved through their Thumb→ARM veneers to PLT entries:
+
+| value | handler | what it actually does |
+|---|---|---|
+| 1 | `SetDeviceTypeAdb` (`0xb0ed`) | `stop adbd` → ids → `start adbd` → **`start mount_msc1`** |
+| 2 | `SetDeviceTypeMsc(bool)` (`0xac5d`) | **`start unmount_msc1`** → `stop adbd` → read `sys.usb.msc1` and write it into `f_mass_storage/lun/file` → `functions=mass_storage,adb` + ids → `start adbd` |
+| 3 | `SetDeviceTypeUac` (`0xaed5`) | `stop adbd` → read `sys.usb.vid` → `functions=audio_func,adb` + ids + `enable` → `start adbd` → **`start mount_msc1`** |
+
+Two bugs collapse into that table:
+
+* **Mass storage.** `unmount_msc1` plus writing `sys.usb.msc1` (`/emmc@contents`) into `lun/file`
+  **is** the medium, and nothing outside this service does it. `UsbMgrServiceFw::SetUsbFunction`
+  sets the descriptor only — hence "a drive with no disk", every time.
+* **USB-DAC silence.** The gadget rewrite re-enumerates in a way `UsbDeviceConnectionMonitor`'s own
+  uevent thread is watching (`NotifyUEventMessage` → `UpdateStatus` → `NotifyUacConnectEvnet`),
+  which `ConnMgrServiceFw` republishes as device 7 enabled — link 1 of the chain above. Switch the
+  gadget any other way and the connect event never fires, the socket is never opened, and the
+  service reports `kFormatNone` forever no matter how often `Start()` is called.
+
+So the ownership picture is not two writers but **three**, and only the third is complete:
+
+| owner | descriptor | medium (`lun/file`, mount) | connect event |
+|---|---|---|---|
+| init, via `sys.sony.config` | yes | yes | no |
+| `UsbMgrServiceFw::SetUsbFunction` | yes | **no** | **no** |
+| `UsbDeviceConnectionService::SetDeviceType` | yes | yes | **yes** |
+
+No root required for any of it: `start mount_msc1` runs inside the service.
+
+`cinder-home` now calls `SetUsbFunction` (so the mode manager's belief stays in sync and its resume
+trigger cannot revert us) and then `SetDeviceType` **last**, so the complete owner's writes win.
+USB-DAC off goes to `Adb`, not `Msc` — `Msc` unmounts `/contents` and would take the music library
+out from under the player. Mass storage stays a separate, explicit user action.
+
+Probes: `cinder-probe --uacgate [secs] [delay] [engage]` (read-only by default; `engage=1` does the
+switch itself behind an armed restore child) and `cinder-probe --usbdt uac|msc|adb [restore_secs]`
+for the raw switch.
+
+### First on-device run of SetDeviceType: a no-op, then a reboot (2026-08-11)
+
+`cinder-probe --uacgate 30 6 1` (engage mode, restore child armed) produced the cleanest possible
+negative result:
+
+```
+usbdt: SetDeviceType(3 = Uac) rc=0
+usbmgr: gadget   functions=mass_storage,adb enable=1 054c:0ca0     <-- unchanged
+device  7 (UacHost )    enabled=0 connected=0                      <-- unchanged
+socket(AF_NETLINK, SOCK_DGRAM, 24) failed: Protocol not supported  <-- unchanged
+```
+
+Sampled every 5 s for 30 s: **nothing moved**. The gadget composition, the ids, connmgr's device
+table and the netlink protocol were all exactly as before. Then, a couple of minutes later, the
+**device rebooted** — recovering onto Cinder by itself, with `/contents/uacgate2.log` intact, so the
+whole run is on record. The pre-reboot logcat is not: the ring only holds the new boot.
+
+Two corrections fall out of that run:
+
+* **`rc` is meaningless.** The client proxy's return was read as an `int`; the tail of
+  `SetDeviceType` (`0xdd2a`…) does no such thing. Treat `rc=0` as "we do not know", not "OK".
+  (`funcarch::ConnMgrService::GetDeviceStatus` genuinely does return 0 = OK — different function,
+  different convention. Do not generalise either one.)
+* **hagoromo8 is running and does host the service** (`ps`: pid 282,
+  `hagodaemon UsbHostConnectionService UsbDeviceConnectionService UsbDeviceAudioPlayerService`),
+  so "service absent" is ruled out.
+
+What the boot log then showed is the more interesting half:
+
+```
+UMGR|UsbMgrImplWmport.cc:525] UsbFunction [Msc] is set
+UDCS|UsbDeviceConnectionMonitor.cc:544] Detect change connection status : 1
+UDCS|UsbDeviceConnectionService.cc:125] Fires OnConnectEvent : 2
+```
+
+The monitor fires the **generic** `OnConnectEvent`, not `OnUacConnectEvent`/`OnMscConnectEvent`, and
+`UsbMgrServiceFw` separately announces `UsbFunction [Msc]`. That points at a cheaper mechanism than
+re-driving the whole gadget: the glue most likely combines "a connection event happened" with "what
+does UsbMgrServiceFw say the function is" to decide device 6 vs device 7. If so, the earlier rounds
+were nearly right — `SetUsbFunction(Uac)` did stick — and the only missing piece is that **no
+connect event re-fires after the function changes**, so connmgr never re-evaluates.
+
+That makes `UsbDeviceConnectionServiceClient::DisableConnection(const bool&)` (vtable slot 8) the
+next thing to try: `true` then `false` should drop and re-raise the connection and force the glue to
+re-decide, without rewriting the gadget at all. Next test, not yet run.
+
+Until that is understood, `cinder-home` does **not** call `SetDeviceType` — a Home-app toggle that
+can reboot the player is worse than one that does nothing. The code and the vtable stay, gated on
+`/contents/cinder-usbdt.on`; `cinder-probe --usbdt` remains the place to experiment.
+
+Also added as a consequence: **`cinder-msc usb-rescue`**. Every writer of this gadget does
+`enable 0 -> ids -> functions -> enable 1`, so any of them dying in the middle leaves `enable=0`
+and *nothing* on the host bus — no adb, no MSC, no UAC. The rescue re-drives init's `adb` block and,
+failing that, writes `enable 1` directly; it runs once at cinder-home startup and after every USB
+mode change, and is a no-op when the gadget is healthy.
+
+---
+
+## Round l (2026-08-11) — FuncMode: the gate was never the gadget
+
+The `DisableConnection` hypothesis at the end of round k was wrong, and so was the premise under it.
+Following the glue one library further answers the whole question, and the answer is not on the USB
+side at all.
+
+### The chain, end to end
+
+`libConnMgrServiceFw.so` is the missing link — it is the only thing in the rootfs besides the
+service itself that references `OnUacConnectEvent` on the *device* interface. Two of its classes
+matter, and Sony has their names crossed over: `UsbHostListener` listens to
+`IUsbDeviceConnectionService` (we are the device, the PC is the host), while `UsbDevListener`
+listens to `IUsbHostConnectionService` (something is plugged into us). We want the former.
+
+`UsbHostListener`'s vtable (`0x26450`, recovered from the R_ARM_ABS32 relocations) shows it
+overrides only **two** slots:
+
+| slot | method |
+|---|---|
+| 4 | `UsbHostListener::OnConnectEvent(connection_status_t const&)` |
+| 5 | `IUsbDeviceConnectionService::IServiceListener::OnUacConnectEvent` — **base no-op** |
+| 6 | `IUsbDeviceConnectionService::IServiceListener::OnMscConnectEvent` — **base no-op** |
+| 7 | `UsbHostListener::OnChangeUsbSuspend(usbsuspend_status_t const&)` |
+
+So connmgr never hears `OnUacConnectEvent` at all. It hears the generic event and then decides for
+itself, in two functions:
+
+```
+ConnGlueUsbHost::CnvConnected(Device, int status, bool& out)          @0x19ed0
+    dev == 7 (UacHost) : out = (status == 4 || status == 2)
+    dev == 6 (MscHost) : out = ((status & ~1) == 2)        i.e. status 2 or 3
+    otherwise          : out = false
+
+ConnGlueUsbHost::CnvStatus(Device, bool connected, FuncMode, DeviceStatus& out)   @0x19f24
+    if (!connected)     out = { 2, 0 };
+    else if (dev != 7)  out = { 2, 1 };
+    else                out = { 2, (FuncMode == 1) };
+```
+
+and `UsbAudioConnectionMonitor::Open` (@0x1e1d0) does `GetDeviceStatus(Device{7}, st)` — `movs r0,#7`,
+so device 7 is confirmed by disassembly, not inference — and believes it only when the word it reads
+back is `1`.
+
+**Device 7 is an AND, and we only ever had one input.** The connect event was arriving; `FuncMode`
+was never 1, so `CnvStatus` threw the event away. That is why `SetUsbFunction`, `sys.sony.config`
+and `SetDeviceType` all produced nothing: none of them is on this path.
+
+### connection_status_t, finally pinned
+
+`UsbDeviceConnectionMonitor::UpdateStatus(int)` (@0xbb88) is the whole decision, and it is driven by
+`NotifyUEventMessage` — a kernel uevent, not an API call. `this+0x1c` is the stored device type,
+`this+0x08` the cached status, `this+0x04` the service. Reading `[svc_vtbl + 68/72/76]` against the
+service vtable at `0x13640` (the stored pointer is past the 8-byte RTTI header, so `+68` is slot 19)
+names them exactly:
+
+| raw uevent | stored device type | call | status |
+|---|---|---|---|
+| 1 | 1 Adb | `NotifyConnectEvnet` (slot 21) | 2 |
+| 1 | 2 Msc | `property_get` + `WriteUsbSetting` + `NotifyMscConnectEvnet` (19) | 3 |
+| 1 | 3 Uac | `NotifyUacConnectEvnet` (slot 20) | 4 |
+| 2 | (CheckDeviceTypeMsc) | `NotifyMscConnectEvnet` | 5 |
+| 0 | previous 2 / 3 / 4 | the matching Notify\*, argument 1 | 1 |
+
+So `connection_status_t` = 1 disconnected, 2 Adb, 3 Msc, 4 Uac, 5 Msc-configured. This predicts the
+boot log line `UDCS|UsbDeviceConnectionService.cc:125] Fires OnConnectEvent : 2` exactly — device
+type Adb, cable present — which is the independent check that the vtable offsets are right.
+
+### FuncMode
+
+`funcarch::GetName(FuncMode const&)` (@0x7e00, `libFuncMgrServiceFw.so`) builds a
+`std::map<FuncMode,const char*>` inline: eight `strd {key, ptr}` pairs into a 64-byte stack array,
+keys 0..7, against the contiguous `.rodata` run at `0xba69`. Read off the binary, not guessed:
+
+| 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+|---|---|---|---|---|---|---|---|
+| MediaPlay | **UsbDac** | A2dpSink | Fm | DirectRec | Dmr | Dms | Initial |
+
+`Invalid` is the ninth string but not a key — `GetCurrentFuncMode` returns `9` of its own accord
+when the binder call fails, and `GetName` falls back to it. Two independent confirmations that
+`UsbDac == 1`: the string order, and `CnvStatus`'s `cmp r1, #1`.
+
+`FuncMgrServiceServiceImpl::EnterFuncMode` (@0x7fb4) is what stock runs when the user picks USB-DAC
+in Settings, and it is three calls under one mutex:
+
+```
+mutex.lock()
+if (mode == current) return                              ← early-out, so calling twice is harmless
+FireRequireExitFuncMode(current)                         ← listeners may veto
+usbmgr::UsbMgrService::SetUsbFunction(...)               ← the only step we were doing
+connmgr::ConnMgrService::SetDeviceHandleRules(...)       ← publishes device 7
+pathmgr::PathMgrService::SetPath(...)                    ← the audio routing path
+log "FuncMode [%s] transition is completed"
+mutex.unlock()
+```
+
+`SetPath` is worth staring at: even a perfect gadget and a perfect connect event would still have
+left the audio unrouted, because nothing we called ever touched `PathMgrService`.
+
+The client is `pst::services::funcarch::funcmgr::FuncMgrService` in `libFuncMgrService.so` and it is
+the easy kind — plain exported methods, no factory, no vtable index to guess, and **stateless** in
+exactly the way `funcarch::connmgr::ConnMgrService` is: the ctor at `0x5d84` only reads the stack
+guard, and every method re-fetches the client through
+`Framework::GetServiceClient("FuncMgrServiceFw")`. A dummy `this` is legitimate.
+
+```
+_ZN3pst8services8funcarch7funcmgr14FuncMgrService18GetCurrentFuncModeEv     -> int  (9 on failure)
+_ZN3pst8services8funcarch7funcmgr14FuncMgrService13EnterFuncModeERKNS1_8FuncModeE   -> bool
+_ZN3pst8services8funcarch7funcmgr14FuncMgrService15SetBootFuncModeERKNS1_8FuncModeE -> bool
+```
+
+### Measured on device (2026-08-11, `cinder-probe --funcmode`, read-only)
+
+```
+funcmode: current = 0 (MediaPlay)
+device  6 (MscHost )  enabled=1 connected=1
+device  7 (UacHost )  enabled=0 connected=0     <-- the gate
+device 10 (SdCard0 )  enabled=1 connected=1
+gadget  functions=mass_storage,adb enable=1 054c:0ca0
+```
+
+`FuncMode = 0` with a healthy gadget and adb up. The static read predicted precisely this. Rounds
+d through k were all measuring the same closed valve from the wrong side.
+
+### What landed
+
+* `cinder-probe --funcmode` — read-only with no argument (prints FuncMode, all 13 connmgr devices,
+  the gadget, the `f_audio_func` nodes and `/proc/asound`), and `--funcmode <n> [restore] [watch]`
+  to make the transition. The engage form self-detaches (`fork` + `setsid` + `SIG_IGN`) before it
+  touches anything, because `SetUsbFunction` re-enumerates the gadget, adbd bounces, and a probe
+  that is still a child of adbd would be SIGHUP'd mid-experiment — taking its own restore with it.
+  A second detached child re-enters `MediaPlay` on a timer regardless of what happens to the parent:
+  same rule as the boot ladder, the escape depends on less than the thing it rescues.
+* `usb_enter_func_mode()` in `cinder-home`, via `dlopen` rather than a `DT_NEEDED` — the
+  libNfcService rule; nothing on this path runs at boot, so it must not be able to break boot.
+  Wired into `apply_usb_dac` **before** the property write, for the same reason `SetUsbFunction`
+  goes there: `EnterFuncMode` installs the service's audio-only descriptor internally, and letting
+  init's `audio_func,adb` land afterwards is what keeps adb alive through DAC mode.
+* Opt-in for now, on `/contents/cinder-funcmode.on`. The *gate* is confirmed on hardware;
+  `EnterFuncMode` itself has not been executed on hardware yet, and the last unverified service call
+  in this file preceded a reboot. One clean `--funcmode 1` run retires the marker — delete the
+  `::access` line, nothing else changes.
+
+Corrected from round k: the closing hypothesis there — that `DisableConnection(true/false)` would
+re-fire the connect event and make the glue re-decide — would not have worked. The glue would have
+re-decided with `FuncMode` still 0 and reached the same answer.
+
+### CONFIRMED ON HARDWARE — `cinder-probe --funcmode 1 120 45`, 2026-08-11
+
+One run, every link moved together and moved back:
+
+| | before | after `EnterFuncMode(1)` | after `EnterFuncMode(0)` |
+|---|---|---|---|
+| `GetCurrentFuncMode` | 0 MediaPlay | **1 UsbDac** | 0 MediaPlay |
+| connmgr device 7 (UacHost) | enabled=0 connected=0 | **enabled=1 connected=1** | enabled=0 connected=0 |
+| connmgr device 6 (MscHost) | 1/1 | 0/1 | 1/1 |
+| gadget | `mass_storage,adb` `054c:0ca0` | **`audio_func` `054c:0b8c`** | `mass_storage` `054c:0ca0` |
+| `socket(AF_NETLINK,SOCK_DGRAM,24)` | ENOPROTOOPT | **bound** | — |
+| `/proc/asound` | card0 only | **card4 pcm0c present** | — |
+
+Stable across all eight 5 s beats of the 45 s window. `hw:4,0` — the capture device
+`UsbAudioPlayerInhal` hardcodes — exists in UsbDac mode and in no other mode. Four rounds of
+"USB-DAC enumerates but is silent" are explained and the control plane is closed.
+
+Three things the run taught that the disassembly did not:
+
+* **`EnterFuncMode`'s bool is not a result.** It returned `false` for the switch *and* for the
+  restore, on the run where all five readings above prove both worked. Exactly the same trap as
+  `UsbDeviceConnectionServiceClient::SetDeviceType`'s `rc`. Judge these calls by read-back, never by
+  return value; `funcmode_enter` now calls `GetCurrentFuncMode` and reports that instead.
+* **Neither mode's descriptor carries adb.** UsbDac is bare `audio_func`, MediaPlay is bare
+  `mass_storage` — so a probe that switches and stops there leaves the device with *no adb at all*,
+  recoverable only by a reboot, which is what happened on the first run. `funcmode_recompose_adb`
+  (re-drives init's `sys.sony.config adb`, the same lever as `cinder-msc usb-rescue`) now runs after
+  every restore, in the in-process path and in the detached child. cinder-home never had this
+  problem: `apply_usb_dac` already writes the property after, which is why the ordering there is
+  FuncMode → SetUsbFunction → property and not any other way round.
+* **Zero netlink FORMAT events, and that is the environment, not the chain.** The player was
+  attached to WSL through usbipd for adb, so Windows never enumerated it as a sound card and nothing
+  was ever streaming into it. The socket existed and had a reader; there was simply no host. Closing
+  the last link needs the player plugged into a PC *without* the passthrough — at which point the
+  events land on a socket we can already open, and `hw:4,0` is already there to capture from.
+
+`cinder-home` calls `EnterFuncMode` unconditionally as of this round — the marker file
+`/contents/cinder-funcmode.on` is retired.
+
+### END TO END — a PC streaming into it, 2026-08-11
+
+New build installed, `usbipd detach` so Windows could enumerate the sound card, USB-DAC toggled from
+the player's own screen, audio played from the PC. Audio came out. From `/contents/cinderhome.log`:
+
+```
+usb-dac: released Music track for the DAC (ClosePlayer rc=0)
+usb-dac: EnterFuncMode
+func-mode: FuncMgrService ready
+func-mode: EnterFuncMode(1 = UsbDac) [returned false — not meaningful]
+usb-dac: SetUsbFunction
+usb-dac: engage -> cinder-msc dac-on rc=0
+usb-dac: OnChangedFormat listener rc=0 (registered)
+usb-dac: Start() -> ... format=0 ...            <- kFormatNone, nothing streaming yet
+usb-dac: waiting for the host — t=1s .. t=116s  <- the heartbeat, doing its job
+usb-dac: host changed the stream format — (re)opening the render path
+usb-dac: Start() -> { 1, 44100, 32 }
+```
+
+Every link of the chain, in order, on real hardware. Device state while streaming:
+`functions=audio_func,adb`, `sys.sony.config=uac`, `idProduct=0b8c`, and
+`/proc/asound/cards` showing `4 [UAC2Gadget]: UAC2_Gadget`. **adb survived the whole session** —
+that is the FuncMode → SetUsbFunction → property ordering paying off exactly as intended.
+
+**And it exposed a decoding bug that had been in the tree for rounds.** The first live payload
+printed as `action=1 format=44100 freq=32 bits=0`, which is self-evidently wrong — 44100 is a rate,
+not a format. `IUsbDeviceAudioPlayerService::stream_info_t` is **three words and has no `action`
+field**; from the tail of `UsbAudioPlayerCore::GetStreamInfo` (@0x16ab0), the function that fills the
+struct that goes over the wire:
+
+```
+str  r3, [r9, #0]      ; stream_type_t  — mapped from the internal stream_format_t (1->1, 2->3, 3->2)
+ldr  r0, [r8, #72]  ->  str  r0, [r9, #4]      ; freq
+ldrb r0, [r8, #76]  ->  str  r0, [r9, #8]      ; bitwidth (a byte, widened to a word)
+```
+
+Three words — which is also why the listener is `OnChangedFormat(const u32&, const u32(&)[3])`. Our
+reader had invented a leading `action`, so every label was shifted by one **and the kFormatNone test
+was reading the frequency**. It only ever behaved because a live stream has a nonzero rate and a
+stopped one has zero, so the bug was invisible until a real host produced a real payload. Fixed in
+both readers (`uac_render` and the `uac_poll_status` backstop); the listener deliberately still
+decodes nothing, so there is exactly one decoder to get wrong.
+
+Correctly read, the live stream was **format 1 (PCM), 44100 Hz, 32-bit** — which is precisely the
+`S32_LE / 44100 / stereo` the capture thread already hardcodes. That assumption is now measured
+rather than assumed.
+
+Task #16 (USB-DAC mode working) is **done**. What remains for #23 is the LDAC leg only: capture
+`hw:4,0` and feed the transmitter, with the input side no longer in question.

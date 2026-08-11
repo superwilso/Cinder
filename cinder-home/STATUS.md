@@ -565,6 +565,16 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   UAC card → the transmitter's abstract AF_UNIX socket), not the standalone `ldac-bridge` daemon and
   not the retired `/contents/ldac_on` file trigger — see the Partial entry for exactly what is and
   isn't proven. Mass-storage moved to **Settings ▸ USB mode**.
+  **2026-08-11 — the input side is solved and PROVEN ON HARDWARE.** The reason it stayed at
+  `kFormatNone` through every round was never the USB gadget: connmgr device 7 (UacHost), which is
+  what the audio service watches, is an **AND of the connect event and `FuncMode == 1` (UsbDac)**.
+  `FuncMgrService::EnterFuncMode` is the supported single call (`SetUsbFunction` +
+  `SetDeviceHandleRules` + **`SetPath`**, the audio route nothing had ever touched), wired into
+  `apply_usb_dac` via `dlopen`. One `cinder-probe --funcmode 1` run moved every link together —
+  FuncMode 0→1, device 7 0/0→1/1, gadget `mass_storage,adb`/0ca0 → `audio_func`/0b8c, netlink proto
+  24 ENOPROTOOPT→bound, and **`/proc/asound` card4 pcm0c (`hw:4,0`) appeared** — held for 45 s, and
+  `EnterFuncMode(MediaPlay)` put all of it back. What remains is the last link only: a real host
+  streaming, which cannot be observed over the usbipd passthrough that carries adb.
 - **Status bar**: live clock (local time) + battery % (sysfs); **tap anywhere on it → Menu**.
 - **Scrobbler**: appends `/contents/.scrobbler.log` (Audioscrobbler/1.1) as you listen.
 - **Safety**: bad-boot counter → auto-revert to stock after **2** bad boots; per-frame + construction
