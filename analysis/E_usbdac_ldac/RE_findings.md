@@ -958,3 +958,329 @@ rather than assumed.
 
 Task #16 (USB-DAC mode working) is **done**. What remains for #23 is the LDAC leg only: capture
 `hw:4,0` and feed the transmitter, with the input side no longer in question.
+
+---
+
+## Round m (2026-08-11) — the LDAC leg: an ALSA capture opened too early is poisoned for good
+
+First on-device run of the bridge with a real host. The log, in full:
+
+```
+ldac: capture device hw:4,0
+ldac: streaming
+ldac: capture not ready (Input/output error) — waiting for the host to start streaming
+ldac: readi -> File descriptor in bad state
+ldac: stopped after 0 frames (0 s)
+```
+
+Five lines, and every one of them matters.
+
+**The hard part had already succeeded.** `snd_pcm_open("hw:4,0", CAPTURE)` returned **0, not
+`-EBUSY`** — Sony's `UsbDeviceAudioPlayerService` does *not* hold the gadget's capture substream
+exclusively, so the whole feature is viable. That was the one thing that could have killed it.
+
+**What actually failed is ordering.** The UAC capture card appears the moment the gadget enters UAC
+mode. That is *minutes* before the user has picked the Walkman as the PC's output device and pressed
+play. The bridge opened the PCM at card-appearance time, into an endpoint with no stream behind it:
+
+- first `snd_pcm_readi` → `-EIO`
+- every `snd_pcm_readi` after that → **`-EBADFD`** ("file descriptor in bad state"), *permanently*,
+  no matter how many times `snd_pcm_prepare` is called.
+
+`-EBADFD` is `SND_PCM_STATE_DISCONNECTED`/`OPEN` leaking out as an errno: the PCM object is in a
+state from which `prepare()` cannot move it. **Retrying harder cannot work** — and retrying harder
+was the previous round's fix, which is why it did not. The object was poisoned at open.
+
+### The gate: GetStatus, not Start
+
+`UsbDeviceAudioPlayerServiceClient::GetStatus(stream_info_t&)` (slot 3) is a **pure read** of the
+same three words `Start()` fills in, and — the whole point — it does **not** take the capture PCM.
+So it can answer "is the host streaming yet?" without being self-defeating, which `Start()` cannot.
+`format == 0` (`kFormatNone`) means no host. Wait on that, *then* open, once, into a stream that
+exists.
+
+**Who is allowed to make that call matters.** Every `pst::services::*` client is asynchronous and
+its replies land on the framework looper; `g_uac_client` is built and driven by cinder-home's render
+thread. Having the bridge thread call `GetStatus` on that same client would put two threads in one
+client's transaction state — the exact shape of the bug that cost weeks on PlayerService. So the
+render loop's existing 1 Hz `uac_poll_status` **publishes** the format word to a `sig_atomic_t`, and
+the bridge only ever reads it. One writer, one reader, one word. (`uac_poll_status` used to bail out
+early when the BT route was active, on the grounds that there was no local render path to open —
+true, but it is precisely the bridging case that now needs the poll, so that early-out moved down.)
+
+### Session loop, not one shot
+
+A PC pausing, switching output device, or sleeping ends the *stream*, not the session. The bridge
+now loops: wait for a format → open → pump → close → wait again. Previously the first stream ending
+killed the thread, so the bridge worked at most once per USB-DAC toggle. Exit conditions are
+distinguished — a closed transmitter socket or a user toggle ends the thread; a stopped host or a
+wrong-state PCM only ends the current session (reopens capped at 8).
+
+Recovery inside the pump is likewise bounded: `-EPIPE`/`-ESTRPIPE`/`-EIO` get `prepare()` + 20 ms,
+but after ~5 s of that we ask GetStatus whether the host is even still there, and after ~15 s with a
+live host we conclude the PCM is poisoned and reopen rather than spinning on it forever.
+
+Result of the retest: **the gate works and the capture runs.** Log: `host is streaming (format=1)
+— opening hw:4,0` → `after set_params state=2 (PREPARED)` → `snd_pcm_start -> ok` → `after start
+state=3 (RUNNING)` → `streaming`, and then no "no capture data" line ever appeared, which means the
+1 s wait kept returning ready and `readi` kept delivering frames. **The explicit `snd_pcm_start` is
+what moved it** — the stream sat in PREPARED and the library's auto-start-on-read never fired on
+this gadget driver.
+
+### The reference dump — Sony's geometry, for the record
+
+Taken from the working DAC→jack session (owner_pid 372 = hagoromo8), against ours:
+
+| | Sony | Cinder |
+|---|---|---|
+| access / format / channels / rate | RW_INTERLEAVED / S32_LE / 2 / 44100 | **identical** |
+| `period_size` | 441 (10 ms) | 882 (20 ms) |
+| `buffer_size` | 22050 (500 ms) | 4410 (100 ms) |
+
+So the format was never wrong, only the buffering — and since the capture now delivers with our
+geometry, that difference is *not* the bug. Left alone deliberately: Sony's 500 ms buffer is more
+overrun-tolerant, but a 125 ms period would make our reads bursty, and changing what now works to
+chase a hypothetical is how the last three rounds went.
+
+---
+
+## Round n (2026-08-11) — the bridge's first audio killed the Home app: SIGPIPE
+
+The same session ended:
+
+```
+[cinder-home] ldac: streaming
+cinderhome-launch: cinder-home CRASHED rc=141 after 419s (respawn 1, 0 consecutive fast)
+```
+
+**rc=141 = 128 + 13 = SIGPIPE.** No fault handler line, no backtrace — nothing faulted. The bridge
+read real frames, `write(2)` them to the transmitter socket, the service closed its end, and the
+default disposition of SIGPIPE terminated the process. The `if (errno == EPIPE)` branch sitting
+right there could never run: the process was dead before `write` returned.
+
+That is a far worse bug than the feature it was hiding. cinder-home is the Home app, appmgr does not
+respawn the launcher, and the respawn attempt then hung in the easel lifecycle
+(`condition_variable::wait` under `onPostInitialize`) and exited 42 — so the launcher handed back to
+appmgr and **the device was left with no Home app at all**, showing a frozen frame.
+
+Fixes, both in:
+
+- `signal(SIGPIPE, SIG_IGN)` in `install_diagnostics()`. Any long-lived process that writes to fds it
+  does not own needs this, and this one is the Home app.
+- `send(fd, …, MSG_NOSIGNAL)` instead of `write()` in the pump, as a local backstop.
+- A `SOCKET_GONE` session end now reconnects (bounded to 3) instead of ending the bridge — the
+  transmitter closing at the end of a stream is normal.
+- `FIRST CAPTURE READ ok — N frames` is logged once per session, so "did any audio move?" stops
+  being an inference from the absence of other lines.
+
+What is still unknown is **why** the transmitter closed. The next log answers it: the EPIPE line now
+carries the frame count, which separates "closed on the very first write" (we are feeding it
+something it rejects) from "closed after seconds of audio" (a stream/state problem at the A2DP end).
+
+Status: built and installed, awaiting the retest.
+
+---
+
+## Round o (2026-08-11) — the socket was never a PCM pipe, and feeding it rebooted the device
+
+The retest ended with the **whole device rebooting** after 5–10 s of audio. The log did not survive
+it (`/contents/cinderhome.log` is truncated at boot), so the answer came from the binary instead.
+
+`GetSocketName` returns `pst::services::bttransmitterservice`, and `/proc/net/unix` shows it as the
+only socket of its kind on the device — no other `pst::services::*` endpoint exists, so it is not
+the generic service transport it looks like. Disassembling the accept loop behind it
+(`libBtTransmitterService.so`, bind @0x16d04 addrlen 110, `listen(fd, 1)`, accept @0x16e68) shows
+what it actually speaks:
+
+```
+recv 4 bytes            -> message type
+recv 4 bytes            -> payload length
+operator new[](length)
+recv length bytes       -> payload
+dispatch on type: 0 => length must be 0
+                  1 => length must be 28   (copied to a 28-byte struct)
+                  2 => length must be 12   (copied to a 12-byte struct)
+                  anything else => close the connection
+```
+
+**It is a framed control channel with a 12-byte maximum payload.** Round 1 recorded it as the PCM
+pipe — `NotifyOpenAudio() → GetSocketName() → connect → write() PCM in NotifyPcmPreferredSize
+chunks` — and that reading was wrong in two ways at once. `NotifyOpenAudio`, `NotifyCloseAudio`,
+`NotifyPcmPreferredSize` and `NotifyChangeVolume` are the *inbound* half of the interface (the BT
+middleware telling the service what happened; `NotifyChangeVolume` is the one we already receive as
+a listener callback), not client-callable RPCs. And `NotifyPcmPreferredSize`'s own code
+(@0xa4f4: log `"Change read pcm size:%u"`, then `cmp #8192` → `"Over read pcm size MAX."`) is the
+service being *told* a chunk size, not announcing one.
+
+So what the bridge did was write raw PCM into a control socket. The service read one audio sample as
+a message type and the next as a length:
+
+- a type that is not 0/1/2 takes the error path and closes the connection — **that is the EPIPE of
+  round n**, and it explains why the transmitter "closed the socket" the instant real audio moved;
+- a length word taken from PCM reaches `operator new[]` as an arbitrary 32-bit value. An allocation
+  of hundreds of megabytes inside a core service throws `bad_alloc`, the service dies, and the
+  device reboots — **which is exactly what was observed.**
+
+The bridge is therefore **disabled in `ldac_start()`**, with the frame layout recorded at the call
+site. It could take the player down at any time and no amount of tuning our end changes that.
+
+### Where the audio actually goes
+
+`/proc/net/unix` names it:
+
+```
+/tmp/bt.a2dp.stream      SOCK_DGRAM   <- the A2DP PCM path (MTK stack)
+/tmp/bt.int.adp  /tmp/bt.ext.adp  /tmp/bt.app.gap
+```
+
+`BtTransmitterExHal::WriteSilent()` is the service keeping that stream fed when there is no source,
+which is the shape of the thing we need to displace. Bridging USB-DAC to LDAC means getting PCM into
+`/tmp/bt.a2dp.stream` (or into the HAL that owns it), not into the control channel — and the next
+round should start by finding which process holds that socket and what a datagram on it looks like,
+**before** anything writes to it.
+
+### What survives from the last two rounds
+
+Not nothing. The USB side is now genuinely solved and measured:
+
+- the capture gate works (`GetStatus` format word, published by the render thread);
+- `hw:4,0` opens for us — Sony does **not** hold it exclusively;
+- an explicit `snd_pcm_start` is required (the stream sits in PREPARED otherwise, and the
+  auto-start-on-read convention does not fire on this gadget);
+- with that, `snd_pcm_readi` delivers real frames at S32_LE/44100/stereo.
+
+Every one of those is a prerequisite for any future bridge, whatever it writes to. What was wrong
+was only the destination.
+
+---
+
+## Round p — the control channel *is* the PCM pipe, after a handshake
+
+Round o was right that raw PCM into `@pst::services::bttransmitterservice` reboots the device, and
+right about the frame grammar. It was wrong about the conclusion. The socket is not "control only".
+**The accepted connection becomes the A2DP PCM source** the moment a well-formed type‑1 frame
+arrives. We crashed because we skipped the handshake, not because we picked the wrong socket.
+
+### Where the audio really flows
+
+Read bottom-up, all inside `hagodaemon` (PID 334 — `BtCommonService BtTransmitterService
+BtBleCommonService BtBleRemoteService BtPlayerService`):
+
+```
+client socket  --PCM-->  BtTransmitterExHal stream thread
+                         -> bt::BtAvSrcComponentIf::SendData(uint16 len, uint8* pcm)   [libBtCompIf]
+                         -> BtMwAvSrcRequestSendData                                    [libBtMw]
+                         -> btmtk_a2dp_send_audio_stream_data  (encodes: LDAC/SBC/aptX) [blueangel]
+                         -> btmtk_a2dp_send_audio_encoded_stream_data
+                            sendto("/tmp/bt.a2dp.stream", 1340 bytes, MSG id 601)
+                         -> mtkbt (PID 146, fd 4 = the bound end)  -> air
+```
+
+`/tmp/bt.a2dp.stream` is therefore **not** a destination for us: it is the MTK stack's internal
+message channel, carrying fixed 1340-byte datagrams of *already encoded* frames (msg id 601 at +0,
+16-bit `1` at +28, `0x520` at +30, payload length u16 at +34, timestamp u32 at +36, payload from
++40, max 1300 B). Writing there would mean re-implementing MTK's framing *and* bypassing AVDTP
+state. `libbluetooth.blueangel.so` links `libldacBTBC.so`, `libsbc_enc.so` and the two aptX blobs —
+**the LDAC encoder runs in hagodaemon, in software, on PCM we supply.**
+
+### `BtTransmitterExHal`, recovered
+
+Object layout (from `WriteSilent` @0xa348 and the stream thread @0xa714, `libBtTransmitterService.so`):
+
+| offset | meaning |
+|---|---|
+| +4     | `bt::BtAvSrcComponentIf*` — `SendData` is vtable slot at +0x2c |
+| +12    | the PCM reader — `Read(buf, size, &got)` at vtable slot +8 |
+| +0x2c  | `streaming` flag |
+| +0x2d  | `silent stop` flag |
+| +0x44  | last accepted sound-status byte |
+| +0x54  | `u16 pcm size` — what `NotifyPcmPreferredSize` sets, capped at 8192 |
+| +0x56  | PCM buffer, 8192 B |
+| +0x2056| silence buffer, 8192 B |
+
+`WriteSilent()` is just `memset(silence,0,8192)` then `while (!stop) SendData(pcm_size, silence)` —
+it keeps the A2DP stream alive with zeros while nothing is playing. The stream thread is the same
+loop with real data:
+
+```c
+while (this->streaming) {
+    if (reader->Read(pcm_buf, this->pcm_size, &got)) continue;   // vtable slot +8
+    if (got == 0) break;
+    src->SendData((uint16)got, pcm_buf);                          // vtable slot +0x2c
+}
+```
+
+### The handshake
+
+`OnEvent(ipcmw::ipcsocket::EventParam& p)` @0x9fc0. The server fills `p` as
+
+```
+p+0    event kind (0 = message received)
+p+4    the accepted connection object   <- the server hands its connection over here
+p+8    message type: 0 | 1 | 2
+p+12   payload, 28 bytes for type 1 / 12 bytes for type 2
+```
+
+and the type‑1 path ends with the move that settles the question (@0xa166):
+
+```
+r1 = p[4];  p[4] = 0;            // take the connection
+old = this->[12];
+this->[12] = r1;                 // it IS the PCM reader
+if (old) old->release();
+this->[0x2c] = 1;                // streaming = true
+... pthread_create(stream thread)
+```
+
+Payload fields the handler actually reads: `+4` = channel count (1 stays 1, anything else becomes
+2), `+20` = a `u8` flag, `+24` = **sample rate in Hz**, checked against the negotiated frequency
+through this table (`.rodata` @0x1c130, indexed by `freq_enum - 1`):
+
+```
+1 -> 44100   2 -> 48000   3 -> --   4 -> 88200   5..7 -> --   8 -> 96000
+```
+
+which is exactly `IBtTransmitterService::BtSoundFrequency`. Before any of that, the handler requires
+`(avsrc_status & ~1) == 4`, so the headphones must already be connected and the source ready.
+Fields `+0`, `+8`, `+12`, `+16` are not touched by this handler — still unidentified.
+
+### What this means for the bridge
+
+The path is: connect → send **one** `[u32 type=1][u32 len=28][28-byte payload]` frame → then write
+raw PCM in `pcm_size` chunks on the same fd. Sony's own code does the LDAC encoding and the AVDTP
+bookkeeping; we only supply samples, which is exactly what the USB capture already produces.
+
+The danger is unchanged and must be respected: **anything that is not a well-formed frame while the
+connection is still in frame-parsing mode reaches `operator new[]` with an arbitrary 32-bit length
+inside a core service, and the device reboots.** So the next step is a `cinder-probe` mode that
+sends the type‑1 frame *and nothing else*, and we read the service's log to see whether it was
+accepted, before a single PCM byte follows it.
+
+### Round p, confirmed on device the same evening
+
+`cinder-probe --btopen`, three runs, no reboot (uptime ran 92 → 223 s straight through):
+
+```
+btopen: socket 'pst::services::bttransmitterservice'
+btopen: connected
+btopen: sending type=1 len=28 chans=2 rate=44100
+btopen: ACCEPTED — connection still open 3 s after the handshake
+btopen: wrote 1764000 of 1764000 bytes
+```
+
+Three independent confirmations, in increasing order of strength:
+
+1. **Accepted.** The service kept the connection instead of closing it, so the payload passed the
+   `(avsrc_status & ~1) == 4` check and the channel/rate fields were understood.
+2. **Real-time drain.** 10 s of audio (1764000 B) took 9.8 s of wall clock to write. The writer is
+   paced by the reader, and the reader consumes at exactly 44100 x 2 x 2 B/s — a live A2DP stream,
+   not a socket buffer swallowing bytes. That arithmetic also **fixes the wire format at S16_LE**:
+   4 bytes per frame, not 8.
+3. **Audible.** A 440 Hz sine came out of the headphones. A wrong format would have been noise.
+
+So the bridge is: connect → handshake → raw S16_LE PCM. The capture side already produces S32_LE,
+so `ldac_pump` takes the top 16 bits of each sample (the gadget's low half is padding on a
+24-in-32 container) and writes 4 bytes per frame instead of 8.
+
+`ldac_start()` is re-enabled, with `ldac_handshake()` gating every session and refusing to send
+audio on a connection the service did not accept.

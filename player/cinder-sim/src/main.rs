@@ -398,6 +398,8 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             ldac_quality: 0,
             enhanced: true,
             enhanced_supported: true,
+            connecting: false,
+            busy_phase: 0.0,
         }),
         Screen::Pairing => {
             // The sim has no radio, so its mock "paired" set stands in for GetPairedDeviceInfo.
@@ -410,7 +412,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                     connected: app.bt_conn == Some(i),
                 })
                 .collect();
-            pairing::render(c, theme, fonts, &paired, &[], None, None, false)
+            pairing::render(c, theme, fonts, &paired, &[], None, None, false, 0.0)
         }
         Screen::Receiver => receiver::render(c, theme, fonts, app.rx),
         Screen::Fm => fm::render(c, theme, fonts, app.fm_freq),

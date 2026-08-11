@@ -209,6 +209,7 @@ pub fn render(
     forget_armed: Option<usize>,
     busy: Option<usize>,
     scanning: bool,
+    busy_phase: f32,
 ) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "Devices", None);
@@ -256,8 +257,16 @@ pub fn render(
             format!("{} · TAP TO CONNECT", d.kind.to_uppercase())
         };
         let armed = forget_armed == Some(i);
-        row(c, t, f, LIST_Y0 + i as i32 * ROW_H, &d.name, &sub, d.connected,
+        let ry = LIST_Y0 + i as i32 * ROW_H;
+        row(c, t, f, ry, &d.name, &sub, d.connected,
             Some(if armed { "TAP AGAIN" } else { "FORGET" }), armed);
+        // A moving indicator on the row that is actually attempting. "CONNECTING…" on its own is
+        // indistinguishable from a wedged attempt, and BT connects here can take several seconds.
+        // Placed in the empty gap between the subtitle and the FORGET button — x≈30 is where the
+        // row's own Bluetooth glyph lives, so the obvious spot would have drawn straight over it.
+        if busy == Some(i) {
+            crate::widgets::spinner(c, 330, ry + ROW_H / 2, 7, 3, busy_phase, t.acc);
+        }
     }
 
     // FOUND — only shown once there is something to say, so the screen is quiet when idle.
@@ -270,6 +279,9 @@ pub fn render(
         if found.is_empty() {
             text::draw(c, f, 58.0, (fy0 + 26) as f32, "Searching…",
                        &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+            if scanning {
+                crate::widgets::spinner(c, 30, fy0 + 21, 7, 3, busy_phase, t.acc);
+            }
         }
         for (i, d) in found.iter().take(cap).enumerate() {
             let sub = if d.kind.is_empty() {

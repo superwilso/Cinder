@@ -127,3 +127,38 @@ pub fn pill(c: &mut Canvas, f: &FontSet, t: &Theme, x: i32, y: i32, h: i32, labe
     text::draw(c, f, (x + 12) as f32, (y + h / 2 + 4) as f32, label, &st);
     w
 }
+
+/// Indeterminate spinner: eight dots on a ring, with a bright head that advances with `phase`
+/// (seconds) and a fading tail behind it.
+///
+/// Motion is the whole point. The Devices screen already printed a static "CONNECTING…" while a
+/// link attempt was in flight, and static text is exactly what a *stalled* attempt looks like — the
+/// user cannot tell "working on it" from "wedged". Anything that can take seconds and can fail needs
+/// to visibly tick.
+///
+/// Drawn with `blend` only, so the tail fade costs nothing extra and it works on every backend. The
+/// caller owns `phase`; nav advances it from real elapsed time and repaints while it moves.
+pub fn spinner(c: &mut Canvas, cx: i32, cy: i32, r: i32, dot: i32, phase: f32, col: Rgb888) {
+    const N: i32 = 8;
+    let head = ((phase * 8.0) as i32).rem_euclid(N);
+    for i in 0..N {
+        let a = i as f32 * core::f32::consts::PI * 2.0 / N as f32 - core::f32::consts::FRAC_PI_2;
+        let px = cx + (a.cos() * r as f32).round() as i32;
+        let py = cy + (a.sin() * r as f32).round() as i32;
+        // How far this dot sits BEHIND the head, so the trail fades backwards around the ring.
+        let back = (head - i).rem_euclid(N);
+        let alpha: u8 = match back {
+            0 => 255,
+            1 => 200,
+            2 => 150,
+            3 => 100,
+            4 => 60,
+            _ => 32,
+        };
+        for dy in 0..dot {
+            for dx in 0..dot {
+                c.blend(px + dx - dot / 2, py + dy - dot / 2, col, alpha);
+            }
+        }
+    }
+}

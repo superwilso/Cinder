@@ -40,6 +40,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <alsa/asoundlib.h>
+#include <cmath>   // --btopen tone: a sine is the only way to hear whether the PCM really arrived
 
 static void clog_(const char* m) { std::fprintf(stderr, "[cinder-probe] %s\n", m); std::fflush(stderr); }
 
@@ -502,6 +503,212 @@ static int ldac_probe() {
     std::fprintf(stderr, "[cinder-probe] ldac: done (%u pump ticks)\n", g_pump_ticks);
     std::fflush(nullptr);
     _exit(0);   // same reason as eq_probe: do not unwind with the pump thread live
+}
+
+// ── --btopen : send the ONE frame that turns the transmitter socket into a PCM pipe ─────────────
+//
+// Round o concluded that `@pst::services::bttransmitterservice` is a control channel and nothing
+// else. That was half right and the wrong half mattered. The frame grammar is real —
+//
+//     recv 4 -> type | recv 4 -> length | new[](length) | recv payload
+//     type 0 => len 0 | 1 => 28 | 2 => 12 | anything else => close
+//
+// — but a type-1 frame does not merely *configure* the stream, it HANDS THE CONNECTION OVER.
+// `BtTransmitterExHal::OnEvent` (libBtTransmitterService.so @0x9fc0) ends the type-1 path with:
+//
+//     r1 = p[4]; p[4] = 0;          // the accepted connection, moved out of the event
+//     old = this->[12];
+//     this->[12] = r1;              // it becomes the ExHal's PCM READER
+//     if (old) old->release();
+//     this->[0x2c] = 1;             // streaming = true
+//     pthread_create(stream thread)
+//
+// and that thread (@0xa714) is a plain pump:
+//
+//     while (streaming) {
+//         if (reader->Read(pcm_buf, pcm_size, &got)) continue;   // vtable slot +8
+//         if (!got) break;
+//         src->SendData((uint16)got, pcm_buf);                   // BtAvSrcComponentIf, slot +0x2c
+//     }
+//
+// So after the handshake the SAME fd carries raw PCM, and Sony does the LDAC encoding
+// (libbluetooth.blueangel.so links libldacBTBC.so) and the AVDTP bookkeeping. `WriteSilent()` is
+// the identical loop over a zeroed buffer — that is all the "silence keeper" ever was.
+//
+// WHY THIS MODE SENDS NO AUDIO BY DEFAULT. Writing PCM while the connection is still in
+// frame-parsing mode is what rebooted the device twice on 2026-08-11: two audio samples get read as
+// a type and a length, and a garbage length reaches `operator new[]` inside a core service. So the
+// default run sends the handshake and then does nothing but watch the socket. A peer that keeps the
+// connection open accepted it; a peer that closes rejected it. Only `--btopen silence` follows up
+// with zeros, and only if the connection actually stayed open.
+//
+//   adb push cinder-home/dist/dev/cinder-probe /tmp/cinder-probe
+//   adb shell 'chmod 755 /tmp/cinder-probe && LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/lib \
+//              /tmp/cinder-probe --btopen'            # handshake only
+//   ... --btopen silence                              # handshake, then 3 s of zeros
+//   ... --btopen tone [rate] [chans] [secs]           # handshake, then an audible 440 Hz sine
+//
+// Headphones must be connected first: the handler requires (avsrc_status & ~1) == 4.
+static int btopen_probe(bool send_silence, bool send_tone, unsigned rate, unsigned chans,
+                        unsigned secs) {
+    install_diagnostics();
+
+    clog_("btopen: Framework::GetReference() …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    if (g_pump_ticks == 0) {
+        clog_("btopen: pump never ticked — every call below would read back stack garbage. STOP");
+        return 1;
+    }
+
+    wd_arm(12);
+    void* bt = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    if (!bt) { clog_("btopen: CreateInstance returned NULL — STOP"); return 1; }
+
+    typedef void (*fn_b)(void*, const bool*);
+    typedef void (*fn_i)(void*, const int*);
+    bool t = true, f = false;
+    int  q = 0;   // BtLdacSoundQuality::Auto
+    clog_("btopen: SetLdac(true) / SetLdacSoundQuality(Auto) / SetCurrentSource(true) …");
+    wd_arm(12); ((fn_b)vslot(bt, VIDX_SetLdac))(bt, &t); wd_disarm();
+    wd_arm(12); ((fn_i)vslot(bt, VIDX_SetLdacSoundQuality))(bt, &q); wd_disarm();
+    wd_arm(12); ((fn_b)vslot(bt, VIDX_SetCurrentSource))(bt, &t); wd_disarm();
+
+    typedef void (*fn_s)(void*, std::string*);
+    std::string sock_name;
+    wd_arm(12);
+    try { ((fn_s)vslot(bt, VIDX_GetSocketName))(bt, &sock_name); }
+    catch (...) { clog_("btopen: GetSocketName THREW — STOP"); return 1; }
+    wd_disarm();
+    if (sock_name.empty()) { clog_("btopen: GetSocketName returned EMPTY — STOP"); return 1; }
+    std::fprintf(stderr, "[cinder-probe] btopen: socket '%s'\n", sock_name.c_str());
+
+    // addrlen 110, not strlen — see the note in ldac_probe: the server binds the full sockaddr_un
+    // and an abstract name is a byte string, trailing NULs included.
+    int sock = -1;
+    for (int i = 0; i < 20 && sock < 0; i++) {
+        sock = socket(AF_UNIX, SOCK_STREAM, 0);
+        struct sockaddr_un a; std::memset(&a, 0, sizeof a);
+        a.sun_family = AF_UNIX;
+        size_t n = sock_name.size();
+        if (n > sizeof a.sun_path - 1) n = sizeof a.sun_path - 1;
+        std::memcpy(a.sun_path + 1, sock_name.data(), n);
+        if (connect(sock, (struct sockaddr*)&a, (socklen_t)sizeof a) < 0) {
+            close(sock); sock = -1; usleep(100000);
+        }
+    }
+    if (sock < 0) {
+        std::fprintf(stderr, "[cinder-probe] btopen: connect failed: %s — STOP\n",
+                     std::strerror(errno));
+        return 1;
+    }
+    clog_("btopen: connected");
+
+    // The frame. Eight bytes of header then exactly 28 bytes of payload — the length word is what
+    // the service allocates on, so it is written as a constant and never computed from anything
+    // that could be short.
+    unsigned char frame[8 + 28];
+    std::memset(frame, 0, sizeof frame);
+    unsigned type = 1, len = 28;
+    std::memcpy(frame + 0, &type, 4);
+    std::memcpy(frame + 4, &len,  4);
+    // Payload fields OnEvent actually reads. Everything else stays zero: the handler does not touch
+    // +0/+8/+12/+16, and inventing values for fields we have not identified is how the last round
+    // went wrong.
+    std::memcpy(frame + 8 + 4,  &chans, 4);   // channel count: 1 stays 1, anything else becomes 2
+    frame[8 + 20] = 1;                        // the u8 flag at payload+20
+    std::memcpy(frame + 8 + 24, &rate,  4);   // sample rate in Hz, checked against BtSoundFrequency
+    std::fprintf(stderr, "[cinder-probe] btopen: sending type=1 len=28 chans=%u rate=%u\n",
+                 chans, rate);
+    ssize_t w = send(sock, frame, sizeof frame, MSG_NOSIGNAL);
+    if (w != (ssize_t)sizeof frame) {
+        std::fprintf(stderr, "[cinder-probe] btopen: send returned %zd (%s) — STOP\n",
+                     w, std::strerror(errno));
+        close(sock);
+        return 1;
+    }
+
+    // Verdict by observation. An accepted frame leaves the connection open with the stream thread
+    // blocked in Read(); a rejected one gets closed by the service. Three seconds is far longer
+    // than either decision takes.
+    bool alive = true;
+    for (int i = 0; i < 30 && alive; i++) {
+        struct pollfd p = { sock, POLLIN, 0 };
+        int pr = poll(&p, 1, 100);
+        if (pr > 0) {
+            if (p.revents & (POLLHUP | POLLERR)) { alive = false; break; }
+            char b[64];
+            ssize_t r = recv(sock, b, sizeof b, MSG_DONTWAIT);
+            if (r == 0) { alive = false; break; }
+            if (r > 0)
+                std::fprintf(stderr, "[cinder-probe] btopen: peer sent %zd bytes back\n", r);
+        }
+    }
+
+    if (!alive) {
+        clog_("btopen: REJECTED — the service closed the connection. The payload layout or the "
+              "AvSrc state is wrong; do NOT send PCM on this shape of frame.");
+        close(sock);
+        g_pump_run = false;
+        std::fflush(nullptr);
+        _exit(2);
+    }
+    clog_("btopen: ACCEPTED — connection still open 3 s after the handshake, which means the ExHal "
+          "took it as its PCM reader and its stream thread is now blocked reading this fd.");
+
+    if (send_silence || send_tone) {
+        // Zeros are exactly what WriteSilent() already pushes, so `silence` adds no failure mode
+        // beyond "was the handshake really accepted" — which the gate above just answered. The tone
+        // is the same write path with audible content, because a silent run cannot tell "the bytes
+        // reached the headphones" apart from "the bytes went into a bit bucket". S16_LE stereo is
+        // assumed: it is the only interleaved 16-bit layout the ExHal's chunk sizes make sense for,
+        // and if the assumption is wrong the tone comes out as noise, which is still an answer.
+        std::fprintf(stderr, "[cinder-probe] btopen: writing %u s of %s (S16_LE, %u ch, %u Hz) …\n",
+                     secs, send_tone ? "440 Hz tone" : "silence", chans, rate);
+        std::vector<unsigned char> buf(4096, 0);
+        const size_t frame_bytes = (size_t)chans * 2;
+        const size_t total = (size_t)rate * frame_bytes * secs;
+        size_t sent = 0;
+        unsigned phase = 0;
+        while (sent < total) {
+            size_t want = buf.size() - (buf.size() % frame_bytes);
+            if (want > total - sent) want = total - sent;
+            if (send_tone) {
+                for (size_t i = 0; i + frame_bytes <= want; i += frame_bytes) {
+                    // 440 Hz at a third of full scale — loud enough to hear, quiet enough not to
+                    // hurt if the headphones are already on someone's head.
+                    double th = 2.0 * 3.14159265358979 * 440.0 * (double)phase / (double)rate;
+                    short s = (short)(10000.0 * sin(th));
+                    phase++;
+                    for (unsigned c = 0; c < chans; c++)
+                        std::memcpy(&buf[i + c * 2], &s, 2);
+                }
+            }
+            ssize_t n = send(sock, buf.data(), want, MSG_NOSIGNAL);
+            if (n <= 0) {
+                std::fprintf(stderr, "[cinder-probe] btopen: send stopped after %zu bytes: %s\n",
+                             sent, std::strerror(errno));
+                break;
+            }
+            sent += (size_t)n;
+        }
+        std::fprintf(stderr, "[cinder-probe] btopen: wrote %zu of %zu bytes\n", sent, total);
+    }
+
+    // Closing the fd is the documented stop: the stream thread's Read returns 0 and the loop ends.
+    close(sock);
+    clog_("btopen: closed — releasing the source");
+    wd_arm(12); ((fn_b)vslot(bt, VIDX_SetCurrentSource))(bt, &f); wd_disarm();
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
 }
 
 // ── --btinfo : confirm on device what static analysis says about the container-shaped calls ─────
@@ -3094,6 +3301,16 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--ldac") == 0) {
         return ldac_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btopen") == 0) {
+        // --btopen [silence] [rate] [chans]. The default sends the handshake and nothing else;
+        // "silence" is the explicit opt-in to writing PCM, and only after the accept gate passes.
+        bool sil  = argc > 2 && std::strcmp(argv[2], "silence") == 0;
+        bool tone = argc > 2 && std::strcmp(argv[2], "tone") == 0;
+        unsigned rate  = argc > 3 ? (unsigned)std::atoi(argv[3]) : 44100u;
+        unsigned chans = argc > 4 ? (unsigned)std::atoi(argv[4]) : 2u;
+        unsigned secs  = argc > 5 ? (unsigned)std::atoi(argv[5]) : 3u;
+        return btopen_probe(sil, tone, rate, chans, secs);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
         return btinfo_probe();
