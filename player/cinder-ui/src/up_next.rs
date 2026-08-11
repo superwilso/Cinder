@@ -11,7 +11,10 @@ use crate::widgets::{fill_rect, hline, right, sty};
 use crate::Canvas;
 
 pub const RH: i32 = 62;
-const LIST_BOTTOM: i32 = 736; // leave room for the footer rule
+// Must equal `library::list_bottom()`: the scrollbar this screen draws is `library::scrollbar`,
+// and `sbar_begin` measures the thumb's travel against the LIBRARY's bottom. Two independent
+// literals happened to agree (800 - 64); deriving it means they cannot quietly stop agreeing.
+const LIST_BOTTOM: i32 = crate::H as i32 - crate::chrome::NP_BAR_H;
 const LIST_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
 /// The reorder grab handle's hit strip on a user-queue row. Wide, because this device has no d-pad
@@ -64,34 +67,9 @@ pub fn queue_view_h() -> i32 {
     LIST_BOTTOM - LIST_TOP
 }
 
-pub fn queue_max_scroll_px(len: usize) -> i32 {
-    (len as i32 * RH - queue_view_h()).max(0)
-}
-
-/// Which queue index sits under screen-`y` at this scroll offset. Unlike [`visible_row_at`] this
-/// returns the index into the queue itself, so the caller never has to know where the window is.
-pub fn queue_row_at(y: i32, scroll_px: i32, len: usize) -> Option<usize> {
-    if !(LIST_TOP..LIST_BOTTOM).contains(&y) {
-        return None;
-    }
-    let i = ((y - LIST_TOP + scroll_px) / RH) as usize;
-    (i < len).then_some(i)
-}
-
 /// Is this x on the grab handle?
 pub fn queue_grip_hit(x: i32) -> bool {
     (GRIP_X0..GRIP_X1).contains(&x)
-}
-
-/// Which slot a floating row is hovering over, from its top edge in screen coords. Uses the row's
-/// CENTRE, so the swap happens when the dragged row is more than half way over its neighbour —
-/// swapping on the leading edge makes the list twitch a full row before the finger has committed.
-pub fn queue_slot_for(float_top: i32, scroll_px: i32, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    let centre = float_top - LIST_TOP + scroll_px + RH / 2;
-    (centre.div_euclid(RH)).clamp(0, len as i32 - 1) as usize
 }
 
 /// The queue in the order it is currently DRAWN: `from` lifted out and re-inserted at `to`.
@@ -106,90 +84,339 @@ fn drag_order(len: usize, drag: Option<QueueDrag>) -> Vec<usize> {
     order
 }
 
-/// Which visible row index `y` falls on (0 = the topmost DRAWN row, which is not necessarily
-/// track 0 — this list auto-scrolls to follow playback). `nav` pairs this with the ids the
-/// renderer publishes, so a tap resolves to the row actually under the finger.
-pub fn visible_row_at(y: i32) -> Option<usize> {
-    let top = crate::chrome::HEADER_BOTTOM;
-    if !(top..LIST_BOTTOM).contains(&y) {
-        return None;
+// ── The unified queue layout ────────────────────────────────────────────────────────────────────
+// Up Next used to be TWO mutually exclusive screens: the current album auto-scrolled to the playing
+// track, OR — the moment you swipe-queued a single song — the user queue on its own, with no
+// now-playing row anywhere on it. Queueing one track therefore hid what was playing, and the queue
+// itself never followed playback.
+//
+// One list now, in Apple Music's order:
+//
+//     PREVIOUSLY PLAYED     album tracks before the current one
+//     NOW PLAYING           the current track
+//     NEXT IN QUEUE         the user's own swipe-queued picks (reorderable, removable)
+//     NEXT FROM <ALBUM>     the rest of the album
+//
+// Sections with nothing in them are omitted, headers and all. Everything below is driven from
+// `layout()`, so the renderer, the tap, the reorder drag and the swipe all read the same geometry
+// — the rule this file already followed for the album window and lost for the user queue.
+
+/// Height of a section heading row.
+pub const HDR_H: i32 = 34;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Section {
+    History,
+    Now,
+    Queue,
+    Album,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Slot {
+    /// A section heading. Never tappable.
+    Head(Section),
+    /// An album track BEFORE the playing one — index into the album's track list.
+    History(usize),
+    /// The playing track — index into the album's track list.
+    Current(usize),
+    /// A user-queued track — index into the USER QUEUE. The only kind that reorders or removes.
+    Queued(usize),
+    /// An album track after the playing one — index into the album's track list.
+    Upcoming(usize),
+}
+
+impl Slot {
+    pub fn h(&self) -> i32 {
+        match self {
+            Slot::Head(_) => HDR_H,
+            _ => RH,
+        }
     }
-    Some(((y - top) / RH) as usize)
+    /// Is this a row a finger can act on?
+    pub fn is_row(&self) -> bool {
+        !matches!(self, Slot::Head(_))
+    }
 }
 
-/// How many rows fit in the window, and where the auto-scrolled window starts for `current`.
-/// Kept next to the renderer that uses it so the two can't disagree.
-pub fn window(len: usize, current: usize) -> (usize, usize) {
-    let visible = ((LIST_BOTTOM - crate::chrome::HEADER_BOTTOM) / RH).max(1) as usize;
-    let max_scroll = len.saturating_sub(visible);
-    (visible, current.saturating_sub(4).min(max_scroll))
+/// The whole screen as a list of slots with their content-space tops.
+#[derive(Clone, Debug, Default)]
+pub struct Layout {
+    pub slots: Vec<(Slot, i32)>, // (slot, top in CONTENT space)
+    pub content_h: i32,
+    /// Content-space top of the NOW PLAYING row, if there is one. This is what the auto-follow
+    /// scrolls to.
+    pub current_top: Option<i32>,
 }
 
-/// Render the queue: `tracks` = the current album's tracks (play order), `current` = the playing
-/// index within it. `album` is shown in the header. The window auto-scrolls to keep the playing
-/// track visible (no cursor state needed — the queue follows playback).
-#[allow(clippy::too_many_arguments)]
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, album: &str, tracks: &[SongRow],
-              current: usize, lib: &crate::model::Library) {
+/// Build the slot list. `album_len`/`current` describe the album the playing track belongs to
+/// (`current == None` when nothing is playing or the track isn't in the library); `queued` is the
+/// user queue's length.
+pub fn layout(album_len: usize, current: Option<usize>, queued: usize) -> Layout {
+    let mut l = Layout::default();
+    let mut y = 0;
+    let push = |l: &mut Layout, s: Slot, y: &mut i32| {
+        l.slots.push((s, *y));
+        *y += s.h();
+    };
+    if let Some(cur) = current {
+        if cur > 0 {
+            push(&mut l, Slot::Head(Section::History), &mut y);
+            for i in 0..cur {
+                push(&mut l, Slot::History(i), &mut y);
+            }
+        }
+        push(&mut l, Slot::Head(Section::Now), &mut y);
+        l.current_top = Some(y);
+        push(&mut l, Slot::Current(cur), &mut y);
+    }
+    if queued > 0 {
+        push(&mut l, Slot::Head(Section::Queue), &mut y);
+        for i in 0..queued {
+            push(&mut l, Slot::Queued(i), &mut y);
+        }
+    }
+    if let Some(cur) = current {
+        if cur + 1 < album_len {
+            push(&mut l, Slot::Head(Section::Album), &mut y);
+            for i in cur + 1..album_len {
+                push(&mut l, Slot::Upcoming(i), &mut y);
+            }
+        }
+    }
+    l.content_h = y;
+    l
+}
+
+impl Layout {
+    /// The slot under screen-`y` at this scroll offset.
+    pub fn at(&self, y: i32, scroll_px: i32) -> Option<Slot> {
+        if !(LIST_TOP..LIST_BOTTOM).contains(&y) {
+            return None;
+        }
+        let cy = y - LIST_TOP + scroll_px.max(0);
+        self.slots
+            .iter()
+            .find(|(s, top)| cy >= *top && cy < *top + s.h())
+            .map(|(s, _)| *s)
+    }
+    /// Content-space top of a slot, for placing a lifted row.
+    pub fn top_of(&self, want: Slot) -> Option<i32> {
+        self.slots.iter().find(|(s, _)| *s == want).map(|(_, t)| *t)
+    }
+    pub fn max_scroll_px(&self) -> i32 {
+        (self.content_h - queue_view_h()).max(0)
+    }
+    /// Scroll that puts NOW PLAYING a third of the way down the window — the Apple Music resting
+    /// position, which keeps a couple of played tracks visible above it instead of pinning it to
+    /// the top with the history off-screen.
+    pub fn follow_scroll(&self) -> i32 {
+        match self.current_top {
+            Some(top) => (top - queue_view_h() / 3).clamp(0, self.max_scroll_px()),
+            None => 0,
+        }
+    }
+    /// Queue indices in DRAWN order while `drag` is lifted (see `drag_order`).
+    pub fn queued_len(&self) -> usize {
+        self.slots.iter().filter(|(s, _)| matches!(s, Slot::Queued(_))).count()
+    }
+    /// Content-space top of the first user-queue row, if the queue section exists.
+    pub fn queue_top(&self) -> Option<i32> {
+        self.slots
+            .iter()
+            .find(|(s, _)| matches!(s, Slot::Queued(0)))
+            .map(|(_, t)| *t)
+    }
+    /// Which queue index a floating row is over, from its top edge in screen coords. Same
+    /// half-row rule as before, but measured from the queue SECTION's top rather than the
+    /// window's, because the queue no longer starts at row 0 of the screen.
+    pub fn queue_slot_for(&self, float_top: i32, scroll_px: i32) -> usize {
+        let len = self.queued_len();
+        if len == 0 {
+            return 0;
+        }
+        let base = self.queue_top().unwrap_or(0);
+        let centre = float_top - LIST_TOP + scroll_px - base + RH / 2;
+        (centre.div_euclid(RH)).clamp(0, len as i32 - 1) as usize
+    }
+}
+
+// ── The unified renderer ────────────────────────────────────────────────────────────────────────
+
+fn section_label(sec: Section, album: &str) -> String {
+    match sec {
+        Section::History => "PREVIOUSLY PLAYED".into(),
+        Section::Now => "NOW PLAYING".into(),
+        Section::Queue => "NEXT IN QUEUE".into(),
+        Section::Album => {
+            if album.is_empty() {
+                "NEXT UP".into()
+            } else {
+                format!("NEXT FROM {}", album.to_uppercase())
+            }
+        }
+    }
+}
+
+/// Everything the unified screen needs to draw itself. Grouped into a struct because the row
+/// renderer wants most of it and a nine-argument function is how the two halves drift apart.
+pub struct QueueView<'a> {
+    pub album: &'a str,
+    /// The album the playing track belongs to, in play order. Empty when nothing is playing.
+    pub tracks: &'a [SongRow],
+    /// Index of the playing track within `tracks`.
+    pub current: Option<usize>,
+    /// The user's own swipe-queued picks.
+    pub queue: &'a [SongRow],
+    pub lib: &'a crate::model::Library,
+    pub scroll_px: i32,
+    pub drag: Option<QueueDrag>,
+    pub swipe: Option<crate::library::SwipeRow>,
+    pub sbar_active: bool,
+}
+
+/// Draw the whole Up Next screen. Returns the layout it drew, so `nav` can hit-test against
+/// exactly what is on the glass rather than rebuilding it and hoping the two agree.
+pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Layout {
     c.fill(t.bg);
+    let l = layout(v.tracks.len(), v.current, v.queue.len());
 
-    if tracks.is_empty() {
+    if l.slots.is_empty() {
         let _ = crate::chrome::header(c, t, f, "Up Next", None);
-        let st = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
-        text::draw(c, f, 22.0, 360.0, "Nothing queued.", &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
-        text::draw(c, f, 22.0, 386.0, "Play a track and its album appears here.", &st);
-        return;
+        text::draw(c, f, 22.0, 360.0, "Nothing queued.",
+                   &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
+        text::draw(c, f, 22.0, 386.0, "Play a track and its album appears here.",
+                   &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0));
+        return l;
     }
 
-    let sub = format!("{} · {} TRACKS", album.to_uppercase(), tracks.len());
-    let y0 = crate::chrome::header(c, t, f, "Up Next", Some(&sub));
+    let y0 = crate::chrome::header(c, t, f, "Up Next", None);
+    // The CLEAR chip belongs to the user queue, so it only appears when there is one to clear.
+    if !v.queue.is_empty() {
+        let (chx, chy, chw, chh) = CLEAR_CHIP;
+        let cap = if v.drag.is_some() {
+            String::from("DRAG TO REORDER")
+        } else {
+            format!("{} QUEUED", v.queue.len())
+        };
+        right(c, f, (chx - 12) as f32, 65.0, &cap,
+              &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
+        crate::widgets::stroke_rect(c, chx, chy, chw, chh, t.line, 1);
+        crate::widgets::center(c, f, (chx + chw / 2) as f32, (chy + chh / 2 + 4) as f32, "CLEAR",
+                               &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14));
+    } else if !v.tracks.is_empty() {
+        right(c, f, 458.0, 65.0, &format!("{} TRACKS", v.tracks.len()),
+              &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
+    }
 
-    // Window that keeps the playing row visible: ~4 rows of lead-in, clamped to the list end.
-    let (_visible, scroll) = window(tracks.len(), current);
-    // This view scrolls by whole rows to follow playback; there is nothing for a finger to drag.
-    let sbar_active = false;
+    let scroll = v.scroll_px.clamp(0, l.max_scroll_px());
+    // Queue rows are drawn in their would-be order while a row is lifted; every other kind keeps
+    // its place, so the reorder only permutes the section it belongs to.
+    let qorder = drag_order(v.queue.len(), v.drag);
+    let mut qseen = 0usize;
 
-    let mut y = y0;
-    let mut shown = 0;
-    for (i, song) in tracks.iter().enumerate().skip(scroll) {
-        if y + RH > LIST_BOTTOM {
+    c.set_clip_y(y0, LIST_BOTTOM);
+    for (slot, top) in &l.slots {
+        let y = y0 + top - scroll;
+        let is_q = matches!(slot, Slot::Queued(_));
+        if y + slot.h() <= y0 {
+            if is_q {
+                qseen += 1;
+            }
+            continue;
+        }
+        if y >= LIST_BOTTOM {
             break;
         }
-        let cy = (y + RH / 2) as f32;
-        let now = i == current;
-        if now {
-            fill_rect(c, 0, y, W as i32, RH, t.panel);
+        match *slot {
+            Slot::Head(sec) => {
+                let col = if sec == Section::Now { t.acc } else { t.faint };
+                let hs = sty(Family::Mono, Weight::Regular, 11.0, col, 0.18);
+                let lbl = crate::widgets::fit(f, &section_label(sec, v.album), &hs, (W as f32) - 44.0);
+                text::draw(c, f, 22.0, (y + HDR_H - 11) as f32, &lbl, &hs);
+                hline(c, y + HDR_H - 1, t.line);
+            }
+            Slot::History(i) | Slot::Upcoming(i) => {
+                if let Some(song) = v.tracks.get(i) {
+                    // History is dimmed — it is context, not a destination, and Apple Music reads
+                    // the same way. Still tappable: that is how you go back a track.
+                    let past = matches!(*slot, Slot::History(_));
+                    album_row(c, t, f, song, v.lib, y, i + 1, past, false);
+                }
+            }
+            Slot::Current(i) => {
+                if let Some(song) = v.tracks.get(i) {
+                    fill_rect(c, 0, y, W as i32, RH, t.panel);
+                    fill_rect(c, 0, y, 4, RH, t.acc);
+                    album_row(c, t, f, song, v.lib, y, i + 1, false, true);
+                }
+            }
+            Slot::Queued(_) => {
+                let qi = qorder.get(qseen).copied().unwrap_or(0);
+                qseen += 1;
+                if v.drag.map(|d| d.from) == Some(qi) {
+                    fill_rect(c, 0, y, W as i32, RH, t.panel); // the well the row came out of
+                } else if let Some(song) = v.queue.get(qi) {
+                    let sw = v
+                        .swipe
+                        .filter(|s| (y..y + RH).contains(&s.y) && s.dx != 0)
+                        .map(|s| s.dx);
+                    if let Some(dx) = sw {
+                        crate::library::swipe_reveal(c, t, f, y, RH, dx,
+                                                     crate::library::SwipeIntent::Remove);
+                    }
+                    queue_row(c, t, f, song, v.lib, y, qseen);
+                    if sw.is_some() {
+                        c.clear_offset_x();
+                    }
+                }
+            }
         }
-        // index / ▶
-        let idx_col = if now { t.acc } else { t.faint };
-        let idx = if now { "▶".to_string() } else { format!("{:02}", i + 1) };
-        text::draw(c, f, 22.0, cy + 4.0, &idx, &sty(Family::Mono, Weight::Regular, 12.0, idx_col, 0.0));
-        // Thumb: the REAL decoded cover when the art cache has one, exactly like the library rows.
-        // This screen drew the gradient fallback unconditionally, so a queue of tracks whose covers
-        // were already decoded and sitting on disk still showed twelve coloured squares. Drawn at
-        // 48px because that is the size the cache stores (T48) — at any other size `thumb` cannot
-        // match and silently falls back to the gradient, which is how it would look "fixed" while
-        // changing nothing.
-        crate::library::thumb(c, t, lib, song.album_id, &song.art,
-                              46, y + (RH - 48) / 2, 48, if t.night { 0.30 } else { 1.0 });
-        // title / artist
-        let title_col = if now { t.acc } else { t.ink };
-        let tst = sty(Family::Sans, Weight::SemiBold, 20.0, title_col, 0.0);
-        text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 306.0), &tst);
-        let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
-        text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, 320.0), &ast);
-        // duration
-        right(c, f, 458.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
-        hline(c, y + RH, t.line);
-        y += RH;
-        shown += 1;
+        if slot.is_row() {
+            hline(c, y + slot.h(), t.line);
+        }
+    }
+    c.clear_clip();
+
+    // The lifted row, last so it sits over everything and clipped so an over-drag can't smear
+    // across the header.
+    if let Some(d) = v.drag {
+        if let Some(song) = v.queue.get(d.from) {
+            let ft = d.float_top().clamp(y0 - RH / 2, LIST_BOTTOM - RH / 2);
+            c.set_clip_y(y0, LIST_BOTTOM);
+            fill_rect(c, 0, ft, W as i32, RH, t.row_sel);
+            fill_rect(c, 0, ft, 4, RH, t.acc);
+            hline(c, ft, t.line);
+            hline(c, ft + RH, t.line);
+            queue_row(c, t, f, song, v.lib, ft, d.to + 1);
+            grip(c, t, ft, true);
+            c.clear_clip();
+        }
     }
 
-    // scrollbar (only if the album overflows the window) — px-space equivalents of the
-    // row-window this screen still scrolls by
-    if tracks.len() > shown {
-        crate::library::scrollbar(c, t, y0, scroll as i32 * RH, tracks.len() as i32 * RH, sbar_active);
+    if l.max_scroll_px() > 0 {
+        crate::library::scrollbar(c, t, y0, scroll, l.content_h, v.sbar_active);
     }
+    l
+}
+
+/// An album-side row (history, current or upcoming). `past` dims it; `now` marks it playing.
+fn album_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow,
+             lib: &crate::model::Library, y: i32, n: usize, past: bool, now: bool) {
+    let cy = (y + RH / 2) as f32;
+    let idx_col = if now { t.acc } else { t.faint };
+    let idx = if now { "\u{25b6}".to_string() } else { format!("{n:02}") };
+    text::draw(c, f, 22.0, cy + 4.0, &idx, &sty(Family::Mono, Weight::Regular, 12.0, idx_col, 0.0));
+    // Played rows fade their art too, so the eye finds the current row without reading a word.
+    let dim = if past { 0.34 } else if t.night { 0.30 } else { 1.0 };
+    crate::library::thumb(c, t, lib, song.album_id, &song.art, 46, y + (RH - 48) / 2, 48, dim);
+    let title_col = if now { t.acc } else if past { t.dim } else { t.ink };
+    let tst = sty(Family::Sans, Weight::SemiBold, 20.0, title_col, 0.0);
+    text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 306.0), &tst);
+    let ast = sty(Family::Sans, Weight::Regular, 15.0, if past { t.faint } else { t.dim }, 0.0);
+    text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, 320.0), &ast);
+    right(c, f, 458.0, cy + 4.0, &song.dur,
+          &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
 }
 
 /// One user-queue row's content at screen-`y`. `n` is the position label (1-based).
@@ -219,82 +446,5 @@ fn grip(c: &mut Canvas, t: &Theme, y: i32, lifted: bool) {
     let w = GRIP_X1 - GRIP_X0 - 8;
     for k in -1..=1 {
         fill_rect(c, GRIP_X0 + 4, cy + k * 7 - 1, w, 2, col);
-    }
-}
-
-/// Render the USER queue (songs added by the Spotify-style right-swipe), in add order. No
-/// "now playing" highlight — these are upcoming picks, not the live album window.
-///
-/// `drag` is the row being reordered, if any: the list is drawn in its would-be order with that
-/// row's slot left empty, and the row itself floats under the finger on top.
-#[allow(clippy::too_many_arguments)]
-pub fn render_queue(c: &mut Canvas, t: &Theme, f: &FontSet, queue: &[SongRow],
-                    lib: &crate::model::Library, scroll_px: i32, drag: Option<QueueDrag>,
-                    swipe: Option<crate::library::SwipeRow>, sbar_active: bool) {
-    c.fill(t.bg);
-    let scroll_px = scroll_px.clamp(0, queue_max_scroll_px(queue.len()));
-    let sub = if drag.is_some() {
-        String::from("DRAG TO REORDER")
-    } else {
-        format!("{} TRACKS", queue.len())
-    };
-    let y0 = crate::chrome::header(c, t, f, "Up Next", None);
-    // Count on the left of the chip, right-aligned into the gap it leaves.
-    let (chx, chy, chw, chh) = CLEAR_CHIP;
-    right(c, f, (chx - 12) as f32, 65.0, &sub,
-          &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
-    crate::widgets::stroke_rect(c, chx, chy, chw, chh, t.line, 1);
-    let cst = sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14);
-    crate::widgets::center(c, f, (chx + chw / 2) as f32, (chy + chh / 2 + 4) as f32, "CLEAR", &cst);
-
-    let order = drag_order(queue.len(), drag);
-    let first = (scroll_px / RH) as usize;
-    let mut y = y0 - (scroll_px % RH);
-    c.set_clip_y(y0, LIST_BOTTOM);
-    for slot in first..order.len() {
-        if y >= LIST_BOTTOM {
-            break;
-        }
-        let i = order[slot];
-        // The lifted row is drawn floating below, not in the list — leave its slot as a well, so
-        // there is somewhere for the eye (and the row) to land.
-        if drag.map(|d| d.from) == Some(i) {
-            fill_rect(c, 0, y, W as i32, RH, t.panel);
-        } else {
-            // Swipe-to-remove. Both directions mean the same thing here — see `SwipeIntent`.
-            let sw = swipe
-                .filter(|s| (y..y + RH).contains(&s.y) && s.dx != 0)
-                .map(|s| s.dx);
-            if let Some(dx) = sw {
-                crate::library::swipe_reveal(c, t, f, y, RH, dx, crate::library::SwipeIntent::Remove);
-            }
-            queue_row(c, t, f, &queue[i], lib, y, slot + 1);
-            if sw.is_some() {
-                c.clear_offset_x();
-            }
-        }
-        hline(c, y + RH, t.line);
-        y += RH;
-    }
-    c.clear_clip();
-
-    // The floating row, last so it sits over everything, and clipped to the list so it cannot
-    // smear across the header on an over-drag.
-    if let Some(d) = drag {
-        if let Some(song) = queue.get(d.from) {
-            let ft = d.float_top().clamp(y0 - RH / 2, LIST_BOTTOM - RH / 2);
-            c.set_clip_y(y0, LIST_BOTTOM);
-            fill_rect(c, 0, ft, W as i32, RH, t.row_sel);
-            fill_rect(c, 0, ft, 4, RH, t.acc);       // lifted marker down the leading edge
-            hline(c, ft, t.line);
-            hline(c, ft + RH, t.line);
-            queue_row(c, t, f, song, lib, ft, d.to + 1);
-            grip(c, t, ft, true);
-            c.clear_clip();
-        }
-    }
-
-    if queue_max_scroll_px(queue.len()) > 0 {
-        crate::library::scrollbar(c, t, y0, scroll_px, queue.len() as i32 * RH, sbar_active);
     }
 }
