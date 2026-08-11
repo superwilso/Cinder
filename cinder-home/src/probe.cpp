@@ -1420,6 +1420,218 @@ static int disp_probe(int off_secs) {
     _exit(0);
 }
 
+// ── --btvollisten : which listener slot carries the sink's volume? ──────────────────────────────
+// The sink is the authority on its own level: with a step-only link (SetCurrentVolume refused —
+// measured on CMF Buds Pro 2, every press) Cinder's absolute 0..MAX counter has no relationship to
+// what the headphones are actually doing, which is why the UI can read mute while audio plays.
+// BtTransmitterServiceListener::OnNotifyChangeVolume is the sink telling us the truth.
+//
+// The callback ORDER is inferred from the order the `BtTransmitterServiceListener::*` strings
+// appear in .rodata, which is declaration order for a vtable-heavy class but is not proof — so
+// every slot is instrumented and the one that fires when the volume moves is the answer. Args are
+// logged as POINTERS plus one byte, never dereferenced as a container: a wrong guess about a slot
+// taking a vector or a string would otherwise be a crash rather than a measurement.
+struct VolListener {
+    virtual ~VolListener() {}
+    static void hit(int slot, const char* name, const void* a, const void* b, const void* c) {
+        unsigned first = 0xFFFFu;
+        if (a) first = *(const unsigned char*)a;
+        std::fprintf(stderr, "[cinder-probe] btvollisten: slot %-2d %-28s a=%p b=%p c=%p  *a=%u\n",
+                     slot, name, a, b, c, first);
+        std::fflush(nullptr);
+    }
+    virtual void s2 (const void* a, const void* b, const void* c) { hit(2,  "OnNotifyAvSrcConnStatus", a,b,c); }
+    virtual void s3 (const void* a, const void* b, const void* c) { hit(3,  "OnNotifyAvrcpConnStatus", a,b,c); }
+    virtual void s4 (const void* a, const void* b, const void* c) { hit(4,  "OnNotifyConnectInformation", a,b,c); }
+    virtual void s5 (const void* a, const void* b, const void* c) { hit(5,  "OnNotifyAvrcpGetPlayStatus", a,b,c); }
+    virtual void s6 (const void* a, const void* b, const void* c) { hit(6,  "OnNotifyAvrcpGetMediaAttr", a,b,c); }
+    virtual void s7 (const void* a, const void* b, const void* c) { hit(7,  "OnNotifyError", a,b,c); }
+    virtual void s8 (const void* a, const void* b, const void* c) { hit(8,  "NotifyConfigiration", a,b,c); }
+    virtual void s9 (const void* a, const void* b, const void* c) { hit(9,  "OnNotifySoundStatus", a,b,c); }
+    virtual void s10(const void* a, const void* b, const void* c) { hit(10, "OnNotifyChangeVolume?", a,b,c); }
+    virtual void s11(const void* a, const void* b, const void* c) { hit(11, "OnNotifyUpdateCapabilities", a,b,c); }
+    // Spares: if the real vtable is longer than the strings suggested, a notification landing here
+    // says so instead of running off the end of the object.
+    virtual void s12(const void* a, const void* b, const void* c) { hit(12, "(beyond the string list)", a,b,c); }
+    virtual void s13(const void* a, const void* b, const void* c) { hit(13, "(beyond the string list)", a,b,c); }
+};
+// Static storage: AddListener keeps a RAW pointer (see the BtCommon listener in cinder-home).
+static VolListener g_vol_listener;
+
+static int btvollisten_probe(int secs) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* x = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    if (!x) { clog_("btvollisten: factory returned null"); g_pump_run = false; _exit(1); }
+    // Slots 3-38 are the service methods (RE_findings, full client vtable), so Add/Remove follow at
+    // 39/40 — the same "immediately after the last method" rule BtCommon and Nfc both obeyed.
+    enum { VIDX_AddListener = 39, VIDX_RemoveListener = 40,
+           VIDX_SetVolumeUp = 17, VIDX_SetVolumeDown = 16 };
+    typedef int (*fnadd)(void*, void*, const std::string*);
+    typedef int (*fnrem)(void*, unsigned);
+    typedef int (*fn0)(void*);
+    std::string key;                       // "" — a NotifyListeners filter key, not a label
+    int rc = -1;
+    wd_arm(10);
+    try { rc = ((fnadd)vslot(x, VIDX_AddListener))(x, (void*)&g_vol_listener, &key); }
+    catch (...) { clog_("btvollisten: AddListener threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] btvollisten: AddListener rc=%d (%s)\n", rc,
+                 rc == 0 ? "registered" : "FAILED — 1=bad arg, 4=no service");
+    if (rc != 0) { g_pump_run = false; std::fflush(nullptr); _exit(1); }
+
+    clog_("btvollisten: registered. Nudging the volume so the sink reports back — and change it on "
+          "the HEADPHONES too; that is the case only a listener can see.");
+    for (int i = 0; i < secs; i++) {
+        if (i == 2 || i == 6) {
+            wd_arm(8);
+            try { ((fn0)vslot(x, VIDX_SetVolumeUp))(x); } catch (...) {}
+            wd_disarm();
+        }
+        if (i == 4 || i == 8) {
+            wd_arm(8);
+            try { ((fn0)vslot(x, VIDX_SetVolumeDown))(x); } catch (...) {}
+            wd_disarm();
+        }
+        sleep(1);
+    }
+    wd_arm(10);
+    try { ((fnrem)vslot(x, VIDX_RemoveListener))(x, (unsigned)(uintptr_t)&g_vol_listener); }
+    catch (...) {}
+    wd_disarm();
+    clog_("btvollisten: unregistered");
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// ── --btvolslot : find the REAL SetCurrentVolume slot ───────────────────────────────────────────
+// Measured 2026-08-11: with the buds connected, absolute volume enabled and all three capability
+// reads returning 1, calling slot 34 with a uint8_t makes BtTransmitterService log NOTHING — while
+// slots 16/17 (SetVolumeUp/Down) reliably log either "Send absolute volute(%u)" or "Not support
+// absolute volume". A slot that reaches no logging branch at all is a slot that is not the method
+// we think it is.
+//
+// The client exports only its factory, so slot names cannot be read from the symbol table, and the
+// `virtual ...` prototype strings that the original table was inferred from only exist for methods
+// that log — IsAvrcpTgVolumeSupported, for one, is absent from them. So the map has to be measured.
+//
+// ONE SLOT PER INVOCATION, deliberately: a wrong signature here can corrupt memory (GetSocketName
+// takes a base::string&, and handing it a uint8_t* would have it marshal from our stack), so a
+// crash must cost one slot rather than the whole scan. The caller checks the service log after each.
+static int btvolslot_probe(int slot, int value) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* x = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    if (!x) { clog_("btvolslot: factory returned null"); g_pump_run = false; _exit(1); }
+    unsigned char v = (unsigned char)(value > 127 ? 127 : (value < 0 ? 0 : value));
+    typedef int (*fnu)(void*, const unsigned char*);
+    std::fprintf(stderr, "[cinder-probe] btvolslot: calling slot %d with uint8_t %u\n", slot, v);
+    std::fflush(nullptr);
+    int rc = -1;
+    wd_arm(8);
+    try { rc = ((fnu)vslot(x, slot))(x, &v); } catch (...) { clog_("btvolslot: threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] btvolslot: slot %d rc=%d (now grep the service log for "
+                         "'volute' / 'absolute volume')\n", slot, rc);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// ── --btvol : drive the sink's volume directly ──────────────────────────────────────────────────
+// Reported 2026-08-11: with "Use Enhanced Mode" on and the log saying "sink takes ABSOLUTE volume",
+// the rocker still does not change the CMF Buds' volume. That leaves two possibilities, and this
+// mode separates them: either SetCurrentVolume(uint8_t) does nothing on this link (a service/ABI
+// problem), or cinder-home is calling it with a value that never moves (a UI/level problem).
+//
+// Sweeps a few absolute levels with a pause between each, so the answer is audible. 0..127 is the
+// AVRCP scale. Prints IsAvrcpTgVolumeSupported / GetControlAbsoluteVolume / IsSupportedAbsoluteVolume
+// first, because SetCurrentVolume is a no-op unless the last two are BOTH true.
+static int btvol_probe(int want) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* x = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    if (!x) { clog_("btvol: BtTransmitterServiceClientFactory returned null"); g_pump_run = false; _exit(1); }
+    enum { VIDX_SetVolumeDown = 16, VIDX_SetVolumeUp = 17,
+           VIDX_IsAvrcpTgVolumeSupported = 30, VIDX_GetControlAbsoluteVolume = 32,
+           VIDX_IsSupportedAbsoluteVolume = 33, VIDX_SetCurrentVolume = 34 };
+    typedef int (*fn0)(void*);
+    typedef int (*fnu)(void*, const unsigned char*);
+
+    int tg = -1, ctrl = -1, sup = -1;
+    wd_arm(10);
+    try {
+        tg   = ((fn0)vslot(x, VIDX_IsAvrcpTgVolumeSupported))(x);
+        ctrl = ((fn0)vslot(x, VIDX_GetControlAbsoluteVolume))(x);
+        sup  = ((fn0)vslot(x, VIDX_IsSupportedAbsoluteVolume))(x);
+    } catch (...) { clog_("btvol: a capability read threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] btvol: IsAvrcpTgVolumeSupported=%d GetControlAbsoluteVolume=%d "
+                         "IsSupportedAbsoluteVolume=%d\n", tg, ctrl, sup);
+    if (ctrl != 1 || sup != 1)
+        clog_("btvol: SetCurrentVolume will be REFUSED by the service in this state — expect silence");
+
+    if (want >= 0) {
+        unsigned char v = (unsigned char)(want > 127 ? 127 : want);
+        wd_arm(10);
+        int rc = -1;
+        try { rc = ((fnu)vslot(x, VIDX_SetCurrentVolume))(x, &v); } catch (...) { clog_("btvol: SetCurrentVolume threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btvol: SetCurrentVolume(%u) rc=%d — judge by EAR, not rc\n", v, rc);
+    } else {
+        // Sweep. Deliberately capped at 55/127 (~43%): this goes straight into earbuds someone is
+        // wearing, and an unmistakable change does not require a painful one.
+        const unsigned char steps[] = { 15, 35, 55, 25 };
+        for (unsigned i = 0; i < sizeof steps / sizeof *steps; i++) {
+            unsigned char v = steps[i];
+            wd_arm(10);
+            int rc = -1;
+            try { rc = ((fnu)vslot(x, VIDX_SetCurrentVolume))(x, &v); } catch (...) {}
+            wd_disarm();
+            std::fprintf(stderr, "[cinder-probe] btvol: SetCurrentVolume(%u) rc=%d\n", v, rc);
+            sleep(3);
+        }
+        // …then the RELATIVE path, for comparison. If these move the volume and the absolute ones
+        // did not, the sink is ignoring absolute volume whatever its capability bits claim.
+        for (int i = 0; i < 3; i++) {
+            wd_arm(10);
+            int rc = -1;
+            try { rc = ((fn0)vslot(x, VIDX_SetVolumeUp))(x); } catch (...) {}
+            wd_disarm();
+            std::fprintf(stderr, "[cinder-probe] btvol: SetVolumeUp() rc=%d\n", rc);
+            sleep(2);
+        }
+    }
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 static int btwho_probe() {
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
@@ -2018,6 +2230,17 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
         return btinfo_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btvollisten") == 0) {
+        return btvollisten_probe(argc > 2 ? std::atoi(argv[2]) : 12);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btvolslot") == 0) {
+        return btvolslot_probe(argc > 2 ? std::atoi(argv[2]) : 34,
+                               argc > 3 ? std::atoi(argv[3]) : 40);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btvol") == 0) {
+        // No arg = sweep 20/60/100/40 absolute then three relative ups. An arg = that level once.
+        return btvol_probe(argc > 2 ? std::atoi(argv[2]) : -1);
     }
     if (argc > 1 && std::strcmp(argv[1], "--pollnodes") == 0) {
         return pollnodes_probe(argc > 2 ? std::atoi(argv[2]) : 10);

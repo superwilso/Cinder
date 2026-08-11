@@ -28,10 +28,20 @@ pub const GRIP_X1: i32 = W as i32 - crate::library::SBAR_GRAB_W;
 /// The "clear the queue" chip in the header: `(x, y, w, h)`. An explicit, labelled control rather
 /// than a gesture, because emptying the queue is the one action here that cannot be undone.
 pub const CLEAR_CHIP: (i32, i32, i32, i32) = (388, 48, 70, 28);
+/// The SHUFFLE chip, immediately left of it. Shuffles what is still to come — not the whole
+/// sequence, and not the user's own picks (see `App::queue_shuffle`).
+pub const SHUFFLE_CHIP: (i32, i32, i32, i32) = (302, 48, 78, 28);
+
+fn in_rect(r: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
+    let (rx, ry, rw, rh) = r;
+    (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
+}
 
 pub fn hit_clear_chip(x: i32, y: i32) -> bool {
-    let (cx, cy, cw, ch) = CLEAR_CHIP;
-    (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y)
+    in_rect(CLEAR_CHIP, x, y)
+}
+pub fn hit_shuffle_chip(x: i32, y: i32) -> bool {
+    in_rect(SHUFFLE_CHIP, x, y)
 }
 
 /// A queue row being dragged to a new position.
@@ -291,21 +301,32 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     }
 
     let y0 = crate::chrome::header(c, t, f, "Up Next", None);
-    // The CLEAR chip belongs to the user queue, so it only appears when there is one to clear.
-    if !v.queue.is_empty() {
-        let (chx, chy, chw, chh) = CLEAR_CHIP;
-        let cap = if v.drag.is_some() {
-            String::from("DRAG TO REORDER")
-        } else {
-            format!("{} QUEUED", v.queue.len())
-        };
-        right(c, f, (chx - 12) as f32, 65.0, &cap,
-              &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
-        crate::widgets::stroke_rect(c, chx, chy, chw, chh, t.line, 1);
-        crate::widgets::center(c, f, (chx + chw / 2) as f32, (chy + chh / 2 + 4) as f32, "CLEAR",
+    // CLEAR belongs to the user queue, so it only appears when there is one to clear. SHUFFLE
+    // belongs to the CONTEXT — there is something to shuffle whenever tracks remain after the
+    // current one, queue or no queue.
+    let can_clear = !v.queue.is_empty();
+    let can_shuffle = v.current.map_or(false, |c| c + 1 < v.tracks.len());
+    if can_clear {
+        chip(c, t, f, CLEAR_CHIP, "CLEAR");
+    }
+    if can_shuffle {
+        let (sx, sy, sw, sh) = SHUFFLE_CHIP;
+        crate::widgets::stroke_rect(c, sx, sy, sw, sh, t.line, 1);
+        crate::icons::shuffle(c, (sx + 17) as f32, (sy + sh / 2) as f32, 13.0, t.dim);
+        crate::widgets::center(c, f, (sx + 46) as f32, (sy + sh / 2 + 4) as f32, "MIX",
                                &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14));
-    } else if !v.tracks.is_empty() {
-        right(c, f, 458.0, 65.0, &format!("{} TRACKS", v.tracks.len()),
+    }
+    // The caption goes left of whichever chip is furthest left, so it can never run under one.
+    let cap_right = if can_shuffle { SHUFFLE_CHIP.0 } else if can_clear { CLEAR_CHIP.0 } else { 458 };
+    let cap = if v.drag.is_some() {
+        String::from("DRAG TO REORDER")
+    } else if can_clear {
+        format!("{} QUEUED", v.queue.len())
+    } else {
+        format!("{} TRACKS", v.tracks.len())
+    };
+    if !v.tracks.is_empty() || can_clear {
+        right(c, f, (cap_right - 12) as f32, 65.0, &cap,
               &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
     }
 
@@ -398,6 +419,14 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
         crate::library::scrollbar(c, t, y0, scroll, l.content_h, v.sbar_active);
     }
     l
+}
+
+/// A labelled header chip.
+fn chip(c: &mut Canvas, t: &Theme, f: &FontSet, r: (i32, i32, i32, i32), label: &str) {
+    let (x, y, w, h) = r;
+    crate::widgets::stroke_rect(c, x, y, w, h, t.line, 1);
+    crate::widgets::center(c, f, (x + w / 2) as f32, (y + h / 2 + 4) as f32, label,
+                           &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14));
 }
 
 /// An album-side row (history, current or upcoming). `past` dims it; `now` marks it playing.
