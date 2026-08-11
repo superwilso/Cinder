@@ -1090,7 +1090,7 @@ void volume_flush() {
 // leave the value alone: the file is the documented escape hatch for a device whose auto-detected
 // node or max_brightness scale is wrong, and an escape that a later feature silently overwrites is
 // not an escape.
-struct BlCfg { int valid = 0, night = -1, day = -1, max = 255, day_pinned = 0; char path[256] = {0}; };
+struct BlCfg { int valid = 0, night = -1, day = -1, max = 255, day_pinned = 0, night_pinned = 0; char path[256] = {0}; };
 BlCfg g_bl;
 bool g_bl_read = false;
 
@@ -1146,6 +1146,8 @@ void load_bl_cfg() {
     g_bl.night = (cfg_night >= 0) ? cfg_night : (g_bl.max * 3 / 100 > 0 ? g_bl.max * 3 / 100 : 1);
     g_bl.day   = (cfg_day   >= 0) ? cfg_day   : (g_bl.max * 70 / 100);
     g_bl.day_pinned = (cfg_day >= 0) ? 1 : 0;
+    // An explicit `night=` in the conf still wins over the derived value, same as `day=`.
+    g_bl.night_pinned = (cfg_night >= 0) ? 1 : 0;
     g_bl.valid = 1;
     // Say so in the log: with `day=` pinned the Settings Brightness row still cycles 1..5 and
     // persists, but it no longer moves the panel. That is the override working as intended, and
@@ -1158,6 +1160,12 @@ void set_backlight(int night) {
     if (!g_bl_read) load_bl_cfg();
     if (!g_bl.valid) return;
     int level = night ? g_bl.night : g_bl.day;
+    // BACKLIGHT OFF BEATS THE THEME. This line used to be the whole of the branch above, which
+    // meant brightness level 0 only reached the panel in the DAY theme: in night theme the
+    // ternary picked g_bl.night (3% of max = 7 raw) and the "off" setting looked identical to the
+    // lowest normal one — exactly what it was reported as. Level 0 is a deliberate, transient
+    // state; nothing may override it.
+    if (cinder_get_brightness() == 0) level = 0;
     if (level < 0) return;
     FILE* f = std::fopen(g_bl.path, "w");
     if (f) { std::fprintf(f, "%d", level); std::fclose(f); }
@@ -1171,6 +1179,11 @@ void set_backlight(int night) {
 // brightness row is persisted — so a single tap could make the device look bricked across reboots.
 // (Same reasoning as the boot-always-day rule for night dimming.) An explicit `day=` in
 // /contents/cinder_backlight.conf still wins, exactly as before, so the file stays the escape hatch.
+// Night theme as a percentage of the current day level. 8% of the level-1 day value (38 of 255)
+// lands on 3 raw units — dim enough to read in the dark without lighting the room, and well below
+// the old fixed 7.
+static const int NIGHT_PCT = 8;
+
 void recompute_day_level() {
     if (!g_bl_read) load_bl_cfg();
     if (!g_bl.valid) return;
@@ -1190,10 +1203,23 @@ void recompute_day_level() {
     // never written to cinder_settings.conf (cinder-ffi persists `brightness_restore`), and the
     // next input event restores the previous level (see the g_bl_zero_at handling in input_pump).
     // So the escape does not depend on being able to see anything.
-    if (lvl == 0) { g_bl.day = 0; return; }
+    if (lvl == 0) { g_bl.day = 0; g_bl.night = 0; return; }
     if (lvl < 1 || lvl > 5) lvl = 4;
     g_bl.day = g_bl.max * pct[lvl - 1] / 100;
     if (g_bl.day < 1) g_bl.day = 1;             // never fully dark
+    // NIGHT FOLLOWS THE BRIGHTNESS ROW. It used to be a fixed 3% of max_brightness computed once
+    // in load_bl_cfg(), which had two consequences: the Brightness row did nothing at all while
+    // the night theme was on, and the floor (7 raw of 255) was brighter than a dark room wants.
+    // Deriving it from the day level fixes both — the row works in either theme, and the darkest
+    // reachable lit state is now 1 raw unit instead of 7.
+    //
+    // Still floored at 1 rather than 0: this one IS persisted, and a persisted setting that blanks
+    // the panel would hide the Settings screen needed to undo it. Level 0 is the transient escape
+    // for true darkness, and it now works in night theme too (see set_backlight).
+    if (!g_bl.night_pinned) {
+        g_bl.night = g_bl.day * NIGHT_PCT / 100;
+        if (g_bl.night < 1) g_bl.night = 1;
+    }
 }
 
 // When the backlight was last taken to 0 by the brightness row. The restore is debounced against
@@ -1639,18 +1665,37 @@ static void* bt_xmit() {
 // a different pair re-decides it.
 static int g_bt_abs_vol = -1;
 
+// When the last negative answer was taken. A NEGATIVE IS NOT CACHEABLE — see below.
+static long g_bt_abs_vol_at = 0;
+
 static bool bt_abs_volume_supported() {
     enum { VIDX_IsSupportedAbsoluteVolume = 33 };
-    if (g_bt_abs_vol >= 0) return g_bt_abs_vol == 1;
+    if (g_bt_abs_vol == 1) return true;          // a YES cannot become a NO on the same link
+    // A "no" almost always means "not yet". GetBtStatus hits 3 at the START of connection setup,
+    // which is the same lag that already forces the device NAME to be re-read a few polls later —
+    // the sink's AVRCP capabilities are not readable that early. The old code asked once at that
+    // exact moment, got 0, and believed it for the rest of the session.
+    //
+    // Measured 2026-08-11 with CMF Buds Pro 2 connected: cinderhome.log said
+    //   bt-vol: sink is step-only (SetVolumeUp/Down)
+    // while cinder-probe --btwho read IsSupportedAbsoluteVolume=1 on that very link. So every
+    // volume press was going out as AVRCP VOLUME_UP/VOLUME_DOWN — the path that makes the buds
+    // beep — even though "Use Enhanced Mode" was on and the sink supported absolute volume.
+    // Re-ask instead, rate-limited to once a second so a step-only sink costs one cheap IPC call
+    // per second of held volume rather than one per press.
+    if (g_bt_abs_vol == 0 && now_ms() - g_bt_abs_vol_at < 1000) return false;
+    const int was = g_bt_abs_vol;
     g_bt_abs_vol = 0;
+    g_bt_abs_vol_at = now_ms();
     try {
         void* x = bt_xmit();
         if (!x) return false;
         typedef int (*fn0)(void*);
         g_bt_abs_vol = ((fn0)bt_slot(x, VIDX_IsSupportedAbsoluteVolume))(x) ? 1 : 0;
     } catch (...) { clog_("bt-vol: IsSupportedAbsoluteVolume threw"); }
-    clog_(g_bt_abs_vol == 1 ? "bt-vol: sink takes ABSOLUTE volume (SetCurrentVolume)"
-                            : "bt-vol: sink is step-only (SetVolumeUp/Down)");
+    if (g_bt_abs_vol != was)                     // log the transition, not every retry
+        clog_(g_bt_abs_vol == 1 ? "bt-vol: sink takes ABSOLUTE volume (SetCurrentVolume)"
+                                : "bt-vol: sink is step-only (SetVolumeUp/Down)");
     cinder_set_bt_enhanced_supported(g_bt_abs_vol == 1);
     return g_bt_abs_vol == 1;
 }
@@ -2302,6 +2347,7 @@ void refresh_bt_route() {
     // it here rather than caching once is what makes swapping between two different pairs of
     // headphones pick the right mechanism for each.
     g_bt_abs_vol = -1;
+    g_bt_abs_vol_at = 0;
     // The link changed, so the name on the CONNECTED card is stale. This poll is the only place that
     // notices a device connecting or dropping on its own, so it owns refreshing the card too.
     refresh_bt_connected();
@@ -3863,7 +3909,13 @@ bool g_house_due = false;    // fwd-declared above
 //                                 20.9 total), and this is the half of that pair the poll() change
 //                                 in the render loop does not touch.
 static void apply_pump_interval() {
-    cinder_audio_pump_set_interval(g_screen_on ? 20 : (g_playing ? 100 : 250));
+    // g_playing is INTENT and it starts `true`, so on a boot where nothing has been played it
+    // stays true forever and the pump never backed off at all (measured: 10.3 ctxt/s on a dark,
+    // idle device that had played nothing). Require the SERVICE to agree — or a press inside the
+    // grace window, so the rate is already up by the time the first frame of audio wants it.
+    const bool busy = g_playing && (cinder_audio_is_playing() != 0 ||
+                                    now_ms() - g_transport_at < TRANSPORT_GRACE_MS);
+    cinder_audio_pump_set_interval(g_screen_on ? 20 : (busy ? 100 : 250));
 }
 
 void poll_now_playing() {

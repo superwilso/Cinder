@@ -71,8 +71,13 @@ pub enum BtHit {
 
 /// Map a tap to a Bluetooth action. `codec_is_ldac` gates the quality chips (only shown for LDAC).
 pub fn hit(x: i32, y: i32, on: bool, codec_is_ldac: bool) -> BtHit {
-    // header on/off toggle works regardless of state
-    if (48..82).contains(&y) && x > 408 {
+    // Header ON/OFF toggle — works regardless of state, and deliberately much larger than the
+    // 34x18 switch graphic. It used to be a 72x34 strip (x>408, y 48..82) hugging the switch, and
+    // it was reported as hard to hit. This is now the mirror image of the back chevron's target on
+    // the other side of the header (which claims x<80 over the same band): the full header height
+    // from under the status strip to the rule, and wide enough to include the "ON"/"OFF" caption
+    // that reads as part of the control. ~102x47, and the two never overlap.
+    if (crate::chrome::STATUS_H..crate::chrome::HEADER_BOTTOM).contains(&y) && x >= 356 {
         return BtHit::Toggle;
     }
     if !on {

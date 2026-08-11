@@ -589,7 +589,15 @@ pub struct App {
     /// Object ids of the Up Next rows the last render actually drew, in drawn order. The window
     /// auto-scrolls to follow playback, so the renderer (which knows `np`) publishes this for the
     /// hit test instead of `tap` trying to recompute it.
-    up_next_rows: Vec<i64>,
+    /// object_ids of the ALBUM tracks Up Next indexes, and which of them is playing. Published by
+    /// `render`, because `tap` has no `np` and so cannot resolve the album itself. Together with
+    /// `queue.len()` these are the only three numbers `up_next_layout()` needs, which is why every
+    /// hit test can rebuild the layout instead of depending on a frame having been drawn first.
+    up_next_album_ids: Vec<i64>,
+    up_next_cur: Option<usize>,
+    /// Does the queue still follow playback? True until the user scrolls it themselves; reset on
+    /// every entry to the screen. This is the whole of "the queue follows the current song".
+    queue_follow: bool,
 }
 
 /// How long the toast stays up (~1.8 s at the 60 fps pump).
@@ -689,7 +697,9 @@ impl Default for App {
             scrub: Scrub::None,
             scrub_permille: 0,
             lib_tab_zones: std::cell::RefCell::new(Vec::new()),
-            up_next_rows: Vec::new(),
+            up_next_album_ids: Vec::new(),
+            up_next_cur: None,
+            queue_follow: true,
         }
     }
 }
@@ -819,7 +829,19 @@ impl App {
     fn place_label(&self) -> (String, String) {
         match self.current() {
             Screen::NowPlaying => ("Now Playing".into(), "Current track".into()),
-            Screen::Library => ("Library".into(), tab_name(self.lib_tab).into()),
+            // ALBUMS TAB: name the OPEN ALBUM, not the tab. The Albums tab is an accordion — the
+            // only way to "be at" an album without leaving the list is to have it expanded — so a
+            // pin taken there used to read "Library / Albums" and was indistinguishable from any
+            // other Albums pin. Naming the album is what makes pinning one from the list useful,
+            // and `restore_pin` turns it into a jump-to. (Tapping the artwork still opens the full
+            // Album screen, which was always pinnable; this covers the drop-down.)
+            Screen::Library => match (self.lib_tab, self.album_expanded) {
+                (Tab::Albums, Some(flat)) => match self.lib.albums_flat().get(flat) {
+                    Some(al) => (al.name.clone(), al.artist.clone()),
+                    None => ("Library".into(), tab_name(self.lib_tab).into()),
+                },
+                _ => ("Library".into(), tab_name(self.lib_tab).into()),
+            },
             Screen::Album => match self.lib.albums_flat().get(self.album_view) {
                 Some(al) => (al.name.clone(), al.artist.clone()),
                 None => ("Album".into(), String::new()),
@@ -885,6 +907,21 @@ impl App {
             .unwrap_or(0);
         self.artist_scroll_px = 0;
         self.playlist_scroll_px = 0;
+        // JUMP TO THE PINNED ALBUM. A saved pixel offset is only right for the library that was
+        // on disk when the pin was taken — add or remove an album above it and the same offset
+        // lands somewhere else entirely. When the pin names an expanded album, recompute the
+        // scroll from that album's CURRENT position instead, so the restore puts it at the top of
+        // the view every time.
+        if p.screen == Screen::Library && p.lib_tab == Tab::Albums {
+            if let Some(flat) = p.album_expanded {
+                if let Some(rank) = self.album_rank_of(flat) {
+                    self.lib_idx = rank;
+                    let top = library::row_top_px(
+                        Tab::Albums, &self.lib, rank, self.album_sort, self.album_expanded);
+                    self.lib_scroll_px = top.clamp(0, self.lib_max_scroll());
+                }
+            }
+        }
     }
 
     /// Handle a tap while the Shelf overlay is open (geometry comes from `shelf::hit`).
@@ -1021,6 +1058,13 @@ impl App {
     fn push(&mut self, s: Screen) {
         if self.current() != s {
             self.boot_stock_armed = false;   // never leave a restart armed across a screen change
+            // Arriving at Up Next always shows you the current track. Scrolling hands the list to
+            // the user for as long as they stay on it; leaving and coming back is the reset, which
+            // means there is no state to explain and no "jump to current" button to find.
+            if s == Screen::UpNext {
+                self.queue_follow = true;
+                self.up_next_cur = None;   // forces the next render to treat this as a track change
+            }
             self.stack.push(s);
         }
     }
@@ -1362,40 +1406,49 @@ impl App {
             Screen::Artist => self.tap_artist(x, y),
             Screen::Playlist => self.tap_playlist(x, y),
             Screen::UpNext => {
-                // The user queue scrolls by pixels, so it resolves a finger itself. A tap on the
-                // grab handle is swallowed: that column belongs to the reorder drag, and playing a
-                // track because a reorder ended up too short to classify is a nasty surprise.
-                if !self.queue.is_empty() {
-                    if crate::up_next::hit_clear_chip(x, y) {
-                        self.toast = String::from("Queue cleared");
-                        self.toast_frames = TOAST_FRAMES;
-                        return self.queue_clear();
-                    }
-                    if crate::up_next::queue_grip_hit(x) {
-                        return vec![];
-                    }
-                    if let Some(i) =
-                        crate::up_next::queue_row_at(y, self.queue_scroll_px, self.queue.len())
-                    {
-                        // Play the QUEUE from here, not the tapped track's album. `start_play`
-                        // hands PlayerService the track's album context, so Up Next displayed one
-                        // list while the transport stepped through another — the queue was
-                        // effectively write-only. The shell resolves the whole queue to a
-                        // NodeTrackSequence, reusing the album-play path (no new device surface).
-                        return vec![Action::PlayQueueAt(i)];
-                    }
-                    self.go(Screen::NowPlaying);
+                use crate::up_next::Slot;
+                // CLEAR belongs to the user queue and is only drawn when there is one.
+                if !self.queue.is_empty() && crate::up_next::hit_clear_chip(x, y) {
+                    self.notify("Queue cleared");
+                    return self.queue_clear();
+                }
+                // The grab-handle column belongs to the reorder drag. Swallowed rather than
+                // treated as a tap: playing a track because a reorder came out too short to
+                // classify is a nasty surprise.
+                if crate::up_next::queue_grip_hit(x)
+                    && matches!(self.up_next_layout().at(y, self.queue_scroll_px), Some(Slot::Queued(_)))
+                {
                     return vec![];
                 }
-                // Tap a queue row to play it. The rows are whatever the last render drew
-                // (`up_next_rows`), so this follows the auto-scrolled window exactly.
-                if let Some(id) = crate::up_next::visible_row_at(y).and_then(|r| self.up_next_rows.get(r))
-                {
-                    return self.start_play(*id);
+                match self.up_next_layout().at(y, self.queue_scroll_px) {
+                    // Play the QUEUE from here, not the tapped track's album — `start_play` hands
+                    // PlayerService the track's album context, which would make Up Next show one
+                    // list while the transport stepped through another.
+                    Some(Slot::Queued(i)) => vec![Action::PlayQueueAt(i)],
+                    // The playing row is not a destination; it is where you already are.
+                    Some(Slot::Current(_)) => {
+                        self.go(Screen::NowPlaying);
+                        vec![]
+                    }
+                    // History and upcoming are both album tracks, so both just play that track.
+                    // Tapping upward is how you go back a song without stepping through every one.
+                    Some(Slot::History(i)) | Some(Slot::Upcoming(i)) => {
+                        match self.up_next_album_ids.get(i).copied() {
+                            Some(id) => {
+                                // Playing something new re-arms the follow, so the list snaps to
+                                // the new track instead of staying where the finger left it.
+                                self.queue_follow = true;
+                                self.start_play(id)
+                            }
+                            None => vec![],
+                        }
+                    }
+                    // A section heading, or the empty state: keep the old shortcut home.
+                    _ => {
+                        self.go(Screen::NowPlaying);
+                        vec![]
+                    }
                 }
-                // Anywhere off the rows keeps the old shortcut back to Now Playing.
-                self.go(Screen::NowPlaying);
-                vec![]
             }
             Screen::Settings => {
                 // A swatch tap picks that accent directly. Checked first because it lives inside
@@ -1903,8 +1956,15 @@ impl App {
             // The user queue drew from row 0 and stopped at the bottom of the panel, so anything
             // past ~10 tracks was unreachable — and unreorderable with it.
             Screen::UpNext => {
-                let max = crate::up_next::queue_max_scroll_px(self.queue.len());
-                self.queue_scroll_px = (self.queue_scroll_px + dy_px).clamp(0, max);
+                let max = self.up_next_layout().max_scroll_px();
+                let next = (self.queue_scroll_px + dy_px).clamp(0, max);
+                // A deliberate scroll takes the list over from the auto-follow. Without this the
+                // next track change would yank it straight back and the user could never read
+                // ahead. Re-entering the screen re-arms it (see `push`).
+                if next != self.queue_scroll_px {
+                    self.queue_follow = false;
+                }
+                self.queue_scroll_px = next;
             }
             _ => {}
         }
@@ -2066,8 +2126,12 @@ impl App {
             Screen::Artist => self.artist_track_at(y).is_some(),
             Screen::Playlist => self.playlist_track_at(y).is_some(),
             // The queue's own rows swipe too, but to REMOVE rather than to queue again.
-            Screen::UpNext => !self.queue.is_empty()
-                && crate::up_next::queue_row_at(y, self.queue_scroll_px, self.queue.len()).is_some(),
+            // Only the USER-QUEUE rows swipe, and they swipe to REMOVE. The album rows around
+            // them are the album's own order — there is nothing to remove them from.
+            Screen::UpNext => matches!(
+                self.up_next_layout().at(y, self.queue_scroll_px),
+                Some(crate::up_next::Slot::Queued(_))
+            ),
             _ => false,
         };
         if !has_track {
@@ -2099,20 +2163,27 @@ impl App {
         if self.locked || self.shelf_open || self.confirm.is_some() {
             return false;
         }
-        // Only the USER queue reorders. The other Up Next view is the current album's own track
-        // order, which is the album's, not ours to rewrite.
+        // Only the USER-QUEUE rows reorder. The album rows sharing this list are the album's own
+        // order, which is not ours to rewrite — and the layout is what tells the two apart now.
         if self.current() != Screen::UpNext || self.queue.is_empty() {
             return false;
         }
         if !crate::up_next::queue_grip_hit(x) {
             return false;
         }
-        let Some(from) = crate::up_next::queue_row_at(y, self.queue_scroll_px, self.queue.len())
+        let Some(crate::up_next::Slot::Queued(from)) =
+            self.up_next_layout().at(y, self.queue_scroll_px)
         else {
             return false;
         };
-        let row_top = crate::chrome::HEADER_BOTTOM + from as i32 * crate::up_next::RH
-            - self.queue_scroll_px;
+        // The row's screen top comes from the LAYOUT, not from `from * RH` — the queue section no
+        // longer starts at the top of the list, so that arithmetic would grab the wrong offset and
+        // the lifted row would jump under the finger.
+        let Some(content_top) = self.up_next_layout().top_of(crate::up_next::Slot::Queued(from))
+        else {
+            return false;
+        };
+        let row_top = crate::chrome::HEADER_BOTTOM + content_top - self.queue_scroll_px;
         self.fling_v = 0.0; // a pick-up must not ride a leftover flick
         self.queue_drag = Some(crate::up_next::QueueDrag {
             from,
@@ -2126,10 +2197,9 @@ impl App {
 
     /// Stream the drag. `dy` is total travel from the gesture's start point.
     pub fn reorder_track(&mut self, dy: i32) {
-        let len = self.queue.len();
         let Some(mut d) = self.queue_drag else { return };
         d.y = d.start_y + dy;
-        d.to = crate::up_next::queue_slot_for(d.float_top(), self.queue_scroll_px, len);
+        d.to = self.up_next_layout().queue_slot_for(d.float_top(), self.queue_scroll_px);
         self.queue_drag = Some(d);
     }
 
@@ -2142,6 +2212,13 @@ impl App {
     /// The drag in effect, for tests and the host preview.
     pub fn reorder_state(&self) -> Option<crate::up_next::QueueDrag> {
         self.queue_drag
+    }
+
+    /// The Up Next slot list. Rebuilt on demand from the three numbers `render` publishes, rather
+    /// than cached from the last frame: a hit test that depended on a frame having been drawn is a
+    /// hit test that silently resolves against the wrong list the first time it runs.
+    fn up_next_layout(&self) -> crate::up_next::Layout {
+        crate::up_next::layout(self.up_next_album_ids.len(), self.up_next_cur, self.queue.len())
     }
 
     /// `(max_scroll_px, list_top)` of whatever the current screen scrolls, or None if it doesn't.
@@ -2161,8 +2238,11 @@ impl App {
             Screen::Playlist => self
                 .playlist_row()
                 .map(|p| (library::playlist_max_scroll_px(p), library::playlist_content_top())),
-            Screen::UpNext if !self.queue.is_empty() => Some((
-                crate::up_next::queue_max_scroll_px(self.queue.len()),
+            // The bar rides the WHOLE list now (history + current + queue + album), not just the
+            // user queue — which is also why it appears on a plain album view, where the old
+            // row-stepping window offered no way to drag at all.
+            Screen::UpNext => Some((
+                self.up_next_layout().max_scroll_px(),
                 crate::chrome::HEADER_BOTTOM,
             )),
             _ => None,
@@ -2304,14 +2384,13 @@ impl App {
             }
             // On the queue itself, either direction removes the row — there is nothing to queue.
             Screen::UpNext => {
-                match crate::up_next::queue_row_at(y, self.queue_scroll_px, self.queue.len()) {
-                    Some(i) if i < self.queue.len() => {
+                match self.up_next_layout().at(y, self.queue_scroll_px) {
+                    Some(crate::up_next::Slot::Queued(i)) if i < self.queue.len() => {
                         let gone = self.queue.remove(i);
-                        self.toast = format!("Removed — {}", gone.title);
-                        self.toast_frames = TOAST_FRAMES;
-                        // The cursor and scroll both index a list that just got shorter.
-                        self.queue_scroll_px = self.queue_scroll_px.min(
-                            crate::up_next::queue_max_scroll_px(self.queue.len()));
+                        self.notify(&format!("Removed — {}", gone.title));
+                        // The list just got shorter, so the scroll may now be past its end.
+                        self.queue_scroll_px =
+                            self.queue_scroll_px.min(self.up_next_layout().max_scroll_px());
                         vec![Action::QueueChanged]
                     }
                     _ => vec![],
@@ -2435,6 +2514,13 @@ impl App {
         self.queue_keep = false;
         self.queue_scroll_px = 0;
         self.queue_drag = None;
+        // RE-ARM THE FOLLOW. Every play that does not start from the Up Next screen itself arrives
+        // here — a library tap, an album, a playlist, a Shuffle band. Without this, a user who had
+        // scrolled Up Next once (which hands the list to them, deliberately) would find it stuck at
+        // the top for the rest of the session while a completely different album played, which is
+        // exactly the behaviour this screen was reworked to fix.
+        self.queue_follow = true;
+        self.up_next_cur = None;
     }
 
     /// The user queue (Up Next shows it in front of the album-derived list).
@@ -3156,36 +3242,41 @@ impl App {
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
             Screen::UsbStorage => crate::usb_storage::render(c, &theme, fonts),
             Screen::UpNext => {
-                // Publish the ids of the rows actually drawn, in drawn order, so `tap` can
-                // resolve a finger to a row. The window auto-scrolls to follow playback and its
-                // position depends on `np`, which `tap` doesn't have — so the renderer, which
-                // does, records it rather than the hit test guessing.
-                let drawn: Vec<i64> = if !self.queue.is_empty() {
-                    // The user's own queue (swipe-to-queue) takes precedence over the derived
-                    // current-album list. It scrolls and reorders, so `tap` resolves it through
-                    // `queue_row_at` rather than through these ids — they stay published for the
-                    // album path below, which really does need the renderer to record its window.
-                    let ids = self.queue.iter().map(|s| s.object_id).collect();
-                    crate::up_next::render_queue(
-                        c, &theme, fonts, &self.queue, &self.lib, self.queue_scroll_px,
-                        self.queue_drag, self.swipe_row, self.sbar_active(),
-                    );
-                    ids
-                } else {
-                    match self.now_playing_queue(np.title, np.artist) {
-                        Some((album, tracks, cur)) => {
-                            let (_, scroll) = crate::up_next::window(tracks.len(), cur);
-                            let ids = tracks.iter().skip(scroll).map(|s| s.object_id).collect();
-                            crate::up_next::render(c, &theme, fonts, album, tracks, cur, &self.lib);
-                            ids
-                        }
-                        None => {
-                            crate::up_next::render(c, &theme, fonts, "", &[], 0, &self.lib);
-                            Vec::new()
-                        }
-                    }
+                // ONE list, Apple Music order: history above, the playing track, then the user's
+                // own queue, then the rest of the album. This screen used to be two mutually
+                // exclusive views — queueing a single track replaced the album window entirely and
+                // took the now-playing row with it, so the queue could not follow playback at all.
+                // Cloned rather than borrowed: the auto-follow below has to WRITE
+                // `queue_scroll_px`, and `now_playing_queue` hands back a slice borrowed from
+                // `self.lib`. One album's rows per frame on this screen only.
+                let (album, tracks, cur) = match self.now_playing_queue(np.title, np.artist) {
+                    Some((a, t, c)) => (a.to_string(), t.to_vec(), Some(c)),
+                    None => (String::new(), Vec::new(), None),
                 };
-                self.up_next_rows = drawn;
+                // AUTO-FOLLOW. `render` is the only place that knows what is playing, so the snap
+                // lives here: whenever the current track moves (or we have just arrived on the
+                // screen) and the user has not taken the list over by scrolling it, park NOW
+                // PLAYING a third of the way down.
+                let track_changed = self.up_next_cur != cur;
+                self.up_next_album_ids = tracks.iter().map(|t| t.object_id).collect();
+                self.up_next_cur = cur;
+                let l = self.up_next_layout();
+                if self.queue_follow && track_changed {
+                    self.queue_scroll_px = l.follow_scroll();
+                    self.fling_v = 0.0;
+                }
+                let view = crate::up_next::QueueView {
+                    album: &album,
+                    tracks: &tracks,
+                    current: cur,
+                    queue: &self.queue,
+                    lib: &self.lib,
+                    scroll_px: self.queue_scroll_px,
+                    drag: self.queue_drag,
+                    swipe: self.swipe_row,
+                    sbar_active: self.sbar_active(),
+                };
+                crate::up_next::render_view(c, &theme, fonts, &view);
             }
             Screen::Eq => crate::eq::render(
                 c, &theme, fonts, &self.eq_bands, data::EQ_PRESETS[self.eq_preset].0, self.eq_sel,
@@ -3418,14 +3509,16 @@ impl App {
                 0.0
             };
             if into != 0.0 {
-                let max = crate::up_next::queue_max_scroll_px(self.queue.len());
+                // Both of these read the UNIFIED layout: the edge-scroll clamps against the whole
+                // list (history + current + queue + album), and the landing slot is measured from
+                // the queue section's own top, which is no longer the top of the screen.
+                let l = self.up_next_layout();
                 let step = (into.clamp(-1.0, 1.0) * EDGE_RATE * dt / 1000.0) as i32;
-                self.queue_scroll_px = (self.queue_scroll_px + step).clamp(0, max);
+                self.queue_scroll_px =
+                    (self.queue_scroll_px + step).clamp(0, l.max_scroll_px());
                 // The finger hasn't moved, but the content under it has — so where the row would
                 // land has changed and the parted list must follow.
-                d.to = crate::up_next::queue_slot_for(
-                    d.float_top(), self.queue_scroll_px, self.queue.len(),
-                );
+                d.to = l.queue_slot_for(d.float_top(), self.queue_scroll_px);
                 self.queue_drag = Some(d);
             }
             animating = true; // the lifted row is live; keep painting it
@@ -4203,9 +4296,12 @@ mod tests {
         a
     }
     /// Screen y of the middle of queue row `i` at the current scroll.
+    /// Screen-y of the centre of user-queue row `i`. Reads the LAYOUT rather than assuming the
+    /// queue starts at the top of the list — it no longer does: history, the playing track and a
+    /// section heading can all sit above it.
     fn qrow_y(a: &App, i: usize) -> i32 {
-        crate::chrome::HEADER_BOTTOM + i as i32 * crate::up_next::RH + crate::up_next::RH / 2
-            - a.queue_scroll_px
+        let top = a.up_next_layout().top_of(crate::up_next::Slot::Queued(i)).unwrap();
+        crate::chrome::HEADER_BOTTOM + top + crate::up_next::RH / 2 - a.queue_scroll_px
     }
 
     /// The whole point: drag a queue row by its handle and it lands where you dropped it. Before
@@ -4282,7 +4378,7 @@ mod tests {
     #[test]
     fn holding_a_dragged_row_at_the_edge_scrolls_the_queue() {
         let mut a = queued(40);
-        assert!(crate::up_next::queue_max_scroll_px(a.queue().len()) > 0, "queue must overflow");
+        assert!(a.up_next_layout().max_scroll_px() > 0, "queue must overflow");
         assert!(a.reorder_begin(crate::up_next::GRIP_X0 + 20, qrow_y(&a, 0)));
         a.reorder_track(700); // park it against the bottom edge
         let before = a.queue_scroll_px;
@@ -4464,14 +4560,18 @@ mod tests {
     #[test]
     fn the_user_queue_scrolls() {
         let mut a = queued(40);
-        let max = crate::up_next::queue_max_scroll_px(a.queue().len());
+        let max = a.up_next_layout().max_scroll_px();
         assert!(max > 0);
         a.scroll_px(10_000);
         assert_eq!(a.queue_scroll_px, max, "must scroll, and clamp to the end");
-        // And the hit test follows the scroll rather than always answering row 0.
+        // And the hit test follows the scroll rather than always answering row 0. Row 0's screen
+        // position at scroll 0 must now resolve to a LATER row (or off the list) once scrolled.
+        let y_unscrolled = crate::chrome::HEADER_BOTTOM
+            + a.up_next_layout().top_of(crate::up_next::Slot::Queued(0)).unwrap()
+            + crate::up_next::RH / 2;
         assert_ne!(
-            crate::up_next::queue_row_at(qrow_y(&a, 0) + a.queue_scroll_px, a.queue_scroll_px, 40),
-            Some(0)
+            a.up_next_layout().at(y_unscrolled, a.queue_scroll_px),
+            Some(crate::up_next::Slot::Queued(0))
         );
     }
 
@@ -5311,6 +5411,38 @@ mod tests {
     /// It defaults ON because the OFF path sends VOLUME_UP/VOLUME_DOWN key events, which sinks
     /// like the CMF Buds answer with their own feedback beep — and because Sony's own
     /// SetCurrentVolume refuses to transmit while the preference is clear.
+    /// Pinning from the Albums accordion names the OPEN ALBUM, and restoring jumps to it —
+    /// recomputing the scroll from the album's current position rather than trusting a pixel
+    /// offset that a library rebuild would have invalidated.
+    #[test]
+    fn albums_pin_names_the_open_album_and_restores_as_a_jump_to() {
+        let mut a = unlocked();
+        a.go_for_preview(Screen::Library);
+        a.lib_tab = Tab::Albums;
+        a.album_expanded = None;
+        // With nothing expanded the pin is just "the Albums tab".
+        let (t, _) = a.place_label();
+        assert_eq!(t, "Library");
+        // Expand one, and the pin takes its name.
+        let flat = 1usize;
+        a.album_expanded = Some(flat);
+        let want = a.lib.albums_flat().get(flat).map(|al| al.name.clone()).unwrap();
+        let (t, sub) = a.place_label();
+        assert_eq!(t, want);
+        assert_eq!(sub, a.lib.albums_flat()[flat].artist.clone());
+        // Pin it, scroll somewhere else, restore: the album comes back expanded and in view.
+        let pin = a.capture_pin();
+        a.lib_scroll_px = 4000;
+        a.album_expanded = None;
+        a.restore_pin(&pin);
+        assert_eq!(a.album_expanded, Some(flat));
+        assert_eq!(a.lib_tab, Tab::Albums);
+        let rank = a.album_rank_of(flat).unwrap();
+        let expect = crate::library::row_top_px(
+            Tab::Albums, &a.lib, rank, a.album_sort, a.album_expanded);
+        assert_eq!(a.lib_scroll_px, expect.clamp(0, a.lib_max_scroll()));
+    }
+
     #[test]
     fn bluetooth_enhanced_mode_toggles_and_is_inert_while_off() {
         let mut a = enter_bluetooth();
@@ -5623,22 +5755,131 @@ mod tests {
         assert_eq!(a.queue().len(), 1);
     }
 
-    /// Tapping a queue row plays that track. Previously *any* tap on Up Next just returned to Now
-    /// Playing, so the queue was look-but-don't-touch.
+    /// Tapping a row plays that track. The layout is what `tap` resolves against, so a test drives
+    /// it exactly as `render` does — build the layout, publish it and the album ids, then tap.
     #[test]
     fn up_next_row_tap_plays_that_track() {
         let mut a = unlocked();
         a.push(Screen::UpNext);
-        // Simulate what a render publishes: the ids actually drawn, in drawn order.
-        a.up_next_rows = vec![101, 202, 303];
+        // Three album tracks, the middle one playing: HISTORY hdr, 101, NOW hdr, 202, NEXT hdr, 303.
+        a.up_next_album_ids = vec![101, 202, 303];
+        a.up_next_cur = Some(1);
+        a.queue_scroll_px = 0;
+        let l = a.up_next_layout();
         let top = crate::chrome::HEADER_BOTTOM;
-        let rh = crate::up_next::RH;
-        assert_eq!(a.tap(240, top + rh / 2), vec![Action::PlayIndex(101)]);
-        assert_eq!(a.tap(240, top + rh + rh / 2), vec![Action::PlayIndex(202)]);
+        let y_of = |slot| top + l.top_of(slot).unwrap() + crate::up_next::RH / 2;
+        // A history row plays that track and re-arms the follow.
+        a.queue_follow = false;
+        assert_eq!(a.tap(240, y_of(crate::up_next::Slot::History(0))), vec![Action::PlayIndex(101)]);
+        assert!(a.queue_follow, "playing from the list re-arms the auto-follow");
         assert_eq!(a.current(), Screen::UpNext, "playing a row should not leave the screen");
-        // Past the drawn rows there is nothing to play — the old shortcut back to Now Playing.
-        assert!(a.tap(240, top + rh * 3 + rh / 2).is_empty());
+        // An upcoming row does the same.
+        assert_eq!(a.tap(240, y_of(crate::up_next::Slot::Upcoming(2))), vec![Action::PlayIndex(303)]);
+        // The NOW PLAYING row is where you already are — it just opens Now Playing.
+        assert!(a.tap(240, y_of(crate::up_next::Slot::Current(1))).is_empty());
         assert_eq!(a.current(), Screen::NowPlaying);
+    }
+
+    /// The Apple Music order, and the fact that empty sections vanish entirely.
+    #[test]
+    fn up_next_layout_is_history_then_now_then_queue_then_album() {
+        use crate::up_next::{layout, Section, Slot};
+        let l = layout(4, Some(1), 2);
+        let kinds: Vec<Slot> = l.slots.iter().map(|(s, _)| *s).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Slot::Head(Section::History),
+                Slot::History(0),
+                Slot::Head(Section::Now),
+                Slot::Current(1),
+                Slot::Head(Section::Queue),
+                Slot::Queued(0),
+                Slot::Queued(1),
+                Slot::Head(Section::Album),
+                Slot::Upcoming(2),
+                Slot::Upcoming(3),
+            ]
+        );
+        // Track 0 playing => no history section at all, header included.
+        let l = layout(2, Some(0), 0);
+        assert_eq!(
+            l.slots.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            vec![Slot::Head(Section::Now), Slot::Current(0), Slot::Head(Section::Album), Slot::Upcoming(1)]
+        );
+        // Nothing playing, but a user queue => just the queue.
+        let l = layout(0, None, 1);
+        assert_eq!(
+            l.slots.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            vec![Slot::Head(Section::Queue), Slot::Queued(0)]
+        );
+        // Nothing at all => the empty state, and no scroll.
+        let l = layout(0, None, 0);
+        assert!(l.slots.is_empty());
+        assert_eq!(l.max_scroll_px(), 0);
+    }
+
+    /// The queue follows playback until the user scrolls, and re-entering the screen re-arms it.
+    #[test]
+    fn up_next_follows_playback_until_the_user_scrolls() {
+        let mut a = unlocked();
+        a.push(Screen::UpNext);
+        assert!(a.queue_follow, "arriving on the screen always shows the current track");
+        // A long album so there is somewhere to scroll to.
+        a.up_next_album_ids = vec![0; 40];
+        a.up_next_cur = Some(20);
+        a.queue_scroll_px = a.up_next_layout().follow_scroll();
+        assert!(a.queue_scroll_px > 0, "row 20 of 40 must be scrolled to");
+        a.scroll_px(-200); // drag the list
+        assert!(!a.queue_follow, "a deliberate scroll takes the list over");
+        // Leaving and coming back resets it.
+        a.pop();
+        a.push(Screen::UpNext);
+        assert!(a.queue_follow);
+        assert_eq!(a.up_next_cur, None);
+    }
+
+    /// Playing something from ANYWHERE re-arms the follow. Found in the queue bug sweep: the
+    /// shell calls `set_play_queue` for every play that does not start on this screen, and it
+    /// reset the scroll without re-arming — so one scroll of Up Next left it pinned to the top for
+    /// the rest of the session, showing the wrong album's first track.
+    #[test]
+    fn playing_from_elsewhere_re_arms_the_queue_follow() {
+        let mut a = unlocked();
+        a.push(Screen::UpNext);
+        // Something long enough to actually scroll — a scroll that cannot move the list is not a
+        // takeover, and must NOT disarm the follow.
+        a.up_next_album_ids = vec![0; 40];
+        a.up_next_cur = Some(20);
+        a.queue_scroll_px = a.up_next_layout().follow_scroll();
+        a.scroll_px(-200);
+        assert!(!a.queue_follow, "a scroll that moves the list hands it to the user");
+        a.set_play_queue(vec![SongRow::default(), SongRow::default()]);
+        assert!(a.queue_follow, "a new play must make the queue follow again");
+        assert_eq!(a.up_next_cur, None, "and the next render must treat it as a track change");
+    }
+
+    /// The scrollbar on this screen is `library::scrollbar`, whose drag maths measure against the
+    /// LIBRARY's list bottom — so the two bottoms must be the same number, not two literals that
+    /// happen to agree.
+    #[test]
+    fn up_next_list_bottom_matches_the_library_it_shares_a_scrollbar_with() {
+        assert_eq!(
+            crate::up_next::queue_view_h(),
+            library::list_bottom() - crate::chrome::HEADER_BOTTOM
+        );
+    }
+
+    /// The playing row parks a third of the way down, not pinned to the top — so the tracks you
+    /// just heard stay visible above it.
+    #[test]
+    fn up_next_follow_parks_the_current_row_a_third_down() {
+        let l = crate::up_next::layout(40, Some(20), 0);
+        let view = crate::up_next::queue_view_h();
+        let top = l.current_top.unwrap();
+        assert_eq!(l.follow_scroll(), (top - view / 3).clamp(0, l.max_scroll_px()));
+        // Early tracks cannot scroll above the start.
+        assert_eq!(crate::up_next::layout(40, Some(0), 0).follow_scroll(), 0);
     }
 
     /// An empty queue keeps the old behaviour: a tap just leaves.
@@ -5646,7 +5887,8 @@ mod tests {
     fn up_next_tap_with_nothing_queued_returns_to_now_playing() {
         let mut a = unlocked();
         a.push(Screen::UpNext);
-        a.up_next_rows.clear();
+        a.up_next_album_ids.clear();
+        a.up_next_cur = None;
         assert!(a.tap(240, crate::chrome::HEADER_BOTTOM + 10).is_empty());
         assert_eq!(a.current(), Screen::NowPlaying);
     }
