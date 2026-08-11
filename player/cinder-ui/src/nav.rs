@@ -483,6 +483,11 @@ pub struct App {
     /// UI state, cleared whenever the list is replaced.
     bt_forget_armed: Option<usize>,
     bt_connecting: Option<usize>,
+    /// Spinner phase in SECONDS for the "connecting"/"scanning" indicators. Advanced by tick_dt
+    /// from real elapsed time (never a frame count — this project has already been bitten once by
+    /// assuming 60 fps when the device renders at ~32), and only while something is actually in
+    /// flight, so an idle screen stays completely static and repaints nothing.
+    bt_busy_phase: f32,
     /// Equalizer: 10 band gains (dB), selected band, active preset index.
     eq_bands: [i8; 10],
     eq_sel: usize,
@@ -657,6 +662,7 @@ impl Default for App {
             bt_prompt: None,
             bt_forget_armed: None,
             bt_connecting: None,
+            bt_busy_phase: 0.0,
             eq_bands: data::EQ_PRESETS[3].1, // "A1"
             eq_sel: 0,
             eq_preset: 3,
@@ -3386,6 +3392,8 @@ impl App {
                     ldac_quality: self.bt_ldac_quality,
                     enhanced: self.bt_enhanced,
                     enhanced_supported: self.bt_enhanced_supported,
+                    connecting: self.bt_connecting.is_some(),
+                    busy_phase: self.bt_busy_phase,
                 };
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
@@ -3399,6 +3407,7 @@ impl App {
                     self.bt_forget_armed,
                     self.bt_connecting,
                     self.bt_scanning,
+                    self.bt_busy_phase,
                 );
                 // Drawn last so it sits over the list, matching how the tap handler treats it.
                 if let Some(p) = &self.bt_prompt {
@@ -3529,6 +3538,16 @@ impl App {
         // Clamp: a long stall (deferred init, a USB-MSC session) must not teleport a fling or
         // swallow a whole toast in one step.
         let dt = (dt_ms.max(1)).min(200) as f32;
+        // Bluetooth busy spinner. Only runs while a connect attempt or a scan is genuinely in
+        // flight, so an idle Devices screen costs nothing and repaints nothing. Wrapped at 8s (one
+        // whole number of 8-dot revolutions) to keep the f32 exact forever.
+        if self.bt_connecting.is_some() || self.bt_scanning {
+            self.bt_busy_phase = (self.bt_busy_phase + dt / 1000.0) % 8.0;
+            animating = true;
+        } else if self.bt_busy_phase != 0.0 {
+            self.bt_busy_phase = 0.0;   // one last repaint clears the spinner
+            animating = true;
+        }
         // Fling momentum: integrate over real time, decay exponentially per unit time (0.92 per
         // 60 fps frame, expressed continuously), stop below a threshold. Hitting the clamp
         // (top/bottom) kills it immediately.
