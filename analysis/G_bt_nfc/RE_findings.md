@@ -1059,3 +1059,128 @@ StopConnectWait, discoverable off, and the radio off again if it was the one tha
 Next step is one run with a phone: `cinder-probe --btrx 40`, pair the Walkman from the phone's
 Bluetooth list, play something. If `OnNotifyReceiveMedia` / `GetBitrate` come back non-zero, the
 sink path is live and the Receiver screen can be wired to it.
+
+---
+
+## Round h (2026-08-11) — Sony's "Use Enhanced Mode", and why the buds beep
+
+The user remembered a Sony setting that removed their CMF Buds' volume-change feedback beep, and
+said explicitly it was **not** the BT Receiver mode of round g. It is this, and the firmware names
+it outright.
+
+`vendor/sony/bin/HgrmMediaPlayerApp`, on the Bluetooth Setting screen (title msg `230002`, the same
+screen as "Wireless Playback Quality" `230009` and Auto-Connect):
+
+```
+property bool is_absolute_volume_on   // AbsoluteVolume
+signal absoluteVolumeOnOffToggled()
+property string absoluteVolumeTitile     : qsTr("230077")
+property string absoluteVolumedescription: qsTr("230079")
+BT SetAbsoluteVolume[%d]        // dmpapp::BtTransmitter
+```
+
+`vendor/sony/translations/HgrmMediaPlayerApp_en_US.qm` (parsed: sections are tagged `0x42` Hashes /
+`0x69` Messages / `0x88` NumerusRules, translations are UTF-16BE):
+
+| id | English |
+|---|---|
+| `230077` | **Use Enhanced Mode** |
+| `230079` | Select this check box\nif you cannot change the volume. |
+
+So "Enhanced Mode" is the **AVRCP absolute-volume switch**, nothing else.
+`vendor/sony/lib/libBtTransmitterService.so` shows the whole state machine in three log strings
+that live adjacent to `SetCurrentVolume`:
+
+```
+Not control absolute volume mode     <- GetControlAbsoluteVolume() == false  (the checkbox is OFF)
+Not support absolute volume          <- IsSupportedAbsoluteVolume() == false (the SINK can't)
+Send absolute volute(%u)             <- both true: the level is transmitted
+```
+
+**Why the beep.** With the preference off, `SetCurrentVolume` transmits nothing, so a volume press
+has to go out as `SetVolumeUp`/`SetVolumeDown` — AVRCP passthrough `VOLUME_UP`/`VOLUME_DOWN` key
+events. A sink that treats those as its own button press answers each one with its own feedback
+tone. With the preference on, the player sends the level and the sink just adopts it silently.
+
+**What Cinder had wrong.** `bt_abs_volume_supported()` gated only on `IsSupportedAbsoluteVolume`
+(slot 33) and never touched the preference. Sony's service checks the preference *itself* before
+transmitting, so on a device where stock had last left the box unticked, Cinder's absolute path was
+a silent no-op and every volume step fell through to the beeping one. Fixed: the Bluetooth screen
+now carries the switch, `bt_apply_enhanced_mode()` pushes it at boot, on the user toggle, and on
+every reconnect (the radio does not carry it across a link), and `bt_use_absolute_volume()` requires
+both halves.
+
+Client vtable slots used (already tabled in round f): 30 `IsAvrcpTgVolumeSupported`,
+31 `SetControlAbsoluteVolume`, 32 `GetControlAbsoluteVolume`, 33 `IsSupportedAbsoluteVolume`,
+34 `SetCurrentVolume`. `cinder-probe --btwho` now prints 30/32/33 alongside the negotiated codec.
+
+Not the cause, ruled out on the way: `SoundEnhancementSetting`
+(`selectBtReceiverPrioritySetting`, msgs `230087` "Sound Quality Preferred" / `230088` "Connection
+Preferred") is the **Receiver** playback-quality screen, a different feature entirely.
+
+---
+
+## Round i (2026-08-11) — DisplayService, and the standby power picture
+
+Measured on device, screen dark, idle, not playing (30 s windows, `/proc/stat` + per-thread
+`/proc/<tid>/status`):
+
+| | CPU | context switches |
+|---|---|---|
+| whole system | 1.17% of one core | ~354/s |
+| `cinder-home` (all 10 threads) | 0.25% of one core | 20.9/s |
+| `disp_ovl_engine_rdma0_update_kthread` + `_DISP_ConfigUpdateKThread` | ~0.47% | **~230/s** |
+
+CPU frequency residency is healthy: 2997 of 3009 jiffies at the **minimum** 598 MHz (governor
+`hotplug`; steps 1300/1196/1040/747.5/598 MHz). Earlier reads showing a pinned 1.3 GHz were the
+observer effect — `adb shell` + `cat` wakes the core. Use `cpufreq/stats/time_in_state`, which is
+cumulative and immune to it.
+
+Playing, screen dark: system 37.5% of a core, 604 ctxt/s, of which `SoundServiceFw` is 33.8% and
+`hagodaemon MediaStoreService PlayerService` 5.05%. **cinder-home is 0.43%** — about 1% of the
+total. The decoder dominates and always will.
+
+### The display pipeline is not addressable from here
+
+`libDisplayService.so` has the real panel switch. Vtable recovered from the `R_ARM_ABS32`
+relocations covering `.data.rel.ro` (the words on disk are zero — same technique as round g):
+
+| slot | method |
+|---|---|
+| 3 | `SetOneLedBrightness(const uint32_t&, const uint32_t&)` |
+| 4 | `SetMultiLedBrightness(const vector<uint32_t>&, const uint32_t&)` |
+| 5 | `SetMultiLedPacket(const vector<led_packet_t>&)` |
+| 6 | `SetLedBlink(const uint32_t&, ×4)` |
+| 7 | `SetLedSpecialPattern(const uint32_t&, const vector<uint32_t>&, const string&)` |
+| **8** | **`SetLCDValidate(const bool&)`** |
+| 9 | `SetLCDValidateGradually(const bool&)` |
+| 10 | `GetLCDValidate(bool&)` |
+| 11 | `SetLCDBacklightBrightness(const uint32_t&)` |
+| 12 | `GetLCDBacklightBrightness(uint32_t&)` |
+| **13** | **`SetTouchPanelValidate(const bool&)`** |
+| 14 | `GetTouchPanelValidate(bool&)` |
+| 15 | `SetDimmer(const bool&, const uint32_t&)` |
+| 16 | `GetName() const` (primary vtable ends here; slot 17 is the `0xfffffffc` secondary marker) |
+
+`cinder-probe --disp` (read-only) with the backlight already at 0 reported
+`GetLCDValidate=1 GetTouchPanelValidate=1 backlight=255` — **the panel and the touch controller are
+fully powered during screen-off**, and DisplayService still believes the backlight is 255 because
+Cinder writes the sysfs node behind its back.
+
+`cinder-probe --dispoff` proved the call works and reverses: a second client read
+`GetLCDValidate=0 GetTouchPanelValidate=0` mid-window, and 1/1 afterwards. **But it does not quiet
+the two MTK kernel threads** — +5 jiffies/10 s invalidated vs +7/15 s baseline, i.e. identical.
+`echo 4 > /sys/class/graphics/fb0/blank` is worse than useless: rc=0, `fb0/state` stays 0, same CPU.
+So those 230 ctxt/s are not reachable from userspace on this firmware; treat the number as the
+floor, not as a bug to fix.
+
+### What WAS reachable
+
+`SetTouchPanelValidate` is the one that matters. `touch_set_sleep()` has been logging
+*"no touch sleep node found"* on every screen toggle since 2026-07-02 — Wampy's two himax paths do
+not exist on this unit and neither does any `sleep` attribute on the i2c bus — which means the
+capacitive panel has **never** stopped scanning with the screen off. It is now driven through
+DisplayService slot 13, reached by `dlopen` rather than a link (a `DT_NEEDED` on the Home app for a
+path this thin is the `libNfcService` boot-to-nothing rule), and only from the **Power-button**
+blank, never the idle blank — the idle blank must stay wakeable by touch. Re-validated on every
+wake and at `input_open()`, so a stuck "invalid" cannot outlive one Power press or one reboot.

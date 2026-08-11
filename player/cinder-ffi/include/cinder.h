@@ -119,7 +119,18 @@ typedef enum {
      * CancelPairing (slot 8) for a display-only passkey. The address comes from the notification the
      * shell received, never from the UI. */
     CINDER_ACT_BT_PROMPT_CONFIRM = 33,
-    CINDER_ACT_BT_PROMPT_CANCEL = 34
+    CINDER_ACT_BT_PROMPT_CANCEL = 34,
+    /* Sony's "Use Enhanced Mode" toggled (firmware message 230077; help text 230079 is "Select
+     * this check box if you cannot change the volume"). It is the AVRCP absolute-volume switch:
+     * read cinder_get_bt_enhanced() and call
+     * BtTransmitterServiceClient::SetControlAbsoluteVolume(const bool&) (slot 31).
+     *
+     * This is not optional bookkeeping. Sony's SetCurrentVolume checks the same preference before
+     * transmitting ("Not control absolute volume mode" / "Not support absolute volume" in
+     * libBtTransmitterService.so), so if the shell never sets it, absolute volume silently does
+     * nothing and every volume step falls back to VOLUME_UP/VOLUME_DOWN key events — which sinks
+     * such as the CMF Buds answer with their own feedback beep. */
+    CINDER_ACT_BT_ENHANCED_CHANGED = 35
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -323,6 +334,13 @@ int  cinder_get_night(void);
  * apply via BtTransmitterService. The same values configure the USB-DAC→LDAC bridge. */
 int  cinder_get_bt_codec(void);
 int  cinder_get_bt_ldac_quality(void);
+/* "Use Enhanced Mode" (1/0) — AVRCP absolute volume. Read after CINDER_ACT_BT_ENHANCED_CHANGED,
+ * at boot, and after every reconnect (the radio does not carry it across a link), then hand it to
+ * SetControlAbsoluteVolume(const bool&) (slot 31). */
+int  cinder_get_bt_enhanced(void);
+/* Push back what the CONNECTED sink can actually do: IsSupportedAbsoluteVolume() (slot 33).
+ * Returns 1 if the Bluetooth screen changed and needs a repaint. */
+int  cinder_set_bt_enhanced_supported(int on);
 /* Did a queue flush become ready at the last track boundary? Clears on read. When it returns 1,
  * drain cinder_pending_play_* and hand the result to PlayerService exactly as for a normal play
  * request: the sequence is rebuilt with the track that just started at index 0, followed by the
