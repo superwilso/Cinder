@@ -132,10 +132,11 @@ fn main() {
                     Some(a) => (a.name.as_str(), &a.track_list[..]),
                     None => ("", &[][..]),
                 };
+                // With a user queue too, so the preview shows all four sections and both chips.
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
                     album, tracks,
                     current: (!tracks.is_empty()).then(|| 2.min(tracks.len() - 1)),
-                    queue: &[], lib: &lib, scroll_px: 0,
+                    queue: &queue[..2.min(queue.len())], lib: &lib, scroll_px: 0,
                     drag: None, swipe: None, sbar_active: false,
                 });
             }),

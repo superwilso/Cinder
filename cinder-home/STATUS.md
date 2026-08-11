@@ -107,6 +107,56 @@ is still preferred.
 
 ---
 
+## TL;DR — 2026-08-11 (later): the sink owns the volume, and the queue is no longer the album
+
+Two reworks, both triggered by the same class of bug — **Cinder holding a belief about state that
+something else actually owns.**
+
+### 1. Bluetooth volume: ask the headphones, don't assume
+
+Cinder kept an absolute counter and assumed the sink followed it. It doesn't, and the drift shows
+up as the reported *"I have it on mute but it has audio"*. Full RE in
+[`../analysis/G_bt_nfc/RE_findings.md`](../analysis/G_bt_nfc/RE_findings.md) round j. What changed:
+
+* **The sink's own level is now read**, via `OnNotifyChangeVolume` — listener **slot 10**, reached
+  through `BtTransmitterServiceClient::AddListener` at **client slot 39**. Proven on device: only
+  slot 10 fired, carrying 19 → 15 → 19 → 15 against two down and two up presses. The listener must
+  be `static` (AddListener keeps a raw pointer) and the callback runs on the framework looper, so it
+  stores one byte and the render thread applies it.
+* **`IsSupportedAbsoluteVolume` (slot 33) is never cached.** It was measured reading 1, then 0, on
+  one unbroken link — support is a property of the AVRCP session, which renegotiates. Caching the
+  YES is what made every press a refused `SetCurrentVolume` with no fallback: **UI moved, headphones
+  didn't.** Now it's one read per press, and even a YES is provisional — `SetCurrentVolume`'s return
+  is checked and a refusal falls through to a step in the same press.
+* **Volume granularity 30 → 64.** With the sink reporting in 127ths there's no reason to quantise
+  to 30; a press is now ~2 AVRCP units against Sony's own 4. Persisted as `bt_volume64`, with the
+  legacy `bt_volume` read once and rescaled so an existing install doesn't wake at half volume.
+* **A net-zero up+down nudge at connect** provokes the first report, because there is no getter —
+  until the sink volunteers a notification the bar is still last session's belief. (Reported as
+  *"3 was mute until I went to mute, then it worked properly"*.)
+
+### 2. Up Next: the playback context is not the queue
+
+The old model poured the whole resolved album into `App::queue`, so "queue this song" had nothing to
+jump ahead of and Up Next drew the album twice. Now:
+
+* **`context`** = what's playing and what follows from it (the album, the artist, the shuffle).
+  **`queue`** = songs the user explicitly picked. What PlayerService is handed is
+  `[current] + user picks + remainder of the context` — so a queued song genuinely plays **next**,
+  not after the album finishes.
+* A queue pick is consumed at the track boundary that starts it (`queue_remove` + `queue_pending`),
+  because **a mid-track `SetTrackSequence` restarts playback** — measured, position 9000 → 0. The
+  track boundary is the only free moment to re-issue the sequence.
+* **One renderer, Apple-Music shaped**: history above (dimmed), NOW PLAYING with an accent bar,
+  NEXT IN QUEUE, then the rest of the context. `up_next::layout()` is the single source of both the
+  drawing and the hit-testing, which is the bug class that produced the old render↔hit mismatch.
+* **MIX** chip shuffles only what is *ahead* of the current track — an xorshift over
+  `context[idx+1..]`, so the past and the now don't move under you.
+* The screen follows the current track (`queue_follow`), re-arming whenever Up Next is entered and
+  dropping the moment the user scrolls.
+
+---
+
 ## TL;DR — 2026-08-11: Sony's "Use Enhanced Mode", and a measured standby/BT power sweep
 
 ### 1. The BT setting that stops headphones beeping at every volume step
@@ -178,6 +228,13 @@ identical rate. Treat 230/s as the floor.
   only from the **Power-button** blank — never the idle blank, which must stay wakeable by touch.
   Re-validated on every wake and at `input_open()`, so a stuck "invalid" cannot outlive one Power
   press or one reboot.
+
+**The BT stack's 13.5% of a core is the link, not us** (closed 2026-08-11, RE_findings round j
+addendum). With buds connected and nothing playing, `mtkbt` + `BtCommonService` + `btif_rxd` cost
+~13.5%; the control measurement with the **radio off** puts both at **0.00% / 0.01%**, so the cost
+is entirely link-attributable. Cinder's whole steady-state contribution is one `GetBtStatus` per
+3 s at ~1.5 ms a round trip ≈ **0.05% of a core** — about 1% of what `BtCommonService` burns.
+Nothing to fix here.
 
 Left alone deliberately: the idle blank keeps the touch controller powered (that is what wakes it),
 and BT discovery is bounded by the radio's own 30 s duration, so a Pairing screen left open costs
@@ -429,17 +486,23 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 - **Visualiser**: Bars / Mirror / Segments / Dots / Wave; always animates (synthetic), with an optional
   **real audio-reactive** mode via Sony's `AudioAnalyzerService` (default OFF — `cinder-probe
   --analyzer` to validate, then `/contents/cinder_viz.conf: analyzer=1`).
-- **Up Next**: the queue = the **current album** (resolved from the library by the now-playing
-  track), playing row highlighted, auto-scrolls to follow playback; clean empty state otherwise.
-  When the user queue (below) is non-empty, Up Next shows it instead, in add order. **Tapping a
-  row plays that track** (2026-07-26 — any tap used to just exit the screen).
+- **Up Next** (reworked 2026-08-11, Apple-Music shaped): one scrolling list — **history** above
+  (dimmed), **NOW PLAYING** with an accent bar, **NEXT IN QUEUE**, then the rest of the playback
+  context. The two are different things: the **context** is what's playing and what follows from it
+  (the album, the artist, a shuffle), the **queue** is what the user explicitly picked, and
+  PlayerService is handed `[current] + user picks + remainder of the context` — so a queued song
+  plays **next**, not after the album. Follows the current track, dropping follow the moment the
+  user scrolls; a **MIX** chip shuffles only what is *ahead* of the current track; **CLEAR** empties
+  the user picks. `up_next::layout()` is the single source of both drawing and hit-testing.
+  **Tapping a row plays that track** (2026-07-26 — any tap used to just exit the screen).
 - **Swipe-to-queue (Spotify-style)**: rightward swipe on a Library-Songs row, an **expanded album's
   inline track row** (added 2026-07-26 — the gesture previously ignored the Albums tab) or an
   album drill-in track adds it
   to the user queue — "Added to queue" toast + a "+ QUEUED" chip slides off the row (~0.4 s).
-  Left-edge→right is still Back (classified first); the two rightward gestures coexist. *(Queue
-  display + intent only: PlayerService honoring it is gated on `SetTrackSequence` RE — same gate
-  as play-by-index.)*
+  Left-edge→right is still Back (classified first); the two rightward gestures coexist. The pick is
+  now genuinely honored: it is spliced in ahead of the context and consumed at the **track
+  boundary** that starts it, because a mid-track `SetTrackSequence` restarts playback (measured:
+  position 9000 → 0).
 - **Settings ▸ Storage**: real internal-storage usage ("used / total GB") from `statvfs`.
 - **Night-mode backlight (minimal light)**: toggling Settings ▸ Theme to **night dims the panel
   backlight to minimal** (and day restores it). The backlight node is auto-detected (the standard
@@ -475,13 +538,17 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 - **Bluetooth volume, separate from the 3.5 mm jack** *(this is two different attenuators, not one
   scale)*: the jack level is the CXD3778GF codec's ALSA `master volume` (0..120); the BT level lives
   **in the headphones** and is driven over AVRCP. Cinder keeps **two independent levels** — separate
-  UI state, separate persisted keys (`volume` / `bt_volume`), separate hardware calls — and the side
-  rocker drives whichever route is live. Absolute AVRCP is preferred
-  (`IsSupportedAbsoluteVolume` → `SetCurrentVolume`, 0..127, closed loop), with
-  `SetVolumeUp`/`SetVolumeDown` as the fallback for sinks that don't support it; support is
-  re-queried on every reconnect because it's a property of the sink, not of us. The saved BT level is
-  pushed to the headphones when they connect. The HUD stretches the coarser BT scale over the same
-  bar, so both routes look identical on screen.
+  UI state, separate persisted keys (`volume` / `bt_volume64`), separate hardware calls — and the
+  side rocker drives whichever route is live. Absolute AVRCP is preferred (`SetCurrentVolume`,
+  0..127) with `SetVolumeUp`/`SetVolumeDown` as the fallback, chosen **per press**:
+  `IsSupportedAbsoluteVolume` is re-read every time (it was measured flapping 1 → 0 on one unbroken
+  link) and even a YES is provisional, since `SetCurrentVolume`'s return distinguishes transmitted
+  from refused. **The sink is the authority on its own level** — `OnNotifyChangeVolume` (listener
+  slot 10, via `AddListener` at client slot 39) feeds the real level back into the UI, including
+  changes made on the headphones themselves, so the bar can no longer drift out of step with what
+  you hear. The BT scale is 0..64 (~2 AVRCP units per press, finer than Sony's own 4); the saved
+  level is pushed at connect, and on the step path a net-zero up+down nudge provokes the first
+  report. The HUD stretches the BT scale over the same bar, so both routes look identical on screen.
 - **Bluetooth transmit codec selector**: choose **LDAC · aptX HD · aptX · SBC** (the codecs this
   hardware can transmit; AAC is receive-only, excluded) from a checked list, with an **LDAC quality**
   sub-row (Auto/990/660/330, Auto default). It's **one device-wide preference**, persisted to

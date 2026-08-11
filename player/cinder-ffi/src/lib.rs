@@ -613,7 +613,7 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume={}\nbrightness={}\nscreen_off={}\nui_scale={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nui_scale={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -1376,9 +1376,32 @@ fn song_row_of(t: &cinder_db::Track) -> cinder_ui::model::SongRow {
 /// an album or hitting a Shuffle band produced a real 200-track sequence that the queue screen
 /// knew nothing about. One resolution, one order, both surfaces.
 fn set_pending(r: &mut Render, seq: Vec<cinder_db::Track>, start: usize) {
-    r.app.set_play_queue(seq.iter().map(song_row_of).collect());
+    r.app.set_play_context(seq.iter().map(song_row_of).collect(), start);
     r.pending_play = seq.into_iter().map(|t| t.filename).collect();
     r.pending_play_start = start;
+}
+
+/// The order to hand PlayerService: the track playing now, then the USER'S OWN PICKS, then
+/// whatever the context had left. That middle term is the whole point of the queue — before the
+/// split it did not exist, because the picks and the context were one flat list and a queued song
+/// simply took its place in line rather than jumping it.
+///
+/// Returns file paths. The current track leads so re-issuing the sequence at a boundary does not
+/// change what is playing (see `Action::QueueChanged`: a mid-track SetTrackSequence restarts).
+fn play_order_uris(r: &Render, current: &str) -> Vec<String> {
+    let by_id = |row: &cinder_ui::model::SongRow| -> Option<String> {
+        r.db.as_ref()
+            .and_then(|db| db.track_by_object_id(row.object_id).ok().flatten())
+            .map(|t| t.filename)
+    };
+    let mut uris: Vec<String> = vec![current.to_string()];
+    uris.extend(r.app.queue().iter().filter_map(by_id));
+    let ctx = r.app.context();
+    let from = r.app.context_idx() + 1;
+    if from < ctx.len() {
+        uris.extend(ctx[from..].iter().filter_map(by_id));
+    }
+    uris
 }
 
 /// Resolve a Library shuffle band into the URIs to play, in the order to play them. `None` when
@@ -2123,6 +2146,9 @@ pub extern "C" fn cinder_set_bt_enhanced_supported(on: libc::c_int) -> libc::c_i
     }
 }
 
+/// Top of the Bluetooth volume scale, mirroring CINDER_BT_VOL_MAX in cinder.h.
+const VOL_BT_MAX: u8 = cinder_ui::overlay::BT_VOL_MAX;
+
 /// Is USB-DAC mode engaged? (1/0). The shell reads this after a CINDER_ACT_USBDAC_LDAC action to
 /// start/stop the LDAC bridge (and switch the USB gadget to UAC) without disconnecting Bluetooth.
 #[no_mangle]
@@ -2721,12 +2747,23 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             loaded |= 2; // bit1: a persisted volume level was restored
                         }
                     }
+                    // LEGACY KEY, on the old 0..30 scale. Written by every build before
+                    // 2026-08-11; reading it as 0..64 would halve the stored level on upgrade, so
+                    // it is rescaled. New builds write `bt_volume64` instead, and when both keys
+                    // are present that one wins (the file is parsed in order and it is written
+                    // after this one).
                     "bt_volume" => {
-                        // Deliberately does NOT set bit1. That bit means "push this to the
-                        // hardware", and there is no way to push an absolute level over AVRCP —
-                        // only up/down steps. The sink keeps its own volume across reconnects, so
-                        // this is restored as the UI's BELIEF about where the headphones are, and
-                        // it can be stale until the user nudges the rocker.
+                        if let Ok(n) = v.parse::<u16>() {
+                            let scaled = (n * crate::VOL_BT_MAX as u16
+                                / cinder_ui::overlay::BT_VOL_MAX_LEGACY as u16) as u8;
+                            r.app.set_bt_volume(scaled);
+                        }
+                    }
+                    // Deliberately does NOT set bit1. That bit means "push this to the hardware",
+                    // and the sink keeps its own volume across reconnects — so this is restored as
+                    // the UI's BELIEF about where the headphones are, and it can be stale until
+                    // the rocker moves or the sink reports its real level.
+                    "bt_volume64" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_bt_volume(n);
                         }
@@ -3278,18 +3315,25 @@ pub extern "C" fn cinder_set_now_playing_uri(
                     r.art_key = Some(t.object_id);
                     request_cover(r, t.object_id);
                 }
+                // Follow the sequence: the context index is what splits Up Next into "already
+                // played" and "still to come", so it has to track the boundary or the screen shows
+                // history that has not happened. An id outside the context (a user-queue track is
+                // playing) leaves it alone — see set_context_playing.
+                r.app.set_context_playing(t.object_id);
+                // A user-queue pick that has now STARTED is no longer queued. Dropping it here is
+                // what stops it playing again on the next re-issue, and it is why the queue shrinks
+                // as it is consumed rather than sitting there for the whole album.
+                if let Some(i) = r.app.queue().iter().position(|q| q.object_id == t.object_id) {
+                    r.app.queue_remove(i);
+                    r.queue_pending = true;   // the sequence changed; re-issue at THIS boundary
+                }
                 // TRACK BOUNDARY — the one moment a queue change is free. The new track has just
                 // begun, so re-issuing the sequence resets a position that is already ~0 and the
                 // reset is invisible. Doing it any other time restarts the music (device-measured;
                 // see Action::QueueChanged).
                 if r.queue_pending {
                     r.queue_pending = false;
-                    let mut uris: Vec<String> = vec![t.filename.clone()];
-                    uris.extend(r.app.queue().iter().filter_map(|q| {
-                        r.db.as_ref()
-                            .and_then(|db| db.track_by_object_id(q.object_id).ok().flatten())
-                            .map(|t| t.filename)
-                    }));
+                    let uris = play_order_uris(r, &t.filename);
                     if uris.len() > 1 {
                         eprintln!(
                             "cinder-ffi: queue flush at track boundary — {} tracks",
