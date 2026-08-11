@@ -258,6 +258,61 @@ static int dac_set(const char *mode, const char *want_state)
 static int dac_on(void)  { return dac_set("uac", "audio_func,adb"); }
 static int dac_off(void) { return dac_set("adb", "adb"); }
 
+/* usb-rescue: put the gadget back on the bus after a half-finished switch.
+ *
+ * MEASURED 2026-08-11, and the reason this exists. Every writer of this gadget — init's blocks,
+ * UsbMgrServiceFw::UpdateUsbFunction, UsbDeviceConnectionMonitor::SetDeviceType* — does the same
+ * sequence: `enable 0` -> ids -> functions -> `enable 1`. If the writer dies, blocks, or is killed
+ * between the first and last step, the device is left with enable=0: no adb, no mass storage, no
+ * UAC, and NOTHING on the host's bus. Windows stops listing the Walkman entirely, which reads like
+ * a dead device and is really a disabled gadget. Only a power-cycle got it back.
+ *
+ * That is a boot-escape-ladder violation one layer down: the thing that re-enables the gadget must
+ * not be the same service whose wedging disabled it. So this path depends on strictly less — a
+ * property write, and failing that a direct sysfs write, with no pst service in the loop at all.
+ *
+ * init's `adb` block is tried FIRST because it also restores functions and the ids; writing
+ * `enable 1` by hand only turns the radio back on with whatever half-written composition is there. */
+#define ENABLE_NODE "/sys/class/android_usb/android0/enable"
+
+static int usb_rescue(void)
+{
+    char buf[32] = {0};
+    FILE *f = fopen(ENABLE_NODE, "r");
+    if (f) {
+        if (fgets(buf, sizeof buf, f)) buf[strcspn(buf, "\r\n")] = 0;
+        fclose(f);
+    }
+    if (strcmp(buf, "1") == 0) {
+        fprintf(stderr, "cinder-msc: usb-rescue: gadget already enabled — nothing to do\n");
+        return 0;
+    }
+    fprintf(stderr, "cinder-msc: usb-rescue: enable='%s' — the gadget is OFF THE BUS. "
+                    "Re-driving init's adb block.\n", buf);
+    if (system(SETPROP "sys.sony.config adb") != 0)
+        fprintf(stderr, "cinder-msc: usb-rescue: setprop returned non-zero\n");
+    wait_prop("sys.usb.state", "adb", 60);
+
+    buf[0] = 0;
+    f = fopen(ENABLE_NODE, "r");
+    if (f) {
+        if (fgets(buf, sizeof buf, f)) buf[strcspn(buf, "\r\n")] = 0;
+        fclose(f);
+    }
+    if (strcmp(buf, "1") == 0) {
+        fprintf(stderr, "cinder-msc: usb-rescue: back on the bus via init\n");
+        return 0;
+    }
+    fprintf(stderr, "cinder-msc: usb-rescue: init did not take (enable='%s') — writing the node\n", buf);
+    if (write_node(ENABLE_NODE, "1") != 0) {
+        fprintf(stderr, "cinder-msc: usb-rescue: write %s failed — a power-cycle is the only way back\n",
+                ENABLE_NODE);
+        return 1;
+    }
+    fprintf(stderr, "cinder-msc: usb-rescue: wrote enable=1 directly\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
@@ -288,5 +343,6 @@ int main(int argc, char **argv)
      * fourth setuid binary to write one property would be worse. */
     if (strcmp(argv[1], "dac-on")  == 0) return dac_on();
     if (strcmp(argv[1], "dac-off") == 0) return dac_off();
+    if (strcmp(argv[1], "usb-rescue") == 0) return usb_rescue();
     return 2;
 }

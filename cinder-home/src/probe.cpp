@@ -1303,6 +1303,873 @@ static int pollnodes_probe(int secs) {
     return 0;
 }
 
+// ── --uaccap : IS THE HOST ACTUALLY STREAMING? ──────────────────────────────────────────────────
+// The one question two rounds of testing could not answer. cinder-home's log says
+// `GetStatus format=0, capture=cardN closed` for the whole session — but "closed" describes OUR
+// side of the ALSA link, so it is silent about whether the PC is sending anything at all. The
+// service reporting no format is equally ambiguous: no host audio, or a host that IS streaming and
+// a Sony service that never noticed.
+//
+// So ask the kernel directly, bypassing Sony entirely: open the UAC gadget's capture PCM and read
+// it. Data with a non-zero peak proves the host is streaming and that the capture is available to
+// us — which, if the service is still reporting kFormatNone, means the render path can be built
+// WITHOUT UsbDeviceAudioPlayerService (capture card N -> write hw:0,4), exactly the shape the LDAC
+// bridge already has.
+//
+// Run it detached while in DAC mode and read the log afterwards — adb cannot survive the gadget
+// switch on a usbipd passthrough:
+//     /tmp/cinder-probe --uaccap 20 > /contents/uaccap.log 2>&1
+static int uaccap_probe(int secs, int delay) {
+    install_diagnostics();
+    if (secs <= 0) secs = 15;
+
+    // ARM IT AND LET GO. The measurement has to happen while the gadget is in UAC mode with the PC
+    // streaming — and that is exactly the state in which adb cannot exist here: usbipd attaches the
+    // WHOLE device to WSL, so a device attached for adb is a device Windows cannot use as a sound
+    // card. The two are mutually exclusive over this passthrough.
+    //
+    // So the caller starts this from a normal adb shell, it returns immediately, and the child does
+    // the work `delay` seconds later — after the user has toggled DAC on and started playback.
+    // setsid + SIG_IGN first, for the same reason the --usbmgr restore child needs them: the shell
+    // that launched us dies with the gadget switch, and a child in that session dies with it.
+    if (delay > 0) {
+        pid_t kid = fork();
+        if (kid != 0) {
+            std::fprintf(stderr, "[cinder-probe] uaccap: armed (pid %d) — measuring %ds of capture "
+                                 "in %ds. Toggle USB-DAC on and start playback on the PC now; read "
+                                 "/contents/uaccap.log afterwards.\n", (int)kid, secs, delay);
+            std::fflush(nullptr);
+            return 0;
+        }
+        signal(SIGHUP, SIG_IGN);
+        signal(SIGINT, SIG_IGN);
+        signal(SIGTERM, SIG_IGN);
+        setsid();
+        sleep((unsigned)delay);
+    }
+
+    char dev[32] = {0};
+    snd_pcm_t* pcm = nullptr;
+    int rc = -ENODEV;
+    // card0 is the built-in codec; the UAC gadget lands on whatever index is free.
+    for (int card = 1; card < 8; card++) {
+        std::snprintf(dev, sizeof dev, "hw:%d,0", card);
+        rc = snd_pcm_open(&pcm, dev, SND_PCM_STREAM_CAPTURE, 0);
+        if (rc == 0) break;
+        if (rc == -EBUSY) {
+            std::fprintf(stderr, "[cinder-probe] uaccap: %s is BUSY — something already owns the "
+                                 "capture (that would be good news: Sony's service took it)\n", dev);
+            return 0;
+        }
+    }
+    if (rc != 0) {
+        std::fprintf(stderr, "[cinder-probe] uaccap: no UAC capture PCM could be opened (%s). "
+                             "Is the gadget in UAC mode?\n", snd_strerror(rc));
+        return 1;
+    }
+    std::fprintf(stderr, "[cinder-probe] uaccap: opened %s for capture\n", dev);
+
+    // Let ALSA pick what the gadget supports rather than imposing a rate — the host decides the
+    // format here, and forcing one is how you get a spurious EINVAL that reads like "no audio".
+    unsigned rate = 48000;
+    int dir = 0;
+    rc = snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+                            2, rate, 1, 200000);
+    if (rc < 0) {
+        std::fprintf(stderr, "[cinder-probe] uaccap: set_params(S16_LE 48k stereo) -> %s; "
+                             "retrying S32_LE 44.1k\n", snd_strerror(rc));
+        rate = 44100;
+        rc = snd_pcm_set_params(pcm, SND_PCM_FORMAT_S32_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+                                2, rate, 1, 200000);
+        if (rc < 0) {
+            std::fprintf(stderr, "[cinder-probe] uaccap: set_params failed: %s\n", snd_strerror(rc));
+            snd_pcm_close(pcm); return 1;
+        }
+    }
+    (void)dir;
+    snd_pcm_prepare(pcm);   // readi auto-starts a prepared stream; snd_pcm_start isn't in the
+                            // ALSA subset this probe declares, and isn't needed for RW_INTERLEAVED
+
+    short buf[2048];
+    long  frames_total = 0, reads_ok = 0, reads_err = 0;
+    int   peak = 0;
+    time_t end = time(nullptr) + secs;
+    while (time(nullptr) < end) {
+        wd_arm(10);
+        snd_pcm_sframes_t got = snd_pcm_readi(pcm, buf, sizeof buf / (2 * sizeof(short)));
+        wd_disarm();
+        if (got < 0) {
+            reads_err++;
+            if (got == -EPIPE) { snd_pcm_prepare(pcm); continue; }
+            if (reads_err > 200) break;
+            usleep(5000);
+            continue;
+        }
+        reads_ok++;
+        frames_total += got;
+        for (long i = 0; i < got * 2; i++) {
+            int v = buf[i] < 0 ? -buf[i] : buf[i];
+            if (v > peak) peak = v;
+        }
+    }
+    snd_pcm_close(pcm);
+
+    std::fprintf(stderr, "[cinder-probe] uaccap: %s  reads_ok=%ld reads_err=%ld frames=%ld "
+                         "peak=%d/32767\n", dev, reads_ok, reads_err, frames_total, peak);
+    if (frames_total > 0 && peak > 64) {
+        clog_("uaccap: >>> THE HOST IS STREAMING AUDIO and the capture is ours to read. If "
+              "cinder-home still logs kFormatNone, Sony's UsbDeviceAudioPlayerService is the "
+              "broken link — bypass it: capture this PCM and write hw:0,4 directly.");
+    } else if (frames_total > 0) {
+        clog_("uaccap: frames arrived but they are SILENT (peak ~0). The host has the device "
+              "selected but is playing nothing, or is muted.");
+    } else {
+        clog_("uaccap: NO frames. The host is not streaming to this gadget at all — check the PC's "
+              "output device selection.");
+    }
+    std::fflush(nullptr);
+    return 0;
+}
+
+// ── --usbmgr : WHO OWNS THE USB GADGET ──────────────────────────────────────────────────────────
+// Reported 2026-08-11: mass storage misbehaves, and USB-DAC may never have produced audio. Both
+// come from the same thing — the gadget has TWO owners that do not know about each other:
+//
+//   * init (/init.usbcfg.rc), on property:sys.sony.config={adb,uac,msc}. Writes functions,
+//     idVendor, idProduct (hardcoded 0B8B/0B8C/0B8D), AND f_mass_storage/lun/file, and it is the
+//     ONLY thing that runs unmount_msc1 (umount /contents) / mount_msc1 (mount_partition contents).
+//   * UsbMgrServiceFw (UsbMgrImplWmport). SetUsbFunction -> UpdateUsbFunction -> SetUac()/SetMsc(),
+//     which write idVendor/idProduct (from DmpFeature, hence the 0ca0 nobody could explain),
+//     functions and MaxPower — and NEVER touch lun/file or the mount.
+//
+// So MSC ends up advertising a mass-storage device with no medium, and a UAC switch made only
+// through the property gets reverted the next time UsbMgr reconfigures (cable insert, resume,
+// OnDeviceConnectedChanged...). Full evidence: analysis/E_usbdac_ldac/RE_findings.md, 2026-08-11.
+//
+// READ-ONLY by default, and worth running exactly as-is first: it asks the service what function it
+// believes is active and prints that next to what the gadget actually says. If those disagree, the
+// diagnosis above is confirmed on this unit rather than inferred from the disassembly.
+//
+// `--usbmgr uac|msc` is the experiment. It bounces adbd (UpdateUsbFunction stops it around the
+// switch), so it forks a restore child FIRST that puts the previous function back after the window
+// no matter what happens to the parent — same rule as --dispoff, and the reason this is safe to run
+// over adb at all.
+extern "C" void* _ZN3pst8services28UsbMgrServiceFwClientFactory14CreateInstanceEv(void);
+
+// Read from the dispatch switch in UsbMgrImplWmport::UpdateUsbFunction (cmp #2 -> SetMsc,
+// cmp #1 -> SetUac), not guessed.
+enum { USBFN_UAC = 1, USBFN_MSC = 2 };
+
+// Whole vtable recovered from R_ARM_ABS32 relocations — every slot is named, nothing inferred.
+enum { VIDX_SetUsbFunction = 3, VIDX_GetUsbFunction = 4,
+       VIDX_GetCurrentPowerSuppliedMode = 9, VIDX_GetAdbEnabled = 11 };
+
+static const char* usbfn_name(unsigned f) {
+    return f == USBFN_UAC ? "UAC (USB-DAC)" : f == USBFN_MSC ? "MSC (mass storage)" : "??";
+}
+
+static void slurp_(const char* path, char* out, size_t n) {
+    out[0] = 0;
+    FILE* f = std::fopen(path, "r");
+    if (!f) { std::snprintf(out, n, "<absent>"); return; }
+    if (!std::fgets(out, (int)n, f)) std::snprintf(out, n, "<empty>");
+    std::fclose(f);
+    size_t l = std::strlen(out);
+    while (l && (out[l-1] == '\n' || out[l-1] == '\r')) out[--l] = 0;
+    if (!out[0]) std::snprintf(out, n, "<empty>");
+}
+
+static void getprop_(const char* key, char* out, size_t n) {
+    char cmd[128];
+    std::snprintf(cmd, sizeof cmd, "/system/bin/getprop %s", key);
+    out[0] = 0;
+    FILE* f = ::popen(cmd, "r");
+    if (!f) { std::snprintf(out, n, "<popen failed>"); return; }
+    if (!std::fgets(out, (int)n, f)) out[0] = 0;
+    ::pclose(f);
+    size_t l = std::strlen(out);
+    while (l && (out[l-1] == '\n' || out[l-1] == '\r')) out[--l] = 0;
+    if (!out[0]) std::snprintf(out, n, "<empty>");
+}
+
+static void usbmgr_dump_gadget(void) {
+    char fn[128], vid[64], pid[64], lun[256], cfg[64], st[64], msc1[128], en[32];
+    slurp_("/sys/class/android_usb/android0/functions", fn, sizeof fn);
+    slurp_("/sys/class/android_usb/android0/idVendor", vid, sizeof vid);
+    slurp_("/sys/class/android_usb/android0/idProduct", pid, sizeof pid);
+    slurp_("/sys/class/android_usb/android0/enable", en, sizeof en);
+    slurp_("/sys/class/android_usb/android0/f_mass_storage/lun/file", lun, sizeof lun);
+    getprop_("sys.sony.config", cfg, sizeof cfg);
+    getprop_("sys.usb.state", st, sizeof st);
+    getprop_("sys.usb.msc1", msc1, sizeof msc1);
+    std::fprintf(stderr,
+        "[cinder-probe] usbmgr: gadget   functions=%s enable=%s %s:%s\n"
+        "[cinder-probe] usbmgr: msc      lun/file=%s  (sys.usb.msc1=%s)\n"
+        "[cinder-probe] usbmgr: init     sys.sony.config=%s  sys.usb.state=%s\n",
+        fn, en, vid, pid, lun, msc1, cfg, st);
+    // The medium check is the whole mass-storage bug in one line.
+    if (std::strstr(fn, "mass_storage") && (std::strcmp(lun, "<empty>") == 0 ||
+                                            std::strcmp(lun, "<absent>") == 0)) {
+        std::fprintf(stderr, "[cinder-probe] usbmgr: >>> the gadget advertises MASS STORAGE with NO "
+                             "BACKING MEDIUM — the host sees a drive with no disk. lun/file is "
+                             "init's job (sys.sony.config=msc), and it has not run.\n");
+    }
+}
+
+static unsigned g_usbmgr_prev = 0;   // what the service believed before we changed it
+
+static int usbmgr_probe(unsigned want, int window_secs) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* c = _ZN3pst8services28UsbMgrServiceFwClientFactory14CreateInstanceEv();
+    if (!c) { clog_("usbmgr: UsbMgrServiceFwClientFactory returned null"); g_pump_run = false; _exit(1); }
+
+    // Req/Rsp are 4-byte structs (SizeOfReqMsg_SetUsbFunction returns 4; WriteReqMsg does one
+    // Alloc(4) and copies one word from offset 0). Oversized + zeroed anyway: over-allocating an
+    // out-param is free, under-allocating smashes the stack.
+    typedef void (*fnrr)(void*, const void*, void*);
+    unsigned req[8], rsp[8];
+
+    std::memset(req, 0, sizeof req); std::memset(rsp, 0, sizeof rsp);
+    wd_arm(10);
+    try { ((fnrr)vslot(c, VIDX_GetUsbFunction))(c, req, rsp); }
+    catch (...) { clog_("usbmgr: GetUsbFunction threw"); }
+    wd_disarm();
+    // The GET responses carry TWO words — SizeOfRspMsg_GetUsbFunction returns 8 while
+    // SizeOfRspMsg_SetUsbFunction returns 4 — so the layout is { uint32_t result; uint32_t value; }
+    // and the answer is at offset 4, NOT 0. Measured on device before it was read back out of the
+    // size functions: the first run printed `rsp 0 2 0 0` with the gadget in mass storage, i.e.
+    // result=0 (ok) and value=2 (MSC). Reading rsp[0] here would report "0 (??)" forever.
+    g_usbmgr_prev = rsp[1];
+    std::fprintf(stderr, "[cinder-probe] usbmgr: service  GetUsbFunction = %u  (%s)  "
+                         "[result=%u  raw %u %u %u %u]\n",
+                 rsp[1], usbfn_name(rsp[1]), rsp[0], rsp[0], rsp[1], rsp[2], rsp[3]);
+
+    std::memset(req, 0, sizeof req); std::memset(rsp, 0, sizeof rsp);
+    wd_arm(10);
+    try { ((fnrr)vslot(c, VIDX_GetAdbEnabled))(c, req, rsp); }
+    catch (...) { clog_("usbmgr: GetAdbEnabled threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] usbmgr: service  GetAdbEnabled  = %u  [result=%u]\n",
+                 rsp[1], rsp[0]);
+
+    usbmgr_dump_gadget();
+
+    if (want == 0) {
+        clog_("usbmgr: read-only. If the service's function disagrees with `functions` above, the "
+              "two owners are fighting — that is the bug. Re-run as --usbmgr uac|msc [secs] to "
+              "switch through the service (arms a restore child first).");
+        g_pump_run = false;
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    // THE ESCAPE FIRST. UpdateUsbFunction stops adbd around the switch, so if this probe loses the
+    // shell we still need the gadget put back. The child holds no client of its own until it needs
+    // one, and does nothing except restore — it depends on strictly less than what it rescues.
+    if (window_secs <= 0) window_secs = 60;
+    unsigned prev = g_usbmgr_prev ? g_usbmgr_prev : USBFN_MSC;
+    pid_t kid = fork();
+    if (kid == 0) {
+        // DETACH FIRST, before anything else can go wrong.
+        //
+        // Learned the hard way 2026-08-11: the first version of this child stayed in the parent's
+        // process group and session. Switching to UAC re-enumerates the gadget, `adb` drops, adbd
+        // SIGHUPs the group — and the restore child died with the very shell it existed to rescue,
+        // leaving the device in UAC with no way back in. That is precisely the escape-ladder rule
+        // being broken: an escape must depend on STRICTLY LESS than the thing it rescues, and a
+        // child sharing the dying session depends on exactly as much.
+        //
+        // setsid() puts it in its own session with no controlling terminal, and SIG_IGN on HUP/INT
+        // means even a group-wide signal cannot take it.
+        signal(SIGHUP, SIG_IGN);
+        signal(SIGINT, SIG_IGN);
+        signal(SIGTERM, SIG_IGN);
+        setsid();
+        // Child: no framework yet — build one, wait out the window, put the old function back.
+        sleep((unsigned)window_secs);
+        pst::core::Framework& cfw = pst::core::Framework::GetReference();
+        cfw.StartForApplication(std::function<void()>(&pump_finish), true);
+        void* cc = _ZN3pst8services28UsbMgrServiceFwClientFactory14CreateInstanceEv();
+        if (cc) {
+            unsigned rq[8], rp[8];
+            std::memset(rq, 0, sizeof rq); std::memset(rp, 0, sizeof rp);
+            rq[0] = prev;
+            try { ((fnrr)vslot(cc, VIDX_SetUsbFunction))(cc, rq, rp); } catch (...) {}
+        }
+        _exit(0);
+    }
+    std::fprintf(stderr, "[cinder-probe] usbmgr: restore child pid=%d armed — puts function %u (%s) "
+                         "back in %ds\n", (int)kid, prev, usbfn_name(prev), window_secs);
+
+    std::memset(req, 0, sizeof req); std::memset(rsp, 0, sizeof rsp);
+    req[0] = want;
+    wd_arm(15);
+    try { ((fnrr)vslot(c, VIDX_SetUsbFunction))(c, req, rsp); }
+    catch (...) { clog_("usbmgr: SetUsbFunction threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] usbmgr: SetUsbFunction(%u = %s) -> rsp %u\n",
+                 want, usbfn_name(want), rsp[0]);
+
+    sleep(2);                       // let UpdateUsbFunction finish its stop-adbd/rewrite/start dance
+    usbmgr_dump_gadget();
+    if (want == USBFN_UAC) {
+        clog_("usbmgr: if `functions` now reads audio_func,adb the service owns the gadget and the "
+              "PC should enumerate a sound card. Audio still needs the host to STREAM and "
+              "UsbDeviceAudioPlayerServiceClient::Start (slot 4) to be called once the format "
+              "arrives — see OnChangedFormat, listener slot 2.");
+    } else {
+        clog_("usbmgr: MSC through the service sets the DESCRIPTOR ONLY. Until lun/file points at "
+              "/emmc@contents and /contents is unmounted device-side (init's half), the host still "
+              "sees a drive with no medium.");
+    }
+    std::fflush(nullptr);
+    g_pump_run = false;
+    return 0;
+}
+
+// ── --uacgate : WHY DOES UsbDeviceAudioPlayerService SAY kFormatNone FOREVER? ───────────────────
+// Recovered 2026-08-11 by static RE of libUsbDeviceAudioPlayerService.so; this probe exists to
+// measure the three links of the chain the RE exposed, all at once and all read-only.
+//
+// The service does NOT learn the stream format from ALSA, and it does not poll. The chain is:
+//
+//   1. connmgr says the device is enabled.  UsbAudioConnectionMonitor::Open (0x1e1d0) calls
+//      funcarch::connmgr::ConnMgrService::GetDeviceStatus(Device=7, DeviceStatus&) and registers a
+//      DeviceListener. Every status change lands in UsbAudioPlayerCore::NotifyChangeConnectionStatus
+//      (0x16c44) — and THAT function is the gate: `if (status == 1) UsbAudioStreamMonitor::Open()`,
+//      else ClearStreamInfo + StopPlaying. Nothing else opens the monitor.
+//   2. the stream monitor's socket.  UsbAudioStreamMonitor::UacInitHotplugSock (0x1ebf4) is,
+//      instruction for instruction:
+//          socket(AF_NETLINK=16, SOCK_DGRAM=2, 24)          // proto 24 — an MTK/Sony private one
+//          setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE=33, 2048)
+//          bind(fd, {nl_family=16, nl_pid=getpid(), nl_groups=1}, 12)
+//   3. the kernel sends the format.  RecvUACEvent (0x1ef00) recvmsg()s into a 2048-byte buffer,
+//      SKIPS THE FIRST 16 BYTES (the nlmsghdr), then splits the rest on '\n'/'\r' and hands each
+//      line to ParseStreamInfo, which matches "ACTION=", "FORMAT=", "FREQ=", "BITWIDTH=" with
+//      values from {STOP,PLAY,NONE} and the frequency table 32000..11289600.
+//
+// So `GetStatus format=0` has exactly three possible causes, and this probe separates them:
+//   * connmgr device 7 never goes enabled -> link 1 is broken, the socket is never even opened;
+//   * the socket is open but the kernel never sends -> link 3, i.e. the host is not streaming (or
+//     f_audio_func never armed), and no amount of calling Start() will help;
+//   * events DO arrive -> the service is being told and is failing to act, and cinder-home should
+//     stop asking it: read the netlink event ourselves and bridge hw:4,0 capture straight out.
+//
+// Nothing here writes anything. Netlink group 1 is multicast, so listening alongside Sony's own
+// service is invisible to it.
+//
+//   /tmp/cinder-probe --uacgate [secs] [delay] > /contents/uacgate.log 2>&1
+// `delay` forks a detached child that starts measuring that many seconds later — the same trick
+// --uaccap needs, because attaching the gadget for adb is exactly what stops the PC using it as a
+// sound card.
+extern "C" {
+// libConnMgrService.so — the funcarch wrapper. It is stateless (the ctor at 0x60bc only touches the
+// stack guard), so a dummy `this` is legitimate: every method re-fetches the client by name via
+// Framework::GetServiceClient("ConnMgrServiceFw").
+int _ZN3pst8services8funcarch7connmgr14ConnMgrService15GetDeviceStatusERKNS1_6DeviceERNS2_12DeviceStatusE(
+        void* self, const int* device, void* status_out);
+int _ZN3pst8services8funcarch7connmgr14ConnMgrService19GetUsbHostSuspendedEv(void* self);
+// libUsbDeviceConnectionService.so — the THIRD gadget owner, and the only complete one. See the
+// long note in main.cpp next to usb_set_device_type(): SetDeviceType (client vtable slot 5) is what
+// rewrites the gadget AND attaches/detaches the mass-storage medium AND makes the connect event
+// fire that opens the audio service's netlink socket.
+void* _ZN3pst8services39UsbDeviceConnectionServiceClientFactory14CreateInstanceEv(void);
+}
+enum { USBDT_ADB = 1, USBDT_MSC = 2, USBDT_UAC = 3 };   // cmp #1/#2/#3 dispatch @0xab98
+
+static const char* usbdt_name(unsigned t) {
+    return t == USBDT_UAC ? "Uac" : t == USBDT_MSC ? "Msc" : t == USBDT_ADB ? "Adb" : "??";
+}
+
+static bool usbdt_set(unsigned t) {
+    enum { VIDX_SetDeviceType = 5 };
+    void* cli = nullptr;
+    try { cli = _ZN3pst8services39UsbDeviceConnectionServiceClientFactory14CreateInstanceEv(); }
+    catch (...) { cli = nullptr; }
+    if (!cli) { clog_("usbdt: factory returned null"); return false; }
+    typedef int (*fnr)(void*, const unsigned*);
+    int rc = -1;
+    wd_arm(20);
+    try { rc = ((fnr)vslot(cli, VIDX_SetDeviceType))(cli, &t); }
+    catch (...) { wd_disarm(); clog_("usbdt: SetDeviceType threw"); return false; }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] usbdt: SetDeviceType(%u = %s) rc=%d\n", t, usbdt_name(t), rc);
+    std::fflush(nullptr);
+    return true;
+}
+
+// The names ConnMgrServiceFw prints for Device (its own dump: "device[%u:%s]"), in the order they
+// sit in .rodata. The first index is NOT confirmed — the strings are contiguous so the pointer
+// table could not be recovered statically — which is the other reason this probe enumerates the
+// whole range and prints it: one run on a device with a jack plugged in pins the mapping.
+static const char* connmgr_device_guess(int d) {
+    static const char* n[] = { "LineIn", "BtlHeadphone", "SeHeadphone", "LineOut", "UacDevice",
+                               "A2dpSink", "MscHost", "UacHost", "AvrcpTg", "HostCable",
+                               "SdCard0", "SdCard1", "Invalid" };
+    return (d >= 0 && d < (int)(sizeof n / sizeof n[0])) ? n[d] : "?";
+}
+
+// DeviceStatus is 8 bytes: funcarch::GetDeviceStatus copies exactly one d-register (vst1.8 {d16})
+// out of the reply at offset 4, and UsbAudioConnectionMonitor reads word 0 and compares it to 1.
+struct ConnDeviceStatus { unsigned enabled; unsigned connected; };
+
+static void uacgate_dump_connmgr(const char* when) {
+    char self[64];                                  // stateless: any address will do as `this`
+    std::fprintf(stderr, "[cinder-probe] uacgate: connmgr device status (%s)\n", when);
+    for (int d = 0; d <= 12; d++) {
+        ConnDeviceStatus st;
+        std::memset(&st, 0xEE, sizeof st);
+        int rc = -1;
+        wd_arm(8);
+        try {
+            rc = _ZN3pst8services8funcarch7connmgr14ConnMgrService15GetDeviceStatusERKNS1_6DeviceERNS2_12DeviceStatusE(
+                     self, &d, &st);
+        } catch (...) { rc = -2; }
+        wd_disarm();
+        if (rc != 0) {
+            std::fprintf(stderr, "[cinder-probe] uacgate:   device %2d (%-12s) rc=%d\n",
+                         d, connmgr_device_guess(d), rc);
+            continue;
+        }
+        std::fprintf(stderr, "[cinder-probe] uacgate:   device %2d (%-12s) enabled=%u connected=%u%s\n",
+                     d, connmgr_device_guess(d), st.enabled, st.connected,
+                     d == 7 ? "   <-- THE GATE: UsbAudioConnectionMonitor watches this one" : "");
+    }
+    int susp = -1;
+    wd_arm(8);
+    try { susp = _ZN3pst8services8funcarch7connmgr14ConnMgrService19GetUsbHostSuspendedEv(self); }
+    catch (...) {}
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] uacgate:   GetUsbHostSuspended = %d\n", susp);
+}
+
+static void uacgate_dump_uacsysfs(void) {
+    static const char* n[] = { "f_allow", "f_valid", "f_start", "f_thresh", "f_plus", "f_minus" };
+    char line[512];
+    int  off = std::snprintf(line, sizeof line, "[cinder-probe] uacgate: f_audio_func ");
+    for (size_t i = 0; i < sizeof n / sizeof n[0]; i++) {
+        char p[128], v[64];
+        std::snprintf(p, sizeof p, "/sys/class/android_usb/android0/f_audio_func/%s", n[i]);
+        slurp_(p, v, sizeof v);
+        off += std::snprintf(line + off, sizeof line - off, "%s=%s ", n[i], v);
+        if (off >= (int)sizeof line - 40) break;
+    }
+    std::fprintf(stderr, "%s\n", line);
+}
+
+static void uacgate_dump_cards(void) {
+    char v[128];
+    slurp_("/proc/asound/cards", v, sizeof v);
+    std::fprintf(stderr, "[cinder-probe] uacgate: /proc/asound/cards[0] = %s\n", v);
+    for (int c = 1; c <= 8; c++) {
+        char p[96];
+        std::snprintf(p, sizeof p, "/proc/asound/card%d/pcm0c/sub0/status", c);
+        FILE* f = std::fopen(p, "r");
+        if (!f) continue;
+        char st[96] = {0};
+        if (std::fgets(st, sizeof st, f)) {
+            size_t l = std::strlen(st);
+            while (l && (st[l-1] == '\n' || st[l-1] == '\r')) st[--l] = 0;
+        }
+        std::fclose(f);
+        std::fprintf(stderr, "[cinder-probe] uacgate: capture card%d pcm0c = %s%s\n", c, st,
+                     c == 4 ? "   (hw:4,0 — the device Sony's UsbAudioPlayerInhal hardcodes)" : "");
+    }
+}
+
+// Netlink proto 24 only EXISTS while the UAC gadget function is loaded — with the gadget at
+// mass_storage,adb this returns ENOPROTOOPT ("Protocol not supported"), which is itself a clean
+// yes/no on whether the UAC function is live. So it gets retried after engaging.
+static int uacgate_open_nl(bool quiet) {
+    int fd = socket(16 /*AF_NETLINK*/, SOCK_DGRAM, 24);
+    if (fd < 0) {
+        if (!quiet)
+            std::fprintf(stderr, "[cinder-probe] uacgate: socket(AF_NETLINK, SOCK_DGRAM, 24) "
+                                 "failed: %s  (the UAC function is not loaded)\n", std::strerror(errno));
+        return -1;
+    }
+    int rcvbuf = 2048;
+    setsockopt(fd, SOL_SOCKET, 33 /*SO_RCVBUFFORCE*/, &rcvbuf, sizeof rcvbuf);
+    // struct sockaddr_nl, laid out by hand so this file needs no linux/netlink.h.
+    struct { unsigned short family; unsigned short pad; unsigned pid; unsigned groups; } sa;
+    std::memset(&sa, 0, sizeof sa);
+    sa.family = 16;
+    sa.pid    = (unsigned)getpid();
+    sa.groups = 1;
+    if (bind(fd, (struct sockaddr*)&sa, 12) < 0) {
+        std::fprintf(stderr, "[cinder-probe] uacgate: bind(nl_groups=1) failed: %s\n",
+                     std::strerror(errno));
+        close(fd);
+        return -1;
+    }
+    clog_("uacgate: netlink proto 24 group 1 bound — the same socket Sony's stream monitor uses");
+    return fd;
+}
+
+static int uacgate_probe(int secs, int delay, int engage) {
+    install_diagnostics();
+    if (secs <= 0) secs = 30;
+
+    if (delay > 0) {
+        pid_t kid = fork();
+        if (kid != 0) {
+            std::fprintf(stderr, "[cinder-probe] uacgate: armed (pid %d) — listening for %ds of UAC "
+                                 "netlink in %ds. Put the player in USB-DAC mode and start playback "
+                                 "on the PC now.\n", (int)kid, secs, delay);
+            std::fflush(nullptr);
+            return 0;
+        }
+        signal(SIGHUP, SIG_IGN);
+        signal(SIGINT, SIG_IGN);
+        signal(SIGTERM, SIG_IGN);
+        setsid();
+        sleep((unsigned)delay);
+    }
+
+    // Open the socket FIRST, before any of the slow service calls: a format event that arrives
+    // while we are still enumerating connmgr is an event we would otherwise miss.
+    int fd = uacgate_open_nl(false);
+
+    uacgate_dump_uacsysfs();
+    usbmgr_dump_gadget();
+    uacgate_dump_cards();
+
+    // connmgr needs the framework pump, so it comes after the socket is already listening.
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    uacgate_dump_connmgr("before");
+
+    // ── optional: DO the switch, so the whole chain can be measured in one run ──────────────────
+    // THE ESCAPE FIRST, as always. Switching to Uac re-enumerates the gadget; over a usbipd
+    // passthrough that detaches the binding and adb goes with it, so the thing that puts the gadget
+    // back must not depend on this shell, this process group, or this process surviving.
+    if (engage) {
+        pid_t kid = fork();
+        if (kid == 0) {
+            signal(SIGHUP, SIG_IGN);
+            signal(SIGINT, SIG_IGN);
+            signal(SIGTERM, SIG_IGN);
+            setsid();
+            sleep((unsigned)(secs + 30));
+            pst::core::Framework& cfw = pst::core::Framework::GetReference();
+            cfw.StartForApplication(std::function<void()>(&pump_finish), true);
+            usbdt_set(USBDT_ADB);
+            _exit(0);
+        }
+        std::fprintf(stderr, "[cinder-probe] uacgate: restore child pid=%d armed — SetDeviceType(Adb) "
+                             "in %ds\n", (int)kid, secs + 30);
+        usbdt_set(USBDT_UAC);
+        sleep(3);                       // let adbd bounce and the uevent land
+        uacgate_dump_uacsysfs();
+        usbmgr_dump_gadget();
+        uacgate_dump_cards();
+        uacgate_dump_connmgr("after SetDeviceType(Uac)");
+        if (fd < 0) fd = uacgate_open_nl(false);   // proto 24 should exist now
+    }
+
+    long events = 0;
+    time_t end = time(nullptr) + secs;
+    time_t next_beat = time(nullptr) + 5;
+    while (time(nullptr) < end) {
+        struct pollfd pfd;
+        pfd.fd = fd; pfd.events = POLLIN; pfd.revents = 0;
+        int pr = (fd >= 0) ? poll(&pfd, 1, 1000) : (usleep(200000), 0);
+        if (pr > 0 && (pfd.revents & POLLIN)) {
+            char buf[2048];
+            ssize_t got = recv(fd, buf, sizeof buf - 1, 0);
+            if (got > 16) {
+                buf[got] = 0;
+                events++;
+                // Sony skips 16 bytes of nlmsghdr, so we do too; the payload is NUL/newline
+                // separated key=value text.
+                std::fprintf(stderr, "[cinder-probe] uacgate: EVENT #%ld (%d bytes payload): ",
+                             events, (int)(got - 16));
+                for (ssize_t i = 16; i < got; i++) {
+                    unsigned char ch = (unsigned char)buf[i];
+                    if (ch == 0 || ch == '\n' || ch == '\r') std::fputc('|', stderr);
+                    else if (ch >= 32 && ch < 127)           std::fputc(ch, stderr);
+                    else                                     std::fprintf(stderr, "\\x%02x", ch);
+                }
+                std::fputc('\n', stderr);
+                std::fflush(stderr);
+            }
+        }
+        if (time(nullptr) >= next_beat) {
+            next_beat = time(nullptr) + 5;
+            uacgate_dump_uacsysfs();
+            uacgate_dump_cards();
+            if (fd < 0) fd = uacgate_open_nl(true);   // the function may load late
+        }
+    }
+    if (fd >= 0) close(fd);
+    uacgate_dump_connmgr("after");
+    if (engage) {
+        usbdt_set(USBDT_ADB);           // don't make the user wait out the restore child
+        sleep(2);
+        usbmgr_dump_gadget();
+    }
+
+    std::fprintf(stderr, "[cinder-probe] uacgate: %ld netlink event(s) in %ds\n", events, secs);
+    if (events > 0) {
+        clog_("uacgate: >>> the kernel IS announcing the stream. If cinder-home still logs "
+              "kFormatNone, UsbDeviceAudioPlayerService is not acting on it — read this socket "
+              "ourselves and bridge hw:4,0 capture directly, the same shape as the LDAC bridge.");
+    } else {
+        clog_("uacgate: no events. Compare the two dumps above: connmgr device 7 never enabled "
+              "means the service never even opened this socket (link 1); device 7 enabled with "
+              "f_valid/f_start still 0 means the HOST is not streaming (link 3).");
+    }
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);   // like every other probe mode: returning unwinds through the live pump thread and
+                // dies with "Fatal error during phase 1 unwinding" AFTER all output, which reads
+                // like a probe failure when it is only a teardown race.
+}
+
+// ── --funcmode : FuncMode, the thing that actually gates USB-DAC ────────────────────────────────
+// Every previous round drove the USB gadget directly (sys.sony.config, UsbMgrServiceFw::
+// SetUsbFunction, UsbDeviceConnectionService::SetDeviceType) and the audio service stayed silent.
+// It stayed silent because the gadget is not what it is watching. The real chain, recovered from
+// libConnMgrServiceFw.so:
+//
+//   ConnGlueUsbHost::CnvStatus(Device, connected, FuncMode, DeviceStatus& out)   @0x19f24
+//       if (!connected)      out = { 2, 0 };
+//       else if (dev != 7)   out = { 2, 1 };
+//       else                 out = { 2, (FuncMode == 1) };     <-- device 7 == UacHost
+//
+// and UsbAudioConnectionMonitor::Open (@0x1e1d0, libUsbDeviceAudioPlayerService.so) does
+// GetDeviceStatus(Device{7}, st) and believes it only when the word it reads is 1. So the gate on
+// USB-DAC is not the descriptor, not the connect event, not the netlink socket — it is
+// **FuncMode == 1**, and nothing we have ever called changed FuncMode.
+//
+// The names come from a std::map<FuncMode,const char*> that funcarch::GetName builds inline
+// (@0x7e00, libFuncMgrServiceFw.so): eight keys, 0..7, against the contiguous .rodata run at
+// 0xba69 — so the enum below is read off the binary, not guessed. GetCurrentFuncMode returns 9 of
+// its own accord when the binder call fails, which is why "Invalid" is a fallback and not a key.
+//
+// FuncMgrServiceServiceImpl::EnterFuncMode (@0x7fb4) is what stock runs when the user picks
+// USB-DAC in Settings, and it is three calls under one mutex, in this order:
+//       FireRequireExitFuncMode(current)                 (listeners may veto)
+//       usbmgr::UsbMgrService::SetUsbFunction(...)        <-- the only step we were doing
+//       connmgr::ConnMgrService::SetDeviceHandleRules(...)  <-- publishes device 7
+//       pathmgr::PathMgrService::SetPath(...)             <-- the audio routing path
+// It also early-outs if the requested mode already equals the current one, so a no-op result is
+// meaningful rather than a failure.
+extern "C" {
+// libFuncMgrService.so — the funcarch wrapper, stateless exactly like ConnMgrService above: the
+// ctor at 0x5d84 only reads the stack guard, and each method re-fetches the client by name via
+// Framework::GetServiceClient("FuncMgrServiceFw"). A dummy `this` is therefore legitimate.
+int  _ZN3pst8services8funcarch7funcmgr14FuncMgrService18GetCurrentFuncModeEv(void* self);
+bool _ZN3pst8services8funcarch7funcmgr14FuncMgrService13EnterFuncModeERKNS1_8FuncModeE(
+        void* self, const int* mode);
+}
+
+enum { FM_MEDIAPLAY = 0, FM_USBDAC = 1, FM_A2DPSINK = 2, FM_FM = 3,
+       FM_DIRECTREC = 4, FM_DMR = 5, FM_DMS = 6, FM_INITIAL = 7, FM_INVALID = 9 };
+
+static const char* funcmode_name(int m) {
+    static const char* n[] = { "MediaPlay", "UsbDac", "A2dpSink", "Fm",
+                               "DirectRec", "Dmr", "Dms", "Initial" };
+    return (m >= 0 && m < (int)(sizeof n / sizeof n[0])) ? n[m] : "Invalid";
+}
+
+static int funcmode_get(void) {
+    char self[64];
+    int m = -1;
+    wd_arm(8);
+    try { m = _ZN3pst8services8funcarch7funcmgr14FuncMgrService18GetCurrentFuncModeEv(self); }
+    catch (...) { m = -2; }
+    wd_disarm();
+    return m;
+}
+
+static void funcmode_report(const char* when) {
+    int m = funcmode_get();
+    std::fprintf(stderr, "[cinder-probe] funcmode: current = %d (%s)   [%s]\n",
+                 m, funcmode_name(m), when);
+    std::fflush(nullptr);
+}
+
+// The bool this returns is NOT a result. Measured 2026-08-11: both EnterFuncMode(1) and
+// EnterFuncMode(0) returned false on a run where GetCurrentFuncMode, connmgr device 7, the gadget
+// descriptor and /proc/asound all confirmed the transition happened. Same trap as
+// UsbDeviceConnectionServiceClient::SetDeviceType's rc — judge by read-back, never by return value.
+static bool funcmode_enter(int mode) {
+    char self[64];
+    wd_arm(30);
+    try { (void)_ZN3pst8services8funcarch7funcmgr14FuncMgrService13EnterFuncModeERKNS1_8FuncModeE(
+                   self, &mode); }
+    catch (...) { wd_disarm(); clog_("funcmode: EnterFuncMode threw"); return false; }
+    wd_disarm();
+    int now = funcmode_get();
+    std::fprintf(stderr, "[cinder-probe] funcmode: EnterFuncMode(%d = %s) — read-back = %d (%s) %s\n",
+                 mode, funcmode_name(mode), now, funcmode_name(now),
+                 now == mode ? "OK" : "DID NOT TAKE");
+    std::fflush(nullptr);
+    return now == mode;
+}
+
+// EnterFuncMode installs the SERVICE's descriptor, and neither UsbDac (`audio_func`) nor MediaPlay
+// (`mass_storage`) carries the adb interface — so a probe that switches modes and stops there
+// leaves the box with no adb at all, recoverable only by a reboot. That happened on the first run.
+// Re-driving init's adb block is the same lever `cinder-msc usb-rescue` uses, and it is a no-op if
+// adb is already composed in.
+static void funcmode_recompose_adb(void) {
+    clog_("funcmode: re-composing adb into the gadget (setprop sys.sony.config adb)");
+    (void)std::system("setprop sys.sony.config adb");
+    for (int i = 0; i < 60; i++) {
+        char v[128];
+        v[0] = 0;
+        getprop_("sys.usb.state", v, sizeof v);
+        if (std::strstr(v, "adb")) break;
+        usleep(500000);
+    }
+    usbmgr_dump_gadget();
+}
+
+// want < 0 => READ-ONLY. Always run that form first; it cannot change anything.
+static int funcmode_probe(int want, int restore_secs, int watch_secs) {
+    install_diagnostics();
+    if (watch_secs   <= 0) watch_secs   = 30;
+    if (restore_secs <= 0) restore_secs = watch_secs + 60;
+
+    // Detach before doing anything that touches the gadget. SetUsbFunction re-enumerates, adbd
+    // bounces, and this process — a child of adbd — gets SIGHUP'd mid-experiment otherwise, which
+    // would take the in-process restore with it. Read-only runs stay in the foreground.
+    if (want >= 0) {
+        pid_t self = fork();
+        if (self != 0) {
+            std::fprintf(stderr, "[cinder-probe] funcmode: detached (pid %d) — EnterFuncMode(%d = %s), "
+                                 "watch %ds, restore child at %ds. Output is going to the log file, "
+                                 "not this shell.\n",
+                         (int)self, want, funcmode_name(want), watch_secs, restore_secs);
+            std::fflush(nullptr);
+            return 0;
+        }
+        signal(SIGHUP,  SIG_IGN);
+        signal(SIGINT,  SIG_IGN);
+        signal(SIGTERM, SIG_IGN);
+        setsid();
+    }
+
+    int fd = (want == FM_USBDAC) ? uacgate_open_nl(true) : -1;
+
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    funcmode_report("before");
+    uacgate_dump_connmgr("before");
+    usbmgr_dump_gadget();
+    uacgate_dump_uacsysfs();
+    uacgate_dump_cards();
+
+    if (want < 0) {
+        clog_("funcmode: read-only run. device 7 connected=1 requires FuncMode==1 (UsbDac); "
+              "re-run as `--funcmode 1` to make the transition.");
+        g_pump_run = false;
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    // THE ESCAPE FIRST. EnterFuncMode calls SetUsbFunction, which re-enumerates the gadget; over a
+    // usbipd passthrough that detaches the binding and takes adb with it. So the thing that puts
+    // the player back into MediaPlay must not depend on this shell, this process group, or this
+    // process still being alive — same rule as the boot ladder.
+    pid_t kid = fork();
+    if (kid == 0) {
+        signal(SIGHUP, SIG_IGN);
+        signal(SIGINT, SIG_IGN);
+        signal(SIGTERM, SIG_IGN);
+        setsid();
+        sleep((unsigned)restore_secs);
+        pst::core::Framework& cfw = pst::core::Framework::GetReference();
+        cfw.StartForApplication(std::function<void()>(&pump_finish), true);
+        funcmode_enter(FM_MEDIAPLAY);
+        funcmode_recompose_adb();        // or the box comes back with no adb at all
+        _exit(0);
+    }
+    std::fprintf(stderr, "[cinder-probe] funcmode: restore child pid=%d armed — "
+                         "EnterFuncMode(0 = MediaPlay) in %ds\n", (int)kid, restore_secs);
+    std::fflush(nullptr);
+
+    funcmode_enter(want);
+    sleep(3);                            // let the three inner calls land and the uevent settle
+    funcmode_report("after EnterFuncMode");
+    uacgate_dump_connmgr("after EnterFuncMode");
+    usbmgr_dump_gadget();
+    uacgate_dump_uacsysfs();
+    uacgate_dump_cards();
+    if (fd < 0 && want == FM_USBDAC) fd = uacgate_open_nl(false);   // proto 24 should exist now
+
+    long events = 0;
+    time_t end = time(nullptr) + watch_secs;
+    time_t next_beat = time(nullptr) + 5;
+    while (time(nullptr) < end) {
+        struct pollfd pfd;
+        pfd.fd = fd; pfd.events = POLLIN; pfd.revents = 0;
+        int pr = (fd >= 0) ? poll(&pfd, 1, 1000) : (usleep(200000), 0);
+        if (pr > 0 && (pfd.revents & POLLIN)) {
+            char buf[2048];
+            ssize_t got = recv(fd, buf, sizeof buf - 1, 0);
+            if (got > 16) {
+                buf[got] = 0;
+                events++;
+                std::fprintf(stderr, "[cinder-probe] funcmode: EVENT #%ld (%d bytes payload): ",
+                             events, (int)(got - 16));
+                for (ssize_t i = 16; i < got; i++) {
+                    unsigned char ch = (unsigned char)buf[i];
+                    if (ch == 0 || ch == '\n' || ch == '\r') std::fputc('|', stderr);
+                    else if (ch >= 32 && ch < 127)           std::fputc(ch, stderr);
+                    else                                     std::fprintf(stderr, "\\x%02x", ch);
+                }
+                std::fputc('\n', stderr);
+                std::fflush(stderr);
+            }
+        }
+        if (time(nullptr) >= next_beat) {
+            next_beat = time(nullptr) + 5;
+            uacgate_dump_uacsysfs();
+            uacgate_dump_cards();
+            uacgate_dump_connmgr("beat");
+            if (fd < 0 && want == FM_USBDAC) fd = uacgate_open_nl(true);
+        }
+    }
+    if (fd >= 0) close(fd);
+
+    funcmode_enter(FM_MEDIAPLAY);        // don't make the user wait out the restore child
+    sleep(2);
+    funcmode_report("restored");
+    uacgate_dump_connmgr("restored");
+    funcmode_recompose_adb();            // MediaPlay's descriptor has no adb either — put it back
+
+    std::fprintf(stderr, "[cinder-probe] funcmode: %ld netlink event(s) in %ds\n",
+                 events, watch_secs);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 // ── --disp / --dispoff : the PANEL POWER path (battery) ─────────────────────────────────────────
 // Measured 2026-08-11, screen dark + idle + not playing: the system does ~354 context switches a
 // second, and 230 of them belong to two MediaTek kernel threads —
@@ -2230,6 +3097,80 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
         return btinfo_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--uaccap") == 0) {
+        return uaccap_probe(argc > 2 ? std::atoi(argv[2]) : 15,
+                            argc > 3 ? std::atoi(argv[3]) : 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--uacgate") == 0) {
+        // --uacgate [secs] [delay] [engage]  — engage=1 switches to Uac itself (restore child armed).
+        return uacgate_probe(argc > 2 ? std::atoi(argv[2]) : 30,
+                             argc > 3 ? std::atoi(argv[3]) : 0,
+                             argc > 4 ? std::atoi(argv[4]) : 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--funcmode") == 0) {
+        // --funcmode                      read-only: print FuncMode + connmgr + gadget. Safe.
+        // --funcmode <n> [restore] [watch] EnterFuncMode(n), watch, then back to MediaPlay.
+        //   n: 0 MediaPlay  1 UsbDac  2 A2dpSink  3 Fm  4 DirectRec  5 Dmr  6 Dms  7 Initial
+        return funcmode_probe(argc > 2 ? std::atoi(argv[2]) : -1,
+                              argc > 3 ? std::atoi(argv[3]) : 0,
+                              argc > 4 ? std::atoi(argv[4]) : 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--usbdt") == 0) {
+        // The raw switch, nothing else: --usbdt uac|msc|adb [restore_secs]. Read-only with no arg.
+        unsigned want = 0;
+        if (argc > 2 && std::strcmp(argv[2], "uac") == 0) want = USBDT_UAC;
+        else if (argc > 2 && std::strcmp(argv[2], "msc") == 0) want = USBDT_MSC;
+        else if (argc > 2 && std::strcmp(argv[2], "adb") == 0) want = USBDT_ADB;
+        install_diagnostics();
+        pst::core::Framework& fw = pst::core::Framework::GetReference();
+        wd_arm(15);
+        fw.StartForApplication(std::function<void()>(&pump_finish), true);
+        wd_disarm();
+        g_pump_run = true;
+        pthread_t pt;
+        pthread_create(&pt, nullptr, pump_thread, &fw);
+        for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+        usbmgr_dump_gadget();
+        if (want == 0) {
+            clog_("usbdt: read-only. Re-run as --usbdt uac|msc|adb [restore_secs] to switch through "
+                  "UsbDeviceConnectionService — the owner that also attaches the MSC medium and "
+                  "fires the connect event the audio service waits on.");
+            g_pump_run = false;
+            std::fflush(nullptr);
+            _exit(0);
+        }
+        int restore = argc > 3 ? std::atoi(argv[3]) : 90;
+        if (restore > 0) {
+            pid_t kid = fork();
+            if (kid == 0) {
+                signal(SIGHUP, SIG_IGN);
+                signal(SIGINT, SIG_IGN);
+                signal(SIGTERM, SIG_IGN);
+                setsid();
+                sleep((unsigned)restore);
+                pst::core::Framework& cfw = pst::core::Framework::GetReference();
+                cfw.StartForApplication(std::function<void()>(&pump_finish), true);
+                usbdt_set(USBDT_ADB);
+                _exit(0);
+            }
+            std::fprintf(stderr, "[cinder-probe] usbdt: restore child pid=%d armed — "
+                                 "SetDeviceType(Adb) in %ds\n", (int)kid, restore);
+        }
+        usbdt_set(want);
+        sleep(3);
+        usbmgr_dump_gadget();
+        g_pump_run = false;
+        std::fflush(nullptr);
+        _exit(0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--usbmgr") == 0) {
+        // No arg = READ-ONLY (always safe). "uac"/"msc" switch through the service and arm a
+        // restore child; the optional third arg is how long before it puts the old function back.
+        unsigned want = 0;
+        if (argc > 2 && std::strcmp(argv[2], "uac") == 0) want = USBFN_UAC;
+        else if (argc > 2 && std::strcmp(argv[2], "msc") == 0) want = USBFN_MSC;
+        return usbmgr_probe(want, argc > 3 ? std::atoi(argv[3]) : 60);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btvollisten") == 0) {
         return btvollisten_probe(argc > 2 ? std::atoi(argv[2]) : 12);

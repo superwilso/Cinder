@@ -2488,6 +2488,207 @@ void refresh_bt_route() {
     }
 }
 
+// ── the USB gadget's OTHER owner ─────────────────────────────────────────────────────────────
+// The gadget is written by TWO subsystems that do not know about each other, and Cinder was only
+// driving one of them:
+//
+//   * init (/init.usbcfg.rc), on property:sys.sony.config={adb,uac,msc} — writes functions,
+//     idVendor/idProduct (0B8B/0B8C/0B8D), AND f_mass_storage/lun/file, and is the ONLY thing that
+//     runs unmount_msc1 (umount /contents) / mount_msc1 (mount_partition contents). This is the
+//     half `cinder-msc` drives.
+//   * UsbMgrServiceFw (UsbMgrImplWmport) — SetUsbFunction -> UpdateUsbFunction -> SetUac()/SetMsc(),
+//     writing idVendor/idProduct (from DmpFeature, hence the 0ca0 that matches none of init's PIDs),
+//     functions and MaxPower. It NEVER touches lun/file or the mount.
+//
+// Measured 2026-08-11 with `cinder-probe --usbmgr`, idle: the service reported GetUsbFunction=2
+// (MSC) while sys.sony.config read `adb`, the gadget sat at mass_storage,adb 054c:0ca0, and
+// lun/file was EMPTY. So the two owners were already disagreeing before anyone touched anything.
+//
+// Why that broke USB-DAC: setting the property alone leaves the service still believing MSC, and
+// ANY of its own triggers — cable insert, Resume(), OnDeviceConnectedChanged — re-runs
+// UpdateUsbFunction and rewrites the gadget back to mass storage. The PC then never enumerates a
+// sound card, or enumerates one that disappears. Telling the service too is what makes the switch
+// stick.
+//
+// dlopen, NOT a link: a DT_NEEDED on the Home app for a path this thin is the libNfcService
+// boot-to-nothing rule. cinder-probe links it properly; here it is optional by construction.
+enum { USBFN_UAC = 1, USBFN_MSC = 2 };   // read from the cmp #1/#2 switch in UpdateUsbFunction
+
+static bool usb_set_function(unsigned fn) {
+    enum { VIDX_SetUsbFunction = 3, VIDX_GetUsbFunction = 4 };
+    static void* cli = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        void* h = dlopen("libUsbMgrServiceFw.so", RTLD_NOW);
+        if (!h) { clog_("usb-fn: libUsbMgrServiceFw.so unavailable — property-only switch"); return false; }
+        typedef void* (*mk)(void);
+        mk f = (mk)dlsym(h, "_ZN3pst8services28UsbMgrServiceFwClientFactory14CreateInstanceEv");
+        if (!f) { clog_("usb-fn: UsbMgrServiceFwClientFactory symbol missing"); return false; }
+        try { cli = f(); } catch (...) { cli = nullptr; }
+        clog_(cli ? "usb-fn: UsbMgrServiceFwClient ready" : "usb-fn: factory returned null");
+    }
+    if (!cli) return false;
+    // ReqMsg_SetUsbFunction is { uint32 function } (SizeOfReqMsg = 4, WriteReqMsg does one Alloc(4)
+    // and copies one word from offset 0). The GET reply is EIGHT bytes — { uint32 result; uint32
+    // value } — so its answer lives at offset 4, not 0. That cost a wasted read: the first probe
+    // run printed "function 0 (??)" because it trusted rsp[0].
+    typedef void (*fnrr)(void*, const void*, void*);
+    unsigned req[8], rsp[8];
+    void** vt = *(void***)cli;
+    std::memset(req, 0, sizeof req); std::memset(rsp, 0, sizeof rsp);
+    try { ((fnrr)vt[VIDX_GetUsbFunction])(cli, req, rsp); }
+    catch (...) { clog_("usb-fn: GetUsbFunction threw"); }
+    const unsigned had = rsp[1];
+    if (had == fn) return true;                    // already believes it; don't provoke a rewrite
+    std::memset(req, 0, sizeof req); std::memset(rsp, 0, sizeof rsp);
+    req[0] = fn;
+    try { ((fnrr)vt[VIDX_SetUsbFunction])(cli, req, rsp); }
+    catch (...) { clog_("usb-fn: SetUsbFunction threw"); return false; }
+    char m[128];
+    std::snprintf(m, sizeof m, "usb-fn: SetUsbFunction %u -> %u (%s) result=%u", had, fn,
+                  fn == USBFN_UAC ? "UAC" : "MSC", rsp[0]);
+    clog_(m);
+    return true;
+}
+
+// ── the THIRD owner, and the only complete one ───────────────────────────────────────────────
+// Recovered 2026-08-11 by RE of libUsbDeviceConnectionService.so, after `--uacgate` measured the
+// gate shut on device. `UsbDeviceConnectionServiceClient::SetDeviceType` (vtable slot 5) is what
+// stock actually drives; UsbMgrServiceFw only records the mode. SetDeviceType does, in order:
+//
+//   SetDeviceTypeUac()  @0xaed5 : stop adbd -> read sys.usb.vid -> write functions=audio_func,adb
+//                                 + idVendor/idProduct + enable -> start adbd -> start mount_msc1
+//   SetDeviceTypeMsc(b) @0xac5d : start unmount_msc1 -> stop adbd -> read sys.usb.msc1 and write it
+//                                 into f_mass_storage/lun/file -> functions=mass_storage,adb + ids
+//                                 -> start adbd
+//   SetDeviceTypeAdb()  @0xb0ed : stop adbd -> ids -> start adbd -> start mount_msc1
+//
+// Two whole bugs collapse into that listing:
+//
+//   * mass storage. `unmount_msc1` + writing sys.usb.msc1 (=/emmc@contents) into lun/file is the
+//     MEDIUM, and NOTHING outside this service does it. UsbMgrServiceFw sets the descriptor only,
+//     which is exactly the "drive with no disk" the probe kept reporting.
+//   * USB-DAC silence. The gadget rewrite makes the kernel re-enumerate; the monitor thread turns
+//     that uevent into NotifyUacConnectEvnet, which ConnMgrServiceFw publishes as device 7
+//     (UacHost) enabled. And device 7 is the gate: UsbAudioPlayerCore::NotifyChangeConnectionStatus
+//     (@0x16c44) opens UsbAudioStreamMonitor ONLY on status==1, and the stream monitor is the sole
+//     owner of the netlink socket (AF_NETLINK proto 24, group 1) the kernel announces
+//     ACTION/FORMAT/FREQ/BITWIDTH on. No connect event -> no socket -> kFormatNone forever, no
+//     matter how often we call Start().
+//
+// Measured before this landed (`cinder-probe --uacgate`, gadget at mass_storage,adb): device 6
+// (MscHost) enabled=1 connected=1, device 7 (UacHost) enabled=0 connected=0, and
+// socket(AF_NETLINK, SOCK_DGRAM, 24) returned "Protocol not supported" — the proto only exists
+// while the UAC function is loaded. Every link of the chain was dark.
+//
+// Note we do NOT need root for any of this: `start mount_msc1` runs inside the service.
+enum { USBDT_ADB = 1, USBDT_MSC = 2, USBDT_UAC = 3 };   // from the cmp #1/#2/#3 dispatch @0xab98
+
+static bool usb_set_device_type(unsigned t) {
+    enum { VIDX_SetDeviceType = 5 };   // vtable recovered from R_ARM_ABS32 relocations, slot 5;
+                                       // AddListener/RemoveListener are 10/11 — the last two, as
+                                       // in every other pst service.
+    static void* cli = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        void* h = dlopen("libUsbDeviceConnectionService.so", RTLD_NOW);
+        if (!h) { clog_("usb-dt: libUsbDeviceConnectionService.so unavailable"); return false; }
+        typedef void* (*mk)(void);
+        mk f = (mk)dlsym(h, "_ZN3pst8services39UsbDeviceConnectionServiceClientFactory14CreateInstanceEv");
+        if (!f) { clog_("usb-dt: UsbDeviceConnectionServiceClientFactory symbol missing"); return false; }
+        try { cli = f(); } catch (...) { cli = nullptr; }
+        clog_(cli ? "usb-dt: UsbDeviceConnectionServiceClient ready" : "usb-dt: factory returned null");
+    }
+    if (!cli) return false;
+    // Not the Req/Rsp pattern: the proxy takes the enum BY CONST REFERENCE, i.e. a pointer to one
+    // word, the same shape as BtTransmitter's setters.
+    typedef int (*fnr)(void*, const unsigned*);
+    void** vt = *(void***)cli;
+    int rc = -1;
+    try { rc = ((fnr)vt[VIDX_SetDeviceType])(cli, &t); }
+    catch (...) { clog_("usb-dt: SetDeviceType threw"); return false; }
+    char m[160];
+    std::snprintf(m, sizeof m, "usb-dt: SetDeviceType(%u = %s) rc=%d%s", t,
+                  t == USBDT_UAC ? "Uac" : t == USBDT_MSC ? "Msc" : "Adb", rc,
+                  t == USBDT_MSC ? "  [unmounts /contents and attaches the medium]" : "");
+    clog_(m);
+    return true;
+}
+
+// ── FuncMode: the thing that actually gates USB-DAC ──────────────────────────────────────────
+// Everything above drives the USB gadget, and the gadget turns out not to be what the audio
+// service is watching. From libConnMgrServiceFw.so, ConnGlueUsbHost::CnvStatus (@0x19f24) — the
+// function that decides what connmgr publishes for a device:
+//
+//     if (!connected)     out = { 2, 0 };
+//     else if (dev != 7)  out = { 2, 1 };
+//     else                out = { 2, (FuncMode == 1) };        // device 7 == UacHost
+//
+// and UsbAudioConnectionMonitor::Open (@0x1e1d0) does GetDeviceStatus(Device{7}, st) and believes
+// it only when the word it reads is 1. So the gate on USB-DAC is FuncMode == 1 (UsbDac), and no
+// amount of descriptor rewriting reaches it. Measured on device 2026-08-11 with the gadget healthy
+// and adb up: FuncMode = 0 (MediaPlay), device 7 = 0/0. Never set, therefore never open.
+//
+// The enum is read off funcarch::GetName (@0x7e00, libFuncMgrServiceFw.so), which builds a
+// std::map<FuncMode,const char*> inline with eight keys 0..7 over the contiguous .rodata run at
+// 0xba69 — not guessed. GetCurrentFuncMode returns 9 of its own accord on binder failure, which is
+// why "Invalid" is a fallback string rather than a key.
+//
+// EnterFuncMode is what stock runs when the user picks USB-DAC in Settings, and it is three calls
+// under one mutex (FuncMgrServiceServiceImpl::EnterFuncMode @0x7fb4):
+//     FireRequireExitFuncMode(current)                    listeners may veto
+//     usbmgr::UsbMgrService::SetUsbFunction(...)          <- the only step we were doing
+//     connmgr::ConnMgrService::SetDeviceHandleRules(...)  <- publishes device 7
+//     pathmgr::PathMgrService::SetPath(...)               <- the audio routing path
+// It early-outs when the requested mode already equals the current one, so calling it twice is
+// harmless. That also means SetUsbFunction from apply_usb_dac below is now redundant — kept only
+// because it is the proven-harmless half and costs one call.
+enum { FM_MEDIAPLAY = 0, FM_USBDAC = 1 };
+
+static bool usb_enter_func_mode(int mode) {
+    typedef bool (*enterfn)(void*, const int*);
+    static enterfn enter = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        // dlopen, not a DT_NEEDED: the libNfcService rule. A link-time dependency on a library this
+        // build has never exercised is a boot risk for the Home app, and nothing here runs at boot.
+        void* h = dlopen("libFuncMgrService.so", RTLD_NOW);
+        if (!h) { clog_("func-mode: libFuncMgrService.so unavailable"); return false; }
+        enter = (enterfn)dlsym(h,
+            "_ZN3pst8services8funcarch7funcmgr14FuncMgrService13EnterFuncModeERKNS1_8FuncModeE");
+        if (!enter) { clog_("func-mode: EnterFuncMode symbol missing"); return false; }
+        clog_("func-mode: FuncMgrService ready");
+    }
+    if (!enter) return false;
+    // Stateless wrapper, exactly like funcarch::connmgr::ConnMgrService: the ctor at 0x5d84 only
+    // reads the stack guard, and every method re-fetches the client via
+    // Framework::GetServiceClient("FuncMgrServiceFw"). A dummy `this` is legitimate.
+    char self[64];
+    bool ok = false;
+    try { ok = enter(self, &mode); }
+    catch (...) { clog_("func-mode: EnterFuncMode threw"); return false; }
+    // The bool is NOT a result — measured 2026-08-11, it came back false for a switch and a restore
+    // that both demonstrably worked (FuncMode, connmgr device 7, the gadget descriptor and
+    // /proc/asound all moved). Logged for the record; nothing branches on it.
+    char m[128];
+    std::snprintf(m, sizeof m, "func-mode: EnterFuncMode(%d = %s) [returned %s — not meaningful]",
+                  mode, mode == FM_USBDAC ? "UsbDac" : "MediaPlay", ok ? "true" : "false");
+    clog_(m);
+    return true;
+}
+
+// run_guarded takes a bare function pointer (its jmp-buf guard cannot carry a closure), so each
+// caller gets a thunk rather than a capturing lambda.
+static void usb_fn_uac() { usb_set_function(USBFN_UAC); }
+static void usb_fn_msc() { usb_set_function(USBFN_MSC); }
+static void usb_dt_uac() { usb_set_device_type(USBDT_UAC); }
+static void usb_dt_adb() { usb_set_device_type(USBDT_ADB); }
+static void usb_fm_usbdac()    { usb_enter_func_mode(FM_USBDAC); }
+static void usb_fm_mediaplay() { usb_enter_func_mode(FM_MEDIAPLAY); }
+
 // ── the render half of USB-DAC ───────────────────────────────────────────────────────────────
 // Flipping the gadget to `uac` only makes the PC ENUMERATE a sound card. It does not make sound
 // come out of the 3.5 mm jack, because nothing has told Sony's player service to open the render
@@ -2515,30 +2716,206 @@ static void* uac_slot(void* obj, int idx) {
     return vptr[idx];
 }
 
+// Build the client on demand. This exists because the first version created it ONLY inside
+// uac_render(), while uac_listener_start() bailed on a null client — and the engage path called the
+// listener first. So the listener registered nothing, silently, and the whole OnChangedFormat fix
+// never ran: the device logged a clean UAC switch and a kFormatNone Start(), then nothing forever.
+// Anything that needs the client asks for it here instead of assuming someone else built it.
+static void* uac_client() {
+    if (!g_uac_client) {
+        try {
+            g_uac_client =
+                _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstanceEv();
+        } catch (...) { g_uac_client = nullptr; }
+    }
+    return g_uac_client;
+}
+
+// Has a real stream been opened since we entered DAC mode? Cleared on entry/exit. Used to stop the
+// backstop poll below once the render path is genuinely up.
+static bool g_uac_playing = false;
+
 // Returns false if the client could not be built; caller logs. Never throws out.
 static bool uac_render(bool start) {
     enum { VIDX_UacStart = 4, VIDX_UacStop = 5 };
     try {
-        if (!g_uac_client) {
-            g_uac_client =
-                _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstanceEv();
-        }
-        if (!g_uac_client) return false;
+        if (!uac_client()) return false;
+        // Start takes an out-param; Stop takes NOTHING. Passing one to Stop was harmless under
+        // AAPCS (the callee just ignores r1) but it was still a lie about the signature — the
+        // recovered vtable reads `Stop()`, no arguments.
         typedef void (*fnp)(void*, void*);
+        typedef void (*fn0)(void*);
+        if (!start) {
+            ((fn0)uac_slot(g_uac_client, VIDX_UacStop))(g_uac_client);
+            clog_("usb-dac: Stop()");
+            return true;
+        }
         // Oversized + zeroed: the field COUNT is known (six reads), the struct's true size is not,
         // and over-allocating an out-param buffer is free while under-allocating smashes the stack.
         unsigned si[32];
         std::memset(si, 0, sizeof si);
-        ((fnp)uac_slot(g_uac_client, start ? VIDX_UacStart : VIDX_UacStop))(g_uac_client, si);
-        char m[160];
-        std::snprintf(m, sizeof m, "usb-dac: %s -> stream_info %u %u %u %u %u %u",
-                      start ? "Start()" : "Stop()", si[0], si[1], si[2], si[3], si[4], si[5]);
+        ((fnp)uac_slot(g_uac_client, VIDX_UacStart))(g_uac_client, si);
+        // stream_info_t is THREE WORDS — { stream_type_t format; u32 freq; u32 bitwidth; } — and
+        // there is NO action field. Read off the tail of
+        // UsbAudioPlayerCore::GetStreamInfo(IUsbDeviceAudioPlayerService::stream_info_t&) @0x16ab0,
+        // which is the function that fills the struct that goes over the wire:
+        //
+        //     str  r3, [r9, #0]      ; stream_type_t, looked up through an internal->IPC map
+        //     ldr  r0, [r8, #72]  ->  str r0, [r9, #4]     ; freq
+        //     ldrb r0, [r8, #76]  ->  str r0, [r9, #8]     ; bitwidth (a byte, widened)
+        //
+        // That also explains the listener signature OnChangedFormat(const u32&, const u32(&)[3]):
+        // three words, not four. The earlier reading here had an invented leading `action` field, so
+        // every label was shifted by one and the kFormatNone test was looking at the FREQUENCY. It
+        // happened to behave (44100 is nonzero when playing, 0 when stopped) but it was wrong, and
+        // the first real capture printed "format=44100 freq=32", which is what exposed it.
+        //
+        // Measured live 2026-08-11 with a PC streaming: { 1, 44100, 32 } — PCM, 44.1 kHz, 32-bit,
+        // which is exactly the S32_LE/44100 the capture thread below already assumes.
+        char m[192];
+        std::snprintf(m, sizeof m, "usb-dac: Start() -> format=%u freq=%u bits=%u%s",
+                      si[0], si[1], si[2],
+                      si[0] == 0 ? "  <-- kFormatNone: the host is not streaming yet" : "");
         clog_(m);
+        if (si[0] != 0) g_uac_playing = true;    // a real format: the render path is open
         return true;
     } catch (...) {
         clog_(start ? "usb-dac: Start() threw" : "usb-dac: Stop() threw");
         return false;
     }
+}
+
+// ── USB-DAC: Start() has to wait for the HOST, not for the user ─────────────────────────────────
+// Why DAC mode was "recognised in audio, no output": Start(stream_info_t&) takes its parameter by
+// NON-const reference — it is an OUT param. The service does not take the format from us; it learns
+// it from a hotplug socket (UsbAudioStreamMonitor::UacInitHotplugSock / RecvUACEvent /
+// ParseStreamInfo) and only then can UsbAudioPlayerCore::StartPlaying open the capture (OpenInhal)
+// and the AudioTrack to the 3.5 mm chain (OpenExhal).
+//
+// Cinder called Start() exactly once, at the instant the user flipped the switch — before any PC
+// was streaming. At that moment there is no valid stream_info, StartPlaying has nothing to open,
+// and NOTHING EVER RETRIED. The switch reported success and the jack stayed silent.
+//
+// The service publishes precisely the event needed. Recovered from the dispatcher
+// (UsbDeviceAudioPlayerServiceListenerProxy::OnChangedFormatBase): it loads the listener object,
+// takes vptr[2], and calls it with r1 = one word and r2 = a three-word struct. So OnChangedFormat
+// is LISTENER SLOT 2, and AddListener is client slot 6 — immediately after the last service method
+// (5, Stop), the same placement BtCommon(30), BtTransmitter(39) and UsbMgr(12) all use.
+//
+// Same discipline as the BT volume listener: this runs on the framework looper, so it only sets a
+// flag; the render loop is what calls Start().
+static volatile sig_atomic_t g_uac_format_notify = 0;
+
+struct CinderUacListener {
+    virtual ~CinderUacListener() {}
+    virtual void OnChangedFormat(const unsigned& a, const unsigned (&b)[3]) {
+        // Read NOTHING beyond these four words — that is exactly what the dispatcher wrote.
+        // `b` is the stream_info_t: { format, freq, bitwidth } (see uac_render). Deliberately not
+        // trusted here — this only raises a flag and lets the Start()/GetStatus path do the read,
+        // so there is exactly one decoder to get wrong.
+        (void)a; (void)b;
+        g_uac_format_notify = 1;
+    }
+};
+// MUST be static: AddListener stores a RAW, unowned pointer (same rule as every other listener here).
+static CinderUacListener g_uac_listener;
+static bool g_uac_listener_on = false;
+
+static void uac_listener_start() {
+    enum { VIDX_UacAddListener = 6 };
+    if (g_uac_listener_on) return;
+    if (!uac_client()) { clog_("usb-dac: no client — cannot register OnChangedFormat"); return; }
+    try {
+        typedef int (*fnadd)(void*, void*, const std::string*);
+        std::string key;                 // "" — a NotifyListeners FILTER KEY, not a label
+        int rc = ((fnadd)uac_slot(g_uac_client, VIDX_UacAddListener))(
+                     g_uac_client, (void*)&g_uac_listener, &key);
+        g_uac_listener_on = (rc == 0);
+        char m[128];
+        std::snprintf(m, sizeof m, "usb-dac: OnChangedFormat listener rc=%d (%s)", rc,
+                      rc == 0 ? "registered" : "FAILED — relying on the status poll");
+        clog_(m);
+    } catch (...) { clog_("usb-dac: AddListener threw"); }
+}
+
+// Render-thread only. The host started (or changed) its stream — NOW Start() can succeed.
+static void uac_drain_format() {
+    if (!g_uac_format_notify) return;
+    g_uac_format_notify = 0;
+    if (cinder_get_usb_dac() == 0) return;          // left DAC mode in the meantime
+    if (cinder_get_bt_route()) return;              // the bridge owns the capture PCM, not us
+    clog_("usb-dac: host changed the stream format — (re)opening the render path");
+    uac_render(true);
+}
+
+// BACKSTOP: ask the service what the stream looks like, once a second while in DAC mode.
+//
+// The listener is the right mechanism, but it only fires on a CHANGE. Two cases it cannot cover:
+// a host that was already streaming before the user toggled DAC mode (no change to report), and a
+// registration that failed. Both end in permanent silence with no way to notice, which is precisely
+// the failure this whole exercise is about — so it gets a cheap, self-limiting poll rather than
+// trust.
+//
+// GetStatus (slot 3) is a pure read of the same stream_info_t Start() fills in, so this costs one
+// IPC per second and stops the moment a real format has been opened.
+// The UAC gadget registers its own ALSA card while the gadget is in audio_func mode, at whatever
+// index is free (4 on this unit, but that is not guaranteed — the ldac bridge scans for it too).
+// Its capture substream tells us whether ANYONE has opened the host's PCM: "closed" means nobody,
+// which is the kernel-side view of the same silence.
+static void uac_capture_state(char* out, size_t n) {
+    std::snprintf(out, n, "no UAC card");
+    for (int c = 1; c <= 8; c++) {
+        char p[64];
+        std::snprintf(p, sizeof p, "/proc/asound/card%d/pcm0c/sub0/status", c);
+        FILE* f = std::fopen(p, "r");
+        if (!f) continue;
+        char buf[96] = {0};
+        if (std::fgets(buf, sizeof buf, f)) {
+            size_t l = std::strlen(buf);
+            while (l && (buf[l-1] == '\n' || buf[l-1] == '\r')) buf[--l] = 0;
+            std::snprintf(out, n, "card%d %s", c, buf);
+        }
+        std::fclose(f);
+        return;
+    }
+}
+
+static void uac_poll_status() {
+    enum { VIDX_UacGetStatus = 3 };
+    static int ticks = 0;
+    if (g_uac_playing) return;                      // already open; nothing to look for
+    if (cinder_get_usb_dac() == 0 || cinder_get_bt_route()) { ticks = 0; return; }
+    if (!uac_client()) return;
+    unsigned si[32];
+    std::memset(si, 0, sizeof si);
+    try {
+        typedef void (*fnp)(void*, void*);
+        ((fnp)uac_slot(g_uac_client, VIDX_UacGetStatus))(g_uac_client, si);
+    } catch (...) { return; }
+    // si[0] is the format word — see the layout note in uac_render(). This used to test si[1], the
+    // FREQUENCY, which only ever behaved because a live stream has a nonzero rate.
+    if (si[0] == 0) {
+        // HEARTBEAT. Silence in the log is ambiguous — it reads the same whether the host never
+        // streamed or the service never noticed, and that ambiguity has already cost two test
+        // rounds. Print what is actually true, every 5 s for the first two minutes, so the log
+        // distinguishes "nobody played anything" from "the PC is streaming and Sony's service is
+        // not seeing it". Cheap, bounded, and it stops the moment a format appears.
+        ticks++;
+        if (ticks <= 120 && (ticks % 5) == 1) {
+            char cap[96];
+            uac_capture_state(cap, sizeof cap);
+            char m[192];
+            std::snprintf(m, sizeof m, "usb-dac: waiting for the host — t=%ds GetStatus format=0, "
+                                       "capture=%s", ticks, cap);
+            clog_(m);
+        }
+        return;                                     // kFormatNone — host still not streaming
+    }
+    char m[160];
+    std::snprintf(m, sizeof m, "usb-dac: GetStatus sees a live stream (format=%u freq=%u bits=%u) "
+                               "without a notify — opening the render path", si[0], si[1], si[2]);
+    clog_(m);
+    uac_render(true);
 }
 
 // Read the gadget's ACTUAL mode rather than trusting our own toggle.
@@ -2887,6 +3264,48 @@ void apply_usb_dac() {
         clog_(cm);
     }
 
+    // TELL THE OTHER OWNER FIRST. The gadget has two independent writers — init (via the property,
+    // which is what cinder-msc drives) and UsbMgrServiceFw — and ORDER DECIDES WHO WINS, because
+    // each one rewrites `functions` wholesale.
+    //
+    // The service goes first on purpose. It ends up believing the right function, so its own later
+    // triggers (cable insert, Resume, OnDeviceConnectedChanged) compare equal and change nothing —
+    // which is the revert that made a UAC switch look like it worked and then silently undo itself.
+    // Meanwhile init's write lands LAST, so the live descriptor is init's `audio_func,adb` rather
+    // than the service's audio-only string, and the adb interface survives DAC mode.
+    //
+    // Doing it the other way round (property first, service second) leaves the service's string
+    // live and takes adb down with it — correct for the radio, useless for anyone debugging.
+    // FUNCMODE FIRST, AND BEFORE THE PROPERTY WRITE. EnterFuncMode is the supported entry point and
+    // a superset of the line below — it calls SetUsbFunction itself, then SetDeviceHandleRules
+    // (which is what publishes connmgr device 7) and SetPath (the audio route). It has to run
+    // before init's property write for the same reason SetUsbFunction does: its inner
+    // SetUsbFunction installs the service's audio-only descriptor string, and letting init's
+    // `audio_func,adb` land afterwards is what keeps adb alive through DAC mode.
+    //
+    // PROVEN ON HARDWARE 2026-08-11 (`cinder-probe --funcmode 1 120 45`), which is why this is no
+    // longer behind a marker file. One run, every link of the chain moved together:
+    //
+    //     FuncMode          0 MediaPlay        -> 1 UsbDac
+    //     connmgr device 7  enabled=0 conn=0   -> enabled=1 connected=1
+    //     gadget            mass_storage,adb   -> audio_func, idProduct 0ca0 -> 0b8c
+    //     netlink proto 24  ENOPROTOOPT        -> bound
+    //     /proc/asound      card0 only         -> card4 pcm0c present  (hw:4,0)
+    //
+    // held stable across a 45 s window, and EnterFuncMode(MediaPlay) put all five back. `hw:4,0` is
+    // the device UsbAudioPlayerInhal hardcodes and it does not exist in any other mode.
+    //
+    // The run recorded zero netlink FORMAT events, which is the environment and not the chain: the
+    // player was attached to WSL through usbipd, so Windows never enumerated it as a sound card and
+    // nothing was ever streaming. A real host is needed to close that last link.
+    //
+    // IGNORE THE RETURN VALUE. EnterFuncMode returned false for BOTH the switch and the restore on
+    // the run where all five readings above confirm it worked — the same trap as SetDeviceType's
+    // rc. usb_enter_func_mode logs it, and nothing branches on it.
+    run_guarded("usb-dac: EnterFuncMode", 20, on ? usb_fm_usbdac : usb_fm_mediaplay);
+
+    run_guarded("usb-dac: SetUsbFunction", 6, on ? usb_fn_uac : usb_fn_msc);
+
     int rc = std::system(on ? "/system/vendor/unknown321/bin/cinder-msc dac-on"
                             : "/system/vendor/unknown321/bin/cinder-msc dac-off");
     char m[128];
@@ -2894,6 +3313,39 @@ void apply_usb_dac() {
                   on ? "engage" : "release", on ? "on" : "off", rc,
                   rc == 0 ? "" : "  (FAILED — is the helper setuid root?)");
     clog_(m);
+
+    // AND THE OWNER THAT ACTUALLY COMPLETES IT, LAST. The two writers above only move descriptor
+    // bytes. This one re-enumerates the gadget in a way UsbDeviceConnectionMonitor is watching, so
+    // it fires NotifyUacConnectEvnet, which is the event half of what device 7 needs.
+    //
+    // CORRECTION (2026-08-11): the event half was never the whole story, which is why this call did
+    // nothing when it was first tried. ConnGlueUsbHost::CnvStatus ANDs the connect event with
+    // FuncMode == 1 before device 7 reports connected — see usb_enter_func_mode above. A connect
+    // event delivered while FuncMode is still MediaPlay is discarded, so SetDeviceType alone can
+    // never open the audio path no matter how cleanly the gadget re-enumerates.
+    //
+    // Off goes to Adb, not Msc: Msc unmounts /contents, which would take the music library out from
+    // under the player. Mass storage is a separate, explicit user action (see usb_set_device_type).
+    // OPT-IN ONLY, AND DELIBERATELY OFF BY DEFAULT (2026-08-11).
+    //
+    // SetDeviceType is the right call on paper — it is the only owner that does the whole job — but
+    // the first on-device run of it did two things at once: the gadget did NOT change (functions
+    // stayed mass_storage,adb through a 30 s window of 5 s samples, device 7 stayed disabled, and
+    // netlink proto 24 never appeared), and a couple of minutes later the DEVICE REBOOTED. The
+    // reboot recovered onto Cinder by itself, but a Home-app toggle that can reboot the player is
+    // strictly worse than one that does nothing, so this stays behind a marker file until the
+    // no-op-plus-reboot is understood. Use `cinder-probe --usbdt` for that; it is opt-in there too.
+    //
+    //     adb shell 'touch /contents/cinder-usbdt.on'     # to try it
+    if (::access("/contents/cinder-usbdt.on", F_OK) == 0)
+        run_guarded("usb-dac: SetDeviceType", 8, on ? usb_dt_uac : usb_dt_adb);
+
+    // AND CHECK THE GADGET IS STILL ON THE BUS. Every writer does `enable 0 -> ids -> functions ->
+    // enable 1`, so one that dies or blocks in the middle leaves enable=0 — no adb, no MSC, no UAC,
+    // nothing visible to the host at all. That happened on 2026-08-11 and cost a power-cycle. The
+    // rescue is a no-op when enable is already 1, and it deliberately goes through init's property
+    // rather than the service that just wedged.
+    (void)std::system("/system/vendor/unknown321/bin/cinder-msc usb-rescue");
     // WHERE THE DAC AUDIO GOES. Only ever decided when the gadget actually came up — arming any of
     // this for a UAC mode that never engaged is how the last round of this looked like it worked.
     //
@@ -2902,14 +3354,27 @@ void apply_usb_dac() {
     // 3.5 mm codec, or OUR bridge owns it and re-encodes to LDAC. Running both means one of them gets
     // -EBUSY. So the route is chosen by where the audio should be heard: headphones connected ->
     // LDAC, otherwise the jack.
+
     if (rc == 0) {
         if (on) {
             if (cinder_get_bt_route()) {
                 clog_("usb-dac: headphones connected -> bridging the DAC to LDAC (skipping the "
                       "local render, which would hold the capture PCM)");
                 ldac_start();
-            } else if (!uac_render(true)) {
-                clog_("usb-dac: gadget is up but Start() failed — expect silence at the jack");
+            } else {
+                // Subscribe FIRST, then try once. The single Start() here only succeeds if a host
+                // is already streaming; the listener is what covers the normal case, where the PC
+                // starts playing seconds or minutes later. Before this, that case never opened.
+                //
+                // uac_listener_start() builds the client itself — it used to bail on a null one,
+                // and since it runs BEFORE the first uac_render() that meant it registered nothing
+                // at all, silently. The log said "SetUsbFunction ok, Start() kFormatNone" and then
+                // went quiet forever, which read like a service problem and was ours.
+                g_uac_playing = false;
+                uac_listener_start();
+                if (!uac_render(true)) {
+                    clog_("usb-dac: gadget is up but Start() failed — expect silence at the jack");
+                }
             }
         } else {
             ldac_stop();
@@ -4162,6 +4627,14 @@ void* render_driver(void*) {
             // The sink told us its real level (its own buttons, or an echo of ours). Adopting it
             // is the whole fix for the UI and the headphones disagreeing.
             if (g_bt_vol_notify >= 0 && bt_vol_drain_notify()) cinder_force_dirty();
+            // The USB host started or changed its stream. Start() can only succeed once a format
+            // exists, so this — not the moment the user flipped the switch — is when the DAC's
+            // render path actually opens.
+            if (g_uac_format_notify) run_guarded("loop: USB-DAC format", 8, uac_drain_format);
+            // …and the backstop, for a host that was already streaming when DAC mode was entered
+            // (no change, so no notify) or a listener that failed to register. Self-limiting: it
+            // returns immediately once a real format has been opened, or when not in DAC mode.
+            if (cinder_get_usb_dac()) run_guarded("loop: USB-DAC status", 8, uac_poll_status);
             // A pairing prompt arrived on the looper; show it from the thread that owns the UI.
             if (g_bt_prompt_dirty) {
                 run_guarded("loop: BT pairing prompt", 4, flush_bt_prompt);
@@ -4573,6 +5046,13 @@ void start_pump_ticker() {
 int main(int argc, char** argv) {
     clog_("main: start");
     install_diagnostics();   // crash/hang handler -> logs the exact PC of the stall
+
+    // SELF-HEAL THE GADGET, BEFORE ANYTHING ELSE WANTS IT. A USB-mode switch that died mid-sequence
+    // leaves /sys/class/android_usb/android0/enable at 0, and then nothing — not adb, not mass
+    // storage, not USB-DAC — is on the host's bus until someone writes it back. A no-op when the
+    // gadget is healthy, which is every normal boot.
+    (void)std::system("/system/vendor/unknown321/bin/cinder-msc usb-rescue");
+
     CinderApp app;
 
     // The CuiAppModule callbacks (named per the RE'd ctor). They map to lifecycle phases;

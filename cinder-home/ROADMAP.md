@@ -219,15 +219,30 @@ never repoint the `.appcfg` before the probe run looks clean.
   Qualcomm/Snapdragon-Sound feature. None of this is a gap — LDAC at 990 kbps already exceeds
   aptX Adaptive's typical 279–420 kbps, and Adaptive's advantage is latency and robustness rather
   than fidelity, which is the wrong trade for a music player.
-- **BT transmit codec — live apply.** The selector (LDAC/aptX HD/aptX/SBC + LDAC quality), the
-  device-wide preference, and its persistence (`cinder_settings.conf` + `cinder_bt.conf`) are **DONE
-  in the UI/shell**. Remaining = the live `BtTransmitterService` apply (SetLdac/SetAptxHD/SetSbc +
-  SetLdacSoundQuality) via the C++ BT client shim (same boundary as `ldac-bridge`).
+- ~~**BT transmit codec — live apply.**~~ **DONE.** The selector (LDAC/aptX HD/aptX/SBC + LDAC
+  quality), the device-wide preference and its persistence (`cinder_settings.conf` +
+  `cinder_bt.conf`) were already done in the UI/shell; the live `BtTransmitterService` apply is
+  `apply_bt_codec()` in `cinder-home/src/main.cpp` — `SetLdac` (slot 20), `SetAptxHD` (22),
+  `SetAptxClassic` (21), `SetLdacSoundQuality` (18), with SBC being what's left when all three are
+  off. Pushed at boot, on every connect edge, and on the user's change.
 - **USB-DAC → LDAC** (the headline) — the **UI/toggle/engage-signalling are DONE**: the USB-DAC
   screen routes input to 3.5 mm + BT/LDAC, the shell starts the bridge (`/contents/ldac_on`) + UAC
   `setprop`, and it never disconnects BT. Remaining = on-device: the `ldac-bridge` daemon capturing
   card4 → the LDAC socket, the E4/E5 ALSA confirm, and validating the UAC switch live. See
   `ldac-bridge/TEST.md` + `analysis/RE_playerservice_sound.md §5`.
+  **2026-08-11 — the input side finally has an explanation.** USB-DAC never produced a format
+  because the gate is **`FuncMode == 1` (UsbDac)**, not the USB gadget: `ConnGlueUsbHost::CnvStatus`
+  ANDs the connect event with FuncMode before connmgr device 7 (UacHost) reports connected, and the
+  audio service opens its netlink socket only on device 7. Read on device: `FuncMode = 0`, device 7
+  = 0/0. `FuncMgrService::EnterFuncMode` is the single supported call and does `SetUsbFunction` +
+  `SetDeviceHandleRules` + **`SetPath`** (the audio route we had never touched). Wired into
+  `apply_usb_dac` via `dlopen`, and **confirmed on hardware the same day**: FuncMode 0→1, device 7
+  0/0→1/1, gadget → `audio_func`/`054c:0b8c`, netlink proto 24 bound, and `/proc/asound` **card4
+  pcm0c (`hw:4,0`)** present — all stable for 45 s and all reversed by `EnterFuncMode(MediaPlay)`.
+  **Next device step is the last link and it needs a real host:** plug the player into a PC *without*
+  the usbipd passthrough (that binding is what stops Windows enumerating the sound card, which is why
+  the run saw zero FORMAT events), then read `--uacgate` for `FORMAT=/FREQ=/BITWIDTH=` and capture
+  `hw:4,0`. See `analysis/E_usbdac_ldac/RE_findings.md` round l.
 - **USB-mode switch** (enter MSC) — wired to **Settings ▸ USB mode** (`setprop sys.sony.config msc`,
   guarded; disruptive — validate live).
 - **FM radio / BT receiver** screens — Sony tuner/BT services (currently static).
