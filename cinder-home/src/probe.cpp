@@ -942,6 +942,53 @@ static int btinfo_probe() {
 // says `Open` slot 4 and `Stop`/`Close`/`GetCurrentMode` marshal no arguments, while `Start` slot 5
 // marshals one and slot 6 marshals two. So it tries the no-argument `Open` first and passes 0 for
 // `Start`'s single argument (0 being the likeliest "default mode"), and reports every return code.
+// A tap is expensive to arrange — somebody has to physically hold a device against the rear panel
+// while this runs — so ONE tap has to answer everything the round-f notes left open, not just
+// "did the callback fire". The struct is only known as far as its prefix:
+//
+//     { vector<uint8_t> addr;  /* +0x00 */  ... uint32 at +0x0C ... strings from +0x10 }
+//
+// so this dumps the raw bytes as well as the decoded prefix. Reading a fixed 64 bytes off an object
+// of unknown size is exactly the kind of thing that belongs in a probe and nowhere near the Home
+// app: the fault handler in install_diagnostics() catches it, and the cost of being wrong is this
+// process rather than the launcher.
+static void nfc_dump_payload(const void* p, const char* what) {
+    if (!p) { clog_("nfc: null payload"); return; }
+    const unsigned char* b = (const unsigned char*)p;
+    for (int row = 0; row < 4; row++) {
+        char line[128];
+        int n = std::snprintf(line, sizeof line, "[cinder-probe] nfc: %s +%02x:", what, row * 16);
+        for (int i = 0; i < 16; i++)
+            n += std::snprintf(line + n, sizeof line - n, " %02x", b[row * 16 + i]);
+        std::fprintf(stderr, "%s\n", line);
+    }
+    unsigned w = 0;
+    std::memcpy(&w, b + 0x0c, 4);
+    std::fprintf(stderr, "[cinder-probe] nfc: %s +0c = %u (0x%06x) — expected class-of-device\n",
+                 what, w, w & 0xffffff);
+    // Any libc++ std::string in the tail: SSO keeps (len<<1) in byte 0 and the text inline from
+    // byte 1; the long form keeps size at +4 and a heap pointer at +8. Both are checked for sanity
+    // before printing, because the whole point is to find out whether these ARE strings.
+    for (unsigned off : { 0x10u, 0x1cu, 0x28u }) {
+        const unsigned char* s = b + off;
+        char out[64] = {0};
+        if (!(s[0] & 1)) {
+            unsigned len = s[0] >> 1;
+            if (len > 0 && len <= 22) { std::memcpy(out, s + 1, len); out[len] = 0; }
+        } else {
+            unsigned len = 0; const char* ptr = nullptr;
+            std::memcpy(&len, s + 4, 4);
+            std::memcpy(&ptr, s + 8, 4);
+            if (ptr && len > 0 && len < 60) { std::memcpy(out, ptr, len); out[len] = 0; }
+        }
+        bool printable = out[0] != 0;
+        for (const char* q = out; *q && printable; q++) printable = (*q >= 0x20 && *q < 0x7f);
+        if (printable)
+            std::fprintf(stderr, "[cinder-probe] nfc: %s +%02x looks like a string: '%s'\n",
+                         what, off, out);
+    }
+}
+
 struct ProbeNfcListener {
     virtual ~ProbeNfcListener() {}                                  // slots 0, 1
     virtual void OnBluetoothOob(const void* oob) {                  // slot 2
@@ -954,10 +1001,14 @@ struct ProbeNfcListener {
         mac_str(*addr, mac, sizeof mac);
         std::fprintf(stderr, "[cinder-probe] nfc: *** BLUETOOTH OOB TAG — addr=%s (%zu bytes) ***\n",
                      mac, addr->size());
+        nfc_dump_payload(oob, "oob");
     }
-    virtual void OnUnknownTag(const void*) {                        // slot 3
+    virtual void OnUnknownTag(const void* tag) {                    // slot 3
         taps++;
+        // Worth as much as the OOB case: headphones that present a non-OOB record land here, and
+        // knowing THAT is what says whether tap-to-pair needs a different record parser.
         clog_("nfc: OnUnknownTag — a tag was read but it is not a Bluetooth OOB record");
+        nfc_dump_payload(tag, "tag");
     }
     virtual void OnHostCardEmulation(const void*) {                 // slot 4
         taps++;
@@ -966,7 +1017,7 @@ struct ProbeNfcListener {
     int taps = 0;
 };
 
-static int nfc_probe(int secs) {
+static int nfc_probe(int secs, unsigned want_mode) {
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
     wd_arm(15);
@@ -1011,20 +1062,48 @@ static int nfc_probe(int secs) {
     wd_disarm();
     std::fprintf(stderr, "[cinder-probe] nfc: Open() slot4 rc=%d\n", rc_open);
 
-    unsigned zero = 0;
+    // MODE 0 IS NOT A MODE, and that is why every previous run saw zero taps.
+    // `NfcService::Start` (libNfcService.so @0x7a40) reads:
+    //
+    //     if (state == 3) return 3;                 // already started
+    //     ret = 1;                                  // <-- the DEFAULT is failure
+    //     if (mode==1) nf=1; else if (mode==2) nf=2; else if (mode==3) nf=0; else goto out;
+    //     puts("calling NF_start2()..."); NF_start2(.., nf); state = 2; ret = 0;
+    //
+    // so the only valid arguments are 1, 2 and 3, the return is 0 for success, and the `rc=1` that
+    // the 2026-07-30 round recorded (and read as ambiguous) was a REJECTED call — the reader was
+    // never started at all. The NFC controller coming up in logcat that day was `Open`'s
+    // NF_initialize, not this.
+    //
+    // Which of the three is tag-reading is not settled, so sweep: take the first mode that both
+    // returns 0 and leaves a nonzero GetCurrentMode. An explicit mode argument overrides.
     int rc_start = -1;
-    wd_arm(12);
-    try { rc_start = ((fnu)vslot(nfc, VIDX_Start1))(nfc, &zero); }
-    catch (...) { clog_("nfc: Start (slot 5) threw"); }
-    wd_disarm();
-    std::fprintf(stderr, "[cinder-probe] nfc: Start(0) slot5 rc=%d\n", rc_start);
-
-    int mode1 = -1;
-    wd_arm(10);
-    try { mode1 = ((fn0)vslot(nfc, VIDX_GetCurrentMode))(nfc); } catch (...) {}
-    wd_disarm();
-    std::fprintf(stderr, "[cinder-probe] nfc: GetCurrentMode (after) = %d%s\n", mode1,
-                 mode1 != mode0 ? "  <== the mode CHANGED, so Open/Start took effect" : "");
+    unsigned used_mode = 0;
+    for (unsigned mode = (want_mode ? want_mode : 1);
+         mode <= (want_mode ? want_mode : 3); mode++) {
+        int rc = -1;
+        wd_arm(12);
+        try { rc = ((fnu)vslot(nfc, VIDX_Start1))(nfc, &mode); }
+        catch (...) { clog_("nfc: Start (slot 5) threw"); }
+        wd_disarm();
+        int md = -1;
+        wd_arm(10);
+        try { md = ((fn0)vslot(nfc, VIDX_GetCurrentMode))(nfc); } catch (...) {}
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] nfc: Start(%u) rc=%d%s -> GetCurrentMode=%d\n",
+                     mode, rc,
+                     rc == 0 ? " (ok)" : rc == 1 ? " (REJECTED — bad mode)"
+                                                 : rc == 3 ? " (already started)" : "",
+                     md);
+        if (rc == 0 || rc == 3) { rc_start = rc; used_mode = mode; break; }
+        // A rejected Start changed nothing, so the next mode can be tried on the same handle.
+    }
+    if (rc_start != 0 && rc_start != 3) {
+        clog_("nfc: no Start mode was accepted — nothing below can fire. Check that NFC is enabled "
+              "in Sony's settings.");
+    } else {
+        std::fprintf(stderr, "[cinder-probe] nfc: started in mode %u\n", used_mode);
+    }
 
     std::fprintf(stderr, "[cinder-probe] nfc: TAP A DEVICE ON THE REAR PANEL NOW (%d s) …\n", secs);
     for (int i = 0; i < secs; i++) {
@@ -3419,7 +3498,8 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--nfc") == 0) {
         // Seconds to wait for a tap (default 30).
-        return nfc_probe(argc > 2 ? std::atoi(argv[2]) : 30);
+        return nfc_probe(argc > 2 ? std::atoi(argv[2]) : 30,
+                         argc > 3 ? (unsigned)std::atoi(argv[3]) : 0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btwho") == 0) {
         return btwho_probe();   // read-only; safe to run while audio is playing

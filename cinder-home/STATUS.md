@@ -944,6 +944,21 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   Standard/Low A/B) is on/off-only — the mode enum values are device-gated (TBD).
 - **Power button**: toggles the **screen/backlight on/off** (panel dark, app keeps running); it does
   not trigger appmgr-owned device suspend. (Locking is the Hold switch, not Power — see Functional.)
+- **NFC tap-to-pair** — *the tag read is PROVEN on hardware (2026-08-11, a WH-1000XM4 against the
+  rear panel); the pair-on-tap wiring is written and installed but not yet exercised end to end.*
+  Hold headphones to the back of the player and they pair. What blocked this for a fortnight was one
+  argument: `NfcService::Start(0)` is **rejected** — `Start` (libNfcService.so @0x7a40) accepts only
+  modes 1/2/3 and returns 0=ok / 1=rejected / 3=already-started, so the old `rc=1` was a refusal, not
+  a success. The NFC controller appearing in logcat came from `Open`'s `NF_initialize`, which is what
+  kept the wrong reading alive. **Mode 1 is the tag reader** (rc=0, `GetCurrentMode` 0→1, callback
+  within seconds). The OOB payload was recovered from that one tap rather than guessed:
+  `+0x00 vector<uint8_t> addr`, `+0x0c uint32` class-of-device (`0x240404` = headphones),
+  `+0x10 vector<uint8_t>` 16 bytes of OOB material, `+0x1c std::string` name (`"WH-1000XM4"`).
+  Only the address and name are read — nothing needs the OOB block. The reader is armed whenever the
+  radio is on (bounded to 5 attempts, so a missing service cannot become a per-frame IPC storm) and
+  the callback only copies under a mutex; `Pairing(addr)` runs on the render thread, the same call
+  the FOUND rows already use. Still `dlopen`, never a `DT_NEEDED` — `readelf -d cinder-home | grep -i
+  nfc` is empty and must stay that way.
 - **Scan-and-pair a NEW device** — *works on hardware 2026-07-30 (a real device paired from the
   Devices screen); three follow-up fixes are installed but not yet re-tested*: the
   Devices screen has a **SCAN** button and a FOUND section. Discovery runs on a real Sony listener —

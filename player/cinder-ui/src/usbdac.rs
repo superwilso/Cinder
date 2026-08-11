@@ -40,7 +40,8 @@ pub fn hit_toggle(x: i32, y: i32) -> bool {
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, codec: &str,
-              bt_device: Option<&str>, eq_preset: &str, dsee: bool) {
+              bt_device: Option<&str>, eq_preset: &str, dsee: bool,
+              fmt: Option<(u32, u32, u32)>, negotiated: Option<&str>) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "USB-DAC", None);
     let onoff = if on { "ON" } else { "OFF" };
@@ -54,7 +55,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, code
         // One path or the other, never both: the bridge takes the capture PCM for the whole
         // session, so when it runs the jack gets nothing. `ldac` is the engine's own condition for
         // choosing, so the two stay in step by construction rather than by comment.
-        let path = if ldac { format!("PC → NW-A55 → {}", codec) } else { "PC → NW-A55 → 3.5MM".to_string() };
+        // NAME THE OUTPUT ONLY IF IT IS KNOWN. `codec` is the user's preference and A2DP
+        // negotiates, so a sink that cannot do LDAC lands on SBC with the preference unchanged —
+        // printing it here would be the third false claim this screen has made about its own
+        // output. `negotiated` comes from GetSoundStatus and is None until its enumerators are tied
+        // to a real headphone, so until then the honest label is the transport, not the codec.
+        let out_name = negotiated.unwrap_or("BLUETOOTH");
+        let path = if ldac { format!("PC → NW-A55 → {}", out_name) }
+                   else { "PC → NW-A55 → 3.5MM".to_string() };
         center(c, f, 240.0, 320.0, &path,
                &sty(Family::Mono, Weight::Regular, 13.0, t.acc, 0.1));
 
@@ -64,18 +72,27 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, code
         let (bx, by, bw, bh) = (50, 352, 380, 112);
         fill_rect(c, bx, by, bw, bh, t.panel);
         stroke_rect(c, bx, by, bw, bh, t.line, 1);
-        let out = if ldac { format!("OUTPUT : {} WIRELESS", codec) }
+        let out = if ldac { format!("OUTPUT : {}", out_name) }
                   else { "OUTPUT : 3.5MM UNBALANCED".to_string() };
-        // These two used to read "INPUT : PCM 24BIT / 96.0 KHZ" and "SOURCE : DESKTOP-7F3K (USB)".
-        // Both were invented — a hardcoded rate the device never reported and a PC name that does
-        // not exist. The one real measurement we have (2026-08-11, a PC streaming into it) came back
-        // PCM / 44100 Hz / 32-bit, so the fake numbers were not even close. A panel that states
-        // fabricated hardware facts is worse than one that states fewer true ones, so this now says
-        // only what is actually known without plumbing the live format up from the engine.
-        // Showing the real rate/bit-depth means passing stream_info_t through the FFI — worth doing,
-        // but it is a change to the engine boundary, not to this screen.
+        // This line used to read "INPUT : PCM 24BIT / 96.0 KHZ" as a hardcoded literal, next to a
+        // "SOURCE : DESKTOP-7F3K (USB)" that named a PC which does not exist. Both were invented,
+        // and when the format was finally measured (2026-08-11) the real stream was 32-bit at
+        // 44.1 kHz — the fake numbers were not even close. So the line went generic, and now it is
+        // live: `fmt` is Sony's own stream_info_t, carried across the FFI by the engine's GetStatus
+        // poll. `None` means nothing is streaming, and the generic line is the honest answer then.
+        let input = match fmt {
+            Some((rate, bits, _)) if rate > 0 => {
+                let khz = rate as f32 / 1000.0;
+                if bits > 0 {
+                    format!("INPUT  : PCM {}BIT / {:.1} KHZ", bits, khz)
+                } else {
+                    format!("INPUT  : PCM {:.1} KHZ", khz)
+                }
+            }
+            _ => "INPUT  : USB AUDIO CLASS 2".to_string(),
+        };
         let lines = [
-            "INPUT  : USB AUDIO CLASS 2".to_string(),
+            input,
             format!("DSP    : EQ {}{}", eq_preset, if dsee { " · DSEE HX" } else { "" }),
             out,
         ];
@@ -90,7 +107,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, code
         if ldac {
             let dev = bt_device.unwrap_or("Bluetooth");
             center(c, f, 240.0, 542.0,
-                   &format!("Playing to {} over {}.", dev, codec),
+                   &format!("Playing to {} — {} requested.", dev, codec),
                    &sty(Family::Sans, Weight::SemiBold, 15.0, t.acc, 0.0));
             center(c, f, 240.0, 564.0, "Stock makes you disconnect Bluetooth first. This does not.",
                    &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0));

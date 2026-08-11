@@ -509,6 +509,19 @@ pub struct App {
     bt_enhanced_supported: bool,
     /// USB-DAC mode engaged (input from a USB host → 3.5mm + BT/LDAC). Transient (not persisted).
     usb_dac_on: bool,
+    /// The host's live stream format, as the engine last reported it: (rate Hz, bit depth,
+    /// channels). `None` means nothing is streaming, or nobody has told us yet.
+    ///
+    /// The USB-DAC panel used to print `INPUT : PCM 24BIT / 96.0 KHZ` as a hardcoded literal, which
+    /// was wrong on the one occasion it was ever measured (the real stream was 32-bit at 44.1 kHz).
+    /// Showing a fabricated hardware fact is worse than showing none, so the line stayed generic
+    /// until the format could cross the FFI boundary. This is that.
+    usb_dac_fmt: Option<(u32, u32, u32)>,
+    /// The raw `BtSoundCodec` word A2DP actually negotiated, or 0 for "not known". Everything else
+    /// on screen is the user's *preference*; A2DP negotiates, so a sink that cannot do LDAC lands on
+    /// SBC while the preference still says LDAC. The enumerators are not mapped yet, so this is
+    /// stored raw and rendered as a neutral label — see `negotiated_codec_name`.
+    bt_codec_negotiated: u32,
     /// Now Playing visualiser type (cinder_ui::viz index) + animation on/off (UI settings).
     viz_kind: u8,
     viz_size: u8,
@@ -672,6 +685,8 @@ impl Default for App {
             bt_enhanced: true,
             bt_enhanced_supported: true,
             usb_dac_on: false,
+            usb_dac_fmt: None,
+            bt_codec_negotiated: 0,
             viz_kind: 0,
             viz_size: 1, // VEIL on the cover page; the big spectrum has its own page
             np_page: 0,
@@ -3447,7 +3462,8 @@ impl App {
                 let dev: Option<&str> = None; // see the Bluetooth screen: no invented device name
                 crate::usbdac::render(
                     c, &theme, fonts, self.usb_dac_on, ldac, codec, dev,
-                    data::EQ_PRESETS[self.eq_preset].0, self.snd_dsee,
+                    data::EQ_PRESETS[self.eq_preset].0, self.snd_dsee, self.usb_dac_fmt,
+                    self.negotiated_codec_name(),
                 )
             }
             Screen::Receiver => crate::receiver::render(c, &theme, fonts, false),
@@ -4021,6 +4037,39 @@ impl App {
     /// is already in this state, so re-applying it would flip USB mode for real.
     pub fn set_usb_dac(&mut self, on: bool) {
         self.usb_dac_on = on;
+        if !on {
+            self.usb_dac_fmt = None;
+        }
+    }
+
+    /// The host's stream format, straight from Sony's `stream_info_t` via the engine. A rate of 0
+    /// means "not streaming" and clears the panel back to its generic line, which is what should
+    /// happen when the PC stops.
+    pub fn set_usb_dac_format(&mut self, rate: u32, bits: u32, chans: u32) {
+        self.usb_dac_fmt = if rate == 0 { None } else { Some((rate, bits, chans)) };
+    }
+
+    pub fn usb_dac_format(&self) -> Option<(u32, u32, u32)> {
+        self.usb_dac_fmt
+    }
+
+    /// The raw negotiated-codec word from `GetSoundStatus`. 0 = not known.
+    pub fn set_bt_negotiated_codec(&mut self, raw: u32) {
+        self.bt_codec_negotiated = raw;
+    }
+
+    /// The negotiated codec's display name, or `None` while the mapping is unknown.
+    ///
+    /// The table is deliberately EMPTY. `GetSoundStatus`'s enumerators have only ever been observed
+    /// with the radio off, where all four fields read 0 — so every entry would be a guess, and this
+    /// screen has already shipped two false claims about its own output. The engine logs the raw
+    /// word (`bt-sound: codec:0x..`) on every change, so one session with a known headphone fills
+    /// this in; until then callers fall back to a neutral label.
+    pub fn negotiated_codec_name(&self) -> Option<&'static str> {
+        match self.bt_codec_negotiated {
+            0 => None,
+            _ => None,
+        }
     }
 
     /// Visualiser settings (the shell reads these to gate/animate; the render uses viz_kind).
