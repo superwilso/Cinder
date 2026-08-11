@@ -97,15 +97,31 @@ static int is_mounted(const char *mp)
 
 /* Unmount, lazily if a holder is still closing. The lazy path is safe here because the gadget only
  * needs the block device free, and the kernel drops the last reference once the holder closes. */
+/* A REAL unmount, never a lazy one.
+ *
+ * This used to fall back to umount2(MNT_DETACH), which was actively dangerous here. MNT_DETACH
+ * succeeds even when a process still holds an fd: the mount point disappears, but the filesystem
+ * stays live until that fd closes. The very next thing msc_on does is point the gadget LUN at the
+ * same block device — so the PC would get write access to a vfat the device still has mounted
+ * internally, with two independent writers and no coordination. That is the corruption this file's
+ * header warns about, reintroduced by the escape hatch meant to avoid a failure.
+ *
+ * So: plain umount(2) only, retried while holders drop. If it will not come clean, say so and let
+ * the caller abort with everything still mounted — a mass-storage handoff that does not happen is a
+ * far better outcome than one that eats the user's library. */
 static int unmount_hard(const char *mp)
 {
     for (int i = 0; i < 12; ++i) {
         if (!is_mounted(mp)) return 0;
         if (umount(mp) == 0) return 0;
-        if (umount2(mp, MNT_DETACH) == 0) return 0;
         usleep(250000);
     }
-    return is_mounted(mp) ? -1 : 0;
+    if (is_mounted(mp)) {
+        fprintf(stderr, "cinder-msc: %s will not unmount cleanly (errno=%d) — refusing the lazy "
+                        "unmount; something still holds it\n", mp, errno);
+        return -1;
+    }
+    return 0;
 }
 
 static void wait_prop(const char *prop, const char *want, int tenths)

@@ -3653,6 +3653,13 @@ void enter_usb_msc() {
         char m[128];
         std::snprintf(m, sizeof m, "usb-msc: cinder-msc on FAILED rc=%d — not entering", rc);
         clog_(m);
+        // NAME THE CULPRIT. The overwhelmingly likely cause is that something still holds an fd
+        // under /contents, and rc alone cannot say which process. Our own fds are already off
+        // /contents at this point (redirect_fds above), so anything this prints is a genuine third
+        // party rather than us. stderr is still the tmpfs log, which gets spliced back below, so
+        // the diagnosis survives into cinderhome.log.
+        clog_("usb-msc: processes still holding /contents:");
+        log_contents_holders();
         // The helper unmounts nothing it cannot hand over, so a failure leaves /contents mounted
         // and the gadget untouched. Put the log back and stay out of MSC rather than sitting in a
         // modal over a handoff that did not happen.
