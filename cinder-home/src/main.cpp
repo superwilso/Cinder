@@ -159,6 +159,15 @@ void install_diagnostics() {
     sa.sa_sigaction = fault_handler; sa.sa_flags = SA_SIGINFO | SA_NODEFER;
     sigemptyset(&sa.sa_mask);
     for (int s : {SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE, SIGALRM}) sigaction(s, &sa, nullptr);
+    // SIGPIPE MUST NOT BE ABLE TO KILL THE HOME APP. Its default disposition is termination, and it
+    // fires on any write to a socket or pipe whose peer has gone — an entirely routine event for the
+    // LDAC transmitter socket and for every popen'd helper. Measured 2026-08-11: the first session
+    // that actually carried audio to the transmitter ended with rc=141 (128 + SIGPIPE) the moment
+    // the service closed its end, and because appmgr does not respawn the launcher, the device was
+    // left with NO Home app. Individual sites still use MSG_NOSIGNAL where they can; this is the
+    // backstop, and it is the correct disposition for any long-lived process that writes to fds it
+    // does not own.
+    signal(SIGPIPE, SIG_IGN);
     // Pre-warm backtrace(): its first call mallocs (libgcc unwinder init). Doing it here means a
     // later in-handler backtrace after a *hang* (SIGALRM) doesn't allocate at a moment the heap
     // lock might be held by the interrupted thread.
@@ -2735,6 +2744,19 @@ static void* uac_client() {
 // backstop poll below once the render path is genuinely up.
 static bool g_uac_playing = false;
 
+// The host's current stream format word, as last seen by the RENDER THREAD's GetStatus poll.
+// 0 = kFormatNone = the PC is not streaming.
+//
+// This is a published value rather than something the LDAC bridge reads for itself, and that is the
+// point: every pst client here is asynchronous, replies land on the framework looper, and
+// g_uac_client is built and driven by the render thread. Calling GetStatus on it from the bridge
+// thread as well would mean two threads in one client's transaction state — the exact shape of bug
+// that cost weeks on PlayerService. One reader, one writer, one word.
+static volatile sig_atomic_t g_uac_host_fmt = 0;
+
+// One-shot latch for the "what does a WORKING capture look like?" dump — see the render loop.
+static bool g_uac_ref_dumped = false;
+
 // Returns false if the client could not be built; caller logs. Never throws out.
 static bool uac_render(bool start) {
     enum { VIDX_UacStart = 4, VIDX_UacStop = 5 };
@@ -2883,8 +2905,12 @@ static void uac_capture_state(char* out, size_t n) {
 static void uac_poll_status() {
     enum { VIDX_UacGetStatus = 3 };
     static int ticks = 0;
-    if (g_uac_playing) return;                      // already open; nothing to look for
-    if (cinder_get_usb_dac() == 0 || cinder_get_bt_route()) { ticks = 0; return; }
+    if (cinder_get_usb_dac() == 0) { ticks = 0; g_uac_host_fmt = 0; return; }
+    // When the LDAC bridge owns the capture there is no local render path to open, but the bridge
+    // still needs to know when the host starts and stops — so keep polling for it. Otherwise the old
+    // rule holds: once a real format has been opened, stop looking.
+    const bool bridging = cinder_get_bt_route() != 0;
+    if (!bridging && g_uac_playing) return;
     if (!uac_client()) return;
     unsigned si[32];
     std::memset(si, 0, sizeof si);
@@ -2894,6 +2920,8 @@ static void uac_poll_status() {
     } catch (...) { return; }
     // si[0] is the format word — see the layout note in uac_render(). This used to test si[1], the
     // FREQUENCY, which only ever behaved because a live stream has a nonzero rate.
+    g_uac_host_fmt = (sig_atomic_t)si[0];           // publish for the bridge thread
+    if (bridging) { ticks = 0; return; }            // the bridge opens the PCM, not us
     if (si[0] == 0) {
         // HEARTBEAT. Silence in the log is ambiguous — it reads the same whether the host never
         // streamed or the service never noticed, and that ambiguity has already cost two test
@@ -2985,6 +3013,12 @@ struct AlsaApi {
     int  (*prepare)(snd_pcm_t*) = nullptr;
     int  (*close)(snd_pcm_t*) = nullptr;
     const char* (*strerr)(int) = nullptr;
+    // Diagnostics + explicit start. All OPTIONAL — ok() deliberately does not require them, so a
+    // libasound missing any of these still gives a working bridge, just a quieter one.
+    int  (*state)(snd_pcm_t*) = nullptr;
+    int  (*start)(snd_pcm_t*) = nullptr;
+    long (*avail_update)(snd_pcm_t*) = nullptr;
+    int  (*wait)(snd_pcm_t*, int) = nullptr;
     bool ok() const { return open && set_params && readi && prepare && close; }
 };
 static AlsaApi g_alsa;
@@ -3007,6 +3041,10 @@ static bool alsa_load() {
     g_alsa.prepare    = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_prepare");
     g_alsa.close      = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_close");
     g_alsa.strerr     = (const char* (*)(int))dlsym(g_alsa.h, "snd_strerror");
+    g_alsa.state        = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_state");
+    g_alsa.start        = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_start");
+    g_alsa.avail_update = (long (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_avail_update");
+    g_alsa.wait         = (int  (*)(snd_pcm_t*, int))dlsym(g_alsa.h, "snd_pcm_wait");
     if (!g_alsa.ok()) { clog_("ldac: libasound is missing a PCM symbol — bridge unavailable"); return false; }
     return true;
 }
@@ -3016,7 +3054,73 @@ static const char* alsa_err(int e) {
     return g_alsa.strerr ? g_alsa.strerr(e) : "(errno)";
 }
 
-// Connect to the transmitter's PCM socket. Returns a connected fd, or -1.
+// The handshake that turns the connection into a PCM pipe. Returns true if the service kept it.
+//
+// THIS IS THE WHOLE FEATURE, AND SKIPPING IT IS WHAT REBOOTED THE DEVICE TWICE ON 2026-08-11.
+// The socket starts in frame-parsing mode: `4-byte type | 4-byte length | new[](length) | payload`,
+// with type 0 => len 0, type 1 => len 28, type 2 => len 12 and anything else closed. PCM written
+// before the handshake is read as a type and a length, and a garbage length reaches `operator new[]`
+// inside a core service — hence the reboots.
+//
+// A *type-1* frame does not merely configure the stream, it hands the connection over.
+// `BtTransmitterExHal::OnEvent` (libBtTransmitterService.so @0x9fc0) ends that path with
+//
+//     r1 = p[4]; p[4] = 0;   old = this->[12];   this->[12] = r1;   this->[0x2c] = 1;
+//     pthread_create(stream thread)
+//
+// and the thread it starts (@0xa714) is a pump: `reader->Read(pcm_buf, pcm_size, &got)` then
+// `BtAvSrcComponentIf::SendData(got, pcm_buf)`. `this->[12]` is *our* connection, so from that
+// point the same fd carries raw PCM and Sony does the LDAC encoding (blueangel links libldacBTBC)
+// and the AVDTP bookkeeping. `WriteSilent()` is the identical loop over a zeroed buffer.
+//
+// Measured end to end 2026-08-11 with `cinder-probe --btopen tone`: accepted, and 10 s of audio
+// took 9.8 s of wall clock to write — the peer drains at exactly rate x channels x 2 bytes, which
+// is both the proof that it is a live A2DP stream and the proof that the wire format is S16_LE.
+// The tone was audible in the headphones.
+static bool ldac_handshake(int fd, unsigned rate, unsigned chans) {
+    unsigned char frame[8 + 28];
+    std::memset(frame, 0, sizeof frame);
+    unsigned type = 1, len = 28;
+    std::memcpy(frame + 0, &type, 4);
+    std::memcpy(frame + 4, &len,  4);
+    // Only the three fields OnEvent actually reads. The rest stays zero deliberately: the handler
+    // never touches payload +0/+8/+12/+16, and inventing values for fields we have not identified
+    // is exactly how the previous round went wrong.
+    std::memcpy(frame + 8 + 4,  &chans, 4);   // channel count: 1 stays 1, anything else becomes 2
+    frame[8 + 20] = 1;                        // the u8 flag at payload+20
+    std::memcpy(frame + 8 + 24, &rate,  4);   // Hz, checked against the negotiated BtSoundFrequency
+                                              // (.rodata 0x1c130: 1->44100 2->48000 4->88200 8->96000)
+    if (send(fd, frame, sizeof frame, MSG_NOSIGNAL) != (ssize_t)sizeof frame) {
+        clog_("ldac: handshake send failed");
+        return false;
+    }
+
+    // VERIFY BEFORE SENDING A SINGLE SAMPLE. A rejected frame gets the connection closed; an
+    // accepted one leaves it open with the ExHal's stream thread blocked reading it. Those are
+    // distinguishable from here, and the cost of being wrong is a device reboot, so pay the second.
+    for (int i = 0; i < 20; i++) {
+        struct pollfd p = { fd, POLLIN, 0 };
+        int pr = poll(&p, 1, 100);
+        if (pr > 0) {
+            if (p.revents & (POLLHUP | POLLERR)) {
+                clog_("ldac: handshake REJECTED — the transmitter closed the connection; not "
+                      "sending audio");
+                return false;
+            }
+            char b[64];
+            ssize_t r = recv(fd, b, sizeof b, MSG_DONTWAIT);
+            if (r == 0) {
+                clog_("ldac: handshake REJECTED — the transmitter closed the connection; not "
+                      "sending audio");
+                return false;
+            }
+        }
+    }
+    clog_("ldac: handshake accepted — the socket is now a PCM pipe");
+    return true;
+}
+
+// Connect to the transmitter's PCM socket and complete the handshake. Returns a ready fd, or -1.
 static int ldac_connect_socket() {
     enum { VIDX_GetSocketName = 29 };
     void* x = bt_xmit();
@@ -3056,7 +3160,13 @@ static int ldac_connect_socket() {
         size_t n = name.size();
         if (n > sizeof a.sun_path - 1) n = sizeof a.sun_path - 1;
         std::memcpy(a.sun_path + 1, name.data(), n);   // abstract: sun_path[0] stays NUL
-        if (connect(fd, (struct sockaddr*)&a, (socklen_t)sizeof a) == 0) return fd;
+        if (connect(fd, (struct sockaddr*)&a, (socklen_t)sizeof a) == 0) {
+            // 44100/stereo: the rate the capture is opened at below, and the only one the gadget
+            // has ever presented. A mismatch here is rejected by the service rather than mishandled.
+            if (ldac_handshake(fd, 44100, 2)) return fd;
+            close(fd);
+            return -1;      // rejected is a real answer — retrying the same frame gets the same one
+        }
         close(fd);
         usleep(100000);
     }
@@ -3091,92 +3201,388 @@ static bool ldac_find_capture(char* out, size_t outn) {
     return found;
 }
 
+// Is the HOST streaming? Returns the format word; 0 = kFormatNone = it is not.
+//
+// GetStatus (client slot 3) is a pure read of the same stream_info_t Start() fills in —
+// { format, freq, bitwidth } — so unlike Start() it does NOT take the capture PCM the bridge needs,
+// which is what makes it usable as a gate at all. The render loop does that read once a second and
+// publishes the result here (see g_uac_host_fmt); the bridge only ever reads the word.
+static unsigned uac_stream_format() {
+    return (unsigned)g_uac_host_fmt;
+}
+
+// ── bridge diagnostics ──────────────────────────────────────────────────────────────────────────
+// A blocking snd_pcm_readi that never returns tells you nothing at all, and that is exactly what the
+// first on-device run produced: "streaming", then ~30 s of silence, then -EIO with zero frames. The
+// kernel already publishes everything needed to tell "the stream never started" apart from "the
+// stream started and starved" — so read it and put it in the log rather than inferring.
+static const char* pcm_state_name(int s) {
+    static const char* n[] = { "OPEN", "SETUP", "PREPARED", "RUNNING", "XRUN",
+                               "DRAINING", "PAUSED", "SUSPENDED", "DISCONNECTED" };
+    return (s >= 0 && s < (int)(sizeof n / sizeof n[0])) ? n[s] : "?";
+}
+
+// Log the first `max` non-empty lines of a /proc file, prefixed. Cheap and bounded.
+static void log_proc_file(const char* path, const char* tag, int max) {
+    FILE* f = std::fopen(path, "r");
+    if (!f) {
+        char m[192];
+        std::snprintf(m, sizeof m, "ldac: %s %s — not readable", tag, path);
+        clog_(m);
+        return;
+    }
+    char line[160];
+    int n = 0;
+    while (n < max && std::fgets(line, sizeof line, f)) {
+        size_t l = std::strlen(line);
+        while (l && (line[l-1] == '\n' || line[l-1] == '\r')) line[--l] = 0;
+        if (!l) continue;
+        char m[224];
+        std::snprintf(m, sizeof m, "ldac: %s | %s", tag, line);
+        clog_(m);
+        n++;
+    }
+    std::fclose(f);
+}
+
+// Dump what the driver thinks of the capture substream. `dev` is "hw:<card>,<device>".
+static void ldac_dump_pcm(const char* dev, const char* when) {
+    int card = 0, device = 0;
+    if (std::sscanf(dev, "hw:%d,%d", &card, &device) != 2) return;
+    char p[128], tag[64];
+    std::snprintf(tag, sizeof tag, "%s hw_params", when);
+    std::snprintf(p, sizeof p, "/proc/asound/card%d/pcm%dc/sub0/hw_params", card, device);
+    log_proc_file(p, tag, 12);
+    std::snprintf(tag, sizeof tag, "%s status", when);
+    std::snprintf(p, sizeof p, "/proc/asound/card%d/pcm%dc/sub0/status", card, device);
+    log_proc_file(p, tag, 10);
+}
+
+static void ldac_log_state(snd_pcm_t* pcm, const char* when) {
+    if (!g_alsa.state) return;
+    int  st = g_alsa.state(pcm);
+    long av = g_alsa.avail_update ? g_alsa.avail_update(pcm) : -1;
+    char m[160];
+    std::snprintf(m, sizeof m, "ldac: %s state=%d (%s) avail=%ld", when, st, pcm_state_name(st), av);
+    clog_(m);
+}
+
+// Block until Sony's service reports a live host stream. Returns the format word, or 0 if the
+// bridge was stopped while waiting.
+//
+// WAIT FOR THE HOST BEFORE OPENING THE PCM. The capture card appears as soon as the gadget enters
+// UAC mode — long before the PC has selected the Walkman as its output and pressed play. Opening
+// then yields a PCM with no stream behind it, and measured on device 2026-08-11 that PCM is
+// UNRECOVERABLE: the first read returns -EIO and every read afterwards returns -EBADFD ("file
+// descriptor in bad state") no matter how many times snd_pcm_prepare is called. Retrying harder was
+// the previous fix and it could not have worked — the object was already poisoned by being opened
+// too early.
+//
+// Sony's service already knows when the host starts: it learns the format from the kernel's netlink
+// announcement, and GetStatus reads it back without touching the PCM. So gate on that.
+static unsigned ldac_wait_for_host() {
+    for (int i = 0; g_ldac_run; i++) {
+        unsigned fmt = uac_stream_format();
+        if (fmt) return fmt;
+        if (i % 150 == 0)          // ~30 s between notes at 200 ms
+            clog_("ldac: waiting for the host to start streaming (GetStatus format=0)");
+        usleep(200000);
+    }
+    return 0;
+}
+
+// Why a capture session ended. The distinction is what lets the bridge survive a PC that stops and
+// restarts playback: only a dead socket (or an explicit stop) ends the thread.
+enum ldac_end {
+    LDAC_END_STOPPED,       // g_ldac_run cleared — the user toggled USB-DAC off
+    LDAC_END_HOST_GONE,     // the PC stopped streaming; go back to waiting
+    LDAC_END_PCM_DEAD,      // the PCM is unusable; drop it and reopen
+    LDAC_END_SOCKET_GONE    // the transmitter closed — the bridge is finished
+};
+
+// The pump. 512 frames × 8 bytes = 4 KB a go, which is ~11.6 ms of audio — small enough to keep
+// latency sane, large enough that the syscall rate stays negligible on one ARMv7 core.
+static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev,
+                          unsigned long long* frames_out) {
+    static unsigned char buf[512 * 8];
+    unsigned long long frames = 0;
+    int err_streak   = 0;      // consecutive recoverable errors in this stall
+    int stall_rounds = 0;      // ~5 s stalls survived while the host still claims to be streaming
+    int dry_waits    = 0;      // consecutive 1 s waits that produced no data at all
+    ldac_end why = LDAC_END_STOPPED;
+
+    while (g_ldac_run) {
+        // NEVER BLOCK INDEFINITELY IN readi. The first on-device run sat inside one blocking read
+        // for over half a minute and produced a single line of log at the end of it, which is the
+        // least informative possible outcome. Waiting with a timeout first costs nothing when audio
+        // is flowing (the fd is already readable) and turns a silent hang into a measurement.
+        if (g_alsa.wait) {
+            int w = g_alsa.wait(pcm, 1000);
+            if (w == 0) {                                   // timeout: no data for a whole second
+                if (++dry_waits == 3 || dry_waits % 15 == 0) {
+                    char m[160];
+                    std::snprintf(m, sizeof m, "ldac: no capture data for %d s", dry_waits);
+                    clog_(m);
+                    ldac_log_state(pcm, "dry");
+                    ldac_dump_pcm(dev, "dry");
+                }
+                if (dry_waits >= 5 && uac_stream_format() == 0) {
+                    clog_("ldac: the host stopped streaming — closing the capture and waiting");
+                    why = LDAC_END_HOST_GONE;
+                    break;
+                }
+                continue;
+            }
+            if (w < 0) {
+                // -EPIPE etc. from the wait itself — fall through to the read, which reports it
+                // through the single error path below rather than duplicating the handling here.
+                if (w != -EPIPE && w != -EINTR) {
+                    char m[128];
+                    std::snprintf(m, sizeof m, "ldac: snd_pcm_wait -> %s", alsa_err(w));
+                    clog_(m);
+                }
+            }
+            dry_waits = 0;
+        }
+        long got = g_alsa.readi(pcm, buf, 512);
+        if (got == -EAGAIN || got == -EINTR) continue;
+
+        if (got == -EPIPE || got == -ESTRPIPE || got == -EIO) {
+            // Overrun, suspend, or a momentary gap. snd_pcm_prepare fixes all three *when there is
+            // still a stream behind the endpoint*; when there is not, it fixes nothing, so cap how
+            // long we are willing to sit here before dropping back to the waiting state.
+            if (err_streak == 0) {
+                char m[128];
+                std::snprintf(m, sizeof m, "ldac: capture stalled (%s) — recovering",
+                              alsa_err((int)got));
+                clog_(m);
+                ldac_log_state(pcm, "stalled");
+                ldac_dump_pcm(dev, "stalled");
+            }
+            g_alsa.prepare(pcm);
+            usleep(20000);
+            if (++err_streak >= 250) {                  // ~5 s
+                err_streak = 0;
+                if (uac_stream_format() == 0) {
+                    clog_("ldac: the host stopped streaming — closing the capture and waiting");
+                    why = LDAC_END_HOST_GONE;
+                    break;
+                }
+                if (++stall_rounds >= 3) {              // ~15 s stalled with a live host: poisoned
+                    clog_("ldac: capture will not recover though the host is streaming — reopening");
+                    why = LDAC_END_PCM_DEAD;
+                    break;
+                }
+                clog_("ldac: still stalled but the host is streaming — retrying");
+            }
+            continue;
+        }
+
+        if (got == -ENODEV || got == -ENXIO) {
+            // The gadget's ALSA card went away: the cable was pulled, or USB-DAC was switched off.
+            // That is a normal end of session, not a failure — measured 2026-08-11, a 14.8 s bridge
+            // session ended exactly here when the mode was toggled off, and calling it "capture
+            // stalled" in the log made a clean shutdown read like a fault.
+            clog_("ldac: the UAC card went away (cable out, or DAC mode off) — waiting for it");
+            why = LDAC_END_HOST_GONE;
+            break;
+        }
+        if (got < 0) {
+            // -EBADFD lands here: the PCM object itself is wrong-state, and no amount of prepare()
+            // will move it. Reopening is the only cure, so say so rather than ending the bridge.
+            char m[128];
+            std::snprintf(m, sizeof m, "ldac: readi -> %s%s", alsa_err((int)got),
+                          got == -EBADFD ? "  (PCM wrong-state — reopening)" : "");
+            clog_(m);
+            why = LDAC_END_PCM_DEAD;
+            break;
+        }
+
+        if (err_streak || stall_rounds) {
+            clog_("ldac: capture recovered");
+            err_streak = stall_rounds = 0;
+        }
+        if (frames == 0) {
+            char m[128];
+            std::snprintf(m, sizeof m, "ldac: FIRST CAPTURE READ ok — %ld frames from the host", got);
+            clog_(m);
+        }
+
+        // S32_LE in, S16_LE out. The capture side is 32-bit because that is what the UAC gadget
+        // presents; the transmitter's reader is 16-bit, which is not a guess — the peer drained the
+        // probe's tone at exactly rate x channels x 2 bytes per second, and a 16-bit sine came out
+        // of the headphones as a clean 440 Hz tone rather than noise. Taking the top 16 bits is the
+        // whole conversion: the gadget's low half is padding on a 24-bit-in-32 container.
+        static short out16[512 * 2];
+        {
+            const int* s32 = (const int*)buf;
+            for (long i = 0; i < got * 2; i++) out16[i] = (short)(s32[i] >> 16);
+        }
+        size_t want = (size_t)got * 4;
+        const unsigned char* p = (const unsigned char*)out16;
+        bool broken = false;
+        while (want && !broken) {
+            // send(MSG_NOSIGNAL), NOT write(). A write() to a socket whose peer has closed raises
+            // SIGPIPE, whose default disposition is to KILL THE PROCESS — so the EPIPE branch below
+            // could never run, and the first time this bridge actually carried audio it took the
+            // Home app down with it (rc=141 = 128+SIGPIPE, measured 2026-08-11: the transmitter
+            // closed its end and cinder-home died mid-session, leaving the launcher to hand back to
+            // appmgr and the device with no Home app at all). MSG_NOSIGNAL turns that into the
+            // errno it should always have been.
+            ssize_t w = send(fd, p, want, MSG_NOSIGNAL);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                // The transmitter closed its end — headphones dropped, or the source was released.
+                // EPIPE here is normal shutdown, not a bug.
+                char m[160];
+                std::snprintf(m, sizeof m, "ldac: %s after %llu frames (%llu s)",
+                              errno == EPIPE ? "transmitter closed the socket"
+                                             : "socket write failed",
+                              frames, frames / 44100);
+                clog_(m);
+                broken = true;
+                break;
+            }
+            p += w;
+            want -= (size_t)w;
+        }
+        if (broken) { why = LDAC_END_SOCKET_GONE; break; }
+        frames += (unsigned long long)got;
+    }
+
+    *frames_out = frames;
+    return why;
+}
+
 static void* ldac_thread(void*) {
     g_ldac_alive = 1;
     clog_("ldac: bridge thread up");
 
     int fd = ldac_connect_socket();
-    snd_pcm_t* pcm = nullptr;
 
     if (fd >= 0) {
-        // Wait for the gadget's capture card. It only appears once the gadget is in UAC mode AND the
-        // host has opened the stream, so "not there yet" is the normal state for the first seconds
-        // after the toggle — poll rather than failing.
+        // Wait for the gadget's capture card. It only appears once the gadget is in UAC mode, so
+        // "not there yet" is the normal state for the first seconds after the toggle — poll rather
+        // than failing.
         char dev[32] = {0};
         for (int i = 0; i < 100 && g_ldac_run && !ldac_find_capture(dev, sizeof dev); i++)
             usleep(100000);
 
         if (dev[0] == '\0') {
-            clog_("ldac: no UAC capture card appeared — is the PC actually playing to the Walkman?");
+            clog_("ldac: no UAC capture card appeared — is the gadget actually in UAC mode?");
         } else {
-            char m[128];
+            char m[160];
             std::snprintf(m, sizeof m, "ldac: capture device %s", dev);
             clog_(m);
-            // 44100 S32_LE stereo — what the UAC gadget presents, and what the transmitter expects.
-            int rc = g_alsa.open(&pcm, dev, SND_PCM_STREAM_CAPTURE, 0);
-            if (rc < 0) {
-                pcm = nullptr;
-                std::snprintf(m, sizeof m, "ldac: snd_pcm_open(%s) -> %s%s", dev, alsa_err(rc),
-                              rc == -EBUSY ? "  (Sony's UsbDeviceAudioPlayerService holds it — this "
-                                             "is contention, not RE)" : "");
+
+            // SESSION LOOP. A PC pausing, switching output device, or sleeping ends the capture
+            // stream but not the bridge: close the PCM, go back to waiting on GetStatus, and open a
+            // fresh one when audio returns. Previously the first stream ending killed the thread,
+            // which meant the bridge worked exactly once per USB-DAC toggle.
+            int reopens = 0, reconnects = 0;
+            unsigned long long total = 0;
+            while (g_ldac_run) {
+                unsigned fmt = ldac_wait_for_host();
+                if (!fmt) break;                        // stopped while waiting
+                std::snprintf(m, sizeof m, "ldac: host is streaming (format=%u) — opening %s",
+                              fmt, dev);
                 clog_(m);
-            } else {
+
+                // 44100 S32_LE stereo — what the UAC gadget presents, and what the transmitter
+                // expects.
+                snd_pcm_t* pcm = nullptr;
+                int rc = g_alsa.open(&pcm, dev, SND_PCM_STREAM_CAPTURE, 0);
+                if (rc == -ENOENT || rc == -ENODEV) {
+                    // The card index is not there any more. The gadget's card is created and
+                    // destroyed with the USB connection, and its index is whatever the kernel had
+                    // free, so a replug can land on a different one — rescan instead of ending the
+                    // bridge, which is what used to happen and meant a cable pull cost you the
+                    // feature until you toggled USB-DAC off and on again.
+                    clog_("ldac: the capture card is gone — rescanning");
+                    dev[0] = '\0';
+                    for (int i = 0; i < 100 && g_ldac_run && !ldac_find_capture(dev, sizeof dev); i++)
+                        usleep(100000);
+                    if (dev[0] == '\0') {
+                        clog_("ldac: no capture card came back — ending the bridge");
+                        break;
+                    }
+                    std::snprintf(m, sizeof m, "ldac: capture device is now %s", dev);
+                    clog_(m);
+                    continue;
+                }
+                if (rc < 0) {
+                    std::snprintf(m, sizeof m, "ldac: snd_pcm_open(%s) -> %s%s", dev, alsa_err(rc),
+                                  rc == -EBUSY ? "  (Sony's UsbDeviceAudioPlayerService holds it — "
+                                                 "this is contention, not RE)" : "");
+                    clog_(m);
+                    break;
+                }
+                // soft_resample = 0. We do not want a rate conversion — the gadget runs at whatever
+                // the host negotiated and the transmitter takes 44100 — and asking a bare hw: device
+                // for resampling only adds a way for this call to half-succeed.
                 rc = g_alsa.set_params(pcm, SND_PCM_FORMAT_S32_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                                       2, 44100, 1, 100000);
+                                       2, 44100, 0, 100000);
                 if (rc < 0) {
                     std::snprintf(m, sizeof m, "ldac: set_params -> %s", alsa_err(rc));
                     clog_(m);
                     g_alsa.close(pcm);
-                    pcm = nullptr;
-                }
-            }
-        }
-    }
-
-    // The pump. 512 frames × 8 bytes = 4 KB a go, which is ~11.6 ms of audio — small enough to keep
-    // latency sane, large enough that the syscall rate stays negligible on one ARMv7 core.
-    if (fd >= 0 && pcm) {
-        clog_("ldac: streaming");
-        static unsigned char buf[512 * 8];
-        unsigned long long frames = 0;
-        while (g_ldac_run) {
-            long got = g_alsa.readi(pcm, buf, 512);
-            if (got == -EPIPE) { g_alsa.prepare(pcm); continue; }    // overrun: resync, keep going
-            if (got == -EAGAIN || got == -EINTR) continue;
-            if (got < 0) {
-                char m[96];
-                std::snprintf(m, sizeof m, "ldac: readi -> %s", alsa_err((int)got));
-                clog_(m);
-                break;
-            }
-            size_t want = (size_t)got * 8;
-            const unsigned char* p = buf;
-            bool broken = false;
-            while (want && !broken) {
-                ssize_t w = write(fd, p, want);
-                if (w < 0) {
-                    if (errno == EINTR) continue;
-                    // The transmitter closed its end — headphones dropped, or the source was
-                    // released. EPIPE here is normal shutdown, not a bug.
-                    clog_(errno == EPIPE ? "ldac: transmitter closed the socket"
-                                         : "ldac: socket write failed");
-                    broken = true;
                     break;
                 }
-                p += w;
-                want -= (size_t)w;
+                ldac_dump_pcm(dev, "after set_params");
+                ldac_log_state(pcm, "after set_params");
+
+                // START EXPLICITLY. snd_pcm_set_params leaves start_threshold at 1, so the first
+                // read is *supposed* to start the stream — but that is a library-side convention and
+                // this is a gadget driver we have no source for. Starting by hand costs one syscall
+                // and turns "did it ever start?" from a guess into a logged return value.
+                if (g_alsa.start) {
+                    int s = g_alsa.start(pcm);
+                    std::snprintf(m, sizeof m, "ldac: snd_pcm_start -> %s",
+                                  s == 0 ? "ok" : alsa_err(s));
+                    clog_(m);
+                    ldac_log_state(pcm, "after start");
+                }
+
+                clog_("ldac: streaming");
+                unsigned long long frames = 0;
+                ldac_end why = ldac_pump(fd, pcm, dev, &frames);
+                g_alsa.close(pcm);
+                total += frames;
+                std::snprintf(m, sizeof m, "ldac: session ended after %llu frames (%llu s)",
+                              frames, frames / 44100);
+                clog_(m);
+
+                if (why == LDAC_END_STOPPED) break;
+                if (why == LDAC_END_SOCKET_GONE) {
+                    // The transmitter dropped us. That is normal at the end of a stream, so try to
+                    // get back in rather than ending the feature — bounded, because a service that
+                    // refuses us repeatedly is telling us something and a reconnect spin would just
+                    // bury it in the log.
+                    close(fd);
+                    if (++reconnects > 3) {
+                        clog_("ldac: transmitter keeps closing the socket — giving up");
+                        fd = -1;
+                        break;
+                    }
+                    clog_("ldac: reconnecting to the transmitter");
+                    usleep(300000);
+                    fd = ldac_connect_socket();
+                    if (fd < 0) break;
+                    continue;
+                }
+                if (why == LDAC_END_PCM_DEAD && ++reopens > 8) {
+                    clog_("ldac: too many failed reopens — giving up on this session");
+                    break;
+                }
+                usleep(200000);
             }
-            if (broken) break;
-            frames += (unsigned long long)got;
+            std::snprintf(m, sizeof m, "ldac: bridge carried %llu frames (%llu s) in total",
+                          total, total / 44100);
+            clog_(m);
         }
-        char m[96];
-        std::snprintf(m, sizeof m, "ldac: stopped after %llu frames (%llu s)",
-                      frames, frames / 44100);
-        clog_(m);
+        if (fd >= 0) close(fd);        // the reconnect path may already have closed and given up
     }
 
-    if (pcm) g_alsa.close(pcm);
-    if (fd >= 0) close(fd);
     clog_("ldac: bridge thread down");
     g_ldac_alive = 0;
     g_ldac_run = 0;
@@ -3185,6 +3591,12 @@ static void* ldac_thread(void*) {
 
 // Bring the bridge up. Returns immediately — everything slow happens on the thread.
 static void ldac_start() {
+    // Disabled between 2026-08-11 and the same evening, on the belief that this socket was a control
+    // channel that could never carry audio. Half of that was right: it *starts* as one, and PCM
+    // written before the handshake reboots the device. The other half was wrong — a type-1 frame
+    // hands the connection to the ExHal as its PCM reader. See ldac_handshake() for the recovered
+    // code path and the on-device measurement. The rule that survives is: never write a sample to
+    // this fd that ldac_handshake() has not first cleared.
     if (g_ldac_alive) { clog_("ldac: already running"); return; }
     // Resolve libasound BEFORE touching the control plane. If the capture side can't work there is no
     // point declaring a source to the transmitter and then having to walk it back.
@@ -3358,8 +3770,13 @@ void apply_usb_dac() {
     if (rc == 0) {
         if (on) {
             if (cinder_get_bt_route()) {
-                clog_("usb-dac: headphones connected -> bridging the DAC to LDAC (skipping the "
-                      "local render, which would hold the capture PCM)");
+                // Headphones connected: bridge the capture to them. The bridge owns the capture PCM
+                // for the whole session, so Sony's own renderer must NOT be started as well — two
+                // readers on one gadget capture is the -EBUSY case, and it is the bridge that loses.
+                clog_("usb-dac: headphones connected — bridging the capture to LDAC");
+                g_uac_playing = false;
+                g_uac_ref_dumped = false;
+                uac_listener_start();
                 ldac_start();
             } else {
                 // Subscribe FIRST, then try once. The single Start() here only succeeds if a host
@@ -3371,6 +3788,7 @@ void apply_usb_dac() {
                 // at all, silently. The log said "SetUsbFunction ok, Start() kFormatNone" and then
                 // went quiet forever, which read like a service problem and was ours.
                 g_uac_playing = false;
+                g_uac_ref_dumped = false;
                 uac_listener_start();
                 if (!uac_render(true)) {
                     clog_("usb-dac: gadget is up but Start() failed — expect silence at the jack");
@@ -4642,6 +5060,18 @@ void* render_driver(void*) {
             // (no change, so no notify) or a listener that failed to register. Self-limiting: it
             // returns immediately once a real format has been opened, or when not in DAC mode.
             if (cinder_get_usb_dac()) run_guarded("loop: USB-DAC status", 8, uac_poll_status);
+            // REFERENCE DUMP. When the DAC renders to the jack, Sony's own service is holding the
+            // same capture substream our bridge fails on — so this is the known-good configuration,
+            // printed once per session. Diffing it against the bridge's "after set_params" dump is
+            // the shortest path to whatever we are setting differently. One shot, and only in the
+            // non-bridging case, where it costs a couple of small /proc reads.
+            if (g_uac_playing && !cinder_get_bt_route() && !g_uac_ref_dumped) {
+                g_uac_ref_dumped = true;
+                run_guarded("loop: USB-DAC reference dump", 6, []() {
+                    char dev[32] = {0};
+                    if (ldac_find_capture(dev, sizeof dev)) ldac_dump_pcm(dev, "SONY-REFERENCE");
+                });
+            }
             // A pairing prompt arrived on the looper; show it from the thread that owns the UI.
             if (g_bt_prompt_dirty) {
                 run_guarded("loop: BT pairing prompt", 4, flush_bt_prompt);

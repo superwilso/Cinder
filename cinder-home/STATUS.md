@@ -31,13 +31,22 @@
 > them at boot. Per-route volume (jack vs BT are two different attenuators) and the Disconnect fix
 > are in the running build but **still want a hands-on check with headphones connected**.
 >
-> **The one big thing that cannot be tested over adb alone:** the **USB-DAC → LDAC** audio path.
-> Its control plane is proven (`cinder-probe --ldac`: `GetSocketName` →
-> `pst::services::bttransmitterservice`, `connect()` succeeds) and the bridge now runs inside
-> cinder-home, but the data plane needs the gadget in `uac` mode with a PC feeding audio — and
-> entering `uac` changes the USB identity and **drops adb**, so it takes a hands-on session. Watch
-> for `-EBUSY` on the capture PCM: that would mean Sony's `UsbDeviceAudioPlayerService` is holding
-> it and the fix is stopping that service.
+> **USB-DAC → LDAC: the transmit half is now PROVEN ON DEVICE (2026-08-11).** `cinder-probe
+> --btopen tone` connects to `pst::services::bttransmitterservice`, sends the 8+28 byte type-1
+> handshake, and the connection is accepted — at which point the same fd carries raw PCM and Sony
+> encodes it. A 440 Hz tone was **audible in the headphones**, and 10 s of audio took 9.8 s of wall
+> clock to write, i.e. the peer drains at exactly rate x channels x 2 bytes (which is also what
+> fixes the wire format at S16_LE). `ldac_start()` is re-enabled and does the same handshake before
+> a single sample moves; see `ldac_handshake()` for the recovered `OnEvent` path.
+>
+> **NEVER write to that fd without the handshake.** PCM sent while the connection is still parsing
+> frames is read as a type and a length, and a garbage length reaches `operator new[]` inside a core
+> service — that rebooted the device twice on 2026-08-11.
+>
+> What is still hands-on: the **capture** half end to end, because it needs the gadget in `uac` mode
+> with a PC feeding audio, and entering `uac` changes the USB identity and **drops adb**. Watch for
+> `-EBUSY` on the capture PCM: that would mean Sony's `UsbDeviceAudioPlayerService` is holding it
+> (the BT branch of `apply_usb_dac` no longer starts it, precisely so it does not).
 >
 > **Still device-unverified from the 07-26 batch:** play-by-index (07-03), the GPU/EGL present path
 > (opt-in, default off), and screenshot capture.
@@ -558,13 +567,22 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   at boot, on every change, and **before** `RequestLastDeviceConnection`, because A2DP negotiates the
   codec at connection setup. Until 2026-07-29 the selector only wrote the conf file and never told the
   radio, which is the same defect shape the BT switch had.
-- **USB-DAC → LDAC (the headline feature)** — *control plane proven on device, data plane written and
-  building, end-to-end still unverified*: the USB-DAC screen toggle **engages USB-DAC input and routes
-  it to the 3.5 mm jack AND Bluetooth/LDAC at once, without disconnecting BT** (stock forces a
-  disconnect). The bridge now lives **inside cinder-home** as a thread (ALSA capture on the gadget's
-  UAC card → the transmitter's abstract AF_UNIX socket), not the standalone `ldac-bridge` daemon and
-  not the retired `/contents/ldac_on` file trigger — see the Partial entry for exactly what is and
-  isn't proven. Mass-storage moved to **Settings ▸ USB mode**.
+- **USB-DAC → LDAC (the headline feature)** — **WORKING END TO END, confirmed on hardware
+  2026-08-11.** The USB-DAC screen toggle engages USB-DAC input and, when Bluetooth headphones are
+  connected, **sends the PC's audio to them over LDAC without disconnecting Bluetooth first** —
+  which is precisely what stock refuses to do (it shows a "disconnect Bluetooth" overlay and tears
+  the link down). With nothing connected it renders to the 3.5 mm jack as before.
+  The bridge lives **inside cinder-home** as a thread — ALSA capture on the gadget's UAC card →
+  handshake → raw S16_LE PCM into the transmitter's abstract AF_UNIX socket — not the standalone
+  `ldac-bridge` daemon and not the retired `/contents/ldac_on` file trigger.
+  **The handshake is the feature.** That socket starts in frame-parsing mode
+  (`4-byte type | 4-byte length | payload`); a type-1 frame with a 28-byte payload makes
+  `BtTransmitterExHal` adopt the connection as its PCM reader, and from then on the same fd carries
+  audio that Sony encodes. Writing PCM *before* that handshake reaches `operator new[]` with a
+  garbage length inside a core service and **reboots the device** — it did, twice, on 2026-08-11.
+  `ldac_handshake()` gates every session and refuses to send audio on a connection the service did
+  not accept. Full recovery in `analysis/E_usbdac_ldac/RE_findings.md` round p.
+  Mass-storage moved to **Settings ▸ USB mode**.
   **2026-08-11 — the input side is solved and PROVEN ON HARDWARE.** The reason it stayed at
   `kFormatNone` through every round was never the USB gadget: connmgr device 7 (UacHost), which is
   what the audio service watches, is an **AND of the connect event and `FuncMode == 1` (UsbDac)**.
@@ -648,6 +666,16 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   out never to have been created. It now falls back to `/dev/null` (losing the log beats failing to
   release `/contents`) and reports the failure *before* switching, while stderr still points at the
   old destination, so the explanation survives in the previous log.
+- **Headphone battery removed, because it is unobtainable** (2026-08-11): the Bluetooth card showed a
+  hardcoded `HP BATT 60%`. It was not a placeholder waiting to be wired — the firmware has **no** way
+  to read a peer's battery. The entire stack's only battery API is AVRCP's coarse 5-state
+  `BtBatteryStatus` (`BtTransmitterService::ChangeBatteryStatus`,
+  `BtMwAvrcpSrcRequestCurrentBatteryStatus`) and it runs the other direction — the Walkman announcing
+  *its own* level to the sink. No BLE Battery Service (0x180F) client in either BLE lib, no
+  `iPhoneAccEv`, HFP only in Hands-Free-unit role (receiver mode) with nothing attached, and no
+  percentage-shaped string anywhere in `libBtMw`/`libBtCompIf`/`libBtTransmitterService`. Sony's own
+  readout lives in the phone app over a proprietary channel. The slot is now empty: a confident fake
+  number about someone's headphones is worse than no reading.
 - **USB-MSC no longer lazily unmounts `/contents`** (2026-08-11): `cinder-msc`'s `unmount_hard` fell
   back to `umount2(MNT_DETACH)` when a plain `umount` returned `EBUSY`. That "fixed" the failure and
   introduced a much worse one: `MNT_DETACH` succeeds *while a process still holds an fd*, so the

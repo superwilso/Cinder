@@ -43,6 +43,13 @@ pub struct Bt<'a> {
     /// Does the CONNECTED sink accept absolute volume (`IsSupportedAbsoluteVolume`)? Pushed by the
     /// shell. False = the row still shows, but says the sink can't do it rather than pretending.
     pub enhanced_supported: bool,
+    /// A connect attempt is in flight (name if known). This screen used to have NO in-flight state
+    /// at all: tapping connect on the Devices screen came straight back here, which still read
+    /// "No device connected" for however many seconds the link took — indistinguishable from the
+    /// attempt having failed outright.
+    pub connecting: bool,
+    /// Spinner phase in seconds, advanced by nav while `connecting`.
+    pub busy_phase: f32,
 }
 
 // ---- layout (shared by render + hit) ----
@@ -138,11 +145,32 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         fill_rect(c, 22, CARD_Y, 436, CARD_H, t.panel);
         stroke_rect(c, 22, CARD_Y, 436, CARD_H, t.line, 1);
         text::draw(c, f, 40.0, (CARD_Y + 24) as f32, "CONNECTED", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
-        right(c, f, 440.0, (CARD_Y + 24) as f32, "HP BATT 60%", &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.1));
+        // There used to be a "HP BATT 60%" readout here. It was hardcoded, and it cannot be made
+        // real on this firmware: the entire BT stack exposes exactly one battery API — AVRCP's
+        // coarse 5-state BtBatteryStatus, via BtTransmitterService::ChangeBatteryStatus and
+        // BtMwAvrcpSrcRequestCurrentBatteryStatus — and it runs the OTHER WAY, the Walkman
+        // announcing its own level to the sink. There is no BLE Battery Service (0x180F) client, no
+        // iPhoneAccEv, and no percentage string anywhere in libBtMw / libBtCompIf /
+        // libBtTransmitterService / either BLE service. HFP exists only in Hands-Free-unit role
+        // (receiver mode) with nothing battery-shaped attached.
+        //
+        // So the number was not a placeholder waiting to be wired — it was unwireable. A confident
+        // "60%" on a stranger's headphones is worse than no reading at all, so the slot is empty.
         text::draw(c, f, 40.0, (CARD_Y + 52) as f32, name, &sty(Family::Sans, Weight::Bold, 24.0, t.ink, 0.0));
         let (dx, dy, dw, dh) = DISC;
         stroke_rect(c, dx, dy, dw, dh, t.line, 1);
         center(c, f, (dx + dw / 2) as f32, (dy + dh / 2 + 4) as f32, "Disconnect", &sty(Family::Sans, Weight::SemiBold, 14.0, t.dim, 0.0));
+    } else if bt.on && bt.connecting {
+        // In flight. A solid card rather than the dashed empty state, because something IS
+        // happening — and a moving spinner, because a connect can take several seconds and the
+        // difference between "trying" and "failed" has to be visible without waiting it out.
+        fill_rect(c, 22, CARD_Y, 436, CARD_H, t.panel);
+        stroke_rect(c, 22, CARD_Y, 436, CARD_H, t.line, 1);
+        text::draw(c, f, 64.0, (CARD_Y + 24) as f32, "CONNECTING",
+                   &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
+        text::draw(c, f, 64.0, (CARD_Y + 52) as f32, "Linking to device…",
+                   &sty(Family::Sans, Weight::Regular, 18.0, t.dim, 0.0));
+        crate::widgets::spinner(c, 42, CARD_Y + CARD_H / 2, 9, 3, bt.busy_phase, t.acc);
     } else {
         let mut dx = 22;
         while dx < 458 {

@@ -86,7 +86,7 @@ fn main() {
         eq_preset: "A1",
         bt_codec: Some("LDAC"),
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true };
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0 };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
@@ -220,6 +220,15 @@ fn main() {
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
                 &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY", accent: cinder_ui::Accent::Amber })),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
+            // The in-flight state this screen had no representation for at all: before, a connect
+            // begun from Devices left this card reading "No device connected" until the link
+            // resolved, which is what a failure looks like.
+            ("bluetooth_connecting", &|c: &mut Canvas| {
+                let b = Bt { on: true, connected: None, link_known: true, codec_sel: 0,
+                             ldac_quality: 0, enhanced: true, enhanced_supported: true,
+                             connecting: true, busy_phase: 0.35 };
+                bluetooth::render(c, &theme, &fonts, &b)
+            }),
             // Two real pairings from the device (the same two the 07-29 GetPairedDeviceInfo pass
             // read back), one connected, one with FORGET armed — the preview covers both row states.
             ("pairing", &|c: &mut Canvas| {
@@ -231,7 +240,18 @@ fn main() {
                     pairing::PairedDevice { name: "Pixel 8".into(), kind: "Phone".into(), connected: false },
                     pairing::PairedDevice { name: "(unnamed)".into(), kind: String::new(), connected: false },
                 ];
-                pairing::render(c, &theme, &fonts, &paired, &found, Some(1), None, true)
+                pairing::render(c, &theme, &fonts, &paired, &found, Some(1), None, true, 0.35)
+            }),
+            // A connect attempt IN FLIGHT on the second paired row: "CONNECTING…" plus the moving
+            // spinner. Previewed on its own because the state is transient on device — it is the
+            // one screen you cannot hold still long enough to eyeball, and it is exactly where a
+            // silent failure would otherwise look identical to success.
+            ("pairing_connecting", &|c: &mut Canvas| {
+                let paired = vec![
+                    pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: false },
+                    pairing::PairedDevice { name: "CMF Buds Pro 2".into(), kind: "Headphones".into(), connected: false },
+                ];
+                pairing::render(c, &theme, &fonts, &paired, &[], None, Some(1), false, 0.35)
             }),
             // The modal pairing prompt over the list — the numeric-comparison case, which is what a
             // phone or a modern pair of headphones actually asks for.
@@ -242,7 +262,7 @@ fn main() {
                 let found = vec![
                     pairing::PairedDevice { name: "Pixel 8".into(), kind: "Phone".into(), connected: false },
                 ];
-                pairing::render(c, &theme, &fonts, &paired, &found, None, None, false);
+                pairing::render(c, &theme, &fonts, &paired, &found, None, None, false, 0.0);
                 pairing::render_prompt(c, &theme, &fonts,
                     &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "Pixel 8".into(), code: 428913 });
             }),
