@@ -268,7 +268,7 @@ fn main() {
             }),
             ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, true)),
             ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, 88.6)),
-            ("usbdac", &|c: &mut Canvas| usbdac::render(c, &theme, &fonts, true, true, "LDAC", Some("WH-1000XM5"), "A1", true)),
+            ("usbdac", &|c: &mut Canvas| usbdac::render(c, &theme, &fonts, true, true, "LDAC", Some("WH-1000XM5"), "A1", true, Some((44100, 32, 2)), None)),
         ];
         for (screen, draw) in render_set {
             let mut c = Canvas::new();

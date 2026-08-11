@@ -1325,3 +1325,69 @@ One genuine follow-up, filed rather than done: now that the volume listener is r
 `OnNotifyAvSrcConnectionStatus` (listener slot 2) would deliver connect/disconnect **as events**,
 so the 3 s poll could be retired for the connected case entirely rather than merely tuned. Worth
 doing for the architecture, not for the power.
+
+---
+
+## Round 2026-08-11 — NFC tap-to-pair fires, and why it never did before
+
+**`Start(0)` was never a valid call.** Round f called it, read `rc=1` as ambiguous, saw the NFC
+controller appear in logcat, and concluded "Open/Start work". Only the first half was true.
+`NfcService::Start` (libNfcService.so @0x7a40) decompiles to:
+
+```c
+lock();
+if (state == 3) return 3;                      // already started
+ret = 1;                                       // the DEFAULT is failure
+if      (mode == 1) nf = 1;
+else if (mode == 2) nf = 2;
+else if (mode == 3) nf = 0;
+else goto out;                                 // mode 0 falls straight here, ret stays 1
+puts("calling NF_start2()...");
+NF_start2(handle, id, nf);
+state = 2; ret = 0;                            // 0 = SUCCESS
+out: unlock(); return (uint8_t)ret;
+```
+
+So the valid arguments are **1, 2, 3 only**, the return is **0 = ok / 1 = rejected / 3 = already
+started**, and mode 0 exits before `NF_start2` is ever reached. The controller coming up in logcat
+was `Open`'s `NF_initialize`, which is why the wrong reading survived: a real side effect, produced
+by the *other* call.
+
+**Mode 1 reads tags.** Measured with `cinder-probe --nfc 30`:
+
+```
+nfc: Open() slot4 rc=0
+nfc: Start(1) rc=0 (ok) -> GetCurrentMode=1
+nfc: *** BLUETOOTH OOB TAG — addr=AC:80:0A:56:A9:91 (6 bytes) ***
+```
+
+A WH-1000XM4 held against the rear panel produced a callback within seconds — the first time
+`OnBluetoothOob` has ever fired.
+
+### The OOB payload, recovered rather than guessed
+
+```
++00: 30 05 90 b3 36 05 90 b3 38 05 90 b3 | 04 04 24 00
++10: 50 05 90 b3 60 05 90 b3 60 05 90 b3 | 14 57 48 2d
++20: 31 30 30 30 58 4d 34 00 00 00 00 00 | 80 93 bf b6
+```
+
+| offset | type | value |
+|---|---|---|
+| +0x00 | `std::vector<uint8_t>` | the BD address — begin/end 6 bytes apart, `AC:80:0A:56:A9:91` |
+| +0x0c | `uint32` | `0x240404` = class-of-device, and 0x240404 *is* the headphone CoD |
+| +0x10 | `std::vector<uint8_t>` | begin 0xb3900550, end 0xb3900560 — a **16-byte** block, the OOB pairing material |
+| +0x1c | `std::string` | `"WH-1000XM4"` — SSO form, length byte `0x14` = 10 << 1 |
+
+Round f's read of the prefix (`{vector<uint8_t> addr; uint32 cod; …}`) was correct as far as it
+went. The two fields it could not name are a second vector and the device name.
+
+### Wired into cinder-home
+
+The `libNfcService` rule said no dependency until the payload read had executed. It has, so
+tap-to-pair is now in the Home app — still by `dlopen`, never a `DT_NEEDED` (`readelf -d
+cinder-home | grep -i nfc` is empty, and must stay that way). The reader is armed whenever the
+radio is on and stopped when it goes off. `OnBluetoothOob` runs on the framework looper, so it only
+copies the address and name under a mutex; the render thread calls `Pairing(addr)` — the same call
+the Devices screen's FOUND rows already use. The 16-byte block at +0x10 is read by nobody: nothing
+needs it, and reading a field with no use is risk without benefit.

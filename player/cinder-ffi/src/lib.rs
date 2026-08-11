@@ -2190,6 +2190,34 @@ pub extern "C" fn cinder_set_usb_dac(on: libc::c_int) {
     }
 }
 
+/// Publish the host's live USB stream format for the USB-DAC panel: rate in Hz, bit depth, channel
+/// count, straight from Sony's `stream_info_t` (the same three words `GetStatus` fills in). Rate 0
+/// means "the host is not streaming" and clears the panel back to its generic line.
+///
+/// State only — it raises no action. The panel is a readout of what the hardware is doing; nothing
+/// the user can do on that screen changes the format.
+#[no_mangle]
+pub extern "C" fn cinder_set_usb_dac_format(rate: libc::c_uint, bits: libc::c_uint,
+                                            chans: libc::c_uint) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_usb_dac_format(rate as u32, bits as u32, chans as u32);
+    }
+}
+
+/// Publish the codec A2DP actually negotiated, as the raw `BtSoundCodec` word from
+/// `GetSoundStatus`. 0 means "nothing connected / not known".
+///
+/// The enumerators are deliberately NOT decoded here: with nothing connected every field reads 0,
+/// so a mapping would be a guess, and this screen has already shipped two claims about its output
+/// that turned out to be false. The UI shows a neutral label until the raw value can be tied to a
+/// real headphone. Sets state only.
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_negotiated_codec(raw: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_bt_negotiated_codec(raw as u32);
+    }
+}
+
 /// Leave the transient backlight-off state (brightness 0) and return to the last visible level.
 /// Returns 1 if it changed, so the shell only rewrites the backlight node when it must.
 ///
