@@ -648,6 +648,18 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   out never to have been created. It now falls back to `/dev/null` (losing the log beats failing to
   release `/contents`) and reports the failure *before* switching, while stderr still points at the
   old destination, so the explanation survives in the previous log.
+- **USB-MSC no longer lazily unmounts `/contents`** (2026-08-11): `cinder-msc`'s `unmount_hard` fell
+  back to `umount2(MNT_DETACH)` when a plain `umount` returned `EBUSY`. That "fixed" the failure and
+  introduced a much worse one: `MNT_DETACH` succeeds *while a process still holds an fd*, so the
+  mount point vanishes but the filesystem stays live — and the very next thing `msc_on` does is point
+  the gadget LUN at that same block device. The PC then gets write access to a vfat the player still
+  has mounted internally: two independent writers, no coordination, which is precisely the corruption
+  the file's own header warns about. Now plain `umount(2)` only, retried while holders drop, and a
+  clean abort with everything still mounted if it will not release. A handoff that does not happen
+  beats one that eats the library. Paired with this, the `cinder-msc on` failure path now calls
+  `log_contents_holders()` — a `/proc` walk that was written months ago and **never wired in** — so a
+  refusal names the holding process and fd instead of printing a bare `rc`. Our own fds are already
+  off `/contents` by then, so anything it lists is a genuine third party.
 - **Scrolling momentum is frame-rate independent** (2026-07-27): the fling stepped `v / 60.0` per
   tick and decayed a flat `0.92` per tick — a hardcoded 60 fps. But this project's own bench
   measured a **scrolling** frame at ~31 ms on device (~32 fps), and flinging *is* scrolling, so the
