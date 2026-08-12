@@ -130,7 +130,10 @@ typedef enum {
      * libBtTransmitterService.so), so if the shell never sets it, absolute volume silently does
      * nothing and every volume step falls back to VOLUME_UP/VOLUME_DOWN key events — which sinks
      * such as the CMF Buds answer with their own feedback beep. */
-    CINDER_ACT_BT_ENHANCED_CHANGED = 35
+    CINDER_ACT_BT_ENHANCED_CHANGED = 35,
+    /* The user queue changed while music is playing.  Rebuild the PlayerService sequence now,
+     * restoring the current position, so an item marked "Playing next" really is next. */
+    CINDER_ACT_QUEUE_CHANGED = 36
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -230,6 +233,11 @@ int  cinder_liked_count(void);
  * fully dark panel is always one touch from coming back and is never persisted. */
 int  cinder_brightness_wake(void);
 int  cinder_prev_means_restart(void);
+/* Prepare a PlayerService sequence starting at the preceding Cinder playback-history entry.
+ * Returns 1 when cinder_pending_play_* is ready, 0 when there is no earlier track. */
+int  cinder_prepare_previous_play(void);
+/* Best current position estimate, used when rebuilding a sequence for a queue edit. */
+int  cinder_play_position_ms(void);
 /* Tell the UI that the SHELL seeked playback to `ms` (the ◁ rewind paths), so the progress bar
  * snaps there instead of extrapolating from the pre-seek anchor for ~1 s. */
 void cinder_notify_seek_ms(int ms);
