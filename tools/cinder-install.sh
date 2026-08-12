@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# cinder-install.sh — one-command build + adb install for Cinder on the NW-A55.
+#
+# Pure-Linux, adb-only. No MSC mode, no .UPG, no usbipd. Builds the dev channel
+# (or stable with --stable), pushes the binary to /data/local/tmp (ext4, safe
+# from MSC), kills the running cinder-home cleanly with the no-respawn flag
+# armed (so /system isn't busy), does an atomic temp→cmp→mv swap, reboots.
+# Keeps a one-step rollback on /data.
+#
+# Usage:
+#   tools/cinder-install.sh                # build dev + install + reboot
+#   tools/cinder-install.sh --no-build     # skip build, install existing dist/dev/
+#   tools/cinder-install.sh --stable       # use stable channel (NO adb next boot!)
+#   tools/cinder-install.sh --full         # also push + chmod 4755 the setuid helpers
+#   tools/cinder-install.sh --rollback     # restore previous binary from /data/cinder/
+#   tools/cinder-install.sh --logs         # tail /contents/cinderhome.log
+#   tools/cinder-install.sh --status       # device + install health check
+#   tools/cinder-install.sh -h             # this help
+#
+# Prereqs:
+#   - adb in PATH (apt install android-tools-adb)
+#   - dev channel already installed (adb only exists once cinder-home dev is running)
+#   - bash cinder-home/build.sh <channel> works (cross toolchain set up)
+#
+# FIRST INSTALL: this script CANNOT do the first install — adb only exists after
+# the dev channel is running. For the one-time first install, put the device in
+# MSC mode and run:  sudo tools/flash.sh install
+
+set -euo pipefail
+
+# ─── paths ─────────────────────────────────────────────────────────────────
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SELF/.." && pwd)"
+
+# ─── colors ────────────────────────────────────────────────────────────────
+if [ -t 1 ]; then
+    C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[36m'; C_D=$'\e[2m'; C_0=$'\e[0m'
+else
+    C_R=; C_G=; C_Y=; C_B=; C_D=; C_0=
+fi
+info() { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*"; }
+ok()   { printf '%s ok %s %s\n' "$C_G" "$C_0" "$*"; }
+say()  { printf '%s\n' "$*"; }
+warn() { printf '%swarn%s %s\n' "$C_Y" "$C_0" "$*" >&2; }
+die()  { printf '%s err %s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
+
+# ─── args ──────────────────────────────────────────────────────────────────
+CHANNEL="dev"
+DO_BUILD=1
+MODE="install"
+FULL=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-build) DO_BUILD=0; shift;;
+        --stable)   CHANNEL="stable"; shift;;
+        --dev)      CHANNEL="dev"; shift;;
+        --full)     FULL=1; shift;;
+        --logs)     MODE="logs"; shift;;
+        --status)   MODE="status"; shift;;
+        --rollback) MODE="rollback"; shift;;
+        -h|--help)  awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } /^$/ { next } { exit }' "$0"; exit 0;;
+        *) die "unknown arg: $1 (try --help)";;
+    esac
+done
+
+DIST="$REPO/cinder-home/dist/$CHANNEL"
+BIN="$DIST/cinder-home"
+INSTALL_PATH="/system/vendor/unknown321/bin/cinder-home"
+STAGE="/data/local/tmp/cinder-home.new"
+BACKUP="/data/cinder/cinder-home.last"
+NORESPAWN="/data/cinder/no_respawn"
+HELPERS_DIR="/system/vendor/unknown321/bin"
+
+# ─── helpers ───────────────────────────────────────────────────────────────
+require_adb() {
+    command -v adb >/dev/null 2>&1 || die "adb not in PATH (apt install android-tools-adb)"
+    [ "$(adb get-state 2>/dev/null)" = "device" ] || die "no adb device connected (run: adb devices)"
+}
+
+# ─── status mode ───────────────────────────────────────────────────────────
+if [ "$MODE" = "status" ]; then
+    require_adb
+    info "device: $(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r')"
+    info "running cinder-home:"
+    adb shell 'pidof cinder-home >/dev/null && echo "    pid: $(pidof cinder-home) — running" || echo "    not running"' 2>/dev/null
+    info "installed binary:"
+    adb shell "[ -f $INSTALL_PATH ] && ls -la $INSTALL_PATH | awk '{print \"    \"\$5\" bytes, mtime \"\$6\" \"\$7\" \"\$8}' || echo '    NOT INSTALLED'" 2>/dev/null
+    info "rollback available:"
+    adb shell "[ -f $BACKUP ] && echo '    yes: $BACKUP' || echo '    no'" 2>/dev/null
+    info "helpers installed:"
+    for h in cinder-umount cinder-power cinder-msc cinder-gpunode; do
+        adb shell "[ -f $HELPERS_DIR/$h ] && echo '    $h: present' || echo '    $h: -'" 2>/dev/null
+    done
+    info "last 10 log lines:"
+    adb shell 'tail -10 /contents/cinderhome.log 2>/dev/null || echo "(no log)"' 2>/dev/null | sed 's/^/    /'
+    exit 0
+fi
+
+# ─── logs mode ─────────────────────────────────────────────────────────────
+if [ "$MODE" = "logs" ]; then
+    require_adb
+    info "tailing /contents/cinderhome.log (Ctrl-C to stop)"
+    exec adb shell 'tail -f /contents/cinderhome.log 2>/dev/null || tail -f /tmp/cinderhome.log 2>/dev/null'
+fi
+
+# ─── build the on-device swap script (used by install + rollback) ──────────
+make_swap_script() {
+    local src="$1"  # source path on device
+    cat <<SWAPEOF
+#!/system/bin/sh
+# generated by cinder-install.sh — atomic swap of cinder-home on /system.
+set -e
+
+STAGE="$src"
+INSTALL_PATH="$INSTALL_PATH"
+BACKUP="$BACKUP"
+NORESPAWN="$NORESPAWN"
+HELPERS_DIR="$HELPERS_DIR"
+FULL=$FULL
+
+echo "[swap] source: \$STAGE"
+echo "[swap] target: \$INSTALL_PATH"
+
+# 1. backup current binary (for --rollback)
+mkdir -p /data/cinder
+if [ -f "\$INSTALL_PATH" ]; then
+    cp "\$INSTALL_PATH" "\$BACKUP"
+    echo "[swap] backed up current binary -> \$BACKUP"
+fi
+
+# 2. arm no-respawn so killing cinder-home doesn't trigger the supervisor
+touch "\$NORESPAWN"
+
+# 3. kill cinder-home (launcher stays alive; appmgr won't reboot)
+PID=\$(pidof cinder-home 2>/dev/null || true)
+if [ -n "\$PID" ]; then
+    echo "[swap] killing cinder-home (pid \$PID)"
+    kill \$PID 2>/dev/null || true
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        pidof cinder-home >/dev/null 2>&1 || break
+        sleep 1
+    done
+    if pidof cinder-home >/dev/null 2>&1; then
+        echo "[swap] WARN: still alive after 10s, sending KILL"
+        kill -9 \$(pidof cinder-home) 2>/dev/null || true
+        sleep 1
+    fi
+else
+    echo "[swap] cinder-home not running (ok)"
+fi
+
+# 4. remount /system rw (try remount first, fall back to mount-by-source —
+#    matches install_cinderhome.sh line 57-58)
+echo "[swap] remounting /system rw"
+if ! mount -o remount,rw /system 2>/dev/null; then
+    mount -t ext4 -o rw,remount /emmc@android /system 2>/dev/null || {
+        rm -f "\$NORESPAWN"
+        echo "[swap] FAIL: could not remount /system rw"
+        exit 1
+    }
+fi
+
+# 5. atomic swap: temp -> cmp -> mv
+echo "[swap] staging \$STAGE -> \$INSTALL_PATH.tmp"
+cp "\$STAGE" "\$INSTALL_PATH.tmp"
+if ! cmp "\$STAGE" "\$INSTALL_PATH.tmp"; then
+    rm -f "\$INSTALL_PATH.tmp" "\$NORESPAWN"
+    mount -o remount,ro /system 2>/dev/null || true
+    echo "[swap] FAIL: staged copy mismatch"
+    exit 1
+fi
+chmod 755 "\$INSTALL_PATH.tmp"
+mv "\$INSTALL_PATH.tmp" "\$INSTALL_PATH"
+echo "[swap] installed: \$INSTALL_PATH"
+
+# 6. helpers if --full
+if [ "\$FULL" = "1" ]; then
+    for h in cinder-umount cinder-power cinder-msc cinder-gpunode; do
+        if [ -f "/data/local/tmp/\$h.new" ]; then
+            cp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"
+            if cmp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"; then
+                chmod 4755 "\$HELPERS_DIR/\$h.tmp"
+                chown root:root "\$HELPERS_DIR/\$h.tmp" 2>/dev/null || true
+                mv "\$HELPERS_DIR/\$h.tmp" "\$HELPERS_DIR/\$h"
+                echo "[swap] installed helper: \$h (4755 root:root)"
+            else
+                rm -f "\$HELPERS_DIR/\$h.tmp"
+                echo "[swap] WARN: \$h copy mismatch, skipped"
+            fi
+            rm -f "/data/local/tmp/\$h.new"
+        fi
+    done
+fi
+
+# 7. cleanup + remount ro + reboot
+rm -f "\$STAGE" "\$NORESPAWN"
+sync
+mount -o remount,ro /system 2>/dev/null || true
+echo "[swap] done — rebooting"
+sync
+reboot
+SWAPEOF
+}
+
+# ─── rollback mode ─────────────────────────────────────────────────────────
+if [ "$MODE" = "rollback" ]; then
+    require_adb
+    info "rolling back to $BACKUP"
+    adb shell "[ -f $BACKUP ]" 2>/dev/null \
+        || die "no rollback binary at $BACKUP (nothing to roll back to — run a normal install first)"
+    SWAP_SCRIPT="$(mktemp)"
+    make_swap_script "$BACKUP" > "$SWAP_SCRIPT"
+    adb push "$SWAP_SCRIPT" /data/local/tmp/_cinder_swap.sh >/dev/null
+    adb shell "chmod 755 /data/local/tmp/_cinder_swap.sh"
+    rm -f "$SWAP_SCRIPT"
+    adb shell "sh /data/local/tmp/_cinder_swap.sh" || die "rollback swap failed (see above)"
+    ok "rollback complete — device rebooting to previous binary"
+    exit 0
+fi
+
+# ─── install mode (default) ────────────────────────────────────────────────
+# 1. build (unless --no-build)
+if [ "$DO_BUILD" = 1 ]; then
+    info "building cinder-home ($CHANNEL channel)…"
+    bash "$REPO/cinder-home/build.sh" "$CHANNEL" || die "build failed"
+fi
+
+[ -f "$BIN" ] || die "binary not found: $BIN (did the build succeed?)"
+BIN_SIZE="$(stat -c %s "$BIN")"
+info "binary: $BIN ($BIN_SIZE bytes)"
+
+# 2. device + first-install check
+require_adb
+info "device: $(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r')"
+adb shell "[ -f $INSTALL_PATH ]" 2>/dev/null \
+    || die "cinder-home is NOT installed at $INSTALL_PATH.
+This script can only UPDATE an existing install (adb only exists once the
+dev channel is running). For the one-time first install, put the device in
+MSC mode and run:  sudo tools/flash.sh install"
+
+# 3. push binary to /data/local/tmp (ext4, safe from MSC mode)
+info "pushing binary to $STAGE…"
+adb push "$BIN" "$STAGE" >/dev/null
+ok "pushed $BIN_SIZE bytes"
+
+# 4. push helpers if --full
+if [ "$FULL" = 1 ]; then
+    info "pushing setuid helpers (--full)…"
+    for h in cinder-umount cinder-power cinder-msc; do
+        if [ -f "$DIST/$h" ]; then
+            adb push "$DIST/$h" "/data/local/tmp/$h.new" >/dev/null
+            ok "  staged $h"
+        fi
+    done
+    if [ "$CHANNEL" = "dev" ] && [ -f "$DIST/cinder-gpunode" ]; then
+        adb push "$DIST/cinder-gpunode" "/data/local/tmp/cinder-gpunode.new" >/dev/null
+        ok "  staged cinder-gpunode (dev-only)"
+    fi
+fi
+
+# 5. upload + run the swap script
+SWAP_SCRIPT="$(mktemp)"
+make_swap_script "$STAGE" > "$SWAP_SCRIPT"
+info "uploading swap script…"
+adb push "$SWAP_SCRIPT" /data/local/tmp/_cinder_swap.sh >/dev/null
+adb shell "chmod 755 /data/local/tmp/_cinder_swap.sh"
+rm -f "$SWAP_SCRIPT"
+
+info "running swap on device…"
+adb shell "sh /data/local/tmp/_cinder_swap.sh" || die "swap failed (see above — rollback with: $0 --rollback)"
+
+# device reboots here, adb connection drops — that's expected
+ok "install complete — device rebooting"
+say ""
+say "  next:"
+say "    $0 --status       check first-boot health"
+say "    $0 --logs         tail the boot log"
+say "    $0 --rollback     restore the previous binary if this one's bad"
