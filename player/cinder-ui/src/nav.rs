@@ -9,7 +9,7 @@
 use crate::bluetooth::Bt;
 use crate::library::{self, Tab};
 use crate::menu::MenuItem;
-use crate::model::{Library, SongRow};
+use crate::model::{AlbumRow, Library, SongRow};
 use crate::now_playing::NowPlaying;
 use crate::sound::Sound;
 use crate::theme::Accent;
@@ -152,12 +152,11 @@ pub enum Action {
     SoundChanged,             // shell reads cinder_get_sound_flags + applies via EffectCtrlDmp
     SoundBypass(bool),        // A/B: true = bypass whole chain (B), false = re-enable (A)
     SleepTimer(u32),          // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
-    ShuffleToggle,            // Now Playing shuffle on/off (FFI holds the state; PlayController wiring is device-gated)
+    ShuffleToggle,            // Now Playing shuffle on/off (FFI rebuilds the active context)
     RepeatCycle,              // Now Playing repeat: off ↔ one (shell applies via SetOneTrackMode)
-    /// The user queue changed. The shell does NOT re-issue the sequence now — it marks the change
-    /// pending and applies it at the next track boundary. Measured on device 2026-07-28: a
-    /// SetTrackSequence during playback restarts the sequence (position 9000 → 0) and the track
-    /// stops, so an immediate apply would interrupt the music every time you queued anything.
+    /// The user queue changed. The shell applies it just before the current track ends: that gets
+    /// the user's first choice ahead of the next context track without making the queue gesture
+    /// pay PlayerService's pause/seek/play replacement cost.
     QueueChanged,
     Restart,                  // confirmed in the modal: shell calls PowerMgrServiceClient::Reboot
     PowerOff,                 // confirmed in the modal: shell calls SetStatus(PowerOff)
@@ -1412,8 +1411,8 @@ impl App {
             Screen::Album => {
                 // track rows via the render-mirroring hit test (rows start 312 @56 —
                 // library::album_view geometry; the Play-album band above returns None).
-                if let Some(album) = self.lib.albums_flat().get(self.album_view) {
-                    if let Some(row) = library::album_hit_track(album, self.album_scroll_px, y) {
+                if let Some(album) = self.lib.albums_flat().get(self.album_view).map(|a| (*a).clone()) {
+                    if let Some(row) = library::album_hit_track(&album, self.album_scroll_px, y) {
                         self.album_track_idx = row;
                         let id = album.track_list.get(row).map(|s| s.object_id);
                         return id.map(|i| self.start_play(i)).unwrap_or_default();
@@ -1907,6 +1906,26 @@ impl App {
         }
     }
 
+    /// The album under `y` on the artist page, for the swipe-to-queue gesture.
+    fn artist_album_at(&self, y: i32) -> Option<AlbumRow> {
+        let page = self.artist_page()?;
+        match library::artist_hit(&page, self.artist_scroll_px, y) {
+            Some(library::ArtistHit::Album(flat)) => self.lib.albums_flat().get(flat).map(|a| (*a).clone()),
+            _ => None,
+        }
+    }
+
+    /// The album under `y` in the Albums accordion header row, for the swipe-to-queue gesture.
+    fn albums_album_at(&self, y: i32) -> Option<AlbumRow> {
+        use crate::library::AlbumsHit;
+        match library::albums_hit(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, 240, y) {
+            Some(AlbumsHit::AlbumToggle(flat) | AlbumsHit::AlbumOpen(flat)) => {
+                self.lib.albums_flat().get(flat).map(|a| (*a).clone())
+            }
+            _ => None,
+        }
+    }
+
     /// Which library tab is at screen-x `x`, from the strip as last rendered. Falls back to an
     /// even quarter split if nothing has been drawn yet (unreachable in practice — a tap cannot
     /// precede the first paint).
@@ -2143,7 +2162,7 @@ impl App {
                 Tab::Songs => library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
                     .and_then(|r| library::song_at(&self.lib, self.lib_sort, r))
                     .is_some(),
-                Tab::Albums => self.albums_track_at(y).is_some(),
+                Tab::Albums => self.albums_track_at(y).is_some() || self.albums_album_at(y).is_some(),
                 _ => false,
             },
             Screen::Album => self
@@ -2152,7 +2171,7 @@ impl App {
                 .get(self.album_view)
                 .and_then(|al| library::album_hit_track(al, self.album_scroll_px, y))
                 .is_some(),
-            Screen::Artist => self.artist_track_at(y).is_some(),
+            Screen::Artist => self.artist_track_at(y).is_some() || self.artist_album_at(y).is_some(),
             Screen::Playlist => self.playlist_track_at(y).is_some(),
             // The queue's own rows swipe too, but to REMOVE rather than to queue again.
             // Only the USER-QUEUE rows swipe, and they swipe to REMOVE. The album rows around
@@ -2393,16 +2412,26 @@ impl App {
             // gestures need no new control and no long-press, and the toast names which one
             // happened so a mis-swipe is legible rather than silent.
             Screen::Library if dir < 0 => {
-                let song = match self.lib_tab {
-                    Tab::Songs => library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
-                        .and_then(|rank| library::song_at(&self.lib, self.lib_sort, rank))
-                        .cloned(),
-                    Tab::Albums => self.albums_track_at(y),
-                    _ => None,
-                };
-                match song {
-                    Some(s) => self.enqueue_at(s, y, QueueAt::Next),
-                    None => vec![],
+                match self.lib_tab {
+                    Tab::Songs => {
+                        let song = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
+                            .and_then(|rank| library::song_at(&self.lib, self.lib_sort, rank))
+                            .cloned();
+                        match song {
+                            Some(s) => self.enqueue_at(s, y, QueueAt::Next),
+                            None => vec![],
+                        }
+                    }
+                    Tab::Albums => {
+                        if let Some(s) = self.albums_track_at(y) {
+                            return self.enqueue_at(s, y, QueueAt::Next);
+                        }
+                        if let Some(al) = self.albums_album_at(y) {
+                            return self.enqueue_album_at(&al, y, QueueAt::Next);
+                        }
+                        vec![]
+                    }
+                    _ => vec![],
                 }
             }
             Screen::Album if dir < 0 => {
@@ -2437,30 +2466,38 @@ impl App {
                 }
                 None => vec![],
             },
-            // The artist page's track rows queue exactly like every other track list.
-            Screen::Artist => match self.artist_track_at(y) {
-                Some(s) => {
-                    let at = if dir < 0 { QueueAt::Next } else { QueueAt::Later };
-                    self.enqueue_at(s, y, at)
+            // The artist page's track and album rows queue.
+            Screen::Artist => {
+                let at = if dir < 0 { QueueAt::Next } else { QueueAt::Later };
+                if let Some(s) = self.artist_track_at(y) {
+                    return self.enqueue_at(s, y, at);
                 }
-                None => vec![],
-            },
+                if let Some(al) = self.artist_album_at(y) {
+                    return self.enqueue_album_at(&al, y, at);
+                }
+                vec![]
+            }
             Screen::Library if dir > 0 => {
-                // Right-swipe a track row → queue that song, using the same render-mirroring hit
-                // test the tap uses so the queued song is exactly the row under the finger.
-                // Both tabs that put a *track* under the finger are covered: the Songs list, and
-                // the tracks of an expanded album in the Albums accordion. (Artist/playlist rows
-                // aren't tracks, so there is nothing to queue.)
-                let song = match self.lib_tab {
-                    Tab::Songs => library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
-                        .and_then(|rank| library::song_at(&self.lib, self.lib_sort, rank))
-                        .cloned(),
-                    Tab::Albums => self.albums_track_at(y),
-                    _ => None,
-                };
-                match song {
-                    Some(s) => self.enqueue_at(s, y, QueueAt::Later),
-                    None => vec![],
+                match self.lib_tab {
+                    Tab::Songs => {
+                        let song = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
+                            .and_then(|rank| library::song_at(&self.lib, self.lib_sort, rank))
+                            .cloned();
+                        match song {
+                            Some(s) => self.enqueue_at(s, y, QueueAt::Later),
+                            None => vec![],
+                        }
+                    }
+                    Tab::Albums => {
+                        if let Some(s) = self.albums_track_at(y) {
+                            return self.enqueue_at(s, y, QueueAt::Later);
+                        }
+                        if let Some(al) = self.albums_album_at(y) {
+                            return self.enqueue_album_at(&al, y, QueueAt::Later);
+                        }
+                        vec![]
+                    }
+                    _ => vec![],
                 }
             }
             Screen::Album if dir > 0 => {
@@ -2482,6 +2519,31 @@ impl App {
     /// animation (`y` = the gesture y, so the chip rides the row the user flicked).
     fn enqueue(&mut self, s: SongRow, y: i32) {
         self.enqueue_at(s, y, QueueAt::Later);
+    }
+
+    /// Add an album's tracks to the user queue, at the front or the back.
+    fn enqueue_album_at(&mut self, album: &AlbumRow, y: i32, at: QueueAt) -> Vec<Action> {
+        if album.track_list.is_empty() {
+            return vec![];
+        }
+        self.toast = match at {
+            QueueAt::Next => format!("Playing next — {}", album.name),
+            QueueAt::Later => format!("Queued album — {}", album.name),
+        };
+        self.toast_frames = TOAST_FRAMES;
+        self.queue_anim_y = y;
+        self.queue_anim_frames = QUEUE_ANIM_FRAMES;
+        match at {
+            QueueAt::Next => {
+                for (i, tr) in album.track_list.iter().cloned().enumerate() {
+                    self.queue.insert(i, tr);
+                }
+            }
+            QueueAt::Later => {
+                self.queue.extend(album.track_list.iter().cloned());
+            }
+        }
+        vec![Action::QueueChanged]
     }
 
     /// Add a track to the user queue, at the front or the back.
@@ -5970,9 +6032,10 @@ mod tests {
         assert_eq!(a.swipe(1, 240, y), vec![Action::QueueChanged]);
         assert_eq!(a.queue().len(), 1);
         assert_eq!(a.queue()[0].object_id, want.object_id);
-        // Collapsed, that same y is no longer a track row -> nothing queued.
+        // Collapsed, that same y is no longer a track row.
         a.album_expanded = None;
-        assert!(a.swipe(1, 240, y).is_empty(), "a non-row swipe must queue nothing");
+        assert!(a.albums_track_at(y).is_none());
+        assert!(a.swipe(1, 240, 20).is_empty(), "a non-row swipe must queue nothing");
         assert_eq!(a.queue().len(), 1);
     }
 
@@ -6162,6 +6225,19 @@ mod tests {
         assert_eq!(a.tap(240, 320), vec![Action::PlayIndex(first_id)]);
         // A tap in the header art/title area plays nothing.
         assert!(a.tap(240, 160).is_empty());
+    }
+
+    #[test]
+    fn album_row_swipe_queues_album() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Albums;
+        let album = a.lib.albums_flat()[0].clone();
+        let y = (0..800)
+            .find(|&y| a.albums_album_at(y).map(|al| al.name) == Some(album.name.clone()))
+            .expect("albums list should contain the first album row");
+        assert_eq!(a.swipe(1, 240, y), vec![Action::QueueChanged]);
+        assert_eq!(a.queue().len(), album.track_list.len());
     }
 
     #[test]

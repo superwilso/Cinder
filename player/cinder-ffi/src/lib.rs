@@ -325,6 +325,11 @@ struct Render {
     app: cinder_ui::nav::App,
     scrob: Option<scrobble::Scrobbler>,
     last_track: Option<cinder_db::Track>, // last resolved track (for scrobble metadata)
+    /// Tracks that Cinder, rather than PlayerService, has already played. PlayerService loses
+    /// its own previous-track state whenever a queue edit replaces its sequence.
+    play_history: Vec<cinder_db::Track>,
+    /// Do not add this outgoing track when a Cinder-managed rewind starts it again.
+    rewind_from: Option<i64>,
     // Now-playing position. Two sources, in priority order:
     //  1. REAL position from PlayerService's PlayEventListener::onPlayTimeUpdated, pushed in via
     //     cinder_set_play_position. It arrives about once a second, so `real_pos_at` records when,
@@ -534,6 +539,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         app: cinder_ui::nav::App::unlocked(),
         scrob: None,
         last_track: None,
+        play_history: Vec::new(),
+        rewind_from: None,
         play_pos_ms: 0,
         cur_duration_ms: 0,
         last_pos: std::time::Instant::now(),
@@ -1379,6 +1386,8 @@ fn set_pending(r: &mut Render, seq: Vec<cinder_db::Track>, start: usize) {
     r.app.set_play_context(seq.iter().map(song_row_of).collect(), start);
     r.pending_play = seq.into_iter().map(|t| t.filename).collect();
     r.pending_play_start = start;
+    r.play_history.clear();
+    r.rewind_from = None;
 }
 
 /// The order to hand PlayerService: the track playing now, then the USER'S OWN PICKS, then
@@ -1685,9 +1694,19 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::SoundChanged => 14,
         Action::SoundBypass(_) => 15,
         Action::ShuffleToggle => {
-            // UI-only for now: hold the state here so the icon reflects it. Telling PlayerService to
-            // actually shuffle the queue is device-gated (PlayController, same as PlayIndex).
             r.np.shuffle = !r.np.shuffle;
+            // The transport control must affect the sequence already playing, not merely the next
+            // album the user starts. App::queue_shuffle deliberately moves only context entries
+            // after the current song; the explicit user queue keeps its chosen order and remains
+            // directly after current. Returning the queue action uses the shell's position-safe
+            // replacement path, so enabling shuffle does not restart the audible track.
+            if r.np.shuffle && r.last_track.is_some() && !r.app.queue_shuffle().is_empty() {
+                let current = r.last_track.as_ref().map(|t| t.filename.clone()).unwrap();
+                r.pending_play = play_order_uris(r, &current);
+                r.pending_play_start = 0;
+                r.queue_flush = true;
+                return Some(36);
+            }
             return None;
         }
         Action::RepeatCycle => {
@@ -1704,14 +1723,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::ScreenOffTimer(_) => 21,    // shell reads cinder_get_screen_off_s() + counts idle
         Action::BootToStock => 22,          // shell arms the one-shot flag + restarts into stock
         Action::QueueChanged => {
-            // DO NOT re-issue now. Measured on device 2026-07-28 with the in-app probe: a
-            // SetTrackSequence during playback restarts the sequence — position went 9000 → 0 and
-            // the track stopped. PlayerService has no insert, so the queue can only be changed by
-            // handing it a whole new sequence, and the only moment that is free is a track
-            // boundary, where the position is already ~0 and a reset is invisible.
-            //
-            // So the change is recorded and `apply_pending_queue` flushes it when the track
-            // changes (or when nothing is playing, where there is nothing to disturb).
+            // PlayerService has no insert operation. Replacing its sequence at gesture time costs
+            // a measured 360–450 ms pause/seek/play cycle, which made adding a song visibly lag.
+            // Hold the edit until the last couple of seconds of the current song instead: the new
+            // sequence is then in place before PlayerService selects the next context track.
             r.queue_pending = true;
             return None;
         }
@@ -2624,6 +2639,21 @@ pub extern "C" fn cinder_clock_tick() {
                 r.dirty = true;
             }
         }
+        // Queue edits are applied shortly before the boundary, not while the finger is still on
+        // the row. Rebuilding needs a pause/seek/play round trip, so the lead absorbs it and the
+        // current track still hands directly to the user's first queued choice.
+        const QUEUE_REBUILD_LEAD_MS: i64 = 2_500;
+        if r.queue_pending && r.np.playing && r.cur_duration_ms > 0
+            && r.play_pos_ms > 0
+            && r.cur_duration_ms.saturating_sub(r.play_pos_ms) <= QUEUE_REBUILD_LEAD_MS
+        {
+            if let Some(current) = r.last_track.as_ref().map(|t| t.filename.clone()) {
+                r.queue_pending = false;
+                r.pending_play = play_order_uris(r, &current);
+                r.pending_play_start = 0;
+                r.queue_flush = r.pending_play.len() > 1;
+            }
+        }
         // Sleep timer: count down in wall-clock (regardless of play/pause). Push the remaining
         // minutes (ceil) to the nav for the Settings row; repaint only when the displayed minute
         // changes. On reaching 0, raise sleep_fire (the shell pauses) and clear the display.
@@ -3078,6 +3108,39 @@ pub extern "C" fn cinder_prev_means_restart() -> libc::c_int {
     prev_means_restart(r.play_pos_ms, r.cur_duration_ms) as libc::c_int
 }
 
+/// Populate the ordinary pending-play channel with a sequence beginning at the preceding track
+/// Cinder observed. This deliberately does not use PlayerService's PrevTrack: queue edits replace
+/// its sequence and reset that service-side history to the current item.
+#[no_mangle]
+pub extern "C" fn cinder_prepare_previous_play() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let Some(current) = r.last_track.clone() else { return 0 };
+    let Some(target) = r.play_history.pop() else { return 0 };
+
+    // Keep the remaining history before the target, then replay the target and current item,
+    // followed by the explicit queue and context still ahead of the current item. The start index
+    // points at target, making repeated presses walk backward through Cinder's history.
+    let mut sequence: Vec<String> = r.play_history.iter().map(|t| t.filename.clone()).collect();
+    let start = sequence.len();
+    sequence.push(target.filename.clone());
+    sequence.push(current.filename.clone());
+    sequence.extend(play_order_uris(r, &current.filename).into_iter().skip(1));
+    r.pending_play = sequence;
+    r.pending_play_start = start;
+    r.rewind_from = Some(current.object_id);
+    r.app.set_context_playing(target.object_id);
+    r.dirty = true;
+    1
+}
+
+/// Position is maintained from PlayerService events when available and falls back to Cinder's
+/// local clock. It is the best point to resume after an immediate queue sequence rebuild.
+#[no_mangle]
+pub extern "C" fn cinder_play_position_ms() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.play_pos_ms.clamp(0, i32::MAX as i64) as libc::c_int)
+}
+
 /// Tell the UI that playback jumped to `ms` because the SHELL seeked on its own (the ◁ rewind
 /// paths). Re-anchors the position interpolator exactly as `cinder_scrub_end` does, so the bar
 /// snaps to the new position instead of extrapolating from the pre-seek anchor for ~1 s.
@@ -3324,6 +3387,18 @@ pub extern "C" fn cinder_set_now_playing_uri(
             let changed = r.last_track.as_ref().map_or(true, |p| p.object_id != t.object_id);
             apply_track(&mut r.np, &t);
             if changed {
+                if let Some(previous) = r.last_track.as_ref() {
+                    if r.rewind_from == Some(previous.object_id) {
+                        r.rewind_from = None;
+                    } else {
+                        r.play_history.push(previous.clone());
+                        // Bound metadata retained for rewind just as the UI bounds navigation
+                        // history. A long unattended session must not grow without limit.
+                        if r.play_history.len() > 256 {
+                            r.play_history.remove(0);
+                        }
+                    }
+                }
                 // Decode the album cover ONCE per track change (never on same-track re-polls:
                 // art_key remembers the object we last decoded for). Pre-scale to the two draw
                 // sizes so render is a plain blit. Failure → gradient fallback stays.
@@ -3936,4 +4011,3 @@ mod tests {
         assert!(RAIL_GRAB_BOT < 692 - 44, "band overlaps the play/pause target");
     }
 }
-

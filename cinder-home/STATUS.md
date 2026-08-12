@@ -153,9 +153,10 @@ jump ahead of and Up Next drew the album twice. Now:
   **`queue`** = songs the user explicitly picked. What PlayerService is handed is
   `[current] + user picks + remainder of the context` — so a queued song genuinely plays **next**,
   not after the album finishes.
-* A queue pick is consumed at the track boundary that starts it (`queue_remove` + `queue_pending`),
-  because **a mid-track `SetTrackSequence` restarts playback** — measured, position 9000 → 0. The
-  track boundary is the only free moment to re-issue the sequence.
+* A queue edit rebuilds PlayerService's sequence immediately as `[current] + user picks + remainder
+  of context`, then restores the current position. This is what makes a pick genuinely play next;
+  the measured `SetTrackSequence` restart is hidden by the immediate seek. A pick is still consumed
+  when it starts so it cannot replay on the following rebuild.
 * **One renderer, Apple-Music shaped**: history above (dimmed), NOW PLAYING with an accent bar,
   NEXT IN QUEUE, then the rest of the context. `up_next::layout()` is the single source of both the
   drawing and the hit-testing, which is the bug class that produced the old render↔hit mismatch.
@@ -262,7 +263,9 @@ and Up Next row taps (plus reorder). Ported on top:
    unconditional `PlayController::PrevTrack()`, which fails two ways: at the HEAD of a sequence
    there is nowhere to step back to, so the button did NOTHING; mid-track it jumped away when the
    user meant "start this again". Now: past a 3 s grace window ◁ restarts the track, and a
-   PrevTrack that reports failure falls back to `seek(0)` instead of no-oping.
+   PrevTrack that reports failure falls back to `seek(0)` instead of no-oping. Cinder also retains
+   its own bounded playback history, because a queue edit replaces PlayerService's sequence and
+   otherwise erases its service-side previous-track history.
 2. **Shelf** — six defects. A filled slot's row BODY now GOes (it used to pin the current place
    into a different slot); an empty slot pins across its whole width (its "GO" column used to
    return `Go(i)`, which did nothing but still dismissed the sheet); `Go` no longer calls `go()`,
@@ -723,14 +726,16 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   wall-clock paced, so the sleep timer and USB debounce keep their real timing at any rate.
 - **Shuffle and repeat are real** (2026-07-28). They were the last two controls that lit up and did
   nothing, and the ones a user hits first.
-  - **Shuffle** now reaches the queue builder. It set a flag and lit an icon and nothing ever read
+  - **Shuffle** reaches the queue builder. It set a flag and lit an icon and nothing ever read
     it: with shuffle showing ON you could tap a track and get its album in strict order — a control
     telling you something about the next hour of listening that was not true. The **tapped track
     stays first** and everything behind it is shuffled: you chose that track, and the tap is a more
     specific instruction than the toggle. Cinder builds the URI list itself, so reordering a `Vec`
     IS the play order — no Sony API needed, where Sony's own shuffle would have meant driving the
-    sequence's `SetupPermutation` for a result we can produce exactly. (The Library's "Shuffle …"
-    bands already worked; nothing is chosen there, so they shuffle the scope and start at the top.)
+    sequence's `SetupPermutation` for a result we can produce exactly. Enabling it mid-playback
+    shuffles only the remaining context and immediately rebuilds the sequence; user-queued songs
+    stay first and retain their explicit order. (The Library's "Shuffle …" bands already worked;
+    nothing is chosen there, so they shuffle the scope and start at the top.)
   - **Repeat** is now **two states, not three**. It cycled off → all → one and told PlayerService
     nothing; repeat-**all** has no known primitive on this service, so a third position would still
     have been decorative. Off ↔ one, wired to `NodeTrackSequence::SetOneTrackMode` — a non-virtual
