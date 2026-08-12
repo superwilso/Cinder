@@ -4546,6 +4546,46 @@ void exit_usb_msc() {
                              : "usb-msc: exited but /contents did NOT remount within 5 s");
 }
 
+// Drain Cinder's pending URI sequence into PlayerService. Queue edits use the same proven
+// NodeTrackSequence path as a normal play action, but restore the current position afterwards so
+// replacing the sequence does not turn a "play next" gesture into a restart.
+static void play_pending_sequence(const char* label, bool restore_position) {
+    int n = cinder_pending_play_count();
+    if (n <= 0) return;
+    if (n > 512) n = 512;
+    static char bufs[512][512];
+    static const char* ptrs[512];
+    int start = cinder_pending_play_start();
+    int kept = 0;
+    for (int i = 0; i < n; ++i) {
+        int len = cinder_pending_play_uri(i, bufs[kept], sizeof bufs[kept]);
+        if (len > 0 && len < (int)sizeof bufs[kept]) {
+            ptrs[kept] = bufs[kept];
+            ++kept;
+        } else {
+            if (len >= (int)sizeof bufs[kept])
+                std::fprintf(stderr, "[cinder] %s: URI %d truncated (%d B) — skipped\n", label, i, len);
+            if (i < start) --start;
+        }
+    }
+    if (kept == 0) return;
+    if (start < 0 || start >= kept) start = 0;
+    int resume_ms = restore_position ? cinder_play_position_ms() : 0;
+    int rc = cinder_audio_play_tracks(ptrs, kept, start);
+    if (rc != 0) {
+        std::fprintf(stderr, "[cinder] %s: play_tracks(%d tracks, start %d) failed rc=%d\n",
+                     label, kept, start, rc);
+        return;
+    }
+    if (restore_position && resume_ms > 0) {
+        cinder_audio_seek_ms(resume_ms);
+        cinder_notify_seek_ms(resume_ms);
+    }
+    set_transport(true);
+    g_np_poll_now = true;
+    g_house_due = true;
+}
+
 // Carry out a navigator action via the audio/effect shims. Volume goes to the configured
 // backend (built-in CXD3778GF defaults, overridable by conf); play-by-index hands PlayerService
 // a NodeTrackSequence built from the pending-play list the UI resolved.
@@ -4577,6 +4617,11 @@ void carry_out(int act) {
                     cinder_notify_seek_ms(0);
                     cinder_audio_seek_ms(0);
                     clog_("transport: prev -> restart current track (past the 3 s grace)");
+                    return;
+                }
+                if (cinder_prepare_previous_play()) {
+                    play_pending_sequence("previous from Cinder history", false);
+                    clog_("transport: prev -> Cinder playback history");
                     return;
                 }
                 int rc = cinder_audio_prev_track();
@@ -4616,42 +4661,12 @@ void carry_out(int act) {
             // UI resolved (cinder_pending_play_*), hand PlayerService a NodeTrackSequence, start
             // at the tapped index. Guarded: JSON->Node + SetTrackSequence are Sony-service calls.
             run_guarded("carry_out: play selected track", 10, []() {
-                int n = cinder_pending_play_count();
-                if (n <= 0) return;
-                if (n > 512) n = 512;                       // sanity cap (one album, not the world)
-                static char bufs[512][512];                 // static: keep the pump stack tiny;
-                static const char* ptrs[512];               // 512B/URI — deep unicode paths fit
-                int start = cinder_pending_play_start();
-                int kept = 0;
-                for (int i = 0; i < n; ++i) {
-                    int len = cinder_pending_play_uri(i, bufs[kept], sizeof bufs[kept]);
-                    // len >= capacity means TRUNCATED (snprintf semantics). A truncated path still
-                    // looks valid, so queueing it would hand PlayerService a file that doesn't
-                    // exist — skip it instead. Reachable with deep UTF-8 (CJK) paths.
-                    if (len > 0 && len < (int)sizeof bufs[kept]) {
-                        ptrs[kept] = bufs[kept];
-                        ++kept;
-                        continue;
-                    }
-                    if (len >= (int)sizeof bufs[kept])
-                        fprintf(stderr, "[cinder] play: URI %d truncated (%d B) — skipped\n", i, len);
-                    // A SKIPPED entry shifts every later track down by one, so the caller's start
-                    // index — which refers to the ORIGINAL list — would then select the wrong
-                    // track. Pull it back for each drop that happened before it.
-                    if (i < start) --start;
-                }
-                if (kept == 0) return;
-                if (start < 0 || start >= kept) start = 0;
-                int rc = cinder_audio_play_tracks(ptrs, kept, start);
-                if (rc == 0) {
-                    set_transport(true);
-                    // Update the screen NOW rather than on the next 1 Hz tick. Without this the
-                    // track you just tapped can take a full second to appear.
-                    g_np_poll_now = true;
-                    g_house_due = true;
-                }
-                else fprintf(stderr, "[cinder] play_tracks(%d tracks, start %d) failed rc=%d\n",
-                             kept, start, rc);
+                play_pending_sequence("play", false);
+            });
+            break;
+        case CINDER_ACT_QUEUE_CHANGED:
+            run_guarded("queue: apply now", 10, []() {
+                if (cinder_take_queue_flush()) play_pending_sequence("queue", true);
             });
             break;
         case CINDER_ACT_EQ_CHANGED:
@@ -5760,24 +5775,7 @@ void* render_driver(void*) {
             // invisible. Applying it any other time restarts the music (measured on device).
             if (cinder_take_queue_flush()) {
                 run_guarded("queue: flush at track boundary", 10, []() {
-                    static char bufs[64][512];
-                    const char* uris[64];
-                    int have = cinder_pending_play_count();
-                    if (have > 64) have = 64;
-                    int n = 0;
-                    for (int i = 0; i < have; ++i) {
-                        int len = cinder_pending_play_uri(i, bufs[n], (int)sizeof bufs[n]);
-                        // snprintf semantics: len is the FULL length, so >= capacity means it was
-                        // truncated. A truncated path is a path to nothing — skip it rather than
-                        // queue a track that cannot open.
-                        if (len <= 0 || len >= (int)sizeof bufs[n]) continue;
-                        uris[n] = bufs[n];
-                        ++n;
-                    }
-                    if (n > 0) {
-                        int rc = cinder_audio_play_tracks(uris, n, 0);
-                        std::fprintf(stderr, "[cinder-home] queue: flushed %d tracks rc=%d\n", n, rc);
-                    }
+                    play_pending_sequence("queue", true);
                 });
             }
             viz_analyzer_tick();              // analyzer runs only while its output is visible

@@ -1041,6 +1041,10 @@ pub fn render(
                         let now = rank == current;
                         rank += 1;
                         let cy = y + ALBUM_ROW_H / 2;
+                        let sw = swipe_for(swipe, y, ALBUM_ROW_H);
+                        if let Some(dx) = sw {
+                            swipe_reveal(c, t, f, y, ALBUM_ROW_H, dx, SwipeIntent::Queue);
+                        }
                         if now {
                             fill_rect(c, 0, y, W as i32, ALBUM_ROW_H, t.row_sel);
                         }
@@ -1064,6 +1068,9 @@ pub fn render(
                         let caret = if expanded { t.acc } else { t.faint };
                         icons::chevron(c, 452.0, cy as f32, 13.0, caret);
                         hline(c, y + ALBUM_ROW_H, t.line);
+                        if sw.is_some() {
+                            c.clear_offset_x();
+                        }
                     }
                     AlbumsRow::Track { flat: fi, track } => {
                         let al = flat[fi];
@@ -1450,6 +1457,10 @@ pub fn artist_view(
             ArtistRowKind::Album(i) => {
                 let Some((_, al)) = page.albums.get(i) else { continue };
                 let cy = y + ARTIST_ALBUM_RH / 2;
+                let sw = swipe_for(swipe, y, ARTIST_ALBUM_RH);
+                if let Some(dx) = sw {
+                    swipe_reveal(c, t, f, y, ARTIST_ALBUM_RH, dx, SwipeIntent::Queue);
+                }
                 thumb(c, t, lib, al.album_id, &al.art, 22, y + (ARTIST_ALBUM_RH - THUMB_PX) / 2, THUMB_PX, artdim(t));
                 let tst = body_label(Family::Sans, Weight::SemiBold, 19.0, t.ink);
                 text::draw(c, f, 80.0, (cy - 2) as f32,
@@ -1463,6 +1474,9 @@ pub fn artist_view(
                     &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
                 icons::chevron(c, 452.0, cy as f32, 13.0, t.faint);
                 hline(c, y + ARTIST_ALBUM_RH, t.line);
+                if sw.is_some() {
+                    c.clear_offset_x();
+                }
             }
             ArtistRowKind::Song(i) => {
                 let Some(tr) = page.tracks.get(i) else { continue };
