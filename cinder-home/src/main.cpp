@@ -1673,6 +1673,11 @@ static void* bt_xmit() {
 // a cache — nothing reads it to make a decision (see bt_abs_volume_supported).
 static int g_bt_abs_vol = -1;
 
+// Ask GetSoundStatus on the NEXT frame rather than waiting out its throttle. Set on the two events
+// that can actually change what A2DP has agreed on: a link coming up (it renegotiates) and a codec
+// preference being written. Same pattern as g_np_poll_now — see bt_poll_sound_status.
+static volatile sig_atomic_t g_bt_sound_poll_now = 0;
+
 // ── Bluetooth listener: the sink's OWN volume ────────────────────────────────────────────────────
 // The headphones are the authority on their own level, and until now Cinder never asked. It kept an
 // absolute 0..CINDER_BT_VOL_MAX counter and assumed the sink followed it — which is only true while
@@ -1888,6 +1893,9 @@ void apply_bt_codec() {
         std::snprintf(m, sizeof m, "bt-codec: ldac=%d aptxhd=%d aptx=%d quality=%d (0=sbc baseline)",
                       (int)ldac, (int)aptxhd, (int)aptx, qi);
         clog_(m);
+        // What we asked for is a PREFERENCE; go and read what the link actually agreed on, without
+        // waiting out the poll's throttle. This is the whole point of GetSoundStatus existing.
+        g_bt_sound_poll_now = 1;
     } catch (...) {
         clog_("bt-codec: apply threw");
     }
@@ -2407,6 +2415,22 @@ void apply_bt_pair_device() {
 static void bt_poll_sound_status() {
     enum { VIDX_GetSoundStatus = 26 };
     static unsigned last = 0xffffffffu;
+    // THROTTLED, and it has to be. This is a synchronous IPC round trip on the RENDER thread, and the
+    // call site gates it only on the route being Bluetooth — so before this it ran on EVERY FRAME,
+    // ~60 a second, for as long as headphones were connected. The comment there claimed it was
+    // "self-limiting"; that was wrong. The `key == last` test below suppresses the LOG, not the call,
+    // and the call is the entire cost. This is exactly the shape of the poll storm that caused the
+    // audio stutter in task #26.
+    //
+    // A2DP negotiates once per link, so the answer changes on the order of once a session. 2 s is
+    // still far more often than it can move, and the two events that CAN move it (a link coming up,
+    // a codec preference being written) set g_bt_sound_poll_now and skip the wait entirely — so the
+    // throttle costs nothing in responsiveness.
+    static long last_ms = 0;
+    const long now = now_ms();
+    if (!g_bt_sound_poll_now && now - last_ms < 2000) return;
+    g_bt_sound_poll_now = 0;
+    last_ms = now;
     void* x = bt_xmit();
     if (!x) return;
     unsigned codec = 0, freq = 0, chan = 0;
@@ -2635,6 +2659,10 @@ void refresh_bt_route() {
         return;                                   // otherwise: don't log every poll
     }
     cinder_set_bt_route(on);
+    // A new link renegotiates the codec, so the previous answer is stale the moment this fires. Read
+    // it on the next frame rather than up to 2 s later — a connect is exactly when the USB-DAC panel
+    // is being looked at.
+    g_bt_sound_poll_now = 1;
     // Absolute-volume support is a property of the SINK, so a new connection has to re-ask. Clearing
     // it here rather than caching once is what makes swapping between two different pairs of
     // headphones pick the right mechanism for each.
@@ -3135,6 +3163,22 @@ static void uac_poll_status() {
     // rule holds: once a real format has been opened, stop looking.
     const bool bridging = cinder_get_bt_route() != 0;
     if (!bridging && g_uac_playing) return;
+    // THROTTLED, for the same reason as bt_poll_sound_status: GetStatus is a synchronous IPC round
+    // trip on the render thread and the call site runs it every frame. With the LDAC bridge up, that
+    // was TWO per-frame round trips on the thread that also paints.
+    //
+    // The rates are picked from what actually consumes the answer, not from taste:
+    //   * bridging — ldac_wait_for_host() polls this word on a 200 ms sleep, so publishing faster
+    //     than 200 ms cannot be noticed by anyone. Same figure, 1/12th the calls.
+    //   * otherwise — 1 s, which also FIXES the heartbeat below. `ticks` was written as a count of
+    //     seconds ("every 5 s for the first two minutes") but incremented once per frame, so at
+    //     60 Hz it printed its 24 lines inside the first two SECONDS and then went silent for good —
+    //     destroying the one diagnostic it exists to provide. At 1 Hz the comment becomes true.
+    static long last_ms = 0;
+    const long every = bridging ? 200 : 1000;
+    const long now = now_ms();
+    if (now - last_ms < every) return;
+    last_ms = now;
     if (!uac_client()) return;
     unsigned si[32];
     std::memset(si, 0, sizeof si);
@@ -5446,8 +5490,9 @@ void* render_driver(void*) {
             // render path actually opens.
             if (g_uac_format_notify) run_guarded("loop: USB-DAC format", 8, uac_drain_format);
             // …and the backstop, for a host that was already streaming when DAC mode was entered
-            // (no change, so no notify) or a listener that failed to register. Self-limiting: it
-            // returns immediately once a real format has been opened, or when not in DAC mode.
+            // (no change, so no notify) or a listener that failed to register. Returns immediately
+            // once a real format has been opened, or when not in DAC mode — and is throttled inside
+            // (200 ms bridging, 1 s otherwise) for the frames where neither of those is true.
             if (cinder_get_usb_dac()) run_guarded("loop: USB-DAC status", 8, uac_poll_status);
             // REFERENCE DUMP. When the DAC renders to the jack, Sony's own service is holding the
             // same capture substream our bridge fails on — so this is the known-good configuration,
@@ -5461,8 +5506,10 @@ void* render_driver(void*) {
                     if (ldac_find_capture(dev, sizeof dev)) ldac_dump_pcm(dev, "SONY-REFERENCE");
                 });
             }
-            // What A2DP actually agreed on. Cheap (four scalar out-params) and self-limiting: it
-            // only logs when the answer changes.
+            // What A2DP actually agreed on. Called every frame but THROTTLED INSIDE (2 s, or at once
+            // on a connect / codec write) — it is a synchronous IPC round trip, not a scalar read,
+            // and the earlier "self-limiting" claim here confused suppressing the log with
+            // suppressing the call.
             if (cinder_get_bt_route()) run_guarded("loop: BT sound status", 6, bt_poll_sound_status);
             // THE OUTPUT ROUTE CAN CHANGE WITHOUT THE TOGGLE. Headphones get switched off, run flat,
             // or walk out of range mid-session. `apply_usb_dac` only runs when the user flips the

@@ -92,7 +92,7 @@ tools/flash.sh --push /tmp/ldac_off        # stop the LDAC bridge supervisor
 ## Step 2 — flash the uninstaller
 Removes the wrapper entirely and restores the original scrobbler:
 ```bash
-tools/flash.sh /mnt/c/Users/walkman/Downloads/cinder_uninstall.upg
+tools/flash.sh /mnt/c/Users/<you>/Downloads/cinder_uninstall.upg
 ```
 The next boot enters the Sony updater (which never runs the wrapper), so this breaks a loop.
 
@@ -100,9 +100,10 @@ The next boot enters the Sony updater (which never runs the wrapper), so this br
 This is brick-insurance and works even in a hard boot loop, because it catches the device in
 **MediaTek mode at the very start of boot**, before any of our code runs.
 
-- Backup file (this device, 2026-06-18, ~2.88 GB): `C:\Users\walkman\OneDrive\Desktop\walkman_backup.20260618_185658.bin`
-- Tool: `C:\Users\walkman\Downloads\walkman-backup-restore-tool.v1.0.9.exe`
-- Driver: `C:\Users\walkman\WalkmanBackupRestoreDriver\installer_x64.exe` (device = `VID_0E8D&PID_2000`)
+- Backup file: wherever you saved your `wbrt` Backup output (see the note above — take a fresh one
+  before every Restore, and never overwrite your known-good image).
+- Tool: `walkman-backup-restore-tool` — `github.com/unknown321/wbrt/releases`
+- Driver: the MediaTek VCOM driver `wbrt`'s README links (device = `VID_0E8D&PID_2000`)
 
 Steps: run the driver installer → run wbrt → **Backup first (see below)** → **Restore** → pick the
 backup → get the device into MediaTek mode (below) → let it finish, don't disconnect.
