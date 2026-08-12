@@ -61,7 +61,7 @@ Note this needs the **dev** channel build, which is what's on the device now (th
 Works even when the device won't boot far enough for adb, because the updater runs before any of our code:
 
 ```bash
-tools/flash.sh /mnt/c/Users/walkman/Downloads/cinder_uninstall.upg
+tools/flash.sh /mnt/c/Users/<you>/Downloads/cinder_uninstall.upg
 ```
 
 One caveat I can't resolve from memory: `RECOVERY.md` calls this file `cinder_uninstall.upg` in the flash example but `cinder_home_uninstall.upg` in the ladder table. Check which one actually exists in Downloads before flashing.
