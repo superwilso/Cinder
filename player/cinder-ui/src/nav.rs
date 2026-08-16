@@ -62,6 +62,10 @@ pub enum Screen {
     /// USB mass-storage mode: MODAL "connected to PC" screen while the storage volume is handed
     /// to the host. Only Back (or the shell detecting cable-unplug) leaves it.
     UsbStorage,
+    /// Genre filter picker, pushed from the Library's filter strip. A picker, not a browse tab:
+    /// 95 genres on the reference device is too many for a chip cycle and too few to deserve its
+    /// own place in the tab strip.
+    GenreFilter,
     /// Sentinel for the Menu row that opens the Shelf. The Shelf is a bottom-sheet OVERLAY (see
     /// `shelf_open`), never pushed onto the route stack — selecting this row calls `open_shelf()`.
     Shelf,
@@ -213,6 +217,16 @@ const FRAME_MS: u32 = 17;
 /// Screen-off (idle) timeout presets, in seconds. 0 = off and is first, so the cycle starts from
 /// "no idle blank" and the feature is strictly opt-in.
 pub const SCREEN_OFF_PRESETS: [u32; 5] = [0, 15, 30, 60, 120];
+
+/// Auto power-off, in MINUTES. Sony's own (sid_4118) offers a similar ladder. 0 = off, and it is
+/// the default: a device that switches itself off is behaviour the owner has to ask for, not
+/// something to spring on them.
+pub const AUTO_OFF_PRESETS: [u32; 4] = [0, 15, 30, 60];
+
+/// Label for an auto power-off preset.
+pub fn auto_off_label(mins: u32) -> String {
+    if mins == 0 { "OFF".to_string() } else { format!("{mins} MIN") }
+}
 
 /// Label for a screen-off preset, matching the row's other mono values.
 pub fn screen_off_label(secs: u32) -> String {
@@ -433,6 +447,13 @@ pub struct App {
     /// and a queued track had nothing to jump ahead of — it just landed in the same flat list.
     context: Vec<SongRow>,
     context_idx: usize,
+    /// The context's object_ids in the order they were in BEFORE the first shuffle permuted them,
+    /// so turning shuffle off can put them back. `None` once there is nothing to undo.
+    ///
+    /// Ids rather than a second `Vec<SongRow>`: the context can be the whole library after a
+    /// "Shuffle all songs", and cloning 3600 rows would double several thousand heap strings to
+    /// remember an ORDER. 8 bytes a track answers the same question for ~29 KB.
+    pre_shuffle: Option<Vec<i64>>,
     /// Seed for `queue_shuffle`; advanced on every use so repeated shuffles differ.
     shuffle_seed: u64,
     /// Set by the "keep queue" answer: the next sequence handed to `set_play_context` is APPENDED
@@ -617,6 +638,13 @@ pub struct App {
     /// a redraw. Everything else Up Next needs now comes straight off `context`/`queue`, so no hit
     /// test depends on a frame having been drawn first.
     up_next_cur: Option<usize>,
+    /// Auto power-off, in minutes (0 = off). Persisted. The shell reads it and owns the timer.
+    auto_off_idx: usize,
+    auto_off_min: u32,
+    /// Genre picker scroll offset.
+    genre_scroll_px: i32,
+    /// Memoised A-Z rail map, keyed on (tab, songs sort, albums order). See `az_present_memo`.
+    az_memo: Option<((u8, usize, usize), [bool; 27])>,
     /// Does the queue still follow playback? True until the user scrolls it themselves; reset on
     /// every entry to the screen. This is the whole of "the queue follows the current song".
     queue_follow: bool,
@@ -658,6 +686,7 @@ impl Default for App {
             queue_drag: None,
             context: Vec::new(),
             context_idx: 0,
+            pre_shuffle: None,
             shuffle_seed: 0x9E3779B97F4A7C15,
             queue_keep: false,
             sbar: None,
@@ -706,8 +735,17 @@ impl Default for App {
             pending_song: None,
             liked_count: 0,
             settings_scroll_px: 0,
-            screen_off_idx: 0,
-            screen_off_s: 0,  // OFF by default — an idle blank is opt-in
+            // 30 s by default. This was OFF, deliberately, because "a failed wake looks like a dead
+            // device" — but wake is now proven three ways (touch, the Power button, any key), the
+            // auto-off path leaves the touch controller POWERED precisely so a tap can wake it, and
+            // a waking touch is consumed so it cannot also press whatever is underneath.
+            //
+            // The cost of leaving it off is the largest single power draw on the device running
+            // forever: measured 2026-08-16 with the panel at full brightness 21 minutes after the
+            // last input, because the owner had never found the setting. A default nobody discovers
+            // is a default that has to be right.
+            screen_off_idx: 2,
+            screen_off_s: SCREEN_OFF_PRESETS[2],
             brightness: 4,   // matches the shell's ~70% day default
             brightness_restore: 4,
             sleep_min: 0,
@@ -726,6 +764,10 @@ impl Default for App {
             lib_tab_zones: std::cell::RefCell::new(Vec::new()),
             up_next_cur: None,
             queue_follow: true,
+            auto_off_idx: 0,
+            auto_off_min: 0,   // OFF by default — see AUTO_OFF_PRESETS
+            genre_scroll_px: 0,
+            az_memo: None,
         }
     }
 }
@@ -995,7 +1037,11 @@ impl App {
     }
 
     /// Pop a transient toast (shelf feedback, queue confirmations).
-    fn notify(&mut self, msg: &str) {
+    ///
+    /// `pub` so the shell can reach it too: a low battery is something the user must be told, and
+    /// the toast is the notification surface this UI already has. Inventing a second one for a
+    /// message that appears twice in the life of a charge would be the wrong trade.
+    pub fn notify(&mut self, msg: &str) {
         self.toast = msg.to_string();
         self.toast_frames = TOAST_FRAMES;
     }
@@ -1204,6 +1250,14 @@ impl App {
                     self.boot_stock_armed = true;
                     vec![]
                 }
+            }
+            crate::settings::ROW_AUTO_OFF => {
+                self.auto_off_idx = (self.auto_off_idx + 1) % AUTO_OFF_PRESETS.len();
+                self.auto_off_min = AUTO_OFF_PRESETS[self.auto_off_idx];
+                // No Action: the shell polls cinder_get_auto_off_min() from its 1 Hz housekeeping,
+                // where the idle timer it feeds already lives. A one-shot action would only tell it
+                // something it is about to read anyway.
+                vec![]
             }
             crate::settings::ROW_SCREEN_OFF => {
                 self.screen_off_idx = (self.screen_off_idx + 1) % SCREEN_OFF_PRESETS.len();
@@ -1478,6 +1532,26 @@ impl App {
                     }
                 }
             }
+            Screen::GenreFilter => {
+                if let Some(r) = library::genre_row_at(&self.lib, y, self.genre_scroll_px) {
+                    // Row 0 is "All genres", i.e. clear. Setting and clearing are the same gesture
+                    // so the screen needs no second control.
+                    let want = if r == 0 { None } else { self.lib.genres.get(r - 1).map(|g| g.id) };
+                    if want != self.lib.filter_genre {
+                        self.lib.filter_genre = want;
+                        // The visible set just changed, so anything derived from it is stale: the
+                        // A-Z map, the scroll offset (the list is shorter now) and any coasting fling.
+                        self.az_memo = None;
+                        self.lib_scroll_px = 0;
+                        self.fling_v = 0.0;
+                        self.lib_idx = 0;
+                        self.album_expanded = None;
+                    }
+                    // Back to the list either way — you came here to answer one question.
+                    self.pop();
+                }
+                vec![]
+            }
             Screen::Settings => {
                 // A swatch tap picks that accent directly. Checked first because it lives inside
                 // the Accent row's band, and falling through to `settings_activate` would advance
@@ -1685,6 +1759,13 @@ impl App {
             self.lib_scroll_px = 0;
             self.fling_v = 0.0;
             self.album_expanded = None;
+            return vec![];
+        }
+        // The genre filter strip, above the list. Checked before the rows for the same reason the
+        // A-Z rail is: it is not part of the list, so a tap here must never reach one.
+        if library::filter_hit(self.lib_tab, y) {
+            self.genre_scroll_px = 0;
+            self.push(Screen::GenreFilter);
             return vec![];
         }
         // A–Z rail: right edge, over the list. Tested BEFORE the rows, because it overlays them —
@@ -2001,6 +2082,10 @@ impl App {
                 let max = crate::settings::max_scroll_px();
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::GenreFilter => {
+                let max = library::genre_max_scroll_px(&self.lib);
+                self.genre_scroll_px = (self.genre_scroll_px + dy_px).clamp(0, max);
+            }
             // The user queue drew from row 0 and stopped at the bottom of the panel, so anything
             // past ~10 tracks was unreachable — and unreorderable with it.
             Screen::UpNext => {
@@ -2297,6 +2382,9 @@ impl App {
                 self.up_next_layout().max_scroll_px(),
                 crate::chrome::HEADER_BOTTOM,
             )),
+            Screen::GenreFilter => {
+                Some((library::genre_max_scroll_px(&self.lib), library::GENRE_TOP))
+            }
             _ => None,
         }
     }
@@ -2334,6 +2422,7 @@ impl App {
             Screen::Artist => self.artist_scroll_px,
             Screen::Playlist => self.playlist_scroll_px,
             Screen::UpNext => self.queue_scroll_px,
+            Screen::GenreFilter => self.genre_scroll_px,
             _ => self.lib_scroll_px,
         }
     }
@@ -2604,6 +2693,10 @@ impl App {
     pub fn set_play_context(&mut self, rows: Vec<SongRow>, start: usize) {
         self.context_idx = start.min(rows.len().saturating_sub(1));
         self.context = rows;
+        // A new sequence has nothing to un-shuffle back to. Holding the old one would let a later
+        // shuffle-off reorder THIS context into some previous album's order and drop every track
+        // the two do not share.
+        self.pre_shuffle = None;
         // "Keep queue" keeps the USER's picks. It used to append the new sequence after them,
         // which only made sense while the two were one list; now the context is its own thing and
         // keeping the picks is simply not clearing them.
@@ -2645,6 +2738,40 @@ impl App {
         }
     }
 
+    /// A track has STARTED. Reconcile both lists, and return true if the user queue changed (the
+    /// shell then re-issues the sequence at this boundary, which is the one moment it is free).
+    ///
+    /// This is one rule in one place because the two halves used to be two statements in the shell,
+    /// in the wrong order, and that was a real bug: `set_context_playing` ran FIRST and searched the
+    /// whole context for the started track. So swipe-queueing track 8 of the album you were already
+    /// playing at track 2 jumped `context_idx` 1 → 7, and the next sequence became
+    /// `[track 8] + context[8..]` — **tracks 3 to 7 silently vanished.** The user asked to hear one
+    /// song sooner and lost five.
+    pub fn track_started(&mut self, object_id: i64) -> bool {
+        // A user pick that has now started is no longer queued. Dropping it here is what stops it
+        // replaying on the next re-issue, and why the queue shrinks as it is consumed.
+        if let Some(i) = self.queue.iter().position(|q| q.object_id == object_id) {
+            self.queue_remove(i);
+            // A PICK MUST NOT MOVE THE CONTEXT. "Play this next, then carry on where I was" is the
+            // whole promise of the queue, and the context index is what "where I was" means.
+            //
+            // The one exception is a pick that was ALSO the very next context track — queue track 3
+            // while track 2 plays and the two coincide. There the context genuinely has advanced
+            // past it, and leaving the index behind would play it a second time out of the
+            // remainder. Strictly `idx + 1`, never a search: a search is what caused the bug above.
+            let next = self.context_idx + 1;
+            if self.context.get(next).map(|t| t.object_id) == Some(object_id) {
+                self.context_idx = next;
+            }
+            return true;
+        }
+        // Not a pick, so this is the context moving: ordinary progression, or a deliberate jump —
+        // an Up Next row tap, or ◁ stepping backwards. A jump can land anywhere, including BEHIND
+        // the current index, so this one does have to search.
+        self.set_context_playing(object_id);
+        false
+    }
+
     /// Shuffle what is still to come, leaving the current track and the user's own picks alone.
     ///
     /// Only the REMAINDER moves: shuffling the tracks already played would rewrite history for no
@@ -2655,6 +2782,12 @@ impl App {
         if self.context.len().saturating_sub(first) < 2 {
             self.notify("Nothing left to shuffle");
             return vec![];
+        }
+        // REMEMBER THE ORDER BEFORE THE FIRST SHUFFLE TOUCHES IT, so shuffle-off has something to
+        // restore. Recorded here rather than at the toggle because this is the only place that
+        // permutes the context, and the MIX chip reaches it too.
+        if self.pre_shuffle.is_none() {
+            self.pre_shuffle = Some(self.context.iter().map(|t| t.object_id).collect());
         }
         // A small xorshift seeded from the shuffle count: self-contained (cinder-ui has no rng and
         // should not gain a dependency for one button) and reproducible in tests.
@@ -2668,6 +2801,41 @@ impl App {
             tail.swap(i, (x % (i as u64 + 1)) as usize);
         }
         self.notify("Shuffled what's next");
+        vec![Action::QueueChanged]
+    }
+
+    /// Put the context back in the order it had before the first shuffle. Returns the action that
+    /// re-issues the sequence, or nothing when there was no shuffle to undo.
+    ///
+    /// Shuffle used to be a ONE-WAY DOOR: the toggle shuffled the remainder when it went on and did
+    /// nothing whatever when it went off, so the only way back to album order was to re-tap the
+    /// album. Stock restores the sequence, and so does every other player.
+    ///
+    /// The CURRENT TRACK KEEPS PLAYING and the index follows it to wherever it sits in the restored
+    /// order — turning shuffle off means "play the rest of this in order from here", not "start the
+    /// album again".
+    pub fn unshuffle_context(&mut self) -> Vec<Action> {
+        let Some(order) = self.pre_shuffle.take() else { return vec![] };
+        if self.context.len() < 2 {
+            return vec![];
+        }
+        // Rank by original position. Anything absent from the recorded order (it cannot happen
+        // today — the context is replaced wholesale, never edited — but a future queue edit would
+        // do it) sorts to the end rather than being dropped or panicking.
+        let rank: std::collections::HashMap<i64, usize> =
+            order.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        let playing = self.context.get(self.context_idx).map(|t| t.object_id);
+        let end = self.context.len();
+        self.context.sort_by_key(|t| *rank.get(&t.object_id).unwrap_or(&end));
+        // Follow the track that is audible right now. Falling back to the old index would be worse
+        // than useless: after a reorder it points at an unrelated song, and Up Next would draw the
+        // wrong half of the list as history.
+        if let Some(id) = playing {
+            if let Some(i) = self.context.iter().position(|t| t.object_id == id) {
+                self.context_idx = i;
+            }
+        }
+        self.notify("Playing in order");
         vec![Action::QueueChanged]
     }
 
@@ -2717,8 +2885,29 @@ impl App {
         &mut self.lib
     }
 
+    /// The A–Z rail's "which letters exist" map, recomputed only when it can have changed.
+    ///
+    /// `az_present` walks every row in the library to fill 27 booleans — 65 us on the host at the
+    /// device's library size, on EVERY painted frame, which is about a quarter of a Library frame
+    /// once the art cache is warm and the rows are cheap blits. The answer depends on the library
+    /// and the two sort chips and nothing else, so it is cached against exactly those.
+    ///
+    /// Invalidated by `set_library`, which is the only way the library is ever replaced.
+    fn az_present_memo(&mut self) -> [bool; 27] {
+        let key = (self.lib_tab as u8, self.lib_sort, self.album_sort);
+        if let Some((k, v)) = self.az_memo {
+            if k == key {
+                return v;
+            }
+        }
+        let v = library::az_present(self.lib_tab, &self.lib, self.lib_sort, self.album_sort);
+        self.az_memo = Some((key, v));
+        v
+    }
+
     pub fn set_library(&mut self, lib: Library) {
         self.lib = lib;
+        self.az_memo = None;   // a new library is a new set of letters
         self.lib_idx = 0;
         self.lib_scroll_px = 0;
         self.fling_v = 0.0;
@@ -3342,8 +3531,9 @@ impl App {
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
                     self.sbar_active(),
                 );
+                let az = self.az_present_memo();
                 crate::library::az_render(
-                    c, &theme, fonts, self.lib_tab, &self.lib, self.lib_sort, self.album_sort,
+                    c, &theme, fonts, self.lib_tab, &az, self.lib_sort, self.album_sort,
                 );
             }
             Screen::Album => {
@@ -3389,6 +3579,9 @@ impl App {
             },
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
             Screen::UsbStorage => crate::usb_storage::render(c, &theme, fonts),
+            Screen::GenreFilter => crate::library::genre_render(
+                c, &theme, fonts, &self.lib, self.genre_scroll_px, self.sbar_active(),
+            ),
             Screen::UpNext => {
                 // ONE list, Apple Music order: history above, the playing track, then the user's
                 // own queue, then the rest of the album. This screen used to be two mutually
@@ -3400,15 +3593,18 @@ impl App {
                 // playlist or a shuffle scope) and got it wrong outright when two albums shared a
                 // track name.
                 //
-                // Cloned rather than borrowed because the auto-follow below has to WRITE
-                // `queue_scroll_px`. One sequence's rows per frame, on this screen only.
-                let (album, tracks, cur) = if self.context.is_empty() {
-                    (String::new(), Vec::new(), None)
-                } else {
-                    let name = self.context.get(self.context_idx)
-                        .map(|t| t.art.clone()).unwrap_or_default();
-                    (name, self.context.clone(), Some(self.context_idx))
-                };
+                // DO EVERY MUTATION FIRST, THEN BORROW. This used to clone the whole context —
+                // `self.context.clone()` — with the note "cloned rather than borrowed because the
+                // auto-follow below has to WRITE queue_scroll_px". That was a borrow-checker
+                // workaround costing 499 us a frame on the host (~7 ms on device) and about
+                // 15,000 string allocations, because after a "Shuffle all songs" the context is
+                // the entire library. It was the largest allocation churn left in the app, on a
+                // heap whose churn has already caused one on-device allocator abort.
+                //
+                // Nothing about it was necessary: the follow needs only three numbers out of the
+                // context (its length, the current index, the queue length). Compute the scroll,
+                // finish writing, and only then take the shared borrow the view wants.
+                let cur = (!self.context.is_empty()).then_some(self.context_idx);
                 // AUTO-FOLLOW. `render` is the only place that knows what is playing, so the snap
                 // lives here: whenever the current track moves (or we have just arrived on the
                 // screen) and the user has not taken the list over by scrolling it, park NOW
@@ -3416,14 +3612,23 @@ impl App {
                 let track_changed = self.up_next_cur != cur;
                 self.up_next_cur = cur;
                 let _ = np;   // the context, not the now-playing strings, drives this screen now
-                let l = self.up_next_layout();
                 if self.queue_follow && track_changed {
-                    self.queue_scroll_px = l.follow_scroll();
+                    // O(1) arithmetic rather than `up_next_layout()`, which materialises one slot
+                    // per track to be asked for a single row's top.
+                    self.queue_scroll_px =
+                        crate::up_next::metrics(self.context.len(), cur, self.queue.len())
+                            .follow_scroll();
                     self.fling_v = 0.0;
                 }
+                // The album caption is one short string; the rows themselves are borrowed.
+                let album = self
+                    .context
+                    .get(self.context_idx)
+                    .map(|t| t.art.clone())
+                    .unwrap_or_default();
                 let view = crate::up_next::QueueView {
                     album: &album,
-                    tracks: &tracks,
+                    tracks: &self.context,
                     current: cur,
                     queue: &self.queue,
                     lib: &self.lib,
@@ -3499,6 +3704,7 @@ impl App {
                     format!("{} / 5", self.brightness)
                 };
                 let screen_off_lbl = screen_off_label(self.screen_off_s);
+                let auto_off_lbl = auto_off_label(self.auto_off_min);
                 // The row value doubles as the confirmation prompt — no extra screen needed, and
                 // the armed state is impossible to miss because it replaces the value in place.
                 let boot_stock_lbl = if self.boot_stock_armed { "TAP AGAIN" } else { "SONY" };
@@ -3512,6 +3718,7 @@ impl App {
                     sleep: &sleep_lbl,
                     brightness: &brightness_lbl,
                     screen_off: &screen_off_lbl,
+                    auto_off: &auto_off_lbl,
                     boot_stock: boot_stock_lbl,
                     accent: self.accent,
                 };
@@ -3996,6 +4203,18 @@ impl App {
     pub fn screen_off_s(&self) -> u32 {
         self.screen_off_s
     }
+    pub fn auto_off_min(&self) -> u32 {
+        self.auto_off_min
+    }
+    /// Snap a loaded value to a known preset, so a hand-edited settings file cannot strand the row
+    /// on a duration the cycle can never reach again. Same rule as `set_screen_off_s`.
+    pub fn set_auto_off_min(&mut self, mins: u32) {
+        self.auto_off_idx = AUTO_OFF_PRESETS
+            .iter()
+            .position(|p| *p == mins)
+            .unwrap_or(0);
+        self.auto_off_min = AUTO_OFF_PRESETS[self.auto_off_idx];
+    }
     pub fn set_screen_off_s(&mut self, secs: u32) {
         // Snap to a known preset so a hand-edited or corrupt settings file can't produce a value
         // the Settings row can't display or cycle away from.
@@ -4337,10 +4556,10 @@ mod tests {
     /// panel, so it has to be opt-in: a default-on idle blank would land on every user at once, on
     /// hardware where a failed wake looks like a dead device.
     #[test]
-    fn screen_off_timer_defaults_to_off_and_cycles_from_off() {
+    fn screen_off_timer_defaults_to_30s_and_can_still_reach_off() {
         let app = unlocked();
-        assert_eq!(app.screen_off_s(), 0, "must be opt-in");
-        assert_eq!(SCREEN_OFF_PRESETS[0], 0, "the cycle has to start at OFF");
+        assert_eq!(app.screen_off_s(), 30, "the backlight is the biggest draw — do not leave it on");
+        assert_eq!(SCREEN_OFF_PRESETS[0], 0, "OFF must still be one of the presets");
 
         let mut app = unlocked();
         let mut seen = vec![app.screen_off_s()];
@@ -4350,9 +4569,10 @@ mod tests {
             assert_eq!(acts, vec![Action::ScreenOffTimer(app.screen_off_s())]);
             seen.push(app.screen_off_s());
         }
-        // Cycles through every preset and wraps back to OFF, so it is always reachable again.
-        assert_eq!(seen.first(), Some(&0));
-        assert_eq!(seen.last(), Some(&0));
+        // Cycles through every preset and comes back to where it started, so OFF — and the default
+        // — are both always reachable again.
+        assert_eq!(seen.first(), Some(&30));
+        assert_eq!(seen.last(), Some(&30));
         for p in SCREEN_OFF_PRESETS {
             assert!(seen.contains(&p), "preset {p} unreachable by cycling");
         }
@@ -4409,6 +4629,147 @@ mod tests {
         app.push(Screen::Library);
         app.pop();
         assert_eq!(app.settings_activate(), vec![], "must re-arm after navigating away");
+    }
+
+    /// Auto power-off must default to OFF and stay reachable back to OFF. A device that switches
+    /// itself off is behaviour the owner asks for; a default that does it, or a cycle that cannot
+    /// be undone, is how someone loses a device mid-listen.
+    #[test]
+    fn auto_power_off_defaults_to_off_and_cycles_back_to_it() {
+        let app = unlocked();
+        assert_eq!(app.auto_off_min(), 0, "must be opt-in");
+        assert_eq!(AUTO_OFF_PRESETS[0], 0);
+
+        let mut app = unlocked();
+        let mut seen = vec![app.auto_off_min()];
+        for _ in 0..AUTO_OFF_PRESETS.len() {
+            app.settings_sel = crate::settings::ROW_AUTO_OFF;
+            // The shell polls the getter from its own timer, so the row emits no action.
+            assert_eq!(app.settings_activate(), vec![]);
+            seen.push(app.auto_off_min());
+        }
+        assert_eq!(seen.first(), Some(&0));
+        assert_eq!(seen.last(), Some(&0), "the cycle must return to OFF");
+        for p in AUTO_OFF_PRESETS {
+            assert!(seen.contains(&p), "preset {p} unreachable by cycling");
+        }
+    }
+
+    /// A hand-edited or corrupt `auto_off=` snaps to a known preset — otherwise the row would show
+    /// a duration the cycle can never reach again, exactly like the screen-off timer's rule.
+    #[test]
+    fn a_bogus_auto_off_value_snaps_to_a_preset() {
+        let mut app = unlocked();
+        app.set_auto_off_min(37);
+        assert!(AUTO_OFF_PRESETS.contains(&app.auto_off_min()));
+        app.set_auto_off_min(30);
+        assert_eq!(app.auto_off_min(), 30, "a real preset survives the round trip");
+    }
+
+    /// The ABOUT rows used to be hit-tested against hardcoded 14 and 15 while ROW_POWER_OFF was 14,
+    /// so selecting Power off highlighted Firmware too and Model could never be selected at all.
+    /// Named constants now, and they have to agree with the section table.
+    #[test]
+    fn the_about_rows_are_the_last_two_and_distinct_from_power_off() {
+        use crate::settings::{ROWS, ROW_FIRMWARE, ROW_MODEL, ROW_POWER_OFF};
+        assert_eq!(ROW_MODEL, ROWS - 1);
+        assert_eq!(ROW_FIRMWARE, ROWS - 2);
+        assert_ne!(ROW_FIRMWARE, ROW_POWER_OFF);
+    }
+
+    /// The genre filter is a FILTER, not a browse tab: it narrows the list that is already there.
+    /// Everything that draws or hit-tests the Songs list has to shrink together, or a tap lands on
+    /// a row the render never drew — the drift this codebase keeps getting bitten by.
+    #[test]
+    fn a_genre_filter_shrinks_the_list_and_everything_derived_from_it() {
+        use crate::library::{self, Tab};
+        let mut a = unlocked();
+        let all = library::row_count(Tab::Songs, &a.lib);
+        assert!(all > 0);
+        assert_eq!(library::song_order(&a.lib, 0).len(), all, "no filter = everything");
+
+        a.lib.filter_genre = Some(1);
+        let some = library::row_count(Tab::Songs, &a.lib);
+        assert!(some > 0 && some < all, "the sample data must have more than one genre");
+        // row_count, song_order and visible_songs are three doors onto one answer.
+        assert_eq!(library::song_order(&a.lib, 0).len(), some);
+        assert_eq!(a.lib.visible_songs(), some);
+        // Every surviving index really carries the genre, and the indices stay ABSOLUTE — song_at
+        // resolves through lib.songs, so a relative index would silently return the wrong track.
+        for i in library::song_order(&a.lib, 0) {
+            assert_eq!(a.lib.songs[i].genre_id, 1);
+        }
+        for rank in 0..some {
+            assert_eq!(library::song_at(&a.lib, 0, rank).unwrap().genre_id, 1);
+        }
+        assert!(library::song_at(&a.lib, 0, some).is_none(), "nothing past the filtered end");
+
+        a.lib.filter_genre = None;
+        assert_eq!(library::row_count(Tab::Songs, &a.lib), all, "clearing restores everything");
+    }
+
+    /// The picker's rows and its hit test share their arithmetic, and row 0 is always "All genres"
+    /// so setting and clearing are the same gesture.
+    #[test]
+    fn the_genre_picker_maps_rows_to_genres_and_row_zero_clears() {
+        use crate::library;
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = crate::library::Tab::Songs;
+        // Tapping the strip opens the picker.
+        let y = library::filter_top() + library::FILTER_H / 2;
+        assert!(library::filter_hit(a.lib_tab, y));
+        a.tap(240, y);
+        assert_eq!(a.current(), Screen::GenreFilter);
+
+        // Row 1 is the first genre; picking it filters and returns to the list.
+        let want = a.lib.genres[0].id;
+        let y1 = library::GENRE_TOP + library::GENRE_RH + library::GENRE_RH / 2;
+        assert_eq!(library::genre_row_at(&a.lib, y1, 0), Some(1));
+        a.tap(240, y1);
+        assert_eq!(a.lib.filter_genre, Some(want));
+        assert_eq!(a.current(), Screen::Library, "picking answers the question and leaves");
+
+        // Row 0 clears it.
+        a.tap(240, y);
+        let y0 = library::GENRE_TOP + library::GENRE_RH / 2;
+        assert_eq!(library::genre_row_at(&a.lib, y0, 0), Some(0));
+        a.tap(240, y0);
+        assert_eq!(a.lib.filter_genre, None);
+    }
+
+    /// A filter changes the visible set, so the scroll offset and the A-Z map derived from the old
+    /// one are stale. Leaving them would scroll past the end of a now-shorter list.
+    #[test]
+    fn picking_a_genre_resets_the_scroll_and_the_az_memo() {
+        use crate::library;
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = crate::library::Tab::Songs;
+        let _ = a.az_present_memo();
+        assert!(a.az_memo.is_some());
+        a.lib_scroll_px = 400;
+
+        a.push(Screen::GenreFilter);
+        a.tap(240, library::GENRE_TOP + library::GENRE_RH + library::GENRE_RH / 2);
+        assert_eq!(a.lib_scroll_px, 0);
+        assert!(a.az_memo.is_none(), "the rail is indexed off the visible rows");
+    }
+
+    /// The filter strip only exists on the two tabs a genre can scope, and `list_top` moves with it
+    /// so the list never draws underneath it.
+    #[test]
+    fn only_track_tabs_carry_the_filter_strip() {
+        use crate::library::{self, Tab};
+        for tab in [Tab::Songs, Tab::Albums] {
+            assert!(library::has_filter(tab));
+            assert_eq!(library::list_top(tab) - library::filter_top() >= library::FILTER_H, true);
+            assert!(library::filter_hit(tab, library::filter_top() + 1));
+        }
+        for tab in [Tab::Artists, Tab::Playlists] {
+            assert!(!library::has_filter(tab));
+            assert!(!library::filter_hit(tab, library::filter_top() + 1));
+        }
     }
 
     /// EVERY Settings row must be reachable by a finger at some scroll position. This caught a real
@@ -4736,6 +5097,142 @@ mod tests {
         // A start index past the end cannot point outside the list.
         a.set_play_context(rows, 99);
         assert_eq!(a.context_idx(), 2);
+    }
+
+    /// Build a 6-track album context with track `at` playing.
+    fn ctx6(at: usize) -> App {
+        let mut a = unlocked();
+        let album: Vec<SongRow> = (0..6)
+            .map(|i| SongRow { title: format!("T{i}"), object_id: 10 + i, ..Default::default() })
+            .collect();
+        a.set_play_context(album, at);
+        a
+    }
+
+    /// Q1, the regression. Queue a track FROM THE ALBUM ALREADY PLAYING and the context index must
+    /// not chase it. Before this, `set_context_playing` searched the whole context, found the pick
+    /// at index 5 and jumped there — so the sequence rebuilt as `[T5] + context[6..]` and tracks
+    /// T2, T3 and T4 were silently dropped from the rest of the album.
+    #[test]
+    fn a_pick_taken_from_the_playing_album_does_not_skip_the_tracks_between() {
+        let mut a = ctx6(1); // T1 playing
+        let pick = a.context()[5].clone(); // T5, which is ALSO five rows further down the context
+        a.queue.push(pick);
+
+        assert!(a.track_started(15), "T5 was a user pick, so the queue changed");
+        assert!(a.queue().is_empty(), "the pick is consumed when it starts");
+        assert_eq!(a.context_idx(), 1, "the context has NOT moved — T1 is still where we were");
+
+        // And the remainder still contains everything that had not played.
+        let rest: Vec<i64> =
+            a.context()[a.context_idx() + 1..].iter().map(|t| t.object_id).collect();
+        assert_eq!(rest, vec![12, 13, 14, 15], "T2..T5 all survive the pick");
+    }
+
+    /// The one case where a pick DOES advance the context: it was also the very next track, so the
+    /// context has genuinely moved past it. Leaving the index behind would replay it out of the
+    /// remainder.
+    #[test]
+    fn a_pick_that_was_also_the_next_track_advances_the_context_by_one() {
+        let mut a = ctx6(1); // T1 playing, so T2 is next either way
+        let pick = a.context()[2].clone();
+        a.queue.push(pick);
+
+        assert!(a.track_started(12));
+        assert!(a.queue().is_empty());
+        assert_eq!(a.context_idx(), 2, "advanced by exactly one");
+        let rest: Vec<i64> =
+            a.context()[a.context_idx() + 1..].iter().map(|t| t.object_id).collect();
+        assert_eq!(rest, vec![13, 14, 15], "T2 is not left in the remainder to play twice");
+    }
+
+    /// Ordinary progression and deliberate jumps both still follow the context. The jump case is
+    /// load-bearing: ◁ steps BACKWARDS, so the search cannot be replaced with "advance by one".
+    #[test]
+    fn a_track_that_is_not_a_pick_follows_the_context_either_way() {
+        let mut a = ctx6(1);
+        assert!(!a.track_started(12), "no pick was consumed");
+        assert_eq!(a.context_idx(), 2, "ordinary progression");
+
+        assert!(!a.track_started(14)); // Up Next row tap, forward
+        assert_eq!(a.context_idx(), 4);
+
+        assert!(!a.track_started(11)); // ◁ rewind, backwards
+        assert_eq!(a.context_idx(), 1, "a jump behind the index still lands");
+
+        // A track that is in neither list leaves the index alone rather than guessing.
+        assert!(!a.track_started(9999));
+        assert_eq!(a.context_idx(), 1);
+    }
+
+    /// A pick that is NOT in the context at all (queued from a different album) is consumed and
+    /// changes nothing else — the ordinary swipe-to-queue case, kept honest alongside the fix.
+    #[test]
+    fn a_pick_from_outside_the_context_leaves_it_untouched() {
+        let mut a = ctx6(1);
+        a.queue.push(SongRow { title: "Elsewhere".into(), object_id: 777, ..Default::default() });
+
+        assert!(a.track_started(777));
+        assert!(a.queue().is_empty());
+        assert_eq!(a.context_idx(), 1);
+        assert_eq!(a.context().len(), 6, "the context is not rewritten by a pick");
+    }
+
+    /// Q2, the regression. Shuffle used to be a one-way door — ON permuted the remainder, OFF did
+    /// nothing at all, and the context stayed shuffled for the rest of the session.
+    #[test]
+    fn turning_shuffle_off_puts_the_context_back_in_order() {
+        let mut a = ctx6(1);
+        let before: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+
+        assert!(!a.queue_shuffle().is_empty(), "there are four tracks ahead to shuffle");
+        let shuffled: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_ne!(shuffled, before, "the remainder actually moved");
+        assert_eq!(&shuffled[..2], &before[..2], "the past and the playing track never move");
+
+        assert_eq!(a.unshuffle_context(), vec![Action::QueueChanged]);
+        let after: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(after, before, "restored to the order it was played in");
+        assert_eq!(a.context_idx(), 1, "and the same track is still the current one");
+
+        // Nothing left to undo, so a second off is inert rather than emitting a pointless re-issue.
+        assert!(a.unshuffle_context().is_empty());
+    }
+
+    /// The restored index follows the AUDIBLE track, not the old slot number. After a shuffle the
+    /// playing song is rarely where it started, and reusing the index would make Up Next draw the
+    /// wrong half of the list as history.
+    #[test]
+    fn unshuffle_follows_the_track_that_is_playing_not_the_index() {
+        let mut a = ctx6(0);
+        let original: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        a.queue_shuffle();
+        // Walk forward into the shuffled remainder so the current track is somewhere unpredictable.
+        a.track_started(a.context()[3].object_id);
+        let playing = a.context()[a.context_idx()].object_id;
+
+        a.unshuffle_context();
+        assert_eq!(
+            a.context()[a.context_idx()].object_id, playing,
+            "the same song is still current after the reorder"
+        );
+        let after: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(after, original);
+    }
+
+    /// Playing something new drops the undo. Restoring THIS context into a previous album's order
+    /// would reorder by a ranking that mostly does not apply to it.
+    #[test]
+    fn a_new_context_forgets_the_shuffle_undo() {
+        let mut a = ctx6(0);
+        a.queue_shuffle();
+        let rows: Vec<SongRow> = (0..3)
+            .map(|i| SongRow { title: format!("N{i}"), object_id: 90 + i, ..Default::default() })
+            .collect();
+        a.set_play_context(rows, 0);
+        assert!(a.unshuffle_context().is_empty(), "nothing to undo on a fresh sequence");
+        let ids: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(ids, vec![90, 91, 92], "and the new context is untouched");
     }
 
     /// The order handed to the player: current track, then the USER'S picks, then the rest of the
@@ -5992,19 +6489,22 @@ mod tests {
         let mut a = unlocked();
         a.stack = vec![Screen::Library];
         a.lib_tab = Tab::Songs;
-        // Rightward swipe starting on the first Songs row (rows start at y=205, 62px tall).
-        assert_eq!(a.swipe(1, 240, 220), vec![Action::QueueChanged]);
+        // Rightward swipe starting on the first Songs row. The y is DERIVED from list_top rather
+        // than written as a literal: the genre filter strip shifted the list down by 32px and a
+        // hardcoded 220 silently started landing on a different row.
+        let row_y = library::list_top(Tab::Songs) + library::row_h(Tab::Songs) / 2;
+        assert_eq!(a.swipe(1, 240, row_y), vec![Action::QueueChanged]);
         assert_eq!(a.queue().len(), 1);
         let expected = library::song_at(&a.lib, a.lib_sort, 0).unwrap().title.clone();
         assert_eq!(a.queue()[0].title, expected);
         // Feedback started: toast + row chip animation, and tick() reports animation frames.
         assert!(a.toast.starts_with("Added to queue"));
         assert_eq!(a.queue_anim_frames, QUEUE_ANIM_FRAMES);
-        assert_eq!(a.queue_anim_y, 220);
+        assert_eq!(a.queue_anim_y, row_y);
         assert!(a.tick());
         // A LEFTWARD swipe now queues too — as PLAY NEXT, in front of what is already there.
         // It used to do nothing at all; the gesture was free and is now the mirror of the right.
-        assert_eq!(a.swipe(-1, 240, 220), vec![Action::QueueChanged]);
+        assert_eq!(a.swipe(-1, 240, row_y), vec![Action::QueueChanged]);
         assert_eq!(a.queue().len(), 2);
         assert!(a.toast.starts_with("Playing next"), "toast was {:?}", a.toast);
         // A rightward swipe on chrome (above the rows) queues nothing.

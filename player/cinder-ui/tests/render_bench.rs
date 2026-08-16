@@ -133,7 +133,7 @@ fn bench_library_tabs() {
         });
         album_groups.push(ArtistGroup { artist: name, albums });
     }
-    let mut lib = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default() };
+    let mut lib = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), filter_genre: None };
     println!("library: {} songs, {} albums, {} artists",
         lib.songs.len(), lib.album_count(), lib.artists.len());
 
@@ -151,7 +151,7 @@ fn bench_library_tabs() {
     }
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Artists, "artists")] {
         time_it(&format!("az_render {name}"), n, || {
-            library::az_render(&mut c, &t, &f, tab, &lib, 0, 0)
+            library::az_render(&mut c, &t, &f, tab, &library::az_present(tab, &lib, 0, 0), 0, 0)
         });
     }
 
@@ -206,7 +206,7 @@ fn bench_derived_state() {
                 .map(|i| SongRow {
                     title: format!("{an} track {i:02}"), artist: name.clone(), dur: "3:20".into(),
                     art: an.clone(), object_id: aid * 100 + i, album_id: aid,
-                    disc: 1, track: i as i32, added: aid, year: 2019,
+                    disc: 1, track: i as i32, added: aid, year: 2019, genre_id: (i % 3) + 1,
                 })
                 .collect();
             songs.extend(track_list.iter().cloned());
@@ -218,7 +218,7 @@ fn bench_derived_state() {
         album_groups.push(ArtistGroup { artist: name, albums });
     }
     let lib = Library { songs, album_groups, artists: Vec::new(), playlists: Vec::new(),
-                        thumbs: Default::default() };
+                        thumbs: Default::default(), genres: Vec::new(), filter_genre: None };
     println!("library: {} songs, {} albums", lib.songs.len(), lib.album_count());
 
     let n = 200;
@@ -257,6 +257,15 @@ fn bench_derived_state() {
     };
     time_it("up_next::render_view", n, || {
         let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view);
+    });
+
+    // The REALISTIC case. scroll_px = 0 above is the worst case for the first-visible-slot search
+    // (the window is already at the top, so there is nothing to skip); in normal use the auto-follow
+    // parks NOW PLAYING a third of the way down, which after a shuffle-all is ~1800 slots in.
+    let follow = cinder_ui::up_next::metrics(ctx.len(), Some(ctx.len() / 2), 3).follow_scroll();
+    let view_followed = cinder_ui::up_next::QueueView { scroll_px: follow, ..view };
+    time_it("up_next::render_view (followed)", n, || {
+        let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view_followed);
     });
 
     // The same screen with an ALBUM-sized context, to separate "drawing 14 rows" from "the cost

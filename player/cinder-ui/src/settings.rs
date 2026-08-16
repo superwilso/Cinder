@@ -13,7 +13,7 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 17;
+pub const ROWS: usize = 18;
 /// The actionable rows: Theme / Accent / UI scale / Visualiser / Visualiser animation / Sleep
 /// timer (DISPLAY) + Battery care (SYSTEM).
 pub const ROW_THEME: usize = 0;
@@ -26,22 +26,30 @@ pub const ROW_VIZ_ANIM: usize = 4;
 pub const ROW_SLEEP: usize = 5;
 pub const ROW_SCREEN_OFF: usize = 6;
 pub const ROW_BRIGHTNESS: usize = 7;
-pub const ROW_STORAGE: usize = 8;
-pub const ROW_DATABASE: usize = 9;
-pub const ROW_BATTERY: usize = 10;
-pub const ROW_USB_MODE: usize = 11; // tapping enters USB mass-storage (file transfer to a PC)
+/// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
+/// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
+/// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
+/// of behaviour that has to be asked for.
+pub const ROW_AUTO_OFF: usize = 8;
+pub const ROW_STORAGE: usize = 9;
+pub const ROW_DATABASE: usize = 10;
+pub const ROW_BATTERY: usize = 11;
+pub const ROW_USB_MODE: usize = 12; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 12;
+pub const ROW_BOOT_STOCK: usize = 13;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 13;
-pub const ROW_POWER_OFF: usize = 14;
+pub const ROW_RESTART: usize = 14;
+pub const ROW_POWER_OFF: usize = 15;
+/// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
+pub const ROW_FIRMWARE: usize = 16;
+pub const ROW_MODEL: usize = 17;
 
 const RH: i32 = 56;
 /// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
 /// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [8, 7, 2];
+const SECTIONS: [usize; 3] = [8, 8, 2];
 
 /// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
 /// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
@@ -75,6 +83,8 @@ pub struct SettingsView<'a> {
     pub brightness: &'a str,
     /// Idle screen-off label, e.g. "OFF" / "30 SEC" / "2 MIN".
     pub screen_off: &'a str,
+    /// Auto power-off label, e.g. "OFF" / "30 MIN".
+    pub auto_off: &'a str,
     /// Boot-to-stock row value: normally "SONY", or the confirm prompt once armed.
     pub boot_stock: &'a str,
     /// The selected accent — which swatch gets the ring, and the name shown beside them.
@@ -314,6 +324,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     y = srow(c, t, f, y, sel == ROW_BRIGHTNESS, "Brightness", v.brightness, false);
 
     y = eyebrow(c, t, f, y + 14, "SYSTEM");
+    // Auto power-off. Distinct from the Screen-off timer above it: that one blanks the panel and
+    // keeps playing, this one shuts the device down — and only when nothing is playing, so it can
+    // never cut a track off.
+    y = srow(c, t, f, y, sel == ROW_AUTO_OFF, "Auto power off", v.auto_off, false);
     // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
     y = srow(c, t, f, y, sel == ROW_STORAGE, "Storage", v.storage, false);
     // Database: no chevron. The chevron is this screen's affordance for "tapping does something"
@@ -332,8 +346,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     y = srow(c, t, f, y, sel == ROW_POWER_OFF, "Power off", "", true);
 
     y = eyebrow(c, t, f, y + 14, "ABOUT");
-    y = srow(c, t, f, y, sel == 14, "Firmware", FIRMWARE_LABEL, false);
-    let _ = srow(c, t, f, y, sel == 15, "Model", "SONY NW-A55", false);
+    // Named, not literal. These were `sel == 14` and `sel == 15` while ROW_POWER_OFF was 14 — so
+    // selecting Power off ALSO highlighted Firmware, and Model could never be highlighted at all.
+    // Two hardcoded indices that stopped matching the section table the moment a row was added.
+    y = srow(c, t, f, y, sel == ROW_FIRMWARE, "Firmware", FIRMWARE_LABEL, false);
+    let _ = srow(c, t, f, y, sel == ROW_MODEL, "Model", "SONY NW-A55", false);
     c.clear_clip();
 }
 
@@ -353,6 +370,7 @@ mod tests {
             sleep: "30 MIN",
             brightness: "4 / 5",
             screen_off: "OFF",
+            auto_off: "OFF",
             boot_stock: "SONY",
             accent,
         }

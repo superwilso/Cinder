@@ -1391,3 +1391,62 @@ radio is on and stopped when it goes off. `OnBluetoothOob` runs on the framework
 copies the address and name under a mutex; the render thread calls `Pairing(addr)` — the same call
 the Devices screen's FOUND rows already use. The 16-byte block at +0x10 is read by nobody: nothing
 needs it, and reading a field with no use is risk without benefit.
+
+---
+
+## 2026-08-16 — GetSoundStatus: argument order confirmed, and a transposition trap next to it
+
+Chasing the negotiated-codec question (task #56) offline, from the device binaries rather than a
+headphone. The enum VALUES are still not recoverable this way, but three things that were
+assumptions are now evidence.
+
+### 1. The signature, from the demangled prototype in `libBtTransmitterService.so` `.rodata`
+
+```
+virtual void pst::services::BtTransmitterService::GetSoundStatus(
+    IBtTransmitterService::BtSoundCodec &,
+    IBtTransmitterService::BtSoundFrequency &,
+    IBtTransmitterService::BtSoundChannel &,
+    bool &)
+```
+
+Cinder's `bt_poll_sound_status` calls `(x, &codec, &freq, &chan, &ok)` — **correct**, and its log
+line's labels match its variables. That ordering was previously a guess.
+
+### 2. The trap: the service-side notifier has channel and frequency SWAPPED
+
+Sitting a few strings away in the same binary:
+
+```
+virtual void BtTransmitterService::NotifySoundStatus(
+    const BtSoundCodec &, const BtSoundChannel &, const BtSoundFrequency &, const bool &)
+```
+
+**Channel before frequency.** Anyone wiring this up by copying the prototype that happens to be
+nearest will transpose two fields and get a plausible-looking wrong answer. The one to copy is the
+LISTENER, whose mangled symbol appears in `libConnMgrServiceFw.so` and `libVolumeServiceFw.so`:
+
+```
+_ZN3pst8services21IBtTransmitterService16IServiceListener19OnNotifySoundStatus
+   ERKNS1_12BtSoundCodecERKNS1_16BtSoundFrequencyERKNS1_14BtSoundChannelERKb
+= OnNotifySoundStatus(const BtSoundCodec&, const BtSoundFrequency&, const BtSoundChannel&, const bool&)
+```
+
+— i.e. the same order as `GetSoundStatus`.
+
+### 3. There is an EVENT for this, so it need not be polled
+
+`IBtTransmitterService::IServiceListener::OnNotifySoundStatus` exists. Cinder re-reads
+`GetSoundStatus` on a 2 s throttle instead; the codec could arrive the instant the link
+renegotiates. This is the same win as the 2026-08-16 BT-route change (`OnNotifyBtStatus` /
+`OnNotifyAclStateChanged` / `OnNotifyDisconnectEnd`), and on an object Cinder **already registers**
+— `AddListener` client slot 39, with `OnNotifyChangeVolume` already live at listener slot 10.
+
+### What did not work, so nobody repeats it
+
+The `"SetSoundStatus(%u,%u,%u)"` format string is at file offset `0x1aaf6`, referenced from exactly
+one literal-pool word at `0x9fac` (ARM PIC: `value + offset + 8` resolves the address — a plain
+`strings`/`grep` will not find the reference). Disassembling its caller yields a state machine over
+`avsrcStatus_` with the significant values **0, 4, 5** — that is the AVSRC link state, **not** the
+codec. The codec enumerators originate in the MediaTek layer below `libBtMw`, and wampy never
+touched this API either, so one device log line with a real headphone remains the cheapest route.
