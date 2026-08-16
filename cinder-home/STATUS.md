@@ -1,5 +1,10 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26)
 
+> **LATEST AUDIT: [`../docs/AUDIT_2026-08-16.md`](../docs/AUDIT_2026-08-16.md)** — Sony functional
+> parity, queue/playback behaviour, and a measured performance + battery sweep, with an ordered
+> plan. Read it before promising a feature: it is the current gap list, and its §E is a device pass
+> that closed two open RE questions and found one new defect.
+
 > **How Cinder differs from Wampy and from Sony's stock player (2026-07-28):**
 > [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md) — subsystem by
 > subsystem, including the three Cinder defects that comparison found, why Cinder's volume is correct
