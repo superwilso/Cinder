@@ -107,13 +107,55 @@ pub fn hit_shuffle_band(x: i32, y: i32) -> bool {
 
 /// Top y of each tab's row area — derived from the band it sits under, so moving the band moves
 /// the list (and the hit test) with it instead of desyncing.
-pub fn list_top(tab: Tab) -> i32 {
+/// Height of the genre-filter strip. It sits BELOW the shuffle band and above the list, so the
+/// band's geometry and hit test are untouched and only `list_top` moves — and everything that
+/// positions or hit-tests the list already derives from `list_top`.
+pub const FILTER_H: i32 = 32;
+
+/// Does this tab carry the filter strip? Songs and Albums are the two lists a genre can scope;
+/// Artists and Playlists are not track lists, so filtering them would mean guessing what the user
+/// meant by "an artist in this genre".
+pub fn has_filter(tab: Tab) -> bool {
+    matches!(tab, Tab::Songs | Tab::Albums)
+}
+
+/// Screen-y of the filter strip's top, for the render and the hit test to share.
+pub fn filter_top() -> i32 {
     let (_, by, _, bh) = library_shuffle_band();
-    let below = by + bh;
+    by + bh
+}
+
+/// Is `(x, y)` on the filter strip? x is unused — the whole width is the target, because a 32px
+/// strip is already a small one and splitting it would make it smaller.
+pub fn filter_hit(tab: Tab, y: i32) -> bool {
+    has_filter(tab) && (filter_top()..filter_top() + FILTER_H).contains(&y)
+}
+
+pub fn list_top(tab: Tab) -> i32 {
+    let below = filter_top() + if has_filter(tab) { FILTER_H } else { 0 };
     match tab {
         Tab::Albums => below + 4,
         _ => below + 8,
     }
+}
+
+/// The genre-filter strip: what is filtering the list right now, and a way to change it.
+fn filter_strip(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library) {
+    let y = filter_top();
+    let cy = y + FILTER_H / 2;
+    fill_rect(c, 0, y, W as i32, FILTER_H, t.panel);
+    let lst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18);
+    text::draw(c, f, 22.0, (cy + 4) as f32, "GENRE", &lst);
+    // The value carries the accent when something is actually filtering, so an active filter is
+    // visible at a glance rather than needing to be read.
+    let on = lib.filter_genre.is_some();
+    let vs = sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc } else { t.dim }, 0.1);
+    let label = lib.filter_name().unwrap_or("ALL");
+    let label = crate::widgets::fit(f, &label.to_uppercase(), &vs, 300.0);
+    let w = text::measure(f, &label, &vs);
+    text::draw(c, f, 440.0 - w, (cy + 4) as f32, &label, &vs);
+    icons::chevron(c, 452.0, cy as f32, 9.0, t.faint);
+    hline(c, y + FILTER_H - 1, t.line);
 }
 
 /// Fixed row height per tab (Albums rows are 60 but carry extra 30px artist headers —
@@ -310,7 +352,16 @@ pub struct AlbumsLayout {
 /// artist-then-name order `albums_flat()` already has; 1-3 are flat re-orders. Ties break on name.
 pub fn album_display_order(lib: &Library, sort: usize) -> Vec<usize> {
     let flat = lib.albums_flat();
-    let mut order: Vec<usize> = (0..flat.len()).collect();
+    // An album survives the filter if ANY of its tracks does. An album whose track list has not
+    // been resolved is kept rather than hidden: `track_list` is allowed to be empty (see AlbumRow),
+    // and silently dropping those would make the filter look like it had eaten half the library.
+    let mut order: Vec<usize> = (0..flat.len())
+        .filter(|i| {
+            lib.filter_genre.is_none()
+                || flat[*i].track_list.is_empty()
+                || flat[*i].track_list.iter().any(|t| lib.passes(t))
+        })
+        .collect();
     let year = |i: usize| flat[i].year.trim().parse::<i32>().unwrap_or(0);
     match sort {
         1 => order.sort_by(|&a, &b| flat[a].name.cmp(&flat[b].name)),
@@ -552,19 +603,21 @@ pub fn az_present(tab: Tab, lib: &Library, sort: usize, album_sort: usize) -> [b
         }
     };
     match tab {
-        Tab::Songs => lib.songs.iter().for_each(|r| mark(song_az_field(r, key))),
+        Tab::Songs => lib.songs.iter().filter(|r| lib.passes(r)).for_each(|r| mark(song_az_field(r, key))),
         Tab::Artists => lib.artists.iter().for_each(|r| mark(&r.name)),
         Tab::Playlists => lib.playlists.iter().for_each(|r| mark(&r.name)),
         // ARTIST groups by artist — that's the visible ordering, and the only rows the jump can
         // land on are the group headers. A-Z is by album name.
+        // Albums honour the filter through album_display_order, so the rail must too — a faint
+        // letter that does jump, or a lit one that does not, is worse than either alone.
         Tab::Albums if key == AzKey::Artist => {
-            lib.album_groups.iter().for_each(|g| mark(&g.artist))
+            let flat = lib.albums_flat();
+            album_display_order(lib, 0).into_iter().for_each(|i| mark(&flat[i].artist))
         }
-        Tab::Albums => lib
-            .album_groups
-            .iter()
-            .flat_map(|g| g.albums.iter())
-            .for_each(|a| mark(&a.name)),
+        Tab::Albums => {
+            let flat = lib.albums_flat();
+            album_display_order(lib, 0).into_iter().for_each(|i| mark(&flat[i].name))
+        }
     }
     out
 }
@@ -644,8 +697,8 @@ fn group_thousands(n: usize) -> String {
 /// Number of selectable rows in a tab (for nav cursor clamping).
 pub fn row_count(tab: Tab, lib: &Library) -> usize {
     match tab {
-        Tab::Songs => lib.songs.len(),
-        Tab::Albums => lib.album_count(),
+        Tab::Songs => lib.visible_songs(),
+        Tab::Albums => album_display_order(lib, 0).len(),
         Tab::Artists => lib.artists.len(),
         Tab::Playlists => lib.playlists.len(),
     }
@@ -657,7 +710,12 @@ pub fn row_count(tab: Tab, lib: &Library) -> usize {
 /// song whenever the sort differs from DB order. Secondary key = title, so ties are stable.
 pub fn song_order(lib: &Library, sort: usize) -> Vec<usize> {
     let s = &lib.songs;
-    let mut order: Vec<usize> = (0..s.len()).collect();
+    // FILTER FIRST, then sort. The returned values stay ABSOLUTE indices into `lib.songs`, so
+    // `song_at` and every other consumer keeps working unchanged — only the set shrinks. This is
+    // the one place the visible Songs list is defined, which is why the filter belongs here rather
+    // than at each call site.
+    let mut order: Vec<usize> =
+        (0..s.len()).filter(|i| lib.passes(&s[*i])).collect();
     let by_title = |a: usize, b: usize| s[a].title.cmp(&s[b].title);
     match sort {
         0 => order.sort_by(|&a, &b| by_title(a, b)),
@@ -909,12 +967,16 @@ fn dur_secs(d: &str) -> i32 {
 #[allow(clippy::too_many_arguments)]
 /// Draw the A–Z rail down the right edge of the list. Letters with no rows are drawn faint, so the
 /// rail also reads as a map of what the library actually contains.
+/// `present` comes from the caller rather than being computed here, because computing it walks
+/// EVERY row in the library — 3,600-odd titles to fill 27 booleans — and this runs on every painted
+/// frame. It changes only when the library or the sort chip does, so `App` memoises it (see
+/// `App::az_present_memo`) and the answer is handed in.
 pub fn az_render(
     c: &mut Canvas,
     t: &Theme,
     f: &FontSet,
     tab: Tab,
-    lib: &Library,
+    present: &[bool; 27],
     sort: usize,
     album_sort: usize,
 ) {
@@ -927,7 +989,6 @@ pub fn az_render(
     let h = LIST_BOTTOM - top;
     let n = AZ_LETTERS.len() as i32;
     let x = W as i32 - AZ_W / 2;
-    let present = az_present(tab, lib, sort, album_sort);
     for (i, &ch) in AZ_LETTERS.iter().enumerate() {
         let cy = top + (i as i32 * h) / n + h / (2 * n);
         let col = if present[i] { t.dim } else { t.faint };
@@ -963,11 +1024,22 @@ pub fn render(
     let y0 = crate::chrome::header(c, t, f, "Library", Some(&rc));
     let yt = tabs(c, t, f, y0, tab);
     let total = row_count(tab, lib);
+    // Drawn AFTER the per-tab arms below place the shuffle band, but its geometry is fixed and
+    // independent of them, so it can be issued here — one call for both tabs that have it.
+    if has_filter(tab) {
+        filter_strip(c, t, f, lib);
+    }
 
     match tab {
         Tab::Songs => {
-            let top = shuffle_row(c, t, f, yt, "Shuffle all songs",
-                &format!("{} TRACKS · RANDOM ORDER", group_thousands(lib.songs.len()))) + 8;
+            // The band's caption follows the FILTER: shuffling a filtered list shuffles what is
+            // on screen, so promising "3,463 tracks" while showing 429 would be a lie about the
+            // next hour of listening.
+            let scope = lib.filter_name().map(|g| format!("Shuffle {g}"))
+                .unwrap_or_else(|| "Shuffle all songs".to_string());
+            shuffle_row(c, t, f, yt, &scope,
+                &format!("{} TRACKS · RANDOM ORDER", group_thousands(lib.visible_songs())));
+            let top = list_top(Tab::Songs);
             let rh = row_h(Tab::Songs);
             let order = song_order(lib, sort); // shared with hit_row/selection — keep in sync
             let first = (scroll_px / rh) as usize;
@@ -1008,7 +1080,8 @@ pub fn render(
             scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
         }
         Tab::Albums => {
-            let top = shuffle_row(c, t, f, yt, "Shuffle by album", "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE") + 4;
+            shuffle_row(c, t, f, yt, "Shuffle by album", "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE");
+            let top = list_top(Tab::Albums);
             let flat = lib.albums_flat();
             let layout = albums_build(lib, album_sort, album_expanded);
             c.set_clip_y(top, LIST_BOTTOM);
@@ -1668,7 +1741,7 @@ mod tests {
                 ArtistGroup { artist: "Two".into(), albums: vec![album("B1", "Two", 4)] },
             ],
             artists: Vec::new(),
-            thumbs: Default::default(),
+            thumbs: Default::default(), genres: Vec::new(), filter_genre: None,
             playlists: Vec::new(),
         }
     }
@@ -1756,7 +1829,7 @@ mod tests {
             ],
             album_groups: Vec::new(),
             artists: Vec::new(),
-            thumbs: Default::default(),
+            thumbs: Default::default(), genres: Vec::new(), filter_genre: None,
             playlists: Vec::new(),
         };
         // added: song 1 newest, 3 oldest. album order: song 2 first. year: song 3 newest.
@@ -1803,7 +1876,7 @@ mod tests {
             album_groups: Vec::new(),
             artists: Vec::new(),
             playlists: Vec::new(),
-            thumbs: Default::default(),
+            thumbs: Default::default(), genres: Vec::new(), filter_genre: None,
         }
     }
 
@@ -1985,4 +2058,81 @@ mod tests {
         assert_eq!(artist_hit(&p, 0, top - 1), None);
         assert_eq!(artist_hit(&p, 0, LIST_BOTTOM), None);
     }
+}
+
+// ── Genre filter picker ─────────────────────────────────────────────────────────────────────────
+// A picker, not a browse tab. 95 genres on the reference device is far too many for a chip cycle
+// and far too few to earn a place in a four-tab strip — and a genre is a way of narrowing the
+// library you already have, not a separate library.
+//
+// Row 0 is always "All genres", so clearing the filter is the same gesture as setting one and needs
+// no second control.
+
+/// Row height in the picker.
+pub const GENRE_RH: i32 = 56;
+/// Screen-y of the first picker row.
+pub const GENRE_TOP: i32 = crate::chrome::HEADER_BOTTOM;
+
+/// Total scrollable height: the "All genres" row plus one per genre.
+pub fn genre_content_h(lib: &Library) -> i32 {
+    (lib.genres.len() as i32 + 1) * GENRE_RH
+}
+
+pub fn genre_max_scroll_px(lib: &Library) -> i32 {
+    (genre_content_h(lib) - (LIST_BOTTOM - GENRE_TOP)).max(0)
+}
+
+/// Which picker row is under `y` at this scroll? `Some(0)` is "All genres"; `Some(n)` is
+/// `lib.genres[n - 1]`. Shares its arithmetic with `genre_render`, so the two cannot disagree.
+pub fn genre_row_at(lib: &Library, y: i32, scroll_px: i32) -> Option<usize> {
+    if !(GENRE_TOP..LIST_BOTTOM).contains(&y) {
+        return None;
+    }
+    let r = ((y - GENRE_TOP + scroll_px.max(0)) / GENRE_RH) as usize;
+    (r <= lib.genres.len()).then_some(r)
+}
+
+pub fn genre_render(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    lib: &Library,
+    scroll_px: i32,
+    sbar_active: bool,
+) {
+    let scroll = scroll_px.clamp(0, genre_max_scroll_px(lib));
+    c.fill(t.bg);
+    let cap = format!("{} GENRES", lib.genres.len());
+    let y0 = crate::chrome::header(c, t, f, "Genre", Some(&cap));
+    c.set_clip_y(y0, LIST_BOTTOM);
+
+    // Only the visible window, like every other long list here — 95 rows is more than a screen.
+    let first = ((scroll / GENRE_RH).max(0)) as usize;
+    for r in first..=lib.genres.len() {
+        let y = GENRE_TOP + r as i32 * GENRE_RH - scroll;
+        if y >= LIST_BOTTOM {
+            break;
+        }
+        let (name, count, id) = if r == 0 {
+            ("All genres".to_string(), lib.songs.len() as u32, None)
+        } else {
+            let g = &lib.genres[r - 1];
+            (g.name.clone(), g.tracks, Some(g.id))
+        };
+        let on = lib.filter_genre == id;
+        if on {
+            fill_rect(c, 0, y, W as i32, GENRE_RH, t.row_sel);
+            fill_rect(c, 0, y, 4, GENRE_RH, t.acc);
+        }
+        let cy = y + GENRE_RH / 2;
+        let ns = body_label(Family::Sans, Weight::SemiBold, 20.0, if on { t.acc } else { t.ink });
+        text::draw(c, f, 22.0, (cy + 5) as f32, &crate::widgets::fit(f, &name, &ns, 320.0), &ns);
+        let cs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06);
+        let cl = format!("{count}");
+        let w = text::measure(f, &cl, &cs);
+        text::draw(c, f, 452.0 - w, (cy + 5) as f32, &cl, &cs);
+        hline(c, y + GENRE_RH, t.line);
+    }
+    c.clear_clip();
+    scrollbar(c, t, GENRE_TOP, scroll, genre_content_h(lib), sbar_active);
 }

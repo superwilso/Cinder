@@ -157,6 +157,61 @@ pub struct Layout {
     /// Content-space top of the NOW PLAYING row, if there is one. This is what the auto-follow
     /// scrolls to.
     pub current_top: Option<i32>,
+    /// Content-space top of the first user-queue row. Stored rather than searched for: the draw
+    /// loop needs it once a frame to work out how many queue rows are above the window, and a
+    /// linear find over a sequence that can be the whole library is not the way to answer an
+    /// arithmetic question.
+    queue_top_px: Option<i32>,
+}
+
+/// The layout's SHAPE, without materialising the slot list. Pure arithmetic, O(1) in the length of
+/// the sequence.
+///
+/// `layout()` allocates one entry per track, and after a "Shuffle all songs" that sequence is the
+/// entire library — 3,600-odd slots. The render path's auto-follow needs exactly two numbers out of
+/// it, so it asks for those instead of building the whole thing to read the top of one row.
+///
+/// `metrics()` and `layout()` MUST agree; `metrics_matches_layout` sweeps them against each other,
+/// because two sources of one truth is the bug class this screen was rewritten to remove.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Metrics {
+    pub current_top: Option<i32>,
+    pub content_h: i32,
+}
+
+pub fn metrics(album_len: usize, current: Option<usize>, queued: usize) -> Metrics {
+    let mut y = 0i32;
+    let mut current_top = None;
+    if let Some(cur) = current {
+        if cur > 0 {
+            y += HDR_H + cur as i32 * RH; // history header + the played rows
+        }
+        y += HDR_H; // NOW PLAYING header
+        current_top = Some(y);
+        y += RH;
+    }
+    if queued > 0 {
+        y += HDR_H + queued as i32 * RH;
+    }
+    if let Some(cur) = current {
+        if cur + 1 < album_len {
+            y += HDR_H + (album_len - cur - 1) as i32 * RH;
+        }
+    }
+    Metrics { current_top, content_h: y }
+}
+
+impl Metrics {
+    pub fn max_scroll_px(&self) -> i32 {
+        (self.content_h - queue_view_h()).max(0)
+    }
+    /// Same rule as `Layout::follow_scroll` — kept next to it so the two cannot drift.
+    pub fn follow_scroll(&self) -> i32 {
+        match self.current_top {
+            Some(top) => (top - queue_view_h() / 3).clamp(0, self.max_scroll_px()),
+            None => 0,
+        }
+    }
 }
 
 /// Build the slot list. `album_len`/`current` describe the album the playing track belongs to
@@ -164,6 +219,11 @@ pub struct Layout {
 /// user queue's length.
 pub fn layout(album_len: usize, current: Option<usize>, queued: usize) -> Layout {
     let mut l = Layout::default();
+    // RESERVE UP FRONT. Every track is a slot, and after a "Shuffle all songs" that is the whole
+    // library — growing from empty meant a dozen reallocations and memcpys of a list that ends up
+    // ~29 KB, once per painted frame. Measured: this is most of what an Up Next frame costs beyond
+    // the ~14 rows it actually draws. Four spare for the section headings.
+    l.slots = Vec::with_capacity(album_len + queued + 4);
     let mut y = 0;
     let push = |l: &mut Layout, s: Slot, y: &mut i32| {
         l.slots.push((s, *y));
@@ -182,6 +242,7 @@ pub fn layout(album_len: usize, current: Option<usize>, queued: usize) -> Layout
     }
     if queued > 0 {
         push(&mut l, Slot::Head(Section::Queue), &mut y);
+        l.queue_top_px = Some(y);
         for i in 0..queued {
             push(&mut l, Slot::Queued(i), &mut y);
         }
@@ -232,10 +293,7 @@ impl Layout {
     }
     /// Content-space top of the first user-queue row, if the queue section exists.
     pub fn queue_top(&self) -> Option<i32> {
-        self.slots
-            .iter()
-            .find(|(s, _)| matches!(s, Slot::Queued(0)))
-            .map(|(_, t)| *t)
+        self.queue_top_px
     }
     /// Which queue index a floating row is over, from its top edge in screen coords. Same
     /// half-row rule as before, but measured from the queue SECTION's top rather than the
@@ -334,18 +392,26 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     // Queue rows are drawn in their would-be order while a row is lifted; every other kind keeps
     // its place, so the reorder only permutes the section it belongs to.
     let qorder = drag_order(v.queue.len(), v.drag);
-    let mut qseen = 0usize;
+
+    // START AT THE FIRST VISIBLE SLOT. This loop used to begin at slot 0 and `continue` past
+    // everything above the window — which is O(the whole sequence) to draw the ~14 rows on screen,
+    // and after a "Shuffle all songs" that is 3,600 iterations a frame. `slots` is built in
+    // ascending `top` order, so the first visible one is a binary search.
+    //
+    // A slot is above the window when `top + h <= scroll` — the same test the old `continue` made,
+    // rearranged so it does not mention `y0`.
+    let first = l.slots.partition_point(|(s, top)| top + s.h() <= scroll);
+    // `qseen` counts the QUEUE rows that were skipped, because `qorder` is indexed by drawn
+    // position. The old loop accumulated it while walking past them; skipping the walk means
+    // computing it, which is the same arithmetic the binary search just replaced.
+    let mut qseen = match l.queue_top() {
+        Some(qt) => (((scroll - qt).max(0) / RH) as usize).min(v.queue.len()),
+        None => 0,
+    };
 
     c.set_clip_y(y0, LIST_BOTTOM);
-    for (slot, top) in &l.slots {
+    for (slot, top) in &l.slots[first..] {
         let y = y0 + top - scroll;
-        let is_q = matches!(slot, Slot::Queued(_));
-        if y + slot.h() <= y0 {
-            if is_q {
-                qseen += 1;
-            }
-            continue;
-        }
         if y >= LIST_BOTTOM {
             break;
         }
@@ -475,5 +541,85 @@ fn grip(c: &mut Canvas, t: &Theme, y: i32, lifted: bool) {
     let w = GRIP_X1 - GRIP_X0 - 8;
     for k in -1..=1 {
         fill_rect(c, GRIP_X0 + 4, cy + k * 7 - 1, w, 2, col);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `metrics()` is a second, arithmetic expression of what `layout()` builds by hand, and it is
+    /// what the render path actually reads. Two sources of one truth is exactly the render↔hit
+    /// drift this screen was rewritten to remove, so they are bound together here rather than
+    /// trusted to stay in step.
+    #[test]
+    fn metrics_matches_layout() {
+        for album_len in [0usize, 1, 2, 5, 40] {
+            for queued in [0usize, 1, 3, 12] {
+                // `None`, plus every valid current index, plus one past the end.
+                let currents: Vec<Option<usize>> =
+                    std::iter::once(None).chain((0..=album_len).map(Some)).collect();
+                for cur in currents {
+                    // layout() only draws a current row when the index is inside the album.
+                    let cur = cur.filter(|c| *c < album_len);
+                    let l = layout(album_len, cur, queued);
+                    let m = metrics(album_len, cur, queued);
+                    assert_eq!(
+                        m.content_h, l.content_h,
+                        "content_h disagrees at album={album_len} cur={cur:?} queued={queued}"
+                    );
+                    assert_eq!(
+                        m.current_top, l.current_top,
+                        "current_top disagrees at album={album_len} cur={cur:?} queued={queued}"
+                    );
+                    assert_eq!(m.follow_scroll(), l.follow_scroll());
+                    assert_eq!(m.max_scroll_px(), l.max_scroll_px());
+                }
+            }
+        }
+    }
+
+    /// The draw loop now binary-searches its way to the first visible slot instead of walking the
+    /// whole sequence. It must land on exactly the slot the old linear scan would have: the first
+    /// whose BOTTOM is still below the top of the window.
+    #[test]
+    fn the_first_visible_slot_is_found_by_search_not_by_walking() {
+        let l = layout(200, Some(100), 4);
+        let max = l.max_scroll_px();
+        for scroll in [0, 1, RH - 1, RH, RH + 1, HDR_H, 500, 1234, max / 2, max] {
+            let want = l.slots.iter().position(|(s, top)| top + s.h() > scroll).unwrap_or(l.slots.len());
+            let got = l.slots.partition_point(|(s, top)| top + s.h() <= scroll);
+            assert_eq!(got, want, "first visible slot disagrees at scroll={scroll}");
+        }
+    }
+
+    /// `qseen` is the number of QUEUE rows scrolled off the top; the drawn order (`qorder`) is
+    /// indexed by it, so an off-by-one here draws the wrong queued track. The old loop counted them
+    /// while walking past; the new one computes them, and the two must agree everywhere.
+    #[test]
+    fn the_skipped_queue_row_count_is_computed_not_counted() {
+        for queued in [1usize, 3, 12] {
+            let l = layout(60, Some(30), queued);
+            let max = l.max_scroll_px();
+            for scroll in 0..=max {
+                let counted = l
+                    .slots
+                    .iter()
+                    .filter(|(s, top)| matches!(s, Slot::Queued(_)) && top + s.h() <= scroll)
+                    .count();
+                let computed = match l.queue_top() {
+                    Some(qt) => (((scroll - qt).max(0) / RH) as usize).min(queued),
+                    None => 0,
+                };
+                assert_eq!(computed, counted, "queued={queued} scroll={scroll}");
+            }
+        }
+    }
+
+    /// No queue section means no queue rows to skip, whatever the scroll.
+    #[test]
+    fn no_queue_section_skips_nothing() {
+        let l = layout(60, Some(30), 0);
+        assert_eq!(l.queue_top(), None);
     }
 }
