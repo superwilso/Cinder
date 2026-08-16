@@ -10,6 +10,15 @@ first one with the device — is a straight line, not a guessing game.
 > the headline LDAC feature has never been executed; and shuffle/repeat still draw as real while
 > doing nothing.
 
+> **NEWER PASS — [`../docs/AUDIT_2026-08-16.md`](../docs/AUDIT_2026-08-16.md)** covers Sony
+> functional parity, queue/playback behaviour, and a **measured** performance + battery sweep, and
+> ends with an ordered plan that supersedes the ordering below. Headlines: the sound chain is never
+> applied to Bluetooth output (goal #7, one call); a queue pick taken from the album already playing
+> silently drops the tracks between; shuffle-off never restores the original order; Up Next clones
+> the whole context every frame; there is no auto power-off; the Hold switch is not detected if it
+> is already on at boot. High gain and L/R balance turned out to be plain ALSA mixer controls, not
+> an RE job.
+
 Last audited: **2026-07-28** (this pass). Prior: 2026-07-26
 ([`../docs/AUDIT_2026-07-26.md`](../docs/AUDIT_2026-07-26.md)), 2026-07-25, 2026-06-30.
 **34 commits have landed since the 07-26 audit** — the file below had drifted badly enough to be

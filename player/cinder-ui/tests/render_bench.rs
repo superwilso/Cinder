@@ -177,3 +177,100 @@ fn bench_library_tabs() {
         library::artist_view(&mut c, &t, &f, &lib, &page, 0, 0, None, false)
     });
 }
+
+/// How much of a Library/Up Next frame is REBUILT ORDERING rather than pixels?
+///
+/// `library::render` calls `song_order` (a full sort of every track) or `albums_build` (two
+/// `albums_flat()` vectors, a sort, and a row vector) on every painted frame, and `nav::render`
+/// clones the whole playback context on every Up Next frame. None of those three depend on
+/// anything that changes between frames — they depend on the library, the sort chip and which
+/// accordion is open — so whatever they cost is pure waste at 60 Hz. This splits the derived work
+/// out of the frame so the memo is sized against a number rather than a hunch.
+#[test]
+#[ignore]
+fn bench_derived_state() {
+    use cinder_ui::library::{self, Tab};
+    use cinder_ui::model::{AlbumRow, ArtistGroup, Library, SongRow};
+
+    // The device library, at its measured size: 3746 tracks over 304 albums.
+    let mut songs = Vec::new();
+    let mut album_groups: Vec<ArtistGroup> = Vec::new();
+    let mut aid = 0i64;
+    for a in 0..152 {
+        let name = format!("Artist {a:03}");
+        let mut albums = Vec::new();
+        for _ in 0..2 {
+            aid += 1;
+            let an = format!("Album {aid:03}");
+            let track_list: Vec<SongRow> = (0..12)
+                .map(|i| SongRow {
+                    title: format!("{an} track {i:02}"), artist: name.clone(), dur: "3:20".into(),
+                    art: an.clone(), object_id: aid * 100 + i, album_id: aid,
+                    disc: 1, track: i as i32, added: aid, year: 2019,
+                })
+                .collect();
+            songs.extend(track_list.iter().cloned());
+            albums.push(AlbumRow {
+                name: an.clone(), artist: name.clone(), year: "2019".into(), tracks: 12,
+                art: an, album_id: aid, added: aid, track_list,
+            });
+        }
+        album_groups.push(ArtistGroup { artist: name, albums });
+    }
+    let lib = Library { songs, album_groups, artists: Vec::new(), playlists: Vec::new(),
+                        thumbs: Default::default() };
+    println!("library: {} songs, {} albums", lib.songs.len(), lib.album_count());
+
+    let n = 200;
+    // The three sorts a user can actually be sitting on.
+    for (s, name) in [(0usize, "TITLE"), (1, "ARTIST A-Z"), (5, "ALBUM")] {
+        time_it(&format!("song_order sort={name}"), n, || {
+            let _ = library::song_order(&lib, s).len();
+        });
+    }
+    for (s, name) in [(0usize, "ARTIST"), (1, "A-Z"), (3, "YEAR")] {
+        time_it(&format!("albums_build order={name}"), n, || {
+            let _ = library::albums_build(&lib, s, None).rows.len();
+        });
+    }
+    time_it("albums_flat", n, || { let _ = lib.albums_flat().len(); });
+    time_it("az_present songs", n, || { let _ = library::az_present(Tab::Songs, &lib, 0, 0); });
+    time_it("max_scroll_px albums", n, || {
+        let _ = library::max_scroll_px(Tab::Albums, &lib, 0, None);
+    });
+
+    // Up Next: nav::render clones the whole context, then builds the slot layout twice (once for
+    // the auto-follow, once inside render_view).
+    let ctx: Vec<SongRow> = lib.songs.clone();
+    time_it("context clone (shuffle-all)", n, || { let _ = ctx.clone().len(); });
+    time_it("up_next::layout (shuffle-all)", n, || {
+        let _ = cinder_ui::up_next::layout(ctx.len(), Some(ctx.len() / 2), 3).slots.len();
+    });
+
+    let t = Theme::day();
+    let f = FontSet::load();
+    let mut c = Canvas::new();
+    let queue: Vec<SongRow> = ctx[..3].to_vec();
+    let view = cinder_ui::up_next::QueueView {
+        album: "Album 001", tracks: &ctx, current: Some(ctx.len() / 2), queue: &queue,
+        lib: &lib, scroll_px: 0, drag: None, swipe: None, sbar_active: false,
+    };
+    time_it("up_next::render_view", n, || {
+        let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view);
+    });
+
+    // The same screen with an ALBUM-sized context, to separate "drawing 14 rows" from "the cost
+    // scales with how long the sequence is".
+    let small: Vec<SongRow> = ctx[..12].to_vec();
+    let view_small = cinder_ui::up_next::QueueView {
+        album: "Album 001", tracks: &small, current: Some(6), queue: &queue,
+        lib: &lib, scroll_px: 0, drag: None, swipe: None, sbar_active: false,
+    };
+    time_it("up_next::render_view (album)", n, || {
+        let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view_small);
+    });
+    time_it("up_next::layout (album)", n, || {
+        let _ = cinder_ui::up_next::layout(12, Some(6), 3).slots.len();
+    });
+    time_it("context clone (album)", n, || { let _ = small.clone().len(); });
+}
