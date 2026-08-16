@@ -52,6 +52,10 @@ pub struct Track {
     pub album_id: Option<i64>,  // -> albums.id (stable key — album NAMES can collide)
     pub added: i64,             // object_body.addedtime (scan/import time; 0 if unknown) — "recently added"
     pub releaseyear_id: Option<i64>, // -> releaseyears.id (resolve via Db::release_years)
+    /// -> genres.id. Kept as the ID rather than the string: 3,463 tracks share 95 genres on the
+    /// reference device, so storing the text per row would be ~3,400 redundant heap strings to say
+    /// one of 95 things. Resolve for display via `Db::genres`.
+    pub genre_id: Option<i64>,
 }
 
 /// Album-art location for an object (from the `images` table). `value` is polymorphic in the
@@ -85,6 +89,11 @@ pub struct Db {
     /// at open rather than hard-coded so a firmware that doesn't ship `albumartists` degrades to
     /// the old (wrong-name) behaviour instead of failing every query and showing an EMPTY library.
     albumartist_table: &'static str,
+    /// Does `object_body` actually have a `genre_id` column? Detected once at open, because naming
+    /// it unconditionally in the SELECT would make the WHOLE track query fail on a firmware variant
+    /// that lacks it — turning "no genre filter" into "no library at all". Same defensive shape as
+    /// `albumartist_table`.
+    has_genre: bool,
     /// object_id → absolute directory path, for every folder in the file tree. See `build_dirs`.
     dirs: std::collections::HashMap<i64, String>,
 }
@@ -135,8 +144,16 @@ impl Db {
             );
         }
         let albumartist_table = if has_albumartists { "albumartists" } else { "artists" };
+        let has_genre = conn
+            .query_row("SELECT genre_id FROM object_body LIMIT 1", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })
+            .is_ok();
+        if !has_genre {
+            eprintln!("[cinder-db] object_body has no `genre_id` — genre filtering unavailable");
+        }
         let dirs = Self::build_dirs(&conn);
-        Db { conn, duration_akey, albumartist_table, dirs }
+        Db { conn, duration_akey, albumartist_table, has_genre, dirs }
     }
 
     /// Mount point for each STORAGE ROOT of the MTP file tree, by the root object's name.
@@ -462,12 +479,14 @@ impl Db {
             None => (String::new(), "NULL"),
         };
         let aa_table = self.albumartist_table;
+        let genre_sel = if self.has_genre { "ob.genre_id" } else { "NULL" };
         let sql = format!(
             "SELECT ob.object_id, ob.title, COALESCE(ar.value,''), COALESCE(al.value,''), \
                     ob.filename, COALESCE(ob.disc_no,0), COALESCE(ob.series_no,0), {dur_sel}, \
                     COALESCE(aa.value,''), \
                     COALESCE(ob.is_high_resolution,0), ob.othumb_id, ob.album_id, \
-                    COALESCE(ob.addedtime,0), ob.releaseyear_id, COALESCE(ob.parent_id,0) \
+                    COALESCE(ob.addedtime,0), ob.releaseyear_id, COALESCE(ob.parent_id,0), \
+                    {genre_sel} \
              FROM object_body ob \
              LEFT JOIN artists ar ON ar.id = ob.artist_id \
              LEFT JOIN albums  al ON al.id = ob.album_id \
@@ -500,6 +519,7 @@ impl Db {
                 album_id: r.get(11)?,
                 added: r.get(12)?,
                 releaseyear_id: r.get(13)?,
+                genre_id: r.get(15)?,
             })
         })?;
         rows.collect()
@@ -539,6 +559,36 @@ impl Db {
         eprintln!("[cinder-db] release_years: no releaseyears/releaseyear table — years left blank");
         std::collections::HashMap::new()
     }
+
+    /// Resolve `genre_id` → the genre name. Confirmed against the reference device 2026-08-16:
+    /// `genres(id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, value TEXT UNIQUE)`, 101 rows,
+    /// 95 of them actually used by tracks.
+    ///
+    /// The EMPTY genre is a real row, not a null — `genre_id` is never NULL on that device, and the
+    /// single largest bucket (482 of 3,463 tracks) points at a genre whose `value` is "". It is kept
+    /// in the map with its empty string so callers can count it and label it themselves; dropping it
+    /// would silently hide an eighth of the library from a filter.
+    pub fn genres(&self) -> std::collections::HashMap<i64, String> {
+        let mut st = match self.conn.prepare("SELECT id, value FROM genres") {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("[cinder-db] genres: no genres table — genre filtering unavailable");
+                return std::collections::HashMap::new();
+            }
+        };
+        let rows = st.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default()))
+        });
+        match rows {
+            Ok(rows) => {
+                let map: std::collections::HashMap<i64, String> =
+                    rows.filter_map(|r| r.ok()).collect();
+                eprintln!("[cinder-db] genres: {} entries", map.len());
+                map
+            }
+            Err(_) => std::collections::HashMap::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -561,6 +611,7 @@ mod tests {
             CREATE TABLE object_ext_int (object_id INTEGER, akey INTEGER, value INTEGER DEFAULT 0, PRIMARY KEY(object_id,akey));
             CREATE TABLE images  (id INTEGER PRIMARY KEY, dataform INTEGER, dataoffset INTEGER, datasize INTEGER, value TEXT, digest TEXT, bmpfile TEXT, bmpwidth INTEGER, bmpheight INTEGER);
             CREATE TABLE releaseyears (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, search_str TEXT, value TEXT);
+            CREATE TABLE genres (id INTEGER PRIMARY KEY, initial INTEGER, sort_str TEXT, value TEXT);
             CREATE TABLE object_body (
                 object_id INTEGER PRIMARY KEY AUTOINCREMENT, object_type INTEGER NOT NULL,
                 parent_id INTEGER, reference_id INTEGER,
@@ -568,7 +619,8 @@ mod tests {
                 initial INTEGER, sort_str TEXT, search_str TEXT, title TEXT DEFAULT "",
                 addedtime INTEGER DEFAULT 0, filename TEXT, filesize INTEGER, albumartist_id INTEGER,
                 series_no INTEGER, disc_no INTEGER, is_high_resolution INTEGER,
-                album_id INTEGER, artist_id INTEGER, releaseyear_id INTEGER, othumb_id INTEGER, mthumb_id INTEGER);
+                album_id INTEGER, artist_id INTEGER, releaseyear_id INTEGER, genre_id INTEGER,
+                othumb_id INTEGER, mthumb_id INTEGER);
             INSERT INTO albums  VALUES (10,0,'last smoke','last smoke','Last Smoke Before the Snowstorm');
             INSERT INTO albums  VALUES (11,0,'harvest','harvest','Harvest Moon');
             -- Orphan lookup row: the stock scanner leaves these behind when the music is deleted,
@@ -583,6 +635,8 @@ mod tests {
             INSERT INTO albumartists VALUES (21,0,'someone','someone','Someone Else Entirely');
             INSERT INTO schema  VALUES (1,7,2,'DURATION');
             INSERT INTO images  VALUES (100,0,4096,20000,'/music/atlas.flac','d1','/db/thumb/100.bmp',92,92);
+            INSERT INTO genres VALUES (1,0,'','');
+            INSERT INTO genres VALUES (2,82,'ROCK','Rock');
             INSERT INTO releaseyears VALUES (30,0,'2012','2012','2012');
             INSERT INTO releaseyears VALUES (31,0,'1992','1992','1992');
             -- THE FILE TREE, exactly as the device stores it. `filename` is a BARE BASENAME and the
@@ -813,6 +867,27 @@ mod tests {
         let years = d.release_years();
         assert_eq!(years.get(&30).map(|s| s.as_str()), Some("2012"));
         assert_eq!(years.get(&31).map(|s| s.as_str()), Some("1992"));
+    }
+
+    #[test]
+    /// The genres lookup, confirmed against the reference device 2026-08-16 (95 of 101 genres in
+    /// use across 3,463 tracks). The EMPTY genre must survive into the map: `genre_id` is never
+    /// NULL there and the largest single bucket — 482 tracks — points at a row whose value is "".
+    /// Dropping it would hide an eighth of the library from a filter that claims to cover it.
+    fn genres_resolve_including_the_empty_one() {
+        let d = db();
+        let g = d.genres();
+        assert_eq!(g.get(&2).map(String::as_str), Some("Rock"));
+        assert_eq!(g.get(&1).map(String::as_str), Some(""), "the empty genre is a real row");
+    }
+
+    #[test]
+    /// A DB with no genres table degrades to an empty map rather than failing the whole library
+    /// build — the same contract release_years has.
+    fn genres_missing_table_is_empty_not_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        let d = Db::wrap(conn);
+        assert!(d.genres().is_empty());
     }
 
     #[test]

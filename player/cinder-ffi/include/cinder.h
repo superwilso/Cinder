@@ -265,6 +265,10 @@ void cinder_scrobble_tick(int playing);
 void cinder_clock_tick(void);
 /* Push battery percent (0..100) to the status bar; repaints only on change. */
 void cinder_set_battery(int pct);
+/* Raise the ordinary bottom toast the UI already uses for queue and Shelf feedback. For the shell
+ * to say something the user must see (a low battery, an imminent shutdown) without inventing a
+ * second notification surface. Fades on its own; NULL/empty is a no-op. */
+void cinder_toast(const char *msg);
 /* Copy the current 10-band EQ gains (dB) into `out` (>= 10 int8). Call after a
  * CINDER_ACT_EQ_CHANGED action, then apply them to the DSP via the effect shim. */
 void cinder_get_eq_bands(signed char *out);
@@ -366,6 +370,10 @@ int  cinder_get_brightness(void);
 /* Idle screen-off timeout in SECONDS; 0 = disabled (the default). The shell owns the countdown
  * because only it sees every input event. Read after CINDER_ACT_SCREEN_OFF_CHANGED and at boot. */
 int  cinder_get_screen_off_s(void);
+/* Auto power-off in MINUTES (0 = off). Poll from the ~1 Hz housekeeping: when it is non-zero and
+ * nothing is playing and there has been no input for that long, shut the device down. Distinct from
+ * the screen-off timer, which only blanks the panel. */
+int  cinder_get_auto_off_min(void);
 /* Is USB-DAC mode engaged? (1/0). Read after a CINDER_ACT_USBDAC_LDAC action to start/stop the LDAC
  * bridge + switch the USB gadget to UAC, without disconnecting Bluetooth. */
 /* Is the Bluetooth switch on? (1/0). Read after a CINDER_ACT_BT_TOGGLE action. */

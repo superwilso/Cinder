@@ -22,6 +22,10 @@ pub struct SongRow {
     pub track: i32,
     pub added: i64, // addedtime — "recently added" sort
     pub year: i32,  // release year — "release year" sort (0 = unresolved)
+    /// `genres.id` for the genre FILTER. An id, not a name: 3,463 tracks share 95 genres on the
+    /// reference device, so a per-row string would be thousands of heap allocations to say one of
+    /// 95 things. 0 = not resolved (host/sample data). Names come from `Library::genres`.
+    pub genre_id: i64,
 }
 
 /// One album row (Albums tab, grouped under its artist).
@@ -37,6 +41,17 @@ pub struct AlbumRow {
     pub added: i64,
     /// The album's tracks in play order (for the drill-in view). May be empty if not loaded.
     pub track_list: Vec<SongRow>,
+}
+
+/// One entry in the genre filter picker: the id to filter by, its display name, and how many
+/// tracks carry it — the count is what makes the picker useful rather than a wall of 95 words.
+#[derive(Clone)]
+pub struct GenreRow {
+    pub id: i64,
+    /// Already substituted for display: the DB's empty genre becomes "(No genre)". Confirmed real
+    /// on the reference device — 482 of 3,463 tracks point at a genre row whose value is "".
+    pub name: String,
+    pub tracks: u32,
 }
 
 /// Albums grouped by artist (Albums tab section structure).
@@ -95,9 +110,40 @@ pub struct Library {
     /// device (they're 1425x1425 JPEGs embedded in the FLACs), which is why they cannot be
     /// resolved during a scroll.
     pub thumbs: std::collections::HashMap<i64, crate::art::Image>,
+    /// Every genre that at least one track carries, with its count. Built once at library build.
+    pub genres: Vec<GenreRow>,
+    /// The ACTIVE genre filter: `Some(id)` hides every track that does not carry it.
+    ///
+    /// It lives on the LIBRARY rather than on `App` on purpose. `song_order`, `row_count`,
+    /// `albums_build`, `az_present` and `content_h` all already take `&Library`, so putting it here
+    /// means every one of them honours the filter with no signature change. Threading a filter
+    /// argument through ten call sites is precisely how a hit test drifts out of step with a
+    /// render, which is the bug this file's neighbours keep getting bitten by.
+    pub filter_genre: Option<i64>,
 }
 
 impl Library {
+    /// Does this row survive the active filter? The single predicate every filtered list asks.
+    pub fn passes(&self, s: &SongRow) -> bool {
+        match self.filter_genre {
+            None => true,
+            Some(id) => s.genre_id == id,
+        }
+    }
+    /// How many tracks are visible under the active filter. Sort-independent, so `row_count` can
+    /// answer without knowing which sort chip is selected.
+    pub fn visible_songs(&self) -> usize {
+        match self.filter_genre {
+            None => self.songs.len(),
+            Some(_) => self.songs.iter().filter(|s| self.passes(s)).count(),
+        }
+    }
+    /// The active filter's display name, for captions. `None` when nothing is filtered.
+    pub fn filter_name(&self) -> Option<&str> {
+        let id = self.filter_genre?;
+        self.genres.iter().find(|g| g.id == id).map(|g| g.name.as_str())
+    }
+
     /// Total album count across all groups (for the header caption).
     pub fn album_count(&self) -> usize {
         self.album_groups.iter().map(|g| g.albums.len()).sum()
@@ -132,6 +178,8 @@ impl Library {
                 track: (i % 3) as i32 + 1,
                 added: 10_000 - i as i64,
                 year: 1990 + (i as i32 * 3 % 30),
+                // Two sample genres so the host preview's filter has something to do.
+                genre_id: (i % 2) as i64 + 1,
             })
             .collect();
         let album_groups = data::ALBUM_GROUPS
@@ -197,6 +245,20 @@ impl Library {
                     .collect(),
             })
             .collect();
-        Library { songs, album_groups, artists, playlists, thumbs: Default::default() }
+        // Sample genres matching the ids the sample songs carry, so the host preview's picker and
+        // filter are exercisable without a device.
+        let genres = vec![
+            GenreRow { id: 1, name: "Alternative".into(), tracks: songs.iter().filter(|s| s.genre_id == 1).count() as u32 },
+            GenreRow { id: 2, name: "Electronic".into(), tracks: songs.iter().filter(|s| s.genre_id == 2).count() as u32 },
+        ];
+        Library {
+            songs,
+            album_groups,
+            artists,
+            playlists,
+            thumbs: Default::default(),
+            genres,
+            filter_genre: None,
+        }
     }
 }

@@ -620,7 +620,7 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nui_scale={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nauto_off={}\nui_scale={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -638,6 +638,7 @@ fn settings_body(r: &Render) -> String {
         r.app.bt_volume_level(),
         r.app.brightness_restore(), // never 0: backlight-off is transient, not a setting
         r.app.screen_off_s(),
+        r.app.auto_off_min(),
         r.app.ui_scale_pct(),
     );
     // Shelf pins were session-scoped, so every reboot silently wiped the user's bookmarks — the
@@ -842,9 +843,46 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         })
         .collect();
 
+    // GENRES for the filter picker. Counted from the tracks we actually built rather than from the
+    // genres table, so the list only ever offers something that will match at least one row — 101
+    // genres exist on the reference device but only 95 are carried by a track.
+    //
+    // The empty genre is REAL and is the largest bucket (482 of 3,463), so it is kept and labelled
+    // rather than dropped; hiding it would mean the filter silently could not reach an eighth of
+    // the library. Sorted by count, biggest first: with 95 entries the useful ones have to be at
+    // the top, and alphabetical would bury Rock behind Acid Jazz.
+    let genres = {
+        let names = db.genres();
+        let mut counts: BTreeMap<i64, u32> = BTreeMap::new();
+        for s in &songs {
+            if s.genre_id != 0 {
+                *counts.entry(s.genre_id).or_insert(0) += 1;
+            }
+        }
+        let mut v: Vec<cinder_ui::model::GenreRow> = counts
+            .into_iter()
+            .map(|(id, tracks)| {
+                let raw = names.get(&id).cloned().unwrap_or_default();
+                let name = if raw.trim().is_empty() { "(No genre)".to_string() } else { raw };
+                cinder_ui::model::GenreRow { id, name, tracks }
+            })
+            .collect();
+        v.sort_by(|a, b| b.tracks.cmp(&a.tracks).then_with(|| a.name.cmp(&b.name)));
+        eprintln!("cinder-ffi: genres: {} in use", v.len());
+        v
+    };
+
     // `thumbs` is filled separately by start_art_cache: the disk cache load is I/O, not model
     // building, and the rest arrives asynchronously from the decoder thread.
-    cinder_ui::Library { songs, album_groups, artists, playlists, thumbs: Default::default() }
+    cinder_ui::Library {
+        songs,
+        album_groups,
+        artists,
+        playlists,
+        thumbs: Default::default(),
+        genres,
+        filter_genre: None,
+    }
 }
 
 // ── Panic context ────────────────────────────────────────────────────────────────────────────
@@ -862,10 +900,10 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 19] = [
+const SCREEN_NAMES: [&str; 20] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
-    "Shelf", "Pairing",
+    "Shelf", "Pairing", "GenreFilter",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -877,6 +915,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Artist => 5, S::Playlist => 6, S::UpNext => 7, S::Eq => 8, S::Sound => 9,
         S::Bluetooth => 10, S::Settings => 11, S::Fm => 12, S::UsbDac => 13, S::Receiver => 14,
         S::Onboarding => 15, S::UsbStorage => 16, S::Shelf => 17, S::Pairing => 18,
+        S::GenreFilter => 19,
     }
 }
 
@@ -1372,6 +1411,7 @@ fn song_row_of(t: &cinder_db::Track) -> cinder_ui::model::SongRow {
         track: t.track_no as i32,
         added: t.added,
         year: 0,
+        genre_id: t.genre_id.unwrap_or(0),
     }
 }
 
@@ -1603,6 +1643,27 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // order is genuinely random regardless of what PlayerService's own shuffle does.
             match shuffle_tracks(r.db.as_ref(), *scope) {
                 Some(seq) => {
+                    // HONOUR THE GENRE FILTER. The band's caption reads "Shuffle Rock" and says how
+                    // many tracks that is, but shuffle_tracks resolves straight out of the DB and
+                    // knew nothing about the filter — so the button promised a filtered shuffle and
+                    // played the whole library. A control that lies about the next hour of
+                    // listening is the exact defect class the shuffle toggle was fixed for.
+                    let seq = match r.app.library().filter_genre {
+                        None => seq,
+                        Some(g) => {
+                            let keep: Vec<cinder_db::Track> =
+                                seq.into_iter().filter(|t| t.genre_id == Some(g)).collect();
+                            // Never hand over an EMPTY sequence: if the filter and the scope do not
+                            // intersect (a genre with no album, say) it is better to do nothing and
+                            // say so than to silently start playing something unrelated.
+                            if keep.is_empty() {
+                                eprintln!("cinder-ffi: Shuffle({scope:?}): nothing matches the \
+                                           active genre filter — ignored");
+                                return None;
+                            }
+                            keep
+                        }
+                    };
                     set_pending(r, seq, 0);
                     8
                 }
@@ -1700,7 +1761,16 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // after the current song; the explicit user queue keeps its chosen order and remains
             // directly after current. Returning the queue action uses the shell's position-safe
             // replacement path, so enabling shuffle does not restart the audible track.
-            if r.np.shuffle && r.last_track.is_some() && !r.app.queue_shuffle().is_empty() {
+            // OFF has to do something too. It used to do nothing at all, which made shuffle a
+            // one-way door: the context stayed permuted for the rest of the session and the only
+            // route back to album order was to re-tap the album. App::unshuffle_context puts the
+            // recorded order back and keeps the audible track playing.
+            let changed = if r.np.shuffle {
+                !r.app.queue_shuffle().is_empty()
+            } else {
+                !r.app.unshuffle_context().is_empty()
+            };
+            if changed && r.last_track.is_some() {
                 let current = r.last_track.as_ref().map(|t| t.filename.clone()).unwrap();
                 r.pending_play = play_order_uris(r, &current);
                 r.pending_play_start = 0;
@@ -2274,6 +2344,13 @@ pub extern "C" fn cinder_get_screen_off_s() -> libc::c_int {
     cell().lock().unwrap().as_ref().map_or(0, |r| r.app.screen_off_s() as libc::c_int)
 }
 
+/// Auto power-off, in MINUTES (0 = off). The shell polls this from its 1 Hz housekeeping and owns
+/// the idle timer; the UI only remembers the choice.
+#[no_mangle]
+pub extern "C" fn cinder_get_auto_off_min() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.auto_off_min() as libc::c_int)
+}
+
 /// Seed the UI volume from the device's REAL level (raw 0..120 steps — the stock scale, 1:1 with
 /// ALSA 'master volume'), without popping the HUD. The shell calls this at boot after restoring
 /// the saved level (or reading the mixer), so the first Vol± press nudges from the actual level.
@@ -2602,6 +2679,26 @@ pub extern "C" fn cinder_set_battery(pct: libc::c_int) {
     }
 }
 
+/// Raise the ordinary bottom toast — the same one queue and Shelf feedback use.
+///
+/// For the shell to say something the user has to see (a low battery, an imminent shutdown) without
+/// inventing a second notification surface for a message that appears twice in the life of a
+/// charge. NULL or empty is a no-op rather than an empty bar.
+#[no_mangle]
+pub extern "C" fn cinder_toast(msg: *const c_char) {
+    if msg.is_null() {
+        return;
+    }
+    let Ok(s) = (unsafe { CStr::from_ptr(msg) }).to_str() else { return };
+    if s.is_empty() {
+        return;
+    }
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.notify(s);
+        r.dirty = true;
+    }
+}
+
 /// Refresh the status-bar / lock-screen clock from the system's local time (call ~1x/sec from
 /// the pump). Only repaints when the minute actually changes (dirty-flag friendly).
 #[no_mangle]
@@ -2824,6 +2921,13 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "bt_volume64" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_bt_volume(n);
+                        }
+                    }
+                    "auto_off" => {
+                        // set_auto_off_min snaps to a known preset, so a hand-edited value cannot
+                        // strand the row on a duration the cycle can never reach.
+                        if let Ok(n) = v.parse::<u32>() {
+                            r.app.set_auto_off_min(n);
                         }
                     }
                     "screen_off" => {
@@ -3418,17 +3522,14 @@ pub extern "C" fn cinder_set_now_playing_uri(
                     r.art_key = Some(t.object_id);
                     request_cover(r, t.object_id);
                 }
-                // Follow the sequence: the context index is what splits Up Next into "already
-                // played" and "still to come", so it has to track the boundary or the screen shows
-                // history that has not happened. An id outside the context (a user-queue track is
-                // playing) leaves it alone — see set_context_playing.
-                r.app.set_context_playing(t.object_id);
-                // A user-queue pick that has now STARTED is no longer queued. Dropping it here is
-                // what stops it playing again on the next re-issue, and it is why the queue shrinks
-                // as it is consumed rather than sitting there for the whole album.
-                if let Some(i) = r.app.queue().iter().position(|q| q.object_id == t.object_id) {
-                    r.app.queue_remove(i);
-                    r.queue_pending = true;   // the sequence changed; re-issue at THIS boundary
+                // Reconcile the two lists against the track that just started: consume it if it was
+                // a user pick, and move the context index only where it genuinely moved. Both halves
+                // used to live here as two statements in the WRONG ORDER — the context search ran
+                // first and a pick taken from the album already playing dragged the index forward
+                // with it, dropping every track in between. The rule is one function now, in
+                // cinder-ui, where it is unit-testable: see App::track_started.
+                if r.app.track_started(t.object_id) {
+                    r.queue_pending = true;   // the queue changed; re-issue at THIS boundary
                 }
                 // TRACK BOUNDARY — the one moment a queue change is free. The new track has just
                 // begun, so re-issuing the sequence resets a position that is already ~0 and the
@@ -3540,7 +3641,7 @@ mod tests {
         let all = [
             S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::Artist, S::Playlist, S::UpNext, S::Eq,
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
-            S::UsbStorage, S::Shelf, S::Pairing,
+            S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
@@ -3607,6 +3708,7 @@ mod tests {
     #[test]
     fn track_fills_now_playing_and_times() {
         let t = cinder_db::Track {
+            genre_id: None,
             object_id: 1,
             title: "Atlas Hands".into(),
             artist: "Benjamin Francis Leftwich".into(),
@@ -3892,6 +3994,7 @@ mod tests {
     #[test]
     fn empty_title_falls_back_to_filename() {
         let t = cinder_db::Track {
+            genre_id: None,
             object_id: 2,
             title: String::new(),
             artist: String::new(),

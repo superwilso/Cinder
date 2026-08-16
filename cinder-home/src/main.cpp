@@ -707,6 +707,17 @@ static const unsigned EVIOCGNAME_64 = (2u << 30) | (64u << 16) | ((unsigned)'E' 
 // every node (grab+release) to log that condition, and HOLD the grab on the touchscreen (we are
 // the Home app — the exclusive touch consumer — and holding locks out late grabbers).
 static const unsigned EVIOCGRAB_ = (1u << 30) | (4u << 16) | ((unsigned)'E' << 8) | 0x90;
+// EVIOCGKEY(len) = _IOR('E', 0x18, len) — the CURRENT pressed/closed state of every key code, as a
+// bitmap. This is the only way to learn a switch's state without waiting for it to move.
+//
+// EVIOCGKEY and not EVIOCGSW, which is what a Hold switch would normally want: on this unit the
+// Hold switch is reported as an ordinary KEY. `getevent -p /dev/input/event4` lists icx_key's
+// capabilities as `KEY (0001): 001c 0023 …` — 0x23 = 35, our hold code — and /proc/bus/input/devices
+// gives icx_key `EV=3` (SYN|KEY). NO node on this device advertises EV_SW at all, so the switch
+// bitmap would be empty on every one of them.
+static unsigned eviocgkey(unsigned len) {
+    return (2u << 30) | (len << 16) | ((unsigned)'E' << 8) | 0x18;
+}
 // Map a raw touch coordinate to the UI's 0..480 / 0..800 space.
 static int touch_ui_x(int rx) {
     int span = g_touch_max_x - g_touch_min_x; if (span <= 0) span = 1;
@@ -774,6 +785,10 @@ static void keymap_load_overrides() {
 }
 
 void touch_set_sleep(int slp);   // defined with screen_toggle below (himax sleep-node driver)
+
+// Adopt the Hold switch's ACTUAL position instead of waiting for it to move. Defined further down,
+// with the lock/screen state it writes (g_held).
+static void sync_hold_from_hw();
 
 static void input_open() {
     keymap_defaults();
@@ -874,6 +889,7 @@ static void input_open() {
         if (pd) closedir(pd);
     }
 #endif
+    sync_hold_from_hw();
 }
 
 // Read the UI's EQ bands and push them to the device DSP. Run ONLY via run_guarded (below): the
@@ -896,6 +912,19 @@ void apply_sound_fn() {
     cinder_effects_set_dc_phase((f >> 3) & 1);
     cinder_effects_set_dynamic_normalizer((f >> 4) & 1);
     cinder_effects_set_clearaudio_plus((f >> 5) & 1);
+    // …AND LET THE WHOLE CHAIN REACH BLUETOOTH. Project goal #7, and until now a hole: the shim has
+    // exported this since the effects were first wired and NOTHING EVER CALLED IT, so over A2DP the
+    // EQ, DSEE HX, VPT and Vinyl were applied or bypassed according to whatever the stock player had
+    // last left the flag at. Every toggle on the Sound screen was potentially a lie the moment you
+    // put headphones on — the same class of defect as the codec preference that only ever reached a
+    // conf file (see apply_bt_codec).
+    //
+    // Unconditional rather than a setting: the user already chose these effects, and "apply them,
+    // except silently not over Bluetooth" is not a choice anyone would make on purpose. It rides
+    // apply_sound_fn so it is re-asserted everywhere the chain is — at boot, on the user's change,
+    // and on every reconnect (the radio does not carry it across a link, exactly like the codec
+    // preference and the volume).
+    cinder_effects_set_bt_audio_effect(1);
 }
 
 // ── Volume backend ──────────────────────────────────────────────────────────────────────────
@@ -1443,6 +1472,60 @@ void touch_set_sleep(int slp) {
 // key event vs. the whole touch stack).
 static bool g_screen_auto_off = false;   // dark because of the idle timer (not the Power button)
 static bool g_held = false;              // Hold/lock switch engaged (mirrors cinder_set_hold)
+
+// Adopt the Hold switch's ACTUAL position, rather than waiting for it to move.
+//
+// evdev delivers state CHANGES. The only place cinder_set_hold() was ever called is the event
+// branch in input_pump, so a device booted with Hold ALREADY engaged came up UNLOCKED — and stayed
+// that way until the switch was flicked twice, with the UI's idea of the lock INVERTED relative to
+// the physical switch in between. Reported 2026-08-16. A pocket-safe device that boots unlocked
+// when the switch says locked is the wrong way round for this bug to fail.
+//
+// Asserts BOTH ways on purpose. This also runs on any path that reopens the nodes, where the switch
+// may have been released while we were not listening — so "no hold code is down" has to actively
+// clear the state, not merely decline to set it.
+//
+// It is also the groundwork for a planned escape: a quick Hold ON→OFF flick as the failsafe out of
+// a fully-dark backlight (see the backlight-off work). That escape is only trustworthy if the lock
+// state can be read rather than inferred, which is what this gives it.
+static void sync_hold_from_hw() {
+    // WHICH codes mean Hold is a question for the LIVE keymap, not for a hardcoded 35:
+    // cinder_keymap.conf can move it, and a device whose conf remaps the switch must still come up
+    // locked. Collect them first so each node is only walked once.
+    int codes[16];
+    int ncodes = 0;
+    for (int c = 0; c < keymap_size() && ncodes < (int)(sizeof codes / sizeof *codes); ++c)
+        if (g_keymap[c] == CINDER_BTN_HOLD) codes[ncodes++] = c;
+    if (ncodes == 0) return;   // nothing is mapped to Hold — nothing to read
+
+    // One bit per code, so the buffer must cover the highest code we will test (keymap_size()).
+    unsigned char bits[(768 + 7) / 8];
+    bool held = false;
+    int on_node = -1, on_code = -1;
+    for (int i = 0; i < g_evn && !held; ++i) {
+        std::memset(bits, 0, sizeof bits);
+        if (ioctl(g_evfds[i], eviocgkey(sizeof bits), bits) < 0) continue;   // node carries no keys
+        for (int k = 0; k < ncodes; ++k) {
+            const int c = codes[k];
+            if (c < 0 || c >= (int)(sizeof bits) * 8) continue;
+            if (bits[c / 8] & (1u << (c % 8))) { held = true; on_node = i; on_code = c; break; }
+        }
+    }
+
+    // Only speak when it changes something. At boot g_held is already false, so the ordinary case
+    // (switch off) writes nothing and logs nothing.
+    if (held == g_held) return;
+    g_held = held;
+    cinder_set_hold(held ? 1 : 0);
+    char m[128];
+    if (held)
+        std::snprintf(m, sizeof m,
+                      "input: Hold switch is ALREADY ENGAGED (node %d, code %d) — locking",
+                      on_node, on_code);
+    else
+        std::snprintf(m, sizeof m, "input: Hold switch reads released — unlocking");
+    clog_(m);
+}
 long g_last_input_ms = 0;                // when we last saw ANY input event (see the fwd decl above)
 
 // Blank the panel WITHOUT sleeping the touch controller, so a touch can wake it.
@@ -2082,6 +2165,19 @@ static pthread_mutex_t g_bt_found_mx = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<BtFound> g_bt_found;                 // guarded by g_bt_found_mx
 static volatile sig_atomic_t g_bt_found_dirty  = 0;
 static volatile sig_atomic_t g_bt_pairing_done = 0;
+// The radio says its connection state moved. Set from the listener, drained by the render loop,
+// which then re-reads the route on the NEXT FRAME instead of waiting out the 3 s poll.
+//
+// This is why Sony connects visibly faster than Cinder did. The link itself is the MTK stack's and
+// takes exactly as long either way — what differed is how long we took to NOTICE. Cinder learned
+// about a connection only from `refresh_bt_route`'s `GetBtStatus` poll, which runs every 3 s (and
+// every 15 s while the radio reads down), so on average ~1.5 s and at worst 3 s of doing nothing
+// before the route flipped — and everything that hangs off the connect edge (the device name, the
+// volume re-assert, the codec apply, the EQ chain) queues up behind that. Stock is event-driven.
+//
+// Polling faster is the wrong fix: each poll is a synchronous IPC round trip on the render thread.
+// The listener costs nothing until something happens.
+static volatile sig_atomic_t g_bt_state_dirty  = 0;
 // The addresses actually PUSHED to the UI, in UI row order — see flush_bt_found for why this is not
 // the same list as g_bt_found. Main-loop thread only, so it needs no lock.
 static std::vector<std::vector<unsigned char>> g_bt_found_ui;
@@ -2136,7 +2232,11 @@ struct CinderBtListener {
         pthread_mutex_unlock(&g_bt_prompt_mx);
         g_bt_prompt_dirty = 1;
     }
-    virtual void OnNotifyBtStatus(const void*, const void*, const void*) {}
+    // The three callbacks that mean "the link changed". Each only raises a flag — the arguments are
+    // deliberately left uninterpreted (the render loop re-reads GetBtStatus, which is the value
+    // refresh_bt_route already trusts), so this needs no argument RE to be correct. Whatever these
+    // carry, the fact that they FIRED is the whole signal.
+    virtual void OnNotifyBtStatus(const void*, const void*, const void*) { g_bt_state_dirty = 1; }
     virtual void OnNotifyNumericComparison(const std::vector<unsigned char>& addr,
                                            const unsigned& a, const unsigned& b,
                                            const std::string& name) {
@@ -2203,13 +2303,13 @@ struct CinderBtListener {
         pthread_mutex_unlock(&g_bt_found_mx);
         if (!dup || renamed) g_bt_found_dirty = 1;
     }
-    virtual void OnNotifyDisconnectEnd(const void*, const void*, const void*) {}
+    virtual void OnNotifyDisconnectEnd(const void*, const void*, const void*) { g_bt_state_dirty = 1; }
     virtual void OnNotifyCoexistenceBtWifiRatio(const void*, const void*, const void*) {}
     virtual void OnNotifyUpdateSupportProfile(const void*, const void*, const void*) {}
     virtual void OnNotifyUpdateOSInfo(const void*, const void*, const void*) {}
     virtual void OnNotifyRssi(const void*, const void*, const void*) {}
     virtual void OnNotifyStartSwitchDevice(const void*, const void*, const void*) {}
-    virtual void OnNotifyAclStateChanged(const void*, const void*, const void*) {}
+    virtual void OnNotifyAclStateChanged(const void*, const void*, const void*) { g_bt_state_dirty = 1; }
     virtual void OnNotifySspRequest(const std::vector<unsigned char>& addr, const std::string& name,
                                    const unsigned& x, const unsigned& y, const unsigned& z) {
         char m[144];
@@ -5306,6 +5406,65 @@ int read_battery() {
     return 100;
 }
 
+// Is the battery being charged? Read alongside the level, because every low-battery decision below
+// is wrong on a charger: 3% and climbing is a device you just plugged in, not one about to die.
+// "Full" counts as charging — that is what a topped-up device on a cable reports.
+static bool battery_charging() {
+    static const char* paths[] = {
+        "/sys/class/power_supply/battery/status",
+        "/sys/class/power_supply/Battery/status",
+        "/sys/class/power_supply/bat/status",
+    };
+    for (const char* p : paths) {
+        FILE* f = std::fopen(p, "r");
+        if (!f) continue;
+        char buf[24] = {0};
+        size_t got = std::fread(buf, 1, sizeof buf - 1, f);
+        std::fclose(f);
+        if (got == 0) continue;
+        // Anything that is not clearly "Discharging" is treated as charging. An unreadable or
+        // unfamiliar status must NOT be read as "on battery" — that direction ends in a shutdown
+        // nobody asked for, and this file's job is to prevent surprise power loss, not cause it.
+        return std::strncmp(buf, "Discharging", 11) != 0;
+    }
+    return true;   // no status node at all: assume charging, i.e. never auto-shut-down
+}
+
+// Low battery: warn once, then shut down cleanly before the hardware browns out.
+//
+// This is not a power SAVING — it is protection. `/contents` is vfat with no journal, it holds the
+// music library, the settings and the scrobbler log, and Cinder writes to it while playing. A flat
+// battery mid-write is a corruption path on the exact partition whose corruption bricked this device
+// on 2026-07-26. Sony has LowBatteryAlert and a critical shutdown; Cinder had neither.
+//
+// Called from the ~10 s battery gauge, so the level is already in hand.
+static void battery_guard(int pct) {
+    static bool warned = false;
+    const bool charging = battery_charging();
+    if (charging || pct > 10) {
+        warned = false;              // re-arm, so the next discharge warns again
+        return;
+    }
+    if (pct > 3) {
+        if (!warned) {
+            warned = true;
+            char m[96];
+            std::snprintf(m, sizeof m, "Battery %d%% — charge soon", pct);
+            cinder_toast(m);
+            clog_(m);
+        }
+        return;
+    }
+    // CRITICAL. Go down deliberately while there is still enough charge to finish the writes,
+    // rather than being cut off mid-write. power_action already syncs before handing over.
+    char m[128];
+    std::snprintf(m, sizeof m, "power: battery %d%% and discharging — shutting down to protect /contents", pct);
+    clog_(m);
+    cinder_toast("Battery critical — shutting down");
+    cinder_render_tick();            // let the toast reach the glass before the panel goes
+    power_action(false);
+}
+
 // Real internal-storage usage for the Settings ▸ Storage row, via statvfs (read-only — no Sony
 // service). Formats "used / total GB" and pushes it. 64-bit math (f_blocks*frsize overflows 32-bit
 // at this capacity). Tries the music mount first, then sensible fallbacks.
@@ -5341,21 +5500,25 @@ bool g_house_due = false;    // fwd-declared above
 // How fast the audio shim's Framework::Pump() loop spins. It exists to deliver binder replies, so
 // the right rate is "as slow as the thing waiting on a reply can tolerate".
 //   awake                 20 ms — the UI shows a moving progress bar and answers presses.
-//   dark + playing       100 ms — nothing is drawn, but track boundaries and the scrobbler ride on it.
-//   dark + NOT playing   250 ms — nothing is waiting on it at all; the only callers are the 1 Hz
-//                                 housekeeping poll and the 15 s BT route poll, both guarded at
-//                                 seconds. Measured 2026-08-11: the pump thread was the joint-
-//                                 largest source of cinder-home's standby wakeups (10.2 ctxt/s of
-//                                 20.9 total), and this is the half of that pair the poll() change
-//                                 in the render loop does not touch.
+//   dark, just pressed   100 ms — a transport press while the screen is off still wants its reply
+//                                 promptly; bounded by TRANSPORT_GRACE_MS.
+//   dark, otherwise      250 ms — nothing is waiting on it faster than that. Measured 2026-08-11:
+//                                 the pump thread was the joint-largest source of cinder-home's
+//                                 standby wakeups (10.2 ctxt/s of 20.9 total), and it is the half
+//                                 the render loop's poll() change does not touch.
+//
+// DARK + PLAYING USED TO BE 100 ms, and that was the wrong rate for the longest-lived state a music
+// player has — screen off, in a pocket, playing for hours. The pump exists only to deliver binder
+// REPLIES to our own client calls; the audio is decoded by SoundServiceFw and does not ride on it at
+// all. What does ride on it is the position callback (~1/s) and the track boundary, both consumed by
+// 1 Hz housekeeping — so a 250 ms delivery window is invisible to every consumer, and it drops 6
+// wakeups a second in the state the device spends most of its life in.
 static void apply_pump_interval() {
     // g_playing is INTENT and it starts `true`, so on a boot where nothing has been played it
     // stays true forever and the pump never backed off at all (measured: 10.3 ctxt/s on a dark,
-    // idle device that had played nothing). Require the SERVICE to agree — or a press inside the
-    // grace window, so the rate is already up by the time the first frame of audio wants it.
-    const bool busy = g_playing && (cinder_audio_is_playing() != 0 ||
-                                    now_ms() - g_transport_at < TRANSPORT_GRACE_MS);
-    cinder_audio_pump_set_interval(g_screen_on ? 20 : (busy ? 100 : 250));
+    // idle device that had played nothing). Hence the grace window rather than the intent flag.
+    const bool just_pressed = now_ms() - g_transport_at < TRANSPORT_GRACE_MS;
+    cinder_audio_pump_set_interval(g_screen_on ? 20 : (just_pressed ? 100 : 250));
 }
 
 void poll_now_playing() {
@@ -5486,11 +5649,24 @@ void* render_driver(void*) {
             // itself — so a 3 s IPC round trip there was buying nothing at all, forever, for the
             // majority of users who leave Bluetooth off. `g_bt_radio_seen_up` is the last answer this
             // poll got, so the first poll after a power-up snaps straight back to 3 s.
+            //
+            // …and the RADIO NOW TELLS US, so the poll is a safety net rather than the mechanism.
+            // OnNotifyBtStatus / OnNotifyAclStateChanged / OnNotifyDisconnectEnd fire on the
+            // framework looper the moment the link moves and set g_bt_state_dirty; this reads the
+            // route on the very next frame instead of up to 3 s (or 15 s from a radio that last
+            // read down) later. That latency is the whole of why stock felt faster to connect —
+            // the link itself is the MTK stack's either way.
             static long last_route_ms = 0;
             const long route_every = g_bt_radio_seen_up ? 3000 : 15000;
-            if (now_ms() - last_route_ms >= route_every) {
+            if (g_bt_state_dirty || now_ms() - last_route_ms >= route_every) {
+                const bool by_event = g_bt_state_dirty != 0;
+                g_bt_state_dirty = 0;
                 last_route_ms = now_ms();
                 run_guarded("loop: BT route poll", 4, refresh_bt_route);
+                // A connect edge also wants the device NAME, which refresh_bt_route only re-asks for
+                // on its own next tick. Logged once per event so a slow link is visible in the log
+                // rather than being guessed at.
+                if (by_event) clog_("bt: link state changed (listener) — route re-read this frame");
             }
             // Scan results. The listener runs on the framework looper and only appends to a guarded
             // list; THIS is where they reach the UI, on the thread that owns it.
@@ -5729,6 +5905,33 @@ void* render_driver(void*) {
                     screen_auto_off();
                 }
             }
+            // AUTO POWER-OFF. Sony has this (sid_4118) and Cinder did not, so a paused device with
+            // the screen dark ran until the battery was flat — the largest battery item in the
+            // 2026-08-16 audit. Off by default; the row has to be set before this can ever fire.
+            //
+            // Four guards, and each one is a way this could otherwise switch the device off in
+            // somebody's hand:
+            //   * NOT WHILE PLAYING. Idle means idle. Music playing with the screen off for an hour
+            //     is the normal way this device is used, and cutting it off would be a bug, not a
+            //     saving. `g_playing` is only our intent, so the SERVICE has to agree too.
+            //   * not during a USB-MSC session — the PC is mid-transfer and owns /contents.
+            //   * not over a modal — a "Power off?" prompt answering itself is absurd.
+            //   * not while charging, for the same reason the low-battery guard checks it: a device
+            //     on a cable is parked on a desk, and shutting it down there just means it is off
+            //     when you come back to it.
+            {
+                const int off_min = cinder_get_auto_off_min();
+                const bool audible = g_playing && cinder_audio_is_playing() != 0;
+                if (off_min > 0 && !audible && !g_msc_active && !cinder_modal_open() &&
+                    !battery_charging() &&
+                    now_ms() - g_last_input_ms >= (long)off_min * 60000L) {
+                    char m[128];
+                    std::snprintf(m, sizeof m,
+                                  "power: %d min idle and nothing playing — auto power off", off_min);
+                    clog_(m);
+                    power_action(false);
+                }
+            }
             // USB mass-storage is fully automatic — no menu dive:
             //  • NOT in MSC + a PC data-host appears (debounced ~2 s so enumeration flicker doesn't
             //    bounce us in) → raise the modal and hand /contents to the PC. This MUST use
@@ -5919,7 +6122,11 @@ void* render_driver(void*) {
         static long last_batt_ms = 0;
         if (house_now - last_batt_ms >= 10000) {
             last_batt_ms = house_now;
-            cinder_set_battery(read_battery());
+            const int pct = read_battery();
+            cinder_set_battery(pct);
+            // Warn low, shut down before the hardware browns out mid-write. Not guarded: it is pure
+            // sysfs reads plus, at the very end, the same power path the Settings row uses.
+            battery_guard(pct);
         }
         ++n;
         // FRAME PACING: sleep only the REMAINDER of the 16 ms budget, not a flat 16 ms on top of

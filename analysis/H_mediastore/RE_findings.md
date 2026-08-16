@@ -114,3 +114,52 @@ done.
 ## Artifacts
 SQL schema + symbols captured here. `libMediaStoreServiceClient.so` available to import into
 `artifacts/ghidra_appmgr` if Path B enum values are needed.
+
+---
+
+## 2026-08-16 — the genre / composer / release-year columns, settled from the live DB
+
+Pulled `/db/MTPDB.dat` off the device (5.2 MB, 19 tables) and read the schema directly rather than
+inferring it. Everything the earlier rounds guessed at or deferred is in **one place**: `object_body`
+already carries the foreign keys.
+
+```sql
+CREATE TABLE object_body ( object_id INTEGER PRIMARY KEY AUTOINCREMENT, … ,
+    is_high_resolution INTEGER, … ,
+    album_id INTEGER, artist_id INTEGER, albumartist_id INTEGER, composer_id INTEGER,
+    genre_id INTEGER, videogenre_id INTEGER, releaseyear_id INTEGER, rating_id INTEGER,
+    othumb_id INTEGER, mthumb_id INTEGER )
+```
+
+Lookup tables, all the same shape as `albums`/`artists`:
+
+| Table | Columns | Rows on the reference device |
+|---|---|---|
+| `genres` | `id, initial, sort_str, value UNIQUE` | 101 |
+| `composers` | `id, initial, sort_str, search_str, value UNIQUE` | 290 |
+| `releaseyears` | `id, value INTEGER UNIQUE` | 68 |
+| `albumartists` | `id, initial, sort_str, search_str, value UNIQUE` | 189 |
+
+**`releaseyears` is CONFIRMED.** `Db::release_years` has been trying `releaseyears` then
+`releaseyear` since 2026-07-03 with a comment saying the name was never captured in RE. It is
+`releaseyears`, and its `value` is an **INTEGER**, not text — the existing reader already tolerates
+both, so nothing was wrong, but the fallback is now known to be dead code rather than insurance.
+
+### What the data actually looks like (3,463 tracks)
+
+- **`genre_id` is never NULL.** "No genre" is a real row whose `value` is the empty string, and it
+  is the **single largest bucket at 482 tracks** — 14% of the library. A filter that drops it, or
+  that treats missing-genre as NULL, silently cannot reach an eighth of the library.
+- **95 of the 101 genres are carried by a track.** Count from the tracks, not from the table, or the
+  picker offers six choices that match nothing.
+- Genres are not all Latin: `語学`, `Électronique`. The `text.rs` device-font fallback covers them.
+- **`is_high_resolution` is set on exactly 1 of 3,463 tracks** on this device. The column works; a
+  Hi-Res filter is simply near-inert on this particular library.
+- 275 distinct composers in use — enough for a composer filter later, and the column is right there.
+
+### One robustness consequence
+
+Naming `ob.genre_id` unconditionally in the track SELECT would make the **whole** track query fail
+on any firmware variant whose `object_body` lacks it — turning "no genre filter" into "no library".
+`Db` now probes for the column once at open (`has_genre`) and selects `NULL` instead, the same shape
+`albumartist_table` already used. Covered by `genres_missing_table_is_empty_not_error`.

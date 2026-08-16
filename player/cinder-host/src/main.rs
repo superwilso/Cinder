@@ -218,7 +218,20 @@ fn main() {
             ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, false)),
             ("sound_bypass", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, true)),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY", accent: cinder_ui::Accent::Amber })),
+                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", accent: cinder_ui::Accent::Amber })),
+            // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
+            // The shuffle band's caption has to follow the filter — shuffling a filtered list
+            // shuffles what is on screen, so it must not still promise the whole library.
+            ("genre_picker", &|c: &mut Canvas| {
+                library::genre_render(c, &theme, &fonts, &lib, 0, false)
+            }),
+            ("library_songs_filtered", &|c: &mut Canvas| {
+                let mut l = lib.clone();
+                l.filter_genre = l.genres.first().map(|g| g.id);
+                library::render(c, &theme, &fonts, library::Tab::Songs, 0, 0, 0, 0, None, &l, None, false);
+                let az = library::az_present(library::Tab::Songs, &l, 0, 0);
+                library::az_render(c, &theme, &fonts, library::Tab::Songs, &az, 0, 0);
+            }),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
             // The in-flight state this screen had no representation for at all: before, a connect
             // begun from Devices left this card reading "No device connected" until the link
@@ -314,7 +327,7 @@ fn main() {
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
                 &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
                     usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY",
+                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY",
                     accent: cinder_ui::Accent::Amber });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
@@ -328,7 +341,7 @@ fn main() {
                 settings::max_scroll_px() / 2,
                 &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
                     usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", boot_stock: "SONY",
+                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY",
                     accent: cinder_ui::Accent::Amber });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, "settings_scrolled");
@@ -407,7 +420,7 @@ fn main() {
         settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
             &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false,
                 battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
-                screen_off: "OFF", boot_stock: "SONY", accent: a });
+                screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", accent: a });
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
         save(&c, &format!("accent_{lower}_settings"));
     }
@@ -452,6 +465,7 @@ fn main() {
                 track: (i % 4) as i32 + 1,
                 added: 100_000 - i as i64,
                 year: 2000 + (i as i32 % 20),
+                genre_id: (i as i64 % 3) + 1,
             });
         }
         let mut album_groups = Vec::new();
@@ -490,7 +504,7 @@ fn main() {
             .iter()
             .map(|a| ArtistRow { name: a.to_string(), albums: 7, tracks: 56, arts: vec![format!("{a}0"), format!("{a}1")], album_ids: Vec::new() })
             .collect();
-        let big = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default() };
+        let big = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), filter_genre: None };
 
         let mut app = App::unlocked();
         app.press(Button::Up); // Menu
@@ -576,7 +590,7 @@ fn main() {
         app.press(Button::Up);
         app.press(Button::Down);
         app.press(Button::Select);
-        app.set_library(Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default() });
+        app.set_library(Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), filter_genre: None });
         app.press(Button::Left); // -> Songs
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);
