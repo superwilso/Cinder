@@ -1,0 +1,22 @@
+[package]
+name = "cinder-installer"
+version = "0.1.0"
+edition = "2021"
+description = "Windows/Linux installer for Cinder — picks components, stages them to the Walkman"
+license = "MIT"
+
+# Deliberately DEPENDENCY-FREE. This is the one artefact end users run, it ships as a single .exe
+# from a GitHub release, and it cross-compiles from Linux to x86_64-pc-windows-gnu with nothing
+# but mingw. Every crate added here is a crate someone has to trust to plug a player in.
+[dependencies]
+
+[[bin]]
+name = "cinder-installer"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

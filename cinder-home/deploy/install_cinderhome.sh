@@ -50,9 +50,52 @@ SRC_UMOUNT=/contents/cinder-umount
 SRC_GPUNODE=/contents/cinder-gpunode
 SRC_POWER=/contents/cinder-power
 SRC_MSC=/contents/cinder-msc
+SRC_CLOCK=/contents/cinder-clock
+SRC_SIGNATURE=/contents/cinder-signature.sh
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
 LAUNCH=$BIN/cinderhome-launch.sh
+
+# ── optional components ────────────────────────────────────────────────────────────────────
+# Which optional parts to install, chosen on the host by tools/configure.sh and staged next to
+# the binaries. See deploy/components.conf for the catalogue and what each one costs.
+#
+# This file is READ, never SOURCED. /contents is vfat and is writable by anyone who plugs the
+# player in over USB-MSC, so `. $COMPONENTS` would execute whatever a user (or anything that had
+# access to the device) left in it, as root, in the updater. We grep out one KEY=VALUE at a time
+# and whitelist-validate every value before it is used.
+#
+# A MISSING file is not an error — it means "defaults", which reproduces the behaviour this
+# installer had before components existed, so older staging layouts keep working unchanged.
+COMPONENTS=/contents/cinder_components.conf
+
+comp_raw() {  # comp_raw <VARNAME> — echo the last assignment, or empty
+    [ -f "$COMPONENTS" ] || return 0
+    "$BB" grep -E "^$1=[A-Za-z0-9_]*[[:space:]]*$" "$COMPONENTS" 2>/dev/null \
+        | "$BB" tail -1 | "$BB" cut -d= -f2 | "$BB" tr -cd 'A-Za-z0-9_'
+}
+comp_bool() {  # comp_bool <VARNAME> <default> — only ever echoes 0 or 1
+    v="$(comp_raw "$1")"
+    case "$v" in 0|1) echo "$v" ;; *) echo "$2" ;; esac
+}
+comp_sig() {   # comp_sig — only ever echoes a known variant name
+    v="$(comp_raw CINDER_SIGNATURE)"
+    case "$v" in stock|pv1|pv2|clock|hw1|hw2) echo "$v" ;; *) echo stock ;; esac
+}
+
+WANT_POWER="$(comp_bool CINDER_POWER 1)"
+WANT_MSC="$(comp_bool CINDER_MSC 1)"
+WANT_CLOCK="$(comp_bool CINDER_CLOCK 1)"
+WANT_UMOUNT="$(comp_bool CINDER_UMOUNT 1)"
+WANT_GPUNODE="$(comp_bool CINDER_GPUNODE 0)"
+WANT_SIGNATURE="$(comp_sig)"
+
+if [ -f "$COMPONENTS" ]; then
+    echo "components: from $COMPONENTS"
+else
+    echo "components: no $COMPONENTS staged — using defaults"
+fi
+echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE signature=$WANT_SIGNATURE"
 
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
@@ -103,7 +146,10 @@ echo "installed binary: $BIN/cinder-home ($sz bytes)"
 # 1b) install the setuid-root umount helper (SETUID is what lets capless uid-100 cinder-home
 #     unmount /contents for USB-MSC). Atomic temp->verify->chown root->chmod 4755->mv. Non-fatal:
 #     if the helper is missing/bad, cinder falls back to the (racy) stock-trigger MSC path.
-if [ -s "$SRC_UMOUNT" ]; then
+if [ "$WANT_UMOUNT" != 1 ]; then
+    echo "components: umount NOT selected — skipping cinder-umount."
+    "$BB" rm -f "$BIN/cinder-umount" 2>/dev/null
+elif [ -s "$SRC_UMOUNT" ]; then
     "$BB" cat "$SRC_UMOUNT" > "$BIN/cinder-umount.tmp" 2>/dev/null
     if [ -s "$BIN/cinder-umount.tmp" ]; then
         "$BB" chown 0:0 "$BIN/cinder-umount.tmp" 2>/dev/null
@@ -122,7 +168,10 @@ fi
 #     /dev/mtk_disp, /dev/sw_sync — the four root-only nodes uid-100 EGL needs). Same atomic
 #     temp->chown root->chmod 4755->mv treatment. Non-fatal: without it the GPU present path
 #     refuses to start and cinder renders via the software framebuffer exactly as before.
-if [ -s "$SRC_GPUNODE" ]; then
+if [ "$WANT_GPUNODE" != 1 ]; then
+    echo "components: gpunode NOT selected — skipping cinder-gpunode (software render)."
+    "$BB" rm -f "$BIN/cinder-gpunode" 2>/dev/null
+elif [ -s "$SRC_GPUNODE" ]; then
     "$BB" cat "$SRC_GPUNODE" > "$BIN/cinder-gpunode.tmp" 2>/dev/null
     if [ -s "$BIN/cinder-gpunode.tmp" ]; then
         "$BB" chown 0:0 "$BIN/cinder-gpunode.tmp" 2>/dev/null
@@ -142,7 +191,10 @@ fi
 #     the Home app — its shutdown barrier waits on an ACK we do not send. Same atomic
 #     temp->chown root->chmod 4755->mv treatment. Non-fatal: without it Power off and Restart log
 #     a clear failure and do nothing, which is what they effectively did before this existed.
-if [ -s "$SRC_POWER" ]; then
+if [ "$WANT_POWER" != 1 ]; then
+    echo "components: power NOT selected — skipping cinder-power (no Power off / Restart)."
+    "$BB" rm -f "$BIN/cinder-power" 2>/dev/null
+elif [ -s "$SRC_POWER" ]; then
     "$BB" cat "$SRC_POWER" > "$BIN/cinder-power.tmp" 2>/dev/null
     if [ -s "$BIN/cinder-power.tmp" ]; then
         "$BB" chown 0:0 "$BIN/cinder-power.tmp" 2>/dev/null
@@ -160,7 +212,10 @@ fi
 # 1e) install the setuid-root USB-MSC helper. Both privileged steps of the handoff (binding the
 #     LUN's backing block device, and switching sys.sony.config) are root-only, so without this
 #     USB mass storage cannot work at all from capless cinder-home.
-if [ -s "$SRC_MSC" ]; then
+if [ "$WANT_MSC" != 1 ]; then
+    echo "components: msc NOT selected — skipping cinder-msc (no USB mass storage)."
+    "$BB" rm -f "$BIN/cinder-msc" 2>/dev/null
+elif [ -s "$SRC_MSC" ]; then
     "$BB" cat "$SRC_MSC" > "$BIN/cinder-msc.tmp" 2>/dev/null
     if [ -s "$BIN/cinder-msc.tmp" ]; then
         "$BB" chown 0:0 "$BIN/cinder-msc.tmp" 2>/dev/null
@@ -173,6 +228,57 @@ if [ -s "$SRC_MSC" ]; then
     fi
 else
     echo "WARN: $SRC_MSC not staged (tools/flash.sh --push dist/<ch>/cinder-msc) — USB mass storage will not work."
+fi
+
+# 1f) install the setuid-root clock helper. settimeofday(2) and the RTC_SET_TIME ioctl both need
+#     CAP_SYS_TIME, and cinder-home runs as uid 100 with an empty capability set. NOTHING in
+#     vendor/sony/lib exposes a clock setter (a sweep of every library's demangled `virtual`
+#     prototypes finds none), so the kernel is the only route. Same atomic
+#     temp->chown root->chmod 4755->mv treatment. Non-fatal: without it the clock cannot be set.
+if [ "$WANT_CLOCK" != 1 ]; then
+    echo "components: clock NOT selected — skipping cinder-clock (clock cannot be set)."
+    "$BB" rm -f "$BIN/cinder-clock" 2>/dev/null
+elif [ -s "$SRC_CLOCK" ]; then
+    "$BB" cat "$SRC_CLOCK" > "$BIN/cinder-clock.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-clock.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-clock.tmp" 2>/dev/null
+        "$BB" chmod 4755 "$BIN/cinder-clock.tmp"
+        "$BB" mv -f "$BIN/cinder-clock.tmp" "$BIN/cinder-clock"
+        echo "installed setuid helper: $BIN/cinder-clock ($("$BB" wc -c < "$BIN/cinder-clock" 2>/dev/null | "$BB" tr -cd '0-9') bytes, mode $("$BB" stat -c %a "$BIN/cinder-clock" 2>/dev/null))"
+    else
+        echo "WARN: cinder-clock stage empty — the clock cannot be set."
+        "$BB" rm -f "$BIN/cinder-clock.tmp" 2>/dev/null
+    fi
+else
+    echo "WARN: $SRC_CLOCK not staged (tools/flash.sh --push dist/<ch>/cinder-clock) — clock cannot be set."
+fi
+
+# 1g) audio "sound signature". Installs the switcher and applies the chosen variant by patching
+#     three bytes of the stock audio HAL — which ALSA PCM device the output stream opens, and the
+#     CPU clock floor held during playback. That is the entirety of what Walkman One's paid sound
+#     signature does; see analysis/RE_walkmanone_extract.md. Not setuid: it is a plain script run
+#     as root from here, and afterwards by hand.
+#     The switcher itself is installed even when the variant is `stock`, so the choice can be
+#     changed later on-device without a reinstall. It verifies the library against a known md5
+#     before touching it, keeps a pristine .stock backup, and rebuilds every variant from that
+#     backup — so variants never stack and a revert is exact. Wholly non-fatal.
+if [ -s "$SRC_SIGNATURE" ]; then
+    "$BB" cat "$SRC_SIGNATURE" > "$BIN/cinder-signature.sh.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-signature.sh.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-signature.sh.tmp" 2>/dev/null
+        "$BB" chmod 755 "$BIN/cinder-signature.sh.tmp"
+        "$BB" mv -f "$BIN/cinder-signature.sh.tmp" "$BIN/cinder-signature.sh"
+        echo "installed: $BIN/cinder-signature.sh"
+        # $WANT_SIGNATURE is whitelist-validated above — it can only ever be one of the six
+        # known variant names, so it is safe to pass through to the shell here.
+        sh "$BIN/cinder-signature.sh" set "$WANT_SIGNATURE" || \
+            echo "WARN: signature '$WANT_SIGNATURE' not applied — audio HAL left as found."
+    else
+        echo "WARN: cinder-signature.sh stage empty — signature left as found."
+        "$BB" rm -f "$BIN/cinder-signature.sh.tmp" 2>/dev/null
+    fi
+elif [ "$WANT_SIGNATURE" != stock ]; then
+    echo "WARN: $SRC_SIGNATURE not staged but signature=$WANT_SIGNATURE requested — NOT applied."
 fi
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
