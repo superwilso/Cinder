@@ -7,22 +7,99 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline, right, stroke_rect, sty, toggle};
 use crate::Canvas;
 
-/// Number of selectable rows on the Sound screen (DSEE, Vinyl, VPT, DC Phase, Normalizer, Clear+).
-pub const ROWS: usize = 6;
+/// Number of selectable rows on the Sound screen (DSEE, Vinyl, VPT, DC Phase, Normalizer, Clear+,
+/// Balance).
+///
+/// "High gain output" USED to sit between Clear+ and Balance. It was cut on 2026-08-17 after being
+/// measured on the device: the control (`headphone smaster gain mode` / `headphone smaster se gain
+/// mode`, numid 28/29) accepts `high`, reads back 1 and persists across a reboot — but the codec
+/// does nothing with it and the output is unchanged by ear. The A50's output stage simply doesn't
+/// have the high-gain hardware the ZX/WM1 series does; the mixer control is inherited from the
+/// shared CXD3778GF driver. Kept here as a note so it isn't "discovered" and re-added: the write
+/// landing is NOT evidence the feature works. See task #59.
+pub const ROWS: usize = 7;
+pub const ROW_BALANCE: usize = 6;
+
+/// L/R balance, 0..=100 with 50 = centre — a continuous drag slider, not the 7 discrete stops it
+/// started as. Left of centre attenuates the RIGHT channel and vice versa: panning left means the
+/// left is louder, which is done by turning the other side down, since the mixer only offers
+/// attenuation.
+pub const BALANCE_CENTRE: usize = 50;
+pub const BALANCE_MAX: usize = 100;
+
+/// Label for a balance position: "Centre", "L 24", "R 12" — the number is distance from centre in
+/// slider units (0..=50), so it reads the same on both sides.
+pub fn balance_label(pos: usize) -> String {
+    let i = pos.min(BALANCE_MAX);
+    match i.cmp(&BALANCE_CENTRE) {
+        std::cmp::Ordering::Equal => "Centre".to_string(),
+        std::cmp::Ordering::Less => format!("L {}", BALANCE_CENTRE - i),
+        std::cmp::Ordering::Greater => format!("R {}", i - BALANCE_CENTRE),
+    }
+}
 
 /// Row pitch and list top — SINGLE SOURCE for the render below and `nav`'s hit test.
 pub const ROW_H: i32 = 64;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
-/// Which sound-effect row is under `y`.
+/// The Balance row is taller than the rest: it carries a full-width drag slider under its label,
+/// and a 64 px row would leave the track sharing an edge with ClearAudio+ above it — the same
+/// near-miss that made the library filter strip hard to hit.
+pub const BALANCE_ROW_H: i32 = 108;
+
+/// Top edge of the Balance row. Everything below it is slider.
+pub fn balance_top() -> i32 {
+    TOP + ROW_H * ROW_BALANCE as i32
+}
+
+/// Which sound-effect row is under `y`. The last row is taller, so this cannot be a plain divide.
 pub fn row_at(y: i32) -> Option<usize> {
     if y < TOP {
         return None;
     }
+    let bal = balance_top();
+    if y >= bal {
+        return (y < bal + BALANCE_ROW_H).then_some(ROW_BALANCE);
+    }
     let r = ((y - TOP) / ROW_H) as usize;
-    (r < ROWS).then_some(r)
+    (r < ROW_BALANCE).then_some(r)
 }
 
+// ── Balance slider geometry — SINGLE SOURCE for the render and the drag hit test ────────────────
+/// Track ends. Full width minus the standard 22 px gutter, so the grab target is the whole screen
+/// width — this is a touch-only device and the knob is small.
+pub const BAL_X0: i32 = 22;
+pub const BAL_X1: i32 = 458;
+/// Vertical centre of the track within the Balance row.
+pub const BAL_TRACK_DY: i32 = 74;
+pub fn bal_track_y() -> i32 {
+    balance_top() + BAL_TRACK_DY
+}
+
+/// Slider position (0..=100) for a finger at `x`. Clamped, so a drag that runs off either end
+/// pins to the stop rather than stopping tracking.
+pub fn balance_at(x: i32) -> usize {
+    let span = (BAL_X1 - BAL_X0).max(1);
+    let t = (x - BAL_X0).clamp(0, span);
+    ((t as i64 * BALANCE_MAX as i64 + span as i64 / 2) / span as i64) as usize
+}
+
+/// Screen x of the knob for position `pos`.
+pub fn balance_x(pos: usize) -> i32 {
+    let span = BAL_X1 - BAL_X0;
+    BAL_X0 + (pos.min(BALANCE_MAX) as i32 * span) / BALANCE_MAX as i32
+}
+
+/// Does `y` fall in the slider's grab band? Deliberately taller than the track: a 4 px line is not
+/// a touch target, and the whole lower half of the row is dead space otherwise.
+pub fn balance_grab(y: i32) -> bool {
+    let ty = bal_track_y();
+    (ty - 26..=ty + 26).contains(&y)
+}
+
+/// Every field is Copy, so a preview or a test can spin a variant off an existing one with
+/// struct-update syntax instead of restating the whole chain.
+#[derive(Clone, Copy)]
 pub struct Sound {
     pub dsee: bool,
     pub vinyl: bool,
@@ -32,6 +109,12 @@ pub struct Sound {
     pub clearaudio: bool,
     pub eq_preset: &'static str,
     pub bt_codec: Option<&'static str>,
+    /// L/R balance position, 0..=100 with 50 = centre. A codec mixer control rather than a DSP
+    /// effect: `l balance volume` / `r balance volume`, INTEGER 0..88 of attenuation in HALF-dB.
+    pub balance: usize,
+    /// True while the finger is on the slider — the knob grows and the readout goes accent, so a
+    /// touch-only device gives some sign it took the gesture (same idea as the scrollbar thumb).
+    pub balance_drag: bool,
 }
 
 /// Outlined value pill ending at `xr`; accent when value != "Off".
@@ -82,6 +165,55 @@ fn wrap(c: &mut Canvas, f: &FontSet, t: &Theme, x: f32, y0: f32, max_w: f32, tex
     y
 }
 
+/// The Balance row: label, live readout, and a full-width drag slider with a centre detent.
+///
+/// Drawn from the same `BAL_*` constants the hit test uses, so the knob cannot drift away from the
+/// place a finger has to land — the recurring defect in this codebase is a render that computes its
+/// geometry independently of the tap handler.
+fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
+    let y = balance_top();
+    let centred = s.balance == BALANCE_CENTRE;
+    if sel {
+        fill_rect(c, 0, y, crate::canvas::W as i32, BALANCE_ROW_H, t.row_sel);
+    }
+    let lc = if sel { t.acc } else { t.ink };
+    text::draw(c, f, 22.0, (y + 28) as f32, "Balance",
+               &sty(Family::Sans, Weight::SemiBold, 18.0, lc, 0.0));
+    text::draw(c, f, 22.0, (y + 46) as f32, "Drag to shift the stereo image left or right",
+               &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
+
+    // Readout, right-aligned on the label line. Grey at centre — centre IS the no-op position and
+    // should not read as an active setting — and accent while the finger is down.
+    let vc = if centred { t.faint } else if s.balance_drag { t.acc } else { t.ink };
+    right(c, f, BAL_X1 as f32, (y + 30) as f32, &balance_label(s.balance).to_uppercase(),
+          &sty(Family::Mono, Weight::Regular, 14.0, vc, 0.1));
+
+    let ty = bal_track_y();
+    let cx = balance_x(BALANCE_CENTRE);
+    let kx = balance_x(s.balance);
+
+    // Track, then the deflection fill from the centre detent out to the knob, so the direction and
+    // the amount are both readable at a glance without doing arithmetic on the label.
+    fill_rect(c, BAL_X0, ty - 1, BAL_X1 - BAL_X0, 3, t.line);
+    if !centred {
+        let (fx, fw) = if kx < cx { (kx, cx - kx) } else { (cx, kx - cx) };
+        fill_rect(c, fx, ty - 1, fw, 3, t.acc);
+    }
+    // Centre detent: a taller tick, so you can see where the null is while dragging.
+    fill_rect(c, cx - 1, ty - 9, 2, 19, if centred { t.acc } else { t.dim });
+
+    // Knob. Square, to match the toggle's knob — this UI has no circle primitive and a hand-rolled
+    // one here would be the only round thing on the screen.
+    let k = if s.balance_drag { 26 } else { 20 };
+    fill_rect(c, kx - k / 2, ty - k / 2, k, k, if centred && !s.balance_drag { t.dim } else { t.acc });
+
+    // End caps. L and R sit outside the travel so they never collide with the knob at full stop.
+    let cap = sty(Family::Mono, Weight::Bold, 12.0, t.faint, 0.12);
+    text::draw(c, f, BAL_X0 as f32, (ty + 30) as f32, "L", &cap);
+    right(c, f, BAL_X1 as f32, (ty + 30) as f32, "R", &cap);
+    hline(c, y + BALANCE_ROW_H, t.line);
+}
+
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_bypass: bool) {
     c.fill(t.bg);
     // No subtitle here — the A/B compare control occupies the header's right side.
@@ -126,6 +258,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_
     toggle(c, t, 418, cy - 11, 40, 22, 14, s.normalizer);
     let cy = row(c, t, f, y0 + rh * 5, sel == 5, "ClearAudio+", "Sony one-touch tuning — overrides EQ + DSP");
     toggle(c, t, 418, cy - 11, 40, 22, 14, s.clearaudio);
+    balance_row(c, t, f, s, sel == ROW_BALANCE);
 
     // signal-path footer
     let fy = 700;

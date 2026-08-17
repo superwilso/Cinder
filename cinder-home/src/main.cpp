@@ -408,6 +408,19 @@ void deferred_up() {
     // hanging the boot. (db load is slow on a big DB, so a generous 25s; the IPC connect 12s.)
     run_guarded("deferred_up: cinder_db_open + build library", 25,
                 []() { cinder_db_open("/db/MTPDB.dat"); });   // path: confirm on device
+    // Bring back what was playing when the device was last powered off — the sequence, the user's
+    // own queued picks and the position inside the track. Must follow the DB open: the files hold
+    // object ids and the rows come from the library. Pure file IO + id lookups (no Sony service is
+    // touched and nothing starts playing), but guarded anyway because it runs during bring-up and
+    // a corrupt file must not be able to cost the user their Home app.
+    //
+    // /data/cinder, NOT /contents: the resume files are machine-written, they change while the PC
+    // holds the MSC volume, and /contents is unmounted for the whole of that.
+    run_guarded("deferred_up: restore playback context", 10, []() {
+        int rr = cinder_resume_load("/data/cinder/queue.conf", "/data/cinder/resume.conf");
+        clog_(rr == 1 ? "deferred_up: resume — context restored (plays on the first press)"
+                      : "deferred_up: resume — nothing saved");
+    });
     clog_("deferred_up: cinder_scrobble_open(/contents/.scrobbler.log)");
     cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
     // THE FRAMEWORK PUMP — must come BEFORE cinder_audio_init. Sony's PlayerService client is
@@ -904,6 +917,83 @@ void apply_eq_fn() {
 // connect can crash/hang). The bitmask matches cinder_get_sound_flags(): bit0 DSEE · bit1 Vinyl ·
 // bit2 VPT · bit3 DC-Phase · bit4 Normalizer · bit5 ClearAudio+. (VPT/DC-Phase apply on/off here;
 // their mode/type is a device-gated enhancement — see analysis/RE_playerservice_sound.md.)
+// HIGH GAIN OUTPUT — CUT 2026-08-17, and this note is here so it is not re-added.
+//
+// Sony's sid_4116. It is the CXD3778GF's own S-Master gain mode, not an EffectCtrlDmp effect:
+//
+//   numid=28 'headphone smaster gain mode'      ENUMERATED  normal | high
+//   numid=29 'headphone smaster se gain mode'   ENUMERATED  normal | high   (single-ended)
+//   numid=30 'headphone smaster btl gain mode'  ENUMERATED  normal | high   (balanced)
+//
+// Both 28 and 29 accepted `high`, read back 1, and the value survived a reboot. The write lands.
+// The CODEC IGNORES IT — measured by ear on device, no audible change on any headphones. The A50's
+// output stage does not have the high-gain hardware the ZX/WM1 series does; these controls come
+// from the shared CXD3778GF driver and are inert on this model. (30 was never written: the NW-A55
+// has only a stereo-mini jack, so `btl` describes hardware that isn't there.)
+//
+// THE LESSON, which is the reason this comment survives the code: on this device a mixer control
+// accepting a write, reading the value back, and persisting it is NOT evidence the feature works.
+// Only a measurable change in the output is. Bit 6 of the sound flags used to carry this and is now
+// permanently clear; cinder-ui has a test that keeps it that way, because an older shell would
+// still apply a set bit.
+
+// L/R BALANCE — Sony's sid_0514, and the other Sound row that is a codec control rather than a DSP
+// effect. `l balance volume` / `r balance volume`, INTEGER 0..88, and both are ATTENUATION: 0 is
+// "no cut". So panning LEFT means turning the RIGHT channel down, not turning the left one up.
+//
+// Position 0..=100 with 50 = centre — a continuous drag slider since 2026-08-17 (it was 7 discrete
+// stops). Both controls are always written, so moving back toward centre RELEASES the previous cut
+// instead of leaving it applied on top of the new one.
+//
+// The control's range is 0..88 and its unit is the HALF-DECIBEL — the same unit the EQ bands were
+// measured to use (analysis/RE_playerservice_sound.md). The original `away * 88 / 3` curve put the
+// outermost stop at 88 raw = -44 dB, which is not a pan, it is a mute: reported 2026-08-16 as "it
+// fully cuts the other side". A balance control exists to nudge a stereo image a few dB for an
+// asymmetric pair of ears or headphones, so full deflection is -12 dB and you can still hear the
+// quiet channel.
+//
+// Linear in dB across the travel, which is what makes a slider predictable — half way out is half
+// the cut in dB, not half the power. 50 slider steps map onto 24 raw values, so most steps do not
+// change the mixer at all and the cache below swallows them; a full sweep is at most 24 writes per
+// side however fast the finger moves.
+static const int BAL_MAX_ATT = 24;   // raw half-dB at full deflection = -12.0 dB
+
+static void apply_balance(int pos) {
+    const int CENTRE = 50;
+    if (pos < 0) pos = 0;
+    if (pos > 100) pos = 100;
+    const int away = pos > CENTRE ? pos - CENTRE : CENTRE - pos;          // 0..50
+    const int cut  = (away * BAL_MAX_ATT + CENTRE / 2) / CENTRE;          // rounded, 0..24
+    const int l_att = pos > CENTRE ? cut : 0;   // panning right cuts the LEFT
+    const int r_att = pos < CENTRE ? cut : 0;   // panning left cuts the RIGHT
+
+    // Skip a write that changes nothing. apply_balance rides apply_sound_fn, so it used to run on
+    // EVERY sound change, boot and BT reconnect — each one two shell forks and two codec writes for
+    // a value that had not moved. It now ALSO runs on every motion event of a live drag, where the
+    // same cache is what keeps the slider from forking a shell per pixel. -1 is "unknown", so the
+    // first call always writes.
+    static int s_l = -1, s_r = -1;
+    if (l_att == s_l && r_att == s_r) return;
+
+    // ONE shell, ONE amixer. It was two `system()` calls, i.e. two forks, two dynamic loads and two
+    // separate codec writes with a scheduling gap between them — which is what the user heard as
+    // "a bit of stutter when it does". amixer's batch mode (-s) reads commands from stdin, so both
+    // channels move inside a single process. Names, not numids: a numid is a firmware-build detail
+    // and this control's name is stable.
+    char cmd[288];
+    std::snprintf(cmd, sizeof cmd,
+                  "{ echo \"cset name='l balance volume' %d\"; "
+                  "echo \"cset name='r balance volume' %d\"; } "
+                  "| amixer -c 0 -s >/dev/null 2>&1",
+                  l_att, r_att);
+    const int rc = std::system(cmd);
+    if (rc == 0) { s_l = l_att; s_r = r_att; }
+    char m[160];
+    std::snprintf(m, sizeof m, "sound: balance pos=%d -> l_att=%d r_att=%d (raw half-dB) rc=%d",
+                  pos, l_att, r_att, rc);
+    clog_(m);
+}
+
 void apply_sound_fn() {
     int f = cinder_get_sound_flags();
     cinder_effects_set_dsee_hx((f >> 0) & 1);
@@ -925,6 +1015,7 @@ void apply_sound_fn() {
     // and on every reconnect (the radio does not carry it across a link, exactly like the codec
     // preference and the volume).
     cinder_effects_set_bt_audio_effect(1);
+    apply_balance(cinder_get_balance());
 }
 
 // ── Volume backend ──────────────────────────────────────────────────────────────────────────
@@ -1342,6 +1433,10 @@ void power_action(bool restart) {
     char m[160];
     std::snprintf(m, sizeof m, "power: %s confirmed — exec cinder-power %s", verb, verb);
     clog_(m);
+    // Write the resume state at its true value before the machine goes down. The 1 Hz saver is
+    // rate-limited to 5 s, so without this a deliberate power-off would come back up to five
+    // seconds behind where the user actually stopped.
+    cinder_resume_flush();
     // Sync BEFORE the helper, not only inside it: /contents is vfat holding the settings file and
     // this log, and the helper's own remount-ro can legitimately fail with EBUSY while we still
     // hold the log open. Two syncs cost nothing next to a shutdown.
@@ -2024,6 +2119,41 @@ static void refresh_bt_connected() {
         // the Bluetooth screen stayed on "No device connected" while audio played.
         cinder_set_bt_connected(!addr.empty() ? name.c_str() : "");
         g_bt_have_name = !addr.empty();
+
+        // WHICH CODEC THE LINK ACTUALLY NEGOTIATED. The Bluetooth screen could only ever show the
+        // codec the user REQUESTED, which is not the same thing: A2DP picks during connection setup
+        // and falls back silently when the sink can't do it, so a player claiming LDAC while
+        // running SBC was indistinguishable from one that was right.
+        //
+        //   virtual void GetSoundStatus(BtSoundCodec&, BtSoundFrequency&, BtSoundChannel&, bool&)
+        //
+        // Slot 26. Four OUT params, every one a scalar (three enums + a bool) — no container to get
+        // wrong, which is what makes it safe to call from here at all, unlike GetCapabilities
+        // (pst::base::vector) or GetConnectInformation above (std::string). Declared `unsigned`
+        // rather than the real enum types: an enum is int-sized on this ABI and we want whatever
+        // arrives, not an assumption about the enumerators.
+        //
+        // 0xDEAD is a sentinel, because the method returns void: an untouched buffer is the ONLY
+        // way to tell "the service wrote nothing" from "the service wrote 0", and 0 is a legitimate
+        // codec value. Measured 2026-08-17, WH-1000XM4 connected and playing: codec=0x02 with the
+        // peer advertising `ldac support:1` and neither aptX — so 0x02 is LDAC.
+        if (!addr.empty()) {
+            enum { VIDX_GetSoundStatus = 26 };
+            typedef void (*fn4)(void*, unsigned*, unsigned*, unsigned*, bool*);
+            unsigned codec = 0xDEADu, freq = 0xDEADu, chan = 0xDEADu;
+            bool scmst = false;
+            ((fn4)bt_slot(x, VIDX_GetSoundStatus))(x, &codec, &freq, &chan, &scmst);
+            const int raw = (codec == 0xDEADu || codec > 0xFFu) ? -1 : (int)codec;
+            if (cinder_set_bt_link_codec(raw)) {
+                char m[128];
+                std::snprintf(m, sizeof m,
+                              "bt: link codec=0x%02x freq=0x%02x chan=0x%02x scmst=%d",
+                              codec, freq, chan, (int)scmst);
+                clog_(m);
+            }
+        } else {
+            cinder_set_bt_link_codec(-1);
+        }
     } catch (...) {
         clog_("bt: GetConnectInformation threw");
     }
@@ -4690,6 +4820,25 @@ static void play_pending_sequence(const char* label, bool restore_position) {
 // backend (built-in CXD3778GF defaults, overridable by conf); play-by-index hands PlayerService
 // a NodeTrackSequence built from the pending-play list the UI resolved.
 void carry_out(int act) {
+    // PAINT THE UI'S ANSWER BEFORE DOING THE SLOW PART.
+    //
+    // The navigator has already updated itself by the time we get here — cinder_tap/cinder_input
+    // flip the state and set the dirty flag, then hand back an action code. But the frame is not
+    // painted until cinder_render_tick() runs, which is BELOW input_pump in the render loop, so
+    // every control that triggers a Sony IPC call showed its new state only after that call
+    // returned. Reported 2026-08-16 as "a bit of delay on the shuffle toggle showing": shuffle
+    // re-issues the track sequence, and a SetTrackSequence + seek is a measured 360–450 ms round
+    // trip. The toggle was already on; the glass just could not say so yet.
+    //
+    // One extra tick, and it is nearly free: the renderer is dirty-flag gated, so this costs a real
+    // frame exactly when something changed (which is the case worth paying for) and returns
+    // immediately otherwise — including on the housekeeping-driven calls into here, where nothing
+    // has. Skipped entirely while the panel is dark, where there is nothing to show.
+    //
+    // The USB-MSC path already did this by hand for its own 8 s blocking call; this generalises it
+    // to every action rather than to the one that was slow enough to notice first.
+    if (g_screen_on) cinder_render_tick();
+
     // Every transport call is a PlayerService IPC call → guard it (same invariant as the EQ apply
     // and the now-playing poll): a hung/crashing PlayerService then skips that one action and the UI
     // keeps running, instead of tripping the per-frame watchdog into a fatal _exit/reboot. The
@@ -4697,8 +4846,20 @@ void carry_out(int act) {
     switch (act) {
         case CINDER_ACT_PLAYPAUSE:
             set_transport(!g_playing);
-            run_guarded("carry_out: play/pause", 6,
-                        []() { if (g_playing) cinder_audio_play(); else cinder_audio_pause(); });
+            run_guarded("carry_out: play/pause", 12, []() {
+                // FIRST ▶ AFTER A BOOT, with a context restored from the last session:
+                // PlayerService has never been told about that sequence, so a plain Play() would
+                // start whatever it happens to hold (usually nothing). Hand it over here rather
+                // than at boot — this is the press where a ~400 ms SetTrackSequence is expected,
+                // and it is the only point at which the user has actually asked for sound.
+                // restore_position picks up the saved offset, which cinder_resume_load has
+                // already put in cinder_play_position_ms().
+                if (g_playing && cinder_resume_take_pending()) {
+                    play_pending_sequence("resume", true);
+                    return;
+                }
+                if (g_playing) cinder_audio_play(); else cinder_audio_pause();
+            });
             break;
         case CINDER_ACT_NEXT:       run_guarded("carry_out: next",  6, []() { cinder_audio_next_track(); }); break;
         case CINDER_ACT_PREV:
@@ -4761,6 +4922,10 @@ void carry_out(int act) {
             // UI resolved (cinder_pending_play_*), hand PlayerService a NodeTrackSequence, start
             // at the tapped index. Guarded: JSON->Node + SetTrackSequence are Sony-service calls.
             run_guarded("carry_out: play selected track", 10, []() {
+                // The user chose their own sequence, so the one the last boot left behind is dead.
+                // Without this a resume armed at boot would still be waiting, and the next ▶ after
+                // a pause would drag playback back to wherever the previous session stopped.
+                cinder_resume_cancel();
                 play_pending_sequence("play", false);
             });
             break;
@@ -4781,6 +4946,12 @@ void carry_out(int act) {
         case CINDER_ACT_SOUND_CHANGED:
             // apply the Sound screen's effect toggles to the DSP, guarded.
             run_guarded("carry_out: apply sound effects", 6, apply_sound_fn);
+            break;
+        case CINDER_ACT_BALANCE_CHANGED:
+            // The balance slider, live under a finger. Just the two mixer writes — NOT
+            // apply_sound_fn, which would run six EffectCtrlDmp round trips per motion event and
+            // turn a drag into the poll storm that caused the audio stutter in task #26.
+            run_guarded("carry_out: balance", 4, []() { apply_balance(cinder_get_balance()); });
             break;
         case CINDER_ACT_SOUND_BYPASS:
             // A/B compare: bypass or re-enable the whole effect chain, guarded.
@@ -4812,6 +4983,28 @@ void carry_out(int act) {
         case CINDER_ACT_BRIGHTNESS_CHANGED:
             // Settings Brightness row cycled 1..5 → recompute the day level + rewrite the node.
             run_guarded("carry_out: backlight (brightness)", 4, apply_brightness);
+            break;
+        case CINDER_ACT_SETTINGS_RESET:
+            // Everything moved at once, so re-apply the whole chain rather than the one control a
+            // normal change would touch. Same order and the same functions the boot path uses
+            // (deferred_up), because "reset" should leave the device in the state a first boot
+            // with this build would have produced.
+            //
+            // Each step is separately guarded, as everywhere else: a fault inside one Sony service
+            // must not stop the remaining ones from being restored — a half-reset chain is worse
+            // than either end of it.
+            clog_("carry_out: settings reset — re-applying the whole chain");
+            run_guarded("reset: EQ", 6, apply_eq_fn);
+            run_guarded("reset: sound effects + high gain + balance", 8, apply_sound_fn);
+            run_guarded("reset: volume", 4, apply_volume);
+            run_guarded("reset: backlight", 4, apply_brightness);
+            run_guarded("reset: repeat-one", 4,
+                        []() { cinder_audio_set_repeat_one(cinder_get_repeat_one()); });
+            run_guarded("reset: battery care", 6,
+                        []() { cinder_power_set_battery_care(cinder_get_battery_care()); });
+            // The reset also cleared the screen-off timeout back to its default; treat the change
+            // as activity so the panel does not blank while the user is still reading the toast.
+            g_last_input_ms = now_ms();
             break;
         case CINDER_ACT_BT_CODEC_CHANGED:
             // device-wide codec/quality changed → persist it for every BT path (file IO, safe)…

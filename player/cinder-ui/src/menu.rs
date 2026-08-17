@@ -1,6 +1,7 @@
 //! Menu (the hub) — ported from cinder-proto-screens3.jsx `CMenu`.
-//! 10 rows: icon + label (17/600) + live value (mono) + chevron, each on a
-//! 63px row with hairline separators.
+//! Twelve rows: icon + label (17/600) + live value (mono) + chevron, each on a
+//! `ROW_H` row with hairline separators. The list does NOT scroll, so `ROW_H` is sized to fit
+//! every row on the 800px panel — see the constant.
 
 use crate::canvas::{Canvas, W};
 use crate::icons;
@@ -46,7 +47,10 @@ fn draw_icon(c: &mut Canvas, name: &str, cx: f32, cy: f32, s: f32, col: Rgb888) 
 }
 
 /// Row pitch and list top — SINGLE SOURCE for both the render below and `nav`'s hit test.
-pub const ROW_H: i32 = 63; // prototype metric (11 rows fit within the 800px panel)
+/// 58, not the prototype's 63: the twelfth row (Folders) pushed 11x63 past the panel, and this
+/// list does not scroll. 91 + 12x58 = 787, six px clear of the 800px bottom. Everything that
+/// positions or hit-tests a menu row derives from this constant, so the two moved together.
+pub const ROW_H: i32 = 58;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
 /// Which menu row is under `y`, given how many rows there are.

@@ -26,6 +26,10 @@ pub struct SongRow {
     /// reference device, so a per-row string would be thousands of heap allocations to say one of
     /// 95 things. 0 = not resolved (host/sample data). Names come from `Library::genres`.
     pub genre_id: i64,
+    /// Hi-Res Audio, from the DB's own flag — the same one the Now Playing badge reads. A filter
+    /// axis rather than a decoration: Sony has "Hi-Res only" and on the reference library it is
+    /// the difference between 3,463 tracks and 1.
+    pub is_hires: bool,
 }
 
 /// One album row (Albums tab, grouped under its artist).
@@ -52,6 +56,34 @@ pub struct GenreRow {
     /// on the reference device — 482 of 3,463 tracks point at a genre row whose value is "".
     pub name: String,
     pub tracks: u32,
+}
+
+/// One directory in the FOLDER browse tree.
+///
+/// Sony has this and it is the only view that answers "where did this file actually come from" —
+/// which on a player you fill over USB-MSC is a question that comes up constantly, especially for
+/// anything the tag scanner filed under the wrong artist.
+///
+/// Flattened into `Library::folders` with index links rather than nested `Vec<FolderRow>` values:
+/// the UI needs to walk UP as well as down, an owned tree cannot hold a parent pointer without
+/// `Rc`, and every screen here is already an index into a flat list.
+#[derive(Clone, Default)]
+pub struct FolderRow {
+    /// Absolute directory path (`/contents/Music/Artist/Album`). The row LABEL is `name`; this is
+    /// what Track information shows and what makes two same-named folders distinguishable.
+    pub path: String,
+    /// Last path segment — what the row draws. For a storage root it is the mount point itself.
+    pub name: String,
+    /// Index into `Library::folders`, or `None` for a storage root.
+    pub parent: Option<usize>,
+    /// Child directories, already in display order.
+    pub subdirs: Vec<usize>,
+    /// Tracks sitting DIRECTLY in this directory, in filename order — which for a music folder is
+    /// track order, and is the order the files are actually in on the volume.
+    pub tracks: Vec<SongRow>,
+    /// Tracks here AND in everything below. The row's count: a folder that holds only subfolders
+    /// would otherwise read "0 tracks" while containing a whole discography.
+    pub total: u32,
 }
 
 /// Albums grouped by artist (Albums tab section structure).
@@ -120,28 +152,55 @@ pub struct Library {
     /// argument through ten call sites is precisely how a hit test drifts out of step with a
     /// render, which is the bug this file's neighbours keep getting bitten by.
     pub filter_genre: Option<i64>,
+    /// The other filter axis: show only Hi-Res tracks. Independent of the genre — the two AND
+    /// together, so "Hi-Res jazz" is expressible and neither has to know about the other.
+    pub filter_hires: bool,
+    /// How many tracks carry the Hi-Res flag. Counted once at library build so the picker can
+    /// label the row without sweeping every track each frame it is on screen.
+    pub hires_tracks: u32,
+    /// The FOLDER tree, flattened. Built once at library build; `folder_roots` are the entries
+    /// with no parent (one per storage volume that holds music).
+    pub folders: Vec<FolderRow>,
+    pub folder_roots: Vec<usize>,
 }
 
 impl Library {
     /// Does this row survive the active filter? The single predicate every filtered list asks.
     pub fn passes(&self, s: &SongRow) -> bool {
+        if self.filter_hires && !s.is_hires {
+            return false;
+        }
         match self.filter_genre {
             None => true,
             Some(id) => s.genre_id == id,
         }
     }
+    /// Is anything filtering at all? Cheaper than asking each axis at every call site, and it is
+    /// the question `visible_songs` and the strip actually want.
+    pub fn filtered(&self) -> bool {
+        self.filter_genre.is_some() || self.filter_hires
+    }
     /// How many tracks are visible under the active filter. Sort-independent, so `row_count` can
     /// answer without knowing which sort chip is selected.
     pub fn visible_songs(&self) -> usize {
-        match self.filter_genre {
-            None => self.songs.len(),
-            Some(_) => self.songs.iter().filter(|s| self.passes(s)).count(),
+        if !self.filtered() {
+            return self.songs.len();
         }
+        self.songs.iter().filter(|s| self.passes(s)).count()
     }
-    /// The active filter's display name, for captions. `None` when nothing is filtered.
-    pub fn filter_name(&self) -> Option<&str> {
-        let id = self.filter_genre?;
-        self.genres.iter().find(|g| g.id == id).map(|g| g.name.as_str())
+    /// The active filter's display name, for captions and the strip. `None` when nothing is
+    /// filtered; the two axes compose with a middot when both are on.
+    pub fn filter_name(&self) -> Option<String> {
+        let genre = self
+            .filter_genre
+            .and_then(|id| self.genres.iter().find(|g| g.id == id))
+            .map(|g| g.name.clone());
+        match (genre, self.filter_hires) {
+            (Some(g), false) => Some(g),
+            (Some(g), true) => Some(format!("{g} · Hi-Res")),
+            (None, true) => Some("Hi-Res".to_string()),
+            (None, false) => None,
+        }
     }
 
     /// Total album count across all groups (for the header caption).
@@ -180,6 +239,8 @@ impl Library {
                 year: 1990 + (i as i32 * 3 % 30),
                 // Two sample genres so the host preview's filter has something to do.
                 genre_id: (i % 2) as i64 + 1,
+                // A couple of Hi-Res rows so the host preview's Hi-Res filter is exercisable.
+                is_hires: i % 5 == 0,
             })
             .collect();
         let album_groups = data::ALBUM_GROUPS
@@ -251,6 +312,27 @@ impl Library {
             GenreRow { id: 1, name: "Alternative".into(), tracks: songs.iter().filter(|s| s.genre_id == 1).count() as u32 },
             GenreRow { id: 2, name: "Electronic".into(), tracks: songs.iter().filter(|s| s.genre_id == 2).count() as u32 },
         ];
+        let hires_tracks = songs.iter().filter(|s| s.is_hires).count() as u32;
+        // The sample data has no paths behind it, so the host preview's folder tree is a small
+        // hand-built one rather than a derived one — enough to exercise both row kinds.
+        let folders = vec![
+            FolderRow {
+                path: "/contents/Music".into(), name: "/contents/Music".into(),
+                parent: None, subdirs: vec![1, 2], tracks: Vec::new(),
+                total: songs.len() as u32,
+            },
+            FolderRow {
+                path: "/contents/Music/Hollow Pines".into(), name: "Hollow Pines".into(),
+                parent: Some(0), subdirs: Vec::new(),
+                tracks: songs.iter().take(4).cloned().collect(), total: 4,
+            },
+            FolderRow {
+                path: "/contents/Music/Vesper Lane".into(), name: "Vesper Lane".into(),
+                parent: Some(0), subdirs: Vec::new(),
+                tracks: songs.iter().skip(4).cloned().collect(),
+                total: songs.len().saturating_sub(4) as u32,
+            },
+        ];
         Library {
             songs,
             album_groups,
@@ -259,6 +341,10 @@ impl Library {
             thumbs: Default::default(),
             genres,
             filter_genre: None,
+            filter_hires: false,
+            hires_tracks,
+            folders,
+            folder_roots: vec![0],
         }
     }
 }

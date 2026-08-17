@@ -31,6 +31,20 @@ pub const RAIL_GRAB_BOT: i32 = 646;
 
 /// Like (heart) glyph centre, and the half-size of its touch target. Single source for the draw
 /// above and the hit test in nav.
+/// The title / artist / codec block, as a tap target: it opens Track information.
+///
+/// Bounded ABOVE the progress rail's grab band and LEFT of the heart, both of which are tested
+/// first — but the geometry excludes them anyway, so the order is belt and braces rather than the
+/// thing keeping them apart. The title baseline is 558 and the artist/codec baseline 583, so the
+/// band brackets both with room for a finger.
+pub const INFO_TOP: i32 = 522;
+pub const INFO_BOT: i32 = RAIL_GRAB_TOP - 1;
+
+/// Is `(x, y)` on the metadata block? The right edge stops clear of the heart's square target.
+pub fn hit_info(x: i32, y: i32) -> bool {
+    (INFO_TOP..=INFO_BOT).contains(&y) && x >= 0 && x < HEART_CX - HEART_HALF - 2
+}
+
 pub const HEART_CX: i32 = 432;
 pub const HEART_CY: i32 = 548;
 pub const HEART_HALF: i32 = 30;

@@ -78,6 +78,7 @@ fn main() {
 
     let snd = Sound {
         dsee: true,
+        balance: cinder_ui::sound::BALANCE_CENTRE, balance_drag: false,
         vinyl: false,
         vpt: "Studio",
         dcphase: "Low A",
@@ -86,7 +87,7 @@ fn main() {
         eq_preset: "A1",
         bt_codec: Some("LDAC"),
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0 };
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02) };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
@@ -217,6 +218,12 @@ fn main() {
             ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4)),
             ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, false)),
             ("sound_bypass", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, true)),
+            // The balance slider off-centre and mid-drag: the two states the static preview above
+            // never shows, and the ones where the knob can drift off its hit band.
+            ("sound_balance", &|c: &mut Canvas| {
+                let s = Sound { balance: 14, balance_drag: true, ..snd };
+                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, false)
+            }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
                 &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", accent: cinder_ui::Accent::Amber })),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
@@ -232,6 +239,31 @@ fn main() {
                 let az = library::az_present(library::Tab::Songs, &l, 0, 0);
                 library::az_render(c, &theme, &fonts, library::Tab::Songs, &az, 0, 0);
             }),
+            // Track information: a long path is the case that decides the layout, so the preview
+            // uses one rather than a tidy short filename.
+            // Folder browse: the root (two subdirectories) and one directory of tracks, because
+            // the two row kinds are what the layout has to keep apart.
+            ("folders_root", &|c: &mut Canvas| {
+                cinder_ui::folders::render(c, &theme, &fonts, &lib, Some(0), 0, false)
+            }),
+            ("folders_dir", &|c: &mut Canvas| {
+                cinder_ui::folders::render(c, &theme, &fonts, &lib, Some(1), 0, false)
+            }),
+            ("track_info", &|c: &mut Canvas| {
+                let rows: Vec<(String, String)> = vec![
+                    ("Title".into(), "Atlas Hands".into()),
+                    ("Artist".into(), "Benjamin Francis Leftwich".into()),
+                    ("Album".into(), "Last Smoke Before the Snowstorm".into()),
+                    ("Genre".into(), "Alternative".into()),
+                    ("Year".into(), "2011".into()),
+                    ("Track".into(), "3".into()),
+                    ("Duration".into(), "4:32".into()),
+                    ("Format".into(), "FLAC · Hi-Res".into()),
+                    ("Size".into(), "48.2 MB".into()),
+                    ("File".into(), "/contents/Music/Benjamin Francis Leftwich/Last Smoke Before the Snowstorm/03 Atlas Hands.flac".into()),
+                ];
+                cinder_ui::track_info::render(c, &theme, &fonts, &rows, 0, false)
+            }),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
             // The in-flight state this screen had no representation for at all: before, a connect
             // begun from Devices left this card reading "No device connected" until the link
@@ -239,7 +271,7 @@ fn main() {
             ("bluetooth_connecting", &|c: &mut Canvas| {
                 let b = Bt { on: true, connected: None, link_known: true, codec_sel: 0,
                              ldac_quality: 0, enhanced: true, enhanced_supported: true,
-                             connecting: true, busy_phase: 0.35 };
+                             connecting: true, busy_phase: 0.35, link_codec: None };
                 bluetooth::render(c, &theme, &fonts, &b)
             }),
             // Two real pairings from the device (the same two the 07-29 GetPairedDeviceInfo pass
@@ -466,6 +498,7 @@ fn main() {
                 added: 100_000 - i as i64,
                 year: 2000 + (i as i32 % 20),
                 genre_id: (i as i64 % 3) + 1,
+                is_hires: i % 6 == 0,
             });
         }
         let mut album_groups = Vec::new();
@@ -504,7 +537,7 @@ fn main() {
             .iter()
             .map(|a| ArtistRow { name: a.to_string(), albums: 7, tracks: 56, arts: vec![format!("{a}0"), format!("{a}1")], album_ids: Vec::new() })
             .collect();
-        let big = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), filter_genre: None };
+        let big = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
 
         let mut app = App::unlocked();
         app.press(Button::Up); // Menu
@@ -590,7 +623,7 @@ fn main() {
         app.press(Button::Up);
         app.press(Button::Down);
         app.press(Button::Select);
-        app.set_library(Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), filter_genre: None });
+        app.set_library(Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() });
         app.press(Button::Left); // -> Songs
         let mut c = Canvas::new();
         app.render(&mut c, &fonts, &np);

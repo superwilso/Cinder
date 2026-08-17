@@ -109,9 +109,9 @@ static int is_mounted(const char *mp)
  * So: plain umount(2) only, retried while holders drop. If it will not come clean, say so and let
  * the caller abort with everything still mounted — a mass-storage handoff that does not happen is a
  * far better outcome than one that eats the user's library. */
-static int unmount_hard(const char *mp)
+static int unmount_hard_for(const char *mp, int tries)
 {
-    for (int i = 0; i < 12; ++i) {
+    for (int i = 0; i < tries; ++i) {
         if (!is_mounted(mp)) return 0;
         if (umount(mp) == 0) return 0;
         usleep(250000);
@@ -123,6 +123,8 @@ static int unmount_hard(const char *mp)
     }
     return 0;
 }
+
+static int unmount_hard(const char *mp) { return unmount_hard_for(mp, 12); }
 
 static void wait_prop(const char *prop, const char *want, int tenths)
 {
@@ -149,9 +151,18 @@ static int msc_on(void)
         fprintf(stderr, "cinder-msc: /contents will not unmount — aborting, nothing changed\n");
         return 1;                         /* leave the gadget alone; the UI stays usable */
     }
-    int had_ext = is_mounted("/contents_ext");
-    if (had_ext && unmount_hard("/contents_ext") != 0)
-        fprintf(stderr, "cinder-msc: /contents_ext busy — SD card will not be offered\n");
+    /* The SD is NOT unmounted here. Reported 2026-08-16 as "in msc mode the sd card is not
+     * readable", and the log said why: `/contents_ext will not unmount cleanly (errno=16)`.
+     *
+     * The asymmetry is the point. cinder-home releases the playing sequence before calling us, but
+     * PlayerService closes the media file on ITS own schedule — so when the track being played
+     * lives on the card, /contents_ext is still held for a moment after /contents is already free.
+     * Three seconds of retries here, BEFORE the gadget switch, was not enough, and failing at this
+     * point meant the card was skipped for the whole session.
+     *
+     * So the card is dealt with AFTER the internal handoff instead: the gadget switch and the LUN0
+     * bind take a second of their own, which is time the holder gets for free, and a card that is
+     * still busy after that costs the user nothing that has not already succeeded. */
 
     /* 2) Switch the gadget through init, so adbd, idProduct and the function list end up exactly
      *    as stock expects. As root the property is accepted and the block actually runs. */
@@ -173,11 +184,32 @@ static int msc_on(void)
         fprintf(stderr, "cinder-msc: LUN0 would not bind %s — host will see no medium\n", INTERNAL);
         rc = 1;
     }
-    /* SD card, best effort: a missing or busy card must not fail the internal handoff. */
-    if (had_ext && !is_mounted("/contents_ext")) {
-        struct stat st;
-        if (stat(SDCARD, &st) == 0) write_node(LUN1, SDCARD);
+    /* SD card, best effort: a missing or busy card must not fail the internal handoff — but it
+     * must also not fail SILENTLY, which is what the old one-line attempt did. Say what happened
+     * either way, so "the card is not readable" is answerable from the log. */
+    struct stat st;
+    if (stat(SDCARD, &st) != 0) {
+        fprintf(stderr, "cinder-msc: no SD card (%s absent) — one drive offered\n", SDCARD);
+        return rc;
     }
+    /* Eight seconds. The holder is a Sony service closing a file it was told to release, not a
+     * deadlock, so it resolves in well under that — and the whole budget is only spent in the case
+     * that would otherwise have lost the card entirely. */
+    if (unmount_hard_for("/contents_ext", 32) != 0) {
+        fprintf(stderr, "cinder-msc: SD card still busy after 8 s — offering the internal drive "
+                        "only. Stop playback from the card and re-enter mass storage.\n");
+        return rc;
+    }
+    for (int i = 0; i < 8 && !node_is_bound(LUN1); ++i) {
+        write_node(LUN1, SDCARD);
+        if (node_is_bound(LUN1)) break;
+        usleep(250000);
+    }
+    if (node_is_bound(LUN1))
+        fprintf(stderr, "cinder-msc: SD card offered on LUN1 (%s)\n", SDCARD);
+    else
+        fprintf(stderr, "cinder-msc: LUN1 would not bind %s — host will see an empty second "
+                        "drive\n", SDCARD);
     return rc;
 }
 

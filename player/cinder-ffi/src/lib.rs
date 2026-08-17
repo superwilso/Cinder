@@ -360,6 +360,25 @@ struct Render {
     // them changes. last_saved is the fingerprint we last wrote, to avoid redundant writes.
     settings_path: Option<String>,
     last_saved_body: String, // the file body we last wrote (compare to skip redundant writes)
+    // ── Resume across a reboot ─────────────────────────────────────────────────────────────
+    // Two files, not one, because the two halves change at completely different rates. The
+    // SEQUENCE (context + queue + un-shuffle order) is tens of kilobytes and changes when the
+    // user starts something or a track boundary passes; the POSITION is 30 bytes and moves every
+    // second. Putting them together would mean rewriting ~25 KB of flash once a second for the
+    // sake of a number, which is the kind of write amplification that wears an eMMC out.
+    //
+    // Neither lives in /contents: that is the USB-MSC volume, it disappears from under us while
+    // the PC holds it, and a machine-written queue file has nothing a user would want to edit.
+    resume_path: Option<String>,      // sequence file; written only when the body changes
+    resume_last_body: String,
+    resume_pos_path: Option<String>,  // position file; written at most every RESUME_POS_EVERY
+    resume_pos_last: String,
+    resume_pos_at: std::time::Instant,
+    /// A restored sequence that PlayerService has NOT been told about. Cinder does not hand it
+    /// over at boot: `cinder_audio_play_tracks` starts playback, and a player that begins playing
+    /// on its own the moment it powers up is a worse bug than the one being fixed. It is handed
+    /// over on the first ▶ instead, which is also when the ~400 ms SetTrackSequence is expected.
+    resume_pending: Option<(Vec<String>, usize, i64)>, // (uris, start index, position ms)
     // Dirty-flag rendering (battery, goal #1): the pump ticks ~30-60x/s, but re-rendering +
     // blitting the whole framebuffer (~4.6 MB copy) when nothing changed is pure waste. We only
     // repaint when `dirty` is set — by input, a now-playing/theme change, or an active overlay
@@ -552,6 +571,12 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         sleep_fire: false,
         settings_path: None,
         last_saved_body: String::new(),
+        resume_path: None,
+        resume_last_body: String::new(),
+        resume_pos_path: None,
+        resume_pos_last: String::new(),
+        resume_pos_at: std::time::Instant::now(),
+        resume_pending: None,
         dirty: true, // paint the first frame
         viz_phase: 2.0,
         last_viz: std::time::Instant::now(),
@@ -620,7 +645,7 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nauto_off={}\nui_scale={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nui_scale={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -639,6 +664,7 @@ fn settings_body(r: &Render) -> String {
         r.app.brightness_restore(), // never 0: backlight-off is transient, not a setting
         r.app.screen_off_s(),
         r.app.auto_off_min(),
+        r.app.balance(),
         r.app.ui_scale_pct(),
     );
     // Shelf pins were session-scoped, so every reboot silently wiped the user's bookmarks — the
@@ -666,6 +692,60 @@ fn save_settings(r: &mut Render) {
         let _ = std::fs::write(&path, &body);
         r.last_saved_body = body;
     }
+}
+
+/// How often the position file may be rewritten. A resume that is up to this far behind the truth
+/// is unnoticeable; a rewrite every second for years is not.
+const RESUME_POS_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+// Persist the playing sequence IF it changed. Built and compared every housekeeping tick: the
+// body is ~7 bytes a track, so even a whole-library shuffle context is a ~25 KB format + memcmp
+// at 1 Hz, against a tick that already makes 400 ms IPC round trips. Best-effort, like settings.
+fn save_resume(r: &mut Render) {
+    let Some(path) = r.resume_path.clone() else { return };
+    let body = r.app.playback_encode();
+    if body == r.resume_last_body {
+        return;
+    }
+    let _ = std::fs::write(&path, &body);
+    r.resume_last_body = body;
+}
+
+// Persist "what was playing and where in it", rate-limited. `force` bypasses the timer for the
+// moments that matter more than the cadence: a pause, or the shell shutting us down.
+fn save_resume_pos(r: &mut Render, force: bool) {
+    let Some(path) = r.resume_pos_path.clone() else { return };
+    let Some(t) = r.last_track.as_ref() else { return };
+    if !force && r.resume_pos_at.elapsed() < RESUME_POS_EVERY {
+        return;
+    }
+    // Second granularity: the file is compared before it is written, so a paused player stops
+    // writing entirely instead of rewriting the same millisecond count forever.
+    let body = format!("track={}\npos={}\n", t.object_id, (r.play_pos_ms.max(0) / 1000) * 1000);
+    r.resume_pos_at = std::time::Instant::now();
+    if body == r.resume_pos_last {
+        return;
+    }
+    let _ = std::fs::write(&path, &body);
+    r.resume_pos_last = body;
+}
+
+// Parse `k=v` lines into (key, value) pairs, skipping blanks and comments. Shared by every
+// config reader here; a malformed line is dropped rather than failing the whole file, because a
+// hand-edited or half-written config must never keep the player from booting.
+fn conf_lines(body: &str) -> impl Iterator<Item = (&str, &str)> {
+    body.lines().filter_map(|l| {
+        let l = l.trim();
+        if l.is_empty() || l.starts_with('#') {
+            return None;
+        }
+        l.split_once('=').map(|(k, v)| (k.trim(), v.trim()))
+    })
+}
+
+// Decode a comma-separated id list. Junk entries are skipped, not fatal.
+fn id_list(v: &str) -> Vec<i64> {
+    v.split(',').filter_map(|s| s.trim().parse::<i64>().ok()).collect()
 }
 
 // Set the progress bar + elapsed/remaining from a position (ms) and duration (ms). Duration 0
@@ -872,6 +952,10 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         v
     };
 
+    let hires_tracks = songs.iter().filter(|s| s.is_hires).count() as u32;
+    eprintln!("cinder-ffi: hi-res tracks: {hires_tracks}");
+    let (folders, folder_roots) = build_folders(&tracks, &songs);
+
     // `thumbs` is filled separately by start_art_cache: the disk cache load is I/O, not model
     // building, and the rest arrives asynchronously from the decoder thread.
     cinder_ui::Library {
@@ -881,8 +965,117 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         playlists,
         thumbs: Default::default(),
         genres,
+        hires_tracks,
         filter_genre: None,
+        filter_hires: false,
+        folders,
+        folder_roots,
     }
+}
+
+/// Build the FOLDER browse tree from the tracks' absolute paths.
+///
+/// `cinder_db` already resolves every track to an absolute path (its `dirs` map walks `parent_id`
+/// up to a storage root), so the tree is derived from the paths rather than queried again — one
+/// pass, no extra SQL, and it cannot disagree with what Track information shows.
+///
+/// Directories with NO tracks anywhere below them do not appear. They are not browsable places on
+/// a music player, and on this device the file tree is full of them (cover-art folders, the MTP
+/// scratch directories) — showing them would bury the four folders that matter.
+fn build_folders(
+    tracks: &[cinder_db::Track],
+    songs: &[cinder_ui::model::SongRow],
+) -> (Vec<cinder_ui::model::FolderRow>, Vec<usize>) {
+    use cinder_ui::model::FolderRow;
+    use std::collections::HashMap;
+
+    let mut idx: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<FolderRow> = Vec::new();
+
+    // Intern one path, creating every missing ancestor above it. Returns its index.
+    fn intern(
+        path: &str,
+        idx: &mut HashMap<String, usize>,
+        out: &mut Vec<FolderRow>,
+    ) -> usize {
+        if let Some(i) = idx.get(path) {
+            return *i;
+        }
+        let cut = path.rfind('/').unwrap_or(0);
+        // A path with no slash above the first character is a root: `/contents` has its slash at
+        // 0, and slicing to 0 would make the parent the empty string, i.e. a phantom root above
+        // every mount.
+        let parent = (cut > 0).then(|| intern(&path[..cut], idx, out));
+        let name = if parent.is_some() { &path[cut + 1..] } else { path };
+        let me = out.len();
+        out.push(FolderRow {
+            path: path.to_string(),
+            name: name.to_string(),
+            parent,
+            subdirs: Vec::new(),
+            tracks: Vec::new(),
+            total: 0,
+        });
+        idx.insert(path.to_string(), me);
+        if let Some(p) = parent {
+            out[p].subdirs.push(me);
+        }
+        me
+    }
+
+    // `songs` is built from `tracks` in the same order (see the loop in build_library), so the two
+    // index together — which is what lets the tree hold ready-made SongRows instead of rebuilding
+    // them, and keeps a folder row identical to the same track's row anywhere else.
+    for (t, row) in tracks.iter().zip(songs.iter()) {
+        let Some(cut) = t.filename.rfind('/') else { continue };
+        if cut == 0 {
+            continue; // a bare "/name" — no directory to file it under
+        }
+        let dir = intern(&t.filename[..cut], &mut idx, &mut out);
+        out[dir].tracks.push(row.clone());
+    }
+
+    // Totals: every directory counts its own tracks plus everything below. Walked from each
+    // directory UP to its root rather than recursively down, so a pathological depth cannot blow
+    // the stack — and the depth is bounded anyway by the `intern` recursion above it.
+    for i in 0..out.len() {
+        let n = out[i].tracks.len() as u32;
+        if n == 0 {
+            continue;
+        }
+        let mut cur = Some(i);
+        let mut guard = 0;
+        while let Some(c) = cur {
+            out[c].total += n;
+            cur = out[c].parent;
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+        }
+    }
+
+    // Tracks in filename order — on a music folder that is track order, and it is the order the
+    // files are actually in on the volume, which is the whole point of browsing this way.
+    // Subdirectories alphabetically, case-insensitively.
+    let names: Vec<String> = out.iter().map(|f| f.name.to_lowercase()).collect();
+    for f in out.iter_mut() {
+        f.tracks.sort_by(|a, b| a.track.cmp(&b.track).then_with(|| a.title.cmp(&b.title)));
+    }
+    for i in 0..out.len() {
+        let mut subs = std::mem::take(&mut out[i].subdirs);
+        subs.sort_by(|a, b| names[*a].cmp(&names[*b]));
+        // Prune the branches that hold no music at all.
+        subs.retain(|s| out[*s].total > 0);
+        out[i].subdirs = subs;
+    }
+
+    let mut roots: Vec<usize> = (0..out.len())
+        .filter(|i| out[*i].parent.is_none() && out[*i].total > 0)
+        .collect();
+    roots.sort_by(|a, b| names[*a].cmp(&names[*b]));
+    eprintln!("cinder-ffi: folders: {} dirs, {} root(s)", out.len(), roots.len());
+    (out, roots)
 }
 
 // ── Panic context ────────────────────────────────────────────────────────────────────────────
@@ -900,10 +1093,10 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 20] = [
+const SCREEN_NAMES: [&str; 22] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
-    "Shelf", "Pairing", "GenreFilter",
+    "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -915,7 +1108,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Artist => 5, S::Playlist => 6, S::UpNext => 7, S::Eq => 8, S::Sound => 9,
         S::Bluetooth => 10, S::Settings => 11, S::Fm => 12, S::UsbDac => 13, S::Receiver => 14,
         S::Onboarding => 15, S::UsbStorage => 16, S::Shelf => 17, S::Pairing => 18,
-        S::GenreFilter => 19,
+        S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21,
     }
 }
 
@@ -1412,7 +1605,69 @@ fn song_row_of(t: &cinder_db::Track) -> cinder_ui::model::SongRow {
         added: t.added,
         year: 0,
         genre_id: t.genre_id.unwrap_or(0),
+        is_hires: t.is_hires,
     }
+}
+
+/// The Track information rows for one track — Sony's "Detailed Information", as
+/// `(label, value)` pairs. A row is OMITTED when its value is unknown, rather than printed empty:
+/// a blank next to "Genre" claims the file has no genre, which is a different statement from the
+/// library not having resolved one.
+fn track_info_rows(r: &Render, t: &cinder_db::Track) -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = Vec::with_capacity(12);
+    let mut put = |k: &str, v: String| {
+        if !v.trim().is_empty() {
+            rows.push((k.to_string(), v));
+        }
+    };
+    put("Title", if t.title.is_empty() {
+        t.filename.rsplit('/').next().unwrap_or("").to_string()
+    } else {
+        t.title.clone()
+    });
+    put("Artist", t.artist.clone());
+    // Only when it differs — on most files it repeats the artist, and a row that says the same
+    // thing twice is noise on a screen whose whole job is the details that are NOT obvious.
+    if t.album_artist.trim() != t.artist.trim() {
+        put("Album artist", t.album_artist.clone());
+    }
+    put("Album", t.album.clone());
+    // Genre and year come from the already-built library rather than fresh queries: the row is in
+    // memory, the maps behind it were resolved once at build, and this runs on the render thread.
+    let lib = r.app.library();
+    if let Some(g) = t.genre_id.and_then(|id| lib.genres.iter().find(|g| g.id == id)) {
+        put("Genre", g.name.clone());
+    }
+    if let Some(row) = lib.songs.iter().find(|s| s.object_id == t.object_id) {
+        if row.year > 0 {
+            put("Year", row.year.to_string());
+        }
+    }
+    if t.track_no > 0 {
+        put("Track", if t.disc_no > 1 {
+            format!("{} (disc {})", t.track_no, t.disc_no)
+        } else {
+            t.track_no.to_string()
+        });
+    }
+    if let Some(ms) = t.duration_raw.filter(|m| *m > 0) {
+        put("Duration", fmt_time(ms));
+    }
+    let (codec, _) = codec_label(&t.filename, t.is_hires);
+    put("Format", codec);
+    // Byte size is not in the DB — it is a stat() on a path we already have, and the one number a
+    // user checking "did the right file copy over" actually wants. Silently skipped if the file is
+    // gone, which is itself worth not claiming a size for.
+    if let Ok(md) = std::fs::metadata(&t.filename) {
+        let bytes = md.len();
+        put("Size", if bytes >= 1 << 20 {
+            format!("{:.1} MB", bytes as f64 / (1u64 << 20) as f64)
+        } else {
+            format!("{} KB", (bytes + 1023) / 1024)
+        });
+    }
+    put("File", t.filename.clone());
+    rows
 }
 
 /// Hand a resolved play sequence to BOTH consumers: the shell gets the file URIs it feeds to
@@ -1753,6 +2008,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         }
         Action::BatteryCareChanged(_) => 13,
         Action::SoundChanged => 14,
+        Action::BalanceChanged => 38,
         Action::SoundBypass(_) => 15,
         Action::ShuffleToggle => {
             r.np.shuffle = !r.np.shuffle;
@@ -1807,6 +2063,18 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // the shell to carry out.
             liked_toggle_current(r);
             return None;
+        }
+        Action::SettingsReset => {
+            // The UI has already put every preference back to its default. What is left is the
+            // half that lives OUT here: the hardware volume the shell restores at boot, and the
+            // settings file itself, which must be rewritten immediately rather than at the next
+            // change — otherwise a power-off straight after a reset would come back to the old
+            // file. The shell then re-applies the chain (EQ / sound / balance / backlight) from
+            // the fresh state.
+            r.np.shuffle = false;
+            r.np.repeat = 0;
+            save_settings(r);
+            37
         }
     })
 }
@@ -2351,6 +2619,17 @@ pub extern "C" fn cinder_get_auto_off_min() -> libc::c_int {
     cell().lock().unwrap().as_ref().map_or(0, |r| r.app.auto_off_min() as libc::c_int)
 }
 
+/// L/R balance position, 0..=100 with 50 = centre. The shell turns it into the codec's two
+/// attenuation controls; the UI only remembers the position.
+#[no_mangle]
+pub extern "C" fn cinder_get_balance() -> libc::c_int {
+    cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(cinder_ui::sound::BALANCE_CENTRE as libc::c_int, |r| r.app.balance() as libc::c_int)
+}
+
 /// Seed the UI volume from the device's REAL level (raw 0..120 steps — the stock scale, 1:1 with
 /// ALSA 'master volume'), without popping the HUD. The shell calls this at boot after restoring
 /// the saved level (or reading the mixer), so the first Vol± press nudges from the actual level.
@@ -2384,6 +2663,23 @@ pub extern "C" fn cinder_set_bt_connected(name: *const libc::c_char) {
     };
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_bt_connected(owned.as_deref());
+    }
+}
+
+/// Push the codec A2DP actually NEGOTIATED on the live link, as the raw `BtSoundCodec` value from
+/// `BtTransmitterService::GetSoundStatus`. Pass a negative value for "nothing connected / the
+/// service wrote nothing", which clears it.
+///
+/// Returns 1 if the value changed, so the shell can repaint only when it must. Deliberately
+/// separate from the codec PREFERENCE (`cinder_get_bt_codec`): the preference is what the user
+/// asked for, this is what the radio agreed to, and A2DP falls back silently when a sink cannot do
+/// the requested codec.
+#[no_mangle]
+pub extern "C" fn cinder_set_bt_link_codec(raw: libc::c_int) -> libc::c_int {
+    let want = (raw >= 0 && raw <= 0xFF).then(|| raw as u8);
+    match cell().lock().unwrap().as_mut() {
+        Some(r) => r.app.set_bt_link_codec(want) as libc::c_int,
+        None => 0,
     }
 }
 
@@ -2736,6 +3032,14 @@ pub extern "C" fn cinder_clock_tick() {
                 r.dirty = true;
             }
         }
+        // Keep the resume files current. The sequence write is body-compared, so it costs a
+        // format + memcmp on a tick where nothing changed and a write only when it did; the
+        // position write is additionally rate-limited (RESUME_POS_EVERY). Forced while paused —
+        // a pause is exactly when the user is about to walk away or power off, and it is also the
+        // moment the position stops moving, so the compare makes it a single write.
+        save_resume(r);
+        save_resume_pos(r, !r.np.playing);
+
         // Queue edits are applied shortly before the boundary, not while the finger is still on
         // the row. Rebuilding needs a pause/seek/play round trip, so the lead absorbs it and the
         // current track still hands directly to the user's first queued choice.
@@ -2923,6 +3227,22 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_bt_volume(n);
                         }
                     }
+                    // The OLD key, from when balance was 7 discrete stops (0..=6, 3 = centre).
+                    // Migrated onto the 0..=100 slider so an upgrade doesn't silently slam a
+                    // centred player hard left — "3" means centre in the old scale and "pan left
+                    // by a third" in the new one, so the value cannot be reinterpreted in place.
+                    // Written back under `balance100`, and this key is never written again.
+                    "balance" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            let old = n.min(6);
+                            r.app.set_balance(old * cinder_ui::sound::BALANCE_MAX / 6);
+                        }
+                    }
+                    "balance100" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            r.app.set_balance(n);
+                        }
+                    }
                     "auto_off" => {
                         // set_auto_off_min snaps to a known preset, so a hand-edited value cannot
                         // strand the row on a duration the cycle can never reach.
@@ -2972,6 +3292,167 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
         }
     }
     loaded
+}
+
+/// Restore the playback context, the user queue and the play position saved by the previous run,
+/// and from here on keep both files up to date.
+///
+/// CALL AFTER `cinder_db_open`: the files hold object_ids, and the rows behind them come from the
+/// library. Calling it earlier restores nothing and simply arms the saving half.
+///
+/// Returns 1 if a sequence was restored, 0 if there was nothing to restore (first boot, empty
+/// context, or every id in the file has since left the library), -2 if the renderer isn't up.
+///
+/// This does NOT start playback and does not touch PlayerService. See `resume_pending`.
+#[no_mangle]
+pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c_char) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return -2 };
+    let cstr = |p: *const c_char| -> Option<String> {
+        if p.is_null() {
+            return None;
+        }
+        unsafe { CStr::from_ptr(p) }.to_str().ok().map(str::to_string)
+    };
+    let (Some(seq_path), Some(pos_path)) = (cstr(seq_path), cstr(pos_path)) else { return -2 };
+
+    let seq_body = std::fs::read_to_string(&seq_path).unwrap_or_default();
+    let pos_body = std::fs::read_to_string(&pos_path).unwrap_or_default();
+
+    let (mut ctx_ids, mut q_ids, mut pre) = (Vec::new(), Vec::new(), None);
+    let mut idx = 0usize;
+    for (k, v) in conf_lines(&seq_body) {
+        match k {
+            "ctx" => ctx_ids = id_list(v),
+            "q" => q_ids = id_list(v),
+            "pre" => pre = Some(id_list(v)),
+            "idx" => idx = v.parse::<usize>().unwrap_or(0),
+            _ => {}
+        }
+    }
+    let (mut resume_id, mut resume_pos) = (0i64, 0i64);
+    for (k, v) in conf_lines(&pos_body) {
+        match k {
+            "track" => resume_id = v.parse::<i64>().unwrap_or(0),
+            "pos" => resume_pos = v.parse::<i64>().unwrap_or(0).max(0),
+            _ => {}
+        }
+    }
+
+    // Arm the saving half whatever happens below, so a first boot (or a library that has lost
+    // every saved track) still starts persisting the moment the user plays something.
+    r.resume_path = Some(seq_path);
+    r.resume_pos_path = Some(pos_path);
+    r.resume_last_body = seq_body;
+    r.resume_pos_last = pos_body;
+
+    // Resolve ids → tracks in ONE pass per list. A track that has left the library since the last
+    // boot drops out silently; that is the whole reason ids are stored rather than rows.
+    let Some(db) = r.db.as_ref() else { return 0 };
+    let resolve = |ids: &[i64]| -> Vec<cinder_db::Track> {
+        ids.iter()
+            .filter_map(|id| db.track_by_object_id(*id).ok().flatten())
+            .collect()
+    };
+    let ctx = resolve(&ctx_ids);
+    let queue = resolve(&q_ids);
+    if ctx.is_empty() && queue.is_empty() {
+        return 0;
+    }
+
+    // The index was recorded against the FULL list. If tracks vanished, follow the saved track's
+    // object_id instead of the raw number — the number would now point at a different song.
+    let saved_at = ctx_ids.get(idx).copied();
+    let idx = saved_at
+        .and_then(|id| ctx.iter().position(|t| t.object_id == id))
+        .unwrap_or_else(|| idx.min(ctx.len().saturating_sub(1)));
+
+    r.app.playback_restore(
+        ctx.iter().map(song_row_of).collect(),
+        idx,
+        queue.iter().map(song_row_of).collect(),
+        pre,
+    );
+
+    // What to show, and what the first ▶ will hand PlayerService. The current track leads the
+    // sequence for the same reason it does in `play_order_uris`: PlayerService starts at an index
+    // into the list it is given, and leading with the current track keeps the two agreeing.
+    let current = ctx.get(idx).or_else(|| queue.first());
+    let Some(cur) = current else { return 0 };
+    let uris: Vec<String> = std::iter::once(cur.filename.clone())
+        .chain(queue.iter().map(|t| t.filename.clone()))
+        .chain(ctx.iter().skip(idx + 1).map(|t| t.filename.clone()))
+        .collect();
+    // Only honour the saved position if it belongs to the track we are about to resume — the two
+    // files are written independently, so a crash between them can leave them one track apart.
+    let pos = if resume_id == cur.object_id { resume_pos } else { 0 };
+
+    apply_track(&mut r.np, cur);
+    r.np.liked = r.liked.contains(&cur.object_id);
+    r.np.playing = false;
+    r.cur_duration_ms = cur.duration_raw.unwrap_or(0).max(0);
+    r.play_pos_ms = pos.min(r.cur_duration_ms.max(0));
+    r.real_pos_ms = -1;
+    set_progress(&mut r.np, r.play_pos_ms, r.cur_duration_ms);
+    if r.art_key != Some(cur.object_id) {
+        r.art_full = None;
+        r.art_thumb = None;
+        bake_gradient_art(r);
+        r.art_key = Some(cur.object_id);
+        request_cover(r, cur.object_id);
+    }
+    r.last_track = Some(cur.clone());
+    r.resume_pending = Some((uris, 0, r.play_pos_ms));
+    r.dirty = true;
+    eprintln!(
+        "cinder-ffi: resumed {} context + {} queued, at index {} pos {} ms",
+        ctx.len(),
+        queue.len(),
+        idx,
+        r.play_pos_ms
+    );
+    1
+}
+
+/// Drain a restored sequence into `cinder_pending_play_*`. The shell calls this on the FIRST ▶
+/// after a boot; 1 means "there is now a sequence to hand PlayerService, and
+/// `cinder_play_position_ms()` is where to seek afterwards" (i.e. call `play_pending_sequence`
+/// with restore_position). 0 means nothing was pending and the press is an ordinary play.
+///
+/// One-shot: anything the user starts by hand replaces the context anyway, and a stale resume
+/// firing later would drag playback back to where the last boot left off.
+#[no_mangle]
+pub extern "C" fn cinder_resume_take_pending() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let Some((uris, start, pos)) = r.resume_pending.take() else { return 0 };
+    if uris.is_empty() {
+        return 0;
+    }
+    r.pending_play = uris;
+    r.pending_play_start = start;
+    r.play_pos_ms = pos;
+    1
+}
+
+/// Drop a pending resume without using it. The shell calls this whenever the user starts
+/// something themselves before pressing ▶, so the sequence they chose is not overwritten by the
+/// one the last boot left behind.
+#[no_mangle]
+pub extern "C" fn cinder_resume_cancel() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.resume_pending = None;
+    }
+}
+
+/// Flush the resume files now — the shell calls this before a deliberate power-off or reboot, so
+/// the position is current rather than up to `RESUME_POS_EVERY` stale.
+#[no_mangle]
+pub extern "C" fn cinder_resume_flush() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        save_resume(r);
+        save_resume_pos(r, true);
+    }
 }
 
 /// Push the currently-playing track. Strings are copied; NULL = empty.
@@ -3574,6 +4055,10 @@ pub extern "C" fn cinder_set_now_playing_uri(
                     s.set_track(meta, now_unix());
                 }
             }
+            // The Track information screen is filled HERE, on the track change, rather than when
+            // the screen opens: it is ~10 short strings, the DB row is already in hand, and doing
+            // it on entry would mean a query on the render thread the first time you tapped.
+            r.app.set_track_info(track_info_rows(r, &t));
             r.last_track = Some(t);
             0
         }
@@ -3641,7 +4126,7 @@ mod tests {
         let all = [
             S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::Artist, S::Playlist, S::UpNext, S::Eq,
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
-            S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter,
+            S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
