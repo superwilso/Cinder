@@ -27,7 +27,7 @@ pub const PAGE: usize = 7;
 /// Bottom y of the scrollable list area — the top of the Now Playing return bar, which is pinned
 /// to the bottom of every library screen. Derived, not a literal, so the list and the bar can't
 /// overlap if the bar's height changes.
-const LIST_BOTTOM: i32 = H as i32 - crate::chrome::NP_BAR_H;
+pub(crate) const LIST_BOTTOM: i32 = H as i32 - crate::chrome::NP_BAR_H;
 
 // ── Pixel-scroll geometry ────────────────────────────────────────────────────────────────
 // Lists scroll in PIXELS (live drag + fling), not rows: `scroll_px` is the content offset in
@@ -80,9 +80,16 @@ pub fn shuffle_band_rect(y_below: i32) -> (i32, i32, i32, i32) {
     (22, y_below + 16, W as i32 - 44, 56)
 }
 
+/// The LIBRARY band is shorter than the album drill-in's, and deliberately: the filter strip sits
+/// directly beneath it, and at 56 the two shared an edge with no gap — so a finger aiming at the
+/// strip landed on Shuffle instead. Reported 2026-08-16 as "filter is hard to press under the
+/// shuffle by album". The album page has nothing below its band, so it keeps the full 56.
+pub const LIB_BAND_H: i32 = 50;
+
 /// The Library-tab shuffle band (all four tabs draw it at the same place).
 pub fn library_shuffle_band() -> (i32, i32, i32, i32) {
-    shuffle_band_rect(TABS_BOTTOM)
+    let (x, y, w, _) = shuffle_band_rect(TABS_BOTTOM);
+    (x, y, w, LIB_BAND_H)
 }
 
 /// The album drill-in's "Play album" band sits under the cover/title block.
@@ -110,7 +117,12 @@ pub fn hit_shuffle_band(x: i32, y: i32) -> bool {
 /// Height of the genre-filter strip. It sits BELOW the shuffle band and above the list, so the
 /// band's geometry and hit test are untouched and only `list_top` moves — and everything that
 /// positions or hit-tests the list already derives from `list_top`.
-pub const FILTER_H: i32 = 32;
+pub const FILTER_H: i32 = 44;
+
+/// Dead space between the shuffle band and the filter strip. Not decoration: without it the two
+/// targets share an edge, and every near-miss upward fires Shuffle — which starts playing music.
+/// An accidental filter change is a visual surprise; an accidental shuffle is an audible one.
+pub const FILTER_GAP: i32 = 6;
 
 /// Does this tab carry the filter strip? Songs and Albums are the two lists a genre can scope;
 /// Artists and Playlists are not track lists, so filtering them would mean guessing what the user
@@ -122,7 +134,7 @@ pub fn has_filter(tab: Tab) -> bool {
 /// Screen-y of the filter strip's top, for the render and the hit test to share.
 pub fn filter_top() -> i32 {
     let (_, by, _, bh) = library_shuffle_band();
-    by + bh
+    by + bh + FILTER_GAP
 }
 
 /// Is `(x, y)` on the filter strip? x is unused — the whole width is the target, because a 32px
@@ -139,18 +151,18 @@ pub fn list_top(tab: Tab) -> i32 {
     }
 }
 
-/// The genre-filter strip: what is filtering the list right now, and a way to change it.
+/// The filter strip: what is filtering the list right now, and a way to change it.
 fn filter_strip(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library) {
     let y = filter_top();
     let cy = y + FILTER_H / 2;
     fill_rect(c, 0, y, W as i32, FILTER_H, t.panel);
     let lst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18);
-    text::draw(c, f, 22.0, (cy + 4) as f32, "GENRE", &lst);
+    text::draw(c, f, 22.0, (cy + 4) as f32, "FILTER", &lst);
     // The value carries the accent when something is actually filtering, so an active filter is
     // visible at a glance rather than needing to be read.
-    let on = lib.filter_genre.is_some();
+    let on = lib.filtered();
     let vs = sty(Family::Mono, Weight::Regular, 12.0, if on { t.acc } else { t.dim }, 0.1);
-    let label = lib.filter_name().unwrap_or("ALL");
+    let label = lib.filter_name().unwrap_or_else(|| "ALL".to_string());
     let label = crate::widgets::fit(f, &label.to_uppercase(), &vs, 300.0);
     let w = text::measure(f, &label, &vs);
     text::draw(c, f, 440.0 - w, (cy + 4) as f32, &label, &vs);
@@ -1741,8 +1753,8 @@ mod tests {
                 ArtistGroup { artist: "Two".into(), albums: vec![album("B1", "Two", 4)] },
             ],
             artists: Vec::new(),
-            thumbs: Default::default(), genres: Vec::new(), filter_genre: None,
             playlists: Vec::new(),
+            thumbs: Default::default(), genres: Vec::new(), ..Default::default()
         }
     }
 
@@ -1829,8 +1841,8 @@ mod tests {
             ],
             album_groups: Vec::new(),
             artists: Vec::new(),
-            thumbs: Default::default(), genres: Vec::new(), filter_genre: None,
             playlists: Vec::new(),
+            thumbs: Default::default(), genres: Vec::new(), ..Default::default()
         };
         // added: song 1 newest, 3 oldest. album order: song 2 first. year: song 3 newest.
         l.songs[0] = SongRow { added: 300, album_id: 5, disc: 1, track: 9, year: 2000, ..l.songs[0].clone() };
@@ -1876,7 +1888,7 @@ mod tests {
             album_groups: Vec::new(),
             artists: Vec::new(),
             playlists: Vec::new(),
-            thumbs: Default::default(), genres: Vec::new(), filter_genre: None,
+            thumbs: Default::default(), genres: Vec::new(), ..Default::default()
         }
     }
 
@@ -2073,23 +2085,34 @@ pub const GENRE_RH: i32 = 56;
 /// Screen-y of the first picker row.
 pub const GENRE_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
-/// Total scrollable height: the "All genres" row plus one per genre.
+/// Rows above the genre list: 0 = the "Hi-Res only" toggle, 1 = "All genres".
+///
+/// Hi-Res lives IN the sheet rather than as a second control on the 32px strip. Splitting that
+/// strip would have made two small targets out of one already-small one, on a device whose only
+/// input is a finger — and the two axes AND together, so a sheet that shows both at once is also
+/// the honest picture of what is filtering.
+pub const GENRE_HEAD_ROWS: usize = 2;
+pub const GENRE_ROW_HIRES: usize = 0;
+pub const GENRE_ROW_ALL: usize = 1;
+
+/// Total scrollable height: the two header rows plus one per genre.
 pub fn genre_content_h(lib: &Library) -> i32 {
-    (lib.genres.len() as i32 + 1) * GENRE_RH
+    (lib.genres.len() + GENRE_HEAD_ROWS) as i32 * GENRE_RH
 }
 
 pub fn genre_max_scroll_px(lib: &Library) -> i32 {
     (genre_content_h(lib) - (LIST_BOTTOM - GENRE_TOP)).max(0)
 }
 
-/// Which picker row is under `y` at this scroll? `Some(0)` is "All genres"; `Some(n)` is
-/// `lib.genres[n - 1]`. Shares its arithmetic with `genre_render`, so the two cannot disagree.
+/// Which picker row is under `y` at this scroll? `GENRE_ROW_HIRES` and `GENRE_ROW_ALL` are the two
+/// header rows; `Some(n)` beyond them is `lib.genres[n - GENRE_HEAD_ROWS]`. Shares its arithmetic
+/// with `genre_render`, so the two cannot disagree.
 pub fn genre_row_at(lib: &Library, y: i32, scroll_px: i32) -> Option<usize> {
     if !(GENRE_TOP..LIST_BOTTOM).contains(&y) {
         return None;
     }
     let r = ((y - GENRE_TOP + scroll_px.max(0)) / GENRE_RH) as usize;
-    (r <= lib.genres.len()).then_some(r)
+    (r < lib.genres.len() + GENRE_HEAD_ROWS).then_some(r)
 }
 
 pub fn genre_render(
@@ -2103,23 +2126,28 @@ pub fn genre_render(
     let scroll = scroll_px.clamp(0, genre_max_scroll_px(lib));
     c.fill(t.bg);
     let cap = format!("{} GENRES", lib.genres.len());
-    let y0 = crate::chrome::header(c, t, f, "Genre", Some(&cap));
+    let y0 = crate::chrome::header(c, t, f, "Filter", Some(&cap));
     c.set_clip_y(y0, LIST_BOTTOM);
 
     // Only the visible window, like every other long list here — 95 rows is more than a screen.
     let first = ((scroll / GENRE_RH).max(0)) as usize;
-    for r in first..=lib.genres.len() {
+    for r in first..lib.genres.len() + GENRE_HEAD_ROWS {
         let y = GENRE_TOP + r as i32 * GENRE_RH - scroll;
         if y >= LIST_BOTTOM {
             break;
         }
-        let (name, count, id) = if r == 0 {
-            ("All genres".to_string(), lib.songs.len() as u32, None)
-        } else {
-            let g = &lib.genres[r - 1];
-            (g.name.clone(), g.tracks, Some(g.id))
+        // The Hi-Res row is a TOGGLE, so it shows its own on-state; the genre rows are a
+        // single-choice list, so exactly one of them is lit.
+        let (name, count, on) = match r {
+            GENRE_ROW_HIRES => ("Hi-Res only".to_string(), lib.hires_tracks, lib.filter_hires),
+            GENRE_ROW_ALL => {
+                ("All genres".to_string(), lib.songs.len() as u32, lib.filter_genre.is_none())
+            }
+            _ => {
+                let g = &lib.genres[r - GENRE_HEAD_ROWS];
+                (g.name.clone(), g.tracks, lib.filter_genre == Some(g.id))
+            }
         };
-        let on = lib.filter_genre == id;
         if on {
             fill_rect(c, 0, y, W as i32, GENRE_RH, t.row_sel);
             fill_rect(c, 0, y, 4, GENRE_RH, t.acc);
@@ -2131,7 +2159,9 @@ pub fn genre_render(
         let cl = format!("{count}");
         let w = text::measure(f, &cl, &cs);
         text::draw(c, f, 452.0 - w, (cy + 5) as f32, &cl, &cs);
-        hline(c, y + GENRE_RH, t.line);
+        // The two axes are independent, so the sheet says so: a rule under the Hi-Res row that is
+        // heavier than the row separators, rather than letting it read as the first genre.
+        hline(c, y + GENRE_RH, if r == GENRE_ROW_HIRES { t.dim } else { t.line });
     }
     c.clear_clip();
     scrollbar(c, t, GENRE_TOP, scroll, genre_content_h(lib), sbar_active);

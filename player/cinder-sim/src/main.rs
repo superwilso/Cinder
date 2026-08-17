@@ -384,6 +384,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         }
         Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0, 0),
         Screen::Sound => sound::render(c, theme, fonts, &Sound {
+            balance: cinder_ui::sound::BALANCE_CENTRE, balance_drag: false,
             dsee: app.dsee, vinyl: app.vinyl, vpt: VPTS[app.vpt], dcphase: DCS[app.dc],
             normalizer: app.normalizer, clearaudio: app.clearaudio, eq_preset: EQ_PRESETS[app.eq_preset].0,
             bt_codec: if app.bt_on && app.bt_conn.is_some() { Some(BT_CODECS[app.bt_codec]) } else { None },
@@ -395,6 +396,9 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             connected: app.bt_conn.map(|r| PAIRED[r].name),
             link_known: true, // the sim always "knows" — it owns its own mock link state
             codec_sel: app.bt_codec as u8,
+            // The sim mocks a link that always got what it asked for; the real one reads it back
+            // from GetSoundStatus and can disagree with the selection.
+            link_codec: app.bt_conn.map(|_| 0x02u8),
             ldac_quality: 0,
             enhanced: true,
             enhanced_supported: true,

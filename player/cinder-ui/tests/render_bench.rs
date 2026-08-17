@@ -133,7 +133,7 @@ fn bench_library_tabs() {
         });
         album_groups.push(ArtistGroup { artist: name, albums });
     }
-    let mut lib = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), filter_genre: None };
+    let mut lib = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
     println!("library: {} songs, {} albums, {} artists",
         lib.songs.len(), lib.album_count(), lib.artists.len());
 
@@ -207,6 +207,7 @@ fn bench_derived_state() {
                     title: format!("{an} track {i:02}"), artist: name.clone(), dur: "3:20".into(),
                     art: an.clone(), object_id: aid * 100 + i, album_id: aid,
                     disc: 1, track: i as i32, added: aid, year: 2019, genre_id: (i % 3) + 1,
+                    is_hires: i % 7 == 0,
                 })
                 .collect();
             songs.extend(track_list.iter().cloned());
@@ -218,7 +219,7 @@ fn bench_derived_state() {
         album_groups.push(ArtistGroup { artist: name, albums });
     }
     let lib = Library { songs, album_groups, artists: Vec::new(), playlists: Vec::new(),
-                        thumbs: Default::default(), genres: Vec::new(), filter_genre: None };
+                        thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
     println!("library: {} songs, {} albums", lib.songs.len(), lib.album_count());
 
     let n = 200;

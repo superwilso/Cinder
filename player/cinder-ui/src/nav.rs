@@ -66,6 +66,13 @@ pub enum Screen {
     /// 95 genres on the reference device is too many for a chip cycle and too few to deserve its
     /// own place in the tab strip.
     GenreFilter,
+    /// Folder browse — the file tree as it is on the volume. Its own screen rather than a fifth
+    /// Library tab: the tab strip is a flat set of four peers, and a folder view is a STACK you
+    /// descend, so it needs Back to mean "up one level" rather than "leave the library".
+    Folders,
+    /// Track information — Sony's "Detailed Information". Pushed by tapping the title/artist/codec
+    /// block on Now Playing, which is where the eye already is when the question comes up.
+    TrackInfo,
     /// Sentinel for the Menu row that opens the Shelf. The Shelf is a bottom-sheet OVERLAY (see
     /// `shelf_open`), never pushed onto the route stack — selecting this row calls `open_shelf()`.
     Shelf,
@@ -154,6 +161,10 @@ pub enum Action {
     BtPromptCancel,
     BatteryCareChanged(bool), // shell calls PowerMgrServiceClient::EnableItawariCharging
     SoundChanged,             // shell reads cinder_get_sound_flags + applies via EffectCtrlDmp
+    /// Balance only. Deliberately NOT SoundChanged: that action re-applies the whole DSP chain
+    /// (six EffectCtrlDmp round trips) plus a settings write, and the balance slider emits on every
+    /// motion event. This one lands on a single cached amixer call.
+    BalanceChanged,
     SoundBypass(bool),        // A/B: true = bypass whole chain (B), false = re-enable (A)
     SleepTimer(u32),          // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
     ShuffleToggle,            // Now Playing shuffle on/off (FFI rebuilds the active context)
@@ -183,6 +194,11 @@ pub enum Action {
     ScreenOffTimer(u32),      // idle screen-off timeout in seconds (0 = off); the shell counts idle
     BootToStock,              // arm a ONE-SHOT boot into Sony's player, then restart
     ToggleLiked,              // heart the currently playing track (cinder-ffi owns the set)
+    /// Every preference just went back to its default (Settings ▸ Reset settings). The shell
+    /// re-applies the whole chain from the UI's new state — EQ, sound effects, balance, high gain,
+    /// backlight, volume — rather than being told about each one, because the point of a reset is
+    /// that EVERYTHING moved and enumerating them here would be one more list to keep in step.
+    SettingsReset,
 }
 
 /// The Menu rows, in display order — index ↔ destination Screen. Matches the prototype's 10 rows;
@@ -196,9 +212,12 @@ pub enum Action {
 // on a device with 304 albums, "88.6 MHz" for a tuner that isn't wired, "Custom A1" regardless of
 // the selected EQ preset, and "WH-1000XM5 · LDAC" naming a pair of headphones that were never
 // connected. A subtitle that states something false is worse than no subtitle.
-const MENU: [(Screen, &str, &str, &str); 11] = [
+const MENU: [(Screen, &str, &str, &str); 12] = [
     (Screen::NowPlaying, "note", "Now Playing", ""),   // live: current track · elapsed
     (Screen::Library, "library", "Library", ""),      // live: album/track counts
+    // Folder browse — the file tree as it is on the volume. Not a fifth Library tab: the strip is
+    // four flat peers and this is a stack you descend, where Back has to mean "up one level".
+    (Screen::Folders, "library", "Folders", ""),      // live: folder/track counts
     (Screen::UpNext, "queue", "Up Next", ""),         // live: queue length
     (Screen::Fm, "radio", "FM Radio", ""),            // tuner not wired — claim nothing
     (Screen::Eq, "eq", "Equalizer", ""),              // live: selected preset
@@ -243,6 +262,7 @@ pub fn screen_off_label(secs: u32) -> String {
 pub(crate) struct MenuSubtitles {
     pub now_playing: String,
     pub library: String,
+    pub folders: String,
     pub queue: String,
     pub eq: String,
     pub sound: String,
@@ -387,6 +407,12 @@ enum Scrub {
     Progress,
     /// Settings ▸ UI scale slider.
     UiScale,
+    /// Sound ▸ L/R balance slider. Applies LIVE on every motion event rather than at release: the
+    /// point of dragging a balance control is hearing the image move under your finger. The cost is
+    /// bounded because the shell's `apply_balance` caches the last raw pair and skips the mixer
+    /// write when it hasn't changed — a full sweep is 100 UI steps but only ~24 distinct
+    /// attenuation values per side.
+    Balance,
 }
 
 pub struct App {
@@ -519,6 +545,10 @@ pub struct App {
     /// `bt_ldac_quality` indexes bluetooth::QUALITIES (0 = Auto). Persisted; applied by the shell.
     bt_codec: u8,
     bt_ldac_quality: u8,
+    /// The codec the LIVE LINK negotiated (raw `BtSoundCodec` from `GetSoundStatus`), pushed by the
+    /// shell. NOT persisted and NOT a preference — it is a property of the current connection, so
+    /// it must be cleared the moment the link drops rather than lingering as a stale claim.
+    bt_link_codec: Option<u8>,
     /// Sony's "Use Enhanced Mode" — `BtTransmitterService::SetControlAbsoluteVolume`. Persisted
     /// intent; the shell pushes it at the radio on change and after every reconnect. Default ON:
     /// Sony's own help text is "select this check box if you cannot change the volume", and the
@@ -561,6 +591,8 @@ pub struct App {
     snd_dc: bool,
     snd_norm: bool,
     snd_clear: bool,
+    /// L/R balance position 0..=100, 50 = centre. Persisted alongside the other sound settings.
+    snd_balance: usize,
     /// A/B compare on the Sound screen: false = A (effects active), true = B (whole chain bypassed,
     /// "direct"). The Option button flips it for an instant listen test; the shell calls the DSP
     /// bypass. Independent of the per-effect toggles — flipping back to A restores them.
@@ -643,6 +675,25 @@ pub struct App {
     auto_off_min: u32,
     /// Genre picker scroll offset.
     genre_scroll_px: i32,
+    /// Track-information rows, `(label, value)`, pushed by the shell whenever the track changes.
+    /// Owned strings rather than a typed view: see `track_info` for why the shape is a list.
+    /// Where we are in the folder tree: indices into `lib.folders`, root-first. Empty = the list
+    /// of storage roots. A stack rather than a single index, because Back has to walk up and the
+    /// parent link alone would not restore the scroll offset of each level.
+    folder_stack: Vec<usize>,
+    folder_scroll_px: i32,
+    /// One saved scroll offset per level already descended, so coming back up puts the folder you
+    /// went into back under your finger instead of at the top of a hundred-row list.
+    folder_scroll_saved: Vec<i32>,
+    track_info: Vec<(String, String)>,
+    track_info_scroll_px: i32,
+    /// Measured content height of the track-info list, refreshed on every paint of that screen.
+    ///
+    /// It cannot be computed where the rows are SET: the height depends on how many lines each
+    /// value wraps to, wrapping needs font metrics, and `set_track_info` has no `FontSet` — only
+    /// `render` does. Caching the render's own measurement is exact and costs nothing, and the
+    /// ordering is safe: a screen has to be painted before a finger can drag it.
+    track_info_h: i32,
     /// Memoised A-Z rail map, keyed on (tab, songs sort, albums order). See `az_present_memo`.
     az_memo: Option<((u8, usize, usize), [bool; 27])>,
     /// Does the queue still follow playback? True until the user scrolls it themselves; reset on
@@ -710,6 +761,7 @@ impl Default for App {
             bt_on: true,
             bt_codec: 0,        // LDAC
             bt_ldac_quality: 0, // Auto
+            bt_link_codec: None,
             bt_enhanced: true,
             bt_enhanced_supported: true,
             usb_dac_on: false,
@@ -726,6 +778,7 @@ impl Default for App {
             snd_dc: false,
             snd_norm: false,
             snd_clear: false,
+            snd_balance: crate::sound::BALANCE_CENTRE,
             snd_ab_bypass: false,
             sound_sel: 0,
             storage: String::new(),
@@ -767,6 +820,12 @@ impl Default for App {
             auto_off_idx: 0,
             auto_off_min: 0,   // OFF by default — see AUTO_OFF_PRESETS
             genre_scroll_px: 0,
+            folder_stack: Vec::new(),
+            folder_scroll_px: 0,
+            folder_scroll_saved: Vec::new(),
+            track_info: Vec::new(),
+            track_info_scroll_px: 0,
+            track_info_h: 0,
             az_memo: None,
         }
     }
@@ -781,6 +840,58 @@ impl App {
     /// lock screen would just get in the way of confirming the panel paints).
     pub fn unlocked() -> Self {
         App { stack: vec![Screen::NowPlaying], locked: false, ..Self::default() }
+    }
+
+    /// Settings ▸ Reset settings, confirmed. Every preference goes back to its default.
+    ///
+    /// It rebuilds from `App::default()` and carries a SHORT list of things forward, rather than
+    /// assigning defaults field by field. That is the whole point: this file has ~95 fields and
+    /// gains one most weeks, so a hand-written reset is a list that silently stops being complete.
+    /// Inverting it means a new preference is reset for free and only genuinely non-preference
+    /// state has to be named here.
+    ///
+    /// What survives, and why:
+    ///   * the LIBRARY — a reset of preferences must not look like a wipe (its filters do reset;
+    ///     a filter is a preference and an invisible one is exactly what a reset is for);
+    ///   * WHAT IS PLAYING — context, queue, position and the un-shuffle order. Silencing the
+    ///     music to change a theme default would be its own bug;
+    ///   * the SHELF PINS — bookmarks the user placed by hand, i.e. their data, not a setting;
+    ///   * the HOLD switch — hardware truth. Resetting `locked` to its default would leave the
+    ///     UI unlocked with the physical switch still engaged, which is precisely the desync
+    ///     fixed by reading `EVIOCGKEY` at boot;
+    ///   * the SCREEN we are on, so the confirmation lands back on Settings.
+    pub fn reset_settings(&mut self) -> Vec<Action> {
+        let mut lib = std::mem::take(&mut self.lib);
+        lib.filter_genre = None;
+        lib.filter_hires = false;
+        let keep = (
+            std::mem::take(&mut self.context),
+            self.context_idx,
+            std::mem::take(&mut self.queue),
+            self.pre_shuffle.take(),
+            std::mem::take(&mut self.pins),
+            self.locked,
+            self.playing,
+        );
+        *self = App {
+            lib,
+            context: keep.0,
+            context_idx: keep.1,
+            queue: keep.2,
+            pre_shuffle: keep.3,
+            pins: keep.4,
+            locked: keep.5,
+            playing: keep.6,
+            stack: vec![Screen::Settings],
+            settings_sel: crate::settings::ROW_RESET,
+            // The intro is not shown again: it was completed once, and re-running it would make a
+            // settings reset look like a factory reset.
+            onboarding_seen: true,
+            ..App::default()
+        };
+        self.toast = "Settings reset".to_string();
+        self.toast_frames = TOAST_FRAMES;
+        vec![Action::SettingsReset]
     }
 
     /// The physical Hold/lock SWITCH changed state. `held` = the switch is now engaged: lock the
@@ -874,6 +985,9 @@ impl App {
                 self.onboarding_page = 0; // re-open the intro from the start
                 self.push(Screen::Onboarding);
             }
+            // Not a bare push: entering the tree has to reset the descent stack and skip the
+            // single-root level, which is what open_folders is for.
+            Screen::Folders => self.open_folders(),
             target => self.push(target),
         }
     }
@@ -1106,6 +1220,98 @@ impl App {
         });
     }
 
+    // ── Playback persistence ────────────────────────────────────────────────────────────────
+    // A reboot used to throw the whole sequence away: play an album, power the player off, come
+    // back to an empty Up Next with no idea where you were. Sony resumes; so does this.
+    //
+    // OBJECT IDS ONLY, never rows. The context can be the entire library after a "Shuffle all"
+    // (3.6k tracks), and writing the titles/artists back out would be ~250 KB of duplicated
+    // strings on a flash volume, to answer a question 8 bytes a track already answers. The shell
+    // resolves the ids against the library it has just opened, so a file deleted between boots
+    // simply drops out of the restored sequence instead of resurrecting a dead path.
+
+    /// Serialise the playback context, the user queue and the un-shuffle order as id lists.
+    pub fn playback_encode(&self) -> String {
+        use std::fmt::Write as _;
+        // Written once a second to be compared against the last body, so it reserves rather than
+        // growing: the whole-library context is 3.6k ids and re-growing that string every tick is
+        // the one avoidable cost on this path.
+        let cap = (self.context.len() * 2 + self.queue.len()) * 7 + 32;
+        let mut s = String::with_capacity(cap);
+        let push_ids = |s: &mut String, it: &mut dyn Iterator<Item = i64>| {
+            for (i, id) in it.enumerate() {
+                if i > 0 {
+                    s.push(',');
+                }
+                let _ = write!(s, "{id}");
+            }
+        };
+        s.push_str("ctx=");
+        push_ids(&mut s, &mut self.context.iter().map(|r| r.object_id));
+        let _ = write!(s, "\nidx={}\nq=", self.context_idx);
+        push_ids(&mut s, &mut self.queue.iter().map(|r| r.object_id));
+        s.push('\n');
+        if let Some(pre) = &self.pre_shuffle {
+            s.push_str("pre=");
+            push_ids(&mut s, &mut pre.iter().copied());
+            s.push('\n');
+        }
+        s
+    }
+
+    /// Put a decoded context back. Rows come from the shell, which resolves the persisted ids
+    /// against the library. Deliberately NOT `set_play_context`: that one is the "the user just
+    /// started something" path and clears the queue, re-arms the follow and drops the un-shuffle
+    /// order — all of which is exactly what a restore must preserve.
+    pub fn playback_restore(
+        &mut self,
+        ctx: Vec<SongRow>,
+        idx: usize,
+        queue: Vec<SongRow>,
+        pre: Option<Vec<i64>>,
+    ) {
+        self.context_idx = idx.min(ctx.len().saturating_sub(1));
+        self.context = ctx;
+        self.queue = queue;
+        // Keep an un-shuffle order only while it still describes THIS context. A track deleted
+        // between boots shortens one list and not the other, and `unshuffle_context` ranks by
+        // position in the saved order — so a stale one would silently drop every track it no
+        // longer mentions the first time shuffle went off.
+        self.pre_shuffle = pre.filter(|p| p.len() == self.context.len());
+        self.queue_scroll_px = 0;
+        self.queue_drag = None;
+        self.queue_follow = true;
+        self.up_next_cur = None;
+    }
+
+    /// True when there is a sequence worth persisting (or, after a restore, worth handing to
+    /// PlayerService on the first press of ▶).
+    pub fn has_playback_state(&self) -> bool {
+        !self.context.is_empty() || !self.queue.is_empty()
+    }
+
+    // ── Track information ───────────────────────────────────────────────────────────────────
+
+    /// Replace the track-information rows. Called by the shell on every track change, so the
+    /// screen is already correct the moment it is opened rather than fetching on entry.
+    ///
+    /// Resets the scroll: these are a DIFFERENT track's rows, and inheriting the last one's offset
+    /// would open the screen part-way down a shorter list.
+    pub fn set_track_info(&mut self, rows: Vec<(String, String)>) {
+        self.track_info = rows;
+        self.track_info_scroll_px = 0;
+        self.track_info_h = 0;
+    }
+
+    pub fn track_info_rows(&self) -> &[(String, String)] {
+        &self.track_info
+    }
+
+    /// How far the track-information list can scroll, from the height its last paint measured.
+    fn track_info_max_scroll(&self) -> i32 {
+        (self.track_info_h - (crate::track_info::BOTTOM - crate::track_info::TOP)).max(0)
+    }
+
     /// True when the Now Playing screen is showing (so the shell only animates the visualiser
     /// there — animating elsewhere would waste battery under dirty-flag rendering).
     pub fn is_now_playing(&self) -> bool {
@@ -1141,9 +1347,77 @@ impl App {
         }
     }
     fn pop(&mut self) {
+        // Back inside the folder tree means UP ONE LEVEL, not "leave the library". Only at the
+        // top of the tree does it pop the screen — which is the whole reason folder browse is its
+        // own screen rather than a fifth Library tab.
+        if self.current() == Screen::Folders && !self.folder_stack.is_empty() {
+            self.folder_stack.pop();
+            // Put the folder you came out of back under your finger. Without this, walking back
+            // up a hundred-row root drops you at the top every time.
+            self.folder_scroll_px = self.folder_scroll_saved.pop().unwrap_or(0);
+            self.fling_v = 0.0;
+            return;
+        }
         if self.stack.len() > 1 {
             self.boot_stock_armed = false;
             self.stack.pop();
+        }
+    }
+
+    // ── Folder browse ───────────────────────────────────────────────────────────────────────
+
+    /// The directory currently being shown; `None` = the list of storage roots.
+    fn folder_cur(&self) -> Option<usize> {
+        self.folder_stack.last().copied()
+    }
+
+    /// Open folder browse at the top. With a single storage volume the root list would be one row
+    /// you always have to tap through, so that level is skipped — it only appears when a microSD
+    /// is present and there is a genuine choice to make.
+    pub fn open_folders(&mut self) {
+        self.folder_stack.clear();
+        self.folder_scroll_saved.clear();
+        self.folder_scroll_px = 0;
+        self.fling_v = 0.0;
+        if self.lib.folder_roots.len() == 1 {
+            self.folder_stack.push(self.lib.folder_roots[0]);
+        }
+        self.push(Screen::Folders);
+    }
+
+    /// Descend into `i`, remembering where we were so Back can restore it.
+    fn folder_enter(&mut self, i: usize) {
+        if i >= self.lib.folders.len() {
+            return;
+        }
+        self.folder_scroll_saved.push(self.folder_scroll_px);
+        self.folder_stack.push(i);
+        self.folder_scroll_px = 0;
+        self.fling_v = 0.0;
+    }
+
+    /// Play the current directory's tracks, starting at `i`. The CONTEXT is the folder — which is
+    /// the point of browsing this way: what follows should be the rest of the folder, in the order
+    /// the files are in, not whatever the last album left behind.
+    fn folder_play(&mut self, i: usize) -> Vec<Action> {
+        let Some(rows) = self.folder_cur().and_then(|d| self.lib.folders.get(d)).map(|d| d.tracks.clone())
+        else {
+            return vec![];
+        };
+        let Some(id) = rows.get(i).map(|t| t.object_id) else { return vec![] };
+        // start_play raises the "you have a queue" prompt where one is needed; the shell resolves
+        // the object_id into a sequence exactly as it does for a library tap.
+        self.start_play(id)
+    }
+
+    fn tap_folders(&mut self, y: i32) -> Vec<Action> {
+        match crate::folders::row_at(&self.lib, self.folder_cur(), y, self.folder_scroll_px) {
+            Some(crate::folders::Row::Dir(i)) => {
+                self.folder_enter(i);
+                vec![]
+            }
+            Some(crate::folders::Row::Track(i)) => self.folder_play(i),
+            None => vec![],
         }
     }
 
@@ -1160,6 +1434,13 @@ impl App {
                 String::from("Empty")
             } else {
                 format!("{} albums · {} tracks", self.lib.album_count(), self.lib.songs.len())
+            },
+            // Counts the DIRECTORIES, which is the thing this row leads to — the track total is
+            // already on the Library row above it and repeating it would say nothing new.
+            folders: match self.lib.folders.len() {
+                0 => String::from("Empty"),
+                1 => String::from("1 folder"),
+                n => format!("{n} folders"),
             },
             queue: if self.queue.is_empty() {
                 String::from("Queue empty")
@@ -1241,6 +1522,10 @@ impl App {
                 self.confirm = Some(crate::confirm::Ask::PowerOff);
                 vec![]
             }
+            crate::settings::ROW_RESET => {
+                self.confirm = Some(crate::confirm::Ask::ResetSettings);
+                vec![]
+            }
             crate::settings::ROW_BOOT_STOCK => {
                 // Two-step: arm, then act. This reboots the device, so it must not be one stray tap.
                 if self.boot_stock_armed {
@@ -1291,9 +1576,28 @@ impl App {
             3 => self.snd_dc = !self.snd_dc,
             4 => self.snd_norm = !self.snd_norm,
             5 => self.snd_clear = !self.snd_clear,
+            // Balance is a slider, not a toggle. Select on it means "back to centre" — the one
+            // thing a button can usefully do to a continuous control, and the position a user is
+            // most likely to want back.
+            crate::sound::ROW_BALANCE => self.snd_balance = crate::sound::BALANCE_CENTRE,
             _ => {}
         }
         vec![Action::SoundChanged]
+    }
+
+    /// Left/Right on the Sound screen. On the slider row it nudges the balance a step; on every
+    /// other row it toggles, which is what it did before the slider existed.
+    fn sound_lr(&mut self, dir: i32) -> Vec<Action> {
+        if self.sound_sel != crate::sound::ROW_BALANCE {
+            return self.sound_toggle_row();
+        }
+        const STEP: i32 = 5;
+        let want = (self.snd_balance as i32 + dir * STEP).clamp(0, crate::sound::BALANCE_MAX as i32);
+        if want as usize == self.snd_balance {
+            return vec![];
+        }
+        self.snd_balance = want as usize;
+        vec![Action::BalanceChanged]
     }
 
     /// A touchscreen TAP at UI coordinates (x: 0..480, y: 0..800). The NW-A55 has no d-pad, so touch
@@ -1328,6 +1632,7 @@ impl App {
                 crate::confirm::Hit::Confirm => match ask {
                     crate::confirm::Ask::Restart => vec![Action::Restart],
                     crate::confirm::Ask::PowerOff => vec![Action::PowerOff],
+                    crate::confirm::Ask::ResetSettings => self.reset_settings(),
                     // The menus never produce a bare Confirm (their hit test returns named rows).
                     _ => vec![],
                 },
@@ -1422,6 +1727,16 @@ impl App {
                 if crate::now_playing::hit_heart(x, y) {
                     return vec![Action::ToggleLiked];
                 }
+                // The metadata block IS the button for "tell me more about this file". Sony puts
+                // the same screen behind an options menu; Cinder has no options menu on Now
+                // Playing, and hanging it off the text the question is about needs no new
+                // furniture. Tested after the heart (which overlaps this band on the right) and
+                // before the transport row (which is well below it).
+                if crate::now_playing::hit_info(x, y) {
+                    self.track_info_scroll_px = 0;
+                    self.push(Screen::TrackInfo);
+                    return vec![];
+                }
                 if hit(240, 692, 44) {
                     self.playing = !self.playing;
                     vec![Action::PlayPause]
@@ -1461,6 +1776,7 @@ impl App {
                     vec![]
                 }
             }
+            Screen::Folders => self.tap_folders(y),
             Screen::Library => self.tap_library(x, y),
             Screen::Album => {
                 // track rows via the render-mirroring hit test (rows start 312 @56 —
@@ -1534,11 +1850,30 @@ impl App {
             }
             Screen::GenreFilter => {
                 if let Some(r) = library::genre_row_at(&self.lib, y, self.genre_scroll_px) {
-                    // Row 0 is "All genres", i.e. clear. Setting and clearing are the same gesture
-                    // so the screen needs no second control.
-                    let want = if r == 0 { None } else { self.lib.genres.get(r - 1).map(|g| g.id) };
-                    if want != self.lib.filter_genre {
-                        self.lib.filter_genre = want;
+                    let changed = match r {
+                        // A TOGGLE, and the one row that does not close the sheet: Hi-Res and a
+                        // genre AND together, so setting one and then the other has to be possible
+                        // without walking back in.
+                        library::GENRE_ROW_HIRES => {
+                            self.lib.filter_hires = !self.lib.filter_hires;
+                            true
+                        }
+                        // "All genres" clears the genre axis. Setting and clearing are the same
+                        // gesture, so the screen needs no second control for it.
+                        library::GENRE_ROW_ALL => {
+                            let changed = self.lib.filter_genre.is_some();
+                            self.lib.filter_genre = None;
+                            changed
+                        }
+                        _ => {
+                            let want =
+                                self.lib.genres.get(r - library::GENRE_HEAD_ROWS).map(|g| g.id);
+                            let changed = want != self.lib.filter_genre;
+                            self.lib.filter_genre = want;
+                            changed
+                        }
+                    };
+                    if changed {
                         // The visible set just changed, so anything derived from it is stale: the
                         // A-Z map, the scroll offset (the list is shorter now) and any coasting fling.
                         self.az_memo = None;
@@ -1547,8 +1882,11 @@ impl App {
                         self.lib_idx = 0;
                         self.album_expanded = None;
                     }
-                    // Back to the list either way — you came here to answer one question.
-                    self.pop();
+                    // Back to the list on a genre choice — you came here to answer one question.
+                    // The Hi-Res toggle stays, because it is the one row you might want to combine.
+                    if r != library::GENRE_ROW_HIRES {
+                        self.pop();
+                    }
                 }
                 vec![]
             }
@@ -1582,6 +1920,19 @@ impl App {
                 }
                 if let Some(row) = crate::sound::row_at(y) {
                     self.sound_sel = row;
+                    // On the slider row a tap inside the grab band JUMPS the knob to the finger
+                    // (the same gesture as a drag that never moved), while a tap on the label half
+                    // only moves focus — so reading the row can't silently change the setting.
+                    if row == crate::sound::ROW_BALANCE {
+                        if crate::sound::balance_grab(y) {
+                            let want = crate::sound::balance_at(x);
+                            if want != self.snd_balance {
+                                self.snd_balance = want;
+                                return vec![Action::BalanceChanged];
+                            }
+                        }
+                        return vec![];
+                    }
                     return self.sound_toggle_row();
                 }
                 vec![]
@@ -2086,6 +2437,14 @@ impl App {
                 let max = library::genre_max_scroll_px(&self.lib);
                 self.genre_scroll_px = (self.genre_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::TrackInfo => {
+                let max = self.track_info_max_scroll();
+                self.track_info_scroll_px = (self.track_info_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::Folders => {
+                let max = crate::folders::max_scroll_px(&self.lib, self.folder_cur());
+                self.folder_scroll_px = (self.folder_scroll_px + dy_px).clamp(0, max);
+            }
             // The user queue drew from row 0 and stopped at the bottom of the panel, so anything
             // past ~10 tracks was unreachable — and unreorderable with it.
             Screen::UpNext => {
@@ -2153,6 +2512,18 @@ impl App {
                     false
                 }
             }
+            Screen::Sound => {
+                if crate::sound::row_at(y) == Some(crate::sound::ROW_BALANCE)
+                    && crate::sound::balance_grab(y)
+                {
+                    self.scrub = Scrub::Balance;
+                    self.sound_sel = crate::sound::ROW_BALANCE;
+                    self.snd_balance = crate::sound::balance_at(x);
+                    true
+                } else {
+                    false
+                }
+            }
             _ => false,
         }
     }
@@ -2169,6 +2540,17 @@ impl App {
                 crate::text::set_scale_idx(crate::settings::ui_scale_idx_at(x));
                 vec![]
             }
+            // Live, unlike the rail: you have to hear a balance change to aim it. Emits nothing
+            // when the finger moved inside the same slider step, so a slow drag doesn't queue an
+            // action per motion event.
+            Scrub::Balance => {
+                let want = crate::sound::balance_at(x);
+                if want == self.snd_balance {
+                    return vec![];
+                }
+                self.snd_balance = want;
+                vec![Action::BalanceChanged]
+            }
             Scrub::None => vec![],
         }
     }
@@ -2178,6 +2560,9 @@ impl App {
         let acts = match self.scrub {
             Scrub::Progress => vec![Action::Seek(self.scrub_permille)],
             Scrub::UiScale => vec![Action::UiScaleChanged],
+            // Already applied on every move; the release only has to get the final value written to
+            // the settings file, which SoundChanged does on top of re-applying the same balance.
+            Scrub::Balance => vec![Action::SoundChanged],
             Scrub::None => vec![],
         };
         self.scrub = Scrub::None;
@@ -2385,6 +2770,11 @@ impl App {
             Screen::GenreFilter => {
                 Some((library::genre_max_scroll_px(&self.lib), library::GENRE_TOP))
             }
+            Screen::TrackInfo => Some((self.track_info_max_scroll(), crate::track_info::TOP)),
+            Screen::Folders => Some((
+                crate::folders::max_scroll_px(&self.lib, self.folder_cur()),
+                crate::folders::TOP,
+            )),
             _ => None,
         }
     }
@@ -2423,6 +2813,8 @@ impl App {
             Screen::Playlist => self.playlist_scroll_px,
             Screen::UpNext => self.queue_scroll_px,
             Screen::GenreFilter => self.genre_scroll_px,
+            Screen::TrackInfo => self.track_info_scroll_px,
+            Screen::Folders => self.folder_scroll_px,
             _ => self.lib_scroll_px,
         }
     }
@@ -3425,8 +3817,11 @@ impl App {
                     }
                     vec![]
                 }
-                // Select/Left/Right toggles the focused effect; the shell applies it via EffectCtrlDmp.
-                Button::Select | Button::Left | Button::Right => self.sound_toggle_row(),
+                // Select toggles the focused effect (and recentres the balance); the shell applies
+                // it via EffectCtrlDmp. Left/Right nudges the slider when it has focus.
+                Button::Select => self.sound_toggle_row(),
+                Button::Left => self.sound_lr(-1),
+                Button::Right => self.sound_lr(1),
                 // Option = instant A/B compare: flip the whole-chain bypass to hear effects on vs off.
                 Button::Option => {
                     self.snd_ab_bypass = !self.snd_ab_bypass;
@@ -3498,9 +3893,10 @@ impl App {
                 } else {
                     format!("{} · {}", np.title, np.elapsed)
                 };
-                let (np_value, lib_value, queue_value, eq_value, sound_value, bt_value, usb_value) = (
-                    &subs.now_playing, &subs.library, &subs.queue, &subs.eq, &subs.sound,
-                    &subs.bluetooth, &subs.usb_dac,
+                let (np_value, lib_value, fold_value, queue_value, eq_value, sound_value,
+                     bt_value, usb_value) = (
+                    &subs.now_playing, &subs.library, &subs.folders, &subs.queue, &subs.eq,
+                    &subs.sound, &subs.bluetooth, &subs.usb_dac,
                 );
                 let items: Vec<MenuItem> = MENU
                     .iter()
@@ -3511,6 +3907,7 @@ impl App {
                         value: match *screen {
                             Screen::NowPlaying => &np_value,
                             Screen::Library => &lib_value,
+                            Screen::Folders => &fold_value,
                             Screen::UpNext => &queue_value,
                             Screen::Eq => &eq_value,
                             Screen::Sound => &sound_value,
@@ -3582,6 +3979,19 @@ impl App {
             Screen::GenreFilter => crate::library::genre_render(
                 c, &theme, fonts, &self.lib, self.genre_scroll_px, self.sbar_active(),
             ),
+            Screen::Folders => crate::folders::render(
+                c, &theme, fonts, &self.lib, self.folder_cur(), self.folder_scroll_px,
+                self.sbar_active(),
+            ),
+            Screen::TrackInfo => {
+                self.track_info_h = crate::track_info::content_h(fonts, &theme, &self.track_info);
+                let max = self.track_info_max_scroll();
+                self.track_info_scroll_px = self.track_info_scroll_px.clamp(0, max);
+                crate::track_info::render(
+                    c, &theme, fonts, &self.track_info, self.track_info_scroll_px,
+                    self.sbar_active(),
+                )
+            }
             Screen::UpNext => {
                 // ONE list, Apple Music order: history above, the playing track, then the user's
                 // own queue, then the rest of the album. This screen used to be two mutually
@@ -3650,8 +4060,21 @@ impl App {
                     dcphase: if self.snd_dc { "On" } else { "Off" },
                     normalizer: self.snd_norm,
                     clearaudio: self.snd_clear,
+                    balance: self.snd_balance,
+                    balance_drag: matches!(self.scrub, Scrub::Balance),
                     eq_preset: data::EQ_PRESETS[self.eq_preset].0,
-                    bt_codec: if self.bt_on { Some(crate::bluetooth::CODECS[self.bt_codec as usize].0) } else { None },
+                    // The signal path shows what is REALLY carrying the audio. Prefer the codec
+                    // the link negotiated; fall back to the preference only when nothing is
+                    // connected yet, where it is the honest statement of intent.
+                    bt_codec: if self.bt_on {
+                        self.bt_connected
+                            .as_ref()
+                            .and(self.bt_link_codec)
+                            .and_then(crate::bluetooth::link_codec_name)
+                            .or(Some(crate::bluetooth::CODECS[self.bt_codec as usize].0))
+                    } else {
+                        None
+                    },
                 };
                 crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.snd_ab_bypass)
             }
@@ -3672,6 +4095,10 @@ impl App {
                     link_known: self.bt_link_known,
                     codec_sel: self.bt_codec,
                     ldac_quality: self.bt_ldac_quality,
+                    // Only meaningful while something is actually connected. Gating on
+                    // bt_connected as well as the value keeps a codec byte from an old link out of
+                    // the "CONNECTED · …" tag on a screen that says nothing is connected.
+                    link_codec: self.bt_connected.as_ref().and(self.bt_link_codec),
                     enhanced: self.bt_enhanced,
                     enhanced_supported: self.bt_enhanced_supported,
                     connecting: self.bt_connecting.is_some(),
@@ -3987,9 +4414,27 @@ impl App {
         // The shell has now looked, whatever it found — so "No device connected" stops being a
         // guess and becomes an observation.
         let changed = next != self.bt_connected || !self.bt_link_known;
+        // A codec belongs to a LINK. When the peer goes away or changes, the last one we were told
+        // about stops being true — and a stale "CONNECTED · LDAC" on the next device would be a
+        // confident lie, which is the failure mode this screen was built to stop.
+        if next.is_none() || next != self.bt_connected {
+            self.bt_link_codec = None;
+        }
         self.bt_connected = next;
         self.bt_link_known = true;
         changed
+    }
+
+    /// Push the codec A2DP negotiated on the live link (raw `BtSoundCodec` from `GetSoundStatus`);
+    /// `None` clears it. Returns true if it moved, so the shell only repaints when it must.
+    pub fn set_bt_link_codec(&mut self, raw: Option<u8>) -> bool {
+        let changed = raw != self.bt_link_codec;
+        self.bt_link_codec = raw;
+        changed
+    }
+
+    pub fn bt_link_codec(&self) -> Option<u8> {
+        self.bt_link_codec
     }
 
     pub fn bt_connected(&self) -> Option<&str> {
@@ -4181,6 +4626,17 @@ impl App {
 
     /// Sound effect toggles as a bitmask for the shell to apply via EffectCtrlDmp:
     /// bit0 DSEE · bit1 Vinyl · bit2 VPT · bit3 DC-Phase · bit4 Normalizer · bit5 ClearAudio+.
+    /// L/R balance position, 0..=100 (50 = centre). Its own value rather than a bit in
+    /// `sound_flags`, which is a u8 of booleans.
+    pub fn balance(&self) -> usize {
+        self.snd_balance
+    }
+    /// Snap a loaded value into range, so a hand-edited settings file cannot park the knob off the
+    /// end of the track.
+    pub fn set_balance(&mut self, i: usize) {
+        self.snd_balance = i.min(crate::sound::BALANCE_MAX);
+    }
+
     pub fn sound_flags(&self) -> u8 {
         (self.snd_dsee as u8)
             | (self.snd_vinyl as u8) << 1
@@ -4450,6 +4906,7 @@ mod tests {
         let mut expected: Vec<String> = [
             Screen::NowPlaying, // no subtitle by design (the title is the screen)
             Screen::Library,
+            Screen::Folders,
             Screen::UpNext,
             Screen::Fm, // tuner not wired — deliberately says nothing
             Screen::Eq,
@@ -4708,11 +5165,17 @@ mod tests {
         assert_eq!(library::row_count(Tab::Songs, &a.lib), all, "clearing restores everything");
     }
 
-    /// The picker's rows and its hit test share their arithmetic, and row 0 is always "All genres"
-    /// so setting and clearing are the same gesture.
+    /// Screen-y of picker row `r` at scroll 0 — derived from the same constants the render uses,
+    /// so inserting a header row moves the test with the screen instead of breaking it.
+    fn picker_y(r: usize) -> i32 {
+        crate::library::GENRE_TOP + r as i32 * crate::library::GENRE_RH + crate::library::GENRE_RH / 2
+    }
+
+    /// The picker's rows and its hit test share their arithmetic, and the "All genres" row means
+    /// setting and clearing are the same gesture.
     #[test]
     fn the_genre_picker_maps_rows_to_genres_and_row_zero_clears() {
-        use crate::library;
+        use crate::library::{self, GENRE_HEAD_ROWS, GENRE_ROW_ALL};
         let mut a = unlocked();
         a.stack = vec![Screen::Library];
         a.lib_tab = crate::library::Tab::Songs;
@@ -4722,20 +5185,57 @@ mod tests {
         a.tap(240, y);
         assert_eq!(a.current(), Screen::GenreFilter);
 
-        // Row 1 is the first genre; picking it filters and returns to the list.
+        // The first row past the two headers is the first genre; picking it filters and leaves.
         let want = a.lib.genres[0].id;
-        let y1 = library::GENRE_TOP + library::GENRE_RH + library::GENRE_RH / 2;
-        assert_eq!(library::genre_row_at(&a.lib, y1, 0), Some(1));
+        let y1 = picker_y(GENRE_HEAD_ROWS);
+        assert_eq!(library::genre_row_at(&a.lib, y1, 0), Some(GENRE_HEAD_ROWS));
         a.tap(240, y1);
         assert_eq!(a.lib.filter_genre, Some(want));
         assert_eq!(a.current(), Screen::Library, "picking answers the question and leaves");
 
-        // Row 0 clears it.
+        // "All genres" clears it.
         a.tap(240, y);
-        let y0 = library::GENRE_TOP + library::GENRE_RH / 2;
-        assert_eq!(library::genre_row_at(&a.lib, y0, 0), Some(0));
+        let y0 = picker_y(GENRE_ROW_ALL);
+        assert_eq!(library::genre_row_at(&a.lib, y0, 0), Some(GENRE_ROW_ALL));
         a.tap(240, y0);
         assert_eq!(a.lib.filter_genre, None);
+    }
+
+    /// Hi-Res is the OTHER axis: it ANDs with the genre, it toggles rather than choosing, and it
+    /// is the one row that leaves the sheet open — because combining it with a genre is the whole
+    /// reason the two share a screen.
+    #[test]
+    fn hi_res_is_a_second_filter_axis_that_ands_with_the_genre() {
+        use crate::library::{GENRE_HEAD_ROWS, GENRE_ROW_HIRES};
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = crate::library::Tab::Songs;
+        let all = a.lib.songs.len();
+        let hires = a.lib.songs.iter().filter(|s| s.is_hires).count();
+        assert!(hires > 0 && hires < all, "the sample library must exercise both sides");
+
+        a.push(Screen::GenreFilter);
+        a.tap(240, picker_y(GENRE_ROW_HIRES));
+        assert!(a.lib.filter_hires);
+        assert_eq!(a.current(), Screen::GenreFilter, "the toggle does not close the sheet");
+        assert_eq!(a.lib.visible_songs(), hires);
+        assert_eq!(a.lib.filter_name().as_deref(), Some("Hi-Res"));
+
+        // Now add a genre on top: the two AND, and the strip says both.
+        let g = a.lib.genres[0].id;
+        a.tap(240, picker_y(GENRE_HEAD_ROWS));
+        assert_eq!(a.lib.filter_genre, Some(g));
+        assert!(a.lib.filter_hires, "choosing a genre does not clear Hi-Res");
+        let both = a.lib.songs.iter().filter(|s| s.is_hires && s.genre_id == g).count();
+        assert_eq!(a.lib.visible_songs(), both);
+        assert!(a.lib.filter_name().unwrap().contains("Hi-Res"));
+
+        // And toggling it back off leaves the genre alone.
+        a.push(Screen::GenreFilter);
+        a.tap(240, picker_y(GENRE_ROW_HIRES));
+        assert!(!a.lib.filter_hires);
+        assert_eq!(a.lib.filter_genre, Some(g));
+        assert!(a.lib.filtered());
     }
 
     /// A filter changes the visible set, so the scroll offset and the A-Z map derived from the old
@@ -4751,9 +5251,37 @@ mod tests {
         a.lib_scroll_px = 400;
 
         a.push(Screen::GenreFilter);
-        a.tap(240, library::GENRE_TOP + library::GENRE_RH + library::GENRE_RH / 2);
+        a.tap(240, picker_y(library::GENRE_HEAD_ROWS));
         assert_eq!(a.lib_scroll_px, 0);
         assert!(a.az_memo.is_none(), "the rail is indexed off the visible rows");
+    }
+
+    /// The filter strip and the shuffle band must not share an edge. They did, and the band is the
+    /// one that starts playing music — so every near-miss aimed at the filter shuffled the library
+    /// instead ("filter is hard to press under the shuffle by album", 2026-08-16).
+    #[test]
+    fn the_filter_strip_is_a_real_target_clear_of_the_shuffle_band() {
+        use crate::library::{self, Tab};
+        let (_, by, _, bh) = library::library_shuffle_band();
+        let band_bottom = by + bh;
+        assert!(library::filter_top() > band_bottom, "the strip starts inside the band");
+        assert!(
+            library::filter_top() - band_bottom >= 4,
+            "less than 4px of dead space between shuffle and filter"
+        );
+        // Big enough to hit: 44 is the smallest row this UI uses anywhere.
+        assert!(library::FILTER_H >= 44, "the strip is smaller than a usable row");
+        // The band must not answer for a tap on the strip, and vice versa.
+        for y in library::filter_top()..library::filter_top() + library::FILTER_H {
+            assert!(library::filter_hit(Tab::Songs, y), "y={y} is not on the strip");
+            assert!(y >= band_bottom, "y={y} is still inside the shuffle band");
+        }
+        assert!(!library::filter_hit(Tab::Songs, band_bottom), "the band's last row hits the strip");
+        // And the list still starts below the strip, with the gap accounted for.
+        assert!(
+            library::list_top(Tab::Songs) >= library::filter_top() + library::FILTER_H,
+            "the list draws underneath the strip"
+        );
     }
 
     /// The filter strip only exists on the two tabs a genre can scope, and `list_top` moves with it
@@ -4770,6 +5298,80 @@ mod tests {
             assert!(!library::has_filter(tab));
             assert!(!library::filter_hit(tab, library::filter_top() + 1));
         }
+    }
+
+    /// Balance cycles like the VPT and DC-Phase pills beside it, and wraps back to CENTRE — the
+    /// The balance slider: render geometry and hit test must agree, a drag must track the finger
+    /// across the whole track, and the ends must be reachable. `balance_x` and `balance_at` are
+    /// each other's inverse — if they drift, the knob sits somewhere your finger isn't, which is
+    /// the render-vs-hit defect this codebase keeps producing.
+    #[test]
+    fn the_balance_slider_tracks_the_finger_end_to_end() {
+        use crate::sound::{self, balance_label, BALANCE_CENTRE, BALANCE_MAX};
+        let mut a = unlocked();
+        assert_eq!(a.balance(), BALANCE_CENTRE, "centre is the default");
+
+        // Round trip: every position maps to an x that maps back to itself.
+        for pos in 0..=BALANCE_MAX {
+            let x = sound::balance_x(pos);
+            assert_eq!(sound::balance_at(x), pos, "position {pos} does not survive a round trip");
+        }
+        // Both stops are reachable, and past the ends pins rather than wrapping.
+        assert_eq!(sound::balance_at(sound::BAL_X0 - 40), 0);
+        assert_eq!(sound::balance_at(sound::BAL_X1 + 40), BALANCE_MAX);
+
+        // A drag: begin inside the grab band, move, release. The value follows the finger and the
+        // moves apply live (that is the point of a balance control).
+        a.stack = vec![Screen::Sound];
+        let ty = sound::bal_track_y();
+        assert!(a.scrub_begin(sound::balance_x(BALANCE_CENTRE), ty), "the grab band did not take");
+        let acts = a.scrub_move(sound::BAL_X0);
+        assert_eq!(a.balance(), 0, "the knob did not follow the finger");
+        assert!(acts.iter().any(|x| matches!(x, Action::BalanceChanged)), "no live apply");
+        // Moving within the same step emits nothing — otherwise a slow drag floods the shell.
+        assert!(a.scrub_move(sound::BAL_X0).is_empty(), "a no-op move still emitted");
+        assert!(a.scrub_end().iter().any(|x| matches!(x, Action::SoundChanged)), "not persisted");
+
+        // The grab band is a real touch target, not the 3px track.
+        assert!(sound::balance_grab(ty - 20) && sound::balance_grab(ty + 20));
+        // ...and it lives inside the Balance row, so it can't steal ClearAudio+'s taps.
+        assert_eq!(sound::row_at(ty), Some(sound::ROW_BALANCE));
+        assert_eq!(sound::row_at(sound::balance_top() - 1), Some(sound::ROW_BALANCE - 1));
+
+        // Select recentres — the one useful thing a button can do to a continuous control.
+        a.sound_sel = sound::ROW_BALANCE;
+        a.sound_toggle_row();
+        assert_eq!(a.balance(), BALANCE_CENTRE);
+        // Left/Right nudge instead of toggling.
+        a.press(Button::Left);
+        assert!(a.balance() < BALANCE_CENTRE, "Left did not nudge the slider");
+
+        // Labels say which way, and centre says neither.
+        assert_eq!(balance_label(BALANCE_CENTRE), "Centre");
+        assert_eq!(balance_label(0), "L 50");
+        assert_eq!(balance_label(BALANCE_MAX), "R 50");
+
+        // A hand-edited value is clamped rather than parking the knob off the end of the track.
+        a.set_balance(9999);
+        assert_eq!(a.balance(), BALANCE_MAX);
+    }
+
+    /// Bit 6 of the sound flags used to carry "high gain output". The row was cut (the codec
+    /// accepts the write and ignores it — see sound::ROWS), so the bit must now stay clear no
+    /// matter what the user does on the Sound screen: a stale set bit would be applied by an older
+    /// shell as a real mixer write.
+    #[test]
+    fn sound_flags_never_set_the_retired_high_gain_bit() {
+        let mut a = unlocked();
+        for row in 0..crate::sound::ROWS {
+            a.sound_sel = row;
+            a.sound_toggle_row();
+            assert_eq!(a.sound_flags() & (1 << 6), 0, "row {row} set the retired bit 6");
+        }
+        // And a settings file written by the OLD build, with bit 6 set, must not resurrect it.
+        let mut b = unlocked();
+        b.set_sound_flags(0xFF);
+        assert_eq!(b.sound_flags() & (1 << 6), 0, "bit 6 survived a restore");
     }
 
     /// EVERY Settings row must be reachable by a finger at some scroll position. This caught a real
@@ -5097,6 +5699,75 @@ mod tests {
         // A start index past the end cannot point outside the list.
         a.set_play_context(rows, 99);
         assert_eq!(a.context_idx(), 2);
+    }
+
+    /// A reboot used to throw the whole sequence away. Encode → decode has to bring back the
+    /// context, where we were in it, the user's own picks and the un-shuffle order — and it has
+    /// to keep them SEPARATE, which is the invariant `set_play_context` would break (it clears
+    /// the queue, and a restore must not).
+    #[test]
+    fn playback_state_survives_an_encode_decode_round_trip() {
+        let mut a = unlocked();
+        let rows: Vec<SongRow> = (0..6)
+            .map(|i| SongRow { title: format!("T{i}"), object_id: 100 + i, ..Default::default() })
+            .collect();
+        a.set_play_context(rows.clone(), 2);
+        a.enqueue_at(SongRow { title: "P0".into(), object_id: 900, ..Default::default() }, 0, QueueAt::Later);
+        a.enqueue_at(SongRow { title: "P1".into(), object_id: 901, ..Default::default() }, 0, QueueAt::Later);
+
+        let body = a.playback_encode();
+        assert!(body.contains("ctx=100,101,102,103,104,105"), "{body}");
+        assert!(body.contains("idx=2"), "{body}");
+        assert!(body.contains("q=900,901"), "{body}");
+        assert!(!body.contains("pre="), "nothing has been shuffled yet: {body}");
+
+        // The shell resolves the ids back to rows against the library; here, straight back.
+        let mut b = unlocked();
+        b.playback_restore(rows.clone(), 2, vec![
+            SongRow { title: "P0".into(), object_id: 900, ..Default::default() },
+            SongRow { title: "P1".into(), object_id: 901, ..Default::default() },
+        ], None);
+        assert_eq!(b.playback_encode(), body, "a round trip is not allowed to change anything");
+        assert_eq!(b.context_idx(), 2);
+        assert_eq!(b.queue().len(), 2, "the user's picks are NOT swallowed by the context");
+        assert!(b.has_playback_state());
+    }
+
+    /// The index is stored as a number but means "this track". If a file left the library between
+    /// boots the number now points at a different song, so a restore must clamp rather than
+    /// resume something the user never chose.
+    #[test]
+    fn a_restore_clamps_an_index_past_a_shortened_context() {
+        let mut a = unlocked();
+        let rows: Vec<SongRow> = (0..3)
+            .map(|i| SongRow { title: format!("T{i}"), object_id: 10 + i, ..Default::default() })
+            .collect();
+        a.playback_restore(rows, 99, vec![], None);
+        assert_eq!(a.context_idx(), 2);
+
+        // Empty everything: no context, no index, no panic, and nothing worth persisting.
+        let mut b = unlocked();
+        b.playback_restore(vec![], 7, vec![], None);
+        assert_eq!(b.context_idx(), 0);
+        assert!(!b.has_playback_state());
+    }
+
+    /// A saved un-shuffle order describes the context it was taken from. If the two no longer
+    /// agree — a track was deleted between boots — keeping it would make the next shuffle-off
+    /// reorder against a stale list and drop every track it no longer mentions.
+    #[test]
+    fn a_stale_unshuffle_order_is_dropped_on_restore() {
+        let rows: Vec<SongRow> = (0..3)
+            .map(|i| SongRow { title: format!("T{i}"), object_id: 10 + i, ..Default::default() })
+            .collect();
+
+        let mut good = unlocked();
+        good.playback_restore(rows.clone(), 0, vec![], Some(vec![12, 10, 11]));
+        assert!(good.playback_encode().contains("pre=12,10,11"), "a matching order is kept");
+
+        let mut stale = unlocked();
+        stale.playback_restore(rows, 0, vec![], Some(vec![12, 10, 11, 13]));
+        assert!(!stale.playback_encode().contains("pre="), "a mismatched order is dropped");
     }
 
     /// Build a 6-track album context with track `at` playing.
@@ -6072,12 +6743,8 @@ mod tests {
         let k0 = a.viz_kind();
         a.press(Button::Option);
         assert_eq!(a.viz_kind(), (k0 + 1) % crate::viz::COUNT);
-        // route to Settings (menu idx 9)
-        a.press(Button::Up); // Menu
-        for _ in 0..9 {
-            a.press(Button::Down);
-        }
-        a.press(Button::Select);
+        // route to Settings — by MENU lookup, not a press count
+        a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
         // cursor down to the Visualiser row and cycle it. Walk to the constant rather than
         // pressing a fixed number of times, so inserting a DISPLAY row above it can't silently
@@ -6115,13 +6782,23 @@ mod tests {
         assert_eq!(a.settings_sel, crate::settings::ROWS - 1);
     }
 
-    fn enter_eq() -> App {
+    /// Walk the Menu cursor to the row that leads to `want` and open it. Derived from MENU rather
+    /// than a fixed number of Down presses: a row inserted above the target used to silently send
+    /// every one of these tests to the wrong screen.
+    fn open_from_menu(want: Screen) -> App {
         let mut a = unlocked();
         a.press(Button::Up); // Menu
-        for _ in 0..4 {
+        let idx = MENU.iter().position(|m| m.0 == want).expect("no menu row for {want:?}");
+        for _ in 0..idx {
             a.press(Button::Down);
         }
-        a.press(Button::Select); // Equalizer (idx 4)
+        assert_eq!(a.menu_index(), idx);
+        a.press(Button::Select);
+        a
+    }
+
+    fn enter_eq() -> App {
+        let a = open_from_menu(Screen::Eq);
         assert_eq!(a.current(), Screen::Eq);
         a
     }
@@ -6148,12 +6825,7 @@ mod tests {
 
     #[test]
     fn bluetooth_select_toggles() {
-        let mut a = unlocked();
-        a.press(Button::Up); // Menu
-        for _ in 0..6 {
-            a.press(Button::Down);
-        }
-        a.press(Button::Select); // Bluetooth (idx 6)
+        let mut a = open_from_menu(Screen::Bluetooth);
         assert_eq!(a.current(), Screen::Bluetooth);
         let was = a.bt_on;
         let acts = a.press(Button::Select);
@@ -6162,12 +6834,7 @@ mod tests {
     }
 
     fn enter_bluetooth() -> App {
-        let mut a = unlocked();
-        a.press(Button::Up); // Menu
-        for _ in 0..6 {
-            a.press(Button::Down);
-        }
-        a.press(Button::Select); // Bluetooth (idx 6)
+        let a = open_from_menu(Screen::Bluetooth);
         assert_eq!(a.current(), Screen::Bluetooth);
         assert!(a.bt_on);
         a
@@ -6251,12 +6918,7 @@ mod tests {
 
     #[test]
     fn usb_dac_toggles_ldac_routing() {
-        let mut a = unlocked();
-        a.press(Button::Up); // Menu
-        for _ in 0..7 {
-            a.press(Button::Down);
-        }
-        a.press(Button::Select); // USB-DAC (idx 7)
+        let mut a = open_from_menu(Screen::UsbDac);
         assert_eq!(a.current(), Screen::UsbDac);
         assert!(!a.usb_dac_on());
         // A stray tap in the body must NOT engage it: this switches the USB gadget mode and
@@ -6277,12 +6939,8 @@ mod tests {
 
     #[test]
     fn settings_usb_mode_enters_mass_storage() {
-        let mut a = unlocked();
-        a.press(Button::Up); // Menu
-        for _ in 0..9 {
-            a.press(Button::Down);
-        }
-        a.press(Button::Select); // Settings
+        let mut a = open_from_menu(Screen::Settings);
+        assert_eq!(a.current(), Screen::Settings);
         for _ in 0..crate::settings::ROW_USB_MODE {
             a.press(Button::Down);
         }
@@ -6303,14 +6961,7 @@ mod tests {
 
     #[test]
     fn settings_select_toggles_theme() {
-        let mut a = unlocked();
-        // route to Settings (menu index 9)
-        a.press(Button::Up); // Menu
-        for _ in 0..9 {
-            a.press(Button::Down);
-        }
-        assert_eq!(a.menu_index(), 9);
-        a.press(Button::Select);
+        let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
         let was = a.night;
         let acts = a.press(Button::Select);
@@ -6320,12 +6971,7 @@ mod tests {
 
     #[test]
     fn settings_battery_care_toggles_and_emits_action() {
-        let mut a = unlocked();
-        a.press(Button::Up); // Menu
-        for _ in 0..9 {
-            a.press(Button::Down);
-        }
-        a.press(Button::Select); // -> Settings
+        let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
         // move cursor to the Battery care row
         for _ in 0..crate::settings::ROW_BATTERY {
@@ -6355,12 +7001,7 @@ mod tests {
 
     #[test]
     fn settings_sleep_timer_cycles_presets() {
-        let mut a = unlocked();
-        a.press(Button::Up); // Menu
-        for _ in 0..9 {
-            a.press(Button::Down);
-        }
-        a.press(Button::Select); // Settings
+        let mut a = open_from_menu(Screen::Settings);
         for _ in 0..crate::settings::ROW_SLEEP {
             a.press(Button::Down);
         }
@@ -6820,12 +7461,7 @@ mod tests {
 
     #[test]
     fn sound_screen_toggles_effects_and_emits_action() {
-        let mut a = unlocked();
-        a.press(Button::Up); // Menu
-        for _ in 0..5 {
-            a.press(Button::Down);
-        }
-        a.press(Button::Select); // Sound Settings (menu idx 5)
+        let mut a = open_from_menu(Screen::Sound);
         assert_eq!(a.current(), Screen::Sound);
         assert_eq!(a.sound_flags(), 0); // all effects off initially
         // toggle DSEE (row 0)
@@ -6907,6 +7543,106 @@ mod tests {
         }
         assert!(a.press(Button::Back).is_empty());
         assert!(!a.modal_open(), "Back must dismiss");
+    }
+
+    /// The metadata block opens Track information, and it must not have stolen a target from the
+    /// controls it sits between — the heart above-right of it and the progress rail below.
+    #[test]
+    fn the_metadata_block_opens_track_information() {
+        use crate::now_playing as np;
+        let mut a = unlocked();
+        a.go(Screen::NowPlaying);
+        a.set_track_info(vec![
+            ("Title".into(), "Atlas Hands".into()),
+            ("File".into(), "/contents/Music/x.flac".into()),
+        ]);
+
+        // The band itself, well left of the heart.
+        let y = (np::INFO_TOP + np::INFO_BOT) / 2;
+        assert!(np::hit_info(120, y));
+        assert!(a.tap(120, y).is_empty());
+        assert_eq!(a.current(), Screen::TrackInfo);
+        assert_eq!(a.track_info_rows().len(), 2);
+        assert!(a.press(Button::Back).is_empty());
+        assert_eq!(a.current(), Screen::NowPlaying, "Back returns to the track");
+
+        // The heart's square keeps its own taps.
+        assert!(!np::hit_info(np::HEART_CX, np::HEART_CY), "the block must not swallow the heart");
+        assert_eq!(a.tap(np::HEART_CX, np::HEART_CY), vec![Action::ToggleLiked]);
+        assert_eq!(a.current(), Screen::NowPlaying);
+
+        // And it stops above the rail's grab band, which owns drag-to-seek.
+        assert!(!np::hit_info(120, np::RAIL_GRAB_TOP));
+        assert!(!np::hit_info(120, np::RAIL_Y));
+
+        // A track change replaces the rows and rewinds the scroll — a shorter list must not open
+        // part-way down because the last one was long.
+        a.push(Screen::TrackInfo);
+        a.scroll_px(400);
+        a.set_track_info(vec![("Title".into(), "Something else".into())]);
+        assert_eq!(a.track_info_rows().len(), 1);
+        assert_eq!(a.track_info_scroll_px, 0);
+    }
+
+    /// A reset must put the PREFERENCES back and leave everything else alone. The two halves are
+    /// asserted together because the bug in either direction is silent: a reset that keeps a
+    /// preference looks like the button did nothing, and a reset that clears the library or stops
+    /// the music looks like a factory wipe.
+    #[test]
+    fn reset_settings_restores_defaults_without_touching_playback_or_the_library() {
+        use crate::confirm::{hit, Ask, Hit};
+        let mut a = unlocked();
+        // Move a spread of preferences off their defaults, one from each family.
+        a.night = !App::default().night;
+        a.set_ui_scale_pct(150);
+        a.set_eq_bands([9; 10]);
+        a.set_sound_flags(0b0111_1111);
+        a.set_balance(0);
+        a.set_brightness(1);
+        a.lib.filter_hires = true;
+        a.lib.filter_genre = Some(a.lib.genres[0].id);
+        let scale_default = App::default().ui_scale_pct();
+
+        // …and set up state a reset must NOT disturb.
+        let rows: Vec<SongRow> = (0..4)
+            .map(|i| SongRow { title: format!("T{i}"), object_id: 50 + i, ..Default::default() })
+            .collect();
+        a.set_play_context(rows, 2);
+        a.enqueue_at(SongRow { title: "P".into(), object_id: 900, ..Default::default() }, 0, QueueAt::Later);
+        a.playing = true;
+        let songs = a.lib.songs.len();
+
+        a.go(Screen::Settings);
+        a.settings_sel = crate::settings::ROW_RESET;
+        assert!(a.press(Button::Select).is_empty(), "the row itself must not act");
+        assert!(a.modal_open(), "reset is destructive — it asks first");
+        // Engage Hold with the card up: the modal is answerable while locked (its branch runs
+        // ahead of the lock check, deliberately), and this is the state that proves a reset
+        // cannot desync the UI from the physical switch.
+        a.set_hold(true);
+        let y = (0..crate::canvas::H as i32)
+            .find_map(|y| (hit(Ask::ResetSettings, 360, y) == Hit::Confirm).then_some(y))
+            .expect("no confirm pixel");
+        assert_eq!(a.tap(360, y), vec![Action::SettingsReset]);
+
+        // Preferences: back to default.
+        assert_eq!(a.night, App::default().night);
+        assert_eq!(a.ui_scale_pct(), scale_default);
+        assert_eq!(a.eq_bands(), App::default().eq_bands());
+        assert_eq!(a.sound_flags(), App::default().sound_flags());
+        assert_eq!(a.balance(), App::default().balance());
+        assert_eq!(a.brightness(), App::default().brightness());
+        assert!(!a.lib.filtered(), "an invisible filter is exactly what a reset is for");
+
+        // Everything else: untouched.
+        assert_eq!(a.lib.songs.len(), songs, "a preference reset is not a library wipe");
+        assert_eq!(a.context().len(), 4, "the music keeps playing");
+        assert_eq!(a.context_idx(), 2);
+        assert_eq!(a.queue().len(), 1, "the hand-built queue is the user's, not a setting");
+        assert!(a.playing);
+        assert!(a.locked, "the Hold switch is hardware truth, not a preference");
+        assert!(a.onboarding_seen(), "a settings reset is not a factory reset");
+        assert_eq!(a.current(), Screen::Settings, "it lands back where it was asked for");
     }
 
     /// The Settings rows still raise their own two-button confirms — the menu is an addition, not

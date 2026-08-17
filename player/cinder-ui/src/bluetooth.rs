@@ -19,6 +19,27 @@ pub const CODECS: [(&str, &str); 4] = [
     ("aptX", "352 kbps · low latency"),
     ("SBC", "Universal · always works"),
 ];
+/// The codec A2DP actually NEGOTIATED on the live link, as reported by
+/// `BtTransmitterService::GetSoundStatus`. This is Sony's own `BtSoundCodec` enum, NOT the
+/// Bluetooth assigned-numbers codec ID — 0x02 there would be MPEG-2/4 AAC, and it is not.
+///
+/// Measured on device 2026-08-17 with a WH-1000XM4: the player requested LDAC, the peer advertised
+/// `ldac support:1` with both aptX flags clear, and the link reported 0x02 for the whole session.
+/// The other enumerators are NOT known yet, so anything else is shown as its raw byte rather than
+/// guessed at — a wrong codec label is worse than an honest hex value on a screen whose entire
+/// purpose is telling you what you are actually listening to.
+pub fn link_codec_name(raw: u8) -> Option<&'static str> {
+    match raw {
+        0x02 => Some("LDAC"),
+        _ => None,
+    }
+}
+
+/// Label for the negotiated codec: its name if we know the enumerator, else the raw byte.
+pub fn link_codec_label(raw: u8) -> String {
+    link_codec_name(raw).map_or_else(|| format!("CODEC 0x{raw:02X}"), |n| n.to_string())
+}
+
 /// LDAC sound-quality tiers. Index = the persisted `bt_ldac_quality` value.
 pub const QUALITIES: [&str; 4] = ["Auto", "990", "660", "330"];
 
@@ -50,6 +71,13 @@ pub struct Bt<'a> {
     pub connecting: bool,
     /// Spinner phase in seconds, advanced by nav while `connecting`.
     pub busy_phase: f32,
+    /// The codec the LINK actually negotiated (raw `BtSoundCodec`), pushed by the shell from
+    /// `GetSoundStatus`. `None` = nothing connected, or the service wrote nothing.
+    ///
+    /// Distinct from `codec_sel`, which is only what the user ASKED for. They disagree whenever a
+    /// sink doesn't support the requested codec and A2DP falls back — which the radio does
+    /// silently, and which is exactly the thing this screen existed to not tell you.
+    pub link_codec: Option<u8>,
 }
 
 // ---- layout (shared by render + hit) ----
@@ -144,7 +172,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         let name = bt.connected.unwrap();
         fill_rect(c, 22, CARD_Y, 436, CARD_H, t.panel);
         stroke_rect(c, 22, CARD_Y, 436, CARD_H, t.line, 1);
-        text::draw(c, f, 40.0, (CARD_Y + 24) as f32, "CONNECTED", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
+        // The tag carries the NEGOTIATED codec when the link reports one. This is the answer to
+        // "am I actually getting LDAC" — the radio falls back silently, so the codec radio list
+        // below (which is only a request) can say LDAC while the link is running something else.
+        let tag = match bt.link_codec.map(link_codec_label) {
+            Some(codec) => format!("CONNECTED · {}", codec.to_uppercase()),
+            None => "CONNECTED".to_string(),
+        };
+        text::draw(c, f, 40.0, (CARD_Y + 24) as f32, &tag, &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
         // There used to be a "HP BATT 60%" readout here. It was hardcoded, and it cannot be made
         // real on this firmware: the entire BT stack exposes exactly one battery API — AVRCP's
         // coarse 5-state BtBatteryStatus, via BtTransmitterService::ChangeBatteryStatus and
@@ -200,6 +235,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         let ncol = if active { t.acc } else { body };
         text::draw(c, f, 64.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, 18.0, ncol, 0.0));
         text::draw(c, f, 64.0, (cy + 15) as f32, sub, &sty(Family::Mono, Weight::Regular, 11.0, subc, 0.04));
+        // "LIVE" marks the codec the link actually negotiated, which is not necessarily the one
+        // selected: A2DP picks during connection setup and falls back without telling anyone. A
+        // selected row with no LIVE tag while something is connected means the request lost.
+        if bt.link_codec.and_then(link_codec_name) == Some(*name) {
+            crate::widgets::right(c, f, 458.0, (cy + 4) as f32, "LIVE",
+                                  &sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.18));
+        }
         crate::widgets::hline(c, y + CODEC_RH, t.line);
     }
 
