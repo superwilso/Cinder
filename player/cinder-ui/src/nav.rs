@@ -62,6 +62,10 @@ pub enum Screen {
     /// USB mass-storage mode: MODAL "connected to PC" screen while the storage volume is handed
     /// to the host. Only Back (or the shell detecting cable-unplug) leaves it.
     UsbStorage,
+    /// Settings ▸ Date & time — the clock editor. Its own screen rather than an in-row cycle: five
+    /// fields is too much for a row, and setting a clock is a deliberate act that deserves an
+    /// explicit Set rather than applying live under the finger.
+    ClockSet,
     /// Genre filter picker, pushed from the Library's filter strip. A picker, not a browse tab:
     /// 95 genres on the reference device is too many for a chip cycle and too few to deserve its
     /// own place in the tab strip.
@@ -165,6 +169,9 @@ pub enum Action {
     /// (six EffectCtrlDmp round trips) plus a settings write, and the balance slider emits on every
     /// motion event. This one lands on a single cached amixer call.
     BalanceChanged,
+    /// Settings ▸ Date & time ▸ SET CLOCK. The shell reads `cinder_get_clock_epoch()` and runs the
+    /// setuid `cinder-clock` helper, which writes BOTH the system clock and the RTC.
+    ClockSet,
     SoundBypass(bool),        // A/B: true = bypass whole chain (B), false = re-enable (A)
     SleepTimer(u32),          // arm/cancel the sleep timer: minutes (0 = off); cinder-ffi counts down
     ShuffleToggle,            // Now Playing shuffle on/off (FFI rebuilds the active context)
@@ -593,6 +600,15 @@ pub struct App {
     snd_clear: bool,
     /// L/R balance position 0..=100, 50 = centre. Persisted alongside the other sound settings.
     snd_balance: usize,
+    /// Wall-clock epoch (UTC seconds), pushed by the shell about once a second. 0 = never reported,
+    /// in which case the Date & time row falls back to the status-bar string rather than showing a
+    /// confident 1970. NOT persisted: it is the system clock, not a preference.
+    clock_epoch: i64,
+    /// The clock editor's working copy. Seeded from `clock_epoch` when the screen opens, and left
+    /// alone while it is open — otherwise the per-second push would drag the field you are editing
+    /// out from under your finger.
+    clock_fields: crate::clockset::Fields,
+    clock_sel: usize,
     /// A/B compare on the Sound screen: false = A (effects active), true = B (whole chain bypassed,
     /// "direct"). The Option button flips it for an instant listen test; the shell calls the DSP
     /// bypass. Independent of the per-effect toggles — flipping back to A restores them.
@@ -779,6 +795,9 @@ impl Default for App {
             snd_norm: false,
             snd_clear: false,
             snd_balance: crate::sound::BALANCE_CENTRE,
+            clock_epoch: 0,
+            clock_fields: [2026, 1, 1, 0, 0],
+            clock_sel: 0,
             snd_ab_bypass: false,
             sound_sel: 0,
             storage: String::new(),
@@ -840,6 +859,48 @@ impl App {
     /// lock screen would just get in the way of confirming the panel paints).
     pub fn unlocked() -> Self {
         App { stack: vec![Screen::NowPlaying], locked: false, ..Self::default() }
+    }
+
+    // ── test-only entry points ──────────────────────────────────────────────────────────────
+    // The overflow audit (tests/ui_overflow.rs) has to reach every screen and overlay. These do
+    // that without making `stack`, `shelf_open` or `confirm` public, which would let any caller
+    // put the navigator in a state its own transitions can never produce.
+
+    /// Open `s` as if it had been routed to. Screens that carry per-screen state get it set up
+    /// here, so the audit renders them the way a user would actually see them.
+    #[doc(hidden)]
+    pub fn push_for_test(&mut self, s: Screen) {
+        match s {
+            Screen::Lock => {
+                self.locked = true;
+                self.stack = vec![Screen::NowPlaying];
+                return;
+            }
+            Screen::Folders => {
+                self.open_folders();
+                return;
+            }
+            Screen::TrackInfo => {
+                // Needs rows, or it renders an empty page and audits nothing.
+                self.track_info = vec![
+                    ("Title".into(), "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364".into()),
+                    ("Artist".into(), "Королевский филармонический оркестр / 東京都交響楽団".into()),
+                    ("Path".into(), "/contents_ext/Music/Classical/Mozart/Sinfonia concertante K364/03 - III. Presto.flac".into()),
+                ];
+            }
+            _ => {}
+        }
+        self.stack.push(s);
+    }
+
+    #[doc(hidden)]
+    pub fn open_shelf_for_test(&mut self) {
+        self.open_shelf();
+    }
+
+    #[doc(hidden)]
+    pub fn open_confirm_for_test(&mut self, ask: crate::confirm::Ask) {
+        self.confirm = Some(ask);
     }
 
     /// Settings ▸ Reset settings, confirmed. Every preference goes back to its default.
@@ -1489,6 +1550,16 @@ impl App {
                 self.accent = self.accent.next();
                 vec![]
             }
+            crate::settings::ROW_CLOCK => {
+                // Seed from the last epoch the shell reported, so the editor opens on the current
+                // time rather than on whatever was left from the previous visit.
+                if self.clock_epoch > 0 {
+                    self.clock_fields = crate::clockset::fields_from_epoch(self.clock_epoch);
+                }
+                self.clock_sel = 0;
+                self.push(Screen::ClockSet);
+                vec![]
+            }
             crate::settings::ROW_VIZ => {
                 self.cycle_viz();
                 vec![]
@@ -1912,11 +1983,46 @@ impl App {
                 }
                 vec![]
             }
+            Screen::ClockSet => {
+                if crate::clockset::hit_set(x, y) {
+                    self.toast = "Clock set".to_string();
+                    self.toast_frames = TOAST_FRAMES;
+                    return vec![Action::ClockSet];
+                }
+                // A tap on a row's label half only moves the cursor — reading the screen must not
+                // change the time.
+                if let Some((f, delta)) = crate::clockset::hit_btn(x, y) {
+                    self.clock_sel = f;
+                    crate::clockset::step(&mut self.clock_fields, f, delta);
+                } else if let Some(f) = crate::clockset::field_at(y) {
+                    self.clock_sel = f;
+                }
+                vec![]
+            }
             Screen::Sound => {
-                // A/B compare control (top-right of the header)
-                if (44..70).contains(&y) && x > 380 {
-                    self.snd_ab_bypass = !self.snd_ab_bypass;
+                // A/B compare control (top-right of the header). Geometry comes from `sound` so the
+                // band and the drawn boxes cannot drift apart — they had, by 4px, on top of the
+                // segments being too small to hit at all ("the a/b buttons are hard to press").
+                // Tapping a segment SELECTS it rather than flipping the pair: on a control this
+                // size "tap B to hear B" is what a finger expects, and it makes a double-tap
+                // idempotent instead of a round trip.
+                if let Some(seg) = crate::sound::hit_ab(x, y) {
+                    let want = seg == 1;
+                    if want == self.snd_ab_bypass {
+                        return vec![];
+                    }
+                    self.snd_ab_bypass = want;
                     return vec![Action::SoundBypass(self.snd_ab_bypass)];
+                }
+                // CENTRE reset, before the row dispatch: it sits inside the Balance row, so the
+                // row's own handling would otherwise swallow it.
+                if crate::sound::hit_balance_reset(x, y) {
+                    self.sound_sel = crate::sound::ROW_BALANCE;
+                    if self.snd_balance == crate::sound::BALANCE_CENTRE {
+                        return vec![];
+                    }
+                    self.snd_balance = crate::sound::BALANCE_CENTRE;
+                    return vec![Action::SoundChanged];
                 }
                 if let Some(row) = crate::sound::row_at(y) {
                     self.sound_sel = row;
@@ -3806,6 +3912,36 @@ impl App {
                 }
                 _ => vec![],
             },
+            Screen::ClockSet => match b {
+                Button::Up => {
+                    self.clock_sel = self.clock_sel.saturating_sub(1);
+                    vec![]
+                }
+                Button::Down => {
+                    if self.clock_sel + 1 < crate::clockset::FIELDS {
+                        self.clock_sel += 1;
+                    }
+                    vec![]
+                }
+                Button::Left => {
+                    crate::clockset::step(&mut self.clock_fields, self.clock_sel, -1);
+                    vec![]
+                }
+                Button::Right => {
+                    crate::clockset::step(&mut self.clock_fields, self.clock_sel, 1);
+                    vec![]
+                }
+                Button::Select => {
+                    self.toast = "Clock set".to_string();
+                    self.toast_frames = TOAST_FRAMES;
+                    vec![Action::ClockSet]
+                }
+                Button::Back => {
+                    self.pop();
+                    vec![]
+                }
+                _ => vec![],
+            },
             Screen::Sound => match b {
                 Button::Up => {
                     self.sound_sel = self.sound_sel.saturating_sub(1);
@@ -4135,6 +4271,7 @@ impl App {
                 // The row value doubles as the confirmation prompt — no extra screen needed, and
                 // the armed state is impossible to miss because it replaces the value in place.
                 let boot_stock_lbl = if self.boot_stock_armed { "TAP AGAIN" } else { "SONY" };
+                let clock_lbl = self.clock_label(np.clock);
                 let view = crate::settings::SettingsView {
                     night: self.night,
                     viz_name: crate::viz::name(self.viz_kind),
@@ -4147,9 +4284,13 @@ impl App {
                     screen_off: &screen_off_lbl,
                     auto_off: &auto_off_lbl,
                     boot_stock: boot_stock_lbl,
+                    clock: &clock_lbl,
                     accent: self.accent,
                 };
                 crate::settings::render(c, &theme, fonts, self.settings_sel, self.settings_scroll_px, &view)
+            }
+            Screen::ClockSet => {
+                crate::clockset::render(c, &theme, fonts, &self.clock_fields, self.clock_sel)
             }
             Screen::Fm => crate::fm::render(c, &theme, fonts, 88.6),
             Screen::UsbDac => {
@@ -4435,6 +4576,33 @@ impl App {
 
     pub fn bt_link_codec(&self) -> Option<u8> {
         self.bt_link_codec
+    }
+
+    /// Push the wall clock (UTC epoch seconds). The shell calls this from its ~1 Hz housekeeping.
+    /// Ignored while the editor is open, so the per-second push cannot drag a field out from under
+    /// the finger that is editing it.
+    pub fn set_clock_epoch(&mut self, epoch: i64) {
+        self.clock_epoch = epoch;
+        if self.current() != Screen::ClockSet {
+            self.clock_fields = crate::clockset::fields_from_epoch(epoch);
+        }
+    }
+
+    /// The epoch the editor would write. Read by the shell after a `ClockSet` action.
+    pub fn clock_epoch_pending(&self) -> i64 {
+        crate::clockset::epoch_from_fields(&self.clock_fields)
+    }
+
+    /// Value for the Settings ▸ Date & time row: "17 Aug · 09:01". Falls back to the status-bar
+    /// string until the shell has reported a real epoch — a confident "1 Jan 1970" would be worse
+    /// than saying only what we actually know.
+    fn clock_label(&self, fallback: &str) -> String {
+        if self.clock_epoch <= 0 {
+            return fallback.to_string();
+        }
+        let f = crate::clockset::fields_from_epoch(self.clock_epoch);
+        let mon = crate::clockset::MONTHS[(f[1].clamp(1, 12) - 1) as usize];
+        format!("{} {} · {:02}:{:02}", f[2], &mon[..3], f[3], f[4])
     }
 
     pub fn bt_connected(&self) -> Option<&str> {
@@ -5301,6 +5469,45 @@ mod tests {
     }
 
     /// Balance cycles like the VPT and DC-Phase pills beside it, and wraps back to CENTRE — the
+    /// The A/B compare segments must be a real touch target and must agree with what is drawn.
+    /// Reported hard to press on 2026-08-17: they were 30x26 with a hit band 4px shorter than the
+    /// boxes and written out separately from the render, which is this codebase's recurring defect.
+    #[test]
+    fn the_ab_segments_are_a_real_target_that_matches_what_is_drawn() {
+        use crate::sound;
+        // Every pixel of each drawn box resolves to that box.
+        for seg in 0..2usize {
+            let (x, y, w, h) = sound::ab_rect(seg);
+            assert!(w >= 44 && h >= 44, "segment {seg} is {w}x{h}, under a usable touch target");
+            for px in [x, x + w / 2, x + w - 1] {
+                for py in [y, y + h / 2, y + h - 1] {
+                    assert_eq!(sound::hit_ab(px, py), Some(seg), "({px},{py}) missed segment {seg}");
+                }
+            }
+        }
+        // The band overhangs the boxes, so a near-miss still lands.
+        let (x, y, _, h) = sound::ab_rect(0);
+        assert!(sound::hit_ab(x + 4, y - 4).is_some(), "a tap just above the box is lost");
+        assert!(sound::hit_ab(x + 4, y + h + 6).is_some(), "a tap just below the box is lost");
+        // …but it must not reach the status-bar icons above it (hamburger / bookmark, y ~22).
+        assert!(sound::hit_ab(x + 4, 22).is_none(), "the A/B band reaches the status bar");
+        // It stays clear of the list underneath and of the back chevron / title on its left.
+        let (_, ay, _, ah) = sound::ab_rect(1);
+        assert!(ay + ah + 10 <= sound::TOP, "the A/B band reaches into the first row");
+        assert!(sound::hit_ab(200, y + 4).is_none(), "the band extends across the title");
+
+        // Tapping a segment SELECTS it: A turns the chain on, B bypasses, and a repeat is a no-op.
+        let mut a = unlocked();
+        a.stack = vec![Screen::Sound];
+        let (bx, by, bw, bh) = sound::ab_rect(1);
+        let acts = a.tap(bx + bw / 2, by + bh / 2);
+        assert!(acts.iter().any(|x| matches!(x, Action::SoundBypass(true))), "B did not bypass");
+        assert!(a.tap(bx + bw / 2, by + bh / 2).is_empty(), "tapping B twice acted twice");
+        let (ax, ay2, aw, ah2) = sound::ab_rect(0);
+        let acts = a.tap(ax + aw / 2, ay2 + ah2 / 2);
+        assert!(acts.iter().any(|x| matches!(x, Action::SoundBypass(false))), "A did not restore");
+    }
+
     /// The balance slider: render geometry and hit test must agree, a drag must track the finger
     /// across the whole track, and the ends must be reachable. `balance_x` and `balance_at` are
     /// each other's inverse — if they drift, the knob sits somewhere your finger isn't, which is
@@ -5311,11 +5518,20 @@ mod tests {
         let mut a = unlocked();
         assert_eq!(a.balance(), BALANCE_CENTRE, "centre is the default");
 
-        // Round trip: every position maps to an x that maps back to itself.
+        // Round trip: every position maps to an x that maps back to itself — EXCEPT inside the
+        // snap band, where landing on centre is the whole point.
         for pos in 0..=BALANCE_MAX {
-            let x = sound::balance_x(pos);
-            assert_eq!(sound::balance_at(x), pos, "position {pos} does not survive a round trip");
+            let got = sound::balance_at(sound::balance_x(pos));
+            if pos.abs_diff(BALANCE_CENTRE) <= sound::BAL_SNAP {
+                assert_eq!(got, BALANCE_CENTRE, "position {pos} should snap to centre");
+            } else {
+                assert_eq!(got, pos, "position {pos} does not survive a round trip");
+            }
         }
+        // The snap band is narrow enough to still reach the positions just outside it, so it buys
+        // a reachable null without stealing usable travel.
+        assert_eq!(sound::balance_at(sound::balance_x(BALANCE_CENTRE + sound::BAL_SNAP + 1)),
+                   BALANCE_CENTRE + sound::BAL_SNAP + 1);
         // Both stops are reachable, and past the ends pins rather than wrapping.
         assert_eq!(sound::balance_at(sound::BAL_X0 - 40), 0);
         assert_eq!(sound::balance_at(sound::BAL_X1 + 40), BALANCE_MAX);
@@ -5342,6 +5558,22 @@ mod tests {
         a.sound_sel = sound::ROW_BALANCE;
         a.sound_toggle_row();
         assert_eq!(a.balance(), BALANCE_CENTRE);
+
+        // …and so does the CENTRE button, which is the touch path. It must sit INSIDE the Balance
+        // row (so it reads as belonging to the slider) but clear of the grab band (so resetting
+        // cannot be mistaken for the start of a drag).
+        let (rx, ry, rw, rh) = sound::balance_reset_rect();
+        assert_eq!(sound::row_at(ry), Some(sound::ROW_BALANCE));
+        assert_eq!(sound::row_at(ry + rh - 1), Some(sound::ROW_BALANCE));
+        for yy in ry..ry + rh {
+            assert!(!sound::balance_grab(yy), "the reset button overlaps the slider grab band");
+        }
+        a.set_balance(0);
+        let acts = a.tap(rx + rw / 2, ry + rh / 2);
+        assert_eq!(a.balance(), BALANCE_CENTRE, "the CENTRE button did not recentre");
+        assert!(acts.iter().any(|x| matches!(x, Action::SoundChanged)), "reset was not persisted");
+        // Pressing it again is a no-op, not a redundant mixer write.
+        assert!(a.tap(rx + rw / 2, ry + rh / 2).is_empty());
         // Left/Right nudge instead of toggling.
         a.press(Button::Left);
         assert!(a.balance() < BALANCE_CENTRE, "Left did not nudge the slider");

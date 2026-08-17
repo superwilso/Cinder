@@ -163,7 +163,17 @@ typedef enum {
      * down, so it must stay cheap. Read cinder_get_balance() and write the two mixer controls;
      * skip the write when the raw pair is unchanged. A CINDER_ACT_SOUND_CHANGED still arrives when
      * the finger lifts, which is what persists the value to the settings file. */
-    CINDER_ACT_BALANCE_CHANGED = 38
+    CINDER_ACT_BALANCE_CHANGED = 38,
+    /* Settings > Date & time > SET CLOCK. Read cinder_get_clock_epoch() and run the setuid
+     * cinder-clock helper: `cinder-clock set <epoch>`. It sets the system clock AND writes the RTC,
+     * so the time survives a power cycle. Exit codes: 0 both clocks, 5 system clock only (the RTC
+     * write failed), 2 the value was rejected, 3 the setuid bit is missing, 4 settimeofday failed.
+     *
+     * There is no Sony service for this. A sweep of every vendor/sony/lib for demangled `virtual`
+     * prototypes finds no clock setter — stock does it inside HgrmMediaPlayerApp's own DateTime
+     * model — and cinder-home runs as uid 100 (system) with no CAP_SYS_TIME, so the helper is the
+     * only route. */
+    CINDER_ACT_CLOCK_SET = 39
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -327,6 +337,12 @@ void cinder_set_volume(int level);
 /* Push the connected Bluetooth device's name into the UI (NULL or "" = nothing connected). Read it
  * from GetConnectInformation(vector<uint8_t>& addr, string& name). */
 void cinder_set_bt_connected(const char* name);
+/* Push the wall clock into the UI (UTC epoch seconds), from the ~1 Hz housekeeping. Shown on the
+ * Settings > Date & time row; seeds the clock editor. Ignored while that editor is open. */
+void cinder_set_clock_epoch(long long epoch);
+/* The UTC epoch the clock editor wants written. Read after CINDER_ACT_CLOCK_SET. Always within the
+ * range cinder-clock accepts (2001-01-01 .. 2038-01-01); see the action's note on 32-bit time_t. */
+long long cinder_get_clock_epoch(void);
 /* Push the codec the live A2DP link NEGOTIATED — the raw BtSoundCodec from
  * BtTransmitterService::GetSoundStatus(BtSoundCodec&, BtSoundFrequency&, BtSoundChannel&, bool&),
  * vtable slot 26 on the transmitter client. Negative = nothing connected / the service wrote

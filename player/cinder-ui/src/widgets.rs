@@ -34,15 +34,46 @@ pub fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32)
 }
 
 /// Draw text right-aligned so it ends at `xr`.
+/// The gutter both helpers keep clear of the panel edges — the same 22px every screen's left
+/// margin uses, so clamped text lines up with the rest of the layout instead of touching the glass.
+const EDGE: f32 = 22.0;
+
+/// Draw text ending at `xr`.
+///
+/// The string is fitted to the space between the left gutter and `xr` first. Right-aligning by
+/// measuring puts the START x at `xr - w`, so an over-long run silently walks off the LEFT edge —
+/// nothing on this device scrolls sideways, so those pixels are gone. It is size-dependent, which
+/// is why it only ever showed up at 130-140% UI scale.
 pub fn right(c: &mut Canvas, f: &FontSet, xr: f32, baseline: f32, s: &str, st: &TextStyle) {
-    let w = text::measure(f, s, st);
-    text::draw(c, f, xr - w, baseline, s, st);
+    let s = fit(f, s, st, (xr - EDGE).max(0.0));
+    let w = text::measure(f, &s, st);
+    text::draw(c, f, xr - w, baseline, &s, st);
+}
+
+/// Draw LEFT-aligned text that stops at `right`, ellipsising if it would not fit.
+///
+/// For static copy at a literal x. Such a line is only safe at ONE text size — the x and the
+/// string are fixed but the glyphs grow with the UI-scale slider — so at 140% a caption laid out
+/// to look comfortable at 100% runs off the panel and the tail is silently discarded. Returns the
+/// end x, like `text::draw`.
+pub fn draw_fit(c: &mut Canvas, f: &FontSet, x: f32, baseline: f32, s: &str, st: &TextStyle,
+                right: f32) -> f32 {
+    let s = fit(f, s, st, (right - x).max(0.0));
+    text::draw(c, f, x, baseline, &s, st)
 }
 
 /// Draw text horizontally centred on `cx`.
+///
+/// Fitted to the panel first: centred text wider than the screen overflows BOTH edges at once, and
+/// the ellipsis is far better than losing the ends of the sentence. Same size-dependence as
+/// `right` — these are the two helpers where the x is computed from the measured width rather than
+/// being a layout constant, so they are exactly where a text-scale change turns into overflow.
 pub fn center(c: &mut Canvas, f: &FontSet, cx: f32, baseline: f32, s: &str, st: &TextStyle) {
-    let w = text::measure(f, s, st);
-    text::draw(c, f, cx - w / 2.0, baseline, s, st);
+    // Symmetric about cx, so the fitted run stays centred on the anchor rather than drifting.
+    let half = (cx - EDGE).min(crate::canvas::W as f32 - EDGE - cx).max(0.0);
+    let s = fit(f, s, st, half * 2.0);
+    let w = text::measure(f, &s, st);
+    text::draw(c, f, cx - w / 2.0, baseline, &s, st);
 }
 
 /// Truncate `s` (with a trailing ellipsis) so it fits within `max_w` px.
