@@ -28,9 +28,20 @@ namespace pst { namespace services { namespace sound {
 enum class Eq10Band : int { B32=0, B64=1, B125=2, B250=3, B500=4, B1k=5, B2k=6, B4k=7, B8k=8, B16k=9 };
 enum class Eq6Band : int { /* TBD 0..5 */ };
 enum class Eq6BandPreset : int { /* TBD (FLAT/ROCK/JAZZ/...) */ };
-enum class VptMode : int { /* TBD (Studio/Club/ConcertHall/...) */ };
+// Values still unrecovered — but UNLIKE most of these, both of the mode enums below have an
+// exported GETTER (EffectCtrlDmp::GetVptMode / ::GetDcPhaseFilterType), so they can be settled by
+// experiment rather than by decompiling: write a candidate, read it back, and see which values the
+// service keeps. `cinder-probe --vpt` does exactly that. Declared as an empty `enum class : int` so
+// a raw int can be static_cast in without inventing enumerator names we have not confirmed.
+// Which tone system is actually IN THE PATH. Sony's manual is explicit that the Equalizer and the
+// Tone Control are alternatives whose settings are saved separately — so this is a selector, not a
+// pair of independent toggles, and having EQ10/EQ6/ToneControl all read "on" at once (as the device
+// does) means nothing without it. Values TBD; probe with --eqsel.
+enum class EqType : int { /* values TBD — probe with --eqsel */ };
+
+enum class VptMode : int { /* values TBD — probe with --vpt */ };
 enum class DseeHxCustomMode : int { /* TBD */ };
-enum class DcPhaseFilterType : int { /* TBD (Low A/B, Standard A/B...) */ };
+enum class DcPhaseFilterType : int { /* values TBD — probe with --vpt */ };
 enum class UserPresetNo : int { /* TBD */ };
 
 // RE-CONFIRMED size — CORRECTED 2026-07-02 after an on-device heap corruption. The ctor @0xdd40
@@ -56,11 +67,33 @@ public:
     // VPT surround
     void SetVpt(bool on);
     void SetVptMode(VptMode mode);
+    VptMode GetVptMode();          // exported; the read-back that makes the enum probeable
     bool IsVptOn();
+
+    // Read-back for the WHOLE chain. Added 2026-08-17 to answer "the effect is set but I cannot
+    // hear it": on this device a setter landing proves nothing (see the high-gain finding), and
+    // several of these gate each other — ClearAudioPlus overrides the manual EQ and DSP outright,
+    // SourceDirect bypasses the lot, and BtAudioSoundEffect decides whether ANY of it reaches a
+    // Bluetooth sink. Without these you cannot tell "not applied" from "applied and inaudible".
+    bool IsClearAudioPlusOn();
+    bool IsBtAudioSoundEffectOn();
+    bool IsSourceDirectOn();
+    bool IsDynamicNormalizerOn();
+    bool IsDcPhaseLinearizerOn();
+    bool IsVinylizerOn();
+    bool IsEq10BandOn();
+    bool IsEq6BandOn();
+    bool IsToneControlOn();
+    bool IsClearPhaseHeadphoneOn();
+    bool IsDseeAiOn();
+    int  GetSelectUsingEq();
+    void SetSelectUsingEq(EqType t);
+    unsigned GetVinylizerType();
 
     // Equalizer
     void SetEq10Band(bool on);
     void SetEq10BandValue(Eq10Band band, int gain);
+    int  GetEq10BandValue(Eq10Band band);   // so a probe can put the user's curve back
     void SetEq6Band(bool on);
     void SetEq6BandPreset(Eq6BandPreset preset);
     void SetEq6BandValue(Eq6Band band, int gain);
@@ -69,6 +102,7 @@ public:
     void SetDynamicNormalizer(bool on);
     void SetDcPhaseLinearizer(bool on);
     void SetDcPhaseFilterType(DcPhaseFilterType type);
+    DcPhaseFilterType GetDcPhaseFilterType();
     void SetVinylizer(bool on);
     void SetVinylizerType(unsigned int type);
     void SetClearAudioPlus(bool on);   // overrides EQ+DSP (one-touch tuning)

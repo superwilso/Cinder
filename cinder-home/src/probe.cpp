@@ -75,7 +75,15 @@ static volatile bool g_pump_run = false;
 static volatile unsigned g_pump_ticks = 0;
 static void* pump_thread(void* fwp) {
     pst::core::Framework* fw = static_cast<pst::core::Framework*>(fwp);
-    while (g_pump_run) { fw->Pump(true); ++g_pump_ticks; }
+    // YIELD BETWEEN PUMPS. This was a bare spin — `while (run) { Pump(true); }` — which pegs a core
+    // for as long as the probe lives. Invisible on a two-second read; audible the moment a probe
+    // mode HOLDS, because SoundServiceFw wants ~34% of a core while playing and a spinning thread
+    // starves it. Reported 2026-08-17 as "very stuttery" during a 25 s VPT hold. Same shape as the
+    // render-loop poll storm in task #26, in a different process.
+    //
+    // 2 ms is 500 pumps a second — orders of magnitude more than any IPC reply needs, and it takes
+    // the thread from 100% of a core to nothing measurable.
+    while (g_pump_run) { fw->Pump(true); ++g_pump_ticks; usleep(2000); }
     return nullptr;
 }
 
@@ -3058,6 +3066,255 @@ int  _ZN3pst8services5sound13EffectCtrlDmp16GetSelectUsingEqEv(void*);
 int  _ZN3pst8services5sound13EffectCtrlDmp12IsEq10BandOnEv(void*);
 }
 
+// The effect shim (cinder-audio/src/effect_shim.cpp) — the probe links the same objects
+// cinder-home does, so these resolve without pulling in the whole header.
+extern "C" {
+int cinder_effects_is_vpt_on(void);
+int cinder_effects_is_dsee_hx_on(void);
+int cinder_effects_is_dsee_ai_on(void);
+int cinder_effects_is_clearaudio_on(void);
+int cinder_effects_is_bt_effect_on(void);
+int cinder_effects_is_source_direct_on(void);
+int cinder_effects_is_normalizer_on(void);
+int cinder_effects_is_dc_phase_on(void);
+int cinder_effects_is_vinylizer_on(void);
+int cinder_effects_is_eq10_on(void);
+int cinder_effects_is_eq6_on(void);
+int cinder_effects_is_tone_on(void);
+int cinder_effects_is_clear_phase_hp_on(void);
+int cinder_effects_get_select_using_eq(void);
+int cinder_effects_set_select_using_eq(int t);
+int cinder_effects_get_eq_band(int i);
+int cinder_effects_set_eq_band(int i, int gain);
+int cinder_effects_get_vinylizer_type(void);
+int cinder_effects_set_vpt(int on);
+int cinder_effects_set_vpt_mode(int mode);
+int cinder_effects_get_vpt_mode(void);
+int cinder_effects_set_dc_phase_type(int type);
+int cinder_effects_get_dc_phase_type(void);
+}
+
+// --eqsel : find which EqType actually puts the 10-band EQ IN THE PATH.
+//
+// `cinder_effects_set_eq` switches the 10-band on and writes gains, but has never called
+// SetSelectUsingEq — and the device reports EQ10, EQ6 and ToneControl all "on" simultaneously with
+// SelectUsingEq=1. Sony's own manual says the Equalizer and the Tone Control are ALTERNATIVES whose
+// settings are saved separately, so something selects between them, and if it is not sitting on the
+// 10-band then Cinder's EQ has been writing to a control that is not in the signal path. Exactly
+// the shape of the ClearAudio+ override that made VPT inaudible for a fortnight.
+//
+// Loads a deliberately absurd curve (+10 dB bass / -10 dB treble; raw units are HALF-decibels, so
+// +-20) and holds it under the chosen selector value. If the EQ is in the path this is unmissable.
+// The user's own curve is read first and put back on the way out.
+static int eqsel_probe(int only, int hold_s) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    const int sel0 = cinder_effects_get_select_using_eq();
+    int saved[10];
+    for (int i = 0; i < 10; i++) saved[i] = cinder_effects_get_eq_band(i);
+    std::snprintf(m, sizeof m,
+                  "eqsel: on entry SelectUsingEq=%d  curve=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+                  sel0, saved[0], saved[1], saved[2], saved[3], saved[4],
+                  saved[5], saved[6], saved[7], saved[8], saved[9]);
+    clog_(m);
+    std::snprintf(m, sizeof m, "eqsel: gates — ClearAudio+=%d SourceDirect=%d (either one hides this test)",
+                  cinder_effects_is_clearaudio_on(), cinder_effects_is_source_direct_on());
+    clog_(m);
+
+    if (only < 0) {
+        clog_("eqsel: read-only. Re-run as --eqsel <n> [secs] to load a wild curve and listen.");
+        g_pump_run = false;
+        return 0;
+    }
+
+    // +10 dB on the bottom three, -10 dB on the top three. Raw is half-decibels.
+    static const int wild[10] = { 20, 20, 20, 0, 0, 0, 0, -20, -20, -20 };
+    for (int i = 0; i < 10; i++) cinder_effects_set_eq_band(i, wild[i]);
+    cinder_effects_set_select_using_eq(only);
+    std::snprintf(m, sizeof m,
+                  "eqsel: SelectUsingEq(%d) -> reads back %d; wild curve loaded, HOLDING %ds — "
+                  "bass should be huge and treble gone if the 10-band is in the path",
+                  only, cinder_effects_get_select_using_eq(), hold_s);
+    clog_(m);
+    for (int i = 0; i < hold_s; i++) sleep(1);
+
+    for (int i = 0; i < 10; i++) cinder_effects_set_eq_band(i, saved[i]);
+    cinder_effects_set_select_using_eq(sel0);
+    std::snprintf(m, sizeof m, "eqsel: restored SelectUsingEq=%d and your curve",
+                  cinder_effects_get_select_using_eq());
+    clog_(m);
+    g_pump_run = false;
+    return 0;
+}
+
+// --fx : dump the ENTIRE effect chain's state.
+//
+// Exists because "I set VPT and cannot hear it" has at least three explanations and the setter's
+// return value distinguishes none of them:
+//   * ClearAudioPlus is ON — Sony's one-touch tuning OVERRIDES the manual EQ and DSP outright.
+//   * SourceDirect is ON — bypasses the chain entirely for the purest path.
+//   * BtAudioSoundEffect is OFF — the chain runs but never reaches a Bluetooth sink, which is the
+//     whole of project goal #7 and the reason cinder-home asserts it unconditionally.
+// Any of those makes every other setting inaudible while still reading back exactly as written.
+static int fx_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[256];
+    std::snprintf(m, sizeof m,
+                  "fx: GATES  ClearAudio+=%d  SourceDirect=%d  BtAudioSoundEffect=%d",
+                  cinder_effects_is_clearaudio_on(), cinder_effects_is_source_direct_on(),
+                  cinder_effects_is_bt_effect_on());
+    clog_(m);
+    clog_("fx:   ^ ClearAudio+ overrides EQ+DSP; SourceDirect bypasses everything;");
+    clog_("fx:     BtAudioSoundEffect=0 means none of it reaches Bluetooth.");
+    std::snprintf(m, sizeof m,
+                  "fx: VPT=%d mode=%d   DcPhase=%d type=%d   Vinylizer=%d type=%d",
+                  cinder_effects_is_vpt_on(), cinder_effects_get_vpt_mode(),
+                  cinder_effects_is_dc_phase_on(), cinder_effects_get_dc_phase_type(),
+                  cinder_effects_is_vinylizer_on(), cinder_effects_get_vinylizer_type());
+    clog_(m);
+    std::snprintf(m, sizeof m,
+                  "fx: DSEE HX=%d  DSEE AI=%d  Normalizer=%d  ToneControl=%d  ClearPhaseHP=%d",
+                  cinder_effects_is_dsee_hx_on(), cinder_effects_is_dsee_ai_on(),
+                  cinder_effects_is_normalizer_on(), cinder_effects_is_tone_on(),
+                  cinder_effects_is_clear_phase_hp_on());
+    clog_(m);
+    std::snprintf(m, sizeof m, "fx: EQ10=%d  EQ6=%d  SelectUsingEq=%d",
+                  cinder_effects_is_eq10_on(), cinder_effects_is_eq6_on(),
+                  cinder_effects_get_select_using_eq());
+    clog_(m);
+    g_pump_run = false;
+    return 0;
+}
+
+// --vpt : settle the VptMode and DcPhaseFilterType enumerators by EXPERIMENT.
+//
+// Both effects have more than on/off in Sony's UI (VPT: Studio / Club / Concert Hall / Matrix;
+// DC Phase: Low and Standard, each A and B) but Cinder renders them as a bool, because
+// `EffectCtrlDmp::SetVptMode(VptMode)` takes an enum whose VALUES were never recovered — the
+// symbols give the names, not the ordinals.
+//
+// Unlike most of this ABI, these two are directly probeable: `GetVptMode` and
+// `GetDcPhaseFilterType` are exported. So write a candidate and read it back. A value the service
+// KEEPS is a valid enumerator; one that reads back as something else was rejected and clamped.
+// That distinguishes the real range from a guess without decompiling anything.
+//
+// It is also audible, which is the other half of the test — and the high-gain lesson says the
+// read-back alone is not proof. Run it with music playing and VPT ON, and listen: the modes are
+// room simulations and the difference is not subtle. `--vpt <n>` parks a single mode so you can sit
+// on it; with no argument it sweeps and restores whatever was set when it started.
+static int vpt_probe(int only, int hold_s) {
+    install_diagnostics();
+    clog_("vpt: effects client + sweep. Play something first, or there is nothing to hear.");
+
+    // FRAMEWORK PUMP FIRST. Without a turning looper a pst client's reads are not answers — the
+    // first run of this probe had every value read back 0, including ones the setter had just been
+    // given, which is the signature of a reply that never arrived rather than of a rejected write.
+    // Same invariant as --btinfo and every other mode here.
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    {
+        char pm[96];
+        std::snprintf(pm, sizeof pm, "vpt: StartForApplication=%d, pump running (%u ticks)",
+                      sr, g_pump_ticks);
+        clog_(pm);
+    }
+
+    const int vpt0 = cinder_effects_get_vpt_mode();
+    const int dcp0 = cinder_effects_get_dc_phase_type();
+    char m[192];
+    std::snprintf(m, sizeof m, "vpt: on entry VptMode=%d DcPhaseFilterType=%d", vpt0, dcp0);
+    clog_(m);
+    if (vpt0 == -1) {
+        clog_("vpt: no effects client — is the sound service up?");
+        return 2;
+    }
+
+    cinder_effects_set_vpt(1);
+    if (only >= 0) {
+        cinder_effects_set_vpt_mode(only);
+        const int rb = cinder_effects_get_vpt_mode();
+        std::snprintf(m, sizeof m, "vpt: SetVptMode(%d) -> reads back %d%s",
+                      only, rb, rb == only ? "  ACCEPTED" : "  REJECTED (clamped)");
+        clog_(m);
+        // HOLD, don't exit. The effect belongs to THIS process's EffectCtrlDmp client: returning
+        // here tears the client down and the setting goes with it, so the first version was
+        // unlistenable — "it doesn't last long enough for me to hear" (2026-08-17). Sit on the mode
+        // with the pump still turning, re-asserting once a second because cinder-home's own
+        // apply_sound_fn will overwrite it if the user touches anything on the Sound screen.
+        std::snprintf(m, sizeof m, "vpt: HOLDING mode %d for %ds — listen now. Ctrl-C to stop early.",
+                      only, hold_s);
+        clog_(m);
+        // Set ONCE and sit. The first version re-asserted every second to defend against
+        // cinder-home's apply_sound_fn overwriting it — but re-applying a DSP effect mid-stream
+        // reconfigures the pipeline, so the defence was itself audible. If something else does
+        // steal the setting, the log below says so on the way out.
+        for (int i = 0; i < hold_s; i++) sleep(1);
+        const int held = cinder_effects_get_vpt_mode();
+        if (held != only) {
+            std::snprintf(m, sizeof m,
+                          "vpt: mode was changed under us during the hold (%d -> %d) — something "
+                          "else re-applied the sound chain", only, held);
+            clog_(m);
+        }
+        cinder_effects_set_vpt_mode(vpt0);
+        cinder_effects_set_vpt(0);
+        std::snprintf(m, sizeof m, "vpt: hold over — restored VptMode=%d, VPT off",
+                      cinder_effects_get_vpt_mode());
+        clog_(m);
+        g_pump_run = false;
+        return 0;
+    }
+
+    for (int v = 0; v <= 7; v++) {
+        cinder_effects_set_vpt_mode(v);
+        const int rb = cinder_effects_get_vpt_mode();
+        std::snprintf(m, sizeof m, "vpt:   VptMode %d -> %d%s", v, rb,
+                      rb == v ? "   ACCEPTED" : "   rejected");
+        clog_(m);
+        sleep(3);   // long enough to actually hear the room change between steps
+    }
+    for (int t = 0; t <= 7; t++) {
+        cinder_effects_set_dc_phase_type(t);
+        const int rb = cinder_effects_get_dc_phase_type();
+        std::snprintf(m, sizeof m, "vpt:   DcPhaseFilterType %d -> %d%s", t, rb,
+                      rb == t ? "   ACCEPTED" : "   rejected");
+        clog_(m);
+    }
+    // Put back exactly what was there, so a probe run is not a settings change.
+    cinder_effects_set_vpt_mode(vpt0);
+    cinder_effects_set_dc_phase_type(dcp0);
+    cinder_effects_set_vpt(0);
+    std::snprintf(m, sizeof m, "vpt: restored VptMode=%d DcPhaseFilterType=%d, VPT off",
+                  cinder_effects_get_vpt_mode(), cinder_effects_get_dc_phase_type());
+    clog_(m);
+    g_pump_run = false;
+    return 0;
+}
+
 static int eq_probe() {
     install_diagnostics();
     clog_("eq: Framework::GetReference() + StartForApplication …");
@@ -3374,6 +3631,19 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--bt") == 0) {
         return bt_probe(argc > 2 && std::strcmp(argv[2], "off") == 0,
                         argc > 2 && std::strcmp(argv[2], "cycle") == 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--eqsel") == 0) {
+        return eqsel_probe(argc > 2 ? std::atoi(argv[2]) : -1,
+                           argc > 3 ? std::atoi(argv[3]) : 30);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--fx") == 0) {
+        return fx_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--vpt") == 0) {
+        // --vpt            sweep every value, report the read-back, restore
+        // --vpt <n> [secs]  HOLD mode n so it can be listened to (default 30 s)
+        return vpt_probe(argc > 2 ? std::atoi(argv[2]) : -1,
+                         argc > 3 ? std::atoi(argv[3]) : 30);
     }
     if (argc > 1 && std::strcmp(argv[1], "--eq") == 0) {
         return eq_probe();

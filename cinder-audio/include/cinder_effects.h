@@ -19,6 +19,19 @@ int cinder_effects_set_eq(const signed char *bands, int n);
 /* Individual effect toggles (wire from the Sound screen). 0 = ok, <0 = unavailable. */
 int cinder_effects_set_dsee_hx(int on);
 int cinder_effects_set_vpt(int on);
+/* VPT surround MODE and DC Phase Linearizer FILTER TYPE. Raw ints: the enumerators are not
+ * recovered yet, but both have an exported getter, so `cinder-probe --vpt` settles them by writing
+ * a candidate and reading it back. Return -1 if the effect client is unavailable. */
+int cinder_effects_set_vpt_mode(int mode);
+int cinder_effects_get_vpt_mode(void);
+int cinder_effects_set_dc_phase_type(int type);
+int cinder_effects_get_dc_phase_type(void);
+/* Which tone system is in the path (Equalizer vs Tone Control — Sony treats them as alternatives).
+ * Raw int; enumerators unrecovered. `cinder-probe --eqsel` settles it by ear. */
+int cinder_effects_get_eq_band(int i);
+int cinder_effects_set_eq_band(int i, int gain);
+int cinder_effects_set_select_using_eq(int t);
+int cinder_effects_get_select_using_eq(void);
 int cinder_effects_set_dc_phase(int on);
 int cinder_effects_set_dynamic_normalizer(int on);
 int cinder_effects_set_vinylizer(int on);

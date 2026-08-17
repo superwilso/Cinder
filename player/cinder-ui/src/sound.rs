@@ -124,7 +124,13 @@ pub fn balance_grab(y: i32) -> bool {
 /// the hit band ended up 4 px shorter than the thing it was meant to cover.
 pub const AB_W: i32 = 48;
 pub const AB_H: i32 = 44;
-pub const AB_TOP: i32 = 34;
+/// MUST start at or below `chrome::STATUS_H`. The status strip's hit test owns every pixel above
+/// it — Menu, Shelf and Now Playing — and it runs BEFORE the per-screen dispatch, so any part of a
+/// control drawn up there is simply unreachable. At 34 the top 10px of these boxes sat inside the
+/// strip and the x range overlapped the bookmark, so aiming at A/B opened the Shelf or the Menu
+/// ("i also still end up hitting the menu bar", 2026-08-17). There is no upward slack in the hit
+/// band for the same reason.
+pub const AB_TOP: i32 = crate::chrome::STATUS_H + 1;
 pub const AB_GAP: i32 = 8;
 pub fn ab_rect(seg: usize) -> (i32, i32, i32, i32) {
     let x0 = BAL_X1 - (AB_W * 2 + AB_GAP);
@@ -134,10 +140,9 @@ pub fn ab_rect(seg: usize) -> (i32, i32, i32, i32) {
 /// slack around the drawn boxes, and the midpoint splits it, so a tap between them still resolves.
 pub fn hit_ab(x: i32, y: i32) -> Option<usize> {
     let (x0, _, _, _) = ab_rect(0);
-    // Asymmetric overhang on purpose: only 6px upward, because the status-bar icons sit at y~22
-    // and a band that reached them would eat their taps; 10px downward, where there is nothing
-    // until HEADER_BOTTOM.
-    if !(AB_TOP - 6..AB_TOP + AB_H + 10).contains(&y) || x < x0 - 10 {
+    // NO upward slack: above AB_TOP is the status strip, which is hit-tested first and would win
+    // anyway. Downward runs to HEADER_BOTTOM, where the first list row begins.
+    if !(AB_TOP..crate::chrome::HEADER_BOTTOM).contains(&y) || x < x0 - 10 {
         return None;
     }
     let (x1, ..) = ab_rect(1);
@@ -159,6 +164,16 @@ pub struct Sound {
     /// L/R balance position, 0..=100 with 50 = centre. A codec mixer control rather than a DSP
     /// effect: `l balance volume` / `r balance volume`, INTEGER 0..88 of attenuation in HALF-dB.
     pub balance: usize,
+    /// Is Bluetooth the LIVE output route? The balance control cannot reach it: `l/r balance
+    /// volume` are numid 11/12 on `sonysoccard`, the CXD3778GF — the only ALSA card on the device,
+    /// and the one that drives the 3.5 mm jack. Bluetooth transmit is non-ALSA (PCM goes to
+    /// BtTransmitterService over a socket), so it never passes that mixer. The same split as the
+    /// volume, which has two separate attenuators for the same reason.
+    ///
+    /// The row stays EDITABLE — you should be able to set it up before plugging in — but it says so,
+    /// because a control that silently does nothing to what you are hearing is the exact class of
+    /// lie this screen already had cleaned out of it once.
+    pub bt_route: bool,
     /// True while the finger is on the slider — the knob grows and the readout goes accent, so a
     /// touch-only device gives some sign it took the gesture (same idea as the scrollbar thumb).
     pub balance_drag: bool,
@@ -226,8 +241,13 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
     let lc = if sel { t.acc } else { t.ink };
     text::draw(c, f, 22.0, (y + 36) as f32, "Balance",
                &sty(Family::Sans, Weight::SemiBold, 18.0, lc, 0.0));
-    text::draw(c, f, 22.0, (y + 58) as f32, "Drag the slider to shift the stereo image",
-               &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
+    let sub = if s.bt_route {
+        "Wired output only — Bluetooth is not affected"
+    } else {
+        "Drag the slider to shift the stereo image"
+    };
+    text::draw(c, f, 22.0, (y + 58) as f32, sub,
+               &sty(Family::Sans, Weight::Regular, 13.0, if s.bt_route { t.acc } else { t.dim }, 0.0));
 
     // CENTRE reset. Greyed out when already centred — it is not a state, it is an action, and an
     // action with nothing to do should say so rather than looking armed.
@@ -270,7 +290,8 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
     hline(c, y + BALANCE_ROW_H, t.line);
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_bypass: bool) {
+/// `setup` is which of the two sound setups is live: 0 = A, 1 = B.
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, setup: usize) {
     c.fill(t.bg);
     // No subtitle here — the A/B compare control occupies the header's right side.
     let y0 = crate::chrome::header(c, t, f, "Sound", None);
@@ -279,7 +300,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_
     // whole effect chain bypassed ("direct"), so you can instantly hear the DSP on vs off. Toggled
     // with the Option button (hinted below the segments).
     {
-        let segs = [("A", !ab_bypass), ("B", ab_bypass)];
+        let segs = [("A", setup == 0), ("B", setup == 1)];
         for (i, (label, on)) in segs.iter().enumerate() {
             let (sx, sy, sw, sh) = ab_rect(i);
             let st = sty(Family::Mono, Weight::Bold, 18.0, if *on { t.acc_ink } else { t.dim }, 0.1);
@@ -294,7 +315,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_
         // first row.
         let hint = sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14);
         let (x0, _, _, _) = ab_rect(0);
-        right(c, f, (x0 - 12) as f32, (AB_TOP + AB_H / 2 + 4) as f32, "OPTION = A/B", &hint);
+        right(c, f, (x0 - 12) as f32, (AB_TOP + AB_H / 2 + 4) as f32, "OPTION = SWAP", &hint);
     }
 
     let rh = ROW_H;
@@ -327,16 +348,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_
         Some(codec) => format!("BT·{}", codec),
         None => "AMP → 3.5MM".to_string(),
     };
-    // In B (bypass), the whole chain is out of the path regardless of the per-effect toggles.
-    let path = if ab_bypass {
-        format!("SIGNAL PATH (B/BYPASS): SOURCE → DIRECT → {}", out)
-    } else {
-        format!("SIGNAL PATH (A): SOURCE → EQ ({}) → {} → {}", s.eq_preset, mid, out)
-    };
+    // Both setups are real chains now — B is not "bypassed", it is the other one — so the path
+    // reads the same way for either and just names which is live.
+    let path = format!("SIGNAL PATH ({}): SOURCE → EQ ({}) → {} → {}",
+                       if setup == 1 { "B" } else { "A" }, s.eq_preset, mid, out);
     let yend = wrap(c, f, t, 22.0, (fy + 22) as f32, 436.0, &path);
-    if ab_bypass {
-        text::draw(c, f, 22.0, yend + 8.0, "! A/B = B — EFFECT CHAIN BYPASSED (OPTION TO COMPARE)", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.1));
-    } else if s.clearaudio {
+    if s.clearaudio {
         text::draw(c, f, 22.0, yend + 8.0, "! CLEARAUDIO+ ACTIVE — EQ AND MANUAL DSP BYPASSED", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.1));
     }
 }

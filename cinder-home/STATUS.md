@@ -1,5 +1,42 @@
-# Cinder — status & flash/verify guide (audited 2026-07-26)
+# Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## Since 2026-08-16 — shipped and hardware-verified (2026-08-17)
+>
+> The matrix further down was last re-audited 2026-07-30 and several of its entries are now stale;
+> the ones proven wrong have been struck through in place. Landed since, all running on device:
+>
+> - **Resume** — the playback context, user queue and position survive a power cycle. Two files, not
+>   one: the sequence is ~25 KB and changes rarely, the position is 30 bytes and moves constantly, so
+>   one file would mean rewriting 25 KB/s of flash. Resume does NOT auto-play; the sequence is handed
+>   to PlayerService on the first ▶. Verified on device: 13-track context restored at index 1, 7 s in.
+> - **Folder browse** — the real file tree (322 dirs across both volumes on the reference device).
+>   Back means "up one level"; empty branches pruned; folder rows count the whole subtree.
+> - **Track info**, **genre filter**, **Hi-Res filter**, **reset settings**, **sound presets**.
+> - **L/R balance** — a continuous drag slider (0..100, centre detent + snap, CENTRE reset). The
+>   mixer unit is the HALF-decibel: the first curve put the outer stop at 88 raw = **−44 dB**, which
+>   is a mute, not a pan. Now ±12 dB, linear in dB, one batched `amixer -s` with a change-cache.
+> - **High gain output — REMOVED.** numid 28/29 accept `high`, read back 1 and persist, and the codec
+>   ignores it: the A50 output stage lacks the ZX/WM1 hardware. *On this device a mixer control
+>   accepting a write is not evidence the feature works.*
+> - **Live BT codec** — `GetSoundStatus` (transmitter slot 26) now reaches the UI, so the Bluetooth
+>   screen shows what A2DP actually **negotiated**, not what was requested. `BtSoundCodec 0x02 =
+>   LDAC` (measured, WH-1000XM4). It is Sony's own enum, NOT the A2DP assigned-numbers ID.
+> - **NFC tap-to-pair** — works. A tap now dispatches on state: already-linked → disconnect,
+>   bonded → `RequestConnection`, unknown → `Pairing` then connect once the link key appears. It
+>   previously always called `Pairing`, which on an already-bonded device does not bring up A2DP —
+>   the audio you got was the headphones' own auto-reconnect arriving at the same moment.
+> - **Date & time (#58)** — Cinder could not set the clock at all. No Sony service exposes a setter,
+>   so the setuid `cinder-clock` helper does `settimeofday(2)` + `RTC_SET_TIME`. cinder-home runs as
+>   **uid 100 (system)**, so this needs the helper. Survives a reboot.
+> - **UI overflow audit** — `Canvas` clips silently, so layout bugs had no symptom. It now counts
+>   off-panel pixels by axis, and `cinder-ui/tests/ui_overflow.rs` renders 22 screens × 2 content
+>   sets × 2 themes × 7 UI scales plus every overlay. It found five real defects (Menu, night Now
+>   Playing/Lock, Pairing, FM, Onboarding, USB Storage); all fixed.
+> - **Battery, measured cable-out (21.6 min idle):** **99.84% at 598 MHz**, **321 ctxt/s** (below the
+>   ~354 baseline), 26 `clone()`s. Total system CPU 1.3% of a core, cinder-home 0.65%. **There is
+>   nothing left to optimise in the idle path.** Never measure this with USB attached — charging pins
+>   the gauge and the flapping link holds the governor at 1.3 GHz.
+>
 > **LATEST AUDIT: [`../docs/AUDIT_2026-08-16.md`](../docs/AUDIT_2026-08-16.md)** — Sony functional
 > parity, queue/playback behaviour, and a measured performance + battery sweep, with an ordered
 > plan. Read it before promising a feature: it is the current gap list, and its §E is a device pass
@@ -1030,10 +1067,11 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 >   — on a row with no handler. Chevron removed.
 >
 > **Genuinely inert (drawn, tappable, no effect) — unchanged, listed so it's known:**
-> - Now Playing **shuffle** and **repeat** icons: `Action::ShuffleToggle`/`RepeatCycle` flip the icon
->   and `return None`. PlayerService is never told, so play order and repeat behaviour don't change.
->   Now cheap to finish: `NodeTrackSequence::SetOneTrackMode` is exported for repeat-one, and Cinder
->   already pre-shuffles queues itself for the Library shuffle bands.
+> - ~~Now Playing **shuffle** and **repeat** icons: `Action::ShuffleToggle`/`RepeatCycle` flip the
+>   icon and `return None`. PlayerService is never told.~~ **FIXED.** Shuffle reorders the live
+>   context (and restores the original order when it goes off — the pre-shuffle order is kept, not
+>   recomputed), and repeat-one reaches `NodeTrackSequence::SetOneTrackMode` through
+>   `CINDER_ACT_REPEAT_CHANGED`.
 > - ~~**Bluetooth radio toggle / Disconnect**: `Action::BtToggle` maps to no `CINDER_ACT_*` at all.~~
 >   **FIXED 2026-07-28/29.** `BtToggle` → `CINDER_ACT_BT_TOGGLE` (26) → `SetRfOnOff`, and Disconnect
 >   got its own `CINDER_ACT_BT_DISCONNECT` (27) → `RequestDisconnection` — it had been sharing the
@@ -1052,8 +1090,9 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 >   from the radio.
 > - `Screen::Fm` and `Screen::Receiver` have no `tap()` branch (they fall to `_ => vec![]`); only
 >   Back does anything. `Screen::Fm` also renders a hardcoded `88.6`.
-> - `NowPlaying.liked` is threaded through four crates and `icons::heart` exists, but the heart is
->   **never drawn** — an unfinished favourites feature, left in place rather than deleted.
+> - ~~`NowPlaying.liked` is threaded through four crates and `icons::heart` exists, but the heart is
+>   **never drawn**.~~ **FIXED.** The glyph is drawn and tappable (`hit_heart`), and liked songs
+>   persist to `/contents/cinder_liked.conf`.
 > - FFI exports the shell never calls: `cinder_set_now_playing` (superseded by `_uri`),
 >   `cinder_set_theme_night`, `cinder_set_visualizer`, `cinder_set_visualizer_type`,
 >   `cinder_visualizer_count`, `cinder_set_pcm` (the analyzer path uses `cinder_set_spectrum`).

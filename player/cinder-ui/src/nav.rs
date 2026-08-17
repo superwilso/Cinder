@@ -110,6 +110,41 @@ pub enum QueueAt {
     Later,
 }
 
+/// One complete sound SETUP: everything the Sound screen and the EQ own, as a value.
+///
+/// A and B are two of these, and the A/B control switches between them rather than bypassing the
+/// chain. That is what the control is FOR — "does this EQ suit this album better than that one" is
+/// the comparison people actually want, and on/off is a much less useful question that Sony
+/// already answers with Source Direct.
+///
+/// Balance is INSIDE the setup, by explicit request (2026-08-17): it is part of how a pair of
+/// headphones is dialled in, so it should travel with the rest of that dial-in.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SoundSetup {
+    pub dsee: bool,
+    pub vinyl: bool,
+    pub vpt: bool,
+    pub dc: bool,
+    pub norm: bool,
+    pub clear: bool,
+    /// L/R balance 0..=100, 50 = centre. Jack-only (see sound::Sound::bt_route), but still part of
+    /// the setup — a wired listening setup is exactly where it matters.
+    pub balance: usize,
+    pub eq_preset: usize,
+    pub eq_bands: [i8; 10],
+}
+
+impl Default for SoundSetup {
+    fn default() -> Self {
+        Self {
+            dsee: false, vinyl: false, vpt: false, dc: false, norm: false, clear: false,
+            balance: crate::sound::BALANCE_CENTRE,
+            eq_preset: 3,                      // "A1"
+            eq_bands: crate::data::EQ_PRESETS[3].1,
+        }
+    }
+}
+
 /// Side effects the shell carries out (via cinder-audio / system services). The UI emits these
 /// instead of acting on audio itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -552,10 +587,6 @@ pub struct App {
     /// `bt_ldac_quality` indexes bluetooth::QUALITIES (0 = Auto). Persisted; applied by the shell.
     bt_codec: u8,
     bt_ldac_quality: u8,
-    /// The codec the LIVE LINK negotiated (raw `BtSoundCodec` from `GetSoundStatus`), pushed by the
-    /// shell. NOT persisted and NOT a preference — it is a property of the current connection, so
-    /// it must be cleared the moment the link drops rather than lingering as a stale claim.
-    bt_link_codec: Option<u8>,
     /// Sony's "Use Enhanced Mode" — `BtTransmitterService::SetControlAbsoluteVolume`. Persisted
     /// intent; the shell pushes it at the radio on change and after every reconnect. Default ON:
     /// Sony's own help text is "select this check box if you cannot change the volume", and the
@@ -600,6 +631,12 @@ pub struct App {
     snd_clear: bool,
     /// L/R balance position 0..=100, 50 = centre. Persisted alongside the other sound settings.
     snd_balance: usize,
+    /// The setup NOT currently selected. The live one is the `snd_*` / `eq_*` fields above, so
+    /// every existing reader keeps working unchanged; switching swaps this with those. Holding the
+    /// inactive one rather than an index into an array of two is what keeps the refactor small.
+    setup_other: SoundSetup,
+    /// 0 = A is live, 1 = B is live.
+    setup_idx: usize,
     /// Wall-clock epoch (UTC seconds), pushed by the shell about once a second. 0 = never reported,
     /// in which case the Date & time row falls back to the status-bar string rather than showing a
     /// confident 1970. NOT persisted: it is the system clock, not a preference.
@@ -777,7 +814,6 @@ impl Default for App {
             bt_on: true,
             bt_codec: 0,        // LDAC
             bt_ldac_quality: 0, // Auto
-            bt_link_codec: None,
             bt_enhanced: true,
             bt_enhanced_supported: true,
             usb_dac_on: false,
@@ -795,6 +831,8 @@ impl Default for App {
             snd_norm: false,
             snd_clear: false,
             snd_balance: crate::sound::BALANCE_CENTRE,
+            setup_other: SoundSetup::default(),
+            setup_idx: 0,
             clock_epoch: 0,
             clock_fields: [2026, 1, 1, 0, 0],
             clock_sel: 0,
@@ -2007,12 +2045,9 @@ impl App {
                 // size "tap B to hear B" is what a finger expects, and it makes a double-tap
                 // idempotent instead of a round trip.
                 if let Some(seg) = crate::sound::hit_ab(x, y) {
-                    let want = seg == 1;
-                    if want == self.snd_ab_bypass {
-                        return vec![];
-                    }
-                    self.snd_ab_bypass = want;
-                    return vec![Action::SoundBypass(self.snd_ab_bypass)];
+                    // A and B are two SETUPS now, not "effects on" vs "effects bypassed" — see
+                    // SoundSetup. Selecting the live one is a no-op rather than a round trip.
+                    return self.select_setup(seg);
                 }
                 // CENTRE reset, before the row dispatch: it sits inside the Balance row, so the
                 // row's own handling would otherwise swallow it.
@@ -2682,6 +2717,17 @@ impl App {
 
     /// Is the in-flight scrub the UI-scale slider? The shell branches on this: a Progress scrub
     /// is resolved to milliseconds in cinder-ffi, a UiScale one is applied and persisted here.
+    /// Is the live scrub the NOW-PLAYING PROGRESS RAIL — the only one whose gesture means a seek?
+    ///
+    /// The FFI used to ask the inverse question ("is it the UI-scale slider?") and treat everything
+    /// else as the rail. That was fine while the rail and one slider were the only two, and it broke
+    /// the moment a third arrived: the balance drag ran the rail's code path, so it never moved the
+    /// balance, and on release it SEEKED THE TRACK. Asking which control is the special one, rather
+    /// than listing the controls that are not, means a fourth slider is inert rather than dangerous.
+    pub fn scrub_is_rail(&self) -> bool {
+        matches!(self.scrub, Scrub::Progress)
+    }
+
     pub fn scrub_is_ui_scale(&self) -> bool {
         self.scrub == Scrub::UiScale
     }
@@ -3958,11 +4004,8 @@ impl App {
                 Button::Select => self.sound_toggle_row(),
                 Button::Left => self.sound_lr(-1),
                 Button::Right => self.sound_lr(1),
-                // Option = instant A/B compare: flip the whole-chain bypass to hear effects on vs off.
-                Button::Option => {
-                    self.snd_ab_bypass = !self.snd_ab_bypass;
-                    vec![Action::SoundBypass(self.snd_ab_bypass)]
-                }
+                // Option = instant A/B compare: swap to the other setup.
+                Button::Option => self.select_setup(1 - self.setup_idx),
                 Button::Back => {
                     self.pop();
                     vec![]
@@ -4198,21 +4241,19 @@ impl App {
                     clearaudio: self.snd_clear,
                     balance: self.snd_balance,
                     balance_drag: matches!(self.scrub, Scrub::Balance),
+                    bt_route: self.bt_route,
                     eq_preset: data::EQ_PRESETS[self.eq_preset].0,
                     // The signal path shows what is REALLY carrying the audio. Prefer the codec
                     // the link negotiated; fall back to the preference only when nothing is
                     // connected yet, where it is the honest statement of intent.
                     bt_codec: if self.bt_on {
-                        self.bt_connected
-                            .as_ref()
-                            .and(self.bt_link_codec)
-                            .and_then(crate::bluetooth::link_codec_name)
+                        self.negotiated_codec_name()
                             .or(Some(crate::bluetooth::CODECS[self.bt_codec as usize].0))
                     } else {
                         None
                     },
                 };
-                crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.snd_ab_bypass)
+                crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.setup_idx)
             }
             Screen::Bluetooth => {
                 let bt = Bt {
@@ -4231,10 +4272,7 @@ impl App {
                     link_known: self.bt_link_known,
                     codec_sel: self.bt_codec,
                     ldac_quality: self.bt_ldac_quality,
-                    // Only meaningful while something is actually connected. Gating on
-                    // bt_connected as well as the value keeps a codec byte from an old link out of
-                    // the "CONNECTED · …" tag on a screen that says nothing is connected.
-                    link_codec: self.bt_connected.as_ref().and(self.bt_link_codec),
+                    link_codec: self.bt_link_codec_raw(),
                     enhanced: self.bt_enhanced,
                     enhanced_supported: self.bt_enhanced_supported,
                     connecting: self.bt_connecting.is_some(),
@@ -4559,23 +4597,70 @@ impl App {
         // about stops being true — and a stale "CONNECTED · LDAC" on the next device would be a
         // confident lie, which is the failure mode this screen was built to stop.
         if next.is_none() || next != self.bt_connected {
-            self.bt_link_codec = None;
+            self.bt_codec_negotiated = 0;
         }
         self.bt_connected = next;
         self.bt_link_known = true;
         changed
     }
 
-    /// Push the codec A2DP negotiated on the live link (raw `BtSoundCodec` from `GetSoundStatus`);
-    /// `None` clears it. Returns true if it moved, so the shell only repaints when it must.
-    pub fn set_bt_link_codec(&mut self, raw: Option<u8>) -> bool {
-        let changed = raw != self.bt_link_codec;
-        self.bt_link_codec = raw;
-        changed
+    // ── A/B sound setups ────────────────────────────────────────────────────────────────────
+    /// The live setup, as a value.
+    pub fn setup(&self) -> SoundSetup {
+        SoundSetup {
+            dsee: self.snd_dsee, vinyl: self.snd_vinyl, vpt: self.snd_vpt, dc: self.snd_dc,
+            norm: self.snd_norm, clear: self.snd_clear, balance: self.snd_balance,
+            eq_preset: self.eq_preset, eq_bands: self.eq_bands,
+        }
     }
 
-    pub fn bt_link_codec(&self) -> Option<u8> {
-        self.bt_link_codec
+    /// Make `s` the live setup.
+    pub fn set_setup(&mut self, s: SoundSetup) {
+        self.snd_dsee = s.dsee;
+        self.snd_vinyl = s.vinyl;
+        self.snd_vpt = s.vpt;
+        self.snd_dc = s.dc;
+        self.snd_norm = s.norm;
+        self.snd_clear = s.clear;
+        self.snd_balance = s.balance.min(crate::sound::BALANCE_MAX);
+        self.eq_preset = s.eq_preset.min(crate::data::EQ_PRESETS.len() - 1);
+        self.eq_bands = s.eq_bands;
+    }
+
+    /// Which setup is live: 0 = A, 1 = B.
+    pub fn setup_idx(&self) -> usize {
+        self.setup_idx
+    }
+
+    /// The one that is not live — persisted so both survive a reboot.
+    pub fn setup_inactive(&self) -> SoundSetup {
+        self.setup_other
+    }
+
+    /// Restore both halves at boot. `idx` names which of the two is live.
+    pub fn restore_setups(&mut self, live: SoundSetup, other: SoundSetup, idx: usize) {
+        self.set_setup(live);
+        self.setup_other = other;
+        self.setup_idx = idx & 1;
+    }
+
+    /// Switch to setup `idx`. The live one is banked first, so edits are never lost by comparing.
+    /// Returns the actions needed to make the hardware match — the whole chain, because everything
+    /// in a setup can differ.
+    pub fn select_setup(&mut self, idx: usize) -> Vec<Action> {
+        let idx = idx & 1;
+        if idx == self.setup_idx {
+            return vec![];
+        }
+        let live = self.setup();
+        let next = self.setup_other;
+        self.setup_other = live;
+        self.setup_idx = idx;
+        self.set_setup(next);
+        self.toast = format!("Setup {}", if idx == 0 { "A" } else { "B" });
+        self.toast_frames = TOAST_FRAMES;
+        // EqChanged carries the bands; SoundChanged re-applies the effect flags AND the balance.
+        vec![Action::EqChanged(self.eq_bands), Action::SoundChanged]
     }
 
     /// Push the wall clock (UTC epoch seconds). The shell calls this from its ~1 Hz housekeeping.
@@ -4963,18 +5048,25 @@ impl App {
         self.bt_codec_negotiated = raw;
     }
 
-    /// The negotiated codec's display name, or `None` while the mapping is unknown.
+    /// The negotiated codec's display name, or `None` while the value is unknown or unmapped.
     ///
-    /// The table is deliberately EMPTY. `GetSoundStatus`'s enumerators have only ever been observed
-    /// with the radio off, where all four fields read 0 — so every entry would be a guess, and this
-    /// screen has already shipped two false claims about its own output. The engine logs the raw
-    /// word (`bt-sound: codec:0x..`) on every change, so one session with a known headphone fills
-    /// this in; until then callers fall back to a neutral label.
+    /// The table used to be deliberately EMPTY: `GetSoundStatus` had only ever been observed with
+    /// the radio OFF, where all four fields read 0, so every entry would have been a guess. It was
+    /// filled in on 2026-08-17 from a live link — see `bluetooth::link_codec_name`, which owns the
+    /// single mapping so this screen and the Bluetooth screen cannot disagree about what is
+    /// playing. Anything still unmapped renders as raw hex rather than a guess.
     pub fn negotiated_codec_name(&self) -> Option<&'static str> {
-        match self.bt_codec_negotiated {
-            0 => None,
-            _ => None,
+        crate::bluetooth::link_codec_name(self.bt_link_codec_raw()?)
+    }
+
+    /// The negotiated `BtSoundCodec` byte for the CURRENT link, or `None` if nothing is connected
+    /// or the service has not reported one. Gated on the peer as well as the value, so a codec from
+    /// an old link can never be shown against a new device.
+    pub fn bt_link_codec_raw(&self) -> Option<u8> {
+        if self.bt_connected.is_none() || self.bt_codec_negotiated == 0 {
+            return None;
         }
+        u8::try_from(self.bt_codec_negotiated).ok()
     }
 
     /// Visualiser settings (the shell reads these to gate/animate; the render uses viz_kind).
@@ -5485,27 +5577,37 @@ mod tests {
                 }
             }
         }
-        // The band overhangs the boxes, so a near-miss still lands.
+        // The control must live ENTIRELY between the status strip and the first list row. The
+        // status strip is hit-tested before any screen, so a pixel above STATUS_H is unreachable
+        // however it is drawn; a pixel at or past HEADER_BOTTOM belongs to the list.
         let (x, y, _, h) = sound::ab_rect(0);
-        assert!(sound::hit_ab(x + 4, y - 4).is_some(), "a tap just above the box is lost");
-        assert!(sound::hit_ab(x + 4, y + h + 6).is_some(), "a tap just below the box is lost");
-        // …but it must not reach the status-bar icons above it (hamburger / bookmark, y ~22).
-        assert!(sound::hit_ab(x + 4, 22).is_none(), "the A/B band reaches the status bar");
-        // It stays clear of the list underneath and of the back chevron / title on its left.
         let (_, ay, _, ah) = sound::ab_rect(1);
-        assert!(ay + ah + 10 <= sound::TOP, "the A/B band reaches into the first row");
+        assert!(y >= crate::chrome::STATUS_H, "A/B is drawn inside the status strip");
+        assert!(ay + ah <= crate::chrome::HEADER_BOTTOM, "A/B is drawn over the first row");
+        for yy in 0..crate::chrome::STATUS_H {
+            assert!(sound::hit_ab(x + 4, yy).is_none(), "the A/B band reaches the status strip");
+        }
+        for yy in crate::chrome::HEADER_BOTTOM..crate::chrome::HEADER_BOTTOM + 20 {
+            assert!(sound::hit_ab(x + 4, yy).is_none(), "the A/B band reaches into the first row");
+        }
+        // Slack downward within the header only, and never across the title.
+        assert!(sound::hit_ab(x + 4, y + h + 1).is_some(), "a tap just below the box is lost");
         assert!(sound::hit_ab(200, y + 4).is_none(), "the band extends across the title");
 
-        // Tapping a segment SELECTS it: A turns the chain on, B bypasses, and a repeat is a no-op.
+        // Tapping a segment SELECTS that SETUP, and a repeat is a no-op. A and B are two complete
+        // sound configurations — the control is a comparison, not an on/off.
         let mut a = unlocked();
         a.stack = vec![Screen::Sound];
         let (bx, by, bw, bh) = sound::ab_rect(1);
+        assert_eq!(a.setup_idx(), 0, "A should be live to begin with");
         let acts = a.tap(bx + bw / 2, by + bh / 2);
-        assert!(acts.iter().any(|x| matches!(x, Action::SoundBypass(true))), "B did not bypass");
+        assert_eq!(a.setup_idx(), 1, "tapping B did not select setup B");
+        assert!(acts.iter().any(|x| matches!(x, Action::SoundChanged)), "B did not re-apply the chain");
         assert!(a.tap(bx + bw / 2, by + bh / 2).is_empty(), "tapping B twice acted twice");
         let (ax, ay2, aw, ah2) = sound::ab_rect(0);
         let acts = a.tap(ax + aw / 2, ay2 + ah2 / 2);
-        assert!(acts.iter().any(|x| matches!(x, Action::SoundBypass(false))), "A did not restore");
+        assert_eq!(a.setup_idx(), 0, "tapping A did not come back");
+        assert!(acts.iter().any(|x| matches!(x, Action::SoundChanged)), "A did not re-apply");
     }
 
     /// The balance slider: render geometry and hit test must agree, a drag must track the finger
@@ -5548,6 +5650,7 @@ mod tests {
         assert!(a.scrub_move(sound::BAL_X0).is_empty(), "a no-op move still emitted");
         assert!(a.scrub_end().iter().any(|x| matches!(x, Action::SoundChanged)), "not persisted");
 
+
         // The grab band is a real touch target, not the 3px track.
         assert!(sound::balance_grab(ty - 20) && sound::balance_grab(ty + 20));
         // ...and it lives inside the Balance row, so it can't steal ClearAudio+'s taps.
@@ -5586,6 +5689,32 @@ mod tests {
         // A hand-edited value is clamped rather than parking the knob off the end of the track.
         a.set_balance(9999);
         assert_eq!(a.balance(), BALANCE_MAX);
+
+        // AND IT IS NOT THE PROGRESS RAIL. The FFI decides what a drag MEANS from this one bit: the
+        // rail reports a seek target, everything else reports a UI action. It used to ask the
+        // inverse ("is it the UI-scale slider?") and assume the rail otherwise — so the balance
+        // drag ran the rail's code path, never moved the balance, and SEEKED THE TRACK on release.
+        // Any future slider must answer false here or it will do the same.
+        let mut a = unlocked();
+        a.stack = vec![Screen::Sound];
+        assert!(a.scrub_begin(sound::balance_x(20), ty));
+        assert!(!a.scrub_is_rail(), "the balance drag claims to be the seek rail");
+        a.scrub_end();
+        // The UI-scale slider, found by walking the Settings rows rather than by a magic y.
+        let mut a = unlocked();
+        a.stack = vec![Screen::Settings];
+        for y in 0..crate::canvas::H as i32 {
+            if crate::settings::row_at(y, 0) == Some(crate::settings::ROW_UI_SCALE)
+                && a.scrub_begin(240, y)
+            {
+                assert!(!a.scrub_is_rail(), "the UI-scale drag claims to be the seek rail");
+                a.scrub_end();
+                break;
+            }
+        }
+        let mut a = unlocked();
+        assert!(a.scrub_begin(240, crate::now_playing::RAIL_GRAB_TOP + 1));
+        assert!(a.scrub_is_rail(), "the progress rail must BE the rail");
     }
 
     /// Bit 6 of the sound flags used to carry "high gain output". The row was cut (the codec
