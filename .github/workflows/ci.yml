@@ -1,0 +1,95 @@
+name: ci
+
+# Builds and tests everything that CAN be built on a hosted runner, on every push.
+#
+# WHY THIS EXISTS SEPARATELY FROM release.yml. The release workflow only runs on a tag, so until
+# now the first time the installer was compiled for Windows was during the release itself — which
+# is the worst possible moment to discover it does not compile. This runs the same build on every
+# push, so a tag is a formality rather than a gamble.
+#
+# The ARM side (cinder-home and friends) is NOT built here: it needs a glibc-2.23 + libc++-3.9.0
+# cross toolchain matched to the player's runtime. It is built by a maintainer and committed under
+# cinder-home/dist/; `tools/release.sh` is what verifies that committed payload is not stale.
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["v*"]     # tags are release.yml's job, no need to run twice
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust:
+    name: ${{ matrix.what }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - what: player (host tests)
+            os: ubuntu-latest
+            dir: player
+          - what: installer (linux)
+            os: ubuntu-latest
+            dir: installer
+          - what: installer (windows)
+            os: windows-latest
+            dir: installer
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.dir }}
+      - name: Test
+        working-directory: ${{ matrix.dir }}
+        run: cargo test --release
+      - name: Build
+        working-directory: ${{ matrix.dir }}
+        run: cargo build --release
+
+  payload:
+    name: dist payload is complete
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every file the installer embeds must be committed
+        shell: bash
+        run: |
+          # The installer's build.rs fails on a missing payload, but it fails with a build error
+          # deep in a cross-platform matrix. Checking it here names the file directly.
+          missing=0
+          while read -r f; do
+            [ -n "$f" ] || continue
+            if [ -f "$f" ]; then
+              printf '  ok      %8s  %s\n' "$(stat -c%s "$f")" "$f"
+            else
+              printf '  MISSING           %s\n' "$f"; missing=1
+            fi
+          done <<'PAYLOAD'
+          cinder-home/dist/stable/cinder-home
+          cinder-home/dist/stable/cinder-probe
+          cinder-home/dist/stable/cinder-umount
+          cinder-home/dist/stable/cinder-power
+          cinder-home/dist/stable/cinder-msc
+          cinder-home/dist/stable/cinder-clock
+          cinder-home/dist/stable/cinder-signature.sh
+          cinder-home/dist/stable/cinder_components.conf
+          cinder-home/dist/stable/cinder_home_install.upg
+          cinder-home/dist/stable/cinder_home_uninstall.upg
+          PAYLOAD
+          [ "$missing" = 0 ] || { echo "::error::dist/stable is incomplete — the installer cannot be built"; exit 1; }
+
+      - name: The ARM binaries must actually be ARM
+        shell: bash
+        run: |
+          # Guards against someone committing a host build by accident, which would produce an
+          # installer that ships x86 binaries to an armv7 player and fails only on the device.
+          for f in cinder-home/dist/stable/cinder-home cinder-home/dist/stable/cinder-probe; do
+            t=$(file -b "$f")
+            echo "  $f: $t"
+            case "$t" in
+              *ARM*) ;;
+              *) echo "::error::$f is not an ARM binary"; exit 1 ;;
+            esac
+          done

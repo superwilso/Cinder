@@ -49,6 +49,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Payload sanity
+        shell: bash
+        run: |
+          # The tagged commit carries the ARM binaries; if one is missing the installer builds an
+          # incomplete package or fails obscurely inside build.rs. Fail here, by name.
+          missing=0
+          for f in cinder-home/dist/stable/cinder-home \
+                   cinder-home/dist/stable/cinder-probe \
+                   cinder-home/dist/stable/cinder_home_install.upg \
+                   cinder-home/dist/stable/cinder_components.conf; do
+            [ -f "$f" ] || { echo "::error::missing payload $f"; missing=1; }
+          done
+          [ "$missing" = 0 ]
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -85,14 +99,24 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: List what is being published
-        run: ls -lR dist
+      - name: List what is being published, with checksums
+        run: |
+          ls -lR dist
+          # A published binary nobody can verify is a binary nobody should run. The sums go in the
+          # release body so a download can be checked without trusting the download itself.
+          ( cd dist && sha256sum * | tee SHA256SUMS )
 
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          draft: true
+          # NOT a draft. It was, and that was the bug: the workflow ran, built both installers,
+          # attached them — and left the release invisible until someone opened GitHub and pressed
+          # Publish. "Automated" has to mean the artefacts are actually reachable at the end.
+          # A tag with a suffix (v1.2.3-rc1) still ships, but marked pre-release.
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           body: |
             ## Installing
 
@@ -105,3 +129,15 @@ jobs:
 
             **Read [RECOVERY.md](../blob/main/RECOVERY.md) first.** This device has no public
             DFU/EDL recovery path.
+
+            ### Verifying the download
+
+            `SHA256SUMS` is attached. On Windows:
+
+            ```powershell
+            Get-FileHash .\cinder-installer-windows-x64.exe -Algorithm SHA256
+            ```
+
+            The installer is unsigned, so SmartScreen will warn about an unknown publisher — that
+            is expected for an unsigned binary and is not itself evidence of anything. Check the
+            hash against `SHA256SUMS` if you want more than my word for it.

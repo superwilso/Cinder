@@ -3806,6 +3806,167 @@ static int tonefreq_probe() {
     _exit(0);
 }
 
+// --fm [play] : bring the FM tuner up and sweep the band.
+//
+// The Si4708 has never been touched by Cinder — `fm.rs` draws a hardcoded 88.6 MHz and the shell
+// makes zero tuner calls. This is the first contact. Interface from analysis/RE_fm_tuner.md: the
+// client vtable at 0x1789c, recovered from R_ARM_ABS32 relocations because the slots are not
+// stored in the file.
+//
+// TWO THINGS THIS PROBE IS CAREFUL ABOUT:
+//
+//   * It does NOT call Play() unless asked (`--fm play`). Play routes tuner audio to the output at
+//     whatever the hardware volume happens to be, and this probe gets run on a device someone may
+//     have left at 120/120 with headphones on.
+//   * It sweeps and REPORTS rather than asserting. `SetFrequency` takes a bare uint32 whose unit is
+//     not recovered — kHz, 10 kHz and Hz are all plausible — so the sweep is also the unit test:
+//     tune across the FM band under each candidate unit and see which one makes GetSignalLevel
+//     move. A flat reading under every unit means either the wrong unit or no antenna.
+//
+// FM NEEDS THE HEADPHONE CABLE AS ITS ANTENNA. With nothing in the jack, every frequency reads
+// dead and the result says nothing.
+extern "C" void* _ZN3pst8services31TunerPlayerServiceClientFactory14CreateInstanceEv(void);
+
+namespace {
+// Slot numbers from analysis/RE_fm_tuner.md. Slot 0 is the first virtual after the
+// [offset, typeinfo] header, same convention as `vslot` uses for the BT clients.
+enum {
+    VIDX_GetTunerState   = 3,
+    VIDX_Open            = 4,
+    VIDX_Close           = 5,
+    VIDX_Play            = 6,
+    VIDX_Stop            = 7,
+    VIDX_GetStereoState  = 12,
+    VIDX_GetFrequency    = 16,
+    VIDX_SetFrequency    = 17,
+    VIDX_GetSignalLevel  = 20,
+    VIDX_IsRunningAuto   = 23,
+};
+typedef int (*fn_v)(void*);
+typedef int (*fn_pu)(void*, unsigned*);
+typedef int (*fn_cu)(void*, const unsigned*);
+typedef int (*fn_pi)(void*, int*);
+
+int fm_signal(void* c) {
+    int lvl = -1;
+    try { ((fn_pi)vslot(c, VIDX_GetSignalLevel))(c, &lvl); } catch (...) { return -1; }
+    return lvl;
+}
+} // namespace
+
+static int fm_probe(bool do_play) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    clog_("fm: TunerPlayerServiceClientFactory::CreateInstance() …");
+    wd_arm(12);
+    void* c = _ZN3pst8services31TunerPlayerServiceClientFactory14CreateInstanceEv();
+    wd_disarm();
+    if (!c) { clog_("fm: CreateInstance returned NULL — STOP"); g_pump_run = false; return 1; }
+    std::snprintf(m, sizeof m, "fm: client %p", c);
+    clog_(m);
+
+    int st = -1;
+    try { wd_arm(10); st = ((fn_v)vslot(c, VIDX_GetTunerState))(c); wd_disarm(); }
+    catch (...) { clog_("fm: GetTunerState threw"); }
+    std::snprintf(m, sizeof m, "fm: GetTunerState (before Open) = %d", st);
+    clog_(m);
+
+    int rc = -1;
+    try { wd_arm(12); rc = ((fn_v)vslot(c, VIDX_Open))(c); wd_disarm(); }
+    catch (...) { clog_("fm: Open threw — STOP"); g_pump_run = false; std::fflush(nullptr); _exit(1); }
+    std::snprintf(m, sizeof m, "fm: Open() rc=%d", rc);
+    clog_(m);
+
+    try { wd_arm(10); st = ((fn_v)vslot(c, VIDX_GetTunerState))(c); wd_disarm(); } catch (...) {}
+    unsigned f0 = 0;
+    try { ((fn_pu)vslot(c, VIDX_GetFrequency))(c, &f0); } catch (...) {}
+    std::snprintf(m, sizeof m, "fm: after Open state=%d  GetFrequency=%u  signal=%d",
+                  st, f0, fm_signal(c));
+    clog_(m);
+
+    if (do_play) {
+        try { wd_arm(12); rc = ((fn_v)vslot(c, VIDX_Play))(c); wd_disarm(); }
+        catch (...) { rc = -99; }
+        std::snprintf(m, sizeof m, "fm: Play() rc=%d  (audio is live from here)", rc);
+        clog_(m);
+        sleep(1);
+    } else {
+        clog_("fm: NOT calling Play() — pass `--fm play` for that. Sweeping muted.");
+    }
+
+    // Unit test + band sweep in one. 98.0 MHz expressed three ways; whichever the service keeps
+    // (and whichever makes the signal move) is the unit.
+    static const struct { const char* name; unsigned v; } kUnits[] = {
+        { "kHz   (98000)",    98000u    },
+        { "10kHz (9800)",     9800u     },
+        { "Hz    (98000000)", 98000000u },
+    };
+    for (unsigned i = 0; i < sizeof kUnits / sizeof kUnits[0]; i++) {
+        unsigned back = 0;
+        try {
+            ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &kUnits[i].v);
+            usleep(200000);
+            ((fn_pu)vslot(c, VIDX_GetFrequency))(c, &back);
+        } catch (...) { back = 0xFFFFFFFFu; }
+        std::snprintf(m, sizeof m, "fm: SetFrequency %-16s -> reads %-10u signal=%d",
+                      kUnits[i].name, back, fm_signal(c));
+        clog_(m);
+    }
+
+    // Sweep the band in kHz — the most likely unit, and the one the read-back above will have
+    // confirmed or denied. 87.5 to 108.0 MHz in 100 kHz steps is the European raster.
+    clog_("fm: sweeping 87.5-108.0 MHz in 100 kHz steps (kHz units) …");
+    int best_lvl[8] = {0}; unsigned best_f[8] = {0};
+    int seen_min = 1 << 30, seen_max = -(1 << 30);
+    for (unsigned khz = 87500; khz <= 108000; khz += 100) {
+        try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &khz); } catch (...) { break; }
+        usleep(30000);
+        int lvl = fm_signal(c);
+        if (lvl < seen_min) seen_min = lvl;
+        if (lvl > seen_max) seen_max = lvl;
+        for (int s = 0; s < 8; s++) {
+            if (lvl > best_lvl[s]) {
+                for (int t = 7; t > s; t--) { best_lvl[t] = best_lvl[t-1]; best_f[t] = best_f[t-1]; }
+                best_lvl[s] = lvl; best_f[s] = khz;
+                break;
+            }
+        }
+    }
+    std::snprintf(m, sizeof m, "fm: signal across the band: min=%d max=%d", seen_min, seen_max);
+    clog_(m);
+    if (seen_min == seen_max) {
+        clog_("fm: *** FLAT — no station discrimination. Either the unit is wrong, the tuner needs");
+        clog_("fm:     Play() first, or NOTHING IS PLUGGED INTO THE HEADPHONE JACK (it is the aerial).");
+    } else {
+        for (int s = 0; s < 8 && best_f[s]; s++) {
+            int stereo = -1;
+            try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &best_f[s]); usleep(120000);
+                  ((fn_pi)vslot(c, VIDX_GetStereoState))(c, &stereo); } catch (...) {}
+            std::snprintf(m, sizeof m, "fm:   %6.1f MHz  signal=%3d  stereoState=%d",
+                          best_f[s] / 1000.0, best_lvl[s], stereo);
+            clog_(m);
+        }
+    }
+
+    if (do_play) { try { ((fn_v)vslot(c, VIDX_Stop))(c); } catch (...) {} clog_("fm: Stop()"); }
+    if (f0) { try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &f0); } catch (...) {} }
+    try { rc = ((fn_v)vslot(c, VIDX_Close))(c); } catch (...) { rc = -99; }
+    std::snprintf(m, sizeof m, "fm: Close() rc=%d", rc);
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 // --vpt : settle the VptMode and DcPhaseFilterType enumerators by EXPERIMENT.
 //
 // Both effects have more than on/off in Sony's UI (VPT: Studio / Club / Concert Hall / Matrix;
@@ -4243,6 +4404,9 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--tone") == 0) {
         return tone_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--fm") == 0) {
+        return fm_probe(argc > 2 && std::strcmp(argv[2], "play") == 0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--tonefreq") == 0) {
         return tonefreq_probe();

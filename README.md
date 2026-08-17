@@ -115,6 +115,34 @@ Releases are cut by `.github/workflows/release.yml` on a `v*` tag. It builds onl
 the ARM binaries under `cinder-home/dist/` are committed, so **build and commit `dist/` before
 tagging**. See [`install.md`](install.md) for the whole pipeline and how to add a component.
 
+## Cutting a release
+
+Releases are automated, but with one hand-built step that cannot be automated away: the ARM
+binaries. Building `cinder-home` needs a glibc-2.23 + libc++-3.9.0 cross toolchain matched to the
+player's own runtime, so they are built by a maintainer and **committed** under
+`cinder-home/dist/`. Only the installer is built in CI.
+
+That split has exactly one dangerous failure mode — tagging a commit whose `dist/` is stale, which
+ships an installer full of last week's binaries with a green tick and no warning. `tools/release.sh`
+exists to make that impossible:
+
+```sh
+tools/release.sh v1.2.3 --dry-run   # verify everything, touch nothing
+tools/release.sh v1.2.3             # verify, tag, push
+```
+
+It refuses to tag unless the tree is clean, `installer/Cargo.toml`'s version matches the tag, every
+embedded payload file exists, **a fresh `build.sh stable` reproduces the committed `dist/` byte for
+byte**, and the installer's own tests pass. It never commits anything — staging stays yours.
+
+Pushing the tag is what triggers `.github/workflows/release.yml`, which builds the Windows and
+Linux installers, attaches them plus `SHA256SUMS` to a **published** (not draft) GitHub release,
+and marks it pre-release if the tag has a suffix like `-rc1`.
+
+Every other push runs `.github/workflows/ci.yml`, which builds and tests the player and the
+installer on both platforms and checks the committed payload is complete and actually ARM — so a
+tag is a formality rather than the first time anything gets compiled for Windows.
+
 ## Flashing and recovery
 
 **Read [`RECOVERY.md`](RECOVERY.md) before flashing anything.** This device has no public
