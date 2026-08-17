@@ -21,7 +21,7 @@
 //! code is for the OTHER device's user to type, so the panel offers nothing to accept.
 
 use crate::icons;
-use crate::text::{self, Family, FontSet, Weight};
+use crate::text::{Family, FontSet, Weight};
 use crate::theme::Theme;
 use crate::widgets::{center, fill_rect, hline, stroke_rect, sty};
 use crate::Canvas;
@@ -183,9 +183,9 @@ fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, name: &str, sub: &str,
        accent: bool, right_label: Option<&str>, right_accent: bool) {
     let cy = y + ROW_H / 2;
     icons::bt(c, 34.0, cy as f32, 16.0, if accent { t.acc } else { t.dim });
-    text::draw(c, f, 58.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, 17.0, t.ink, 0.0));
+    crate::widgets::draw_fit(c, f, 58.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, 17.0, t.ink, 0.0), 458.0);
     let scol = if accent { t.acc } else { t.faint };
-    text::draw(c, f, 58.0, (cy + 15) as f32, sub, &sty(Family::Mono, Weight::Regular, 11.0, scol, 0.06));
+    crate::widgets::draw_fit(c, f, 58.0, (cy + 15) as f32, sub, &sty(Family::Mono, Weight::Regular, 11.0, scol, 0.06), 458.0);
     if let Some(label) = right_label {
         // Fixed width, the same constant `hit()` splits the row on, so the touch target IS the drawn
         // button. Sizing the box to the label would leave a silent dead band beside it.
@@ -218,8 +218,8 @@ pub fn render(
     // thing this space can hold is the control that does work.
     fill_rect(c, 22, CARD_Y, 436, CARD_H, t.panel);
     stroke_rect(c, 22, CARD_Y, 436, CARD_H, t.line, 1);
-    text::draw(c, f, 40.0, (CARD_Y + 30) as f32, "Scan for new devices",
-               &sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0));
+    crate::widgets::draw_fit(c, f, 40.0, (CARD_Y + 30) as f32, "Scan for new devices",
+               &sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0), 458.0);
     let sub = if scanning {
         format!("SEARCHING… {} FOUND", found.len())
     } else if found.is_empty() {
@@ -227,8 +227,8 @@ pub fn render(
     } else {
         format!("{} FOUND · SCAN AGAIN TO REFRESH", found.len())
     };
-    text::draw(c, f, 40.0, (CARD_Y + 52) as f32, &sub,
-               &sty(Family::Mono, Weight::Regular, 11.0, if scanning { t.acc } else { t.faint }, 0.08));
+    crate::widgets::draw_fit(c, f, 40.0, (CARD_Y + 52) as f32, &sub,
+               &sty(Family::Mono, Weight::Regular, 11.0, if scanning { t.acc } else { t.faint }, 0.08), 458.0);
     let (sx, sy, sw, sh) = SCAN_BTN;
     if scanning {
         fill_rect(c, sx, sy, sw, sh, t.acc);
@@ -240,11 +240,11 @@ pub fn render(
 
     // PAIRED
     let prows = devices.len().min(MAX_PAIRED);
-    text::draw(c, f, 22.0, (LIST_Y0 - 16) as f32, &format!("PAIRED · {}", devices.len()),
-               &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
+    crate::widgets::draw_fit(c, f, 22.0, (LIST_Y0 - 16) as f32, &format!("PAIRED · {}", devices.len()),
+               &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18), 458.0);
     if devices.is_empty() {
-        text::draw(c, f, 58.0, (LIST_Y0 + 26) as f32, "Nothing paired yet",
-                   &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+        crate::widgets::draw_fit(c, f, 58.0, (LIST_Y0 + 26) as f32, "Nothing paired yet",
+                   &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0), 458.0);
     }
     for (i, d) in devices.iter().take(prows).enumerate() {
         let sub = if busy == Some(i) {
@@ -272,13 +272,13 @@ pub fn render(
     // FOUND — only shown once there is something to say, so the screen is quiet when idle.
     if scanning || !found.is_empty() {
         let hy = found_header_y(devices.len());
-        text::draw(c, f, 22.0, hy as f32, &format!("FOUND · {}", found.len()),
-                   &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
+        crate::widgets::draw_fit(c, f, 22.0, hy as f32, &format!("FOUND · {}", found.len()),
+                   &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18), 458.0);
         let cap = found_capacity(devices.len());
         let fy0 = found_y0(devices.len());
         if found.is_empty() {
-            text::draw(c, f, 58.0, (fy0 + 26) as f32, "Searching…",
-                       &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+            crate::widgets::draw_fit(c, f, 58.0, (fy0 + 26) as f32, "Searching…",
+                       &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0), 458.0);
             if scanning {
                 crate::widgets::spinner(c, 30, fy0 + 21, 7, 3, busy_phase, t.acc);
             }
@@ -295,11 +295,11 @@ pub fn render(
 
     // Footer: the two limits that are real, stated rather than hidden.
     hline(c, FOOT_Y, t.line);
-    text::draw(c, f, 22.0, 760.0, "PIN AND CONFIRM PROMPTS APPEAR HERE WHEN A DEVICE ASKS",
-               &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1));
+    crate::widgets::draw_fit(c, f, 22.0, 760.0, "PIN AND CONFIRM PROMPTS APPEAR HERE WHEN A DEVICE ASKS",
+               &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1), 458.0);
     icons::rx(c, 30.0, 776.0, 14.0, t.faint);
-    text::draw(c, f, 46.0, 780.0, "NFC TAP-TO-PAIR IS NOT WIRED YET",
-               &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08));
+    crate::widgets::draw_fit(c, f, 46.0, 780.0, "NFC TAP-TO-PAIR IS NOT WIRED YET",
+               &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08), 458.0);
 }
 
 #[cfg(test)]

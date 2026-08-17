@@ -13,7 +13,7 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 19;
+pub const ROWS: usize = 20;
 /// The actionable rows: Theme / Accent / UI scale / Visualiser / Visualiser animation / Sleep
 /// timer (DISPLAY) + Battery care (SYSTEM).
 pub const ROW_THEME: usize = 0;
@@ -34,27 +34,32 @@ pub const ROW_AUTO_OFF: usize = 8;
 pub const ROW_STORAGE: usize = 9;
 pub const ROW_DATABASE: usize = 10;
 pub const ROW_BATTERY: usize = 11;
-pub const ROW_USB_MODE: usize = 12; // tapping enters USB mass-storage (file transfer to a PC)
+/// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
+/// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
+/// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
+/// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
+pub const ROW_CLOCK: usize = 12;
+pub const ROW_USB_MODE: usize = 13; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 13;
+pub const ROW_BOOT_STOCK: usize = 14;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 14;
-pub const ROW_POWER_OFF: usize = 15;
+pub const ROW_RESTART: usize = 15;
+pub const ROW_POWER_OFF: usize = 16;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 16;
+pub const ROW_RESET: usize = 17;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 17;
-pub const ROW_MODEL: usize = 18;
+pub const ROW_FIRMWARE: usize = 18;
+pub const ROW_MODEL: usize = 19;
 
 const RH: i32 = 56;
 /// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
 /// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [8, 9, 2];
+const SECTIONS: [usize; 3] = [8, 10, 2];
 
 /// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
 /// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
@@ -92,6 +97,9 @@ pub struct SettingsView<'a> {
     pub auto_off: &'a str,
     /// Boot-to-stock row value: normally "SONY", or the confirm prompt once armed.
     pub boot_stock: &'a str,
+    /// The live clock, shown as the Date & time row's value — so the row is also where you notice
+    /// the time is wrong. Formatted by the caller (nav) from the same string the status bar uses.
+    pub clock: &'a str,
     /// The selected accent — which swatch gets the ring, and the name shown beside them.
     pub accent: Accent,
 }
@@ -342,6 +350,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     // Battery care = Sony "Itawari" charging (caps ~90%). Live On/Off toggle (no chevron — it acts
     // in place), wired to PowerMgrServiceClient::EnableItawariCharging via the shell.
     y = srow(c, t, f, y, sel == ROW_BATTERY, "Battery care", if v.battery_care { "ON · 90%" } else { "OFF" }, false);
+    // Chevron: it drills into the clock editor. The value is the live clock, so the row doubles as
+    // the place you notice the time is wrong.
+    y = srow(c, t, f, y, sel == ROW_CLOCK, "Date & time", v.clock, true);
     y = srow(c, t, f, y, sel == ROW_USB_MODE, "USB mode", if v.usb_dac { "DAC" } else { "MASS STORAGE" }, true);
     // Boot to stock: the only way back to Sony's player that needs no USB cable. Chevron, because
     // it acts. The value doubles as the confirmation prompt (see nav: first tap arms, second goes).
@@ -379,7 +390,7 @@ mod tests {
             brightness: "4 / 5",
             screen_off: "OFF",
             auto_off: "OFF",
-            boot_stock: "SONY",
+            boot_stock: "SONY", clock: "17 Aug · 09:01",
             accent,
         }
     }

@@ -23,6 +23,24 @@ pub struct Canvas {
     /// is what makes "the whole bar follows the finger" a two-line change at the call site
     /// instead of an edit to every primitive in the row.
     off_x: i32,
+    /// Pixels a draw call asked for that fell OFF THE PANEL — x outside 0..W, or y outside 0..H.
+    ///
+    /// Every write here is silently clipped, which is the right runtime behaviour (a stray glyph
+    /// must never scribble outside the framebuffer) but hides layout bugs completely: text that
+    /// runs past the right margin, a row drawn below the panel, a value that overflows its pill —
+    /// all of them just disappear, and the screenshot looks merely "a bit tight" instead of wrong.
+    /// Counting them turns "does anything clip?" into an assertion. See `tests/ui_overflow.rs`.
+    ///
+    /// Rejections caused by the CLIP BAND are deliberately NOT counted: lists set a band precisely
+    /// so half-scrolled rows are cut off, and that is correct behaviour rather than a defect.
+    ///
+    /// Split by AXIS, because the two mean opposite things. Running off the LEFT or RIGHT edge is
+    /// always a layout defect — nothing on this device scrolls horizontally, so a pixel past the
+    /// margin is content the user can never see. Running off the TOP or BOTTOM is usually a
+    /// scrolling list drawing rows outside the viewport, which is ordinary; Settings alone is
+    /// 919px of content on an 800px panel.
+    oob_x: u32,
+    oob_y: u32,
 }
 
 impl Default for Canvas {
@@ -33,7 +51,7 @@ impl Default for Canvas {
 
 impl Canvas {
     pub fn new() -> Self {
-        Self { buf: vec![0; W * H], clip_top: 0, clip_bot: H as i32, off_x: 0 }
+        Self { buf: vec![0; W * H], clip_top: 0, clip_bot: H as i32, off_x: 0, oob_x: 0, oob_y: 0 }
     }
 
     /// Translate every subsequent draw horizontally by `dx` px. Pair with `clear_offset_x`.
@@ -61,12 +79,40 @@ impl Canvas {
         self.buf.fill(to_u32(c));
     }
 
+    /// Pixels asked for past the LEFT or RIGHT margin since `reset_oob` — always a layout defect.
+    pub fn oob_x(&self) -> u32 {
+        self.oob_x
+    }
+
+    /// Pixels asked for above or below the panel — normal for a scrolling list.
+    pub fn oob_y(&self) -> u32 {
+        self.oob_y
+    }
+
+    pub fn reset_oob(&mut self) {
+        self.oob_x = 0;
+        self.oob_y = 0;
+    }
+
+    /// Record one rejected pixel, by axis. Horizontal wins when both are out: a pixel that is off
+    /// to the right AND below is reported as the horizontal defect, which is the actionable one.
+    #[inline]
+    fn note_oob(&mut self, x: i32, y: i32) {
+        if x < 0 || x >= W as i32 {
+            self.oob_x = self.oob_x.saturating_add(1);
+        } else if y < 0 || y >= H as i32 {
+            self.oob_y = self.oob_y.saturating_add(1);
+        }
+    }
+
     #[inline]
     pub fn put(&mut self, x: i32, y: i32, v: u32) {
         let x = x + self.off_x;
         if x >= 0 && y >= self.clip_top && y < self.clip_bot && (x as usize) < W {
             self.buf[y as usize * W + x as usize] = v;
+            return;
         }
+        self.note_oob(x, y);
     }
 
     /// Alpha-blend `c` over the existing pixel with coverage `a` (0..=255).
@@ -74,6 +120,11 @@ impl Canvas {
     pub fn blend(&mut self, x: i32, y: i32, c: Rgb888, a: u8) {
         let x = x + self.off_x;
         if x < 0 || y < self.clip_top || y >= self.clip_bot || x as usize >= W {
+            // A zero-coverage blend is a no-op the rasteriser emits for glyph edges; counting it
+            // would report overflow for text that merely ENDS at the margin.
+            if a > 0 {
+                self.note_oob(x, y);
+            }
             return;
         }
         let idx = y as usize * W + x as usize;
@@ -101,6 +152,13 @@ impl Canvas {
             return None;
         }
         let x1 = x + len as i32;
+        let over_x = (-x).max(0) + (x1 - W as i32).max(0);
+        if over_x > 0 {
+            self.oob_x = self.oob_x.saturating_add(over_x as u32);
+        }
+        if y < 0 || y >= H as i32 {
+            self.oob_y = self.oob_y.saturating_add((len as i32 - over_x).max(0) as u32);
+        }
         if x1 <= 0 || x >= W as i32 {
             return None;
         }

@@ -1451,6 +1451,39 @@ void power_action(bool restart) {
     clog_(m);
 }
 
+// Settings > Date & time > SET CLOCK. Hands the epoch to the setuid helper, which is the only
+// thing on this device that can move either clock: settimeofday(2) and RTC_SET_TIME both want
+// CAP_SYS_TIME, and cinder-home runs as uid 100 (system) with an empty capability set.
+//
+// The epoch is an INTEGER from the UI, already clamped by cinder-ui to the same 2001..2038 range
+// the helper enforces independently — so unlike apply_volume's control name (which comes from a
+// user-writable file on /contents) there is no string here to character-check. It is still printed
+// with %lld into a fixed buffer and nothing else from the UI reaches the command line.
+static void apply_clock() {
+    long long epoch = cinder_get_clock_epoch();
+    char cmd[128];
+    std::snprintf(cmd, sizeof cmd,
+                  "/system/vendor/unknown321/bin/cinder-clock set %lld", epoch);
+    int rc = std::system(cmd);
+    // system() returns a wait status; the helper's own code is in the low byte of the exit status.
+    int code = (rc == -1) ? -1 : ((rc >> 8) & 0xff);
+    char m[192];
+    const char *what;
+    switch (code) {
+        case 0:  what = "system clock + RTC set"; break;
+        case 5:  what = "system clock set, RTC WRITE FAILED (will not survive a power cycle)"; break;
+        case 2:  what = "REJECTED: epoch outside 2001..2038 or malformed"; break;
+        case 3:  what = "REFUSED: helper is not setuid root"; break;
+        case 4:  what = "settimeofday failed"; break;
+        default: what = "unknown result"; break;
+    }
+    std::snprintf(m, sizeof m, "clock: set %lld -> rc=%d (%s)", epoch, code, what);
+    clog_(m);
+    // Push the new time straight back, so the Settings row and the status bar do not wait for the
+    // next housekeeping tick to stop showing the old one.
+    if (code == 0 || code == 5) cinder_set_clock_epoch((long long)::time(nullptr));
+}
+
 // For the LIVE theme toggle: match the backlight to the current theme.
 void apply_backlight() { set_backlight(cinder_get_night()); }
 
@@ -2099,6 +2132,10 @@ void apply_bt_codec() {
 // while `GetConnectInformation` only has an address to give near the last. So the read that fires on
 // the route change can legitimately come back empty, and something has to ask again.
 static bool g_bt_have_name = false;
+// The CONNECTED peer's BD address, or empty. Needed because "is the thing I just tapped the thing
+// I am already listening to?" cannot be answered from the name alone — two headphones can share a
+// model name, and the name is what the sink chose to advertise, not an identity.
+static std::vector<unsigned char> g_bt_connected_addr;
 
 static void refresh_bt_connected() {
     enum { VIDX_GetConnectInformation = 5 };
@@ -2119,6 +2156,7 @@ static void refresh_bt_connected() {
         // the Bluetooth screen stayed on "No device connected" while audio played.
         cinder_set_bt_connected(!addr.empty() ? name.c_str() : "");
         g_bt_have_name = !addr.empty();
+        g_bt_connected_addr = addr;
 
         // WHICH CODEC THE LINK ACTUALLY NEGOTIATED. The Bluetooth screen could only ever show the
         // codec the user REQUESTED, which is not the same thing: A2DP picks during connection setup
@@ -2797,10 +2835,51 @@ static void nfc_stop() {
     clog_("nfc: reader stopped");
 }
 
-// Called from the render loop when a tap landed. Pairs with whatever was tapped, which is the whole
-// feature: hold the headphones to the back of the player and they pair.
+// The address a tap asked us to connect once the pairing table catches up. Empty = nothing pending.
+// A pairing does NOT bring up A2DP by itself, and OnNotifyPairingComplete fires before the link key
+// is even visible (see analysis/G_bt_nfc/RE_findings.md, round 2026-07-30d) — so the connect has to
+// wait for the paired-list recheck rather than follow the Pairing call.
+static std::vector<unsigned char> g_nfc_connect_after_pair;
+
+// Ask the radio to bring up a link to `addr`. Shared by the Devices rows and NFC, so there is one
+// place that knows the codec has to be pushed BEFORE the connect — A2DP negotiates during
+// connection setup, so a codec set afterwards applies to the next link, not this one.
+static int bt_request_connection(const std::vector<unsigned char>& addr, const char* who) {
+    enum { VIDX_RequestConnection = 6 };
+    int rc = -1;
+    try {
+        void* x = bt_xmit();
+        if (!x) { clog_("bt: no transmitter client — cannot connect"); return -1; }
+        apply_bt_codec();
+        typedef int (*fna)(void*, const std::vector<unsigned char>*);
+        rc = ((fna)bt_slot(x, VIDX_RequestConnection))(x, &addr);
+        char m[128];
+        std::snprintf(m, sizeof m, "%s: RequestConnection rc=%d", who, rc);
+        clog_(m);
+    } catch (...) { clog_("bt: RequestConnection threw"); }
+    return rc;
+}
+
+// Called from the render loop when a tap landed.
+//
+// A TAP IS NOT ALWAYS A PAIRING. This used to call `Pairing` unconditionally, which is right only
+// for a device the player has never seen. Tapping headphones that are ALREADY BONDED re-runs the
+// bond and does not bring up A2DP — so the feature looked like it worked while the audio link was
+// actually the headphones' own auto-reconnect on power-up, arriving at the same moment by
+// coincidence. Reported 2026-08-17: "the nfc turns the headphones on but i think they connect
+// because they previously were, not because of the tap." Correct, and the log agreed:
+//
+//   nfc: tapped 00:00:5E:00:53:01 'WH-1000XM4' — pairing
+//   nfc: Pairing rc=1                      <-- rc=1 IS success; the call was simply the wrong verb
+//
+// So the tap now dispatches on what the device actually is:
+//
+//   connected already  -> disconnect. Sony's own NFC behaviour on this hardware ("touch the device
+//                         again to disconnect"), and the only way to make one gesture a toggle.
+//   bonded, not linked -> RequestConnection. This is the common case and the one that was broken.
+//   unknown            -> Pairing, then connect once the link key shows up (see the recheck loop).
 static void nfc_service_tap() {
-    enum { VIDX_Pairing = 7 };
+    enum { VIDX_Pairing = 7, VIDX_RequestDisconnection = 8 };
     std::vector<unsigned char> addr;
     std::string name;
     pthread_mutex_lock(&g_nfc_mx);
@@ -2808,41 +2887,72 @@ static void nfc_service_tap() {
     name.swap(g_nfc_name);
     pthread_mutex_unlock(&g_nfc_mx);
     if (addr.size() != 6) { clog_("nfc: tap with no usable address"); return; }
-    char m[160];
-    std::snprintf(m, sizeof m, "nfc: tapped %02X:%02X:%02X:%02X:%02X:%02X '%s' — pairing",
-                  addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], name.c_str());
+    char m[192];
+
+    // Fresh reads: the tap may be the first thing that has ever touched Bluetooth this session, in
+    // which case both the paired list and the connected peer are empty for want of asking, not
+    // because they are really empty. Getting this wrong turns a connect into a redundant re-pair.
+    refresh_bt_paired();
+    refresh_bt_connected();
+
+    bool bonded = false;
+    for (size_t i = 0; i < g_bt_paired.size(); i++)
+        if (g_bt_paired[i] == addr) { bonded = true; break; }
+    const bool linked = (addr == g_bt_connected_addr);
+
+    std::snprintf(m, sizeof m, "nfc: tapped %02X:%02X:%02X:%02X:%02X:%02X '%s' — %s",
+                  addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], name.c_str(),
+                  linked ? "already linked, disconnecting" : bonded ? "bonded, connecting"
+                                                                    : "unknown, pairing");
     clog_(m);
-    // Same call the FOUND rows use, and it is the one that has already paired a real device.
+
+    if (linked) {
+        try {
+            void* x = bt_xmit();
+            if (!x) { clog_("nfc: no transmitter client — cannot disconnect"); return; }
+            typedef int (*fn0)(void*);
+            int rc = ((fn0)bt_slot(x, VIDX_RequestDisconnection))(x);
+            std::snprintf(m, sizeof m, "nfc: RequestDisconnection rc=%d (radio stays on)", rc);
+            clog_(m);
+        } catch (...) { clog_("nfc: RequestDisconnection threw"); }
+        refresh_bt_connected();
+        refresh_bt_route();
+        return;
+    }
+
+    if (bonded) {
+        bt_request_connection(addr, "nfc");
+        // The link comes up asynchronously; the route poll notices it and refreshes the name.
+        return;
+    }
+
+    // Genuinely new. Pair, and remember to connect once the link key appears — pairing alone leaves
+    // you bonded and silent, which is not what someone who just tapped their headphones wanted.
     g_bt_pairing_addr = addr;
+    g_nfc_connect_after_pair = addr;
     try {
         void* c = bt_common();
         if (!c) return;
         typedef int (*fna)(void*, const std::vector<unsigned char>*);
         int rc = ((fna)bt_slot(c, VIDX_Pairing))(c, &addr);
-        std::snprintf(m, sizeof m, "nfc: Pairing rc=%d", rc);
+        std::snprintf(m, sizeof m, "nfc: Pairing rc=%d (1 = accepted)", rc);
         clog_(m);
     } catch (...) { clog_("nfc: Pairing threw"); }
+    // Same recheck the scan flow uses: the callback runs ahead of the pairing table, so poll for
+    // the side effect rather than trusting the return.
+    g_bt_paired_recheck_left = 8;
+    g_bt_paired_recheck_at   = now_ms() + 700;
 }
 
 // Connect one specific paired device (Devices ▸ row). `RequestConnection` takes the BD address by
 // const reference — unlike RequestLastDeviceConnection, which takes nothing and picks for itself.
 void apply_bt_connect_device() {
-    enum { VIDX_RequestConnection = 6 };
     int i = cinder_pending_bt_device();
     if (i < 0 || (size_t)i >= g_bt_paired.size()) { clog_("bt-paired: connect for an unknown row"); return; }
     const std::vector<unsigned char> addr = g_bt_paired[(size_t)i];
-    try {
-        void* x = bt_xmit();
-        if (!x) { clog_("bt-paired: no transmitter client — cannot connect"); return; }
-        // The codec has to be set before the link comes up, same as the radio toggle path: A2DP
-        // negotiates it during connection setup.
-        apply_bt_codec();
-        typedef int (*fna)(void*, const std::vector<unsigned char>*);
-        int rc = ((fna)bt_slot(x, VIDX_RequestConnection))(x, &addr);
-        char m[96];
-        std::snprintf(m, sizeof m, "bt-paired: RequestConnection(row %d) rc=%d", i, rc);
-        clog_(m);
-    } catch (...) { clog_("bt-paired: RequestConnection threw"); }
+    char who[48];
+    std::snprintf(who, sizeof who, "bt-paired: row %d", i);
+    bt_request_connection(addr, who);
     // The connection completes asynchronously; the 3 s route poll notices it and refreshes the name.
     refresh_bt_paired();
 }
@@ -4947,6 +5057,9 @@ void carry_out(int act) {
             // apply the Sound screen's effect toggles to the DSP, guarded.
             run_guarded("carry_out: apply sound effects", 6, apply_sound_fn);
             break;
+        case CINDER_ACT_CLOCK_SET:
+            run_guarded("carry_out: set clock", 8, apply_clock);
+            break;
         case CINDER_ACT_BALANCE_CHANGED:
             // The balance slider, live under a finger. Just the two mixer writes — NOT
             // apply_sound_fn, which would run six EffectCtrlDmp round trips per motion event and
@@ -5998,7 +6111,16 @@ void* render_driver(void*) {
                         // It is paired now, so it must stop offering "TAP TO PAIR" in the FOUND list.
                         flush_bt_found();
                         clog_("bt-scan: the new device is in the paired list");
+                        // A tap-to-pair asked for a link, not just a bond. NOW is the first moment
+                        // RequestConnection can work: before the link key is visible the radio has
+                        // nothing to connect with. Cleared either way so it fires exactly once.
+                        if (!g_nfc_connect_after_pair.empty()) {
+                            std::vector<unsigned char> want;
+                            want.swap(g_nfc_connect_after_pair);
+                            bt_request_connection(want, "nfc: paired, now connecting");
+                        }
                     } else if (g_bt_paired_recheck_left == 0) {
+                        g_nfc_connect_after_pair.clear();
                         clog_("bt-scan: paired list never showed the new device — leaving it to the "
                               "next refresh rather than inventing a row");
                     }

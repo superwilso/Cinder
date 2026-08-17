@@ -37,6 +37,12 @@ pub enum Ask {
     ResetSettings,
 }
 
+/// Every question the modal can ask. Exists so the overflow audit can render all of them without
+/// a list that silently stops being complete when a new one is added.
+pub const ALL: &[Ask] = &[
+    Ask::Restart, Ask::PowerOff, Ask::PowerMenu, Ask::QueueOnPlay, Ask::ResetSettings,
+];
+
 impl Ask {
     /// Title, body, and the label on the confirming button. The confirm label names the ACTION
     /// ("Restart", "Power off") rather than saying "OK": at a glance you should be able to tell

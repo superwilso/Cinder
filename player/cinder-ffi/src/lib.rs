@@ -1093,10 +1093,10 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 22] = [
+const SCREEN_NAMES: [&str; 23] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
-    "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders",
+    "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1108,7 +1108,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Artist => 5, S::Playlist => 6, S::UpNext => 7, S::Eq => 8, S::Sound => 9,
         S::Bluetooth => 10, S::Settings => 11, S::Fm => 12, S::UsbDac => 13, S::Receiver => 14,
         S::Onboarding => 15, S::UsbStorage => 16, S::Shelf => 17, S::Pairing => 18,
-        S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21,
+        S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
     }
 }
 
@@ -2009,6 +2009,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::BatteryCareChanged(_) => 13,
         Action::SoundChanged => 14,
         Action::BalanceChanged => 38,
+        Action::ClockSet => 39,
         Action::SoundBypass(_) => 15,
         Action::ShuffleToggle => {
             r.np.shuffle = !r.np.shuffle;
@@ -2683,6 +2684,27 @@ pub extern "C" fn cinder_set_bt_link_codec(raw: libc::c_int) -> libc::c_int {
     }
 }
 
+/// Push the wall clock into the UI (UTC epoch seconds). Call it from the ~1 Hz housekeeping — the
+/// Settings ▸ Date & time row shows it, and the clock editor seeds from it. Ignored while the
+/// editor is open so a per-second push cannot drag a field out from under the user's finger.
+#[no_mangle]
+pub extern "C" fn cinder_set_clock_epoch(epoch: i64) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_clock_epoch(epoch);
+    }
+}
+
+/// The UTC epoch the clock editor wants written. Read after a CINDER_ACT_CLOCK_SET action and pass
+/// it to the setuid `cinder-clock` helper, which sets BOTH the system clock and the RTC.
+///
+/// Always inside the range the helper accepts (2001-01-01 .. 2038-01-01) — the editor clamps to the
+/// same bound the helper enforces, so the two cannot disagree. The upper bound is NOT arbitrary:
+/// `time_t` is 32-bit here and the signed wrap at 2038-01-19 turns a future date into 1901.
+#[no_mangle]
+pub extern "C" fn cinder_get_clock_epoch() -> i64 {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.clock_epoch_pending())
+}
+
 /// Start a fresh paired-device list. Call this, then `cinder_bt_paired_add` once per device **in the
 /// order the shell will index them** — the UI hands back a row index, never an address, so the two
 /// orderings are the same object seen from two sides.
@@ -3004,6 +3026,13 @@ pub extern "C" fn cinder_clock_tick() {
         if !hhmm.is_empty() && hhmm != r.np.clock {
             r.np.clock = hhmm;
             r.dirty = true;
+        }
+        // The Settings ▸ Date & time row shows the wall clock and the editor seeds from it, so the
+        // epoch rides the same 1 Hz tick the status-bar string already does rather than making the
+        // shell own a second cadence for the same fact. `set_clock_epoch` no-ops while the editor
+        // is open, so this cannot move a field the user is editing.
+        if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            r.app.set_clock_epoch(d.as_secs() as i64);
         }
         // Advance the now-playing position estimate by REAL elapsed time (rate-independent: this is
         // called from the pump's ~1x/sec housekeeping, but the cadence varies, so we use a wall-clock
@@ -4127,6 +4156,7 @@ mod tests {
             S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::Artist, S::Playlist, S::UpNext, S::Eq,
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
+            S::ClockSet,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();

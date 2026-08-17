@@ -5,7 +5,7 @@ use cinder_ui::library::Tab;
 use cinder_ui::menu::MenuItem;
 use cinder_ui::sound::Sound;
 use cinder_ui::{
-    bluetooth, eq, fm, library, lock, menu, now_playing, pairing, receiver, settings, shelf, sound,
+    bluetooth, clockset, eq, fm, library, lock, menu, now_playing, pairing, receiver, settings, shelf, sound,
     up_next, usbdac, Canvas, FontSet, Library, Theme, H, W,
 };
 
@@ -220,12 +220,15 @@ fn main() {
             ("sound_bypass", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, true)),
             // The balance slider off-centre and mid-drag: the two states the static preview above
             // never shows, and the ones where the knob can drift off its hit band.
+            ("clockset", &|c: &mut Canvas| {
+                clockset::render(c, &theme, &fonts, &[2026, 8, 17, 9, 1], clockset::F_MONTH)
+            }),
             ("sound_balance", &|c: &mut Canvas| {
                 let s = Sound { balance: 14, balance_drag: true, ..snd };
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, false)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", accent: cinder_ui::Accent::Amber })),
+                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber })),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
             // The shuffle band's caption has to follow the filter — shuffling a filtered list
             // shuffles what is on screen, so it must not still promise the whole library.
@@ -359,7 +362,7 @@ fn main() {
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
                 &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
                     usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY",
+                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
                     accent: cinder_ui::Accent::Amber });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
@@ -373,7 +376,7 @@ fn main() {
                 settings::max_scroll_px() / 2,
                 &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
                     usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY",
+                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
                     accent: cinder_ui::Accent::Amber });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, "settings_scrolled");
@@ -452,7 +455,7 @@ fn main() {
         settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
             &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false,
                 battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
-                screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", accent: a });
+                screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: a });
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
         save(&c, &format!("accent_{lower}_settings"));
     }
