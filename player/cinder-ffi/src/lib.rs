@@ -346,6 +346,8 @@ struct Render {
     // bar/labels show this pending target and incoming position updates are ignored, so the bar
     // does not fight the finger. The shell issues the actual SeekTime on release.
     scrub_ms: Option<i64>,
+    /// Action produced by a settings-slider drag, waiting for the shell to collect it.
+    scrub_act: Option<libc::c_int>,
     // Screenshot request: Some(path) => the next rendered frame is also written to `path` as a PNG.
     // Captured from the Canvas BEFORE presentation, so it is identical on the software framebuffer
     // and the GPU/EGL path (under EGL the Mali swapchain owns the panel, so reading /dev/graphics/fb0
@@ -566,6 +568,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         real_pos_ms: -1,
         real_pos_at: std::time::Instant::now(),
         scrub_ms: None,
+        scrub_act: None,
         pending_screenshot: None,
         sleep_remaining_ms: 0,
         sleep_fire: false,
@@ -642,10 +645,25 @@ fn apply_track(np: &mut Np, t: &cinder_db::Track) {
 }
 
 // Serialise the persisted UI preferences (theme + visualiser + EQ + sound effects) to the file body.
+/// Serialise the setup that is NOT live, so both halves of the A/B pair survive a reboot. The LIVE
+/// one keeps using the existing `eq=` / `sound=` / `balance100=` keys, which means an older build
+/// reading this file still finds exactly what it expects and simply ignores the spare.
+fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
+    let eq: Vec<String> = s.eq_bands.iter().map(|b| b.to_string()).collect();
+    let flags = (s.dsee as u8)
+        | (s.vinyl as u8) << 1
+        | (s.vpt as u8) << 2
+        | (s.dc as u8) << 3
+        | (s.norm as u8) << 4
+        | (s.clear as u8) << 5;
+    format!("bank_eq={}\nbank_sound={}\nbank_balance={}\nbank_preset={}\n",
+            eq.join(","), flags, s.balance, s.eq_preset)
+}
+
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nui_scale={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nui_scale={}\nsetup={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -666,7 +684,9 @@ fn settings_body(r: &Render) -> String {
         r.app.auto_off_min(),
         r.app.balance(),
         r.app.ui_scale_pct(),
+        r.app.setup_idx(),
     );
+    body.push_str(&setup_body(&r.app.setup_inactive()));
     // Shelf pins were session-scoped, so every reboot silently wiped the user's bookmarks — the
     // one thing a "pin this place" feature must not do. One line per occupied slot.
     for i in 0..cinder_ui::shelf::SLOTS {
@@ -2667,23 +2687,6 @@ pub extern "C" fn cinder_set_bt_connected(name: *const libc::c_char) {
     }
 }
 
-/// Push the codec A2DP actually NEGOTIATED on the live link, as the raw `BtSoundCodec` value from
-/// `BtTransmitterService::GetSoundStatus`. Pass a negative value for "nothing connected / the
-/// service wrote nothing", which clears it.
-///
-/// Returns 1 if the value changed, so the shell can repaint only when it must. Deliberately
-/// separate from the codec PREFERENCE (`cinder_get_bt_codec`): the preference is what the user
-/// asked for, this is what the radio agreed to, and A2DP falls back silently when a sink cannot do
-/// the requested codec.
-#[no_mangle]
-pub extern "C" fn cinder_set_bt_link_codec(raw: libc::c_int) -> libc::c_int {
-    let want = (raw >= 0 && raw <= 0xFF).then(|| raw as u8);
-    match cell().lock().unwrap().as_mut() {
-        Some(r) => r.app.set_bt_link_codec(want) as libc::c_int,
-        None => 0,
-    }
-}
-
 /// Push the wall clock into the UI (UTC epoch seconds). Call it from the ~1 Hz housekeeping — the
 /// Settings ▸ Date & time row shows it, and the clock editor seeds from it. Ignored while the
 /// editor is open so a per-second push cannot drag a field out from under the user's finger.
@@ -3163,6 +3166,12 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         if let Ok(body) = std::fs::read_to_string(&p) {
             loaded = 1;
+            // The spare A/B setup, accumulated across however many `bank_*` lines the file has and
+            // installed once at the end — the keys can arrive in any order, and the live setup must
+            // be in place before the spare is banked beside it.
+            let mut bank = cinder_ui::nav::SoundSetup::default();
+            let mut bank_seen = false;
+            let mut bank_idx = 0usize;
             for line in body.lines() {
                 let mut it = line.splitn(2, '=');
                 let k = it.next().unwrap_or("").trim();
@@ -3272,6 +3281,36 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_balance(n);
                         }
                     }
+                    // The OTHER A/B setup and which of the two was live. Parsed into locals and
+                    // applied once at the end, because the keys can arrive in any order and the
+                    // live setup has to be banked before the spare can be installed beside it.
+                    "setup" => { if let Ok(n) = v.parse::<usize>() { bank_idx = n & 1; } }
+                    "bank_sound" => {
+                        if let Ok(f) = v.parse::<u8>() {
+                            bank.dsee = f & 1 != 0;
+                            bank.vinyl = f & (1 << 1) != 0;
+                            bank.vpt = f & (1 << 2) != 0;
+                            bank.dc = f & (1 << 3) != 0;
+                            bank.norm = f & (1 << 4) != 0;
+                            bank.clear = f & (1 << 5) != 0;
+                            bank_seen = true;
+                        }
+                    }
+                    "bank_balance" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            bank.balance = n.min(cinder_ui::sound::BALANCE_MAX);
+                            bank_seen = true;
+                        }
+                    }
+                    "bank_preset" => {
+                        if let Ok(n) = v.parse::<usize>() { bank.eq_preset = n; bank_seen = true; }
+                    }
+                    "bank_eq" => {
+                        for (i, part) in v.split(',').take(10).enumerate() {
+                            if let Ok(g) = part.trim().parse::<i8>() { bank.eq_bands[i] = g; }
+                        }
+                        bank_seen = true;
+                    }
                     "auto_off" => {
                         // set_auto_off_min snaps to a known preset, so a hand-edited value cannot
                         // strand the row on a duration the cycle can never reach.
@@ -3308,6 +3347,14 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     }
                     _ => {}
                 }
+            }
+            // Both A/B setups are now in place: the live one came from the `eq=`/`sound=`/
+            // `balance100=` keys above, the spare from the `bank_*` ones. A file written by an
+            // older build has no bank at all, so the spare stays at its default and A/B still
+            // works — it just starts out as "your setup" versus "a fresh one".
+            if bank_seen {
+                let live = r.app.setup();
+                r.app.restore_setups(live, bank, bank_idx);
             }
             r.night = r.app.night;
             r.dirty = true;
@@ -3685,7 +3732,10 @@ pub extern "C" fn cinder_scrub_hit(x: libc::c_int, y: libc::c_int) -> libc::c_in
     if !r.app.scrub_begin(x as i32, y as i32) {
         return 0;
     }
-    if r.app.scrub_is_ui_scale() {
+    // Anything that is NOT the progress rail is a settings slider: it applies to the UI, has no
+    // track duration to care about, and must never produce a seek. Asked this way round so a new
+    // slider is handled correctly by default — see `App::scrub_is_rail`.
+    if !r.app.scrub_is_rail() {
         r.dirty = true;
         return 1;
     }
@@ -3696,6 +3746,29 @@ pub extern "C" fn cinder_scrub_hit(x: libc::c_int, y: libc::c_int) -> libc::c_in
         return 0;
     }
     1
+}
+
+/// Park the first shell-visible action from a slider drag. One slot is enough: the moves are
+/// idempotent (each carries the slider's current value, not a delta), so if the shell is late and a
+/// second arrives first, applying only the newest is not merely acceptable — it is what you want.
+fn stash_scrub_action(r: &mut Render, acts: &[cinder_ui::nav::Action]) {
+    for a in acts {
+        if let Some(code) = carry_action(r, a) {
+            r.scrub_act = Some(code);
+            return;
+        }
+    }
+}
+
+/// Take the action a slider drag produced (0 = none). The shell calls this after every
+/// `cinder_scrub_to` and after `cinder_scrub_end`, and carries out whatever it gets.
+#[no_mangle]
+pub extern "C" fn cinder_scrub_action() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    match guard.as_mut() {
+        Some(r) => r.scrub_act.take().unwrap_or(0),
+        None => 0,
+    }
 }
 
 /// How far into a track ◁ stops meaning "previous track" and starts meaning "rewind to the
@@ -3778,9 +3851,12 @@ pub extern "C" fn cinder_notify_seek_ms(ms: libc::c_int) {
 pub extern "C" fn cinder_scrub_to(x: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -1 };
-    if r.app.scrub_is_ui_scale() {
-        // Settings ▸ UI scale: applies live as the finger moves. No seek target to report.
-        r.app.scrub_move(x as i32);
+    if !r.app.scrub_is_rail() {
+        // A settings slider: applies live as the finger moves. No seek target to report, but it may
+        // have work for the shell (the balance slider writes the codec's two attenuators on every
+        // step), so the action is parked for `cinder_scrub_action` to hand over.
+        let acts = r.app.scrub_move(x as i32);
+        stash_scrub_action(r, &acts);
         r.dirty = true;
         return -1;
     }
@@ -3804,10 +3880,11 @@ pub extern "C" fn cinder_scrub_to(x: libc::c_int) -> libc::c_int {
 pub extern "C" fn cinder_scrub_end() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -1 };
-    if r.app.scrub_is_ui_scale() {
-        r.app.scrub_end();
+    if !r.app.scrub_is_rail() {
+        let acts = r.app.scrub_end();
+        stash_scrub_action(r, &acts);
         r.dirty = true;
-        save_settings(r); // the scale is persisted, so it survives the next boot
+        save_settings(r); // sliders are persisted, so they survive the next boot
         return -1;
     }
     r.app.scrub_end(); // release nav's claim; the ms target below is this layer's business

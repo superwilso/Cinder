@@ -384,11 +384,11 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         }
         Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0, 0),
         Screen::Sound => sound::render(c, theme, fonts, &Sound {
-            balance: cinder_ui::sound::BALANCE_CENTRE, balance_drag: false,
+            balance: cinder_ui::sound::BALANCE_CENTRE, balance_drag: false, bt_route: false,
             dsee: app.dsee, vinyl: app.vinyl, vpt: VPTS[app.vpt], dcphase: DCS[app.dc],
             normalizer: app.normalizer, clearaudio: app.clearaudio, eq_preset: EQ_PRESETS[app.eq_preset].0,
             bt_codec: if app.bt_on && app.bt_conn.is_some() { Some(BT_CODECS[app.bt_codec]) } else { None },
-        }, 0, false),
+        }, 0, 0),
         Screen::Settings => settings::render(c, theme, fonts, 0, 0,
             &settings::SettingsView { night: app.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: app.usb_dac, battery_care: false, storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: app.accent }),
         Screen::Bluetooth => bluetooth::render(c, theme, fonts, &Bt {

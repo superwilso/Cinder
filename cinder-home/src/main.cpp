@@ -274,6 +274,7 @@ static int bt_status();      // defined with the Bluetooth block below
 static bool bt_radio_up(int st);
 static void apply_pump_interval();  // defined with poll_now_playing — audio-pump rate for the current state
 void refresh_bt_route();     // ditto — points the volume rocker at whichever output is live
+static void bt_reconnect_rearm();  // ditto — "the user wants a link"; clears the auto-reconnect latch
 extern bool g_bt_radio_seen_up;  // ditto — last GetBtStatus said the radio was up (poll back-off)
 void apply_bt_codec();       // ditto — pushes the codec choice to the radio (not just the conf file)
 static void bt_apply_enhanced_mode(const char* why); // ditto — Sony's "Use Enhanced Mode" (absolute volume)
@@ -1491,6 +1492,9 @@ void apply_backlight() { set_backlight(cinder_get_night()); }
 // playback/Hold-state continue); ON restores the current theme's level. Pure sysfs write, no Sony
 // service. Locking is independent (the Hold switch) — waking the screen never unlocks the touch.
 bool g_screen_on = true;      // see the fwd decl above
+// True while we are dropping the remainder of the contact that woke the panel. See the touch pump:
+// waking must never also press whatever the finger landed on.
+static bool g_touch_wake_swallow = false;
 // The himax touch controller has a driver sysfs SLEEP switch — and something must write it, or
 // the controller never scans and /dev/input/event1 stays silent forever (opens fine, EVIOCGABS
 // answers, zero events — the exact 2026-07-02 symptom). The stock Qt app is what normally wakes
@@ -1809,6 +1813,10 @@ static void bt_set_rf(bool on) {
 // Apply the Settings switch to the radio. Run ONLY via run_guarded — every call here is Sony IPC.
 void apply_bt_toggle() {
     bool want = cinder_get_bt_on() != 0;
+    // Either direction is the user taking charge of the radio: ON obviously re-arms, and OFF should
+    // not leave a stale "they disconnected on purpose" latch to suppress the reconnect after the
+    // next ON.
+    bt_reconnect_rearm();
     int st = bt_status();
     char m[160];
     std::snprintf(m, sizeof m, "bt: toggle %s (GetBtStatus=%d%s)",
@@ -2137,6 +2145,13 @@ static bool g_bt_have_name = false;
 // model name, and the name is what the sink chose to advertise, not an identity.
 static std::vector<unsigned char> g_bt_connected_addr;
 
+// Auto-reconnect state. Declared here, beside the link state it reasons about, because the
+// Disconnect path below runs before the reconnect logic further down. See bt_reconnect_tick.
+static bool g_bt_user_disconnected = false;
+// When to try next, and how long to wait after that. 0 = nothing scheduled.
+static long g_bt_reconnect_at = 0;
+static int  g_bt_reconnect_wait_s = 0;
+
 static void refresh_bt_connected() {
     enum { VIDX_GetConnectInformation = 5 };
     try {
@@ -2154,44 +2169,18 @@ static void refresh_bt_connected() {
         // status (0 = OK), not the service method's `bool`. This code used to gate on
         // `rc && !addr.empty()`, so it threw away a perfectly good name on every real connection and
         // the Bluetooth screen stayed on "No device connected" while audio played.
+        const std::vector<unsigned char> prev_addr = g_bt_connected_addr;
         cinder_set_bt_connected(!addr.empty() ? name.c_str() : "");
         g_bt_have_name = !addr.empty();
         g_bt_connected_addr = addr;
 
-        // WHICH CODEC THE LINK ACTUALLY NEGOTIATED. The Bluetooth screen could only ever show the
-        // codec the user REQUESTED, which is not the same thing: A2DP picks during connection setup
-        // and falls back silently when the sink can't do it, so a player claiming LDAC while
-        // running SBC was indistinguishable from one that was right.
-        //
-        //   virtual void GetSoundStatus(BtSoundCodec&, BtSoundFrequency&, BtSoundChannel&, bool&)
-        //
-        // Slot 26. Four OUT params, every one a scalar (three enums + a bool) — no container to get
-        // wrong, which is what makes it safe to call from here at all, unlike GetCapabilities
-        // (pst::base::vector) or GetConnectInformation above (std::string). Declared `unsigned`
-        // rather than the real enum types: an enum is int-sized on this ABI and we want whatever
-        // arrives, not an assumption about the enumerators.
-        //
-        // 0xDEAD is a sentinel, because the method returns void: an untouched buffer is the ONLY
-        // way to tell "the service wrote nothing" from "the service wrote 0", and 0 is a legitimate
-        // codec value. Measured 2026-08-17, WH-1000XM4 connected and playing: codec=0x02 with the
-        // peer advertising `ldac support:1` and neither aptX — so 0x02 is LDAC.
-        if (!addr.empty()) {
-            enum { VIDX_GetSoundStatus = 26 };
-            typedef void (*fn4)(void*, unsigned*, unsigned*, unsigned*, bool*);
-            unsigned codec = 0xDEADu, freq = 0xDEADu, chan = 0xDEADu;
-            bool scmst = false;
-            ((fn4)bt_slot(x, VIDX_GetSoundStatus))(x, &codec, &freq, &chan, &scmst);
-            const int raw = (codec == 0xDEADu || codec > 0xFFu) ? -1 : (int)codec;
-            if (cinder_set_bt_link_codec(raw)) {
-                char m[128];
-                std::snprintf(m, sizeof m,
-                              "bt: link codec=0x%02x freq=0x%02x chan=0x%02x scmst=%d",
-                              codec, freq, chan, (int)scmst);
-                clog_(m);
-            }
-        } else {
-            cinder_set_bt_link_codec(-1);
-        }
+        // The negotiated codec is NOT read here. bt_poll_sound_status() already owns that call and
+        // throttles it to 2 s with an event bypass; a second reader in this function meant two
+        // synchronous IPC round trips for one fact, and two paths that could disagree about it.
+        // A link coming up sets g_bt_sound_poll_now, so the throttle costs nothing here.
+        // A peer we did not have last time is a NEW link, and the codec is negotiated during its
+        // setup — so ask for a fresh read rather than waiting out the throttle.
+        if (!addr.empty() && addr != prev_addr) g_bt_sound_poll_now = 1;
     } catch (...) {
         clog_("bt: GetConnectInformation threw");
     }
@@ -2201,6 +2190,11 @@ static void refresh_bt_connected() {
 // arguments (`virtual bool RequestDisconnection()` straight out of the library's own strings).
 void apply_bt_disconnect() {
     enum { VIDX_RequestDisconnection = 8 };
+    // The user said no. Park the auto-reconnect, or the link comes straight back and the button
+    // looks broken.
+    g_bt_user_disconnected = true;
+    g_bt_reconnect_at = 0;
+    g_bt_reconnect_wait_s = 0;
     try {
         void* x = bt_xmit();
         if (!x) { clog_("bt: no transmitter client — cannot disconnect"); return; }
@@ -2233,6 +2227,85 @@ static_assert(sizeof(BtPairedDeviceInformation) == 48, "paired-device stride is 
 // The BD addresses, in the SAME ORDER they were pushed into the UI. A row index is the only handle
 // the UI ever holds, so this vector is the other half of that agreement: index in, address out.
 static std::vector<std::vector<unsigned char>> g_bt_paired;
+
+// ── AUTO-RECONNECT ──────────────────────────────────────────────────────────────────────────────
+// Walk out of range and back and the link stayed down: nothing ever retried. The radio reconnects
+// on a deliberate toggle (apply_bt_toggle) and when the sink itself initiates, but a link that
+// DROPS — range, the headphones idling off, a competing host stealing them — left the player
+// silently on the 3.5 mm jack until the user noticed and toggled Bluetooth off and on.
+//
+// THE FLAG IS THE WHOLE DESIGN. An auto-reconnect that ignores an explicit Disconnect is worse than
+// none: the button would appear broken, because the link would come straight back. So a user
+// disconnect (the Bluetooth screen's Disconnect, or a second NFC tap on the connected device) parks
+// the retry until the user asks for a link again — a toggle, a Devices row, a tap, or a pairing.
+// First wait after noticing a drop, and the ceiling. A failed attempt is not free — it occupies the
+// radio and the MTK stack is the single most expensive thing on this device when it is busy (~13.5%
+// of a core with a link up) — so this backs off hard rather than hammering. The cap is generous
+// because the common case is the headphones being switched off deliberately, where the right
+// behaviour is to cost nothing until they come back.
+#define BT_RECONNECT_FIRST_S 10
+#define BT_RECONNECT_MAX_S   300
+
+// Called wherever the user asks for a link, so the retry stops being parked.
+static void bt_reconnect_rearm() {
+    g_bt_user_disconnected = false;
+    g_bt_reconnect_at = 0;
+    g_bt_reconnect_wait_s = 0;
+}
+
+// Runs from the 1 Hz housekeeping. Cheap: the common paths are two boolean tests.
+static void bt_reconnect_tick() {
+    if (!cinder_get_bt_on() || g_bt_user_disconnected) return;
+    if (g_bt_have_name) {                     // connected — reset so the next drop starts fresh
+        if (g_bt_reconnect_wait_s) {
+            clog_("bt-reconnect: link is up again — retry disarmed");
+            g_bt_reconnect_at = 0;
+            g_bt_reconnect_wait_s = 0;
+        }
+        return;
+    }
+    // Nothing to reconnect TO is not a failure; it is a device that has never been paired.
+    if (g_bt_paired.empty()) return;
+    // The radio itself has to be up. If it is not, apply_bt_toggle owns that, not us.
+    if (!g_bt_radio_seen_up) return;
+
+    const long now = now_ms();
+    if (g_bt_reconnect_at == 0) {             // first notice of the drop: schedule, don't act
+        g_bt_reconnect_wait_s = BT_RECONNECT_FIRST_S;
+        g_bt_reconnect_at = now + (long)g_bt_reconnect_wait_s * 1000;
+        char m[128];
+        std::snprintf(m, sizeof m, "bt-reconnect: link is down — first retry in %ds",
+                      g_bt_reconnect_wait_s);
+        clog_(m);
+        return;
+    }
+    if (now < g_bt_reconnect_at) return;
+
+    // Zero-arg: the service looks up the last device itself. Preferred over RequestConnection with
+    // an address because it is what Sony's own reconnect does, and it needs no guess about WHICH of
+    // several paired devices the user meant.
+    enum { VIDX_RequestLastDeviceConnection = 7 };
+    apply_bt_codec();     // A2DP negotiates during setup, so the preference must precede the link
+    int rc = -1;
+    try {
+        void* x = bt_xmit();
+        if (x) {
+            typedef int (*fn0)(void*);
+            rc = ((fn0)bt_slot(x, VIDX_RequestLastDeviceConnection))(x);
+        }
+    } catch (...) { clog_("bt-reconnect: RequestLastDeviceConnection threw"); }
+
+    if (g_bt_reconnect_wait_s < BT_RECONNECT_MAX_S) {
+        g_bt_reconnect_wait_s *= 2;
+        if (g_bt_reconnect_wait_s > BT_RECONNECT_MAX_S) g_bt_reconnect_wait_s = BT_RECONNECT_MAX_S;
+    }
+    g_bt_reconnect_at = now + (long)g_bt_reconnect_wait_s * 1000;
+    char m[160];
+    std::snprintf(m, sizeof m, "bt-reconnect: RequestLastDeviceConnection rc=%d — next retry in %ds",
+                  rc, g_bt_reconnect_wait_s);
+    clog_(m);
+}
+
 
 static void* bt_common() {
     if (!g_bt_common) g_bt_common = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
@@ -2907,6 +2980,11 @@ static void nfc_service_tap() {
     clog_(m);
 
     if (linked) {
+        // Same reasoning as the Disconnect button: a deliberate hang-up must not be undone by the
+        // auto-reconnect a few seconds later.
+        g_bt_user_disconnected = true;
+        g_bt_reconnect_at = 0;
+        g_bt_reconnect_wait_s = 0;
         try {
             void* x = bt_xmit();
             if (!x) { clog_("nfc: no transmitter client — cannot disconnect"); return; }
@@ -2921,6 +2999,7 @@ static void nfc_service_tap() {
     }
 
     if (bonded) {
+        bt_reconnect_rearm();
         bt_request_connection(addr, "nfc");
         // The link comes up asynchronously; the route poll notices it and refreshes the name.
         return;
@@ -2928,6 +3007,7 @@ static void nfc_service_tap() {
 
     // Genuinely new. Pair, and remember to connect once the link key appears — pairing alone leaves
     // you bonded and silent, which is not what someone who just tapped their headphones wanted.
+    bt_reconnect_rearm();
     g_bt_pairing_addr = addr;
     g_nfc_connect_after_pair = addr;
     try {
@@ -2950,6 +3030,7 @@ void apply_bt_connect_device() {
     int i = cinder_pending_bt_device();
     if (i < 0 || (size_t)i >= g_bt_paired.size()) { clog_("bt-paired: connect for an unknown row"); return; }
     const std::vector<unsigned char> addr = g_bt_paired[(size_t)i];
+    bt_reconnect_rearm();          // an explicit connect re-arms the retry
     char who[48];
     std::snprintf(who, sizeof who, "bt-paired: row %d", i);
     bt_request_connection(addr, who);
@@ -5195,10 +5276,21 @@ void carry_out(int act) {
 
 // Drain pending input from every node; map raw code -> logical button -> navigator -> action.
 // Classify a finished contact (finger-up), from BTN_TOUCH=0 or a type-A empty-frame lift.
+// A settings-slider drag can have work for us on EVERY motion event, not just on release — the
+// balance slider writes the codec's two attenuators as the finger moves, because the point of
+// dragging a balance control is hearing the image move. The progress rail reports nothing here; it
+// returns its seek target from cinder_scrub_end() instead.
+static void scrub_carry() {
+    int act = cinder_scrub_action();
+    if (act != CINDER_ACT_NONE) carry_out(act);
+}
+
 static void touch_release() {
     if (g_touch_down && g_scrub_active) {
         // Drag-to-seek ends: ask cinder-ffi where the finger left the rail and seek there.
+        // -1 means "not the rail" (a settings slider) OR "no controller"; either way, no seek.
         int ms = cinder_scrub_end();
+        scrub_carry();
         if (ms >= 0) {
             // -1 means "no controller"; 0 only means the request was SENT. SeekTime is void, so
             // there is no acceptance to report — the old "seek REJECTED" line here was reading a
@@ -5283,6 +5375,7 @@ static void touch_drag_motion() {
         if (cinder_scrub_hit(touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y))) {
             g_scrub_active = true;
             cinder_scrub_to(touch_ui_x(g_touch_cur_x));   // a tap on the rail also seeks
+            scrub_carry();
             return;
         }
     }
@@ -5290,6 +5383,7 @@ static void touch_drag_motion() {
         // Seeking: the bar tracks x only. Never promote to a list drag — vertical wander during a
         // horizontal scrub must not start scrolling the screen underneath.
         cinder_scrub_to(touch_ui_x(g_touch_cur_x));
+        scrub_carry();
         return;
     }
     if (g_hswipe_active) {
@@ -5526,6 +5620,36 @@ void input_pump() {
                         g_touch_saw_pos = false;
                         g_drag_active = false; g_drag_vel = 0.0f;
                         g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
+                        // AND SWALLOW THE REST OF THIS CONTACT. Clearing the state above is not
+                        // enough: the finger is still on the glass and the panel keeps streaming
+                        // positions, but `screen_auto_wake` has already set g_screen_on — so the
+                        // NEXT position event falls through to the handler below, finds
+                        // !g_touch_down, and synthesises a brand-new contact mid-gesture. The lift
+                        // then reads as a genuine tap wherever the finger happened to be, which is
+                        // exactly the "tap to wake also presses the button underneath" report
+                        // (2026-08-17). The latch clears on the real lift, so the NEXT touch works
+                        // normally.
+                        g_touch_wake_swallow = true;
+                        continue;
+                    }
+                    // Still inside the contact that woke the panel: drop everything until it lifts.
+                    if (g_touch_wake_swallow) {
+                        if (type == EV_ABS_ && (code == ABS_X_ || code == ABS_MT_POSITION_X_
+                                             || code == ABS_Y_ || code == ABS_MT_POSITION_Y_)) {
+                            g_touch_saw_pos = true;
+                            continue;
+                        }
+                        // A lift is BTN_TOUCH=0, or (type-A) a SYN frame that carried no position.
+                        if (type == EV_KEY_ && code == BTN_TOUCH_ && !val) {
+                            g_touch_wake_swallow = false;
+                            g_touch_saw_pos = false;
+                            continue;
+                        }
+                        if (type == EV_SYN_ && code == 0) {
+                            if (!g_touch_saw_pos) g_touch_wake_swallow = false;
+                            g_touch_saw_pos = false;
+                            continue;
+                        }
                         continue;
                     }
                     // Live touch = activity, so the idle blank holds off — but NOT while Hold is
@@ -6008,6 +6132,9 @@ void* render_driver(void*) {
             // and the earlier "self-limiting" claim here confused suppressing the log with
             // suppressing the call.
             if (cinder_get_bt_route()) run_guarded("loop: BT sound status", 6, bt_poll_sound_status);
+            // A dropped link never came back on its own. Guarded like every other pst call, and
+            // cheap in the common cases: connected, or radio off, is two boolean tests.
+            run_guarded("loop: BT reconnect", 8, bt_reconnect_tick);
             // THE OUTPUT ROUTE CAN CHANGE WITHOUT THE TOGGLE. Headphones get switched off, run flat,
             // or walk out of range mid-session. `apply_usb_dac` only runs when the user flips the
             // switch, so before this the session was stuck on whichever route it started with: turn

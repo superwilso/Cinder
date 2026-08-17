@@ -78,7 +78,7 @@ fn main() {
 
     let snd = Sound {
         dsee: true,
-        balance: cinder_ui::sound::BALANCE_CENTRE, balance_drag: false,
+        balance: cinder_ui::sound::BALANCE_CENTRE, balance_drag: false, bt_route: false,
         vinyl: false,
         vpt: "Studio",
         dcphase: "Low A",
@@ -216,8 +216,8 @@ fn main() {
                 cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
             }),
             ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4)),
-            ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, false)),
-            ("sound_bypass", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, true)),
+            ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, 0)),
+            ("sound_setup_b", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, 1)),
             // The balance slider off-centre and mid-drag: the two states the static preview above
             // never shows, and the ones where the knob can drift off its hit band.
             ("clockset", &|c: &mut Canvas| {
@@ -225,7 +225,7 @@ fn main() {
             }),
             ("sound_balance", &|c: &mut Canvas| {
                 let s = Sound { balance: 14, balance_drag: true, ..snd };
-                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, false)
+                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
                 &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber })),

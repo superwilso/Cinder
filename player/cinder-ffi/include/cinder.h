@@ -284,6 +284,14 @@ void cinder_notify_seek_ms(int ms);
 int  cinder_scrub_hit(int x, int y);
 int  cinder_scrub_to(int x);
 int  cinder_scrub_end(void);
+/* Action produced by a SETTINGS-SLIDER drag (0 = none). Call after every cinder_scrub_to() and
+ * after cinder_scrub_end(), and carry out whatever it returns.
+ *
+ * The rail is not the only horizontal drag any more. cinder_scrub_end() returns a seek target ONLY
+ * for the Now Playing progress rail; every other slider returns -1 and reports its work here
+ * instead. The balance slider writes the codec's two attenuators on each step, so it needs this on
+ * MOVE, not just on release. */
+int  cinder_scrub_action(void);
 /* Push the REAL position/duration from PlayerService's PlayEventListener (onPlayTimeUpdated) plus
  * the real play/pause state. Takes priority over the local play-clock estimate and is what makes
  * the progress bar follow seeks and mid-track starts. `cur_ms` < 0 = no update yet (ignored);
@@ -343,20 +351,6 @@ void cinder_set_clock_epoch(long long epoch);
 /* The UTC epoch the clock editor wants written. Read after CINDER_ACT_CLOCK_SET. Always within the
  * range cinder-clock accepts (2001-01-01 .. 2038-01-01); see the action's note on 32-bit time_t. */
 long long cinder_get_clock_epoch(void);
-/* Push the codec the live A2DP link NEGOTIATED — the raw BtSoundCodec from
- * BtTransmitterService::GetSoundStatus(BtSoundCodec&, BtSoundFrequency&, BtSoundChannel&, bool&),
- * vtable slot 26 on the transmitter client. Negative = nothing connected / the service wrote
- * nothing, which clears it. Returns 1 if the value changed (repaint), 0 otherwise.
- *
- * This is NOT the codec preference. cinder_get_bt_codec() is what the user asked for; this is what
- * the radio agreed to, and the two differ whenever a sink cannot do the requested codec — A2DP
- * negotiates during connection setup and falls back without saying so.
- *
- * Known enumerator: 0x02 = LDAC (measured on device 2026-08-17, WH-1000XM4, peer advertising
- * `ldac support:1` and neither aptX). It is Sony's own enum, NOT the Bluetooth assigned-numbers
- * codec ID — 0x02 there is MPEG-2/4 AAC and that is not what this is. The UI prints any other
- * value as raw hex rather than guessing. */
-int  cinder_set_bt_link_codec(int raw);
 /* Paired-device list for the Devices screen. Call cinder_bt_paired_clear(), then _add() once per
  * device from GetPairedDeviceInfo — IN THE SAME ORDER the shell keeps its BD addresses, because the
  * UI hands back a row index and nothing else. `kind` may be NULL. connected != 0 marks the live link.
@@ -458,6 +452,11 @@ void cinder_set_usb_dac_format(unsigned rate, unsigned bits, unsigned chans);
 /* Publish the codec A2DP actually negotiated (raw BtSoundCodec word from GetSoundStatus; 0 = not
    known). The UI shows a neutral label until the enumerators are tied to a real headphone. */
 void cinder_set_bt_negotiated_codec(int raw);
+/* ^ the raw BtSoundCodec word from BtTransmitterService::GetSoundStatus (transmitter slot 26).
+ * MEASURED 2026-08-17 on a live link, WH-1000XM4: 0x02 = LDAC, with the peer advertising
+ * `ldac support:1` and neither aptX. It is SONY'S OWN ENUM, not the Bluetooth assigned-numbers
+ * codec ID — 0x02 there is MPEG-2/4 AAC, which this is not. Other enumerators are still unmapped
+ * and the UI renders them as raw hex rather than guessing. */
 /* Read the Sound A/B compare state (1 = B/bypassed, 0 = A/active). Call after a
  * CINDER_ACT_SOUND_BYPASS action, then apply via cinder_effects_set_bypass. */
 int  cinder_get_sound_bypass(void);
