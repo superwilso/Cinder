@@ -230,6 +230,38 @@ something on this device can move it back to the 6-band behind Cinder's back.
 
 ---
 
+## 11. LIVE NOW: the NW-WM1A volume curve is loaded
+
+Ran 2026-08-17 with a track playing and volume at 0:
+
+```sh
+dacdat ovt /system/usr/share/audio_dac/ov_127x.tbl   # rc=0
+```
+
+That file is md5 `39a60adc…`, which is **byte-identical to the NW-WM1A's own `ov_127x.tbl`** (and
+to the ZX300's `ov_1288`). The A50's own curve is `ov_1291.tbl`, md5 `bb5ccae7…`. Both were already
+on the device from the earlier staging pass.
+
+**It is NOT the "WM1Z sound signature".** It is the WM1A's output-volume table: a mapping from each
+of the 120 volume steps to an attenuation. It changes how loud a given step is. Tonality lives in
+the external tuning, which is the encrypted blob in §9 and is not reachable.
+
+**Raise the volume ONE STEP AT A TIME from 0.** A different table means step N is not the same
+loudness it was before.
+
+Revert, either:
+
+```sh
+dacdat ovt /system/usr/share/audio_dac/ov_1291.tbl   # back to the A50 curve
+```
+
+or just reboot — `load_sony_driver` runs `dacdat auto $PRODDEV` every boot and reloads the 1291 set,
+so this change does not survive a restart and cannot be left behind by accident.
+
+There is no read-back: `dacdat` reports rc only. Judge by level.
+
+---
+
 ## 10. Still open, lower priority
 
 - **Bluetooth scan-and-pair UI** (#25) — the listener ABI is recovered, the screen is not built.
