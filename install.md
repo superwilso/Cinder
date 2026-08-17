@@ -1,7 +1,8 @@
 # Install — build, flash, and iterate on Cinder for the NW-A55
 
-End-to-end guide: from a fresh Linux box to a device running Cinder, then the
-fast adb iteration loop. If you only read one section, read [§2 First-time
+**If you just want to run Cinder, read [§A](#a-the-easy-way--the-installer) and stop there.**
+Everything after it is for building from source: from a fresh Linux box to a device running
+Cinder, then the fast adb iteration loop. For that, read [§2 First-time
 install](#2-first-time-install) once and [§4 Iterate via adb](#4-iterate-via-adb)
 forever after.
 
@@ -10,6 +11,140 @@ forever after.
 > restore. Cinder's safety model (bad-boot counter, crash supervisor, escape
 > ladder ordered so each rung depends on strictly less than the one it rescues)
 > exists because of a real brick during development.
+
+---
+
+## A. The easy way — the installer
+
+Download **`cinder-installer-windows-x64.exe`** from the
+[latest release](../../releases/latest). Connect the Walkman by USB in **mass-storage mode**, so
+it shows up as a drive, and run it. A Linux build is published alongside it and behaves the same,
+looking under `/media`, `/run/media`, `/mnt` and `/Volumes`.
+
+```
+  Cinder installer  (channel: stable)
+  player: D:\
+  ------------------------------------------------------------
+    1  [x]     Power off / Restart menu                   power
+    2  [x]     USB mass storage (put music on the device) msc
+    3  [x]     Set the clock and RTC                      clock
+    4  [x]     Unmount helper for USB mass storage        umount
+    5  [ ]     GPU present path (experimental, dev only)  gpunode
+    6  <stock> Audio "sound signature"                    signature
+  ------------------------------------------------------------
+   <number> toggle/cycle   ?<number> describe   i install   q quit
+```
+
+Type a number to toggle or cycle it, `?6` to read the full description of item 6, `i` to install.
+It finds the player on its own; if you have several drives it asks, and you can always name one:
+
+```
+cinder-installer.exe D:\
+```
+
+Then: **eject the drive safely**, unplug it, and on the player go to
+**Settings ▸ Device Settings ▸ Update**. It reboots into Cinder.
+
+The installer only copies files. The firmware write is done by the player's own updater, which is
+what keeps this program unable to brick anything by itself.
+
+To go back to stock, copy `cinder_home_uninstall.upg` to the storage root as `NW_WM_FW.UPG` and
+run the same update flow. Cinder never modifies the stock Qt binary — only its 78-byte `.appcfg`
+launch config, and the original is kept alongside as `.appcfg.real`.
+
+### What the components are
+
+| id | default | what saying no costs you |
+|---|---|---|
+| `power` | on | No Power off / Restart in the UI. Sony's power service can't serve those while Cinder is the Home app — its shutdown barrier waits on an ACK Cinder never sends — so this needs a small setuid-root helper calling `reboot(2)`. |
+| `msc` | on | No USB mass storage, i.e. no way to put music on the device over USB. Both privileged steps are root-only, hence setuid. |
+| `clock` | on | The clock can't be set at all. Nothing in Sony's libraries exposes a clock setter, so the kernel is the only route and that needs `CAP_SYS_TIME`. |
+| `umount` | on | Only useful alongside `msc`; releases `/contents` during the handoff. |
+| `gpunode` | **off** | Nothing. It is setuid-root purely to make four kernel graphics nodes world-writable, for a GPU present path that is default-off and measured **4.7× slower** than the software one. |
+| `signature` | `stock` | See below. |
+
+Four are setuid-root helpers. That is exactly why they are choices and not assumptions: each buys
+one feature with one piece of attack surface, and you should be able to decline any of them.
+
+### The "sound signature"
+
+This patches **three bytes** of the stock audio HAL (`libaudiohal-adleralsa.so`). The bytes are
+ASCII digits inside string literals — no code changes. They control two things: **which ALSA PCM
+device** the output stream opens, and **the CPU clock floor** held during playback.
+
+| variant | ALSA path | CPU floor | |
+|---|---|---|---|
+| `stock` | `hw:0,0` + `hw:0,4` | 1.04 GHz | Sony original, no change |
+| `pv1` | both `hw:0,0` | 1.3 GHz | as shipped by Walkman One |
+| `pv2` | both `hw:0,4` | 1.3 GHz | as shipped by Walkman One |
+| `clock` | untouched | 1.3 GHz | floor only |
+| `hw1` | both `hw:0,0` | untouched | path only, no battery cost |
+| `hw2` | both `hw:0,4` | untouched | path only, no battery cost |
+
+`pv1` and `pv2` reproduce Walkman One's variants byte-for-byte from your own stock library with no
+firmware flash. `clock`, `hw1` and `hw2` are combinations Walkman One doesn't ship — they split its
+two effects apart so each can be judged separately. **The 1.3 GHz floor costs battery whenever
+audio is playing.** Full derivation:
+[`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md).
+
+Change it later on the device, without reinstalling:
+
+```sh
+cinder-signature.sh status
+cinder-signature.sh set pv2
+cinder-signature.sh revert
+```
+
+It verifies the library against a known checksum before touching it, keeps a pristine `.stock`
+backup, and rebuilds every variant from that backup — so variants never stack and a revert is
+exact. Takes effect on the next reboot, because the HAL is loaded at play time.
+
+### Choosing components without the GUI
+
+`cinder-home/tools/configure.sh` is the same picker as a shell script, driving the same catalogue:
+
+```bash
+cinder-home/tools/configure.sh                                   # interactive
+cinder-home/tools/configure.sh --set signature=pv2 --disable gpunode --defaults
+cinder-home/tools/configure.sh --show                            # print current selection
+```
+
+It writes `dist/<channel>/cinder_components.conf`, which is what the device-side installer reads.
+
+### Adding a component
+
+Add one line to [`cinder-home/deploy/components.conf`](cinder-home/deploy/components.conf) with an
+indented description under it. That file is the single source of truth — `configure.sh` parses it,
+the installer embeds it, and `install_cinderhome.sh` gates on the variables it declares. Nothing
+hardcodes a component list.
+
+```
+id | VARNAME | bool|enum:a,b,c | default | title
+    Description, indented. Shown by ?<n> in both pickers.
+```
+
+> **How the device reads the answers.** `install_cinderhome.sh` *parses* `cinder_components.conf`;
+> it never sources it. `/contents` is vfat and writable by anyone who plugs the player in, so
+> sourcing would execute whatever was left in that file, as root, inside the updater. Every value
+> is whitelist-validated against the type declared in the catalogue before use.
+
+### Building the installer
+
+```bash
+cd installer
+CINDER_CHANNEL=stable cargo build --release                                  # native
+CINDER_CHANNEL=stable cargo build --release --target x86_64-pc-windows-gnu   # .exe, from Linux
+```
+
+The Windows cross-build needs mingw (`apt install mingw-w64`). The installer is dependency-free
+Rust and embeds the device binaries, the `.UPG` and the component catalogue at compile time, so a
+single file is all an end user needs. `build.rs` fails loudly if a payload file is missing rather
+than shipping an incomplete installer — so build the device side first (§1–§2).
+
+Releases are cut by [`.github/workflows/release.yml`](.github/workflows/release.yml) on a `v*` tag.
+It builds **only** the installer; the ARM binaries under `cinder-home/dist/` are committed, because
+reproducing that cross toolchain on a hosted runner is a lot of machinery for no gain. **So build
+and commit `dist/` before tagging.**
 
 ---
 
