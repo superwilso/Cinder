@@ -52,7 +52,7 @@ impl Touch {
         }
         self.cur = (x, y);
         if self.scrub {
-            app.scrub_move(x);
+            app.scrub_move(x, y);
             return;
         }
         if !self.drag {

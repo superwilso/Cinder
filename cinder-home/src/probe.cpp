@@ -3092,6 +3092,27 @@ int cinder_effects_set_vpt_mode(int mode);
 int cinder_effects_get_vpt_mode(void);
 int cinder_effects_set_dc_phase_type(int type);
 int cinder_effects_get_dc_phase_type(void);
+float cinder_effects_get_eq_band_db(int i);
+int cinder_effects_set_tone_control(int on);
+int cinder_effects_set_eq6(int on);
+int cinder_effects_set_tone_value(int band, int gain);
+int cinder_effects_get_tone_value(int band);
+float cinder_effects_get_tone_value_db(int band);
+int cinder_effects_set_tone_freq(int band, int f);
+int cinder_effects_get_tone_freq(int band);
+int cinder_effects_set_eq6_band(int b, int gain);
+int cinder_effects_set_eq6(int on2);
+int cinder_effects_set_dsee_hx(int on3);
+int cinder_effects_save_user_preset(int no);
+int cinder_effects_load_user_preset(int no);
+int cinder_effects_set_vinylizer(int on4);
+int cinder_effects_set_vinylizer_type(int t2);
+int cinder_effects_set_dc_phase(int on5);
+int cinder_effects_set_dynamic_normalizer(int on6);
+int cinder_effects_get_eq6_band(int b);
+float cinder_effects_get_eq6_band_db(int b);
+int cinder_effects_set_eq6_preset(int p);
+int cinder_effects_get_eq6_preset(void);
 }
 
 // --eqsel : find which EqType actually puts the 10-band EQ IN THE PATH.
@@ -3202,6 +3223,587 @@ static int fx_probe() {
     clog_(m);
     g_pump_run = false;
     return 0;
+}
+
+// --tone : settle the Tone Control and 6-band EQ units, ranges and enumerators.
+//
+// WHY THIS IS MEASURABLE WITHOUT EARS. On this device a read-back does NOT bound an enum — the
+// service stores whatever int it is handed (proven for VptMode and for SelectUsingEq, where 0..7
+// all echoed). But there are two harder signals available here:
+//
+//   * a dB getter whose conversion happens INSIDE the service, against its own table, so it
+//     reports the scale AND the clamp rather than the value it was handed; and
+//   * `SetEq6BandPreset`, which is the rare setter with a VISIBLE SIDE EFFECT — if a preset is
+//     real, the six band values move. A preset that is merely stored leaves them alone.
+//
+// The 10-band's dB getter is the CONTROL: its scale is already measured (raw = half-decibels,
+// +-20 = +-10 dB), so if it reads sensibly in the same run then a flat 0 from one of the others
+// is a fact about that control, not about the probe.
+//
+// PASS 1 (2026-08-17) established, with tone control OFF and eq6 preset 0:
+//   * ToneType ordinals ARE 0/1/2 — the service logs `eqtone,type=N`, N in {0,1,2}, i.e. the
+//     catalogue order BASS/MIDDLE/TREBLE is the enum order.
+//   * Tone raw echoes -30..+30 unclamped and the dB twin reads 0 throughout.
+//   * Eq6 band writes DO NOT STICK — set +-30, read back 0, every band.
+//   * Eq6 presets 1..7 each load a DIFFERENT six-value curve. Preset 0 is flat.
+// Pass 2 (this code) asks the two questions those answers raise: does the dB twin come alive when
+// the effect is switched ON, and do band writes stick once a preset is selected?
+//
+// Everything written here is read first and put back on the way out.
+
+// Ladder deliberately overshoots on both sides: the interesting reading is where dB STOPS
+// following the raw value, because that is the clamp.
+static const int kToneLadder[] = { -30, -24, -20, -12, -6, 0, 6, 12, 20, 24, 30 };
+static const int kToneLadderN = (int)(sizeof kToneLadder / sizeof kToneLadder[0]);
+
+// Sweep one band of one control, printing raw and dB side by side.
+static void tone_sweep(const char* tag, int band,
+                       int (*set)(int, int), int (*getraw)(int), float (*getdb)(int)) {
+    char raw[160] = {0}, db[160] = {0}, m[256];
+    int rl = 0, dl = 0;
+    for (int i = 0; i < kToneLadderN; i++) {
+        set(band, kToneLadder[i]);
+        rl += std::snprintf(raw + rl, sizeof raw - rl, "%d ", getraw(band));
+        dl += std::snprintf(db + dl, sizeof db - dl, "%.1f ", (double)getdb(band));
+        if (rl >= (int)sizeof raw || dl >= (int)sizeof db) break;
+    }
+    std::snprintf(m, sizeof m, "tone: %-10s raw %s", tag, raw);
+    clog_(m);
+    std::snprintf(m, sizeof m, "tone: %-10s dB  %s", tag, db);
+    clog_(m);
+}
+
+static int tone_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    static const char* kBand[3] = { "BASS", "MID", "TREB" };
+
+    // ── entry state, so every write below can be put back ────────────────────────────────────
+    const int tone_on0 = cinder_effects_is_tone_on();
+    const int eq6_on0  = cinder_effects_is_eq6_on();
+    const int preset0  = cinder_effects_get_eq6_preset();
+    int tsaved[3], fsaved[3], esaved[6], qsaved[10];
+    for (int b = 0; b < 3; b++)  tsaved[b] = cinder_effects_get_tone_value(b);
+    for (int b = 0; b < 3; b++)  fsaved[b] = cinder_effects_get_tone_freq(b);
+    for (int b = 0; b < 6; b++)  esaved[b] = cinder_effects_get_eq6_band(b);
+    for (int b = 0; b < 10; b++) qsaved[b] = cinder_effects_get_eq_band(b);
+    std::snprintf(m, sizeof m, "tone: entry ToneOn=%d Eq6On=%d preset=%d tone=%d,%d,%d freq=%d,%d,%d",
+                  tone_on0, eq6_on0, preset0, tsaved[0], tsaved[1], tsaved[2],
+                  fsaved[0], fsaved[1], fsaved[2]);
+    clog_(m);
+    clog_("tone: ladder = -30 -24 -20 -12 -6 0 6 12 20 24 30");
+
+    // ── A. the control: the 10-band, whose scale is already known ────────────────────────────
+    clog_("tone: === A. 10-band EQ (CONTROL — raw is half-decibels, +-20 = +-10 dB) ===");
+    tone_sweep("eq10[0]", 0, cinder_effects_set_eq_band,
+               cinder_effects_get_eq_band, cinder_effects_get_eq_band_db);
+    cinder_effects_set_eq_band(0, qsaved[0]);
+
+    // ── B. Tone Control, with the effect switched ON ─────────────────────────────────────────
+    // Pass 1 read a flat 0 dB with the effect off. If that was the reason, this comes alive.
+    clog_("tone: === B. Tone Control, effect ON ===");
+    cinder_effects_set_tone_control(1);
+    for (int b = 0; b < 3; b++) {
+        tone_sweep(kBand[b], b, cinder_effects_set_tone_value,
+                   cinder_effects_get_tone_value, cinder_effects_get_tone_value_db);
+        cinder_effects_set_tone_value(b, tsaved[b]);
+    }
+    cinder_effects_set_tone_control(tone_on0);
+
+    // ── C. how far up does the preset enum go? ───────────────────────────────────────────────
+    // The catalogue lists seven names (Bright, Excited, Mellow, Relaxed, Vocal, Custom 1,
+    // Custom 2) and pass 1 saw eight distinct behaviours, 0..7, with 0 flat. Push past the end:
+    // an out-of-range preset should stop changing the curve.
+    clog_("tone: === C. eq6 preset ordinals (a REAL preset moves the six band values) ===");
+    for (int p = 0; p < 16; p++) {
+        cinder_effects_set_eq6_preset(p);
+        std::snprintf(m, sizeof m, "tone: preset %2d -> reads %2d  bands %d,%d,%d,%d,%d,%d",
+                      p, cinder_effects_get_eq6_preset(),
+                      cinder_effects_get_eq6_band(0), cinder_effects_get_eq6_band(1),
+                      cinder_effects_get_eq6_band(2), cinder_effects_get_eq6_band(3),
+                      cinder_effects_get_eq6_band(4), cinder_effects_get_eq6_band(5));
+        clog_(m);
+    }
+
+    // ── D. do 6-band writes stick, and under which preset? ───────────────────────────────────
+    // Pass 1 wrote +-30 to every band under preset 0 and read back 0 every time. The obvious
+    // explanation is that the band values belong to the SELECTED preset and only the two Custom
+    // slots are writable — which is exactly how Sony's own UI behaves. Test the flat slot, and
+    // the last two, which are the Custom candidates.
+    clog_("tone: === D. eq6 band writes under different presets ===");
+    static const int kTryPresets[3] = { 0, 6, 7 };
+    for (int i = 0; i < 3; i++) {
+        cinder_effects_set_eq6_preset(kTryPresets[i]);
+        char tag[24];
+        std::snprintf(tag, sizeof tag, "eq6[0]@p%d", kTryPresets[i]);
+        tone_sweep(tag, 0, cinder_effects_set_eq6_band,
+                   cinder_effects_get_eq6_band, cinder_effects_get_eq6_band_db);
+    }
+
+    // ── restore ──────────────────────────────────────────────────────────────────────────────
+    cinder_effects_set_eq6_preset(preset0);
+    for (int b = 0; b < 6; b++)  cinder_effects_set_eq6_band(b, esaved[b]);
+    for (int b = 0; b < 10; b++) cinder_effects_set_eq_band(b, qsaved[b]);
+    for (int b = 0; b < 3; b++) {
+        cinder_effects_set_tone_value(b, tsaved[b]);
+        cinder_effects_set_tone_freq(b, fsaved[b]);
+    }
+    cinder_effects_set_tone_control(tone_on0);
+    cinder_effects_set_eq6(eq6_on0);
+    std::snprintf(m, sizeof m, "tone: restored ToneOn=%d Eq6On=%d preset=%d tone=%d,%d,%d eq10[0]=%d",
+                  cinder_effects_is_tone_on(), cinder_effects_is_eq6_on(),
+                  cinder_effects_get_eq6_preset(),
+                  cinder_effects_get_tone_value(0), cinder_effects_get_tone_value(1),
+                  cinder_effects_get_tone_value(2), cinder_effects_get_eq_band(0));
+    clog_(m);
+    g_pump_run = false;
+    // _exit, not return: the pump thread is still inside libpstcore, and unwinding through static
+    // destructors while it runs faults in the BT/effect libs. Same reason --eq does it. Returning
+    // here is what made this probe (and --fx) exit 42 with a PC=0 backtrace after a clean run.
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --inpath <t> : which EqType value puts WHICH tone system in the signal path.
+//
+// The breakthrough that makes this answerable without ears is in the service's own log, not in
+// any getter: `FilterChain::ExecEffectParam` is followed by `<Effect>::UpdateProcCond(bool,bool)
+// ... isproc is N`, and **isproc is the service saying whether that effect is actually
+// processing**. A setter's return value cannot distinguish "stored" from "in the path"; isproc
+// can. So: switch all three tone systems ON, give them non-flat values, select one EqType, poke
+// each system once, and read which one reports isproc 1.
+//
+// Run it once per candidate with the log cleared in between:
+//   for t in 0 1 2 3 4; do adb shell logcat -c; cinder-probe --inpath $t;
+//       adb shell logcat -d | grep -oE '(Eq10band|Eq6band|EqTone)::UpdateProcCond.*isproc is [01]'; done
+//
+// MEASURED 2026-08-17 with only the 10-band on: EqType **2** is the one under which Eq10band
+// reports `isproc is 1`. 0, 1 and 3 never do — and the device was sitting on 1, which means the
+// EQ Cinder has been writing since June was stored and never in the path.
+static int inpath_probe(int t) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    const int sel0 = cinder_effects_get_select_using_eq();
+    const int eq10_0 = cinder_effects_is_eq10_on();
+    const int eq6_0  = cinder_effects_is_eq6_on();
+    const int tone_0 = cinder_effects_is_tone_on();
+    const int pre0   = cinder_effects_get_eq6_preset();
+    int q0 = cinder_effects_get_eq_band(0);
+    int t0 = cinder_effects_get_tone_value(0);
+
+    // All three ON and non-flat, so "not processing" can only mean "not selected".
+    cinder_effects_set_eq_band(0, 12);      // +6 dB, inside the +-20 raw range
+    cinder_effects_set_tone_control(1);
+    cinder_effects_set_tone_value(0, 12);
+    cinder_effects_set_eq6(1);
+    cinder_effects_set_eq6_preset(4);
+
+    cinder_effects_set_select_using_eq(t);
+
+    // Poke each system so each emits one UpdateProcCond under THIS selector.
+    for (int i = 0; i < 3; i++) {
+        cinder_effects_set_eq_band(0, 12 - i);
+        cinder_effects_set_tone_value(0, 12 - i);
+        cinder_effects_set_eq6_preset(4);
+        usleep(100000);
+    }
+    std::snprintf(m, sizeof m, "inpath: selector %d applied (reads %d); poked eq10/eq6/tone",
+                  t, cinder_effects_get_select_using_eq());
+    clog_(m);
+    sleep(1);
+
+    // Restore. Selector LAST, so nothing above is re-evaluated under the old value.
+    cinder_effects_set_eq6_preset(pre0);
+    cinder_effects_set_eq6(eq6_0);
+    cinder_effects_set_tone_value(0, t0);
+    cinder_effects_set_tone_control(tone_0);
+    cinder_effects_set_eq_band(0, q0);
+    if (!eq10_0) { /* leave as found — the 10-band is switched on by set_eq, not here */ }
+    cinder_effects_set_select_using_eq(sel0);
+    std::snprintf(m, sizeof m, "inpath: restored selector=%d eq10[0]=%d tone[0]=%d preset=%d",
+                  cinder_effects_get_select_using_eq(), cinder_effects_get_eq_band(0),
+                  cinder_effects_get_tone_value(0), cinder_effects_get_eq6_preset());
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --fxtime : how expensive IS an effect call?
+//
+// The Sound screen re-applies the whole chain on every change, and the band fields became
+// draggable on 2026-08-17 — so a drag was emitting ~25 IPC round-trips per motion event and the
+// audio stuttered. The shell now caches and writes only what moved, but "25 calls is too many"
+// was an inference, not a measurement. This measures it: median and worst-case microseconds for
+// each call, so the budget is a number rather than a hunch.
+//
+// Reads are separated from writes because they are different animals — a getter is a round-trip to
+// the service, a setter is a round-trip PLUS whatever the DSP does about it downstream.
+static long long usec_now() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+}
+
+static void fxtime_row(const char* name, int reps, void (*call)(int), int arg) {
+    long long worst = 0, total = 0;
+    long long samples[64];
+    if (reps > 64) reps = 64;
+    for (int i = 0; i < reps; i++) {
+        long long t0 = usec_now();
+        call(arg);
+        long long d = usec_now() - t0;
+        samples[i] = d;
+        total += d;
+        if (d > worst) worst = d;
+    }
+    // Median by insertion sort — n is tiny and this keeps the probe dependency-free.
+    for (int i = 1; i < reps; i++) {
+        long long v = samples[i];
+        int j = i - 1;
+        while (j >= 0 && samples[j] > v) { samples[j + 1] = samples[j]; j--; }
+        samples[j + 1] = v;
+    }
+    char m[224];
+    std::snprintf(m, sizeof m, "fxtime: %-22s median %6lld us   mean %6lld us   worst %6lld us",
+                  name, samples[reps / 2], total / (reps ? reps : 1), worst);
+    clog_(m);
+}
+
+static void c_eqband(int v)   { cinder_effects_set_eq_band(0, v); }
+static void c_tone(int v)     { cinder_effects_set_tone_value(0, v); }
+static void c_vptmode(int v)  { cinder_effects_set_vpt_mode(v); }
+static void c_dsee(int v)     { cinder_effects_set_dsee_hx(v); }
+static void c_geteq(int v)    { (void)v; (void)cinder_effects_get_eq_band(0); }
+static void c_isvpt(int v)    { (void)v; (void)cinder_effects_is_vpt_on(); }
+
+static int fxtime_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    const int q0 = cinder_effects_get_eq_band(0);
+    const int t0 = cinder_effects_get_tone_value(0);
+    const int vm0 = cinder_effects_get_vpt_mode();
+    const int dsee0 = cinder_effects_is_dsee_hx_on();
+
+    clog_("fxtime: 32 reps each. A UI frame is 16000 us; a drag emits one apply per frame.");
+    fxtime_row("get_eq_band", 32, c_geteq, 0);
+    fxtime_row("is_vpt_on", 32, c_isvpt, 0);
+    fxtime_row("set_eq_band (same val)", 32, c_eqband, q0);
+    fxtime_row("set_eq_band (alternating)", 32, c_eqband, 4);
+    fxtime_row("set_tone_value", 32, c_tone, 4);
+    fxtime_row("set_vpt_mode", 32, c_vptmode, vm0);
+    fxtime_row("set_dsee_hx", 32, c_dsee, dsee0);
+
+    cinder_effects_set_eq_band(0, q0);
+    cinder_effects_set_tone_value(0, t0);
+    cinder_effects_set_vpt_mode(vm0);
+    cinder_effects_set_dsee_hx(dsee0);
+    char m[224];
+    std::snprintf(m, sizeof m, "fxtime: restored eq10[0]=%d tone[0]=%d vptmode=%d dsee=%d",
+                  cinder_effects_get_eq_band(0), cinder_effects_get_tone_value(0),
+                  cinder_effects_get_vpt_mode(), cinder_effects_is_dsee_hx_on());
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --eq6custom : is the 6-band EQ editable, and which presets are the Custom slots?
+//
+// The service told us the rule itself on 2026-08-17:
+//   EffectCtrlDmp.cc:534  !!! cannot set value except for UserCustom preset
+// so band writes are rejected under a NAMED preset and accepted under a Custom one. The same run
+// showed `!!! unknown preset. use fallback` for 11..15 but NOT for 9 and 10 — so the enum is
+// 0..10, eleven slots, and 9/10 are the two Customs (both flat, because nothing has ever written
+// them). This confirms it by writing and reading back under every valid preset.
+static int eq6custom_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    const int pre0 = cinder_effects_get_eq6_preset();
+    const int on0 = cinder_effects_is_eq6_on();
+    std::snprintf(m, sizeof m, "eq6: entry preset=%d Eq6On=%d", pre0, on0);
+    clog_(m);
+    clog_("eq6: writing 6,-6 to band0/band1 under each preset; a slot that KEEPS them is a Custom.");
+
+    for (int p = 0; p <= 11; p++) {
+        cinder_effects_set_eq6_preset(p);
+        const int before0 = cinder_effects_get_eq6_band(0);
+        cinder_effects_set_eq6_band(0, 6);
+        cinder_effects_set_eq6_band(1, -6);
+        const int a0 = cinder_effects_get_eq6_band(0);
+        const int a1 = cinder_effects_get_eq6_band(1);
+        std::snprintf(m, sizeof m,
+                      "eq6: preset %2d  band0 %3d -> wrote 6 -> reads %3d   band1 reads %3d   %s",
+                      p, before0, a0, a1,
+                      (a0 == 6 && a1 == -6) ? "*** WRITABLE (UserCustom) ***" : "rejected");
+        clog_(m);
+    }
+
+    // Put the user's world back: reselect the entry preset, which reloads its own curve.
+    cinder_effects_set_eq6_preset(pre0);
+    std::snprintf(m, sizeof m, "eq6: restored preset=%d bands %d,%d,%d,%d,%d,%d",
+                  cinder_effects_get_eq6_preset(),
+                  cinder_effects_get_eq6_band(0), cinder_effects_get_eq6_band(1),
+                  cinder_effects_get_eq6_band(2), cinder_effects_get_eq6_band(3),
+                  cinder_effects_get_eq6_band(4), cinder_effects_get_eq6_band(5));
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --userpreset [--write] : settle UserPresetNo, and find out what Sony's saved setups hold.
+//
+// Cinder's A/B is its own thing — two `SoundSetup`s in Cinder's settings file. Sony has its own
+// two-or-three saved setups ("Saved Sound Settings 1/2/3" in the catalogue) behind
+// `SaveUserPreset(UserPresetNo)` / `LoadUserPreset(UserPresetNo)`, and backing A/B onto those would
+// make the setups survive being edited from the stock UI. The enum's ordinals were never recovered.
+//
+// READ-ONLY BY DEFAULT, deliberately. `SaveUserPreset` would OVERWRITE whatever the user has in
+// Sony's slots, and that is their data — however unlikely it is to matter on a device that boots
+// Cinder as Home. So the default pass only LOADS: a load overwrites the LIVE chain, which Cinder
+// re-asserts on its next apply anyway, and the chain is snapshotted and put back here regardless.
+// What comes back after a load IS the slot's content, so this reads the store without writing it.
+//
+// Pass --write to additionally prove the round trip (save a marker, disturb it, load it back).
+// That one DOES overwrite the slot it tests.
+struct FxSnap {
+    int eq[10];
+    int dsee, vpt, vptmode, dc, dctype, norm, vinyl, vinyltype, tone, tv[3], eq6preset, sel;
+};
+
+static void fx_snap(FxSnap& s) {
+    for (int i = 0; i < 10; i++) s.eq[i] = cinder_effects_get_eq_band(i);
+    s.dsee = cinder_effects_is_dsee_hx_on();
+    s.vpt = cinder_effects_is_vpt_on();
+    s.vptmode = cinder_effects_get_vpt_mode();
+    s.dc = cinder_effects_is_dc_phase_on();
+    s.dctype = cinder_effects_get_dc_phase_type();
+    s.norm = cinder_effects_is_normalizer_on();
+    s.vinyl = cinder_effects_is_vinylizer_on();
+    s.vinyltype = cinder_effects_get_vinylizer_type();
+    s.tone = cinder_effects_is_tone_on();
+    for (int i = 0; i < 3; i++) s.tv[i] = cinder_effects_get_tone_value(i);
+    s.eq6preset = cinder_effects_get_eq6_preset();
+    s.sel = cinder_effects_get_select_using_eq();
+}
+
+static void fx_restore(const FxSnap& s) {
+    for (int i = 0; i < 10; i++) cinder_effects_set_eq_band(i, s.eq[i]);
+    cinder_effects_set_dsee_hx(s.dsee);
+    cinder_effects_set_vpt(s.vpt);
+    cinder_effects_set_vpt_mode(s.vptmode);
+    cinder_effects_set_dc_phase(s.dc);
+    cinder_effects_set_dc_phase_type(s.dctype);
+    cinder_effects_set_dynamic_normalizer(s.norm);
+    cinder_effects_set_vinylizer(s.vinyl);
+    cinder_effects_set_vinylizer_type(s.vinyltype);
+    cinder_effects_set_tone_control(s.tone);
+    for (int i = 0; i < 3; i++) cinder_effects_set_tone_value(i, s.tv[i]);
+    cinder_effects_set_eq6_preset(s.eq6preset);
+    cinder_effects_set_select_using_eq(s.sel);
+}
+
+static bool fx_same(const FxSnap& a, const FxSnap& b) {
+    for (int i = 0; i < 10; i++) if (a.eq[i] != b.eq[i]) return false;
+    for (int i = 0; i < 3; i++) if (a.tv[i] != b.tv[i]) return false;
+    return a.dsee == b.dsee && a.vpt == b.vpt && a.vptmode == b.vptmode && a.dc == b.dc
+        && a.dctype == b.dctype && a.norm == b.norm && a.vinyl == b.vinyl
+        && a.vinyltype == b.vinyltype && a.tone == b.tone && a.eq6preset == b.eq6preset
+        && a.sel == b.sel;
+}
+
+static void fx_log(const char* tag, const FxSnap& s) {
+    char m[224];
+    std::snprintf(m, sizeof m,
+                  "userpreset: %-14s eq %d,%d,%d,%d,%d,%d,%d,%d,%d,%d", tag,
+                  s.eq[0], s.eq[1], s.eq[2], s.eq[3], s.eq[4], s.eq[5], s.eq[6], s.eq[7],
+                  s.eq[8], s.eq[9]);
+    clog_(m);
+    std::snprintf(m, sizeof m,
+                  "userpreset: %-14s dsee=%d vpt=%d/%d dc=%d/%d norm=%d vinyl=%d/%d tone=%d "
+                  "tv=%d,%d,%d eq6p=%d sel=%d", tag,
+                  s.dsee, s.vpt, s.vptmode, s.dc, s.dctype, s.norm, s.vinyl, s.vinyltype,
+                  s.tone, s.tv[0], s.tv[1], s.tv[2], s.eq6preset, s.sel);
+    clog_(m);
+}
+
+static int userpreset_probe(bool do_write) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    FxSnap live;
+    fx_snap(live);
+    fx_log("LIVE (entry)", live);
+
+    // Pass 1, read-only: what does each slot hold? A load that changes nothing is either an empty
+    // slot, an out-of-range ordinal, or a slot that happens to match the live chain — the log says
+    // which by showing the content.
+    for (int n = 0; n < 5; n++) {
+        cinder_effects_load_user_preset(n);
+        FxSnap got;
+        fx_snap(got);
+        std::snprintf(m, sizeof m, "userpreset: --- LoadUserPreset(%d) -> %s ---", n,
+                      fx_same(got, live) ? "chain UNCHANGED (empty slot, or out of range)"
+                                         : "chain CHANGED (this slot holds a setup)");
+        clog_(m);
+        if (!fx_same(got, live)) {
+            char tag[20];
+            std::snprintf(tag, sizeof tag, "slot %d", n);
+            fx_log(tag, got);
+        }
+        fx_restore(live);
+    }
+
+    if (do_write) {
+        clog_("userpreset: === --write: round-tripping slot 0 and 1 (THIS OVERWRITES THEM) ===");
+        for (int n = 0; n < 2; n++) {
+            // A marker no real setup would be: full boost on band 0, full cut on band 9.
+            cinder_effects_set_eq_band(0, 20);
+            cinder_effects_set_eq_band(9, -20);
+            cinder_effects_save_user_preset(n);
+            // Disturb it, then load it back.
+            cinder_effects_set_eq_band(0, 0);
+            cinder_effects_set_eq_band(9, 0);
+            cinder_effects_load_user_preset(n);
+            const int b0 = cinder_effects_get_eq_band(0), b9 = cinder_effects_get_eq_band(9);
+            std::snprintf(m, sizeof m,
+                          "userpreset: slot %d round trip -> band0=%d band9=%d   %s", n, b0, b9,
+                          (b0 == 20 && b9 == -20) ? "*** SAVE/LOAD WORKS ***" : "did not round trip");
+            clog_(m);
+            fx_restore(live);
+        }
+    }
+
+    fx_restore(live);
+    FxSnap back;
+    fx_snap(back);
+    std::snprintf(m, sizeof m, "userpreset: restored — chain %s the entry state",
+                  fx_same(back, live) ? "MATCHES" : "DOES NOT MATCH");
+    clog_(m);
+    if (!fx_same(back, live)) fx_log("AFTER", back);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --tonefreq : recover the Tone Control CENTRE FREQUENCIES in Hz.
+//
+// `GetToneCenterFreq` echoes whatever it is handed and has no dB twin, so the ordinals cannot be
+// settled by read-back the way the gains were. But the DSP prints the real numbers itself, from
+// inside EffectSetParamHQEQ_ToneControl:
+//
+//     FS = [%u] FREQ = [%d] BFREQ1 = [%d] BFREQ2 = [%d]
+//
+// — and only while the effect is ACTUALLY PROCESSING, which is why this needs music playing, Tone
+// Control on, and EqType 3 selected. An attempt on 2026-08-17 right after a reboot logged nothing
+// because every PCM was closed.
+//
+// The correlation needs no marker of its own: the service logs `eqtone,type=N,centerfreq=F`
+// immediately before the DSP reconfigures, so reading logcat in order pairs each ordinal with the
+// Hz that follow it. Run as:
+//
+//     adb shell logcat -c
+//     cinder-probe --tonefreq
+//     adb shell logcat -d | grep -E 'centerfreq=|FREQ = \['
+static int tonefreq_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    const int tone0 = cinder_effects_is_tone_on();
+    const int sel0 = cinder_effects_get_select_using_eq();
+    int tv0[3], tf0[3];
+    for (int b = 0; b < 3; b++) tv0[b] = cinder_effects_get_tone_value(b);
+    for (int b = 0; b < 3; b++) tf0[b] = cinder_effects_get_tone_freq(b);
+    std::snprintf(m, sizeof m, "tonefreq: entry ToneOn=%d sel=%d values=%d,%d,%d freqs=%d,%d,%d",
+                  tone0, sel0, tv0[0], tv0[1], tv0[2], tf0[0], tf0[1], tf0[2]);
+    clog_(m);
+
+    // The effect has to be IN THE PATH and doing something, or it never reconfigures and never
+    // logs. Non-zero gains on every band, tone control on, EqType 3 = ToneControl.
+    for (int b = 0; b < 3; b++) cinder_effects_set_tone_value(b, 12);   // +6 dB
+    cinder_effects_set_tone_control(1);
+    cinder_effects_set_select_using_eq(3);
+    clog_("tonefreq: tone control ON, EqType 3 — sweeping centre frequencies");
+    sleep(1);
+
+    for (int b = 0; b < 3; b++) {
+        for (int f = 0; f < 8; f++) {
+            cinder_effects_set_tone_freq(b, f);
+            std::snprintf(m, sizeof m, "tonefreq: >>> band %d freq ordinal %d <<<", b, f);
+            clog_(m);
+            usleep(400000);   // let the DSP reconfigure and log before the next write
+        }
+        cinder_effects_set_tone_freq(b, tf0[b]);
+    }
+
+    for (int b = 0; b < 3; b++) {
+        cinder_effects_set_tone_value(b, tv0[b]);
+        cinder_effects_set_tone_freq(b, tf0[b]);
+    }
+    cinder_effects_set_tone_control(tone0);
+    cinder_effects_set_select_using_eq(sel0);
+    std::snprintf(m, sizeof m, "tonefreq: restored ToneOn=%d sel=%d values=%d,%d,%d freqs=%d,%d,%d",
+                  cinder_effects_is_tone_on(), cinder_effects_get_select_using_eq(),
+                  cinder_effects_get_tone_value(0), cinder_effects_get_tone_value(1),
+                  cinder_effects_get_tone_value(2),
+                  cinder_effects_get_tone_freq(0), cinder_effects_get_tone_freq(1),
+                  cinder_effects_get_tone_freq(2));
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
 }
 
 // --vpt : settle the VptMode and DcPhaseFilterType enumerators by EXPERIMENT.
@@ -3638,6 +4240,24 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--fx") == 0) {
         return fx_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--tone") == 0) {
+        return tone_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--tonefreq") == 0) {
+        return tonefreq_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--userpreset") == 0) {
+        return userpreset_probe(argc > 2 && std::strcmp(argv[2], "--write") == 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--fxtime") == 0) {
+        return fxtime_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--eq6custom") == 0) {
+        return eq6custom_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--inpath") == 0) {
+        return inpath_probe(argc > 2 ? std::atoi(argv[2]) : 2);
     }
     if (argc > 1 && std::strcmp(argv[1], "--vpt") == 0) {
         // --vpt            sweep every value, report the read-back, restore

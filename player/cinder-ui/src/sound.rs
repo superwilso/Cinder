@@ -17,8 +17,16 @@ use crate::Canvas;
 /// have the high-gain hardware the ZX/WM1 series does; the mixer control is inherited from the
 /// shared CXD3778GF driver. Kept here as a note so it isn't "discovered" and re-added: the write
 /// landing is NOT evidence the feature works. See task #59.
-pub const ROWS: usize = 7;
+pub const ROWS: usize = 8;
 pub const ROW_BALANCE: usize = 6;
+/// The "Advanced ›" row — pushes `Screen::Advanced`, where the rest of Sony's effect surface lives.
+///
+/// It sits in space that was already empty: the balance row ends at 607 and the signal-path footer
+/// starts at 700, so this is a real row in a real gap rather than something squeezed in. A row
+/// rather than a header button because the header's right side is the A/B control and its left is
+/// the OPTION hint — and because a screenful of rows that quietly omits half the DSP is worse than
+/// one that says where the rest went.
+pub const ROW_ADVANCED: usize = 7;
 
 /// L/R balance, 0..=100 with 50 = centre — a continuous drag slider, not the 7 discrete stops it
 /// started as. Left of centre attenuates the RIGHT channel and vice versa: panning left means the
@@ -52,6 +60,11 @@ pub fn balance_top() -> i32 {
     TOP + ROW_H * ROW_BALANCE as i32
 }
 
+/// Top edge of the "Advanced ›" row, immediately under the balance slider.
+pub fn advanced_top() -> i32 {
+    balance_top() + BALANCE_ROW_H
+}
+
 /// Which sound-effect row is under `y`. The last row is taller, so this cannot be a plain divide.
 pub fn row_at(y: i32) -> Option<usize> {
     if y < TOP {
@@ -59,7 +72,11 @@ pub fn row_at(y: i32) -> Option<usize> {
     }
     let bal = balance_top();
     if y >= bal {
-        return (y < bal + BALANCE_ROW_H).then_some(ROW_BALANCE);
+        if y < bal + BALANCE_ROW_H {
+            return Some(ROW_BALANCE);
+        }
+        let adv = advanced_top();
+        return (y >= adv && y < adv + ROW_H).then_some(ROW_ADVANCED);
     }
     let r = ((y - TOP) / ROW_H) as usize;
     (r < ROW_BALANCE).then_some(r)
@@ -180,7 +197,7 @@ pub struct Sound {
 }
 
 /// Outlined value pill ending at `xr`; accent when value != "Off".
-fn value_pill(c: &mut Canvas, f: &FontSet, t: &Theme, xr: i32, cy: i32, label: &str) {
+pub(crate) fn value_pill(c: &mut Canvas, f: &FontSet, t: &Theme, xr: i32, cy: i32, label: &str) {
     let active = !label.eq_ignore_ascii_case("off");
     let up = label.to_uppercase();
     let col = if active { t.acc } else { t.faint };
@@ -192,7 +209,7 @@ fn value_pill(c: &mut Canvas, f: &FontSet, t: &Theme, xr: i32, cy: i32, label: &
     text::draw(c, f, (xr - w + 12) as f32, (cy + 4) as f32, &up, &st);
 }
 
-fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, desc: &str) -> i32 {
+pub(crate) fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, desc: &str) -> i32 {
     let rh = ROW_H;
     let cy = y + rh / 2;
     if sel {
@@ -334,6 +351,15 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
     let cy = row(c, t, f, y0 + rh * 5, sel == 5, "ClearAudio+", "Sony one-touch tuning — overrides EQ + DSP");
     toggle(c, t, 418, cy - 11, 40, 22, 14, s.clearaudio);
     balance_row(c, t, f, s, sel == ROW_BALANCE);
+
+    // "Advanced ›" — the route to the rest of Sony's effects.
+    {
+        let ay = advanced_top();
+        let cy = row(c, t, f, ay, sel == ROW_ADVANCED, "Advanced",
+                     "Source Direct, Clear Phase, DSEE AI, Tone Control");
+        let chev = sty(Family::Sans, Weight::SemiBold, 20.0, t.dim, 0.0);
+        right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
+    }
 
     // signal-path footer
     let fy = 700;

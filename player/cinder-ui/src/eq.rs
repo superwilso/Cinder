@@ -83,6 +83,22 @@ pub fn band_center_x(i: usize) -> i32 {
     BAND_X0 + i as i32 * BAND_SLOT + BAND_SLOT / 2
 }
 
+/// The band gain a finger at `y` is asking for — the exact inverse of the knob placement in
+/// `render`, snapped to [`BAND_STEP`] so a drag lands on the same values a tap can reach.
+///
+/// This is what makes the field DRAGGABLE. Before it, every slider on the device was tap-only:
+/// one tap, one step, so crossing the range took ten taps per band and a hundred for a curve.
+/// Deriving it from the same `span`/`mid` the renderer uses is not a nicety — an independent
+/// formula here would put the knob somewhere other than under the finger, which reads as the
+/// screen fighting you.
+pub fn value_at_y(y: i32) -> i8 {
+    let span = (FIELD_BOTTOM - FIELD_TOP) / 2 - 10;
+    // knob_y = mid - v * span / BAND_MAX  =>  v = (mid - y) * BAND_MAX / span
+    let raw = (FIELD_MID - y) * BAND_MAX as i32 / span.max(1);
+    let snapped = (raw as f32 / BAND_STEP as f32).round() as i32 * BAND_STEP as i32;
+    snapped.clamp(-(BAND_MAX as i32), BAND_MAX as i32) as i8
+}
+
 /// Which band column is under `x` within the field, if any.
 pub fn band_at(x: i32) -> Option<usize> {
     let i = (x - BAND_X0).div_euclid(BAND_SLOT);

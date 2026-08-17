@@ -62,19 +62,25 @@ W1 also swaps the table files in `/system/usr/share/audio_dac/`:
 
 | file | size | stock | W1 |
 |---|---|---|---|
+| `ov_1291.tbl`, `ov_dsd_1291.tbl`, `tc_1291.tbl` (+`_cew`) | 84950 / 13076 / 2888 | ✓ | ✗ |
 | `ov_127x.tbl`, `ov_1280.tbl` (+`_cew`) | 84950 | ✗ | ✓ |
 | `ov_dsd_127x.tbl`, `ov_dsd_1280.tbl` (+`_cew`) | 13076 | ✗ | ✓ |
 | `tc_127x.tbl`, `tc_1280.tbl` | 2888 | ✗ | ✓ |
 | `ncgain_*.tbl`, `ambgain*.tbl`, `ambient480_*` | 70 | ✓ | ✗ |
 
-`ov` = output volume, `tc` = tone control, `_cew` = the Europe variant. W1 drops the A50's
-noise-cancelling/ambient tables (the ZX300 has no NC headphone support) and adds the output-volume
-tables. It also stops insmod-ing `cxd3778gf_dnc_core.ko` — the only CXD module that differs
+`ov` = output volume, `tc` = tone control, `_cew` = the Europe variant. The trailing number is the
+**DAC variant**: the A50 is 1291, the ZX300 is 1280/127x. W1 drops the A50's noise-cancelling and
+ambient tables (the ZX300 has no NC headphone support) and its 1291 tables, and ships 1280/127x in
+their place. It also stops insmod-ing `cxd3778gf_dnc_core.ko` — the only CXD module that differs
 between the two images.
 
-> **UNVERIFIED:** whether the *stock kernel* accepts an `ov_*.tbl` upload. W1 ships a different
-> bootimg (7168000 → 7700480 bytes) and the codec driver is in-kernel, not a module, so the table
-> format may need the newer driver. **Test this before assuming the tables are drop-in.**
+> **CORRECTED 2026-08-17.** An earlier pass here claimed stock had NO `ov_*`/`tc_*` tables and that
+> W1 introduced the concept. That was wrong — it came from a directory listing truncated before the
+> `ov_*` entries. **Stock ships `ov_1291`, `ov_dsd_1291` and `tc_1291` and loads them at every
+> boot.** The mechanism is not new; only the tables differ.
+>
+> This RESOLVES what was flagged as the open question. The stock kernel demonstrably accepts an
+> `ov_*.tbl` upload, because stock does exactly that on every boot. No kernel change is needed.
 
 ### Layer 2 — the audio HAL, i.e. the actual "sound signature" (3 BYTES)
 
@@ -136,9 +142,26 @@ it decides whether the full signature is reachable without flashing or only the 
    the `hw:0,N` string lives in the HAL, not in Cinder. Dropping `pv1`/`pv2` into
    `/vendor/sony/lib/libaudiohal-adleralsa.so` is a plain file replace with the same install
    discipline as `cinder-home` (keep a `.prev`). This is the highest-value / lowest-effort item.
-3. **`dacdat` re-programming — plausible, needs a test.** `dacdat` is identical and present; the
-   arguments are the gate. `dacdat auto BBDMP2_linux …` with W1's `ov_*.tbl` copied in is the
-   experiment. Blocked on the kernel question above.
+3. **`dacdat` re-programming — UNBLOCKED, and the interface is explicit.** `dacdat`'s own usage:
+
+   ```
+   dacdat ovt FILE            --- output volume table      (ov_*.tbl)
+   dacdat dgt FILE            --- device gain table
+   dacdat tct FILE            --- tone control table       (tc_*.tbl)
+   dacdat auto MODEL VOL_LIMIT
+        MODEL     : BBDMP2_linux / BBDMP3_linux / BBDMP5_linux
+        VOL_LIMIT : 0 / 10
+   ```
+
+   The **stock binary already accepts `BBDMP2_linux`** — Walkman One's model — and `VOL_LIMIT` is a
+   bare `0` or `10`, which is the region cap expressed as an argument. All it lacks is the
+   1280/127x tables, which are now staged in `/system/usr/share/audio_dac/` on the device
+   (inert: `load_sony_driver` runs `dacdat auto $PRODDEV …` with `ro.product.device` still
+   `BBDMP5_linux`, so boot keeps loading the 1291 set).
+
+   **NOT YET RUN.** Loading a different output-volume table changes what every volume step does,
+   and `VOL_LIMIT 0` removes a cap. That belongs to a deliberate session with headphones OFF, not
+   to a background push.
 4. **The external tuning blobs — unknown.** Unpack the 192 KB UPG first.
 
 ## Do NOT confuse this with a region unlock
