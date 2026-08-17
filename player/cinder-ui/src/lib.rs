@@ -33,6 +33,7 @@ pub mod receiver;
 pub mod fm;
 pub mod folders;
 pub mod track_info;
+pub mod clockset;
 pub mod usbdac;
 pub mod usb_storage;
 pub mod onboarding;

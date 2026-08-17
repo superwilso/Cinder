@@ -4,7 +4,7 @@
 
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::widgets::{fill_rect, hline, right, stroke_rect, sty, toggle};
+use crate::widgets::{center, fill_rect, hline, right, stroke_rect, sty, toggle};
 use crate::Canvas;
 
 /// Number of selectable rows on the Sound screen (DSEE, Vinyl, VPT, DC Phase, Normalizer, Clear+,
@@ -42,10 +42,10 @@ pub fn balance_label(pos: usize) -> String {
 pub const ROW_H: i32 = 64;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
-/// The Balance row is taller than the rest: it carries a full-width drag slider under its label,
-/// and a 64 px row would leave the track sharing an edge with ClearAudio+ above it — the same
-/// near-miss that made the library filter strip hard to hit.
-pub const BALANCE_ROW_H: i32 = 108;
+/// The Balance row is taller than the rest: it carries a full-width drag slider, a Centre reset
+/// button and a readout, and a 64 px row would leave the track sharing an edge with ClearAudio+
+/// above it — the same near-miss that made the library filter strip hard to hit.
+pub const BALANCE_ROW_H: i32 = 132;
 
 /// Top edge of the Balance row. Everything below it is slider.
 pub fn balance_top() -> i32 {
@@ -71,7 +71,24 @@ pub fn row_at(y: i32) -> Option<usize> {
 pub const BAL_X0: i32 = 22;
 pub const BAL_X1: i32 = 458;
 /// Vertical centre of the track within the Balance row.
-pub const BAL_TRACK_DY: i32 = 74;
+pub const BAL_TRACK_DY: i32 = 86;
+
+/// "Centre" reset button, top-right of the Balance row. A slider needs a way back to its null that
+/// isn't "drag carefully until the number reads 50" — on a 436 px track one slider step is 4.4 px,
+/// so hitting exactly centre by hand is luck. Select does it too, but this is the touch path.
+pub const BAL_RESET_W: i32 = 104;
+pub const BAL_RESET_H: i32 = 38;
+pub fn balance_reset_rect() -> (i32, i32, i32, i32) {
+    (BAL_X1 - BAL_RESET_W, balance_top() + 12, BAL_RESET_W, BAL_RESET_H)
+}
+pub fn hit_balance_reset(x: i32, y: i32) -> bool {
+    let (rx, ry, rw, rh) = balance_reset_rect();
+    (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
+}
+
+/// Slider steps within which a drag snaps to dead centre. Without it, "centred" is a 1-in-101 shot
+/// and the control has no null you can actually land on — the detent tick would be decoration.
+pub const BAL_SNAP: usize = 3;
 pub fn bal_track_y() -> i32 {
     balance_top() + BAL_TRACK_DY
 }
@@ -81,7 +98,9 @@ pub fn bal_track_y() -> i32 {
 pub fn balance_at(x: i32) -> usize {
     let span = (BAL_X1 - BAL_X0).max(1);
     let t = (x - BAL_X0).clamp(0, span);
-    ((t as i64 * BALANCE_MAX as i64 + span as i64 / 2) / span as i64) as usize
+    let pos = ((t as i64 * BALANCE_MAX as i64 + span as i64 / 2) / span as i64) as usize;
+    // Snap through the detent, so centre is reachable with a normal finger.
+    if pos.abs_diff(BALANCE_CENTRE) <= BAL_SNAP { BALANCE_CENTRE } else { pos }
 }
 
 /// Screen x of the knob for position `pos`.
@@ -94,7 +113,35 @@ pub fn balance_x(pos: usize) -> i32 {
 /// a touch target, and the whole lower half of the row is dead space otherwise.
 pub fn balance_grab(y: i32) -> bool {
     let ty = bal_track_y();
-    (ty - 26..=ty + 26).contains(&y)
+    (ty - 30..=ty + 34).contains(&y)
+}
+
+// ── A/B compare control ─────────────────────────────────────────────────────────────────────────
+/// Two segments in the header. They were 30x26 with a 26 px hit band and reported hard to press on
+/// 2026-08-17; a 26 px target is under every touch guideline and this one sits in a corner, where a
+/// thumb is least accurate. Now 48x44 with a band that overhangs it, and A/B is the SINGLE SOURCE
+/// for both the render and nav's hit test — they used to be written out separately, which is how
+/// the hit band ended up 4 px shorter than the thing it was meant to cover.
+pub const AB_W: i32 = 48;
+pub const AB_H: i32 = 44;
+pub const AB_TOP: i32 = 34;
+pub const AB_GAP: i32 = 8;
+pub fn ab_rect(seg: usize) -> (i32, i32, i32, i32) {
+    let x0 = BAL_X1 - (AB_W * 2 + AB_GAP);
+    (x0 + seg as i32 * (AB_W + AB_GAP), AB_TOP, AB_W, AB_H)
+}
+/// Which A/B segment a tap lands on: 0 = A (effects active), 1 = B (chain bypassed). The band is
+/// slack around the drawn boxes, and the midpoint splits it, so a tap between them still resolves.
+pub fn hit_ab(x: i32, y: i32) -> Option<usize> {
+    let (x0, _, _, _) = ab_rect(0);
+    // Asymmetric overhang on purpose: only 6px upward, because the status-bar icons sit at y~22
+    // and a band that reached them would eat their taps; 10px downward, where there is nothing
+    // until HEADER_BOTTOM.
+    if !(AB_TOP - 6..AB_TOP + AB_H + 10).contains(&y) || x < x0 - 10 {
+        return None;
+    }
+    let (x1, ..) = ab_rect(1);
+    Some(if x < x1 - AB_GAP / 2 { 0 } else { 1 })
 }
 
 /// Every field is Copy, so a preview or a test can spin a variant off an existing one with
@@ -177,16 +224,20 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
         fill_rect(c, 0, y, crate::canvas::W as i32, BALANCE_ROW_H, t.row_sel);
     }
     let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (y + 28) as f32, "Balance",
+    text::draw(c, f, 22.0, (y + 36) as f32, "Balance",
                &sty(Family::Sans, Weight::SemiBold, 18.0, lc, 0.0));
-    text::draw(c, f, 22.0, (y + 46) as f32, "Drag to shift the stereo image left or right",
+    text::draw(c, f, 22.0, (y + 58) as f32, "Drag the slider to shift the stereo image",
                &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
 
-    // Readout, right-aligned on the label line. Grey at centre — centre IS the no-op position and
-    // should not read as an active setting — and accent while the finger is down.
-    let vc = if centred { t.faint } else if s.balance_drag { t.acc } else { t.ink };
-    right(c, f, BAL_X1 as f32, (y + 30) as f32, &balance_label(s.balance).to_uppercase(),
-          &sty(Family::Mono, Weight::Regular, 14.0, vc, 0.1));
+    // CENTRE reset. Greyed out when already centred — it is not a state, it is an action, and an
+    // action with nothing to do should say so rather than looking armed.
+    {
+        let (rx, ry, rw, rh) = balance_reset_rect();
+        let col = if centred { t.faint } else { t.acc };
+        stroke_rect(c, rx, ry, rw, rh, if centred { t.line } else { t.acc }, 1);
+        center(c, f, (rx + rw / 2) as f32, (ry + rh / 2 + 5) as f32, "CENTRE",
+               &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14));
+    }
 
     let ty = bal_track_y();
     let cx = balance_x(BALANCE_CENTRE);
@@ -200,17 +251,22 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
         fill_rect(c, fx, ty - 1, fw, 3, t.acc);
     }
     // Centre detent: a taller tick, so you can see where the null is while dragging.
-    fill_rect(c, cx - 1, ty - 9, 2, 19, if centred { t.acc } else { t.dim });
+    fill_rect(c, cx - 1, ty - 11, 2, 23, if centred { t.acc } else { t.dim });
 
     // Knob. Square, to match the toggle's knob — this UI has no circle primitive and a hand-rolled
-    // one here would be the only round thing on the screen.
-    let k = if s.balance_drag { 26 } else { 20 };
+    // one here would be the only round thing on the screen. It grows under a finger.
+    let k = if s.balance_drag { 32 } else { 24 };
     fill_rect(c, kx - k / 2, ty - k / 2, k, k, if centred && !s.balance_drag { t.dim } else { t.acc });
 
-    // End caps. L and R sit outside the travel so they never collide with the knob at full stop.
+    // End caps and the live readout share the line under the track. L and R sit at the extremes so
+    // they never collide with the knob at full stop; the value sits between them, centred, where it
+    // is closest to where you are looking while dragging.
     let cap = sty(Family::Mono, Weight::Bold, 12.0, t.faint, 0.12);
-    text::draw(c, f, BAL_X0 as f32, (ty + 30) as f32, "L", &cap);
-    right(c, f, BAL_X1 as f32, (ty + 30) as f32, "R", &cap);
+    let vc = if centred { t.faint } else { t.acc };
+    text::draw(c, f, BAL_X0 as f32, (ty + 32) as f32, "L", &cap);
+    right(c, f, BAL_X1 as f32, (ty + 32) as f32, "R", &cap);
+    center(c, f, 240.0, (ty + 32) as f32, &balance_label(s.balance).to_uppercase(),
+           &sty(Family::Mono, Weight::Regular, 13.0, vc, 0.1));
     hline(c, y + BALANCE_ROW_H, t.line);
 }
 
@@ -224,23 +280,21 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, ab_
     // with the Option button (hinted below the segments).
     {
         let segs = [("A", !ab_bypass), ("B", ab_bypass)];
-        let sw = 30;
-        let sh = 26;
-        let top = 44;
-        let mut sx = 458 - (sw * 2 + 6);
-        for (label, on) in segs.iter() {
-            let st = sty(Family::Mono, Weight::Bold, 14.0, if *on { t.acc_ink } else { t.dim }, 0.1);
+        for (i, (label, on)) in segs.iter().enumerate() {
+            let (sx, sy, sw, sh) = ab_rect(i);
+            let st = sty(Family::Mono, Weight::Bold, 18.0, if *on { t.acc_ink } else { t.dim }, 0.1);
             if *on {
-                fill_rect(c, sx, top, sw, sh, t.acc);
+                fill_rect(c, sx, sy, sw, sh, t.acc);
             }
-            stroke_rect(c, sx, top, sw, sh, if *on { t.acc } else { t.line }, 1);
-            let lw = text::measure(f, label, &st) as i32;
-            text::draw(c, f, (sx + (sw - lw) / 2) as f32, (top + sh / 2 + 4) as f32, label, &st);
-            sx += sw + 6;
+            stroke_rect(c, sx, sy, sw, sh, if *on { t.acc } else { t.line }, 1);
+            center(c, f, (sx + sw / 2) as f32, (sy + sh / 2 + 6) as f32, label, &st);
         }
-        // hint
+        // The hint moved LEFT of the segments rather than under them: the segments now fill the
+        // header's vertical space, and a caption below would have run past HEADER_BOTTOM into the
+        // first row.
         let hint = sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14);
-        right(c, f, 458.0, (top + sh + 11) as f32, "OPTION = A/B", &hint);
+        let (x0, _, _, _) = ab_rect(0);
+        right(c, f, (x0 - 12) as f32, (AB_TOP + AB_H / 2 + 4) as f32, "OPTION = A/B", &hint);
     }
 
     let rh = ROW_H;

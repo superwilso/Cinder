@@ -74,10 +74,18 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, items: &[MenuItem]) {
         let cy = (yt + rh / 2) as f32;
         let icol = if m.active { t.acc } else { t.dim };
         draw_icon(c, m.icon, 33.0, cy, 19.0, icol);
-        text::draw(c, f, 56.0, cy + 6.0, m.label, &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
+        let label_end = text::draw(c, f, 56.0, cy + 6.0, m.label,
+                                   &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
+        // The value is right-aligned by measuring it, so an over-long one puts its start x NEGATIVE
+        // and it runs off the LEFT edge — under the icon, through the label, and off the panel.
+        // Nothing here scrolls sideways, so those pixels are simply gone. The Now Playing row's
+        // value is a live "Artist — Title", which is exactly the string with no length bound.
+        // Truncate to the gap between the label and the chevron. Caught by tests/ui_overflow.rs.
         let vs = sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.04);
-        let vw = text::measure(f, m.value, &vs);
-        text::draw(c, f, 438.0 - vw, cy + 5.0, m.value, &vs);
+        let avail = (438.0 - (label_end + 12.0)).max(0.0);
+        let value = crate::widgets::fit(f, m.value, &vs, avail);
+        let vw = text::measure(f, &value, &vs);
+        text::draw(c, f, 438.0 - vw, cy + 5.0, &value, &vs);
         icons::chevron(c, 456.0, cy, 14.0, t.faint);
         fill_rect(c, 0, yt + rh, W as i32, 1, t.line); // bottom border
     }

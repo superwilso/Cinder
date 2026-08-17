@@ -314,9 +314,18 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
             Some(img) => art::draw_image(c, t, 24, 80, img, 0.32),
             None => art::block(c, t, 24, 80, 92, 92, np.art, 0.32),
         }
-        text::draw(c, f, 134.0, 110.0, np.title, &s(Family::Sans, Weight::Bold, 23.0, t.ink, 0.0));
-        text::draw(c, f, 134.0, 133.0, np.artist, &s(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0));
-        text::draw(c, f, 134.0, 153.0, np.codec, &s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08));
+        // TRUNCATE. The day layout below already fits its title to 372px; this column never did,
+        // so in night mode a long title or a non-Latin artist ran straight off the right edge and
+        // was clipped away — 6000+ pixels of it on a real classical tag. Caught by
+        // tests/ui_overflow.rs; the two layouts are separate code paths and only one had the bound.
+        const COL_X: f32 = 134.0;
+        const COL_W: f32 = 456.0 - COL_X;
+        let ts = s(Family::Sans, Weight::Bold, 23.0, t.ink, 0.0);
+        let as_ = s(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
+        let cs = s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08);
+        text::draw(c, f, COL_X, 110.0, &crate::widgets::fit(f, np.title, &ts, COL_W), &ts);
+        text::draw(c, f, COL_X, 133.0, &crate::widgets::fit(f, np.artist, &as_, COL_W), &as_);
+        text::draw(c, f, COL_X, 153.0, &crate::widgets::fit(f, np.codec, &cs, COL_W), &cs);
         // Night pages the same way the day theme does, but the block is different: there is no
         // full-bleed cover to page, only the airy negative space under the compact header. So the
         // header stays put and the SPACE changes. Swiping still works, the dots still say where you

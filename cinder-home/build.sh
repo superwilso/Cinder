@@ -247,6 +247,14 @@ echo "[6c] build cinder-power (setuid-root power helper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-power" "$HERE/src/cinder-power.c"
 echo "built: $HERE/cinder-power ($(stat -c %s "$HERE/cinder-power") bytes)"
 
+# cinder-clock: fifth setuid-root helper — set the system clock and the RTC. Both settimeofday(2)
+# and the RTC_SET_TIME ioctl need CAP_SYS_TIME; cinder-home runs as uid 100 (system) with an empty
+# capability set. NOTHING in vendor/sony/lib exposes a clock setter (a sweep of every library's
+# demangled `virtual` prototypes finds none), so the kernel is the only route. See src/cinder-clock.c.
+echo "[6e] build cinder-clock (setuid-root clock helper, static)…"
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-clock" "$HERE/src/cinder-clock.c"
+echo "built: $HERE/cinder-clock ($(stat -c %s "$HERE/cinder-clock") bytes)"
+
 # cinder-msc: fourth setuid-root helper — the USB mass-storage handoff. BOTH privileged steps are
 # root-only on this device (the LUN backing-file write opens the block device in the caller's
 # credentials, and sys.sony.config is refused for uid system), which is why MSC never worked from
@@ -260,6 +268,7 @@ cp -f "$OUT" "$DIST/cinder-home"
 cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"
 cp -f "$HERE/cinder-umount" "$DIST/cinder-umount"
 cp -f "$HERE/cinder-power" "$DIST/cinder-power"
+cp -f "$HERE/cinder-clock" "$DIST/cinder-clock"
 cp -f "$HERE/cinder-msc" "$DIST/cinder-msc"
 # cinder-gpunode ships on the DEV channel ONLY. It is setuid-root and its whole job is to make
 # four kernel graphics nodes world-writable — real attack surface — in service of a GPU present

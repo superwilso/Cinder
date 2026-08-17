@@ -6,7 +6,7 @@
 
 use crate::canvas::{Canvas, H, W};
 use crate::icons;
-use crate::text::{self, Family, FontSet, Weight};
+use crate::text::{Family, FontSet, Weight};
 use crate::theme::Theme;
 use crate::widgets::{fill_rect, sty};
 
@@ -29,8 +29,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
 
     let title = "USB Storage";
     let tst = sty(Family::Sans, Weight::ExtraBold, 29.0, t.ink, -0.01);
-    let tw = text::measure(f, title, &tst);
-    text::draw(c, f, cx - tw / 2.0, (cy - 40) as f32, title, &tst);
+    crate::widgets::center(c, f, cx, (cy - 40) as f32, title, &tst);
 
     let lines = [
         "Storage is connected to your computer.",
@@ -42,8 +41,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
     for l in lines {
         if !l.is_empty() {
             let st = sty(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
-            let w = text::measure(f, l, &st);
-            text::draw(c, f, cx - w / 2.0, y as f32, l, &st);
+            crate::widgets::center(c, f, cx, y as f32, l, &st);
         }
         y += 28;
     }
@@ -52,6 +50,5 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet) {
     let (bx, by, bw, bh) = OFF_BTN;
     fill_rect(c, bx, by, bw, bh, t.acc);
     let bst = sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc_ink, 0.06);
-    let lw = text::measure(f, "TURN OFF", &bst);
-    text::draw(c, f, cx - lw / 2.0, (by + bh / 2 + 6) as f32, "TURN OFF", &bst);
+    crate::widgets::center(c, f, cx, (by + bh / 2 + 6) as f32, "TURN OFF", &bst);
 }
