@@ -31,6 +31,10 @@ pub enum Ask {
     /// question, and it is a genuine either/or rather than a confirmation: the queue you built by
     /// hand is not something to silently discard, nor something to silently keep.
     QueueOnPlay,
+    /// "Reset settings" from the Settings screen. A yes/no card rather than the two-tap arm used
+    /// by Boot to stock: this one cannot be undone by rebooting, and the body has to say what the
+    /// scope is before the finger commits.
+    ResetSettings,
 }
 
 impl Ask {
@@ -54,6 +58,11 @@ impl Ask {
             ),
             Ask::PowerMenu => ("Power", "", ""),
             Ask::QueueOnPlay => ("Play this now?", "", ""),
+            Ask::ResetSettings => (
+                "Reset settings?",
+                "Every preference goes back to its default. Your music, playlists and pins are untouched.",
+                "Reset",
+            ),
         }
     }
 

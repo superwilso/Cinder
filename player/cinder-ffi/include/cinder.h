@@ -43,6 +43,26 @@ void cinder_set_theme_night(int night);
  * level was restored (apply it to the mixer instead of seeding from hardware). 0 = no file. */
 int cinder_settings_load(const char *path);
 
+/* Resume across a reboot. `seq_path` holds the playback context + user queue (object ids, written
+ * only when they change); `pos_path` holds the current track + position (30 bytes, written at most
+ * every 5 s). Call ONCE at boot AFTER cinder_db_open — the ids are resolved against the library.
+ * Returns 1 if a sequence was restored, 0 if there was nothing to restore, -2 if not initialised.
+ *
+ * Restoring does NOT start playback and does not touch PlayerService: a player that starts playing
+ * by itself at power-on is worse than the bug this fixes. The sequence is handed over on the first
+ * transport press instead — see cinder_resume_take_pending. Calling this also ARMS the saving
+ * half, so both files stay current from here on. */
+int  cinder_resume_load(const char *seq_path, const char *pos_path);
+/* Call on the first ▶ after a boot. 1 = the restored sequence is now in cinder_pending_play_* and
+ * cinder_play_position_ms() is where to seek, so hand it to play_pending_sequence with
+ * restore_position; 0 = nothing pending, carry on with an ordinary play. One-shot. */
+int  cinder_resume_take_pending(void);
+/* Throw a pending resume away — the user started something themselves, so the sequence the last
+ * boot left behind must not overwrite it. */
+void cinder_resume_cancel(void);
+/* Write both resume files right now (before a deliberate power-off / reboot). */
+void cinder_resume_flush(void);
+
 /* Logical buttons (the backend maps raw evdev key codes -> these). */
 typedef enum {
     CINDER_BTN_UP = 0, CINDER_BTN_DOWN = 1, CINDER_BTN_LEFT = 2, CINDER_BTN_RIGHT = 3,
@@ -133,7 +153,17 @@ typedef enum {
     CINDER_ACT_BT_ENHANCED_CHANGED = 35,
     /* The user queue changed while music is playing.  Rebuild the PlayerService sequence now,
      * restoring the current position, so an item marked "Playing next" really is next. */
-    CINDER_ACT_QUEUE_CHANGED = 36
+    CINDER_ACT_QUEUE_CHANGED = 36,
+    /* Settings > Reset settings, confirmed. Every preference is back to its default; re-apply the
+     * whole chain from the UI's state (EQ, sound flags, balance, backlight, volume). Nothing needs
+     * reading back one field at a time — the point of the reset is that all of it moved. */
+    CINDER_ACT_SETTINGS_RESET = 37,
+    /* Sound > Balance moved. BALANCE ONLY — deliberately not CINDER_ACT_SOUND_CHANGED, which
+     * re-applies the whole DSP chain: the slider emits this on every motion event while a finger is
+     * down, so it must stay cheap. Read cinder_get_balance() and write the two mixer controls;
+     * skip the write when the raw pair is unchanged. A CINDER_ACT_SOUND_CHANGED still arrives when
+     * the finger lifts, which is what persists the value to the settings file. */
+    CINDER_ACT_BALANCE_CHANGED = 38
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -297,6 +327,20 @@ void cinder_set_volume(int level);
 /* Push the connected Bluetooth device's name into the UI (NULL or "" = nothing connected). Read it
  * from GetConnectInformation(vector<uint8_t>& addr, string& name). */
 void cinder_set_bt_connected(const char* name);
+/* Push the codec the live A2DP link NEGOTIATED — the raw BtSoundCodec from
+ * BtTransmitterService::GetSoundStatus(BtSoundCodec&, BtSoundFrequency&, BtSoundChannel&, bool&),
+ * vtable slot 26 on the transmitter client. Negative = nothing connected / the service wrote
+ * nothing, which clears it. Returns 1 if the value changed (repaint), 0 otherwise.
+ *
+ * This is NOT the codec preference. cinder_get_bt_codec() is what the user asked for; this is what
+ * the radio agreed to, and the two differ whenever a sink cannot do the requested codec — A2DP
+ * negotiates during connection setup and falls back without saying so.
+ *
+ * Known enumerator: 0x02 = LDAC (measured on device 2026-08-17, WH-1000XM4, peer advertising
+ * `ldac support:1` and neither aptX). It is Sony's own enum, NOT the Bluetooth assigned-numbers
+ * codec ID — 0x02 there is MPEG-2/4 AAC and that is not what this is. The UI prints any other
+ * value as raw hex rather than guessing. */
+int  cinder_set_bt_link_codec(int raw);
 /* Paired-device list for the Devices screen. Call cinder_bt_paired_clear(), then _add() once per
  * device from GetPairedDeviceInfo — IN THE SAME ORDER the shell keeps its BD addresses, because the
  * UI hands back a row index and nothing else. `kind` may be NULL. connected != 0 marks the live link.
@@ -374,6 +418,11 @@ int  cinder_get_screen_off_s(void);
  * nothing is playing and there has been no input for that long, shut the device down. Distinct from
  * the screen-off timer, which only blanks the panel. */
 int  cinder_get_auto_off_min(void);
+/* L/R balance position, 0..=100 with 50 = centre (a continuous slider). Read after a
+ * CINDER_ACT_BALANCE_CHANGED or CINDER_ACT_SOUND_CHANGED action and write the codec's
+ * `l balance volume` / `r balance volume` (0..88 of ATTENUATION, in HALF-decibels): panning left
+ * turns the RIGHT channel down, because the mixer only offers attenuation. */
+int  cinder_get_balance(void);
 /* Is USB-DAC mode engaged? (1/0). Read after a CINDER_ACT_USBDAC_LDAC action to start/stop the LDAC
  * bridge + switch the USB gadget to UAC, without disconnecting Bluetooth. */
 /* Is the Bluetooth switch on? (1/0). Read after a CINDER_ACT_BT_TOGGLE action. */

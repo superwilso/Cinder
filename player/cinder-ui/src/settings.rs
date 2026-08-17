@@ -13,7 +13,7 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 18;
+pub const ROWS: usize = 19;
 /// The actionable rows: Theme / Accent / UI scale / Visualiser / Visualiser animation / Sleep
 /// timer (DISPLAY) + Battery care (SYSTEM).
 pub const ROW_THEME: usize = 0;
@@ -42,14 +42,19 @@ pub const ROW_BOOT_STOCK: usize = 13;
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
 pub const ROW_RESTART: usize = 14;
 pub const ROW_POWER_OFF: usize = 15;
+/// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
+/// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
+/// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
+/// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
+pub const ROW_RESET: usize = 16;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 16;
-pub const ROW_MODEL: usize = 17;
+pub const ROW_FIRMWARE: usize = 17;
+pub const ROW_MODEL: usize = 18;
 
 const RH: i32 = 56;
 /// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
 /// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [8, 8, 2];
+const SECTIONS: [usize; 3] = [8, 9, 2];
 
 /// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
 /// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
@@ -344,6 +349,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
 
     y = srow(c, t, f, y, sel == ROW_RESTART, "Restart", "", true);
     y = srow(c, t, f, y, sel == ROW_POWER_OFF, "Power off", "", true);
+    // Chevron, because it acts — behind the confirmation modal. The value names the SCOPE, since
+    // "reset" on a music player could just as easily mean the library or the whole device.
+    y = srow(c, t, f, y, sel == ROW_RESET, "Reset settings", "PREFERENCES", true);
 
     y = eyebrow(c, t, f, y + 14, "ABOUT");
     // Named, not literal. These were `sel == 14` and `sel == 15` while ROW_POWER_OFF was 14 — so
