@@ -1,0 +1,107 @@
+name: release
+
+# Builds the end-user installer and attaches it to a GitHub release.
+#
+# Only the INSTALLER is built here. The device binaries it embeds (cinder-home, cinder-probe, the
+# setuid helpers, the .UPG) are committed under cinder-home/dist/ because building them needs a
+# glibc-2.23 + libc++-3.9.0 cross toolchain matched to the player's own runtime — see
+# cinder-home/build.sh. Reproducing that on a hosted runner would be a lot of machinery to
+# maintain for no gain, so the ARM side is built by a maintainer and committed.
+#
+# That means: BUILD AND COMMIT dist/ BEFORE TAGGING, or the release ships whatever was last
+# committed. The installer's build.rs fails loudly if a payload file is missing, so a stale or
+# incomplete dist/ breaks the build here rather than shipping a broken .exe.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Build channel to embed"
+        required: false
+        default: stable
+        type: choice
+        options: [stable, dev]
+
+permissions:
+  contents: write
+
+env:
+  CINDER_CHANNEL: ${{ github.event.inputs.channel || 'stable' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: cinder-installer.exe
+            asset: cinder-installer-windows-x64.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: cinder-installer
+            asset: cinder-installer-linux-x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Test
+        working-directory: installer
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Build
+        working-directory: installer
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        shell: bash
+        working-directory: installer
+        run: |
+          cp "target/${{ matrix.target }}/release/${{ matrix.artifact }}" "${{ matrix.asset }}"
+          ls -l "${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: installer/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: List what is being published
+        run: ls -lR dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true
+          body: |
+            ## Installing
+
+            Download **cinder-installer-windows-x64.exe**, plug the Walkman in over USB in
+            mass-storage mode, and run it. It finds the player, asks which optional parts you
+            want, and copies them across.
+
+            It does **not** flash anything — the player does that itself from
+            Settings ▸ Device Settings ▸ Update, after you eject it.
+
+            **Read [RECOVERY.md](../blob/main/RECOVERY.md) first.** This device has no public
+            DFU/EDL recovery path.

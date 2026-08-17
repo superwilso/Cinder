@@ -46,3 +46,6 @@ cinder-home/cinder-home
 cinder-home/cinder-probe
 ldac-bridge/*.o
 ldac-bridge/cinder-ldac-bridge
+
+# Installer build output — built from dist/, published by CI; never committed.
+cinder-home/dist/*/cinder-installer*
