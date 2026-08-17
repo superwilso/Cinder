@@ -362,6 +362,7 @@ bool viz_analyzer_enabled() {
 }
 
 void report_storage();  // defined below (with the other sysfs readers); called from deferred_up
+void fx_cache_drop();    // defined below: forget what the sound service was last told
 void apply_eq_fn();      // defined below (carry_out helpers); re-applied from deferred_up on restore
 void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, before render_up)
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
@@ -472,6 +473,7 @@ void deferred_up() {
     // Re-apply the user's SAVED EQ + sound effects to the DSP (only if a settings file was restored —
     // no point pushing defaults on a fresh install). Guarded, like every effect-shim call.
     if (g_settings_loaded) {
+        fx_cache_drop();   // boot: nothing is known about what the stock player left behind
         run_guarded("deferred_up: re-apply saved EQ", 6, apply_eq_fn);
         run_guarded("deferred_up: re-apply saved sound", 6, apply_sound_fn);
         // Repeat-one is sticky inside the audio shim and applied to every sequence it builds, so
@@ -906,18 +908,60 @@ static void input_open() {
     sync_hold_from_hw();
 }
 
+// ── Sound-chain write cache ─────────────────────────────────────────────────────────────────
+// WHY THIS EXISTS. Every effect setter here is an IPC round-trip to the sound service, and the UI
+// re-applies the WHOLE chain on any change: ten EQ bands plus ~fifteen effect calls. That was fine
+// while the controls were toggles you press once. It stopped being fine the moment the EQ and Tone
+// Control band fields became DRAGGABLE (2026-08-17) — a drag emits a change per motion event, so
+// the shell was doing twenty-five round-trips per frame and the audio stuttered while you moved a
+// slider. The user's report, verbatim: "reduce the amount of stuttering and glitches when
+// adjusting eq".
+//
+// So: remember what was last handed to the service and skip the calls whose value has not moved.
+// A drag then costs ONE call — the band under the finger.
+//
+// The cache is a claim about the service's state, so anything that can invalidate that claim has
+// to say so. `fx_cache_drop()` is called at boot and after a Bluetooth reconnect, which are the
+// two places the chain is re-asserted precisely BECAUSE something else may have moved it.
+static int  g_fx_last[40];
+static bool g_fx_have = false;
+static int  g_eq_last[10];
+static bool g_eq_have = false;
+
+void fx_cache_drop() { g_fx_have = false; g_eq_have = false; }
+
+// True if slot `i` changed (and records the new value). Slots are private to each apply_* below.
+static inline bool fx_dirty(int i, int val) {
+    if (!g_fx_have || g_fx_last[i] != val) { g_fx_last[i] = val; return true; }
+    return false;
+}
+
 // Read the UI's EQ bands and push them to the device DSP. Run ONLY via run_guarded (below): the
 // EffectCtrlDmp connect can crash/hang if the sound service is down → caught, UI continues.
 void apply_eq_fn() {
     signed char bands[10];
     cinder_get_eq_bands(bands);
-    cinder_effects_set_eq(bands, 10);
+    if (!g_eq_have) {
+        // First apply, or the cache was dropped: assert the whole curve, and the 10-band's own
+        // on-switch with it. cinder_effects_set_eq does both.
+        cinder_effects_set_eq(bands, 10);
+        for (int i = 0; i < 10; i++) g_eq_last[i] = bands[i];
+        g_eq_have = true;
+        return;
+    }
+    for (int i = 0; i < 10; i++) {
+        if (g_eq_last[i] == bands[i]) continue;
+        g_eq_last[i] = bands[i];
+        cinder_effects_set_eq_band(i, bands[i]);
+    }
 }
 
 // Apply the Sound screen's effect toggles to the DSP. Run ONLY via run_guarded (the EffectCtrlDmp
 // connect can crash/hang). The bitmask matches cinder_get_sound_flags(): bit0 DSEE · bit1 Vinyl ·
-// bit2 VPT · bit3 DC-Phase · bit4 Normalizer · bit5 ClearAudio+. (VPT/DC-Phase apply on/off here;
-// their mode/type is a device-gated enhancement — see analysis/RE_playerservice_sound.md.)
+// bit2 VPT · bit3 DC-Phase · bit4 Normalizer · bit5 ClearAudio+. VPT's ROOM is not a bit — it is
+// an enum read separately via cinder_get_vpt_mode() and applied with SetVptMode. DC-Phase's filter
+// TYPE is still on/off only; it is the same shape of change and the next one to make.
+// See analysis/RE_dsp_effects_surface.md.
 // HIGH GAIN OUTPUT — CUT 2026-08-17, and this note is here so it is not re-added.
 //
 // Sony's sid_4116. It is the CXD3778GF's own S-Master gain mode, not an EffectCtrlDmp effect:
@@ -996,13 +1040,67 @@ static void apply_balance(int pos) {
 }
 
 void apply_sound_fn() {
+    // Slot numbers are local to this function and only have to be unique; see fx_dirty's note for
+    // why the calls are skipped at all. Order is unchanged — only the "has it moved" guard is new.
+    enum { S_DSEE, S_VINYL, S_VPT, S_VPTMODE, S_DC, S_DCTYPE, S_CLEARPH, S_DSEEAI, S_DSEECUST,
+           S_DSEEMODE, S_TONE, S_TONE0, S_TONE1, S_TONE2, S_VINYLTYPE, S_SRCDIRECT,
+           S_NORM, S_CLEARAUDIO };
     int f = cinder_get_sound_flags();
-    cinder_effects_set_dsee_hx((f >> 0) & 1);
-    cinder_effects_set_vinylizer((f >> 1) & 1);
-    cinder_effects_set_vpt((f >> 2) & 1);
-    cinder_effects_set_dc_phase((f >> 3) & 1);
-    cinder_effects_set_dynamic_normalizer((f >> 4) & 1);
-    cinder_effects_set_clearaudio_plus((f >> 5) & 1);
+    if (fx_dirty(S_DSEE, (f >> 0) & 1)) cinder_effects_set_dsee_hx((f >> 0) & 1);
+    if (fx_dirty(S_VINYL, (f >> 1) & 1)) cinder_effects_set_vinylizer((f >> 1) & 1);
+    if (fx_dirty(S_VPT, (f >> 2) & 1)) cinder_effects_set_vpt((f >> 2) & 1);
+    // Which room. Sent unconditionally rather than only when VPT is on: stock leaves a mode behind
+    // with VPT off (it read back 1 = Club), so keeping the service's idea of the room in step with
+    // ours means turning VPT on later cannot land in a room the UI is not showing.
+    if (fx_dirty(S_VPTMODE, cinder_get_vpt_mode())) cinder_effects_set_vpt_mode(cinder_get_vpt_mode());
+    if (fx_dirty(S_DC, (f >> 3) & 1)) cinder_effects_set_dc_phase((f >> 3) & 1);
+    // Which filter. Sent unconditionally, same reasoning as the VPT room above.
+    if (fx_dirty(S_DCTYPE, cinder_get_dc_type())) cinder_effects_set_dc_phase_type(cinder_get_dc_type());
+
+    // Sound ▸ Advanced. Same read-flags-then-apply shape as the rows above.
+    // NOTE ON ORDER: Source Direct is applied LAST of the bypass-class controls, after the effects
+    // it hides have been set. The service keeps each effect's own state regardless, so this only
+    // decides what is in the path — but setting the chain first and the bypass after means the
+    // chain is already correct the moment the bypass is lifted.
+    int af = cinder_get_adv_flags();
+    if (fx_dirty(S_CLEARPH, (af >> 1) & 1)) cinder_effects_set_clear_phase((af >> 1) & 1);
+    if (fx_dirty(S_DSEEAI, (af >> 2) & 1)) cinder_effects_set_dsee_ai((af >> 2) & 1);
+    if (fx_dirty(S_DSEECUST, (af >> 3) & 1)) cinder_effects_set_dsee_hx_custom((af >> 3) & 1);
+    if (fx_dirty(S_DSEEMODE, cinder_get_dsee_mode())) cinder_effects_set_dsee_hx_mode(cinder_get_dsee_mode());
+    if (fx_dirty(S_TONE, (af >> 4) & 1)) cinder_effects_set_tone_control((af >> 4) & 1);
+    // The three Tone Control band gains. Raw HALF-DECIBELS, Sony order BASS/MIDDLE/TREBLE — both
+    // measured on device (cinder-probe --tone), not assumed. Sent whenever the chain is applied,
+    // like the VPT room and the DC Phase filter, so switching Tone Control on later cannot land on
+    // gains the UI is not showing.
+    {
+        signed char tb[3] = { 0, 0, 0 };
+        int n = cinder_get_tone_bands(tb);
+        for (int i = 0; i < n && i < 3; i++)
+            if (fx_dirty(S_TONE0 + i, tb[i])) cinder_effects_set_tone_value(i, tb[i]);
+    }
+    // …AND SELECT WHICH TONE SYSTEM IS IN THE PATH. This was the hole: Sony's Equalizer and Tone
+    // Control are ALTERNATIVES, SetSelectUsingEq picks between them, and NOTHING IN CINDER HAD EVER
+    // CALLED IT. The device sat on 1 = the 6-band EQ, which Cinder does not even expose — so every
+    // band the EQ screen has written since June was stored by the service and never in the path.
+    // Measured, not inferred: the sound service logs `isproc is 1` for exactly one of the three
+    // under each value (see effect_abi.hpp EqType, and `cinder-probe --inpath`).
+    // NOT CACHED, and for the same reason SetBtAudioSoundEffect below is not: this call's entire
+    // job is to make sure the right tone system is IN THE PATH, so skipping it because "we already
+    // set it once" is skipping the assertion, not an optimisation.
+    //
+    // It is not hypothetical. MEASURED 2026-08-17 (`cinder-probe --userpreset`): Sony's three saved
+    // setups each hold `SelectUsingEq = 1` — the SIX-band, which Cinder does not expose. Anything
+    // that loads one (the stock UI, a stray LoadUserPreset) silently takes Cinder's EQ out of the
+    // path, and a cached selector would keep quietly agreeing that everything was fine. That is the
+    // exact bug this whole selector fix exists to kill; re-introducing it through a cache would be
+    // a poor trade for ~3 ms on an apply that already only runs when something changed.
+    cinder_effects_set_tone_system(((af >> 4) & 1) ? CINDER_TONE_SYS_TONE : CINDER_TONE_SYS_EQ10);
+    // Sent unconditionally: the device read back Vinylizer type=7, which is not a member of the
+    // four-value enum at all, because nothing had ever set it.
+    if (fx_dirty(S_VINYLTYPE, cinder_get_vinyl_type())) cinder_effects_set_vinylizer_type(cinder_get_vinyl_type());
+    if (fx_dirty(S_SRCDIRECT, (af >> 0) & 1)) cinder_effects_set_source_direct((af >> 0) & 1);
+    if (fx_dirty(S_NORM, (f >> 4) & 1)) cinder_effects_set_dynamic_normalizer((f >> 4) & 1);
+    if (fx_dirty(S_CLEARAUDIO, (f >> 5) & 1)) cinder_effects_set_clearaudio_plus((f >> 5) & 1);
     // …AND LET THE WHOLE CHAIN REACH BLUETOOTH. Project goal #7, and until now a hole: the shim has
     // exported this since the effects were first wired and NOTHING EVER CALLED IT, so over A2DP the
     // EQ, DSEE HX, VPT and Vinyl were applied or bypassed according to whatever the stock player had
@@ -1016,6 +1114,10 @@ void apply_sound_fn() {
     // and on every reconnect (the radio does not carry it across a link, exactly like the codec
     // preference and the volume).
     cinder_effects_set_bt_audio_effect(1);
+    // NOT cached, deliberately: this is the one call whose whole job is to be re-asserted after
+    // something else may have cleared it (a reconnect, the stock player). Caching it would make
+    // the re-assert a no-op, which is the bug it was added to fix.
+    g_fx_have = true;
     apply_balance(cinder_get_balance());
 }
 
@@ -3146,6 +3248,7 @@ void refresh_bt_route() {
         run_guarded("bt: resync volume after reconnect", 8,
                     []() { bt_resync_volume("bt reconnect"); });
         write_bt_pref();
+        fx_cache_drop();   // a reconnect is exactly when the service may have moved under us
         run_guarded("bt: re-apply EQ after reconnect", 6, apply_eq_fn);
         run_guarded("bt: re-apply sound after reconnect", 6, apply_sound_fn);
     }
@@ -4679,6 +4782,32 @@ void apply_usb_dac() {
 // wait for the remount, then point the log back at /contents/cinderhome.log.
 static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
 static bool g_msc_seen_usb = false; // saw the cable while in MSC → unplug ends the session
+// THE USER SAID NO. Set when mass storage is left by hand (the Turn Off button, or Back) while the
+// PC is still plugged in; cleared when the data host goes away.
+//
+// Without it the exit is a LOOP, and it was: leaving MSC clears g_msc_active, the very next
+// watcher tick sees usb_data_host() still true, and two ticks later auto-MSC hands the volume
+// straight back to the PC. Reported 2026-08-17 as "usb mass storage mode can't be turned off when
+// the usb is in, the screen keeps coming up" — the modal was not reappearing, it was being
+// re-entered, once every couple of seconds, forever.
+//
+// Latched rather than debounced on purpose: no timeout makes "off" mean off, and the one event
+// that can plausibly mean the user changed their mind is unplugging and replugging the cable.
+//
+// RELEASING IT IS THE SUBTLE HALF, and the first attempt got it wrong (reported 2026-08-17: "the
+// msc fix didn't stay"). The obvious release condition — "the data host went away" — is WRONG,
+// because leaving mass storage switches the gadget from `mass_storage` back to `adb`, and that
+// RE-ENUMERATES: `android0/state` leaves CONFIGURED for a moment, so `usb_data_host()` reads false
+// mid-exit, the latch cleared, enumeration finished, and auto-MSC walked straight back in. The
+// symptom was identical to having no fix at all.
+//
+// So the release is keyed on the CABLE, via the broad `usb_connected()` probe (which also reads
+// the power-supply nodes and therefore stays true across a gadget re-bind), and it is debounced:
+// the cable has to be gone for several consecutive ticks. Both halves matter — the broad probe
+// survives the re-enumeration, the debounce survives anything that makes it flicker.
+static bool g_msc_user_off = false;
+static int  g_msc_off_gone = 0;      // consecutive ticks with no cable at all
+static const int MSC_OFF_RELEASE_TICKS = 3;
 static int  g_usb_hi = 0;           // debounce: consecutive host-present samples while NOT in MSC
 
 // Point stdout/stderr at `path`. Returns false only if even /dev/null could not be opened.
@@ -5264,10 +5393,24 @@ void carry_out(int act) {
             // device-gated USB-mode switch (hands storage to the PC; disruptive — validate live).
             // 25 s budget: Stop IPC + the 5 s umount verify + recovery + the 3 s gadget-state
             // settle all run under this ONE guard (run_guarded doesn't nest).
+            // Entering by hand clears the refusal — asking for mass storage IS changing your mind,
+            // and leaving the latch set would make the auto path stay dead after this session ends.
+            g_msc_user_off = false;
+            g_msc_off_gone = 0;
             run_guarded("carry_out: enter USB MSC", 25, enter_usb_msc);
             break;
         case CINDER_ACT_EXIT_USB_MSC:
             // Back on the modal (or the unplug watcher) → remount /contents + restore the log.
+            // Latch the refusal FIRST: exit_usb_msc takes seconds, and a watcher tick landing in
+            // the middle of it would re-enter before the flag was set.
+            // `usb_connected()`, not `usb_data_host()`: by the time this runs the gadget may
+            // already be mid-switch, and the question being asked is "is the cable in", not "is the
+            // gadget enumerated right now".
+            if (usb_connected()) {
+                g_msc_user_off = true;
+                g_msc_off_gone = 0;
+                clog_("usb-msc: left by hand with the cable still in — auto-MSC is off until unplug");
+            }
             run_guarded("carry_out: exit USB MSC", 10, exit_usb_msc);
             break;
         default: break;
@@ -5280,9 +5423,47 @@ void carry_out(int act) {
 // balance slider writes the codec's two attenuators as the finger moves, because the point of
 // dragging a balance control is hearing the image move. The progress rail reports nothing here; it
 // returns its seek target from cinder_scrub_end() instead.
+//
+// AND IT IS RATE-LIMITED, because MEASURED 2026-08-17 (`cinder-probe --fxtime`) an effect write is
+// not cheap:
+//
+//     get_eq_band          median      1 us      <- reads are free
+//     set_eq_band          median 10304 us      <- writes are 10 ms, changed value or not
+//     set_tone_value       median  6956 us
+//     set_vpt_mode         median  2981 us
+//
+// A UI frame is 16 ms. One EQ band write is most of a frame; the ten the shell used to send on
+// every change were 103 ms, six frames, which is exactly the stutter the user reported when
+// dragging the EQ. Two fixes, and both are needed:
+//
+//   1. `fx_dirty` (see apply_sound_fn) skips the calls whose value has not moved — a drag then
+//      touches ONE band instead of twenty-five controls. Note the probe line above: writing the
+//      SAME value costs the same 10 ms, so the service does not short-circuit and the caller must.
+//   2. this throttle, because even one 10 ms write per motion event eats 60% of the frame budget.
+//      During a drag the write happens at most every SCRUB_APPLY_MS; in between, the UI still
+//      follows the finger at full rate because the value lives in the navigator, not the DSP.
+//
+// Correctness of dropping writes rests on one thing: the scrub's RELEASE always emits the action
+// again (nav's `scrub_end` re-emits EqChanged/SoundChanged for exactly this reason), so the final
+// value is never the one that got skipped.
+static const long SCRUB_APPLY_MS = 60;
+static long long g_scrub_last_apply_ms = 0;
+
+static long long mono_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
 static void scrub_carry() {
     int act = cinder_scrub_action();
-    if (act != CINDER_ACT_NONE) carry_out(act);
+    if (act == CINDER_ACT_NONE) return;
+    if (g_scrub_active && g_touch_down) {
+        const long long now = mono_ms();
+        if (now - g_scrub_last_apply_ms < SCRUB_APPLY_MS) return;   // release will re-emit it
+        g_scrub_last_apply_ms = now;
+    }
+    carry_out(act);
 }
 
 static void touch_release() {
@@ -5290,6 +5471,7 @@ static void touch_release() {
         // Drag-to-seek ends: ask cinder-ffi where the finger left the rail and seek there.
         // -1 means "not the rail" (a settings slider) OR "no controller"; either way, no seek.
         int ms = cinder_scrub_end();
+        g_scrub_last_apply_ms = 0;   // the FINAL value must never be the one the throttle drops
         scrub_carry();
         if (ms >= 0) {
             // -1 means "no controller"; 0 only means the request was SENT. SeekTime is void, so
@@ -5374,15 +5556,17 @@ static void touch_drag_motion() {
         g_scrub_tested = true;
         if (cinder_scrub_hit(touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y))) {
             g_scrub_active = true;
-            cinder_scrub_to(touch_ui_x(g_touch_cur_x));   // a tap on the rail also seeks
+            cinder_scrub_to(touch_ui_x(g_touch_cur_x), touch_ui_y(g_touch_cur_y));  // a tap on a slider also sets it
             scrub_carry();
             return;
         }
     }
     if (g_scrub_active) {
-        // Seeking: the bar tracks x only. Never promote to a list drag — vertical wander during a
-        // horizontal scrub must not start scrolling the screen underneath.
-        cinder_scrub_to(touch_ui_x(g_touch_cur_x));
+        // The control owns this contact. Never promote to a list drag — wander during a scrub must
+        // not start scrolling the screen underneath, and that matters MORE now that some sliders
+        // are vertical: an EQ band drag is a vertical gesture over a screen that does not scroll,
+        // and without this it would read as a list drag the moment it left the field.
+        cinder_scrub_to(touch_ui_x(g_touch_cur_x), touch_ui_y(g_touch_cur_y));
         scrub_carry();
         return;
     }
@@ -6397,7 +6581,8 @@ void* render_driver(void*) {
                     int act = cinder_input(CINDER_BTN_BACK);
                     if (act != CINDER_ACT_NONE) carry_out(act);
                 }
-            } else if (usb_data_host() && !dev_skip_auto_msc() && !cinder_get_usb_dac()) {
+            } else if (usb_data_host() && !dev_skip_auto_msc() && !cinder_get_usb_dac()
+                       && !g_msc_user_off) {
                 // USB-DAC EXCLUDES auto-MSC, and that is why plain DAC mode never worked.
                 // `sys.sony.config=uac` reconfigures the gadget to `audio_func,adb`, which
                 // enumerates — so `usb_data_host()` goes true within ~2 s and this branch handed
@@ -6413,6 +6598,17 @@ void* render_driver(void*) {
                 }
             } else {
                 g_usb_hi = 0;
+                // Cable actually out, for long enough that it is not a re-enumeration: the
+                // refusal has served its purpose, so the next connection behaves normally again.
+                if (g_msc_user_off) {
+                    if (usb_connected()) {
+                        g_msc_off_gone = 0;
+                    } else if (++g_msc_off_gone >= MSC_OFF_RELEASE_TICKS) {
+                        g_msc_user_off = false;
+                        g_msc_off_gone = 0;
+                        clog_("usb-msc: cable out — auto-MSC re-armed");
+                    }
+                }
             }
             // QUEUE FLUSH — the pending user-queue edit, applied at a track boundary. cinder-ffi
             // only raises this when the track has just changed, which is the one moment

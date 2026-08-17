@@ -61,8 +61,13 @@ int cinder_effects_is_tone_on(void)               { auto* e = fxc(); if (!e) ret
 int cinder_effects_is_clear_phase_hp_on(void)     { auto* e = fxc(); if (!e) return -1; return e->IsClearPhaseHeadphoneOn() ? 1 : 0; }
 int cinder_effects_get_select_using_eq(void)      { auto* e = fxc(); if (!e) return -1; return e->GetSelectUsingEq(); }
 int cinder_effects_get_eq_band(int i)             { auto* e = fxc(); if (!e) return 0; return e->GetEq10BandValue(static_cast<pst::services::sound::Eq10Band>(i)); }
+float cinder_effects_get_eq_band_db(int i)        { auto* e = fxc(); if (!e) return 0.0f; return e->GetEq10BandValuedB(static_cast<pst::services::sound::Eq10Band>(i)); }
 int cinder_effects_set_eq_band(int i, int gain)   { auto* e = fxc(); if (!e) return -1; e->SetEq10BandValue(static_cast<pst::services::sound::Eq10Band>(i), gain); return 0; }
 int cinder_effects_set_select_using_eq(int t)     { auto* e = fxc(); if (!e) return -1; e->SetSelectUsingEq(static_cast<pst::services::sound::EqType>(t)); return 0; }
+// Which tone system is IN THE PATH: 0 none, 1 the 6-band, 2 the 10-band, 3 Tone Control. Same call
+// as above, named — the ordinals were settled on device (see effect_abi.hpp EqType) and the raw
+// int only ever meant "we do not know yet".
+int cinder_effects_set_tone_system(int sys)       { auto* e = fxc(); if (!e) return -1; e->SetSelectUsingEq(static_cast<pst::services::sound::EqType>(sys)); return 0; }
 int cinder_effects_get_vinylizer_type(void)       { auto* e = fxc(); if (!e) return -1; return (int)e->GetVinylizerType(); }
 int cinder_effects_set_dc_phase_type(int type)    { auto* e = fxc(); if (!e) return -1; e->SetDcPhaseFilterType(static_cast<pst::services::sound::DcPhaseFilterType>(type)); return 0; }
 int cinder_effects_get_dc_phase_type(void)        { auto* e = fxc(); if (!e) return -1; return static_cast<int>(e->GetDcPhaseFilterType()); }
@@ -72,5 +77,57 @@ int cinder_effects_set_vinylizer(int on)          { auto* e = fxc(); if (!e) ret
 int cinder_effects_set_clearaudio_plus(int on)    { auto* e = fxc(); if (!e) return -1; e->SetClearAudioPlus(on != 0); return 0; }
 int cinder_effects_set_bt_audio_effect(int on)    { auto* e = fxc(); if (!e) return -1; e->SetBtAudioSoundEffect(on != 0); return 0; }
 int cinder_effects_set_bypass(int bypass)         { auto* e = fxc(); if (!e) return -1; if (bypass) e->DisableSoundEffects(); else e->ReenableSoundEffects(); return 0; }
+
+// ── the rest of Sony's surface (2026-08-17) ───────────────────────────────────────────────────
+// Every symbol below was verified present in libEffectCtrlDmp.so's dynamic table before being
+// declared; see analysis/RE_dsp_effects_surface.md. Anything Sony exports that describes hardware
+// this unit does not have (ClearPhase Speaker/Wmport) is deliberately NOT wired.
+namespace { using namespace pst::services::sound; }
+
+// Source Direct — bypasses the whole chain. Overrides everything below it, exactly like
+// ClearAudioPlus does, which is why the UI has to grey out what it hides.
+int cinder_effects_set_source_direct(int on)      { auto* e = fxc(); if (!e) return -1; e->SetSourceDirect(on != 0); return 0; }
+int cinder_effects_is_source_direct(void)         { auto* e = fxc(); if (!e) return -1; return e->IsSourceDirectOn() ? 1 : 0; }
+
+int cinder_effects_set_clear_phase(int on)        { auto* e = fxc(); if (!e) return -1; e->SetClearPhaseHeadphone(on != 0); return 0; }
+int cinder_effects_is_clear_phase(void)           { auto* e = fxc(); if (!e) return -1; return e->IsClearPhaseHeadphoneOn() ? 1 : 0; }
+
+int cinder_effects_set_dsee_ai(int on)            { auto* e = fxc(); if (!e) return -1; e->SetDseeAi(on != 0); return 0; }
+int cinder_effects_is_dsee_ai(void)               { auto* e = fxc(); if (!e) return -1; return e->IsDseeAiOn() ? 1 : 0; }
+
+int cinder_effects_set_dsee_hx_custom(int on)     { auto* e = fxc(); if (!e) return -1; e->SetDseeHxCustom(on != 0); return 0; }
+int cinder_effects_is_dsee_hx_custom(void)        { auto* e = fxc(); if (!e) return -1; return e->IsDseeHxCustomOn() ? 1 : 0; }
+int cinder_effects_set_dsee_hx_mode(int mode)     { auto* e = fxc(); if (!e) return -1; e->SetDseeHxCustomMode(static_cast<DseeHxCustomMode>(mode)); return 0; }
+int cinder_effects_get_dsee_hx_mode(void)         { auto* e = fxc(); if (!e) return -1; return static_cast<int>(e->GetDseeHxCustomMode()); }
+
+int cinder_effects_set_vinylizer_type(int type)   { auto* e = fxc(); if (!e) return -1; e->SetVinylizerType(static_cast<unsigned>(type)); return 0; }
+/* cinder_effects_get_vinylizer_type is defined above with the other read-backs. */
+
+// Tone Control: three bands, each with a selectable centre frequency. Mutually exclusive with the
+// 10-band EQ — SetSelectUsingEq decides which one is actually in the path.
+int cinder_effects_set_tone_control(int on)       { auto* e = fxc(); if (!e) return -1; e->SetToneControl(on != 0); return 0; }
+int cinder_effects_is_tone_control(void)          { auto* e = fxc(); if (!e) return -1; return e->IsToneControlOn() ? 1 : 0; }
+int cinder_effects_set_tone_value(int band, int gain) { auto* e = fxc(); if (!e) return -1; e->SetToneValue(static_cast<ToneType>(band), gain); return 0; }
+int cinder_effects_get_tone_value(int band)       { auto* e = fxc(); if (!e) return -1; return e->GetToneValue(static_cast<ToneType>(band)); }
+float cinder_effects_get_tone_value_db(int band)  { auto* e = fxc(); if (!e) return 0.0f; return e->GetToneValuedB(static_cast<ToneType>(band)); }
+int cinder_effects_set_tone_freq(int band, int f) { auto* e = fxc(); if (!e) return -1; e->SetToneCenterFreq(static_cast<ToneType>(band), static_cast<ToneCenterFreq>(f)); return 0; }
+int cinder_effects_get_tone_freq(int band)        { auto* e = fxc(); if (!e) return -1; return static_cast<int>(e->GetToneCenterFreq(static_cast<ToneType>(band))); }
+
+// 6-band EQ — where Sony's NAMED presets live (Bright/Excited/Mellow/Relaxed/Vocal/Custom 1/2).
+// The ten-band Cinder already drives has no presets of its own.
+int cinder_effects_set_eq6(int on)                { auto* e = fxc(); if (!e) return -1; e->SetEq6Band(on != 0); return 0; }
+int cinder_effects_is_eq6(void)                   { auto* e = fxc(); if (!e) return -1; return e->IsEq6BandOn() ? 1 : 0; }
+int cinder_effects_set_eq6_preset(int p)          { auto* e = fxc(); if (!e) return -1; e->SetEq6BandPreset(static_cast<Eq6BandPreset>(p)); return 0; }
+int cinder_effects_get_eq6_preset(void)           { auto* e = fxc(); if (!e) return -1; return static_cast<int>(e->GetEq6BandPreset()); }
+int cinder_effects_set_eq6_band(int b, int gain)  { auto* e = fxc(); if (!e) return -1; e->SetEq6BandValue(static_cast<Eq6Band>(b), gain); return 0; }
+int cinder_effects_get_eq6_band(int b)            { auto* e = fxc(); if (!e) return -1; return e->GetEq6BandValue(static_cast<Eq6Band>(b)); }
+float cinder_effects_get_eq6_band_db(int b)       { auto* e = fxc(); if (!e) return 0.0f; return e->GetEq6BandValuedB(static_cast<Eq6Band>(b)); }
+
+// Sony's own two saved setups.
+int cinder_effects_save_user_preset(int no)       { auto* e = fxc(); if (!e) return -1; e->SaveUserPreset(static_cast<UserPresetNo>(no)); return 0; }
+int cinder_effects_load_user_preset(int no)       { auto* e = fxc(); if (!e) return -1; e->LoadUserPreset(static_cast<UserPresetNo>(no)); return 0; }
+
+// Read-backs used to grey out rows that something upstream is overriding.
+int cinder_effects_is_clearaudio_plus(void)       { auto* e = fxc(); if (!e) return -1; return e->IsClearAudioPlusOn() ? 1 : 0; }
 
 } // extern "C"

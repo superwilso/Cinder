@@ -26,6 +26,8 @@ pub mod library;
 pub mod viz;
 pub mod eq;
 pub mod sound;
+pub mod advanced;
+pub mod tone;
 pub mod settings;
 pub mod bluetooth;
 pub mod pairing;
