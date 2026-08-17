@@ -50,6 +50,15 @@ pub enum Screen {
     UpNext,
     Eq,
     Sound,
+    /// Sound ▸ Advanced — the rest of Sony's effect surface (Source Direct, Clear Phase, DSEE AI,
+    /// DSEE HX Custom, Vinyl character, Tone Control). Its own screen because the Sound list is
+    /// full and making it scroll would put a scroll offset into the one screen whose render and
+    /// hit test have already drifted apart once. See `advanced.rs`.
+    Advanced,
+    /// Sound ▸ Advanced ▸ Tone Control — the three band gains. Its own screen because it is a
+    /// slider field, not a row: the Advanced list is toggles and pills, and a three-column tap
+    /// target does not fit inside a 64 px row. See `tone.rs`.
+    Tone,
     Bluetooth,
     /// Paired-device picker (connect / disconnect / forget). Pushed from Bluetooth ▸ "Pair new
     /// device"; before 2026-07-30 `pairing.rs` rendered but had no route at all.
@@ -119,12 +128,27 @@ pub enum QueueAt {
 ///
 /// Balance is INSIDE the setup, by explicit request (2026-08-17): it is part of how a pair of
 /// headphones is dialled in, so it should travel with the rest of that dial-in.
+/// VPT room names, in catalogue order — which is picker order, which is almost certainly enum
+/// order. The index IS the value handed to Sony's `SetVptMode`; stock read back 1, i.e. Club.
+/// See `snd_vpt_mode` for why these labels are provisional until an ear test settles them.
+pub const VPT_MODES: [&str; 4] = ["Studio", "Club", "Concert Hall", "Matrix"];
+
+/// DC Phase Linearizer filter types, in catalogue order — index IS the value handed to Sony's
+/// `SetDcPhaseFilterType`. Stock read back 5, i.e. Type B High, which is the LAST member and is
+/// decent evidence the list is complete. Same provisional-label caveat as [`VPT_MODES`].
+pub const DC_PHASE_TYPES: [&str; 6] =
+    ["Type A Low", "Type A Std", "Type A High", "Type B Low", "Type B Std", "Type B High"];
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct SoundSetup {
     pub dsee: bool,
     pub vinyl: bool,
     pub vpt: bool,
+    /// Index into [`VPT_MODES`]. Travels with the setup so A and B can hold different rooms.
+    pub vpt_mode: usize,
     pub dc: bool,
+    /// Index into [`DC_PHASE_TYPES`]. Travels with the setup, like the VPT room.
+    pub dc_type: usize,
     pub norm: bool,
     pub clear: bool,
     /// L/R balance 0..=100, 50 = centre. Jack-only (see sound::Sound::bt_route), but still part of
@@ -137,7 +161,7 @@ pub struct SoundSetup {
 impl Default for SoundSetup {
     fn default() -> Self {
         Self {
-            dsee: false, vinyl: false, vpt: false, dc: false, norm: false, clear: false,
+            dsee: false, vinyl: false, vpt: false, vpt_mode: 0, dc: false, dc_type: 0, norm: false, clear: false,
             balance: crate::sound::BALANCE_CENTRE,
             eq_preset: 3,                      // "A1"
             eq_bands: crate::data::EQ_PRESETS[3].1,
@@ -365,6 +389,7 @@ fn screen_token(s: Screen) -> &'static str {
         Screen::Playlist => "playlist",
         Screen::UpNext => "queue",
         Screen::Eq => "eq",
+        Screen::Tone => "tone",
         Screen::Sound => "sound",
         Screen::Bluetooth => "bt",
         Screen::Settings => "settings",
@@ -449,6 +474,16 @@ enum Scrub {
     Progress,
     /// Settings ▸ UI scale slider.
     UiScale,
+    /// Equalizer ▸ one band column, and Advanced ▸ Tone Control ▸ one band column. VERTICAL, unlike
+    /// every scrub above it — which is the whole reason `scrub_move` carries y as well as x. Before
+    /// these two existed the band fields were TAP-ONLY: one tap, one step, ten taps to cross a
+    /// band and a hundred to shape a curve.
+    ///
+    /// The band is captured at finger-DOWN and never re-picked. Letting the column change mid-drag
+    /// would mean a diagonal sweep silently rewrites bands you were only passing over, which is
+    /// unrecoverable without an undo the screen does not have.
+    EqBand(usize),
+    ToneBand(usize),
     /// Sound ▸ L/R balance slider. Applies LIVE on every motion event rather than at release: the
     /// point of dragging a balance control is hearing the image move under your finger. The cost is
     /// bounded because the shell's `apply_balance` caches the last raw pair and skips the mixer
@@ -626,7 +661,47 @@ pub struct App {
     snd_dsee: bool,
     snd_vinyl: bool,
     snd_vpt: bool,
+    /// Which VPT room, 0..=3 — an index into [`VPT_MODES`], sent straight through to Sony's
+    /// `SetVptMode`. Only meaningful while `snd_vpt` is on; the two are kept separate because the
+    /// device has separate `SetVpt(bool)` and `SetVptMode(enum)` calls, and stock leaves a mode
+    /// behind even with VPT off (it read back mode 1 = Club).
+    ///
+    /// LABELS ARE PROVISIONAL. Catalogue order (the UTF-16BE .qm files) is Studio/Club/Concert
+    /// Hall/Matrix and is almost certainly enum order, but an echoed read-back does NOT bound an
+    /// enum on this device — values 0,3,4,5 all sounded distinct in an ear test, which more than
+    /// four labels can explain. The mechanism is right either way; if the ear test renames them it
+    /// is a one-line change to VPT_MODES.
+    snd_vpt_mode: usize,
     snd_dc: bool,
+    /// Which DC Phase filter, 0..=5 — an index into [`DC_PHASE_TYPES`], sent straight to Sony's
+    /// `SetDcPhaseFilterType`. Separate from `snd_dc` for the same reason the VPT room is separate
+    /// from `snd_vpt`: the device has separate on/off and type calls.
+    snd_dc_type: usize,
+
+    // ── Sound ▸ Advanced ────────────────────────────────────────────────────────────────────
+    // Sony controls Cinder never exposed. Their setters were verified present in
+    // libEffectCtrlDmp.so's dynamic table before being wired; see analysis/RE_dsp_effects_surface.md.
+    /// Bypasses the entire chain. Sony's own control, distinct from Cinder's A/B, which uses
+    /// DisableSoundEffects.
+    adv_source_direct: bool,
+    adv_clear_phase: bool,
+    adv_dsee_ai: bool,
+    /// DSEE HX Custom on/off, and which mode — same split as VPT, same reason.
+    adv_dsee_custom: bool,
+    adv_dsee_mode: usize,
+    /// Vinylizer character, 0..=3. Always meaningful to SET even with the Vinyl Processor off:
+    /// the device read back type=7, which is not a member of a four-value enum, because nothing
+    /// had ever set it.
+    adv_vinyl_type: usize,
+    adv_tone: bool,
+    /// Tone Control band gains, RAW half-decibels, ±20 = ±10 dB — measured on device, not assumed
+    /// (`cinder-probe --tone`). Index order is Sony's own: 0 BASS, 1 MIDDLE, 2 TREBLE, confirmed
+    /// by the sound service logging `eqtone,type=N` as each is written.
+    tone_bands: [i8; crate::tone::BANDS],
+    /// Focused band on the Tone Control screen.
+    tone_sel: usize,
+    /// Focused row on the Advanced screen.
+    adv_sel: usize,
     snd_norm: bool,
     snd_clear: bool,
     /// L/R balance position 0..=100, 50 = centre. Persisted alongside the other sound settings.
@@ -827,6 +902,18 @@ impl Default for App {
             snd_dsee: false,
             snd_vinyl: false,
             snd_vpt: false,
+            snd_vpt_mode: 0,
+            snd_dc_type: 0,
+            adv_source_direct: false,
+            adv_clear_phase: false,
+            adv_dsee_ai: false,
+            adv_dsee_custom: false,
+            adv_dsee_mode: 0,
+            adv_vinyl_type: 0,
+            adv_tone: false,
+            tone_bands: [0; crate::tone::BANDS],
+            tone_sel: 0,
+            adv_sel: 0,
             snd_dc: false,
             snd_norm: false,
             snd_clear: false,
@@ -1681,16 +1768,105 @@ impl App {
         match self.sound_sel {
             0 => self.snd_dsee = !self.snd_dsee,
             1 => self.snd_vinyl = !self.snd_vinyl,
-            2 => self.snd_vpt = !self.snd_vpt,
-            3 => self.snd_dc = !self.snd_dc,
+            // VPT is one control with five states, not a toggle plus a hidden mode: there is no
+            // d-pad on this device, so a tap is the ONLY way to reach the rooms. Cycles
+            // Off -> Studio -> Club -> Concert Hall -> Matrix -> Off. `snd_vpt` and `snd_vpt_mode`
+            // stay separate underneath because the device has separate SetVpt/SetVptMode calls.
+            2 => {
+                if !self.snd_vpt {
+                    self.snd_vpt = true;
+                    self.snd_vpt_mode = 0;
+                } else if self.snd_vpt_mode + 1 < VPT_MODES.len() {
+                    self.snd_vpt_mode += 1;
+                } else {
+                    self.snd_vpt = false;
+                    self.snd_vpt_mode = 0;
+                }
+            }
+            // Same one-control-many-states shape as VPT above, and for the same reason: no d-pad.
+            3 => {
+                if !self.snd_dc {
+                    self.snd_dc = true;
+                    self.snd_dc_type = 0;
+                } else if self.snd_dc_type + 1 < DC_PHASE_TYPES.len() {
+                    self.snd_dc_type += 1;
+                } else {
+                    self.snd_dc = false;
+                    self.snd_dc_type = 0;
+                }
+            }
             4 => self.snd_norm = !self.snd_norm,
             5 => self.snd_clear = !self.snd_clear,
             // Balance is a slider, not a toggle. Select on it means "back to centre" — the one
             // thing a button can usefully do to a continuous control, and the position a user is
             // most likely to want back.
             crate::sound::ROW_BALANCE => self.snd_balance = crate::sound::BALANCE_CENTRE,
+            // Not a setting — a route. Returns no action: pushing a screen changes nothing about
+            // the sound, and emitting SoundChanged here would re-apply the whole chain on a
+            // navigation, which is how a "why did my audio blip when I opened a menu" bug starts.
+            crate::sound::ROW_ADVANCED => {
+                self.adv_sel = 0;
+                self.push(Screen::Advanced);
+                return vec![];
+            }
             _ => {}
         }
+        vec![Action::SoundChanged]
+    }
+
+    /// Toggle/cycle the focused Advanced row (shared by the Select button and a tap).
+    ///
+    /// Every row here is a tap-cycle for the same reason the VPT room is: no d-pad, so a value a
+    /// finger cannot reach is a value that does not exist.
+    fn advanced_toggle_row(&mut self) -> Vec<Action> {
+        use crate::advanced as adv;
+        match self.adv_sel {
+            adv::ROW_SOURCE_DIRECT => self.adv_source_direct = !self.adv_source_direct,
+            adv::ROW_CLEAR_PHASE => self.adv_clear_phase = !self.adv_clear_phase,
+            adv::ROW_DSEE_AI => self.adv_dsee_ai = !self.adv_dsee_ai,
+            adv::ROW_DSEE_CUSTOM => {
+                if !self.adv_dsee_custom {
+                    self.adv_dsee_custom = true;
+                    self.adv_dsee_mode = 0;
+                } else if self.adv_dsee_mode + 1 < adv::DSEE_MODES.len() {
+                    self.adv_dsee_mode += 1;
+                } else {
+                    self.adv_dsee_custom = false;
+                    self.adv_dsee_mode = 0;
+                }
+            }
+            // Vinyl character has no "off" — the Vinyl Processor's own switch is on the Sound
+            // screen, and this only says WHICH character that switch turns on. So it wraps
+            // through the four and never lands on a state that means "none".
+            adv::ROW_VINYL_TYPE => {
+                self.adv_vinyl_type = (self.adv_vinyl_type + 1) % adv::VINYL_TYPES.len();
+            }
+            adv::ROW_TONE => self.adv_tone = !self.adv_tone,
+            // A ROUTE, not a setting — same rule as the Sound screen's "Advanced ›" row: pushing a
+            // screen changes nothing about the sound, and emitting SoundChanged here would
+            // re-apply the whole chain on a navigation.
+            adv::ROW_TONE_BANDS => {
+                self.tone_sel = 0;
+                self.push(Screen::Tone);
+                return vec![];
+            }
+            _ => {}
+        }
+        vec![Action::SoundChanged]
+    }
+
+    /// Nudge the focused Tone Control band. `dir` is +1 up / -1 down; one step is 1.0 dB.
+    ///
+    /// The clamp is not cosmetic: past ±20 raw the sound service does not clamp to the edge, it
+    /// ZEROES the band (measured — see `tone.rs`), so an unclamped nudge would read as a boost and
+    /// be silence.
+    fn tone_nudge(&mut self, dir: i32) -> Vec<Action> {
+        let g = &mut self.tone_bands[self.tone_sel];
+        *g = if dir > 0 {
+            (*g + crate::tone::BAND_STEP).min(crate::tone::BAND_MAX)
+        } else {
+            (*g - crate::tone::BAND_STEP).max(-crate::tone::BAND_MAX)
+        };
         vec![Action::SoundChanged]
     }
 
@@ -2075,6 +2251,32 @@ impl App {
                         return vec![];
                     }
                     return self.sound_toggle_row();
+                }
+                vec![]
+            }
+            Screen::Advanced => {
+                if let Some(row) = crate::advanced::row_at(y) {
+                    self.adv_sel = row;
+                    return self.advanced_toggle_row();
+                }
+                vec![]
+            }
+            Screen::Tone => {
+                // Same idiom as the Equalizer's band field, through `tone`'s own layout helpers:
+                // tap a column to focus it, above the zero line raises, below lowers.
+                if (crate::tone::FIELD_TOP..crate::tone::FIELD_BOTTOM).contains(&y) {
+                    if let Some(band) = crate::tone::band_at(x) {
+                        self.tone_sel = band;
+                        return self.tone_nudge(if y < crate::tone::FIELD_MID { 1 } else { -1 });
+                    }
+                    return vec![];
+                }
+                if crate::tone::reset_at(x, y) {
+                    if self.tone_bands == [0; crate::tone::BANDS] {
+                        return vec![];
+                    }
+                    self.tone_bands = [0; crate::tone::BANDS];
+                    return vec![Action::SoundChanged];
                 }
                 vec![]
             }
@@ -2653,6 +2855,28 @@ impl App {
                     false
                 }
             }
+            Screen::Eq => {
+                if (crate::eq::FIELD_TOP..crate::eq::FIELD_BOTTOM).contains(&y) {
+                    if let Some(band) = crate::eq::band_at(x) {
+                        self.scrub = Scrub::EqBand(band);
+                        self.eq_sel = band;
+                        self.eq_bands[band] = crate::eq::value_at_y(y);
+                        return true;
+                    }
+                }
+                false
+            }
+            Screen::Tone => {
+                if (crate::tone::FIELD_TOP..crate::tone::FIELD_BOTTOM).contains(&y) {
+                    if let Some(band) = crate::tone::band_at(x) {
+                        self.scrub = Scrub::ToneBand(band);
+                        self.tone_sel = band;
+                        self.tone_bands[band] = crate::tone::value_at_y(y);
+                        return true;
+                    }
+                }
+                false
+            }
             Screen::Sound => {
                 if crate::sound::row_at(y) == Some(crate::sound::ROW_BALANCE)
                     && crate::sound::balance_grab(y)
@@ -2671,8 +2895,31 @@ impl App {
 
     /// The finger moved to `x` during a scrub. The rail only PREVIEWS here (committing a seek per
     /// motion event would hammer PlayerService); the UI-scale slider applies live.
-    pub fn scrub_move(&mut self, x: i32) -> Vec<Action> {
+    pub fn scrub_move(&mut self, x: i32, y: i32) -> Vec<Action> {
         match self.scrub {
+            // Live, and deliberately emitting NOTHING when the value did not change: a drag
+            // produces a motion event per frame, but only ~20 of them land on a new step. That
+            // check is most of the fix for "adjusting the EQ stutters the audio" — the rest is in
+            // the shell, which now writes only the band that actually moved.
+            Scrub::EqBand(b) => {
+                let want = crate::eq::value_at_y(y);
+                if want == self.eq_bands[b] {
+                    return vec![];
+                }
+                self.eq_bands[b] = want;
+                // Off any named preset the moment a band is hand-edited — the pill would otherwise
+                // keep claiming "ROCK" for a curve that is no longer ROCK.
+                self.eq_preset = 0;
+                vec![Action::EqChanged(self.eq_bands)]
+            }
+            Scrub::ToneBand(b) => {
+                let want = crate::tone::value_at_y(y);
+                if want == self.tone_bands[b] {
+                    return vec![];
+                }
+                self.tone_bands[b] = want;
+                vec![Action::SoundChanged]
+            }
             Scrub::Progress => {
                 self.scrub_permille = rail_permille(x);
                 vec![]
@@ -2704,6 +2951,10 @@ impl App {
             // Already applied on every move; the release only has to get the final value written to
             // the settings file, which SoundChanged does on top of re-applying the same balance.
             Scrub::Balance => vec![Action::SoundChanged],
+            // Already applied on every step. The release only has to get the final curve into the
+            // settings file, which is what these actions do on top of re-applying it.
+            Scrub::EqBand(_) => vec![Action::EqChanged(self.eq_bands)],
+            Scrub::ToneBand(_) => vec![Action::SoundChanged],
             Scrub::None => vec![],
         };
         self.scrub = Scrub::None;
@@ -3914,6 +4165,21 @@ impl App {
                 }
                 _ => vec![],
             },
+            Screen::Tone => match b {
+                Button::Left => {
+                    self.tone_sel = self.tone_sel.saturating_sub(1);
+                    vec![]
+                }
+                Button::Right => {
+                    if self.tone_sel + 1 < crate::tone::BANDS {
+                        self.tone_sel += 1;
+                    }
+                    vec![]
+                }
+                Button::Up => self.tone_nudge(1),
+                Button::Down => self.tone_nudge(-1),
+                _ => vec![],
+            },
             Screen::Eq => match b {
                 Button::Left => {
                     self.eq_sel = self.eq_sel.saturating_sub(1);
@@ -4012,10 +4278,17 @@ impl App {
                 }
                 _ => vec![],
             },
-            // The remaining screens (Fm/Receiver): Back pops, everything else is a no-op until
-            // their per-screen controls are wired. (Not "Pairing" — there is no Screen::Pairing;
-            // pairing.rs is a designed-but-unreachable screen, rendered only by the host preview
-            // harness and the sim. UpNext isn't here either: it handles buttons above.)
+            // The remaining screens (Fm / Receiver / Pairing): Back pops, everything else is a
+            // no-op. For Fm and Receiver that is "until their per-screen controls are wired"; for
+            // Pairing it is deliberate — every control on that screen (scan, a device row, FORGET,
+            // the pairing prompt's yes/no) is a touch target, and this unit has no d-pad, so there
+            // is no button that could sensibly stand in for "the third row down".
+            //
+            // (This comment used to claim there was no Screen::Pairing at all and that pairing.rs
+            // was unreachable. Both stopped being true when the route landed; it is corrected here
+            // rather than deleted because "designed but unreachable" was worth knowing and is
+            // exactly the sort of stale note that sends the next reader looking for a bug.)
+            // UpNext isn't here either: it handles buttons above.
             _ => match b {
                 Button::Back => {
                     self.pop();
@@ -4235,8 +4508,8 @@ impl App {
                 let snd = Sound {
                     dsee: self.snd_dsee,
                     vinyl: self.snd_vinyl,
-                    vpt: if self.snd_vpt { "On" } else { "Off" },
-                    dcphase: if self.snd_dc { "On" } else { "Off" },
+                    vpt: if self.snd_vpt { VPT_MODES[self.snd_vpt_mode.min(VPT_MODES.len() - 1)] } else { "Off" },
+                    dcphase: if self.snd_dc { DC_PHASE_TYPES[self.snd_dc_type.min(DC_PHASE_TYPES.len() - 1)] } else { "Off" },
                     normalizer: self.snd_norm,
                     clearaudio: self.snd_clear,
                     balance: self.snd_balance,
@@ -4254,6 +4527,47 @@ impl App {
                     },
                 };
                 crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.setup_idx)
+            }
+            Screen::Tone => {
+                let tc = crate::tone::Tone {
+                    bands: self.tone_bands,
+                    on: self.adv_tone,
+                    overridden_by: if self.adv_source_direct {
+                        Some("Source Direct")
+                    } else if self.snd_clear {
+                        Some("ClearAudio+")
+                    } else {
+                        None
+                    },
+                };
+                crate::tone::render(c, &theme, fonts, &tc, self.tone_sel)
+            }
+            Screen::Advanced => {
+                let adv = crate::advanced::Advanced {
+                    source_direct: self.adv_source_direct,
+                    clear_phase: self.adv_clear_phase,
+                    dsee_ai: self.adv_dsee_ai,
+                    dsee_custom: if self.adv_dsee_custom {
+                        crate::advanced::DSEE_MODES[self.adv_dsee_mode.min(crate::advanced::DSEE_MODES.len() - 1)]
+                    } else {
+                        "Off"
+                    },
+                    vinyl_type: crate::advanced::VINYL_TYPES
+                        [self.adv_vinyl_type.min(crate::advanced::VINYL_TYPES.len() - 1)],
+                    vinyl_on: self.snd_vinyl,
+                    tone_control: self.adv_tone,
+                    // Which upstream control is hiding the rest, if any. Source Direct wins the
+                    // naming when both are on: it is the outer bypass, so it is what you would
+                    // have to turn off FIRST.
+                    overridden_by: if self.adv_source_direct {
+                        Some("Source Direct")
+                    } else if self.snd_clear {
+                        Some("ClearAudio+")
+                    } else {
+                        None
+                    },
+                };
+                crate::advanced::render(c, &theme, fonts, &adv, self.adv_sel)
             }
             Screen::Bluetooth => {
                 let bt = Bt {
@@ -4608,7 +4922,8 @@ impl App {
     /// The live setup, as a value.
     pub fn setup(&self) -> SoundSetup {
         SoundSetup {
-            dsee: self.snd_dsee, vinyl: self.snd_vinyl, vpt: self.snd_vpt, dc: self.snd_dc,
+            dsee: self.snd_dsee, vinyl: self.snd_vinyl, vpt: self.snd_vpt,
+            vpt_mode: self.snd_vpt_mode, dc: self.snd_dc, dc_type: self.snd_dc_type,
             norm: self.snd_norm, clear: self.snd_clear, balance: self.snd_balance,
             eq_preset: self.eq_preset, eq_bands: self.eq_bands,
         }
@@ -4619,6 +4934,8 @@ impl App {
         self.snd_dsee = s.dsee;
         self.snd_vinyl = s.vinyl;
         self.snd_vpt = s.vpt;
+        self.snd_vpt_mode = s.vpt_mode.min(VPT_MODES.len() - 1);
+        self.snd_dc_type = s.dc_type.min(DC_PHASE_TYPES.len() - 1);
         self.snd_dc = s.dc;
         self.snd_norm = s.norm;
         self.snd_clear = s.clear;
@@ -4888,6 +5205,77 @@ impl App {
     /// end of the track.
     pub fn set_balance(&mut self, i: usize) {
         self.snd_balance = i.min(crate::sound::BALANCE_MAX);
+    }
+
+    /// Which VPT room is selected, 0..=3 — handed straight to Sony's `SetVptMode`. Its own value
+    /// for the same reason balance is: `sound_flags` is a u8 of booleans and this is an enum.
+    pub fn vpt_mode(&self) -> usize {
+        self.snd_vpt_mode
+    }
+    /// Clamped on the way in, so a hand-edited settings file cannot select a room that does not
+    /// exist and get handed to the device as an out-of-range enum.
+    pub fn set_vpt_mode(&mut self, m: usize) {
+        self.snd_vpt_mode = m.min(VPT_MODES.len() - 1);
+    }
+
+    /// The Advanced screen's booleans, packed: bit0 Source Direct, bit1 Clear Phase, bit2 DSEE AI,
+    /// bit3 DSEE HX Custom, bit4 Tone Control. Same shape as `sound_flags` and applied by the same
+    /// CINDER_ACT_SOUND_CHANGED path.
+    ///
+    /// These are deliberately NOT part of the A/B setup. A/B is for "does this EQ suit this album
+    /// better than that one"; the Advanced screen's own framing is "set these once for a pair of
+    /// headphones". Putting them in the setup would mean an A/B swap silently changed whether the
+    /// chain was bypassed at all, which is the opposite of what the control is for.
+    pub fn adv_flags(&self) -> u8 {
+        (self.adv_source_direct as u8)
+            | (self.adv_clear_phase as u8) << 1
+            | (self.adv_dsee_ai as u8) << 2
+            | (self.adv_dsee_custom as u8) << 3
+            | (self.adv_tone as u8) << 4
+    }
+    pub fn set_adv_flags(&mut self, f: u8) {
+        self.adv_source_direct = f & 1 != 0;
+        self.adv_clear_phase = f & (1 << 1) != 0;
+        self.adv_dsee_ai = f & (1 << 2) != 0;
+        self.adv_dsee_custom = f & (1 << 3) != 0;
+        self.adv_tone = f & (1 << 4) != 0;
+    }
+
+    /// Tone Control band gains, RAW half-decibels. Clamped on the way in for the same reason the
+    /// nudge is: out of range the service zeroes the band rather than clamping it, so a
+    /// hand-edited settings file could otherwise silence a band that the UI draws as boosted.
+    pub fn tone_bands(&self) -> [i8; crate::tone::BANDS] {
+        self.tone_bands
+    }
+    pub fn set_tone_bands(&mut self, b: [i8; crate::tone::BANDS]) {
+        for (dst, src) in self.tone_bands.iter_mut().zip(b.iter()) {
+            *dst = (*src).clamp(-crate::tone::BAND_MAX, crate::tone::BAND_MAX);
+        }
+    }
+
+    /// DSEE HX Custom mode, 0..=4 — the value for `SetDseeHxCustomMode`.
+    pub fn dsee_mode(&self) -> usize {
+        self.adv_dsee_mode
+    }
+    pub fn set_dsee_mode(&mut self, m: usize) {
+        self.adv_dsee_mode = m.min(crate::advanced::DSEE_MODES.len() - 1);
+    }
+
+    /// Vinylizer character, 0..=3 — the value for `SetVinylizerType`.
+    pub fn vinyl_type(&self) -> usize {
+        self.adv_vinyl_type
+    }
+    pub fn set_vinyl_type(&mut self, t: usize) {
+        self.adv_vinyl_type = t.min(crate::advanced::VINYL_TYPES.len() - 1);
+    }
+
+    /// Which DC Phase filter type is selected, 0..=5 — handed to Sony's `SetDcPhaseFilterType`.
+    pub fn dc_type(&self) -> usize {
+        self.snd_dc_type
+    }
+    /// Clamped, so a hand-edited settings file cannot reach the device as an out-of-range enum.
+    pub fn set_dc_type(&mut self, t: usize) {
+        self.snd_dc_type = t.min(DC_PHASE_TYPES.len() - 1);
     }
 
     pub fn sound_flags(&self) -> u8 {
@@ -5233,6 +5621,151 @@ mod tests {
         app.snd_dsee = false;
         app.snd_vpt = false;
         assert_eq!(app.menu_subtitles().sound, "Off");
+    }
+
+    /// The VPT row is ONE control with five states, cycled by tap, because this device has no
+    /// d-pad — a hidden mode reachable only by Left/Right would be unreachable in practice. The
+    /// row's own subtitle promises "Studio / Club / Concert Hall", so the pill has to be able to
+    /// show them; before this it only ever said On or Off.
+    #[test]
+    fn vpt_row_cycles_off_through_every_room_and_back() {
+        let mut app = unlocked();
+        app.sound_sel = 2;
+        assert!(!app.snd_vpt, "starts off");
+
+        let mut seen = Vec::new();
+        for _ in 0..VPT_MODES.len() {
+            app.sound_toggle_row();
+            assert!(app.snd_vpt, "still on part-way through the rooms");
+            seen.push(VPT_MODES[app.snd_vpt_mode]);
+        }
+        assert_eq!(seen, VPT_MODES.to_vec(), "visits every room, in catalogue order");
+
+        // one more tap wraps back to off, and resets the room so the next cycle starts clean
+        app.sound_toggle_row();
+        assert!(!app.snd_vpt, "wraps back to off");
+        assert_eq!(app.snd_vpt_mode, 0);
+    }
+
+    /// The room travels with the A/B setup — otherwise swapping setups would keep whichever room
+    /// happened to be live, which is exactly the kind of silent carry-over the A/B control exists
+    /// to rule out.
+    #[test]
+    fn vpt_mode_is_part_of_the_setup_snapshot() {
+        let mut app = unlocked();
+        app.snd_vpt = true;
+        app.snd_vpt_mode = 2;
+        let saved = app.setup();
+        assert_eq!(saved.vpt_mode, 2);
+
+        app.snd_vpt_mode = 0;
+        app.set_setup(saved);
+        assert_eq!(app.snd_vpt_mode, 2, "restored from the setup");
+    }
+
+    /// A hand-edited settings file must not be able to hand the device an out-of-range enum.
+    #[test]
+    fn vpt_mode_is_clamped_on_the_way_in() {
+        let mut app = unlocked();
+        app.set_vpt_mode(99);
+        assert_eq!(app.vpt_mode(), VPT_MODES.len() - 1);
+    }
+
+    /// DC Phase is the same one-control-many-states shape as VPT, for the same no-d-pad reason.
+    #[test]
+    fn dc_phase_row_cycles_every_filter_type_and_back() {
+        let mut app = unlocked();
+        app.sound_sel = 3;
+        assert!(!app.snd_dc, "starts off");
+
+        let mut seen = Vec::new();
+        for _ in 0..DC_PHASE_TYPES.len() {
+            app.sound_toggle_row();
+            assert!(app.snd_dc);
+            seen.push(DC_PHASE_TYPES[app.snd_dc_type]);
+        }
+        assert_eq!(seen, DC_PHASE_TYPES.to_vec(), "visits every filter, in catalogue order");
+
+        app.sound_toggle_row();
+        assert!(!app.snd_dc, "wraps back to off");
+        assert_eq!(app.snd_dc_type, 0);
+    }
+
+    /// The filter type travels with the A/B setup, and is clamped on the way in.
+    #[test]
+    fn dc_type_rides_the_setup_and_is_clamped() {
+        let mut app = unlocked();
+        app.snd_dc = true;
+        app.snd_dc_type = 4;
+        let saved = app.setup();
+        assert_eq!(saved.dc_type, 4);
+        app.snd_dc_type = 0;
+        app.set_setup(saved);
+        assert_eq!(app.snd_dc_type, 4);
+
+        app.set_dc_type(99);
+        assert_eq!(app.dc_type(), DC_PHASE_TYPES.len() - 1);
+    }
+
+    /// The Advanced row is a ROUTE, not a setting: it must push the screen and emit NO action.
+    /// Emitting SoundChanged here would re-apply the whole effect chain on a navigation, which is
+    /// how "my audio blipped when I opened a menu" starts.
+    #[test]
+    fn advanced_row_opens_the_screen_without_touching_the_sound() {
+        let mut app = unlocked();
+        app.push_for_test(Screen::Sound);
+        app.sound_sel = crate::sound::ROW_ADVANCED;
+        let acts = app.sound_toggle_row();
+        assert!(acts.is_empty(), "navigation must not emit a sound action");
+        assert_eq!(app.current(), Screen::Advanced);
+        assert_eq!(app.adv_sel, 0, "focus starts at the top of the new screen");
+    }
+
+    /// DSEE HX Custom cycles Off -> each mode -> Off, like VPT.
+    #[test]
+    fn dsee_custom_cycles_every_mode_and_back() {
+        use crate::advanced::DSEE_MODES;
+        let mut app = unlocked();
+        app.adv_sel = crate::advanced::ROW_DSEE_CUSTOM;
+        let mut seen = Vec::new();
+        for _ in 0..DSEE_MODES.len() {
+            app.advanced_toggle_row();
+            assert!(app.adv_dsee_custom);
+            seen.push(DSEE_MODES[app.adv_dsee_mode]);
+        }
+        assert_eq!(seen, DSEE_MODES.to_vec());
+        app.advanced_toggle_row();
+        assert!(!app.adv_dsee_custom, "wraps back to off");
+        assert_eq!(app.adv_dsee_mode, 0);
+    }
+
+    /// Vinyl character has NO off state — the Vinyl Processor's own switch lives on the Sound
+    /// screen, and this only says which character that switch turns on. So it wraps through the
+    /// four and never lands on something meaning "none".
+    #[test]
+    fn vinyl_character_wraps_without_an_off_state() {
+        use crate::advanced::VINYL_TYPES;
+        let mut app = unlocked();
+        app.adv_sel = crate::advanced::ROW_VINYL_TYPE;
+        for i in 0..VINYL_TYPES.len() * 2 {
+            let before = app.adv_vinyl_type;
+            app.advanced_toggle_row();
+            assert_eq!(app.adv_vinyl_type, (before + 1) % VINYL_TYPES.len(), "step {i}");
+        }
+        assert_eq!(app.adv_vinyl_type, 0, "back where it started after two laps");
+    }
+
+    /// The packed flags must round-trip — they are what gets persisted and handed to the shell.
+    #[test]
+    fn advanced_flags_round_trip() {
+        let mut app = unlocked();
+        for f in [0u8, 0b1_0101, 0b1_1111] {
+            app.set_adv_flags(f);
+            assert_eq!(app.adv_flags(), f, "flags {f:#07b}");
+        }
+        app.set_adv_flags(0b1_1111);
+        assert!(app.adv_source_direct && app.adv_clear_phase && app.adv_dsee_ai
+                && app.adv_dsee_custom && app.adv_tone);
     }
 
     /// Brightness cycles 1..5, then 0 (backlight off), then wraps.
@@ -5643,11 +6176,11 @@ mod tests {
         a.stack = vec![Screen::Sound];
         let ty = sound::bal_track_y();
         assert!(a.scrub_begin(sound::balance_x(BALANCE_CENTRE), ty), "the grab band did not take");
-        let acts = a.scrub_move(sound::BAL_X0);
+        let acts = a.scrub_move(sound::BAL_X0, ty);
         assert_eq!(a.balance(), 0, "the knob did not follow the finger");
         assert!(acts.iter().any(|x| matches!(x, Action::BalanceChanged)), "no live apply");
         // Moving within the same step emits nothing — otherwise a slow drag floods the shell.
-        assert!(a.scrub_move(sound::BAL_X0).is_empty(), "a no-op move still emitted");
+        assert!(a.scrub_move(sound::BAL_X0, ty).is_empty(), "a no-op move still emitted");
         assert!(a.scrub_end().iter().any(|x| matches!(x, Action::SoundChanged)), "not persisted");
 
 
@@ -7951,6 +8484,10 @@ mod tests {
     /// the music looks like a factory wipe.
     #[test]
     fn reset_settings_restores_defaults_without_touching_playback_or_the_library() {
+        // SETS the global text scale (150% below), so it must hold the crate-wide lock or it
+        // corrupts any concurrent test that measures text. This one was the source of the
+        // intermittent `track_info::long_values_wrap_inside_the_value_column` failure.
+        let _scale = lock_scale();
         use crate::confirm::{hit, Ask, Hit};
         let mut a = unlocked();
         // Move a spread of preferences off their defaults, one from each family.
@@ -8309,6 +8846,93 @@ mod tests {
     }
 
     #[test]
+    /// The EQ band field is DRAGGABLE, and the knob has to end up where the finger is. Before
+    /// 2026-08-17 every slider on this device was tap-only — one tap, one step, ten taps to cross
+    /// a band — which is what the user reported as "they can't be dragged".
+    #[test]
+    fn eq_band_drag_follows_the_finger() {
+        let mut a = App::unlocked();
+        a.stack = vec![Screen::Eq];
+        let x = crate::eq::band_center_x(3);
+        // Grab: the value is set at finger-DOWN, not only on the first move.
+        assert!(a.scrub_begin(x, crate::eq::FIELD_MID), "the band field did not take the grab");
+        assert_eq!(a.eq_bands[3], 0, "grabbing the zero line should read as 0 dB");
+        // Drag to the top of the field → full boost.
+        let acts = a.scrub_move(x, crate::eq::FIELD_TOP);
+        assert_eq!(a.eq_bands[3], crate::eq::BAND_MAX, "the knob did not follow the finger up");
+        assert!(acts.iter().any(|q| matches!(q, Action::EqChanged(_))), "no live apply");
+        // A move that lands on the same step emits NOTHING. Effect writes cost ~10 ms each
+        // (cinder-probe --fxtime), so a drag that queued one per motion event stuttered the audio.
+        assert!(a.scrub_move(x, crate::eq::FIELD_TOP - 5).is_empty(), "a no-op move still emitted");
+        // …and the bottom of the field is full cut.
+        a.scrub_move(x, crate::eq::FIELD_BOTTOM);
+        assert_eq!(a.eq_bands[3], -crate::eq::BAND_MAX, "the knob did not follow the finger down");
+        // The release re-emits, which is what makes the shell's 60 ms throttle safe to drop
+        // intermediate writes: the FINAL value always gets through.
+        assert!(a.scrub_end().iter().any(|q| matches!(q, Action::EqChanged(_))),
+                "the release did not re-emit the final curve");
+    }
+
+    /// The band is captured at finger-down and never re-picked. A diagonal sweep must not rewrite
+    /// the bands it passes over — there is no undo on this screen.
+    #[test]
+    fn an_eq_drag_never_changes_band_mid_sweep() {
+        let mut a = App::unlocked();
+        a.stack = vec![Screen::Eq];
+        // Snapshot first: the default curve is a preset, not flat, so "unchanged" is not "zero".
+        let before = a.eq_bands;
+        assert!(a.scrub_begin(crate::eq::band_center_x(0), crate::eq::FIELD_MID));
+        // Finger wanders all the way across the field while moving up.
+        a.scrub_move(crate::eq::band_center_x(9), crate::eq::FIELD_TOP);
+        assert_eq!(a.eq_bands[0], crate::eq::BAND_MAX, "the grabbed band did not move");
+        for b in 1..10 {
+            assert_eq!(a.eq_bands[b], before[b],
+                       "band {b} was rewritten by a sweep that only passed over it");
+        }
+    }
+
+    /// Hand-editing a band drops the preset pill: it would otherwise keep claiming a name for a
+    /// curve that is no longer that preset.
+    #[test]
+    fn dragging_a_band_clears_the_preset_name() {
+        let mut a = App::unlocked();
+        a.stack = vec![Screen::Eq];
+        a.eq_preset = 2;
+        let x = crate::eq::band_center_x(5);
+        assert!(a.scrub_begin(x, crate::eq::FIELD_MID));
+        a.scrub_move(x, crate::eq::FIELD_TOP);
+        assert_eq!(a.eq_preset, 0, "the preset pill still names a curve that was edited by hand");
+    }
+
+    /// The Tone Control field drags the same way, over its own geometry.
+    #[test]
+    fn tone_band_drag_follows_the_finger() {
+        let mut a = App::unlocked();
+        a.stack = vec![Screen::Tone];
+        let x = crate::tone::band_center_x(1);
+        assert!(a.scrub_begin(x, crate::tone::FIELD_MID), "the tone field did not take the grab");
+        let acts = a.scrub_move(x, crate::tone::FIELD_TOP);
+        assert_eq!(a.tone_bands()[1], crate::tone::BAND_MAX);
+        assert!(acts.iter().any(|q| matches!(q, Action::SoundChanged)), "no live apply");
+        assert!(a.scrub_move(x, crate::tone::FIELD_TOP).is_empty(), "a no-op move still emitted");
+        a.scrub_move(x, crate::tone::FIELD_BOTTOM);
+        assert_eq!(a.tone_bands()[1], -crate::tone::BAND_MAX);
+        assert!(a.scrub_end().iter().any(|q| matches!(q, Action::SoundChanged)));
+    }
+
+    /// A drag started OFF the field must not be claimed as a band scrub — otherwise a tap on the
+    /// preset pills or the footer would grab the whole gesture and the screen would feel stuck.
+    #[test]
+    fn only_the_band_field_claims_a_scrub() {
+        let mut a = App::unlocked();
+        a.stack = vec![Screen::Eq];
+        assert!(!a.scrub_begin(crate::eq::band_center_x(0), crate::eq::FIELD_TOP - 1),
+                "a point above the field was claimed");
+        assert!(!a.scrub_begin(crate::eq::band_center_x(0), crate::eq::FIELD_BOTTOM),
+                "a point below the field was claimed");
+        assert!(!a.scrub_begin(5, crate::eq::FIELD_MID), "the left gutter was claimed");
+    }
+
     fn ui_scale_slider_scrubs_taps_and_steps() {
         let _scale = lock_scale();
         let mut a = unlocked();
@@ -8322,7 +8946,7 @@ mod tests {
         // Dragging it scrubs live.
         assert!(a.scrub_begin(100, row_y));
         assert!(a.scrub_is_ui_scale());
-        a.scrub_move(100);
+        a.scrub_move(100, row_y);
         assert_eq!(crate::text::scale_pct(), crate::text::SCALE_STEPS[0]);
         assert_eq!(a.scrub_end(), vec![Action::UiScaleChanged]);
         // Buttons step one stop and clamp at both ends.

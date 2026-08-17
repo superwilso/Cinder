@@ -260,7 +260,7 @@ int  cinder_toggle_liked(void);
 int  cinder_liked_count(void);
 /* Drag-to-seek on the Now Playing progress rail. On finger-DOWN the shell asks cinder_scrub_hit;
  * if it returns 1 the whole contact belongs to the scrub (no tap / list-drag / swipe). Then
- * cinder_scrub_to(x) on down and on every move makes the bar follow the finger, and
+ * cinder_scrub_to(x, y) on down and on every move makes the control follow the finger, and
  * cinder_scrub_end() at release returns the ms to hand to cinder_audio_seek_ms (-1 = nothing to
  * do). While a scrub is active, incoming position updates are ignored so the bar can't fight the
  * finger. */
@@ -282,7 +282,10 @@ int  cinder_play_position_ms(void);
  * snaps there instead of extrapolating from the pre-seek anchor for ~1 s. */
 void cinder_notify_seek_ms(int ms);
 int  cinder_scrub_hit(int x, int y);
-int  cinder_scrub_to(int x);
+/* Both coordinates: the Now Playing rail, the UI-scale slider and the balance slider are
+ * horizontal, but the Equalizer and Tone Control band fields are VERTICAL. One entry point for
+ * either orientation, so the shell does not have to know which slider it is dragging. */
+int  cinder_scrub_to(int x, int y);
 int  cinder_scrub_end(void);
 /* Action produced by a SETTINGS-SLIDER drag (0 = none). Call after every cinder_scrub_to() and
  * after cinder_scrub_end(), and carry out whatever it returns.
@@ -336,6 +339,22 @@ int  cinder_get_battery_care(void);
  * bit4 Dynamic Normalizer, bit5 ClearAudio+). Call after a CINDER_ACT_SOUND_CHANGED action, then
  * apply each via the effect shim. */
 int  cinder_get_sound_flags(void);
+/* Which VPT room, 0..=3 — the value for cinder_effects_set_vpt_mode(). The flags above carry
+ * VPT's on/off; this carries which room, because the device has separate SetVpt/SetVptMode
+ * calls. Always in range: the navigator clamps it. */
+int  cinder_get_vpt_mode(void);
+/* Which DC Phase filter type, 0..=5 — for cinder_effects_set_dc_phase_type(). */
+int  cinder_get_dc_type(void);
+/* Sound > Advanced, packed: bit0 Source Direct, bit1 Clear Phase, bit2 DSEE AI,
+ * bit3 DSEE HX Custom, bit4 Tone Control. */
+int  cinder_get_adv_flags(void);
+/* DSEE HX Custom mode 0..=4, and Vinylizer character 0..=3. */
+int  cinder_get_dsee_mode(void);
+int  cinder_get_vinyl_type(void);
+/* Tone Control band gains, RAW HALF-DECIBELS (+-20 = +-10 dB), Sony order BASS/MIDDLE/TREBLE.
+ * Writes up to 3 bytes into `out` and returns how many. Past +-20 the sound service ZEROES the
+ * band instead of clamping it, so never widen this range without re-measuring. */
+int  cinder_get_tone_bands(signed char *out);
 /* Read the current UI volume as the raw 0..120 step level (the stock scale — 1:1 with ALSA card0
  * 'master volume'). Call after a CINDER_ACT_VOLUP/VOLDOWN action and write it to the mixer. */
 int  cinder_get_volume(void);

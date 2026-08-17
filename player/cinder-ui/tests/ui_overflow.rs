@@ -99,7 +99,7 @@ const SCREENS: &[Screen] = &[
     Screen::Artist, Screen::Playlist, Screen::UpNext, Screen::Eq, Screen::Sound,
     Screen::Bluetooth, Screen::Pairing, Screen::Settings, Screen::Fm, Screen::UsbDac,
     Screen::Receiver, Screen::Onboarding, Screen::UsbStorage, Screen::GenreFilter,
-    Screen::Folders, Screen::TrackInfo, Screen::ClockSet,
+    Screen::Folders, Screen::TrackInfo, Screen::ClockSet, Screen::Advanced, Screen::Tone,
 ];
 
 #[test]
@@ -181,4 +181,80 @@ fn overlays_and_modals_stay_on_the_panel() {
     }
 
     assert!(bad.is_empty(), "an overlay is clipped:\n  {}", bad.join("\n  "));
+}
+
+/// Every VPT room and DC Phase filter label must fit its pill, at every UI scale.
+///
+/// The rest of this file drives screens through the navigator, which leaves VPT OFF — so the pill
+/// only ever renders "OFF" and the audit never sees a room name. "Concert Hall" is four times as
+/// long as "Off" and is right-aligned against the same margin, so it is exactly the case that
+/// would slip through. Added with the VPT rooms (2026-08-17).
+#[test]
+fn effect_enum_labels_fit_at_every_scale() {
+    let fonts = FontSet::load();
+    let np = np_plain();
+    for idx in 0..cinder_ui::text::SCALE_STEPS.len() {
+        let _g = scale_lock(idx);
+        let pct = cinder_ui::text::SCALE_STEPS[idx];
+        for room in 0..cinder_ui::nav::VPT_MODES.len() {
+            let mut a = at(Screen::Sound);
+            a.set_sound_flags(1 << 2); // VPT on — the pill shows a room, not "Off"
+            a.set_vpt_mode(room);
+            let oob = overflow_of(&mut a, &fonts, &np);
+            assert_eq!(
+                oob, 0,
+                "VPT room {:?} overflows at {}% UI scale ({} px past the margin)",
+                cinder_ui::nav::VPT_MODES[room], pct, oob
+            );
+        }
+        // Sound ▸ Advanced: its two pills carry the longest labels on the screen, and the
+        // override banner only appears when something upstream is bypassing the chain — so the
+        // sweep above, which never turns those on, would not draw either of them.
+        for f in [0u8, 0b0000_1001, 0b0001_1111] {
+            for mode in 0..cinder_ui::advanced::DSEE_MODES.len() {
+                for vt in 0..cinder_ui::advanced::VINYL_TYPES.len() {
+                    let mut a = at(Screen::Advanced);
+                    a.set_adv_flags(f);
+                    a.set_dsee_mode(mode);
+                    a.set_vinyl_type(vt);
+                    let oob = overflow_of(&mut a, &fonts, &np);
+                    assert_eq!(
+                        oob, 0,
+                        "Advanced overflows at {pct}% (flags {f:#07b}, dsee {mode}, vinyl {vt}): {oob} px"
+                    );
+                }
+            }
+        }
+        // Tone Control: its state line is the variable-width part, and the longest wording only
+        // appears when something upstream is bypassing the chain — "<name> is on — nothing here is
+        // in the path", where <name> is a control's name and so not a width this file may assume.
+        // The default state never draws it, so the sweep above would miss it entirely; same reason
+        // the Advanced banner gets its own pass.
+        for f in [0u8, 0b0001_0000, 0b0001_0001] {
+            let mut a = at(Screen::Tone);
+            a.set_adv_flags(f);
+            a.set_tone_bands([cinder_ui::tone::BAND_MAX; cinder_ui::tone::BANDS]);
+            let oob = overflow_of(&mut a, &fonts, &np);
+            assert_eq!(oob, 0, "Tone Control overflows at {pct}% (flags {f:#07b}): {oob} px");
+            // …and with ClearAudio+ upstream, which names a different control in the same line.
+            let mut a = at(Screen::Tone);
+            a.set_adv_flags(f);
+            a.set_sound_flags(1 << 5);
+            a.set_tone_bands([-cinder_ui::tone::BAND_MAX; cinder_ui::tone::BANDS]);
+            let oob = overflow_of(&mut a, &fonts, &np);
+            assert_eq!(oob, 0, "Tone Control overflows under ClearAudio+ at {pct}%: {oob} px");
+        }
+        for ty in 0..cinder_ui::nav::DC_PHASE_TYPES.len() {
+            let mut a = at(Screen::Sound);
+            a.set_sound_flags(1 << 3); // DC Phase on — the pill shows a filter type, not "Off"
+            a.set_dc_type(ty);
+            let oob = overflow_of(&mut a, &fonts, &np);
+            assert_eq!(
+                oob, 0,
+                "DC Phase type {:?} overflows at {}% UI scale ({} px past the margin)",
+                cinder_ui::nav::DC_PHASE_TYPES[ty], pct, oob
+            );
+        }
+    }
+    let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
 }

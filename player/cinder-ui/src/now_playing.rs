@@ -532,6 +532,7 @@ mod tests {
     /// keep meaning the stronger thing.
     #[test]
     fn cover_visualiser_off_leaves_the_artwork_completely_clean() {
+        let _scale = crate::text::scale_guard();
         let t = Theme::day();
         let f = FontSet::load();
         let levels: Vec<f32> = (0..36).map(|i| 0.2 + 0.7 * (i as f32 / 36.0)).collect();

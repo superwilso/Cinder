@@ -46,6 +46,18 @@ fn hsv(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
     )
 }
 
+/// FNV-1a over the name — the same hash `hashed_stops` derives its hue from, exposed so a caller
+/// can key a cache on "which gradient is this" without recomputing the gradient to find out.
+/// Two names that collide here would share a swatch, which is already true of the hue itself.
+pub fn name_key(name: &str) -> u32 {
+    let mut h: u32 = 2166136261;
+    for b in name.bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(16777619);
+    }
+    h
+}
+
 /// Derive a bright→mid→dark 3-stop gradient from a string hash (FNV-1a → hue).
 fn hashed_stops(name: &str) -> [(f32, (u8, u8, u8)); 3] {
     let mut h: u32 = 2166136261;

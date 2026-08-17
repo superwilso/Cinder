@@ -159,6 +159,9 @@ mod tests {
     /// the ones split mid-word.
     #[test]
     fn long_values_wrap_inside_the_value_column() {
+        // Measures text, so it shares the crate-wide UI-scale lock — see text::scale_guard. Without
+        // it this passes alone and fails in a full run, because another test's 140% is still live.
+        let _scale = crate::text::scale_guard();
         let f = fonts();
         let t = Theme::day();
         let vs = value_style(&t);
@@ -178,6 +181,7 @@ mod tests {
     /// stay inside it. This is the case the greedy word loop cannot handle on its own.
     #[test]
     fn an_unbreakable_run_is_split_by_character() {
+        let _scale = crate::text::scale_guard();
         let f = fonts();
         let t = Theme::day();
         let vs = value_style(&t);
@@ -195,6 +199,7 @@ mod tests {
     /// screen cannot scroll past its own content.
     #[test]
     fn content_height_matches_the_rows_actually_drawn() {
+        let _scale = crate::text::scale_guard();
         let f = fonts();
         let t = Theme::day();
         let rows: Vec<(String, String)> = vec![

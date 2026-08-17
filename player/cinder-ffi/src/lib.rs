@@ -663,7 +663,7 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nui_scale={}\nsetup={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -683,6 +683,12 @@ fn settings_body(r: &Render) -> String {
         r.app.screen_off_s(),
         r.app.auto_off_min(),
         r.app.balance(),
+        r.app.vpt_mode(),
+        r.app.dc_type(),
+        r.app.adv_flags(),
+        r.app.dsee_mode(),
+        r.app.vinyl_type(),
+        r.app.tone_bands().iter().map(|b| b.to_string()).collect::<Vec<_>>().join(","),
         r.app.ui_scale_pct(),
         r.app.setup_idx(),
     );
@@ -1113,10 +1119,11 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 23] = [
+const SCREEN_NAMES: [&str; 25] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
-    "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet",
+    "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
+    "Tone",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1129,6 +1136,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Bluetooth => 10, S::Settings => 11, S::Fm => 12, S::UsbDac => 13, S::Receiver => 14,
         S::Onboarding => 15, S::UsbStorage => 16, S::Shelf => 17, S::Pairing => 18,
         S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
+        S::Advanced => 23, S::Tone => 24,
     }
 }
 
@@ -2900,6 +2908,82 @@ pub extern "C" fn cinder_get_sound_bypass() -> libc::c_int {
     }
 }
 
+/// Which VPT room is selected, 0..=3 — the value to hand Sony's `SetVptMode`. Read alongside
+/// `cinder_get_sound_flags` after a CINDER_ACT_SOUND action: the flags carry VPT's on/off, this
+/// carries which room. Separate because the device has separate SetVpt/SetVptMode calls and
+/// `sound_flags` is a u8 of booleans. Clamped in the navigator, so this is always in range.
+#[no_mangle]
+pub extern "C" fn cinder_get_vpt_mode() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.vpt_mode() as libc::c_int,
+        None => 0,
+    }
+}
+
+/// Which DC Phase filter type is selected, 0..=5 — the value for
+/// `cinder_effects_set_dc_phase_type()`. Companion to `cinder_get_vpt_mode`; the sound flags carry
+/// DC Phase's on/off, this carries which filter. Clamped in the navigator.
+#[no_mangle]
+pub extern "C" fn cinder_get_dc_type() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.dc_type() as libc::c_int,
+        None => 0,
+    }
+}
+
+/// Sound ▸ Advanced, packed: bit0 Source Direct, bit1 Clear Phase, bit2 DSEE AI,
+/// bit3 DSEE HX Custom, bit4 Tone Control. Read after CINDER_ACT_SOUND_CHANGED alongside
+/// cinder_get_sound_flags.
+#[no_mangle]
+pub extern "C" fn cinder_get_adv_flags() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.adv_flags() as libc::c_int,
+        None => 0,
+    }
+}
+
+/// DSEE HX Custom mode, 0..=4 — for cinder_effects_set_dsee_hx_mode().
+#[no_mangle]
+pub extern "C" fn cinder_get_dsee_mode() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.dsee_mode() as libc::c_int,
+        None => 0,
+    }
+}
+
+/// Vinylizer character, 0..=3 — for cinder_effects_set_vinylizer_type(). Worth sending even with
+/// the Vinyl Processor off: the device read back type=7, outside a four-value enum, because
+/// nothing had ever set it.
+/// Copy the Tone Control band gains (RAW half-decibels, Sony order BASS/MIDDLE/TREBLE) into
+/// `out`, which must have room for `cinder_ui::tone::BANDS` bytes. Returns how many were written,
+/// or 0 if the renderer is not up.
+///
+/// A pointer-out rather than a packed int for the same reason the EQ uses one: three signed gains
+/// do not fit a flag word, and packing them would put a decode step between the UI's value and the
+/// DSP's — which is exactly where the 10-band's "labelled +6, applied +3" bug lived.
+#[no_mangle]
+pub extern "C" fn cinder_get_tone_bands(out: *mut libc::c_schar) -> libc::c_int {
+    if out.is_null() {
+        return 0;
+    }
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => {
+            let b = r.app.tone_bands();
+            unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), out, b.len()) };
+            b.len() as libc::c_int
+        }
+        None => 0,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_get_vinyl_type() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.vinyl_type() as libc::c_int,
+        None => 0,
+    }
+}
+
 /// Enable the built-in scrobbler, appending an Audioscrobbler/1.1 `.scrobbler.log` at `path`
 /// (typically the storage root, e.g. "/contents/.scrobbler.log"). `client` is the
 /// #CLIENT id. Call after `cinder_db_open`. Returns 0, or -2 if the renderer isn't up.
@@ -3280,6 +3364,40 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         if let Ok(n) = v.parse::<usize>() {
                             r.app.set_balance(n);
                         }
+                    }
+                    // Which VPT room. Absent from files written by older builds, which is fine —
+                    // it just stays at 0 (Studio), and VPT's on/off still comes from `sound=`.
+                    // set_vpt_mode clamps, so a hand-edited value cannot reach the device as an
+                    // out-of-range enum.
+                    "vpt_mode" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            r.app.set_vpt_mode(n);
+                        }
+                    }
+                    // Which DC Phase filter. Same story as vpt_mode: absent in older files means
+                    // 0, and set_dc_type clamps.
+                    "dc_type" => {
+                        if let Ok(n) = v.parse::<usize>() {
+                            r.app.set_dc_type(n);
+                        }
+                    }
+                    // Sound ▸ Advanced. All three absent in files written by older builds, which
+                    // leaves the whole screen at its defaults (everything off, mode 0) — the state
+                    // the device was in before the screen existed.
+                    "adv" => { if let Ok(n) = v.parse::<u8>() { r.app.set_adv_flags(n); } }
+                    "dsee_mode" => { if let Ok(n) = v.parse::<usize>() { r.app.set_dsee_mode(n); } }
+                    "vinyl_type" => { if let Ok(n) = v.parse::<usize>() { r.app.set_vinyl_type(n); } }
+                    // Tone Control bands, RAW half-decibels. Absent in older files = flat, which
+                    // is what the device had before the editor existed. set_tone_bands clamps, so
+                    // a hand-edited value cannot reach the service out of range — past the end it
+                    // ZEROES the band rather than clamping, so an unchecked value would read as a
+                    // boost in the UI and be silence in the DSP.
+                    "tone" => {
+                        let mut b = [0i8; cinder_ui::tone::BANDS];
+                        for (i, part) in v.split(',').take(cinder_ui::tone::BANDS).enumerate() {
+                            if let Ok(n) = part.trim().parse::<i8>() { b[i] = n; }
+                        }
+                        r.app.set_tone_bands(b);
                     }
                     // The OTHER A/B setup and which of the two was live. Parsed into locals and
                     // applied once at the end, because the keys can arrive in any order and the
@@ -3844,18 +3962,22 @@ pub extern "C" fn cinder_notify_seek_ms(ms: libc::c_int) {
     r.dirty = true;
 }
 
-/// Move an in-progress drag-to-seek to UI x. Returns the target position in ms (>= 0), or -1 if
-/// there is nothing to scrub. Also starts the scrub if it wasn't started yet, so the shell can
-/// just call this on down and on every move.
+/// Move an in-progress scrub to UI (x, y). Returns the seek target in ms (>= 0) when the gesture
+/// is the Now Playing rail, or -1 for every other slider (they apply live and report nothing).
+///
+/// `y` arrived 2026-08-17 with the EQ and Tone Control band fields, which are VERTICAL: the rail,
+/// the UI-scale slider and the balance slider are all horizontal, so the parameter did not exist
+/// and the band columns could only be TAPPED. Passing both means one entry point covers sliders of
+/// either orientation instead of the shell needing to know which is which.
 #[no_mangle]
-pub extern "C" fn cinder_scrub_to(x: libc::c_int) -> libc::c_int {
+pub extern "C" fn cinder_scrub_to(x: libc::c_int, y: libc::c_int) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -1 };
     if !r.app.scrub_is_rail() {
         // A settings slider: applies live as the finger moves. No seek target to report, but it may
         // have work for the shell (the balance slider writes the codec's two attenuators on every
         // step), so the action is parked for `cinder_scrub_action` to hand over.
-        let acts = r.app.scrub_move(x as i32);
+        let acts = r.app.scrub_move(x as i32, y as i32);
         stash_scrub_action(r, &acts);
         r.dirty = true;
         return -1;
@@ -4233,7 +4355,7 @@ mod tests {
             S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::Artist, S::Playlist, S::UpNext, S::Eq,
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
-            S::ClockSet,
+            S::ClockSet, S::Advanced, S::Tone,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
