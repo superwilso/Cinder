@@ -48,6 +48,8 @@
 #include "cinder.h"
 #include "cinder_effects.h"
 #include "cinder_tuner.h"
+#include "vol_ramp.h"
+#include "jack_edge.h"
 #include "cinder_analyzer.h"
 #include "cinder_power.h"
 #include "discover.h"
@@ -365,6 +367,7 @@ bool viz_analyzer_enabled() {
 void report_storage();  // defined below (with the other sysfs readers); called from deferred_up
 void fx_cache_drop();    // defined below: forget what the sound service was last told
 void apply_eq_fn();      // defined below (carry_out helpers); re-applied from deferred_up on restore
+void fm_release_capture(); // defined below; hands hw:0,1 back before any DELIBERATE exit
 void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, before render_up)
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
 extern bool g_np_poll_now;  // defined with the pump state: force the next now-playing poll (see below)
@@ -756,9 +759,81 @@ static const long TRANSPORT_GRACE_MS = 3000; // > the ~1 s onPlayTimeUpdated per
                                              // movement tolerance, so the lag can't fight a press
 // Set the transport intent AND start the grace window. Always use this rather than assigning
 // g_playing directly, or the service's lagging view will immediately overwrite the new state.
+// ── CPU clock floor while playing ───────────────────────────────────────────────────────────
+//
+// Walkman One's paid "sound signature" is two things (analysis/RE_walkmanone_extract.md): which
+// ALSA device the stream opens, and a CPU clock floor held during playback. cinder-signature.sh
+// already does the first. This is the second, and it needs no patch and no helper at all —
+// `scaling_min_freq` ships **0666** on this device, so uid 100 can write it directly.
+//
+// DEFAULT OFF, and deliberately: holding the CPU off its lowest step costs battery on a player
+// whose whole job is to run for a long time on one charge. Opt in with /contents/cinder_cpufloor.conf
+// containing a kHz value from `scaling_available_frequencies`:
+//
+//     khz=1040000            # or 598000 / 747500 / 1196000 / 1300000
+//     khz=off                # explicit off (the default if the file is absent)
+//
+// Whether it is audible is not something this file claims. It is what the paid patch does; the
+// measurement is the user's to make, and turning it off is one line.
+const char* const CPUFLOOR_PATH = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq";
+static int  g_cpufloor_khz = 0;      // 0 = feature off
+static int  g_cpufloor_orig = -1;    // what the governor had before we touched it
+static bool g_cpufloor_read = false;
+static bool g_cpufloor_held = false;
+
+static int read_int_file(const char* path) {
+    FILE* f = std::fopen(path, "r");
+    if (!f) return -1;
+    int v = -1;
+    if (std::fscanf(f, "%d", &v) != 1) v = -1;
+    std::fclose(f);
+    return v;
+}
+
+static void load_cpufloor_cfg() {
+    g_cpufloor_read = true;
+    FILE* f = std::fopen("/contents/cinder_cpufloor.conf", "r");
+    if (!f) return;
+    char line[128];
+    while (std::fgets(line, sizeof line, f)) {
+        if (line[0] == '#') continue;
+        int v = 0;
+        if (std::sscanf(line, " khz = %d", &v) == 1 && v > 0) g_cpufloor_khz = v;
+    }
+    std::fclose(f);
+    if (g_cpufloor_khz) {
+        g_cpufloor_orig = read_int_file(CPUFLOOR_PATH);
+        char m[144];
+        std::snprintf(m, sizeof m, "cpufloor: %d kHz while playing (governor default %d)",
+                      g_cpufloor_khz, g_cpufloor_orig);
+        clog_(m);
+    }
+}
+
+// Hold the floor while playing, drop it the moment playback stops. Best-effort: the node is 0666
+// on this device, but a write failure here must never be more than a log line.
+static void apply_cpu_floor(bool playing) {
+    if (!g_cpufloor_read) load_cpufloor_cfg();
+    if (!g_cpufloor_khz || g_cpufloor_orig < 0) return;
+    if (playing == g_cpufloor_held) return;
+    const int want = playing ? g_cpufloor_khz : g_cpufloor_orig;
+    FILE* f = std::fopen(CPUFLOOR_PATH, "w");
+    if (!f) { clog_("cpufloor: cannot open scaling_min_freq (not 0666?)"); return; }
+    std::fprintf(f, "%d", want);
+    std::fclose(f);
+    g_cpufloor_held = playing;
+    // Read it back: cpufreq silently clamps to a value the table actually has, so what we asked
+    // for and what is in force are not the same question.
+    char m[128];
+    std::snprintf(m, sizeof m, "cpufloor: %s -> asked %d, in force %d",
+                  playing ? "play" : "stop", want, read_int_file(CPUFLOOR_PATH));
+    clog_(m);
+}
+
 static void set_transport(bool playing) {
     g_playing = playing;
     g_transport_at = now_ms();
+    apply_cpu_floor(playing);
 }
 
 static int keymap_size() { return (int)(sizeof g_keymap / sizeof *g_keymap); }
@@ -1512,6 +1587,7 @@ void boot_to_stock() {
         return;
     }
     clog_("boot-to-stock: armed; exiting so appmgr restarts the device into the Sony player");
+    fm_release_capture();
     // ORDER MATTERS: the flag is written and sync()'d ABOVE, before anything else runs. Keep it
     // that way. cinder_render_shutdown joins the present thread, which blocks if the display driver
     // has wedged — so if this ever hangs, the user power-cycles and STILL lands on stock, because
@@ -2065,7 +2141,8 @@ static bool bt_vol_drain_notify() {
     if (v < 0) return false;
     g_bt_vol_notify = -1;
     if (v > 127) v = 127;
-    // 0..127 -> 0..CINDER_BT_VOL_MAX, rounded rather than truncated so the top of the sink's scale
+    // 0..127 -> 0..CINDER_BT_VOL_MAX (an identity map now the two are both 127), rounded rather
+    // than truncated so the top of the sink's scale
     // reaches the top of ours instead of stopping one step short.
     int lvl = (v * CINDER_BT_VOL_MAX + 63) / 127;
     if (lvl == cinder_get_bt_volume()) return false;
@@ -2153,8 +2230,11 @@ static void apply_bt_volume(bool up) {
         // call in the same press is what makes a flapping link still track the rocker.
         bool sent = false;
         if (bt_use_absolute_volume()) {
-            // UI steps -> the AVRCP 0..127 scale. Integer maths, and the top step must land on 127
-            // exactly or full volume would be unreachable.
+            // UI steps -> the AVRCP 0..127 scale. Since 2026-08-18 CINDER_BT_VOL_MAX *is* 127, so
+            // this is an identity map and one press moves the sink by exactly one unit — the
+            // finest Bluetooth allows, absolute volume being a 7-bit field. The arithmetic stays
+            // written out because the scale is a constant somebody may change again, and the top
+            // step must land on 127 exactly or full volume would be unreachable.
             int lvl = cinder_get_bt_volume();
             if (lvl < 0) lvl = 0;
             if (lvl > CINDER_BT_VOL_MAX) lvl = CINDER_BT_VOL_MAX;
@@ -5314,8 +5394,145 @@ static void fm_tune_fn() {
     fm_report_actual();
 }
 
+// Give hw:0,1 back before we go.
+//
+// MEASURED 2026-08-18: AudioInPlayerService opens the capture on Play() and closes it only on
+// Stop(). It does NOT notice its client dying — SIGKILL the client mid-play and `pcm1c` stays
+// `RUNNING` for the rest of the boot, with every later open returning -EBUSY. Reproduced three
+// times, and three clean start/stop cycles never leaked, so the trigger is specifically an exit
+// that skips Stop().
+//
+// So every DELIBERATE exit calls this. It is NOT called from the fault handler: that path's whole
+// contract is to die fast so appmgr reboots and the bad-boot counter reverts, and a Sony IPC call
+// made from a signal handler after a SIGSEGV could hang instead of returning — trading a leaked
+// PCM for a hung Home app is a bad trade. A hard crash therefore still leaks it, and the recovery
+// for that is the reboot which is already happening.
+void fm_release_capture() {
+    if (!g_fm_on) return;
+    clog_("fm: releasing hw:0,1 before exit (the service will not do it for us)");
+    run_guarded("exit: FM stop", 6, []() { cinder_tuner_stop(); });
+    g_fm_on = false;
+}
+
+// ── PAUSE ON UNPLUG ─────────────────────────────────────────────────────────────────────────
+//
+// Pulling the headphones out should stop the music, not broadcast it. Sony's own player does this
+// and Cinder did not, because nothing was watching the jack.
+//
+// The device offers two ways to see it and this uses the switch rather than the ALSA control: it is
+// a 3-byte sysfs read with no mixer round-trip, and it reports the KIND of thing plugged in, not
+// just presence — `cxd3778gf_h2w` is the standard Android headset switch (0 = nothing,
+// non-zero = headphone/headset). `numid=33 'jack status se'` is the same fact through amixer, and
+// costs a fork.
+//
+// EDGE-TRIGGERED, on the 1→0 transition only. Level-triggering would fight the user: pause once on
+// unplug, and never again until something is plugged back in. The first observation after boot only
+// seeds the state — a device that BOOTS with nothing in the jack must not pause anything.
+//
+// The FM aerial is the same cable (analysis/RE_fm_tuner.md), so an unplug also means the radio has
+// lost its antenna. That is logged rather than acted on: FM going quiet is self-evident on the
+// screen, and stopping the tuner from here would fight the FM screen's own power button.
+const char* const JACK_SWITCH = "/sys/class/switch/cxd3778gf_h2w/state";
+static int g_jack_last = -1;   // -1 = not yet observed
+
+void jack_watch_tick() {
+    int now = read_int_file(JACK_SWITCH);
+    if (now < 0) return;                       // no such node on this unit: feature simply absent
+    const int prev = g_jack_last;
+    g_jack_last = now;
+    if (prev < 0) {                            // first read of the boot: seed only, never act
+        char m[96];
+        std::snprintf(m, sizeof m, "jack: %s at startup (state=%d)",
+                      now ? "headphones present" : "nothing in the jack", now);
+        clog_(m);
+        return;
+    }
+    if (!cinder_jack_should_pause(prev, now)) return;   // see src/jack_edge.h
+    clog_("jack: headphones UNPLUGGED");
+    if (g_fm_on) clog_("jack: the FM aerial is that cable — reception is gone until it is back");
+    if (g_playing) {
+        clog_("jack: pausing playback");
+        set_transport(false);
+        run_guarded("jack: pause", 6, []() { cinder_audio_pause(); });
+    }
+}
+
+// ── FM long jobs, driven a slice per frame ──────────────────────────────────────────────────
+//
+// carry_out runs on the RENDER thread (input_pump sits above cinder_render_tick in the same loop),
+// so anything slow here is a frozen screen. A ~10 s scan froze it for ten seconds — reported from
+// the device 2026-08-18 — and a 1-4 s seek both froze it and made its own dial sweep invisible,
+// since the thread that would paint the sweep was the one stuck in the loop.
+//
+// So the action now only STARTS the job and returns; fm_job_tick() advances it one channel per
+// frame from the pump loop. A slice is the chip's own ~45 ms tune time, so the loop drops to
+// ~16 fps during a sweep instead of stopping, and the progress bar reports real work.
+static int g_fm_job = 0;         // 0 = none, 1 = scan, 2 = seek
+static bool g_fm_job_was_on = false;
+
+static void fm_job_tick_inner() {
+    if (g_fm_job == 1) {
+        int pct = cinder_tuner_scan_step();
+        if (pct >= 0) { cinder_fm_report_scan_progress(pct); return; }
+        int found[8] = {0};
+        int n = cinder_tuner_scan_collect(found, 8);
+        cinder_fm_report_stations(found, n);
+        // The sweep left the chip wherever it finished; put it back on the user's frequency.
+        cinder_tuner_set_khz(cinder_fm_khz());
+        fm_report_actual();
+        g_fm_job = 0;
+        char m[96];
+        std::snprintf(m, sizeof m, "fm: scan (chip RSSI) found %d station(s)", n);
+        clog_(m);
+    } else if (g_fm_job == 2) {
+        int cur = 0;
+        int r = cinder_tuner_seek_step(&cur);
+        if (r == 0) {                       // still walking — drive the dial from the hardware
+            if (cur > 0) cinder_fm_report_khz(cur);
+            return;
+        }
+        if (r > 0) cinder_fm_report_khz(r);
+        else       fm_report_actual();      // nothing found: show where the radio actually sits
+        g_fm_job = 0;
+    }
+}
+
+// Guarded like every other slice of work: short budget, because ONE slice is milliseconds. A hang
+// inside it is a bus fault, not a long scan, and must not take the frame loop with it.
+void fm_job_tick() {
+    if (g_fm_job == 0) return;
+    run_guarded("pump: FM job slice", 4, fm_job_tick_inner);
+}
+
+// Cancel whatever is running. `collect` doubles as the scan's cancel — it peak-picks whatever was
+// gathered and restores the chip either way.
+static void fm_job_cancel() {
+    if (g_fm_job == 1) {
+        int found[8] = {0};
+        int n = cinder_tuner_scan_collect(found, 8);
+        cinder_fm_report_stations(found, n);
+        cinder_tuner_set_khz(cinder_fm_khz());
+        clog_("fm: scan cancelled");
+    } else if (g_fm_job == 2) {
+        cinder_tuner_seek_abort();
+        fm_report_actual();
+        clog_("fm: seek cancelled");
+    }
+    g_fm_job = 0;
+}
+
 static void fm_seek_fn() {
     if (!g_fm_on) return;
+    if (g_fm_job != 0) { fm_job_cancel(); return; }
+    // Same split as the scan: the chip walks the band by itself, so all we do is poll — and polling
+    // a slice per frame is what makes the dial sweep VISIBLE rather than a jump after a freeze.
+    if (cinder_tuner_hw()) {
+        if (cinder_tuner_seek_begin(cinder_fm_khz(), cinder_fm_seek_dir())) {
+            g_fm_job = 2;
+            return;
+        }
+        clog_("fm: seek_begin refused — falling back to the audio seek");
+    }
     int found = cinder_tuner_seek(cinder_fm_khz(), cinder_fm_seek_dir(), fm_on_step);
     if (found) cinder_fm_report_khz(found);
     else fm_report_actual();
@@ -5328,6 +5545,21 @@ static void fm_scan_fn() {
     // one that has to stop the radio first and rebuild it afterwards.
     const bool hw = cinder_tuner_hw() != 0;
     const bool was = g_fm_on;
+    // Already sweeping? The screen's SCAN button is also its cancel, and this is that press.
+    if (g_fm_job != 0) { fm_job_cancel(); return; }
+    // REGISTER PATH: start a chunked job and get out of the render thread's way. Everything below
+    // is the audio fallback, which has no way to be sliced — it owns the capture PCM for a fixed
+    // window per step — and still blocks. That path only exists when cinder-fm is not installed.
+    if (hw) {
+        if (cinder_tuner_scan_begin(87500, 108000)) {
+            g_fm_job = 1;
+            g_fm_job_was_on = was;
+            cinder_fm_report_scan_progress(0);
+            clog_("fm: scan started (chip RSSI, sliced per frame)");
+            return;
+        }
+        clog_("fm: scan_begin refused — falling back to the audio sweep");
+    }
     if (!hw && was) { cinder_tuner_stop(); g_fm_on = false; }
     cinder_tuner_set_progress_cb(fm_on_progress);
     int found[8] = {0};
@@ -5667,15 +5899,17 @@ void carry_out(int act) {
         case CINDER_ACT_FM_SEEK:
             // A full band traversal at ~0.14 s a step is ~30 s worst case; budget generously,
             // because the guard firing mid-seek would leave the tuner holding the capture PCM.
-            // That hazard is specific to the AUDIO seek: the hardware seek touches no PCM at all
-            // and finishes in well under a second, so on this device the budget is now slack.
+            // That hazard is specific to the AUDIO seek, which is all this budget is for now: the
+            // register seek returns immediately from here and is polled by fm_job_tick().
             run_guarded("carry_out: FM seek", 45, fm_seek_fn);
             break;
         case CINDER_ACT_FM_BT_OUT:
             run_guarded("carry_out: FM Bluetooth out", 20, fm_btout_fn);
             break;
         case CINDER_ACT_FM_SCAN:
-            // ~0.45 s per step across 206 steps.
+            // 150 s is for the AUDIO fallback (~0.45 s per step across 206 steps), which still
+            // blocks. On the register path this call only STARTS the sliced job and returns at
+            // once — fm_job_tick() does the work, one channel per frame, with its own guard.
             run_guarded("carry_out: FM scan", 150, fm_scan_fn);
             break;
         case CINDER_ACT_EXIT_USB_MSC:
@@ -5928,9 +6162,22 @@ int g_vol_btn = -1;      // CINDER_BTN_VOLUP / _VOLDOWN while held, else -1
 long g_vol_down_ms = 0;  // when the press landed
 long g_vol_last_ms = 0;  // last volume action emitted (kernel repeat OR synthetic)
 
-const long VOL_REPEAT_DELAY_MS = 350;    // hold this long before the ramp starts…
-const long VOL_REPEAT_EVERY_MS = 120;    // …then one step this often (~8/s, full scale in ~4 s)
+const long VOL_REPEAT_DELAY_MS = CINDER_VOL_REPEAT_DELAY_MS;  // hold this long before the ramp starts…
+const long VOL_REPEAT_EVERY_MS = CINDER_VOL_REPEAT_EVERY_MS;  // …then a step this often (~8/s)
 const long VOL_REPEAT_MAX_MS = 15000;    // dead-man: give up if a release was missed
+
+// ACCELERATION. The tick rate stays at 120 ms and the STEP SIZE grows with how long the rocker has
+// been held, so a tap is always exactly one step — the precision the fine scales exist for — while
+// crossing the whole range stops taking forever.
+//
+// It is needed because both scales are deliberately fine: the jack is 0..120 and Bluetooth went to
+// 0..127 on 2026-08-18 to match AVRCP 1:1. At a flat one step per tick a full sweep is ~15 s. With
+// these buckets it is about 5, and the first second and a half is still single steps, which is the
+// part of the range anyone actually aims within.
+//
+// The curve itself lives in src/vol_ramp.h so tools/volramp_selftest.cpp can check the SAME code
+// rather than a copy of it; build.sh runs that self-test on the host and refuses to pack if it
+// fails. See that header for why it is geometric.
 
 void vol_repeat_tick() {
     if (g_vol_btn < 0) return;
@@ -5939,7 +6186,22 @@ void vol_repeat_tick() {
     if (now - g_vol_down_ms < VOL_REPEAT_DELAY_MS) return;
     if (now - g_vol_last_ms < VOL_REPEAT_EVERY_MS) return;
     g_vol_last_ms = now;
-    int act = cinder_input(g_vol_btn);
+
+    int steps = cinder_vol_repeat_steps(now - g_vol_down_ms);
+    // MULTI-STEP IS ONLY SAFE WHERE THE APPLIED VALUE IS ABSOLUTE. The jack path writes a level and
+    // is already coalesced; BT with SetCurrentVolume likewise sends the level, so advancing the UI
+    // by N and applying once lands exactly right and costs ONE call instead of N. The BT STEP
+    // fallback (SetVolumeUp/Down) is RELATIVE — advancing the UI by N there while sending one step
+    // would desync the two — so that path stays at one step per tick, which is also why this cannot
+    // simply be a faster timer.
+    const bool absolute = !cinder_get_bt_route() || bt_use_absolute_volume();
+    if (!absolute) steps = 1;
+
+    int act = CINDER_ACT_NONE;
+    for (int i = 0; i < steps; i++) {
+        int a = cinder_input(g_vol_btn);
+        if (a != CINDER_ACT_NONE) act = a;   // the UI clamps at both ends, so overshoot is harmless
+    }
     if (act != CINDER_ACT_NONE) carry_out(act);
 }
 
@@ -6775,6 +7037,11 @@ void* render_driver(void*) {
             if (g_app) g_app->StopBootAnimation();
         }
 
+        // FM scan/seek advance one channel per FRAME, not per housekeeping tick: they are the only
+        // work here that used to block the render thread outright, and slicing them is the whole
+        // point. Costs nothing when idle (a single int test).
+        fm_job_tick();
+
         // (input_pump + volume_flush now run at the TOP of the loop, before the paint — see there)
         // ~1x/sec housekeeping, paced by the WALL CLOCK rather than an iteration count. It used to
         // be `n % 60`, which silently assumed the loop always runs at 60 Hz — no longer true now
@@ -6787,6 +7054,7 @@ void* render_driver(void*) {
             last_house_ms = house_now;
             cinder_clock_tick();
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
+            run_guarded("pump: headphone unplug", 4, jack_watch_tick);
             // FM signal meter. Register reads only — no Sony service call, no ALSA — so it is far
             // cheaper than the poll above it and safe on the same tick.
             run_guarded("pump: FM signal", 4, fm_signal_fn);

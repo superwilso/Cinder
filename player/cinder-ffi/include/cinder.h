@@ -429,7 +429,7 @@ void cinder_set_bt_scanning(int on);
 /* Top of the Bluetooth volume scale (must match cinder_ui::overlay::BT_VOL_MAX). A step count, not
  * a mixer value: the shell maps it onto AVRCP's 0..127. Was 30 until 2026-08-11, which made one
  * press ~4.2 AVRCP units; 64 makes it ~2. */
-#define CINDER_BT_VOL_MAX 64
+#define CINDER_BT_VOL_MAX 127
 /* Bluetooth output volume, a SEPARATE level on its own 0..30 AVRCP-step scale. `cinder_get_volume`
  * above stays the 3.5 mm codec level even while headphones are connected, so the two routes never
  * overwrite each other's setting. */

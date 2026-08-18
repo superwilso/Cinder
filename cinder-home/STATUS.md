@@ -655,12 +655,17 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   back to measuring the audio (~90 s) and the screen honestly draws **no meter** instead of one
   backed by a constant.
   Why it is Partial and not Functional, precisely:
-  * **It has never run inside cinder-home.** Every measurement so far came through `cinder-probe`.
-    The screen, the 1 Hz meter poll and the guard budgets are unproven until a flash + reboot.
-  * **BT OUT cannot work as designed right now.** `AudioInPlayerService` opens `hw:0,1` and does not
-    release it on `Stop()` — the substream stays `RUNNING` for the rest of the boot and every open
-    returns `-EBUSY`. The button now proves its source with `cinder_tuner_capture_rms()` and refuses
-    with a reason rather than lighting up and transmitting silence.
+  * **Proven inside cinder-home 2026-08-18** — flashed and booted. The 1 Hz `pump: FM signal` tick
+    runs the setuid helper and reaches the chip from uid 100 with no user action
+    (`cinder-fm rc=0`, `regmon live, DEVICEID=0x1242` in the boot log). What is still unexercised is
+    the SCREEN itself: the meter, scan and seek buttons need a finger on the device.
+  * **BT OUT: the source is proven, the bridge is not wired.** On a clean boot `hw:0,1` captures FM
+    and the mux-OFF control reads exactly **0.0 RMS** against non-zero routed — so the route is what
+    carries it. An earlier note here called this blocked; that was a **wedge** left by a previous
+    session (`-EBUSY` for the rest of that boot), which a reboot clears. `fm_btout_fn` detects the
+    wedge via `cinder_tuner_capture_rms()` and refuses with a reason rather than transmitting
+    silence. The bridge itself is already written end to end (`fmbt_thread`: open `hw:0,1` ->
+    `ldac_connect_socket` -> `ldac_pump`); what it has never had is a run with a headphone connected.
   * **Stereo will not light here, and that is the hardware.** `ST` reads 0 at all four `BLNDADJ`
     settings because the strongest local carrier reads RSSI 15 while the chip's most sensitive
     stereo blend starts at 19. Not a bug, not fixable in software.
