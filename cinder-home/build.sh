@@ -164,6 +164,26 @@ if cc -O2 -o "$HERE/.guard_selftest" "$HERE/tools/guard_selftest.cpp" 2>/dev/nul
     rm -f "$HERE/.guard_selftest"
 else echo "(skip: no host cc)"; fi
 
+echo "── self-test: volume rocker ramp (host) ──"
+# The hold-to-accelerate curve in src/vol_ramp.h, checked against the SAME header main.cpp uses:
+# a tap must stay one step, the ramp must not run away, and a full sweep of either scale must be a
+# few seconds rather than fifteen. Fast, host-native, no device.
+if cc -O2 -o "$HERE/.volramp_selftest" "$HERE/tools/volramp_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.volramp_selftest" >/dev/null 2>&1; then echo "OK: volume ramp curve"; \
+    else "$HERE/.volramp_selftest"; echo "FAIL: volume ramp self-test"; exit 1; fi
+    rm -f "$HERE/.volramp_selftest"
+else echo "(skip: no host cc)"; fi
+
+echo "── self-test: headphone-unplug edge (host) ──"
+# The rule in src/jack_edge.h, checked against the SAME header main.cpp uses: only the
+# plugged->unplugged transition pauses, the first observation of a boot never acts, and plugging IN
+# does nothing. It was written wrong the first time (it paused on plug-in), hence this file.
+if cc -O2 -o "$HERE/.jackedge_selftest" "$HERE/tools/jackedge_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.jackedge_selftest" >/dev/null 2>&1; then echo "OK: headphone-unplug edge"; \
+    else "$HERE/.jackedge_selftest"; echo "FAIL: jack edge self-test"; exit 1; fi
+    rm -f "$HERE/.jackedge_selftest"
+else echo "(skip: no host cc)"; fi
+
 echo "── verify: device glibc compatibility gate ──"
 gate_glibc "$OUT"
 cp "$OUT" "$OUT.unstripped"; ${TARGET}-strip "$OUT"
@@ -260,6 +280,16 @@ echo "[6e] build cinder-clock (setuid-root clock helper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-clock" "$HERE/src/cinder-clock.c"
 echo "built: $HERE/cinder-clock ($(stat -c %s "$HERE/cinder-clock") bytes)"
 
+# cinder-voltable: seventh setuid-root helper — install one of Sony's OUTPUT VOLUME TABLES into
+# /proc/icx_audio_cxd3778gf_data/{ovt,ovt_dsd}, which are root-only. The stock A50 curve has two
+# dead zones (vol 40-60 and 100-120 do nothing, measured) and coarsens toward the top where the
+# volume pop is worst; the NW-WM1A table Sony already ships has neither problem. Must run every
+# boot, because load_sony_driver re-applies the stock table each time. See
+# analysis/RE_volume_pop.md and src/cinder-voltable.c.
+echo "[6g] build cinder-voltable (setuid-root volume-table helper, static)…"
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-voltable" "$HERE/src/cinder-voltable.c"
+echo "built: $HERE/cinder-voltable ($(stat -c %s "$HERE/cinder-voltable") bytes)"
+
 # cinder-fm: sixth setuid-root helper — chmod 0666 on /proc/regmon/Si4708icx/{target,value}, the
 # two kernel files through which Sony's own driver publishes the FM tuner's registers. That is what
 # gives the radio a real signal meter, a one-second band scan and the chip's hardware seek; Sony's
@@ -291,6 +321,7 @@ cp -f "$HERE/cinder-power" "$DIST/cinder-power"
 cp -f "$HERE/cinder-clock" "$DIST/cinder-clock"
 cp -f "$HERE/cinder-msc" "$DIST/cinder-msc"
 cp -f "$HERE/cinder-fm" "$DIST/cinder-fm"
+cp -f "$HERE/cinder-voltable" "$DIST/cinder-voltable"
 # cinder-gpunode ships on the DEV channel ONLY. It is setuid-root and its whole job is to make
 # four kernel graphics nodes world-writable — real attack surface — in service of a GPU present
 # path that is default OFF and measured 4.7x SLOWER than the software one (45.6 ms/present vs 9.6;

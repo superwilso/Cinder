@@ -263,3 +263,67 @@ does to your ears, not just what the DAC reports.
   `N.bin` does not mean the same partition in both. Stock system = `6.bin`; W1 system = `7.bin`.
 - Both system images are ext4 with the **same UUID** (`57f8f4bc-…`), so mounting both at once needs
   `-o nouuid` or, better, `debugfs` as used here.
+
+
+## VERIFIED ON THE LIVE DEVICE — 2026-08-18
+
+The ranking above was derived from the extracted filesystems. Checked against the running A55, and
+it holds — with one finding that makes item 3 considerably better than it reads.
+
+### Every volume table W1 uses ALREADY SHIPS IN STOCK FIRMWARE
+
+`/system/usr/share/audio_dac/` on the stock device, 61 files, **all dated 2019-07-31 — Sony's own
+build stamp, not anything staged by us**:
+
+```
+ov_1291.tbl  bb5ccae7b1a147b3507cb787cda522a6   <- the A50 set, what boot loads today
+ov_1280.tbl  5bf930c0209cbe4b7ba871e74e6b2b30   <- BBDMP2, i.e. Walkman One's model
+ov_127x.tbl  39a60adc7240be8deab95c39becf4419   <- the NW-WM1A's own curve
+```
+
+Three genuinely different files (distinct md5s, same 84950 bytes). Same story for the DSD and tone
+tables, with a detail worth noting:
+
+```
+ov_dsd_1291 == ov_dsd_1280   but ov_dsd_127x differs     -> the WM1A has its own DSD curve
+tc_1280     == tc_127x       but tc_1291     differs     -> the A50 has a DIFFERENT tone-control
+                                                            table from BOTH higher models
+```
+
+So switching sets changes the volume curve **and** the tone-control table together. And it needs
+**nothing from Walkman One at all** — the payload is Sony's, sitting inert on every stock A55,
+reachable only because `load_sony_driver` passes `ro.product.device` = `BBDMP5_linux`.
+
+### `dacdat` applies at RUNTIME, through a proc node — no flash, no init hook
+
+```
+$ readelf -d dacdat | grep NEEDED     -> libasound
+$ strings dacdat                      -> /proc/icx_audio_cxd3778gf_data
+                                         /proc/icx_audio_dnc_data
+$ ls /proc/icx_audio_cxd3778gf_data/  -> ovt  ovt_dsd  dgt  tct  tct_ng/nh/sg/...
+                                         limiter_31/500/750  ainc_*  ambgain
+                                         b_nc_gain  u_ncgain_*  c_nw750_nml_0..7  i_data
+```
+
+It is a directory of per-table proc nodes, `-rw------- root root`, that the codec driver reads. That
+means the tables can be loaded **at any time, by any root process** — and Cinder's launcher already
+runs as root, exactly as it already runs `cinder-signature.sh`. No model swap, no partition write,
+no boot-order dependency.
+
+`dacdat`'s usage also lists more than this document recorded: `bncgt`/`uncgt` (NC gain tables),
+`idata` (IRAM), per-headphone `cnw500n`/`cnw750n`/`cnc31n` CRAM sets, `ambgain`, and a **third**
+model in `auto` — `BBDMP2_linux / BBDMP3_linux / BBDMP5_linux`.
+
+### So: what of Walkman One is and is not reachable
+
+| layer | status |
+|---|---|
+| HAL "sound signature" — ALSA device + CPU floor | **PORTED.** `cinder-signature.sh`, installed |
+| CPU clock floor on its own | **FREE, unwired.** `scaling_min_freq` is already `0666` |
+| Volume / DSD / tone tables (`ov_*`, `tc_*`) | **FULLY REACHABLE, and needs no W1 files.** All three sets ship in stock; `dacdat` is byte-identical to W1's and applies at runtime |
+| `dacdat auto BBDMP2_linux` (whole model profile) | **Reachable.** The stock binary accepts the model |
+| External tuning blobs (Bright / Neutral & Warm / WM1Z) | **CLOSED, negative.** 4000-byte encrypted payload, unknown KAS, and the two-time-pad XOR is noise |
+
+**Still NOT RUN, deliberately.** Loading a different output-volume table changes what every volume
+step does to your ears, and `VOL_LIMIT 0` removes the EU cap. That is a session with headphones OFF
+and a way back (`dacdat ovt ov_1291.tbl` restores stock), not a background push.

@@ -20,16 +20,25 @@ pub const VOL_MAX: u8 = 120;
 /// than something rescaled onto it. 30 is the usual A2DP sink granularity; the HUD stretches it
 /// back over the same 0..VOL_MAX bar so both routes look identical on screen.
 ///
-/// 64, not 30. AVRCP's own scale is 0..127, so 30 steps meant one press moved the sink by ~4.2 of
-/// its units — audibly coarse, and the finest control the rocker could offer was about 3.5% of
-/// full scale per press. 64 halves that to ~2 units without making the rocker unusable: a full
-/// sweep is 64 presses, and the rocker repeats while held.
-pub const BT_VOL_MAX: u8 = 64;
-/// The scale `bt_volume` was persisted on before 2026-08-11. A settings file written by an older
-/// build stores a 0..30 value, and reading it as 0..64 would halve everyone's volume on upgrade —
-/// so `cinder_ffi::settings_load` rescales when it sees the old key. Kept here next to the new
-/// value because the two only make sense together.
+/// 127, which is AVRCP's own scale exactly — one press moves the sink by ONE unit, and there is no
+/// finer control available over Bluetooth at all: absolute volume is a 7-bit field, so 0..127 is
+/// the protocol's floor on granularity, not a choice we are making.
+///
+/// The history is worth keeping because it explains why this is not over-engineering. 30 steps
+/// (pre-2026-08-11) moved the sink ~4.2 units a press — audibly coarse. 64 halved that to ~2, which
+/// still skipped every other value the sink could distinguish. 127 is 1:1 and cannot be improved on.
+///
+/// The cost is presses, and it is bounded: the rocker auto-repeats every 120 ms while held, so a
+/// full sweep is ~15 s — the same order as the 3.5 mm route's own 0..120 scale, which users already
+/// live with. A finer scale than the wire allows would be a lie; a coarser one throws away levels
+/// the headphones can actually resolve.
+pub const BT_VOL_MAX: u8 = 127;
+/// The scale `bt_volume` was persisted on before 2026-08-11 (0..30), and `bt_volume64` the one used
+/// between then and 2026-08-18 (0..64). Reading either as 0..127 without rescaling would leave a
+/// user quieter than they left themselves — not dangerous, but wrong — so `cinder_ffi::settings_load`
+/// migrates both. Kept here next to the live value because they only make sense together.
 pub const BT_VOL_MAX_LEGACY: u8 = 30;
+pub const BT_VOL_MAX_LEGACY_64: u8 = 64;
 
 /// How many pump frames the volume HUD stays up after the last change (~1.6 s at the 60 fps
 /// pump; the exact pump rate is the shell's, this is just "a moment").

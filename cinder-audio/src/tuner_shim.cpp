@@ -154,6 +154,17 @@ int rd(int reg) {
     return v;
 }
 
+// Non-blocking read, for anything on the render thread. A scan or seek slice holds the lock for a
+// few ms at a time, and the 1 Hz meter poll waiting on it would put the UI's own thread to sleep —
+// the same class of stall this file was just restructured to remove. A skipped sample is nothing;
+// a skipped frame is visible.
+int rd_try(int reg) {
+    if (pthread_mutex_trylock(&g_lock) != 0) return -1;
+    int v = rd_l(reg);
+    pthread_mutex_unlock(&g_lock);
+    return v;
+}
+
 // Are the nodes usable by this uid? Runs the setuid helper once if not, exactly as the GPU path
 // runs cinder-gpunode, then re-checks. A failure here is never fatal: everything falls back to the
 // audio-measured routes below.
@@ -462,7 +473,7 @@ int cinder_tuner_stereo(void) {
     // The chip's own ST bit is the truth. Sony's GetStereoState read 0 on every station ever
     // tested, including ones that were audibly playing, so it is only a fallback.
     if (regmon::available()) {
-        int s = regmon::rd(regmon::R_STATUS);
+        int s = regmon::rd_try(regmon::R_STATUS);
         if (s >= 0) return (s & regmon::ST_STEREO) ? 1 : 0;
     }
     if (!g_tuner) return -1;
@@ -475,7 +486,7 @@ int cinder_tuner_hw(void) { return regmon::available() ? 1 : 0; }
 
 int cinder_tuner_signal(void) {
     if (!regmon::available()) return -1;
-    int s = regmon::rd(regmon::R_STATUS);
+    int s = regmon::rd_try(regmon::R_STATUS);     // never block the caller; see rd_try
     return s < 0 ? -1 : (s & regmon::ST_RSSI);
 }
 
@@ -539,6 +550,93 @@ static int seek_hw(int from_khz, int dir, cinder_tuner_step_fn on_step) {
     }
     std::fprintf(stderr, "[cinder-tuner] hw seek from %d dir %+d -> %d kHz\n", from_khz, dir, found);
     return found;
+}
+
+// ── CHUNKED SEEK — same reason as the chunked scan above ────────────────────────────────────
+//
+// The chip does the walking; all we do is poll STC. Blocking that poll on the render thread cost
+// 1-4 s of frozen UI AND made the dial sweep invisible: on_step marked the UI dirty, but the thread
+// that paints was the one sitting in the loop. Polled a slice at a time, the sweep is real.
+namespace {
+struct SeekJob {
+    bool active = false;
+    regmon::Plan plan;
+    int pc0 = 0, s2 = 0, s3 = 0;
+    int polls = 0;
+} g_seek;
+}  // namespace
+
+int cinder_tuner_seek_begin(int from_khz, int dir) {
+    using namespace regmon;
+    if (!available()) return 0;
+    if (dir == 0) dir = 1;
+    pthread_mutex_lock(&g_lock);
+    g_seek.plan = plan_l();
+    g_seek.pc0 = rd_l(R_POWERCFG);
+    g_seek.s2  = rd_l(R_SYSCONFIG2);
+    g_seek.s3  = rd_l(R_SYSCONFIG3);
+    if (g_seek.pc0 < 0 || g_seek.s2 < 0 || g_seek.s3 < 0) {
+        pthread_mutex_unlock(&g_lock);
+        return 0;
+    }
+    tune_l(g_seek.plan, from_khz);
+    wr_l(R_SYSCONFIG2, (unsigned)((g_seek.s2 & 0x00FF) | ((g_seek_th & 0xFF) << 8)));
+    wr_l(R_SYSCONFIG3, (unsigned)((g_seek.s3 & 0xFF00) | (1 << 4) | 1));
+    unsigned go = ((unsigned)g_seek.pc0 & ~(unsigned)(PC_SKMODE | PC_SEEKUP)) | PC_SEEK;
+    if (dir >= 0) go |= PC_SEEKUP;
+    wr_l(R_POWERCFG, go);
+    pthread_mutex_unlock(&g_lock);
+    g_seek.polls = 0;
+    g_seek.active = true;
+    return 1;
+}
+
+// 0 = still walking (*cur_khz = where the chip is, for the dial), >0 = landed there, -1 = nothing.
+int cinder_tuner_seek_step(int* cur_khz) {
+    using namespace regmon;
+    if (!g_seek.active) return -1;
+    Plan& p = g_seek.plan;
+
+    pthread_mutex_lock(&g_lock);
+    int s = rd_l(R_STATUS);
+    int rc = rd_l(R_READCHAN);
+    pthread_mutex_unlock(&g_lock);
+    if (s < 0) { cinder_tuner_seek_abort(); return -1; }
+
+    if (cur_khz && rc >= 0) *cur_khz = p.base_khz + (rc & CH_MASK) * p.space_khz;
+
+    // ~4 s of frames; the chip is normally done in well under one.
+    if (!(s & ST_STC) && ++g_seek.polls < 400) return 0;
+
+    int found = 0;
+    if ((s & ST_STC) && !(s & ST_SFBL) && rc >= 0)
+        found = p.base_khz + (rc & CH_MASK) * p.space_khz;
+
+    pthread_mutex_lock(&g_lock);
+    wr_l(R_POWERCFG, (unsigned)g_seek.pc0);
+    wr_l(R_SYSCONFIG2, (unsigned)g_seek.s2);
+    wr_l(R_SYSCONFIG3, (unsigned)g_seek.s3);
+    if (found) found = snap_l(p, found);          // off the 50 kHz shoulder, onto the raster
+    pthread_mutex_unlock(&g_lock);
+    g_seek.active = false;
+
+    if (found && g_tuner) {
+        unsigned uf = (unsigned)found;
+        try { ((fn_cu)vslot(g_tuner, T_SetFrequency))(g_tuner, &uf); } catch (...) {}
+    }
+    std::fprintf(stderr, "[cinder-tuner] chunked seek -> %d kHz after %d polls\n", found, g_seek.polls);
+    return found ? found : -1;
+}
+
+void cinder_tuner_seek_abort(void) {
+    using namespace regmon;
+    if (!g_seek.active) return;
+    pthread_mutex_lock(&g_lock);
+    wr_l(R_POWERCFG, (unsigned)g_seek.pc0);
+    wr_l(R_SYSCONFIG2, (unsigned)g_seek.s2);
+    wr_l(R_SYSCONFIG3, (unsigned)g_seek.s3);
+    pthread_mutex_unlock(&g_lock);
+    g_seek.active = false;
 }
 
 int cinder_tuner_seek(int from_khz, int dir, cinder_tuner_step_fn on_step) {
@@ -658,6 +756,124 @@ static int scan_hw(int start_khz, int end_khz, int* out_khz, int max) {
     for (int i = 0; i < np && out < max; i++) out_khz[out++] = peaks[i].khz;
     std::fprintf(stderr, "[cinder-tuner] hw scan %d-%d kHz: floor=%d cut=%d -> %d station(s)\n",
                  start_khz, end_khz, floor_rssi, cut, out);
+    return out;
+}
+
+// ── CHUNKED SCAN — the same sweep, one channel per call ─────────────────────────────────────
+//
+// WHY THIS EXISTS: cinder-home runs input, actions AND painting on one thread (the render worker;
+// carry_out is called from input_pump, which sits above cinder_render_tick in that loop). So the
+// blocking scan below froze the screen for its whole ~10 s — reported from the device 2026-08-18,
+// "paused and wouldn't respond". The progress callback could not help: it marks the UI dirty, but
+// nothing can paint while the thread that paints is inside the scan.
+//
+// A worker thread was the obvious fix and is the wrong one here: the sweep brackets itself with
+// Sony service calls (Open/Play/Stop/Close), and pst clients are not something to move off their
+// pump thread on a hunch — see reference_pst_ipc_pump.
+//
+// So the sweep is turned inside out instead. One channel is ~45 ms (the chip's own tune time), so
+// a per-frame slice costs about two frames and the loop keeps running: the progress bar becomes
+// real, the UI stays live, and SCAN can actually be cancelled mid-sweep — which the screen already
+// offered and could not previously deliver.
+namespace {
+struct ScanJob {
+    bool  active = false;
+    regmon::Plan plan;
+    int   pc0 = 0;
+    int   f = 0, start = 0, end = 0, span = 1;
+    struct Hit { int khz, rssi; } hits[256];
+    int   nh = 0;
+} g_scan;
+}  // namespace
+
+int cinder_tuner_scan_begin(int start_khz, int end_khz) {
+    using namespace regmon;
+    if (!available()) return 0;
+    pthread_mutex_lock(&g_lock);
+    g_scan.plan = plan_l();
+    g_scan.pc0 = rd_l(R_POWERCFG);
+    if (g_scan.pc0 >= 0)
+        wr_l(R_POWERCFG, (unsigned)g_scan.pc0 & ~(unsigned)PC_DMUTE);   // mute for the sweep
+    pthread_mutex_unlock(&g_lock);
+    if (g_scan.pc0 < 0) return 0;
+    g_scan.start = g_scan.f = start_khz;
+    g_scan.end = end_khz;
+    g_scan.span = (end_khz - start_khz) / 100 + 1;
+    g_scan.nh = 0;
+    g_scan.active = true;
+    return 1;
+}
+
+int cinder_tuner_scan_step(void) {
+    using namespace regmon;
+    if (!g_scan.active) return -1;
+    if (g_scan.f > g_scan.end || g_scan.nh >= 256) return -1;
+
+    Plan& p = g_scan.plan;
+    int chan = (g_scan.f - p.base_khz) / p.space_khz;
+    if (chan >= 0 && chan <= CH_MASK) {
+        pthread_mutex_lock(&g_lock);
+        int s = -1;
+        if (wr_l(R_CHANNEL, (unsigned)(chan | CH_TUNE))) {
+            s = wait_stc_l();
+            wr_l(R_CHANNEL, (unsigned)chan);
+        }
+        pthread_mutex_unlock(&g_lock);
+        if (s < 0) return -1;                       // the bus went away; let the caller finish
+        g_scan.hits[g_scan.nh].khz = g_scan.f;
+        g_scan.hits[g_scan.nh].rssi = s & ST_RSSI;
+        g_scan.nh++;
+    }
+    g_scan.f += 100;                                 // the raster the UI tunes on
+    int done = g_scan.nh * 100 / (g_scan.span > 0 ? g_scan.span : 1);
+    return done > 99 ? 99 : done;                    // 100 is reserved for "finished"
+}
+
+// Peak-pick what the sweep collected, put the chip back, and end the job. Safe to call at any time
+// — a cancel is just this with whatever has been gathered so far.
+int cinder_tuner_scan_collect(int* out_khz, int max) {
+    using namespace regmon;
+    if (!g_scan.active) return 0;
+    pthread_mutex_lock(&g_lock);
+    if (g_scan.pc0 >= 0) wr_l(R_POWERCFG, (unsigned)g_scan.pc0);   // unmute, as we found it
+    pthread_mutex_unlock(&g_lock);
+    g_scan.active = false;
+
+    const int nh = g_scan.nh;
+    if (!out_khz || max <= 0 || nh < 8) return 0;
+
+    static int sorted[256];
+    for (int i = 0; i < nh; i++) sorted[i] = g_scan.hits[i].rssi;
+    for (int a = 1; a < nh; a++) {
+        int v = sorted[a], b = a - 1;
+        while (b >= 0 && sorted[b] > v) { sorted[b + 1] = sorted[b]; b--; }
+        sorted[b + 1] = v;
+    }
+    const int floor_rssi = sorted[nh / 2];
+    const int cut = floor_rssi + 3;
+    g_seek_th = floor_rssi + 1;
+
+    struct Peak { int khz, rssi; };
+    static Peak peaks[64];
+    int np = 0;
+    for (int i = 0; i < nh; i++) {
+        if (g_scan.hits[i].rssi < cut) continue;
+        if (np > 0 && g_scan.hits[i].khz - peaks[np - 1].khz <= 200) {
+            if (g_scan.hits[i].rssi > peaks[np - 1].rssi)
+                peaks[np - 1] = { g_scan.hits[i].khz, g_scan.hits[i].rssi };
+            continue;
+        }
+        if (np < 64) peaks[np++] = { g_scan.hits[i].khz, g_scan.hits[i].rssi };
+    }
+    for (int a = 1; a < np; a++) {
+        Peak v = peaks[a]; int b = a - 1;
+        while (b >= 0 && peaks[b].rssi < v.rssi) { peaks[b + 1] = peaks[b]; b--; }
+        peaks[b + 1] = v;
+    }
+    int out = 0;
+    for (int i = 0; i < np && out < max; i++) out_khz[out++] = peaks[i].khz;
+    std::fprintf(stderr, "[cinder-tuner] chunked scan: %d steps, floor=%d cut=%d -> %d station(s)\n",
+                 nh, floor_rssi, cut, out);
     return out;
 }
 

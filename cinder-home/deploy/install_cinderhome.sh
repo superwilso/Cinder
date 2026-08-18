@@ -52,6 +52,7 @@ SRC_POWER=/contents/cinder-power
 SRC_MSC=/contents/cinder-msc
 SRC_CLOCK=/contents/cinder-clock
 SRC_FM=/contents/cinder-fm
+SRC_VOLTABLE=/contents/cinder-voltable
 SRC_SIGNATURE=/contents/cinder-signature.sh
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
@@ -79,6 +80,10 @@ comp_bool() {  # comp_bool <VARNAME> <default> — only ever echoes 0 or 1
     v="$(comp_raw "$1")"
     case "$v" in 0|1) echo "$v" ;; *) echo "$2" ;; esac
 }
+comp_voltable() {  # comp_voltable — only ever echoes a known table keyword
+    v="$(comp_raw CINDER_VOLTABLE)"
+    case "$v" in stock|wm1a|w1) echo "$v" ;; *) echo stock ;; esac
+}
 comp_sig() {   # comp_sig — only ever echoes a known variant name
     v="$(comp_raw CINDER_SIGNATURE)"
     case "$v" in stock|pv1|pv2|clock|hw1|hw2) echo "$v" ;; *) echo stock ;; esac
@@ -90,6 +95,7 @@ WANT_CLOCK="$(comp_bool CINDER_CLOCK 1)"
 WANT_UMOUNT="$(comp_bool CINDER_UMOUNT 1)"
 WANT_GPUNODE="$(comp_bool CINDER_GPUNODE 0)"
 WANT_FM="$(comp_bool CINDER_FM 1)"
+WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
 
 if [ -f "$COMPONENTS" ]; then
@@ -97,7 +103,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM signature=$WANT_SIGNATURE"
+echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE signature=$WANT_SIGNATURE"
 
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
@@ -277,6 +283,34 @@ elif [ -s "$SRC_FM" ]; then
     fi
 else
     echo "WARN: $SRC_FM not staged (tools/flash.sh --push dist/<ch>/cinder-fm) — FM meter/fast scan unavailable."
+fi
+
+# 1f3) wired volume curve. Installs cinder-voltable (setuid-root) and records the chosen table in
+#      /contents/cinder_voltable.conf, which the LAUNCHER applies on every boot — it has to be every
+#      boot, because load_sony_driver re-installs the stock table each time. Putting the choice on
+#      /contents means it can be changed over USB-MSC without a reinstall.
+#      Non-fatal: without it the stock curve stays, which is what the device does today.
+if [ -s "$SRC_VOLTABLE" ]; then
+    "$BB" cat "$SRC_VOLTABLE" > "$BIN/cinder-voltable.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-voltable.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-voltable.tmp" 2>/dev/null
+        "$BB" chmod 4755 "$BIN/cinder-voltable.tmp"
+        "$BB" mv -f "$BIN/cinder-voltable.tmp" "$BIN/cinder-voltable"
+        echo "installed setuid helper: $BIN/cinder-voltable (mode $("$BB" stat -c %a "$BIN/cinder-voltable" 2>/dev/null))"
+    else
+        echo "WARN: cinder-voltable stage empty — the stock volume curve stays."
+        "$BB" rm -f "$BIN/cinder-voltable.tmp" 2>/dev/null
+    fi
+else
+    echo "WARN: $SRC_VOLTABLE not staged — the stock volume curve stays."
+fi
+# Only seed the conf if the user has not already got one: their on-device choice outranks the
+# installer's default on a re-flash.
+if [ ! -f /contents/cinder_voltable.conf ]; then
+    echo "$WANT_VOLTABLE" > /contents/cinder_voltable.conf 2>/dev/null
+    echo "volume curve: $WANT_VOLTABLE (wrote /contents/cinder_voltable.conf)"
+else
+    echo "volume curve: keeping existing /contents/cinder_voltable.conf ($("$BB" cat /contents/cinder_voltable.conf 2>/dev/null))"
 fi
 
 # 1g) audio "sound signature". Installs the switcher and applies the chosen variant by patching
@@ -533,6 +567,34 @@ MSC_NO_RESPAWN=/contents/cinderhome_norespawn   # same, settable over USB-MSC
 RESPAWN_MAX_FAST=3        # consecutive crashes inside the healthy window before giving up
 RESPAWN_HEALTHY_S=30      # a run at least this long "counts" — it resets the consecutive tally
 RESPAWN_MAX_TOTAL=10      # absolute cap per boot, so a 31-s crash cycle cannot loop forever
+
+# WIRED VOLUME CURVE. load_sony_driver installs the stock output volume table on every boot, so the
+# choice has to be re-applied on every boot too — this is not an install-time patch.
+#
+# The stock A50 table wastes 40 of the 120 steps (vol 40-60 and 100-120 are both dead, measured in
+# analysis/RE_volume_pop.md) and coarsens toward the top where the volume pop is worst. cinder-
+# voltable is setuid-root because the tables go into /proc/icx_audio_cxd3778gf_data/, which the
+# launcher (uid 100, like the app) cannot write.
+#
+# Best-effort and deliberately quiet on failure: a missing helper or an unreadable conf leaves the
+# stock curve, which is exactly what the device does without any of this. Nothing here may stop a
+# boot — the audio path is already up by now either way.
+VOLTABLE_CONF=/contents/cinder_voltable.conf
+VOLTABLE_BIN=/system/vendor/unknown321/bin/cinder-voltable   # same dir as HOME_BIN above
+if [ -x "$VOLTABLE_BIN" ] && [ -f "$VOLTABLE_CONF" ]; then
+    vt=$(cat "$VOLTABLE_CONF" 2>/dev/null | tr -d " \t\r\n")
+    case "$vt" in
+        stock|wm1a|w1)
+            if "$VOLTABLE_BIN" "$vt" >/dev/null 2>&1; then
+                log "volume curve: $vt applied"
+            else
+                log "volume curve: cinder-voltable $vt FAILED — stock curve stays"
+            fi
+            ;;
+        "") : ;;
+        *)  log "volume curve: unknown value '$vt' in $VOLTABLE_CONF — stock curve stays" ;;
+    esac
+fi
 
 # Kill switch: restores the pre-supervisor `exec`. The escape for the escape — a file drop over
 # USB-MSC needs strictly less than the supervisor it disables.

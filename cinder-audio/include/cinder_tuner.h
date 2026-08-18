@@ -121,6 +121,32 @@ void cinder_tuner_set_progress_cb(cinder_tuner_progress_fn cb);
 typedef void (*cinder_tuner_step_fn)(int khz);
 int cinder_tuner_seek(int from_khz, int dir, cinder_tuner_step_fn on_step);
 
+/* ── CHUNKED scan and seek — use these from a UI thread ──────────────────────────────────────
+ * cinder-home runs input, actions AND painting on one thread, so the blocking calls above freeze
+ * the screen for their whole duration — ~10 s for a scan, 1-4 s for a seek. It also makes the
+ * seek's dial sweep invisible, because the thread that would paint it is inside the loop.
+ *
+ * These do the identical work a slice at a time. One slice is about one channel — ~45 ms, the
+ * chip's own tune time — so the UI keeps painting, the progress bar means something, and a scan
+ * can actually be cancelled. Both are REGISTER-PATH ONLY: they return 0 from _begin when
+ * cinder_tuner_hw() is 0, and the caller should fall back to the blocking calls above.
+ *
+ * Scan:  begin() -> step() per frame until it returns -1 -> collect().
+ *        step() returns 0..99 progress; collect() fills out_khz strongest-first and returns how
+ *        many. collect() ALSO ends the job and restores the chip, so it is the cancel path too:
+ *        call it early and it simply peak-picks whatever was gathered.
+ *
+ * Seek:  begin() -> step(&cur) per frame. 0 = still walking and *cur is where the chip is right
+ *        now (drive the dial with it), >0 = landed on that frequency, -1 = found nothing.
+ *        abort() gives up and puts the chip back. */
+int  cinder_tuner_scan_begin(int start_khz, int end_khz);
+int  cinder_tuner_scan_step(void);
+int  cinder_tuner_scan_collect(int *out_khz, int max);
+
+int  cinder_tuner_seek_begin(int from_khz, int dir);
+int  cinder_tuner_seek_step(int *cur_khz);
+void cinder_tuner_seek_abort(void);
+
 #ifdef __cplusplus
 }
 #endif

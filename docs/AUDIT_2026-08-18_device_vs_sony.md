@@ -50,9 +50,9 @@ device, `28/29/30` S-Master gain modes. Read live, with their current values:
 
 | numid | control | value | what it gives us |
 |---|---|---|---|
-| **1, 2** | `noise cancel mode` / `status` | 0 / 0 | **noise cancelling — a whole Sony feature Cinder does not have at all** (zero mentions in the source) |
-| **3, 7** | `user noise cancel gain` / `user ambient gain` | 15 / 15 | NC strength and ambient-sound level |
-| **31** | `noise cancel headphone type` | 3 | which NC headphone is fitted |
+| 1, 2 | `noise cancel mode` / `status` | 0 / 0 | NC and ambient modes — **but only with Sony's own NC headphones; see the correction below** |
+| 3, 7 | `user noise cancel gain` / `user ambient gain` | 15 / 15 | NC strength and ambient level, same gate |
+| **31** | `noise cancel headphone type` | 3 = `other` | enumerates `nw750n / nc31 / nw500n / other` — **the device auto-detects, and correctly reports no NC headphone here** |
 | **33, 34** | `jack status se` / `jack status btl` | **1** / 0 | **real jack detection** — se reads 1 with headphones in. Pause-on-unplug, and a truthful FM aerial check |
 | 8 | `nc ignore jack state` | off | |
 | 13 | `master gain` | 30 | a *second* gain stage, separate from `numid=10` |
@@ -148,17 +148,56 @@ is in, and one of them tells you *what kind*.
 A driver-level **fade amount** and **timed mute** are precisely the shape of knob that the unsolved
 volume-step pop would respond to, and `timed_mute_ms` can be experimented with today at zero cost.
 
+## CORRECTION — noise cancelling is NOT the win this audit first called it
+
+The first draft ranked NC top. **That was wrong, and testing on the device says so.** Recorded here
+rather than quietly deleted, because the mistake is instructive: an ALSA control that accepts a
+write is not evidence that anything happened.
+
+`noise cancel headphone type` enumerates **`nw750n / nc31 / nw500n / other`** — three specific Sony
+NC headphones and a catch-all. With headphones in the jack it reads **`other`**, i.e. the device
+detects that no NC headphone is attached. Setting `noise cancel mode` to `airplane` in that state:
+
+```
+mode   -> 1        (stored)
+status -> 0        (off — NC never engaged)
+MICBIAS   = 0x00   (the NC mic bias was never powered)
+AD8CTRL0  = 0x00   (the NC mic ADC never turned on)
+```
+
+The control takes the write and the feature does not run — the same write-accepted-but-inert shape
+as the enums in `reference_eq_units`.
+
+Forcing it proves the gate is **software**, and equally proves why that does not help:
+
+```
+type := nw750n,  nc ignore jack state := on,  mode := airplane
+  status -> 1 (nc)     MICBIAS -> 0x0A (powered)     DNC1_START 0x50 -> 0x80 (engine running)
+```
+
+So the driver can be made to run the canceller. It cannot be made to grow microphones. Sony's
+Walkman NC takes its noise reference from **feed-forward mics inside the headphone**, carried on
+extra pins of the plug — which is exactly what `nw750n / nc31 / nw500n` identifies. On an ordinary
+3-pole headphone the DNC engine would process a floating input: no cancellation, plausibly added
+hiss. The same gate covers the ambient modes, which pipe outside sound *in* through those same mics.
+
+**What is actually worth building:** a conditional. `noise cancel headphone type` is auto-detected,
+so Cinder can show the NC/ambient controls **only when it reads something other than `other`** — a
+real feature for someone who owns one of those three headphones, and correctly invisible otherwise.
+That is a much smaller and more honest item than "Cinder is missing noise cancelling".
+
 ## Ranked — what I would actually do
 
-1. **Noise cancelling (B).** Free tier, a complete Sony feature Cinder does not have, six ALSA
-   controls, and the kernel module is already loaded. Best ratio in the audit by a wide margin.
-2. **Jack detect → pause on unplug (B/G).** Free, small, and the kind of thing whose absence is felt
+1. **Jack detect → pause on unplug (B/G).** Free, small, and the kind of thing whose absence is felt
    every time it happens.
-3. **The volume pop (A/H).** A months-old unsolved bug with two new suspects — `SMS_SFTRMP` in the
+2. **The volume pop (A/H).** A months-old unsolved bug with two new suspects — `SMS_SFTRMP` in the
    codec and `timed_mute_ms` in the driver — one of which is free to test.
-4. **CPU floor (E).** Free. Half of a feature people pay for.
-5. **Headphone impedance (A).** Needs a helper, but turns a guessed setting into a measured one.
-6. **Battery detail: current, charge target, temperature (D/F).** Half free, half helper.
+3. **CPU floor (E), and the `dacdat` volume tables.** Both free or nearly so — see the Walkman One
+   section below.
+4. **Headphone impedance (A).** Needs a helper, but turns a guessed setting into a measured one.
+5. **Battery detail: current, charge target, temperature (D/F).** Half free, half helper.
+6. **Noise cancelling, CONDITIONALLY (B).** Only meaningful with one of the three Sony NC
+   headphones; gate the UI on the auto-detected type.
 7. **Bluetooth over the stack's own sockets (C).** Biggest payoff, biggest cost. Do it deliberately,
    not opportunistically — and start by watching `/tmp/bt.app.gap` during a known connect.
 
