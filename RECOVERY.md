@@ -185,10 +185,19 @@ degrades silently (no `cinder-umount` → USB-MSC cannot unmount `/contents` as 
 ```bash
 tools/flash.sh --push cinder-home/dist/stable/cinder-home
 tools/flash.sh --push cinder-home/dist/stable/cinder-umount
-tools/flash.sh --push cinder-home/dist/stable/cinder-gpunode
+tools/flash.sh --push cinder-home/dist/stable/cinder-power
+tools/flash.sh --push cinder-home/dist/stable/cinder-msc
+tools/flash.sh --push cinder-home/dist/stable/cinder-clock
+tools/flash.sh --push cinder-home/dist/stable/cinder-fm
+tools/flash.sh --push cinder-home/dist/stable/cinder-gpunode   # dev channel only
 tools/flash.sh cinder-home/dist/stable/cinder_home_install.upg
 # then boot with the cable OUT — a cable at boot is itself the escape to stock
 ```
+
+Every one of those is a separate `SRC_*` the installer stages from the storage root and only
+*warns* about if missing, so anything left out degrades silently: no `cinder-power` → no Power off
+or Restart; no `cinder-msc` → no USB mass storage; no `cinder-clock` → the clock cannot be set;
+no `cinder-fm` → the radio loses its signal meter and its one-second scan.
 
 ### Getting a stubborn looping device into MediaTek mode (hard-won notes)
 - **Detach usbipd first.** If the device is bound to WSL it's invisible to Windows/wbrt:

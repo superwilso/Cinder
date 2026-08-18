@@ -5287,35 +5287,68 @@ static void fm_power_fn() {
     }
 }
 
+// The signal meter. Three register reads through the shim, so it is cheap enough to ride the 1 Hz
+// housekeeping tick rather than needing a thread of its own. Only meaningful while the tuner is
+// powered — with the chip down the registers describe nothing, so the meter is cleared instead.
+static void fm_signal_fn() {
+    if (!g_fm_on) { cinder_fm_report_signal(-1, 0, cinder_tuner_hw()); return; }
+    int rssi = cinder_tuner_signal();
+    int st = cinder_tuner_stereo();
+    cinder_fm_report_signal(rssi, st > 0 ? 1 : 0, cinder_tuner_hw());
+}
+
+// GetFrequency has been MEASURED returning 0 immediately after a start on device. The UI clamps
+// whatever it is handed into the band, so a 0 does not show as "unknown" — it drags the dial to
+// 87.5 and leaves it there. Every read-back therefore goes through this: report a frequency only
+// when one was actually read, and otherwise leave the UI showing what the user set.
+static void fm_report_actual() {
+    int back = cinder_tuner_get_khz();
+    if (back > 0) cinder_fm_report_khz(back);
+}
+
 static void fm_tune_fn() {
     if (!g_fm_on) return;
     cinder_tuner_set_khz(cinder_fm_khz());
     // Report what the radio HOLDS: SetFrequency rejects out-of-band values and keeps the previous
     // one, so echoing the request back would show a frequency that is not tuned.
-    cinder_fm_report_khz(cinder_tuner_get_khz());
+    fm_report_actual();
 }
 
 static void fm_seek_fn() {
     if (!g_fm_on) return;
     int found = cinder_tuner_seek(cinder_fm_khz(), cinder_fm_seek_dir(), fm_on_step);
-    cinder_fm_report_khz(found ? found : cinder_tuner_get_khz());
+    if (found) cinder_fm_report_khz(found);
+    else fm_report_actual();
 }
 
 static void fm_scan_fn() {
-    // A scan needs the capture PCM, which AudioInPlayerService holds while playing — so stop
-    // first, sweep, then bring the radio back up on whatever it was tuned to.
+    // The register scan reads the chip's own RSSI, so it needs neither the capture PCM nor
+    // AudioInPlayerService and can sweep with the radio still up — the shim mutes the chip for the
+    // duration and unmutes after. The AUDIO scan is the one that has to own hw:0,1, and hence the
+    // one that has to stop the radio first and rebuild it afterwards.
+    const bool hw = cinder_tuner_hw() != 0;
     const bool was = g_fm_on;
-    if (was) { cinder_tuner_stop(); g_fm_on = false; }
+    if (!hw && was) { cinder_tuner_stop(); g_fm_on = false; }
     cinder_tuner_set_progress_cb(fm_on_progress);
     int found[8] = {0};
     int n = cinder_tuner_scan(87500, 108000, found, 8);
     cinder_tuner_set_progress_cb(nullptr);
     cinder_fm_report_stations(found, n);
-    if (was) {
+    if (!hw && was) {
         int rc = cinder_tuner_start(cinder_fm_khz());
         g_fm_on = (rc == 0);
         cinder_fm_report_playing(g_fm_on ? 1 : 0);
+    } else if (hw) {
+        // The sweep left the chip wherever it finished; put it back on the user's frequency.
+        cinder_tuner_set_khz(cinder_fm_khz());
+        // Only echo a read-back that actually read. GetFrequency has been seen to return 0 right
+        // after a start on device, and the UI clamps whatever it is given into the band — so a 0
+        // would silently drag the dial to 87.5 and leave it there.
+        fm_report_actual();
     }
+    char m[96];
+    std::snprintf(m, sizeof m, "fm: scan (%s) found %d station(s)", hw ? "chip RSSI" : "audio", n);
+    clog_(m);
 }
 
 
@@ -5335,6 +5368,21 @@ static void fm_btout_fn() {
     if (!g_fm_on) { cinder_fm_report_bt_out(0); clog_("fm-bt: radio is off — nothing to send"); return; }
     if (want) {
         cinder_tuner_audio_stop();      // release hw:0,1 from AudioInPlayerService
+        // PROVE the source before claiming to send it. MEASURED 2026-08-18: AudioInPlayerService
+        // opens hw:0,1 and does NOT release it on Stop — the substream stays RUNNING for the rest
+        // of the boot, and every open returns -EBUSY. Without this check the bridge starts, the
+        // button lights, and nothing is transmitted, which is the worst of the three outcomes.
+        int rms = cinder_tuner_capture_rms(300);
+        if (rms < 0) {
+            cinder_tuner_audio_start();          // put the radio back on the jack
+            cinder_fm_report_bt_out(0);
+            clog_("fm-bt: hw:0,1 is held by another process (-EBUSY) — cannot bridge. The radio "
+                  "stays on the headphone jack.");
+            return;
+        }
+        char m[128];
+        std::snprintf(m, sizeof m, "fm-bt: capture source RMS=%d (0 would be silence)", rms);
+        clog_(m);
         fmbt_start();
         cinder_fm_report_bt_out(g_ldac_alive ? 1 : 0);
         clog_(g_ldac_alive ? "fm-bt: bridging radio to Bluetooth" : "fm-bt: bridge failed to start");
@@ -5619,6 +5667,8 @@ void carry_out(int act) {
         case CINDER_ACT_FM_SEEK:
             // A full band traversal at ~0.14 s a step is ~30 s worst case; budget generously,
             // because the guard firing mid-seek would leave the tuner holding the capture PCM.
+            // That hazard is specific to the AUDIO seek: the hardware seek touches no PCM at all
+            // and finishes in well under a second, so on this device the budget is now slack.
             run_guarded("carry_out: FM seek", 45, fm_seek_fn);
             break;
         case CINDER_ACT_FM_BT_OUT:
@@ -6737,6 +6787,9 @@ void* render_driver(void*) {
             last_house_ms = house_now;
             cinder_clock_tick();
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
+            // FM signal meter. Register reads only — no Sony service call, no ALSA — so it is far
+            // cheaper than the poll above it and safe on the same tick.
+            run_guarded("pump: FM signal", 4, fm_signal_fn);
             // Scrobble writes /contents — skip while it's handed to the PC (stale mountpoint).
             if (!g_msc_active) cinder_scrobble_tick(g_playing ? 1 : 0);
             // g_playing changes on its own (a track ends, the sleep timer pauses), and the screen

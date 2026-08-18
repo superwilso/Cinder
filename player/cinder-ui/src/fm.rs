@@ -1,17 +1,23 @@
 //! FM Radio — the real thing, wired to the Si4708.
 //!
-//! WHAT THE HARDWARE FORCED. Two of Sony's own primitives are unusable here, and both were
-//! checked against a station that was audible at the time (analysis/RE_fm_tuner.md):
+//! WHAT THE HARDWARE FORCED, AND WHAT IT GAVE BACK. Both of Sony's own primitives are unusable —
+//! `GetSignalLevel` returns 1 at EVERY frequency in the band, and `StartAutoTuning` is a 48-byte
+//! stub that returns inside 100 ms having found nothing in either direction. For a while that meant
+//! the station list had to be MEASURED from the audio at ~0.45 s per step, about 90 s for the band.
 //!
-//!   * `GetSignalLevel` returns 1 at EVERY frequency in the band. It is not a signal meter, so
-//!     there is no bar to draw and nothing to seek on.
-//!   * `StartAutoTuning` returns inside 100 ms having found nothing, in both directions.
+//! It does not any more. Sony's driver publishes the chip's registers at `/proc/regmon/Si4708icx`,
+//! so the screen now draws a REAL signal meter (`STATUS_RSSI`), scans the whole band in about ten
+//! seconds instead of ninety, and seeks with the chip's own hardware seek — which, unlike the audio
+//! route, does not borrow the capture PCM, so the radio stays audible while it sweeps. Ten and not
+//! one: a tune costs the chip ~45 ms to settle and 206 of those is the floor (RE_fm_tuner.md).
 //!
-//! So a station list has to be MEASURED from the audio, and that costs ~0.45 s per 100 kHz step —
-//! about 90 s for the whole band. That is far too slow to sit behind a SEEK button, which is why
-//! this screen has an explicit SCAN that fills the preset row, and why ◀ ▶ then jump between the
-//! stations that scan FOUND rather than sweeping live. The slow thing happens once, on purpose,
-//! with the user watching; the fast thing happens per tap.
+//! SCAN still exists and still fills the preset row, because a list of the local stations is worth
+//! having on a screen this small — it is just no longer a minute-long ordeal, and ◀ ▶ are now a
+//! true seek rather than a jump between whatever the last scan found.
+//!
+//! The meter degrades honestly: if the register path is down (`hw == false`, e.g. the setuid
+//! helper is not installed) `signal` is negative and the meter is not drawn at all, rather than
+//! drawing a bar that is really a constant.
 //!
 //! ANTENNA. The headphone cable is the aerial — with an empty jack every frequency is noise. The
 //! footer says so, because "the radio is broken" and "nothing is plugged in" look identical.
@@ -29,6 +35,22 @@ pub const MAX_KHZ: i32 = 108000;
 pub const STEP_KHZ: i32 = 100;
 /// How many stations the preset row shows.
 pub const PRESETS: usize = 6;
+
+/// RSSI that fills the meter. MEASURED on this unit across two sessions (2026-08-18): with the
+/// aerial cable's far end in a PC the noise floor sat at 5-6 and carriers read 9-14; with it
+/// hanging free the floor rose to 8 and carriers reached 15. So both ends move with the aerial.
+/// The Si470x range is nominally 0..75 dBuV and nothing here comes near it — scaling to 75 would
+/// leave the meter permanently on its first bar, which looks broken while being correct.
+pub const SIGNAL_FULL: i32 = 18;
+/// Below this the bar is drawn faint: it is the band's own noise, not a station. Set above the
+/// higher of the two measured floors, so a quiet band does not read as a weak station.
+pub const SIGNAL_FLOOR: i32 = 8;
+/// Meter geometry — beneath the frequency readout, right of the MHz label.
+const METER_X: i32 = 30;
+const METER_Y: i32 = 236;
+const METER_W: i32 = 420;
+const METER_H: i32 = 6;
+const METER_SEGS: i32 = 20;
 
 // ── layout: one source for render AND hit test ───────────────────────────────────────────────
 const DIAL_X0: i32 = 30;
@@ -142,6 +164,12 @@ pub struct Fm {
     pub antenna: bool,
     /// Radio audio is going out over Bluetooth rather than the jack.
     pub bt_out: bool,
+    /// Live RSSI off the chip, or <0 when there is no register path and so no meter to draw.
+    pub signal: i32,
+    /// True when scan/seek/meter are the chip's own rather than measured from the audio.
+    pub hw: bool,
+    /// Chip's ST bit — a genuine stereo lock, not Sony's GetStereoState (which reads 0 always).
+    pub stereo: bool,
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
@@ -180,6 +208,27 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     let start = 240.0 - (fw + 9.0 + mw) / 2.0;
     text::draw(c, f, start, 205.0, &fstr, &fs);
     text::draw(c, f, start + fw + 9.0, 205.0, "MHz", &ms);
+
+    // SIGNAL METER — the chip's own RSSI, segment by segment. Drawn only when there is a real
+    // reading behind it: a negative `signal` means the register path is down, and a meter that is
+    // secretly a constant is worse than no meter, which is exactly what Sony's GetSignalLevel
+    // would have given us.
+    if s.signal >= 0 {
+        let lit = (s.signal.min(SIGNAL_FULL) * METER_SEGS + SIGNAL_FULL / 2) / SIGNAL_FULL;
+        let seg_w = METER_W / METER_SEGS;
+        // Above the floor it is a station and takes the accent; at or below it is just band noise.
+        let on = if s.signal > SIGNAL_FLOOR { t.acc } else { t.dim };
+        for i in 0..METER_SEGS {
+            let x = METER_X + i * seg_w;
+            let c_ = if i < lit { on } else { t.line };
+            fill_rect(c, x, METER_Y, seg_w - 3, METER_H, c_);
+        }
+        // Stereo lock earns a label rather than an icon — it is rare enough here to be worth words.
+        if s.stereo {
+            text::draw(c, f, (METER_X + METER_W - 30) as f32, (METER_Y - 8) as f32, "ST",
+                       &sty(Family::Mono, Weight::Regular, 10.0, t.acc, 0.10));
+        }
+    }
 
     // dial
     fill_rect(c, DIAL_X0, DIAL_Y, DIAL_W, 1, t.line);
@@ -243,8 +292,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
     }
     center(c, f, 240.0, (SCAN_Y + SCAN_H / 2 + 5) as f32, &scan_label,
            &sty(Family::Mono, Weight::Regular, 14.0, if s.scanning { t.acc } else { t.dim }, 0.10));
-    center(c, f, 240.0, (SCAN_Y + SCAN_H + 20) as f32,
-           "takes about a minute — the signal meter cannot do it",
+    // What the scan actually costs depends on which route is live, and the difference is two
+    // orders of magnitude — so say which one the user is about to get.
+    let scan_note = if s.hw {
+        "reads the chip's own signal meter — about ten seconds"
+    } else {
+        "no register access — measured from the audio, about a minute"
+    };
+    center(c, f, 240.0, (SCAN_Y + SCAN_H + 20) as f32, scan_note,
            &sty(Family::Sans, Weight::Regular, 11.0, t.faint, 0.0));
 
     hline(c, 740, t.line);

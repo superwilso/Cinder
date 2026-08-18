@@ -129,7 +129,7 @@ never repoint the `.appcfg` before the probe run looks clean.
   and is setting it live on an in-use sequence safe. **Repeat-all** stays open — the shape would be
   to detect end-of-queue and re-issue the sequence, which needs one device session to observe what
   the play state actually does when a queue runs out.
-- **Remaining inert controls** (deliberate, tracked): FM / BT Receiver (backends not wired, P2 below),
+- **Remaining inert controls** (deliberate, tracked): BT Receiver (backend not wired, P2 below),
   Settings ▸ Database, and the EQ footer's **"Save Sound Preset"** — the EQ already persists on
   every change, so that button has nothing to do; reword it or give it a real named-preset store.
 - **Repo hygiene — now materially worse, and worth doing.** `.git` has grown from 116 MB to
@@ -254,7 +254,8 @@ never repoint the `.appcfg` before the probe run looks clean.
   `hw:4,0`. See `analysis/E_usbdac_ldac/RE_findings.md` round l.
 - **USB-mode switch** (enter MSC) — wired to **Settings ▸ USB mode** (`setprop sys.sony.config msc`,
   guarded; disruptive — validate live).
-- **FM radio / BT receiver** screens — Sony tuner/BT services (currently static).
+- **BT receiver** screen — Sony BT services (currently static). *(FM is no longer on this list —
+  see the FM entry below.)*
 - **Scan-and-pair — BUILT 2026-07-30, wants a hands-on pairing attempt.** The Devices screen has a
   SCAN button and a FOUND section, driven by a real Sony listener. The ABI was recovered *and proven on
   hardware* the same day (`cinder-probe --btscan`): a plain C++ object registered with
@@ -268,7 +269,31 @@ never repoint the `.appcfg` before the probe run looks clean.
   headphones — which also settles which of `NumericComparison`'s two words is the displayed code, and
   whether the echoed `SspVariant` is accepted. **NFC tap-to-pair** now rides the same listener; it is ordinary work, not a wall.
   Detail: `analysis/G_bt_nfc/RE_findings.md` rounds 2026-07-30b and c.
-- **FM radio, and FM → Bluetooth** — designed end to end 2026-07-28, none of it built. Full write-up
+- **FM radio — BUILT 2026-08-17/18 and proven on hardware; FM → Bluetooth is the part still open.**
+  The radio tunes, plays, scans and seeks. Sony's two primitives are useless (`GetSignalLevel` is a
+  constant 1, `StartAutoTuning` a 48-byte stub) — so Cinder drives the **chip** instead, through
+  `/proc/regmon/Si4708icx`, which Sony's own driver publishes and which the setuid `cinder-fm`
+  widens for uid 100. That gives a real graded RSSI meter, a ~10 s band scan (vs ~90 s measuring the
+  audio) and the chip's own hardware seek, which needs no capture PCM and so leaves the radio
+  audible while it sweeps. Seek results are snapped off the driver's 50 kHz raster onto the 100 kHz
+  one. Detail and every measurement: [`../analysis/RE_fm_tuner.md`](../analysis/RE_fm_tuner.md).
+  Three of this item's original traps were tested on device 2026-08-18 and **do not reproduce**: no
+  service re-disables the ADC mux (held 90 s), the device does not opportunistically suspend
+  (`autosleep=off`, zero suspends in 2 h 10 min screen-dark), and stereo is not a config problem —
+  `ST` stays 0 at all four `BLNDADJ` settings because the best local carrier reads RSSI 15 and the
+  chip's most sensitive stereo blend starts at 19.
+  **What is left:** ~~the tuner~~ → **FM → Bluetooth**, which is blocked on one measured fact:
+  `AudioInPlayerService` opens `hw:0,1` and does not release it on `Stop()` — the substream stays
+  `RUNNING` for the rest of the boot and every open returns `-EBUSY`. The BT-out button now proves
+  its source with `cinder_tuner_capture_rms()` and refuses honestly rather than transmitting
+  silence. Next test, and it needs a decision because it means killing a Sony service: restart
+  `hagoromo28` and re-run `cinder-probe --fm btcap`. That separates "never releases" from "wedged
+  from an earlier session" (`Play()` currently returns 0 while `GetPlayerState()` stays 0, where a
+  healthy start moves 0 → 2), and the two have opposite fixes.
+  **Never run in cinder-home yet** — every measurement so far came through `cinder-probe`; the
+  screen, the 1 Hz meter poll and the guard budgets are unproven until a flash + reboot.
+
+- **FM → Bluetooth design notes (unchanged, still the plan)** — full write-up
   with the evidence: [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md).
   Short version: the Si4708 is a V4L2 *control* device with no ALSA symbols, so its audio is analog
   into the codec's `'analog input device'` mux (item #1 is `tuner`) → ADC → **`hw:0,1`**

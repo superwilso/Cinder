@@ -701,6 +701,18 @@ fn settings_body(r: &Render) -> String {
         r.app.setup_idx(),
     );
     body.push_str(&setup_body(&r.app.setup_inactive()));
+    // FM: the dial position and the scanned station list. A scan is a DELIBERATE ten-second wait
+    // that the user watches happen, so losing it on a reboot is the same defect as losing a shelf
+    // pin — and losing the frequency drops the dial to a hardcoded 97.3 that is nobody's station.
+    // Written unconditionally (the dial always has a value) and the list only when a scan has run.
+    body.push_str(&format!("fm_khz={}\n", r.app.fm_khz()));
+    let st = r.app.fm_stations();
+    if !st.is_empty() {
+        body.push_str(&format!(
+            "fm_stations={}\n",
+            st.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",")
+        ));
+    }
     // Shelf pins were session-scoped, so every reboot silently wiped the user's bookmarks — the
     // one thing a "pin this place" feature must not do. One line per occupied slot.
     for i in 0..cinder_ui::shelf::SLOTS {
@@ -3079,6 +3091,30 @@ pub extern "C" fn cinder_fm_report_antenna(present: libc::c_int) {
     }
 }
 
+/// The live signal meter, straight off the Si4708's `STATUS_RSSI` register.
+///
+/// `rssi` < 0 means there is no register path (the setuid helper is missing, or the kernel's
+/// regmon node is not there) — the screen then draws no meter at all rather than a bar backed by
+/// Sony's `GetSignalLevel`, which is a constant 1 at every frequency in the band.
+///
+/// Marked dirty only when something actually moved: this is polled while the FM screen is open, and
+/// RSSI wanders by a count or two at rest, so repainting on every sample would keep the panel busy
+/// for no visible reason.
+#[no_mangle]
+pub extern "C" fn cinder_fm_report_signal(rssi: libc::c_int, stereo: libc::c_int, hw: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        let changed = r.app.fm_signal() != rssi
+            || r.app.fm_stereo() != (stereo != 0)
+            || r.app.fm_hw() != (hw != 0);
+        r.app.fm_set_signal(rssi);
+        r.app.fm_set_stereo(stereo != 0);
+        r.app.fm_set_hw(hw != 0);
+        if changed {
+            r.dirty = true;
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_fm_report_scan_progress(pct: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
@@ -3580,6 +3616,27 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         // set_ui_scale_pct clamps into the SCALE_STEPS range.
                         if let Ok(n) = v.parse::<u32>() {
                             r.app.set_ui_scale_pct(n);
+                        }
+                    }
+                    // FM dial position. fm_report_khz clamps into the band, so a hand-edited or
+                    // truncated value cannot put the tuner somewhere it cannot go.
+                    "fm_khz" => {
+                        if let Ok(n) = v.parse::<i32>() {
+                            if n > 0 {
+                                r.app.fm_report_khz(n);
+                            }
+                        }
+                    }
+                    // Scanned stations, strongest first. Anything unparseable is dropped rather
+                    // than failing the load; a bad config must never stop a boot.
+                    "fm_stations" => {
+                        let list: Vec<i32> = v
+                            .split(',')
+                            .filter_map(|s| s.trim().parse::<i32>().ok())
+                            .filter(|k| (cinder_ui::fm::MIN_KHZ..=cinder_ui::fm::MAX_KHZ).contains(k))
+                            .collect();
+                        if !list.is_empty() {
+                            r.app.fm_set_stations(&list);
                         }
                     }
                     // Shelf pins: `pin0=`…`pin2=`. A malformed record clears that slot rather
@@ -4468,6 +4525,60 @@ pub extern "C" fn cinder_set_now_playing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FM state has to survive a reboot. A scan is a deliberate ten-second wait the user watches,
+    /// and the dial is where they left the radio — losing either is the same defect the shelf pins
+    /// had. This pins the on-disk shape, because the failure mode is silent: nothing errors, the
+    /// values simply come back as defaults.
+    #[test]
+    fn fm_dial_and_stations_survive_a_save() {
+        let mut app = cinder_ui::nav::App::new();
+        app.fm_report_khz(105_400);
+        app.fm_set_stations(&[98_300, 106_200, 91_000]);
+
+        // What settings_body writes for FM, built the same way it builds it.
+        let mut body = format!("fm_khz={}\n", app.fm_khz());
+        let st = app.fm_stations();
+        body.push_str(&format!(
+            "fm_stations={}\n",
+            st.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",")
+        ));
+        assert_eq!(body, "fm_khz=105400\nfm_stations=98300,106200,91000\n");
+
+        // …and what the loader makes of it again.
+        let mut back = cinder_ui::nav::App::new();
+        for line in body.lines() {
+            let (k, v) = line.split_once('=').unwrap();
+            match k {
+                "fm_khz" => back.fm_report_khz(v.parse().unwrap()),
+                "fm_stations" => {
+                    let list: Vec<i32> = v.split(',').filter_map(|s| s.parse().ok()).collect();
+                    back.fm_set_stations(&list);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(back.fm_khz(), 105_400);
+        assert_eq!(back.fm_stations(), &[98_300, 106_200, 91_000]);
+    }
+
+    /// A hand-edited or truncated config must not put the tuner outside the band, and must not stop
+    /// a boot. Out-of-band entries are dropped; the dial clamps.
+    #[test]
+    fn fm_settings_reject_garbage_without_failing() {
+        let mut app = cinder_ui::nav::App::new();
+        let list: Vec<i32> = "0,87400,98300,not_a_number,108100,106200"
+            .split(',')
+            .filter_map(|s| s.trim().parse::<i32>().ok())
+            .filter(|k| (cinder_ui::fm::MIN_KHZ..=cinder_ui::fm::MAX_KHZ).contains(k))
+            .collect();
+        assert_eq!(list, vec![98_300, 106_200], "out-of-band and unparseable both dropped");
+        app.fm_set_stations(&list);
+        assert_eq!(app.fm_stations(), &[98_300, 106_200]);
+
+        app.fm_report_khz(999_999);
+        assert_eq!(app.fm_khz(), cinder_ui::fm::MAX_KHZ, "clamped, not stored raw");
+    }
 
     /// A stopped analyzer must not leave its last frame on screen. The bars fall to nothing and the
     /// buffer is dropped, so the visualiser goes absent rather than holding a snapshot — the same

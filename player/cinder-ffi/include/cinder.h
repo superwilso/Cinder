@@ -378,6 +378,11 @@ int  cinder_fm_playing(void);        /* did the user just switch it on or off? *
 void cinder_fm_report_khz(int khz);
 void cinder_fm_report_playing(int on);
 void cinder_fm_report_antenna(int present);
+/* The live signal meter, straight off the chip's STATUS_RSSI register (cinder_tuner_signal()).
+ * `rssi` < 0 = no register path, and the screen then draws no meter rather than one backed by
+ * Sony's GetSignalLevel, which is a constant 1 at every frequency. `hw` says which route is live,
+ * so the SCAN button can tell the user whether it will take a second or a minute. */
+void cinder_fm_report_signal(int rssi, int stereo, int hw);
 void cinder_fm_report_scan_progress(int pct);
 /* Install the stations a scan found, best first (kHz). Clears the scanning state. */
 void cinder_fm_report_stations(const int *khz, int n);
