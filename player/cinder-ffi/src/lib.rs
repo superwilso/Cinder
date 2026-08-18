@@ -345,6 +345,10 @@ struct Render {
     // Drag-to-seek: Some(target_ms) while a finger is dragging the progress rail. While set, the
     // bar/labels show this pending target and incoming position updates are ignored, so the bar
     // does not fight the finger. The shell issues the actual SeekTime on release.
+    /// Direction of the seek the UI last asked for (-1 / +1) and whether FM was switched on.
+    /// Parked here because an action code is one int and these ride alongside it.
+    fm_seek_dir: i32,
+    fm_power: bool,
     scrub_ms: Option<i64>,
     /// Action produced by a settings-slider drag, waiting for the shell to collect it.
     scrub_act: Option<libc::c_int>,
@@ -567,6 +571,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         last_pos: std::time::Instant::now(),
         real_pos_ms: -1,
         real_pos_at: std::time::Instant::now(),
+        fm_seek_dir: 1,
+        fm_power: false,
         scrub_ms: None,
         scrub_act: None,
         pending_screenshot: None,
@@ -1721,10 +1727,35 @@ fn set_pending(r: &mut Render, seq: Vec<cinder_db::Track>, start: usize) {
 /// Returns file paths. The current track leads so re-issuing the sequence at a boundary does not
 /// change what is playing (see `Action::QueueChanged`: a mid-track SetTrackSequence restarts).
 fn play_order_uris(r: &Render, current: &str) -> Vec<String> {
+    // ONE query for the whole map, not one per row.
+    //
+    // This used to call `db.track_by_object_id(row.object_id)` for EVERY row — and that is a full
+    // join-and-filter query each time. With the play context set to All Songs the context IS the
+    // library, so a single shuffle press issued one database round-trip per track in the
+    // collection, and it did so while holding the renderer mutex that every other FFI entry point
+    // needs. Input, rendering and housekeeping all queue up behind it.
+    //
+    // Reported 2026-08-18: "toggling shuffle can crash the device when there is a lot queued" —
+    // shuffled All Songs, pressed shuffle a couple of times, and the device stopped responding to
+    // any input at all and had to be force-rebooted (the launcher's bad-boot counter then reverted
+    // it to stock). Not a crash: a freeze, which is what a long hold of that lock looks like from
+    // the outside.
+    //
+    // MEASURED FIRST, because the obvious suspect was wrong: `cinder-probe --seqtime` showed
+    // SetTrackSequence is FLAT at ~0.25 s from 1 to 512 tracks, so the IPC was never the cost and
+    // the queue flush never came near its 10 s guard. The cost was here, in Rust, and it scales
+    // with library size rather than with the 512-track cap the shell applies afterwards.
+    //
+    // `tracks()` is a single query; the map makes each row a hash lookup. The allocation is one
+    // String per track either way.
+    let index: std::collections::HashMap<i64, String> = r
+        .db
+        .as_ref()
+        .and_then(|db| db.tracks(cinder_db::Sort::Artist).ok())
+        .map(|v| v.into_iter().map(|t| (t.object_id, t.filename)).collect())
+        .unwrap_or_default();
     let by_id = |row: &cinder_ui::model::SongRow| -> Option<String> {
-        r.db.as_ref()
-            .and_then(|db| db.track_by_object_id(row.object_id).ok().flatten())
-            .map(|t| t.filename)
+        index.get(&row.object_id).cloned()
     };
     let mut uris: Vec<String> = vec![current.to_string()];
     uris.extend(r.app.queue().iter().filter_map(by_id));
@@ -1926,6 +1957,13 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // order is genuinely random regardless of what PlayerService's own shuffle does.
             match shuffle_tracks(r.db.as_ref(), *scope) {
                 Some(seq) => {
+                    // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
+                    // the shuffle band on Albums / All Songs started a shuffled sequence but left
+                    // the transport's shuffle indicator OFF, so the control said one thing and the
+                    // player said another — and the moment the sequence ran out, playback carried
+                    // on in plain order without anything having changed on screen.
+                    r.np.shuffle = true;
+
                     // HONOUR THE GENRE FILTER. The band's caption reads "Shuffle Rock" and says how
                     // many tracks that is, but shuffle_tracks resolves straight out of the DB and
                     // knew nothing about the filter — so the button promised a filtered shuffle and
@@ -1962,6 +2000,12 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             match playlist_tracks(r.db.as_ref(), *playlist_id) {
                 Some(mut seq) => {
                     Rng::new().shuffle(&mut seq);
+                    // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
+                    // the shuffle band on Albums / All Songs started a shuffled sequence but left
+                    // the transport's shuffle indicator OFF, so the control said one thing and the
+                    // player said another — and the moment the sequence ran out, playback carried
+                    // on in plain order without anything having changed on screen.
+                    r.np.shuffle = true;
                     set_pending(r, seq, 0);
                     8
                 }
@@ -1988,6 +2032,12 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             };
             match artist_tracks(r.db.as_ref(), &name) {
                 Some(seq) => {
+                    // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
+                    // the shuffle band on Albums / All Songs started a shuffled sequence but left
+                    // the transport's shuffle indicator OFF, so the control said one thing and the
+                    // player said another — and the moment the sequence ran out, playback carried
+                    // on in plain order without anything having changed on screen.
+                    r.np.shuffle = true;
                     set_pending(r, seq, 0);
                     8
                 }
@@ -1997,6 +2047,12 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 }
             }
         }
+        // FM. The frequency/direction the shell needs is fetched with cinder_fm_* rather than
+        // packed into the return code, which is a single int.
+        Action::FmPower(on) => { r.fm_power = *on; 40 }
+        Action::FmTune(khz) => { r.app.fm_report_khz(*khz); 41 }
+        Action::FmSeek(dir) => { r.fm_seek_dir = *dir; 42 }
+        Action::FmScan => 43,
         Action::ThemeChanged(_) => 16, // shell also drives the backlight (night = minimal light)
         Action::Sleep => 10,
         Action::EnterUsbMsc => 11,
@@ -2973,6 +3029,63 @@ pub extern "C" fn cinder_get_tone_bands(out: *mut libc::c_schar) -> libc::c_int 
             b.len() as libc::c_int
         }
         None => 0,
+    }
+}
+
+/// ── FM radio ────────────────────────────────────────────────────────────────────────────────
+#[no_mangle]
+pub extern "C" fn cinder_fm_khz() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() { Some(r) => r.app.fm_khz(), None => 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_fm_seek_dir() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() { Some(r) => r.fm_seek_dir, None => 1 }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_fm_playing() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() { Some(r) => r.fm_power as libc::c_int, None => 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_fm_report_khz(khz: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() { r.app.fm_report_khz(khz); r.dirty = true; }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_fm_report_playing(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() { r.app.fm_set_playing(on != 0); r.dirty = true; }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_fm_report_antenna(present: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.fm_set_antenna(present != 0);
+        r.dirty = true;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_fm_report_scan_progress(pct: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.fm_set_scan_progress(pct.clamp(0, 100) as u8);
+        r.dirty = true;
+    }
+}
+
+/// # Safety
+/// `khz` must point to `n` readable ints.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_fm_report_stations(khz: *const libc::c_int, n: libc::c_int) {
+    let list: Vec<i32> = if khz.is_null() || n <= 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(khz, n as usize).to_vec()
+    };
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.fm_set_stations(&list);
+        r.dirty = true;
     }
 }
 

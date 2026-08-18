@@ -54,6 +54,12 @@ int  snd_pcm_recover(snd_pcm_t *pcm, int err, int silent);
 /* Re-arm a stream after an overrun (-EPIPE). The capture loop in cinder-home resyncs with this
    rather than tearing the stream down, so a momentary overrun costs a buffer, not the session. */
 int  snd_pcm_prepare(snd_pcm_t *pcm);
+/* Explicitly starting the stream is NOT optional on this device — see reference_uac_capture_start:
+   the capture PCM does not begin on its own, and a reader that only calls readi() blocks forever.
+   `drop` discards whatever the previous tuning left in the buffer, which matters for a scanner
+   that retunes between reads. */
+int  snd_pcm_start(snd_pcm_t *pcm);
+int  snd_pcm_drop(snd_pcm_t *pcm);
 int  snd_pcm_close(snd_pcm_t *pcm);
 const char *snd_strerror(int errnum);
 

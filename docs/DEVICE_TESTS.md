@@ -262,6 +262,28 @@ There is no read-back: `dacdat` reports rc only. Judge by level.
 
 ---
 
+## 12. Volume-change POP on wired headphones, only below volume 100 (REPORTED 2026-08-18)
+
+A small but audible pop each time the volume changes, on the 3.5 mm output. **It stops above
+volume 100** — steps 100..120 are silent, steps below pop.
+
+That threshold is the interesting part and probably names the cause. The volume scale is 0..120 and
+the output path has more than one gain stage:
+
+* `numid=10 'master volume'` 0..120 — the table-driven attenuator (`dacdat` output-volume tables)
+* `numid=13 'master gain'` 0..30 — a coarse gain
+* `numid=28/29 'headphone smaster (se) gain mode'` — normal/high, the CXD3778GF's own output stage
+
+A pop that disappears past a fixed step is the signature of **gain staging being re-arranged at
+that boundary** — below it something switches per step and clicks; above it the same step only
+moves one attenuator. Worth reading `master gain` and the smaster gain mode across the range and
+finding what changes at 100; if a discrete control is being toggled per step, the fix is to stop
+toggling it, or to ramp rather than jump.
+
+Not yet investigated. Reproduce with wired headphones and step the volume one press at a time.
+
+---
+
 ## 10. Still open, lower priority
 
 - **Bluetooth scan-and-pair UI** (#25) — the listener ABI is recovered, the screen is not built.

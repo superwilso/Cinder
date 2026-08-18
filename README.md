@@ -173,3 +173,6 @@ as an external build dependency, not vendored into this repo.
 
 This project is not affiliated with or endorsed by Sony. "Walkman" and related marks belong to
 Sony Corporation.
+
+As a disclaimer, a large amount of the reverse engineering work, documentation and rust and C++ code were writen by claude.
+All work was supervised and checked by a human.

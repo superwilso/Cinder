@@ -188,6 +188,14 @@ pub enum Action {
     /// `App::artist_name_at`) rather than the name, because `Action` is `Copy` and a `String`
     /// would take that away from every other variant.
     ShuffleArtist(usize),
+    /// FM radio. The shell owns the tuner: power drives Open/Play + the ADC route, Tune is a
+    /// single SetFrequency, Seek is a LIVE sweep (the chip's own auto-tune finds nothing on this
+    /// hardware, so the shell steps and measures, reporting each step back so the dial moves),
+    /// and Scan sweeps the whole band to fill the station list.
+    FmPower(bool),
+    FmTune(i32),
+    FmSeek(i32),
+    FmScan,
     /// Shuffle one playlist by DB id. Same channel as `PlayPlaylist`, but shuffled — the page's
     /// band needs it and `ShuffleScope::Playlist` picks a RANDOM playlist, which is a different
     /// thing entirely.
@@ -285,7 +293,9 @@ const MENU: [(Screen, &str, &str, &str); 12] = [
     // four flat peers and this is a stack you descend, where Back has to mean "up one level".
     (Screen::Folders, "library", "Folders", ""),      // live: folder/track counts
     (Screen::UpNext, "queue", "Up Next", ""),         // live: queue length
-    (Screen::Fm, "radio", "FM Radio", ""),            // tuner not wired — claim nothing
+    // The tuner IS wired now (2026-08-18). The subtitle names the one thing that stops it
+    // working, because an empty jack and a broken radio sound identical.
+    (Screen::Fm, "radio", "FM Radio", "Needs wired headphones as the aerial"),
     (Screen::Eq, "eq", "Equalizer", ""),              // live: selected preset
     (Screen::Sound, "sound", "Sound Settings", ""),   // live: which effects are on
     (Screen::Bluetooth, "bt", "Bluetooth", ""),       // live: configured transmit codec
@@ -694,6 +704,17 @@ pub struct App {
     /// had ever set it.
     adv_vinyl_type: usize,
     adv_tone: bool,
+    /// FM radio state. Frequency in kHz — the unit `SetFrequency` takes, and it validates its own
+    /// range, so an out-of-band value is rejected rather than stored.
+    fm_khz: i32,
+    fm_playing: bool,
+    fm_stations: [i32; crate::fm::PRESETS],
+    fm_n_stations: usize,
+    fm_scanning: bool,
+    fm_scan_pct: u8,
+    /// Something in the headphone jack. The cable IS the aerial, so without it every frequency is
+    /// noise and the screen says so rather than looking broken.
+    fm_antenna: bool,
     /// Tone Control band gains, RAW half-decibels, ±20 = ±10 dB — measured on device, not assumed
     /// (`cinder-probe --tone`). Index order is Sony's own: 0 BASS, 1 MIDDLE, 2 TREBLE, confirmed
     /// by the sound service logging `eqtone,type=N` as each is written.
@@ -911,6 +932,13 @@ impl Default for App {
             adv_dsee_mode: 0,
             adv_vinyl_type: 0,
             adv_tone: false,
+            fm_khz: 97300,
+            fm_playing: false,
+            fm_stations: [0; crate::fm::PRESETS],
+            fm_n_stations: 0,
+            fm_scanning: false,
+            fm_scan_pct: 0,
+            fm_antenna: false,
             tone_bands: [0; crate::tone::BANDS],
             tone_sel: 0,
             adv_sel: 0,
@@ -2253,6 +2281,42 @@ impl App {
                     return self.sound_toggle_row();
                 }
                 vec![]
+            }
+            Screen::Fm => {
+                use crate::fm::Hit;
+                // A scan owns the tuner for about a minute; taking taps during it would queue
+                // retunes behind a job that is already retuning. Only Scan responds, and it cancels.
+                if self.fm_scanning {
+                    return match crate::fm::hit(x, y) {
+                        Some(Hit::Scan) => { self.fm_scanning = false; vec![Action::FmScan] }
+                        _ => vec![],
+                    };
+                }
+                match crate::fm::hit(x, y) {
+                    Some(Hit::Power) => {
+                        self.fm_playing = !self.fm_playing;
+                        vec![Action::FmPower(self.fm_playing)]
+                    }
+                    Some(Hit::Step(d)) => {
+                        self.fm_khz = (self.fm_khz + d).clamp(crate::fm::MIN_KHZ, crate::fm::MAX_KHZ);
+                        vec![Action::FmTune(self.fm_khz)]
+                    }
+                    Some(Hit::Dial(k)) => { self.fm_khz = k; vec![Action::FmTune(k)] }
+                    Some(Hit::Prev) => vec![Action::FmSeek(-1)],
+                    Some(Hit::Next) => vec![Action::FmSeek(1)],
+                    Some(Hit::Preset(i)) => {
+                        if i < self.fm_n_stations {
+                            self.fm_khz = self.fm_stations[i];
+                            vec![Action::FmTune(self.fm_khz)]
+                        } else { vec![] }
+                    }
+                    Some(Hit::Scan) => {
+                        self.fm_scanning = true;
+                        self.fm_scan_pct = 0;
+                        vec![Action::FmScan]
+                    }
+                    None => vec![],
+                }
             }
             Screen::Advanced => {
                 if let Some(row) = crate::advanced::row_at(y) {
@@ -4644,7 +4708,18 @@ impl App {
             Screen::ClockSet => {
                 crate::clockset::render(c, &theme, fonts, &self.clock_fields, self.clock_sel)
             }
-            Screen::Fm => crate::fm::render(c, &theme, fonts, 88.6),
+            Screen::Fm => {
+                let v = crate::fm::Fm {
+                    khz: self.fm_khz,
+                    playing: self.fm_playing,
+                    stations: self.fm_stations,
+                    n_stations: self.fm_n_stations,
+                    scanning: self.fm_scanning,
+                    scan_pct: self.fm_scan_pct,
+                    antenna: self.fm_antenna,
+                };
+                crate::fm::render(c, &theme, fonts, &v)
+            }
             Screen::UsbDac => {
                 let ldac = self.usb_dac_on && self.bt_on;
                 let codec = crate::bluetooth::CODECS[self.bt_codec as usize].0;
@@ -5253,6 +5328,29 @@ impl App {
         }
     }
 
+    /// FM: what the UI currently shows, in kHz.
+    pub fn fm_khz(&self) -> i32 { self.fm_khz }
+    /// Report the tuner's ACTUAL frequency back. Used during a live seek so the dial follows the
+    /// sweep, and after any tune, because `SetFrequency` rejects out-of-band values and keeps the
+    /// previous one — the UI must show what the radio holds, not what it was asked for.
+    pub fn fm_report_khz(&mut self, khz: i32) {
+        self.fm_khz = khz.clamp(crate::fm::MIN_KHZ, crate::fm::MAX_KHZ);
+    }
+    pub fn fm_playing(&self) -> bool { self.fm_playing }
+    pub fn fm_set_playing(&mut self, on: bool) { self.fm_playing = on; }
+    pub fn fm_set_antenna(&mut self, present: bool) { self.fm_antenna = present; }
+    pub fn fm_scanning(&self) -> bool { self.fm_scanning }
+    pub fn fm_set_scan_progress(&mut self, pct: u8) { self.fm_scan_pct = pct.min(100); }
+    /// Install the stations a scan found, best first.
+    pub fn fm_set_stations(&mut self, khz: &[i32]) {
+        self.fm_n_stations = khz.len().min(crate::fm::PRESETS);
+        self.fm_stations = [0; crate::fm::PRESETS];
+        self.fm_stations[..self.fm_n_stations].copy_from_slice(&khz[..self.fm_n_stations]);
+        self.fm_scanning = false;
+        self.fm_scan_pct = 0;
+    }
+    pub fn fm_stations(&self) -> &[i32] { &self.fm_stations[..self.fm_n_stations] }
+
     /// DSEE HX Custom mode, 0..=4 — the value for `SetDseeHxCustomMode`.
     pub fn dsee_mode(&self) -> usize {
         self.adv_dsee_mode
@@ -5556,7 +5654,9 @@ mod tests {
             Screen::Library,
             Screen::Folders,
             Screen::UpNext,
-            Screen::Fm, // tuner not wired — deliberately says nothing
+            // Screen::Fm left this list on 2026-08-18: the tuner is wired, so the row now carries
+            // a real static subtitle ("Needs wired headphones as the aerial") instead of the empty
+            // string it used while there was nothing behind it. Nothing fills it at render time.
             Screen::Eq,
             Screen::Sound,
             Screen::Bluetooth,

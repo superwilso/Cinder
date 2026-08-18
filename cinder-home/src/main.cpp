@@ -47,6 +47,7 @@
 // this shell stays C++/libc++. See player/cinder-ffi/include/cinder.h.
 #include "cinder.h"
 #include "cinder_effects.h"
+#include "cinder_tuner.h"
 #include "cinder_analyzer.h"
 #include "cinder_power.h"
 #include "discover.h"
@@ -4543,6 +4544,90 @@ static void* ldac_thread(void*) {
 }
 
 // Bring the bridge up. Returns immediately — everything slow happens on the thread.
+// ── FM → BLUETOOTH ──────────────────────────────────────────────────────────────────────────
+// The same bridge as USB-DAC → LDAC, with a different source. Everything on the transmit side is
+// reused: ldac_connect_socket (which does the type-1 handshake), and ldac_pump.
+//
+// WHY THIS IS POSSIBLE AT ALL. FM audio looked un-bridgeable at first because no ALSA device opens
+// while the tuner plays — the Si4708 is analogue into the codec. But the codec can digitise it:
+// `analog input device` has a `tuner` item and `hw:0,1` is a real capture PCM. So the chain is
+//
+//     Si4708 --analogue--> CXD3778GF ADC --> hw:0,1 --> LDAC/SBC encode --> BtTransmitterService
+//
+// and the aerial and the output are INDEPENDENT: the cable only has to be plugged in, not listened
+// to. Cable in the jack for reception, audio to the headphones over Bluetooth.
+//
+// NEVER write PCM to that socket before the handshake — it reboots the device, measured twice.
+// ldac_connect_socket is the only thing that may open it, which is why this reuses it rather than
+// opening its own.
+//
+// The USB-DAC bridge and this one share `g_ldac_run`/`g_ldac_alive` deliberately: they are the same
+// resource (one BT PCM socket, one bridge thread) and `g_ldac_alive` already refuses a second
+// thread, so the two modes cannot fight over it.
+static void* fmbt_thread(void*) {
+    g_ldac_alive = 1;
+    clog_("fm-bt: bridge thread up (source hw:0,1, the codec ADC)");
+
+    // The ADC's own format. Fixed, unlike the UAC bridge — there is no host to negotiate with.
+    const unsigned RATE = 44100, CHANS = 2;
+    snd_pcm_t* pcm = nullptr;
+    if (!alsa_load()) { clog_("fm-bt: libasound unavailable"); g_ldac_alive = 0; g_ldac_run = 0; return nullptr; }
+    int rc = g_alsa.open(&pcm, "hw:0,1", /*CAPTURE*/1, 0);
+    if (rc < 0) {
+        char m[160];
+        std::snprintf(m, sizeof m, "fm-bt: cannot open hw:0,1: rc=%d%s", rc,
+                      rc == -EBUSY ? " (AudioInPlayerService still holds it — stop FM audio first)"
+                                   : "");
+        clog_(m);
+        g_ldac_alive = 0; g_ldac_run = 0;
+        return nullptr;
+    }
+    rc = g_alsa.set_params(pcm, /*S16_LE*/2, /*RW_INTERLEAVED*/3, CHANS, RATE, 1, 200000);
+    if (rc < 0) {
+        char m[128];
+        std::snprintf(m, sizeof m, "fm-bt: set_params failed: rc=%d", rc);
+        clog_(m);
+        g_alsa.close(pcm);
+        g_ldac_alive = 0; g_ldac_run = 0;
+        return nullptr;
+    }
+    g_alsa.start(pcm);   // this capture does not start on its own
+
+    int fd = ldac_connect_socket(RATE, CHANS);
+    if (fd < 0) {
+        clog_("fm-bt: no transmitter socket — is a device connected?");
+        g_alsa.close(pcm);
+        g_ldac_alive = 0; g_ldac_run = 0;
+        return nullptr;
+    }
+    unsigned long long frames = 0;
+    ldac_end why = ldac_pump(fd, pcm, "hw:0,1", RATE, &frames);
+    char m[192];
+    std::snprintf(m, sizeof m, "fm-bt: pump ended (%d) after %llu frames", (int)why, frames);
+    clog_(m);
+    ::close(fd);
+    g_alsa.close(pcm);
+    g_ldac_alive = 0;
+    g_ldac_run = 0;
+    return nullptr;
+}
+
+// Start the radio-to-Bluetooth bridge. The tuner must already be running; the FM AUDIO path
+// (AudioInPlayerService) must NOT be, because it owns hw:0,1 and this needs it.
+static void fmbt_start() {
+    if (g_ldac_alive) { clog_("fm-bt: a bridge is already running"); return; }
+    g_ldac_run = 1;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_t th;
+    if (pthread_create(&th, &at, fmbt_thread, nullptr) != 0) {
+        g_ldac_run = 0;
+        clog_("fm-bt: pthread_create FAILED");
+    }
+    pthread_attr_destroy(&at);
+}
+
 static void ldac_start() {
     // Disabled between 2026-08-11 and the same evening, on the belief that this socket was a control
     // channel that could never carry audio. Half of that was right: it *starts* as one, and PCM
@@ -5136,6 +5221,103 @@ static void play_pending_sequence(const char* label, bool restore_position) {
     g_house_due = true;
 }
 
+
+// ── FM radio ────────────────────────────────────────────────────────────────────────────────
+// The tuner shim (cinder-audio/src/tuner_shim.cpp) owns the two Sony services and the ADC route;
+// this is only the glue that keeps the UI in step and paints while the slow parts run.
+//
+// SEEK AND SCAN ARE SLOW ON PURPOSE. Sony's own auto-tune finds nothing on this hardware and
+// GetSignalLevel reads 1 at every frequency, so a station can only be found by MEASURING the
+// audio — about 0.14 s per 100 kHz step for a seek, 0.45 s for a scan. Both paint every step so
+// the dial visibly sweeps rather than freezing.
+static bool g_fm_on = false;
+
+// Called from inside the shim for every frequency a seek passes through.
+static void fm_on_step(int khz) {
+    cinder_fm_report_khz(khz);
+    if (g_screen_on) cinder_render_tick();      // the sweep has to be VISIBLE
+}
+static void fm_on_progress(int pct) {
+    cinder_fm_report_scan_progress(pct);
+    if (g_screen_on) cinder_render_tick();
+}
+
+static void fm_power_fn() {
+    const bool want = cinder_fm_playing() != 0;
+    if (want) {
+        // The aerial is the headphone cable. Report it so the screen can say "no aerial" instead
+        // of looking broken when the jack is empty — they are indistinguishable by ear.
+        FILE* af = std::fopen("/sys/class/switch/cxd3778gf_antenna/state", "r");
+        int ant = 0;
+        if (af) { if (std::fscanf(af, "%d", &ant) != 1) ant = 0; std::fclose(af); }
+        cinder_fm_report_antenna(ant);
+        // RELEASE THE MUSIC TRACK, do not merely pause it.
+        //
+        // SoundServiceFw allows only ONE track of a given type ("Cannot create multiple tracks that
+        // have same type"), and AudioInPlayerService creates one to carry the radio. Pausing leaves
+        // the player's track alive — cinder_audio.h says so outright: after play_tracks the graph
+        // sits in OMX_StatePause "with the SoundService track created but silent". So a paused
+        // player still owns the slot, AudioIn::Play() returns 1, and FM is silent with every other
+        // call reporting success. Measured 2026-08-18: `AudioIn rc=1 state=0` with the tuner in
+        // state 2 and the ADC routed.
+        //
+        // close_player releases it. Playback comes back through the normal play path, which issues
+        // a fresh SetTrackSequence — the same thing the USB-MSC handover does for the same reason.
+        //
+        // FM also MIXES with playback rather than replacing it (measured — both audible at once),
+        // so this is needed twice over: for the track slot, and so the radio is not playing over
+        // an album.
+        if (g_playing) set_transport(false);
+        cinder_audio_release_sequence();
+        cinder_audio_close_player();
+        int rc = cinder_tuner_start(cinder_fm_khz());
+        g_fm_on = (rc == 0);
+        char m[128];
+        std::snprintf(m, sizeof m, "fm: start(%d kHz) rc=%d antenna=%d tunerState=%d",
+                      cinder_fm_khz(), rc, ant, cinder_tuner_state());
+        clog_(m);
+        cinder_fm_report_playing(g_fm_on ? 1 : 0);
+        if (g_fm_on) cinder_fm_report_khz(cinder_tuner_get_khz());
+    } else {
+        cinder_tuner_stop();
+        g_fm_on = false;
+        cinder_fm_report_playing(0);
+        // The player was released on the way in; re-init so the next ▶ has a controller to talk to.
+        cinder_audio_init("cinder");
+    }
+}
+
+static void fm_tune_fn() {
+    if (!g_fm_on) return;
+    cinder_tuner_set_khz(cinder_fm_khz());
+    // Report what the radio HOLDS: SetFrequency rejects out-of-band values and keeps the previous
+    // one, so echoing the request back would show a frequency that is not tuned.
+    cinder_fm_report_khz(cinder_tuner_get_khz());
+}
+
+static void fm_seek_fn() {
+    if (!g_fm_on) return;
+    int found = cinder_tuner_seek(cinder_fm_khz(), cinder_fm_seek_dir(), fm_on_step);
+    cinder_fm_report_khz(found ? found : cinder_tuner_get_khz());
+}
+
+static void fm_scan_fn() {
+    // A scan needs the capture PCM, which AudioInPlayerService holds while playing — so stop
+    // first, sweep, then bring the radio back up on whatever it was tuned to.
+    const bool was = g_fm_on;
+    if (was) { cinder_tuner_stop(); g_fm_on = false; }
+    cinder_tuner_set_progress_cb(fm_on_progress);
+    int found[8] = {0};
+    int n = cinder_tuner_scan(87500, 108000, found, 8);
+    cinder_tuner_set_progress_cb(nullptr);
+    cinder_fm_report_stations(found, n);
+    if (was) {
+        int rc = cinder_tuner_start(cinder_fm_khz());
+        g_fm_on = (rc == 0);
+        cinder_fm_report_playing(g_fm_on ? 1 : 0);
+    }
+}
+
 // Carry out a navigator action via the audio/effect shims. Volume goes to the configured
 // backend (built-in CXD3778GF defaults, overridable by conf); play-by-index hands PlayerService
 // a NodeTrackSequence built from the pending-play list the UI resolved.
@@ -5398,6 +5580,22 @@ void carry_out(int act) {
             g_msc_user_off = false;
             g_msc_off_gone = 0;
             run_guarded("carry_out: enter USB MSC", 25, enter_usb_msc);
+            break;
+        case CINDER_ACT_FM_POWER:
+            // 20 s: bringing the tuner up opens two Sony services and re-routes the codec.
+            run_guarded("carry_out: FM power", 20, fm_power_fn);
+            break;
+        case CINDER_ACT_FM_TUNE:
+            run_guarded("carry_out: FM tune", 8, fm_tune_fn);
+            break;
+        case CINDER_ACT_FM_SEEK:
+            // A full band traversal at ~0.14 s a step is ~30 s worst case; budget generously,
+            // because the guard firing mid-seek would leave the tuner holding the capture PCM.
+            run_guarded("carry_out: FM seek", 45, fm_seek_fn);
+            break;
+        case CINDER_ACT_FM_SCAN:
+            // ~0.45 s per step across 206 steps.
+            run_guarded("carry_out: FM scan", 150, fm_scan_fn);
             break;
         case CINDER_ACT_EXIT_USB_MSC:
             // Back on the modal (or the unplug watcher) → remount /contents + restore the log.

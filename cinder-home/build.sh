@@ -113,10 +113,15 @@ CXXINC=(-nostdinc++ -isystem "$LIBCXX_V1" \
 for src in "$HERE/src/main.cpp:$HERE/main.o" \
            "$AUDIO/src/player_shim.cpp:$HERE/player_shim.o" \
            "$AUDIO/src/effect_shim.cpp:$HERE/effect_shim.o" \
+           "$AUDIO/src/tuner_shim.cpp:$HERE/tuner_shim.o" \
            "$AUDIO/src/analyzer_shim.cpp:$HERE/analyzer_shim.o" \
            "$AUDIO/src/power_shim.cpp:$HERE/power_shim.o" \
            "$HERE/src/discover.cpp:$HERE/discover.o"; do
+    # -I../ldac-bridge/include: the minimal ALSA shim. tuner_shim.cpp needs it — the FM scanner
+    # measures the capture PCM directly, because Sony's own GetSignalLevel/StartAutoTuning cannot
+    # find a station on this hardware (verified against one that was audible).
     $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
+         -I"$HERE/../ldac-bridge/include" \
          -fPIC -O2 -Wall -std=c++14 -fno-rtti "${CHANNEL_DEF[@]}" "${INCLUDES[@]}" \
          -c "${src%%:*}" -o "${src##*:}"
 done
@@ -131,7 +136,7 @@ CRT="$HERE/.crt223"; mkdir -p "$CRT"
 cp -f "$DEVSYS/usr/lib/arm-linux-gnueabihf"/{Scrt1.o,crt1.o,crti.o,crtn.o} "$CRT/"
 $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$DEVSYS/usr/lib/arm-linux-gnueabihf" -L"$DEVSYS/lib/arm-linux-gnueabihf" \
-     "$HERE/main.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/analyzer_shim.o" "$HERE/power_shim.o" "${DISCOVER_MAIN[@]}" "$HERE/glibc223_compat.o" \
+     "$HERE/main.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/power_shim.o" "${DISCOVER_MAIN[@]}" "$HERE/glibc223_compat.o" \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lPlayerServiceClientUtil -lEffectCtrlDmp -lPowerMgrServiceClient \
@@ -178,12 +183,12 @@ $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
 # binder replies, which is what the "every PlayerService out-param is stack garbage" hunt needs.
 $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$DEVSYS/usr/lib/arm-linux-gnueabihf" -L"$DEVSYS/lib/arm-linux-gnueabihf" \
-     "$HERE/probe.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/analyzer_shim.o" "$HERE/discover.o" "$HERE/glibc223_compat.o" \
+     "$HERE/probe.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/discover.o" "$HERE/glibc223_compat.o" \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -lPlayerServiceClient -lPlayerServiceClientUtil -lpstcore -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
      -lBtTransmitterService -lBtCommonService -lUsbDeviceAudioPlayerService \
-     -lNfcService -lTunerPlayerService \
+     -lNfcService -lTunerPlayerService -lAudioInPlayerService \
      -lBtPlayerService \
      -lDisplayService \
      -lUsbMgrServiceFw \

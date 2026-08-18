@@ -419,7 +419,11 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             pairing::render(c, theme, fonts, &paired, &[], None, None, false, 0.0)
         }
         Screen::Receiver => receiver::render(c, theme, fonts, app.rx),
-        Screen::Fm => fm::render(c, theme, fonts, app.fm_freq),
+        Screen::Fm => fm::render(c, theme, fonts, &fm::Fm {
+            khz: 97300, playing: true,
+            stations: [0; fm::PRESETS], n_stations: 0,
+            scanning: false, scan_pct: 0, antenna: true,
+        }),
         Screen::UsbDac => usbdac::render(c, theme, fonts, app.usb_dac, app.usb_dac && app.bt_on,
             BT_CODECS[app.bt_codec], app.bt_conn.map(|r| PAIRED[r].name), EQ_PRESETS[app.eq_preset].0, app.dsee,
             // The sim has no USB host, so it shows what a live 44.1/32 stream looks like rather
