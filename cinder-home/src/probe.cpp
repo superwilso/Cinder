@@ -4327,9 +4327,34 @@ static int fm_v4l2(int station_khz, int dead_khz) {
 // 2026-08-18), so a scan no longer needs to demodulate anything. This characterises the meter
 // across the whole band: how many steps report signal, whether it is graded or binary, and how
 // long a step actually takes — which is what decides the settle time the shim should use.
-static int fm_v4l2scan(int start_khz, int end_khz, int settle_ms) {
+static int fm_v4l2scan(int start_khz, int end_khz, int settle_ms, bool power) {
     install_diagnostics();
     char m[256];
+    // POWER THE CHIP FIRST. V4L2 only READS the Si4708 — TunerPlayerService::Open() is what turns
+    // it on. Measured 2026-08-18: a sweep run straight after an FM listening session (chip still
+    // powered) reported signal, and the identical sweep run later, cold, reported 0 everywhere at
+    // every settle time. The meter is not broken; an unpowered tuner receives nothing.
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    void* tc = nullptr;
+    if (power) {
+        fm_route_on();
+        tc = _ZN3pst8services31TunerPlayerServiceClientFactory14CreateInstanceEv();
+    }
+    if (tc) {
+        try { ((fn_v)vslot(tc, VIDX_Open))(tc); } catch (...) {}
+        try { ((fn_v)vslot(tc, VIDX_Play))(tc); } catch (...) {}
+    }
+    std::snprintf(m, sizeof m, "v4l2: tuner powered (client %p, state %d)", tc,
+                  tc ? ((fn_v)vslot(tc, VIDX_GetTunerState))(tc) : -1);
+    clog_(m);
+
     int fd = open("/dev/radio0", O_RDWR);
     if (fd < 0) {
         std::snprintf(m, sizeof m, "v4l2: open failed: %s", strerror(errno));
@@ -4383,6 +4408,111 @@ static int fm_v4l2scan(int start_khz, int end_khz, int settle_ms) {
         clog_(m);
         i = j + 1;
     }
+    close(fd);
+    if (tc) {
+        try { ((fn_v)vslot(tc, VIDX_Stop))(tc); } catch (...) {}
+        try { ((fn_v)vslot(tc, VIDX_Close))(tc); } catch (...) {}
+        fm_route_off();
+    }
+    g_pump_run = false;
+    return 0;
+}
+
+// --fm i2c : read the Si4708's OWN registers over /dev/i2c-2, bypassing Sony's driver.
+//
+// WHY. Everything above it is lossy. TunerPlayerService::GetSignalLevel returns a constant, its
+// StartAutoTuning is a 48-byte stub, and the kernel driver's V4L2 meter is BINARY — the histogram
+// across the band is only ever 0 or 65535, which is a "tuned" flag rather than a signal strength,
+// and it flickers on marginal stations (97.3 present in one sweep, absent in the next).
+//
+// The chip itself has neither problem. Si470x-family register map (public):
+//
+//   0x02 POWERCFG    SEEK(8) SEEKUP(9) SKMODE(10)      <- the hardware seek nothing else exposes
+//   0x03 CHANNEL     TUNE(15) + channel
+//   0x05 SYSCONFIG2  SEEKTH(15:8) BAND(7:6) SPACE(5:4) VOLUME(3:0)
+//   0x0A STATUSRSSI  RSSI(7:0) ST(8) BLERA SF/BL(13) STC(14) RDSR(15)
+//   0x0B READCHAN    channel(9:0)
+//
+// READ PROTOCOL: the Si470x returns registers starting at 0x0A and wrapping — read 32 bytes and
+// you get 0x0A..0x0F then 0x00..0x09, big-endian 16-bit each. There is no register-address byte.
+//
+// THIS PROBE ONLY READS. It does not write POWERCFG, because the kernel driver is bound to this
+// chip and a write underneath it could desynchronise the driver's shadow of the register file.
+// Reading is safe: the chip has no read side effects except STC clearing, which we do not touch.
+static int fm_i2c(void) {
+    install_diagnostics();
+    char m[256];
+    int fd = open("/dev/i2c-2", O_RDWR);
+    if (fd < 0) {
+        std::snprintf(m, sizeof m, "i2c: open(/dev/i2c-2) failed: %s", strerror(errno));
+        clog_(m);
+        return 1;
+    }
+    // I2C_SLAVE = 0x0703. Using the numeric constant avoids needing linux/i2c-dev.h, which is not
+    // in the device sysroot.
+    if (ioctl(fd, 0x0703, 0x10) < 0) {
+        std::snprintf(m, sizeof m, "i2c: I2C_SLAVE 0x10 failed: %s%s", strerror(errno),
+                      errno == EBUSY ? "  (the Si4708icx driver holds it — try I2C_SLAVE_FORCE)"
+                                     : "");
+        clog_(m);
+        // 0x0706 = I2C_SLAVE_FORCE: take the address even though a driver is bound. Read-only, so
+        // the risk is a confused driver shadow at worst, not a bus fault.
+        if (ioctl(fd, 0x0706, 0x10) < 0) {
+            clog_("i2c: I2C_SLAVE_FORCE also failed — no direct access");
+            close(fd);
+            return 1;
+        }
+        clog_("i2c: took the address with I2C_SLAVE_FORCE");
+    }
+    // MediaTek's adapter does not implement the simple read()/write() file ops — plain read()
+    // returns EINVAL. Use I2C_RDWR with an explicit message instead, and try progressively smaller
+    // transfers: MTK controllers frequently cap a single transaction well below 32 bytes.
+    struct i2c_msg_ { unsigned short addr, flags; unsigned short len; unsigned char* buf; };
+    struct i2c_rdwr_ { struct i2c_msg_* msgs; int nmsgs; };
+    unsigned char buf[32];
+    std::memset(buf, 0, sizeof buf);
+    ssize_t n = -1;
+    int used = 0;
+    for (int want : { 32, 16, 8 }) {
+        struct i2c_msg_ msg;
+        msg.addr = 0x10; msg.flags = 1 /* I2C_M_RD */; msg.len = (unsigned short)want; msg.buf = buf;
+        struct i2c_rdwr_ rd; rd.msgs = &msg; rd.nmsgs = 1;
+        if (ioctl(fd, 0x0707 /* I2C_RDWR */, &rd) >= 0) { n = want; used = want; break; }
+        std::snprintf(m, sizeof m, "i2c: I2C_RDWR read of %d B failed: %s", want, strerror(errno));
+        clog_(m);
+    }
+    if (n < 0) {
+        clog_("i2c: no direct transfer worked — the adapter refuses userspace access to this device");
+        close(fd);
+        return 1;
+    }
+    std::snprintf(m, sizeof m, "i2c: read %d bytes via I2C_RDWR", used);
+    clog_(m);
+    if (used < 32) {
+        clog_("i2c: PARTIAL — registers past the transfer length are stale zeros, read with care");
+    }
+    // Registers come back starting at 0x0A and wrapping to 0x09.
+    unsigned short reg[16];
+    for (int i = 0; i < 16; i++) {
+        int r = (0x0A + i) & 0x0F;
+        reg[r] = (unsigned short)((buf[i * 2] << 8) | buf[i * 2 + 1]);
+    }
+    for (int r = 0; r < 16; r++) {
+        std::snprintf(m, sizeof m, "i2c: reg[0x%02X] = 0x%04X", r, reg[r]);
+        clog_(m);
+    }
+    const unsigned short st = reg[0x0A];
+    std::snprintf(m, sizeof m,
+                  "i2c: STATUSRSSI RSSI=%u  ST=%u  STC=%u  SF/BL=%u  RDSR=%u",
+                  st & 0xFF, (st >> 8) & 1, (st >> 14) & 1, (st >> 13) & 1, (st >> 15) & 1);
+    clog_(m);
+    std::snprintf(m, sizeof m, "i2c: READCHAN channel=%u   POWERCFG=0x%04X   SYSCONFIG2=0x%04X",
+                  reg[0x0B] & 0x03FF, reg[0x02], reg[0x05]);
+    clog_(m);
+    // Device ID registers confirm we are talking to the right part rather than reading noise.
+    std::snprintf(m, sizeof m, "i2c: DEVICEID=0x%04X CHIPID=0x%04X  (pn=%u mfgid=0x%03X)",
+                  reg[0x00], reg[0x01], (reg[0x00] >> 12) & 0xF, reg[0x00] & 0xFFF);
+    clog_(m);
     close(fd);
     return 0;
 }
@@ -5214,10 +5344,13 @@ int main(int argc, char** argv) {
         // --fm tune <kHz> [s] hold ONE station so its audio can be captured/heard
         if (argc > 3 && std::strcmp(argv[2], "scan") == 0)
             return fm_scan(std::atoi(argv[3]), argc > 4 ? std::atoi(argv[4]) : 108000);
+        if (argc > 2 && std::strcmp(argv[2], "i2c") == 0)
+            return fm_i2c();
         if (argc > 2 && std::strcmp(argv[2], "v4l2scan") == 0)
             return fm_v4l2scan(argc > 3 ? std::atoi(argv[3]) : 87500,
                                argc > 4 ? std::atoi(argv[4]) : 108000,
-                               argc > 5 ? std::atoi(argv[5]) : 30);
+                               argc > 5 ? std::atoi(argv[5]) : 30,
+                               argc > 6 && std::strcmp(argv[6], "power") == 0);
         if (argc > 2 && std::strcmp(argv[2], "v4l2") == 0)
             return fm_v4l2(argc > 3 ? std::atoi(argv[3]) : 97300,
                            argc > 4 ? std::atoi(argv[4]) : 104300);

@@ -325,7 +325,45 @@ close to the floor: retune, settle, capture enough samples to compute the ratio.
 never been given a fair test. Registering a listener was worth doing and settled it in the other
 direction.)
 
-## ✅ SOLVED — `/dev/radio0` GIVES A REAL SIGNAL METER (2026-08-18)
+## HOW FAR DOWN CAN WE REACH? All three userspace layers, measured
+
+Every layer between us and the Si4708 drops a feature. This is the complete picture as of
+2026-08-18, and it is why the audio-measuring scanner still exists.
+
+| layer | tune | signal | seek |
+|---|---|---|---|
+| `TunerPlayerService` | yes | **constant 1** everywhere | **stub** — 48 bytes, returns 4, args unread |
+| kernel `Si4708icx` via `/dev/radio0` | yes | **binary** 0 or 65535, nothing between | `HW_FREQ_SEEK` cap bit CLEAR, ioctl ENOTTY |
+| direct I2C via `/dev/i2c-2` | — | — | **no transfer works at all** |
+
+**Direct I2C is closed.** `/dev/i2c-2` opens; `I2C_SLAVE 0x10` returns EBUSY (the driver is bound)
+and `I2C_SLAVE_FORCE` takes it — but then every read fails:
+
+```
+read(32)                 -> EINVAL   (MTK does not implement the simple file ops)
+I2C_RDWR 32 / 16 / 8 B   -> EINVAL   (all three)
+```
+
+So MediaTek's adapter refuses userspace transfers to this device. The chip has a proper 8-bit RSSI
+in `STATUSRSSI` and SEEK bits in `POWERCFG`; we simply cannot reach them from userspace.
+
+**The only remaining route to real RSSI and hardware seek is KERNEL CODE** — a module (or a patch
+to `Si4708icx`) built against 3.10.26-mt8590. That is a real project with real brick risk: it
+touches a bus a bound driver owns, and a bad module at boot is the failure mode the launcher's
+escape ladder exists for. Not something to attempt casually.
+
+**What the V4L2 meter is still good for.** It is binary, but it is INSTANT and it discriminates
+perfectly on a strong carrier (65535 vs 0, repeatable). Across the full band it agrees with the
+audio scanner on the strong stations and flickers on marginal ones (97.3 present in one sweep,
+absent the next; 91.3 and 106.2 likewise). So it is a good FIRST PASS and a bad final answer:
+sweep with V4L2 to get candidates in ~25 s, then confirm the flickering ones by audio.
+
+**The aerial dominates everything.** Three separate "the meter is broken" conclusions during this
+session were all one cause: nothing in the headphone jack. `signal` reads 0 at every frequency with
+no aerial, exactly as it would for a dead band. ALWAYS check
+`/sys/class/switch/cxd3778gf_antenna/state` before believing any tuner measurement.
+
+## ✅ /dev/radio0 GIVES AN INSTANT (BINARY) SIGNAL METER (2026-08-18)
 
 Sony's search interface is a stub, but the kernel driver underneath is not. `cinder-probe --fm v4l2`:
 
