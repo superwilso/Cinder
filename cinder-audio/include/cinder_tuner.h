@@ -30,6 +30,13 @@ int cinder_tuner_start(int khz);
 /* Tear down: AudioIn Stop, tuner Stop + Close, and put the mixer route back. 0 = ok. */
 int cinder_tuner_stop(void);
 
+/* Start/stop ONLY the local audio path (AudioInPlayerService), leaving the tuner tuned and
+ * playing. Bluetooth output needs hw:0,1, and AudioInPlayerService owns it while the radio is
+ * audible on the jack — so the two cannot run together. Stop the audio path, bridge, and start it
+ * again when Bluetooth output is switched off. */
+int cinder_tuner_audio_start(void);
+int cinder_tuner_audio_stop(void);
+
 /* Retune while playing. Cheap — no need to stop and restart. 0 = ok. */
 int cinder_tuner_set_khz(int khz);
 /* What the tuner actually holds, in kHz. 0 if unavailable. Sony VALIDATES this setter: an

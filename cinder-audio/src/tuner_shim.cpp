@@ -183,6 +183,21 @@ int cinder_tuner_stop(void) {
     return 0;
 }
 
+int cinder_tuner_audio_start(void) {
+    if (!g_ain) return -1;
+    int rc = -1;
+    try { rc = ((fn_v)vslot(g_ain, A_Play))(g_ain); } catch (...) { return -1; }
+    std::fprintf(stderr, "[cinder-tuner] audio path start rc=%d\n", rc);
+    return rc;
+}
+
+int cinder_tuner_audio_stop(void) {
+    if (!g_ain) return -1;
+    try { ((fn_v)vslot(g_ain, A_Stop))(g_ain); } catch (...) { return -1; }
+    std::fprintf(stderr, "[cinder-tuner] audio path stopped (hw:0,1 released)\n");
+    return 0;
+}
+
 int cinder_tuner_set_khz(int khz) {
     if (!g_tuner) return -1;
     unsigned f = (unsigned)khz;
