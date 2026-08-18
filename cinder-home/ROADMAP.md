@@ -282,16 +282,21 @@ never repoint the `.appcfg` before the probe run looks clean.
   (`autosleep=off`, zero suspends in 2 h 10 min screen-dark), and stereo is not a config problem —
   `ST` stays 0 at all four `BLNDADJ` settings because the best local carrier reads RSSI 15 and the
   chip's most sensitive stereo blend starts at 19.
-  **What is left:** ~~the tuner~~ → **FM → Bluetooth**, which is blocked on one measured fact:
-  `AudioInPlayerService` opens `hw:0,1` and does not release it on `Stop()` — the substream stays
-  `RUNNING` for the rest of the boot and every open returns `-EBUSY`. The BT-out button now proves
-  its source with `cinder_tuner_capture_rms()` and refuses honestly rather than transmitting
-  silence. Next test, and it needs a decision because it means killing a Sony service: restart
-  `hagoromo28` and re-run `cinder-probe --fm btcap`. That separates "never releases" from "wedged
-  from an earlier session" (`Play()` currently returns 0 while `GetPlayerState()` stays 0, where a
-  healthy start moves 0 → 2), and the two have opposite fixes.
-  **Never run in cinder-home yet** — every measurement so far came through `cinder-probe`; the
-  screen, the 1 Hz meter poll and the guard budgets are unproven until a flash + reboot.
+  **FM → Bluetooth is UNBLOCKED** *(settled on a fresh boot, 2026-08-18)*. An earlier note here
+  called it blocked because `AudioInPlayerService` was holding `hw:0,1` with every open returning
+  `-EBUSY`. A reboot showed that was a **wedge left by that session**, not a design limit: on a
+  clean boot `pcm1c` reads `closed`, `cinder-probe --fm btcap` captures successfully, and the
+  mux-OFF control comes back at exactly **0.0 RMS** against non-zero routed — the proof that
+  `hw:0,1` carries FM *because of* the `analog input device` route. It is released cleanly
+  afterwards. What wedges it is still unknown (suspect: the `Play()` that returns 0 while
+  `GetPlayerState()` stays 0); the recovery is a reboot, and `fm_btout_fn` now detects the state and
+  refuses with a reason instead of transmitting silence. What remains is wiring the capture into
+  the existing LDAC bridge — except that it is ALREADY WIRED: `fmbt_thread` opens `hw:0,1`, sets the
+  ADC format, connects the transmitter socket and pumps. Nothing is left to build; what it has never
+  had is a run with a headphone actually connected.
+  **Proven in cinder-home 2026-08-18:** flashed and booted; the 1 Hz `pump: FM signal` tick runs the
+  setuid helper and reaches the chip from uid 100 (`cinder-fm rc=0`, `regmon live, DEVICEID=0x1242`)
+  with no user action.
 
 - **FM → Bluetooth design notes (unchanged, still the plan)** — full write-up
   with the evidence: [`../docs/COMPARISON_cinder_wampy_sony.md`](../docs/COMPARISON_cinder_wampy_sony.md).

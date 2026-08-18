@@ -8312,15 +8312,18 @@ mod tests {
         assert_eq!(a.up_next_cur, None, "and the next render must treat it as a track change");
     }
 
-    /// The BT scale went 30 -> 64 on 2026-08-11 so a press moves the sink ~2 AVRCP units instead
-    /// of ~4.2. The HUD stretches whatever the scale is back over 0..VOL_MAX, so the bar must look
-    /// the same at both ends however many steps there are.
+    /// The BT scale went 30 -> 64 (2026-08-11) -> 127 (2026-08-18). 127 is AVRCP's own scale, so a
+    /// press now moves the sink by exactly ONE unit and no finer control exists over Bluetooth —
+    /// absolute volume is a 7-bit field. The HUD stretches whatever the scale is back over
+    /// 0..VOL_MAX, so the bar must look the same at both ends however many steps there are.
     #[test]
     fn bt_volume_scale_is_finer_and_still_maps_onto_the_shared_hud() {
-        use crate::overlay::{BT_VOL_MAX, BT_VOL_MAX_LEGACY, VOL_MAX};
-        assert!(BT_VOL_MAX > BT_VOL_MAX_LEGACY, "the whole point is finer steps");
-        // AVRCP is 0..127, so a step is now under 2.5 of its units.
-        assert!(127 / BT_VOL_MAX as u32 <= 2);
+        use crate::overlay::{BT_VOL_MAX, BT_VOL_MAX_LEGACY, BT_VOL_MAX_LEGACY_64, VOL_MAX};
+        assert!(BT_VOL_MAX > BT_VOL_MAX_LEGACY_64, "the whole point is finer steps");
+        assert!(BT_VOL_MAX_LEGACY_64 > BT_VOL_MAX_LEGACY);
+        // 1:1 with the wire. Anything coarser throws away levels the sink can resolve; anything
+        // finer is not representable in AVRCP's 7 bits and would be a lie on the bar.
+        assert_eq!(BT_VOL_MAX, 127, "AVRCP absolute volume is 0..127");
         let mut a = unlocked();
         a.set_bt_route(true);
         a.set_bt_volume(0);

@@ -105,3 +105,67 @@ Step the volume one press per second across the range under test, then analyse w
 slew rather than raw level or raw slew. The analysis is a dozen lines of Python; the important part
 is dividing by the local RMS, because the whole first attempt at this measured loudness and called
 it a pop.
+
+## SOLVED — it is the PHV analogue attenuator, and the curve is a Sony table (2026-08-18)
+
+The pop was never findable from the shell or the mixer because the thing that moves is **inside the
+codec**. `/proc/regmon/cxd3778gf` (see `reference_fm_regmon` for how that door opened) makes it
+directly observable: register `0x49 PHV_L` / `0x4B PHV_R` is the analogue headphone attenuator, and
+it is what every volume step actually changes.
+
+Measured against `numid=10 'master volume'`, 1 s settle per point so nothing is caught mid-ramp:
+
+```
+vol    0   20   40   60   80   90  100  110  120
+PHV    4   80  100  100  148  188  228  228  228
+```
+
+**Two dead zones, both real and both reproducible:**
+
+* **40 → 60 does nothing.** PHV sits at 100 across a fifth of the scale.
+* **100 → 120 does nothing.** PHV pins at 228 and never moves again.
+
+So **40 of the 120 UI steps are inert on the wired output**, and the second dead zone is exactly the
+"26 pops below 100, 1 above" asymmetry this document opened with: above 100 there is only one pop
+because above 100 *nothing changes*. Below it, every step is a fresh analogue gain change — and the
+steps get bigger toward the top (1 count per step at vol 20-40, **4 per step at 80-100**), which is
+where the pops were worst.
+
+### The curve is a loadable table, and Sony ships a better one
+
+That shape comes from the output volume table `load_sony_driver` installs at boot — `ov_1291.tbl`,
+chosen because `ro.product.device` is `BBDMP5_linux`. `dacdat ovt <file>` swaps it live through
+`/proc/icx_audio_cxd3778gf_data/ovt`. All three tables are already on the device
+(`analysis/RE_walkmanone_extract.md`). A/B, same sweep, same instrument:
+
+| vol | 0 | 20 | 40 | 60 | 80 | 90 | 100 | 110 | 120 |
+|---|---|---|---|---|---|---|---|---|---|
+| `ov_1291` — stock A50 | 4 | 80 | 100 | **100** | 148 | 188 | 228 | **228** | **228** |
+| `ov_1280` — Walkman One's BBDMP2 | 4 | 80 | 100 | **100** | 148 | 188 | 228 | **228** | **228** |
+| `ov_127x` — **NW-WM1A** | 4 | 44 | 84 | 124 | 164 | 184 | 204 | 224 | 228 |
+
+**Walkman One's table is behaviourally identical to stock.** The files differ by md5 but produce the
+same attenuator values at every point sampled — so whatever the model swap buys, it is not the
+volume curve. That is worth knowing before anyone pays for it.
+
+**The WM1A table is straightforwardly better on this hardware:**
+
+* **no dead zones** — monotonic across the whole 0..120 range;
+* **the full scale is usable**, where stock wastes 40 steps;
+* **smaller steps at the top** (204 → 224 → 228 against stock's 4-per-step run to 228), which is
+  precisely where the pop is loudest.
+
+### What this does NOT settle
+
+Whether the pop is *audibly* gone. PHV moving in smaller increments should mean a smaller
+discontinuity, but "smaller" is an inference — confirming it needs the analogue rig
+(`tools/measure_output.py`) or ears, and neither was available here. The mechanism and the curve are
+measured; the audible result is not.
+
+Also note the WM1A curve is **quieter at the same number** through the mid range (vol 20: 44 vs 80).
+Maximum output is unchanged (both reach 228), but a habitual volume setting will sound different, so
+this is a change to announce rather than to slip in.
+
+The remaining suspects for the pop's *character* — `SMS_SFTRMP` (soft ramp, reads **0 = disabled**)
+and the driver's `fade_amount` / `timed_mute_ms` parameters — are untested and are the next thing to
+try if a table swap is not enough.

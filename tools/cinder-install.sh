@@ -82,13 +82,15 @@ if [ "$MODE" = "status" ]; then
     require_adb
     info "device: $(adb shell getprop ro.product.model 2>/dev/null | tr -d '\r')"
     info "running cinder-home:"
-    adb shell 'pidof cinder-home >/dev/null && echo "    pid: $(pidof cinder-home) — running" || echo "    not running"' 2>/dev/null
+    # `ps | grep`, not pidof — this device has neither pidof nor pgrep, and `pidof` there prints
+    # "pidof: not found" and exits non-zero, which reads as "not running" for any process at all.
+    adb shell 'p=$(ps 2>/dev/null | grep /system/vendor/unknown321/bin/cinder-home | grep -v grep | awk "{print \$2}" | head -1); [ -n "$p" ] && echo "    pid: $p — running" || echo "    not running"' 2>/dev/null
     info "installed binary:"
     adb shell "[ -f $INSTALL_PATH ] && ls -la $INSTALL_PATH | awk '{print \"    \"\$5\" bytes, mtime \"\$6\" \"\$7\" \"\$8}' || echo '    NOT INSTALLED'" 2>/dev/null
     info "rollback available:"
     adb shell "[ -f $BACKUP ] && echo '    yes: $BACKUP' || echo '    no'" 2>/dev/null
     info "helpers installed:"
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-gpunode; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-gpunode; do
         adb shell "[ -f $HELPERS_DIR/$h ] && echo '    $h: present' || echo '    $h: -'" 2>/dev/null
     done
     info "last 10 log lines:"
@@ -131,40 +133,89 @@ fi
 # 2. arm no-respawn so killing cinder-home doesn't trigger the supervisor
 touch "\$NORESPAWN"
 
-# 3. kill cinder-home (launcher stays alive; appmgr won't reboot)
-PID=\$(pidof cinder-home 2>/dev/null || true)
+# 3. remount /system rw and install the HELPERS FIRST — before anything kills the app.
+#
+# WHY THE ORDER MATTERS: killing cinder-home makes appmgr reboot the device (its SIGCHLD handler
+# calls android_reboot when the foreground app goes away), and that reboot lands whenever it lands.
+# With the helper loop after the kill it was a RACE, and it showed: one run installed 1 of 6
+# helpers, the next installed 3 of 6, both reporting success. The helpers are ordinary files that
+# have nothing to do with the running process, so they go in while the device is still calm.
+#    remount /system rw (try remount first, fall back to mount-by-source —
+#    matches install_cinderhome.sh line 57-58)
+echo "[swap] remounting /system rw"
+if ! mount -o remount,rw /system 2>/dev/null; then
+    mount -t ext4 -o rw,remount /emmc@android /system 2>/dev/null || {
+        rm "\$NORESPAWN" 2>/dev/null
+        echo "[swap] FAIL: could not remount /system rw"
+        exit 1
+    }
+fi
+
+#    helpers if --full
+if [ "\$FULL" = "1" ]; then
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-gpunode; do
+        if [ -f "/data/local/tmp/\$h.new" ]; then
+            cp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"
+            if cmp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"; then
+                # ORDER MATTERS: chown CLEARS the setuid bit, so it has to come FIRST. The other
+                # way round (2026-08-18) silently shipped cinder-umount as 0755 — the helper still
+                # existed, still ran, and could no longer unmount /contents for USB-MSC, which is
+                # the whole reason it is setuid.
+                chown root:root "\$HELPERS_DIR/\$h.tmp" 2>/dev/null || true
+                chmod 4755 "\$HELPERS_DIR/\$h.tmp"
+                mv "\$HELPERS_DIR/\$h.tmp" "\$HELPERS_DIR/\$h"
+                # Report what is ACTUALLY on disk, not what we asked for — that is how the missing
+                # setuid bit went unnoticed.
+                #
+                # NOTE, and it bit twice on 2026-08-18: this heredoc is UNQUOTED, so the host
+                # expands command substitutions, backticks and variables while GENERATING the
+                # script. That applies to COMMENTS too. An unescaped substitution here ran on
+                # the host with both vars unset and spliced a whole directory listing into the
+                # middle of this loop, breaking it. Escape every dollar; no backticks in prose.
+                echo "[swap] installed helper: \$h (\$(ls -l "\$HELPERS_DIR/\$h" 2>/dev/null | cut -c1-10))"
+            else
+                rm "\$HELPERS_DIR/\$h.tmp" 2>/dev/null
+                echo "[swap] WARN: \$h copy mismatch, skipped"
+            fi
+            # The device rm and mv do NOT accept a -f flag; they parse it as a filename and
+            # fail with "rm failed for -f" or "Invalid cross-device link". That aborted this
+            # very loop after the first helper on 2026-08-18. Redirect stderr, do not force.
+            rm "/data/local/tmp/\$h.new" 2>/dev/null
+        fi
+    done
+fi
+
+
+# 4. kill cinder-home (launcher stays alive; appmgr won't reboot)
+#
+# THERE IS NO `pidof` ON THIS DEVICE. It printed "pidof: not found" and every check below then
+# read as "not running", so on 2026-08-18 the swap replaced the binary UNDER the live process and
+# reported success — the file changed, /proc/<pid>/exe went `(deleted)`, and the old code kept
+# running until a reboot. Find the pid from ps instead, and match the full install path so a
+# grep of this script's own command line cannot match.
+cinder_pid() { ps 2>/dev/null | grep "\$INSTALL_PATH" | grep -v grep | awk '{print \$2}' | head -1; }
+PID=\$(cinder_pid)
 if [ -n "\$PID" ]; then
     echo "[swap] killing cinder-home (pid \$PID)"
     kill \$PID 2>/dev/null || true
     for i in 1 2 3 4 5 6 7 8 9 10; do
-        pidof cinder-home >/dev/null 2>&1 || break
+        [ -z "\$(cinder_pid)" ] && break
         sleep 1
     done
-    if pidof cinder-home >/dev/null 2>&1; then
+    if [ -n "\$(cinder_pid)" ]; then
         echo "[swap] WARN: still alive after 10s, sending KILL"
-        kill -9 \$(pidof cinder-home) 2>/dev/null || true
+        kill -9 \$(cinder_pid) 2>/dev/null || true
         sleep 1
     fi
 else
     echo "[swap] cinder-home not running (ok)"
 fi
 
-# 4. remount /system rw (try remount first, fall back to mount-by-source —
-#    matches install_cinderhome.sh line 57-58)
-echo "[swap] remounting /system rw"
-if ! mount -o remount,rw /system 2>/dev/null; then
-    mount -t ext4 -o rw,remount /emmc@android /system 2>/dev/null || {
-        rm -f "\$NORESPAWN"
-        echo "[swap] FAIL: could not remount /system rw"
-        exit 1
-    }
-fi
-
 # 5. atomic swap: temp -> cmp -> mv
 echo "[swap] staging \$STAGE -> \$INSTALL_PATH.tmp"
 cp "\$STAGE" "\$INSTALL_PATH.tmp"
 if ! cmp "\$STAGE" "\$INSTALL_PATH.tmp"; then
-    rm -f "\$INSTALL_PATH.tmp" "\$NORESPAWN"
+    rm "\$INSTALL_PATH.tmp" "\$NORESPAWN" 2>/dev/null
     mount -o remount,ro /system 2>/dev/null || true
     echo "[swap] FAIL: staged copy mismatch"
     exit 1
@@ -173,27 +224,8 @@ chmod 755 "\$INSTALL_PATH.tmp"
 mv "\$INSTALL_PATH.tmp" "\$INSTALL_PATH"
 echo "[swap] installed: \$INSTALL_PATH"
 
-# 6. helpers if --full
-if [ "\$FULL" = "1" ]; then
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-gpunode; do
-        if [ -f "/data/local/tmp/\$h.new" ]; then
-            cp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"
-            if cmp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"; then
-                chmod 4755 "\$HELPERS_DIR/\$h.tmp"
-                chown root:root "\$HELPERS_DIR/\$h.tmp" 2>/dev/null || true
-                mv "\$HELPERS_DIR/\$h.tmp" "\$HELPERS_DIR/\$h"
-                echo "[swap] installed helper: \$h (4755 root:root)"
-            else
-                rm -f "\$HELPERS_DIR/\$h.tmp"
-                echo "[swap] WARN: \$h copy mismatch, skipped"
-            fi
-            rm -f "/data/local/tmp/\$h.new"
-        fi
-    done
-fi
-
 # 7. cleanup + remount ro + reboot
-rm -f "\$STAGE" "\$NORESPAWN"
+rm "\$STAGE" "\$NORESPAWN" 2>/dev/null
 sync
 mount -o remount,ro /system 2>/dev/null || true
 echo "[swap] done — rebooting"
@@ -246,7 +278,7 @@ ok "pushed $BIN_SIZE bytes"
 # 4. push helpers if --full
 if [ "$FULL" = 1 ]; then
     info "pushing setuid helpers (--full)…"
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable; do
         if [ -f "$DIST/$h" ]; then
             adb push "$DIST/$h" "/data/local/tmp/$h.new" >/dev/null
             ok "  staged $h"
@@ -261,16 +293,69 @@ fi
 # 5. upload + run the swap script
 SWAP_SCRIPT="$(mktemp)"
 make_swap_script "$STAGE" > "$SWAP_SCRIPT"
+# SANITY-GATE THE GENERATED SCRIPT. The heredoc that builds it is unquoted, so anything unescaped
+# in it — including in a COMMENT — is executed on the HOST at generation time and its output is
+# spliced into the script body. That happened twice on 2026-08-18 and both times the result still
+# ran, still reported success, and silently skipped five of six helpers. A splice is easy to spot
+# even when the cause is not: real lines here never start with a directory listing.
+if grep -qE '^(total [0-9]+|[-dlbcps][rwxsStT-]{9}[ .])' "$SWAP_SCRIPT"; then
+    say ""
+    grep -nE '^(total [0-9]+|[-dlbcps][rwxsStT-]{9}[ .])' "$SWAP_SCRIPT" | head -3
+    rm -f "$SWAP_SCRIPT"
+    die "generated swap script contains spliced command output — an unescaped \$( ) or backtick in make_swap_script"
+fi
+if ! sh -n "$SWAP_SCRIPT" 2>/dev/null; then
+    rm -f "$SWAP_SCRIPT"
+    die "generated swap script is not valid sh"
+fi
 info "uploading swap script…"
 adb push "$SWAP_SCRIPT" /data/local/tmp/_cinder_swap.sh >/dev/null
 adb shell "chmod 755 /data/local/tmp/_cinder_swap.sh"
 rm -f "$SWAP_SCRIPT"
 
+# 5b. BORROW rung 0 for exactly one boot.
+#
+# The launcher treats ANY cable at boot as the escape to stock (`usb_connected` reads
+# android_usb/state and power_supply/usb/{online,present} — there is no adb-vs-charging
+# distinction). So a flash over adb would reboot straight into the Sony player every time, which is
+# useless for verifying the thing you just installed.
+#
+# The opt-out is therefore taken here and GIVEN BACK below, as close to the boot as possible. It is
+# a loan, not a setting: leaving it set silently removes the one escape that depends on nothing.
+# If this script dies before the restore, the trap still puts it back on the next adb contact, and
+# rung 1 (the bad-boot counter, MAXBAD=4) covers the window regardless.
+CABLE_FLAG=/data/cinder/cable_escape_off
+restore_cable_escape() {
+    adb wait-for-device >/dev/null 2>&1 || return 0
+    adb shell "rm $CABLE_FLAG 2>/dev/null; sync" >/dev/null 2>&1 || true
+    if adb shell "[ -e $CABLE_FLAG ] && echo set" 2>/dev/null | grep -q set; then
+        warn "could NOT remove $CABLE_FLAG — rung 0 is still disabled, remove it by hand"
+    else
+        ok "rung 0 restored (cable-at-boot -> stock is armed again)"
+    fi
+}
+trap restore_cable_escape EXIT
+info "borrowing rung 0 for this boot (cable-at-boot escape off)…"
+adb shell "touch $CABLE_FLAG; sync" >/dev/null 2>&1 || warn "could not set $CABLE_FLAG — this boot will land on STOCK if a cable is attached"
+
 info "running swap on device…"
 adb shell "sh /data/local/tmp/_cinder_swap.sh" || die "swap failed (see above — rollback with: $0 --rollback)"
 
 # device reboots here, adb connection drops — that's expected
-ok "install complete — device rebooting"
+info "waiting for the device to come back…"
+if adb wait-for-device >/dev/null 2>&1; then
+    # Give rung 0 back FIRST, before any deeper verification: if the new build is going to misbehave
+    # this is the moment you most want the escape armed, not the moment after a health check that
+    # might itself hang.
+    restore_cable_escape
+    trap - EXIT
+    PID_BACK="$(adb shell 'ps 2>/dev/null | grep /system/vendor/unknown321/bin/cinder-home | grep -v grep | awk "{print \$2}" | head -1' 2>/dev/null | tr -d '\r')"
+    if [ -n "$PID_BACK" ]; then ok "cinder-home running (pid $PID_BACK)"
+    else warn "cinder-home not seen yet — check: $0 --status"; fi
+else
+    warn "device did not come back on adb; rung 0 may still be borrowed — check by hand"
+fi
+ok "install complete"
 say ""
 say "  next:"
 say "    $0 --status       check first-boot health"

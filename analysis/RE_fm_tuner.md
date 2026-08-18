@@ -722,3 +722,78 @@ here because killing a Sony service unprompted is not a safe autonomous act on t
 refuses, says why, and puts the radio back on the jack — instead of lighting up and transmitting
 nothing, which is what it would have done. The control in `--fm btcap` matters for the same reason:
 a capture that opens and returns all-silence looks identical to one that works.
+
+## RESOLVED — `hw:0,1` was WEDGED, not permanently held (fresh boot, 2026-08-18)
+
+The section above left two readings open and said the discriminating test was a `hagoromo28`
+restart. A reboot settled it for free, and **the answer is reading (2): the service was wedged.**
+
+On a fresh boot, before anything touches the tuner:
+
+```
+/proc/asound/card0/pcm1c/sub0/status  ->  closed        (and no process holds the fd)
+```
+
+So `AudioInPlayerService` does **not** grab the capture PCM at boot and never let go. The
+`RUNNING since t=909 s` seen earlier was leftover state from that session's FM work.
+
+Then `cinder-probe --fm btcap` on the clean PCM — the same run that failed with `-EBUSY` three
+times an hour earlier:
+
+```
+[cinder-tuner] capture rms(500 ms) = 2.8
+[cinder-tuner] capture rms(500 ms) = 0.0     <-- mux OFF, the control
+[cinder-tuner] capture rms(500 ms) = 8.5
+fm-btcap: RMS  routed=2  MUX-OFF(control)=0  routed-again=8
+VERDICT — the route is what carries it; hw:0,1 is a real FM source
+```
+
+**The control is exactly 0.0 and both routed captures are not.** That is the proof the FM → Bluetooth
+design needed and had never had: `hw:0,1` carries FM, and it carries it *because of* the
+`analog input device` route rather than incidentally. (Absolute levels are low here because the
+aerial was reading `signal=0` on that frequency at the time; the separation is the result, not the
+magnitude.)
+
+And afterwards:
+
+```
+pcm1c after the probe exited  ->  closed
+```
+
+**Released cleanly.** So the normal lifecycle is fine.
+
+### What this changes
+
+* **FM → Bluetooth is NOT blocked.** The earlier entry said it was; it is not.
+* The failure mode is real but is a **wedge**, not a design limit: once `AudioInPlayerService` is in
+  that state it holds `hw:0,1` `RUNNING` for the rest of the boot and every open returns `-EBUSY`.
+  What wedges it is still unknown — the suspect is the `Play()` that returns `rc=0` while
+  `GetPlayerState()` stays `0`, where a healthy start moves 0 → 2.
+* **A reboot is the recovery**, and no Sony service needs killing to get out of it.
+* `cinder_tuner_capture_rms()` and the `fm_btout_fn` gate stay exactly as they are — they are now
+  the detector for the wedge rather than for a permanent condition, which is a better reason to have
+  them: the button refuses with a reason on the boot where it cannot work, instead of transmitting
+  silence.
+
+## THE WEDGE, IDENTIFIED — an exit that skips Stop() (2026-08-18)
+
+Reproduced deliberately, and the rule is simple:
+
+```
+three clean start/stop cycles      -> pcm1c closed every time
+SIGKILL the client while playing   -> pcm1c RUNNING, and it stays RUNNING for the rest of the boot
+```
+
+`AudioInPlayerService` opens the capture on `Play()` and closes it only on `Stop()`. **It does not
+notice its client dying.** So any exit that skips `Stop()` — a crash, a `kill -9`, the installer's
+own swap script killing cinder-home — leaks `hw:0,1` until reboot, and every later open is `-EBUSY`.
+
+**Shipped:** `fm_release_capture()` is called from every DELIBERATE exit path. It is deliberately
+NOT called from the fault handler: that path's contract is to die fast so appmgr reboots and the
+bad-boot counter reverts, and a Sony IPC call from a signal handler after a SIGSEGV can hang rather
+than return — trading a leaked PCM for a hung Home app is a bad trade. A hard crash therefore still
+leaks it, and the recovery is the reboot that is already happening.
+
+**FM → Bluetooth needs no more code.** `fmbt_thread` already opens `hw:0,1`, sets the ADC format,
+connects the transmitter socket and pumps. It has never been run with a headphone connected — that,
+not construction, is what is left.

@@ -671,7 +671,7 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume64={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -3506,7 +3506,21 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // and the sink keeps its own volume across reconnects — so this is restored as
                     // the UI's BELIEF about where the headphones are, and it can be stale until
                     // the rocker moves or the sink reports its real level.
+                    // LEGACY KEY, on the 0..64 scale used between 2026-08-11 and 2026-08-18.
+                    // Same reasoning as `bt_volume` above, one scale later: read as 0..127 it would
+                    // halve the stored level. New builds write `bt_volume127`.
                     "bt_volume64" => {
+                        if let Ok(n) = v.parse::<u16>() {
+                            let scaled = (n * crate::VOL_BT_MAX as u16
+                                / cinder_ui::overlay::BT_VOL_MAX_LEGACY_64 as u16) as u8;
+                            r.app.set_bt_volume(scaled);
+                        }
+                    }
+                    // Deliberately does NOT set bit1. That bit means "push this to the hardware",
+                    // and the sink keeps its own volume across reconnects — so this is restored as
+                    // the UI's BELIEF about where the headphones are, and it can be stale until
+                    // the rocker moves or the sink reports its real level.
+                    "bt_volume127" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_bt_volume(n);
                         }
