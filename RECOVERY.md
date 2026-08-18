@@ -18,6 +18,63 @@ the whole design: the 2026-07-26 brick happened because every escape that existe
 | 4 | Flash `cinder_home_uninstall.upg`. | The Sony updater boots. |
 | 5 | `wbrt` eMMC restore. | Nothing — but it wipes `/contents`. |
 
+### What survives kernel work (audited 2026-08-18)
+
+Everything above assumes the main kernel boots. **Kernel work breaks that assumption**, so the
+ladder has to be re-read for it. Facts, all verified on the live device:
+
+**wbrt still covers you — for module work and even for a bad `bootimg`.** wbrt is
+`flash_tool.exe` + `MTK_AllInOne_DA_5.2136.bin`, its driver binds `VID_0E8D&PID_2000`
+("MT65xx **Preloader**"), and its backup length is hardcoded `2885156864` bytes from **user-area
+offset 0**. Against `/proc/dumchar_info`:
+
+| region | where | inside wbrt's 2.68 GB? |
+|---|---|---|
+| `preloader` | `/dev/misc-sd` = eMMC **boot0**, outside the user area | **NO — never backed up, never restored** |
+| `uboot` (LK) | `mmcblk0p7` @ 0x2120000 | yes |
+| `bootimg` — where kernel work lands | `mmcblk0p8` @ 0x2180000, 16 MB | yes |
+| `recovery` | `mmcblk0p9` @ 0x3180000, 16 MB | yes |
+| `nvp` / `android` / `usrdata` | p22 / p19 / p28 | yes |
+| `contents` | `mmcblk0p29` @ 0x92f80000 | first ~400 MB only |
+
+So the only thing wbrt cannot rewrite is the preloader in boot0 — and nothing in the FM kernel
+plan writes there. **Never write boot0.** That is the one action with no way back.
+
+`/proc/sys/kernel/panic` = **5** and `panic_on_oops` = **1** (`CONFIG_PANIC_TIMEOUT=5`), so an oops
+or panic auto-reboots after 5 s instead of hanging silently. Every reboot re-runs the preloader, so
+wbrt's catch window recurs — the same trick RECOVERY step 3 already relies on.
+
+**But rungs 0-4 mostly do not survive.** Rungs 0-3 are all userspace — cable escape, bad-boot
+counter, `/contents` flags — and every one needs the main kernel to boot. Rung 4 is armed by
+`scsitool do_fw_upgrade` over USB-MSC, which also needs a booting main kernel. A dead `bootimg`
+therefore drops you from rung 0 straight to rung 5.
+
+**There is probably a kernel-independent rung 4, but it is UNPROVEN.** `recovery` (`mmcblk0p9`) is
+a fully self-contained updater: its own kernel (3,822,632 B) and its own 3.8 MB ramdisk of 133
+entries, whose `init.rc` ends in
+
+```
+exec /bin/sh /install_update_script/icx_start_update.sh
+```
+
+with every `mount ... /system|/data|/db` line commented out (`#@`). It depends on neither `bootimg`
+nor the `android` partition. LK carries the standard Android BCB (`boot-recovery`,
+`mboot_recovery_load_misc`) plus an `MT65XX_RECOVERY_KEY` combo. Two things would have to be armed
+**from a working system, before the risky boot**: the `misc` BCB (`mmcblk0p11`, currently all
+zeros) and NVP `fup` (currently `0xFFFFFFFF`; `icx_start_update.sh` hard-requires `0x70555766`).
+Nobody has tested this. Until someone does, treat a bad `bootimg` as "wbrt only".
+
+**Therefore the working rule for kernel work:**
+
+| what you do | worst case | needs wbrt? |
+|---|---|---|
+| `insmod` by hand over adb | panic -> 5 s -> reboot -> module gone, self-healed | no |
+| module loaded from the launcher at boot | bad-boot counter -> stock, taking the module load with it | no |
+| **replace the kernel in `bootimg`** | no boot; rungs 0-4 all gone | **yes** |
+
+Stay in the first two rows. The third is the only tier that bets the device on wbrt, and no FM work
+so far justifies going there.
+
 **Rung 0 is the important one.** Plug the cable in, power on, and you land on stock — no matter
 how broken the filesystem is. The cost is that charging at boot also lands on stock; turn that off
 for cable-heavy dev with `/data/cinder/cable_escape_off` (or `/contents/cinderhome_cable_off`).

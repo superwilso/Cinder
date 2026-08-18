@@ -43,6 +43,9 @@ const PRESET_COLS: [i32; 3] = [22, 170, 318];
 const SCAN_Y: i32 = 620;
 const SCAN_H: i32 = 52;
 const POWER: (i32, i32, i32, i32) = (352, 46, 106, 34);
+/// Send the radio out over Bluetooth instead of the jack. The cable stays in either way — it is
+/// the AERIAL, not the output, and those are independent.
+const BTOUT: (i32, i32, i32, i32) = (232, 46, 112, 34);
 
 /// The four transport buttons, laid out as a uniform row so the hit test needs no font metrics.
 const BTN_LABELS: [&str; 4] = ["\u{2212}0.1", "\u{25C0}", "\u{25B6}", "+0.1"];
@@ -66,6 +69,8 @@ pub enum Hit {
     Preset(usize),
     /// Run a band scan (slow; the shell shows progress).
     Scan,
+    /// Toggle Bluetooth output.
+    BtOut,
     /// Tap on the dial — tune straight to that frequency.
     Dial(i32),
 }
@@ -86,6 +91,10 @@ pub fn hit(x: i32, y: i32) -> Option<Hit> {
     let (px, py, pw, ph) = POWER;
     if (px..px + pw).contains(&x) && (py..py + ph).contains(&y) {
         return Some(Hit::Power);
+    }
+    let (bx, by, bw, bh) = BTOUT;
+    if (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y) {
+        return Some(Hit::BtOut);
     }
     // The dial is a real target, not decoration: a 40 px band around the line.
     if (DIAL_Y - 22..DIAL_Y + 22).contains(&y) && (DIAL_X0..DIAL_X0 + DIAL_W).contains(&x) {
@@ -131,6 +140,8 @@ pub struct Fm {
     pub scan_pct: u8,
     /// Is anything in the headphone jack? Without it there is no aerial and no radio.
     pub antenna: bool,
+    /// Radio audio is going out over Bluetooth rather than the jack.
+    pub bt_out: bool,
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
@@ -147,6 +158,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
            if s.playing { "ON" } else { "OFF" },
            &sty(Family::Mono, Weight::Regular, 12.0,
                 if s.playing { t.acc_ink } else { t.dim }, 0.14));
+
+    // Bluetooth output pill. The radio's audio is analogue into the codec ADC, captured from
+    // hw:0,1 and re-encoded — so the cable can stay in as the aerial while you listen on LDAC.
+    let (bx, by, bw, bh) = BTOUT;
+    if s.bt_out {
+        fill_rect(c, bx, by, bw, bh, t.acc);
+    }
+    stroke_rect(c, bx, by, bw, bh, if s.bt_out { t.acc } else { t.line }, 1);
+    center(c, f, (bx + bw / 2) as f32, (by + bh / 2 + 4) as f32, "BT OUT",
+           &sty(Family::Mono, Weight::Regular, 12.0,
+                if s.bt_out { t.acc_ink } else { t.dim }, 0.14));
 
     // big frequency readout
     let fstr = format!("{:.1}", s.khz as f32 / 1000.0);
@@ -226,10 +248,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Fm) {
            &sty(Family::Sans, Weight::Regular, 11.0, t.faint, 0.0));
 
     hline(c, 740, t.line);
-    let note = if s.antenna {
-        "ANTENNA: HEADPHONE CABLE"
-    } else {
+    let note = if !s.antenna {
         "NO AERIAL — PLUG IN WIRED HEADPHONES"
+    } else if s.bt_out {
+        "AERIAL: CABLE IN THE JACK  ·  AUDIO OVER BLUETOOTH"
+    } else {
+        "ANTENNA: HEADPHONE CABLE"
     };
     center(c, f, 240.0, 768.0, note,
            &sty(Family::Mono, Weight::Regular, 11.0,
@@ -258,6 +282,7 @@ mod tests {
         assert_eq!(hit(btn_x(2) + 10, BTN_Y + 10), Some(Hit::Next));
         assert_eq!(hit(btn_x(3) + 10, BTN_Y + 10), Some(Hit::Step(STEP_KHZ)));
         assert_eq!(hit(POWER.0 + 5, POWER.1 + 5), Some(Hit::Power));
+        assert_eq!(hit(BTOUT.0 + 5, BTOUT.1 + 5), Some(Hit::BtOut));
         assert_eq!(hit(240, SCAN_Y + 10), Some(Hit::Scan));
         for i in 0..PRESETS {
             let cx = PRESET_COLS[i % 3];

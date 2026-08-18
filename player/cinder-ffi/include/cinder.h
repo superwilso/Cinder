@@ -181,7 +181,9 @@ typedef enum {
     CINDER_ACT_FM_POWER = 40,
     CINDER_ACT_FM_TUNE = 41,
     CINDER_ACT_FM_SEEK = 42,
-    CINDER_ACT_FM_SCAN = 43
+    CINDER_ACT_FM_SCAN = 43,
+    /* Radio out over Bluetooth: the shell captures hw:0,1 and feeds the LDAC bridge. */
+    CINDER_ACT_FM_BT_OUT = 44
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -379,6 +381,8 @@ void cinder_fm_report_antenna(int present);
 void cinder_fm_report_scan_progress(int pct);
 /* Install the stations a scan found, best first (kHz). Clears the scanning state. */
 void cinder_fm_report_stations(const int *khz, int n);
+int  cinder_fm_bt_out(void);          /* did the user just ask for BT output? */
+void cinder_fm_report_bt_out(int on);
 /* Read the current UI volume as the raw 0..120 step level (the stock scale — 1:1 with ALSA card0
  * 'master volume'). Call after a CINDER_ACT_VOLUP/VOLDOWN action and write it to the mixer. */
 int  cinder_get_volume(void);

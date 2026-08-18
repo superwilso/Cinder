@@ -318,7 +318,7 @@ fn main() {
             ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, &fm::Fm {
                 khz: 97300, playing: true,
                 stations: [97300, 100000, 107800, 0, 0, 0], n_stations: 3,
-                scanning: false, scan_pct: 0, antenna: true,
+                scanning: false, scan_pct: 0, antenna: true, bt_out: false,
             })),
             ("usbdac", &|c: &mut Canvas| usbdac::render(c, &theme, &fonts, true, true, "LDAC", Some("WH-1000XM5"), "A1", true, Some((44100, 32, 2)), None)),
         ];

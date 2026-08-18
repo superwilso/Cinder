@@ -422,7 +422,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         Screen::Fm => fm::render(c, theme, fonts, &fm::Fm {
             khz: 97300, playing: true,
             stations: [0; fm::PRESETS], n_stations: 0,
-            scanning: false, scan_pct: 0, antenna: true,
+            scanning: false, scan_pct: 0, antenna: true, bt_out: false,
         }),
         Screen::UsbDac => usbdac::render(c, theme, fonts, app.usb_dac, app.usb_dac && app.bt_on,
             BT_CODECS[app.bt_codec], app.bt_conn.map(|r| PAIRED[r].name), EQ_PRESETS[app.eq_preset].0, app.dsee,

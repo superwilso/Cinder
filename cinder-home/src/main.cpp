@@ -5318,6 +5318,34 @@ static void fm_scan_fn() {
     }
 }
 
+
+// Radio out over Bluetooth. The tuner keeps playing; what changes is where the audio goes.
+//
+// FM audio is analogue into the codec, so it can only leave over Bluetooth by being DIGITISED
+// first — `analog input device` = tuner puts it on the ADC, and hw:0,1 is where it lands. From
+// there it is the same bridge USB-DAC uses, with a different source.
+//
+// The aerial and the output are INDEPENDENT: the cable only has to be in the jack to receive, not
+// to be listened to. Cable in for reception, audio on LDAC.
+//
+// AudioInPlayerService and the bridge both want hw:0,1, so they cannot both run. Switching BT
+// output on stops the local audio path; switching it off brings it back.
+static void fm_btout_fn() {
+    const bool want = cinder_fm_bt_out() != 0;
+    if (!g_fm_on) { cinder_fm_report_bt_out(0); clog_("fm-bt: radio is off — nothing to send"); return; }
+    if (want) {
+        cinder_tuner_audio_stop();      // release hw:0,1 from AudioInPlayerService
+        fmbt_start();
+        cinder_fm_report_bt_out(g_ldac_alive ? 1 : 0);
+        clog_(g_ldac_alive ? "fm-bt: bridging radio to Bluetooth" : "fm-bt: bridge failed to start");
+    } else {
+        ldac_stop();
+        cinder_tuner_audio_start();     // hand hw:0,1 back to the local path
+        cinder_fm_report_bt_out(0);
+        clog_("fm-bt: back to the headphone jack");
+    }
+}
+
 // Carry out a navigator action via the audio/effect shims. Volume goes to the configured
 // backend (built-in CXD3778GF defaults, overridable by conf); play-by-index hands PlayerService
 // a NodeTrackSequence built from the pending-play list the UI resolved.
@@ -5592,6 +5620,9 @@ void carry_out(int act) {
             // A full band traversal at ~0.14 s a step is ~30 s worst case; budget generously,
             // because the guard firing mid-seek would leave the tuner holding the capture PCM.
             run_guarded("carry_out: FM seek", 45, fm_seek_fn);
+            break;
+        case CINDER_ACT_FM_BT_OUT:
+            run_guarded("carry_out: FM Bluetooth out", 20, fm_btout_fn);
             break;
         case CINDER_ACT_FM_SCAN:
             // ~0.45 s per step across 206 steps.

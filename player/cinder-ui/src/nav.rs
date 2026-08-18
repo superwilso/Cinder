@@ -196,6 +196,8 @@ pub enum Action {
     FmTune(i32),
     FmSeek(i32),
     FmScan,
+    /// Send the radio out over Bluetooth instead of the jack. The cable stays in as the aerial.
+    FmBtOut(bool),
     /// Shuffle one playlist by DB id. Same channel as `PlayPlaylist`, but shuffled — the page's
     /// band needs it and `ShuffleScope::Playlist` picks a RANDOM playlist, which is a different
     /// thing entirely.
@@ -715,6 +717,7 @@ pub struct App {
     /// Something in the headphone jack. The cable IS the aerial, so without it every frequency is
     /// noise and the screen says so rather than looking broken.
     fm_antenna: bool,
+    fm_bt_out: bool,
     /// Tone Control band gains, RAW half-decibels, ±20 = ±10 dB — measured on device, not assumed
     /// (`cinder-probe --tone`). Index order is Sony's own: 0 BASS, 1 MIDDLE, 2 TREBLE, confirmed
     /// by the sound service logging `eqtone,type=N` as each is written.
@@ -939,6 +942,7 @@ impl Default for App {
             fm_scanning: false,
             fm_scan_pct: 0,
             fm_antenna: false,
+            fm_bt_out: false,
             tone_bands: [0; crate::tone::BANDS],
             tone_sel: 0,
             adv_sel: 0,
@@ -2309,6 +2313,10 @@ impl App {
                             self.fm_khz = self.fm_stations[i];
                             vec![Action::FmTune(self.fm_khz)]
                         } else { vec![] }
+                    }
+                    Some(Hit::BtOut) => {
+                        self.fm_bt_out = !self.fm_bt_out;
+                        vec![Action::FmBtOut(self.fm_bt_out)]
                     }
                     Some(Hit::Scan) => {
                         self.fm_scanning = true;
@@ -4717,6 +4725,7 @@ impl App {
                     scanning: self.fm_scanning,
                     scan_pct: self.fm_scan_pct,
                     antenna: self.fm_antenna,
+                    bt_out: self.fm_bt_out,
                 };
                 crate::fm::render(c, &theme, fonts, &v)
             }
@@ -5339,6 +5348,8 @@ impl App {
     pub fn fm_playing(&self) -> bool { self.fm_playing }
     pub fn fm_set_playing(&mut self, on: bool) { self.fm_playing = on; }
     pub fn fm_set_antenna(&mut self, present: bool) { self.fm_antenna = present; }
+    pub fn fm_bt_out(&self) -> bool { self.fm_bt_out }
+    pub fn fm_set_bt_out(&mut self, on: bool) { self.fm_bt_out = on; }
     pub fn fm_scanning(&self) -> bool { self.fm_scanning }
     pub fn fm_set_scan_progress(&mut self, pct: u8) { self.fm_scan_pct = pct.min(100); }
     /// Install the stations a scan found, best first.

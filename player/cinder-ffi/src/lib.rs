@@ -349,6 +349,7 @@ struct Render {
     /// Parked here because an action code is one int and these ride alongside it.
     fm_seek_dir: i32,
     fm_power: bool,
+    fm_bt: bool,
     scrub_ms: Option<i64>,
     /// Action produced by a settings-slider drag, waiting for the shell to collect it.
     scrub_act: Option<libc::c_int>,
@@ -573,6 +574,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         real_pos_at: std::time::Instant::now(),
         fm_seek_dir: 1,
         fm_power: false,
+        fm_bt: false,
         scrub_ms: None,
         scrub_act: None,
         pending_screenshot: None,
@@ -2053,6 +2055,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::FmTune(khz) => { r.app.fm_report_khz(*khz); 41 }
         Action::FmSeek(dir) => { r.fm_seek_dir = *dir; 42 }
         Action::FmScan => 43,
+        Action::FmBtOut(on) => { r.fm_bt = *on; 44 }
         Action::ThemeChanged(_) => 16, // shell also drives the backlight (night = minimal light)
         Action::Sleep => 10,
         Action::EnterUsbMsc => 11,
@@ -3046,6 +3049,16 @@ pub extern "C" fn cinder_fm_seek_dir() -> libc::c_int {
 #[no_mangle]
 pub extern "C" fn cinder_fm_playing() -> libc::c_int {
     match cell().lock().unwrap().as_ref() { Some(r) => r.fm_power as libc::c_int, None => 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_fm_bt_out() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() { Some(r) => r.fm_bt as libc::c_int, None => 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_fm_report_bt_out(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() { r.app.fm_set_bt_out(on != 0); r.dirty = true; }
 }
 
 #[no_mangle]

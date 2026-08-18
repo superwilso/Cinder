@@ -262,7 +262,11 @@ There is no read-back: `dacdat` reports rc only. Judge by level.
 
 ---
 
-## 12. Volume-change POP on wired headphones, only below volume 100 (REPORTED 2026-08-18)
+## 12. Volume-change POP on wired headphones, only below volume 100
+
+**Full write-up: [`analysis/RE_volume_pop.md`](../analysis/RE_volume_pop.md).** Confirmed by
+measurement 2026-08-18; cause narrowed to the output-volume table; one experiment left to settle it
+(swap `ov_127x` for `ov_1291` and re-measure).
 
 A small but audible pop each time the volume changes, on the 3.5 mm output. **It stops above
 volume 100** — steps 100..120 are silent, steps below pop.
@@ -280,7 +284,58 @@ moves one attenuator. Worth reading `master gain` and the smaster gain mode acro
 finding what changes at 100; if a discrete control is being toggled per step, the fix is to stop
 toggling it, or to ramp rather than jump.
 
-Not yet investigated. Reproduce with wired headphones and step the volume one press at a time.
+### Investigated 2026-08-18 — what it is NOT
+
+**The shell is not doing it.** `apply_volume` writes exactly one control, `master volume`
+(numid=10). Nothing else.
+
+**The driver is not switching gain stages either.** Stepping volume across 0..120 and reading every
+other gain control after each step:
+
+```
+vol=  0 .. 120   master_gain=30  HWGAIN=0,0  smaster=0  se=0     (constant throughout)
+```
+
+`master gain` (numid=13), `HWGAIN` (numid=46) and both S-Master gain modes (numid=28/29) never
+move. So the "gain staging re-arranged at step 100" theory is DEAD — there is no visible control
+changing at any step, let alone at 100.
+
+**Not captured with the output idle.** Recording the headphone jack while stepping 60→66 and
+104→110, one step per second, with nothing playing: zero transients above +10 dB over a -39.8 dBFS
+floor. That is a real negative but a narrow one — with no stream the output amp is idle, and a
+volume write into an idle amp is not the event being reported.
+
+### CONFIRMED BY MEASUREMENT 2026-08-18
+
+Captured the headphone jack while stepping volume one press per second, 60→67 and 103→110, with
+music playing. The right metric is slew NORMALISED BY LOCAL LEVEL — raw slew is useless here,
+because louder audio has more slew and the above-100 half is simply louder, which produced a
+completely inverted first answer.
+
+Outliers (>3× median normalised slew) landing ON a step boundary:
+
+| | on-step transients |
+|---|---|
+| below volume 100 | **26** |
+| above volume 100 | **1** |
+
+That is the reported behaviour, reproduced objectively. Combined with every mixer control being
+constant across 0..120, the pop is the CXD3778GF's own attenuator changing, driven by the
+`ov_*.tbl` output-volume table — not by anything the shell or the ALSA control layer does.
+
+### What is left
+
+The pop is inside the codec: the volume STEP itself is an attenuator change in the CXD3778GF, and
+the `ov_*.tbl` output-volume table decides what each step does. A click that stops above a fixed
+step is consistent with the table crossing a range boundary per step below it and not above.
+
+**To reproduce properly:** play a steady quiet tone (not music — music masks it), capture, and step
+one press at a time across 95..105. A tone makes a click obvious in a way programme material does
+not. `tools/measure_output.py --wav` will analyse the capture.
+
+**Worth trying once reproduced:** load the WM1A curve (`dacdat ovt ov_127x.tbl`) and repeat. If the
+pop moves to a different step or disappears, it is the table and not the silicon — which would also
+make it fixable by shipping a different table.
 
 ---
 
