@@ -40,6 +40,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <alsa/asoundlib.h>
+#include <linux/videodev2.h>
+#include <sys/ioctl.h>
 #include <cmath>   // --btopen tone: a sine is the only way to hear whether the PCM really arrived
 
 static void clog_(const char* m) { std::fprintf(stderr, "[cinder-probe] %s\n", m); std::fflush(stderr); }
@@ -3826,6 +3828,10 @@ static int tonefreq_probe() {
 // FM NEEDS THE HEADPHONE CABLE AS ITS ANTENNA. With nothing in the jack, every frequency reads
 // dead and the result says nothing.
 extern "C" void* _ZN3pst8services31TunerPlayerServiceClientFactory14CreateInstanceEv(void);
+// The tuner chip and the AUDIO PATH for analogue sources are two different services, both hosted
+// in hagoromo28. TunerPlayerService tunes; nothing is audible until AudioInPlayerService is played.
+// That is why Open/SetFrequency/Play all returned 0 and the output stayed at a flat -59.8 dBFS.
+extern "C" void* _ZN3pst8services33AudioInPlayerServiceClientFactory14CreateInstanceEv(void);
 
 namespace {
 // Slot numbers from analysis/RE_fm_tuner.md. Slot 0 is the first virtual after the
@@ -3836,6 +3842,11 @@ enum {
     VIDX_Close           = 5,
     VIDX_Play            = 6,
     VIDX_Stop            = 7,
+    VIDX_GetSenseMode    = 18,
+    VIDX_SetSenseMode    = 19,
+    VIDX_StartAutoTuning = 21,
+    VIDX_GetMuteMode     = 8,
+    VIDX_SetMuteMode     = 9,
     VIDX_GetStereoState  = 12,
     VIDX_GetFrequency    = 16,
     VIDX_SetFrequency    = 17,
@@ -3846,6 +3857,8 @@ typedef int (*fn_v)(void*);
 typedef int (*fn_pu)(void*, unsigned*);
 typedef int (*fn_cu)(void*, const unsigned*);
 typedef int (*fn_pi)(void*, int*);
+typedef int (*fn_ci)(void*, const int*);
+typedef int (*fn_seek)(void*, const unsigned*, const bool*, const unsigned*);
 
 int fm_signal(void* c) {
     int lvl = -1;
@@ -3853,6 +3866,709 @@ int fm_signal(void* c) {
     return lvl;
 }
 } // namespace
+
+// --fm tune <kHz> [seconds] : hold ONE station so its audio can be heard or CAPTURED.
+//
+// This is the one that answers the open question in analysis/RE_fm_tuner.md — "where does the
+// tuner audio go?". Open/Play return 0, but a return code proves nothing on this device (see the
+// high-gain finding, and dacdat). The honest test is to record the headphone output on a PC and
+// look at the level: FM audio present or not, no ears required.
+//
+// Wiring: the headphone cable IS the aerial, so the SAME cable can run to a PC input and still
+// receive. Keep the volume LOW — a headphone output into a mic input is already a level mismatch,
+// and this holds for `seconds` with no way to turn it down from here.
+// Select the tuner as the codec's analogue input. MEASURED 2026-08-18: without this,
+// AudioInPlayerService::Play() returns rc=1 and the audio path never opens; with it, rc=0 and the
+// player state moves 0 -> 2. The ADC has to have a source before the capture side will start.
+static void fm_route_on()  { std::system("amixer -c0 cset numid=26 1 >/dev/null 2>&1"); }
+static void fm_route_off() { std::system("amixer -c0 cset numid=26 0 >/dev/null 2>&1"); }
+
+// --fm audioscan <start_kHz> <end_kHz> <dwell_ms> : tune each step for a fixed dwell, playing.
+//
+// `GetSignalLevel` is useless for finding a station on this hardware — with the aerial in it
+// returns 1 for 203 of the 206 frequencies in the band. So the scan is done the only way that
+// actually discriminates: PLAY each frequency for a known dwell and measure the analogue output on
+// a PC. A carrier is loud, a dead frequency is quiet, and the difference is tens of dB.
+//
+// The dwell is fixed and printed so the host can slice one continuous recording into per-frequency
+// bins without any clock sync — bin N is frequency start + N*step. Run it as:
+//
+//   (host) start recording for nsteps*dwell + margin
+//   (device) cinder-probe --fm audioscan 88000 91000 1500
+//   (host) slice the WAV into nsteps bins, RMS each, the loud ones are stations
+static int fm_audioscan(int start_khz, int end_khz, int dwell_ms) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    fm_route_on();
+    void* c = _ZN3pst8services31TunerPlayerServiceClientFactory14CreateInstanceEv();
+    if (!c) { clog_("fm: CreateInstance NULL — STOP"); fm_route_off(); g_pump_run = false; return 1; }
+    try { ((fn_v)vslot(c, VIDX_Open))(c); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Play))(c); } catch (...) {}
+    // Open the audio path too, or this sweep is silent and there is nothing to listen to.
+    void* ain = _ZN3pst8services33AudioInPlayerServiceClientFactory14CreateInstanceEv();
+    if (ain) {
+        int rc2 = -1, st = -1;
+        try { rc2 = ((fn_v)vslot(ain, 3))(ain); } catch (...) {}
+        try { st = ((fn_v)vslot(ain, 6))(ain); } catch (...) {}
+        std::snprintf(m, sizeof m, "fm: AudioIn Play() rc=%d state=%d (2 = audio path open)", rc2, st);
+        clog_(m);
+    }
+
+    const int step = 100;
+    int nsteps = (end_khz - start_khz) / step + 1;
+    std::snprintf(m, sizeof m,
+                  "fm: audioscan %d..%d kHz, %d steps of %d kHz, %d ms each = %.1f s total",
+                  start_khz, end_khz, nsteps, step, dwell_ms, nsteps * dwell_ms / 1000.0);
+    clog_(m);
+    clog_("fm: START-NOW");   // the host lines its recording up on this
+    for (int i = 0; i < nsteps; i++) {
+        unsigned f = (unsigned)(start_khz + i * step);
+        try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &f); } catch (...) {}
+        std::snprintf(m, sizeof m, "fm:   >>> %.1f MHz", f / 1000.0);
+        clog_(m);
+        usleep(dwell_ms * 1000);
+    }
+    clog_("fm: END");
+    if (ain) { try { ((fn_v)vslot(ain, 5))(ain); } catch (...) {} }
+    try { ((fn_v)vslot(c, VIDX_Stop))(c); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Close))(c); } catch (...) {}
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --fm seek [from_kHz] : use Sony's own auto-tune to find a station.
+//
+// `GetSignalLevel` cannot discriminate (203 of 206 frequencies read 1) and an audio A/B of a known
+// station against a dead frequency came out identical, so either nothing is receivable or the
+// tuner needs more setup than Open/SetFrequency/Play. StartAutoTuning is the firmware's OWN seek —
+// if any carrier is reachable it will stop on one, and where it stops is the answer.
+//
+// Signature: StartAutoTuning(const uint32_t&, const bool&, const uint32_t&). Argument roles are
+// not recovered; best guess is (start frequency, direction-up, mode/threshold). Reported verbatim.
+// --fm scan <start_kHz> <end_kHz> : a REAL station scanner, on-device, no PC needed.
+//
+// Neither of Sony's own primitives can find a station on this hardware:
+//   * `GetSignalLevel` returns 1 at 203 of 206 frequencies — and still 1 everywhere once the aerial
+//     is free. It is not an RSSI.
+//   * `StartAutoTuning` returns within 100 ms with IsRunningAutoTuning()==0 and the frequency back
+//     at its start value, in both directions — even when a station is AUDIBLY present.
+// Both were verified against a station the user could hear. So a scan has to measure the AUDIO.
+//
+// The discriminator is spectral, not level. Unlocked FM is broadband hiss; a locked station is
+// programme material with far less energy at the top of the band. So per frequency we capture from
+// `hw:0,1` (the codec ADC, with `analog input device` = tuner) and compute
+//
+//     hf = mean(|x[n] - x[n-1]|) / mean(|x[n]|)
+//
+// a first-difference high-pass proxy. White noise sits near 1.4; music and speech sit well below
+// it. LOW hf = station. Level alone does not work — hiss is often LOUDER than a locked carrier.
+//
+// AudioInPlayerService must NOT be playing during a scan: it owns hw:0,1 and the open would fail.
+static int fm_scan(int start_khz, int end_khz) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    fm_route_on();
+    void* c = _ZN3pst8services31TunerPlayerServiceClientFactory14CreateInstanceEv();
+    if (!c) { clog_("fm: CreateInstance NULL"); fm_route_off(); g_pump_run = false; return 1; }
+    try { ((fn_v)vslot(c, VIDX_Open))(c); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Play))(c); } catch (...) {}
+
+    snd_pcm_t* pcm = nullptr;
+    int rc = snd_pcm_open(&pcm, "hw:0,1", SND_PCM_STREAM_CAPTURE, 0);
+    if (rc < 0) {
+        std::snprintf(m, sizeof m, "fm: cannot open hw:0,1 for capture: %s%s", snd_strerror(rc),
+                      rc == -EBUSY ? "  (is AudioInPlayerService still playing?)" : "");
+        clog_(m);
+        try { ((fn_v)vslot(c, VIDX_Close))(c); } catch (...) {}
+        fm_route_off(); g_pump_run = false; return 1;
+    }
+    const unsigned RATE = 44100;
+    rc = snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
+                            2, RATE, 1, 200000);
+    if (rc < 0) {
+        std::snprintf(m, sizeof m, "fm: set_params failed: %s", snd_strerror(rc));
+        clog_(m);
+        snd_pcm_close(pcm);
+        try { ((fn_v)vslot(c, VIDX_Close))(c); } catch (...) {}
+        fm_route_off(); g_pump_run = false; return 1;
+    }
+    snd_pcm_start(pcm);   // the UAC lesson: this device does not start on its own
+
+    const int step = 100, nsteps = (end_khz - start_khz) / step + 1;
+    const int FR = RATE / 5;               // 200 ms of audio per frequency
+    static short buf[(44100 / 5) * 2];
+    std::snprintf(m, sizeof m, "fm: scanning %d..%d kHz, %d steps — LOW hf = station",
+                  start_khz, end_khz, nsteps);
+    clog_(m);
+
+    struct Hit { unsigned f; double hf; double rms; };
+    static Hit hits[256];
+    int nh = 0;
+    for (int i = 0; i < nsteps && nh < 256; i++) {
+        unsigned f = (unsigned)(start_khz + i * step);
+        try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &f); } catch (...) {}
+        usleep(250000);                     // let the tuner settle before believing the audio
+        snd_pcm_drop(pcm); snd_pcm_prepare(pcm); snd_pcm_start(pcm);
+        int got = 0;
+        while (got < FR) {
+            snd_pcm_sframes_t n = snd_pcm_readi(pcm, buf + got * 2, FR - got);
+            if (n < 0) { snd_pcm_recover(pcm, (int)n, 1); break; }
+            if (n == 0) break;
+            got += (int)n;
+        }
+        if (got < FR / 2) { continue; }
+        double sabs = 0, sdif = 0, sq = 0;
+        int prev = buf[0];
+        for (int k = 0; k < got; k++) {
+            int v = buf[k * 2];             // left channel is enough
+            sabs += (v < 0 ? -v : v);
+            int d = v - prev; sdif += (d < 0 ? -d : d);
+            sq += (double)v * v;
+            prev = v;
+        }
+        double hf = sabs > 0 ? sdif / sabs : 9.9;
+        double rms = 20.0 * std::log10((std::sqrt(sq / got) + 1e-9) / 32768.0);
+        hits[nh].f = f; hits[nh].hf = hf; hits[nh].rms = rms; nh++;
+    }
+    snd_pcm_close(pcm);
+
+    // Rank by hf ascending — the least hissy frequencies first.
+    for (int a = 1; a < nh; a++) {
+        Hit t = hits[a]; int b = a - 1;
+        while (b >= 0 && hits[b].hf > t.hf) { hits[b + 1] = hits[b]; b--; }
+        hits[b + 1] = t;
+    }
+    double med = nh ? hits[nh / 2].hf : 0;
+    std::snprintf(m, sizeof m, "fm: median hf = %.3f (that is the no-station baseline)", med);
+    clog_(m);
+    clog_("fm: --- best candidates (lowest hf) ---");
+    for (int i = 0; i < nh && i < 10; i++) {
+        std::snprintf(m, sizeof m, "fm:   %6.1f MHz   hf %.3f   level %6.1f dBFS   %s",
+                      hits[i].f / 1000.0, hits[i].hf, hits[i].rms,
+                      hits[i].hf < med * 0.85 ? "<<< STATION" : "");
+        clog_(m);
+    }
+    try { ((fn_v)vslot(c, VIDX_Stop))(c); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Close))(c); } catch (...) {}
+    fm_route_off();
+    clog_("fm: scan done");
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --fm autotune : drive the CHIP'S OWN SEEK properly, with a listener registered.
+//
+// The earlier conclusion that `StartAutoTuning` "finds nothing" was WRONG, and the symbol table
+// says why: the result arrives through
+//
+//     OnChangedAutoTuningInfo(const ITunerPlayerService::AutoTuningState&, const uint32_t&)
+//
+// so the call is ASYNCHRONOUS and LISTENER-DRIVEN. Returning within 100 ms is the documented
+// shape. The probe that dismissed it never registered a listener and polled IsRunningAutoTuning
+// instead of waiting for the callback.
+//
+// THE VTABLE ORDER of the five IServiceListener callbacks is not recovered, so this does what
+// CinderBtListener does in cinder-home: implement every slot with the SAME uninterpreted shape and
+// let one seek reveal which fires. Nothing is dereferenced, so a wrong arity cannot fault — the
+// arguments are recorded as raw words and interpreted afterwards, on paper.
+//
+// If this lands on a real frequency, a Sony-speed scan is available and the audio-measuring
+// scanner becomes a fallback.
+namespace {
+
+struct LsnHit { int slot; unsigned long a, b, c; };
+volatile int g_lsn_n = 0;
+LsnHit g_lsn[64];
+
+void lsn_note(int slot, unsigned long a, unsigned long b, unsigned long c) {
+    int i = g_lsn_n;
+    if (i < 64) { g_lsn[i].slot = slot; g_lsn[i].a = a; g_lsn[i].b = b; g_lsn[i].c = c; g_lsn_n = i + 1; }
+}
+
+// Virtual destructor FIRST: the Itanium ABI puts D1/D0 in slots 0/1, so the callbacks land at
+// 2.. — the layout the library dispatches through. Twelve of them, comfortably more than the five
+// the interface declares, so an unexpected slot lands on a recorder rather than on garbage.
+struct TunerLsn {
+    virtual ~TunerLsn() {}
+    virtual void s0(unsigned long a, unsigned long b, unsigned long c) { lsn_note(0, a, b, c); }
+    virtual void s1(unsigned long a, unsigned long b, unsigned long c) { lsn_note(1, a, b, c); }
+    virtual void s2(unsigned long a, unsigned long b, unsigned long c) { lsn_note(2, a, b, c); }
+    virtual void s3(unsigned long a, unsigned long b, unsigned long c) { lsn_note(3, a, b, c); }
+    virtual void s4(unsigned long a, unsigned long b, unsigned long c) { lsn_note(4, a, b, c); }
+    virtual void s5(unsigned long a, unsigned long b, unsigned long c) { lsn_note(5, a, b, c); }
+    virtual void s6(unsigned long a, unsigned long b, unsigned long c) { lsn_note(6, a, b, c); }
+    virtual void s7(unsigned long a, unsigned long b, unsigned long c) { lsn_note(7, a, b, c); }
+    virtual void s8(unsigned long a, unsigned long b, unsigned long c) { lsn_note(8, a, b, c); }
+    virtual void s9(unsigned long a, unsigned long b, unsigned long c) { lsn_note(9, a, b, c); }
+    virtual void s10(unsigned long a, unsigned long b, unsigned long c) { lsn_note(10, a, b, c); }
+    virtual void s11(unsigned long a, unsigned long b, unsigned long c) { lsn_note(11, a, b, c); }
+};
+
+} // namespace
+
+static int fm_autotune(int from_khz) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    fm_route_on();
+    void* c = _ZN3pst8services31TunerPlayerServiceClientFactory14CreateInstanceEv();
+    if (!c) { clog_("fm: CreateInstance NULL"); fm_route_off(); g_pump_run = false; return 1; }
+    try { ((fn_v)vslot(c, VIDX_Open))(c); } catch (...) {}
+    unsigned f0 = (unsigned)from_khz;
+    try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &f0); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Play))(c); } catch (...) {}
+
+    // Register. AddListener is client slot 26; `name` is a notify FILTER KEY, not a label.
+    TunerLsn lsn;
+    enum { VIDX_AddListener = 26, VIDX_RemoveListener = 27 };
+    typedef int (*fn_add)(void*, void*, const std::string*);
+    typedef int (*fn_rem)(void*, void*);
+    int add_rc = -1;
+    {
+        std::string name("cinder");
+        try { wd_arm(12); add_rc = ((fn_add)vslot(c, VIDX_AddListener))(c, &lsn, &name); wd_disarm(); }
+        catch (...) { clog_("fm: AddListener THREW"); }
+    }
+    std::snprintf(m, sizeof m, "fm: AddListener rc=%d (raw ptr, client builds the proxy)", add_rc);
+    clog_(m);
+
+    // Now the seek. Try both directions; report every callback that arrives.
+    for (int dir = 1; dir >= 0; dir--) {
+        g_lsn_n = 0;
+        unsigned start = (unsigned)from_khz;
+        bool up = dir != 0;
+        unsigned arg3 = 0;
+        int running_before = -1, running_after = -1;
+        try { running_before = ((fn_v)vslot(c, VIDX_IsRunningAuto))(c); } catch (...) {}
+        try { ((fn_seek)vslot(c, VIDX_StartAutoTuning))(c, &start, &up, &arg3); }
+        catch (...) { clog_("fm: StartAutoTuning THREW"); continue; }
+        // WAIT FOR THE CALLBACK, which is the whole point — do not poll IsRunningAutoTuning and
+        // conclude from it. 15 s is far longer than any seek should take.
+        int waited = 0;
+        while (waited < 150 && g_lsn_n == 0) { usleep(100000); waited++; }
+        usleep(500000);                                  // let a burst finish arriving
+        try { running_after = ((fn_v)vslot(c, VIDX_IsRunningAuto))(c); } catch (...) {}
+        unsigned landed = 0;
+        try { ((fn_pu)vslot(c, VIDX_GetFrequency))(c, &landed); } catch (...) {}
+        std::snprintf(m, sizeof m,
+                      "fm: seek %s from %.1f -> %.1f MHz | callbacks=%d after %d ms | running %d->%d",
+                      up ? "UP" : "DOWN", from_khz / 1000.0, landed / 1000.0,
+                      (int)g_lsn_n, waited * 100, running_before, running_after);
+        clog_(m);
+        for (int i = 0; i < g_lsn_n && i < 12; i++) {
+            std::snprintf(m, sizeof m, "fm:   callback slot %2d  args %lu, %lu, %lu",
+                          g_lsn[i].slot, g_lsn[i].a, g_lsn[i].b, g_lsn[i].c);
+            clog_(m);
+        }
+        if (g_lsn_n == 0) clog_("fm:   (no callback at all — listener not registered, or seek never ran)");
+    }
+
+    try { ((fn_rem)vslot(c, VIDX_RemoveListener))(c, &lsn); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Stop))(c); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Close))(c); } catch (...) {}
+    fm_route_off();
+    clog_("fm: autotune done");
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --fm v4l2 : talk to the Si4708 DIRECTLY through the kernel's V4L2 radio node.
+//
+// Sony's StartAutoTuning is a stub (48 bytes, unconditionally returns 4 — see analysis/
+// RE_fm_tuner.md), so their SEARCH interface does not exist. But the chip is not hidden:
+//
+//     /dev/radio0   "Silicon Labs. FM Tuner"   driver Si4708icx at i2c 2-0010
+//
+// V4L2 radio exposes exactly the two things Sony withheld: VIDIOC_G_TUNER carries a real signal
+// strength and stereo flag, and VIDIOC_S_HW_FREQ_SEEK is the chip's hardware seek. If those work,
+// an instant scanner and a real meter are both available — search over V4L2, audio still over
+// TunerPlayerService + AudioInPlayerService.
+//
+// READ-ONLY except for tuning: it sets frequencies (which the tuner already lets anyone do) and
+// tries one seek. Nothing here can write a register directly.
+//
+// The unit rule is easy to get wrong: with V4L2_TUNER_CAP_LOW the frequency field is in 1/16 kHz
+// (62.5 Hz) steps, otherwise 1/16 MHz (62.5 kHz). Both are handled rather than assumed.
+static int fm_v4l2(int station_khz, int dead_khz) {
+    install_diagnostics();
+    char m[224];
+
+    int fd = open("/dev/radio0", O_RDWR);
+    if (fd < 0) {
+        std::snprintf(m, sizeof m, "v4l2: open(/dev/radio0) failed: %s%s", strerror(errno),
+                      errno == EBUSY ? "  (TunerPlayerService probably holds it — stop FM first)"
+                                     : "");
+        clog_(m);
+        return 1;
+    }
+    struct v4l2_capability cap;
+    std::memset(&cap, 0, sizeof cap);
+    if (ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0) {
+        std::snprintf(m, sizeof m, "v4l2: driver='%s' card='%s' caps=0x%08x",
+                      cap.driver, cap.card, cap.capabilities);
+        clog_(m);
+        std::snprintf(m, sizeof m, "v4l2:   TUNER=%d RADIO=%d HW_FREQ_SEEK=%d RDS=%d",
+                      !!(cap.capabilities & V4L2_CAP_TUNER),
+                      !!(cap.capabilities & V4L2_CAP_RADIO),
+                      !!(cap.capabilities & V4L2_CAP_HW_FREQ_SEEK),
+                      !!(cap.capabilities & V4L2_CAP_RDS_CAPTURE));
+        clog_(m);
+    } else {
+        std::snprintf(m, sizeof m, "v4l2: QUERYCAP failed: %s", strerror(errno));
+        clog_(m);
+    }
+
+    struct v4l2_tuner tun;
+    std::memset(&tun, 0, sizeof tun);
+    if (ioctl(fd, VIDIOC_G_TUNER, &tun) != 0) {
+        std::snprintf(m, sizeof m, "v4l2: G_TUNER failed: %s — no meter available here",
+                      strerror(errno));
+        clog_(m);
+        close(fd);
+        return 1;
+    }
+    const bool low = (tun.capability & V4L2_TUNER_CAP_LOW) != 0;
+    const double unit_khz = low ? (1.0 / 16.0) : 62.5;   // field units expressed in kHz
+    std::snprintf(m, sizeof m, "v4l2: tuner '%s' cap=0x%x CAP_LOW=%d range %.1f..%.1f MHz",
+                  tun.name, tun.capability, (int)low,
+                  tun.rangelow * unit_khz / 1000.0, tun.rangehigh * unit_khz / 1000.0);
+    clog_(m);
+
+    // The decisive test: does `signal` actually MOVE between a station and a dead frequency? A
+    // constant is what Sony's own GetSignalLevel returns, and it is why the audio scanner exists.
+    auto probe_at = [&](int khz, const char* label) {
+        struct v4l2_frequency fr;
+        std::memset(&fr, 0, sizeof fr);
+        fr.tuner = 0;
+        fr.type = V4L2_TUNER_RADIO;
+        fr.frequency = (unsigned)(khz / unit_khz);
+        if (ioctl(fd, VIDIOC_S_FREQUENCY, &fr) != 0) {
+            std::snprintf(m, sizeof m, "v4l2: S_FREQUENCY(%.1f) failed: %s", khz / 1000.0,
+                          strerror(errno));
+            clog_(m);
+            return;
+        }
+        usleep(300000);
+        struct v4l2_tuner t2;
+        std::memset(&t2, 0, sizeof t2);
+        if (ioctl(fd, VIDIOC_G_TUNER, &t2) != 0) return;
+        struct v4l2_frequency back;
+        std::memset(&back, 0, sizeof back);
+        back.tuner = 0; back.type = V4L2_TUNER_RADIO;
+        ioctl(fd, VIDIOC_G_FREQUENCY, &back);
+        std::snprintf(m, sizeof m,
+                      "v4l2: %-8s %.1f MHz -> reads %.1f  signal=%5u/65535  stereo=%d",
+                      label, khz / 1000.0, back.frequency * unit_khz / 1000.0,
+                      t2.signal, !!(t2.rxsubchans & V4L2_TUNER_SUB_STEREO));
+        clog_(m);
+    };
+    probe_at(station_khz, "STATION");
+    probe_at(dead_khz,    "DEAD");
+    probe_at(station_khz, "STATION");   // twice, so a drifting reading is visible as drift
+
+    // And the hardware seek Sony stubbed out.
+    struct v4l2_hw_freq_seek sk;
+    std::memset(&sk, 0, sizeof sk);
+    sk.tuner = 0;
+    sk.type = V4L2_TUNER_RADIO;
+    sk.seek_upward = 1;
+    sk.wrap_around = 1;
+    struct timespec a, b;
+    clock_gettime(CLOCK_MONOTONIC, &a);
+    int rc = ioctl(fd, VIDIOC_S_HW_FREQ_SEEK, &sk);
+    clock_gettime(CLOCK_MONOTONIC, &b);
+    long ms = (b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000;
+    struct v4l2_frequency landed;
+    std::memset(&landed, 0, sizeof landed);
+    landed.tuner = 0; landed.type = V4L2_TUNER_RADIO;
+    ioctl(fd, VIDIOC_G_FREQUENCY, &landed);
+    std::snprintf(m, sizeof m, "v4l2: HW_FREQ_SEEK up rc=%d (%s) in %ld ms -> %.1f MHz",
+                  rc, rc == 0 ? "OK" : strerror(errno), ms,
+                  landed.frequency * unit_khz / 1000.0);
+    clog_(m);
+
+    close(fd);
+    clog_("v4l2: done");
+    return 0;
+}
+
+// --fm v4l2scan <start_kHz> <end_kHz> : sweep the band reading the REAL signal meter.
+//
+// VIDIOC_G_TUNER.signal is full-scale on a carrier and zero on a dead frequency (measured
+// 2026-08-18), so a scan no longer needs to demodulate anything. This characterises the meter
+// across the whole band: how many steps report signal, whether it is graded or binary, and how
+// long a step actually takes — which is what decides the settle time the shim should use.
+static int fm_v4l2scan(int start_khz, int end_khz, int settle_ms) {
+    install_diagnostics();
+    char m[256];
+    int fd = open("/dev/radio0", O_RDWR);
+    if (fd < 0) {
+        std::snprintf(m, sizeof m, "v4l2: open failed: %s", strerror(errno));
+        clog_(m); return 1;
+    }
+    struct v4l2_tuner tun;
+    std::memset(&tun, 0, sizeof tun);
+    if (ioctl(fd, VIDIOC_G_TUNER, &tun) != 0) { clog_("v4l2: G_TUNER failed"); close(fd); return 1; }
+    const double unit_khz = (tun.capability & V4L2_TUNER_CAP_LOW) ? (1.0 / 16.0) : 62.5;
+
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int steps = 0, hits = 0;
+    unsigned hist[9] = {0};                 // signal distribution, in eighths of full scale
+    static struct { int khz; unsigned sig; } found[64];
+    int nf = 0;
+    for (int khz = start_khz; khz <= end_khz; khz += 100) {
+        struct v4l2_frequency fr;
+        std::memset(&fr, 0, sizeof fr);
+        fr.tuner = 0; fr.type = V4L2_TUNER_RADIO;
+        fr.frequency = (unsigned)(khz / unit_khz);
+        if (ioctl(fd, VIDIOC_S_FREQUENCY, &fr) != 0) continue;
+        usleep(settle_ms * 1000);
+        struct v4l2_tuner t;
+        std::memset(&t, 0, sizeof t);
+        if (ioctl(fd, VIDIOC_G_TUNER, &t) != 0) continue;
+        steps++;
+        hist[t.signal * 8 / 65536]++;
+        if (t.signal > 32768) {
+            hits++;
+            if (nf < 64) { found[nf].khz = khz; found[nf].sig = t.signal; nf++; }
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+    std::snprintf(m, sizeof m, "v4l2: %d steps in %ld ms (%.1f ms/step, settle %d ms) — %d above half scale",
+                  steps, ms, steps ? (double)ms / steps : 0.0, settle_ms, hits);
+    clog_(m);
+    std::snprintf(m, sizeof m, "v4l2: signal histogram (eighths): %u %u %u %u %u %u %u %u %u",
+                  hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], hist[8]);
+    clog_(m);
+    // Collapse adjacent steps: a transmitter lights several 100 kHz slots.
+    int i = 0;
+    while (i < nf) {
+        int j = i;
+        while (j + 1 < nf && found[j + 1].khz == found[j].khz + 100) j++;
+        int centre = found[i].khz + ((found[j].khz - found[i].khz) / 200) * 100;
+        std::snprintf(m, sizeof m, "v4l2:   %6.1f MHz  (%5.1f-%5.1f, %d steps)  signal=%u",
+                      centre / 1000.0, found[i].khz / 1000.0, found[j].khz / 1000.0,
+                      j - i + 1, found[i].sig);
+        clog_(m);
+        i = j + 1;
+    }
+    close(fd);
+    return 0;
+}
+
+static int fm_seek(int from_khz) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    fm_route_on();
+    void* c = _ZN3pst8services31TunerPlayerServiceClientFactory14CreateInstanceEv();
+    if (!c) { clog_("fm: CreateInstance NULL"); fm_route_off(); g_pump_run = false; return 1; }
+    try { ((fn_v)vslot(c, VIDX_Open))(c); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Play))(c); } catch (...) {}
+    void* ain = _ZN3pst8services33AudioInPlayerServiceClientFactory14CreateInstanceEv();
+    if (ain) { try { ((fn_v)vslot(ain, 3))(ain); } catch (...) {} }
+
+    unsigned f = (unsigned)from_khz;
+    try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &f); } catch (...) {}
+    // Sense mode first: if it is a sensitivity/threshold setting, the least selective value gives
+    // the best chance of finding anything indoors on a short aerial.
+    for (int sm = 0; sm <= 2; sm++) {
+        int cur = -1;
+        try { ((fn_ci)vslot(c, VIDX_SetSenseMode))(c, &sm); } catch (...) {}
+        try { ((fn_pi)vslot(c, VIDX_GetSenseMode))(c, &cur); } catch (...) {}
+        std::snprintf(m, sizeof m, "fm: SetSenseMode(%d) -> reads %d", sm, cur);
+        clog_(m);
+    }
+    for (int dir = 1; dir >= 0; dir--) {
+        unsigned start = (unsigned)from_khz;
+        bool up = dir != 0;
+        unsigned arg3 = 0;
+        try { ((fn_seek)vslot(c, VIDX_StartAutoTuning))(c, &start, &up, &arg3); }
+        catch (...) { clog_("fm: StartAutoTuning threw"); continue; }
+        int running = 1, waited = 0;
+        while (waited < 150) {
+            usleep(100000); waited++;
+            try { running = ((fn_v)vslot(c, VIDX_IsRunningAuto))(c); } catch (...) { break; }
+            if (!running) break;
+        }
+        unsigned landed = 0;
+        try { ((fn_pu)vslot(c, VIDX_GetFrequency))(c, &landed); } catch (...) {}
+        int stereo = -1;
+        try { ((fn_pi)vslot(c, VIDX_GetStereoState))(c, &stereo); } catch (...) {}
+        std::snprintf(m, sizeof m,
+                      "fm: seek %s from %.1f -> landed %.1f MHz after %d ms (running=%d stereo=%d)",
+                      up ? "UP" : "DOWN", from_khz / 1000.0, landed / 1000.0, waited * 100,
+                      running, stereo);
+        clog_(m);
+    }
+    if (ain) { try { ((fn_v)vslot(ain, 5))(ain); } catch (...) {} }
+    try { ((fn_v)vslot(c, VIDX_Stop))(c); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Close))(c); } catch (...) {}
+    fm_route_off();
+    clog_("fm: seek done");
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+static int fm_tune(int khz, int seconds, const char* ainame) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    // SELECT THE TUNER AS THE ADC'S SOURCE FIRST. Without this the capture side has nothing to
+    // read and the whole path is silent even on a strong carrier — which is exactly what happened
+    // on 2026-08-18: `--fm audioscan` had this call and was audible, `--fm tune` did not and played
+    // 45 s of nothing on 97.3 MHz.
+    fm_route_on();
+    void* c = _ZN3pst8services31TunerPlayerServiceClientFactory14CreateInstanceEv();
+    if (!c) { clog_("fm: CreateInstance returned NULL — STOP"); fm_route_off(); g_pump_run = false; return 1; }
+
+    int rc = -1;
+    try { wd_arm(12); rc = ((fn_v)vslot(c, VIDX_Open))(c); wd_disarm(); } catch (...) { rc = -99; }
+    unsigned want = (unsigned)khz, got = 0;
+    try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &want); usleep(200000);
+          ((fn_pu)vslot(c, VIDX_GetFrequency))(c, &got); } catch (...) {}
+    if (got != want) {
+        std::snprintf(m, sizeof m, "fm: asked for %u kHz, tuner holds %u — REJECTED, out of band?",
+                      want, got);
+        clog_(m);
+    }
+    // MUTE MODE. Never touched until 2026-08-18, when an audio sweep of 88-91 MHz came back FLAT
+    // at -59.7 dBFS across all 31 steps — well above the -93 dBFS noise floor, so the amp was on,
+    // but with no station discrimination whatsoever. A muted tuner looks exactly like that: you
+    // hear the output stage, not the radio. Report what it holds, then explicitly clear it.
+    int mute0 = -1;
+    try { ((fn_pi)vslot(c, VIDX_GetMuteMode))(c, &mute0); } catch (...) {}
+    {
+        FILE* af = std::fopen("/sys/class/switch/cxd3778gf_antenna/state", "r");
+        int ant = -1; if (af) { if (std::fscanf(af, "%d", &ant) != 1) ant = -1; std::fclose(af); }
+        std::snprintf(m, sizeof m, "fm: antenna switch = %d (1 = something in the jack; it is the AERIAL)", ant);
+        clog_(m);
+    }
+    std::snprintf(m, sizeof m, "fm: GetMuteMode = %d (clearing to 0 before Play)", mute0);
+    clog_(m);
+    { int off = 0; try { ((fn_ci)vslot(c, VIDX_SetMuteMode))(c, &off); } catch (...) {} }
+    int mute1 = -1;
+    try { ((fn_pi)vslot(c, VIDX_GetMuteMode))(c, &mute1); } catch (...) {}
+    std::snprintf(m, sizeof m, "fm: MuteMode now %d", mute1);
+    clog_(m);
+    int play_rc = -1;
+    try { wd_arm(12); play_rc = ((fn_v)vslot(c, VIDX_Play))(c); wd_disarm(); } catch (...) {}
+    // ORDER MATTERS: the tuner must be STREAMING before the capture side opens. `--fm audioscan`
+    // played (tuner Play, then AudioIn) and was audible; this function opened AudioIn first and was
+    // SILENT even on a strong carrier. Same shape as reference_uac_capture_start — the capture PCM
+    // must not be opened before the source is live.
+    // …and OPEN THE ANALOGUE AUDIO PATH. Slot 3 Play(), slot 4 Play(const std::string&) — the
+    // string overload names a source. Try the bare one first, then the named one, reporting the
+    // player state after each so the log says which (if either) took.
+    void* ain = nullptr;
+    try { ain = _ZN3pst8services33AudioInPlayerServiceClientFactory14CreateInstanceEv(); } catch (...) {}
+    if (!ain) {
+        clog_("fm: AudioInPlayerServiceClient NULL — audio path cannot be opened");
+    } else {
+        int st0 = -1, r3 = -1, r4 = -1;
+        try { st0 = ((fn_v)vslot(ain, 6))(ain); } catch (...) {}
+        try { wd_arm(12); r3 = ((fn_v)vslot(ain, 3))(ain); wd_disarm(); } catch (...) {}
+        int st1 = -1;
+        try { st1 = ((fn_v)vslot(ain, 6))(ain); } catch (...) {}
+        std::snprintf(m, sizeof m, "fm: AudioIn state %d -> Play() rc=%d -> state %d", st0, r3, st1);
+        clog_(m);
+        if (st1 == st0) {
+            // The accepted names are the ones BOTH libAudioInPlayerService and libSoundServiceFw
+            // carry: music, beep, hdmi, hfp, mic, mrmcloop. "tuner" is NOT among them — that was a
+            // guess on 2026-08-18 and the device rebooted into stock. `Play()` with no argument
+            // builds an EMPTY string (disassembled at 0xabf8) and returns rc=1, so the name is
+            // required and validated.
+            std::string src(ainame);
+            typedef int (*fn_s)(void*, const std::string*);
+            try { wd_arm(12); r4 = ((fn_s)vslot(ain, 4))(ain, &src); wd_disarm(); } catch (...) {}
+            int st2 = -1;
+            try { st2 = ((fn_v)vslot(ain, 6))(ain); } catch (...) {}
+            std::snprintf(m, sizeof m, "fm: AudioIn Play(\"%s\") rc=%d -> state %d", ainame, r4, st2);
+            clog_(m);
+        }
+    }
+    int stereo = -1;
+    try { ((fn_pi)vslot(c, VIDX_GetStereoState))(c, &stereo); } catch (...) {}
+
+    std::snprintf(m, sizeof m,
+                  "fm: Open=%d tuned %.1f MHz Play=%d signal=%d stereoState=%d — HOLDING %ds",
+                  rc, got / 1000.0, play_rc, fm_signal(c), stereo, seconds);
+    clog_(m);
+    // Re-assert the frequency now that both players are up. `--fm audioscan` tunes AFTER the
+    // plays and is audible; tuning only before them leaves room for Play() to reset it.
+    try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &want); } catch (...) {}
+    clog_("fm: (capture the headphone output NOW — tools/measure_output.py on the host)");
+
+    // Report every few seconds so a listener/capture can be lined up against the log.
+    for (int t = 0; t < seconds; t++) {
+        sleep(1);
+        if (t % 5 == 4) {
+            int st = -1;
+            try { ((fn_pi)vslot(c, VIDX_GetStereoState))(c, &st); } catch (...) {}
+            std::snprintf(m, sizeof m, "fm:   +%2ds  signal=%d stereoState=%d", t + 1,
+                          fm_signal(c), st);
+            clog_(m);
+        }
+    }
+
+    if (ain) { try { ((fn_v)vslot(ain, 5))(ain); } catch (...) {} clog_("fm: AudioIn Stop()"); }
+    fm_route_off();
+    try { ((fn_v)vslot(c, VIDX_Stop))(c); } catch (...) {}
+    try { ((fn_v)vslot(c, VIDX_Close))(c); } catch (...) {}
+    fm_route_off();
+    clog_("fm: Stop() + Close() — done");
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
 
 static int fm_probe(bool do_play) {
     install_diagnostics();
@@ -3925,7 +4641,11 @@ static int fm_probe(bool do_play) {
     // Sweep the band in kHz — the most likely unit, and the one the read-back above will have
     // confirmed or denied. 87.5 to 108.0 MHz in 100 kHz steps is the European raster.
     clog_("fm: sweeping 87.5-108.0 MHz in 100 kHz steps (kHz units) …");
-    int best_lvl[8] = {0}; unsigned best_f[8] = {0};
+    // MEASURED 2026-08-17 with the aerial in: GetSignalLevel returns 0 or 1, not an RSSI scale.
+    // So there is no "strongest station" to rank — the useful output is the LIST of frequencies
+    // that come back non-zero. The first version of this kept a top-8, which with a boolean signal
+    // was just the first eight ties in sweep order and told you nothing.
+    unsigned hits[256]; int nhits = 0;
     int seen_min = 1 << 30, seen_max = -(1 << 30);
     for (unsigned khz = 87500; khz <= 108000; khz += 100) {
         try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &khz); } catch (...) { break; }
@@ -3933,13 +4653,7 @@ static int fm_probe(bool do_play) {
         int lvl = fm_signal(c);
         if (lvl < seen_min) seen_min = lvl;
         if (lvl > seen_max) seen_max = lvl;
-        for (int s = 0; s < 8; s++) {
-            if (lvl > best_lvl[s]) {
-                for (int t = 7; t > s; t--) { best_lvl[t] = best_lvl[t-1]; best_f[t] = best_f[t-1]; }
-                best_lvl[s] = lvl; best_f[s] = khz;
-                break;
-            }
-        }
+        if (lvl > 0 && nhits < 256) hits[nhits++] = khz;
     }
     std::snprintf(m, sizeof m, "fm: signal across the band: min=%d max=%d", seen_min, seen_max);
     clog_(m);
@@ -3947,13 +4661,25 @@ static int fm_probe(bool do_play) {
         clog_("fm: *** FLAT — no station discrimination. Either the unit is wrong, the tuner needs");
         clog_("fm:     Play() first, or NOTHING IS PLUGGED INTO THE HEADPHONE JACK (it is the aerial).");
     } else {
-        for (int s = 0; s < 8 && best_f[s]; s++) {
+        std::snprintf(m, sizeof m, "fm: %d of 206 frequencies report signal — collapsing to carriers:",
+                      nhits);
+        clog_(m);
+        // A real transmitter lights several adjacent 100 kHz steps, so print RUNS. The centre of a
+        // run is the station; a lone isolated step is more likely noise than a broadcaster.
+        int i = 0;
+        while (i < nhits) {
+            int j = i;
+            while (j + 1 < nhits && hits[j + 1] == hits[j] + 100) j++;
+            unsigned centre = hits[i] + ((hits[j] - hits[i]) / 200) * 100;
             int stereo = -1;
-            try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &best_f[s]); usleep(120000);
+            try { ((fn_cu)vslot(c, VIDX_SetFrequency))(c, &centre); usleep(200000);
                   ((fn_pi)vslot(c, VIDX_GetStereoState))(c, &stereo); } catch (...) {}
-            std::snprintf(m, sizeof m, "fm:   %6.1f MHz  signal=%3d  stereoState=%d",
-                          best_f[s] / 1000.0, best_lvl[s], stereo);
+            std::snprintf(m, sizeof m,
+                          "fm:   %6.1f MHz  (%5.1f-%5.1f, %2d steps)  stereoState=%d  %s",
+                          centre / 1000.0, hits[i] / 1000.0, hits[j] / 1000.0, j - i + 1, stereo,
+                          (j - i + 1) >= 3 ? "<- looks like a station" : "");
             clog_(m);
+            i = j + 1;
         }
     }
 
@@ -3962,6 +4688,79 @@ static int fm_probe(bool do_play) {
     try { rc = ((fn_v)vslot(c, VIDX_Close))(c); } catch (...) { rc = -99; }
     std::snprintf(m, sizeof m, "fm: Close() rc=%d", rc);
     clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --seqtime : how long does SetTrackSequence take as the sequence grows?
+//
+// Chasing a HANG reported 2026-08-18: "all songs" shuffled, shuffle pressed a couple of times, then
+// the device stopped responding to any input and had to be force-rebooted (the launcher's bad-boot
+// counter then reverted it to stock — the cable was NOT in, so that rung did its job).
+//
+// The suspect path is the queue flush, which runs under `run_guarded(..., 10, ...)`. If a large
+// sequence pushes SetTrackSequence past that budget, SIGALRM fires and `fault_handler` siglongjmps
+// out of the call — and a siglongjmp that unwinds out of code holding a lock leaves that lock held
+// FOREVER. main.cpp already documents exactly this failure for malloc's arena lock (the 2026-07-02
+// SIGABRT note). The same shape applied to cinder-ffi's renderer mutex would freeze every later
+// FFI entry point, which is precisely "stopped responding to inputs from anything".
+//
+// That is a chain of plausible steps, not a measurement. This measures the first link: the actual
+// cost of SetTrackSequence against sequence length. If 512 tracks lands well inside 10 s the
+// theory is wrong and the hang is elsewhere; if it approaches or exceeds it, the theory stands and
+// the guard budget is the thing to change.
+//
+// Builds its sequences from URIs the caller supplies, repeated — the SIZE is what is under test,
+// not the content.
+static int seqtime_probe(const char* uri) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[256];
+    static const int kN[] = { 1, 10, 50, 100, 200, 350, 512 };
+    static const char* ptrs[512];
+    for (int i = 0; i < 512; i++) ptrs[i] = uri;
+
+    // Bring the PlayerService client up FIRST. Without this every call returns -1 immediately and
+    // the timings measure nothing but an early bail-out — which is exactly what the first run did.
+    clog_("seqtime: cinder_audio_init(\"cinderprobe\") …");
+    wd_arm(20);
+    int ai = cinder_audio_init("cinderprobe");
+    wd_disarm();
+    int waited = 0;
+    while (!cinder_audio_is_connected() && waited < 50) { usleep(100000); ++waited; }
+    std::snprintf(m, sizeof m, "seqtime: audio_init=%d connected=%d after %d ms",
+                  ai, cinder_audio_is_connected(), waited * 100);
+    clog_(m);
+    if (!cinder_audio_is_connected()) {
+        clog_("seqtime: NOT CONNECTED — timings below would be meaningless, stopping");
+        g_pump_run = false; std::fflush(nullptr); _exit(1);
+    }
+    clog_("seqtime: the queue flush is guarded at 10 s = 10000000 us. Watch for that line.");
+    for (unsigned k = 0; k < sizeof kN / sizeof kN[0]; k++) {
+        const int n = kN[k];
+        struct timespec a, b;
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        int rc = cinder_audio_play_tracks(ptrs, n, 0);
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        long long us = (long long)(b.tv_sec - a.tv_sec) * 1000000LL
+                     + (b.tv_nsec - a.tv_nsec) / 1000;
+        std::snprintf(m, sizeof m, "seqtime: %4d tracks -> %8lld us (%.2f s) rc=%d%s",
+                      n, us, us / 1e6, rc,
+                      us > 10000000LL ? "   *** PAST THE 10 s GUARD ***"
+                    : us >  5000000LL ? "   <- over half the budget" : "");
+        clog_(m);
+        usleep(300000);
+    }
+    clog_("seqtime: done — playback was left wherever the last call put it; press pause in the UI.");
     g_pump_run = false;
     std::fflush(nullptr);
     _exit(0);
@@ -4405,7 +5204,32 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--tone") == 0) {
         return tone_probe();
     }
+    if (argc > 1 && std::strcmp(argv[1], "--seqtime") == 0) {
+        if (argc < 3) { clog_("seqtime: need a playable URI/path"); return 1; }
+        return seqtime_probe(argv[2]);
+    }
     if (argc > 1 && std::strcmp(argv[1], "--fm") == 0) {
+        // --fm                sweep the band, muted
+        // --fm play           sweep with the tuner streaming
+        // --fm tune <kHz> [s] hold ONE station so its audio can be captured/heard
+        if (argc > 3 && std::strcmp(argv[2], "scan") == 0)
+            return fm_scan(std::atoi(argv[3]), argc > 4 ? std::atoi(argv[4]) : 108000);
+        if (argc > 2 && std::strcmp(argv[2], "v4l2scan") == 0)
+            return fm_v4l2scan(argc > 3 ? std::atoi(argv[3]) : 87500,
+                               argc > 4 ? std::atoi(argv[4]) : 108000,
+                               argc > 5 ? std::atoi(argv[5]) : 30);
+        if (argc > 2 && std::strcmp(argv[2], "v4l2") == 0)
+            return fm_v4l2(argc > 3 ? std::atoi(argv[3]) : 97300,
+                           argc > 4 ? std::atoi(argv[4]) : 104300);
+        if (argc > 2 && std::strcmp(argv[2], "autotune") == 0)
+            return fm_autotune(argc > 3 ? std::atoi(argv[3]) : 90000);
+        if (argc > 2 && std::strcmp(argv[2], "seek") == 0)
+            return fm_seek(argc > 3 ? std::atoi(argv[3]) : 87500);
+        if (argc > 5 && std::strcmp(argv[2], "audioscan") == 0)
+            return fm_audioscan(std::atoi(argv[3]), std::atoi(argv[4]), std::atoi(argv[5]));
+        if (argc > 3 && std::strcmp(argv[2], "tune") == 0)
+            return fm_tune(std::atoi(argv[3]), argc > 4 ? std::atoi(argv[4]) : 20,
+                           argc > 5 ? argv[5] : "music");
         return fm_probe(argc > 2 && std::strcmp(argv[2], "play") == 0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--tonefreq") == 0) {

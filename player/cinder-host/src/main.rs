@@ -315,7 +315,11 @@ fn main() {
                     &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "Pixel 8".into(), code: 428913 });
             }),
             ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, true)),
-            ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, 88.6)),
+            ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, &fm::Fm {
+                khz: 97300, playing: true,
+                stations: [97300, 100000, 107800, 0, 0, 0], n_stations: 3,
+                scanning: false, scan_pct: 0, antenna: true,
+            })),
             ("usbdac", &|c: &mut Canvas| usbdac::render(c, &theme, &fonts, true, true, "LDAC", Some("WH-1000XM5"), "A1", true, Some((44100, 32, 2)), None)),
         ];
         for (screen, draw) in render_set {

@@ -173,7 +173,15 @@ typedef enum {
      * prototypes finds no clock setter — stock does it inside HgrmMediaPlayerApp's own DateTime
      * model — and cinder-home runs as uid 100 (system) with no CAP_SYS_TIME, so the helper is the
      * only route. */
-    CINDER_ACT_CLOCK_SET = 39
+    CINDER_ACT_CLOCK_SET = 39,
+    /* FM radio. The shell owns the tuner (cinder_tuner.h): POWER runs the full bring-up/teardown,
+     * TUNE is one SetFrequency, SEEK is a LIVE sweep the shell drives step by step (the chip's own
+     * auto-tune finds nothing on this hardware), and SCAN sweeps the band to fill the station
+     * list. SEEK and SCAN are SLOW and blocking — both paint every step so the dial sweeps. */
+    CINDER_ACT_FM_POWER = 40,
+    CINDER_ACT_FM_TUNE = 41,
+    CINDER_ACT_FM_SEEK = 42,
+    CINDER_ACT_FM_SCAN = 43
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -355,6 +363,22 @@ int  cinder_get_vinyl_type(void);
  * Writes up to 3 bytes into `out` and returns how many. Past +-20 the sound service ZEROES the
  * band instead of clamping it, so never widen this range without re-measuring. */
 int  cinder_get_tone_bands(signed char *out);
+
+/* ── FM radio ────────────────────────────────────────────────────────────────────────────────
+ * The UI holds the frequency the user is looking at; the shell holds the radio. These keep the
+ * two in step. Frequencies are kHz — the unit SetFrequency takes. */
+int  cinder_fm_khz(void);            /* what the UI is showing */
+int  cinder_fm_seek_dir(void);       /* -1 / +1, valid right after CINDER_ACT_FM_SEEK */
+int  cinder_fm_playing(void);        /* did the user just switch it on or off? */
+/* Push the tuner's ACTUAL frequency back to the UI. Call it for every step of a live seek so the
+ * dial follows the sweep, and after any tune — SetFrequency rejects out-of-band values and keeps
+ * the previous one, so the UI must show what the radio holds, not what it was asked for. */
+void cinder_fm_report_khz(int khz);
+void cinder_fm_report_playing(int on);
+void cinder_fm_report_antenna(int present);
+void cinder_fm_report_scan_progress(int pct);
+/* Install the stations a scan found, best first (kHz). Clears the scanning state. */
+void cinder_fm_report_stations(const int *khz, int n);
 /* Read the current UI volume as the raw 0..120 step level (the stock scale — 1:1 with ALSA card0
  * 'master volume'). Call after a CINDER_ACT_VOLUP/VOLDOWN action and write it to the mixer. */
 int  cinder_get_volume(void);

@@ -8,8 +8,17 @@ read-back anywhere for what the volume table actually did. `master volume` and `
 INPUTS, not the table's output. So the only instrument left is the analogue signal itself.
 
 Wire the Walkman's headphone out to the PC's line/mic in, play a known tone or track, and run this.
-It captures from WSLg's PulseAudio bridge (`RDPSource`, i.e. whatever Windows has selected as the
-default recording device) and reports level and spectrum.
+It reports level and spectrum.
+
+CAPTURE BACKEND. Two exist, and the default is the one that actually works here:
+
+  * `--backend ffmpeg` (DEFAULT) drives Windows' own ffmpeg.exe over WSL interop against a
+    DirectShow device. MEASURED 2026-08-18: music through the cable read RMS -35.6 dBFS, peak
+    -23.5 dBFS — real signal with headroom.
+  * `--backend pulse` uses WSLg's PulseAudio bridge (`RDPSource`). On this machine that bridge
+    returns a DEAD stream: RMS -93.66 dBFS, bit-identical at every Walkman volume from 1 to 70,
+    i.e. not quiet audio but no audio. Kept because it needs no Windows interop, but do not trust
+    a silent result from it — cross-check with ffmpeg before concluding the device is silent.
 
     python3 tools/measure_output.py --seconds 5 --label "A50 curve, vol 100"
     python3 tools/measure_output.py --seconds 5 --label "WM1A curve, vol 100" --compare out/A50*.json
@@ -38,6 +47,8 @@ import time
 
 RATE = 44100
 PREFIX = os.path.expanduser("~/.local/cinder-pa")
+# The DirectShow name as ffmpeg reports it (`-list_devices true -f dshow -i dummy`).
+DSHOW_DEFAULT = "Microphone (Realtek(R) Audio)"
 
 
 def tool(name: str) -> list:
@@ -60,6 +71,47 @@ def env() -> dict:
             os.path.join(PREFIX, "usr/lib/x86_64-linux-gnu/pulseaudio")]
     e["LD_LIBRARY_PATH"] = ":".join(libs + [e.get("LD_LIBRARY_PATH", "")])
     return e
+
+
+def win_path(p: str) -> str:
+    """/mnt/c/... -> C:\\... so a Windows binary can be handed the same file."""
+    if p.startswith("/mnt/") and len(p) > 6:
+        return p[5].upper() + ":" + p[6:].replace("/", "\\")
+    return p
+
+
+def read_wav(path: str) -> list:
+    """Mono samples from a WAV, averaging channels if it is stereo."""
+    import wave
+    with wave.open(path, "rb") as w:
+        if w.getsampwidth() != 2:
+            sys.exit(f"{path}: expected 16-bit, got {w.getsampwidth() * 8}-bit")
+        ch = w.getnchannels()
+        raw = w.readframes(w.getnframes())
+    vals = list(struct.unpack(f"<{len(raw) // 2}h", raw))
+    if ch == 1:
+        return vals
+    # Average rather than take one side: the bridge is often a mono jack fed from a stereo out,
+    # and picking channel 0 alone would under-read anything panned right.
+    return [(vals[i] + vals[i + 1]) // 2 for i in range(0, len(vals) - 1, 2)]
+
+
+def capture_ffmpeg(seconds: float, device: str) -> list:
+    """Record via Windows' ffmpeg.exe. The WAV lands on the Windows side so both can reach it."""
+    out_win = r"C:\Users\ABDPa\Downloads\cinder_measure.wav"
+    out_wsl = "/mnt/c/Users/ABDPa/Downloads/cinder_measure.wav"
+    ff = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                         "(Get-Command ffmpeg).Source"],
+                        capture_output=True, text=True).stdout.strip()
+    if not ff:
+        sys.exit("ffmpeg.exe not found on the Windows side — install it, or use --backend pulse")
+    cmd = (f"& '{ff}' -hide_banner -loglevel error -f dshow "
+           f"-i audio='{device}' -t {seconds} -y '{out_win}'")
+    r = subprocess.run(["powershell.exe", "-NoProfile", "-Command", cmd],
+                       capture_output=True, text=True, timeout=seconds + 60)
+    if not os.path.exists(out_wsl):
+        sys.exit(f"ffmpeg captured nothing.\n{r.stderr.strip()[:400]}")
+    return read_wav(out_wsl)
 
 
 def capture(seconds: float, source: str) -> list:
@@ -117,14 +169,24 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seconds", type=float, default=5.0)
-    ap.add_argument("--source", default="RDPSource")
+    ap.add_argument("--backend", choices=["ffmpeg", "pulse"], default="ffmpeg")
+    ap.add_argument("--device", default=DSHOW_DEFAULT, help="DirectShow capture device name")
+    ap.add_argument("--wav", help="analyse an existing WAV instead of capturing")
+    ap.add_argument("--source", default="RDPSource", help="pulse backend only")
     ap.add_argument("--label", default="capture")
     ap.add_argument("--out", default="artifacts/measure")
     ap.add_argument("--compare", help="an earlier .json to diff against")
     args = ap.parse_args()
 
-    print(f"capturing {args.seconds:.1f}s from {args.source} …")
-    s = capture(args.seconds, args.source)
+    if args.wav:
+        print(f"analysing {args.wav} …")
+        s = read_wav(args.wav)
+    elif args.backend == "ffmpeg":
+        print(f"capturing {args.seconds:.1f}s from '{args.device}' via Windows ffmpeg …")
+        s = capture_ffmpeg(args.seconds, args.device)
+    else:
+        print(f"capturing {args.seconds:.1f}s from {args.source} (WSLg pulse) …")
+        s = capture(args.seconds, args.source)
     rms = math.sqrt(sum(v * v for v in s) / len(s))
     peak = max(abs(v) for v in s)
     bands = dft_bands(s)
@@ -137,6 +199,8 @@ def main() -> None:
     print(f"  peak {rec['peak_dbfs']:+7.2f} dBFS" + ("   *** CLIPPING ***" if rec["clipped"] else ""))
     if rec["rms_dbfs"] < -80:
         print("  ! that is the noise floor — nothing is reaching the input")
+        if args.backend == "pulse":
+            print("  ! the WSLg pulse bridge reads dead on this machine — retry with --backend ffmpeg")
     for f, d in bands:
         print(f"    {f:>7.1f} Hz  {d:+7.2f} dBFS")
 
