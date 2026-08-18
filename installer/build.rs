@@ -27,6 +27,14 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     ("dist/{ch}/cinder-power", "cinder-power", "power", true),
     ("dist/{ch}/cinder-msc", "cinder-msc", "msc", true),
     ("dist/{ch}/cinder-clock", "cinder-clock", "clock", true),
+    // Built on both channels, so `required` — a stable build missing either is a real defect, not
+    // a channel difference. cinder-fm backs the FM signal meter / fast scan / hardware seek;
+    // cinder-voltable installs the chosen output volume table on every boot.
+    ("dist/{ch}/cinder-fm", "cinder-fm", "fm", true),
+    // Empty id = always staged, same as cinder-signature.sh: `voltable` is an ENUM component
+    // (stock/wm1a/w1), so there is no "off" that should skip the helper — the curve can be changed
+    // on-device later by editing /contents/cinder_voltable.conf, and that needs the binary present.
+    ("dist/{ch}/cinder-voltable", "cinder-voltable", "", true),
     ("dist/{ch}/cinder-gpunode", "cinder-gpunode", "gpunode", false),
     ("dist/{ch}/cinder-signature.sh", "cinder-signature.sh", "", true),
     // The .UPG the Sony updater actually runs. It MUST land on the player as NW_WM_FW.UPG —
