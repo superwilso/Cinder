@@ -45,22 +45,57 @@ int cinder_tuner_get_khz(void);
 
 /* Is the tuner open? (TunerState: 0 = closed, 1 = open.) <0 if unavailable. */
 int cinder_tuner_state(void);
-/* Stereo lock indicator. NOTE: read 0 on every station tested so far, so treat a 0 as "unknown"
- * rather than "definitely mono" until it has been seen to move. */
+/* Stereo lock indicator. Reads the chip's own ST bit when the register path is up; falls back to
+ * Sony's GetStereoState, which read 0 on every station ever tested and so means little. */
 int cinder_tuner_stereo(void);
 
-/* ── Scanning ────────────────────────────────────────────────────────────────────────────────
- * Sony's own primitives CANNOT find a station on this hardware, and both were checked against a
- * station that was audible at the time:
- *   * GetSignalLevel returns 1 at every frequency in the band.
- *   * StartAutoTuning returns within 100 ms having found nothing, in both directions.
- * So the scan measures the AUDIO from the capture PCM and scores it spectrally: unlocked FM is
- * broadband hiss, a locked carrier is not. Level alone does not work — hiss is often LOUDER.
+/* ── The chip, directly ──────────────────────────────────────────────────────────────────────
+ * Sony's driver publishes every Si470x register through the kernel register monitor at
+ * /proc/regmon/Si4708icx. The nodes ship root-only; `cinder-fm` (setuid) widens them, and this
+ * shim probes and uses them automatically. Everything below degrades to the audio-measured routes
+ * if that path is unavailable, so none of it is a hard dependency. */
+
+/* Is the register path live? 1 = the meter and hardware seek are real, 0 = audio measurement. */
+int cinder_tuner_hw(void);
+
+/* REAL signal strength — STATUS_RSSI[7:0], the graded meter Sony's GetSignalLevel is not
+ * (it returns a constant 1 at every frequency in the band). <0 when the register path is down.
  *
- * Fills `out_khz` with up to `max` station frequencies, best first, and returns how many. The
- * tuner must NOT be started when this is called: the scan owns the capture PCM and
- * AudioInPlayerService holds it while playing. Scan first, then start. Blocking, ~0.45 s per
- * 100 kHz step, so a full band sweep is around 90 s — call it off the render thread. */
+ * SCALE, measured 2026-08-18 on this unit with the cable as aerial: noise floor 5-6, real
+ * carriers 9-14. The theoretical range is 0..75 dBuV, but nothing here approaches that, so a UI
+ * meter should saturate around 15 rather than 75 or it will never leave the first bar. */
+int cinder_tuner_signal(void);
+
+/* Is there real PCM on the source the Bluetooth bridge reads? Returns the RMS of `ms` (20..2000)
+ * of capture from hw:0,1, 0..32767, or <0 if the path could not be opened.
+ *
+ * WHY IT EXISTS: FM audio is ANALOGUE into the codec and only becomes PCM because `analog input
+ * device` routes it to the ADC. Get that wrong and the capture still opens, still returns frames,
+ * and every one of them is silence — the same failure that cost two 45-minute "I hear nothing"
+ * sessions on the local path. Near-zero here means the bridge would transmit silence.
+ *
+ * BORROWS hw:0,1: AudioInPlayerService owns it while the radio is audible on the jack, so the local
+ * path is stopped for the duration and handed back. The radio goes briefly quiet. */
+int cinder_tuner_capture_rms(int ms);
+
+/* ── Scanning ────────────────────────────────────────────────────────────────────────────────
+ * Fills `out_khz` with up to `max` station frequencies, strongest first, and returns how many.
+ * Blocking either way — call it off the render thread.
+ *
+ * WITH the register path (cinder_tuner_hw() == 1): steps the chip and reads STATUS_RSSI, waiting
+ * on STC. MEASURED at ~9 s for the whole band (206 steps, ~45 ms each — the chip's own tune time,
+ * which no amount of code removes). Needs no capture PCM and may be called while the radio is
+ * playing: the chip is muted for the sweep and unmuted after.
+ *
+ * WITHOUT it: falls back to measuring the AUDIO from the capture PCM and scoring it spectrally
+ * (unlocked FM is broadband hiss, a locked carrier is not; level alone does not work because hiss
+ * is often LOUDER). ~0.45 s per 100 kHz step, so around 90 s for the band — and in THAT mode the
+ * tuner must NOT be started when this is called, because the scan needs hw:0,1 and
+ * AudioInPlayerService holds it while playing.
+ *
+ * Sony's own primitives cannot do this at all, and both were checked against a station that was
+ * audible at the time: GetSignalLevel returns 1 at every frequency, and StartAutoTuning is a
+ * 48-byte stub that returns within 100 ms having found nothing in either direction. */
 int cinder_tuner_scan(int start_khz, int end_khz, int *out_khz, int max);
 
 /* Progress callback for the scan: called with 0..100 as it sweeps, so the UI can show real work
@@ -68,16 +103,21 @@ int cinder_tuner_scan(int start_khz, int end_khz, int *out_khz, int max);
 typedef void (*cinder_tuner_progress_fn)(int pct);
 void cinder_tuner_set_progress_cb(cinder_tuner_progress_fn cb);
 
-/* LIVE SEEK — step from `from_khz` in `dir` (-1/+1) until a station is found or the band ends.
- * Returns the frequency it stopped on, or 0 if it found nothing.
+/* LIVE SEEK — from `from_khz` in `dir` (-1/+1) until a station is found or the band wraps.
+ * Returns the frequency it stopped on, or 0 if it found nothing. `on_step` is called with every
+ * frequency passed through, so the dial SWEEPS instead of jumping.
  *
- * This is what a Sony seek looks like on hardware whose own auto-tune does not work: the shell
- * steps the tuner and measures each step, and `on_step` is called with every frequency it passes
- * through so the dial SWEEPS instead of jumping. Roughly 0.14 s per 100 kHz step, so crossing the
- * whole band is a few seconds — visible, which is the point.
+ * WITH the register path: the CHIP walks the band (POWERCFG SEEK/SEEKUP, polled on STC) and
+ * on_step is driven from READCHAN as it moves. It needs no capture PCM, so the radio stays
+ * AUDIBLE throughout and a seek can no longer leave the audio path stopped.
  *
- * The tuner must be STARTED (cinder_tuner_start) first. Seek borrows the capture PCM from the
- * audio path and hands it back when it stops. */
+ *   Why Sony's own seek never worked, and it is not a code defect: stock SEEKTH is 18 and no
+ *   station here reads above 14, so the threshold sits above the whole band and every seek runs
+ *   to the band limit. This lowers it, using the noise floor the last scan measured.
+ *
+ * WITHOUT it: steps the tuner and measures each step from the capture PCM, ~0.14 s per step. In
+ * that mode the tuner must be STARTED first, and seek BORROWS hw:0,1 from the audio path — the
+ * radio goes quiet for the duration and is handed back when it stops. */
 typedef void (*cinder_tuner_step_fn)(int khz);
 int cinder_tuner_seek(int from_khz, int dir, cinder_tuner_step_fn on_step);
 

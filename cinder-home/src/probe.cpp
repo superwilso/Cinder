@@ -17,6 +17,7 @@
 #include "cinder.h"
 #include "cinder_audio.h"
 #include "cinder_analyzer.h"
+#include "cinder_tuner.h"
 #include "discover.h"
 #include <cstdio>
 #include <cstdlib>
@@ -5316,6 +5317,94 @@ static int dac_probe(bool stop) {
     _exit(0);
 }
 
+static long fm_now_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// --fm btcap [kHz] : prove the Bluetooth bridge has a real source.
+//
+// The FM screen has a BT OUT button whose whole premise is that FM becomes PCM on hw:0,1, and that
+// premise had never been tested — it was reasoned from the codec's `analog input device` mux having
+// a `tuner` item. This is the controlled version: capture with the mux routed to the tuner, then
+// with it OFF as a control, then routed again. If the route is what makes the difference, the
+// middle number collapses. If all three are the same, the bridge would be transmitting whatever is
+// on that ADC regardless of the radio, which is not the feature.
+static int fm_btcap(int khz) {
+    char m[224];
+    int rc = cinder_tuner_start(khz);
+    std::snprintf(m, sizeof m, "fm-btcap: start(%d kHz) rc=%d signal=%d", khz, rc,
+                  cinder_tuner_signal());
+    clog_(m);
+    usleep(400000);
+
+    int on1 = cinder_tuner_capture_rms(500);
+    std::system("amixer -c0 cset numid=26 0 >/dev/null 2>&1");   // control: ADC source OFF
+    usleep(300000);
+    int off = cinder_tuner_capture_rms(500);
+    std::system("amixer -c0 cset numid=26 1 >/dev/null 2>&1");   // routed again
+    usleep(300000);
+    int on2 = cinder_tuner_capture_rms(500);
+
+    std::snprintf(m, sizeof m,
+                  "fm-btcap: RMS  routed=%d  MUX-OFF(control)=%d  routed-again=%d", on1, off, on2);
+    clog_(m);
+    if (on1 > 0 && off >= 0 && on1 > off * 2 && on2 > off * 2)
+        clog_("fm-btcap: VERDICT — the route is what carries it; hw:0,1 is a real FM source");
+    else if (on1 <= 0)
+        clog_("fm-btcap: VERDICT — capture failed to open; BT out cannot work");
+    else
+        clog_("fm-btcap: VERDICT — INCONCLUSIVE, control did not separate (see numbers above)");
+
+    cinder_tuner_stop();
+    return 0;
+}
+
+static int fm_regmon() {
+    char m[256];
+    std::snprintf(m, sizeof m, "fm-regmon: cinder_tuner_hw()=%d (1 = chip registers reachable)",
+                  cinder_tuner_hw());
+    clog_(m);
+    if (!cinder_tuner_hw()) {
+        clog_("fm-regmon: no register path — run /system/vendor/unknown321/bin/cinder-fm first");
+        return 1;
+    }
+
+    // The chip has to be powered for its registers to describe anything, and Sony's Open() owns
+    // that sequence — same reason cinder_tuner_scan brings the service up around a cold sweep.
+    int rc = cinder_tuner_start(97300);
+    std::snprintf(m, sizeof m, "fm-regmon: start rc=%d  freq=%d kHz  signal=%d  stereo=%d",
+                  rc, cinder_tuner_get_khz(), cinder_tuner_signal(), cinder_tuner_stereo());
+    clog_(m);
+
+    int found[8] = {0};
+    long t0 = fm_now_ms();
+    int n = cinder_tuner_scan(87500, 108000, found, 8);
+    long dt = fm_now_ms() - t0;
+    std::snprintf(m, sizeof m, "fm-regmon: scan found %d station(s) in %ld ms", n, dt);
+    clog_(m);
+    for (int i = 0; i < n; i++) {
+        cinder_tuner_set_khz(found[i]);
+        usleep(120000);
+        std::snprintf(m, sizeof m, "fm-regmon:   %6.1f MHz  signal=%2d  stereo=%d",
+                      found[i] / 1000.0, cinder_tuner_signal(), cinder_tuner_stereo());
+        clog_(m);
+    }
+
+    cinder_tuner_set_khz(87500);
+    t0 = fm_now_ms();
+    int hit = cinder_tuner_seek(87500, +1, nullptr);
+    dt = fm_now_ms() - t0;
+    std::snprintf(m, sizeof m, "fm-regmon: hw seek up from 87.5 -> %.1f MHz in %ld ms (0 = nothing)",
+                  hit / 1000.0, dt);
+    clog_(m);
+
+    cinder_tuner_stop();
+    clog_("fm-regmon: done (tuner stopped, chip left as the driver had it)");
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--dac") == 0) {
         return dac_probe(argc > 2 && std::strcmp(argv[2], "stop") == 0);
@@ -5338,6 +5427,12 @@ int main(int argc, char** argv) {
         if (argc < 3) { clog_("seqtime: need a playable URI/path"); return 1; }
         return seqtime_probe(argv[2]);
     }
+// --fm regmon [from_kHz] : exercise the SHIPPING code path — cinder_tuner_hw / _signal / _scan /
+// _seek, i.e. exactly what the FM screen calls, rather than probe-local re-implementations.
+//
+// This is the on-device test for the register route: it needs /proc/regmon/Si4708icx readable, so
+// run cinder-fm (or be root) first. Everything it calls degrades to the audio routes when that is
+// missing, which is itself worth seeing.
     if (argc > 1 && std::strcmp(argv[1], "--fm") == 0) {
         // --fm                sweep the band, muted
         // --fm play           sweep with the tuner streaming
@@ -5346,6 +5441,10 @@ int main(int argc, char** argv) {
             return fm_scan(std::atoi(argv[3]), argc > 4 ? std::atoi(argv[4]) : 108000);
         if (argc > 2 && std::strcmp(argv[2], "i2c") == 0)
             return fm_i2c();
+        if (argc > 2 && std::strcmp(argv[2], "regmon") == 0)
+            return fm_regmon();
+        if (argc > 2 && std::strcmp(argv[2], "btcap") == 0)
+            return fm_btcap(argc > 3 ? std::atoi(argv[3]) : 98300);
         if (argc > 2 && std::strcmp(argv[2], "v4l2scan") == 0)
             return fm_v4l2scan(argc > 3 ? std::atoi(argv[3]) : 87500,
                                argc > 4 ? std::atoi(argv[4]) : 108000,

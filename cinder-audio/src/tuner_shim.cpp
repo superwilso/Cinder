@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
+#include <pthread.h>
 #include <cstdio>
 
 // ALSA is dlopen'd for the same reason the Sony services are: cinder-home is the Home app, and a
@@ -71,6 +72,189 @@ bool alsa_load() {
     g_alsa.ok = true;
     return true;
 }
+
+// ── THE CHIP, DIRECTLY: /proc/regmon/Si4708icx ──────────────────────────────────────────────
+//
+// Sony's driver registers the tuner with the kernel's generic register monitor, which exposes
+// every Si470x register over I2C as a `target` + `value` pair. That is the whole reason this file
+// no longer has to measure the radio by listening to it:
+//
+//   * `STATUS_RSSI[7:0]`  — a REAL graded signal meter. Sony's GetSignalLevel returns a constant
+//     1 at every frequency in the band, and the V4L2 `signal` field is binary 0/65535.
+//   * `STATUS_RSSI[14]` STC — tune-complete. Waiting on it rather than on a fixed settle turns a
+//     90-second band scan into a ~9-second one. Not faster than that: MEASURED on device, a tune
+//     costs the CHIP about 45 ms to settle, and 206 steps of that is the floor. The register path
+//     removes the software tax, not the physics.
+//   * `POWERCFG` SEEK/SEEKUP/SKMODE — the chip walks the band itself. Sony's StartAutoTuning is a
+//     48-byte stub that never reads its arguments.
+//
+// WHY SONY'S SEEK ALWAYS FAILED, and it is not a code defect: stock `SEEKTH` is 18, and no station
+// in range reads above 14. The threshold sits above the entire band, so seek runs to the band limit
+// and raises SF/BL every time. We lower it and it works.
+//
+// The nodes ship root-only; `cinder-fm` (setuid, src/cinder-fm.c) widens exactly those two files,
+// after which this is plain file I/O at uid 100.
+//
+// RULES, learned by probing the live chip — see analysis/RE_fm_tuner.md:
+//   * NEVER write BAND/SPACE (`SYSCONFIG2[7:4]`). They define the channel<->frequency mapping that
+//     the Sony driver's own SetFrequency arithmetic assumes; changing them desyncs the two. We READ
+//     them and follow whatever the driver chose, and we only ever write SEEKTH, the top byte.
+//   * Never write TEST1 or BOOTCONFIG. Those are the chip's bring-up state.
+//   * `target` is a single global selector, so every access has to be serialised.
+namespace regmon {
+
+const char* const TARGET = "/proc/regmon/Si4708icx/target";
+const char* const VALUE  = "/proc/regmon/Si4708icx/value";
+const char* const HELPER = "/system/vendor/unknown321/bin/cinder-fm";
+
+enum {  // Si470x register map, as the driver names it in `target`
+    R_DEVICEID = 0x00, R_POWERCFG = 0x02, R_CHANNEL = 0x03, R_SYSCONFIG1 = 0x04,
+    R_SYSCONFIG2 = 0x05, R_SYSCONFIG3 = 0x06, R_STATUS = 0x0A, R_READCHAN = 0x0B,
+};
+enum {  // STATUS_RSSI
+    ST_STC = 1 << 14, ST_SFBL = 1 << 13, ST_STEREO = 1 << 8, ST_RSSI = 0xFF,
+};
+enum {  // POWERCFG
+    PC_DMUTE = 1 << 14, PC_SKMODE = 1 << 10, PC_SEEKUP = 1 << 9, PC_SEEK = 1 << 8,
+    PC_ENABLE = 1 << 0,
+};
+enum { CH_TUNE = 1 << 15, CH_MASK = 0x03FF };
+
+pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+int g_live = -1;   // -1 = not probed yet, 0 = unavailable, 1 = usable
+
+// Seek threshold, refreshed by every scan from the band's measured noise floor so it tracks this
+// aerial and this location. 6 is the measured-good default (floor 5-6, carriers 9-14).
+int g_seek_th = 6;
+
+bool put(const char* path, unsigned v) {
+    FILE* f = std::fopen(path, "w");
+    if (!f) return false;
+    int n = std::fprintf(f, "0x%04X\n", v & 0xFFFF);
+    return std::fclose(f) == 0 && n > 0;
+}
+
+int value_get() {
+    FILE* f = std::fopen(VALUE, "r");
+    if (!f) return -1;
+    unsigned v = 0;
+    int n = std::fscanf(f, "%x", &v);   // the node prints "0x0000000B"
+    std::fclose(f);
+    return n == 1 ? (int)(v & 0xFFFF) : -1;
+}
+
+// Caller holds g_lock.
+int rd_l(int reg) { return put(TARGET, (unsigned)reg) ? value_get() : -1; }
+bool wr_l(int reg, unsigned v) { return put(TARGET, (unsigned)reg) && put(VALUE, v); }
+
+int rd(int reg) {
+    pthread_mutex_lock(&g_lock);
+    int v = rd_l(reg);
+    pthread_mutex_unlock(&g_lock);
+    return v;
+}
+
+// Are the nodes usable by this uid? Runs the setuid helper once if not, exactly as the GPU path
+// runs cinder-gpunode, then re-checks. A failure here is never fatal: everything falls back to the
+// audio-measured routes below.
+bool available() {
+    if (g_live >= 0) return g_live == 1;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (access(TARGET, R_OK | W_OK) == 0 && access(VALUE, R_OK | W_OK) == 0) {
+            // Prove it end to end rather than trusting the mode bits: DEVICEID is a constant.
+            pthread_mutex_lock(&g_lock);
+            int id = rd_l(R_DEVICEID);
+            pthread_mutex_unlock(&g_lock);
+            if (id > 0) {
+                std::fprintf(stderr, "[cinder-tuner] regmon live, DEVICEID=0x%04X\n", id);
+                g_live = 1;
+                return true;
+            }
+            std::fprintf(stderr, "[cinder-tuner] regmon readable but DEVICEID read failed\n");
+            break;
+        }
+        if (attempt == 0) {
+            int rc = std::system(HELPER);
+            std::fprintf(stderr, "[cinder-tuner] %s rc=%d (widening regmon nodes)\n",
+                         HELPER, (rc == -1) ? -1 : ((rc >> 8) & 0xff));
+        }
+    }
+    std::fprintf(stderr, "[cinder-tuner] regmon UNAVAILABLE — falling back to audio measurement\n");
+    g_live = 0;
+    return false;
+}
+
+// The chip's own channel<->frequency plan, READ from SYSCONFIG2 rather than assumed, so a
+// different region setting cannot silently put every frequency out by a factor.
+struct Plan { int base_khz, space_khz, top_khz; };
+Plan plan_l() {
+    Plan p = { 87500, 100, 108000 };
+    int s2 = rd_l(R_SYSCONFIG2);
+    if (s2 < 0) return p;
+    switch ((s2 >> 6) & 3) {                      // BAND
+        case 0:  p.base_khz = 87500; p.top_khz = 108000; break;
+        case 1:  p.base_khz = 76000; p.top_khz = 108000; break;
+        default: p.base_khz = 76000; p.top_khz =  90000; break;
+    }
+    switch ((s2 >> 4) & 3) {                      // SPACE
+        case 0:  p.space_khz = 200; break;
+        case 1:  p.space_khz = 100; break;
+        default: p.space_khz =  50; break;
+    }
+    return p;
+}
+
+// Wait for STC. It is normally set by the second read; the bound is a safety net, not a budget.
+int wait_stc_l() {
+    for (int i = 0; i < 200; i++) {
+        int s = rd_l(R_STATUS);
+        if (s < 0) return -1;
+        if (s & ST_STC) return s;
+        usleep(1000);
+    }
+    return rd_l(R_STATUS);
+}
+
+// RSSI at one frequency, tuning there to get it. Caller holds g_lock.
+int rssi_at_l(const Plan& p, int khz) {
+    int chan = (khz - p.base_khz) / p.space_khz;
+    if (chan < 0 || chan > CH_MASK) return -1;
+    if (!wr_l(R_CHANNEL, (unsigned)(chan | CH_TUNE))) return -1;
+    int st = wait_stc_l();
+    wr_l(R_CHANNEL, (unsigned)chan);
+    return st < 0 ? -1 : (st & ST_RSSI);
+}
+
+// Put a seek result back on the 100 kHz raster. The driver runs the chip at SPACE=50 kHz, so its
+// hardware seek can and does stop on a HALF-step — 91.45 MHz, measured — which is the shoulder of a
+// carrier rather than a carrier. European broadcasts are on the 100 kHz raster, so the right answer
+// is one of the two neighbours; which one is not guessable from the offset, so we measure both and
+// keep the stronger. Two tunes, about 90 ms.
+//
+// Caller holds g_lock.
+int snap_l(const Plan& p, int khz) {
+    const int RASTER = 100;
+    if (khz % RASTER == 0) return khz;
+    int lo = (khz / RASTER) * RASTER, hi = lo + RASTER;
+    int rl = rssi_at_l(p, lo), rh = rssi_at_l(p, hi);
+    int pick = (rh > rl) ? hi : lo;
+    rssi_at_l(p, pick);                       // leave the chip on the one we chose
+    return pick;
+}
+
+// Tune the chip directly and return where it landed, in kHz (0 on failure). Caller holds g_lock.
+int tune_l(const Plan& p, int khz) {
+    int chan = (khz - p.base_khz) / p.space_khz;
+    if (chan < 0 || chan > CH_MASK) return 0;
+    if (!wr_l(R_CHANNEL, (unsigned)(chan | CH_TUNE))) return 0;
+    int st = wait_stc_l();
+    int rc = rd_l(R_READCHAN);
+    wr_l(R_CHANNEL, (unsigned)chan);              // clear TUNE, which clears STC
+    if (st < 0 || rc < 0) return 0;
+    return p.base_khz + (rc & CH_MASK) * p.space_khz;
+}
+
+}  // namespace regmon
 
 void* g_tuner = nullptr;   // TunerPlayerServiceClient
 void* g_ain   = nullptr;   // AudioInPlayerServiceClient
@@ -198,6 +382,63 @@ int cinder_tuner_audio_stop(void) {
     return 0;
 }
 
+// Is there real PCM on the Bluetooth bridge's source? Returns the RMS of `ms` of capture from
+// hw:0,1 (0..32767), or <0 if the path could not be opened.
+//
+// This is the precondition the BT-out button depends on and which had never actually been checked:
+// FM audio is ANALOGUE into the codec, and only becomes PCM because `analog input device` routes it
+// to the ADC. If that route is wrong the capture still opens, still returns frames, and they are
+// all silence — the exact failure that cost two 45-minute "I hear nothing" sessions on the local
+// path. So the bridge should ask before it claims to be sending anything.
+//
+// It BORROWS hw:0,1 the same way the audio seek does: AudioInPlayerService owns that PCM while the
+// radio is audible on the jack, so the local path is stopped for the duration and handed back.
+int cinder_tuner_capture_rms(int ms) {
+    if (!alsa_load()) return -1;
+    if (ms < 20) ms = 20;
+    if (ms > 2000) ms = 2000;
+
+    const bool was = g_playing;
+    if (was && g_ain) { try { ((fn_v)vslot(g_ain, A_Stop))(g_ain); } catch (...) {} }
+
+    snd_pcm_t* pcm = nullptr;
+    double rms = -1;
+    const unsigned RATE = 44100;
+    // Report the actual errno. "capture failed" is not a diagnosis: -EBUSY means somebody else
+    // holds hw:0,1 (hagodaemon does, and does not necessarily let go on Stop), while -ENOENT or
+    // -ENODEV means the device is not there at all. Those need opposite responses.
+    int orc = g_alsa.open(&pcm, "hw:0,1", 1, 0);
+    int prc = (orc >= 0) ? g_alsa.set_params(pcm, 2, 3, 2, RATE, 1, 200000) : -1;
+    if (orc < 0 || prc < 0)
+        std::fprintf(stderr, "[cinder-tuner] hw:0,1 open=%d set_params=%d (-16 = EBUSY, held by "
+                             "another process)\n", orc, prc);
+    if (orc >= 0 && prc >= 0) {
+        g_alsa.start(pcm);                       // this device does not start capture on its own
+        const int want = (int)RATE * ms / 1000;
+        static short buf[(44100 / 2) * 2];
+        const int cap = (int)(sizeof buf / sizeof buf[0]) / 2;
+        int need = want < cap ? want : cap, got = 0;
+        while (got < need) {
+            snd_pcm_sframes_t n = g_alsa.readi(pcm, buf + got * 2, need - got);
+            if (n < 0) { g_alsa.recover(pcm, (int)n, 1); break; }
+            if (n == 0) break;
+            got += (int)n;
+        }
+        if (got > 0) {
+            double acc = 0;
+            for (int k = 0; k < got; k++) {
+                double v = buf[k * 2];
+                acc += v * v;
+            }
+            rms = std::sqrt(acc / got);
+        }
+        g_alsa.close(pcm);
+    }
+    if (was && g_ain) { try { ((fn_v)vslot(g_ain, A_Play))(g_ain); } catch (...) {} }
+    std::fprintf(stderr, "[cinder-tuner] capture rms(%d ms) = %.1f\n", ms, rms);
+    return rms < 0 ? -1 : (int)rms;
+}
+
 int cinder_tuner_set_khz(int khz) {
     if (!g_tuner) return -1;
     unsigned f = (unsigned)khz;
@@ -218,17 +459,92 @@ int cinder_tuner_state(void) {
 }
 
 int cinder_tuner_stereo(void) {
+    // The chip's own ST bit is the truth. Sony's GetStereoState read 0 on every station ever
+    // tested, including ones that were audibly playing, so it is only a fallback.
+    if (regmon::available()) {
+        int s = regmon::rd(regmon::R_STATUS);
+        if (s >= 0) return (s & regmon::ST_STEREO) ? 1 : 0;
+    }
     if (!g_tuner) return -1;
     int st = -1;
     try { ((fn_pi)vslot(g_tuner, T_GetStereoState))(g_tuner, &st); } catch (...) { return -1; }
     return st;
 }
 
+int cinder_tuner_hw(void) { return regmon::available() ? 1 : 0; }
+
+int cinder_tuner_signal(void) {
+    if (!regmon::available()) return -1;
+    int s = regmon::rd(regmon::R_STATUS);
+    return s < 0 ? -1 : (s & regmon::ST_RSSI);
+}
+
 void cinder_tuner_set_progress_cb(cinder_tuner_progress_fn cb) { g_progress = cb; }
 
+// HARDWARE SEEK. The chip walks the band itself: set SEEK/SEEKUP in POWERCFG, poll STC, read
+// READCHAN. Unlike the audio-measured seek below this needs neither ALSA nor the capture PCM, so
+// AudioInPlayerService keeps hw:0,1 the whole time — the radio stays audible while it seeks, and
+// a seek can no longer leave the audio path stopped if the shell's guard fires mid-sweep.
+//
+// READCHAN tracks the chip as it moves, so polling it drives a REAL sweep on the dial rather than
+// a jump. SKMODE is left clear so the band wraps, which is how a radio is expected to behave; the
+// chip raises SF/BL by itself once it has been all the way round.
+static int seek_hw(int from_khz, int dir, cinder_tuner_step_fn on_step) {
+    using namespace regmon;
+    pthread_mutex_lock(&g_lock);
+    Plan p = plan_l();
+    int pc0 = rd_l(R_POWERCFG), s2 = rd_l(R_SYSCONFIG2), s3 = rd_l(R_SYSCONFIG3);
+    if (pc0 < 0 || s2 < 0 || s3 < 0) { pthread_mutex_unlock(&g_lock); return 0; }
+
+    tune_l(p, from_khz);                                     // start from where the UI thinks we are
+    // SEEKTH is the top byte ONLY — BAND/SPACE in the low byte stay exactly as the driver set them.
+    wr_l(R_SYSCONFIG2, (unsigned)((s2 & 0x00FF) | ((g_seek_th & 0xFF) << 8)));
+    // SKSNR=1 / SKCNT=1: the most permissive real quality gates. Stock leaves both at 0, i.e.
+    // disabled, which lets seek stop on noise; the strict AN230 values reject everything here.
+    wr_l(R_SYSCONFIG3, (unsigned)((s3 & 0xFF00) | (1 << 4) | 1));
+
+    unsigned go = ((unsigned)pc0 & ~(unsigned)(PC_SKMODE | PC_SEEKUP)) | PC_SEEK;
+    if (dir >= 0) go |= PC_SEEKUP;
+    wr_l(R_POWERCFG, go);
+
+    int found = 0, last_step = 0;
+    for (int i = 0; i < 4000; i++) {                          // ~4 s ceiling; the chip is far faster
+        int s = rd_l(R_STATUS);
+        if (s < 0) break;
+        if (s & ST_STC) {
+            int rc = rd_l(R_READCHAN);
+            if (rc >= 0 && !(s & ST_SFBL))
+                found = p.base_khz + (rc & CH_MASK) * p.space_khz;
+            break;
+        }
+        int rc = rd_l(R_READCHAN);                            // animate the dial from the hardware
+        if (rc >= 0 && on_step) {
+            int khz = p.base_khz + (rc & CH_MASK) * p.space_khz;
+            if (khz != last_step) { last_step = khz; on_step(khz); }
+        }
+        usleep(1000);
+    }
+
+    wr_l(R_POWERCFG, (unsigned)pc0);                          // clear SEEK, which clears STC
+    wr_l(R_SYSCONFIG2, (unsigned)s2);                         // put the thresholds back
+    wr_l(R_SYSCONFIG3, (unsigned)s3);
+    if (found) found = snap_l(p, found);                      // off the 50 kHz shoulder, onto the raster
+    pthread_mutex_unlock(&g_lock);
+
+    // Hand the result to the Sony service so the service and the chip agree about the frequency —
+    // otherwise cinder_tuner_get_khz() keeps returning where the service last thought it was.
+    if (found && g_tuner) {
+        unsigned uf = (unsigned)found;
+        try { ((fn_cu)vslot(g_tuner, T_SetFrequency))(g_tuner, &uf); } catch (...) {}
+    }
+    std::fprintf(stderr, "[cinder-tuner] hw seek from %d dir %+d -> %d kHz\n", from_khz, dir, found);
+    return found;
+}
+
 int cinder_tuner_seek(int from_khz, int dir, cinder_tuner_step_fn on_step) {
-    if (!g_tuner || !alsa_load()) return 0;
     if (dir == 0) dir = 1;
+    if (regmon::available()) return seek_hw(from_khz, dir, on_step);
+    if (!g_tuner || !alsa_load()) return 0;
     // The audio path holds hw:0,1 while playing, so a seek BORROWS it: stop AudioIn, sweep with the
     // capture PCM, hand it back at the end. The tuner itself keeps playing throughout.
     bool was = g_playing;
@@ -264,8 +580,114 @@ int cinder_tuner_seek(int from_khz, int dir, cinder_tuner_step_fn on_step) {
     return found;
 }
 
+// HARDWARE SCAN. Step the chip across the band, wait for STC, read the RSSI. MEASURED end to end
+// on device: 206 steps in ~9.3 s, i.e. ~45 ms a step, which is the Si4708's own tune time and not
+// something more code can remove. Against the ~450 ms an audio window costs per step that is a 10x
+// improvement, and it is the honest number — an earlier draft of this comment said "about a
+// second", which was the shell-loop measurement misread as the chip's.
+//
+// It needs neither ALSA nor AudioInPlayerService, so unlike the audio scan below it does NOT have
+// to stop the radio first. The chip is muted for the sweep (DMUTE cleared) so the user hears a
+// clean pause rather than the band being dragged past their ears, and POWERCFG is restored after.
+static int scan_hw(int start_khz, int end_khz, int* out_khz, int max) {
+    using namespace regmon;
+    struct Hit { int khz, rssi; };
+    static Hit hits[256];
+    int nh = 0;
+
+    pthread_mutex_lock(&g_lock);
+    Plan p = plan_l();
+    int pc0 = rd_l(R_POWERCFG);
+    if (pc0 < 0) { pthread_mutex_unlock(&g_lock); return 0; }
+    wr_l(R_POWERCFG, (unsigned)pc0 & ~(unsigned)PC_DMUTE);    // mute for the sweep
+
+    // 100 kHz is the raster the UI tunes on, whatever the chip's own SPACE happens to be.
+    const int step = 100;
+    const int span = (end_khz - start_khz) / step + 1;
+    for (int f = start_khz; f <= end_khz && nh < 256; f += step) {
+        int chan = (f - p.base_khz) / p.space_khz;
+        if (chan < 0 || chan > CH_MASK) continue;
+        if (!wr_l(R_CHANNEL, (unsigned)(chan | CH_TUNE))) break;
+        int s = wait_stc_l();
+        wr_l(R_CHANNEL, (unsigned)chan);
+        if (s < 0) break;
+        hits[nh].khz = f;
+        hits[nh].rssi = s & ST_RSSI;
+        nh++;
+        if (g_progress && span > 0) g_progress(nh * 100 / span);
+    }
+    wr_l(R_POWERCFG, (unsigned)pc0);                          // unmute, back to how we found it
+    pthread_mutex_unlock(&g_lock);
+    if (nh < 8) return 0;
+
+    // The noise floor is whatever most of the band reads — measured 5-6 here, but it moves with the
+    // aerial, so take it from the data rather than baking a number in. Carriers ran 9-14 against
+    // that floor, so +3 is a real peak and not a wobble.
+    static int sorted[256];
+    for (int i = 0; i < nh; i++) sorted[i] = hits[i].rssi;
+    for (int a = 1; a < nh; a++) {
+        int v = sorted[a], b = a - 1;
+        while (b >= 0 && sorted[b] > v) { sorted[b + 1] = sorted[b]; b--; }
+        sorted[b + 1] = v;
+    }
+    const int floor_rssi = sorted[nh / 2];
+    const int cut = floor_rssi + 3;
+    // Remember the floor for seek: SEEKTH has to sit above the noise and below the weakest station,
+    // and stock's 18 sits above the entire band, which is exactly why Sony's seek never worked.
+    g_seek_th = floor_rssi + 1;
+
+    // A transmitter lights three or four adjacent 100 kHz steps. Keep the strongest of each run,
+    // so the preset list holds stations rather than shoulders.
+    struct Peak { int khz, rssi; };
+    static Peak peaks[64];
+    int np = 0;
+    for (int i = 0; i < nh; i++) {
+        if (hits[i].rssi < cut) continue;
+        if (np > 0 && hits[i].khz - peaks[np - 1].khz <= 200) {
+            if (hits[i].rssi > peaks[np - 1].rssi) peaks[np - 1] = { hits[i].khz, hits[i].rssi };
+            continue;
+        }
+        if (np < 64) peaks[np++] = { hits[i].khz, hits[i].rssi };
+    }
+    for (int a = 1; a < np; a++) {                            // strongest first
+        Peak v = peaks[a]; int b = a - 1;
+        while (b >= 0 && peaks[b].rssi < v.rssi) { peaks[b + 1] = peaks[b]; b--; }
+        peaks[b + 1] = v;
+    }
+    int out = 0;
+    for (int i = 0; i < np && out < max; i++) out_khz[out++] = peaks[i].khz;
+    std::fprintf(stderr, "[cinder-tuner] hw scan %d-%d kHz: floor=%d cut=%d -> %d station(s)\n",
+                 start_khz, end_khz, floor_rssi, cut, out);
+    return out;
+}
+
 int cinder_tuner_scan(int start_khz, int end_khz, int* out_khz, int max) {
     if (!out_khz || max <= 0) return 0;
+    if (regmon::available()) {
+        // The chip has to be powered for its registers to mean anything, and Sony's Open() owns
+        // that sequence. If the radio is already playing this is a no-op on a live client.
+        if (!ensure_clients()) return 0;
+        bool opened = false;
+        if (!g_playing) {
+            route(true);
+            try {
+                ((fn_v)vslot(g_tuner, T_Open))(g_tuner);
+                ((fn_v)vslot(g_tuner, T_Play))(g_tuner);
+            } catch (...) { route(false); return 0; }
+            opened = true;
+        }
+        int n = scan_hw(start_khz, end_khz, out_khz, max);
+        if (opened) {
+            try { ((fn_v)vslot(g_tuner, T_Stop))(g_tuner); } catch (...) {}
+            try { ((fn_v)vslot(g_tuner, T_Close))(g_tuner); } catch (...) {}
+            route(false);
+        } else if (g_tuner) {
+            // Put the service's idea of the frequency back where the user left it.
+            unsigned uf = (unsigned)cinder_tuner_get_khz();
+            if (uf) { try { ((fn_cu)vslot(g_tuner, T_SetFrequency))(g_tuner, &uf); } catch (...) {} }
+        }
+        return n;
+    }
     if (!ensure_clients() || !alsa_load()) return 0;
     route(true);
     try {

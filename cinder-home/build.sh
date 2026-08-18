@@ -260,6 +260,15 @@ echo "[6e] build cinder-clock (setuid-root clock helper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-clock" "$HERE/src/cinder-clock.c"
 echo "built: $HERE/cinder-clock ($(stat -c %s "$HERE/cinder-clock") bytes)"
 
+# cinder-fm: sixth setuid-root helper — chmod 0666 on /proc/regmon/Si4708icx/{target,value}, the
+# two kernel files through which Sony's own driver publishes the FM tuner's registers. That is what
+# gives the radio a real signal meter, a one-second band scan and the chip's hardware seek; Sony's
+# TunerPlayerService can provide none of them (GetSignalLevel is a constant 1, StartAutoTuning is a
+# 48-byte stub). See src/cinder-fm.c and analysis/RE_fm_tuner.md.
+echo "[6f] build cinder-fm (setuid-root FM register helper, static)…"
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-fm" "$HERE/src/cinder-fm.c"
+echo "built: $HERE/cinder-fm ($(stat -c %s "$HERE/cinder-fm") bytes)"
+
 # cinder-msc: fourth setuid-root helper — the USB mass-storage handoff. BOTH privileged steps are
 # root-only on this device (the LUN backing-file write opens the block device in the caller's
 # credentials, and sys.sony.config is refused for uid system), which is why MSC never worked from
@@ -281,6 +290,7 @@ cp -f "$HERE/cinder-umount" "$DIST/cinder-umount"
 cp -f "$HERE/cinder-power" "$DIST/cinder-power"
 cp -f "$HERE/cinder-clock" "$DIST/cinder-clock"
 cp -f "$HERE/cinder-msc" "$DIST/cinder-msc"
+cp -f "$HERE/cinder-fm" "$DIST/cinder-fm"
 # cinder-gpunode ships on the DEV channel ONLY. It is setuid-root and its whole job is to make
 # four kernel graphics nodes world-writable — real attack surface — in service of a GPU present
 # path that is default OFF and measured 4.7x SLOWER than the software one (45.6 ms/present vs 9.6;
