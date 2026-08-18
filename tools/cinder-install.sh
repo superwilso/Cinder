@@ -334,6 +334,11 @@ restore_cable_escape() {
         ok "rung 0 restored (cable-at-boot -> stock is armed again)"
     fi
 }
+# INT and TERM as well as EXIT: an untrapped SIGTERM kills the shell WITHOUT running an EXIT trap,
+# and that is exactly what happened on 2026-08-18 — the run was terminated while waiting for the
+# device and left rung 0 borrowed until the next session noticed. The escape must survive this
+# script being killed, or it is not much of an escape.
+trap 'restore_cable_escape; exit 143' INT TERM
 trap restore_cable_escape EXIT
 info "borrowing rung 0 for this boot (cable-at-boot escape off)…"
 adb shell "touch $CABLE_FLAG; sync" >/dev/null 2>&1 || warn "could not set $CABLE_FLAG — this boot will land on STOCK if a cable is attached"
