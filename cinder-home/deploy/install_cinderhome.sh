@@ -51,6 +51,7 @@ SRC_GPUNODE=/contents/cinder-gpunode
 SRC_POWER=/contents/cinder-power
 SRC_MSC=/contents/cinder-msc
 SRC_CLOCK=/contents/cinder-clock
+SRC_FM=/contents/cinder-fm
 SRC_SIGNATURE=/contents/cinder-signature.sh
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
@@ -88,6 +89,7 @@ WANT_MSC="$(comp_bool CINDER_MSC 1)"
 WANT_CLOCK="$(comp_bool CINDER_CLOCK 1)"
 WANT_UMOUNT="$(comp_bool CINDER_UMOUNT 1)"
 WANT_GPUNODE="$(comp_bool CINDER_GPUNODE 0)"
+WANT_FM="$(comp_bool CINDER_FM 1)"
 WANT_SIGNATURE="$(comp_sig)"
 
 if [ -f "$COMPONENTS" ]; then
@@ -95,7 +97,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE signature=$WANT_SIGNATURE"
+echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM signature=$WANT_SIGNATURE"
 
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
@@ -251,6 +253,30 @@ elif [ -s "$SRC_CLOCK" ]; then
     fi
 else
     echo "WARN: $SRC_CLOCK not staged (tools/flash.sh --push dist/<ch>/cinder-clock) — clock cannot be set."
+fi
+
+# 1f2) FM register helper. chmod 0666 on /proc/regmon/Si4708icx/{target,value} — the two kernel
+#      files Sony's own driver publishes the FM tuner's registers through. Reaching them is what
+#      gives the radio a real signal meter, a one-second band scan and the chip's hardware seek;
+#      Sony's service has none of the three. Same atomic temp->chown root->chmod 4755->mv
+#      treatment. Non-fatal: without it the radio still plays, scan falls back to measuring the
+#      audio (about a minute) and the screen draws no meter rather than a fake one.
+if [ "$WANT_FM" != 1 ]; then
+    echo "components: fm NOT selected — skipping cinder-fm (no meter, slow scan)."
+    "$BB" rm -f "$BIN/cinder-fm" 2>/dev/null
+elif [ -s "$SRC_FM" ]; then
+    "$BB" cat "$SRC_FM" > "$BIN/cinder-fm.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-fm.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-fm.tmp" 2>/dev/null
+        "$BB" chmod 4755 "$BIN/cinder-fm.tmp"
+        "$BB" mv -f "$BIN/cinder-fm.tmp" "$BIN/cinder-fm"
+        echo "installed setuid helper: $BIN/cinder-fm ($("$BB" wc -c < "$BIN/cinder-fm" 2>/dev/null | "$BB" tr -cd '0-9') bytes, mode $("$BB" stat -c %a "$BIN/cinder-fm" 2>/dev/null))"
+    else
+        echo "WARN: cinder-fm stage empty — FM meter/fast scan unavailable."
+        "$BB" rm -f "$BIN/cinder-fm.tmp" 2>/dev/null
+    fi
+else
+    echo "WARN: $SRC_FM not staged (tools/flash.sh --push dist/<ch>/cinder-fm) — FM meter/fast scan unavailable."
 fi
 
 # 1g) audio "sound signature". Installs the switcher and applies the chosen variant by patching

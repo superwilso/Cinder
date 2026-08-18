@@ -644,6 +644,26 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   watchdog; every Sony-IPC call inside `run_guarded`; USB-at-launch / `cinderhome_off` escape.
 
 ### ◐ Partial (UI works; backend/hardware leg pending — device-gated)
+
+- **FM Radio — the tuner is REAL; the Bluetooth leg is not.** *(built 2026-08-17/18, measured on
+  hardware — `analysis/RE_fm_tuner.md`)* Tune, play, a graded signal meter, a ~10 s band scan and
+  the chip's own hardware seek all work, and all of them are driven through the CHIP rather than
+  Sony's API, because Sony's API cannot do them: `GetSignalLevel` returns a constant 1 at every
+  frequency in the band and `StartAutoTuning` is a 48-byte stub. Cinder reads and writes the Si4708
+  registers through `/proc/regmon/Si4708icx`, which Sony's own driver publishes, widened for uid 100
+  by the setuid `cinder-fm` helper. Without that helper everything still works, the scan just falls
+  back to measuring the audio (~90 s) and the screen honestly draws **no meter** instead of one
+  backed by a constant.
+  Why it is Partial and not Functional, precisely:
+  * **It has never run inside cinder-home.** Every measurement so far came through `cinder-probe`.
+    The screen, the 1 Hz meter poll and the guard budgets are unproven until a flash + reboot.
+  * **BT OUT cannot work as designed right now.** `AudioInPlayerService` opens `hw:0,1` and does not
+    release it on `Stop()` — the substream stays `RUNNING` for the rest of the boot and every open
+    returns `-EBUSY`. The button now proves its source with `cinder_tuner_capture_rms()` and refuses
+    with a reason rather than lighting up and transmitting silence.
+  * **Stereo will not light here, and that is the hardware.** `ST` reads 0 at all four `BLNDADJ`
+    settings because the strongest local carrier reads RSSI 15 while the chip's most sensitive
+    stereo blend starts at 19. Not a bug, not fixable in software.
 - **Volume keys**: HUD + UI level work, and the hardware path now has a **built-in default from the
   2026-07-02 discovery dump** — no conf needed: `amixer -c0 cset name='master volume' <0..120>` (the
   CXD3778GF master, the stock 120-step range). At boot the UI level is **seeded from the real mixer**
@@ -1108,7 +1128,7 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 - *(moved to Functional 2026-07-29: **Bluetooth radio on/off** — the toggle now drives the real radio
   via `BtCommonServiceClient::SetRfOnOff` and reconnects the last device, and **Disconnect** hangs up
   without powering the radio down.)*
-- **FM Radio** screen: static (88.6 MHz placeholder).
+- *(moved out 2026-08-18: the **FM Radio** screen is no longer stationary — see Partial below.)*
 - **BT Receiver** screen: static (off).
 - *(moved to Functional 2026-07-30: the **Devices** screen — `pairing.rs` is a real route with real
   paired devices, connect / disconnect / forget. Discovering an **unpaired** device is the one part

@@ -484,3 +484,241 @@ retunes or each frequency is scored on the previous one's audio.
    come out" and settles the two readable enums in one session.
 2. Only then decide whether to build the screen or delete it. A screen that draws a fake frequency
    is the same class of lie stripped out of Sound and Advanced twice.
+
+## THE CHIP IS UNLOCKED — `/proc/regmon/Si4708icx`, 2026-08-18
+
+`PLAN_fm_kernel.md` argued that real RSSI and hardware seek needed a kernel module, because
+"the registers cannot be reached from userspace at all". **That was wrong.** Sony's driver calls
+`regmon_add` (visible in its UND symbols), and the kernel exposes a generic register-monitor at
+`/proc/regmon/` with one directory per registered device:
+
+```
+/proc/regmon/{Si4708icx, afe_reg, bq24262, cxd3778gf, mt6323}
+/proc/regmon/Si4708icx/{target, value}      -rw------- root root
+```
+
+`target` **reads** as the register-name table and **writes** to select a register; `value` reads and
+writes that register over I2C. The whole Si470x map is there:
+
+```
+0x00 DEVICEID  0x02 POWERCFG   0x04 SYSCONFIG1  0x06 SYSCONFIG3  0x08 TEST2       0x0A STATUS_RSSI  0x0C-0x0F RDSA-RDSD
+0x01 CHIPID    0x03 CHANNEL    0x05 SYSCONFIG2  0x07 TEST1       0x09 BOOTCONFIG  0x0B READCHAN
+```
+
+Root-only, and cinder-home is uid 100 — so shipping this needs a setuid helper, same shape as
+`cinder-clock` / `cinder-gpunode`.
+
+### Stock register state (device idle, tuned to 97.3)
+
+| reg | value | decode |
+|---|---|---|
+| `0x00 DEVICEID` | `0x1242` | Silicon Labs, MFGID 0x242 |
+| `0x01 CHIPID` | `0x1093` | REV 4, firmware 19 (powered) |
+| `0x02 POWERCFG` | `0x4001` | `ENABLE=1`, `DMUTE=1`, no SEEK |
+| `0x03 CHANNEL` | `0x01AA` | chan 426 |
+| `0x04 SYSCONFIG1` | `0x08AA` | `DE=1` (50 µs, Europe ✓), **`RDS=0` — disabled** |
+| `0x05 SYSCONFIG2` | `0x126F` | `SEEKTH=0x12`(18), `BAND=01`(76–108), `SPACE=10`(50 kHz), `VOL=0xF` |
+| `0x06 SYSCONFIG3` | `0x1000` | **`SKSNR=0`, `SKCNT=0` — seek quality gates disabled** |
+| `0x0A STATUS_RSSI` | `0x000B` | `RSSI=11`, `ST=0`, `STC=0` |
+| `0x0B READCHAN` | `0x01AA` | 426 |
+
+`76 MHz + 426 × 50 kHz = 97.3 MHz` — the station this doc confirmed by ear. Live reads, not cache:
+RSSI wanders 9–14 between reads at the same frequency.
+
+### Writes work — tune + `STC` proven
+
+```
+write CHANNEL = 0x811C     (TUNE=1, chan 284)
+  STATUS  0x5007  -> STC=1
+  READCHAN 0x011C -> chan 284 = 76000 + 284*50 = 90.2 MHz   ✓ landed
+write CHANNEL = 0x011C     (clear TUNE)
+  STATUS  0x1007  -> STC=0   ✓ handshake completes on demand
+```
+
+**`STC` settles within one extra register read.** The 90 ms-per-step settle tax that every
+Cinder scan has paid does not exist here.
+
+### Real RSSI — the full band, 206 channels
+
+Sweep = write `CHANNEL|TUNE`, poll `STC`, read `STATUS_RSSI`. 35 s for the whole band, and that is
+*entirely* shell-spawn overhead (2 `echo` + `cat` per register op); the chip is ready immediately.
+
+Noise floor 5–6, with genuine 3-channel-wide carriers on top:
+
+| MHz | RSSI |
+|---|---|
+| 98.2 / 98.3 / 98.4 | **14** |
+| 107.7 / 107.8 / 107.9 | 11 / 12 / 12 |
+| 106.1 / 106.2 / 106.3 | 10 / 11 / 11 |
+| 90.9 / 91.0 | 11 / 11 |
+| 105.3 / 105.4 / 105.5 | 9 / 10 / 10 |
+| 92.1 – 92.8 | 10 |
+| 97.3 / 97.4 | 9 / 9 |
+
+This is the graded meter that `GetSignalLevel` (constant `1` at 203 of 206 frequencies) and the
+V4L2 `signal` field (binary `0`/`65535`) both failed to give.
+
+### Hardware seek works
+
+`POWERCFG` `SEEK[8]` / `SEEKUP[9]` / `SKMODE[10]`, poll `STC`, read `READCHAN`, clear `SEEK`.
+
+**Why it appeared broken before:** stock `SEEKTH` is **18**, and no station here exceeds **14**.
+The threshold sits above the entire band, so seek walks to the band limit and raises `SF/BL`.
+That — not a missing capability — is why Sony's `StartAutoTuning` finds nothing.
+
+Only the top byte of `SYSCONFIG2` needs touching, so `BAND`/`SPACE` stay as the driver set them
+and **the driver's frequency mapping never desyncs**:
+
+| settings | result | time |
+|---|---|---|
+| `SEEKTH=8`, `SKSNR=4`, `SKCNT=8` (AN230 "recommended") | 98.3, 106.2 | 7 s |
+| `SEEKTH=6`, `SKSNR=1`, `SKCNT=1` (permissive) | 97.3, 98.3, 105.4, 105.45, 106.2 | 13 s |
+
+Again, seconds are shell overhead — the chip's own seek is ~30–100 status polls per station.
+
+### RDS is absent in HARDWARE — do not chase it
+
+`SYSCONFIG1` bit 12 sets and reads back (`0x18AA`), but `RDSS` never syncs and `RDSA`–`RDSD` stay
+zero after 300 polls at both 98.3 (RSSI 14) and 106.2. **The Si4708 is the non-RDS member of the
+family — Si4709 is the one with RDS.** `TunerPlayerServiceListener::OnReceivedPs` exists because
+the service is shared across models, not because this part can deliver it. Don't re-investigate.
+
+### The design this implies
+
+Split by what each side is actually good at, and nothing desyncs:
+
+* **Tune / audio path** — keep using `TunerPlayerService` + `AudioInPlayerService` exactly as the
+  section above establishes (`numid=26` first, then Tuner `Open`/`SetFrequency`/`Play`, then
+  AudioIn `Play()`). Sony owns the power sequence and the ADC route; don't fight it.
+* **Signal meter, scan, seek** — `/proc/regmon/Si4708icx` via a setuid helper. Read `STATUS_RSSI`
+  for the meter, `SEEK` for seek, `READCHAN` for where it landed — then hand the resulting
+  frequency back to `SetFrequency` so the service and the chip agree.
+* Write only `POWERCFG` (SEEK bits) and the **top byte** of `SYSCONFIG2` (`SEEKTH`), plus
+  `SYSCONFIG3` quality gates. Never `BAND`/`SPACE` — those define the chip↔driver channel mapping.
+  Never `TEST1`/`BOOTCONFIG`.
+
+Restore-on-exit values for a probe: `POWERCFG=0x4001`, `SYSCONFIG1=0x08AA`, `SYSCONFIG2=0x126F`,
+`SYSCONFIG3=0x1000`. Verified: after all of the above the driver is `Live`, refcount intact,
+`/dev/radio0` present, no I2C errors in `dmesg`.
+
+**Zero kernel code. Zero boot-path risk. The escape ladder is untouched.**
+
+## AS BUILT — what shipped, and the three things the hardware corrected
+
+Wired into Cinder 2026-08-18: `cinder-fm` (setuid, chmods the two regmon nodes), a register layer
+in `cinder-audio/src/tuner_shim.cpp`, a real meter on the FM screen, and `cinder-probe --fm regmon`
+as the on-device test for the shipping code path rather than a probe-local re-implementation.
+
+Measured through the shipping path, not through a shell loop:
+
+```
+fm-regmon: cinder_tuner_hw()=1
+fm-regmon: start rc=0  signal=15  stereo=0
+[cinder-tuner] hw scan 87500-108000 kHz: floor=8 cut=11 -> 8 station(s)
+fm-regmon: scan found 8 station(s) in 9876 ms
+[cinder-tuner] hw seek from 87500 dir +1 -> 91700 kHz
+fm-regmon: hw seek up from 87.5 -> 91.7 MHz in 2751 ms
+```
+
+**1. The scan is ~10 s, not ~1 s.** The shell measurement above was dominated by process spawns,
+and reading it as the chip's speed was wrong. Through compiled code a step costs ~45 ms, which is
+the Si4708's own tune-and-settle time; 206 of those is ~9.5 s and no amount of code removes it.
+Still a 10x improvement on the ~90 s audio scan, and the docs and the UI both now say ten seconds.
+
+**2. Hardware seek stops on 50 kHz HALF-steps.** The driver runs the chip at `SPACE=50 kHz`, so
+seek landed on **91.45 MHz** — the shoulder of a carrier, not a carrier, because European
+broadcasts sit on the 100 kHz raster. Which neighbour is the real one is not deducible from the
+offset, so the shim now measures the RSSI of both and keeps the stronger (two tunes, ~90 ms). After
+that, results land on the raster: 91.7 MHz.
+
+**3. `GetFrequency` returns 0 right after a start.** Reproduced on both runs
+(`start rc=0 freq=0 kHz`). The UI *clamps* whatever it is handed into the band, so a 0 does not
+show as "unknown" — it drags the dial to 87.5 MHz and leaves it there. Every read-back in the shell
+now goes through `fm_report_actual()`, which reports only a frequency that actually read.
+
+**The RSSI scale moves with the aerial.** Floor 5-6 and carriers 9-14 with the cable's far end in a
+PC; floor 8 and carriers up to 15 with it hanging free. So no fixed calibration is honest — the UI
+saturates at 18 and marks its floor, and each scan republishes the measured floor as the seek
+threshold, which is what makes seek work at all.
+
+**What the register path removed, beyond speed:** the audio seek borrowed `hw:0,1` from
+`AudioInPlayerService`, so the radio went SILENT for the duration and the shell's 45 s guard firing
+mid-seek would leave the audio path stopped. Hardware seek touches no PCM at all — the radio stays
+audible while it sweeps, and that failure mode is gone.
+
+## FOUR DEVICE QUESTIONS SETTLED — 2026-08-18, autonomous session
+
+All four were open items in `cinder-home/ROADMAP.md`; three of them turned out not to be problems
+on this configuration, and the fourth is a real one that the BT-out button was silently ignoring.
+
+### 1. Stereo is UNREACHABLE at these signal levels — stop chasing it
+
+`ST` had read 0 at every station in every session, and the obvious suspicion was configuration.
+It is not. Tested on the strongest local carrier (98.3 MHz, RSSI 15) with `MONO` (POWERCFG[13])
+confirmed clear, stepping `SYSCONFIG1` `BLNDADJ[7:6]` through **all four** values:
+
+```
+BLNDADJ=0 -> RSSI=15  ST=0        BLNDADJ=2 -> RSSI=15  ST=0   (Sony's setting)
+BLNDADJ=1 -> RSSI=15  ST=0        BLNDADJ=3 -> RSSI=14  ST=0
+```
+
+The datasheet explains it: `BLNDADJ=10` — the value Sony ships — is the **most sensitive** option,
+starting the stereo blend at 19 dBµV. Our best carrier reads **15**. The signal is below the point
+where the chip will even begin to blend, on the most permissive setting the part offers. Nothing in
+software reaches this; it is an aerial and reception limit. The `ST` indicator stays in the UI
+because it costs nothing and would light on a strong signal — but do not expect it here.
+
+### 2. The "Sony service re-disables the ADC mux on a timer" trap does NOT reproduce
+
+Set `numid=26` to `tuner` and polled it every 5 s for 90 s: it held at `1` throughout, no reset.
+Wampy hit that trap with Sony's own player running and owning the mux; with Cinder as Home and the
+stock Qt app frozen, nothing is there to reset it. No re-assert timer is needed in the shim.
+
+### 3. The "device suspends to `mem` without a wake_lock" trap does NOT reproduce either
+
+```
+/sys/power/autosleep = off        /sys/power/wake_lock = (empty, no locks held)
+dmesg suspend entries this boot = 0     uptime 7782 s, idle 6102 s, backlight = 0
+```
+
+Opportunistic suspend is **off** on this device, and it had gone 2 h 10 min — screen dark, no
+wake_locks held, cinder-home running as Home — without a single suspend. There is no reason to add
+a `/sys/power/wake_lock` for FM. (Caveat: measured with adb attached, though nothing held a lock.)
+
+### 4. ⚠️ REAL PROBLEM — `AudioInPlayerService` never releases `hw:0,1`
+
+The BT-out design is "stop the local audio path, and the bridge takes `hw:0,1`". Tested for the
+first time with `cinder-probe --fm btcap`, which captures with the mux routed to the tuner, again
+with it OFF as a control, and a third time routed:
+
+```
+[cinder-tuner] hw:0,1 open=-16 set_params=-1   (-16 = EBUSY)   x3
+fm-btcap: RMS  routed=-1  MUX-OFF(control)=-1  routed-again=-1
+```
+
+`Stop()` does not give the PCM back:
+
+```
+/proc/asound/card0/pcm1c/sub0/status
+  state: RUNNING   owner_pid: 337   trigger_time: 909.5   tstamp: 8159.5
+/proc/337/cmdline
+  hagodaemon AudioInPlayerService TunerPlayerService userAndGroup=system,system nice=-10 sub_sm
+```
+
+hagoromo28 opened the capture at **t=909 s** — hours before this session, i.e. left over from the
+earlier FM work — and it is still **RUNNING** with its tstamp still advancing at t=8159 s. Every
+`snd_pcm_open("hw:0,1")` since returns `-EBUSY`.
+
+**Two readings, and they are not yet distinguished.** Either (a) `AudioInPlayerService` simply never
+closes the PCM once opened, in which case the BT-out design needs the bridge to take `hw:0,1`
+*before* AudioIn ever does; or (b) the service is **wedged** in a leftover state from the earlier
+session — note that `Play()` now returns `rc=0` but leaves `GetPlayerState()` at **0**, where a
+healthy start moves it 0 → 2 — in which case a restart of hagoromo28 clears it and the design is
+fine. The discriminating test is to restart `hagoromo28` and re-run `--fm btcap`; that was not done
+here because killing a Sony service unprompted is not a safe autonomous act on this device.
+
+**What shipped in the meantime:** `cinder_tuner_capture_rms(ms)` measures the bridge's source, and
+`fm_btout_fn` now calls it before starting the bridge. If the PCM cannot be opened the button
+refuses, says why, and puts the radio back on the jack — instead of lighting up and transmitting
+nothing, which is what it would have done. The control in `--fm btcap` matters for the same reason:
+a capture that opens and returns all-silence looks identical to one that works.

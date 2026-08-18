@@ -718,6 +718,13 @@ pub struct App {
     /// noise and the screen says so rather than looking broken.
     fm_antenna: bool,
     fm_bt_out: bool,
+    /// Live RSSI straight off the Si4708 (STATUS_RSSI[7:0]), or -1 when the register path is down
+    /// and there is no meter to draw. NOT Sony's GetSignalLevel, which is a constant 1.
+    fm_signal: i32,
+    /// The chip's registers are reachable, so the meter and seek are hardware rather than measured.
+    fm_hw: bool,
+    /// Chip ST bit — a real stereo lock. Rare on this aerial, which is why it is worth showing.
+    fm_stereo: bool,
     /// Tone Control band gains, RAW half-decibels, ±20 = ±10 dB — measured on device, not assumed
     /// (`cinder-probe --tone`). Index order is Sony's own: 0 BASS, 1 MIDDLE, 2 TREBLE, confirmed
     /// by the sound service logging `eqtone,type=N` as each is written.
@@ -943,6 +950,9 @@ impl Default for App {
             fm_scan_pct: 0,
             fm_antenna: false,
             fm_bt_out: false,
+            fm_signal: -1,
+            fm_hw: false,
+            fm_stereo: false,
             tone_bands: [0; crate::tone::BANDS],
             tone_sel: 0,
             adv_sel: 0,
@@ -4726,6 +4736,9 @@ impl App {
                     scan_pct: self.fm_scan_pct,
                     antenna: self.fm_antenna,
                     bt_out: self.fm_bt_out,
+                    signal: self.fm_signal,
+                    hw: self.fm_hw,
+                    stereo: self.fm_stereo,
                 };
                 crate::fm::render(c, &theme, fonts, &v)
             }
@@ -5348,6 +5361,13 @@ impl App {
     pub fn fm_playing(&self) -> bool { self.fm_playing }
     pub fn fm_set_playing(&mut self, on: bool) { self.fm_playing = on; }
     pub fn fm_set_antenna(&mut self, present: bool) { self.fm_antenna = present; }
+    /// Raw RSSI from the chip, or <0 for "no meter". See `fm::SIGNAL_FULL` for the scale.
+    pub fn fm_set_signal(&mut self, rssi: i32) { self.fm_signal = rssi; }
+    pub fn fm_signal(&self) -> i32 { self.fm_signal }
+    pub fn fm_stereo(&self) -> bool { self.fm_stereo }
+    pub fn fm_hw(&self) -> bool { self.fm_hw }
+    pub fn fm_set_hw(&mut self, hw: bool) { self.fm_hw = hw; }
+    pub fn fm_set_stereo(&mut self, st: bool) { self.fm_stereo = st; }
     pub fn fm_bt_out(&self) -> bool { self.fm_bt_out }
     pub fn fm_set_bt_out(&mut self, on: bool) { self.fm_bt_out = on; }
     pub fn fm_scanning(&self) -> bool { self.fm_scanning }

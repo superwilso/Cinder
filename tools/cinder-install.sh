@@ -88,7 +88,7 @@ if [ "$MODE" = "status" ]; then
     info "rollback available:"
     adb shell "[ -f $BACKUP ] && echo '    yes: $BACKUP' || echo '    no'" 2>/dev/null
     info "helpers installed:"
-    for h in cinder-umount cinder-power cinder-msc cinder-gpunode; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-gpunode; do
         adb shell "[ -f $HELPERS_DIR/$h ] && echo '    $h: present' || echo '    $h: -'" 2>/dev/null
     done
     info "last 10 log lines:"
@@ -175,7 +175,7 @@ echo "[swap] installed: \$INSTALL_PATH"
 
 # 6. helpers if --full
 if [ "\$FULL" = "1" ]; then
-    for h in cinder-umount cinder-power cinder-msc cinder-gpunode; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-gpunode; do
         if [ -f "/data/local/tmp/\$h.new" ]; then
             cp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"
             if cmp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"; then
@@ -246,7 +246,7 @@ ok "pushed $BIN_SIZE bytes"
 # 4. push helpers if --full
 if [ "$FULL" = 1 ]; then
     info "pushing setuid helpers (--full)…"
-    for h in cinder-umount cinder-power cinder-msc; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm; do
         if [ -f "$DIST/$h" ]; then
             adb push "$DIST/$h" "/data/local/tmp/$h.new" >/dev/null
             ok "  staged $h"

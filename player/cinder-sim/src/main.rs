@@ -423,6 +423,9 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             khz: 97300, playing: true,
             stations: [0; fm::PRESETS], n_stations: 0,
             scanning: false, scan_pct: 0, antenna: true, bt_out: false,
+            // A mid-strength carrier: enough to show the meter doing something without pretending
+            // this unit ever sees a full-scale one (measured ceiling is about 14).
+            signal: 11, hw: true, stereo: false,
         }),
         Screen::UsbDac => usbdac::render(c, theme, fonts, app.usb_dac, app.usb_dac && app.bt_on,
             BT_CODECS[app.bt_codec], app.bt_conn.map(|r| PAIRED[r].name), EQ_PRESETS[app.eq_preset].0, app.dsee,
