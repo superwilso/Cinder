@@ -76,7 +76,7 @@ struct App {
     shuffle: bool,
     repeat: u8, // 0 off · 1 one  (matches nav: repeat-all has no PlayerService primitive)
     shelf_open: bool,
-    pins: [Option<(String, String)>; 3],
+    pins: [Option<(String, String)>; shelf::SLOTS],
     history: Vec<Screen>,
     lib: cinder_ui::Library,
 }
@@ -108,15 +108,9 @@ fn header_back(x: i32, y: i32) -> bool {
 fn handle_click(app: &mut App, x: i32, y: i32) {
     // Shelf overlay intercepts every click while open.
     if app.shelf_open {
-        let filled = [app.pins[0].is_some(), app.pins[1].is_some(), app.pins[2].is_some()];
+        let filled: [bool; shelf::SLOTS] = std::array::from_fn(|i| app.pins[i].is_some());
         match shelf::hit(x, y, filled) {
             shelf::ShelfHit::Close => app.shelf_open = false,
-            shelf::ShelfHit::Back => {
-                app.shelf_open = false;
-                if let Some(s) = app.history.pop() {
-                    app.screen = s;
-                }
-            }
             shelf::ShelfHit::PinTo(slot) => {
                 app.pins[slot] = Some((format!("Now Playing · {}", SONGS[app.track].t), "Just now".into()));
             }
@@ -402,6 +396,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             ldac_quality: 0,
             enhanced: true,
             enhanced_supported: true,
+            paired: &[],
             connecting: false,
             busy_phase: 0.0,
         }),
@@ -438,11 +433,8 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
     if app.shelf_open {
         let this_title = format!("Now Playing · {}", SONGS[i].t);
         let this_sub = format!("1:47 / {}", SONGS[i].d);
-        let pins = [
-            app.pins[0].as_ref().map(|(t, s)| shelf::Pin { title: t, sub: s }),
-            app.pins[1].as_ref().map(|(t, s)| shelf::Pin { title: t, sub: s }),
-            app.pins[2].as_ref().map(|(t, s)| shelf::Pin { title: t, sub: s }),
-        ];
+        let pins: [Option<shelf::Pin>; shelf::SLOTS] =
+            std::array::from_fn(|n| app.pins[n].as_ref().map(|(t, s)| shelf::Pin { title: t, sub: s }));
         shelf::render(c, theme, fonts, &this_title, &this_sub, &pins);
     }
 }
@@ -475,7 +467,7 @@ fn main() {
         shuffle: false,
         repeat: 1,
         shelf_open: false,
-        pins: [None, None, None],
+        pins: std::array::from_fn(|_| None),
         history: Vec::new(),
         lib: cinder_ui::Library::sample(),
     };

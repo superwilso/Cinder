@@ -63,6 +63,9 @@ pub enum Screen {
     /// Paired-device picker (connect / disconnect / forget). Pushed from Bluetooth ▸ "Pair new
     /// device"; before 2026-07-30 `pairing.rs` rendered but had no route at all.
     Pairing,
+    /// Transmit codec + LDAC quality + Enhanced Mode, moved off the Bluetooth screen so the
+    /// paired-device list can be its body.
+    BtCodec,
     Settings,
     Fm,
     UsbDac,
@@ -367,6 +370,19 @@ struct ShelfPin {
     playlist_view: usize,
     title: String,
     sub: String,
+    // ── STABLE IDENTITIES ─────────────────────────────────────────────────────────────────
+    // The fields above are INDICES into lists the library rebuilds at every boot, and a pin
+    // outlives that rebuild. Add one track and every index after it shifts, so a pin saved on
+    // "anymore (Deluxe)" opened "burn" instead — reported 2026-08-19. The index is kept only as a
+    // fallback for a pin written before this existed, or one whose target has since been deleted.
+    /// `AlbumRow::album_id` of `album_view`, or -1.
+    album_id: i64,
+    /// `AlbumRow::album_id` of `album_expanded`, or -1.
+    expanded_album_id: i64,
+    /// Name of `artist_view` (artists are keyed by name, not id), or empty.
+    artist_name: String,
+    /// `PlaylistRow::id` of `playlist_view`, or -1.
+    playlist_id: i64,
 }
 
 /// Screens a Shelf pin may point at. Anything else (modals, onboarding, the lock screen) is not a
@@ -404,6 +420,7 @@ fn screen_token(s: Screen) -> &'static str {
         Screen::Tone => "tone",
         Screen::Sound => "sound",
         Screen::Bluetooth => "bt",
+        Screen::BtCodec => "btcodec",
         Screen::Settings => "settings",
         Screen::Fm => "fm",
         Screen::UsbDac => "usbdac",
@@ -423,6 +440,7 @@ fn screen_from_token(t: &str) -> Option<Screen> {
         "eq" => Screen::Eq,
         "sound" => Screen::Sound,
         "bt" => Screen::Bluetooth,
+        "btcodec" => Screen::BtCodec,
         "settings" => Screen::Settings,
         "fm" => Screen::Fm,
         "usbdac" => Screen::UsbDac,
@@ -623,6 +641,8 @@ pub struct App {
     /// assuming 60 fps when the device renders at ~32), and only while something is actually in
     /// flight, so an idle screen stays completely static and repaints nothing.
     bt_busy_phase: f32,
+    /// Milliseconds left of the optimistic play/pause hold. See `set_playing_optimistic`.
+    playing_hold_ms: u32,
     /// Equalizer: 10 band gains (dB), selected band, active preset index.
     eq_bands: [i8; 10],
     eq_sel: usize,
@@ -800,7 +820,7 @@ pub struct App {
     lib: Library,
     /// Shelf bottom-sheet overlay: whether it's showing, and the three pin slots (jump-back places).
     shelf_open: bool,
-    pins: [Option<ShelfPin>; 3],
+    pins: [Option<ShelfPin>; crate::shelf::SLOTS],
     /// User play-queue (Spotify-style right-swipe on a song row adds to it). Shown on Up Next in
     /// front of the album-derived list. Display + intent today: making PlayerService actually play
     /// this order lands with PlayController::SetTrackSequence (RE pending).
@@ -914,6 +934,7 @@ impl Default for App {
             bt_forget_armed: None,
             bt_connecting: None,
             bt_busy_phase: 0.0,
+            playing_hold_ms: 0,
             eq_bands: data::EQ_PRESETS[3].1, // "A1"
             eq_sel: 0,
             eq_preset: 3,
@@ -992,7 +1013,7 @@ impl Default for App {
             onboarding_seen: false,
             lib: Library::sample(),
             shelf_open: false,
-            pins: [None, None, None],
+            pins: std::array::from_fn(|_| None),
             queue: Vec::new(),
             toast: String::new(),
             toast_frames: 0,
@@ -1285,7 +1306,38 @@ impl App {
             playlist_view: self.playlist_view,
             title,
             sub,
+            album_id: self.lib.albums_flat().get(self.album_view).map(|a| a.album_id).unwrap_or(-1),
+            expanded_album_id: self
+                .album_expanded
+                .and_then(|e| self.lib.albums_flat().get(e).map(|a| a.album_id))
+                .unwrap_or(-1),
+            artist_name: self.artist_name_at(self.artist_view).unwrap_or("").to_string(),
+            playlist_id: self.lib.playlists.get(self.playlist_view).map(|p| p.id).unwrap_or(-1),
         }
+    }
+
+    /// Row of the album with `album_id` in the CURRENT library, if it is still there and the id
+    /// actually identifies it.
+    ///
+    /// An id is only trusted when it is positive (0 is this codebase's "unset") and matches exactly
+    /// ONE row. A duplicated or absent id resolves to `None` and the caller falls back to the
+    /// stored index — picking the first of several matches would be the same class of mistake this
+    /// whole change exists to fix, just with a different wrong answer.
+    fn album_row_by_id(&self, album_id: i64) -> Option<usize> {
+        if album_id <= 0 {
+            return None;
+        }
+        let flat = self.lib.albums_flat();
+        let mut hit = None;
+        for (i, a) in flat.iter().enumerate() {
+            if a.album_id == album_id {
+                if hit.is_some() {
+                    return None; // ambiguous — the id does not identify a row here
+                }
+                hit = Some(i);
+            }
+        }
+        hit
     }
 
     /// Restore a pinned place. Two things this deliberately does NOT do any more: it no longer
@@ -1296,10 +1348,18 @@ impl App {
         self.lib_tab = p.lib_tab;
         self.lib_sort = p.lib_sort.min(library::SORTS.len().saturating_sub(1));
         self.album_sort = p.album_sort.min(library::ALBUM_SORTS.len().saturating_sub(1));
-        self.album_expanded = p.album_expanded;
-        self.album_view = p.album_view;
-        self.artist_view = p.artist_view;
-        self.playlist_view = p.playlist_view;
+        // Resolve by identity where we have one; the stored index is only the fallback for a pin
+        // written before identities existed, or one whose album/artist/playlist has been deleted.
+        self.album_expanded = self.album_row_by_id(p.expanded_album_id).or(p.album_expanded);
+        self.album_view = self.album_row_by_id(p.album_id).unwrap_or(p.album_view);
+        self.artist_view = (!p.artist_name.is_empty())
+            .then(|| self.lib.artists.iter().position(|a| a.name == p.artist_name))
+            .flatten()
+            .unwrap_or(p.artist_view);
+        self.playlist_view = (p.playlist_id > 0)
+            .then(|| self.lib.playlists.iter().position(|pl| pl.id == p.playlist_id))
+            .flatten()
+            .unwrap_or(p.playlist_view);
         self.lib_idx = 0;
         self.fling_v = 0.0;
         self.stack = if p.screen == Screen::NowPlaying {
@@ -1337,13 +1397,9 @@ impl App {
     /// Handle a tap while the Shelf overlay is open (geometry comes from `shelf::hit`).
     fn shelf_tap(&mut self, x: i32, y: i32) -> Vec<Action> {
         use crate::shelf::ShelfHit;
-        let filled = [self.pins[0].is_some(), self.pins[1].is_some(), self.pins[2].is_some()];
+        let filled: [bool; crate::shelf::SLOTS] = std::array::from_fn(|i| self.pins[i].is_some());
         match crate::shelf::hit(x, y, filled) {
             ShelfHit::Close => self.shelf_open = false,
-            ShelfHit::Back => {
-                self.shelf_open = false;
-                self.pop();
-            }
             ShelfHit::PinTo(i) => {
                 if !pinnable(self.current()) {
                     self.notify("Nothing to pin here");
@@ -1399,7 +1455,7 @@ impl App {
         let Some(p) = self.pins.get(i).and_then(|p| p.as_ref()) else { return String::new() };
         let clean = |s: &str| s.replace(['|', '\n'], " ");
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             screen_token(p.screen),
             tab_token(p.lib_tab),
             p.lib_sort,
@@ -1412,6 +1468,10 @@ impl App {
             p.playlist_view,
             clean(&p.title),
             clean(&p.sub),
+            p.album_id,
+            p.expanded_album_id,
+            clean(&p.artist_name),
+            p.playlist_id,
         )
     }
 
@@ -1445,6 +1505,13 @@ impl App {
             playlist_view: num(f[9]).max(0) as usize,
             title: f[10].to_string(),
             sub: f[11].to_string(),
+            // Records written before identities existed stop at field 11. They decode to -1/""
+            // and fall back to their indices — the old behaviour, for the one boot it takes to
+            // re-save them.
+            album_id: f.get(12).map(|v| num(v)).unwrap_or(-1),
+            expanded_album_id: f.get(13).map(|v| num(v)).unwrap_or(-1),
+            artist_name: f.get(14).map(|v| v.to_string()).unwrap_or_default(),
+            playlist_id: f.get(15).map(|v| num(v)).unwrap_or(-1),
         });
     }
 
@@ -2019,7 +2086,7 @@ impl App {
         if Self::shows_np_bar(self.current()) && crate::chrome::hit_np_bar(x, y) {
             // Left zone = play/pause without leaving the list; the rest opens Now Playing.
             if crate::chrome::hit_np_bar_play(x, y) {
-                self.playing = !self.playing;
+                self.set_playing_optimistic(!self.playing);
                 return vec![Action::PlayPause];
             }
             self.go(Screen::NowPlaying);
@@ -2082,7 +2149,7 @@ impl App {
                     return vec![];
                 }
                 if hit(240, 692, 44) {
-                    self.playing = !self.playing;
+                    self.set_playing_optimistic(!self.playing);
                     vec![Action::PlayPause]
                 } else if hit(130, 692, 34) {
                     vec![Action::Prev]
@@ -2412,7 +2479,7 @@ impl App {
             }
             Screen::Bluetooth => {
                 use crate::bluetooth::BtHit;
-                match crate::bluetooth::hit(x, y, self.bt_on, self.bt_codec == crate::bluetooth::LDAC) {
+                match crate::bluetooth::hit(x, y, self.bt_on, self.bt_paired.len()) {
                     BtHit::Toggle => {
                         self.bt_on = !self.bt_on;
                         vec![Action::BtToggle(self.bt_on)]
@@ -2439,7 +2506,39 @@ impl App {
                         self.push(Screen::Pairing);
                         vec![Action::BtPairedRefresh]
                     }
+                    // Connect straight from this screen — the whole point of the redesign. Same
+                    // two-way rule the Devices screen uses: the connected row hangs up.
+                    BtHit::PairedRow(i) => match self.bt_paired.get(i) {
+                        Some(d) if d.connected => vec![Action::BtDisconnect],
+                        Some(_) => {
+                            self.bt_connecting = Some(i);
+                            vec![Action::BtConnectDevice(i)]
+                        }
+                        None => vec![],
+                    },
+                    BtHit::Advanced => {
+                        self.push(Screen::BtCodec);
+                        vec![]
+                    }
                     BtHit::None => vec![],
+                }
+            }
+            Screen::BtCodec => {
+                use crate::bluetooth::BtHit;
+                match crate::bluetooth::hit_codec(x, y, self.bt_on, self.bt_codec == crate::bluetooth::LDAC) {
+                    BtHit::Codec(i) => {
+                        self.bt_codec = i as u8;
+                        vec![Action::BtCodecChanged]
+                    }
+                    BtHit::Quality(i) => {
+                        self.bt_ldac_quality = i as u8;
+                        vec![Action::BtCodecChanged]
+                    }
+                    BtHit::Enhanced => {
+                        self.bt_enhanced = !self.bt_enhanced;
+                        vec![Action::BtEnhancedChanged]
+                    }
+                    _ => vec![],
                 }
             }
             Screen::Pairing => {
@@ -2740,9 +2839,42 @@ impl App {
         use crate::library::AlbumsHit;
         match library::albums_hit(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, x, y) {
             Some(AlbumsHit::AlbumToggle(flat)) => {
+                // KEEP THE TAPPED ROW UNDER THE FINGER.
+                //
+                // Only one album is open at a time, so opening B also CLOSES A — and if A sat above
+                // B, closing it deletes its whole track list from the content above B, dragging B
+                // (and everything below) upward by that height. The album you just pressed then
+                // jumps off the top of the view and you have to scroll back to find it. Reported
+                // 2026-08-19: "the drop down doesn't open in the correct way and I have to scroll
+                // to see the button I just pressed — it needs to push the rest of the library down."
+                //
+                // The row's content-space top is cheap to ask for either side of the change, so
+                // shift the scroll by exactly the amount the row moved. The tapped row then stays
+                // put and the rest of the library moves around it, which is what a disclosure
+                // control is supposed to look like.
+                // Only the case that actually moves the row costs anything: an album ALREADY OPEN
+                // ABOVE this one, whose closing removes content from above it. With nothing open,
+                // or the open one below, the row cannot move and the two layout builds here (which
+                // are a full `albums_build` each, over every album) would be pure waste on the
+                // input thread.
+                let rank = self.album_rank_of(flat);
+                let shifts = match (self.album_expanded, rank) {
+                    (Some(open), Some(r)) if open != flat => {
+                        self.album_rank_of(open).is_some_and(|o| o < r)
+                    }
+                    _ => false,
+                };
+                let before = rank.filter(|_| shifts).map(|r| {
+                    library::row_top_px(Tab::Albums, &self.lib, r, self.album_sort, self.album_expanded)
+                });
                 self.album_expanded = if self.album_expanded == Some(flat) { None } else { Some(flat) };
-                if let Some(rank) = self.album_rank_of(flat) {
+                if let Some(rank) = rank {
                     self.lib_idx = rank;
+                }
+                if let (Some(b), Some(r)) = (before, rank) {
+                    let after = library::row_top_px(
+                        Tab::Albums, &self.lib, r, self.album_sort, self.album_expanded);
+                    self.lib_scroll_px += after - b;
                 }
                 self.clamp_lib_scroll();
                 self.fling_v = 0.0;
@@ -3897,7 +4029,7 @@ impl App {
             return match b {
                 Button::Power => vec![Action::Sleep],
                 Button::Play => {
-                    self.playing = !self.playing;
+                    self.set_playing_optimistic(!self.playing);
                     vec![Action::PlayPause]
                 }
                 Button::Right | Button::Next => vec![Action::Next],
@@ -3936,7 +4068,7 @@ impl App {
                 }
                 Button::Power => vec![Action::Sleep],
                 Button::Play => {
-                    self.playing = !self.playing;
+                    self.set_playing_optimistic(!self.playing);
                     vec![Action::PlayPause]
                 }
                 Button::Next => vec![Action::Next],
@@ -4017,7 +4149,7 @@ impl App {
             }
             Button::Play => {
                 // Play/pause is global on a music player.
-                self.playing = !self.playing;
+                self.set_playing_optimistic(!self.playing);
                 return vec![Action::PlayPause];
             }
             Button::Next => return vec![Action::Next],
@@ -4401,6 +4533,7 @@ impl App {
     /// Draw the current screen. Live now-playing data comes from the shell (`np`); list/
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
+        self.reconcile_playing(np.playing);
         let theme = Theme::for_mode(self.night, self.accent);
         match self.current() {
             Screen::Lock => {
@@ -4690,8 +4823,25 @@ impl App {
                     enhanced_supported: self.bt_enhanced_supported,
                     connecting: self.bt_connecting.is_some(),
                     busy_phase: self.bt_busy_phase,
+                    paired: &self.bt_paired,
                 };
                 crate::bluetooth::render(c, &theme, fonts, &bt)
+            }
+            Screen::BtCodec => {
+                let bt = Bt {
+                    on: self.bt_on,
+                    connected: self.bt_connected.as_deref(),
+                    link_known: self.bt_link_known,
+                    codec_sel: self.bt_codec,
+                    ldac_quality: self.bt_ldac_quality,
+                    link_codec: self.bt_link_codec_raw(),
+                    enhanced: self.bt_enhanced,
+                    enhanced_supported: self.bt_enhanced_supported,
+                    connecting: self.bt_connecting.is_some(),
+                    busy_phase: self.bt_busy_phase,
+                    paired: &self.bt_paired,
+                };
+                crate::bluetooth::render_codec(c, &theme, fonts, &bt)
             }
             Screen::Pairing => {
                 crate::pairing::render(
@@ -4807,11 +4957,9 @@ impl App {
         // Shelf bottom-sheet: dims the screen behind + draws the sheet over the lower half.
         if self.shelf_open {
             let (title, sub) = self.place_label();
-            let pins = [
-                self.pins[0].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub }),
-                self.pins[1].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub }),
-                self.pins[2].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub }),
-            ];
+            let pins: [Option<crate::shelf::Pin>; crate::shelf::SLOTS] = std::array::from_fn(|i| {
+                self.pins[i].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub })
+            });
             crate::shelf::render(c, &theme, fonts, &title, &sub, &pins);
         }
         // TRANSIENTS LAST — above the Shelf sheet too. Drawn before it, the sheet (which fills
@@ -4836,6 +4984,34 @@ impl App {
     /// Advance per-frame timers (overlay countdowns). The shell calls this once per pump tick
     /// before `render`. Returns true while something time-driven still needs redrawing.
     /// One animation step at the nominal 60 fps. Prefer [`tick_dt`] — this is the host/sim path.
+    /// How long the UI trusts its own play/pause guess before deferring to the player.
+    ///
+    /// Long enough to cover the round trip (the shell pauses/resumes and the next poll reports it),
+    /// short enough that a guess which turned out wrong corrects itself while the user is still
+    /// looking at the bar.
+    const PLAYING_HOLD_MS: u32 = 900;
+
+    /// Flip the transport state OPTIMISTICALLY, so the button responds under the finger instead of
+    /// waiting out a poll, and start a hold during which the player's own answer is ignored.
+    ///
+    /// `self.playing` is what the mini-player bar draws, and it used to be a purely local flag that
+    /// nothing ever reconciled: five places flipped it, and the real transport state was never read
+    /// back. So anything that changed playback WITHOUT a tap — a track ending, a play that failed,
+    /// a pause for USB-MSC — left the bar showing the opposite of the truth until the user happened
+    /// to tap it twice. Reported 2026-08-19 as the library's play/pause "not accurate".
+    fn set_playing_optimistic(&mut self, v: bool) {
+        self.playing = v;
+        self.playing_hold_ms = Self::PLAYING_HOLD_MS;
+    }
+
+    /// Adopt the player's transport state once the optimistic hold has run out. Called from
+    /// `render`, which is the only place that sees the shell's `NowPlaying`.
+    fn reconcile_playing(&mut self, np_playing: bool) {
+        if self.playing_hold_ms == 0 {
+            self.playing = np_playing;
+        }
+    }
+
     pub fn tick(&mut self) -> bool {
         self.tick_dt(FRAME_MS)
     }
@@ -4857,6 +5033,8 @@ impl App {
         // Clamp: a long stall (deferred init, a USB-MSC session) must not teleport a fling or
         // swallow a whole toast in one step.
         let dt = (dt_ms.max(1)).min(200) as f32;
+        // Run the optimistic play/pause hold down in REAL time, like everything else here.
+        self.playing_hold_ms = self.playing_hold_ms.saturating_sub(dt_ms);
         // Bluetooth busy spinner. Only runs while a connect attempt or a scan is genuinely in
         // flight, so an idle Devices screen costs nothing and repaints nothing. Wrapped at 8s (one
         // whole number of 8-dot revolutions) to keep the f32 exact forever.
@@ -7451,7 +7629,8 @@ mod tests {
         assert!(a.shelf_is_open());
         assert_eq!(a.current(), Screen::NowPlaying);
         // Pin "this place" (the Pin button), then close and navigate away.
-        a.tap(420, 582); // PIN_BTN region
+        let (pbx, pby) = crate::shelf::pin_button_center();
+        a.tap(pbx, pby); // header Pin
         assert!(a.pins[0].is_some());
         a.tap(240, 200); // dim backdrop → Close
         assert!(!a.shelf_is_open());
@@ -7460,7 +7639,7 @@ mod tests {
         a.tap(200, 91 + 1 * 63 + 8); // Library row
         assert_eq!(a.current(), Screen::Library);
         a.open_shelf();
-        a.tap(380, 640 + 12); // slot 0 "GO ›" hit
+        a.tap(380, crate::shelf::slot_center_y(0)); // slot 0 "GO ›" hit
         assert!(!a.shelf_is_open());
         assert_eq!(a.current(), Screen::NowPlaying);
     }
@@ -7483,14 +7662,18 @@ mod tests {
     /// `chrome::status_hit`, so this pins the agreement rather than a pair of literals.
     #[test]
     fn status_strip_targets_match_the_drawn_glyphs() {
-        use crate::chrome::{status_hit, StatusTap, STATUS_H};
+        use crate::chrome::{status_hit, StatusTap, STATUS_DEAD_H, STATUS_H};
         // The bookmark is drawn at x=388, centre of the strip.
         assert_eq!(status_hit(388, STATUS_H / 2), Some(StatusTap::Shelf));
         // The ☰ is drawn at x=344 — outside the Shelf zone, so tapping it means Menu.
         assert_eq!(status_hit(344, STATUS_H / 2), Some(StatusTap::Menu));
-        // The whole strip is live to its full height: the bottom row used to be dead space
-        // (the strip was 34px) and is now a Menu target.
-        assert_eq!(status_hit(240, STATUS_H - 1), Some(StatusTap::Menu));
+        // Live down to the dead band, and NOT through it. The strip is hit-tested before any
+        // screen, so its bottom edge used to steal taps aimed at the back chevron and the
+        // Bluetooth switch directly beneath it — see STATUS_DEAD_H.
+        assert_eq!(status_hit(240, STATUS_H - STATUS_DEAD_H - 1), Some(StatusTap::Menu));
+        for y in STATUS_H - STATUS_DEAD_H..STATUS_H {
+            assert_eq!(status_hit(240, y), None, "the strip still claims y={y}");
+        }
         assert_eq!(status_hit(240, STATUS_H), None); // below the strip: not ours
         // Every x along the strip resolves to something — no dead columns.
         for x in 0..crate::W as i32 {
@@ -7918,18 +8101,69 @@ mod tests {
         a
     }
 
+    /// The codec controls now live one level down, behind "Audio quality" — the Bluetooth screen
+    /// itself is the paired-device list. Reaching them through the real tap keeps this honest: if
+    /// the row moves, these tests fail rather than testing a page nothing can open.
+    fn enter_bt_codec() -> App {
+        let mut a = enter_bluetooth();
+        let (_, ay, _, ah) = crate::bluetooth::advanced_row();
+        assert!(a.tap(240, ay + ah / 2).is_empty(), "opening a page emits no action");
+        assert_eq!(a.current(), Screen::BtCodec, "Audio quality did not open the codec page");
+        a
+    }
+
+    /// The ON/OFF switch used to share an edge with the status strip, and `chrome::status_hit`
+    /// claims every pixel above that line — with "anywhere else → Menu" as its fallback. So a tap
+    /// slightly high did not miss the switch, it left the screen entirely. Reported 2026-08-19.
+    /// The same edge, on the control that matters most: the back chevron, which every screen with
+    /// a header draws. A tap a pixel high used to jump to Now Playing (the strip sends x < 80 to
+    /// `StatusTap::NowPlaying`) instead of going back.
+    #[test]
+    fn back_chevron_is_not_stolen_by_the_status_strip() {
+        let mut a = open_from_menu(Screen::Bluetooth);
+        assert_eq!(a.current(), Screen::Bluetooth);
+
+        // In the dead band: nothing happens, and crucially we do not leave the screen.
+        assert!(a.tap(30, crate::chrome::STATUS_H - 2).is_empty());
+        assert_eq!(a.current(), Screen::Bluetooth, "a high back tap navigated away");
+
+        // On the chevron itself: back, as asked.
+        a.tap(30, crate::chrome::STATUS_H + 4);
+        assert_ne!(a.current(), Screen::Bluetooth, "the back chevron did not pop");
+    }
+
+    #[test]
+    fn bluetooth_toggle_has_a_dead_band_under_the_status_strip() {
+        let mut a = enter_bluetooth();
+        let was = a.bt_on;
+
+        // A near miss in the dead band is INERT — it must not toggle, and above all it must not
+        // navigate. The old geometry opened the Menu from here.
+        let acts = a.tap(430, crate::chrome::STATUS_H - 2);
+        assert!(acts.is_empty(), "a near miss emitted {acts:?}");
+        assert_eq!(a.bt_on, was, "a near miss flipped the radio");
+        assert_eq!(a.current(), Screen::Bluetooth, "a near miss navigated away");
+
+        // And the target itself is genuinely tall — the old one stopped at HEADER_BOTTOM (91).
+        for y in [crate::chrome::STATUS_H, 70, 100, 120] {
+            let before = a.bt_on;
+            assert_eq!(a.tap(430, y), vec![Action::BtToggle(!before)], "y={y} missed the switch");
+            assert_eq!(a.bt_on, !before);
+        }
+    }
+
     #[test]
     fn bluetooth_codec_and_quality_select() {
-        let mut a = enter_bluetooth();
+        let mut a = enter_bt_codec();
         // default codec = LDAC (0): the quality chips are visible. Pick 660 (chip index 2).
         assert_eq!(a.bt_codec, 0);
-        assert_eq!(a.tap(260, 440), vec![Action::BtCodecChanged]);
+        assert_eq!(a.tap(260, crate::bluetooth::quality_row_y()), vec![Action::BtCodecChanged]);
         assert_eq!(a.bt_ldac_quality, 2);
         // select SBC (codec row 3) → device-wide codec changes; LDAC chips hide
-        assert_eq!(a.tap(200, 360), vec![Action::BtCodecChanged]);
+        assert_eq!(a.tap(200, crate::bluetooth::codec_row_y(3)), vec![Action::BtCodecChanged]);
         assert_eq!(a.bt_codec, 3);
         // with SBC active there are no LDAC quality chips, so that band is now inert
-        assert!(a.tap(260, 440).is_empty());
+        assert!(a.tap(260, crate::bluetooth::quality_row_y()).is_empty());
     }
 
     /// Sony's "Use Enhanced Mode" (firmware message 230077) is the AVRCP absolute-volume switch.
@@ -7970,17 +8204,20 @@ mod tests {
 
     #[test]
     fn bluetooth_enhanced_mode_toggles_and_is_inert_while_off() {
-        let mut a = enter_bluetooth();
+        let mut a = enter_bt_codec();
+        let ey = crate::bluetooth::enhanced_row_y();
         assert!(a.bt_enhanced(), "enhanced mode defaults on");
-        // 576 is inside the row (556..620) and clear of the LDAC chips above and Pair below.
-        assert_eq!(a.tap(240, 576), vec![Action::BtEnhancedChanged]);
+        assert_eq!(a.tap(240, ey), vec![Action::BtEnhancedChanged]);
         assert!(!a.bt_enhanced());
-        assert_eq!(a.tap(240, 576), vec![Action::BtEnhancedChanged]);
+        assert_eq!(a.tap(240, ey), vec![Action::BtEnhancedChanged]);
         assert!(a.bt_enhanced());
-        // Radio off ⇒ the whole panel below the header is inert, this row included.
+        // Radio off ⇒ the whole panel is inert, this row included. The switch is on the Bluetooth
+        // screen, so go back for it and return.
+        a.press(Button::Back);
         a.tap(430, 64); // header toggle
         assert!(!a.bt_on);
-        assert!(a.tap(240, 576).is_empty());
+        a.push(Screen::BtCodec);
+        assert!(a.tap(240, ey).is_empty());
         assert!(a.bt_enhanced(), "an inert tap must not flip the preference");
     }
 
@@ -8922,11 +9159,12 @@ mod tests {
         let mut a = unlocked();
         a.go(Screen::Library);
         a.open_shelf();
-        a.tap(420, 582); // header Pin → slot 0
+        let (pbx, pby) = crate::shelf::pin_button_center();
+        a.tap(pbx, pby); // header Pin → slot 0
         a.tap(240, 200); // backdrop closes
         a.go(Screen::NowPlaying);
         a.open_shelf();
-        a.tap(200, 640 + 12); // slot 0 row body → GO
+        a.tap(200, crate::shelf::slot_center_y(0)); // slot 0 row body → GO
         assert_eq!(a.current(), Screen::Library);
         assert!(!a.shelf_is_open());
         assert_eq!(a.press(Button::Back), vec![]);
@@ -8942,12 +9180,12 @@ mod tests {
         let mut a = unlocked();
         a.go(Screen::Library);
         a.open_shelf();
-        a.tap(200, 640 + 2 * 46 + 12); // body of empty slot 2
+        a.tap(200, crate::shelf::slot_center_y(2)); // body of empty slot 2
         assert!(a.pins[2].is_some());
         assert!(a.pins[0].is_none(), "it must pin where the finger was, not slot 0");
         assert!(a.toast.starts_with("Pinned to slot 3"), "{}", a.toast);
         assert!(a.shelf_is_open(), "pinning must not dismiss the sheet");
-        a.tap(440, 640 + 2 * 46 + 12); // the × column forgets it
+        a.tap(440, crate::shelf::slot_center_y(2)); // the × column forgets it
         assert!(a.pins[2].is_none());
         assert!(a.toast.starts_with("Slot 3 cleared"), "{}", a.toast);
     }
@@ -8967,7 +9205,8 @@ mod tests {
         let scroll = a.lib_scroll_px;
         assert!(scroll > 0);
         a.open_shelf();
-        a.tap(420, 582);
+        let (pbx, pby) = crate::shelf::pin_button_center();
+        a.tap(pbx, pby);
         a.tap(240, 200);
         // Wander off: different tab, different sort, scrolled back to the top.
         a.lib_tab = Tab::Albums;
@@ -8975,11 +9214,194 @@ mod tests {
         a.lib_scroll_px = 0;
         a.go(Screen::NowPlaying);
         a.open_shelf();
-        a.tap(200, 640 + 12); // GO
+        a.tap(200, crate::shelf::slot_center_y(0)); // GO
         assert_eq!(a.current(), Screen::Library);
         assert_eq!(a.lib_tab, Tab::Songs);
         assert_eq!(a.lib_sort, 2);
         assert_eq!(a.lib_scroll_px, scroll, "the list position is part of 'the place'");
+    }
+
+    /// The reported failure, 2026-08-19: a pin saved on "anymore (Deluxe)" opened "burn" instead.
+    /// A pin stored the album's ROW NUMBER, and the library is rebuilt from the DB at every boot —
+    /// so anything that shifts the list (a track added, a rescan) silently re-aims every pin.
+    /// Opening an album must not move the row you pressed. Only one is open at a time, so opening
+    /// B closes A — and when A is above B, closing it used to drag B upward off the screen.
+    /// The mini-player's play/pause used to be a local guess that nothing ever corrected: five
+    /// places flipped it, and the player's real state was never read back. A track ending, or a
+    /// pause the app did not initiate, left the bar showing the opposite of the truth.
+    #[test]
+    fn library_play_pause_follows_the_player_after_its_optimistic_hold() {
+        let mut a = unlocked();
+        a.go_for_preview(Screen::Library);
+
+        // The player says PLAYING and the UI agrees.
+        let mut np = NowPlaying {
+            title: "Atlas Hands",
+            artist: "Benjamin Francis Leftwich",
+            codec: "FLAC",
+            badge: "FLAC 24/96",
+            clock: "14:32",
+            battery: 78,
+            elapsed: "1:47",
+            remaining: "-2:45",
+            progress: 0.39,
+            art: "kind",
+            art_full: None,
+            art_thumb: None,
+            liked: false,
+            playing: true,
+            shuffle: false,
+            repeat: 0,
+            viz_seed: 2.0,
+            viz_kind: 0,
+            viz_size: 1,
+            page: 0,
+            viz_levels: None,
+            scrubbing: false,
+        };
+        let mut c = Canvas::new();
+        let fonts = FontSet::load();
+        a.render(&mut c, &fonts, &np);
+        assert!(a.playing);
+
+        // Tap the bar's play/pause: the button answers IMMEDIATELY, before any round trip, and
+        // holds that answer even though the player still reports the old state.
+        let (_, by, _, bh) = crate::chrome::np_bar_rect();
+        assert_eq!(a.tap(30, by + bh / 2), vec![Action::PlayPause]);
+        assert!(!a.playing, "the button did not respond under the finger");
+        a.render(&mut c, &fonts, &np);
+        assert!(!a.playing, "the guess was overwritten before the player could act on it");
+
+        // Once the hold runs out, the player is the authority again.
+        for _ in 0..20 {
+            a.tick_dt(100);
+        }
+        a.render(&mut c, &fonts, &np);
+        assert!(a.playing, "the bar never adopted the player's actual state");
+
+        // And a change the UI never initiated — a track ending — is picked up on its own.
+        np.playing = false;
+        a.render(&mut c, &fonts, &np);
+        assert!(!a.playing, "playback stopped and the bar still said playing");
+    }
+
+    #[test]
+    fn expanding_an_album_leaves_the_pressed_row_where_it_is() {
+        let mut a = unlocked();
+        a.go_for_preview(Screen::Library);
+        a.lib_tab = Tab::Albums;
+        let order = crate::library::album_display_order(&a.lib, a.album_sort);
+        assert!(order.len() >= 3, "need a few albums");
+        let (first, later) = (order[0], order[2]);
+
+        // Open the FIRST album, so there is something above to collapse.
+        a.album_expanded = Some(first);
+        a.clamp_lib_scroll();
+
+        // Where the third album sits on screen right now.
+        let rank = a.album_rank_of(later).unwrap();
+        // Screen y of the row, matching `albums_hit`'s own mapping (content y - scroll + list top).
+        let screen_y = |app: &App| {
+            crate::library::row_top_px(Tab::Albums, &app.lib, rank, app.album_sort, app.album_expanded)
+                - app.lib_scroll_px
+                + crate::library::list_top(Tab::Albums)
+        };
+        // Scroll well down, so closing the album above has scroll to give back. At the very top
+        // of the list it cannot: there is no content left above the row to remove, and then the row
+        // must come up with it — a boundary, not a bug.
+        a.lib_scroll_px = a.lib_max_scroll();
+
+        let before = screen_y(&a);
+        assert!(
+            (crate::library::list_top(Tab::Albums)..crate::library::list_bottom() - 40).contains(&before),
+            "the third album is not on screen to begin with (y={before})"
+        );
+
+        // Tap its BODY (x clear of the art, which drills in instead of toggling).
+        let _ = a.tap_albums(240, before + 8);
+        assert_eq!(a.album_expanded, Some(later), "the tapped album did not open");
+        let after = screen_y(&a);
+        assert_eq!(
+            after, before,
+            "the pressed row moved on screen ({before} -> {after}); the rest of the library \
+             should move around it instead"
+        );
+        assert!(
+            (crate::library::list_top(Tab::Albums)..crate::library::list_bottom()).contains(&after),
+            "the pressed row is not even on screen ({after})"
+        );
+    }
+
+    #[test]
+    fn a_pin_follows_the_album_not_its_row_number() {
+        let mut a = unlocked();
+        // The fixture leaves album_id at 0, which is deliberately not trusted. Give them real ids.
+        let mut lib = a.lib.clone();
+        assert!(lib.albums_flat().len() >= 3, "need a few albums to shift");
+        let mut n = 0i64;
+        for g in lib.album_groups.iter_mut() {
+            for al in g.albums.iter_mut() {
+                al.album_id = 100 + n;
+                n += 1;
+            }
+        }
+        a.set_library(lib.clone());
+        a.lib_tab = Tab::Albums;
+
+        // Pin the album sitting at row 2.
+        let target = a.lib.albums_flat()[2].album_id;
+        let target_name = a.lib.albums_flat()[2].name.clone();
+        a.album_view = 2;
+        a.album_expanded = Some(2);
+        let pin = a.capture_pin();
+
+        // Now the library gains an album ahead of it, exactly as a rescan would. Every row after
+        // the insertion shifts by one, and the OLD code would have restored the wrong album.
+        let mut grown = lib.clone();
+        let mut newcomer = grown.album_groups[0].albums[0].clone();
+        newcomer.album_id = 999;
+        newcomer.name = "Brand New".into();
+        grown.album_groups[0].albums.insert(0, newcomer);
+        a.set_library(grown);
+
+        a.restore_pin(&pin);
+        assert_eq!(
+            a.lib.albums_flat()[a.album_view].album_id, target,
+            "the pin landed on '{}' instead of '{}'",
+            a.lib.albums_flat()[a.album_view].name, target_name
+        );
+        assert_eq!(a.album_expanded.map(|e| a.lib.albums_flat()[e].album_id), Some(target));
+        assert_ne!(a.album_view, 2, "the row number should have moved; the album should not");
+    }
+
+    /// The identities have to survive the config file too, and an OLD record (12 fields, no
+    /// identities) must still decode rather than clearing the slot.
+    #[test]
+    fn pin_identities_round_trip_and_old_records_still_load() {
+        let mut a = unlocked();
+        let mut lib = a.lib.clone();
+        let mut n = 0i64;
+        for g in lib.album_groups.iter_mut() {
+            for al in g.albums.iter_mut() {
+                al.album_id = 100 + n;
+                n += 1;
+            }
+        }
+        a.set_library(lib);
+        a.lib_tab = Tab::Albums;
+        a.album_view = 1;
+        a.pins[0] = Some(a.capture_pin());
+        let enc = a.shelf_pin_encode(0);
+        assert!(enc.contains("|101|"), "the album id is not in the record: {enc}");
+
+        let mut b = unlocked();
+        b.shelf_pin_decode(0, &enc);
+        assert!(b.pins[0].is_some());
+
+        // A pre-identity record: the first 12 fields only.
+        let old: String = enc.split('|').take(12).collect::<Vec<_>>().join("|");
+        b.shelf_pin_decode(1, &old);
+        assert!(b.pins[1].is_some(), "an older pin record was thrown away");
     }
 
     #[test]
@@ -8991,7 +9413,8 @@ mod tests {
         a.lib_sort = 1;
         a.lib_scroll_px = 96;
         a.open_shelf();
-        a.tap(420, 582);
+        let (pbx, pby) = crate::shelf::pin_button_center();
+        a.tap(pbx, pby);
         let encoded = a.shelf_pin_encode(0);
         assert!(!encoded.is_empty());
         let mut b = unlocked();
@@ -9024,7 +9447,8 @@ mod tests {
         let mut a = unlocked();
         a.go(Screen::UsbStorage);
         a.open_shelf();
-        a.tap(420, 582);
+        let (pbx, pby) = crate::shelf::pin_button_center();
+        a.tap(pbx, pby);
         assert!(a.pins[0].is_none());
         assert_eq!(a.toast, "Nothing to pin here");
     }

@@ -3412,6 +3412,11 @@ void apply_bt_forget_device() {
 // come back — see the back-off there. Starts `true` so a first poll always happens promptly.
 bool g_bt_radio_seen_up = true;
 
+// How often to re-ask WHICH device is on the other end, once one is known. Every read is a
+// synchronous IPC round trip on the render thread, so this is a throttle rather than a per-frame
+// poll; 2 s is well inside the time a user takes to notice headphones dropping.
+#define BT_LINK_POLL_MS 2000
+
 void refresh_bt_route() {
     int st = bt_status();
     g_bt_radio_seen_up = bt_radio_up(st);
@@ -3422,7 +3427,37 @@ void refresh_bt_route() {
         // (`AVSRC status change to (3)`), and the address only becomes readable a couple of stages
         // later. Without this retry a single early empty read left the Bluetooth screen saying "No
         // device connected" for the whole session while audio played into the headphones.
-        if (on && !g_bt_have_name) refresh_bt_connected();
+        // RE-READ THE PEER, don't just fill it in once.
+        //
+        // This used to ask only when the name was MISSING, which made the answer permanent for the
+        // rest of the session: the first successful read cached a name and nothing ever cleared it.
+        // Two failures followed, and the second is the serious one:
+        //
+        //   * the Bluetooth screen kept listing headphones that had been switched off, and
+        //   * `bt_reconnect_tick` reads that same flag as "we are connected", so it disarmed the
+        //     service retry AND the connect-wait and never re-armed them — which is why the radio
+        //     reconnected on demand but never on its own.
+        //
+        // Measured 2026-08-19: with the radio armed, a headphone's own power-on lands a link in
+        // 5.81 s (`--btlink wait 90 keep`). With the app believing it is still linked, never.
+        //
+        // The original reason for asking again still holds — the first read happens the instant
+        // GetBtStatus hits 3, which is the START of connection setup, before the address is
+        // readable — so keep asking immediately while there is no name, and poll on a throttle once
+        // there is. GetBtStatus alone cannot answer this: it reads 3 with nothing connected at all
+        // (`--btlink drop` leaves bt=3 avsrc=1 and an empty name), so the ADDRESS is the link.
+        if (on) {
+            static long bt_link_last = 0;
+            const long now = now_ms();
+            if (!g_bt_have_name || now - bt_link_last >= BT_LINK_POLL_MS) {
+                bt_link_last = now;
+                refresh_bt_connected();
+            }
+        } else if (g_bt_have_name) {
+            // Radio down: nothing can be linked to it, and leaving the name behind strands the
+            // reconnect logic exactly as above.
+            refresh_bt_connected();
+        }
         return;                                   // otherwise: don't log every poll
     }
     cinder_set_bt_route(on);

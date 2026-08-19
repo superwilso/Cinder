@@ -78,19 +78,38 @@ pub struct Bt<'a> {
     /// sink doesn't support the requested codec and A2DP falls back — which the radio does
     /// silently, and which is exactly the thing this screen existed to not tell you.
     pub link_codec: Option<u8>,
+    /// The radio's paired devices, so this screen can CONNECT to one directly.
+    ///
+    /// They used to live only on the separate Devices screen, behind "Pair new device" — a button
+    /// whose label says you are about to pair something new, which is the wrong door for "put my
+    /// headphones back on". Reconnecting to a known device is the commonest thing anyone does here,
+    /// so it is now the body of the screen.
+    pub paired: &'a [crate::pairing::PairedDevice],
 }
 
 // ---- layout (shared by render + hit) ----
 const CARD_Y: i32 = 92;
 const CARD_H: i32 = 86;
 const DISC: (i32, i32, i32, i32) = (348, 136, 104, 34); // x,y,w,h
-const CODEC_Y0: i32 = 212;
-const CODEC_RH: i32 = 44;
+
+// ---- main screen: the paired list is the content ----
+const PAIRED_Y0: i32 = 212;
+const PAIRED_RH: i32 = 62;
+/// Rows shown before the list is cut off. Five fills the space between the card and the footer
+/// without pushing either off; a longer pairing history is managed on the Devices screen, which is
+/// where forgetting lives anyway.
+pub const PAIRED_SHOWN: usize = 5;
+const ADV_Y: i32 = 548; // "Audio quality ›" — the codec page
+const ADV_H: i32 = 60;
+const PAIR_Y: i32 = 640;
+
+// ---- codec page (its own screen now) ----
+const CODEC_Y0: i32 = 150;
+const CODEC_RH: i32 = 56;
 const QUAL_Y: i32 = 420;
 const QUAL_H: i32 = 40;
 const ENH_Y: i32 = 556; // "Use Enhanced Mode" row (absolute volume)
 const ENH_H: i32 = 64;
-const PAIR_Y: i32 = 700;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum BtHit {
@@ -102,17 +121,53 @@ pub enum BtHit {
     /// "Use Enhanced Mode" toggled — the absolute-volume switch.
     Enhanced,
     Pair,
+    /// A paired device row — connect to it, or hang up if it is the connected one. Which of the
+    /// two is the caller's call, from its own `connected` flag, so geometry stays geometry.
+    PairedRow(usize),
+    /// Open the codec / volume-control page.
+    Advanced,
 }
 
-/// Map a tap to a Bluetooth action. `codec_is_ldac` gates the quality chips (only shown for LDAC).
-pub fn hit(x: i32, y: i32, on: bool, codec_is_ldac: bool) -> BtHit {
-    // Header ON/OFF toggle — works regardless of state, and deliberately much larger than the
-    // 34x18 switch graphic. It used to be a 72x34 strip (x>408, y 48..82) hugging the switch, and
-    // it was reported as hard to hit. This is now the mirror image of the back chevron's target on
-    // the other side of the header (which claims x<80 over the same band): the full header height
-    // from under the status strip to the rule, and wide enough to include the "ON"/"OFF" caption
-    // that reads as part of the control. ~102x47, and the two never overlap.
-    if (crate::chrome::STATUS_H..crate::chrome::HEADER_BOTTOM).contains(&y) && x >= 356 {
+/// Geometry accessors, so tests and any future caller ask the layout where a control is rather
+/// than repeating a pixel that silently rots when the screen moves.
+pub fn advanced_row() -> (i32, i32, i32, i32) {
+    (0, ADV_Y, crate::canvas::W as i32, ADV_H)
+}
+/// Vertical centre of codec row `i` on the codec page.
+pub fn codec_row_y(i: usize) -> i32 {
+    CODEC_Y0 + i as i32 * CODEC_RH + CODEC_RH / 2
+}
+/// Vertical centre of the LDAC quality chip strip.
+pub fn quality_row_y() -> i32 {
+    QUAL_Y + QUAL_H / 2
+}
+/// Vertical centre of the Enhanced Mode row.
+pub fn enhanced_row_y() -> i32 {
+    ENH_Y + ENH_H / 2
+}
+
+/// Map a tap on the BLUETOOTH screen. The codec controls moved to their own page, so this now
+/// answers only: the radio switch, the connected card, a paired device, and the two footer rows.
+pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
+    // Header ON/OFF toggle. Three sizes so far: a 72x34 strip hugging the switch graphic (too
+    // small), then the full header band from `STATUS_H` to `HEADER_BOTTOM` at x>=356, and now this.
+    //
+    // The second version was still wrong, and in a way that made a MISS worse than a miss. It began
+    // at exactly `STATUS_H`, sharing an edge with the status strip — and `chrome::status_hit`
+    // claims every y below that line with "anywhere else along the strip → the Menu". So a tap two
+    // pixels high did not fail to toggle Bluetooth, it navigated away to the Menu. Reported
+    // 2026-08-19 as hitting the top bar by accident.
+    //
+    // So: a deliberate DEAD BAND under the status strip, and the rest of the growth downward into
+    // the empty space beside the connected card, which has no other target above `DISC`. A tap in
+    // the gap now does nothing at all, which is the right outcome for a near miss — losing your
+    // place is worse than having to tap again.
+    // The dead band now lives in `chrome::STATUS_DEAD_H`, where every header control benefits from
+    // it, so this starts at STATUS_H again and simply grows DOWNWARD into the empty space beside
+    // the connected card — which has no other target above `DISC`.
+    const TOGGLE_BOTTOM: i32 = 128;
+    const TOGGLE_LEFT: i32 = 336;
+    if (crate::chrome::STATUS_H..TOGGLE_BOTTOM).contains(&y) && x >= TOGGLE_LEFT {
         return BtHit::Toggle;
     }
     if !on {
@@ -121,6 +176,24 @@ pub fn hit(x: i32, y: i32, on: bool, codec_is_ldac: bool) -> BtHit {
     let (dx, dy, dw, dh) = DISC;
     if (dy..dy + dh).contains(&y) && (dx..dx + dw).contains(&x) {
         return BtHit::Disconnect;
+    }
+    let rows = paired.min(PAIRED_SHOWN) as i32;
+    if (PAIRED_Y0..PAIRED_Y0 + rows * PAIRED_RH).contains(&y) {
+        return BtHit::PairedRow(((y - PAIRED_Y0) / PAIRED_RH) as usize);
+    }
+    if (ADV_Y..ADV_Y + ADV_H).contains(&y) {
+        return BtHit::Advanced;
+    }
+    if (PAIR_Y..PAIR_Y + 52).contains(&y) {
+        return BtHit::Pair;
+    }
+    BtHit::None
+}
+
+/// Map a tap on the CODEC page. `codec_is_ldac` gates the quality chips (only shown for LDAC).
+pub fn hit_codec(x: i32, y: i32, on: bool, codec_is_ldac: bool) -> BtHit {
+    if !on {
+        return BtHit::None;
     }
     if (CODEC_Y0..CODEC_Y0 + 4 * CODEC_RH).contains(&y) {
         return BtHit::Codec(((y - CODEC_Y0) / CODEC_RH) as usize);
@@ -133,9 +206,6 @@ pub fn hit(x: i32, y: i32, on: bool, codec_is_ldac: bool) -> BtHit {
     // no other tappable thing on that band.
     if (ENH_Y..ENH_Y + ENH_H).contains(&y) {
         return BtHit::Enhanced;
-    }
-    if (PAIR_Y..PAIR_Y + 52).contains(&y) {
-        return BtHit::Pair;
     }
     BtHit::None
 }
@@ -164,8 +234,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     let _y0 = crate::chrome::header(c, t, f, "Bluetooth", None);
     // header right: ON/OFF + toggle
     let onoff = if bt.on { "ON" } else { "OFF" };
-    right(c, f, 416.0, 65.0, onoff, &sty(Family::Mono, Weight::Regular, 12.0, if bt.on { t.acc } else { t.faint }, 0.12));
-    crate::widgets::toggle(c, t, 424, 56, 34, 18, 12, bt.on);
+    // Nudged down from y=56/65 so the graphic sits further from the status strip the user kept
+    // catching, and nearer the middle of its (much larger) touch target. Still inside the header
+    // band, so it stays level enough with the title to read as part of the header.
+    right(c, f, 416.0, 71.0, onoff, &sty(Family::Mono, Weight::Regular, 12.0, if bt.on { t.acc } else { t.faint }, 0.12));
+    crate::widgets::toggle(c, t, 424, 62, 34, 18, 12, bt.on);
 
     // connected card (or empty state)
     if bt.on && bt.connected.is_some() {
@@ -223,10 +296,98 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         center(c, f, 240.0, (CARD_Y + CARD_H / 2 + 4) as f32, msg, &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
     }
 
+    // PAIRED DEVICES — the body of the screen, and tappable.
+    //
+    // Reconnecting to headphones you already own is the commonest reason anyone opens this screen,
+    // and until now it was the one thing you could not do from it: the list lived behind a button
+    // labelled "Pair new device". The codec radio list that used to occupy this space is a
+    // set-once preference and has moved to its own page.
+    let cap = if bt.on { t.acc } else { t.faint };
+    text::draw(c, f, 22.0, 198.0, "PAIRED DEVICES", &sty(Family::Mono, Weight::Regular, 11.0, cap, 0.18));
+    if !bt.on {
+        // Nothing here is actionable with the radio off, and greyed rows invite taps that do
+        // nothing. Say why the list is empty instead of showing a dead one.
+        center(c, f, 240.0, (PAIRED_Y0 + 40) as f32, "Turn Bluetooth on to see your devices",
+               &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+    } else if bt.paired.is_empty() {
+        center(c, f, 240.0, (PAIRED_Y0 + 40) as f32, "No paired devices yet",
+               &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
+    } else {
+        for (i, d) in bt.paired.iter().take(PAIRED_SHOWN).enumerate() {
+            let y = PAIRED_Y0 + i as i32 * PAIRED_RH;
+            let cy = y + PAIRED_RH / 2;
+            if d.connected {
+                fill_rect(c, 0, y, crate::canvas::W as i32, PAIRED_RH, t.row_sel);
+            }
+            let icol = if d.connected { t.acc } else { t.dim };
+            icons::bt(c, 38.0, cy as f32, 16.0, icol);
+            let nst = sty(Family::Sans, Weight::SemiBold, 18.0,
+                          if d.connected { t.acc } else { t.ink }, 0.0);
+            // Leave room for the right-hand status word rather than running under it.
+            crate::widgets::draw_fit(c, f, 64.0, (cy - 2) as f32, &d.name, &nst, 360.0);
+            let sub = if d.connected { "CONNECTED" } else { d.kind.as_str() };
+            let scol = if d.connected { t.acc } else { t.faint };
+            crate::widgets::draw_fit(c, f, 64.0, (cy + 16) as f32, sub,
+                                     &sty(Family::Mono, Weight::Regular, 11.0, scol, 0.06), 360.0);
+            crate::widgets::right(c, f, 458.0, (cy + 4) as f32,
+                                  if d.connected { "\u{2022}" } else { "CONNECT" },
+                                  &sty(Family::Mono, Weight::Regular, 11.0,
+                                       if d.connected { t.acc } else { t.dim }, 0.1));
+            crate::widgets::hline(c, y + PAIRED_RH, t.line);
+        }
+    }
+
+    // AUDIO QUALITY — the codec page, one row rather than a quarter of the screen.
+    //
+    // Codec and Enhanced Mode are set once and then never touched, so they were paying for prime
+    // screen space with the thing people actually came for. The row still SHOWS the current codec,
+    // because that is the part worth glancing at.
+    crate::widgets::hline(c, ADV_Y, t.line);
+    let acol = if bt.on { t.ink } else { t.faint };
+    text::draw(c, f, 22.0, (ADV_Y + 26) as f32, "Audio quality",
+               &sty(Family::Sans, Weight::SemiBold, 17.0, acol, 0.0));
+    let live = bt.link_codec.map(link_codec_label);
+    let want = CODECS[(bt.codec_sel as usize).min(CODECS.len() - 1)].0;
+    let detail = match live {
+        // What the link NEGOTIATED, when that differs from the request — the radio falls back
+        // silently and this row is now the only place that discrepancy is visible from.
+        Some(l) if !l.eq_ignore_ascii_case(want) => format!("{want} requested \u{b7} {l} in use"),
+        Some(l) => l,
+        None => want.to_string(),
+    };
+    text::draw(c, f, 22.0, (ADV_Y + 46) as f32, &detail,
+               &sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.dim } else { t.faint }, 0.04));
+    crate::widgets::right(c, f, 458.0, (ADV_Y + 36) as f32, "\u{203a}",
+                          &sty(Family::Sans, Weight::Regular, 22.0, t.dim, 0.0));
+    crate::widgets::hline(c, ADV_Y + ADV_H, t.line);
+
+    // pair new device + NFC hint
+    fill_rect(c, 22, PAIR_Y, 436, 52, if bt.on { t.acc } else { t.line });
+    let plabel_col = if bt.on { t.acc_ink } else { t.faint };
+    icons::bt(c, 178.0, (PAIR_Y + 26) as f32, 17.0, plabel_col);
+    text::draw(c, f, 196.0, (PAIR_Y + 31) as f32, "Pair new device", &sty(Family::Sans, Weight::Bold, 17.0, plabel_col, 0.0));
+    // Footer: an NFC hint on the left and the Receiver-mode link on the right, on ONE baseline.
+    // Both were drawn at fixed x, so at 140% "…TO REAR PANEL" ran straight through "RECEIVER
+    // MODE ›". The link keeps its width (it names a destination); the hint gives way.
+    icons::rx(c, 30.0, 776.0, 14.0, t.faint);
+    crate::widgets::row_pair(
+        c, f, 46.0, 458.0, 780.0,
+        "NFC · TOUCH DEVICE TO REAR PANEL", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
+        "RECEIVER MODE \u{203a}", &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08),
+        14.0,
+    );
+}
+
+/// The codec / volume-control page, reached from "Audio quality" on the Bluetooth screen. These
+/// controls were the top half of that screen; they are configured once and then ignored, so they
+/// were the wrong thing to give the most reachable space to.
+pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
+    c.fill(t.bg);
+    let _y0 = crate::chrome::header(c, t, f, "Audio quality", None);
     // TRANSMIT CODEC — list with the active one selected (greyed while BT is off)
     let body = if bt.on { t.ink } else { t.faint };
     let subc = if bt.on { t.dim } else { t.faint };
-    text::draw(c, f, 22.0, 198.0, "TRANSMIT CODEC", &sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.acc } else { t.faint }, 0.18));
+    text::draw(c, f, 22.0, (CODEC_Y0 - 20) as f32, "TRANSMIT CODEC", &sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.acc } else { t.faint }, 0.18));
     for (i, (name, sub)) in CODECS.iter().enumerate() {
         let y = CODEC_Y0 + i as i32 * CODEC_RH;
         let cy = y + CODEC_RH / 2;
@@ -296,19 +457,4 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     crate::widgets::toggle(c, t, 422, ENH_Y + 20, 34, 18, 12, enh_on);
     crate::widgets::hline(c, ENH_Y + ENH_H, t.line);
 
-    // pair new device + NFC hint
-    fill_rect(c, 22, PAIR_Y, 436, 52, if bt.on { t.acc } else { t.line });
-    let plabel_col = if bt.on { t.acc_ink } else { t.faint };
-    icons::bt(c, 178.0, (PAIR_Y + 26) as f32, 17.0, plabel_col);
-    text::draw(c, f, 196.0, (PAIR_Y + 31) as f32, "Pair new device", &sty(Family::Sans, Weight::Bold, 17.0, plabel_col, 0.0));
-    // Footer: an NFC hint on the left and the Receiver-mode link on the right, on ONE baseline.
-    // Both were drawn at fixed x, so at 140% "…TO REAR PANEL" ran straight through "RECEIVER
-    // MODE ›". The link keeps its width (it names a destination); the hint gives way.
-    icons::rx(c, 30.0, 776.0, 14.0, t.faint);
-    crate::widgets::row_pair(
-        c, f, 46.0, 458.0, 780.0,
-        "NFC · TOUCH DEVICE TO REAR PANEL", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08),
-        "RECEIVER MODE \u{203a}", &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.08),
-        14.0,
-    );
 }
