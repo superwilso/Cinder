@@ -140,7 +140,7 @@ pub fn library_shuffle_band() -> (i32, i32, i32, i32) {
 }
 
 /// The album drill-in's "Play album" band sits under the cover/title block.
-pub const ALBUM_BAND_Y: i32 = 234;
+pub const ALBUM_BAND_Y: i32 = 186;
 
 /// The "Play album" band on the album drill-in.
 pub fn album_play_band() -> (i32, i32, i32, i32) {
@@ -375,7 +375,17 @@ pub fn az_hit_x(x: i32) -> bool {
 }
 
 /// Album drill-in track rows: top y and row height.
-pub const ALBUM_TRACKS_TOP: i32 = 312;
+/// Top of the album drill-in's track list. DERIVED from the band, the way `artist_content_top`
+/// already was — never a literal again.
+///
+/// This was `312`, a number that silently equalled the computed top only while the band sat at
+/// `ALBUM_BAND_Y = 234`. Moving the header up to close its dead band shifted the renderer to 264
+/// and left this at 312, so every tap resolved a row low while the screen looked right. The
+/// renderer and `album_hit_track` now read the same function.
+pub fn album_tracks_top() -> i32 {
+    let (_, by, _, bh) = shuffle_band_rect(ALBUM_BAND_Y);
+    by + bh + 6
+}
 pub const ALBUM_TRACK_RH: i32 = 62;
 
 // ── Albums tab: sortable + expandable (accordion) display list ────────────────────────────
@@ -688,7 +698,7 @@ pub fn max_scroll_px(tab: Tab, lib: &Library, album_sort: usize, album_expanded:
 
 /// Largest useful `scroll_px` for the album drill-in track list.
 pub fn album_max_scroll_px(album: &crate::model::AlbumRow) -> i32 {
-    (album.track_list.len() as i32 * ALBUM_TRACK_RH - (LIST_BOTTOM - ALBUM_TRACKS_TOP)).max(0)
+    (album.track_list.len() as i32 * ALBUM_TRACK_RH - (LIST_BOTTOM - album_tracks_top())).max(0)
 }
 
 /// Virtual y (content px) of selectable row `idx` — for the cursor-follow used by button nav. For
@@ -820,13 +830,13 @@ pub fn hit_row(tab: Tab, lib: &Library, scroll_px: i32, y: i32) -> Option<usize>
     }
 }
 
-/// Which track row of the album drill-in sits under touch-`y`? Rows from ALBUM_TRACKS_TOP
+/// Which track row of the album drill-in sits under touch-`y`? Rows from `album_tracks_top`
 /// @56px in content space — mirrors `album_view()` at the given pixel scroll.
 pub fn album_hit_track(album: &crate::model::AlbumRow, scroll_px: i32, y: i32) -> Option<usize> {
-    if y < ALBUM_TRACKS_TOP || y >= LIST_BOTTOM {
+    if y < album_tracks_top() || y >= LIST_BOTTOM {
         return None;
     }
-    let cy = y - ALBUM_TRACKS_TOP + scroll_px.max(0);
+    let cy = y - album_tracks_top() + scroll_px.max(0);
     let r = (cy / ALBUM_TRACK_RH) as usize;
     (r < album.track_list.len()).then_some(r)
 }
@@ -1317,27 +1327,28 @@ pub fn album_view(
     let scroll_px = scroll_px.clamp(0, album_max_scroll_px(album));
     c.fill(t.bg);
     // back chevron + ALBUM eyebrow
-    icons::back(c, 30.0, 110.0, 20.0, t.dim);
-    text::draw(c, f, 50.0, 114.0, "ALBUM", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
+    icons::back(c, 30.0, 62.0, 20.0, t.dim);
+    text::draw(c, f, 50.0, 66.0, "ALBUM", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
     // art block + title/artist/meta
     match cover {
         Some(img) if img.w == COVER_PX as usize && img.h == COVER_PX as usize =>
-            art::draw_image(c, t, 22, 130, img, artdim(t)),
-        _ => art::block(c, t, 22, 130, COVER_PX, COVER_PX, &album.art, artdim(t)),
+            art::draw_image(c, t, 22, 82, img, artdim(t)),
+        _ => art::block(c, t, 22, 82, COVER_PX, COVER_PX, &album.art, artdim(t)),
     }
     let title = crate::widgets::fit(
         f, &album.name, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01), (W as f32) - 150.0,
     );
-    text::draw(c, f, 132.0, 158.0, &title, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01));
-    text::draw(c, f, 132.0, 182.0, &album.artist, &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0));
+    text::draw(c, f, 132.0, 110.0, &title, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01));
+    text::draw(c, f, 132.0, 134.0, &album.artist, &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0));
     let meta = if album.year.is_empty() {
         format!("{} TRACKS", album.tracks)
     } else {
         format!("{} · {} TRACKS", album.year, album.tracks)
     };
-    text::draw(c, f, 132.0, 204.0, &meta, &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
+    text::draw(c, f, 132.0, 156.0, &meta, &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
 
-    let top = shuffle_row(c, t, f, ALBUM_BAND_Y, "Play album", "IN ORDER · THEN SHUFFLE") + 6;
+    shuffle_row(c, t, f, ALBUM_BAND_Y, "Play album", "IN ORDER · THEN SHUFFLE");
+    let top = album_tracks_top();
     let rh = ALBUM_TRACK_RH;
     let total = album.track_list.len();
     let first = (scroll_px / rh) as usize;
@@ -1386,7 +1397,7 @@ pub fn album_view(
 // preview.
 
 /// The "Shuffle artist" band sits under the name/stats block.
-pub const ARTIST_BAND_Y: i32 = 182;
+pub const ARTIST_BAND_Y: i32 = 134;
 
 /// Top of the artist page's scrolling content — derived from the band, like `list_top`.
 pub fn artist_content_top() -> i32 {
@@ -1555,14 +1566,14 @@ pub fn artist_view(
 ) {
     let scroll_px = scroll_px.clamp(0, artist_max_scroll_px(page));
     c.fill(t.bg);
-    icons::back(c, 30.0, 110.0, 20.0, t.dim);
-    text::draw(c, f, 50.0, 114.0, "ARTIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
+    icons::back(c, 30.0, 62.0, 20.0, t.dim);
+    text::draw(c, f, 50.0, 66.0, "ARTIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
 
     let nst = sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
     let name = crate::widgets::fit(f, page.name, &nst, W as f32 - 44.0);
-    text::draw(c, f, 22.0, 152.0, &name, &nst);
+    text::draw(c, f, 22.0, 104.0, &name, &nst);
     let stats = format!("{} ALBUMS · {} TRACKS", page.albums.len(), page.tracks.len());
-    text::draw(c, f, 22.0, 174.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
+    text::draw(c, f, 22.0, 126.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
     shuffle_row(c, t, f, ARTIST_BAND_Y, "Shuffle artist",
         &format!("ALL {} TRACKS · RANDOM ORDER", page.tracks.len()));
 
@@ -1651,7 +1662,7 @@ pub fn artist_view(
 
 /// The "Shuffle playlist" band. Sits higher than the artist page's because there is no
 /// albums/tracks stat pair above it, just the one count.
-pub const PLAYLIST_BAND_Y: i32 = 182;
+pub const PLAYLIST_BAND_Y: i32 = 134;
 pub const PLAYLIST_TRACK_RH: i32 = ARTIST_TRACK_RH;
 
 pub fn playlist_content_top() -> i32 {
@@ -1701,12 +1712,12 @@ pub fn playlist_view(
 ) {
     let scroll_px = scroll_px.clamp(0, playlist_max_scroll_px(pl));
     c.fill(t.bg);
-    icons::back(c, 30.0, 110.0, 20.0, t.dim);
-    text::draw(c, f, 50.0, 114.0, "PLAYLIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
+    icons::back(c, 30.0, 62.0, 20.0, t.dim);
+    text::draw(c, f, 50.0, 66.0, "PLAYLIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
 
     let nst = sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
     let name = crate::widgets::fit(f, &pl.name, &nst, W as f32 - 44.0);
-    text::draw(c, f, 22.0, 152.0, &name, &nst);
+    text::draw(c, f, 22.0, 104.0, &name, &nst);
     // The DB's own count, not the resolved length: a member whose file is gone still counts in
     // Sony's container, and silently showing a smaller number would hide that.
     let stats = if pl.track_list.len() as u32 == pl.tracks {
@@ -1714,7 +1725,7 @@ pub fn playlist_view(
     } else {
         format!("{} OF {} TRACKS AVAILABLE", pl.track_list.len(), pl.tracks)
     };
-    text::draw(c, f, 22.0, 174.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
+    text::draw(c, f, 22.0, 126.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
     shuffle_row(c, t, f, PLAYLIST_BAND_Y, "Shuffle playlist",
         &format!("ALL {} TRACKS · RANDOM ORDER", pl.track_list.len()));
 
@@ -1944,7 +1955,7 @@ mod tests {
         let l = lib();
         let flat = l.albums_flat();
         let a = flat[2]; // B1, 4 tracks
-        let t = ALBUM_TRACKS_TOP;
+        let t = album_tracks_top();
         let rh = ALBUM_TRACK_RH; // rows from t @rh
         assert_eq!(album_hit_track(a, 0, t - 1), None); // Play-album band / gap
         assert_eq!(album_hit_track(a, 0, t + 1), Some(0));

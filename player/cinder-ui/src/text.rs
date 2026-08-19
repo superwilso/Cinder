@@ -147,6 +147,48 @@ const FALLBACK_FONTS: &[&str] = &[
 /// extracted rootfs and render real non-Latin text without a device.
 const FALLBACK_DIR: &str = "/system/vendor/sony/lib/fonts";
 
+/// The fallbacks whose parsed size is measured in tens of megabytes (Japanese, Korean, Traditional
+/// Chinese). At most one of these is ever resident — see `fallback`.
+const CJK_FALLBACKS: [usize; 3] = [1, 2, 3];
+
+/// Every distinct bundled font, as (family, weight) pairs that `pick` maps to different files.
+/// Order matters only for looks — the first one carrying the glyph wins — so the regular weights
+/// come first and the display weights last.
+const BUNDLED_ORDER: [(Family, Weight); 7] = [
+    (Family::Sans, Weight::Regular),
+    (Family::Mono, Weight::Regular),
+    (Family::Sans, Weight::SemiBold),
+    (Family::Sans, Weight::Bold),
+    (Family::Mono, Weight::Bold),
+    (Family::Mono, Weight::Light),
+    (Family::Sans, Weight::ExtraBold),
+];
+
+/// Is `ch` in a script that fallback #`i` is actually for?
+///
+/// The chain is five fonts totalling ~18 MB on disk and ~250 MB parsed, and fontdue parses eagerly
+/// — so "try them all and see" is not a lookup, it is an allocation storm. Each font is therefore
+/// only opened for the scripts it exists to provide. Anything not listed (arrows, geometric shapes,
+/// dingbats, emoji, currency, maths) resolves to `.notdef` without touching the disk.
+fn fallback_covers_script(i: usize, ch: char) -> bool {
+    let c = ch as u32;
+    match i {
+        // SST-Roman: Latin-1/Extended, Greek, Cyrillic — Sony's own proportional corporate face.
+        0 => (0x0080..=0x024F).contains(&c) || (0x0370..=0x03FF).contains(&c) || (0x0400..=0x052F).contains(&c),
+        // SSTJpPro: Japanese — kana, CJK punctuation, unified ideographs, compatibility, fullwidth.
+        1 => (0x3000..=0x30FF).contains(&c) || (0x3400..=0x9FFF).contains(&c)
+            || (0xF900..=0xFAFF).contains(&c) || (0xFF00..=0xFFEF).contains(&c),
+        // NotoSansKR: Hangul jamo, compatibility jamo, extended-A/B, syllables.
+        2 => (0x1100..=0x11FF).contains(&c) || (0x3130..=0x318F).contains(&c)
+            || (0xA960..=0xA97F).contains(&c) || (0xAC00..=0xD7FF).contains(&c),
+        // DFPGothic: Traditional Chinese — only reached for ideographs SSTJpPro did not have.
+        3 => (0x3400..=0x9FFF).contains(&c) || (0xF900..=0xFAFF).contains(&c),
+        // NotoSansThai.
+        4 => (0x0E00..=0x0E7F).contains(&c),
+        _ => false,
+    }
+}
+
 /// Lazily-resolved fallback slot. Fonts live for the process lifetime (leaked once), which is
 /// what lets `resolve` hand back a plain reference out of a `RefCell`.
 enum Slot {
@@ -164,6 +206,11 @@ pub struct FontSet {
     mono_regular: Font,
     mono_bold: Font,
     fallbacks: RefCell<Vec<Slot>>,
+    /// Times a lookup has gone past both bundled families into the device chain, and which
+    /// characters did it. Diagnostic only (see `chain_walks`/`chain_chars`); the regression test
+    /// asserts the count is zero for UI chrome and prints the set when it is not.
+    chain_walks: std::cell::Cell<u32>,
+    chain_chars: RefCell<std::collections::BTreeSet<char>>,
     // Rasterising a glyph allocates + does real work; the UI re-draws the same glyphs every frame
     // (especially while scrolling / the visualiser animates), so we cache (metrics, coverage
     // bitmap) per glyph. Single-threaded access (render runs under the cinder-ffi mutex), so a
@@ -183,6 +230,8 @@ impl FontSet {
             mono_regular: f(include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf")),
             mono_bold: f(include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf")),
             fallbacks: RefCell::new((0..FALLBACK_FONTS.len()).map(|_| Slot::Untried).collect()),
+            chain_walks: std::cell::Cell::new(0),
+            chain_chars: RefCell::new(std::collections::BTreeSet::new()),
             glyph_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -195,6 +244,23 @@ impl FontSet {
         }
         if matches!(self.fallbacks.borrow()[i], Slot::Absent) {
             return None;
+        }
+        // ONE HEAVY FACE AT A TIME. fontdue parses every outline at load: measured on device,
+        // SSTJpPro-Regular alone is +82 MB of RSS, and NotoSansKR and DFPGothicPW5 are the same
+        // order. The device has 467 MB total with ~120 MB free, so a library holding Japanese AND
+        // Korean tags would load two of them and reach the OOM killer — which for cinder-home is a
+        // reboot, not an error. The first CJK-class face to load therefore wins for the session;
+        // the others are marked Absent and their scripts render .notdef. A wrong glyph is a
+        // cosmetic bug. A reboot is not.
+        if CJK_FALLBACKS.contains(&i) {
+            let taken = {
+                let slots = self.fallbacks.borrow();
+                CJK_FALLBACKS.iter().any(|&j| j != i && matches!(slots[j], Slot::Ready(_)))
+            };
+            if taken {
+                self.fallbacks.borrow_mut()[i] = Slot::Absent;
+                return None;
+            }
         }
         let dir = std::env::var("CINDER_FONT_DIR").unwrap_or_else(|_| FALLBACK_DIR.to_string());
         let loaded = std::fs::read(format!("{dir}/{}", FALLBACK_FONTS[i]))
@@ -210,9 +276,36 @@ impl FontSet {
         loaded
     }
 
-    /// Pick the font that actually has `ch`, plus its cache id. Falls back through the device
-    /// chain when the bundled font lacks the codepoint; if nothing has it, returns the primary so
-    /// the caller still gets `.notdef` metrics and the text keeps its shape.
+    /// Pick the font that actually has `ch`, plus its cache id. Order: the requested font, then the
+    /// OTHER BUNDLED FAMILY, then the device chain — and the device chain only for scripts the
+    /// fallback in question actually covers. If nothing has it, returns the primary so the caller
+    /// still gets `.notdef` metrics and the text keeps its shape.
+    ///
+    /// ── WHY THE ORDER AND THE GATE EXIST (2026-08-19, a device OOM) ─────────────────────────
+    /// This used to go straight from "the requested font lacks it" to loading Sony's fonts. Two
+    /// things made that fatal on a 467 MB device:
+    ///
+    ///   1. **The sibling bundled family was never tried.** JetBrains Mono carries the arrows and
+    ///      geometric shapes Hanken Grotesk lacks (▸ ◁ ▷ ↕ ▶ ◀ ─ ≡ ⇒) *and* full Cyrillic. A
+    ///      `Family::Sans` run containing `▸` therefore skipped a font already in memory and went
+    ///      to disk.
+    ///   2. **Nothing gated the chain by script.** fontdue parses every glyph outline at load:
+    ///      measured on device, SSTJpPro-Regular costs **+82 MB of RSS** and the whole chain about
+    ///      **250 MB**. So one character that no font covers loaded all five fonts and the kernel
+    ///      killed the app:
+    ///
+    ///      ```text
+    ///      Out of memory: Kill process 1700 (cinder-probe) score 514
+    ///      Killed process 1700 (cinder-probe) total-vm:265164kB, anon-rss:251472kB
+    ///      ```
+    ///
+    ///      In cinder-home that is not a crash, it is a REBOOT — appmgr reboots the device when its
+    ///      foreground app dies. The reported symptom was "the device crashes on the 3rd page of
+    ///      the welcome screens": that page, alone in the UI, draws `Settings ▸ Theme` in Sans.
+    ///
+    /// The gate is deliberately strict: a symbol, arrow or dingbat NEVER loads a fallback. Those
+    /// are chrome, they belong in the bundled fonts, and a `.notdef` box is a cosmetic bug where
+    /// loading 250 MB to look for one is a reboot.
     fn resolve(&self, fam: Family, w: Weight, ch: char) -> (u8, &Font) {
         let id = Self::font_index(fam, w);
         let primary = self.pick(fam, w);
@@ -222,6 +315,11 @@ impl FontSet {
             return (id, primary);
         }
         for i in 0..FALLBACK_FONTS.len() {
+            if !fallback_covers_script(i, ch) {
+                continue;
+            }
+            self.chain_walks.set(self.chain_walks.get() + 1);
+            self.chain_chars.borrow_mut().insert(ch);
             if let Some(f) = self.fallback(i) {
                 if f.lookup_glyph_index(ch) != 0 {
                     // ids 16.. are the fallbacks, so they can't collide with `font_index`'s 0..6.
@@ -229,7 +327,43 @@ impl FontSet {
                 }
             }
         }
+        // Last, the other bundled family (and its other weights) — already in memory, so this is a
+        // lookup rather than a load. It comes AFTER the chain on purpose: Cyrillic and Greek exist
+        // in JetBrains Mono, but Sony's proportional SST-Roman is the right face for a sans run,
+        // and this is the tier that catches what the chain is not for — the arrows and geometric
+        // shapes (▸ ◁ ▷ ↕ ▶ ◀ ─ ≡ ⇒) that only the mono face carries.
+        for (f2, w2) in BUNDLED_ORDER {
+            if f2 == fam && w2 == w {
+                continue;
+            }
+            let alt = self.pick(f2, w2);
+            if alt.lookup_glyph_index(ch) != 0 {
+                return (Self::font_index(f2, w2), alt);
+            }
+        }
         (id, primary)
+    }
+
+    /// How many times a glyph lookup has reached the DEVICE font chain (i.e. past both bundled
+    /// families). Zero for anything the bundled fonts cover. Tests assert on it; nothing else
+    /// reads it.
+    pub fn chain_walks(&self) -> u32 {
+        self.chain_walks.get()
+    }
+
+    /// The distinct characters that reached the device chain.
+    pub fn chain_char_list(&self) -> Vec<char> {
+        self.chain_chars.borrow().iter().copied().collect()
+    }
+
+    /// The distinct characters that reached the device chain, formatted for a test failure.
+    pub fn chain_chars(&self) -> String {
+        self.chain_chars
+            .borrow()
+            .iter()
+            .map(|c| format!("U+{:04X} {c:?}", *c as u32))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// Stable font index for the cache key (matches `pick`'s selection).
@@ -278,6 +412,17 @@ impl FontSet {
             },
         }
     }
+}
+
+/// DIAGNOSTIC hook for `cinder-probe --fontchain`: resolve `ch` through the real chain (loading
+/// whatever fallback that takes) and rasterise it at a typical UI size, returning the font id that
+/// answered — `u8::MAX` if nothing covered it and the primary's `.notdef` was used. Kept next to
+/// `resolve` so it cannot drift from what the renderer actually does.
+pub fn probe_glyph(fonts: &FontSet, ch: char) -> u8 {
+    let (id, font) = fonts.resolve(Family::Sans, Weight::Regular, ch);
+    let covered = font.lookup_glyph_index(ch) != 0;
+    let _ = font.rasterize(ch, 16.0);
+    if covered { id } else { u8::MAX }
 }
 
 pub struct TextStyle {

@@ -60,7 +60,19 @@ namespace {
 
 // Lifecycle tracer -> /contents/cinderhome.log (the launcher redirects stdout/stderr there).
 // Flushed every line so a hang/crash still leaves the last reached step on disk.
-void clog_(const char* m) { std::fprintf(stderr, "[cinder-home] %s\n", m); std::fflush(stderr); }
+// Every log line carries seconds since the app started. Cheap (one clock_gettime), and it is the
+// difference between "tap-to-pair feels slow" and "the tag read took 1.9 s and the link 2.4 s" —
+// the log had no timestamps at all, so every latency question needed a probe run to answer.
+// CLOCK_MONOTONIC deliberately: cinder-clock may step the wall clock underneath us at any time.
+void clog_(const char* m) {
+    static double t0 = 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const double now = (double)ts.tv_sec + ts.tv_nsec / 1e9;
+    if (t0 == 0) t0 = now;
+    std::fprintf(stderr, "[cinder-home] %8.3f %s\n", now - t0, m);
+    std::fflush(stderr);
+}
 
 // ---- crash + hang diagnostics ----------------------------------------------------------
 // The first device runs hang inside the device's CuiAppModule::OnInitialize, which we can't
@@ -278,6 +290,10 @@ static bool bt_radio_up(int st);
 static void apply_pump_interval();  // defined with poll_now_playing — audio-pump rate for the current state
 void refresh_bt_route();     // ditto — points the volume rocker at whichever output is live
 static void bt_reconnect_rearm();  // ditto — "the user wants a link"; clears the auto-reconnect latch
+// The radio's own reconnect machinery — arm the service-side retry thread, and make the player
+// connectable so a headphone's power-on page is accepted. Defined next to bt_reconnect_tick.
+static void bt_service_retry(bool on, bool force);
+static void bt_connect_wait(bool on);
 extern bool g_bt_radio_seen_up;  // ditto — last GetBtStatus said the radio was up (poll back-off)
 void apply_bt_codec();       // ditto — pushes the codec choice to the radio (not just the conf file)
 static void bt_apply_enhanced_mode(const char* why); // ditto — Sony's "Use Enhanced Mode" (absolute volume)
@@ -2003,7 +2019,12 @@ void apply_bt_toggle() {
     clog_(m);
     if (st < 0) { clog_("bt: BtCommonServiceClient unavailable — switch is UI-only this session"); return; }
 
-    if (!want) { bt_set_rf(false); return; }
+    if (!want) {
+        bt_connect_wait(false);
+        bt_service_retry(false, false);
+        bt_set_rf(false);
+        return;
+    }
 
     // Power the radio up if it is not already. KEEP THIS SHORT: it runs on the render/input thread,
     // so every millisecond here is a frozen UI. The first version polled for up to 5 s, and the
@@ -2032,6 +2053,11 @@ void apply_bt_toggle() {
             typedef int (*fn0)(void*);
             ((fn0)bt_slot(g_bt_xmit, VIDX_RequestLastDeviceConnection))(g_bt_xmit);
             clog_("bt: RequestLastDeviceConnection() sent");
+            // …and let the radio keep trying on its own, and accept the headphones' own attempt.
+            // One request is a single shot; these two are the difference between "it reconnects if
+            // you are lucky with the timing" and "it reconnects".
+            bt_service_retry(true, true);
+            bt_connect_wait(true);
         }
     } catch (...) {
         clog_("bt: RequestLastDeviceConnection threw");
@@ -2429,6 +2455,122 @@ static std::vector<std::vector<unsigned char>> g_bt_paired;
 #define BT_RECONNECT_FIRST_S 10
 #define BT_RECONNECT_MAX_S   300
 
+// ── The radio's OWN reconnect, which this project never switched on ─────────────────────────────
+//
+// `BtTransmitterService` has two methods Cinder has never called, both in the recovered vtable:
+//
+//   slot 27  SetConnectRetryMode(const bool&, const uint32_t&, const uint32_t&)
+//   slot 10  RequestStartConnectWait()
+//
+// The first arms the service's own `ConnectRetryWorkThread(const uint32_t&, const uint32_t&)` —
+// the two u32s are that thread's interval and count. It **defaults to off**, measured on a device
+// that had never been touched (`cinder-probe --btlink retry on 5 10`, 2026-08-19):
+//
+//   SetConnectRetryMode(true, 5, 10) rc=1   GetConnectRetryMode 0 -> 1
+//   t+ 0.26s avsrc 1->3   t+ 5.06s 3->2   t+15.14s 2->3   t+20.19s 3->2      <- attempts, on OUR interval
+//
+// That is the reconnect this app has been doing by hand from the render thread, done properly by a
+// service thread: no 8 s guard budget, no UI stall, and it keeps trying while the screen is off.
+// The local ladder below stays as a backstop for the case the service gives up (count exhausted).
+//
+// The second makes the transmitter *connectable*, so a headphone that is switched on and pages the
+// Walkman is accepted instead of ignored. Without it, every reconnect has to be one we initiate,
+// which is why "turn the headphones on and wait" behaved like a coin flip: it worked only if the
+// backoff timer happened to fire soon after.
+// What the two u32s ACTUALLY mean, read off the HCI trace (`--btlink hci on`, decoded with
+// analysis/tools/btsnoop_decode.py, 2026-08-19):
+//
+//   0.015  CMD Create Connection        -> 00:00:5E:00:53:02
+//   5.014  CMD Create Connection Cancel                       <- interval later, to the millisecond
+//   5.016  EVT Connection Complete      status=PAGE TIMEOUT
+//   5.021  CMD Write Scan Enable        0x02 (page scan)
+//  15.032  CMD Create Connection        -> 00:00:5E:00:53:02  <- and again
+//
+// So `interval` is the PAGE TIMEOUT allowed for each attempt, not the gap between them; the gap is
+// a further ~10 s, making the cycle interval+10. Each count is therefore ~15 s of wall clock.
+// 20 gives about five minutes of active paging after a drop, which is the window where the user is
+// most likely to be switching the headphones back on; after that the local ladder takes over at a
+// far lower duty cycle. Paging is not free — this is the same radio that costs ~13.5% of a core
+// when it is busy — so the count is deliberately not "forever".
+#define BT_SVC_RETRY_INTERVAL_S 5u
+#define BT_SVC_RETRY_COUNT      20u    // ~5 min at a ~15 s cycle, then the ladder below takes over
+
+// The service SILENTLY REJECTS a count below 5. Measured on device 2026-08-19, from a cleared mode
+// each time: 1, 3 and 4 give rc=0 with GetConnectRetryMode staying 0 and not one page on the air;
+// 5, 7, 10 and 20 give rc=1, flip it to 1, and page. The floor is on the count alone — (10, 7) is
+// accepted — so it is not "count must cover the interval".
+//
+// rc is a STATE-CHANGED flag, not a success code: re-arming an already-armed mode returns 0 too.
+// So rc alone cannot separate a rejection from a no-op; only the readback can. That is why this
+// number is guarded here rather than trusted at the call site.
+static_assert(BT_SVC_RETRY_COUNT >= 5, "SetConnectRetryMode silently ignores a count below 5");
+
+static bool g_bt_svc_retry_on    = false;
+static bool g_bt_svc_retry_known = false;   // has the cache been reconciled with the service yet?
+static bool g_bt_connect_wait_on = false;
+
+// Arm/disarm the service-side retry. Cheap and idempotent; `force` re-arms even when we think it is
+// already on, which is what a fresh disconnect wants (the count starts over).
+//
+// The mode is SERVICE state, and it is STICKY — it outlives this process (proved by setting it from
+// cinder-probe and reading it back from a second run). A Cinder that went away with the retry armed
+// therefore comes back to a radio still paging every ~15 s while this cache says "off", and the
+// early-return below would never disarm it. Paging is not free, so reconcile once on first use.
+static void bt_service_retry(bool on, bool force) {
+    enum { VIDX_SetConnectRetryMode = 27, VIDX_GetConnectRetryMode = 28 };
+    if (!g_bt_svc_retry_known) {
+        try {
+            void* xg = bt_xmit();
+            if (xg) {
+                typedef int (*fng)(void*);
+                g_bt_svc_retry_on = ((fng)bt_slot(xg, VIDX_GetConnectRetryMode))(xg) != 0;
+                g_bt_svc_retry_known = true;
+                if (g_bt_svc_retry_on)
+                    clog_("bt: service retry was already armed at startup — cache seeded ON");
+            }
+        } catch (...) { clog_("bt: GetConnectRetryMode threw"); }
+    }
+    if (on == g_bt_svc_retry_on && !force) return;
+    try {
+        void* x = bt_xmit();
+        if (!x) return;
+        typedef int (*fnr)(void*, const bool*, const unsigned*, const unsigned*);
+        const bool     b  = on;
+        const unsigned iv = BT_SVC_RETRY_INTERVAL_S, cnt = BT_SVC_RETRY_COUNT;
+        int rc = ((fnr)bt_slot(x, VIDX_SetConnectRetryMode))(x, &b, &iv, &cnt);
+        g_bt_svc_retry_on = on;
+        char m[128];
+        std::snprintf(m, sizeof m, "bt: SetConnectRetryMode(%s, %u, %u) rc=%d",
+                      on ? "true" : "false", iv, cnt, rc);
+        clog_(m);
+    } catch (...) { clog_("bt: SetConnectRetryMode threw"); }
+}
+
+// Accept an INCOMING connection (headphones switched on next to the player). Held open whenever the
+// radio is up and nothing is linked; closed once a link exists, so a second device cannot walk in
+// behind the one that is playing.
+//
+// NOTE what the HCI trace says this is NOT: the controller already sits at `Write Scan Enable 0x02`
+// (page scan on, inquiry scan off) between connection attempts, so the baseband is connectable with
+// or without this call. Whatever it changes is above the baseband — the A2DP/AVRCP accept path —
+// and it is cheap, so it is called for the state it does own rather than for a scan-enable it does
+// not. If a future capture shows it emitting no HCI at all AND no link ever arrives through it,
+// delete it rather than leaving a call whose only effect is a log line.
+static void bt_connect_wait(bool on) {
+    enum { VIDX_RequestStartConnectWait = 10, VIDX_RequestStopConnectWait = 11 };
+    if (on == g_bt_connect_wait_on) return;
+    try {
+        void* x = bt_xmit();
+        if (!x) return;
+        typedef int (*fn0)(void*);
+        int rc = ((fn0)bt_slot(x, on ? VIDX_RequestStartConnectWait : VIDX_RequestStopConnectWait))(x);
+        g_bt_connect_wait_on = on;
+        char m[96];
+        std::snprintf(m, sizeof m, "bt: Request%sConnectWait() rc=%d", on ? "Start" : "Stop", rc);
+        clog_(m);
+    } catch (...) { clog_("bt: connect-wait call threw"); }
+}
+
 // Called wherever the user asks for a link, so the retry stops being parked.
 static void bt_reconnect_rearm() {
     g_bt_user_disconnected = false;
@@ -2438,8 +2580,17 @@ static void bt_reconnect_rearm() {
 
 // Runs from the 1 Hz housekeeping. Cheap: the common paths are two boolean tests.
 static void bt_reconnect_tick() {
-    if (!cinder_get_bt_on() || g_bt_user_disconnected) return;
+    if (!cinder_get_bt_on() || g_bt_user_disconnected) {
+        // A deliberate hang-up (or a radio the user switched off) must not leave the player
+        // connectable, or the headphones simply walk back in and the Disconnect button reads as
+        // broken.
+        bt_connect_wait(false);
+        bt_service_retry(false, false);
+        return;
+    }
     if (g_bt_have_name) {                     // connected — reset so the next drop starts fresh
+        bt_connect_wait(false);               // one link at a time; a second device can wait
+        bt_service_retry(false, false);       // nothing to retry while it is up
         if (g_bt_reconnect_wait_s) {
             clog_("bt-reconnect: link is up again — retry disarmed");
             g_bt_reconnect_at = 0;
@@ -2453,11 +2604,17 @@ static void bt_reconnect_tick() {
     if (!g_bt_radio_seen_up) return;
 
     const long now = now_ms();
-    if (g_bt_reconnect_at == 0) {             // first notice of the drop: schedule, don't act
+    if (g_bt_reconnect_at == 0) {             // first notice of the drop
+        // Hand the job to the radio HERE rather than waiting out the ladder: the service's own
+        // retry thread runs on a 5 s interval and the connect-wait makes a headphone's own
+        // power-on page land, both of which beat anything a 1 Hz UI timer can do. The ladder below
+        // is now the backstop for after the service's count runs out.
+        bt_service_retry(true, true);         // force: a fresh drop restarts the count
+        bt_connect_wait(true);
         g_bt_reconnect_wait_s = BT_RECONNECT_FIRST_S;
         g_bt_reconnect_at = now + (long)g_bt_reconnect_wait_s * 1000;
         char m[128];
-        std::snprintf(m, sizeof m, "bt-reconnect: link is down — first retry in %ds",
+        std::snprintf(m, sizeof m, "bt-reconnect: link is down — radio retry armed, backstop in %ds",
                       g_bt_reconnect_wait_s);
         clog_(m);
         return;
@@ -3028,6 +3185,10 @@ struct CinderNfcListener {
         } catch (...) { g_nfc_addr.clear(); g_nfc_name.clear(); }
         pthread_mutex_unlock(&g_nfc_mx);
         g_nfc_tapped = 1;
+        // Don't wait out the ~1 Hz housekeeping interval: a tap is a deliberate gesture and the
+        // second it costs here is a second of the user holding headphones against the back of the
+        // player wondering whether it registered.
+        g_house_due = true;
     }
     virtual void OnUnknownTag(const void*) {                         // slot 3
         clog_("nfc: a tag was read but it is not a Bluetooth OOB record — ignoring");
@@ -3203,8 +3364,10 @@ static void nfc_service_tap() {
     } catch (...) { clog_("nfc: Pairing threw"); }
     // Same recheck the scan flow uses: the callback runs ahead of the pairing table, so poll for
     // the side effect rather than trusting the return.
-    g_bt_paired_recheck_left = 8;
-    g_bt_paired_recheck_at   = now_ms() + 700;
+    // 300 ms x 20 rather than 700 ms x 8: the same ~6 s of patience, but the connect that follows a
+    // tap-to-pair fires within 300 ms of the link key appearing instead of within 700.
+    g_bt_paired_recheck_left = 20;
+    g_bt_paired_recheck_at   = now_ms() + 300;
 }
 
 // Connect one specific paired device (Devices ▸ row). `RequestConnection` takes the BD address by
@@ -6942,15 +7105,19 @@ void* render_driver(void*) {
                     refresh_bt_paired();
                     // The callback runs ahead of the pairing table, so schedule re-reads instead of
                     // trusting that one. Stops early the moment the new address shows up.
-                    g_bt_paired_recheck_left = 8;
-                    g_bt_paired_recheck_at   = now_ms() + 700;
+                    g_bt_paired_recheck_left = 20;
+                    g_bt_paired_recheck_at   = now_ms() + 300;
                 });
             }
             // Waiting for a just-paired device to appear in GetPairedDeviceInfo. ~700 ms apart, up to
             // 8 tries (~5.5 s), then give up quietly — the list is also re-read whenever the screen is
             // opened, so a slow radio costs a stale row and not a wrong one.
+            // The recheck lives inside the ~1 Hz housekeeping block, so a 300 ms interval only
+            // means anything if the block itself runs more often — hence the g_house_due below,
+            // which is cleared every pass and re-set here for as long as a recheck is outstanding.
+            if (g_bt_paired_recheck_left > 0) g_house_due = true;
             if (g_bt_paired_recheck_left > 0 && now_ms() >= g_bt_paired_recheck_at) {
-                g_bt_paired_recheck_at = now_ms() + 700;
+                g_bt_paired_recheck_at = now_ms() + 300;
                 g_bt_paired_recheck_left--;
                 run_guarded("loop: BT paired recheck", 6, []() {
                     refresh_bt_paired();

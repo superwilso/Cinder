@@ -526,8 +526,13 @@ can_write() { ( : > "$1" ) 2>/dev/null; }
 # that crashed erased the evidence of its own crash as soon as the next boot started — twice on
 # 2026-07-26, including the frozen-panel boot whose log was the whole diagnosis. One rename makes
 # the failing boot readable from the boot after it (`tools/flash.sh --cat cinderhome.log.1`).
+# NO `-f` HERE. This device's /bin/mv is toolbox, and toolbox mv REJECTS the flag outright —
+# `mv -f a b` prints "failed on '-f'", returns 255 and MOVES NOTHING (measured on device
+# 2026-08-19). So this rotation, added precisely so a crashed boot's log survives into the next
+# boot, has never once run: every boot truncated the evidence it was written to keep. Plain `mv`
+# overwrites an existing destination on toolbox, which is all this needs.
 for l in /contents/cinderhome.log /data/cinder/cinderhome.log; do
-    [ -f "$l" ] && mv -f "$l" "$l.1" 2>/dev/null
+    [ -f "$l" ] && mv "$l" "$l.1" 2>/dev/null
 done
 LOGF=/contents/cinderhome.log
 can_write "$LOGF" || LOGF=/data/cinder/cinderhome.log

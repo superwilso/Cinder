@@ -1487,6 +1487,23 @@ impl App {
         s
     }
 
+    /// Record the order this context had BEFORE the shell shuffled it, so shuffle-off can put it
+    /// back. Call AFTER `set_play_context`, which clears `pre_shuffle` by design.
+    ///
+    /// Without this, shuffle was still a one-way door on the commonest path of all. `queue_shuffle`
+    /// records the pre-shuffle order, but that only runs when the toggle is pressed mid-playback.
+    /// Turn shuffle ON first and then tap an album and the shell shuffles the rows before handing
+    /// them over (`apply_shuffle`), so the context arrives already permuted with nothing saved —
+    /// and shuffle-off then found no order to restore and silently did nothing. The un-shuffled
+    /// order exists only out in the shell, so it has to be handed in.
+    ///
+    /// Ignored unless it describes THIS context, the same guard `playback_restore` uses.
+    pub fn note_pre_shuffle(&mut self, ids: Vec<i64>) {
+        if ids.len() == self.context.len() {
+            self.pre_shuffle = Some(ids);
+        }
+    }
+
     /// Put a decoded context back. Rows come from the shell, which resolves the persisted ids
     /// against the library. Deliberately NOT `set_play_context`: that one is the "the user just
     /// started something" path and clears the queue, re-arms the follow and drops the un-shuffle
@@ -3238,7 +3255,7 @@ impl App {
                 .lib
                 .albums_flat()
                 .get(self.album_view)
-                .map(|al| (library::album_max_scroll_px(al), library::ALBUM_TRACKS_TOP)),
+                .map(|al| (library::album_max_scroll_px(al), library::album_tracks_top())),
             Screen::Artist => self
                 .artist_page()
                 .map(|p| (library::artist_max_scroll_px(&p), library::artist_content_top())),
@@ -3807,7 +3824,7 @@ impl App {
     /// Keep the album drill-in cursor's row fully inside its pixel-scrolled window.
     fn album_ensure_visible(&mut self) {
         let row_top = self.album_track_idx as i32 * library::ALBUM_TRACK_RH;
-        let view = crate::canvas::H as i32 - 12 - library::ALBUM_TRACKS_TOP;
+        let view = crate::canvas::H as i32 - 12 - library::album_tracks_top();
         if row_top < self.album_scroll_px {
             self.album_scroll_px = row_top;
         } else if row_top + library::ALBUM_TRACK_RH > self.album_scroll_px + view {
@@ -6916,6 +6933,42 @@ mod tests {
         assert_eq!(after, original);
     }
 
+    /// The path the toggle actually breaks on: shuffle ON **first**, then tap an album. The shell
+    /// shuffles the rows before handing them over, so `set_play_context` receives an already
+    /// permuted context and clears the undo — and shuffle-off then had nothing to restore and did
+    /// nothing at all. Reported 2026-08-19 as "some edge cases for shuffle that don't work".
+    #[test]
+    fn shuffle_on_before_play_can_still_be_turned_off() {
+        let mut a = ctx6(0);
+        // What the shell hands in: the album's real order, permuted, plus the order it replaced.
+        let original: Vec<i64> = vec![10, 11, 12, 13, 14, 15];
+        let played: Vec<i64> = vec![13, 15, 10, 12, 14, 11];
+        let rows: Vec<SongRow> = played
+            .iter()
+            .map(|id| SongRow { title: format!("T{id}"), object_id: *id, ..Default::default() })
+            .collect();
+        a.set_play_context(rows, 0);
+        a.note_pre_shuffle(original.clone());
+
+        assert_eq!(a.unshuffle_context(), vec![Action::QueueChanged], "shuffle-off did nothing");
+        let after: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(after, original, "the album did not come back in its running order");
+        assert_eq!(
+            a.context()[a.context_idx()].object_id, 13,
+            "the song that was playing must still be the current one"
+        );
+    }
+
+    /// The guard: an order that does not describe this context is refused rather than half-applied.
+    #[test]
+    fn a_pre_shuffle_order_of_the_wrong_length_is_refused() {
+        let mut a = ctx6(0);
+        let n = a.context().len();
+        a.note_pre_shuffle(vec![1, 2, 3]);
+        assert!(a.unshuffle_context().is_empty(), "a mismatched order was accepted");
+        assert_eq!(a.context().len(), n, "and the context was left alone");
+    }
+
     /// Playing something new drops the undo. Restoring THIS context into a previous album's order
     /// would reorder by a ranking that mostly does not apply to it.
     #[test]
@@ -8388,12 +8441,17 @@ mod tests {
         a.push(Screen::Album);
         let album = a.lib.albums_flat()[0].clone();
         let first_id = album.track_list[0].object_id;
+        // Coordinates come from the layout functions, never literals: this test used to hardcode
+        // 260/320/160, which pinned it to one band position and said nothing about whether the
+        // renderer and the hit test agreed.
+        let (bx, by, bw, bh) = library::album_play_band();
         // Tap the "Play album" band → plays from the first track (shell expands the album).
-        assert_eq!(a.tap(240, 260), vec![Action::PlayIndex(first_id)]);
-        // Tap the first track row (rows start at y=312 @56px) → same first track by object id.
-        assert_eq!(a.tap(240, 320), vec![Action::PlayIndex(first_id)]);
-        // A tap in the header art/title area plays nothing.
-        assert!(a.tap(240, 160).is_empty());
+        assert_eq!(a.tap(bx + bw / 2, by + bh / 2), vec![Action::PlayIndex(first_id)]);
+        // Tap the first track row → same first track by object id.
+        let row0 = library::album_tracks_top() + library::ALBUM_TRACK_RH / 2;
+        assert_eq!(a.tap(240, row0), vec![Action::PlayIndex(first_id)]);
+        // A tap in the header art/title area, above the band, plays nothing.
+        assert!(a.tap(240, by - 20).is_empty());
     }
 
     #[test]

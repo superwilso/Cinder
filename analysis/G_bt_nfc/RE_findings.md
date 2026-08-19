@@ -1450,3 +1450,94 @@ one literal-pool word at `0x9fac` (ARM PIC: `value + offset + 8` resolves the ad
 `avsrcStatus_` with the significant values **0, 4, 5** — that is the AVSRC link state, **not** the
 codec. The codec enumerators originate in the MediaTek layer below `libBtMw`, and wampy never
 touched this API either, so one device log line with a real headphone remains the cheapest route.
+
+---
+
+## 2026-08-19 — the transport, the HCI trace, and the two reconnect calls nobody made
+
+Three separate results from one session. The first kills a plan, the second replaces a year of
+guessing, the third is the reconnect fix.
+
+### 1. The MTK sockets are DGRAM, so they cannot be observed
+
+`docs/PLAN_bluetooth_stack.md` proposed attaching a reader to `/tmp/bt.app.gap` and watching the
+adapter protocol go past. It cannot work, and the reason is one line of `/proc/net/unix`:
+
+```
+dc4fc480: 00000003 00000000 00000000 0002 01  3240 /tmp/bt.int.adp
+dc4fc000: 00000002 00000000 00000000 0002 01  3242 /tmp/bt.a2dp.stream
+d8178b40: 00000002 00000000 00000000 0002 01  4294 /tmp/bt.app.gap
+d37c6b40: 00000002 00000000 00000000 0002 01  4296 /tmp/bt.ext.adp
+```
+
+Type `0002` is **SOCK_DGRAM** on every one of them (`connect()` as STREAM and SEQPACKET both return
+`EPROTOTYPE`; confirmed on device with `analysis/G_bt_nfc/btsniff.c`, which connects as DGRAM and
+reads 0 bytes for as long as you leave it). A datagram socket is a mailbox, not a pipe: messages go
+to the address the sender names, so a second client attached to `/tmp/bt.app.gap` sees nothing at
+all. There is no passive tap here, at any price.
+
+The owners, from `/proc/<pid>/fd`:
+
+| socket | bound by |
+|---|---|
+| `/tmp/bt.int.adp`, `/tmp/bt.a2dp.stream` | **mtkbt** (PID 146) |
+| `/tmp/bt.app.gap`, `/tmp/bt.ext.adp` | **hagodaemon** (PID 354) — which hosts BtCommonService, BtTransmitterService, BtPlayerService and BtBle*, and maps `libBtMw.so` + `libbluetooth.blueangel.so` |
+
+So `libbluetooth.blueangel.so` is the **client** library (1354 exported `btmtk_*` symbols, including
+`btmtk_gap_get_rssi` and `btmtk_gap_send_hci`), `libBtMw.so` is Sony's wrapper over it (508 exports,
+including `BtMwCommonRequestGetRssi` and `BtMwCommonSetHciLogEnabled`), and the pst services are a
+third layer on top. The per-profile socket names the client library can bind — `/tmp/bt.ext.adp.spp`,
+`.hid`, `.gattc`, `.l2cap`, … — are all currently **unbound**, which is the only door left if a
+future profile is ever wanted.
+
+### 2. `SetHciLogEnabled` gives a full btsnoop trace — the failure channel this stack never had
+
+`BtCommonServiceClient::SetHciLogEnabled(const bool&)`, client vtable **slot 26**. One call, and
+mtkbt starts writing `/tmp/hci_sniffer_log_<YYYYMMDDhhmmss>.cfa`. **The `.cfa` extension is a lie:
+the file is a plain btsnoop capture** (`btsnoop\0`, version 1, datalink 1002 = HCI UART H4), so
+Wireshark opens it directly, and `analysis/tools/btsnoop_decode.py` prints it in a terminal.
+
+That retires "the MTK stack logs nothing, judge by side effects" as a *forced* method
+(`reference_bt_radio_wedge`). It is now a choice.
+
+### 3. `SetConnectRetryMode` (slot 27) and `RequestStartConnectWait` (slot 10)
+
+Both are on `BtTransmitterServiceClient`, both have been in the recovered vtable since 2026-07-29,
+and **nothing in this project has ever called either.** Measured with `cinder-probe --btlink`:
+
+```
+btlink: SetConnectRetryMode(true, 5, 10) rc=1   GetConnectRetryMode 0 -> 1
+btlink: RequestStartConnectWait() rc=0
+```
+
+`GetConnectRetryMode` returns **0 on a device nobody has touched** — Sony's own retry is off by
+default. With it on, the HCI trace shows exactly what the service does, and what the two `uint32_t`
+arguments mean:
+
+```
+    0.015 CMD 0x0405 Create Connection          -> 00:00:5E:00:53:02
+    5.014 CMD 0x0408 Create Connection Cancel                        <- `interval` later
+    5.016 EVT 0x03   Connection Complete        status=PAGE TIMEOUT (peer did not answer)
+    5.021 CMD 0x0c1a Write Scan Enable          0x02 (page scan)
+   15.032 CMD 0x0405 Create Connection          -> 00:00:5E:00:53:02  <- next attempt
+```
+
+* **`interval` is the page timeout per attempt, not the gap.** The gap is a further ~10 s, so the
+  cycle is `interval + 10` and a `count` of 20 is about five minutes of paging.
+* The target is the **last device**, chosen by the service (here the CMF Buds, not the WH-1000XM4).
+* `status=0x02` on every attempt is a page timeout, which is the correct answer for headphones that
+  are switched off — the negative control this measurement needed.
+* Between attempts the controller sits at `Write Scan Enable 0x02` = **page scan on, inquiry scan
+  off**: connectable, not discoverable. Which also means `RequestStartConnectWait` does *not* change
+  the scan enable — whatever it does is above the baseband, in the A2DP/AVRCP accept path.
+
+**Not yet measured:** whether a headphone switched on during a retry window actually lands, because
+that needs a person to switch one on. The 90 s window run on 2026-08-19 saw no incoming link, with
+the headphones' state unconfirmed — that is an untested case, not a negative result.
+
+### What shipped in cinder-home
+
+`bt_service_retry()` and `bt_connect_wait()` (next to `bt_reconnect_tick`), driven from one state
+machine: armed when the radio comes up and again on the first notice of a drop, torn down when a
+link exists, when the user disconnects on purpose, and when the radio goes off. The old exponential
+ladder (10 s → 300 s) stays as the backstop for after the service's count runs out.
