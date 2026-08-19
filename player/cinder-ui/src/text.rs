@@ -189,6 +189,16 @@ fn fallback_covers_script(i: usize, ch: char) -> bool {
     }
 }
 
+/// Would the DEVICE font chain be asked for `ch` at all? True for the scripts the Sony fonts exist
+/// to provide (Latin-1/Greek/Cyrillic, CJK, Hangul, Thai) — i.e. library CONTENT we delegate.
+///
+/// Everything else — symbols, arrows, dingbats, punctuation — is chrome, and must come from the
+/// bundled fonts. Tests use this to tell "unresolvable because the device fonts are not on this
+/// host" from "unresolvable anywhere", which is the only one that is a bug.
+pub fn device_chain_covers(ch: char) -> bool {
+    (0..FALLBACK_FONTS.len()).any(|i| fallback_covers_script(i, ch))
+}
+
 /// Lazily-resolved fallback slot. Fonts live for the process lifetime (leaked once), which is
 /// what lets `resolve` hand back a plain reference out of a `RefCell`.
 enum Slot {
@@ -211,6 +221,9 @@ pub struct FontSet {
     /// asserts the count is zero for UI chrome and prints the set when it is not.
     chain_walks: std::cell::Cell<u32>,
     chain_chars: RefCell<std::collections::BTreeSet<char>>,
+    /// Characters NO font on the device could supply — the ones that render as a `.notdef` box.
+    /// This is the set that actually matters for chrome; see `unresolved_chars`.
+    unresolved: RefCell<std::collections::BTreeSet<char>>,
     // Rasterising a glyph allocates + does real work; the UI re-draws the same glyphs every frame
     // (especially while scrolling / the visualiser animates), so we cache (metrics, coverage
     // bitmap) per glyph. Single-threaded access (render runs under the cinder-ffi mutex), so a
@@ -232,6 +245,7 @@ impl FontSet {
             fallbacks: RefCell::new((0..FALLBACK_FONTS.len()).map(|_| Slot::Untried).collect()),
             chain_walks: std::cell::Cell::new(0),
             chain_chars: RefCell::new(std::collections::BTreeSet::new()),
+            unresolved: RefCell::new(std::collections::BTreeSet::new()),
             glyph_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -341,7 +355,30 @@ impl FontSet {
                 return (Self::font_index(f2, w2), alt);
             }
         }
+        // NOTHING HAS IT. The guard on this used to be a test that could not fail: it filtered
+        // `chain_chars` to symbols, but `fallback_covers_script` gates every symbol out BEFORE that
+        // set is touched, so the assertion was vacuous — it watched a set the code cannot put a
+        // symbol into. This is the honest signal: reached only when the requested font lacked the
+        // glyph (checked at the top), every script-eligible fallback missed, and every other
+        // bundled face missed too. Whatever lands here draws a `.notdef` box on the device.
+        self.unresolved.borrow_mut().insert(ch);
         (id, primary)
+    }
+
+    /// Characters that no font could supply, so they rendered as `.notdef`. Empty is the invariant
+    /// for UI chrome; a test prints the set when it is not.
+    pub fn unresolved_chars(&self) -> Vec<char> {
+        self.unresolved.borrow().iter().copied().collect()
+    }
+
+    /// The same set, formatted for a test failure.
+    pub fn unresolved_report(&self) -> String {
+        self.unresolved
+            .borrow()
+            .iter()
+            .map(|c| format!("U+{:04X} {c:?}", *c as u32))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// How many times a glyph lookup has reached the DEVICE font chain (i.e. past both bundled

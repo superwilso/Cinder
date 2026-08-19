@@ -3346,7 +3346,18 @@ pub extern "C" fn cinder_clock_tick() {
         // the row. Rebuilding needs a pause/seek/play round trip, so the lead absorbs it and the
         // current track still hands directly to the user's first queued choice.
         const QUEUE_REBUILD_LEAD_MS: i64 = 2_500;
-        if r.queue_pending && r.np.playing && r.cur_duration_ms > 0
+        // NOT ON BLUETOOTH. The rebuild is a pause/seek/play round trip, and the lead exists so
+        // that cost lands before the boundary instead of on it. Down the jack that is a brief
+        // glitch; over A2DP it disrupts a stream the sink is buffering ~200 ms of, so the end of
+        // the track is cut and the resume clicks — reported 2026-08-19 as songs being "cut off at
+        // the end" with a pop when listening on BT.
+        //
+        // The boundary flush in the track-change handler already covers this case for free (the
+        // new track's position is ~0, so re-issuing there resets nothing audible). Skipping the
+        // early rebuild on BT costs only that the first queued track hands over a fraction later;
+        // it does not cost the queue edit, which still applies.
+        let on_bt = r.app.bt_route();
+        if r.queue_pending && r.np.playing && !on_bt && r.cur_duration_ms > 0
             && r.play_pos_ms > 0
             && r.cur_duration_ms.saturating_sub(r.play_pos_ms) <= QUEUE_REBUILD_LEAD_MS
         {

@@ -234,7 +234,19 @@ bool g_settings_loaded = false; // did cinder_settings_load find a saved file? (
 bool g_volume_restored = false; // did it restore a persisted volume level? (→ push to hw, not seed)
 void set_backlight(int night); // night=minimal/day=normal; boot forces day, toggle matches theme
 void recompute_day_level();   // map the UI's 0..5 brightness onto the node's day level (no write)
-void brightness_wake_on_input(); // leave a level-0 blank on the next input (defined with the backlight)
+void brightness_wake_on_input(); // end a level-0 backlight blank — Hold switch or Power only
+// Sony's DisplayService owns the real backlight level; defined with the touch-panel switch, which
+// shares its client. set_backlight (above them) needs all three.
+static bool display_backlight(unsigned level);
+static void display_backlight_remember();
+extern unsigned g_disp_bl_saved;
+
+// DisplayService backlight level for the night theme. The service reported 2 as its normal level,
+// and 0 is fully off — so 1 is the only step between "normal" and "dark", and it is the one the
+// sysfs node cannot reach. Kept as a named constant rather than a literal because the service's
+// full scale is not known: if a later unit turns out to have more headroom, this is the one place
+// that changes.
+static const unsigned DISPLAY_BL_NIGHT = 1u;
 extern bool g_screen_on;      // panel lit? (defined with the screen state, below)
 extern long g_last_input_ms;  // idle-screen-off clock; seeded by render_up, defined with the input state
 long now_ms();                // CLOCK_MONOTONIC ms (defined with the touch state, below)
@@ -1491,8 +1503,28 @@ void set_backlight(int night) {
     // state; nothing may override it.
     if (cinder_get_brightness() == 0) level = 0;
     if (level < 0) return;
+    // Remember the service's own level before we ever change it — that is what "back on" means.
+    display_backlight_remember();
     FILE* f = std::fopen(g_bl.path, "w");
     if (f) { std::fprintf(f, "%d", level); std::fclose(f); }
+    // …and the node is NOT the whole story. Sony's DisplayService holds its own backlight level and
+    // the LED node does not override it: measured 2026-08-19 with the node at 0, the service at 2
+    // and the panel still lit — the reported "backlight off still powers the backlight". Only the
+    // fully-off case and its restore go through the service; the graded day/night levels stay on
+    // the node, whose 0..max scale we know (the service's own scale is separate and unmapped).
+    //
+    // NIGHT GOES DARKER THAN THE NODE CAN REACH. The point of night mode on a music player is
+    // using it in the dark without lighting the room, and the node bottoms out well above that:
+    // its "3 raw units" still left the panel at the service's level 2. The service's own scale is
+    // small — it sat at 2 for normal use — so one step below that is the darkest readable setting
+    // the hardware offers, and it is a step the sysfs node cannot express at all.
+    if (level == 0) {
+        display_backlight(0);                       // fully off (Hold / Power / reboot restore it)
+    } else if (night) {
+        display_backlight(DISPLAY_BL_NIGHT);        // darker than anything the node can ask for
+    } else if (g_disp_bl_saved) {
+        display_backlight(g_disp_bl_saved);         // back to whatever it was before we touched it
+    }
 }
 
 // Apply the UI's brightness level (1..5) by recomputing the DAY level, then re-writing the panel.
@@ -1553,6 +1585,13 @@ long g_bl_zero_at = 0;
 
 // Next input after a level-0 blank: come back. Cheap and unconditional — cinder_brightness_wake
 // returns 0 immediately unless the UI is actually in the transient state.
+// End a level-0 (backlight fully off) state. Called ONLY from the Hold switch and Power, which are
+// the two controls a user can find without seeing the screen.
+//
+// Backlight-off is a real setting now rather than a transient blank: it survives touches, so the
+// player can sit dark in a pocket while it plays. That makes the way back matter, so there are
+// three, and they do not share a dependency: the Hold switch, the Power button, and a reboot (boot
+// always applies the DAY level regardless of what is stored — see the boot path).
 void brightness_wake_on_input() {
     if (g_bl_zero_at == 0) return;
     if (now_ms() - g_bl_zero_at < 400) return;   // debounce the selecting gesture's own release
@@ -1570,7 +1609,7 @@ void apply_brightness() {
     set_backlight(cinder_get_night());
     // Arm (or disarm) the "any input brings it back" escape.
     g_bl_zero_at = (cinder_get_brightness() == 0) ? now_ms() : 0;
-    if (g_bl_zero_at) clog_("backlight: BACKLIGHT OFF (transient — next input restores it)");
+    if (g_bl_zero_at) clog_("backlight: BACKLIGHT OFF — Hold switch, Power or a reboot restores it");
 }
 
 // ── Boot to stock (Settings ▸ Boot to stock, after the row's two-tap confirm) ─────────────────
@@ -1700,21 +1739,73 @@ static bool g_touch_wake_swallow = false;
 // Returns true if the service accepted the call; false means "not available, use the node path".
 // The client is built once and kept — CreateInstance is a binder handshake, and this is called on
 // every screen toggle.
-static bool touch_panel_service(bool valid) {
-    enum { VIDX_SetTouchPanelValidate = 13 };
+// One DisplayServiceClient, shared by the touch-panel switch and the backlight. Built lazily and
+// kept: CreateInstance is a binder handshake and both callers run on user gestures.
+static void* display_client() {
     static void* cli = nullptr;
     static bool tried = false;
-    if (!tried) {
-        tried = true;
-        void* h = dlopen("libDisplayService.so", RTLD_NOW);
-        if (!h) { clog_("touch: libDisplayService.so unavailable — falling back to the sysfs node"); return false; }
-        typedef void* (*mk)(void);
-        mk f = (mk)dlsym(h, "_ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv");
-        if (!f) { clog_("touch: DisplayServiceClientFactory symbol missing"); return false; }
-        try { cli = f(); } catch (...) { cli = nullptr; }
-        clog_(cli ? "touch: DisplayServiceClient ready (SetTouchPanelValidate)"
-                  : "touch: DisplayServiceClientFactory returned null");
-    }
+    if (tried) return cli;
+    tried = true;
+    void* h = dlopen("libDisplayService.so", RTLD_NOW);
+    if (!h) { clog_("display: libDisplayService.so unavailable — sysfs node only"); return nullptr; }
+    typedef void* (*mk)(void);
+    mk f = (mk)dlsym(h, "_ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv");
+    if (!f) { clog_("display: DisplayServiceClientFactory symbol missing"); return nullptr; }
+    try { cli = f(); } catch (...) { cli = nullptr; }
+    clog_(cli ? "display: DisplayServiceClient ready" : "display: DisplayServiceClientFactory returned null");
+    return cli;
+}
+
+// THE BACKLIGHT SWITCH THAT ACTUALLY OWNS THE PANEL.
+//
+// `/sys/class/leds/lcd-backlight/brightness` is not it. Measured 2026-08-19: the node read 0 while
+// the panel was still lit and DisplayService reported its own level of 2 — Sony's service holds the
+// value and the LED node does not override it. So "brightness 0" dimmed nothing and the backlight
+// kept drawing power, which is exactly what was reported.
+//
+// Slot 11 is `SetLCDBacklightBrightness(const uint32_t&)`. Used ONLY for the fully-off case and the
+// restore from it: the service's scale is its own (it sat at 2, against the node's 0..255), so the
+// day/night levels stay with the node rather than guessing a mapping. The level to come back to is
+// whatever the service reported before we first touched it.
+static bool display_backlight(unsigned level) {
+    enum { VIDX_SetLCDBacklightBrightness = 11, VIDX_GetLCDBacklightBrightness = 12 };
+    // Skip a write that changes nothing. Every theme toggle and brightness step calls through here
+    // and this is a synchronous binder round trip on the render thread — the same thread a drag has
+    // to keep up with. Observed sending the identical level five times in one session.
+    static unsigned last = 0xFFFFFFFFu;
+    if (level == last) return true;
+    void* cli = display_client();
+    if (!cli) return false;
+    void** vt = *(void***)cli;
+    try {
+        typedef void (*fnwu)(void*, const unsigned*);
+        ((fnwu)vt[VIDX_SetLCDBacklightBrightness])(cli, &level);
+    } catch (...) { clog_("display: SetLCDBacklightBrightness threw"); return false; }
+    last = level;
+    char m[96];
+    std::snprintf(m, sizeof m, "display: SetLCDBacklightBrightness(%u)", level);
+    clog_(m);
+    return true;
+}
+
+/// The service's own level before we ever wrote it — what a restore goes back to. 0 = not read yet.
+unsigned g_disp_bl_saved = 0;
+
+static void display_backlight_remember() {
+    if (g_disp_bl_saved) return;
+    void* cli = display_client();
+    if (!cli) return;
+    unsigned cur = 0;
+    try {
+        typedef void (*fnru)(void*, unsigned*);
+        ((fnru)(*(void***)cli)[12])(cli, &cur);
+    } catch (...) { return; }
+    if (cur > 0) g_disp_bl_saved = cur;
+}
+
+static bool touch_panel_service(bool valid) {
+    enum { VIDX_SetTouchPanelValidate = 13 };
+    void* cli = display_client();
     if (!cli) return false;
     try {
         typedef int (*fnb)(void*, const bool*);
@@ -6318,6 +6409,20 @@ static void touch_drag_motion() {
                 return;
             }
             g_drag_active = true;
+            // CATCH UP THE SLOP. The 12 px that classified this contact as a drag are real finger
+            // movement, and anchoring the drag at the CURRENT position threw them away: every
+            // delta after this was measured from here, so the list sat a constant 12 px behind the
+            // finger for the whole gesture and never recovered. Reported 2026-08-19 as the library
+            // feeling laggy under a drag — the frame rate was fine (78 fps pipelined, measured),
+            // it was the content trailing the finger by a fixed offset the entire time.
+            //
+            // Dispatching the accumulated delta once, here, makes the list track the finger 1:1
+            // from the point it went down. The classification threshold is untouched, so nothing
+            // changes about which contacts become taps.
+            {
+                const int catch_up = uy - touch_ui_y(g_touch_start_y);
+                if (catch_up != 0) cinder_touch_drag(-catch_up);
+            }
             g_drag_last_uy = uy;
             g_drag_last_ms = now_ms();
             g_drag_vel = 0.0f;
@@ -6627,6 +6732,9 @@ void input_pump() {
                 // /contents/cinder_keymap.conf from the dev keycode log.
                 if ((type == EV_KEY_ || type == EV_SW_) && code < keymap_size()
                         && g_keymap[code] == CINDER_BTN_HOLD) {
+                    // ESCAPE from a level-0 backlight. Here rather than with the other buttons
+                    // because this branch `continue`s — the switch never reaches them.
+                    brightness_wake_on_input();
                     cinder_set_hold(val ? 1 : 0);
                     g_held = (val != 0);     // the auto-wake path needs it (pocket-safety, below)
                     g_last_input_ms = now_ms();   // flicking the switch is deliberate activity
@@ -6700,6 +6808,10 @@ void input_pump() {
                 if (val == 1) {
                     g_last_input_ms = now_ms();
                     if (g_screen_auto_off && btn != CINDER_BTN_POWER) screen_auto_wake();
+                    // The second escape from a level-0 backlight, and it must be taken BEFORE the
+                    // Power block below — that one `continue`s once the hold gesture is armed, so
+                    // a call placed after it would never run on a normal press.
+                    if (btn == CINDER_BTN_POWER) brightness_wake_on_input();
                 }
                 if (btn == CINDER_BTN_VOLUP || btn == CINDER_BTN_VOLDOWN) {
                     if (val == 1) { g_vol_btn = btn; g_vol_down_ms = now_ms(); }
@@ -6729,11 +6841,10 @@ void input_pump() {
     vol_repeat_tick();
     // Same idea for Power: the menu opens on elapsed time, not on an event, so it needs a tick.
     power_hold_tick();
-    // ANY input at all cancels a level-0 (backlight off) blank. Checked here — once, after the
-    // drain — rather than at each of the seven places that stamp g_last_input_ms, so no input
-    // path can be added later that forgets to provide the escape. It reads a single global and
-    // returns immediately unless the blank is actually armed.
-    if (g_ev_total != ev_before) brightness_wake_on_input();
+    // A level-0 blank is ended by the HOLD switch or POWER only — see brightness_wake_on_input.
+    // It used to end on ANY input, which made "backlight off" last exactly until the next touch:
+    // the pocket case (screen dark, music playing) was the one it could not do, because a stray
+    // touch through fabric lit the panel straight back up.
 }
 
 // Battery percent from sysfs (best-effort; 100 if unavailable).

@@ -2960,6 +2960,81 @@ enum { VIDX_SetLCDValidate = 8, VIDX_GetLCDValidate = 10,
        VIDX_SetLCDBacklightBrightness = 11, VIDX_GetLCDBacklightBrightness = 12,
        VIDX_SetTouchPanelValidate = 13, VIDX_GetTouchPanelValidate = 14 };
 
+// ── --displight <level> [restore_secs] : the backlight control that actually OWNS the panel ──
+//
+// Writing 0 to /sys/class/leds/lcd-backlight/brightness does NOT turn the panel off on this
+// firmware: measured 2026-08-19 with the node reading 0 while the panel was lit and
+// DisplayService reporting `backlight=2`. The LED node is not the effective control — Sony's
+// DisplayService owns the level and re-asserts it — so the switch is slot 11,
+// `SetLCDBacklightBrightness(const uint32_t&)`.
+//
+// Backlight only: the LCD and the touch panel stay VALID, unlike --dispoff. A restore child is
+// armed first regardless, because the whole point of the test is a screen you cannot read.
+static int displight_probe(unsigned level, int restore_secs) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* d = _ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv();
+    if (!d) { clog_("displight: DisplayServiceClientFactory returned null"); g_pump_run = false; _exit(1); }
+    typedef void (*fnru)(void*, unsigned*);
+    typedef void (*fnwu)(void*, const unsigned*);
+
+    unsigned before = 0xDEADu;
+    wd_arm(10);
+    try { ((fnru)vslot(d, VIDX_GetLCDBacklightBrightness))(d, &before); } catch (...) {}
+    wd_disarm();
+    char node[16] = "?";
+    {
+        FILE* nf = std::fopen("/sys/class/leds/lcd-backlight/brightness", "r");
+        if (nf) {
+            if (!std::fgets(node, sizeof node, nf)) std::strcpy(node, "?");
+            std::fclose(nf);
+            char* nl = std::strpbrk(node, "\r\n");
+            if (nl) *nl = 0;
+        }
+    }
+    std::fprintf(stderr, "[cinder-probe] displight: before=%u (service)  node=%s\n", before, node);
+
+    if (restore_secs > 0) {
+        pid_t kid = fork();
+        if (kid == 0) {
+            signal(SIGHUP, SIG_IGN); signal(SIGINT, SIG_IGN); signal(SIGTERM, SIG_IGN);
+            setsid();
+            for (int i = 0; i < restore_secs; i++) sleep(1);
+            void* d2 = _ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv();
+            const unsigned back = (before == 0xDEADu || before == 0) ? 5u : before;
+            if (d2) { try { ((fnwu)vslot(d2, VIDX_SetLCDBacklightBrightness))(d2, &back); } catch (...) {} }
+            FILE* f = std::fopen("/sys/class/leds/lcd-backlight/brightness", "w");
+            if (f) { std::fputs("5", f); std::fclose(f); }
+            _exit(0);
+        }
+        std::fprintf(stderr, "[cinder-probe] displight: restore child pid=%d armed (+%ds)\n",
+                     (int)kid, restore_secs);
+    }
+
+    wd_arm(10);
+    try { ((fnwu)vslot(d, VIDX_SetLCDBacklightBrightness))(d, &level); }
+    catch (...) { clog_("displight: SetLCDBacklightBrightness threw"); }
+    wd_disarm();
+    sleep(1);
+    unsigned after = 0xDEADu;
+    wd_arm(10);
+    try { ((fnru)vslot(d, VIDX_GetLCDBacklightBrightness))(d, &after); } catch (...) {}
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] displight: SetLCDBacklightBrightness(%u) -> reads %u  "
+                         "(LOOK AT THE PANEL NOW)\n", level, after);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 static int disp_probe(int off_secs) {
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
@@ -6076,6 +6151,11 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--disp") == 0) {
         return disp_probe(0);   // read-only
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--displight") == 0) {
+        // --displight <level> [restore_secs]  — backlight only; LCD + touch stay valid.
+        return displight_probe(argc > 2 ? (unsigned)std::strtoul(argv[2], nullptr, 10) : 0u,
+                               argc > 3 ? std::atoi(argv[3]) : 20);
     }
     if (argc > 1 && std::strcmp(argv[1], "--dispoff") == 0) {
         // Seconds to hold the panel powered down (default 20). Arms a restore child first.
