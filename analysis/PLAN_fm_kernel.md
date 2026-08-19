@@ -1,3 +1,27 @@
+> # ⚠️ SUPERSEDED — DO NOT START A KERNEL MODULE
+>
+> This document concluded that kernel code was the only remaining route to real RSSI and hardware
+> seek. **That is wrong.** The device exposes a register monitor:
+>
+> ```
+> /proc/regmon/Si4708icx/target    rw-rw-rw-
+> /proc/regmon/Si4708icx/value     rw-rw-rw-
+> ```
+>
+> (siblings: `afe_reg`, `bq24262`, `cxd3778gf`, `mt6323` — the same interface for the codec, the
+> charger and the PMIC.)
+>
+> That is **full Si4708 register read/write from userspace**, world-writable, no module, no kernel
+> source, and none of the brick risk this plan spends its last section on. Write the register index
+> to `target`, read or write `value`.
+>
+> Everything below about WHICH registers matter (`STATUSRSSI` for real RSSI and `STC`, `POWERCFG`
+> for `SEEK`/`SEEKUP`, `SYSCONFIG2` for the threshold) is still correct and still the point — only
+> the delivery mechanism was wrong. Read the register table, ignore the build/risk sections.
+>
+> The direct-I2C failure that led here was real (`/dev/i2c-2` refuses userspace transfers), but it
+> was not the only userspace path and I did not look for another before concluding.
+
 # Getting real RSSI and hardware seek out of the Si4708 — the kernel plan
 
 Written 2026-08-18, at the end of a session that took the userspace routes as far as they go. This

@@ -38,6 +38,8 @@
 #include <functional>
 #include <cerrno>
 #include <stddef.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <alsa/asoundlib.h>
@@ -775,6 +777,127 @@ static void mac_str(const std::vector<unsigned char>& a, char* out, size_t cap) 
         n += std::snprintf(out + n, cap - n, b ? ":%02X" : "%02X", a[b]);
 }
 
+enum { BL_GetAvSrc = 3, BL_GetAvrcp = 4, BL_GetConnInfo = 5, BL_RequestConnection = 6,
+       BL_RequestLastDeviceConnection = 7, BL_RequestDisconnection = 8,
+       BL_RequestStartConnectWait = 10, BL_RequestStopConnectWait = 11,
+       BL_SetConnectRetryMode = 27, BL_GetConnectRetryMode = 28 };
+enum { BL_GetBtStatus = 3, BL_SetRfOnOff = 4, BL_GetPairedDeviceInfo = 20,
+       BL_GetRssi = 25, BL_SetHciLogEnabled = 26,
+       BL_CmnAddListener = 30, BL_CmnRemoveListener = 31 };
+
+static double bl_now() {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return (double)tv.tv_sec + tv.tv_usec / 1e6;
+}
+
+// One line of "where is the link right now", cheap enough to run four times a second.
+struct BlState {
+    int bt = -1, avsrc = -1, avrcp = -1;
+    std::vector<unsigned char> addr;
+    std::string name;
+    bool linked() const { return !addr.empty(); }
+};
+
+static void bl_read(void* x, void* cmn, BlState& s) {
+    typedef int (*fn0)(void*);
+    typedef int (*fn2)(void*, std::vector<unsigned char>*, std::string*);
+    s.addr.clear();
+    s.name.clear();
+    try {
+        if (cmn) s.bt    = ((fn0)vslot(cmn, BL_GetBtStatus))(cmn);
+        if (x)   s.avsrc = ((fn0)vslot(x, BL_GetAvSrc))(x);
+        if (x)   s.avrcp = ((fn0)vslot(x, BL_GetAvrcp))(x);
+        if (x)   ((fn2)vslot(x, BL_GetConnInfo))(x, &s.addr, &s.name);
+    } catch (...) { clog_("btlink: a status read threw"); }
+}
+
+static void bl_print(const BlState& s, double t0, const char* tag) {
+    char mac[24] = "-";
+    if (s.addr.size() == 6) mac_str(s.addr, mac, sizeof mac);
+    std::fprintf(stderr, "[cinder-probe] btlink: t+%6.2fs  bt=%d avsrc=%d avrcp=%d  %s '%s'  %s\n",
+                 bl_now() - t0, s.bt, s.avsrc, s.avrcp, mac, s.name.c_str(), tag ? tag : "");
+}
+
+// Poll until a link appears (or `secs` runs out), printing only when something CHANGES — a status
+// line every 250 ms is unreadable, and the transitions are the measurement.
+static bool bl_wait_link(void* x, void* cmn, double t0, int secs, const char* what) {
+    BlState prev;
+    bl_read(x, cmn, prev);
+    bl_print(prev, t0, "(before)");
+    const double deadline = bl_now() + secs;
+    while (bl_now() < deadline) {
+        usleep(250000);
+        BlState s;
+        bl_read(x, cmn, s);
+        if (s.bt != prev.bt || s.avsrc != prev.avsrc || s.avrcp != prev.avrcp ||
+            s.addr != prev.addr) {
+            bl_print(s, t0, s.linked() ? "<== LINK" : "");
+            prev = s;
+            if (s.linked()) {
+                std::fprintf(stderr, "[cinder-probe] btlink: *** %s produced a link in %.2f s ***\n",
+                             what, bl_now() - t0);
+                return true;
+            }
+        }
+    }
+    std::fprintf(stderr, "[cinder-probe] btlink: %s — NO link after %d s\n", what, secs);
+    return false;
+}
+
+// ── --fontchain : what one codepoint costs, on the device, in real memory ──────────────────────
+//
+// `text::resolve` walks the Sony fallback chain for any codepoint the bundled fonts lack, LOADING
+// each font in turn until one covers it. For a codepoint nothing covers, that loads all five —
+// including DFPGothicPW5 (10 MB on disk, far more once parsed) — on a 467 MB device. The host
+// tests cannot see this: on a desktop it is free.
+//
+// Written 2026-08-19 chasing "the device crashes on the 3rd page of the welcome screens". That
+// page is the only one whose text contains U+25B8 (the "Settings ▸ Theme" arrow), and U+25B8 is in
+// NONE of the bundled fonts and NONE of the five Sony fallbacks — the worst case above.
+//
+// Read-only and self-contained: it renders nothing, touches no service, and prints VmRSS around
+// each character so the cost lands on the exact codepoint that caused it.
+extern "C" int cinder_font_probe(unsigned cp);
+
+static long fc_rss_kb() {
+    FILE* f = std::fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    char line[256];
+    long kb = -1;
+    while (std::fgets(line, sizeof line, f))
+        if (std::strncmp(line, "VmRSS:", 6) == 0) { kb = std::atol(line + 6); break; }
+    std::fclose(f);
+    return kb;
+}
+
+static int fontchain_probe(int argc, char** argv) {
+    struct { unsigned cp; const char* what; } probes[] = {
+        { 0x0041, "'A'  ASCII — never walks the chain" },
+        { 0x00B7, "'.'  U+00B7 middle dot — bundled" },
+        { 0x2014, "'-'  U+2014 em dash — bundled" },
+        { 0x25C1, "     U+25C1 white left triangle — JetBrains Mono has it (Controls page)" },
+        { 0x25B8, "     U+25B8 black right small triangle — NOTHING has it (Features page)" },
+        { 0x65E5, "     U+65E5 CJK 'day' — a real fallback hit" },
+    };
+    unsigned only = 0;
+    if (argc > 2) only = (unsigned)std::strtoul(argv[2], nullptr, 0);
+
+    std::fprintf(stderr, "[cinder-probe] fontchain: VmRSS at start = %ld kB\n", fc_rss_kb());
+    for (unsigned i = 0; i < sizeof probes / sizeof probes[0]; i++) {
+        if (only && probes[i].cp != only) continue;
+        long before = fc_rss_kb();
+        int id = cinder_font_probe(probes[i].cp);
+        long after = fc_rss_kb();
+        std::fprintf(stderr, "[cinder-probe] fontchain: U+%04X %-62s -> font id %3d   "
+                     "VmRSS %ld -> %ld kB  (%+ld)\n",
+                     probes[i].cp, probes[i].what, id, before, after, after - before);
+    }
+    std::fprintf(stderr, "[cinder-probe] fontchain: VmRSS at end = %ld kB  "
+                 "(font id 255 = nothing covered it and the WHOLE chain was loaded)\n", fc_rss_kb());
+    return 0;
+}
+
 static int btinfo_probe() {
     install_diagnostics();
 
@@ -1013,6 +1136,12 @@ struct ProbeNfcListener {
         std::fprintf(stderr, "[cinder-probe] nfc: *** BLUETOOTH OOB TAG — addr=%s (%zu bytes) ***\n",
                      mac, addr->size());
         nfc_dump_payload(oob, "oob");
+        // Kept for --nfctap, which measures tap -> link. The callback runs on the framework looper,
+        // so this is written there and read by the main thread; a word-sized flag published last is
+        // enough ordering for a probe (cinder-home does the same thing under a mutex).
+        try { last_addr = *addr; } catch (...) { last_addr.clear(); }
+        t_tap = bl_now();
+        tapped = 1;
     }
     virtual void OnUnknownTag(const void* tag) {                    // slot 3
         taps++;
@@ -1026,6 +1155,9 @@ struct ProbeNfcListener {
         clog_("nfc: OnHostCardEmulation");
     }
     int taps = 0;
+    std::vector<unsigned char> last_addr;
+    double t_tap = 0;
+    volatile sig_atomic_t tapped = 0;
 };
 
 static int nfc_probe(int secs, unsigned want_mode) {
@@ -1253,6 +1385,111 @@ struct ProbeRxListener {
 };
 
 extern "C" void* _ZN3pst8services28BtPlayerServiceClientFactory14CreateInstanceEv(void);
+
+// ── --nfctap : how long does tap-to-pair actually take, end to end? ────────────────────────────
+//
+// "Make the tap work and make it faster" needs numbers before it needs code, and cinder-home's own
+// path has none — its log has no timestamps. This arms the reader exactly as the Home app does
+// (Open, Start(1), listener) and then times the three stages a user experiences as one:
+//
+//   arm -> OnBluetoothOob        the NFC read itself (hardware + Sony's stack)
+//   callback -> RequestConnection  what the app adds
+//   RequestConnection -> link      the radio
+//
+// Safe to run while cinder-home is up: NfcService accepts more than one listener, and a Start on an
+// already-started reader returns 3 ("already") rather than disturbing it.
+static int nfctap_probe(int secs) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* nfc = _ZN3pst8services23NfcServiceClientFactory14CreateInstanceEv();
+    void* x   = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    void* cmn = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    if (!nfc || !x || !cmn) { clog_("nfctap: a client factory returned NULL"); _exit(1); }
+
+    enum { N_Open = 4, N_Start = 5, N_Stop = 7, N_Close = 8, N_GetMode = 9,
+           N_AddListener = 10, N_RemoveListener = 11 };
+    typedef int (*fn0)(void*);
+    typedef int (*fnu)(void*, const unsigned*);
+    typedef int (*fnadd)(void*, void*, const std::string*);
+    typedef int (*fnrem)(void*, unsigned);
+    typedef int (*fna)(void*, const std::vector<unsigned char>*);
+    typedef int (*fnpaired)(void*, std::vector<BtPairedDeviceInformation>*);
+
+    const double t0 = bl_now();
+    static ProbeNfcListener listener;   // static: the proxy keeps a RAW pointer
+    std::string key("");
+    wd_arm(12);
+    try { ((fnadd)vslot(nfc, N_AddListener))(nfc, (void*)&listener, &key); }
+    catch (...) { clog_("nfctap: AddListener threw"); }
+    wd_disarm();
+    int rc_open = -1, rc_start = -1, md = -1;
+    unsigned mode = 1;
+    wd_arm(12);
+    try {
+        rc_open  = ((fn0)vslot(nfc, N_Open))(nfc);
+        rc_start = ((fnu)vslot(nfc, N_Start))(nfc, &mode);
+        md       = ((fn0)vslot(nfc, N_GetMode))(nfc);
+    } catch (...) { clog_("nfctap: bring-up threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] nfctap: Open rc=%d  Start(1) rc=%d (0 ok / 3 already)  "
+                 "mode=%d  armed in %.2f s\n", rc_open, rc_start, md, bl_now() - t0);
+
+    std::vector<BtPairedDeviceInformation> paired;
+    try { ((fnpaired)vslot(cmn, BL_GetPairedDeviceInfo))(cmn, &paired); } catch (...) {}
+
+    std::fprintf(stderr, "[cinder-probe] nfctap: TAP THE HEADPHONES ON THE REAR PANEL NOW (%d s)\n", secs);
+    const double t_arm = bl_now();
+    const double deadline = t_arm + secs;
+    while (bl_now() < deadline && !listener.tapped) usleep(50000);
+
+    if (!listener.tapped) {
+        std::fprintf(stderr, "[cinder-probe] nfctap: no tag in %d s — nothing to time\n", secs);
+    } else {
+        std::vector<unsigned char> addr = listener.last_addr;
+        char mac[24] = "-";
+        mac_str(addr, mac, sizeof mac);
+        std::fprintf(stderr, "[cinder-probe] nfctap: TAP  %s  at t+%.2f s (%.2f s after the reader "
+                     "was armed)\n", mac, listener.t_tap - t0, listener.t_tap - t_arm);
+        bool bonded = false;
+        for (size_t i = 0; i < paired.size(); i++) if (paired[i].addr == addr) bonded = true;
+        std::fprintf(stderr, "[cinder-probe] nfctap: %s\n",
+                     bonded ? "already bonded -> RequestConnection (the common case)"
+                            : "NOT bonded -> a real pairing would be needed; only timing the read");
+        if (bonded && addr.size() == 6) {
+            const double t_req = bl_now();
+            int rc = -1;
+            wd_arm(12);
+            try { rc = ((fna)vslot(x, BL_RequestConnection))(x, &addr); }
+            catch (...) { clog_("nfctap: RequestConnection threw"); }
+            wd_disarm();
+            std::fprintf(stderr, "[cinder-probe] nfctap: RequestConnection rc=%d, %.0f ms after the "
+                         "callback\n", rc, (t_req - listener.t_tap) * 1000.0);
+            bl_wait_link(x, cmn, listener.t_tap, 30, "tap -> RequestConnection");
+        }
+    }
+
+    wd_arm(12);
+    try {
+        // Leave the reader as we found it: if it was already running (rc 3) it belongs to
+        // cinder-home, and stopping it would disarm the Home app's tap-to-pair for the rest of the
+        // boot.
+        if (rc_start == 0) { ((fn0)vslot(nfc, N_Stop))(nfc); ((fn0)vslot(nfc, N_Close))(nfc); }
+        ((fnrem)vslot(nfc, N_RemoveListener))(nfc, (unsigned)(uintptr_t)&listener);
+    } catch (...) {}
+    wd_disarm();
+
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
 
 static int btrx_probe(int secs) {
     install_diagnostics();
@@ -1538,6 +1775,229 @@ static int btscan_probe(int secs) {
     std::fflush(nullptr);
     _exit(0);
 }
+
+// ── --btlink : the reconnect path, measured — and the two Sony calls Cinder never makes ─────────
+//
+// Task: "reconnecting to paired devices" and "tap-to-pair, faster". Both are already implemented in
+// cinder-home, so the question is not whether the calls exist but WHAT THE RADIO DOES WITH THEM and
+// how long it takes. This measures that without a rebuild or a reboot: every subcommand is one
+// request plus a 250 ms status poll with timestamps.
+//
+// Two transmitter methods are in the recovered vtable and are called by NOTHING in this project
+// (grep: only the sink-side BtPlayerService equivalents are used):
+//
+//   slot 10  RequestStartConnectWait()                       — accept an INCOMING connection.
+//   slot 27  SetConnectRetryMode(const bool&, const u32&, const u32&) — the service's own retry
+//            worker (`BtTransmitterService::ConnectRetryWorkThread(const uint32_t&, const uint32_t&)`
+//            exists in the same binary, so the two u32s are that thread's interval and count).
+//
+// If connect-wait is what makes a headphone's own power-on reconnect land, that is the whole
+// "reconnect is slow" complaint: Cinder's backoff starts at 10 s and doubles to 300 s, so a
+// headphone switched on during the long part of that curve waits minutes for a link the radio could
+// have accepted immediately.
+//
+// Everything here is reversible and does nothing a user could not do from the Bluetooth screen:
+// connect, disconnect, and two mode flags that are restored unless `keep` is passed.
+static int btlink_probe(const char* sub, const char* a1, int a2, int a3, bool keep) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* x   = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    void* cmn = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
+    if (!x || !cmn) { clog_("btlink: no transmitter/common client"); _exit(1); }
+
+    typedef int (*fn0)(void*);
+    typedef void (*fnb)(void*, const bool*);
+    typedef int (*fna)(void*, const std::vector<unsigned char>*);
+    typedef int (*fnretry)(void*, const bool*, const unsigned*, const unsigned*);
+    typedef int (*fnpaired)(void*, std::vector<BtPairedDeviceInformation>*);
+
+    const double t0 = bl_now();
+
+    // The radio has to be up for any of this to mean anything, and 7 is OFF (not a wedge —
+    // reference_bt_radio_wedge). Powering it up here is the same call the Settings switch makes.
+    int st = -1;
+    try { st = ((fn0)vslot(cmn, BL_GetBtStatus))(cmn); } catch (...) {}
+    if (st != 2 && st != 3) {
+        bool on = true;
+        clog_("btlink: radio is not up — SetRfOnOff(true)");
+        wd_arm(10);
+        try { ((fnb)vslot(cmn, BL_SetRfOnOff))(cmn, &on); } catch (...) {}
+        wd_disarm();
+        for (int i = 0; i < 25; i++) {
+            usleep(200000);
+            try { st = ((fn0)vslot(cmn, BL_GetBtStatus))(cmn); } catch (...) {}
+            if (st == 2 || st == 3) break;
+        }
+        std::fprintf(stderr, "[cinder-probe] btlink: radio status now %d after %.2f s\n",
+                     st, bl_now() - t0);
+    }
+
+    // The paired table, because every addressed subcommand indexes into it.
+    std::vector<BtPairedDeviceInformation> paired;
+    try { ((fnpaired)vslot(cmn, BL_GetPairedDeviceInfo))(cmn, &paired); }
+    catch (...) { clog_("btlink: GetPairedDeviceInfo threw"); }
+    for (size_t i = 0; i < paired.size(); i++) {
+        char mac[24] = "-";
+        if (paired[i].addr.size() == 6) mac_str(paired[i].addr, mac, sizeof mac);
+        std::fprintf(stderr, "[cinder-probe] btlink: paired[%zu] %s '%s'\n",
+                     i, mac, paired[i].name.c_str());
+    }
+
+    // ── status: read-only. Also the only place GetConnectRetryMode has ever been called.
+    if (!sub || std::strcmp(sub, "status") == 0) {
+        int retry = -1;
+        wd_arm(10);
+        try { retry = ((fn0)vslot(x, BL_GetConnectRetryMode))(x); } catch (...) { clog_("btlink: GetConnectRetryMode threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btlink: GetConnectRetryMode() = %d\n", retry);
+        BlState s;
+        bl_read(x, cmn, s);
+        bl_print(s, t0, "(status)");
+        g_pump_run = false;
+        std::fflush(nullptr);
+        _exit(0);
+    }
+
+    // ── last: the zero-argument reconnect cinder-home's backoff timer uses. (An ADDRESSED connect
+    //    is --btconnect <row>, which already exists and is not duplicated here.)
+    if (std::strcmp(sub, "last") == 0) {
+        int rc = -1;
+        wd_arm(12);
+        try { rc = ((fn0)vslot(x, BL_RequestLastDeviceConnection))(x); }
+        catch (...) { clog_("btlink: RequestLastDeviceConnection threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btlink: RequestLastDeviceConnection() rc=%d\n", rc);
+        bl_wait_link(x, cmn, t0, a2 > 0 ? a2 : 30, "RequestLastDeviceConnection");
+    }
+    // ── wait S: become connectable and let the HEADPHONES do the connecting. Switch them on
+    //    during the window. If this lands, incoming reconnect is a radio feature Cinder is simply
+    //    not enabling, and the whole backoff ladder is the wrong mechanism.
+    else if (std::strcmp(sub, "wait") == 0) {
+        int rc = -1;
+        wd_arm(12);
+        try { rc = ((fn0)vslot(x, BL_RequestStartConnectWait))(x); }
+        catch (...) { clog_("btlink: RequestStartConnectWait threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btlink: RequestStartConnectWait() rc=%d — "
+                     "SWITCH THE HEADPHONES ON NOW (%d s)\n", rc, a2 > 0 ? a2 : 45);
+        bl_wait_link(x, cmn, t0, a2 > 0 ? a2 : 45, "connect-wait (incoming)");
+        if (!keep) {
+            wd_arm(12);
+            try { ((fn0)vslot(x, BL_RequestStopConnectWait))(x); } catch (...) {}
+            wd_disarm();
+            clog_("btlink: RequestStopConnectWait() — connectable window closed again");
+        } else {
+            clog_("btlink: connect-wait LEFT ON (keep)");
+        }
+    }
+    // ── retry on|off [interval_s] [count]: the service-side retry worker.
+    else if (std::strcmp(sub, "retry") == 0) {
+        bool on = a1 && (std::strcmp(a1, "on") == 0 || std::strcmp(a1, "1") == 0);
+        unsigned iv = a2 > 0 ? (unsigned)a2 : 5, cnt = a3 > 0 ? (unsigned)a3 : 10;
+        int before = -1, rc = -1, after = -1;
+        wd_arm(10);
+        try { before = ((fn0)vslot(x, BL_GetConnectRetryMode))(x); } catch (...) {}
+        wd_disarm();
+        wd_arm(12);
+        try { rc = ((fnretry)vslot(x, BL_SetConnectRetryMode))(x, &on, &iv, &cnt); }
+        catch (...) { clog_("btlink: SetConnectRetryMode threw"); }
+        wd_disarm();
+        wd_arm(10);
+        try { after = ((fn0)vslot(x, BL_GetConnectRetryMode))(x); } catch (...) {}
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btlink: SetConnectRetryMode(%s, %u, %u) rc=%d  "
+                     "GetConnectRetryMode %d -> %d\n", on ? "true" : "false", iv, cnt, rc,
+                     before, after);
+        // With retry ON, a request that fails should be re-tried BY THE SERVICE. Watch for that.
+        if (on && a2 >= 0) bl_wait_link(x, cmn, t0, 40, "retry-mode window");
+    }
+    // ── hci on|off: Sony's own HCI trace. mtkbt writes /tmp/hci_sniffer_log_<stamp>.cfa — the
+    //    failure channel this stack otherwise does not have.
+    else if (std::strcmp(sub, "hci") == 0) {
+        bool on = a1 && (std::strcmp(a1, "on") == 0 || std::strcmp(a1, "1") == 0);
+        int rc = -1;
+        wd_arm(12);
+        try { ((fnb)vslot(cmn, BL_SetHciLogEnabled))(cmn, &on); rc = 0; }
+        catch (...) { clog_("btlink: SetHciLogEnabled threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btlink: SetHciLogEnabled(%s)%s — look for "
+                     "/tmp/hci_sniffer_log_*.cfa\n", on ? "true" : "false",
+                     rc == 0 ? "" : " THREW");
+        DIR* d = opendir("/tmp");
+        if (d) {
+            struct dirent* de;
+            while ((de = readdir(d))) {
+                if (std::strncmp(de->d_name, "hci_sniffer_log", 15) != 0) continue;
+                char p[256];
+                std::snprintf(p, sizeof p, "/tmp/%s", de->d_name);
+                struct stat sb;
+                if (stat(p, &sb) == 0)
+                    std::fprintf(stderr, "[cinder-probe] btlink:   %s  %ld bytes\n",
+                                 p, (long)sb.st_size);
+            }
+            closedir(d);
+        }
+    }
+    // ── rssi S: GetRssi (BtCommon slot 25) answers over OnNotifyRssi, so this needs the listener.
+    //    Untested until now with a device actually CONNECTED — the 2026-07-30 round called it on an
+    //    idle radio and read the silence as "wrong reply path".
+    else if (std::strcmp(sub, "rssi") == 0) {
+        static ProbeBtListener listener;
+        typedef int (*fnadd)(void*, void*, const std::string*);
+        std::string key("");
+        int id = -1;
+        wd_arm(12);
+        try { id = ((fnadd)vslot(cmn, BL_CmnAddListener))(cmn, (void*)&listener, &key); }
+        catch (...) { clog_("btlink: AddListener threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btlink: AddListener -> %d\n", id);
+        const int secs = a2 > 0 ? a2 : 10;
+        for (int i = 0; i < secs; i++) {
+            int rr = -1;
+            wd_arm(10);
+            try { rr = ((fn0)vslot(cmn, BL_GetRssi))(cmn); } catch (...) {}
+            wd_disarm();
+            BlState s;
+            bl_read(x, cmn, s);
+            std::fprintf(stderr, "[cinder-probe] btlink: GetRssi rc=%d  (callbacks so far %d)  "
+                         "avsrc=%d link='%s'\n", rr, listener.calls, s.avsrc, s.name.c_str());
+            usleep(1000000);
+        }
+        typedef int (*fnrem)(void*, unsigned);
+        wd_arm(12);
+        try { ((fnrem)vslot(cmn, BL_CmnRemoveListener))(cmn, (unsigned)(uintptr_t)&listener); } catch (...) {}
+        wd_disarm();
+    }
+    // ── drop: disconnect, so a reconnect test starts from a known state.
+    else if (std::strcmp(sub, "drop") == 0) {
+        int rc = -1;
+        wd_arm(12);
+        try { rc = ((fn0)vslot(x, BL_RequestDisconnection))(x); }
+        catch (...) { clog_("btlink: RequestDisconnection threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btlink: RequestDisconnection() rc=%d\n", rc);
+        BlState s;
+        for (int i = 0; i < 12; i++) { usleep(500000); bl_read(x, cmn, s); if (!s.linked()) break; }
+        bl_print(s, t0, s.linked() ? "(still linked)" : "(dropped)");
+    }
+    else {
+        clog_("btlink: usage: --btlink status | conn <row> [secs] | last [secs] | wait [secs] [keep] "
+              "| retry on|off [interval] [count] | hci on|off | rssi [secs] | drop");
+    }
+
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 
 // ── --pollnodes : which /dev/input node makes poll() spin? ──────────────────────────────────────
 // The render loop's dark sleep became poll() on every input node (2026-08-11) and cinder-home's
@@ -5501,8 +5961,30 @@ int main(int argc, char** argv) {
         unsigned secs  = argc > 5 ? (unsigned)std::atoi(argv[5]) : 3u;
         return btopen_probe(sil, tone, rate, chans, secs);
     }
+    if (argc > 1 && std::strcmp(argv[1], "--fontchain") == 0) {
+        return fontchain_probe(argc, argv);
+    }
     if (argc > 1 && std::strcmp(argv[1], "--btinfo") == 0) {
         return btinfo_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--nfctap") == 0) {
+        return nfctap_probe(argc > 2 ? std::atoi(argv[2]) : 45);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btlink") == 0) {
+        // --btlink status | last [secs] | wait [secs] [keep] | retry on|off [interval] [count]
+        //         | hci on|off | rssi [secs] | drop
+        // An ADDRESSED connect is --btconnect <row>; this covers the calls that one does not make.
+        const char* sub = argc > 2 ? argv[2] : "status";
+        const char* a1  = argc > 3 ? argv[3] : nullptr;
+        int a2 = argc > 4 ? std::atoi(argv[4]) : 0;
+        int a3 = argc > 5 ? std::atoi(argv[5]) : 0;
+        bool keep = false;
+        for (int i = 3; i < argc; i++) if (std::strcmp(argv[i], "keep") == 0) keep = true;
+        // "--btlink wait 45" and "--btlink rssi 20" put their seconds in argv[3], where the
+        // on/off subcommands put a word; accept both without a second parser.
+        if ((std::strcmp(sub, "wait") == 0 || std::strcmp(sub, "rssi") == 0 ||
+             std::strcmp(sub, "last") == 0) && a1 && a2 == 0) a2 = std::atoi(a1);
+        return btlink_probe(sub, a1, a2, a3, keep);
     }
     if (argc > 1 && std::strcmp(argv[1], "--uaccap") == 0) {
         return uaccap_probe(argc > 2 ? std::atoi(argv[2]) : 15,

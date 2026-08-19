@@ -104,13 +104,52 @@ fn device_font_fallback() {
         return;
     }
     std::env::set_var("CINDER_FONT_DIR", ROOTFS_FONTS);
-    let full = FontSet::load();
+
+    // Each script resolves — but each in its OWN FontSet. At most one CJK-class face (Japanese,
+    // Korean, Traditional Chinese) is resident per FontSet since 2026-08-19: fontdue parses every
+    // outline at load, one of those faces costs +82 MB of RSS on device, and loading two reaches
+    // the OOM killer — which for cinder-home means appmgr reboots the device. See
+    // `CJK_FALLBACKS` in text.rs.
     for (s, bare_w) in samples.iter().zip(&bare_widths) {
-        let w = measure(&full, s, &sty(16.0));
-        // Real CJK/Thai glyphs are full-width where .notdef is roughly half, so a resolved
-        // fallback is unambiguously wider. This asserts the chain actually engaged.
-        assert!(w > *bare_w, "{s}: no fallback engaged (width {w} vs bare {bare_w})");
+        let one = FontSet::load();
+        let w = measure(&one, s, &sty(16.0));
+        // The width must CHANGE, not necessarily grow. It grows for CJK/Thai, where .notdef is
+        // roughly half-width and the real glyph is full-width. It SHRINKS for Cyrillic: `resolve`
+        // now falls back to the other bundled family when the device chain has nothing for a
+        // codepoint, and JetBrains Mono carries Cyrillic — so "bare" is real monospaced Cyrillic
+        // (16 px/char) and the chain replaces it with Sony's proportional SST-Roman, which is
+        // narrower. Either direction proves the chain engaged.
+        assert!(
+            (w - *bare_w).abs() > 0.5,
+            "{s}: no fallback engaged (width {w} vs bare {bare_w})"
+        );
     }
+
+    // The cap itself: one FontSet, two different CJK scripts. The first wins; the second keeps
+    // .notdef metrics rather than pulling a second 80 MB face into a 467 MB device.
+    let shared = FontSet::load();
+    let jp = measure(&shared, samples[0], &sty(16.0));
+    let kr = measure(&shared, samples[2], &sty(16.0));
+    assert!(
+        (jp - bare_widths[0]).abs() > 0.5,
+        "the FIRST CJK script asked for must resolve (Japanese: {jp} vs bare {})",
+        bare_widths[0]
+    );
+    assert!(
+        (kr - bare_widths[2]).abs() < 0.5,
+        "a SECOND CJK-class face was loaded into the same FontSet (Korean: {kr} vs bare {}) — \
+         that is the pair that OOM-kills the app on device",
+        bare_widths[2]
+    );
+
+    let full = FontSet::load();
+    let _ = measure(&full, samples[3], &sty(16.0));   // Cyrillic -> SST-Roman, the cheap face
+    assert!(
+        full.chain_walks() > 0,
+        "the device chain was never consulted for {:?} — the script gate in \
+         `fallback_covers_script` is too tight",
+        samples[3]
+    );
     assert_eq!(
         ascii_bare,
         measure(&full, ascii, &sty(16.0)),

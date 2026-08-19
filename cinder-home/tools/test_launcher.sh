@@ -162,6 +162,23 @@ check "  ran once" "$(runs_of "$LAST_R")" 1
 scenario "binary vanishes mid-session -> stock"   stock  'stub_vanish $R'
 check "  ran once" "$(runs_of "$LAST_R")" 1
 
+# ── STATIC: flags this device's toolbox does not accept ───────────────────────────────────────
+# The launcher runs at normal boot with the DEVICE's tools, and /bin/mv is toolbox. Toolbox mv
+# rejects `-f` outright — "failed on '-f'", rc 255, and it moves NOTHING (measured on device
+# 2026-08-19). The log rotation carried `mv -f` for weeks and therefore never ran once, so every
+# boot destroyed the previous boot's log: the exact evidence the rotation exists to keep. This
+# sandbox cannot catch that, because the host's GNU mv accepts the flag — so it is asserted on the
+# text instead. (`rm -f` is fine: toolbox rm complains about the flag and still removes the files.)
+R="$(mktemp -d "$SP/static.XXXXXX")"; build_launcher "$R"
+# Code lines only — the comment above the rotation names the broken form on purpose.
+if grep -n '^[^#]*mv -f' "$R/launch.sh" >/dev/null 2>&1; then
+    printf '  FAIL  %-46s -> %s\n' "launcher uses no 'mv -f' (toolbox rejects it)" "$(grep -c '^[^#]*mv -f' "$R/launch.sh") use(s)"
+    FAIL=$((FAIL+1))
+else
+    printf '  ok    %-46s -> none\n' "launcher uses no 'mv -f' (toolbox rejects it)"
+    PASS=$((PASS+1))
+fi
+
 rm -rf "$SP"/lt.*
 echo
 echo "$PASS passed, $FAIL failed"

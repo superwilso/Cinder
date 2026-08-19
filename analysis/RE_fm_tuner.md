@@ -347,7 +347,7 @@ I2C_RDWR 32 / 16 / 8 B   -> EINVAL   (all three)
 So MediaTek's adapter refuses userspace transfers to this device. The chip has a proper 8-bit RSSI
 in `STATUSRSSI` and SEEK bits in `POWERCFG`; we simply cannot reach them from userspace.
 
-**The only remaining route to real RSSI and hardware seek is KERNEL CODE** — a module (or a patch
+**CORRECTED: the route is `/proc/regmon/Si4708icx` (target/value, world-writable) — full register access from userspace, no module. The claim below that this needs KERNEL CODE** — a module (or a patch
 to `Si4708icx`) built against 3.10.26-mt8590. That is a real project with real brick risk: it
 touches a bus a bound driver owns, and a bad module at boot is the failure mode the launcher's
 escape ladder exists for. Not something to attempt casually.

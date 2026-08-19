@@ -374,6 +374,35 @@ make it fixable by shipping a different table.
 - **External tuning blobs** (#63) — the 192 KB nested `NW_WM_FW.UPG` under `/etc/.mod/tunings/`
   is still unpacked. Decides whether the full Walkman One signature is reachable without flashing.
 
+## 13. Bluetooth reconnect — the radio does it now, one case left to prove
+
+**Pushed and waiting for a reboot** (`cinder-home` md5 `cbdbcbbd…`). Two calls the app never made
+are now wired: the service's own retry thread, and the connectable window that lets a headphone's
+power-on land. Both were verified as primitives against the live radio on 2026-08-19 — the retry
+mode arms, the service pages on its own interval, and the count Cinder ships (20) is accepted.
+
+**What is still unproven is the case that matters to you:** whether a headphone switched on near
+the player actually connects on its own, without touching the Walkman.
+
+```sh
+# 1. with the headphones OFF, disconnect so the test starts from a known state
+cinder-probe --btlink drop
+# 2. open the window, then SWITCH THE HEADPHONES ON inside it
+cinder-probe --btlink wait 90 keep
+```
+
+A link inside those 90 s is the whole "reconnect is slow" complaint answered. Nothing happening is
+also a result — it means the accept path needs more than this call, and the local ladder stays the
+mechanism. Either way `--btlink status` afterwards shows where the radio ended up.
+
+Then the same thing through the app rather than the probe: reboot, connect the headphones, switch
+them off, and switch them back on a minute later without touching the player. The log should show
+`bt: SetConnectRetryMode(true, 5, 20) rc=1` and `bt: RequestStartConnectWait() rc=0` at the drop.
+
+> One caveat worth knowing while testing: the retry mode is **service state that survives the app**.
+> If a test leaves it armed, the radio keeps paging every ~15 s until the count runs out, whatever
+> the UI says. `cinder-probe --btlink retry off` clears it.
+
 ---
 
 ## Running a probe

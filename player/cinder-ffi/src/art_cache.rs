@@ -117,7 +117,9 @@ pub fn load_all(album_ids: impl Iterator<Item = i64>) -> std::collections::HashM
 pub fn build_one(db: &cinder_db::Db, album_id: i64, object_id: i64) -> Option<Image> {
     let native = crate::art_load::load(db, object_id)?;
     let t96 = native.scaled_to(T96, T96);
-    let t48 = native.scaled_to(T48, T48);
+    // 48 comes from the 96, not from the native decode: with an area-averaging scaler the two-step
+    // reduction is equivalent to the one-step one, and it reads 96x96 instead of ~1425x1425.
+    let t48 = t96.scaled_to(T48, T48);
     // The native decode is the big allocation (a 1425x1425 cover is 6 MB of RGB). Drop it before
     // touching the filesystem so the peak doesn't overlap with anything else this thread does —
     // this process has already died once from allocation failure under fragmentation.
@@ -142,7 +144,45 @@ pub fn ensure_dir() -> bool {
     // See `store`: the builder may run as root (probe) or uid 100 (the app), and both must be able
     // to add files. Best-effort — it fails harmlessly when we don't own the directory.
     let _ = std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o777));
+    discard_if_stale(&d);
     true
+}
+
+/// Cache format/quality version. **Bump this whenever the thumbnails a given cover produces
+/// change** — a new scaler, a new size, a new colour treatment.
+///
+/// Without it a quality fix is invisible on any device that already has a cache: the stored files
+/// are still the right LENGTH, so `load` accepts them and `is_cached` reports done, and the
+/// improved code never runs against a real library. Version 2 is the switch from bilinear to
+/// area-averaged downscaling (see `Image::scaled_to`).
+const CACHE_VERSION: &str = "2";
+
+/// Drop the cached thumbnails when they were produced by a different version of the scaler. Runs
+/// once per process at `ensure_dir`; a rebuild is background work the app already knows how to do,
+/// and the whole cache is disposable by design.
+fn discard_if_stale(d: &str) {
+    let stamp = format!("{d}/version");
+    if std::fs::read_to_string(&stamp).map(|v| v.trim() == CACHE_VERSION).unwrap_or(false) {
+        return;
+    }
+    let mut n = 0;
+    if let Ok(rd) = std::fs::read_dir(d) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let stale = p.extension().and_then(|x| x.to_str())
+                .map(|x| x == format!("t{T48}") || x == format!("t{T96}"))
+                .unwrap_or(false);
+            if stale && std::fs::remove_file(&p).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    if n > 0 {
+        eprintln!("cinder-ffi: art cache: discarded {n} thumbnails from an older scaler — \
+                   they rebuild in the background");
+    }
+    let _ = std::fs::write(&stamp, CACHE_VERSION);
+    let _ = std::fs::set_permissions(&stamp, std::fs::Permissions::from_mode(0o666));
 }
 
 #[cfg(test)]
@@ -207,5 +247,33 @@ mod tests {
         assert_eq!(m.len(), 2);
         assert!(m.contains_key(&1) && m.contains_key(&3) && !m.contains_key(&2));
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// A cache written by an older scaler must be discarded, not silently reused — otherwise a
+    /// quality fix never reaches a device that already has thumbnails.
+    #[test]
+    fn stale_cache_is_discarded_and_restamped() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tmp("stale");
+        std::env::set_var("CINDER_ART_CACHE", &d);
+        // Pretend an old build left thumbnails behind with no version stamp.
+        std::fs::create_dir_all(&d).unwrap();
+        let _ = std::fs::remove_file(format!("{d}/version"));
+        store(11, &img(T48, 0x10)).unwrap();
+        store(11, &img(T96, 0x10)).unwrap();
+        assert!(is_cached(11), "precondition: the old thumbnails are present");
+
+        assert!(ensure_dir());
+        assert!(!is_cached(11), "an older scaler's thumbnails were kept");
+        assert_eq!(
+            std::fs::read_to_string(format!("{d}/version")).unwrap().trim(),
+            CACHE_VERSION
+        );
+
+        // Second run: same version, so a freshly built cache survives.
+        store(11, &img(T48, 0x20)).unwrap();
+        store(11, &img(T96, 0x20)).unwrap();
+        assert!(ensure_dir());
+        assert!(is_cached(11), "a current-version cache was wiped");
     }
 }

@@ -1620,14 +1620,22 @@ impl Rng {
 /// list itself, so the order it hands over IS the play order. Sony's own shuffle lives in a
 /// permutation over the sequence's children (`SetupPermutation`), which would mean more ABI surface
 /// for a result we can produce exactly by reordering a `Vec`.
-fn apply_shuffle(on: bool, mut seq: Vec<cinder_db::Track>, start: usize) -> (Vec<cinder_db::Track>, usize) {
+/// Returns the reordered sequence, the new start index, and — when it actually shuffled — the
+/// object_ids in their ORIGINAL order, which the caller hands to `App::note_pre_shuffle` so that
+/// turning shuffle back off restores this album's real running order.
+fn apply_shuffle(
+    on: bool,
+    mut seq: Vec<cinder_db::Track>,
+    start: usize,
+) -> (Vec<cinder_db::Track>, usize, Option<Vec<i64>>) {
     if !on || seq.len() < 2 || start >= seq.len() {
-        return (seq, start);
+        return (seq, start, None);
     }
+    let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
     let chosen = seq.remove(start);
     Rng::new().shuffle(&mut seq);
     seq.insert(0, chosen);
-    (seq, 0)
+    (seq, 0, Some(pre))
 }
 
 /// One DB track as the owned UI row. Shared by the library build and by every play action, so a
@@ -1896,8 +1904,11 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             let ctx = r.db.as_ref().and_then(|db| db.album_context(*object_id).ok().flatten());
             match ctx {
                 Some((tracks, idx)) if !tracks.is_empty() => {
-                    let (seq, start) = apply_shuffle(r.np.shuffle, tracks, idx);
+                    let (seq, start, pre) = apply_shuffle(r.np.shuffle, tracks, idx);
                     set_pending(r, seq, start);
+                    if let Some(pre) = pre {
+                        r.app.note_pre_shuffle(pre);
+                    }
                     8
                 }
                 _ => {
@@ -1956,8 +1967,11 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // needs no new code or FFI symbol for playlists.
             match playlist_tracks(r.db.as_ref(), *playlist_id) {
                 Some(seq) => {
-                    let (seq, start) = apply_shuffle(r.np.shuffle, seq, 0);
+                    let (seq, start, pre) = apply_shuffle(r.np.shuffle, seq, 0);
                     set_pending(r, seq, start);
+                    if let Some(pre) = pre {
+                        r.app.note_pre_shuffle(pre);
+                    }
                     8
                 }
                 None => {
@@ -3902,27 +3916,77 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
         };
         let total = todo.len();
         let mut done = 0usize;
-        for (album_id, object_id) in todo {
-            // Decode OUTSIDE the lock. This is the expensive part and the UI must keep painting
-            // through it.
-            let Some(t48) = art_cache::build_one(&db, album_id, object_id) else {
-                continue;
-            };
-            done += 1;
-            if let Ok(mut g) = cell().lock() {
-                let Some(r) = g.as_mut() else { break }; // renderer gone (shutdown) — stop
-                r.app.library_mut().thumbs.insert(album_id, t48);
-                r.dirty = true; // the row this belongs to may be on screen right now
+        // RETRY THE FAILURES, because the commonest reason for one is that this ran too early.
+        //
+        // The builder starts from `cinder_db_open`, which happens during boot — and the music
+        // itself lives on `/data/mnt/internal` and `/data/mnt/external`, which are not mounted yet
+        // at that point. Every decode then fails instantly with `magic=unreadable`, the single pass
+        // finishes in a few seconds having built almost nothing, and nothing ever tries again.
+        // Measured on device 2026-08-19: `builder finished — 7/317 covers decoded`, done by 15 s of
+        // uptime; the same code run from cinder-probe a few minutes later built 180 without a miss.
+        //
+        // This was invisible for as long as a full cache existed, because `todo` was then empty. It
+        // only surfaced when the cache was discarded for a scaler change and had to rebuild from
+        // nothing — which is also exactly when a user notices, since every cover is a gradient.
+        //
+        // So: sweep, keep what failed, wait, sweep again. The delay grows because a mount that is
+        // not there after a minute is unlikely to appear in the next second, and each round is
+        // silent when there is nothing left to do.
+        let mut queue = todo;
+        let mut round = 0u32;
+        while !queue.is_empty() && round <= ART_BUILD_ROUNDS {
+            if round > 0 {
+                let wait = std::time::Duration::from_secs(10 * round as u64);
+                eprintln!(
+                    "cinder-ffi: art cache: {} covers unreadable (media not mounted yet?) — \
+                     retrying in {} s",
+                    queue.len(),
+                    wait.as_secs()
+                );
+                std::thread::sleep(wait);
             }
-            // Yield between albums. The builder is strictly background work: a cover that shows up
-            // a minute later costs the user nothing, whereas competing with the render thread for
-            // this single core would be visible immediately as scroll stutter.
-            std::thread::sleep(std::time::Duration::from_millis(120));
+            let mut failed = Vec::new();
+            let mut stop = false;
+            for (album_id, object_id) in std::mem::take(&mut queue) {
+                // Decode OUTSIDE the lock. This is the expensive part and the UI must keep painting
+                // through it.
+                let Some(t48) = art_cache::build_one(&db, album_id, object_id) else {
+                    failed.push((album_id, object_id));
+                    continue;
+                };
+                done += 1;
+                if let Ok(mut g) = cell().lock() {
+                    let Some(r) = g.as_mut() else { stop = true; break }; // renderer gone — stop
+                    r.app.library_mut().thumbs.insert(album_id, t48);
+                    r.dirty = true; // the row this belongs to may be on screen right now
+                }
+                // Yield between albums. The builder is strictly background work: a cover that shows
+                // up a minute later costs the user nothing, whereas competing with the render
+                // thread for this single core would be visible immediately as scroll stutter.
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+            if stop {
+                break;
+            }
+            queue = failed;
+            round += 1;
+        }
+        if !queue.is_empty() {
+            eprintln!(
+                "cinder-ffi: art cache: giving up on {} covers after {ART_BUILD_ROUNDS} retries — \
+                 they are missing, not late",
+                queue.len()
+            );
         }
         eprintln!("cinder-ffi: art cache: builder finished — {done}/{total} covers decoded");
         ART_BUILDER_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
     });
 }
+
+/// How many times the builder re-sweeps the covers it could not read. Waits grow 10 s, 20 s, 30 s …
+/// so the last attempt is around three minutes in — comfortably past the point where `/data/mnt`
+/// appears, without leaving a thread sweeping a library of genuinely artless albums forever.
+const ART_BUILD_ROUNDS: u32 = 6;
 
 static ART_BUILDER_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -3937,6 +4001,26 @@ static ART_BUILDER_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::A
 // queue is the point: while a decode is in flight the user may skip five times, and every cover
 // but the last is already garbage by the time it would be drawn. The worker overwrites, so a run
 // of skips costs one decode, not five.
+/// DIAGNOSTIC: resolve one codepoint through the real font chain and rasterise it, exactly as the
+/// renderer does, so `cinder-probe --fontchain` can watch what a single character costs ON DEVICE.
+///
+/// Why this exists: `text::resolve` walks the Sony fallback chain for any codepoint the bundled
+/// fonts lack, and *loads* each font in the chain until one has the glyph. For a codepoint NOTHING
+/// has, that means loading all five — including `DFPGothicPW5` (10 MB on disk) — on a device with
+/// 467 MB of RAM. Host-side tests can never see that cost. Returns the font id that answered
+/// (0..6 = bundled, 16.. = fallback, matching `text::resolve`), or -1 for an invalid codepoint.
+#[no_mangle]
+pub extern "C" fn cinder_font_probe(cp: u32) -> libc::c_int {
+    let Some(ch) = char::from_u32(cp) else { return -1 };
+    // FontSet holds RefCells (single-threaded by design — render runs under the cinder-ffi mutex),
+    // so it lives in a thread-local rather than a static: same object across calls, which is what
+    // makes the per-character memory delta mean anything.
+    thread_local! {
+        static FONTS: cinder_ui::text::FontSet = cinder_ui::text::FontSet::load();
+    }
+    FONTS.with(|f| cinder_ui::text::probe_glyph(f, ch) as libc::c_int)
+}
+
 static COVER_REQ: std::sync::Mutex<Option<i64>> = std::sync::Mutex::new(None);
 static COVER_WAKE: std::sync::Condvar = std::sync::Condvar::new();
 static COVER_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -4905,13 +4989,17 @@ mod tests {
         let uris = uris_of(seq.clone());
 
         // Off: byte-for-byte untouched, and the start index is preserved.
-        let (off, start) = apply_shuffle(false, seq.clone(), 7);
+        let (off, start, pre) = apply_shuffle(false, seq.clone(), 7);
+        assert!(pre.is_none(), "nothing was shuffled, so there is no order to restore");
         assert_eq!(uris_of(off), uris);
         assert_eq!(start, 7);
 
         // On: the TAPPED track leads (the tap is more specific than the toggle) and playback
         // starts at 0, because the queue was reordered to put it there.
-        let (on, start) = apply_shuffle(true, seq.clone(), 7);
+        let (on, start, pre) = apply_shuffle(true, seq.clone(), 7);
+        // The pre-shuffle order comes back so shuffle-off can restore it.
+        let pre = pre.expect("a real shuffle must report the order it replaced");
+        assert_eq!(pre.len(), seq.len());
         assert_eq!(start, 0);
         let on = uris_of(on);
         assert_eq!(on[0], uris[7], "the track you tapped must still be the one that plays");
@@ -4933,13 +5021,13 @@ mod tests {
     #[test]
     fn shuffling_degenerate_queues_is_safe() {
         let trk = |n: &str| cinder_db::Track { filename: n.into(), ..Default::default() };
-        assert_eq!(apply_shuffle(true, Vec::new(), 0), (Vec::new(), 0));
+        assert_eq!(apply_shuffle(true, Vec::new(), 0), (Vec::new(), 0, None));
         let one = vec![trk("/a.flac")];
-        assert_eq!(apply_shuffle(true, one.clone(), 0), (one.clone(), 0));
+        assert_eq!(apply_shuffle(true, one.clone(), 0), (one.clone(), 0, None));
         // A start index past the end (a stale index against a shorter queue) is left alone rather
         // than indexing out of bounds.
         let two = vec![trk("/a.flac"), trk("/b.flac")];
-        assert_eq!(apply_shuffle(true, two.clone(), 9), (two, 9));
+        assert_eq!(apply_shuffle(true, two.clone(), 9), (two, 9, None));
     }
 
     /// No DB → no action (rather than an empty queue).
