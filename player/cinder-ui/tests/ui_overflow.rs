@@ -215,24 +215,37 @@ fn ui_chrome_never_reaches_the_device_font_chain() {
         a.render(&mut c, &fonts, &np);
         a.press(Button::Select);
     }
-    // Non-Latin *tags* may legitimately borrow Sony's fonts — that is what the chain is for, and
-    // the sample library carries Japanese and Cyrillic on purpose. What may never reach it is a
-    // SYMBOL: arrows, geometric shapes, dingbats and general punctuation are chrome, none of the
-    // five Sony fonts carries most of them, and asking costs ~250 MB and the process.
-    let symbols: Vec<char> = fonts
-        .chain_char_list()
+    // ASSERT ON WHAT NOTHING COULD DRAW, not on what reached the chain.
+    //
+    // This test used to filter `chain_char_list()` down to symbols — and could therefore never
+    // fail, because `fallback_covers_script` gates every symbol out BEFORE that set is recorded.
+    // It watched a set the code cannot put a symbol into, which is worse than no test: it read as
+    // a guard on the bug that OOM-killed the app.
+    //
+    // The honest signal is `unresolved_chars`: characters the requested font lacked, that no
+    // script-eligible fallback had, and that no other bundled face had either. Those draw a
+    // `.notdef` box. Non-Latin TAGS legitimately borrow Sony's fonts and are fine — but chrome is
+    // ours, and a box in it is a bug whether or not the chain was involved.
+    // Characters in a script the DEVICE chain provides are content, and unresolvable here only
+    // because this host has no Sony font directory. What must never appear is a character no font
+    // anywhere could draw — that is a box on the device too.
+    let missing: Vec<char> = fonts
+        .unresolved_chars()
         .into_iter()
-        .filter(|c| {
-            let u = *c as u32;
-            (0x2000..=0x2BFF).contains(&u) || (0x2E00..=0x2FFF).contains(&u)
-        })
+        .filter(|c| !cinder_ui::text::device_chain_covers(*c))
         .collect();
     assert!(
-        symbols.is_empty(),
-        "UI chrome asked for symbol glyphs the bundled fonts lack: {symbols:?}\n\
-         On device each one walks the whole Sony font chain — ~250 MB parsed — and the kernel \
-         OOM-kills the app, which for cinder-home means a REBOOT. Use a character Hanken Grotesk \
-         or JetBrains Mono actually has."
+        missing.is_empty(),
+        "UI chrome used glyphs no font on the device can draw, so they render as \u{25a1} boxes: \
+         {}\n\
+         Pick a character Hanken Grotesk or JetBrains Mono actually has. (Before the script gate \
+         existed, one of these also walked the whole Sony font chain — ~250 MB parsed — and the \
+         kernel OOM-killed the app, which for cinder-home means a REBOOT.)",
+        missing
+            .iter()
+            .map(|c| format!("U+{:04X} {c:?}", *c as u32))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 }
 
@@ -348,4 +361,30 @@ fn effect_enum_labels_fit_at_every_scale() {
         }
     }
     let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
+}
+
+/// The previous version of the chrome test could not fail, and nobody noticed for weeks. So prove
+/// the detector fires: draw a character no bundled font has and that the device chain is not for,
+/// and require it to be reported. If this ever goes quiet, the chrome assertion above is decorative
+/// again.
+#[test]
+fn the_unresolved_detector_actually_fires() {
+    use cinder_ui::text::{self, Family, Weight};
+    let fonts = FontSet::load();
+    let mut c = Canvas::new();
+    assert!(
+        fonts.unresolved_chars().is_empty(),
+        "nothing has been drawn yet, so nothing can be unresolved"
+    );
+    // U+2603 SNOWMAN: not in Hanken Grotesk or JetBrains Mono, and outside every script the Sony
+    // fallbacks exist to provide — so no font anywhere on the device can draw it.
+    assert!(!text::device_chain_covers('\u{2603}'), "pick a character the chain is NOT for");
+    let st = cinder_ui::widgets::sty(
+        Family::Sans, Weight::Regular, 18.0, cinder_ui::theme::Theme::day().ink, 0.0);
+    text::draw(&mut c, &fonts, 10.0, 40.0, "\u{2603}", &st);
+    assert_eq!(
+        fonts.unresolved_chars(),
+        vec!['\u{2603}'],
+        "the detector did not notice a glyph nothing can draw"
+    );
 }

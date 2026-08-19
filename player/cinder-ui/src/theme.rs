@@ -122,6 +122,15 @@ pub struct Theme {
     pub night: bool,
 }
 
+/// Scale an `0xRRGGBB` toward black by `pct`/100, per channel. Const so the palettes stay
+/// compile-time constants.
+const fn dim_rgb(c: u32, pct: u32) -> u32 {
+    let r = ((c >> 16) & 0xff) * pct / 100;
+    let g = ((c >> 8) & 0xff) * pct / 100;
+    let b = (c & 0xff) * pct / 100;
+    (r << 16) | (g << 8) | b
+}
+
 impl Theme {
     /// Day palette with Cinder's own amber. Equivalent to `day_with(Accent::Amber)`.
     pub fn day() -> Self {
@@ -149,18 +158,32 @@ impl Theme {
         }
     }
 
+    /// How much of the night palette's light to keep. The BACKLIGHT cannot go below its floor —
+    /// the panel is a TFT LCD (Himax hx8379c) lit by an MTK BLS PWM, and raw 0 and 1 are visibly
+    /// identical because the driver clamps at a nonzero duty. So the remaining lever is how much
+    /// white the UI paints: at the backlight floor, what makes a screen uncomfortable in a dark
+    /// room is bright chrome, not the lamp behind it.
+    ///
+    /// 55% keeps every relationship in the palette (ink over dim over faint, accent still the
+    /// brightest thing) while roughly halving the light the panel actually emits.
+    const NIGHT_DIM_PCT: u32 = 55;
+
     pub fn night_with(a: Accent) -> Self {
         let p = &PALETTES[a.index()];
+        let d = |c: u32| rgb(dim_rgb(c, Self::NIGHT_DIM_PCT));
         Theme {
+            // Already true black; scaling it would change nothing.
             bg: rgb(0x000000),
-            panel: rgb(0x0a0908),
-            line: rgb(0x161310),
-            ink: rgb(0x8d8170),
-            dim: rgb(0x5b5347),
-            faint: rgb(0x3b362d),
-            acc: rgb(p.acc_n),
+            panel: d(0x0a0908),
+            line: d(0x161310),
+            ink: d(0x8d8170),
+            dim: d(0x5b5347),
+            faint: d(0x3b362d),
+            acc: d(p.acc_n),
+            // NOT dimmed: this is the ink drawn ON the accent band, and it is already the dark
+            // half of that pair. Dimming both sides would collapse the contrast between them.
             acc_ink: rgb(p.ink_n),
-            row_sel: rgb(p.sel_n),
+            row_sel: d(p.sel_n),
             night: true,
         }
     }
@@ -178,9 +201,15 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use embedded_graphics::prelude::RgbColor;
 
     /// The default accent must reproduce the original palette exactly. If this ever fails, adding
     /// accents changed the look of a device that never asked for one.
+    ///
+    /// NIGHT is the deliberate exception: its whole palette is scaled by `NIGHT_DIM_PCT` so the
+    /// screen emits less light at a backlight that cannot go below its own floor. The originals
+    /// are still written out here, scaled by the same constant, so this stays a statement about
+    /// the palette rather than a row of magic numbers.
     #[test]
     fn amber_is_byte_identical_to_the_original_palette() {
         let d = Theme::day();
@@ -188,9 +217,24 @@ mod tests {
         assert_eq!(d.acc_ink, rgb(0x1a0a02));
         assert_eq!(d.row_sel, rgb(0x1c1713));
         let n = Theme::night();
-        assert_eq!(n.acc, rgb(0x863810));
-        assert_eq!(n.acc_ink, rgb(0x000000));
-        assert_eq!(n.row_sel, rgb(0x0f0c0a));
+        assert_eq!(n.acc, rgb(dim_rgb(0x863810, Theme::NIGHT_DIM_PCT)));
+        assert_eq!(n.acc_ink, rgb(0x000000), "ink ON the accent must not be dimmed too");
+        assert_eq!(n.row_sel, rgb(dim_rgb(0x0f0c0a, Theme::NIGHT_DIM_PCT)));
+    }
+
+    /// The point of the change: night must actually emit less light than it used to, and still
+    /// keep its own ordering (ink brighter than dim, dim brighter than faint).
+    #[test]
+    fn night_is_dimmer_than_it_was_and_still_ordered() {
+        let lum = |c: Rgb888| c.r() as u32 * 2 + c.g() as u32 * 3 + c.b() as u32;
+        let n = Theme::night();
+        // The pre-change values, for the comparison this test exists to make.
+        assert!(lum(n.ink) < lum(rgb(0x8d8170)), "night ink is no dimmer than before");
+        assert!(lum(n.acc) < lum(rgb(0x863810)), "night accent is no dimmer than before");
+        assert!(lum(n.ink) > lum(n.dim), "ink must stay above dim");
+        assert!(lum(n.dim) > lum(n.faint), "dim must stay above faint");
+        assert!(lum(n.ink) > lum(n.bg), "ink must stay readable against the background");
+        assert_eq!(n.bg, rgb(0x000000), "night background must stay true black");
     }
 
     /// Neutrals are the identity — they must not vary with the accent.
