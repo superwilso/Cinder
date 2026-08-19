@@ -145,6 +145,97 @@ fn no_screen_draws_off_the_panel_at_any_ui_scale() {
     assert!(bad.is_empty(), "content is clipped at non-default UI scale:\n  {}", bad.join("\n  "));
 }
 
+
+/// EVERY onboarding page, at every scale, day and night.
+///
+/// `SCREENS` only ever renders `Screen::Onboarding` at page 0, so pages 1-3 — Controls, Features
+/// and Done — had no coverage at all until a device report of a crash "on the 3rd page" (2026-08-19)
+/// went looking for it. A paged screen needs its pages walked, not just its entry state.
+#[test]
+fn every_onboarding_page_stays_on_the_panel_at_every_scale() {
+    let fonts = FontSet::load();
+    let np = np_hostile();
+    let mut bad: Vec<String> = Vec::new();
+    for idx in 0..cinder_ui::text::SCALE_STEPS.len() {
+        let _g = scale_lock(idx);
+        let pct = cinder_ui::text::SCALE_STEPS[idx];
+        for night in [false, true] {
+            let mut a = at(Screen::Onboarding);
+            a.night = night;
+            for page in 0..cinder_ui::onboarding::PAGES {
+                // Rendering is the test as much as the count is: a panic in a glyph, an icon or a
+                // layout helper takes the whole app down on device (Rust panics abort into
+                // appmgr's SIGCHLD reboot), and only these pages draw these strings.
+                let n = overflow_of(&mut a, &fonts, &np);
+                if n > 0 {
+                    bad.push(format!("onboarding page {page} @ {pct}% night={night}: {n} px past the margin"));
+                }
+                a.press(Button::Select);   // next page (finishes on the last, which is fine here)
+            }
+        }
+    }
+    let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
+    assert!(bad.is_empty(), "onboarding content is clipped:\n  {}", bad.join("\n  "));
+}
+
+
+/// NO PIECE OF UI CHROME MAY NEED SONY'S FONTS.
+///
+/// The device font chain is five files, ~18 MB on disk and ~250 MB once fontdue has parsed them.
+/// On 2026-08-19 a single character in the onboarding Features page — `▸` in "Settings ▸ Theme",
+/// which Hanken Grotesk does not carry — walked that whole chain looking for a glyph none of the
+/// five has, and the kernel killed the app:
+///
+///     Out of memory: Kill process 1700 (cinder-probe) ... anon-rss:251472kB
+///
+/// For cinder-home that is a device REBOOT, because appmgr reboots when its foreground app dies.
+/// `resolve` now tries the other bundled family first and gates the chain by script, so `▸` is
+/// found in JetBrains Mono for free — and this test is the rule that keeps it that way: with a
+/// Latin-only library and Latin-only track metadata, rendering every screen must never once reach
+/// the chain. Non-Latin *tags* legitimately do; the UI's own strings never may.
+#[test]
+fn ui_chrome_never_reaches_the_device_font_chain() {
+    let _g = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
+    let fonts = FontSet::load();
+    let np = np_plain();
+    for &s in SCREENS {
+        let mut a = at(s);
+        a.set_library(cinder_ui::model::Library::default()); // no sample rows: chrome only
+        for night in [false, true] {
+            a.night = night;
+            let mut c = Canvas::new();
+            a.render(&mut c, &fonts, &np);
+        }
+    }
+    // Every onboarding page, since that is where this bug lived and only page 0 is in SCREENS.
+    let mut a = at(Screen::Onboarding);
+    a.set_library(cinder_ui::model::Library::default());
+    for _ in 0..cinder_ui::onboarding::PAGES {
+        let mut c = Canvas::new();
+        a.render(&mut c, &fonts, &np);
+        a.press(Button::Select);
+    }
+    // Non-Latin *tags* may legitimately borrow Sony's fonts — that is what the chain is for, and
+    // the sample library carries Japanese and Cyrillic on purpose. What may never reach it is a
+    // SYMBOL: arrows, geometric shapes, dingbats and general punctuation are chrome, none of the
+    // five Sony fonts carries most of them, and asking costs ~250 MB and the process.
+    let symbols: Vec<char> = fonts
+        .chain_char_list()
+        .into_iter()
+        .filter(|c| {
+            let u = *c as u32;
+            (0x2000..=0x2BFF).contains(&u) || (0x2E00..=0x2FFF).contains(&u)
+        })
+        .collect();
+    assert!(
+        symbols.is_empty(),
+        "UI chrome asked for symbol glyphs the bundled fonts lack: {symbols:?}\n\
+         On device each one walks the whole Sony font chain — ~250 MB parsed — and the kernel \
+         OOM-kills the app, which for cinder-home means a REBOOT. Use a character Hanken Grotesk \
+         or JetBrains Mono actually has."
+    );
+}
+
 /// Modals and overlays draw ON TOP of a screen, so they get their own pass — they are the most
 /// likely thing to overflow (a confirm dialog sizes itself around text it did not choose).
 #[test]

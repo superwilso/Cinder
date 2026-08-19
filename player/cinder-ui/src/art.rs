@@ -88,11 +88,25 @@ pub struct Image {
 }
 
 impl Image {
-    /// Bilinear-resample into a new dw×dh image (called once per track change, not per frame).
+    /// Resample into a new dw×dh image (called once per track change / cache build, not per frame).
+    ///
+    /// SHRINKING USES AN AREA AVERAGE, not bilinear. Bilinear reads exactly four source pixels
+    /// whatever the ratio, and album art on this device is ~1425×1425 going to 96 or 48 — a 15×
+    /// or 30× reduction, where those four pixels are ~0.5% of the source and the other 99.5% is
+    /// discarded. The result is not a soft thumbnail, it is an aliased one: fine detail folds down
+    /// into false speckle, which reads as "pixelated" even though every pixel is in the right
+    /// place. Averaging the whole source rectangle that maps to each output pixel is the correct
+    /// filter, and it costs one pass over the source — trivial beside the JPEG decode that just
+    /// produced it.
+    ///
+    /// Upscaling and equal sizes keep the bilinear path, where there is no aliasing to fix.
     pub fn scaled_to(&self, dw: usize, dh: usize) -> Image {
         let mut out = vec![0u8; dw * dh * 3];
         if self.w == 0 || self.h == 0 || dw == 0 || dh == 0 {
             return Image { w: dw, h: dh, rgb: out };
+        }
+        if dw <= self.w && dh <= self.h && (dw < self.w || dh < self.h) {
+            return self.area_scaled(dw, dh);
         }
         let sx = self.w as f32 / dw as f32;
         let sy = self.h as f32 / dh as f32;
@@ -116,6 +130,36 @@ impl Image {
                         + p10 * (1.0 - tx) * ty + p11 * tx * ty;
                     out[o + ch] = v.round().clamp(0.0, 255.0) as u8;
                 }
+            }
+        }
+        Image { w: dw, h: dh, rgb: out }
+    }
+
+    /// Box filter: each output pixel is the mean of every source pixel that maps onto it. Only
+    /// used when both axes shrink, so each output rectangle covers at least one source pixel.
+    fn area_scaled(&self, dw: usize, dh: usize) -> Image {
+        let mut out = vec![0u8; dw * dh * 3];
+        for y in 0..dh {
+            let sy0 = y * self.h / dh;
+            let sy1 = (((y + 1) * self.h / dh).max(sy0 + 1)).min(self.h);
+            for x in 0..dw {
+                let sx0 = x * self.w / dw;
+                let sx1 = (((x + 1) * self.w / dw).max(sx0 + 1)).min(self.w);
+                let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
+                for yy in sy0..sy1 {
+                    let row = yy * self.w;
+                    for xx in sx0..sx1 {
+                        let i = (row + xx) * 3;
+                        r += self.rgb[i] as u32;
+                        g += self.rgb[i + 1] as u32;
+                        b += self.rgb[i + 2] as u32;
+                        n += 1;
+                    }
+                }
+                let o = (y * dw + x) * 3;
+                out[o] = (r / n) as u8;
+                out[o + 1] = (g / n) as u8;
+                out[o + 2] = (b / n) as u8;
             }
         }
         Image { w: dw, h: dh, rgb: out }
@@ -353,5 +397,60 @@ mod tests {
         assert_eq!(c.buf[20 * crate::canvas::W], 0x112233);
         assert_eq!(c.buf[20 * crate::canvas::W + 2], 0, "clipped image drew too wide");
         assert_eq!(c.buf[19 * crate::canvas::W + 479], 0, "wrapped onto the previous row");
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::Image;
+
+    /// A checkerboard reduced to one pixel must be the MEAN of the board (mid grey). Bilinear
+    /// fails this — it samples four neighbouring pixels near one corner and returns whatever
+    /// happens to be there, which is the aliasing that made thumbnails look pixelated.
+    #[test]
+    fn shrinking_averages_the_whole_source() {
+        let n = 64;
+        let mut rgb = Vec::with_capacity(n * n * 3);
+        for y in 0..n {
+            for x in 0..n {
+                let v = if (x + y) % 2 == 0 { 0u8 } else { 255u8 };
+                rgb.extend_from_slice(&[v, v, v]);
+            }
+        }
+        let one = Image { w: n, h: n, rgb }.scaled_to(1, 1);
+        assert_eq!((one.w, one.h), (1, 1));
+        for ch in 0..3 {
+            assert!(
+                (one.rgb[ch] as i32 - 127).abs() <= 1,
+                "checkerboard averaged to {} — the scaler is sampling, not averaging",
+                one.rgb[ch]
+            );
+        }
+    }
+
+    /// Every source pixel must contribute: a single bright pixel in a dark field survives a big
+    /// reduction as a small but non-zero lift. Bilinear drops it entirely unless it lands on a
+    /// sample point.
+    #[test]
+    fn no_source_pixel_is_skipped() {
+        let n = 60;
+        let mut rgb = vec![0u8; n * n * 3];
+        let (px, py) = (37, 11); // deliberately not on a 1/4 sample point
+        let i = (py * n + px) * 3;
+        rgb[i] = 255;
+        rgb[i + 1] = 255;
+        rgb[i + 2] = 255;
+        let small = Image { w: n, h: n, rgb }.scaled_to(4, 4);
+        let total: u32 = small.rgb.iter().map(|&v| v as u32).sum();
+        assert!(total > 0, "the bright pixel vanished — output is all black");
+    }
+
+    /// Upscaling still goes through bilinear, and an even magnification of a flat image is flat.
+    #[test]
+    fn upscaling_still_works() {
+        let img = Image { w: 2, h: 2, rgb: vec![10, 20, 30].repeat(4) };
+        let big = img.scaled_to(8, 8);
+        assert_eq!((big.w, big.h), (8, 8));
+        assert_eq!(&big.rgb[0..3], &[10, 20, 30]);
     }
 }
