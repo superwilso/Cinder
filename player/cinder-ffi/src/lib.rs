@@ -1156,7 +1156,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Bluetooth => 10, S::Settings => 11, S::Fm => 12, S::UsbDac => 13, S::Receiver => 14,
         S::Onboarding => 15, S::UsbStorage => 16, S::Shelf => 17, S::Pairing => 18,
         S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
-        S::Advanced => 23, S::Tone => 24,
+        S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
     }
 }
 
@@ -1794,7 +1794,9 @@ fn play_order_uris(r: &Render, current: &str) -> Vec<String> {
 /// shell an empty sequence.
 ///
 /// Each arm matches the sub-label the band draws, so what the button promises is what it does.
-/// Every track by one named artist, shuffled. Matches on ALBUM ARTIST with the track artist as the
+/// Every track by one named artist, in the library's own artist order. It used to shuffle here,
+/// which left the caller with no way to say what order it had replaced — see `note_pre_shuffle`.
+/// Matches on ALBUM ARTIST with the track artist as the
 /// fallback — the same `group_artist` rule the Artists tab is built with, so the row's track count
 /// and what this plays are the same set.
 fn artist_tracks(db: Option<&cinder_db::Db>, name: &str) -> Option<Vec<cinder_db::Track>> {
@@ -1811,7 +1813,6 @@ fn artist_tracks(db: Option<&cinder_db::Db>, name: &str) -> Option<Vec<cinder_db
     if v.is_empty() {
         return None;
     }
-    Rng::new().shuffle(&mut v);
     Some(v)
 }
 
@@ -2027,6 +2028,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // `ShuffleScope::Playlist`, which picks a random playlist and shuffles that.
             match playlist_tracks(r.db.as_ref(), *playlist_id) {
                 Some(mut seq) => {
+                    // Keep the playlist's real running order so shuffle-off can restore it. The
+                    // toggle promises "play the rest of this in order from here", and it has to
+                    // mean that however the shuffle started — via the toggle, or via this band.
+                    let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
                     Rng::new().shuffle(&mut seq);
                     // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
                     // the shuffle band on Albums / All Songs started a shuffled sequence but left
@@ -2035,6 +2040,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     // on in plain order without anything having changed on screen.
                     r.np.shuffle = true;
                     set_pending(r, seq, 0);
+                    r.app.note_pre_shuffle(pre);
                     8
                 }
                 None => {
@@ -2059,7 +2065,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 }
             };
             match artist_tracks(r.db.as_ref(), &name) {
-                Some(seq) => {
+                Some(mut seq) => {
+                    // Same as the playlist band: remember the catalogue order before permuting it.
+                    let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
+                    Rng::new().shuffle(&mut seq);
                     // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
                     // the shuffle band on Albums / All Songs started a shuffled sequence but left
                     // the transport's shuffle indicator OFF, so the control said one thing and the
@@ -2067,6 +2076,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     // on in plain order without anything having changed on screen.
                     r.np.shuffle = true;
                     set_pending(r, seq, 0);
+                    r.app.note_pre_shuffle(pre);
                     8
                 }
                 None => {

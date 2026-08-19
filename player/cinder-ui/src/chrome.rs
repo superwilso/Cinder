@@ -27,6 +27,21 @@ fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32) -> 
 /// [`HEADER_BOTTOM`], which is unchanged — the strip grew into empty space above the back chevron.
 pub const STATUS_H: i32 = 44;
 
+/// A few pixels along the BOTTOM of the status strip that the strip does not claim.
+///
+/// The strip is hit-tested before any screen and its fallback is "anywhere else → the Menu", so it
+/// used to own every pixel right down to its edge — and every header control below starts at that
+/// same edge: the back chevron on every screen (`nav.rs`, x < 80) and the Bluetooth ON/OFF switch.
+/// A tap a pixel or two high therefore did not MISS the control, it navigated: to the Menu on the
+/// right, to Now Playing on the left. Reported 2026-08-19, first against the Bluetooth switch and
+/// then — correctly — as affecting "lots of the back buttons".
+///
+/// Fixing it here rather than in each control fixes all of them at once, and costs nothing that
+/// matters: the strip keeps 38 of its 44 px, its glyphs are centred far from this edge, and a tap
+/// in the gap now does nothing instead of doing the wrong thing. Losing your place is worse than
+/// having to tap again.
+pub const STATUS_DEAD_H: i32 = 6;
+
 /// Vertical centre of the strip; every glyph in it is centred here.
 const STATUS_MID: f32 = STATUS_H as f32 / 2.0;
 
@@ -61,7 +76,7 @@ pub enum StatusTap {
 /// zone is built from the same `SHELF_CX` the bookmark is drawn at, so the target cannot drift out
 /// from under the glyph.
 pub fn status_hit(x: i32, y: i32) -> Option<StatusTap> {
-    if y >= STATUS_H {
+    if y >= STATUS_H - STATUS_DEAD_H {
         return None;
     }
     Some(if (SHELF_CX - SHELF_HALF_W..=SHELF_CX + SHELF_HALF_W).contains(&x) {

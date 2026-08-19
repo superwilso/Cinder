@@ -9,6 +9,17 @@ use cinder_ui::{
     up_next, usbdac, Canvas, FontSet, Library, Theme, H, W,
 };
 
+/// Paired devices for the Bluetooth preview — the list is the body of that screen now.
+fn preview_paired() -> Vec<cinder_ui::pairing::PairedDevice> {
+    [("WH-1000XM5", "HEADPHONES", true), ("CMF Buds Pro 2", "EARBUDS", false),
+     ("WONDERBOOM", "SPEAKER", false)]
+        .into_iter()
+        .map(|(name, kind, connected)| cinder_ui::pairing::PairedDevice {
+            name: name.to_string(), kind: kind.to_string(), connected,
+        })
+        .collect()
+}
+
 fn save(c: &Canvas, name: &str) {
     let img = image::RgbImage::from_raw(W as u32, H as u32, c.to_rgb_bytes()).expect("buffer size");
     let path = format!("out/{name}.png");
@@ -27,6 +38,7 @@ fn preview_thumb(var: &str, edge: usize) -> Option<cinder_ui::art::Image> {
 
 fn main() {
     let fonts = FontSet::load();
+    let preview_paired_list = preview_paired();
     std::fs::create_dir_all("out").ok();
 
     let np = now_playing::NowPlaying {
@@ -87,7 +99,7 @@ fn main() {
         eq_preset: "A1",
         bt_codec: Some("LDAC"),
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02) };
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02), paired: &preview_paired_list };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
@@ -119,7 +131,11 @@ fn main() {
             ("shelf", &|c: &mut Canvas| {
                 now_playing::render(c, &theme, &fonts, &np);
                 shelf::render(c, &theme, &fonts, "Now Playing · Atlas Hands", "1:47 / 4:32",
-                    &[Some(shelf::Pin { title: "Library · Albums", sub: "Saved 2 min ago" }), None, None]);
+                    &std::array::from_fn(|i| match i {
+                        0 => Some(shelf::Pin { title: "Library · Albums", sub: "Saved 2 min ago" }),
+                        1 => Some(shelf::Pin { title: "Nick Drake · Pink Moon", sub: "Saved yesterday" }),
+                        _ => None,
+                    }));
             }),
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
@@ -268,11 +284,12 @@ fn main() {
                 cinder_ui::track_info::render(c, &theme, &fonts, &rows, 0, false)
             }),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
+            ("bluetooth_codec", &|c: &mut Canvas| bluetooth::render_codec(c, &theme, &fonts, &bt)),
             // The in-flight state this screen had no representation for at all: before, a connect
             // begun from Devices left this card reading "No device connected" until the link
             // resolved, which is what a failure looks like.
             ("bluetooth_connecting", &|c: &mut Canvas| {
-                let b = Bt { on: true, connected: None, link_known: true, codec_sel: 0,
+                let b = Bt { paired: &preview_paired_list, on: true, connected: None, link_known: true, codec_sel: 0,
                              ldac_quality: 0, enhanced: true, enhanced_supported: true,
                              connecting: true, busy_phase: 0.35, link_codec: None };
                 bluetooth::render(c, &theme, &fonts, &b)
