@@ -46,8 +46,25 @@ git rev-parse "$TAG" >/dev/null 2>&1 && die "$TAG already exists — pick a new 
 # ── 2. the installer's version must match the tag ───────────────────────────────────────────
 WANT="${TAG#v}"; WANT="${WANT%%-*}"
 HAVE="$(grep -m1 '^version' installer/Cargo.toml | cut -d'"' -f2)"
-[ "$HAVE" = "$WANT" ] || die "installer/Cargo.toml says version = \"$HAVE\" but the tag is $TAG.
-    Fix one of them and commit:  sed -i 's/^version = .*/version = \"$WANT\"/' installer/Cargo.toml"
+[ "$HAVE" = "$WANT" ] || {
+    printf '\ninstaller/Cargo.toml says version = "%s" but the tag is %s.\n' "$HAVE" "$TAG"
+    if [ -t 0 ]; then
+        read -r -p "Update the installer version to $WANT now? [y/N] " ANSWER
+    else
+        ANSWER=""
+    fi
+    case "$ANSWER" in
+        y|Y|yes|YES)
+            sed -i "0,/^version = \"$HAVE\"$/s//version = \"$WANT\"/" installer/Cargo.toml
+            sed -i "/^name = \"cinder-installer\"$/,/^version = / s/^version = \".*\"$/version = \"$WANT\"/" installer/Cargo.lock
+            ok "updated installer version to $WANT in Cargo.toml and Cargo.lock"
+            die "version updated — review, commit, then rerun: tools/release.sh $TAG"
+            ;;
+        *)
+            die "version unchanged — update it manually or rerun and answer yes"
+            ;;
+    esac
+}
 ok "installer version $HAVE matches $TAG"
 
 # ── 3. the committed payload must match a fresh build ───────────────────────────────────────
