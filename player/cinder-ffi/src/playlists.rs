@@ -26,12 +26,19 @@ use std::path::{Path, PathBuf};
 
 /// Where the files live by default, beside the liked list.
 pub const DIR: &str = "/contents/cinder_playlists";
+/// The SD-card counterpart of `DIR`. New user-made playlists always live under `DIR` (the
+/// internal volume is the one the device boots from and the one USB-MSC exposes by default),
+/// but synced playlists that arrived on a card are READ from here — see `SEARCH_DIRS`.
 pub const EXT_DIR: &str = "/contents_ext/cinder_playlists";
 
-/// All search directories for synced playlists on internal and external storage.
+/// All search directories for synced playlists on internal and external storage. The first two
+/// entries are the canonical Cinder locations (`DIR` and `EXT_DIR`); the rest are the
+/// conventions Sony's own software and third-party sync tools (Media Go, Music Center,
+/// Clementine, etc.) use to lay a card out — they get picked up so a playlist the user syncs
+/// from their PC appears on the device without a copy step.
 pub const SEARCH_DIRS: &[&str] = &[
-    "/contents/cinder_playlists",
-    "/contents_ext/cinder_playlists",
+    DIR,
+    EXT_DIR,
     "/contents/PLAYLISTS",
     "/contents_ext/PLAYLISTS",
     "/contents/playlists",
