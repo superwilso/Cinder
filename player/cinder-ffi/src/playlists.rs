@@ -24,9 +24,40 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Where the files live, beside the liked list.
+/// Where the files live by default, beside the liked list.
 pub const DIR: &str = "/contents/cinder_playlists";
+pub const EXT_DIR: &str = "/contents_ext/cinder_playlists";
+
+/// All search directories for synced playlists on internal and external storage.
+pub const SEARCH_DIRS: &[&str] = &[
+    "/contents/cinder_playlists",
+    "/contents_ext/cinder_playlists",
+    "/contents/PLAYLISTS",
+    "/contents_ext/PLAYLISTS",
+    "/contents/playlists",
+    "/contents_ext/playlists",
+    "/contents/Playlists",
+    "/contents_ext/Playlists",
+    "/contents/MUSIC/Playlists",
+    "/contents_ext/MUSIC/Playlists",
+    "/contents/MUSIC/playlists",
+    "/contents_ext/MUSIC/playlists",
+    "/contents/MUSIC",
+    "/contents_ext/MUSIC",
+    "/contents",
+    "/contents_ext",
+];
+
 const EXT: &str = "m3u8";
+
+fn is_playlist_file(path: &Path) -> bool {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        ext.eq_ignore_ascii_case("m3u8") || ext.eq_ignore_ascii_case("m3u")
+    } else {
+        false
+    }
+}
+
 /// A playlist name that is longer than this is truncated for the FILE name only; the full name
 /// still goes in the `#PLAYLIST:` directive, so nothing the user typed is lost on screen.
 const MAX_STEM: usize = 48;
@@ -57,26 +88,52 @@ pub struct Store {
 }
 
 impl Store {
-    /// Read every `.m3u8` in `dir`. A missing directory is an empty store, not an error — the
-    /// common case is a device that has never had a playlist made on it.
+    /// Read every `.m3u8` and `.m3u` in `dir` (or across all search directories if `dir == DIR`).
+    /// A missing directory is skipped — the common case is an unmounted card or a device
+    /// that has never had a playlist made on it.
     pub fn open(dir: impl AsRef<Path>) -> Store {
-        let dir = dir.as_ref().to_path_buf();
+        let primary_dir = dir.as_ref().to_path_buf();
+        let dirs_to_scan: Vec<PathBuf> = if primary_dir == Path::new(DIR) {
+            SEARCH_DIRS.iter().map(PathBuf::from).collect()
+        } else {
+            vec![primary_dir.clone()]
+        };
+
         let mut lists: Vec<Playlist> = Vec::new();
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
-                    != Some(EXT.to_string())
-                {
-                    continue;
-                }
-                if let Some(list) = parse_file(&path) {
-                    lists.push(list);
+        let mut seen_files: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut seen_stems: BTreeSet<String> = BTreeSet::new();
+
+        for d in dirs_to_scan {
+            if let Ok(entries) = fs::read_dir(&d) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !is_playlist_file(&path) {
+                        continue;
+                    }
+                    if let Ok(canonical) = path.canonicalize() {
+                        if !seen_files.insert(canonical) {
+                            continue;
+                        }
+                    } else if !seen_files.insert(path.clone()) {
+                        continue;
+                    }
+                    if let Some(list) = parse_file(&path) {
+                        let stem = list
+                            .file
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        if !stem.is_empty() && !seen_stems.insert(stem) {
+                            continue;
+                        }
+                        lists.push(list);
+                    }
                 }
             }
         }
         lists.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        Store { dir, lists }
+        Store { dir: primary_dir, lists }
     }
 
     pub fn get(&self, id: i64) -> Option<&Playlist> {
@@ -233,7 +290,14 @@ pub fn id_for(stem: &str) -> i64 {
 }
 
 fn parse_file(path: &Path) -> Option<Playlist> {
-    let body = fs::read_to_string(path).ok()?;
+    let body = fs::read_to_string(path).unwrap_or_else(|_| {
+        fs::read(path)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default()
+    });
+    if body.is_empty() {
+        return None;
+    }
     let stem = path.file_stem()?.to_str()?.to_string();
     let mut name = stem.clone();
     let mut entries: Vec<Entry> = Vec::new();
@@ -263,7 +327,8 @@ fn parse_file(path: &Path) -> Option<Playlist> {
         if entries.len() >= MAX_TRACKS {
             break;
         }
-        entries.push(Entry { uri: trimmed.to_string(), label: std::mem::take(&mut pending_label) });
+        let norm_uri = trimmed.replace('\\', "/").replace("%20", " ");
+        entries.push(Entry { uri: norm_uri, label: std::mem::take(&mut pending_label) });
     }
 
     Some(Playlist { id: id_for(&stem), name, file: path.to_path_buf(), entries })
@@ -435,6 +500,16 @@ mod tests {
         let store = Store::open(&dir.0);
         assert_eq!(store.lists[0].name, "From PC", "falls back to the file name");
         assert_eq!(uris(&store.lists[0]).len(), 2);
+    }
+
+    #[test]
+    fn m3u_and_windows_paths_supported() {
+        let dir = Dir::new("m3u_win");
+        fs::write(dir.0.join("Synced Playlist.m3u"), "MUSIC\\Artist\\Album\\01%20Track.flac\r\n..\\MUSIC\\b.mp3\n").unwrap();
+        let store = Store::open(&dir.0);
+        assert_eq!(store.lists.len(), 1);
+        assert_eq!(store.lists[0].name, "Synced Playlist");
+        assert_eq!(uris(&store.lists[0]), vec!["MUSIC/Artist/Album/01 Track.flac", "../MUSIC/b.mp3"]);
     }
 
     #[test]

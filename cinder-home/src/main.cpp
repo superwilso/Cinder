@@ -5576,8 +5576,12 @@ void exit_usb_msc() {
     // The PC may have rewritten anything under /contents while it held the volume, so any config
     // we cache from there is now suspect. Only cinder_viz.conf is cached; drop it.
     viz_conf_invalidate();
-    clog_(contents_mounted() ? "usb-msc: exited (/contents remounted; log restored)"
-                             : "usb-msc: exited but /contents did NOT remount within 5 s");
+    if (contents_mounted()) {
+        clog_("usb-msc: exited (/contents remounted; log restored)");
+        cinder_db_open("/db/MTPDB.dat");
+    } else {
+        clog_("usb-msc: exited but /contents did NOT remount within 5 s");
+    }
 }
 
 // Drain Cinder's pending URI sequence into PlayerService. Queue edits use the same proven
@@ -7658,6 +7662,34 @@ void* render_driver(void*) {
             // Warn low, shut down before the hardware browns out mid-write. Not guarded: it is pure
             // sysfs reads plus, at the very end, the same power path the Settings row uses.
             battery_guard(pct);
+        }
+        // LIBRARY / PLAYLIST RESCAN. `exit_usb_msc` already reloads the DB the moment the PC hands
+        // /contents back, which is how a sync normally lands — this is the belt-and-braces path for
+        // anything that changes /db/MTPDB.dat without going through USB-MSC (an adb push into the
+        // DB during dev, or a scan Sony's own service re-runs on its own schedule).
+        //
+        // PACED AT 10 s, ON THE SAME CLOCK AS THE BATTERY GAUGE — not checked every pump tick. The
+        // first version stat()'d the DB on every tick (up to 50/s with the screen on) from inside
+        // this same render/pump thread, which is the thread that also drives the Bluetooth route
+        // poll and reconnect logic a few lines above. `cinder_db_open` is a full rebuild — every
+        // album/artist/playlist query plus the art-cache restart, the ~3,500-track cost logged at
+        // boot as "library loaded" — and running it inline on that thread, however rarely it
+        // actually fired, meant a real sync landing while paired could stall BT housekeeping
+        // mid-session. Reported 2026-08-20 as "BT seems worse" after this was added. A 10 s-paced
+        // check costs one stat() every 10 s instead of one every ~20 ms, and only ever blocks the
+        // thread on a genuine change — not on the polling itself.
+        static long last_db_check_ms = 0;
+        static time_t last_db_mtime = 0;
+        if (house_now - last_db_check_ms >= 10000 && !g_msc_active) {
+            last_db_check_ms = house_now;
+            struct stat st;
+            if (stat("/db/MTPDB.dat", &st) == 0) {
+                if (last_db_mtime != 0 && st.st_mtime != last_db_mtime) {
+                    clog_("housekeeping: /db/MTPDB.dat modified -> reloading library and playlists");
+                    cinder_db_open("/db/MTPDB.dat");
+                }
+                last_db_mtime = st.st_mtime;
+            }
         }
         ++n;
         // FRAME PACING: sleep only the REMAINDER of the 16 ms budget, not a flat 16 ms on top of

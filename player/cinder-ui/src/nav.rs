@@ -2245,23 +2245,13 @@ impl App {
                     // repeat icon (transport row, far right)
                     vec![Action::RepeatCycle]
                 } else if let Some(slot) = crate::now_playing::hit_toolbar(x, y) {
-                    // bottom toolbar: library · queue · +playlist · eq · bt · settings.
+                    // bottom toolbar: library · queue · bt · settings.
                     // Slots come from `now_playing::TOOLBAR_CX`, so the target is wherever the
-                    // icon was actually drawn — the old version hardcoded five 96px bands beside
-                    // a render that could have moved without it.
+                    // icon was actually drawn.
                     match slot {
                         0 => self.push(Screen::Library),
                         1 => self.push(Screen::UpNext),
-                        2 => {
-                            // Add THIS track to a playlist. Nothing playing → nothing to add, and
-                            // opening an empty picker would be a dead end.
-                            match self.context.get(self.context_idx).map(|s| s.object_id) {
-                                Some(id) if id != 0 => self.open_playlist_pick(id),
-                                _ => self.notify("Nothing playing"),
-                            }
-                        }
-                        3 => self.push(Screen::Eq),
-                        4 => self.push(Screen::Bluetooth),
+                        2 => self.push(Screen::Bluetooth),
                         _ => self.push(Screen::Settings),
                     }
                     vec![]
@@ -2956,7 +2946,7 @@ impl App {
     }
 
     /// Open "Add to playlist" for one track.
-    fn open_playlist_pick(&mut self, object_id: i64) {
+    pub fn open_playlist_pick(&mut self, object_id: i64) {
         self.pick_track = object_id;
         self.pick_scroll_px = 0;
         self.fling_v = 0.0;
@@ -8388,15 +8378,14 @@ mod tests {
 
     /// Now Playing ▸ the toolbar's third slot adds what is playing to a playlist.
     #[test]
-    fn add_to_playlist_from_now_playing() {
+    fn add_to_playlist_picker() {
         let mut a = own_and_sony();
         while a.current() != Screen::NowPlaying {
             a.press(Button::Back);
         }
         let songs = a.lib.songs.clone();
         a.set_play_context(songs, 1);
-        let slot = crate::now_playing::TOOLBAR_CX[2];
-        assert!(a.tap(slot, crate::now_playing::TOOLBAR_TOP + 20).is_empty());
+        a.open_playlist_pick(901);
         assert_eq!(a.current(), Screen::PlaylistPick);
 
         // Row 0 makes a new playlist AND remembers the track; row 1 is "Mine".
@@ -8413,7 +8402,7 @@ mod tests {
         }
         let songs = a.lib.songs.clone();
         a.set_play_context(songs, 0);
-        a.tap(crate::now_playing::TOOLBAR_CX[2], crate::now_playing::TOOLBAR_TOP + 20);
+        a.open_playlist_pick(900);
         assert!(a.tap(240, crate::playlist_pick::TOP + 4).is_empty(), "row 0 opens the keyboard");
         assert_eq!(a.current(), Screen::Keyboard);
         kb_key(&mut a, crate::keyboard::Key::Char('x'));
@@ -8421,6 +8410,32 @@ mod tests {
                    vec![Action::PlaylistCreateWith(900)]);
         assert_ne!(a.current(), Screen::PlaylistPick,
                    "the picker's question is answered, so it goes with the keyboard");
+    }
+
+    #[test]
+    fn toolbar_navigation_four_slots() {
+        let mut a = own_and_sony();
+        while a.current() != Screen::NowPlaying {
+            a.press(Button::Back);
+        }
+        // Slot 0 -> Library
+        a.tap(crate::now_playing::TOOLBAR_CX[0], crate::now_playing::TOOLBAR_TOP + 20);
+        assert_eq!(a.current(), Screen::Library);
+        a.press(Button::Back);
+
+        // Slot 1 -> UpNext
+        a.tap(crate::now_playing::TOOLBAR_CX[1], crate::now_playing::TOOLBAR_TOP + 20);
+        assert_eq!(a.current(), Screen::UpNext);
+        a.press(Button::Back);
+
+        // Slot 2 -> Bluetooth
+        a.tap(crate::now_playing::TOOLBAR_CX[2], crate::now_playing::TOOLBAR_TOP + 20);
+        assert_eq!(a.current(), Screen::Bluetooth);
+        a.press(Button::Back);
+
+        // Slot 3 -> Settings
+        a.tap(crate::now_playing::TOOLBAR_CX[3], crate::now_playing::TOOLBAR_TOP + 20);
+        assert_eq!(a.current(), Screen::Settings);
     }
 
     /// The track picker stays open across adds — building a playlist is a run of taps.
@@ -9994,7 +10009,6 @@ mod tests {
         crate::text::scale_guard()
     }
 
-    #[test]
     /// The EQ band field is DRAGGABLE, and the knob has to end up where the finger is. Before
     /// 2026-08-17 every slider on this device was tap-only — one tap, one step, ten taps to cross
     /// a band — which is what the user reported as "they can't be dragged".
@@ -10082,6 +10096,7 @@ mod tests {
         assert!(!a.scrub_begin(5, crate::eq::FIELD_MID), "the left gutter was claimed");
     }
 
+    #[test]
     fn ui_scale_slider_scrubs_taps_and_steps() {
         let _scale = lock_scale();
         let mut a = unlocked();
