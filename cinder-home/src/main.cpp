@@ -1645,13 +1645,10 @@ void boot_to_stock() {
     clog_("boot-to-stock: armed; exiting so appmgr restarts the device into the Sony player");
     fm_release_capture();
     // ORDER MATTERS: the flag is written and sync()'d ABOVE, before anything else runs. Keep it
-    // that way. cinder_render_shutdown joins the present thread, which blocks if the display driver
-    // has wedged — so if this ever hangs, the user power-cycles and STILL lands on stock, because
-    // the flag was already durable. Doing the sync after the shutdown would make the cable-free
-    // escape depend on a healthy present path, i.e. on more than it is there to rescue.
-    cinder_render_shutdown();   // release the framebuffer so the reboot isn't fighting our mapping
+    // that way. Do not tear down the renderer here: dropping the present thread joins it, and a
+    // wedged display driver can make that join block forever before appmgr gets a chance to restart
+    // us. Process exit releases the framebuffer mappings and lets appmgr perform the reboot.
     std::fflush(nullptr);
-    ::sync();
     _exit(0);
 }
 
