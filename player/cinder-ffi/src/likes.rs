@@ -271,6 +271,26 @@ pub enum Outcome {
     Applied(usize, usize),
 }
 
+pub const INTERNAL_LIKED_PATH: &str = "/contents/cinder_liked.conf";
+pub const EXTERNAL_LIKED_PATH: &str = "/contents_ext/cinder_liked.conf";
+pub const LIKED_PATHS: &[&str] = &[INTERNAL_LIKED_PATH, EXTERNAL_LIKED_PATH];
+
+/// Load decimal object_ids from a cinder_liked.conf file.
+pub fn liked_load(path: &str) -> std::collections::BTreeSet<i64> {
+    std::fs::read_to_string(path)
+        .map(|body| body.lines().filter_map(|l| l.trim().parse::<i64>().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Load liked song object_ids across both internal storage and the SD card.
+pub fn liked_load_all() -> std::collections::BTreeSet<i64> {
+    let mut all = BTreeSet::new();
+    for path in LIKED_PATHS {
+        all.extend(liked_load(path));
+    }
+    all
+}
+
 /// Full-file path of the import that sits beside `liked_path`.
 pub fn import_path(liked_path: &str) -> String {
     match liked_path.rfind('/') {
@@ -302,6 +322,48 @@ where
     }
     let _ = std::fs::rename(&path, format!("{path}{DONE_SUFFIX}"));
     (Outcome::Applied(ids.len(), missing), Some(ids))
+}
+
+/// Apply imports across both internal storage and the SD card.
+pub fn apply_import_all<'a, I>(songs: I) -> (Outcome, Option<BTreeSet<i64>>)
+where
+    I: Iterator<Item = (i64, &'a str, &'a str, &'a str)> + Clone,
+{
+    let mut combined_ids = BTreeSet::new();
+    let mut any_applied = false;
+    let mut total_missing = 0;
+    let mut last_outcome = Outcome::None;
+
+    for liked_path in LIKED_PATHS {
+        let (outcome, ids) = apply_import(liked_path, songs.clone());
+        match outcome {
+            Outcome::Applied(_, missing) => {
+                any_applied = true;
+                total_missing += missing;
+                if let Some(set) = ids {
+                    combined_ids.extend(set);
+                }
+                last_outcome = Outcome::Applied(combined_ids.len(), total_missing);
+            }
+            Outcome::Unresolved(_) => {
+                if !any_applied {
+                    last_outcome = outcome;
+                }
+            }
+            Outcome::Ignored(_) => {
+                if !any_applied && last_outcome == Outcome::None {
+                    last_outcome = outcome;
+                }
+            }
+            Outcome::None => {}
+        }
+    }
+
+    if any_applied {
+        (Outcome::Applied(combined_ids.len(), total_missing), Some(combined_ids))
+    } else {
+        (last_outcome, None)
+    }
 }
 
 #[cfg(test)]
@@ -444,6 +506,17 @@ mod tests {
         assert_eq!(outcome, Outcome::Unresolved(1));
         assert!(ids.is_none());
         assert!(import.exists(), "an unresolved import must survive for the next boot");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn liked_load_parses_ids_correctly() {
+        let dir = std::env::temp_dir().join(format!("cinder_likes_load_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("cinder_liked.conf");
+        std::fs::write(&f, "101\n102\n\n103\ninvalid\n104\n").unwrap();
+        let ids = liked_load(f.to_str().unwrap());
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), vec![101, 102, 103, 104]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

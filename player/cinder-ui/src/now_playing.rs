@@ -46,10 +46,10 @@ pub fn hit_info(x: i32, y: i32) -> bool {
 }
 
 /// The bottom toolbar's slot centres, and the single source for both the icons above and the hit
-/// test in `nav::tap`. Six 80 px slots across a 480 px panel.
+/// test in `nav::tap`. Four 120 px slots across a 480 px panel (library, queue, bluetooth, settings).
 pub const TOOLBAR_TOP: i32 = 744;
-pub const TOOLBAR_SLOTS: usize = 6;
-pub const TOOLBAR_CX: [i32; TOOLBAR_SLOTS] = [40, 120, 200, 280, 360, 440];
+pub const TOOLBAR_SLOTS: usize = 4;
+pub const TOOLBAR_CX: [i32; TOOLBAR_SLOTS] = [60, 180, 300, 420];
 
 /// Which toolbar slot a tap lands on, or None if the tap is above the bar.
 pub fn hit_toolbar(x: i32, y: i32) -> Option<usize> {
@@ -449,12 +449,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         fill_rect(c, 435, ty as i32 - 1, 3, 3, t.acc);
     }
 
-    // ---------- bottom toolbar (744..800): library · queue · +playlist · eq · bt · settings ----
-    // SIX slots of 80px, not five of 96: "add this to a playlist" is a per-TRACK action and
-    // Now Playing is where the track is. It has no other honest home — the metadata block is
-    // already Track information, the heart is already the liked list, and the swipe gestures on
-    // the library rows are both spent on the queue.
-    // (`nav::tap` slices the same 80px slots in the same order — keep them in sync.)
+    // ---------- bottom toolbar (744..800): library · queue · bt · settings --------------------
+    // FOUR slots of 120px: library, queue, bluetooth, settings.
+    // (`nav::tap` slices the same 120px slots in the same order — keep them in sync.)
     hline(c, 744, t.line);
     let tb = 774.0;
     for (index, slot) in TOOLBAR_CX.iter().enumerate() {
@@ -462,9 +459,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         match index {
             0 => icons::library(c, cx, tb, 24.0, t.dim),
             1 => icons::queue(c, cx, tb, 24.0, t.dim),
-            2 => icons::bookmark(c, cx, tb, 24.0, t.dim),
-            3 => icons::eq(c, cx, tb, 24.0, t.dim),
-            4 => icons::bt(c, cx, tb, 23.0, t.dim),
+            2 => icons::bt(c, cx, tb, 23.0, t.dim),
             _ => icons::settings(c, cx, tb, 24.0, t.dim),
         }
     }
@@ -490,11 +485,10 @@ fn idle_chrome(c: &mut Canvas, t: &Theme, f: &FontSet) {
 
     hline(c, 744, t.line);
     let tb = 774.0;
-    icons::library(c, 48.0, tb, 26.0, t.acc); // the one thing worth tapping from here
-    icons::queue(c, 144.0, tb, 26.0, t.dim);
-    icons::eq(c, 240.0, tb, 26.0, t.dim);
-    icons::bt(c, 336.0, tb, 25.0, t.dim);
-    icons::settings(c, 432.0, tb, 26.0, t.dim);
+    icons::library(c, 60.0, tb, 26.0, t.acc); // the one thing worth tapping from here
+    icons::queue(c, 180.0, tb, 26.0, t.dim);
+    icons::bt(c, 300.0, tb, 25.0, t.dim);
+    icons::settings(c, 420.0, tb, 26.0, t.dim);
     let _ = f;
 }
 
