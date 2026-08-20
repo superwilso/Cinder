@@ -96,6 +96,48 @@ fn main() {
     }
     src.push_str("];\n");
 
+    // Sony's native Windows updater performs the required safe-eject and SCSI firmware
+    // transition. Embed its complete runtime so the end-user installer needs no WSL, usbipd,
+    // driver setup, or separate download.
+    let updater_root = manifest.join("sony-updater");
+    let updater_files = [
+        "SoftwareUpdateTool.exe",
+        "Data/App/WmFwUpdater.dll",
+        "Data/App/msvcp100.dll",
+        "Data/App/msvcr100.dll",
+        "Data/Device/SWUpdate.xml",
+        "Data/Device/disclaimer_de.txt",
+        "Data/Device/disclaimer_en.txt",
+        "Data/Device/disclaimer_es.txt",
+        "Data/Device/disclaimer_fr.txt",
+        "Data/Device/disclaimer_it.txt",
+        "Data/Device/disclaimer_ja.txt",
+        "Data/Device/disclaimer_ko.txt",
+        "Data/Device/disclaimer_pt-br.txt",
+        "Data/Device/disclaimer_pt-pt.txt",
+        "Data/Device/disclaimer_ru.txt",
+        "Data/Device/disclaimer_zh-Hans.txt",
+        "Data/Device/disclaimer_zh-Hant.txt",
+    ];
+    src.push_str("pub static UPDATER_PAYLOAD: &[(&str, &[u8])] = &[\n");
+    let mut updater_missing = Vec::new();
+    for rel in updater_files {
+        let p = updater_root.join(rel);
+        println!("cargo:rerun-if-changed={}", p.display());
+        if p.is_file() {
+            src.push_str(&format!("    ({:?}, include_bytes!({:?})),\n", rel, abs(&p)));
+        } else {
+            updater_missing.push(rel);
+            println!("cargo:warning=cinder-installer: missing Sony updater file {rel}");
+        }
+    }
+    src.push_str("];\n");
+    src.push_str("pub static UPDATER_MISSING: &[&str] = &[\n");
+    for rel in updater_missing {
+        src.push_str(&format!("    {:?},\n", rel));
+    }
+    src.push_str("];\n");
+
     if !missing.is_empty() {
         println!(
             "cargo:warning=cinder-installer: {} payload file(s) missing for channel '{}' — \
