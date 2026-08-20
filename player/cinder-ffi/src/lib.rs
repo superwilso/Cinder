@@ -1783,7 +1783,18 @@ fn track_info_rows(r: &Render, t: &cinder_db::Track) -> Vec<(String, String)> {
 /// hand-swiped in, and fell back to a guess at the current album when that was empty — so playing
 /// an album or hitting a Shuffle band produced a real 200-track sequence that the queue screen
 /// knew nothing about. One resolution, one order, both surfaces.
-fn set_pending(r: &mut Render, seq: Vec<cinder_db::Track>, start: usize) {
+const MAX_PLAY_SEQUENCE: usize = 512;
+
+fn set_pending(r: &mut Render, mut seq: Vec<cinder_db::Track>, start: usize) {
+    if seq.len() > MAX_PLAY_SEQUENCE {
+        eprintln!(
+            "cinder-ffi: play sequence has {} tracks; limiting playback and Up Next to {}",
+            seq.len(),
+            MAX_PLAY_SEQUENCE
+        );
+        seq.truncate(MAX_PLAY_SEQUENCE);
+    }
+    let start = start.min(seq.len().saturating_sub(1));
     r.app.set_play_context(seq.iter().map(song_row_of).collect(), start);
     r.pending_play = seq.into_iter().map(|t| t.filename).collect();
     r.pending_play_start = start;
