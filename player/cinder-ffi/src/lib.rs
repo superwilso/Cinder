@@ -2002,8 +2002,18 @@ fn add_track_to_playlist(r: &mut Render, playlist_id: i64, object_id: i64) {
 /// album plus one per playlist, and it would also throw away the scroll position of the screen
 /// the user is editing on.
 fn refresh_playlists(r: &mut Render) {
-    let mut rows = r.db_playlists.clone();
-    rows.extend(user_playlist_rows(&r.plists, r.db.as_ref()));
+    let mut rows = Vec::new();
+    let mut seen_names = std::collections::BTreeSet::new();
+    for row in r
+        .db_playlists
+        .iter()
+        .cloned()
+        .chain(user_playlist_rows(&r.plists, r.db.as_ref()))
+    {
+        if seen_names.insert(row.name.to_lowercase()) {
+            rows.push(row);
+        }
+    }
     rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     r.app.set_playlists(rows);
     r.dirty = true;
