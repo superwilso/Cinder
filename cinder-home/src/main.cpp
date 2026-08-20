@@ -257,6 +257,12 @@ easel::ApplicationBase* g_app = nullptr; // the app — for StopBootAnimation() 
 volatile bool g_pump_ticker_run = false; // is the pump-driver ticker thread active?
 pthread_t g_pump_ticker = 0;   // the ticker thread handle (joined at finalize)
 bool g_deferred_done = false;  // slow/blocking init (DB + PlayerService) finished?
+bool g_db_ready = false;       // library DB opened successfully this boot
+bool g_audio_ready = false;    // PlayerService connection succeeded this boot
+bool g_audio_pump_started = false;
+bool g_resume_ready = false;   // resume/scrobble state restored after the DB became available
+long g_deferred_retry_ms = 0;  // pace retries after a transient service/storage failure
+int g_deferred_rc = -1;        // result slot for non-capturing guarded init callbacks
 time_t g_healthy_since = 0;    // when deferred init completed (for the proven-healthy reset)
 bool g_counter_reset = false;  // have we cleared the launcher bad-boot counter this boot?
 time_t g_first_paint_at = 0;   // when the FIRST frame hit the panel (the bad-boot health signal)
@@ -438,11 +444,22 @@ void stop_analyzer() {
 // so a blocking Sony-IPC can't stall the device. Idempotent, one-shot.
 void deferred_up() {
     if (g_deferred_done) return;
-    // Each guarded: a crash/hang in the library load or the PlayerService connect is caught and
-    // that subsystem is skipped — the UI keeps running (empty library / no playback) rather than
-    // hanging the boot. (db load is slow on a big DB, so a generous 25s; the IPC connect 12s.)
-    run_guarded("deferred_up: cinder_db_open + build library", 25,
-                []() { cinder_db_open("/db/MTPDB.dat"); });   // path: confirm on device
+    const long retry_now = now_ms();
+    if (retry_now - g_deferred_retry_ms < 1000) return;
+    g_deferred_retry_ms = retry_now;
+    // A transient mount or PlayerService race must not permanently leave the app without a
+    // library or playback. Retry only the failed prerequisite, paced at 1 Hz; successful stages
+    // stay complete and are never repeated.
+    if (!g_db_ready) {
+        g_deferred_rc = -1;
+        run_guarded("deferred_up: cinder_db_open + build library", 25,
+                    []() { g_deferred_rc = cinder_db_open("/db/MTPDB.dat"); });
+        if (g_deferred_rc != 0) {
+            clog_("deferred_up: DB unavailable — will retry");
+            return;
+        }
+        g_db_ready = true;
+    }
     // Bring back what was playing when the device was last powered off — the sequence, the user's
     // own queued picks and the position inside the track. Must follow the DB open: the files hold
     // object ids and the rows come from the library. Pure file IO + id lookups (no Sony service is
@@ -451,13 +468,16 @@ void deferred_up() {
     //
     // /data/cinder, NOT /contents: the resume files are machine-written, they change while the PC
     // holds the MSC volume, and /contents is unmounted for the whole of that.
-    run_guarded("deferred_up: restore playback context", 10, []() {
-        int rr = cinder_resume_load("/data/cinder/queue.conf", "/data/cinder/resume.conf");
-        clog_(rr == 1 ? "deferred_up: resume — context restored (plays on the first press)"
-                      : "deferred_up: resume — nothing saved");
-    });
-    clog_("deferred_up: cinder_scrobble_open(/contents/.scrobbler.log)");
-    cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
+    if (!g_resume_ready) {
+        run_guarded("deferred_up: restore playback context", 10, []() {
+            int rr = cinder_resume_load("/data/cinder/queue.conf", "/data/cinder/resume.conf");
+            clog_(rr == 1 ? "deferred_up: resume — context restored (plays on the first press)"
+                          : "deferred_up: resume — nothing saved");
+        });
+        clog_("deferred_up: cinder_scrobble_open(/contents/.scrobbler.log)");
+        cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
+        g_resume_ready = true;
+    }
     // THE FRAMEWORK PUMP — must come BEFORE cinder_audio_init. Sony's PlayerService client is
     // asynchronous: replies are dispatched by pst::core::Framework's event looper. Nothing drove
     // it (easel's pump never fires for our non-Qt CuiAppModule — see the render-driver note
@@ -465,13 +485,25 @@ void deferred_up() {
     // playback silently did nothing. Safe to call here and not earlier: app.run() has already
     // constructed easel::Framework (which calls StartForApplication) by the time OnForeground
     // fires, and deferred_up runs after that — GetReference() on an unstarted Framework segfaults.
-    clog_("deferred_up: cinder_audio_pump_start (pst::core::Framework event looper)");
-    run_guarded("deferred_up: audio pump start", 8, []() { cinder_audio_pump_start(20); });
-    run_guarded("deferred_up: cinder_audio_init (PlayerService connect)", 12,
-                []() {
-                    if (cinder_audio_init("cinder") != 0)
-                        clog_("deferred_up: audio_init FAILED — transport + progress unavailable");
-                });
+    if (!g_audio_pump_started) {
+        clog_("deferred_up: cinder_audio_pump_start (pst::core::Framework event looper)");
+        if (run_guarded("deferred_up: audio pump start", 8,
+                        []() { cinder_audio_pump_start(20); }) != 0) {
+            clog_("deferred_up: audio pump unavailable — will retry");
+            return;
+        }
+        g_audio_pump_started = true;
+    }
+    if (!g_audio_ready) {
+        g_deferred_rc = -1;
+        run_guarded("deferred_up: cinder_audio_init (PlayerService connect)", 12,
+                    []() { g_deferred_rc = cinder_audio_init("cinder"); });
+        if (g_deferred_rc != 0) {
+            clog_("deferred_up: audio unavailable — will retry");
+            return;
+        }
+        g_audio_ready = true;
+    }
     // Sync the Settings "Battery care" toggle to the device's real Itawari state (guarded — the
     // PowerMgrServiceClient ctor connects to the power service). Unavailable (-1) leaves the UI default.
     run_guarded("deferred_up: read battery care state", 8,
@@ -6158,7 +6190,9 @@ void carry_out(int act) {
             // UsbDeviceAudioPlayerServiceClient and makes a Start()/Stop() IPC round trip on top of
             // the gadget re-enumerating. A budget sized for the old body would fire the guard
             // mid-call and _exit a perfectly healthy app.
-            run_guarded("carry_out: USB-DAC/LDAC toggle", 18, apply_usb_dac);
+            // apply_usb_dac owns guards for each Sony IPC step; the single global jump buffer
+            // cannot safely be nested around the whole transition.
+            apply_usb_dac();
             break;
         case CINDER_ACT_BT_TOGGLE:
             // 8 s: SetRfOnOff + at most ~0.9 s of polling + the connect request. Deliberately not
