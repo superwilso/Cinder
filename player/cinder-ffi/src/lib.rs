@@ -4885,6 +4885,7 @@ pub extern "C" fn cinder_set_now_playing(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::likes::liked_load;
 
     /// FM state has to survive a reboot. A scan is a deliberate ten-second wait the user watches,
     /// and the dial is where they left the radio — losing either is the same defect the shelf pins
