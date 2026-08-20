@@ -555,11 +555,6 @@ fn grip(c: &mut Canvas, t: &Theme, y: i32, lifted: bool) {
 mod tests {
     use super::*;
 
-    /// `metrics()` is a second, arithmetic expression of what `layout()` builds by hand, and it is
-    /// what the render path actually reads. Two sources of one truth is exactly the render↔hit
-    /// drift this screen was rewritten to remove, so they are bound together here rather than
-    /// trusted to stay in step.
-    #[test]
     /// The binary search must answer exactly what the linear scan it replaced answered — for every
     /// pixel of a layout that has history, a current row, a queue and an album tail, including the
     /// gaps between sections where the answer is None.
@@ -584,6 +579,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn metrics_matches_layout() {
         for album_len in [0usize, 1, 2, 5, 40] {
             for queued in [0usize, 1, 3, 12] {

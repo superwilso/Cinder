@@ -919,17 +919,53 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         .albums()
         .unwrap_or_default()
         .into_iter()
-        .map(|a| AlbumRow {
-            artist: album_artist.get(&a.id).cloned().unwrap_or_default(),
-            year: album_year.get(&a.id).cloned().unwrap_or_default(),
-            tracks: a.track_count.max(0) as u32,
-            art: a.name.clone(),
-            added: album_added.get(&a.id).copied().unwrap_or(0),
-            track_list: album_tracks.remove(&a.id).unwrap_or_default(),
-            name: a.name,
-            album_id: a.id,
+        .map(|a| {
+            let trs = album_tracks.remove(&a.id).unwrap_or_default();
+            let mut artist = album_artist.get(&a.id).cloned().unwrap_or_default();
+            if artist.is_empty() && !trs.is_empty() {
+                artist = trs[0].artist.clone();
+            }
+            AlbumRow {
+                artist,
+                year: album_year.get(&a.id).cloned().unwrap_or_default(),
+                tracks: a.track_count.max(0) as u32,
+                art: a.name.clone(),
+                added: album_added.get(&a.id).copied().unwrap_or(0),
+                track_list: trs,
+                name: a.name,
+                album_id: a.id,
+            }
         })
         .collect();
+
+    // Include any albums that had tracks but were not returned by db.albums()
+    for (aid, trs) in album_tracks {
+        if trs.is_empty() {
+            continue;
+        }
+        let name = trs[0].art.clone();
+        if name.is_empty() {
+            continue;
+        }
+        let artist = album_artist
+            .get(&aid)
+            .cloned()
+            .unwrap_or_else(|| trs[0].artist.clone());
+        let year = album_year.get(&aid).cloned().unwrap_or_default();
+        let added = album_added.get(&aid).copied().unwrap_or(0);
+        let count = trs.len() as u32;
+        album_rows.push(AlbumRow {
+            artist,
+            year,
+            tracks: count,
+            art: name.clone(),
+            added,
+            track_list: trs,
+            name,
+            album_id: aid,
+        });
+    }
+
     album_rows.sort_by(|x, y| x.artist.cmp(&y.artist).then_with(|| x.name.cmp(&y.name)));
     let mut album_groups: Vec<ArtistGroup> = Vec::new();
     for ar in album_rows {
@@ -1815,7 +1851,7 @@ fn play_order_uris(r: &Render, current: &str) -> Vec<String> {
 /// and what this plays are the same set.
 fn artist_tracks(db: Option<&cinder_db::Db>, name: &str) -> Option<Vec<cinder_db::Track>> {
     let db = db?;
-    let mut v: Vec<cinder_db::Track> = db
+    let v: Vec<cinder_db::Track> = db
         .tracks(cinder_db::Sort::Artist)
         .ok()?
         .into_iter()
@@ -4268,12 +4304,11 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
             r.plists = playlists::Store::open(playlists::DIR);
             eprintln!("cinder-ffi: playlists: {} of your own", r.plists.lists.len());
             refresh_playlists(r);
-            // Liked list lives beside the user's music, not next to the DB: /contents is the
-            // partition they can actually reach over USB-MSC to back it up or edit it.
-            let liked_path = String::from("/contents/cinder_liked.conf");
-            r.liked = liked_load(&liked_path);
-            eprintln!("cinder-ffi: liked songs: {} loaded", r.liked.len());
-            r.liked_path = Some(liked_path.clone());
+            // Liked list lives beside the user's music on both internal storage and SD card:
+            // /contents and /contents_ext are reachable over USB-MSC.
+            r.liked = likes::liked_load_all();
+            eprintln!("cinder-ffi: liked songs: {} loaded from internal and SD card", r.liked.len());
+            r.liked_path = Some(likes::INTERNAL_LIKED_PATH.to_string());
             // A liked list pushed from the PC (likesync) lands here as artist/title rows and is
             // resolved against the library that was just built — object ids are rebuilt whenever
             // the database is, so they can only be matched on this side. See `likes.rs` for why
@@ -4296,8 +4331,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
                     (s.object_id, s.artist.clone(), s.title.clone(), filed_under.to_string())
                 })
                 .collect();
-            let (outcome, imported) = likes::apply_import(
-                &liked_path,
+            let (outcome, imported) = likes::apply_import_all(
                 songs
                     .iter()
                     .map(|(id, artist, title, filed)| {
@@ -4322,7 +4356,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
                 }
             }
             if let Some(ids) = imported {
-                r.liked = ids;
+                r.liked.extend(ids);
                 liked_save(r); // rewrites cinder_liked.conf AND the cinder_loved.tsv export
             }
             r.app.set_liked_count(r.liked.len());
@@ -4534,19 +4568,17 @@ pub extern "C" fn cinder_scrub_end() -> libc::c_int {
 // One decimal object_id per line. A plain-text list survives partial writes gracefully (a torn
 // line is skipped, not fatal) and is trivially inspectable over USB-MSC, which matters for
 // something the user has curated by hand and cannot otherwise back up.
-fn liked_load(path: &str) -> std::collections::BTreeSet<i64> {
-    std::fs::read_to_string(path)
-        .map(|body| body.lines().filter_map(|l| l.trim().parse::<i64>().ok()).collect())
-        .unwrap_or_default()
-}
-
 fn liked_save(r: &Render) {
-    let Some(path) = r.liked_path.as_ref() else { return };
     let body: String = r.liked.iter().map(|id| format!("{id}\n")).collect();
-    // Write via a temp file + rename so a power cut mid-write can't truncate the existing list.
-    let tmp = format!("{path}.tmp");
-    if std::fs::write(&tmp, body).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
+    for path in likes::LIKED_PATHS {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if parent.exists() {
+                let tmp = format!("{path}.tmp");
+                if std::fs::write(&tmp, &body).is_ok() {
+                    let _ = std::fs::rename(&tmp, path);
+                }
+            }
+        }
     }
     liked_export_tsv(r);
 }
@@ -4561,8 +4593,6 @@ fn liked_save(r: &Render) {
 /// takes, which is why this is a separate human-readable file rather than the object_id list (those
 /// ids mean nothing off-device).
 fn liked_export_tsv(r: &Render) {
-    let Some(path) = r.liked_path.as_ref() else { return };
-    let tsv = path.replace("cinder_liked.conf", "cinder_loved.tsv");
     let lib = r.app.library();
     let mut body = String::from("# artist\ttitle — liked in Cinder; feed to Last.fm track.love\n");
     for id in &r.liked {
@@ -4570,9 +4600,16 @@ fn liked_export_tsv(r: &Render) {
             body.push_str(&format!("{}\t{}\n", song.artist, song.title));
         }
     }
-    let tmp = format!("{tsv}.tmp");
-    if std::fs::write(&tmp, body).is_ok() {
-        let _ = std::fs::rename(&tmp, &tsv);
+    for path in likes::LIKED_PATHS {
+        let tsv = path.replace("cinder_liked.conf", "cinder_loved.tsv");
+        if let Some(parent) = std::path::Path::new(&tsv).parent() {
+            if parent.exists() {
+                let tmp = format!("{tsv}.tmp");
+                if std::fs::write(&tmp, &body).is_ok() {
+                    let _ = std::fs::rename(&tmp, &tsv);
+                }
+            }
+        }
     }
 }
 

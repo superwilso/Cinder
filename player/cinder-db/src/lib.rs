@@ -168,9 +168,17 @@ impl Db {
     ///
     /// BOTH STORAGES MATTER: this device has ~2/3 of the library on internal storage and ~1/3 on
     /// the microSD, and they hang off two different roots.
-    const ROOTS: [(&'static str, &'static str); 2] = [
-        ("internal", "/contents"),      // /emmc@contents, vfat
-        ("external", "/contents_ext"),  // the microSD, /dev/block/mmcblk1p1
+    const ROOTS: [(&'static str, &'static str); 10] = [
+        ("internal", "/contents"),          // /emmc@contents, vfat
+        ("contents", "/contents"),
+        ("emmc", "/contents"),
+        ("internal storage", "/contents"),
+        ("external", "/contents_ext"),      // the microSD, /dev/block/mmcblk1p1
+        ("contents_ext", "/contents_ext"),
+        ("sdcard", "/contents_ext"),
+        ("sdcard1", "/contents_ext"),
+        ("microsd", "/contents_ext"),
+        ("memory card", "/contents_ext"),
     ];
 
     /// Resolve every folder object to an absolute directory path, once, at open.
@@ -207,7 +215,10 @@ impl Db {
                 let Some((parent, name)) = raw.get(&cur) else { break };
                 if *parent == 0 {
                     // A storage root: its own name selects the mount, and is not part of the path.
-                    prefix = Self::ROOTS.iter().find(|(n, _)| n == name).map(|(_, m)| *m);
+                    prefix = Self::ROOTS
+                        .iter()
+                        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                        .map(|(_, m)| *m);
                     break;
                 }
                 stack.push(name.as_str());
@@ -366,20 +377,37 @@ impl Db {
         self.query_tracks(&format!("WHERE {TRACK_WHERE}"), order, [])
     }
 
-    /// Resolve the now-playing metadata for the file PlayerService reports (PlayStatus.uri).
+    /// Resolve the now-playing metadata for the file PlayerService reports (PlayStatus.uri)
+    /// or for a playlist entry (which might use relative paths, Windows backslashes, or URL encoding).
     pub fn track_by_filename(&self, filename: &str) -> Result<Option<Track>> {
         // PlayerService reports back the absolute path we gave it, but the DB column is a bare
         // basename — so match on the basename and then disambiguate on the full path. Basenames
         // repeat constantly across a real library ("01 Intro.flac"), so picking the first row that
         // merely shares a name would show the wrong album's metadata on Now Playing.
-        let base = filename.rsplit('/').next().unwrap_or(filename);
+        // Slashes might be Windows backslashes in synced playlists; URL encoding like %20 might also appear.
+        let clean = filename.replace('\\', "/");
+        let decoded = clean.replace("%20", " ");
+        let base = clean.rsplit('/').next().unwrap_or(&clean);
+        let base_dec = decoded.rsplit('/').next().unwrap_or(&decoded);
+
         let v = self.query_tracks(
-            &format!("WHERE {TRACK_WHERE} AND ob.filename = ?1"),
+            &format!("WHERE {TRACK_WHERE} AND (ob.filename = ?1 OR ob.filename = ?2)"),
             "ob.object_id",
-            [base],
+            [base, base_dec],
         )?;
-        if let Some(exact) = v.iter().position(|t| t.filename == filename) {
+        if let Some(exact) = v.iter().position(|t| {
+            t.filename == filename || t.filename == clean || t.filename == decoded
+        }) {
             return Ok(v.into_iter().nth(exact));
+        }
+        // Match by suffix (e.g. "Artist/Album/01 Track.flac" from a relative playlist entry)
+        if let Some(pos) = v.iter().position(|t| {
+            t.filename.ends_with(&clean)
+                || clean.ends_with(&t.filename)
+                || t.filename.ends_with(&decoded)
+                || decoded.ends_with(&t.filename)
+        }) {
+            return Ok(v.into_iter().nth(pos));
         }
         // No exact match: either the caller passed a bare basename (older callers did), or the
         // track is under an unresolved root. Either way the single-candidate answer is still right.
