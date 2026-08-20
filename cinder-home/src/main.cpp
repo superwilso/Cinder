@@ -49,6 +49,7 @@
 #include "cinder_effects.h"
 #include "cinder_tuner.h"
 #include "vol_ramp.h"
+#include "bt_edge.h"
 #include "jack_edge.h"
 #include "cinder_analyzer.h"
 #include "cinder_power.h"
@@ -2452,8 +2453,13 @@ static bool g_bt_user_disconnected = false;
 static long g_bt_reconnect_at = 0;
 static int  g_bt_reconnect_wait_s = 0;
 
+// Was a peer linked at the last observation? -1 = nothing seen yet this boot, so the first read
+// only seeds. Lives beside the address it summarises.
+static int g_bt_link_last = -1;
+
 static void refresh_bt_connected() {
     enum { VIDX_GetConnectInformation = 5 };
+    bool drop = false;   // the link went away on this read: pause after the IPC, not inside it
     try {
         void* x = bt_xmit();
         if (!x) return;
@@ -2474,6 +2480,19 @@ static void refresh_bt_connected() {
         g_bt_have_name = !addr.empty();
         g_bt_connected_addr = addr;
 
+        // PAUSE ON DISCONNECT — the Bluetooth half of pause-on-unplug (see src/bt_edge.h).
+        // Decided here rather than acted on here: a throw out of the pause would be caught by this
+        // function's `catch (...)` and logged as "GetConnectInformation threw", which would send
+        // the next reader looking at the wrong call entirely.
+        drop = cinder_bt_should_pause(g_bt_link_last, addr.empty() ? 0 : 1, g_playing ? 1 : 0);
+        if (g_bt_link_last < 0) {
+            char m[96];
+            std::snprintf(m, sizeof m, "bt: %s at startup",
+                          addr.empty() ? "no device linked" : "a device is already linked");
+            clog_(m);
+        }
+        g_bt_link_last = addr.empty() ? 0 : 1;
+
         // The negotiated codec is NOT read here. bt_poll_sound_status() already owns that call and
         // throttles it to 2 s with an event bypass; a second reader in this function meant two
         // synchronous IPC round trips for one fact, and two paths that could disagree about it.
@@ -2483,6 +2502,17 @@ static void refresh_bt_connected() {
         if (!addr.empty() && addr != prev_addr) g_bt_sound_poll_now = 1;
     } catch (...) {
         clog_("bt: GetConnectInformation threw");
+        return;   // state unknown: never pause on a guess
+    }
+
+    if (drop) {
+        // The log says which kind of drop it was, because they need different follow-ups: a user
+        // disconnect is done, a link that fell over is what auto-reconnect exists for.
+        clog_(g_bt_user_disconnected
+                  ? "bt: disconnected by the user — pausing playback"
+                  : "bt: link DROPPED (range, sink powered off, or stolen) — pausing playback");
+        set_transport(false);
+        run_guarded("bt: pause", 6, []() { cinder_audio_pause(); });
     }
 }
 
