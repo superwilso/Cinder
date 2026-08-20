@@ -266,10 +266,17 @@ impl Layout {
             return None;
         }
         let cy = y - LIST_TOP + scroll_px.max(0);
-        self.slots
-            .iter()
-            .find(|(s, top)| cy >= *top && cy < *top + s.h())
-            .map(|(s, _)| *s)
+        // BINARY SEARCH, not a scan. `slots` is built in ascending `top` order and after a
+        // "Shuffle all songs" it holds one entry per track — 3,463 on the reference device. This
+        // runs on every tap, on every frame of a reorder drag, and on every swipe classification,
+        // so a linear find here is a scan of the whole library under a moving finger.
+        //
+        // `partition_point` gives the first slot starting AFTER cy; the candidate is the one
+        // before it, and it only matches if cy is inside that slot's own height (the gap between
+        // two sections is not a slot).
+        let index = self.slots.partition_point(|(_, top)| *top <= cy);
+        let (slot, top) = *self.slots.get(index.checked_sub(1)?)?;
+        (cy < top + slot.h()).then_some(slot)
     }
     /// Content-space top of a slot, for placing a lifted row.
     pub fn top_of(&self, want: Slot) -> Option<i32> {
@@ -553,6 +560,30 @@ mod tests {
     /// drift this screen was rewritten to remove, so they are bound together here rather than
     /// trusted to stay in step.
     #[test]
+    /// The binary search must answer exactly what the linear scan it replaced answered — for every
+    /// pixel of a layout that has history, a current row, a queue and an album tail, including the
+    /// gaps between sections where the answer is None.
+    #[test]
+    fn at_matches_a_linear_scan_everywhere() {
+        for (album_len, cur, queued) in
+            [(200usize, Some(100usize), 4usize), (5, Some(0), 0), (40, Some(39), 3), (0, None, 6)]
+        {
+            let l = layout(album_len, cur, queued);
+            for scroll in [0, 37, 500, l.max_scroll_px()] {
+                for y in LIST_TOP - 2..LIST_BOTTOM + 2 {
+                    let want = if !(LIST_TOP..LIST_BOTTOM).contains(&y) {
+                        None
+                    } else {
+                        let cy = y - LIST_TOP + scroll.max(0);
+                        l.slots.iter().find(|(s, top)| cy >= *top && cy < *top + s.h()).map(|(s, _)| *s)
+                    };
+                    assert_eq!(l.at(y, scroll), want,
+                               "y={y} scroll={scroll} album={album_len} cur={cur:?} queued={queued}");
+                }
+            }
+        }
+    }
+
     fn metrics_matches_layout() {
         for album_len in [0usize, 1, 2, 5, 40] {
             for queued in [0usize, 1, 3, 12] {

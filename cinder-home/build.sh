@@ -178,6 +178,11 @@ echo "── self-test: headphone-unplug edge (host) ──"
 # The rule in src/jack_edge.h, checked against the SAME header main.cpp uses: only the
 # plugged->unplugged transition pauses, the first observation of a boot never acts, and plugging IN
 # does nothing. It was written wrong the first time (it paused on plug-in), hence this file.
+if cc -O2 -o "$HERE/.btedge_selftest" "$HERE/tools/btedge_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.btedge_selftest" >/dev/null 2>&1; then echo "OK: bluetooth-disconnect edge"; \
+    else "$HERE/.btedge_selftest"; echo "FAIL: bt edge self-test"; exit 1; fi
+    rm -f "$HERE/.btedge_selftest"
+fi
 if cc -O2 -o "$HERE/.jackedge_selftest" "$HERE/tools/jackedge_selftest.cpp" -lstdc++ 2>/dev/null; then
     if "$HERE/.jackedge_selftest" >/dev/null 2>&1; then echo "OK: headphone-unplug edge"; \
     else "$HERE/.jackedge_selftest"; echo "FAIL: jack edge self-test"; exit 1; fi

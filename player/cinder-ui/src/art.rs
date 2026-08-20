@@ -278,6 +278,70 @@ pub fn block(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32, name: 
     }
 }
 
+/// Cached form of [`block`]: bake once, blit thereafter.
+///
+/// Keyed on the name's hash, the edge, the opacity and the background it was blended toward — the
+/// four things the pixels depend on. Baked at the row's ACTUAL opacity rather than at 1.0 and
+/// blended on the way out, because blending twice quantises twice; `the_baked_gradient_matches_the
+/// _drawn_one_exactly` pins the two paths together.
+///
+/// USE THIS FROM ANY PER-FRAME PATH. The library rows have had this since the Now Playing art was
+/// fixed; the album drill-in's 96×96 cover, the Playlists rows and Now Playing's night header did
+/// not, and each was recomputing a gradient every single frame — 9,216 pixels for the album cover
+/// alone, at a table lookup, a squared-distance test and a `sqrt` per pixel.
+///
+/// Above `CACHE_MAX_EDGE` it declines and draws directly: one 480×480 entry is 691 KB, and this
+/// device has aborted an allocator over render-path churn once already (ROADMAP 2026-07-28). The
+/// full-screen fallback is supplied pre-baked by the shell in normal operation anyway.
+pub fn block_cached(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32,
+                    name: &str, opacity: f32) {
+    let op = opacity.clamp(0.0, 1.0);
+    if w != h || w > CACHE_MAX_EDGE || w <= 0 {
+        block(c, t, x0, y0, w, h, name, op);
+        return;
+    }
+    use embedded_graphics::prelude::RgbColor;
+    let bg = ((t.bg.r() as u32) << 16) | ((t.bg.g() as u32) << 8) | t.bg.b() as u32;
+    let key: GradKey = (name_key(name), w, (op * 1000.0) as u16, bg);
+    GRAD_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= GRAD_CACHE_MAX && !cache.contains_key(&key) {
+            cache.clear();
+        }
+        let img = cache.entry(key).or_insert_with(|| gradient_image(t, w, h, name, op));
+        // The opacity is already baked in, so blit at 1.0 — blending again would darken it twice.
+        draw_image(c, t, x0, y0, img, 1.0);
+    });
+}
+
+/// (name hash, edge, opacity ×1000, background) — everything the baked pixels depend on.
+type GradKey = (u32, i32, u16, u32);
+
+/// Largest square this will cache. 96×96×3 B is 27 KB; 128 is the ceiling for anything that is
+/// drawn per frame on this device. Bigger art is a real cover's job.
+const CACHE_MAX_EDGE: i32 = 128;
+
+/// Cap on cached swatches. A 48×48 entry is ~6.9 KB and a 96×96 one ~27 KB, so 64 entries is
+/// bounded at a few hundred KB — deliberately modest, for the allocator reason above. ~13 rows are
+/// visible at a time; the headroom covers a scroll without thrash.
+const GRAD_CACHE_MAX: usize = 64;
+
+thread_local! {
+    static GRAD_CACHE: std::cell::RefCell<std::collections::HashMap<GradKey, Image>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// How many entries the cache is holding. Tests only — the cap is the contract, not the contents.
+#[doc(hidden)]
+pub fn grad_cache_len() -> usize {
+    GRAD_CACHE.with(|c| c.borrow().len())
+}
+
+#[doc(hidden)]
+pub fn grad_cache_max() -> usize {
+    GRAD_CACHE_MAX
+}
+
 /// Render the gradient fallback ONCE into an `Image`, so it can be blitted like a real cover
 /// instead of recomputed every frame.
 ///
