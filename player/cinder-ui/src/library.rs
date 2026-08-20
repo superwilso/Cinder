@@ -194,8 +194,28 @@ pub fn list_top(tab: Tab) -> i32 {
     let below = filter_top() + if has_filter(tab) { FILTER_H } else { 0 };
     match tab {
         Tab::Albums => below + 4,
+        // Playlists carries the "NEW PLAYLIST" row between the band and the list. Adding it here
+        // rather than as a virtual row 0 keeps every index in this file meaning what it says: the
+        // A–Z rail, the selection cursor and `hit_row` all still index `lib.playlists` directly.
+        Tab::Playlists => below + 8 + NEW_PLAYLIST_H,
         _ => below + 8,
     }
+}
+
+/// The "NEW PLAYLIST" row on the Playlists tab: the only way to make one, so it is a full-width
+/// row rather than a corner button, and it never scrolls away.
+pub const NEW_PLAYLIST_H: i32 = 62;
+
+pub fn new_playlist_rect() -> (i32, i32, i32, i32) {
+    (0, filter_top() + 8, W as i32, NEW_PLAYLIST_H)
+}
+
+pub fn hit_new_playlist(tab: Tab, x: i32, y: i32) -> bool {
+    if tab != Tab::Playlists {
+        return false;
+    }
+    let (rx, ry, rw, rh) = new_playlist_rect();
+    (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
 }
 
 /// The filter strip: what is filtering the list right now, and a way to change it.
@@ -1278,7 +1298,11 @@ pub fn render(
             scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
         }
         Tab::Playlists => {
-            let top = shuffle_row(c, t, f, yt, "Shuffle a playlist", "RANDOM PLAYLIST · SHUFFLED") + 8;
+            shuffle_row(c, t, f, yt, "Shuffle a playlist", "RANDOM PLAYLIST · SHUFFLED");
+            new_playlist_row(c, t, f);
+            // From `list_top`, not from the band: the hit test reads the same function, so the
+            // row you press is always the row that was drawn.
+            let top = list_top(Tab::Playlists);
             let rh = row_h(Tab::Playlists);
             let first = (scroll_px / rh) as usize;
             let mut y = top - (scroll_px % rh);
@@ -1296,7 +1320,13 @@ pub fn render(
                 art::block(c, t, 22, y + (rh - 48) / 2, 48, 48, &pl.art, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
                 text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
-                let sub = format!("{} tracks", pl.tracks);
+                // Cinder's own playlists are editable and Sony's are not, so the row says which
+                // it is — otherwise the missing controls on the page look like a bug.
+                let sub = if pl.user {
+                    format!("{} tracks · YOURS", pl.tracks)
+                } else {
+                    format!("{} tracks", pl.tracks)
+                };
                 text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
                 icons::chevron(c, 456.0, cy as f32, 14.0, t.faint);
                 hline(c, y + rh, t.line);
@@ -1665,9 +1695,11 @@ pub fn artist_view(
 pub const PLAYLIST_BAND_Y: i32 = 134;
 pub const PLAYLIST_TRACK_RH: i32 = ARTIST_TRACK_RH;
 
-pub fn playlist_content_top() -> i32 {
+/// Top of the member list. A user playlist gives up 56 px of it to the edit bar; a Sony one has
+/// no bar and keeps the space. Both the renderer and the hit test read this, so they cannot drift.
+pub fn playlist_content_top(pl: &crate::model::PlaylistRow) -> i32 {
     let (_, by, _, bh) = shuffle_band_rect(PLAYLIST_BAND_Y);
-    by + bh + 8
+    by + bh + 8 + if pl.user { PLAYLIST_ACTIONS_H } else { 0 }
 }
 
 pub fn hit_playlist_shuffle_band(x: i32, y: i32) -> bool {
@@ -1675,8 +1707,8 @@ pub fn hit_playlist_shuffle_band(x: i32, y: i32) -> bool {
     (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
 }
 
-pub fn playlist_view_h() -> i32 {
-    LIST_BOTTOM - playlist_content_top()
+pub fn playlist_view_h(pl: &crate::model::PlaylistRow) -> i32 {
+    LIST_BOTTOM - playlist_content_top(pl)
 }
 
 pub fn playlist_content_h(pl: &crate::model::PlaylistRow) -> i32 {
@@ -1684,17 +1716,76 @@ pub fn playlist_content_h(pl: &crate::model::PlaylistRow) -> i32 {
 }
 
 pub fn playlist_max_scroll_px(pl: &crate::model::PlaylistRow) -> i32 {
-    (playlist_content_h(pl) - playlist_view_h()).max(0)
+    (playlist_content_h(pl) - playlist_view_h(pl)).max(0)
 }
 
 /// Which track is under touch-`y`. Mirrors the renderer's geometry exactly.
 pub fn playlist_hit_track(pl: &crate::model::PlaylistRow, scroll_px: i32, y: i32) -> Option<usize> {
-    let top = playlist_content_top();
+    let top = playlist_content_top(pl);
     if y < top || y >= LIST_BOTTOM {
         return None;
     }
     let i = ((y - top + scroll_px.max(0)) / PLAYLIST_TRACK_RH) as usize;
     (i < pl.track_list.len()).then_some(i)
+}
+
+/// The "NEW PLAYLIST" row. Outlined rather than filled: the accent band directly above it is
+/// filled, and two solid accent blocks stacked read as one control.
+fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet) {
+    let (x, y, w, h) = new_playlist_rect();
+    let cy = y + h / 2;
+    stroke_rect(c, x + 22, y + 4, w - 44, h - 8, t.acc, 2);
+    // A `+` drawn from two bars — `icons` has no plus.
+    fill_rect(c, 44, cy - 1, 22, 2, t.acc);
+    fill_rect(c, 54, cy - 11, 2, 22, t.acc);
+    text::draw(c, f, 80.0, (cy - 2) as f32, "NEW PLAYLIST",
+        &sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc, 0.04));
+    text::draw(c, f, 80.0, (cy + 16) as f32, "NAME IT, THEN ADD TRACKS",
+        &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14));
+}
+
+// ── The playlist page's edit controls (Cinder's own playlists only) ─────────────────────────────
+//
+// Sony's playlists are containers in a database this app does not write, so the bar is drawn only
+// for `pl.user`. Everything below keys off the same flag, including the geometry — which is why
+// `playlist_content_top` takes the row rather than being a constant.
+
+/// Height of the strip holding ADD TRACKS / RENAME / DELETE.
+pub const PLAYLIST_ACTIONS_H: i32 = 56;
+pub const PLAYLIST_ACTIONS: [&str; 3] = ["+ TRACKS", "RENAME", "DELETE"];
+
+/// Rect of action button `i` (0..3) on a user playlist's page.
+pub fn playlist_action_rect(i: usize) -> (i32, i32, i32, i32) {
+    let (_, by, _, bh) = shuffle_band_rect(PLAYLIST_BAND_Y);
+    let y = by + bh + 10;
+    let w = 140;
+    let x = 22 + i as i32 * (w + 8);
+    (x, y, w, PLAYLIST_ACTIONS_H - 12)
+}
+
+pub fn hit_playlist_action(pl: &crate::model::PlaylistRow, x: i32, y: i32) -> Option<usize> {
+    if !pl.user {
+        return None;
+    }
+    (0..PLAYLIST_ACTIONS.len()).find(|&i| {
+        let (bx, by, bw, bh) = playlist_action_rect(i);
+        (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+    })
+}
+
+/// The remove (×) column on a user playlist's rows. Two-tap: the first tap arms the row and it
+/// says REMOVE?, the second removes. Tapping anywhere else disarms — the same shape Settings ▸
+/// Boot to stock uses, and the reason is the same: a single tap next to a track should never be
+/// able to quietly delete it.
+pub const PLAYLIST_REMOVE_X: i32 = 396;
+
+pub fn hit_playlist_remove(pl: &crate::model::PlaylistRow, scroll_px: i32, x: i32, y: i32)
+    -> Option<usize>
+{
+    if !pl.user || x < PLAYLIST_REMOVE_X {
+        return None;
+    }
+    playlist_hit_track(pl, scroll_px, y)
 }
 
 /// Playlist drill-in: fixed header (name, count, shuffle band) then the members in saved order.
@@ -1709,6 +1800,8 @@ pub fn playlist_view(
     sel: usize,
     swipe: Option<SwipeRow>,
     sbar_active: bool,
+    // `armed`: the row whose × is armed, if any (two-tap remove).
+    armed: Option<usize>,
 ) {
     let scroll_px = scroll_px.clamp(0, playlist_max_scroll_px(pl));
     c.fill(t.bg);
@@ -1729,13 +1822,30 @@ pub fn playlist_view(
     shuffle_row(c, t, f, PLAYLIST_BAND_Y, "Shuffle playlist",
         &format!("ALL {} TRACKS · RANDOM ORDER", pl.track_list.len()));
 
-    let top = playlist_content_top();
+    if pl.user {
+        for (i, label) in PLAYLIST_ACTIONS.iter().enumerate() {
+            let (bx, by, bw, bh) = playlist_action_rect(i);
+            stroke_rect(c, bx, by, bw, bh, t.line, 1);
+            crate::widgets::center(c, f, (bx + bw / 2) as f32, (by + bh / 2 + 6) as f32, label,
+                &sty(Family::Sans, Weight::SemiBold, 15.0, t.acc, 0.04));
+        }
+    }
+
+    let top = playlist_content_top(pl);
     c.set_clip_y(top, LIST_BOTTOM);
     if pl.track_list.is_empty() {
         let st = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
         text::draw(c, f, 22.0, (top + 40) as f32, "Nothing in this playlist.",
             &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
-        text::draw(c, f, 22.0, (top + 66) as f32, "Its tracks are missing from the library.", &st);
+        // Two different empty states, and saying the wrong one is worse than saying nothing: a
+        // playlist you just made is empty because you have not added anything yet, while a Sony
+        // one that renders empty has members whose files no longer resolve.
+        let why = if pl.user {
+            "Use + TRACKS above to put something in it."
+        } else {
+            "Its tracks are missing from the library."
+        };
+        text::draw(c, f, 22.0, (top + 66) as f32, why, &st);
         c.clear_clip();
         return;
     }
@@ -1765,8 +1875,18 @@ pub fn playlist_view(
         let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
         text::draw(c, f, 110.0, (cy + 16) as f32,
             &crate::widgets::fit(f, &sgn.artist, &ast, 268.0), &ast);
-        right(c, f, 452.0, (cy + 4) as f32, &sgn.dur,
+        // The duration moves left on a user playlist to make room for the × column.
+        let dur_x = if pl.user { (PLAYLIST_REMOVE_X - 12) as f32 } else { 452.0 };
+        right(c, f, dur_x, (cy + 4) as f32, &sgn.dur,
             &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.0));
+        if pl.user {
+            if armed == Some(i) {
+                crate::widgets::center(c, f, 428.0, (cy + 4) as f32, "REMOVE?",
+                    &sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.08));
+            } else {
+                icons::close(c, 428.0, cy as f32, 11.0, t.faint);
+            }
+        }
         hline(c, y + PLAYLIST_TRACK_RH, t.line);
         if sw.is_some() {
             c.clear_offset_x();

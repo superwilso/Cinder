@@ -89,9 +89,31 @@ pub enum Screen {
     /// Track information — Sony's "Detailed Information". Pushed by tapping the title/artist/codec
     /// block on Now Playing, which is where the eye already is when the question comes up.
     TrackInfo,
+    /// Free text — naming or renaming a playlist. The device's only keyboard (`keyboard.rs`);
+    /// there is no d-pad and no hardware keys to type with, so this is a touch grid.
+    Keyboard,
+    /// "Add to playlist": which of YOUR playlists does this track go into. Sony's own are not
+    /// offered, because its database is not ours to write.
+    PlaylistPick,
+    /// "Add tracks": the library, tapped to add into the playlist that is open.
+    TrackPick,
     /// Sentinel for the Menu row that opens the Shelf. The Shelf is a bottom-sheet OVERLAY (see
     /// `shelf_open`), never pushed onto the route stack — selecting this row calls `open_shelf()`.
     Shelf,
+}
+
+/// Why the keyboard is open. It carries the target with it, so the commit path is one match
+/// rather than a set of flags that can disagree ("renaming" plus "creating" at once).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KbPurpose {
+    /// Made from the Playlists tab: create it and open it.
+    NewPlaylist,
+    /// Made from "Add to playlist": create it, then put that track (object id) straight in — the
+    /// whole reason the user is here, and losing it would mean naming a playlist and then having
+    /// to find the track again.
+    NewPlaylistWith(i64),
+    /// Rename the playlist with this id.
+    Rename(i64),
 }
 
 /// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
@@ -205,6 +227,20 @@ pub enum Action {
     /// band needs it and `ShuffleScope::Playlist` picks a RANDOM playlist, which is a different
     /// thing entirely.
     ShufflePlaylist(i64),
+    /// Create a playlist named `App::text_input()` (the keyboard's buffer). The name travels
+    /// out-of-band because `Action` is `Copy` and a `String` in it would take that away from
+    /// every other variant — the same reason `ShuffleArtist` carries an index, not a name.
+    PlaylistCreate,
+    /// Create it and add this track (object id) in one step.
+    PlaylistCreateWith(i64),
+    /// Rename the playlist with this id to `App::text_input()`.
+    PlaylistRename(i64),
+    /// Delete it. Confirmed in the modal first — an m3u8 file is small but a curated list is not.
+    PlaylistDelete(i64),
+    /// `(playlist id, track object id)`.
+    PlaylistAddTrack(i64, i64),
+    /// `(playlist id, position)` — remove one member. Two-tap armed in the UI.
+    PlaylistRemoveAt(i64, u32),
     ThemeChanged(bool),
     Sleep,
     EnterUsbMsc,
@@ -790,6 +826,23 @@ pub struct App {
     /// The confirmation modal, when one is open. `Some` makes it modal: it is drawn over the
     /// current screen and it swallows every tap until it is answered.
     confirm: Option<crate::confirm::Ask>,
+    /// The keyboard's buffer and modifiers. They live here because the keyboard is a ROUTE, not a
+    /// modal call: the text has to survive every frame between one key and the next.
+    kb_text: String,
+    kb_shift: bool,
+    kb_page: u8,
+    kb_purpose: KbPurpose,
+    /// The track "Add to playlist" is about (object id; 0 = nothing).
+    pick_track: i64,
+    pick_scroll_px: i32,
+    track_pick_scroll_px: i32,
+    /// The song order the track picker is showing (indices into `lib.songs`). Built once when the
+    /// screen opens: sorting 3,945 rows per frame is exactly the kind of per-frame derived work
+    /// the 2026-08-16 performance pass went and removed everywhere else.
+    track_pick_order: Vec<usize>,
+    /// The playlist member whose × is armed. First tap arms, second removes, a tap anywhere else
+    /// disarms — a single tap beside a track must never be able to delete it.
+    playlist_remove_arm: Option<usize>,
     /// The song a QueueOnPlay prompt is about. Held only while that modal is up: the tap has
     /// already happened, but which action it becomes depends on the answer.
     pending_song: Option<i64>,
@@ -992,6 +1045,15 @@ impl Default for App {
             sleep_idx: 0,
             boot_stock_armed: false,
             confirm: None,
+            kb_text: String::new(),
+            kb_shift: false,
+            kb_page: 0,
+            kb_purpose: KbPurpose::NewPlaylist,
+            pick_track: 0,
+            pick_scroll_px: 0,
+            track_pick_scroll_px: 0,
+            track_pick_order: Vec::new(),
+            playlist_remove_arm: None,
             pending_song: None,
             liked_count: 0,
             settings_scroll_px: 0,
@@ -1087,6 +1149,15 @@ impl App {
     }
 
     #[doc(hidden)]
+    /// Type into the keyboard from a test, as a user would key by key.
+    #[doc(hidden)]
+    pub fn type_for_test(&mut self, s: &str) {
+        for ch in s.chars() {
+            let key = if ch == ' ' { crate::keyboard::Key::Space } else { crate::keyboard::Key::Char(ch) };
+            crate::keyboard::apply(key, &mut self.kb_text, &mut self.kb_shift, &mut self.kb_page);
+        }
+    }
+
     pub fn open_confirm_for_test(&mut self, ask: crate::confirm::Ask) {
         self.confirm = Some(ask);
     }
@@ -2044,6 +2115,18 @@ impl App {
                     crate::confirm::Ask::Restart => vec![Action::Restart],
                     crate::confirm::Ask::PowerOff => vec![Action::PowerOff],
                     crate::confirm::Ask::ResetSettings => self.reset_settings(),
+                    crate::confirm::Ask::DeletePlaylist => {
+                        match self.playlist_row().map(|p| p.id) {
+                            Some(id) => {
+                                // Leave the page first: it is about to stop existing, and the row
+                                // index it is holding would point at whatever slid into its place.
+                                self.pop();
+                                self.notify("Playlist deleted");
+                                vec![Action::PlaylistDelete(id)]
+                            }
+                            None => vec![],
+                        }
+                    }
                     // The menus never produce a bare Confirm (their hit test returns named rows).
                     _ => vec![],
                 },
@@ -2161,25 +2244,27 @@ impl App {
                 } else if hit(436, 692, 30) {
                     // repeat icon (transport row, far right)
                     vec![Action::RepeatCycle]
-                } else if y > 744 {
-                    // bottom toolbar: library · queue · eq · bt · settings (the old heart was
-                    // inert — a straight jump to the Library earns the prime slot instead)
-                    if x < 96 {
-                        self.push(Screen::Library);
-                        vec![]
-                    } else if x < 192 {
-                        self.push(Screen::UpNext);
-                        vec![]
-                    } else if x < 288 {
-                        self.push(Screen::Eq);
-                        vec![]
-                    } else if x < 384 {
-                        self.push(Screen::Bluetooth);
-                        vec![]
-                    } else {
-                        self.push(Screen::Settings);
-                        vec![]
+                } else if let Some(slot) = crate::now_playing::hit_toolbar(x, y) {
+                    // bottom toolbar: library · queue · +playlist · eq · bt · settings.
+                    // Slots come from `now_playing::TOOLBAR_CX`, so the target is wherever the
+                    // icon was actually drawn — the old version hardcoded five 96px bands beside
+                    // a render that could have moved without it.
+                    match slot {
+                        0 => self.push(Screen::Library),
+                        1 => self.push(Screen::UpNext),
+                        2 => {
+                            // Add THIS track to a playlist. Nothing playing → nothing to add, and
+                            // opening an empty picker would be a dead end.
+                            match self.context.get(self.context_idx).map(|s| s.object_id) {
+                                Some(id) if id != 0 => self.open_playlist_pick(id),
+                                _ => self.notify("Nothing playing"),
+                            }
+                        }
+                        3 => self.push(Screen::Eq),
+                        4 => self.push(Screen::Bluetooth),
+                        _ => self.push(Screen::Settings),
                     }
+                    vec![]
                 } else if y < 91 {
                     self.push(Screen::Menu); // tap the top/art → menu
                     vec![]
@@ -2211,6 +2296,9 @@ impl App {
             }
             Screen::Artist => self.tap_artist(x, y),
             Screen::Playlist => self.tap_playlist(x, y),
+            Screen::Keyboard => self.tap_keyboard(x, y),
+            Screen::PlaylistPick => self.tap_playlist_pick(y),
+            Screen::TrackPick => self.tap_track_pick(y),
             Screen::UpNext => {
                 use crate::up_next::Slot;
                 // CLEAR belongs to the user queue and is only drawn when there is one.
@@ -2660,6 +2748,12 @@ impl App {
             self.push(Screen::GenreFilter);
             return vec![];
         }
+        // "NEW PLAYLIST", between the shuffle band and the list on the Playlists tab. Tested
+        // before the rows for the same reason as the filter strip: it is not part of the list.
+        if library::hit_new_playlist(self.lib_tab, x, y) {
+            self.open_keyboard(KbPurpose::NewPlaylist);
+            return vec![];
+        }
         // A–Z rail: right edge, over the list. Tested BEFORE the rows, because it overlays them —
         // a tap there means "jump", never "open the row underneath". Skipped entirely when the
         // active sort has no alphabetical ordering: the rail isn't drawn then, so it must not go on
@@ -2797,11 +2891,134 @@ impl App {
         self.lib.playlists.get(self.playlist_view)
     }
 
+    /// Cinder's own playlists — the only ones anything can be added to.
+    fn user_playlists(&self) -> Vec<(i64, String, u32)> {
+        self.lib
+            .playlists
+            .iter()
+            .filter(|p| p.user)
+            .map(|p| (p.id, p.name.clone(), p.tracks))
+            .collect()
+    }
+
+    /// Open the keyboard for `purpose`, seeded with the name it is editing (empty for a new one).
+    fn open_keyboard(&mut self, purpose: KbPurpose) {
+        self.kb_purpose = purpose;
+        self.kb_shift = false;
+        self.kb_page = 0;
+        self.kb_text = match purpose {
+            // Renaming starts from the current name: the common edit is a word, not a retype.
+            KbPurpose::Rename(id) => self
+                .lib
+                .playlists
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        self.push(Screen::Keyboard);
+    }
+
+    /// The text the keyboard is holding. The shell reads this when it carries out a
+    /// `PlaylistCreate` / `PlaylistRename`, because `Action` is `Copy` and cannot carry a String.
+    pub fn text_input(&self) -> &str {
+        self.kb_text.trim()
+    }
+
+    /// Replace just the playlist rows. The shell calls this after it writes the store, instead of
+    /// rebuilding the whole library: a rebuild is one query per album plus one per playlist, and
+    /// it would also reset the scroll position of the screen the user is looking at.
+    pub fn set_playlists(&mut self, rows: Vec<crate::model::PlaylistRow>) {
+        // Follow the OPEN playlist by id, not by row number. The merged list is sorted by name, so
+        // a rename moves it — and an index kept across that would leave the page showing whichever
+        // playlist slid into the old slot, under the old name's edits.
+        let open = self.lib.playlists.get(self.playlist_view).map(|p| p.id);
+        self.lib.playlists = rows;
+        self.playlist_view = open
+            .and_then(|id| self.lib.playlists.iter().position(|p| p.id == id))
+            .unwrap_or_else(|| self.playlist_view.min(self.lib.playlists.len().saturating_sub(1)));
+        self.playlist_remove_arm = None;
+    }
+
+    /// Put the page for playlist `id` on screen. Used by the shell right after it creates one, so
+    /// naming a playlist lands you inside it rather than back at a list you have to search.
+    pub fn open_playlist_by_id(&mut self, id: i64) {
+        if let Some(index) = self.lib.playlists.iter().position(|p| p.id == id) {
+            if self.current() == Screen::Playlist {
+                self.playlist_view = index;
+                self.playlist_track_idx = 0;
+                self.playlist_scroll_px = 0;
+            } else {
+                self.open_playlist(index);
+            }
+        }
+    }
+
+    /// Open "Add to playlist" for one track.
+    fn open_playlist_pick(&mut self, object_id: i64) {
+        self.pick_track = object_id;
+        self.pick_scroll_px = 0;
+        self.fling_v = 0.0;
+        self.push(Screen::PlaylistPick);
+    }
+
+    /// Open "Add tracks" for the playlist that is open.
+    fn open_track_pick(&mut self) {
+        self.track_pick_order = library::song_order(&self.lib, 0);
+        self.track_pick_scroll_px = 0;
+        self.fling_v = 0.0;
+        self.push(Screen::TrackPick);
+    }
+
+    fn pick_max_scroll(&self) -> i32 {
+        let rows = self.user_playlists().len() + 1;
+        (crate::playlist_pick::content_h(rows)
+            - (crate::playlist_pick::BOTTOM - crate::playlist_pick::TOP)).max(0)
+    }
+
+    fn track_pick_max_scroll(&self) -> i32 {
+        (crate::playlist_pick::content_h(self.track_pick_order.len())
+            - (crate::playlist_pick::BOTTOM - crate::playlist_pick::TOP)).max(0)
+    }
+
+    /// The songs the track picker is showing, in its fixed order.
+    fn track_pick_songs(&self) -> Vec<&crate::model::SongRow> {
+        self.track_pick_order.iter().filter_map(|i| self.lib.songs.get(*i)).collect()
+    }
+
     /// A tap on the playlist page: the band shuffles it, a track row plays it.
     fn tap_playlist(&mut self, x: i32, y: i32) -> Vec<Action> {
-        let Some(id) = self.playlist_row().map(|p| p.id) else { return vec![] };
+        let Some((id, user)) = self.playlist_row().map(|p| (p.id, p.user)) else { return vec![] };
         if library::hit_playlist_shuffle_band(x, y) {
             return vec![Action::ShufflePlaylist(id)];
+        }
+        if user {
+            // The edit bar, above the list.
+            if let Some(action) = self.playlist_row().and_then(|p| library::hit_playlist_action(p, x, y)) {
+                self.playlist_remove_arm = None;
+                match action {
+                    0 => self.open_track_pick(),
+                    1 => self.open_keyboard(KbPurpose::Rename(id)),
+                    _ => self.confirm = Some(crate::confirm::Ask::DeletePlaylist),
+                }
+                return vec![];
+            }
+            // The × column: first tap arms that row, second removes it.
+            let hit = self
+                .playlist_row()
+                .and_then(|p| library::hit_playlist_remove(p, self.playlist_scroll_px, x, y));
+            if let Some(row) = hit {
+                if self.playlist_remove_arm == Some(row) {
+                    self.playlist_remove_arm = None;
+                    self.notify("Removed");
+                    return vec![Action::PlaylistRemoveAt(id, row as u32)];
+                }
+                self.playlist_remove_arm = Some(row);
+                return vec![];
+            }
+            // Anything else on the page disarms — including a tap that plays a track.
+            self.playlist_remove_arm = None;
         }
         // Copy the object id out before mutating — `playlist_row` borrows `self.lib`.
         let hit = self.playlist_row().and_then(|p| {
@@ -2815,6 +3032,76 @@ impl App {
             }
             None => vec![],
         }
+    }
+
+    /// A tap on the keyboard. Only Done leaves an action behind; everything else edits the buffer.
+    fn tap_keyboard(&mut self, x: i32, y: i32) -> Vec<Action> {
+        let Some(key) = crate::keyboard::hit(self.kb_page, x, y) else { return vec![] };
+        let commit = crate::keyboard::apply(
+            key, &mut self.kb_text, &mut self.kb_shift, &mut self.kb_page);
+        if !commit {
+            return vec![];
+        }
+        let purpose = self.kb_purpose;
+        // Leave the keyboard BEFORE the action lands: the shell rebuilds the playlist rows while
+        // carrying it out, and it may want to push the new playlist's page on top of where we
+        // came from — not on top of a keyboard the user has finished with.
+        self.pop();
+        // Naming a playlist FROM the "add to playlist" picker answers the picker's question too,
+        // so the picker goes with it. Otherwise Back from the new playlist's page would drop the
+        // user into a chooser they have already finished with.
+        if matches!(purpose, KbPurpose::NewPlaylistWith(_)) && self.current() == Screen::PlaylistPick {
+            self.pop();
+        }
+        match purpose {
+            KbPurpose::NewPlaylist => vec![Action::PlaylistCreate],
+            KbPurpose::NewPlaylistWith(object_id) => vec![Action::PlaylistCreateWith(object_id)],
+            KbPurpose::Rename(id) => vec![Action::PlaylistRename(id)],
+        }
+    }
+
+    /// "Add to playlist": row 0 makes a new one, the rest add to an existing one.
+    fn tap_playlist_pick(&mut self, y: i32) -> Vec<Action> {
+        let targets = self.user_playlists();
+        match crate::playlist_pick::hit_row(targets.len() + 1, self.pick_scroll_px, y) {
+            Some(0) => {
+                self.open_keyboard(KbPurpose::NewPlaylistWith(self.pick_track));
+                vec![]
+            }
+            Some(index) => {
+                let (id, name, _) = targets[index - 1].clone();
+                let track = self.pick_track;
+                self.pop();
+                self.notify(&format!("Added to {name}"));
+                vec![Action::PlaylistAddTrack(id, track)]
+            }
+            None => vec![],
+        }
+    }
+
+    /// "Add tracks": each tap adds one. The screen stays open — building a playlist is a run of
+    /// taps, and popping back to the page after every one would make adding ten tracks ten trips.
+    fn tap_track_pick(&mut self, y: i32) -> Vec<Action> {
+        let Some(id) = self.playlist_row().map(|p| p.id) else { return vec![] };
+        let count = self.track_pick_order.len();
+        let Some(row) = crate::playlist_pick::hit_row(count, self.track_pick_scroll_px, y) else {
+            return vec![];
+        };
+        let Some(song) = self.track_pick_songs().get(row).map(|s| (s.object_id, s.title.clone()))
+        else {
+            return vec![];
+        };
+        // Already in it? Say so rather than silently doing nothing — the tick is small.
+        if self
+            .playlist_row()
+            .map(|p| p.track_list.iter().any(|s| s.object_id == song.0))
+            .unwrap_or(false)
+        {
+            self.notify("Already in this playlist");
+            return vec![];
+        }
+        self.notify(&format!("Added {}", song.1));
+        vec![Action::PlaylistAddTrack(id, song.0)]
     }
 
     /// The track under `y` on the playlist page, for the swipe-to-queue gesture.
@@ -3006,6 +3293,14 @@ impl App {
             Screen::Settings => {
                 let max = crate::settings::max_scroll_px();
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::PlaylistPick => {
+                let max = self.pick_max_scroll();
+                self.pick_scroll_px = (self.pick_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::TrackPick => {
+                let max = self.track_pick_max_scroll();
+                self.track_pick_scroll_px = (self.track_pick_scroll_px + dy_px).clamp(0, max);
             }
             Screen::GenreFilter => {
                 let max = library::genre_max_scroll_px(&self.lib);
@@ -3393,7 +3688,7 @@ impl App {
                 .map(|p| (library::artist_max_scroll_px(&p), library::artist_content_top())),
             Screen::Playlist => self
                 .playlist_row()
-                .map(|p| (library::playlist_max_scroll_px(p), library::playlist_content_top())),
+                .map(|p| (library::playlist_max_scroll_px(p), library::playlist_content_top(p))),
             // The bar rides the WHOLE list now (history + current + queue + album), not just the
             // user queue — which is also why it appears on a plain album view, where the old
             // row-stepping window offered no way to drag at all.
@@ -3405,6 +3700,8 @@ impl App {
                 Some((library::genre_max_scroll_px(&self.lib), library::GENRE_TOP))
             }
             Screen::TrackInfo => Some((self.track_info_max_scroll(), crate::track_info::TOP)),
+            Screen::PlaylistPick => Some((self.pick_max_scroll(), crate::playlist_pick::TOP)),
+            Screen::TrackPick => Some((self.track_pick_max_scroll(), crate::playlist_pick::TOP)),
             Screen::Folders => Some((
                 crate::folders::max_scroll_px(&self.lib, self.folder_cur()),
                 crate::folders::TOP,
@@ -3449,6 +3746,8 @@ impl App {
             Screen::GenreFilter => self.genre_scroll_px,
             Screen::TrackInfo => self.track_info_scroll_px,
             Screen::Folders => self.folder_scroll_px,
+            Screen::PlaylistPick => self.pick_scroll_px,
+            Screen::TrackPick => self.track_pick_scroll_px,
             _ => self.lib_scroll_px,
         }
     }
@@ -3970,8 +4269,12 @@ impl App {
     /// Keep the playlist cursor on screen when the transport buttons move it.
     fn playlist_ensure_visible(&mut self) {
         let want = self.playlist_track_idx as i32 * library::PLAYLIST_TRACK_RH;
-        let Some(max) = self.playlist_row().map(library::playlist_max_scroll_px) else { return };
-        let view = library::playlist_view_h();
+        let Some((max, view)) = self
+            .playlist_row()
+            .map(|p| (library::playlist_max_scroll_px(p), library::playlist_view_h(p)))
+        else {
+            return;
+        };
         let s = self.playlist_scroll_px;
         let s = if want < s {
             want
@@ -4636,6 +4939,7 @@ impl App {
                 Some(pl) => crate::library::playlist_view(
                     c, &theme, fonts, &self.lib, pl, self.playlist_scroll_px,
                     self.playlist_track_idx, self.swipe_row, self.sbar_active(),
+                    self.playlist_remove_arm,
                 ),
                 // The library reloaded and the index is stale — fall back to the tab rather than
                 // drawing a blank page the user cannot leave.
@@ -4920,6 +5224,46 @@ impl App {
                 )
             }
             Screen::Receiver => crate::receiver::render(c, &theme, fonts, false),
+            Screen::Keyboard => {
+                let (title, placeholder) = match self.kb_purpose {
+                    KbPurpose::Rename(_) => ("Rename playlist", "Playlist name"),
+                    _ => ("New playlist", "Playlist name"),
+                };
+                crate::keyboard::render(c, &theme, fonts, title, &self.kb_text, placeholder,
+                                        self.kb_page, self.kb_shift)
+            }
+            Screen::PlaylistPick => {
+                let targets = self.user_playlists();
+                let rows: Vec<crate::playlist_pick::Target> = targets
+                    .iter()
+                    .map(|(_, name, tracks)| crate::playlist_pick::Target { name, tracks: *tracks })
+                    .collect();
+                let sony = self.lib.playlists.iter().filter(|p| !p.user).count();
+                let track = self
+                    .lib
+                    .songs
+                    .iter()
+                    .find(|s| s.object_id == self.pick_track)
+                    .map(|s| s.title.clone())
+                    .unwrap_or_default();
+                crate::playlist_pick::render_targets(c, &theme, fonts, "Add to playlist", &track,
+                                                     &rows, sony, self.pick_scroll_px)
+            }
+            Screen::TrackPick => {
+                let songs = self.track_pick_songs();
+                let (name, members) = self
+                    .playlist_row()
+                    .map(|p| {
+                        (p.name.clone(),
+                         p.track_list.iter().map(|s| s.object_id).collect::<Vec<_>>())
+                    })
+                    .unwrap_or_default();
+                let is_in = |row: usize| {
+                    songs.get(row).map(|s| members.contains(&s.object_id)).unwrap_or(false)
+                };
+                crate::playlist_pick::render_tracks(c, &theme, fonts, &name, &songs, &is_in,
+                                                    self.track_pick_scroll_px, members.len())
+            }
             // Shelf is an overlay, never the stack top — render Now Playing as a safe fallback if
             // it somehow becomes current (it shouldn't).
             Screen::Shelf => crate::now_playing::render(c, &theme, fonts, np),
@@ -7908,16 +8252,203 @@ mod tests {
             playlists: vec![
                 crate::model::PlaylistRow {
                     id: 77, name: "Night Bus".into(), tracks: 3, art: "Night Bus".into(),
-                    track_list: songs[..3].to_vec(),
+                    track_list: songs[..3].to_vec(), user: false,
                 },
                 crate::model::PlaylistRow {
                     id: 78, name: "Morning".into(), tracks: 2, art: "Morning".into(),
-                    track_list: songs[3..].to_vec(),
+                    track_list: songs[3..].to_vec(), user: false,
                 },
             ],
             ..Default::default()
         };
         a
+    }
+
+    /// A library with one of CINDER'S OWN playlists (editable) and one of Sony's (not).
+    fn own_and_sony() -> App {
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::Library);
+        a.lib_tab = Tab::Playlists;
+        let songs: Vec<SongRow> = (0..4)
+            .map(|i| SongRow {
+                title: format!("T{i}"), artist: "Someone".into(), dur: "3:00".into(),
+                object_id: 900 + i, ..Default::default()
+            })
+            .collect();
+        a.lib = crate::model::Library {
+            songs: songs.clone(),
+            playlists: vec![
+                crate::model::PlaylistRow {
+                    id: -42, name: "Mine".into(), tracks: 2, art: "Mine".into(),
+                    track_list: songs[..2].to_vec(), user: true,
+                },
+                crate::model::PlaylistRow {
+                    id: 7, name: "Sony's".into(), tracks: 2, art: "Sony's".into(),
+                    track_list: songs[2..].to_vec(), user: false,
+                },
+            ],
+            ..Default::default()
+        };
+        a
+    }
+
+    fn kb_key(a: &mut App, key: crate::keyboard::Key) -> Vec<Action> {
+        // Tap the key where it is drawn, so the test goes through the same hit test the finger does.
+        let page = a.kb_page;
+        let (row, col) = (0..crate::keyboard::ROWS)
+            .flat_map(|r| (0..12).map(move |c| (r, c)))
+            .find(|&(r, c)| crate::keyboard::key_at(page, r, c) == Some(key))
+            .expect("key is on this page");
+        let (x, y, w, h) = crate::keyboard::key_rect(page, row, col).unwrap();
+        a.tap(x + w / 2, y + h / 2)
+    }
+
+    /// The only way to make a playlist on the device: the row above the list, then the keyboard.
+    #[test]
+    fn the_new_playlist_row_opens_the_keyboard_and_names_one() {
+        let mut a = own_and_sony();
+        let (x, y, _, h) = library::new_playlist_rect();
+        assert!(a.tap(x + 100, y + h / 2).is_empty(), "opening the keyboard emits no action");
+        assert_eq!(a.current(), Screen::Keyboard);
+
+        for ch in "night bus".chars() {
+            let key = if ch == ' ' { crate::keyboard::Key::Space } else { crate::keyboard::Key::Char(ch) };
+            assert!(kb_key(&mut a, key).is_empty());
+        }
+        assert_eq!(a.text_input(), "night bus");
+        assert_eq!(kb_key(&mut a, crate::keyboard::Key::Done), vec![Action::PlaylistCreate]);
+        assert_eq!(a.current(), Screen::Library, "Done leaves the keyboard behind");
+    }
+
+    /// An empty name is not a playlist: Done must do nothing rather than create "Playlist".
+    #[test]
+    fn done_with_an_empty_field_does_nothing() {
+        let mut a = own_and_sony();
+        let (x, y, _, h) = library::new_playlist_rect();
+        a.tap(x + 100, y + h / 2);
+        assert!(kb_key(&mut a, crate::keyboard::Key::Done).is_empty());
+        assert_eq!(a.current(), Screen::Keyboard, "and it stays on the keyboard");
+    }
+
+    #[test]
+    fn renaming_starts_from_the_current_name() {
+        let mut a = own_and_sony();
+        a.open_playlist(0);
+        let (bx, by, bw, bh) = library::playlist_action_rect(1); // RENAME
+        assert!(a.tap(bx + bw / 2, by + bh / 2).is_empty());
+        assert_eq!(a.current(), Screen::Keyboard);
+        assert_eq!(a.text_input(), "Mine", "the field is seeded, not blank");
+        assert_eq!(kb_key(&mut a, crate::keyboard::Key::Done), vec![Action::PlaylistRename(-42)]);
+    }
+
+    /// Removing a track is two taps. One tap next to a track must never delete it.
+    #[test]
+    fn removing_a_member_takes_two_taps_and_disarms_on_a_miss() {
+        let mut a = own_and_sony();
+        a.open_playlist(0);
+        let row_y = library::playlist_content_top(a.playlist_row().unwrap())
+            + library::PLAYLIST_TRACK_RH / 2;
+        let x = library::PLAYLIST_REMOVE_X + 20;
+
+        assert!(a.tap(x, row_y).is_empty(), "the first tap only arms");
+        assert_eq!(a.tap(x, row_y), vec![Action::PlaylistRemoveAt(-42, 0)]);
+
+        // Arm it again, then tap somewhere else: the arm is gone, so the next × tap re-arms
+        // rather than removing.
+        assert!(a.tap(x, row_y).is_empty());
+        a.tap(120, row_y); // plays that track — and disarms
+        assert!(a.tap(x, row_y).is_empty(), "a tap elsewhere must disarm the row");
+    }
+
+    #[test]
+    fn deleting_a_playlist_asks_first() {
+        let mut a = own_and_sony();
+        a.open_playlist(0);
+        let (bx, by, bw, bh) = library::playlist_action_rect(2); // DELETE
+        assert!(a.tap(bx + bw / 2, by + bh / 2).is_empty());
+        assert!(a.modal_open(), "delete must be confirmed, not immediate");
+        let (cx, cy) = crate::confirm::confirm_button_centre(crate::confirm::Ask::DeletePlaylist);
+        assert_eq!(a.tap(cx, cy), vec![Action::PlaylistDelete(-42)]);
+        assert_ne!(a.current(), Screen::Playlist, "the page it deleted must not stay open");
+    }
+
+    /// Sony's playlists are read-only here, and the page must not pretend otherwise.
+    #[test]
+    fn a_sony_playlist_has_no_edit_controls() {
+        let mut a = own_and_sony();
+        a.open_playlist(1); // Sony's
+        let pl = a.playlist_row().unwrap();
+        let (bx, by, bw, bh) = library::playlist_action_rect(2);
+        assert!(library::hit_playlist_action(pl, bx + bw / 2, by + bh / 2).is_none());
+        // And the × column is just part of the row: tapping there plays the track.
+        let row_y = library::playlist_content_top(a.playlist_row().unwrap())
+            + library::PLAYLIST_TRACK_RH / 2;
+        assert_eq!(a.tap(library::PLAYLIST_REMOVE_X + 20, row_y), vec![Action::PlayIndex(902)]);
+    }
+
+    /// Now Playing ▸ the toolbar's third slot adds what is playing to a playlist.
+    #[test]
+    fn add_to_playlist_from_now_playing() {
+        let mut a = own_and_sony();
+        while a.current() != Screen::NowPlaying {
+            a.press(Button::Back);
+        }
+        let songs = a.lib.songs.clone();
+        a.set_play_context(songs, 1);
+        let slot = crate::now_playing::TOOLBAR_CX[2];
+        assert!(a.tap(slot, crate::now_playing::TOOLBAR_TOP + 20).is_empty());
+        assert_eq!(a.current(), Screen::PlaylistPick);
+
+        // Row 0 makes a new playlist AND remembers the track; row 1 is "Mine".
+        let row1 = crate::playlist_pick::TOP + crate::playlist_pick::ROW_H + 4;
+        assert_eq!(a.tap(240, row1), vec![Action::PlaylistAddTrack(-42, 901)]);
+        assert_ne!(a.current(), Screen::PlaylistPick, "picking a playlist closes the picker");
+    }
+
+    #[test]
+    fn a_new_playlist_from_the_picker_keeps_the_track() {
+        let mut a = own_and_sony();
+        while a.current() != Screen::NowPlaying {
+            a.press(Button::Back);
+        }
+        let songs = a.lib.songs.clone();
+        a.set_play_context(songs, 0);
+        a.tap(crate::now_playing::TOOLBAR_CX[2], crate::now_playing::TOOLBAR_TOP + 20);
+        assert!(a.tap(240, crate::playlist_pick::TOP + 4).is_empty(), "row 0 opens the keyboard");
+        assert_eq!(a.current(), Screen::Keyboard);
+        kb_key(&mut a, crate::keyboard::Key::Char('x'));
+        assert_eq!(kb_key(&mut a, crate::keyboard::Key::Done),
+                   vec![Action::PlaylistCreateWith(900)]);
+        assert_ne!(a.current(), Screen::PlaylistPick,
+                   "the picker's question is answered, so it goes with the keyboard");
+    }
+
+    /// The track picker stays open across adds — building a playlist is a run of taps.
+    #[test]
+    fn the_track_picker_adds_without_leaving() {
+        let mut a = own_and_sony();
+        a.open_playlist(0);
+        let (bx, by, bw, bh) = library::playlist_action_rect(0); // + TRACKS
+        assert!(a.tap(bx + bw / 2, by + bh / 2).is_empty());
+        assert_eq!(a.current(), Screen::TrackPick);
+
+        // The picker lists the library in title order: T0..T3. T0 and T1 are already members.
+        let row = |i: i32| crate::playlist_pick::TOP + i * crate::playlist_pick::ROW_H + 4;
+        assert!(a.tap(240, row(0)).is_empty(), "a track already in the playlist is not re-added");
+        assert_eq!(a.tap(240, row(2)), vec![Action::PlaylistAddTrack(-42, 902)]);
+        assert_eq!(a.current(), Screen::TrackPick, "the picker stays open");
+    }
+
+    /// The open page follows its playlist when the list is re-sorted under it (a rename does that).
+    #[test]
+    fn the_open_playlist_page_follows_a_rename() {
+        let mut a = own_and_sony();
+        a.open_playlist(0); // "Mine", id -42, first of two
+        let mut rows = a.lib.playlists.clone();
+        rows[0].name = "Zzz last".into();
+        rows.sort_by(|x, y| x.name.to_lowercase().cmp(&y.name.to_lowercase()));
+        a.set_playlists(rows);
+        assert_eq!(a.playlist_row().map(|p| p.id), Some(-42), "the page must not change playlist");
     }
 
     /// Tapping the row body opens that playlist's own page — the same shape the Artists tab has.
@@ -7932,7 +8463,8 @@ mod tests {
         assert_eq!(a.playlist_row().map(|p| p.id), Some(78));
 
         // A track row plays; the band shuffles that playlist by id.
-        let ty = library::playlist_content_top() + library::PLAYLIST_TRACK_RH / 2;
+        let ty = library::playlist_content_top(a.playlist_row().unwrap())
+            + library::PLAYLIST_TRACK_RH / 2;
         assert_eq!(a.tap(200, ty), vec![Action::PlayIndex(503)]);
         assert_eq!(a.current(), Screen::Playlist, "playing must not leave the page");
         let (bx, by, _, bh) = library::shuffle_band_rect(library::PLAYLIST_BAND_Y);
@@ -7949,7 +8481,8 @@ mod tests {
     fn the_playlist_page_scrolls_and_queues() {
         let mut a = two_playlists();
         a.open_playlist(0);
-        let ty = library::playlist_content_top() + library::PLAYLIST_TRACK_RH / 2;
+        let ty = library::playlist_content_top(a.playlist_row().unwrap())
+            + library::PLAYLIST_TRACK_RH / 2;
         assert_eq!(a.swipe(1, 240, ty), vec![Action::QueueChanged]);
         assert_eq!(a.queue().len(), 1);
         assert_eq!(a.queue()[0].title, "P0");
