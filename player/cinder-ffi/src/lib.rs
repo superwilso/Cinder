@@ -14,6 +14,7 @@
 mod art_cache;
 mod art_load;
 mod gpu;
+mod likes;
 mod present;
 mod scrobble;
 mod spectrum;
@@ -4120,7 +4121,58 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
             let liked_path = String::from("/contents/cinder_liked.conf");
             r.liked = liked_load(&liked_path);
             eprintln!("cinder-ffi: liked songs: {} loaded", r.liked.len());
-            r.liked_path = Some(liked_path);
+            r.liked_path = Some(liked_path.clone());
+            // A liked list pushed from the PC (likesync) lands here as artist/title rows and is
+            // resolved against the library that was just built — object ids are rebuilt whenever
+            // the database is, so they can only be matched on this side. See `likes.rs` for why
+            // the import replaces rather than merges, and what it refuses to act on.
+            let lib_ref = r.app.library();
+            // album_id -> the artist the album is filed under, so a featured-artist track can be
+            // found by the name the PC knows it by (see likes::resolve).
+            let album_artist: std::collections::HashMap<i64, &str> = lib_ref
+                .album_groups
+                .iter()
+                .flat_map(|group| {
+                    group.albums.iter().map(move |album| (album.album_id, group.artist.as_str()))
+                })
+                .collect();
+            let songs: Vec<(i64, String, String, String)> = lib_ref
+                .songs
+                .iter()
+                .map(|s| {
+                    let filed_under = album_artist.get(&s.album_id).copied().unwrap_or("");
+                    (s.object_id, s.artist.clone(), s.title.clone(), filed_under.to_string())
+                })
+                .collect();
+            let (outcome, imported) = likes::apply_import(
+                &liked_path,
+                songs
+                    .iter()
+                    .map(|(id, artist, title, filed)| {
+                        (*id, artist.as_str(), title.as_str(), filed.as_str())
+                    }),
+            );
+            match outcome {
+                likes::Outcome::None => {}
+                likes::Outcome::Ignored(why) => {
+                    eprintln!("cinder-ffi: liked import ignored: {why}");
+                }
+                likes::Outcome::Unresolved(rows) => {
+                    eprintln!(
+                        "cinder-ffi: liked import: {rows} row(s) matched nothing in the library \
+                         — left in place for the next boot"
+                    );
+                }
+                likes::Outcome::Applied(liked, missing) => {
+                    eprintln!(
+                        "cinder-ffi: liked import applied — {liked} liked, {missing} not on this device"
+                    );
+                }
+            }
+            if let Some(ids) = imported {
+                r.liked = ids;
+                liked_save(r); // rewrites cinder_liked.conf AND the cinder_loved.tsv export
+            }
             r.app.set_liked_count(r.liked.len());
             r.db_path = Some(p.clone());
             start_art_cache(r, &p);
