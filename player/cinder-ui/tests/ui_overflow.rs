@@ -91,6 +91,10 @@ fn at(screen: Screen) -> App {
         return a;
     }
     a.push_for_test(screen);
+    if screen == Screen::Keyboard {
+        // A full-length name is the state that can overflow the field; an empty one never could.
+        a.type_for_test(&"Late Night On The Bus Mix ".repeat(3));
+    }
     a
 }
 
@@ -100,7 +104,45 @@ const SCREENS: &[Screen] = &[
     Screen::Bluetooth, Screen::Pairing, Screen::Settings, Screen::Fm, Screen::UsbDac,
     Screen::Receiver, Screen::Onboarding, Screen::UsbStorage, Screen::GenreFilter,
     Screen::Folders, Screen::TrackInfo, Screen::ClockSet, Screen::Advanced, Screen::Tone,
+    Screen::Keyboard, Screen::PlaylistPick, Screen::TrackPick,
 ];
+
+/// The keyboard's word keys (SHIFT / SPACE / DONE / 123) are drawn centred with no `fit`, so a
+/// larger UI scale could push a label past its own key without ever leaving the panel — which the
+/// off-panel audit would not see. Measure each label against the key it sits in, at every scale.
+#[test]
+fn keyboard_labels_fit_their_keys_at_every_scale() {
+    use cinder_ui::keyboard::{key_at, key_rect, Key, ROWS};
+    let mut bad: Vec<String> = Vec::new();
+    for idx in 0..cinder_ui::text::SCALE_STEPS.len() {
+        let _g = scale_lock(idx);
+        let fonts = FontSet::load();
+        for page in [0u8, 1] {
+            for row in 0..ROWS {
+                for col in 0.. {
+                    let Some((_, _, w, _)) = key_rect(page, row, col) else { break };
+                    let Some(key) = key_at(page, row, col) else { break };
+                    let (label, size) = match key {
+                        Key::Char(ch) => (ch.to_string(), 24.0),
+                        Key::Shift => ("CAPS".to_string(), 15.0),
+                        Key::Page => ("123".to_string(), 15.0),
+                        Key::Space => ("SPACE".to_string(), 15.0),
+                        Key::Backspace => ("DEL".to_string(), 15.0),
+                        Key::Done => ("DONE".to_string(), 15.0),
+                    };
+                    let st = cinder_ui::widgets::sty(
+                        cinder_ui::text::Family::Sans, cinder_ui::text::Weight::SemiBold, size,
+                        cinder_ui::theme::Theme::day().ink, 0.0);
+                    let measured = cinder_ui::text::measure(&fonts, &label, &st);
+                    if measured > (w - 6) as f32 {
+                        bad.push(format!("scale {idx}: {label:?} is {measured:.0}px in a {w}px key"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "keyboard labels overflow their keys:\n{}", bad.join("\n"));
+}
 
 #[test]
 fn no_screen_draws_off_the_panel() {

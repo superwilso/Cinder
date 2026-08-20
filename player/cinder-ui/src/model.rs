@@ -117,6 +117,14 @@ pub struct PlaylistRow {
     pub name: String,
     pub tracks: u32,
     pub art: String,
+    /// True for a playlist CINDER owns — one made on the device (or dropped into
+    /// `/contents/cinder_playlists` from a PC), stored as an `.m3u8` file. False for one read out
+    /// of Sony's MediaStore database, which this app can browse and play but must not write: that
+    /// database is rebuilt by a rescan and its object ids are re-issued with it.
+    ///
+    /// The flag decides whether the page draws its edit bar, so it is not decoration — a row that
+    /// claimed to be editable and was not would offer controls that silently do nothing.
+    pub user: bool,
     /// Members in the user's saved order. Resolved once at library build, like `AlbumRow`'s, so
     /// the drill-in page is a pure view and needs no DB access per frame. `tracks` is the DB's own
     /// count and can legitimately exceed this when a member file no longer resolves.
@@ -301,6 +309,8 @@ impl Library {
                 name: p.n.into(),
                 tracks: p.k,
                 art: p.art.into(),
+                // Sample data stands in for Sony's database rows on the host preview.
+                user: false,
                 track_list: (0..p.k as usize)
                     .filter_map(|i| songs.get((i + pi) % songs.len().max(1)).cloned())
                     .collect(),
