@@ -35,12 +35,17 @@ pub enum Ask {
     /// by Boot to stock: this one cannot be undone by rebooting, and the body has to say what the
     /// scope is before the finger commits.
     ResetSettings,
+    /// Deleting one of Cinder's own playlists. A yes/no card and not a two-tap row: the two-tap
+    /// idiom is already spent on the × beside each TRACK, and using it for the whole list too
+    /// would make "remove one" and "delete all of it" the same gesture in the same screen.
+    DeletePlaylist,
 }
 
 /// Every question the modal can ask. Exists so the overflow audit can render all of them without
 /// a list that silently stops being complete when a new one is added.
 pub const ALL: &[Ask] = &[
     Ask::Restart, Ask::PowerOff, Ask::PowerMenu, Ask::QueueOnPlay, Ask::ResetSettings,
+    Ask::DeletePlaylist,
 ];
 
 impl Ask {
@@ -68,6 +73,11 @@ impl Ask {
                 "Reset settings?",
                 "Every preference goes back to its default. Your music, playlists and pins are untouched.",
                 "Reset",
+            ),
+            Ask::DeletePlaylist => (
+                "Delete this playlist?",
+                "The playlist is deleted. The music in it stays on the device.",
+                "Delete",
             ),
         }
     }
@@ -151,6 +161,12 @@ pub enum Hit {
     ClearQueue,
     /// Play the tapped song and leave the queue alone — it plays after.
     KeepQueue,
+}
+
+/// Centre of the confirming button, for tests that need to press it without duplicating the
+/// modal's geometry (the thing this module exists to keep in one place).
+pub fn confirm_button_centre(_ask: Ask) -> (i32, i32) {
+    ((BTN_SPLIT + CARD_X + CARD_W) / 2, BTN_Y + BTN_H / 2)
 }
 
 pub fn hit(ask: Ask, x: i32, y: i32) -> Hit {

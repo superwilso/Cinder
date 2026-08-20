@@ -191,9 +191,50 @@ fn main() {
             }),
             ("playlist_page", &|c: &mut Canvas| {
                 match lib.playlists.first() {
-                    Some(pl) => library::playlist_view(c, &theme, &fonts, &lib, pl, 0, 0, None, false),
+                    Some(pl) => library::playlist_view(c, &theme, &fonts, &lib, pl, 0, 0, None, false, None),
                     None => {}
                 }
+            }),
+            // The playlists you MADE: the same page, plus its edit bar and a row armed for
+            // removal — the state that is easiest to get wrong and hardest to see in a test.
+            ("playlist_page_own", &|c: &mut Canvas| {
+                if let Some(pl) = lib.playlists.first() {
+                    let mine = cinder_ui::model::PlaylistRow {
+                        user: true, name: "Late Night On The Bus".into(), ..pl.clone()
+                    };
+                    library::playlist_view(c, &theme, &fonts, &lib, &mine, 0, 1, None, false, Some(1));
+                }
+            }),
+            // The Playlists tab, which is where a playlist gets made.
+            ("library_playlists_own", &|c: &mut Canvas| {
+                let mut mine = lib.clone();
+                if let Some(first) = mine.playlists.first_mut() {
+                    first.user = true;
+                }
+                library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &mine, None, false);
+                cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands",
+                                          "Benjamin Francis Leftwich", true, 0.39);
+            }),
+            ("keyboard", &|c: &mut Canvas| {
+                cinder_ui::keyboard::render(c, &theme, &fonts, "New playlist",
+                                            "Late night on the bus", "Playlist name", 0, true);
+            }),
+            ("keyboard_symbols", &|c: &mut Canvas| {
+                cinder_ui::keyboard::render(c, &theme, &fonts, "Rename playlist",
+                                            "2 a.m. mix #3", "Playlist name", 1, false);
+            }),
+            ("playlist_pick", &|c: &mut Canvas| {
+                let targets = [
+                    cinder_ui::playlist_pick::Target { name: "Late Night On The Bus", tracks: 42 },
+                    cinder_ui::playlist_pick::Target { name: "Sunday", tracks: 9 },
+                ];
+                cinder_ui::playlist_pick::render_targets(c, &theme, &fonts, "Add to playlist",
+                                                         "Atlas Hands", &targets, 3, 0);
+            }),
+            ("track_pick", &|c: &mut Canvas| {
+                let songs: Vec<&cinder_ui::model::SongRow> = lib.songs.iter().collect();
+                cinder_ui::playlist_pick::render_tracks(c, &theme, &fonts, "Late Night On The Bus",
+                                                        &songs, &|i| i % 3 == 0, 0, 4);
             }),
             ("up_next_remove", &|c: &mut Canvas| {
                 let l = up_next::layout(0, None, queue.len());

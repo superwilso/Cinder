@@ -15,6 +15,7 @@ mod art_cache;
 mod art_load;
 mod gpu;
 mod likes;
+mod playlists;
 mod present;
 mod scrobble;
 mod spectrum;
@@ -431,6 +432,13 @@ struct Render {
     last_scrob: std::time::Instant, // real-time anchor for the scrobble play clock
     liked: std::collections::BTreeSet<i64>,
     liked_path: Option<String>,
+    /// Playlists the user made ON the device, as .m3u8 files (see `playlists.rs`). Separate from
+    /// the Sony ones below because they are the only ones this app may write.
+    plists: playlists::Store,
+    /// Sony's playlist rows, kept from the last library build so a playlist edit can rebuild the
+    /// merged list without re-querying the database — one edit is a keypress away from the next,
+    /// and the DB half of the list cannot have changed in between.
+    db_playlists: Vec<cinder_ui::model::PlaylistRow>,
     pending_play_start: usize,
     // Decoded album cover for the CURRENT track, pre-scaled to the two draw sizes (480 full-bleed,
     // 92 thumb). art_key = the object_id we last decoded for (skip re-decode on same-track polls);
@@ -604,6 +612,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         last_scrob: std::time::Instant::now(),
         liked: std::collections::BTreeSet::new(),
         liked_path: None,
+        plists: playlists::Store::default(),
+        db_playlists: Vec::new(),
         pending_play_start: 0,
         art_full: None,
         art_thumb: None,
@@ -953,6 +963,8 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         .into_iter()
         .map(|p| cinder_ui::model::PlaylistRow {
             id: p.id,
+            // From Sony's database: browsable and playable, but not ours to edit.
+            user: false,
             name: p.name.clone(),
             tracks: p.track_count.max(0) as u32,
             // Members in the saved order, resolved once here so the drill-in page never touches
@@ -1140,11 +1152,11 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 25] = [
+const SCREEN_NAMES: [&str; 29] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
-    "Tone",
+    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1158,6 +1170,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Onboarding => 15, S::UsbStorage => 16, S::Shelf => 17, S::Pairing => 18,
         S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
+        S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
     }
 }
 
@@ -1887,6 +1900,91 @@ fn playlist_tracks(db: Option<&cinder_db::Db>, playlist_id: i64) -> Option<Vec<c
     (!tracks.is_empty()).then_some(tracks)
 }
 
+/// Members of whichever playlist `id` names — Sony's (positive object id) or ours (negative, the
+/// sign is the discriminator; see `playlists::id_for`).
+fn any_playlist_tracks(r: &Render, id: i64) -> Option<Vec<cinder_db::Track>> {
+    if id < 0 {
+        user_playlist_tracks(r, id)
+    } else {
+        playlist_tracks(r.db.as_ref(), id)
+    }
+}
+
+/// Build the UI rows for Cinder's own playlists, resolving each member path back to a library
+/// track. A path that no longer resolves is dropped from the list but still counts in `tracks`,
+/// which is the same honesty the Sony rows already have: "3 OF 4 TRACKS AVAILABLE" says the file
+/// is missing rather than quietly shortening the playlist.
+fn user_playlist_rows(
+    store: &playlists::Store,
+    db: Option<&cinder_db::Db>,
+) -> Vec<cinder_ui::model::PlaylistRow> {
+    store
+        .lists
+        .iter()
+        .map(|list| {
+            let track_list: Vec<cinder_ui::model::SongRow> = db
+                .map(|db| {
+                    list.entries
+                        .iter()
+                        .filter_map(|entry| db.track_by_filename(&entry.uri).ok().flatten())
+                        .map(|t| song_row_of(&t))
+                        .collect()
+                })
+                .unwrap_or_default();
+            cinder_ui::model::PlaylistRow {
+                id: list.id,
+                name: list.name.clone(),
+                tracks: list.entries.len() as u32,
+                art: list.name.clone(),
+                track_list,
+                user: true,
+            }
+        })
+        .collect()
+}
+
+/// Put one library track into one of our playlists. The PATH is what gets stored — object ids are
+/// re-issued whenever the database is rebuilt, and a playlist that forgets its tracks on a rescan
+/// would be worse than no playlist at all.
+fn add_track_to_playlist(r: &mut Render, playlist_id: i64, object_id: i64) {
+    let track = r.db.as_ref().and_then(|db| db.track_by_object_id(object_id).ok().flatten());
+    let Some(track) = track else {
+        eprintln!("cinder-ffi: playlist add: object {object_id} is not in the library");
+        return;
+    };
+    let label = format!("{} - {}", track.artist, track.title);
+    match r.plists.add(playlist_id, &track.filename, &label) {
+        Ok(true) => {}
+        Ok(false) => eprintln!("cinder-ffi: playlist add: already there (or full)"),
+        Err(e) => eprintln!("cinder-ffi: playlist add: {e}"),
+    }
+}
+
+/// Re-merge Sony's playlists with ours and hand the result to the UI. Called after every edit.
+///
+/// `set_playlists` rather than a full `build_library`: rebuilding the library is one query per
+/// album plus one per playlist, and it would also throw away the scroll position of the screen
+/// the user is editing on.
+fn refresh_playlists(r: &mut Render) {
+    let mut rows = r.db_playlists.clone();
+    rows.extend(user_playlist_rows(&r.plists, r.db.as_ref()));
+    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    r.app.set_playlists(rows);
+    r.dirty = true;
+}
+
+/// The tracks of one of OUR playlists, in saved order, resolved to DB rows for playback.
+fn user_playlist_tracks(r: &Render, id: i64) -> Option<Vec<cinder_db::Track>> {
+    let db = r.db.as_ref()?;
+    let list = r.plists.get(id)?;
+    let tracks: Vec<cinder_db::Track> = list
+        .entries
+        .iter()
+        .filter_map(|entry| db.track_by_filename(&entry.uri).ok().flatten())
+        .collect();
+    (!tracks.is_empty()).then_some(tracks)
+}
+
 /// Map a navigator `Action` to the `cinder_action_t` the shell carries out (Some = return this
 /// code), applying the internal-only ones in place and returning None for them (theme is applied by
 /// the caller; the sleep timer arms here; BtToggle is UI-only). Shared by cinder_input + cinder_tap.
@@ -1967,7 +2065,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // Same channel as PlayIndex — the members become the pending sequence, starting at
             // the top — so the shell keeps handling exactly one "play these URIs" action and
             // needs no new code or FFI symbol for playlists.
-            match playlist_tracks(r.db.as_ref(), *playlist_id) {
+            match any_playlist_tracks(r, *playlist_id) {
                 Some(seq) => {
                     let (seq, start, pre) = apply_shuffle(r.np.shuffle, seq, 0);
                     set_pending(r, seq, start);
@@ -2027,7 +2125,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::ShufflePlaylist(playlist_id) => {
             // One NAMED playlist, shuffled — the band on the playlist page. Distinct from
             // `ShuffleScope::Playlist`, which picks a random playlist and shuffles that.
-            match playlist_tracks(r.db.as_ref(), *playlist_id) {
+            match any_playlist_tracks(r, *playlist_id) {
                 Some(mut seq) => {
                     // Keep the playlist's real running order so shuffle-off can restore it. The
                     // toggle promises "play the rest of this in order from here", and it has to
@@ -2049,6 +2147,54 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     return None;
                 }
             }
+        }
+        // ── playlists the user made on the device ───────────────────────────────────────
+        // All five are INTERNAL: they change files and the UI's rows, and there is nothing for
+        // the C++ shell to do, so they return None rather than an action code.
+        Action::PlaylistCreate | Action::PlaylistCreateWith(_) => {
+            let name = r.app.text_input().to_string();
+            match r.plists.create(&name) {
+                Ok(id) => {
+                    if let Action::PlaylistCreateWith(object_id) = a {
+                        add_track_to_playlist(r, id, *object_id);
+                    }
+                    refresh_playlists(r);
+                    // Land inside the new playlist: naming one and being dropped back at the list
+                    // to find it again is a step nobody wants.
+                    r.app.open_playlist_by_id(id);
+                    eprintln!("cinder-ffi: playlist created: {name:?}");
+                }
+                Err(e) => eprintln!("cinder-ffi: playlist create {name:?}: {e}"),
+            }
+            return None;
+        }
+        Action::PlaylistRename(id) => {
+            let name = r.app.text_input().to_string();
+            if let Err(e) = r.plists.rename(*id, &name) {
+                eprintln!("cinder-ffi: playlist rename: {e}");
+            }
+            refresh_playlists(r);
+            return None;
+        }
+        Action::PlaylistDelete(id) => {
+            if let Err(e) = r.plists.delete(*id) {
+                eprintln!("cinder-ffi: playlist delete: {e}");
+            }
+            refresh_playlists(r);
+            return None;
+        }
+        Action::PlaylistAddTrack(playlist_id, object_id) => {
+            add_track_to_playlist(r, *playlist_id, *object_id);
+            refresh_playlists(r);
+            return None;
+        }
+        Action::PlaylistRemoveAt(playlist_id, position) => {
+            match r.plists.remove_at(*playlist_id, *position as usize) {
+                Ok(true) => refresh_playlists(r),
+                Ok(false) => {}
+                Err(e) => eprintln!("cinder-ffi: playlist remove: {e}"),
+            }
+            return None;
         }
         Action::ShuffleArtist(idx) => {
             // One named artist, their tracks shuffled — the Artists-row button and the band on the
@@ -4114,8 +4260,14 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
                 lib.album_count(),
                 lib.artists.len()
             );
+            // Sony's playlist rows are kept so a later edit can re-merge the two lists without
+            // re-querying; ours come from the .m3u8 folder beside the liked list.
+            r.db_playlists = lib.playlists.clone();
             r.app.set_library(lib);
             r.db = Some(db);
+            r.plists = playlists::Store::open(playlists::DIR);
+            eprintln!("cinder-ffi: playlists: {} of your own", r.plists.lists.len());
+            refresh_playlists(r);
             // Liked list lives beside the user's music, not next to the DB: /contents is the
             // partition they can actually reach over USB-MSC to back it up or edit it.
             let liked_path = String::from("/contents/cinder_liked.conf");
@@ -4756,6 +4908,10 @@ mod tests {
     /// reason the synthetic animation was removed.
     /// The panic hook's screen table must line up with `screen_ord`, or a crash report names the
     /// wrong screen — which is worse than naming none, because it sends the reader somewhere else.
+    ///
+    /// This caught a real one: `BtCodec` had ordinal 25 against a 25-entry table, so a panic on
+    /// the codec screen indexed past the end and reported no screen at all. The list below is the
+    /// part that has to be kept complete — hence the length assertion.
     #[test]
     fn every_screen_has_a_distinct_panic_name() {
         use cinder_ui::nav::Screen as S;
@@ -4763,7 +4919,8 @@ mod tests {
             S::Lock, S::NowPlaying, S::Menu, S::Library, S::Album, S::Artist, S::Playlist, S::UpNext, S::Eq,
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
-            S::ClockSet, S::Advanced, S::Tone,
+            S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
+            S::TrackPick,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
