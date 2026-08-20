@@ -2,7 +2,7 @@
 name = "cinder-installer"
 version = "0.1.2"
 edition = "2021"
-description = "Windows/Linux installer for Cinder — picks components, stages them to the Walkman"
+description = "Windows one-click installer for Cinder and the Sony firmware updater"
 license = "MIT"
 
 # Deliberately DEPENDENCY-FREE. This is the one artefact end users run, it ships as a single .exe

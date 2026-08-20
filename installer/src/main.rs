@@ -10,9 +10,7 @@
 //!      actually understands
 //!   3. writes the answers as cinder_components.conf and copies the staged files to the drive root
 //!   4. writes the install package as NW_WM_FW.UPG
-//!
-//! It does NOT flash anything. The last step is done by the player itself, from its own menu,
-//! which is what keeps this program unable to brick a device on its own.
+//!   5. launches Sony's native updater, which performs the required safe-eject/update transition
 
 use std::fs;
 use std::io::{self, Write};
@@ -179,7 +177,14 @@ fn show(comps: &[Comp], target: &Path) {
         println!("   {:>2}  {:<7} {:<42} {}", i + 1, c.render(), c.title, c.id);
     }
     println!("  ------------------------------------------------------------");
-    println!("   <number> toggle/cycle   ?<number> describe   i install   q quit");
+    println!("\n  What the options do:");
+    for (i, c) in comps.iter().enumerate() {
+        println!("\n   {}. {}  [default: {}]", i + 1, c.title, c.default);
+        for line in c.desc.lines() {
+            println!("      {line}");
+        }
+    }
+    println!("\n   <number> toggle/cycle   ?<number> repeat one description   i install   q quit");
 }
 
 // ── writing ────────────────────────────────────────────────────────────────────────────────
@@ -231,6 +236,66 @@ fn install(comps: &[Comp], target: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Launch Sony's own Windows updater from an embedded temporary bundle. It owns the device
+/// handoff: do not manually eject or trigger a Linux SCSI command before this returns.
+#[cfg(windows)]
+fn run_sony_updater() -> io::Result<()> {
+    use std::process::Command;
+    let root = std::env::temp_dir().join(format!("cinder-updater-{}", std::process::id()));
+    if root.exists() {
+        fs::remove_dir_all(&root)?;
+    }
+    for (relative, bytes) in UPDATER_PAYLOAD {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, bytes)?;
+    }
+    let upg = PAYLOAD
+        .iter()
+        .find(|(name, _, _)| *name == "NW_WM_FW.UPG")
+        .map(|(_, _, bytes)| *bytes)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "embedded install UPG missing"))?;
+    fs::write(root.join("Data/Device/NW_WM_FW.UPG"), upg)?;
+    let exe = root.join("SoftwareUpdateTool.exe");
+    println!("\n  Starting Sony's firmware updater...");
+    let status = Command::new(&exe).current_dir(&root).status()?;
+    fs::remove_dir_all(&root).ok();
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Sony updater exited with {status}"),
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn run_sony_updater() -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the one-click updater is Windows-only; run the native Windows release executable",
+    ))
+}
+
+fn finish_install(comps: &[Comp], target: &Path) -> ! {
+    if let Err(e) = install(comps, target) {
+        eprintln!("\nERROR: {e}");
+        eprintln!("The player may now hold a partial copy. Re-run before updating.");
+        std::process::exit(1);
+    }
+    println!("\n  Files staged. Sony's updater will now take over the USB connection.");
+    if let Err(e) = run_sony_updater() {
+        eprintln!("\nERROR: could not start the Sony updater: {e}");
+        eprintln!("The files are staged; reconnect the Walkman and run this installer again.");
+        std::process::exit(1);
+    }
+    print_next_steps();
+    std::process::exit(0);
+}
+
 // ── main ───────────────────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -243,8 +308,8 @@ fn main() {
             "-y" | "--yes" => assume_yes = true,
             "-h" | "--help" => {
                 println!("cinder-installer [--yes] [<drive or mount point>]");
-                println!("  Stages Cinder onto the Walkman. Does not flash — the player does that");
-                println!("  itself, from Settings, after you eject it.");
+                println!("  Stages Cinder and launches Sony's native updater.");
+                println!("  Windows only; the updater performs the USB handoff and reboot.");
                 return;
             }
             other => explicit = Some(PathBuf::from(other)),
@@ -254,6 +319,12 @@ fn main() {
 
     println!("Cinder installer — channel {CHANNEL}");
 
+    if !cfg!(windows) {
+        eprintln!("ERROR: this installer must be run as the Windows release .exe.");
+        eprintln!("The Sony updater uses Windows-only device access and cannot run in WSL.");
+        std::process::exit(2);
+    }
+
     if !MISSING.is_empty() {
         eprintln!("\nERROR: this build is incomplete — the following payload files were missing");
         eprintln!("when it was compiled:");
@@ -262,6 +333,14 @@ fn main() {
         }
         eprintln!("\nBuild them first:  cinder-home/build.sh {CHANNEL}");
         eprintln!("                   cinder-home/tools/pack_upg.sh {CHANNEL}");
+        std::process::exit(2);
+    }
+    if !UPDATER_MISSING.is_empty() {
+        eprintln!("\nERROR: the embedded Sony Windows updater is incomplete:");
+        for m in UPDATER_MISSING {
+            eprintln!("    {m}");
+        }
+        eprintln!("This release must be built from the authorized updater bundle.");
         std::process::exit(2);
     }
 
@@ -327,12 +406,7 @@ fn main() {
 
     // ── pick ──
     if assume_yes {
-        if let Err(e) = install(&comps, &target) {
-            eprintln!("\nERROR: {e}");
-            std::process::exit(1);
-        }
-        print_next_steps();
-        return;
+        finish_install(&comps, &target);
     }
 
     loop {
@@ -385,19 +459,11 @@ fn main() {
         return;
     }
 
-    if let Err(e) = install(&comps, &target) {
-        eprintln!("\nERROR: {e}");
-        eprintln!("The player may now hold a partial copy. Re-run before flashing.");
-        std::process::exit(1);
-    }
-    print_next_steps();
+    finish_install(&comps, &target);
 }
 
 fn print_next_steps() {
-    println!("\n  Done. To finish the install, on the PLAYER:");
-    println!("    1. Eject the drive safely, then unplug it.");
-    println!("    2. Settings -> Device Settings -> Update -> follow the prompts.");
-    println!("    3. It reboots into Cinder.");
+    println!("\n  Sony's updater has finished. The Walkman should reboot into Cinder.");
     println!("\n  If a boot ever goes wrong: hold the player's USB cable in at power-on to get");
     println!("  the stock player back, and see RECOVERY.md.");
 }

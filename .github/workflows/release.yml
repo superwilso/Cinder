@@ -32,20 +32,7 @@ env:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: cinder-installer.exe
-            asset: cinder-installer-windows-x64.exe
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: cinder-installer
-            asset: cinder-installer-linux-x64
-
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -58,35 +45,34 @@ jobs:
           for f in cinder-home/dist/stable/cinder-home \
                    cinder-home/dist/stable/cinder-probe \
                    cinder-home/dist/stable/cinder_home_install.upg \
-                   cinder-home/dist/stable/cinder_components.conf; do
+                   cinder-home/dist/stable/cinder_components.conf \
+                   installer/sony-updater/SoftwareUpdateTool.exe \
+                   installer/sony-updater/Data/App/WmFwUpdater.dll; do
             [ -f "$f" ] || { echo "::error::missing payload $f"; missing=1; }
           done
           [ "$missing" = 0 ]
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Test
         working-directory: installer
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo test
 
       - name: Build
         working-directory: installer
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release
 
       - name: Stage artifact
-        shell: bash
         working-directory: installer
         run: |
-          cp "target/${{ matrix.target }}/release/${{ matrix.artifact }}" "${{ matrix.asset }}"
-          ls -l "${{ matrix.asset }}"
+          Copy-Item target/release/cinder-installer.exe cinder-installer-windows-x64.exe
+          Get-ChildItem cinder-installer-windows-x64.exe
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset }}
-          path: installer/${{ matrix.asset }}
+          name: cinder-installer-windows-x64.exe
+          path: installer/cinder-installer-windows-x64.exe
           if-no-files-found: error
 
   release:
@@ -94,6 +80,8 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -101,6 +89,8 @@ jobs:
 
       - name: List what is being published, with checksums
         run: |
+          cp cinder-home/dist/stable/cinder_home_install.upg dist/cinder-home-install.upg
+          cp cinder-home/dist/stable/cinder_home_uninstall.upg dist/cinder-home-uninstall.upg
           ls -lR dist
           # A published binary nobody can verify is a binary nobody should run. The sums go in the
           # release body so a download can be checked without trusting the download itself.
@@ -120,12 +110,14 @@ jobs:
           body: |
             ## Installing
 
-            Download **cinder-installer-windows-x64.exe**, plug the Walkman in over USB in
-            mass-storage mode, and run it. It finds the player, asks which optional parts you
-            want, and copies them across.
+            Download **cinder-installer-windows-x64.exe**, connect the Walkman in USB mass-storage
+            mode, and run it. It finds the player, stages every Cinder binary plus `NW_WM_FW.UPG`,
+            then launches Sony's native updater. Follow that updater's prompts; it performs the
+            required USB handoff and reboots the Walkman into Cinder. No WSL, usbipd, or manual
+            SCSI command is required.
 
-            It does **not** flash anything — the player does that itself from
-            Settings ▸ Device Settings ▸ Update, after you eject it.
+            `cinder-home-install.upg` and `cinder-home-uninstall.upg` are also attached for
+            advanced recovery use. The one-click Windows executable is the recommended path.
 
             **Read [RECOVERY.md](../blob/main/RECOVERY.md) first.** This device has no public
             DFU/EDL recovery path.
