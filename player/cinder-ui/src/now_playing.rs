@@ -327,7 +327,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         // compact header: 92px thumb @32% + title/artist/codec column
         match np.art_thumb {
             Some(img) => art::draw_image(c, t, 24, 80, img, 0.32),
-            None => art::block(c, t, 24, 80, 92, 92, np.art, 0.32),
+            None => art::block_cached(c, t, 24, 80, 92, 92, np.art, 0.32),
         }
         // TRUNCATE. The day layout below already fits its title to 372px; this column never did,
         // so in night mode a long title or a non-Latin artist ran straight off the right edge and
@@ -373,7 +373,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
                 // full-bleed album art: the real decoded cover when available
                 match np.art_full {
                     Some(img) => art::draw_image(c, t, 0, 34, img, 1.0),
-                    None => art::block(c, t, 0, 34, 480, 480, np.art, 1.0),
+                    // 480x480 is past the cache's edge limit, so this still bakes per frame — but
+                    // only when the shell supplied no image at all, which on device it always does
+                    // (cinder-ffi bakes one per track). See art::block_cached.
+                    None => art::block_cached(c, t, 0, 34, 480, 480, np.art, 1.0),
                 }
                 // The visualiser stands on the BOTTOM EDGE of the cover (y=508, six px clear of
                 // the art's real edge at 514) and grows upward into it, so changing size moves

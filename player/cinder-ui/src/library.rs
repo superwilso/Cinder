@@ -57,35 +57,13 @@ pub const THUMB_PX: i32 = 48;
 pub const COVER_PX: i32 = 96;
 
 /// Baked gradient swatches for rows that have NO real cover, keyed by what makes one differ:
-/// the name's hash, the edge, the opacity, and the background it was blended toward.
+/// One row's artwork: the real thumbnail if the art cache has decoded it, else the generated
+/// gradient — cached and blitted rather than recomputed, via [`art::block_cached`].
 ///
 /// The gradient costs a table lookup and a blend PER PIXEL. A row's 48x48 swatch is 2,304 pixels
 /// and a screenful is ~13 rows, so a library with no decoded covers was recomputing ~30,000 pixels
-/// of gradient every frame, forever — the covers path has been blitting a cached `Image` since the
-/// Now Playing art was fixed, and this is the same fix for the fallback that stayed behind.
-///
-/// Baked at the row's ACTUAL opacity rather than at 1.0 and blended on the way out. Those are not
-/// the same picture: blending twice quantises twice. Baking at the real opacity means each entry
-/// is byte-identical to what `art::block` would have drawn, which `art`'s own
-/// `the_baked_gradient_matches_the_drawn_one_exactly` already pins down.
-///
-/// Thread-local rather than a field on `Library`: rendering takes `&Library`, and this is a pure
-/// memo of a pure function — nothing about it belongs in the model, and it must not become
-/// something a caller can forget to invalidate.
-type GradKey = (u32, i32, u16, u32);
-
-/// Cap on cached swatches. 48x48x3 bytes is ~6.9 KB each, so 64 entries is ~440 KB — deliberately
-/// modest. This device aborted an allocator once over a 1.5 MB buffer's churn (see ROADMAP
-/// 2026-07-28), so a render-path cache does not get to be generous. ~13 rows are visible at a
-/// time; the headroom covers a scroll without thrash, and blowing past it during a long scroll
-/// through a coverless library costs exactly what today's code costs anyway: one bake.
-const GRAD_CACHE_MAX: usize = 64;
-
-thread_local! {
-    static GRAD_CACHE: std::cell::RefCell<std::collections::HashMap<GradKey, art::Image>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
+/// of gradient every frame, forever. The cache used to live here; it now lives in `art`, beside
+/// the function it memoises, so the album cover and Now Playing's night header can use it too.
 pub(crate) fn thumb(
     c: &mut Canvas, t: &Theme, lib: &Library, album_id: i64, name: &str,
     x: i32, y: i32, size: i32, op: f32,
@@ -94,24 +72,7 @@ pub(crate) fn thumb(
         Some(img) if img.w == size as usize && img.h == size as usize => {
             art::draw_image(c, t, x, y, img, op)
         }
-        _ => {
-            use embedded_graphics::prelude::RgbColor;
-            let op = op.clamp(0.0, 1.0);
-            let bg = ((t.bg.r() as u32) << 16) | ((t.bg.g() as u32) << 8) | t.bg.b() as u32;
-            let key: GradKey = (art::name_key(name), size, (op * 1000.0) as u16, bg);
-            GRAD_CACHE.with(|cache| {
-                let mut cache = cache.borrow_mut();
-                if cache.len() >= GRAD_CACHE_MAX && !cache.contains_key(&key) {
-                    cache.clear();
-                }
-                let img = cache
-                    .entry(key)
-                    .or_insert_with(|| art::gradient_image(t, size, size, name, op));
-                // Opacity is already baked in, so blit it straight — blending again here would
-                // darken it a second time.
-                art::draw_image(c, t, x, y, img, 1.0);
-            });
-        }
+        _ => art::block_cached(c, t, x, y, size, size, name, op),
     }
 }
 
@@ -1317,7 +1278,7 @@ pub fn render(
                 if now {
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
                 }
-                art::block(c, t, 22, y + (rh - 48) / 2, 48, 48, &pl.art, artdim(t));
+                art::block_cached(c, t, 22, y + (rh - 48) / 2, 48, 48, &pl.art, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
                 text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
                 // Cinder's own playlists are editable and Sony's are not, so the row says which
@@ -1363,7 +1324,7 @@ pub fn album_view(
     match cover {
         Some(img) if img.w == COVER_PX as usize && img.h == COVER_PX as usize =>
             art::draw_image(c, t, 22, 82, img, artdim(t)),
-        _ => art::block(c, t, 22, 82, COVER_PX, COVER_PX, &album.art, artdim(t)),
+        _ => art::block_cached(c, t, 22, 82, COVER_PX, COVER_PX, &album.art, artdim(t)),
     }
     let title = crate::widgets::fit(
         f, &album.name, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01), (W as f32) - 150.0,
@@ -2391,10 +2352,10 @@ mod grad_cache_tests {
         let t = Theme::day();
         let lib = Library::sample();
         let mut c = Canvas::new();
-        for i in 0..(GRAD_CACHE_MAX * 3) {
+        for i in 0..(art::grad_cache_max() * 3) {
             thumb(&mut c, &t, &lib, -1, &format!("album {i}"), 0, 0, THUMB_PX, 1.0);
         }
-        let n = GRAD_CACHE.with(|cc| cc.borrow().len());
-        assert!(n <= GRAD_CACHE_MAX, "cache grew to {n}, cap is {GRAD_CACHE_MAX}");
+        let n = art::grad_cache_len();
+        assert!(n <= art::grad_cache_max(), "cache grew to {n}, cap is {}", art::grad_cache_max());
     }
 }

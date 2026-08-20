@@ -176,6 +176,17 @@ fn bench_library_tabs() {
     time_it("artist_view render", n, || {
         library::artist_view(&mut c, &t, &f, &lib, &page, 0, 0, None, false)
     });
+
+    // The album drill-in draws a 96x96 cover. With no decoded artwork that is a generated
+    // gradient — 9,216 pixels of table lookup, squared distance and a sqrt — and until
+    // 2026-08-20 it was recomputed on every single frame the page was up.
+    let mut bare = Library::sample();
+    bare.thumbs.clear();
+    if let Some(album) = bare.albums_flat().first().map(|a| (*a).clone()) {
+        time_it("album_view (gradient cover)", n, || {
+            library::album_view(&mut c, &t, &f, &album, 0, 0, None, None, false)
+        });
+    }
 }
 
 /// How much of a Library/Up Next frame is REBUILT ORDERING rather than pixels?
