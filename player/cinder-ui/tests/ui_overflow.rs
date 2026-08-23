@@ -353,6 +353,26 @@ fn effect_enum_labels_fit_at_every_scale() {
                 cinder_ui::nav::VPT_MODES[room], pct, oob
             );
         }
+        // THE SOUND SCREEN'S FOOTER, under every override. Its warning line names a control and
+        // says where that control lives, so it is the longest string on the screen — and neither
+        // override is reachable from the sweeps above (Source Direct is an ADV flag, ClearAudio+ a
+        // sound flag, and both default off), so without this pass the line was never drawn at any
+        // scale. The Tone Control case matters too: it swaps "EQ (<preset>)" for "TONE" in the
+        // path, changing the wrap.
+        for adv in [0u8, 0b0000_0001, 0b0001_0000, 0b0001_0001] {
+            for snd in [0u8, 1 << 5, 0b11_1111] {
+                let mut a = at(Screen::Sound);
+                a.set_adv_flags(adv);
+                a.set_sound_flags(snd);
+                a.set_vpt_mode(cinder_ui::nav::VPT_MODES.len() - 1); // the longest room name
+                a.set_dc_type(cinder_ui::nav::DC_PHASE_TYPES.len() - 1);
+                let oob = overflow_of(&mut a, &fonts, &np);
+                assert_eq!(
+                    oob, 0,
+                    "Sound footer overflows at {pct}% (adv {adv:#07b}, sound {snd:#08b}): {oob} px"
+                );
+            }
+        }
         // Sound ▸ Advanced: its two pills carry the longest labels on the screen, and the
         // override banner only appears when something upstream is bypassing the chain — so the
         // sweep above, which never turns those on, would not draw either of them.
