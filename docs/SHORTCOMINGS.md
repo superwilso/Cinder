@@ -97,8 +97,10 @@ prose.
 
 ### B1. Process-lifetime thinking about service-lifetime state
 
-Five of the eleven defects found in the 2026-08-23 audits are **the same bug**, and it has a name
-worth adopting: *an assertion about somebody else's state, written as if it were our own preference.*
+Four of the fourteen defects fixed in the 2026-08-23 audits are **the same bug**, and it has a name
+worth adopting: *an assertion about somebody else's state, written as if it were our own
+preference.* A fifth instance — `SetSelectUsingEq`, uncalled for months — was found earlier and is
+listed with them because it is the clearest example of the class.
 
 | Defect | What was assumed | Reality |
 |---|---|---|
