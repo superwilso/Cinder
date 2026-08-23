@@ -41,6 +41,10 @@ sample() {
         [ -n "$name" ] || continue
         case "$name" in
             *cinder*|*hagodaemon*|*Hgrm*|*bluetooth*|*audio*|*logwrapper*)
+                # SC2046 word splitting is THE POINT here: /proc/PID/stat is a single
+                # space-separated line and this splits it into $1..$15. Quoting would make it
+                # one argument and $14/$15 below would be empty.
+                # shellcheck disable=SC2046
                 set -- $(cat "$p/stat" 2>/dev/null)
                 # $1 = pid, $14 utime, $15 stime — positional and stable.
                 # A logwrapper shell is only worth naming by what it wrapped, so keep the argv[0]
