@@ -20,7 +20,7 @@
 #   tools/host_syntax_check.sh          check everything
 #   tools/host_syntax_check.sh -v       show each command
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "cannot reach the repo root" >&2; exit 2; }
 
 VERBOSE=""
 [ "${1:-}" = "-v" ] && VERBOSE=1
