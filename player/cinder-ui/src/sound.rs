@@ -194,6 +194,19 @@ pub struct Sound {
     /// True while the finger is on the slider — the knob grows and the readout goes accent, so a
     /// touch-only device gives some sign it took the gesture (same idea as the scrollbar thumb).
     pub balance_drag: bool,
+    /// Source Direct — set two screens away, on Sound ▸ Advanced, and it bypasses EVERYTHING this
+    /// screen lists.
+    ///
+    /// It had no field here at all, so the footer drew a full chain — `SOURCE → EQ (Rock) →
+    /// DSEE HX → VPT·CLUB → AMP → 3.5MM` — while the whole of it was out of the path, and the only
+    /// warning line was ClearAudio+'s. That is worse than the "why can I not hear VPT" evening the
+    /// Advanced screen's override banner was written for, because at least ClearAudio+ has its
+    /// switch on THIS screen: Source Direct is two taps away and leaves no trace here.
+    pub source_direct: bool,
+    /// Is Tone Control the tone system in the path? Sony's Equalizer and Tone Control are
+    /// ALTERNATIVES — `SetSelectUsingEq` picks one — so when this is on the 10-band EQ is not in
+    /// the chain, and a footer that keeps naming a preset is naming something inaudible.
+    pub tone_control: bool,
 }
 
 /// Outlined value pill ending at `xr`; accent when value != "Off".
@@ -308,6 +321,60 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
 }
 
 /// `setup` is which of the two sound setups is live: 0 = A, 1 = B.
+/// The footer's two lines: the signal path, and the override warning under it (if any).
+///
+/// A PURE FUNCTION because this is the one thing on the device that claims to say where the audio
+/// actually goes, and until now it could only be checked by looking at a screenshot. It was wrong
+/// in two ways at once, and neither was visible to any test:
+///
+///   * **Source Direct was not represented at all.** Set two screens away, it bypasses the whole
+///     chain — and the footer went on drawing `SOURCE → EQ (Rock) → DSEE HX → VPT·CLUB → AMP`
+///     over the top of a total bypass, with a warning line that only ever named ClearAudio+.
+///   * **`EQ (<preset>)` was printed unconditionally.** Sony's Equalizer and Tone Control are
+///     ALTERNATIVES — `SetSelectUsingEq` picks one — so with Tone Control on, the preset named
+///     there is not in the path at all.
+///
+/// Override precedence matches the Advanced screen's banner exactly (Source Direct first, because
+/// it is the OUTER bypass and therefore what you would have to turn off first), so the two screens
+/// cannot tell the user different stories about the same state.
+pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
+    let out = match s.bt_codec {
+        Some(codec) => format!("BT·{codec}"),
+        None => "AMP → 3.5MM".to_string(),
+    };
+    // Both setups are real chains — B is not "bypassed", it is the other one — so the path reads
+    // the same way for either and just names which is live.
+    let ab = if setup == 1 { "B" } else { "A" };
+    let warn = if s.source_direct {
+        // Kept SHORTER than the ClearAudio+ line below, deliberately. The first draft named where
+        // the control lives — "(SOUND ▸ ADVANCED)" — and `fit` truncated the line at "EVERY EFFECT
+        // BY…", cutting the one word that carries the meaning. A warning that loses its verb is
+        // worse than a terse one, and the "Advanced ›" row directly above the footer already lists
+        // Source Direct first among what it contains.
+        Some("! SOURCE DIRECT ON — EVERY EFFECT BYPASSED")
+    } else if s.clearaudio {
+        Some("! CLEARAUDIO+ ACTIVE — EQ AND MANUAL DSP BYPASSED")
+    } else {
+        None
+    };
+    if s.source_direct {
+        // Nothing between the source and the amp. Say exactly that, rather than drawing a chain and
+        // adding a footnote underneath that contradicts the line above it.
+        return (format!("SIGNAL PATH ({ab}): SOURCE → {out}"), warn);
+    }
+    // Which tone system is really in the chain. Sony picks ONE of the two, so naming the wrong one
+    // is the same lie as naming both.
+    let tone_stage =
+        if s.tone_control { "TONE".to_string() } else { format!("EQ ({})", s.eq_preset) };
+    let mut parts: Vec<String> = Vec::new();
+    if s.dsee { parts.push("DSEE HX".into()); }
+    if s.vinyl { parts.push("VINYL".into()); }
+    if !s.vpt.eq_ignore_ascii_case("off") { parts.push(format!("VPT·{}", s.vpt.to_uppercase())); }
+    if !s.dcphase.eq_ignore_ascii_case("off") { parts.push("DC PHASE".into()); }
+    let mid = if parts.is_empty() { "DIRECT".to_string() } else { parts.join(" → ") };
+    (format!("SIGNAL PATH ({ab}): SOURCE → {tone_stage} → {mid} → {out}"), warn)
+}
+
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, setup: usize) {
     c.fill(t.bg);
     // No subtitle here — the A/B compare control occupies the header's right side.
@@ -361,25 +428,112 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
         right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
     }
 
-    // signal-path footer
+    // ── signal-path footer ──────────────────────────────────────────────────────────────────
+    // THE FOOTER'S ONE JOB IS TO BE TRUE. It is the only thing on the device that says what is
+    // actually carrying the audio, and it used to be wrong in two ways at once: it ignored Source
+    // Direct entirely (no field, no warning, a full chain drawn over a total bypass), and it named
+    // an EQ preset even when Tone Control had replaced the 10-band in the path.
     let fy = 700;
     hline(c, fy, t.line);
-    let mut parts: Vec<String> = Vec::new();
-    if s.dsee { parts.push("DSEE HX".into()); }
-    if s.vinyl { parts.push("VINYL".into()); }
-    if !s.vpt.eq_ignore_ascii_case("off") { parts.push(format!("VPT·{}", s.vpt.to_uppercase())); }
-    if !s.dcphase.eq_ignore_ascii_case("off") { parts.push("DC PHASE".into()); }
-    let mid = if parts.is_empty() { "DIRECT".to_string() } else { parts.join(" → ") };
-    let out = match s.bt_codec {
-        Some(codec) => format!("BT·{}", codec),
-        None => "AMP → 3.5MM".to_string(),
-    };
-    // Both setups are real chains now — B is not "bypassed", it is the other one — so the path
-    // reads the same way for either and just names which is live.
-    let path = format!("SIGNAL PATH ({}): SOURCE → EQ ({}) → {} → {}",
-                       if setup == 1 { "B" } else { "A" }, s.eq_preset, mid, out);
+    let (path, warn) = signal_path(s, setup);
     let yend = wrap(c, f, t, 22.0, (fy + 22) as f32, 436.0, &path);
-    if s.clearaudio {
-        text::draw(c, f, 22.0, yend + 8.0, "! CLEARAUDIO+ ACTIVE — EQ AND MANUAL DSP BYPASSED", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.1));
+    if let Some(w) = warn {
+        // Through `fit`, like the Advanced banner: at 140% UI scale an unfitted line of this length
+        // runs past the margin, which is exactly what tests/ui_overflow.rs exists to catch.
+        let st = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.1);
+        let w = crate::widgets::fit(f, w, &st, 436.0);
+        text::draw(c, f, 22.0, yend + 8.0, &w, &st);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A live chain with everything on, so each test can switch off the one thing it is about.
+    fn loud() -> Sound {
+        Sound {
+            dsee: true,
+            vinyl: true,
+            vpt: "Club",
+            dcphase: "Low A",
+            normalizer: true,
+            clearaudio: false,
+            eq_preset: "Rock",
+            bt_codec: None,
+            balance: BALANCE_CENTRE,
+            bt_route: false,
+            balance_drag: false,
+            source_direct: false,
+            tone_control: false,
+        }
+    }
+
+    /// The ordinary case: every stage the user switched on is named, in order.
+    #[test]
+    fn a_live_chain_names_every_stage() {
+        let (p, w) = signal_path(&loud(), 0);
+        assert_eq!(p, "SIGNAL PATH (A): SOURCE → EQ (Rock) → DSEE HX → VINYL → VPT·CLUB → DC PHASE → AMP → 3.5MM");
+        assert!(w.is_none(), "nothing is overriding, so nothing to warn about");
+    }
+
+    /// Source Direct bypasses the whole chain. The footer used to have no field for it at all, so
+    /// it drew the full chain over a total bypass and said nothing.
+    #[test]
+    fn source_direct_empties_the_path_and_says_so() {
+        let (p, w) = signal_path(&Sound { source_direct: true, ..loud() }, 0);
+        assert_eq!(p, "SIGNAL PATH (A): SOURCE → AMP → 3.5MM",
+                   "nothing may appear between the source and the amp");
+        for stage in ["EQ", "DSEE", "VINYL", "VPT", "DC PHASE", "TONE"] {
+            assert!(!p.contains(stage), "{stage} is bypassed but still drawn");
+        }
+        let w = w.unwrap();
+        assert!(w.contains("SOURCE DIRECT"), "the bypass must be named");
+        assert!(w.ends_with("BYPASSED"), "the warning must keep its verb: {w}");
+    }
+
+    /// Tone Control REPLACES the 10-band EQ (`SetSelectUsingEq` picks one of the two), so naming a
+    /// preset while it is on names something that is not in the path.
+    #[test]
+    fn tone_control_replaces_the_eq_in_the_path() {
+        let (p, _) = signal_path(&Sound { tone_control: true, ..loud() }, 0);
+        assert!(p.contains("SOURCE → TONE →"), "Tone Control must take the EQ's place: {p}");
+        assert!(!p.contains("EQ ("), "the EQ preset is not in the path: {p}");
+        // …and with it off, the EQ is back and named.
+        let (p, _) = signal_path(&loud(), 0);
+        assert!(p.contains("EQ (Rock)"), "the EQ returns when Tone Control is off: {p}");
+        assert!(!p.contains("TONE"), "{p}");
+    }
+
+    /// Precedence must match the Advanced screen's banner, or the two screens tell the user
+    /// different stories about one state. Source Direct is the OUTER bypass and wins.
+    #[test]
+    fn source_direct_outranks_clearaudio_in_the_warning() {
+        let both = Sound { source_direct: true, clearaudio: true, ..loud() };
+        assert!(signal_path(&both, 0).1.unwrap().contains("SOURCE DIRECT"));
+        let ca = Sound { clearaudio: true, ..loud() };
+        assert!(signal_path(&ca, 0).1.unwrap().contains("CLEARAUDIO+"));
+        // ClearAudio+ overrides the EQ and manual DSP but is not the outer bypass, so the chain is
+        // still drawn — the warning is what says it is not reaching the amp untouched.
+        assert!(signal_path(&ca, 0).0.contains("EQ (Rock)"));
+    }
+
+    /// With no effects at all the middle reads DIRECT — not empty, and not a dangling arrow.
+    #[test]
+    fn an_empty_chain_reads_direct() {
+        let quiet = Sound {
+            dsee: false, vinyl: false, vpt: "Off", dcphase: "Off", ..loud()
+        };
+        let (p, _) = signal_path(&quiet, 0);
+        assert_eq!(p, "SIGNAL PATH (A): SOURCE → EQ (Rock) → DIRECT → AMP → 3.5MM");
+    }
+
+    /// The output stage names the live link, and setup B is a chain like A rather than a bypass.
+    #[test]
+    fn the_output_stage_and_the_setup_letter() {
+        let bt = Sound { bt_codec: Some("LDAC"), ..loud() };
+        assert!(signal_path(&bt, 0).0.ends_with("→ BT·LDAC"));
+        assert!(signal_path(&bt, 1).0.starts_with("SIGNAL PATH (B):"));
+        assert!(signal_path(&bt, 0).0.starts_with("SIGNAL PATH (A):"));
     }
 }

@@ -50,6 +50,8 @@
 #include "cinder_tuner.h"
 #include "vol_ramp.h"
 #include "bt_edge.h"
+#include "bt_switch.h" // radio-vs-switch reconcile (host-tested)
+#include "db_sig.h"   // has the library database moved? (host-tested)
 #include "jack_edge.h"
 #include "cinder_analyzer.h"
 #include "cinder_power.h"
@@ -309,6 +311,7 @@ static bool bt_radio_up(int st);
 static void apply_pump_interval();  // defined with poll_now_playing — audio-pump rate for the current state
 void refresh_bt_route();     // ditto — points the volume rocker at whichever output is live
 static void bt_reconnect_rearm();  // ditto — "the user wants a link"; clears the auto-reconnect latch
+extern long g_bt_toggle_at;  // defined with refresh_bt_route — when the user last worked the switch
 // The radio's own reconnect machinery — arm the service-side retry thread, and make the player
 // connectable so a headphone's power-on page is accepted. Defined next to bt_reconnect_tick.
 static void bt_service_retry(bool on, bool force);
@@ -319,6 +322,7 @@ static void bt_apply_enhanced_mode(const char* why); // ditto — Sony's "Use En
 static void refresh_bt_connected();  // ditto — names the linked device for the Bluetooth screen
 void refresh_bt_paired();    // ditto — reads the radio's pairing table for the Devices screen
 void apply_bt_scan();        // ditto — starts/stops discovery (SetSearchMode + the listener)
+static bool bt_listener_register();  // ditto — the BtCommonService notification listener
 void apply_bt_prompt_reply(bool accept); // ditto — answers a numeric-comparison / SSP prompt
 void apply_bt_pair_device(); // ditto — pairs with a device the scan turned up
 
@@ -523,6 +527,28 @@ void deferred_up() {
                     // …and names whatever is already linked, so the Bluetooth screen is correct on
                     // first open rather than after the first 3 s poll.
                     refresh_bt_connected();
+                    // SEED THE PAIRING TABLE. Not for the Devices screen — that reads it on entry
+                    // — but for `bt_reconnect_tick`, which bails on `g_bt_paired.empty()` and so
+                    // did NOTHING for the whole boot: no RequestLastDeviceConnection, and no
+                    // RequestStartConnectWait either, which is the call that lets the headphones'
+                    // OWN power-on page land. Nothing else populated it at startup, so after a
+                    // reboot the player neither reached for the headphones nor accepted them
+                    // reaching for it until the user happened to open Settings ▸ Bluetooth ▸
+                    // Devices. Reported 2026-08-23 as "bluetooth not connecting to WH-XM4".
+                    //
+                    // Reading it here is the whole fix: with a non-empty table the 1 Hz tick sees
+                    // "radio up, nothing linked, something paired", arms the radio's own retry and
+                    // the connect-wait on its first pass, and runs the backoff ladder after that.
+                    refresh_bt_paired();
+                    // REGISTER THE RADIO'S LISTENER NOW. Its only call site was `apply_bt_scan`,
+                    // so on a boot where nobody opened Devices and started a scan the listener was
+                    // never registered at all — and it is what sets `g_bt_state_dirty` from
+                    // OnNotifyBtStatus / OnNotifyAclStateChanged / OnNotifyDisconnectEnd. The
+                    // render loop's "the radio NOW TELLS US, so the poll is a safety net rather
+                    // than the mechanism" fast path was therefore dead in the ordinary case, and
+                    // every link change waited out the 3 s (or 15 s) poll instead. Registration is
+                    // idempotent and permanent by design — see bt_listener_register.
+                    bt_listener_register();
                     char m[96];
                     std::snprintf(m, sizeof m, "deferred_up: BT radio status=%d -> switch %s",
                                   st, bt_radio_up(st) ? "ON" : "OFF");
@@ -535,14 +561,37 @@ void deferred_up() {
     // makes every absolute-volume call a silent no-op (see bt_apply_enhanced_mode).
     run_guarded("deferred_up: apply saved BT enhanced mode", 6,
                 []() { bt_apply_enhanced_mode("boot"); });
-    // Re-apply the user's SAVED EQ + sound effects to the DSP (only if a settings file was restored —
-    // no point pushing defaults on a fresh install). Guarded, like every effect-shim call.
+    // Push the UI's EQ + sound chain at the DSP. UNCONDITIONALLY — this is a RECONCILE, not a
+    // restore, and the difference is the bug.
+    //
+    // It used to be `if (g_settings_loaded)`, reasoning "no point pushing defaults on a fresh
+    // install". But the DSP is not ours and does not boot empty: it holds whatever the stock player
+    // last left in it. With no settings file Cinder would draw its own defaults — every effect off —
+    // and never send a single call, so the screen said one thing and the hardware did another, for
+    // the whole session. That is the same class of defect as the codec preference that only ever
+    // reached a conf file, and as the BT switch that never called SetRfOnOff.
+    //
+    // And `g_settings_loaded` is false more often than "fresh install" suggests. It is set by
+    // reading /contents/cinder_settings.conf in `render_up` — and /contents is vfat, is handed
+    // wholesale to the PC for USB-MSC, and this file's own comments call it "both corruptible and
+    // periodically absent". One unreadable boot and the DSP is never reconciled.
+    //
+    // Two of the calls inside are not user preferences at all, which is what makes the gate
+    // indefensible rather than merely wasteful — apply_sound_fn's own comments say so:
+    //   * `SetSelectUsingEq` — the device sits on 1 (the SIX-band, which Cinder does not expose),
+    //     so without this call every band the EQ screen writes is stored by the service and never
+    //     put in the path. That is the exact bug the selector was added to kill.
+    //   * `SetBtAudioSoundEffect(1)` — project goal #7. Without it the chain over A2DP is whatever
+    //     the stock player last left the flag at.
+    // Both are assertions about somebody else's state, and neither has anything to do with whether
+    // we found a file.
+    fx_cache_drop();   // boot: nothing is known about what the stock player left behind
+    run_guarded("deferred_up: apply EQ", 6, apply_eq_fn);
+    run_guarded("deferred_up: apply sound chain", 6, apply_sound_fn);
     if (g_settings_loaded) {
-        fx_cache_drop();   // boot: nothing is known about what the stock player left behind
-        run_guarded("deferred_up: re-apply saved EQ", 6, apply_eq_fn);
-        run_guarded("deferred_up: re-apply saved sound", 6, apply_sound_fn);
-        // Repeat-one is sticky inside the audio shim and applied to every sequence it builds, so
-        // pushing the restored value once here is enough — nothing is playing yet at this point.
+        // This one IS a restore: repeat-one is sticky inside the audio shim and applied to every
+        // sequence it builds, so pushing the restored value once here is enough — nothing is
+        // playing yet at this point. With no file there is nothing to restore.
         run_guarded("deferred_up: re-apply saved repeat", 4,
                     []() { cinder_audio_set_repeat_one(cinder_get_repeat_one()); });
     }
@@ -2129,6 +2178,10 @@ static void bt_set_rf(bool on) {
 // Apply the Settings switch to the radio. Run ONLY via run_guarded — every call here is Sony IPC.
 void apply_bt_toggle() {
     bool want = cinder_get_bt_on() != 0;
+    // Tell the route poll's reconcile to keep its hands off for a few seconds: powering the radio
+    // up is asynchronous and this function deliberately stops waiting after ~0.9 s, so the next
+    // poll can legitimately still read "not up" on a switch the user just turned ON.
+    g_bt_toggle_at = now_ms();
     // Either direction is the user taking charge of the radio: ON obviously re-arms, and OFF should
     // not leave a stale "they disconnected on purpose" latch to suppress the reconnect after the
     // next ON.
@@ -2581,7 +2634,13 @@ struct BtPairedDeviceInformation {
     unsigned char              f0, f1;  // +40  flags — 1,1 on both real pairings
     unsigned char              pad[6];  // +42 -> 48
 };
+// HOST SYNTAX CHECK: this is a fact about the DEVICE's 32-bit libc++ 3.9 layout (vector 12 B,
+// string 12 B), so it cannot hold on a 64-bit libstdc++ host, where the same struct is 96 bytes.
+// tools/host_syntax_check.sh defines CINDER_HOST_SYNTAX_ONLY to skip it; every real build — which
+// is the only one whose answer means anything here — still asserts it.
+#ifndef CINDER_HOST_SYNTAX_ONLY
 static_assert(sizeof(BtPairedDeviceInformation) == 48, "paired-device stride is not 48");
+#endif
 
 // The BD addresses, in the SAME ORDER they were pushed into the UI. A row index is the only handle
 // the UI ever holds, so this vector is the other half of that agreement: index in, address out.
@@ -2708,7 +2767,18 @@ static void bt_service_retry(bool on, bool force) {
 // delete it rather than leaving a call whose only effect is a log line.
 static void bt_connect_wait(bool on) {
     enum { VIDX_RequestStartConnectWait = 10, VIDX_RequestStopConnectWait = 11 };
-    if (on == g_bt_connect_wait_on) return;
+    // THE FIRST CALL OF A PROCESS ALWAYS TRANSMITS. `g_bt_connect_wait_on` starts false, which is a
+    // GUESS about state that lives in the service, not in us — and `bt_service_retry` right above
+    // documents why that guess is unsafe: its mode is sticky and outlives this process, proven by
+    // setting it from cinder-probe and reading it back from a second run. Connect-wait is the same
+    // kind of state with no getter to reconcile against, so a Cinder that went away (or was
+    // respawned by the launcher's crash supervisor) with the service still in connect-wait would
+    // early-return on the first `bt_connect_wait(false)` and leave it armed for good — a second
+    // device able to walk in behind the one that is playing, which is the whole thing this call
+    // exists to prevent. One extra IPC per boot is the honest price of not guessing.
+    static bool known = false;
+    if (known && on == g_bt_connect_wait_on) return;
+    known = true;
     try {
         void* x = bt_xmit();
         if (!x) return;
@@ -3349,6 +3419,9 @@ static CinderNfcListener g_nfc_listener;   // static: the proxy keeps a RAW poin
 static void* g_nfc_client = nullptr;
 static bool  g_nfc_running = false;
 static int   g_nfc_arm_tries = 0;   // bounds the retry; see the render loop
+// How hard to try to bring the reader up, and how far apart. BOTH halves matter: the count alone
+// is meaningless in a block that runs per-frame (see the render loop's NFC section).
+enum { NFC_ARM_TRIES = 10, NFC_ARM_EVERY_MS = 2000 };
 
 enum { VIDX_NfcOpen = 4, VIDX_NfcStart = 5, VIDX_NfcStop = 7, VIDX_NfcClose = 8,
        VIDX_NfcGetCurrentMode = 9, VIDX_NfcAddListener = 10, VIDX_NfcRemoveListener = 11 };
@@ -3567,9 +3640,75 @@ bool g_bt_radio_seen_up = true;
 // poll; 2 s is well inside the time a user takes to notice headphones dropping.
 #define BT_LINK_POLL_MS 2000
 
+// When the user last worked the Settings switch. The reconcile below leaves the switch alone for a
+// few seconds afterwards: `apply_bt_toggle` polls for the radio only ~0.9 s before proceeding, so a
+// radio that is still powering up would otherwise be read as "off" and slam the switch back under
+// the finger that just moved it — the exact "the switch doesn't work" failure apply_bt_toggle's own
+// comment describes.
+long g_bt_toggle_at = 0;
+#define BT_TOGGLE_SETTLE_MS 6000
+
 void refresh_bt_route() {
     int st = bt_status();
     g_bt_radio_seen_up = bt_radio_up(st);
+
+    // ── RECONCILE THE RADIO SWITCH ──────────────────────────────────────────────────────────────
+    //
+    // `cinder_set_bt_on` had exactly ONE call site in the whole shell: a single, un-retried read in
+    // `deferred_up`, on the boot path, inside a run_guarded that swallows failure. `bt_status()`
+    // returns -1 when BtCommonServiceClient cannot be built and 0 for "unknown" — both of which a
+    // hagodaemon still coming up will produce — and `bt_radio_up()` calls those OFF.
+    //
+    // Nothing ever asked again. This function has re-read the very same GetBtStatus every 3 s for
+    // the whole session and used it only for the volume route, so the app could sit there KNOWING
+    // the radio was up while `cinder_get_bt_on()` said otherwise. And that flag is not passive:
+    //
+    //   * `bt_reconnect_tick` takes its "radio off" branch, which does not merely return — it calls
+    //     bt_connect_wait(false) and bt_service_retry(false, false), actively telling the radio to
+    //     STOP its own retry and stop accepting incoming links;
+    //   * the NFC reader is never armed (`want_nfc = cinder_get_bt_on() != 0`);
+    //   * the Settings switch shows Bluetooth off while the radio is on.
+    //
+    // So one unlucky boot read disabled Bluetooth and NFC for the entire session, with no way back
+    // except the user toggling the switch by hand. `deferred_up` already has a retry ladder for the
+    // DB for exactly this class of race ("a transient mount or PlayerService race must not
+    // permanently leave the app without a library"); the radio never got one. This poll IS that
+    // ladder — it runs every 3 s and already has the answer in `st`.
+    //
+    // THE RADIO IS THE TRUTH, NOT THE SWITCH. If the two disagree outside the settle window the
+    // switch is what moves, in either direction — including a switch the user turned OFF against a
+    // radio that stayed up, because `bt_set_rf(false)` returning is not evidence the radio went
+    // down. Same rule the project already applies to the mixer: a control accepting a write is not
+    // proof the hardware did anything.
+    // The decision itself is in src/bt_switch.h, host-tested by tools/btswitch_selftest.cpp: which
+    // statuses count as evidence, why UP wins on one read while OFF has to be seen repeatedly, and
+    // why a user toggle buys a settle window.
+    {
+        static int down_reads = 0;
+        const int believed = cinder_get_bt_on() != 0;
+        const int settling = (g_bt_toggle_at != 0)
+                          && (now_ms() - g_bt_toggle_at < BT_TOGGLE_SETTLE_MS);
+        const int want = cinder_bt_switch_reconcile(st, believed, settling, &down_reads);
+        if (want != CINDER_BT_SWITCH_LEAVE) {
+            cinder_set_bt_on(want);
+            char m[128];
+            std::snprintf(m, sizeof m, "bt: switch was %s but GetBtStatus=%d — reconciled to %s",
+                          believed ? "ON" : "OFF", st, want ? "ON" : "OFF");
+            clog_(m);
+            if (want == CINDER_BT_SWITCH_ON) {
+                // The radio is up after all, so everything the "off" branch tore down has to be
+                // reachable again: clear the retry schedule so the very next reconnect tick treats
+                // this as a fresh drop and re-arms the radio's own retry + the connect-wait.
+                g_bt_reconnect_at = 0;
+                g_bt_reconnect_wait_s = 0;
+                // And the pairing table may never have been read — deferred_up reads it in the same
+                // guarded block as the status read that has just been proved wrong, and
+                // bt_reconnect_tick does nothing at all without it.
+                refresh_bt_paired();
+            }
+        }
+    }
+
     int on = (st == 3) ? 1 : 0;
     if (on == cinder_get_bt_route()) {
         // No route change — but if we are on Bluetooth and still have no device NAME, ask again. The
@@ -5587,6 +5726,17 @@ void enter_usb_msc() {
     g_msc_active = true;
     g_msc_seen_usb = false;
 }
+// ── the library store's fingerprint ─────────────────────────────────────────────────────────────
+//
+// The rule itself is in src/db_sig.h, host-tested by tools/dbsig_selftest.cpp — it is the thing
+// that decides whether music the user just copied onto the device is ever seen, and st_mtime alone
+// was not enough to decide it (see that header for why).
+static unsigned long long g_db_sig = 0;
+
+static unsigned long long db_signature() {
+    return cinder_db_signature("/db/MTPDB.dat", "/db/MTPDB.dat-wal", "/db/MTPDB.dat-journal");
+}
+
 void exit_usb_msc() {
     // Mirror of the entry: releasing the LUN and remounting /contents are both root-only, and the
     // helper does them in the one order that is safe — media released BEFORE the remount, so the
@@ -5608,6 +5758,9 @@ void exit_usb_msc() {
     if (contents_mounted()) {
         clog_("usb-msc: exited (/contents remounted; log restored)");
         cinder_db_open("/db/MTPDB.dat");
+        // Re-seed the watcher: this reload has already happened, and leaving the pre-MSC
+        // signature in place would make the next poll do the whole ~3,500-track rebuild again.
+        g_db_sig = db_signature();
     } else {
         clog_("usb-msc: exited but /contents did NOT remount within 5 s");
     }
@@ -7233,7 +7386,18 @@ void* render_driver(void*) {
             if (cinder_get_bt_route()) run_guarded("loop: BT sound status", 6, bt_poll_sound_status);
             // A dropped link never came back on its own. Guarded like every other pst call, and
             // cheap in the common cases: connected, or radio off, is two boolean tests.
-            run_guarded("loop: BT reconnect", 8, bt_reconnect_tick);
+            //
+            // PACED AT 1 Hz, which is what `bt_reconnect_tick`'s own header always claimed and
+            // this call site never delivered: it sits in the per-frame half of the loop, so with
+            // the screen on it ran ~60x a second. The backoff ladder is wall-clock so it behaved
+            // correctly, but every pass re-ran the "is anything paired / is the radio up" tests
+            // and, on the first pass after a drop, two IPC calls — on the render thread. Once a
+            // second is as fast as a reconnect ladder measured in seconds can use.
+            static long last_bt_reconnect_ms = 0;
+            if (now_ms() - last_bt_reconnect_ms >= 1000) {
+                last_bt_reconnect_ms = now_ms();
+                run_guarded("loop: BT reconnect", 8, bt_reconnect_tick);
+            }
             // THE OUTPUT ROUTE CAN CHANGE WITHOUT THE TOGGLE. Headphones get switched off, run flat,
             // or walk out of range mid-session. `apply_usb_dac` only runs when the user flips the
             // switch, so before this the session was stuck on whichever route it started with: turn
@@ -7276,24 +7440,44 @@ void* render_driver(void*) {
             // Both calls are cheap no-ops once they have taken effect.
             {
                 const bool want_nfc = cinder_get_bt_on() != 0;
+                static long last_nfc_arm_ms = 0;
                 if (want_nfc != g_nfc_running) {
                     if (!want_nfc) {
                         run_guarded("loop: NFC disarm", 8, nfc_stop);
-                    } else if (g_nfc_arm_tries < 5) {
-                        // BOUNDED. `nfc_start()` leaves g_nfc_running false when it fails, and the
-                        // test above is "want != have" — so a permanent failure (no libNfcService,
-                        // a service that refuses every mode) would re-run three IPC calls on EVERY
+                    } else if (g_nfc_arm_tries < NFC_ARM_TRIES
+                               && now_ms() - last_nfc_arm_ms >= NFC_ARM_EVERY_MS) {
+                        // BOUNDED, AND PACED ON THE WALL CLOCK.
+                        //
+                        // `nfc_start()` leaves g_nfc_running false when it fails, and the test
+                        // above is "want != have" — so a permanent failure (no libNfcService, a
+                        // service that refuses every mode) would re-run three IPC calls on EVERY
                         // frame, which is the poll-storm shape that caused the audio stutter in
-                        // task #26. Five attempts is enough to ride out a service that is still
-                        // coming up at boot; after that it stays off until the radio is toggled.
+                        // task #26. Hence the count.
+                        //
+                        // But THIS BLOCK IS NOT THE 1 Hz HOUSEKEEPING — it sits in the per-frame
+                        // half of the render loop, and the screen is on at boot, so it ran at
+                        // ~60 Hz. Five attempts paced by nothing were therefore spent in about 80
+                        // MILLISECONDS of the first frame after deferred init, long before
+                        // NfcService is answering. The retry that was written to "ride out a
+                        // service that is still coming up at boot" could not survive one blink of
+                        // it, and the log line it printed —
+                        //   nfc: reader would not start — tap-to-pair off for this session
+                        // — was true for the rest of the session, with no way back short of
+                        // toggling the radio. Reported 2026-08-23 as "nfc not pairing or
+                        // connecting automatically with just nfc".
+                        //
+                        // A wall-clock gate is what the original comment assumed it had: ten
+                        // attempts, one every two seconds, is ~20 s of patience for the same three
+                        // IPC calls the count was there to limit.
+                        last_nfc_arm_ms = now_ms();
                         g_nfc_arm_tries++;
                         run_guarded("loop: NFC arm", 8, []() { nfc_start(); });
-                        if (!g_nfc_running && g_nfc_arm_tries >= 5)
+                        if (!g_nfc_running && g_nfc_arm_tries >= NFC_ARM_TRIES)
                             clog_("nfc: reader would not start — tap-to-pair off for this session");
                     }
                 }
                 // A radio toggle is the user asking again, so it re-earns the attempts.
-                if (!want_nfc) g_nfc_arm_tries = 0;
+                if (!want_nfc) { g_nfc_arm_tries = 0; last_nfc_arm_ms = 0; }
             }
             // Something was tapped. The callback ran on the framework looper and only copied the
             // address out; the Pairing call happens here, on the thread that owns the clients.
@@ -7709,18 +7893,32 @@ void* render_driver(void*) {
         // mid-session. Reported 2026-08-20 as "BT seems worse" after this was added. A 10 s-paced
         // check costs one stat() every 10 s instead of one every ~20 ms, and only ever blocks the
         // thread on a genuine change — not on the polling itself.
+        //
+        // WHAT "CHANGED" MEANS. The first version compared st_mtime alone, and mtime is the one
+        // stamp a SQLite writer can leave untouched across a commit: with a write-ahead log the
+        // pages land in `MTPDB.dat-wal` and the main file is only rewritten at a checkpoint, and
+        // vfat's mtime has 2-second granularity besides. A scan that finished inside one such
+        // window was invisible, and the library kept showing what it showed at boot. So the
+        // signature is the whole observable state of the store — mtime, size and inode of the DB
+        // and of both journal shapes — and any difference in any of them is a change.
+        //
+        // ⚠ THIS ONLY NOTICES A SCAN; IT DOES NOT CAUSE ONE. `/db/MTPDB.dat` is written by Sony's
+        // MediaStoreService, and the thing that used to ASK it to re-scan after music arrived was
+        // the stock Qt app that Cinder replaces. Cinder has never called MediaStore at all (see
+        // analysis/H_mediastore/RE_findings.md — we read the SQLite file, Path A, and Path B was
+        // never wired). So new albums copied over USB-MSC stay unknown until something else
+        // triggers a scan. Closing that needs the MediaStoreClient scan verb RE'd on device; it is
+        // NOT worth guessing a vtable slot into a core service from here — that is exactly what
+        // rebooted the device twice on 2026-08-11 (STATUS.md, the BT handshake).
         static long last_db_check_ms = 0;
-        static time_t last_db_mtime = 0;
         if (house_now - last_db_check_ms >= 10000 && !g_msc_active) {
             last_db_check_ms = house_now;
-            struct stat st;
-            if (stat("/db/MTPDB.dat", &st) == 0) {
-                if (last_db_mtime != 0 && st.st_mtime != last_db_mtime) {
-                    clog_("housekeeping: /db/MTPDB.dat modified -> reloading library and playlists");
-                    cinder_db_open("/db/MTPDB.dat");
-                }
-                last_db_mtime = st.st_mtime;
+            const unsigned long long sig = db_signature();
+            if (sig != 0 && g_db_sig != 0 && sig != g_db_sig) {
+                clog_("housekeeping: the library database changed -> reloading library and playlists");
+                cinder_db_open("/db/MTPDB.dat");
             }
+            if (sig != 0) g_db_sig = sig;
         }
         ++n;
         // FRAME PACING: sleep only the REMAINDER of the 16 ms budget, not a flat 16 ms on top of

@@ -98,6 +98,8 @@ fn main() {
         clearaudio: false,
         eq_preset: "A1",
         bt_codec: Some("LDAC"),
+        source_direct: false,
+        tone_control: false,
     };
     let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02), paired: &preview_paired_list };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
@@ -197,6 +199,14 @@ fn main() {
             }),
             // The playlists you MADE: the same page, plus its edit bar and a row armed for
             // removal — the state that is easiest to get wrong and hardest to see in a test.
+            ("sound_source_direct", &|c: &mut Canvas| {
+                let s = Sound { source_direct: true, ..snd };
+                sound::render(c, &theme, &fonts, &s, 0, 0);
+            }),
+            ("sound_tone_control", &|c: &mut Canvas| {
+                let s = Sound { tone_control: true, ..snd };
+                sound::render(c, &theme, &fonts, &s, 0, 0);
+            }),
             ("playlist_page_own", &|c: &mut Canvas| {
                 if let Some(pl) = lib.playlists.first() {
                     let mine = cinder_ui::model::PlaylistRow {
