@@ -50,6 +50,7 @@
 #include "cinder_tuner.h"
 #include "vol_ramp.h"
 #include "bt_edge.h"
+#include "bt_switch.h" // radio-vs-switch reconcile (host-tested)
 #include "db_sig.h"   // has the library database moved? (host-tested)
 #include "jack_edge.h"
 #include "cinder_analyzer.h"
@@ -310,6 +311,7 @@ static bool bt_radio_up(int st);
 static void apply_pump_interval();  // defined with poll_now_playing — audio-pump rate for the current state
 void refresh_bt_route();     // ditto — points the volume rocker at whichever output is live
 static void bt_reconnect_rearm();  // ditto — "the user wants a link"; clears the auto-reconnect latch
+extern long g_bt_toggle_at;  // defined with refresh_bt_route — when the user last worked the switch
 // The radio's own reconnect machinery — arm the service-side retry thread, and make the player
 // connectable so a headphone's power-on page is accepted. Defined next to bt_reconnect_tick.
 static void bt_service_retry(bool on, bool force);
@@ -320,6 +322,7 @@ static void bt_apply_enhanced_mode(const char* why); // ditto — Sony's "Use En
 static void refresh_bt_connected();  // ditto — names the linked device for the Bluetooth screen
 void refresh_bt_paired();    // ditto — reads the radio's pairing table for the Devices screen
 void apply_bt_scan();        // ditto — starts/stops discovery (SetSearchMode + the listener)
+static bool bt_listener_register();  // ditto — the BtCommonService notification listener
 void apply_bt_prompt_reply(bool accept); // ditto — answers a numeric-comparison / SSP prompt
 void apply_bt_pair_device(); // ditto — pairs with a device the scan turned up
 
@@ -537,6 +540,15 @@ void deferred_up() {
                     // "radio up, nothing linked, something paired", arms the radio's own retry and
                     // the connect-wait on its first pass, and runs the backoff ladder after that.
                     refresh_bt_paired();
+                    // REGISTER THE RADIO'S LISTENER NOW. Its only call site was `apply_bt_scan`,
+                    // so on a boot where nobody opened Devices and started a scan the listener was
+                    // never registered at all — and it is what sets `g_bt_state_dirty` from
+                    // OnNotifyBtStatus / OnNotifyAclStateChanged / OnNotifyDisconnectEnd. The
+                    // render loop's "the radio NOW TELLS US, so the poll is a safety net rather
+                    // than the mechanism" fast path was therefore dead in the ordinary case, and
+                    // every link change waited out the 3 s (or 15 s) poll instead. Registration is
+                    // idempotent and permanent by design — see bt_listener_register.
+                    bt_listener_register();
                     char m[96];
                     std::snprintf(m, sizeof m, "deferred_up: BT radio status=%d -> switch %s",
                                   st, bt_radio_up(st) ? "ON" : "OFF");
@@ -2143,6 +2155,10 @@ static void bt_set_rf(bool on) {
 // Apply the Settings switch to the radio. Run ONLY via run_guarded — every call here is Sony IPC.
 void apply_bt_toggle() {
     bool want = cinder_get_bt_on() != 0;
+    // Tell the route poll's reconcile to keep its hands off for a few seconds: powering the radio
+    // up is asynchronous and this function deliberately stops waiting after ~0.9 s, so the next
+    // poll can legitimately still read "not up" on a switch the user just turned ON.
+    g_bt_toggle_at = now_ms();
     // Either direction is the user taking charge of the radio: ON obviously re-arms, and OFF should
     // not leave a stale "they disconnected on purpose" latch to suppress the reconnect after the
     // next ON.
@@ -2722,7 +2738,18 @@ static void bt_service_retry(bool on, bool force) {
 // delete it rather than leaving a call whose only effect is a log line.
 static void bt_connect_wait(bool on) {
     enum { VIDX_RequestStartConnectWait = 10, VIDX_RequestStopConnectWait = 11 };
-    if (on == g_bt_connect_wait_on) return;
+    // THE FIRST CALL OF A PROCESS ALWAYS TRANSMITS. `g_bt_connect_wait_on` starts false, which is a
+    // GUESS about state that lives in the service, not in us — and `bt_service_retry` right above
+    // documents why that guess is unsafe: its mode is sticky and outlives this process, proven by
+    // setting it from cinder-probe and reading it back from a second run. Connect-wait is the same
+    // kind of state with no getter to reconcile against, so a Cinder that went away (or was
+    // respawned by the launcher's crash supervisor) with the service still in connect-wait would
+    // early-return on the first `bt_connect_wait(false)` and leave it armed for good — a second
+    // device able to walk in behind the one that is playing, which is the whole thing this call
+    // exists to prevent. One extra IPC per boot is the honest price of not guessing.
+    static bool known = false;
+    if (known && on == g_bt_connect_wait_on) return;
+    known = true;
     try {
         void* x = bt_xmit();
         if (!x) return;
@@ -3584,9 +3611,75 @@ bool g_bt_radio_seen_up = true;
 // poll; 2 s is well inside the time a user takes to notice headphones dropping.
 #define BT_LINK_POLL_MS 2000
 
+// When the user last worked the Settings switch. The reconcile below leaves the switch alone for a
+// few seconds afterwards: `apply_bt_toggle` polls for the radio only ~0.9 s before proceeding, so a
+// radio that is still powering up would otherwise be read as "off" and slam the switch back under
+// the finger that just moved it — the exact "the switch doesn't work" failure apply_bt_toggle's own
+// comment describes.
+long g_bt_toggle_at = 0;
+#define BT_TOGGLE_SETTLE_MS 6000
+
 void refresh_bt_route() {
     int st = bt_status();
     g_bt_radio_seen_up = bt_radio_up(st);
+
+    // ── RECONCILE THE RADIO SWITCH ──────────────────────────────────────────────────────────────
+    //
+    // `cinder_set_bt_on` had exactly ONE call site in the whole shell: a single, un-retried read in
+    // `deferred_up`, on the boot path, inside a run_guarded that swallows failure. `bt_status()`
+    // returns -1 when BtCommonServiceClient cannot be built and 0 for "unknown" — both of which a
+    // hagodaemon still coming up will produce — and `bt_radio_up()` calls those OFF.
+    //
+    // Nothing ever asked again. This function has re-read the very same GetBtStatus every 3 s for
+    // the whole session and used it only for the volume route, so the app could sit there KNOWING
+    // the radio was up while `cinder_get_bt_on()` said otherwise. And that flag is not passive:
+    //
+    //   * `bt_reconnect_tick` takes its "radio off" branch, which does not merely return — it calls
+    //     bt_connect_wait(false) and bt_service_retry(false, false), actively telling the radio to
+    //     STOP its own retry and stop accepting incoming links;
+    //   * the NFC reader is never armed (`want_nfc = cinder_get_bt_on() != 0`);
+    //   * the Settings switch shows Bluetooth off while the radio is on.
+    //
+    // So one unlucky boot read disabled Bluetooth and NFC for the entire session, with no way back
+    // except the user toggling the switch by hand. `deferred_up` already has a retry ladder for the
+    // DB for exactly this class of race ("a transient mount or PlayerService race must not
+    // permanently leave the app without a library"); the radio never got one. This poll IS that
+    // ladder — it runs every 3 s and already has the answer in `st`.
+    //
+    // THE RADIO IS THE TRUTH, NOT THE SWITCH. If the two disagree outside the settle window the
+    // switch is what moves, in either direction — including a switch the user turned OFF against a
+    // radio that stayed up, because `bt_set_rf(false)` returning is not evidence the radio went
+    // down. Same rule the project already applies to the mixer: a control accepting a write is not
+    // proof the hardware did anything.
+    // The decision itself is in src/bt_switch.h, host-tested by tools/btswitch_selftest.cpp: which
+    // statuses count as evidence, why UP wins on one read while OFF has to be seen repeatedly, and
+    // why a user toggle buys a settle window.
+    {
+        static int down_reads = 0;
+        const int believed = cinder_get_bt_on() != 0;
+        const int settling = (g_bt_toggle_at != 0)
+                          && (now_ms() - g_bt_toggle_at < BT_TOGGLE_SETTLE_MS);
+        const int want = cinder_bt_switch_reconcile(st, believed, settling, &down_reads);
+        if (want != CINDER_BT_SWITCH_LEAVE) {
+            cinder_set_bt_on(want);
+            char m[128];
+            std::snprintf(m, sizeof m, "bt: switch was %s but GetBtStatus=%d — reconciled to %s",
+                          believed ? "ON" : "OFF", st, want ? "ON" : "OFF");
+            clog_(m);
+            if (want == CINDER_BT_SWITCH_ON) {
+                // The radio is up after all, so everything the "off" branch tore down has to be
+                // reachable again: clear the retry schedule so the very next reconnect tick treats
+                // this as a fresh drop and re-arms the radio's own retry + the connect-wait.
+                g_bt_reconnect_at = 0;
+                g_bt_reconnect_wait_s = 0;
+                // And the pairing table may never have been read — deferred_up reads it in the same
+                // guarded block as the status read that has just been proved wrong, and
+                // bt_reconnect_tick does nothing at all without it.
+                refresh_bt_paired();
+            }
+        }
+    }
+
     int on = (st == 3) ? 1 : 0;
     if (on == cinder_get_bt_route()) {
         // No route change — but if we are on Bluetooth and still have no device NAME, ask again. The

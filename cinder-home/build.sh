@@ -188,6 +188,14 @@ if cc -O2 -o "$HERE/.jackedge_selftest" "$HERE/tools/jackedge_selftest.cpp" -lst
     else "$HERE/.jackedge_selftest"; echo "FAIL: jack edge self-test"; exit 1; fi
     rm -f "$HERE/.jackedge_selftest"
 else echo "(skip: no host cc)"; fi
+# The Bluetooth switch/radio reconcile (src/bt_switch.h). The most load-bearing of these four: the
+# flag it maintains gates auto-reconnect, the NFC reader, and whether the radio is told to keep
+# retrying — and a single un-retried boot read used to decide it for the whole session.
+if cc -O2 -o "$HERE/.btswitch_selftest" "$HERE/tools/btswitch_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.btswitch_selftest" >/dev/null 2>&1; then echo "OK: bluetooth switch reconcile"; \
+    else "$HERE/.btswitch_selftest"; echo "FAIL: bt switch self-test"; exit 1; fi
+    rm -f "$HERE/.btswitch_selftest"
+else echo "(skip: no host cc)"; fi
 # The library-database change rule (src/db_sig.h). Same reason as the two above: it is a handful of
 # lines that decides something the user sees — whether music they just copied is ever picked up —
 # and its first version (st_mtime on the main file alone) could be defeated by SQLite's WAL mode.

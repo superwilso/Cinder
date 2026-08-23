@@ -133,8 +133,72 @@ it should change, `PlayPlaylistAt` is the pattern to copy.
 
 ## 3. Bluetooth and NFC
 
-Two independent defects, both fixed, and they compound: the first stops the player reaching for the
-headphones, the second stops the tap that would have worked around it.
+**Second pass (2026-08-23, after "I think the BT bugs run deeper" — correct).** The first pass found
+two defects; a full sweep of the subsystem found a third that is *upstream of both* and explains the
+symptom on its own. All five are fixed. Read §3.0 first — it subsumes §3a in the bad case.
+
+Five defects, in causal order: the switch never re-read the radio (§3.0), the pairing table was
+never seeded (§3a), the NFC reader disarmed itself (§3b), the radio's own notification listener was
+never registered (§3d), and the connect-wait cache guessed at service state (§3e). §3f is a pacing
+correction with no user-visible symptom.
+
+### 3.0. THE DEEP ONE — the shell decided once, at boot, whether Bluetooth existed
+
+`cinder_set_bt_on` has **exactly one call site in the entire shell**: a single, un-retried
+`GetBtStatus` read in `deferred_up`, on the boot path, inside a `run_guarded` that swallows failure.
+
+```c
+int st = bt_status();
+cinder_set_bt_on(bt_radio_up(st) ? 1 : 0);
+```
+
+`bt_status()` returns **-1** when `BtCommonServiceClient` cannot be constructed and **0** for the
+service's own "unknown" — both of which a `hagodaemon` still coming up produces — and
+`bt_radio_up()` calls both of those OFF. **Nothing ever asked again.** `refresh_bt_route()` has
+re-read that very same `GetBtStatus` every 3 seconds for the whole session and used the answer only
+to point the volume rocker; the app could sit there *knowing* the radio was up while
+`cinder_get_bt_on()` said it was off.
+
+And that flag is not passive. Everything downstream reads it:
+
+* **`bt_reconnect_tick`** takes its "radio off" branch — which does not merely return, it calls
+  `bt_connect_wait(false)` and `bt_service_retry(false, false)`, i.e. actively tells the radio to
+  **stop its own retry** and **stop accepting incoming links**. The player does not just fail to
+  connect; it disables the two mechanisms that would have connected it.
+* **The NFC reader is never armed** — `want_nfc = cinder_get_bt_on() != 0`. §3b's pacing fix does
+  nothing while this flag is false.
+* **The Settings switch shows Bluetooth off** while the radio is on.
+
+So one unlucky boot read disables Bluetooth *and* NFC for the entire session, with no way back
+except the user noticing and toggling the switch by hand. It would present exactly as reported, and
+it would look intermittent — because it is a race.
+
+`deferred_up` already has a retry ladder for the DB for precisely this class of race ("a transient
+mount or PlayerService race must not permanently leave the app without a library or playback. Retry
+only the failed prerequisite, paced at 1 Hz"). The radio never got one.
+
+**Fix:** `refresh_bt_route()` now reconciles the switch from the status it was already reading. The
+decision is in **`cinder-home/src/bt_switch.h`**, host-tested by `tools/btswitch_selftest.cpp`
+(24 cases), and it is deliberately asymmetric:
+
+* **Only 2 / 3 / 7 are evidence.** `0` and `-1` are exactly what the failing boot read produced, so
+  acting on them is the bug itself — they decide nothing and do not even advance the tally.
+* **UP wins on one read.** A status of 2 or 3 is positive proof; there is nothing to wait for.
+* **OFF needs three consecutive known-off reads** (~9 s). "Not up yet" and "off" are
+  indistinguishable in one sample.
+* **A user toggle buys a 6 s settle window.** `apply_bt_toggle` deliberately stops waiting for the
+  radio after ~0.9 s (a longer wait freezes the UI, which read as "the switch doesn't work"), so the
+  next poll can honestly still see "not up" on a switch just turned ON — and reconciling then would
+  slam it back under the finger that moved it. The tally still accrues while settling, so the truth
+  lands on the first read after the window rather than restarting the count.
+
+On a correction to ON it also clears the reconnect schedule and reads the pairing table, because
+everything the "off" branch tore down has to be reachable again.
+
+The policy, stated once: **the radio is the truth, not the switch.** Outside the settle window the
+switch is what moves, in either direction — including a switch the user turned OFF against a radio
+that stayed up, because `bt_set_rf(false)` returning is not evidence the radio went down. Same rule
+the project already applies to the mixer.
 
 ### 3a. Auto-reconnect did nothing for a whole boot — `g_bt_paired` was never seeded
 
@@ -152,6 +216,12 @@ things never happened:
   headphones reaching for it, which is how a WH-1000XM4 normally lands when you power it on.
 
 The device therefore sat there doing neither until the user happened to open the Devices screen.
+There is a second, visible consequence. `refresh_bt_paired` is also what pushes the list into the
+UI (`cinder_bt_paired_add`), and the **Bluetooth screen's own device rows** read that list —
+`BtHit::PairedRow(i)` indexes it directly. The only thing that emitted `BtPairedRefresh` was
+*entering the Devices screen* (`BtHit::Pair`). So after a reboot the Bluetooth screen showed **no
+paired devices at all** until the user drilled one level deeper and came back.
+
 That is the report exactly. Fix: `deferred_up` now calls `refresh_bt_paired()` beside the reads it
 already does. With a non-empty table the tick's first pass sees "radio up, nothing linked, something
 paired", arms the radio's own retry and the connect-wait, and runs the backoff ladder after that —
@@ -183,7 +253,42 @@ actually failing.
 Fix: gate the retry on the **wall clock** as the comment always assumed — ten attempts, one every
 two seconds, ~20 s of patience for the same three calls the count exists to limit.
 
-### 3c. Also corrected — `bt_reconnect_tick` ran ~60x a second
+### 3d. The radio's notification listener was never registered on an ordinary boot
+
+`bt_listener_register()` had **one** call site: inside `apply_bt_scan()`, and only when the user
+starts a device scan. On any boot where nobody opened Devices and pressed Scan, `CinderBtListener`
+was never registered at all.
+
+That listener is what sets `g_bt_state_dirty` from `OnNotifyBtStatus`, `OnNotifyAclStateChanged` and
+`OnNotifyDisconnectEnd`. The render loop's fast path is written around it, and says so:
+
+> …and the RADIO NOW TELLS US, so the poll is a safety net rather than the mechanism. […] this reads
+> the route on the very next frame instead of up to 3 s (or 15 s from a radio that last read down)
+> later. That latency is the whole of why stock felt faster to connect.
+
+In the ordinary case that path was **dead**, and every link change waited out the poll — up to 15 s
+when the radio last read down, which is exactly the state a reconnect starts from. Fix:
+`deferred_up` registers it. Registration is idempotent and permanent by design, `apply_bt_scan`
+still calls it, and it is safe outside a scan (`OnNotifySearchedDevice` only fires while the radio
+is actually searching).
+
+### 3e. The connect-wait cache guessed at state that lives in the service
+
+`bt_connect_wait` early-returns when the requested state matches `g_bt_connect_wait_on`, which
+starts `false` — a **guess** about state that lives in `BtTransmitterService`, not in us. The
+function directly above it, `bt_service_retry`, documents why that guess is unsafe and reconciles
+against a getter:
+
+> The mode is SERVICE state, and it is STICKY — it outlives this process (proved by setting it from
+> cinder-probe and reading it back from a second run).
+
+Connect-wait is the same kind of state with no getter to reconcile against. A Cinder that went away
+— or was respawned by the launcher's crash supervisor — with the service still in connect-wait would
+early-return on its first `bt_connect_wait(false)` and leave it armed for good, letting a second
+device walk in behind the one that is playing, which is the whole thing the call exists to prevent.
+Fix: the first call of a process always transmits. One extra IPC per boot.
+
+### 3f. Also corrected — `bt_reconnect_tick` ran ~60x a second
 
 Same misplacement, no user-visible symptom: the function's header says "runs from the 1 Hz
 housekeeping" and its call site is in the per-frame half. The backoff ladder is wall-clock so it
@@ -198,7 +303,9 @@ IPC calls on the render thread. Now gated to 1 Hz, matching what it documents.
 |---|---|
 | Playlist play/shuffle band, playlist-context playback | 398 host tests (3 new), UI overflow matrix, host PNG render in both themes |
 | Library change rule (`db_sig.h`) | 10-case host self-test, wired into `build.sh` |
-| `refresh_bt_paired()` at boot | **Not host-testable** — Sony IPC. Reasoning is from the call-site audit above; confirm on device by the log line `bt-paired: N device(s)` appearing in `deferred_up` and a link coming up after a reboot with no screen touched |
+| Switch reconcile in the live poll | Confirm on device: `bt: switch was OFF but GetBtStatus=2 — reconciled to ON` should appear within ~3 s on a boot that lost the race, and should appear on NO boot that did not |
+| Switch/radio reconcile rule (`bt_switch.h`) | 24-case host self-test, wired into `build.sh` |
+| `refresh_bt_paired()` at boot, listener registration, connect-wait first call | **Not host-testable** — Sony IPC. Reasoning is from the call-site audit above; confirm on device by `bt-paired: N device(s)` and `bt-scan: AddListener rc=0` appearing in `deferred_up`, and a link coming up after a reboot with no screen touched |
 | NFC retry pacing | **Not host-testable.** Confirm on device: `nfc: Start(1) rc=0 mode=1` should now appear within ~20 s of boot instead of the "off for this session" line |
 | MediaStore re-scan trigger | **Not implemented** — see §1a for the device-session plan |
 

@@ -8,14 +8,31 @@
 >   member played that track's **album**, because every play funnelled through `PlayIndex`, which
 >   resolves an object id to the only context an object id has. New `Action::PlayPlaylistAt`, and
 >   the band is split PLAY | SHUFFLE. 398 host tests (3 new) + the overflow matrix.
-> - **Bluetooth reconnect — FIXED.** `bt_reconnect_tick` bails on an empty pairing table and
->   **nothing seeded `g_bt_paired` at boot**, so after a reboot the player neither called
->   `RequestLastDeviceConnection` nor `RequestStartConnectWait` until the user opened the Devices
->   screen. `deferred_up` now reads the table. *Device-unverified.*
-> - **NFC tap-to-pair — FIXED.** The arm retry is bounded to five attempts and its block runs
->   **per-frame, not at 1 Hz** — so the whole budget was spent ~80 ms into every boot, long before
->   NfcService answers, and the reader stayed off for the session. Now paced on the wall clock.
->   *Device-unverified.*
+> - **Bluetooth — FIVE defects, not one.** A second sweep (prompted by "the BT bugs run deeper" —
+>   correct) found the one that is upstream of the rest:
+>   - **The shell decided ONCE, at boot, whether Bluetooth existed.** `cinder_set_bt_on` had
+>     exactly one call site in the whole shell — an un-retried `GetBtStatus` in `deferred_up`,
+>     inside a guard that swallows failure. `bt_status()` answers **-1** (no client) or **0**
+>     (unknown) while hagodaemon is still coming up, and `bt_radio_up()` calls both OFF. Nothing
+>     ever asked again, though `refresh_bt_route` re-read the same status every 3 s and used it
+>     only for the volume rocker. And the flag is not passive: `bt_reconnect_tick`'s "radio off"
+>     branch **actively disarms** the radio's retry and the connect-wait, and the NFC reader is
+>     gated on it. One unlucky boot read killed Bluetooth *and* NFC for the session. The route
+>     poll now reconciles it — rule in `src/bt_switch.h`, **24-case host self-test**.
+>   - **The pairing table was never seeded at boot**, so `bt_reconnect_tick` bailed on
+>     `g_bt_paired.empty()` every tick — no `RequestLastDeviceConnection`, no
+>     `RequestStartConnectWait` — and the **Bluetooth screen showed no devices** until the user
+>     drilled into Devices and back.
+>   - **NFC tap-to-pair disarmed itself ~80 ms into every boot**: five arm attempts bounded by a
+>     count, in a block that runs per-frame rather than at the 1 Hz its comment assumes.
+>   - **The radio's notification listener was only registered by `apply_bt_scan`**, so on a boot
+>     with no device scan the event-driven route path (`g_bt_state_dirty`) was dead and every link
+>     change waited out the 3–15 s poll.
+>   - **`bt_connect_wait` guessed at service state** that is sticky across process restarts, the
+>     way `bt_service_retry` explicitly does not.
+>
+>   All five fixed; all *device-unverified* (Sony IPC — see the audit's verification table for the
+>   log lines to look for).
 > - **Library auto-update — HALF fixed, half device-gated.** The change watcher compared `st_mtime`
 >   on the main DB file only, which SQLite's WAL mode can leave untouched across a whole scan; the
 >   rule is now `src/db_sig.h` (DB + `-wal` + `-journal`, mtime + size + inode) with a 10-case host
