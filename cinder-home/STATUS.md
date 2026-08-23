@@ -1,5 +1,28 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-08-23 — three reported defects audited and (mostly) fixed
+>
+> **Full write-up: [`../docs/AUDIT_2026-08-23_three_reports.md`](../docs/AUDIT_2026-08-23_three_reports.md).**
+>
+> - **Playlists — FIXED.** The page had no plain Play (its only band was Shuffle), and tapping a
+>   member played that track's **album**, because every play funnelled through `PlayIndex`, which
+>   resolves an object id to the only context an object id has. New `Action::PlayPlaylistAt`, and
+>   the band is split PLAY | SHUFFLE. 398 host tests (3 new) + the overflow matrix.
+> - **Bluetooth reconnect — FIXED.** `bt_reconnect_tick` bails on an empty pairing table and
+>   **nothing seeded `g_bt_paired` at boot**, so after a reboot the player neither called
+>   `RequestLastDeviceConnection` nor `RequestStartConnectWait` until the user opened the Devices
+>   screen. `deferred_up` now reads the table. *Device-unverified.*
+> - **NFC tap-to-pair — FIXED.** The arm retry is bounded to five attempts and its block runs
+>   **per-frame, not at 1 Hz** — so the whole budget was spent ~80 ms into every boot, long before
+>   NfcService answers, and the reader stayed off for the session. Now paced on the wall clock.
+>   *Device-unverified.*
+> - **Library auto-update — HALF fixed, half device-gated.** The change watcher compared `st_mtime`
+>   on the main DB file only, which SQLite's WAL mode can leave untouched across a whole scan; the
+>   rule is now `src/db_sig.h` (DB + `-wal` + `-journal`, mtime + size + inode) with a 10-case host
+>   self-test. **But nothing ever asks MediaStoreService to re-scan** — the stock Qt app did that,
+>   and Cinder has never called MediaStore at all. That needs the client vtable RE'd on device;
+>   §1a of the audit has the plan. **This is the live blocker for new albums appearing.**
+
 > ## Since 2026-08-16 — shipped and hardware-verified (2026-08-17)
 >
 > The matrix further down was last re-audited 2026-07-30 and several of its entries are now stale;
