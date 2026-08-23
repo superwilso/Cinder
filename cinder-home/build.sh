@@ -188,6 +188,14 @@ if cc -O2 -o "$HERE/.jackedge_selftest" "$HERE/tools/jackedge_selftest.cpp" -lst
     else "$HERE/.jackedge_selftest"; echo "FAIL: jack edge self-test"; exit 1; fi
     rm -f "$HERE/.jackedge_selftest"
 else echo "(skip: no host cc)"; fi
+# The library-database change rule (src/db_sig.h). Same reason as the two above: it is a handful of
+# lines that decides something the user sees — whether music they just copied is ever picked up —
+# and its first version (st_mtime on the main file alone) could be defeated by SQLite's WAL mode.
+if cc -O2 -o "$HERE/.dbsig_selftest" "$HERE/tools/dbsig_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.dbsig_selftest" >/dev/null 2>&1; then echo "OK: library database change rule"; \
+    else "$HERE/.dbsig_selftest"; echo "FAIL: db signature self-test"; exit 1; fi
+    rm -f "$HERE/.dbsig_selftest"
+else echo "(skip: no host cc)"; fi
 
 echo "── verify: device glibc compatibility gate ──"
 gate_glibc "$OUT"

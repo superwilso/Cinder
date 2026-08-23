@@ -207,6 +207,15 @@ pub enum Action {
     VolDown,
     PlayIndex(i64), // play the library track with this DB object_id (the shell resolves it to a URI)
     PlayPlaylist(i64), // play a whole playlist from the top (DB container object_id)
+    /// `(playlist id, index)` — play a whole playlist STARTING AT one of its members.
+    ///
+    /// Tapping a track inside a playlist used to emit `PlayIndex`, and `PlayIndex` resolves an
+    /// object id to its ALBUM context, because that is the only context an object id carries.
+    /// So picking track 4 of a 60-track playlist played track 4's album and then stopped — on a
+    /// playlist of singles, the one song. Reported 2026-08-23: "selecting a single song just
+    /// plays that song not the rest of the playlist." The context has to travel WITH the tap,
+    /// which is what this variant is for.
+    PlayPlaylistAt(i64, u32),
     Shuffle(ShuffleScope), // the accent band on each Library tab — shuffle within that scope
     /// Shuffle ONE named artist: the shuffle button on an Artists row, or the band on that
     /// artist's page. The payload is a `lib.artists` INDEX (resolve it with
@@ -845,7 +854,12 @@ pub struct App {
     playlist_remove_arm: Option<usize>,
     /// The song a QueueOnPlay prompt is about. Held only while that modal is up: the tap has
     /// already happened, but which action it becomes depends on the answer.
-    pending_song: Option<i64>,
+    /// The play action a queue-replace prompt is holding, replayed verbatim on Confirm.
+    ///
+    /// It stores the ACTION, not a bare object id: the prompt sits in the middle of every play
+    /// funnel, and a funnel that forgets which context you started from is the same defect as
+    /// having no context at all (see `Action::PlayPlaylistAt`).
+    pending_play: Option<Action>,
     /// How many tracks are liked — drives the Library's "Liked songs" row. The set itself lives in
     /// cinder-ffi (it owns persistence); nav only needs the count to render.
     liked_count: usize,
@@ -1054,7 +1068,7 @@ impl Default for App {
             track_pick_scroll_px: 0,
             track_pick_order: Vec::new(),
             playlist_remove_arm: None,
-            pending_song: None,
+            pending_play: None,
             liked_count: 0,
             settings_scroll_px: 0,
             // 30 s by default. This was OFF, deliberately, because "a failed wake looks like a dead
@@ -1252,14 +1266,20 @@ impl App {
     /// of them respect is worse than no prompt — it would look like the queue is discarded at
     /// random depending on which screen you started from.
     fn start_play(&mut self, id: i64) -> Vec<Action> {
+        self.start_play_action(Action::PlayIndex(id))
+    }
+
+    /// The same funnel for a play action that already knows its context (a playlist member, say).
+    /// `start_play` is the object-id shorthand for it.
+    fn start_play_action(&mut self, act: Action) -> Vec<Action> {
         // Only HAND-BUILT picks are worth interrupting for — and since the queue/context split,
         // that is exactly what `queue` holds. It used to also contain the whole playing sequence,
         // which is why a separate `queue_user_adds` counter had to exist to tell the two apart;
         // with the lists separated, the queue being non-empty IS the question.
         if self.queue.is_empty() {
-            return vec![Action::PlayIndex(id)];
+            return vec![act];
         }
-        self.pending_song = Some(id);
+        self.pending_play = Some(act);
         self.confirm = Some(crate::confirm::Ask::QueueOnPlay);
         vec![]
     }
@@ -2092,7 +2112,7 @@ impl App {
         if let Some(ask) = self.confirm {
             self.confirm = None;
             return match crate::confirm::hit(ask, x, y) {
-                crate::confirm::Hit::Cancel => { self.pending_song = None; vec![] }
+                crate::confirm::Hit::Cancel => { self.pending_play = None; vec![] }
                 // The menu's own rows say which action was chosen; a yes/no card's Confirm means
                 // "the thing the card is named after".
                 crate::confirm::Hit::Restart => vec![Action::Restart],
@@ -2102,14 +2122,14 @@ impl App {
                     self.queue.clear();
                     let mut acts = Vec::new();
                     if had { acts.push(Action::QueueChanged); }
-                    if let Some(id) = self.pending_song.take() { acts.push(Action::PlayIndex(id)); }
+                    if let Some(act) = self.pending_play.take() { acts.push(act); }
                     acts
                 }
                 crate::confirm::Hit::KeepQueue => {
                     // Honour it for real: the new sequence is APPENDED after the picks instead of
                     // replacing them, so "keep" keeps them where the user can still see them.
                     self.queue_keep = true;
-                    self.pending_song.take().map(|id| vec![Action::PlayIndex(id)]).unwrap_or_default()
+                    self.pending_play.take().map(|act| vec![act]).unwrap_or_default()
                 }
                 crate::confirm::Hit::Confirm => match ask {
                     crate::confirm::Ask::Restart => vec![Action::Restart],
@@ -2977,9 +2997,14 @@ impl App {
         self.track_pick_order.iter().filter_map(|i| self.lib.songs.get(*i)).collect()
     }
 
-    /// A tap on the playlist page: the band shuffles it, a track row plays it.
+    /// A tap on the playlist page: the band's left half plays it in order and its right half
+    /// shuffles it; a track row plays the WHOLE playlist starting there.
     fn tap_playlist(&mut self, x: i32, y: i32) -> Vec<Action> {
         let Some((id, user)) = self.playlist_row().map(|p| (p.id, p.user)) else { return vec![] };
+        if library::hit_playlist_play_band(x, y) {
+            self.playlist_track_idx = 0;
+            return self.start_play_action(Action::PlayPlaylist(id));
+        }
         if library::hit_playlist_shuffle_band(x, y) {
             return vec![Action::ShufflePlaylist(id)];
         }
@@ -3016,9 +3041,11 @@ impl App {
                 .and_then(|i| p.track_list.get(i).map(|s| (i, s.object_id)))
         });
         match hit {
-            Some((i, oid)) => {
+            // The PLAYLIST is the context, not the tapped track's album — see
+            // `Action::PlayPlaylistAt`. `oid` is resolved only to prove the row is real.
+            Some((i, _oid)) => {
                 self.playlist_track_idx = i;
-                self.start_play(oid)
+                self.start_play_action(Action::PlayPlaylistAt(id, i as u32))
             }
             None => vec![],
         }
@@ -4615,11 +4642,14 @@ impl App {
                         vec![]
                     }
                     Button::Select => {
-                        let id = self
+                        // Same context rule as the tap path: the playlist plays, from here.
+                        let idx = self.playlist_track_idx;
+                        let hit = self
                             .playlist_row()
-                            .and_then(|p| p.track_list.get(self.playlist_track_idx))
-                            .map(|s| s.object_id);
-                        id.map(|i| self.start_play(i)).unwrap_or_default()
+                            .filter(|p| idx < p.track_list.len())
+                            .map(|p| p.id);
+                        hit.map(|id| self.start_play_action(Action::PlayPlaylistAt(id, idx as u32)))
+                            .unwrap_or_default()
                     }
                     Button::Back | Button::Left => {
                         self.pop();
@@ -8362,6 +8392,67 @@ mod tests {
         assert_ne!(a.current(), Screen::Playlist, "the page it deleted must not stay open");
     }
 
+    /// Reported 2026-08-23: "selecting a single song just plays that song not the rest of the
+    /// playlist". A member row must carry the PLAYLIST and the row's index, because an object id
+    /// on its own resolves to the track's album and nothing wider.
+    #[test]
+    fn a_playlist_member_plays_the_whole_playlist_from_that_row() {
+        let mut a = two_playlists();
+        a.open_playlist(0); // "Night Bus", 3 members
+        let top = library::playlist_content_top(a.playlist_row().unwrap());
+        for row in 0..3u32 {
+            let y = top + row as i32 * library::PLAYLIST_TRACK_RH + library::PLAYLIST_TRACK_RH / 2;
+            assert_eq!(
+                a.tap(200, y),
+                vec![Action::PlayPlaylistAt(77, row)],
+                "row {row} must play playlist 77 from index {row}"
+            );
+        }
+    }
+
+    /// Reported 2026-08-23: "no way to press normal non shuffled play on a playlist". The band's
+    /// two halves must tile it exactly — no dead strip between them, and neither may answer for
+    /// the other.
+    #[test]
+    fn the_playlist_band_offers_play_as_well_as_shuffle() {
+        let (bx, by, bw, bh) = library::shuffle_band_rect(library::PLAYLIST_BAND_Y);
+        let (px, py, pw, ph) = library::playlist_play_band();
+        let (sx, sy, sw, sh) = library::playlist_shuffle_band();
+        assert_eq!((px, py, ph), (bx, by, bh), "the play half keeps the band's origin");
+        assert_eq!((sy, sh), (by, bh));
+        assert_eq!(px + pw, sx, "the halves must be adjacent");
+        assert_eq!(pw + sw, bw, "the halves must cover the whole band");
+        for x in [px, px + pw / 2, px + pw - 1] {
+            assert!(library::hit_playlist_play_band(x, by + bh / 2));
+            assert!(!library::hit_playlist_shuffle_band(x, by + bh / 2));
+        }
+        for x in [sx, sx + sw / 2, sx + sw - 1] {
+            assert!(library::hit_playlist_shuffle_band(x, by + bh / 2));
+            assert!(!library::hit_playlist_play_band(x, by + bh / 2));
+        }
+        assert!(!library::hit_playlist_play_band(px + pw / 2, by - 1));
+        assert!(!library::hit_playlist_shuffle_band(sx + sw / 2, by + bh));
+    }
+
+    /// The queue-replace prompt sits in the middle of every play funnel. It must replay the
+    /// action it was holding — the whole point of the fix above is that the context travels with
+    /// the tap, and a prompt that downgraded it back to a bare object id would undo that.
+    #[test]
+    fn the_queue_prompt_replays_the_playlist_context() {
+        let mut a = two_playlists();
+        a.open_playlist(0);
+        a.queue_push_for_test();
+        let y = library::playlist_content_top(a.playlist_row().unwrap())
+            + library::PLAYLIST_TRACK_RH + library::PLAYLIST_TRACK_RH / 2;
+        assert!(a.tap(200, y).is_empty(), "with a queue, the tap asks first");
+        assert!(a.modal_open());
+        let keep = (0..crate::canvas::H as i32)
+            .find(|y| crate::confirm::hit(crate::confirm::Ask::QueueOnPlay, 240, *y)
+                == crate::confirm::Hit::KeepQueue)
+            .expect("row has no tappable pixel");
+        assert_eq!(a.tap(240, keep), vec![Action::PlayPlaylistAt(77, 1)]);
+    }
+
     /// Sony's playlists are read-only here, and the page must not pretend otherwise.
     #[test]
     fn a_sony_playlist_has_no_edit_controls() {
@@ -8373,7 +8464,11 @@ mod tests {
         // And the × column is just part of the row: tapping there plays the track.
         let row_y = library::playlist_content_top(a.playlist_row().unwrap())
             + library::PLAYLIST_TRACK_RH / 2;
-        assert_eq!(a.tap(library::PLAYLIST_REMOVE_X + 20, row_y), vec![Action::PlayIndex(902)]);
+        // …and it plays the PLAYLIST from that row, not the track's album.
+        assert_eq!(
+            a.tap(library::PLAYLIST_REMOVE_X + 20, row_y),
+            vec![Action::PlayPlaylistAt(7, 0)]
+        );
     }
 
     /// Now Playing ▸ the toolbar's third slot adds what is playing to a playlist.
@@ -8477,13 +8572,15 @@ mod tests {
         assert_eq!(a.current(), Screen::Playlist);
         assert_eq!(a.playlist_row().map(|p| p.id), Some(78));
 
-        // A track row plays; the band shuffles that playlist by id.
+        // A track row plays THE PLAYLIST from that row; the band's two halves play and shuffle it.
         let ty = library::playlist_content_top(a.playlist_row().unwrap())
             + library::PLAYLIST_TRACK_RH / 2;
-        assert_eq!(a.tap(200, ty), vec![Action::PlayIndex(503)]);
+        assert_eq!(a.tap(200, ty), vec![Action::PlayPlaylistAt(78, 0)]);
         assert_eq!(a.current(), Screen::Playlist, "playing must not leave the page");
-        let (bx, by, _, bh) = library::shuffle_band_rect(library::PLAYLIST_BAND_Y);
-        assert_eq!(a.tap(bx + 20, by + bh / 2), vec![Action::ShufflePlaylist(78)]);
+        let (px, py, pw, ph) = library::playlist_play_band();
+        assert_eq!(a.tap(px + pw / 2, py + ph / 2), vec![Action::PlayPlaylist(78)]);
+        let (sx, sy, sw, sh) = library::playlist_shuffle_band();
+        assert_eq!(a.tap(sx + sw / 2, sy + sh / 2), vec![Action::ShufflePlaylist(78)]);
 
         // And Back returns to the tab.
         a.press(Button::Back);
@@ -9586,7 +9683,7 @@ mod tests {
         assert!(a.tap(5, 5).is_empty());
         assert!(!a.modal_open());
         assert_eq!(a.queue().len(), 1);
-        assert!(a.pending_song.is_none(), "a cancelled song must not survive the dialog");
+        assert!(a.pending_play.is_none(), "a cancelled song must not survive the dialog");
     }
 
     /// Open the Library on a given tab, the way a user does.
