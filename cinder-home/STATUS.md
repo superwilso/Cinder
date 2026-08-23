@@ -1,5 +1,33 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-08-23 — sound-effects audit: 5 defects, all fixed
+>
+> **Write-up: [`../docs/AUDIT_2026-08-23_sound_effects.md`](../docs/AUDIT_2026-08-23_sound_effects.md).**
+> Three of the five are one failure in different clothes — *a control that says one thing while the
+> DSP does another* — the class already cleaned out of the volume row, the codec row and the BT
+> switch, but never swept for in the effects chain.
+>
+> - **The boot DSP reconcile was gated on `g_settings_loaded`.** The DSP is not ours and does not
+>   boot empty — it holds what the stock player left. With no settings file Cinder drew its own
+>   defaults and sent nothing, all session. Two of the gated calls are not preferences at all:
+>   `SetSelectUsingEq` (without it the EQ is stored but never in the path — verbatim the bug the
+>   selector was added to kill) and `SetBtAudioSoundEffect(1)` (goal #7). And `/contents` is vfat
+>   and "periodically absent", so the gate fails far more often than "fresh install" suggests.
+>   Now unconditional.
+> - **The signal-path footer had no `source_direct` field at all** — it drew a full chain over a
+>   total bypass, with only ClearAudio+'s warning available. Source Direct is set two screens away
+>   and left no trace on the screen you come back to.
+> - **…and printed `EQ (<preset>)` even under Tone Control**, which REPLACES the 10-band rather
+>   than stacking with it.
+> - **DSEE HX Custom / DSEE AI claimed nothing about their parent**, while their two immediate
+>   neighbours on the same screen both say "… is off".
+> - **DSEE AI shipped drawn like a working toggle** against this project's own note — "UNVERIFIED,
+>   treat like high gain until heard". Not removed (nobody has measured it inert, unlike high
+>   gain); the row now says what is actually known. Ear test to settle it is in the audit.
+>
+> `signal_path` is now a **pure function with 6 host tests** — it was previously checkable only by
+> looking at a screenshot, which is how both footer lies survived.
+
 > ## 2026-08-23 — three reported defects audited and (mostly) fixed
 >
 > **Full write-up: [`../docs/AUDIT_2026-08-23_three_reports.md`](../docs/AUDIT_2026-08-23_three_reports.md).**

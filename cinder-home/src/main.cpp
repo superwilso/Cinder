@@ -561,14 +561,37 @@ void deferred_up() {
     // makes every absolute-volume call a silent no-op (see bt_apply_enhanced_mode).
     run_guarded("deferred_up: apply saved BT enhanced mode", 6,
                 []() { bt_apply_enhanced_mode("boot"); });
-    // Re-apply the user's SAVED EQ + sound effects to the DSP (only if a settings file was restored —
-    // no point pushing defaults on a fresh install). Guarded, like every effect-shim call.
+    // Push the UI's EQ + sound chain at the DSP. UNCONDITIONALLY — this is a RECONCILE, not a
+    // restore, and the difference is the bug.
+    //
+    // It used to be `if (g_settings_loaded)`, reasoning "no point pushing defaults on a fresh
+    // install". But the DSP is not ours and does not boot empty: it holds whatever the stock player
+    // last left in it. With no settings file Cinder would draw its own defaults — every effect off —
+    // and never send a single call, so the screen said one thing and the hardware did another, for
+    // the whole session. That is the same class of defect as the codec preference that only ever
+    // reached a conf file, and as the BT switch that never called SetRfOnOff.
+    //
+    // And `g_settings_loaded` is false more often than "fresh install" suggests. It is set by
+    // reading /contents/cinder_settings.conf in `render_up` — and /contents is vfat, is handed
+    // wholesale to the PC for USB-MSC, and this file's own comments call it "both corruptible and
+    // periodically absent". One unreadable boot and the DSP is never reconciled.
+    //
+    // Two of the calls inside are not user preferences at all, which is what makes the gate
+    // indefensible rather than merely wasteful — apply_sound_fn's own comments say so:
+    //   * `SetSelectUsingEq` — the device sits on 1 (the SIX-band, which Cinder does not expose),
+    //     so without this call every band the EQ screen writes is stored by the service and never
+    //     put in the path. That is the exact bug the selector was added to kill.
+    //   * `SetBtAudioSoundEffect(1)` — project goal #7. Without it the chain over A2DP is whatever
+    //     the stock player last left the flag at.
+    // Both are assertions about somebody else's state, and neither has anything to do with whether
+    // we found a file.
+    fx_cache_drop();   // boot: nothing is known about what the stock player left behind
+    run_guarded("deferred_up: apply EQ", 6, apply_eq_fn);
+    run_guarded("deferred_up: apply sound chain", 6, apply_sound_fn);
     if (g_settings_loaded) {
-        fx_cache_drop();   // boot: nothing is known about what the stock player left behind
-        run_guarded("deferred_up: re-apply saved EQ", 6, apply_eq_fn);
-        run_guarded("deferred_up: re-apply saved sound", 6, apply_sound_fn);
-        // Repeat-one is sticky inside the audio shim and applied to every sequence it builds, so
-        // pushing the restored value once here is enough — nothing is playing yet at this point.
+        // This one IS a restore: repeat-one is sticky inside the audio shim and applied to every
+        // sequence it builds, so pushing the restored value once here is enough — nothing is
+        // playing yet at this point. With no file there is nothing to restore.
         run_guarded("deferred_up: re-apply saved repeat", 4,
                     []() { cinder_audio_set_repeat_one(cinder_get_repeat_one()); });
     }
