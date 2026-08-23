@@ -324,6 +324,13 @@ Stated plainly, because the weaknesses above are only survivable *because* of th
 > workspaces today, so the gate would be red on arrival. It needs a formatting commit first, and
 > that is a separate decision on a comment-dense tree.
 >
+> **The gate went red on its own first run**, and the reason is worth keeping. The steps were
+> inlined in `ci.yml` and verified locally *by hand*; the local shellcheck was 0.11.0 and the
+> runner's was older, and the two disagree about `#!/system/xbin/busybox sh`. So the fix was not
+> just the finding — CI and a contributor now run the **same script** (`tools/shell_check.sh`,
+> `tools/host_syntax_check.sh`) against a **pinned** linter. A gate whose version floats is a gate
+> that can turn red with no source change: the same fragility class as the `<cstdint>` bug above.
+>
 > **Still open: 4, 5, 6, 7, 8, 10.**
 
 | # | Action | Cost | Why this order |

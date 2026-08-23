@@ -118,22 +118,18 @@ jobs:
       # 5,288 lines of shell across 33 scripts — the launcher, the crash supervisor, the bad-boot
       # counter, the USB-MSC ordering. All root-privileged, all on the boot path, and none of it
       # had so much as a syntax check.
-      - name: Shell syntax
-        run: |
-          fail=0
-          while IFS= read -r f; do
-            bash -n "$f" || { echo "::error file=$f::bash -n failed"; fail=1; }
-          done < <(find . -name '*.sh' -not -path './.git/*')
-          exit $fail
+      #
+      # PINNED, AND VIA A SCRIPT, both for the same reason. The first version of this job inlined
+      # the commands and used whatever shellcheck the runner image shipped — and it went red on its
+      # first run, because the local shellcheck used to verify it was 0.11.0 and the runner's was
+      # older, and the two disagree about `#!/system/xbin/busybox sh`. A lint gate whose version
+      # floats is a gate that can turn red with no source change. tools/shell_check.sh is what a
+      # contributor runs locally, so local and CI cannot drift into checking different things.
+      - name: Install pinned shellcheck
+        run: pipx install shellcheck-py==0.11.0.1 || pip install --user shellcheck-py==0.11.0.1
 
-      # shellcheck ships on ubuntu-latest; the install is a fallback if that stops being true.
-      # -S warning rather than the default: the tree is clean at that level as of 2026-08-23 (the
-      # four findings it had were fixed, not silenced), while info/style would add 55 more.
-      - name: Shellcheck
-        run: |
-          command -v shellcheck >/dev/null 2>&1 || sudo apt-get install -y -qq shellcheck
-          find . -name '*.sh' -not -path './.git/*' -print0 \
-            | xargs -0 shellcheck -S warning -f gcc
+      - name: Shell syntax + lint
+        run: tools/shell_check.sh
 
   payload:
     name: dist payload is complete
