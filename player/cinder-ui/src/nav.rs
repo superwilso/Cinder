@@ -5071,6 +5071,11 @@ impl App {
                     balance: self.snd_balance,
                     balance_drag: matches!(self.scrub, Scrub::Balance),
                     bt_route: self.bt_route,
+                    // Both are set on OTHER screens and both change what this one's footer means:
+                    // Source Direct (Sound ▸ Advanced) bypasses the whole chain, and Tone Control
+                    // replaces the 10-band EQ rather than stacking with it.
+                    source_direct: self.adv_source_direct,
+                    tone_control: self.adv_tone,
                     eq_preset: data::EQ_PRESETS[self.eq_preset].0,
                     // The signal path shows what is REALLY carrying the audio. Prefer the codec
                     // the link negotiated; fall back to the preference only when nothing is
@@ -5103,6 +5108,9 @@ impl App {
                     source_direct: self.adv_source_direct,
                     clear_phase: self.adv_clear_phase,
                     dsee_ai: self.adv_dsee_ai,
+                    // The parent switch lives on the Sound screen; both DSEE rows below are only
+                    // in the path while it is on.
+                    dsee_hx: self.snd_dsee,
                     dsee_custom: if self.adv_dsee_custom {
                         crate::advanced::DSEE_MODES[self.adv_dsee_mode.min(crate::advanced::DSEE_MODES.len() - 1)]
                     } else {
