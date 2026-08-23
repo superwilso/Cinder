@@ -1,5 +1,14 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-08-23 — standing reference: [`../docs/SHORTCOMINGS.md`](../docs/SHORTCOMINGS.md)
+>
+> What is structurally weak about this project and its GitHub setup, with evidence per claim. Not a
+> bug list — the audits below hold those; this is the conditions that let them exist and survive.
+> Headline: **41% of the tree (24,723 lines of C/C++ and shell) is never compiled by any automated
+> gate** — and it is the half that runs as root, owns the boot path and drives closed Sony services,
+> while the 311-test half is the drawing code that cannot brick anything. Cited by section ID
+> (A1, B1, D4…) so findings can be referred to later.
+
 > ## 2026-08-23 — sound-effects audit: 5 defects, all fixed
 >
 > **Write-up: [`../docs/AUDIT_2026-08-23_sound_effects.md`](../docs/AUDIT_2026-08-23_sound_effects.md).**
