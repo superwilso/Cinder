@@ -302,17 +302,41 @@ Stated plainly, because the weaknesses above are only survivable *because* of th
 
 ## Part F — Remediation, in order of value per unit of effort
 
+> ### Status — 2026-08-23
+>
+> **Items 1, 2 and 3 are done; 9 is half done.** `ci.yml` gained a `native` job running
+> `tools/host_syntax_check.sh` (18 C/C++ files), the six C++ self-tests, `bash -n` and
+> `shellcheck -S warning` over all 33 scripts — plus a clippy gate scoped to `correctness` +
+> `suspicious` on the Rust jobs. That closes **A3**, **A4** and **D2**, and closes **A1**/**D1**
+> apart from the ARM link, the GLIBC ceiling gate and the qemu preflight, which genuinely need the
+> cross toolchain.
+>
+> The same change removed a duplicate trigger (`push: ["**"]` *and* `pull_request` both fired on
+> every PR branch), so **CI now covers ~24,700 more lines while running fewer jobs than before —
+> 8 per push down to 5.**
+>
+> Two things worth recording from doing it: the syntax check found a real latent bug on its first
+> run (`probe.cpp` using `uintptr_t` in seven places with no `<cstdint>`), and the four shellcheck
+> findings were *fixed* rather than silenced — one of which, a hardcoded personal Windows path in
+> `flash.sh`, had no business in a public repo.
+>
+> `cargo fmt --check` (the other half of 9) was deliberately **not** added: `fmt` fails on both
+> workspaces today, so the gate would be red on arrival. It needs a formatting commit first, and
+> that is a separate decision on a comment-dense tree.
+>
+> **Still open: 4, 5, 6, 7, 8, 10.**
+
 | # | Action | Cost | Why this order |
 |---|---|---|---|
-| 1 | **Call `cinder-home/build.sh`'s self-tests from CI.** Extract the six `cc`-compiled self-tests into a `selftests` job (or a `build.sh --host-tests-only` flag). No cross toolchain needed. | ~1 h | Turns six existing, written, passing gates from opt-in into enforced. Highest ratio in the table. |
-| 2 | **Add a `bash -n` + `shellcheck` job** over the 33 scripts. | ~1 h | 5,288 lines of root-privileged, boot-path shell currently has no syntax gate at all. |
-| 3 | **Compile-check the C++ on the host** — `cinder-audio` + `cinder-home/src` against stub headers, `-fsyntax-only` if linking is impractical. | ~half day | Would have caught this session's C++ edits, which shipped uncompiled. Closes the worst of A1. |
+| 1 | ✅ **Call `cinder-home/build.sh`'s self-tests from CI.** Extract the six `cc`-compiled self-tests into a `selftests` job (or a `build.sh --host-tests-only` flag). No cross toolchain needed. | ~1 h | Turns six existing, written, passing gates from opt-in into enforced. Highest ratio in the table. |
+| 2 | ✅ **Add a `bash -n` + `shellcheck` job** over the 33 scripts. | ~1 h | 5,288 lines of root-privileged, boot-path shell currently has no syntax gate at all. |
+| 3 | ✅ **Compile-check the C++ on the host** — `cinder-audio` + `cinder-home/src` against stub headers, `-fsyntax-only` if linking is impractical. | ~half day | Would have caught this session's C++ edits, which shipped uncompiled. Closes the worst of A1. |
 | 4 | **Make `release.sh` the only way to release**: have `release.yml` re-run the payload-vs-source comparison rather than an existence check. | ~2 h | The guard already exists and is correct; it is simply bypassable. Protects the flash path. |
 | 5 | **Stop committing `*.unstripped`.** `.gitignore` them; keep `dist/`. | 10 min | Stops the bleeding on D5. Does not fix history, and should not try to. |
 | 6 | **Adopt a "service state" convention** for B1 — a naming rule or a helper (`reconcile_*` vs `apply_*`) that makes "assertion about a service" visually distinct from "push a preference". | ~half day | Five defects in one audit came from this. A convention is cheaper than finding the sixth. |
 | 7 | **Add `SECURITY.md` + `CONTRIBUTING.md`.** | ~1 h | Twelve setuid binaries and an unsigned flasher, with no disclosure route. |
 | 8 | **Either use the issue tracker or stop citing it.** Fifteen dangling references. | ~2 h | Cheap, and it makes the excellent comments navigable. |
-| 9 | **Add `cargo clippy` + `cargo fmt --check`.** | ~30 min | Low value against the rest, listed for completeness. |
+| 9 | ◐ **Add `cargo clippy`** (done, scoped to `correctness` + `suspicious`) **+ `cargo fmt --check`** (NOT done — `fmt` fails on both workspaces today, so the gate would be red on arrival; it needs a formatting commit first). | ~30 min | Low value against the rest, listed for completeness. |
 | 10 | **Require PRs on `main`.** | ~10 min | Deliberately last: the current workflow is one person moving fast, and a rule nobody wants gets bypassed. Worth doing when a second contributor appears, not before. |
 
 ### Deliberately not recommended
