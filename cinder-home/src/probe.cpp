@@ -23,6 +23,12 @@
 #include <cstdlib>
 #include <csignal>
 #include <cstring>
+// uintptr_t, used in seven places to turn a listener's address into the `unsigned` handle
+// RemoveListener wants. It compiled only because the device toolchain's headers happened to pull
+// stdint in transitively — a header reorder or a toolchain bump would have broken the build with
+// no source change. Found 2026-08-23 by the first host syntax check this file has ever had
+// (tools/host_syntax_check.sh); main.cpp already had the include.
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <ucontext.h>
@@ -767,7 +773,13 @@ struct BtPairedDeviceInformation {
     unsigned char              f0, f1;  // +40  flags — 1,1 on both
     unsigned char              pad[6];  // +42 -> 48
 };
+// HOST SYNTAX CHECK: this is a fact about the DEVICE's 32-bit libc++ 3.9 layout (vector 12 B,
+// string 12 B), so it cannot hold on a 64-bit libstdc++ host, where the same struct is 96 bytes.
+// tools/host_syntax_check.sh defines CINDER_HOST_SYNTAX_ONLY to skip it; every real build — which
+// is the only one whose answer means anything here — still asserts it.
+#ifndef CINDER_HOST_SYNTAX_ONLY
 static_assert(sizeof(BtPairedDeviceInformation) == 48, "paired-device stride is not 48");
+#endif
 
 // Format a BD address for the log. Empty in → "(none)".
 static void mac_str(const std::vector<unsigned char>& a, char* out, size_t cap) {

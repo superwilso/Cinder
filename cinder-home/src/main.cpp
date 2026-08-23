@@ -2634,7 +2634,13 @@ struct BtPairedDeviceInformation {
     unsigned char              f0, f1;  // +40  flags — 1,1 on both real pairings
     unsigned char              pad[6];  // +42 -> 48
 };
+// HOST SYNTAX CHECK: this is a fact about the DEVICE's 32-bit libc++ 3.9 layout (vector 12 B,
+// string 12 B), so it cannot hold on a 64-bit libstdc++ host, where the same struct is 96 bytes.
+// tools/host_syntax_check.sh defines CINDER_HOST_SYNTAX_ONLY to skip it; every real build — which
+// is the only one whose answer means anything here — still asserts it.
+#ifndef CINDER_HOST_SYNTAX_ONLY
 static_assert(sizeof(BtPairedDeviceInformation) == 48, "paired-device stride is not 48");
+#endif
 
 // The BD addresses, in the SAME ORDER they were pushed into the UI. A row index is the only handle
 // the UI ever holds, so this vector is the other half of that agreement: index in, address out.
