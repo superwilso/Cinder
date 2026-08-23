@@ -34,9 +34,9 @@ REPO="$(cd "$SELF/.." && pwd)"
 
 # ─── colors ────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
-    C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[36m'; C_D=$'\e[2m'; C_0=$'\e[0m'
+    C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[36m'; C_0=$'\e[0m'
 else
-    C_R=; C_G=; C_Y=; C_B=; C_D=; C_0=
+    C_R=; C_G=; C_Y=; C_B=; C_0=
 fi
 info() { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*"; }
 ok()   { printf '%s ok %s %s\n' "$C_G" "$C_0" "$*"; }
