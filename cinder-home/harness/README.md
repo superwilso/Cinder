@@ -45,8 +45,15 @@ tests whether the app **runs** them, when, and how often.
   (Initialize → PostInitialize → Activate → Foreground). Booting *is* the test.
 * **`harness.cpp`** — the trace store, the scripting table, and a **virtual clock**. `usleep`,
   `sleep`, `clock_gettime` and `time` are defined here and win over libc, so sleeping does not wait,
-  it advances a counter. Two virtual minutes of device time cost a few milliseconds. Only the frame
-  loop may move the clock; every other thread waits on a condition variable for it to arrive.
+  it advances a counter. Two virtual minutes of device time cost a few milliseconds.
+
+  Advancing it is discrete-event scheduling: every sleeping thread registers the virtual time it
+  wants to wake at, and the clock jumps to the **earliest** of those, but only once no thread is
+  still executing app code. The obvious alternative — "one thread owns the clock, claimed by the
+  first to sleep" — looked right and was wrong: the app's own `healthy_timer` is a detached thread
+  created by the frame loop one statement before the frame loop's first sleep, and it sleeps for
+  nine seconds and exits. Lose that race and the clock jumped nine seconds in one step and then
+  belonged to a dead thread. It passed locally and hung in CI.
 
 ## What it does not do
 
