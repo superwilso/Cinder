@@ -299,6 +299,59 @@ static void s_usb_msc(void) {
           "released the pinned track sequence before handing the volume over");
 }
 
+// ── auto power-off, and the guards that keep it out of somebody's hand ───────────────────────
+// Sony has this and Cinder did not, so a paused device with the screen dark ran until the battery
+// was flat — the largest item in the 2026-08-16 battery audit. It is off by default and has four
+// guards, each of which is a way it could otherwise switch the device off while someone is using
+// it. Three scenarios: it fires when it should, and it does not fire in the two cases where firing
+// would be the bug.
+//
+// The idle one also pins the FIFTH guard, added after the harness found it missing: power_action
+// only returns when the helper failed, and this block runs at ~1 Hz, so a device whose setuid bit
+// is gone forked the helper and wrote three log lines every second for ever — 3,541 attempts and
+// 10,623 flushed lines in one virtual hour. (The harness's `system` is a recording stub, so here
+// the helper always "fails", which is precisely the case worth testing.)
+static void s_auto_off_idle(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_auto_off_min", 1);
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_set_budget_ms(3600000);
+    cinder_harness_run();
+
+    const char* helper = "system:/system/vendor/unknown321/bin/cinder-power off";
+    long long at = cinder_harness_first_ms(helper);
+    std::printf("  .... first power-off attempt at %lldms (1 min idle)\n", at);
+    check_range(at, 60000, 66000, "powered off a minute after the last input");
+
+    int tries = cinder_harness_count(helper);
+    std::printf("  .... %d attempts over the hour, %d log lines\n", tries, cinder_harness_count("log"));
+    check_range(tries, 1, 20, "a helper that cannot work is retried slowly, not once a second");
+    check_range(cinder_harness_count("log"), 0, 120, "and does not narrate every attempt");
+}
+
+static void s_auto_off_playing(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_auto_off_min", 1);
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_set_budget_ms(300000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-power off"), 0,
+             "never powers off while the service says audio is playing");
+}
+
+static void s_auto_off_charging(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_auto_off_min", 1);
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_fs_write("/sys/class/power_supply/battery/status", "Charging\n");
+    cinder_harness_fs_write("/sys/class/power_supply/usb/online", "1\n");
+    cinder_harness_set_budget_ms(300000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-power off"), 0,
+             "never powers off a device sitting on a charger");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
@@ -311,6 +364,9 @@ static const Scenario kScenarios[] = {
     {"log-volume",        s_log_volume,              "the log is a flash write: keep it rare"},
     {"jack-unplug",       s_jack_unplug,             "headphones out mid-track pauses playback"},
     {"usb-msc",           s_usb_msc,                 "a PC appearing hands over the volume, once"},
+    {"autooff-idle",      s_auto_off_idle,           "idle and silent: power off, and back off if it fails"},
+    {"autooff-playing",   s_auto_off_playing,        "never power off while audio is playing"},
+    {"autooff-charging",  s_auto_off_charging,       "never power off a device on a charger"},
     {nullptr, nullptr, nullptr},
 };
 
