@@ -78,10 +78,11 @@ void ApplicationBase::run(int, char**, const char* name,
     OnActivate();       if (g_cb.activate)   g_cb.activate();
     OnForeground();     if (g_cb.foreground) g_cb.foreground();
 
-    // From here the app's own render_driver worker owns the clock: it sleeps once per frame, and
-    // that is what makes virtual time move. This thread must only ever WAIT for it, never set it,
-    // or the frame loop's pacing would be measured against a clock this thread was running.
-    cinder_harness_clock_never_owner();
+    // From here the app's own threads decide when virtual time moves — they sleep once per frame,
+    // and the clock jumps to the earliest wake anybody is waiting for. THIS thread is waiting for
+    // the end of the whole scenario, so it must count for nothing: including its target in that
+    // "earliest" would jump straight to the end of the run.
+    cinder_harness_clock_passive();
     while (cinder_harness_now_ms() < g_budget_ms) sleep(1);
 
     if (g_cb.finalize) g_cb.finalize();   // stops + joins the worker (main.cpp's cbFinal)
