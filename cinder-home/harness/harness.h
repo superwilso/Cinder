@@ -20,6 +20,10 @@ extern "C" {
 
 // ── the stub side (called by generated stubs and the fakes) ──────────────────────────────────
 void cinder_harness_record(const char* name, long long arg);
+// The generated stubs' version: `slot` is a static int initialised to -1 at each call site, holding
+// the interned name id after the first call. A long scenario records millions of times, and a map
+// lookup per call was most of the cost of one.
+void cinder_harness_record_cached(int* slot, const char* name, long long arg);
 // Same, for a caller that already holds the harness lock. Only the scheduled-filesystem hook does.
 void cinder_harness_record_locked(const char* name, long long arg);
 // Returns 1 and fills *out if the test scripted a return value for this call, else 0.

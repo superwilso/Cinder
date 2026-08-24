@@ -4,9 +4,10 @@
 [`cinder-home/harness/`](../cinder-home/harness/README.md).** One defect, two ordinary triggers, and a failure mode
 worse than either trigger — followed by two more of the same shape, found the same way.
 
-**The pattern, stated once:** a retry that cannot succeed, run from a timer, that logs every
-attempt. Three instances in one afternoon (the boot-animation re-kill, the bad-boot counter, the
-power-off helper), all invisible to every gate this project had, all obvious in a trace.
+**The pattern, stated once:** a message on a timer, about a condition that cannot change, written
+to flash. Four instances in one afternoon — the boot-animation re-kill, the bad-boot counter, the
+power-off helper, the silent-input heartbeat — all invisible to every gate this project had, all
+obvious in a trace.
 
 ## The defect
 
@@ -152,6 +153,23 @@ principle come back — it just stops shouting. The same hour now costs 12 forks
 Three scenarios pin the behaviour and the three guards that keep this out of somebody's hand:
 `autooff-idle` (fires a minute after the last input, and backs off when the helper fails),
 `autooff-playing` and `autooff-charging` (never fires).
+
+## A fourth: the silent-input heartbeat
+
+`input_pump()` logs "still ZERO events from every node" when the input system has produced nothing —
+a genuine diagnostic for a real failure mode (a foreign grab, a dead driver). It was paced
+`++calls % 450`, which is the same assumption the housekeeping block twenty lines below it had
+already been explicitly fixed for: the loop runs at 60 Hz awake and 1 Hz with the panel dark, so
+"every 450 calls" meant **every 7.5 seconds awake and every 7.5 minutes dark** — neither of them the
+"~15 s" its own comment claimed. And input that is genuinely dead never starts working, so it
+repeated for ever: **499 lines an hour**, each an `fflush` to `/contents`.
+
+Now paced by the wall clock and backing off — 15 s, 1 min, 4 min, 16 min, then hourly. Four lines
+in the first hour, one an hour after that. The condition it reports cannot change on its own, so
+after the first few the only useful thing it can do is stop.
+
+This is why `log-volume` runs with the panel **on**: at 60 Hz anything paced by a frame count shows
+up at sixty times the rate it would in the dark, and that is what caught it.
 
 ## Why nothing found this before
 
