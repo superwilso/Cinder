@@ -4,10 +4,10 @@
 [`cinder-home/harness/`](../cinder-home/harness/README.md).** One defect, two ordinary triggers, and a failure mode
 worse than either trigger — followed by two more of the same shape, found the same way.
 
-**The pattern, stated once:** a message on a timer, about a condition that cannot change, written
-to flash. Four instances in one afternoon — the boot-animation re-kill, the bad-boot counter, the
-power-off helper, the silent-input heartbeat — all invisible to every gate this project had, all
-obvious in a trace.
+**The pattern, stated once:** work on a timer, for a condition that cannot change, that nobody
+stops. Five instances in one afternoon — the boot-animation re-kill, the bad-boot counter, the
+power-off helper, the silent-input heartbeat, and a wedged mass-storage session — all invisible to
+every gate this project had, all obvious in a trace.
 
 ## The defect
 
@@ -170,6 +170,22 @@ after the first few the only useful thing it can do is stop.
 
 This is why `log-volume` runs with the panel **on**: at 60 Hz anything paced by a frame count shows
 up at sixty times the rate it would in the dark, and that is what caught it.
+
+## A fifth, and the worst-behaved: a wedged mass-storage session
+
+`ensure_msc_lun()` binds the gadget's mass-storage LUN to `/emmc@contents` after `/contents` is
+unmounted. When the LUN comes up empty — the "PC sees a reader with NO medium" case its own comments
+are about — it runs a ladder of eight write-and-confirm attempts with settle sleeps, costing about
+**two seconds**. And it is called from the ~1 Hz housekeeping tick for the whole session.
+
+So on a device where the LUN cannot be backed, the render thread spent two seconds out of every one
+inside that ladder: **an entire USB-MSC session with a UI that does not repaint and a Back button —
+the only way out of the modal — sampled every other second**, plus a failure line every two seconds.
+Now: the ladder backs off ten seconds after a failure, and the line stops after three. The fast path
+(the LUN is already backed, which is every healthy session) is a single file read and is unchanged.
+
+The `msc-cycle` scenario covers the whole round trip — cable in, handover, a wedged session, cable
+out, release — and pins the retry count.
 
 ## Why nothing found this before
 
