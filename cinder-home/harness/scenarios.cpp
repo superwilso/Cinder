@@ -211,6 +211,37 @@ static void s_dark_playing(void) {
     check_range(ipc, 0, 12, "a steady Bluetooth session costs single-digit IPC calls a minute");
 }
 
+// ── the log is a flash write, so its VOLUME is a defect class ────────────────────────────────
+// clog_ writes one line to stderr per event and fflushes it, and the launcher redirects stderr to
+// /contents/cinderhome.log — a file on the same fragile vfat partition as the user's music. A line
+// on a timer is therefore a flash write per tick, for as long as the player runs, and two defects
+// of exactly that shape have already shipped:
+//
+//   * the boot-animation re-kill ran every frame when bring-up stalled — 62 lines a second;
+//   * mark_healthy_maybe logged its failure on every 1 Hz retry — 21,594 of a six-hour log's
+//     21,700 lines were that one sentence.
+//
+// Neither is visible in a unit test and both are invisible on the device until the log is opened.
+// A ceiling on lines-per-hour catches the whole class, whatever causes the next one. Six virtual
+// hours costs about a second here.
+static void s_log_volume(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    cinder_harness_set_budget_ms(6 * 3600 * 1000);
+    cinder_harness_run();
+
+    // Boot is allowed to be chatty — it is the part anyone debugging actually reads. It is the
+    // STEADY STATE that must be quiet, so measure from an hour in.
+    int lines = cinder_harness_count_between("log", 3600000, 21600000);
+    std::printf("  .... %d log lines over five steady-state hours\n", lines);
+    check_range(lines, 0, 300, "a running player writes well under a line a minute to flash");
+    // If that fails, CINDER_HARNESS_TRACE=1 dumps the trace and the offending line is in it
+    // verbatim — the count says there is a problem, the trace says which sentence.
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
@@ -220,6 +251,7 @@ static const Scenario kScenarios[] = {
     {"bt-idle-poll",      s_bt_idle_poll_rate,       "the idle Bluetooth poll backs off"},
     {"stalled-bringup",   s_stalled_bringup,         "bring-up that never completes must not freeze the app"},
     {"dark-playing",      s_dark_playing,            "panel dark, BT playing: the state the device lives in"},
+    {"log-volume",        s_log_volume,              "the log is a flash write: keep it rare"},
     {nullptr, nullptr, nullptr},
 };
 
