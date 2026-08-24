@@ -454,6 +454,29 @@ void stop_analyzer() {
         run_guarded("analyzer stop", 6, []() { cinder_analyzer_stop(); });
 }
 
+// A log line that belongs to a RETRY LOOP, paced so it cannot become the log.
+//
+// Five separate defects found on 2026-08-24 were the same mistake — a message on a timer, about a
+// condition that cannot change on its own, written to /contents/cinderhome.log and fflushed. On the
+// device that file is on the vfat partition holding the user's music, so a line per second is
+// 86,400 flash writes a day saying one thing. (Measured with cinder-home/harness: a boot where the
+// library DB never opens wrote 3,571 copies of "DB unavailable" an hour.)
+//
+// The rule: say it immediately, then after a minute, then roughly tripling to hourly. Prompt enough
+// to diagnose from the log, bounded enough that a device stuck for a day costs a couple of dozen
+// lines. Each call site owns a RetryLog; a successful stage simply stops calling.
+struct RetryLog { long next_ms; long gap_ms; };
+
+void retry_log(RetryLog& st, const char* msg) {
+    const long now = now_ms();
+    if (st.next_ms != 0 && now < st.next_ms) return;
+    clog_(msg);
+    st.gap_ms = (st.gap_ms == 0) ? 60000
+              : (st.gap_ms < 3600000 ? st.gap_ms * 3 : 3600000);
+    if (st.gap_ms > 3600000) st.gap_ms = 3600000;
+    st.next_ms = now + st.gap_ms;
+}
+
 // DEFERRED bring-up: the slow/blocking parts (library DB load + scrobbler + PlayerService
 // connect). Run from the pump AFTER the first frame is painted, each under the hang watchdog
 // so a blocking Sony-IPC can't stall the device. Idempotent, one-shot.
@@ -470,7 +493,8 @@ void deferred_up() {
         run_guarded("deferred_up: cinder_db_open + build library", 25,
                     []() { g_deferred_rc = cinder_db_open("/db/MTPDB.dat"); });
         if (g_deferred_rc != 0) {
-            clog_("deferred_up: DB unavailable — will retry");
+            static RetryLog rl_DB = {0, 0};
+            retry_log(rl_DB, "deferred_up: DB unavailable — will retry");
             return;
         }
         g_db_ready = true;
@@ -504,7 +528,8 @@ void deferred_up() {
         clog_("deferred_up: cinder_audio_pump_start (pst::core::Framework event looper)");
         if (run_guarded("deferred_up: audio pump start", 8,
                         []() { cinder_audio_pump_start(20); }) != 0) {
-            clog_("deferred_up: audio pump unavailable — will retry");
+            static RetryLog rl_pump = {0, 0};
+            retry_log(rl_pump, "deferred_up: audio pump unavailable — will retry");
             return;
         }
         g_audio_pump_started = true;
@@ -514,7 +539,8 @@ void deferred_up() {
         run_guarded("deferred_up: cinder_audio_init (PlayerService connect)", 12,
                     []() { g_deferred_rc = cinder_audio_init("cinder"); });
         if (g_deferred_rc != 0) {
-            clog_("deferred_up: audio unavailable — will retry");
+            static RetryLog rl_audio = {0, 0};
+            retry_log(rl_audio, "deferred_up: audio unavailable — will retry");
             return;
         }
         g_audio_ready = true;
@@ -7770,9 +7796,13 @@ void* render_driver(void*) {
             const long bring_now = now_ms();
             if (deferred_stalled_since == 0) deferred_stalled_since = bring_now;
             deferred_up();
-            // Re-kill the boot animation: dense while a respawn is actually plausible, then rare —
-            // the same shape as the forced-repaint insurance above, and for the same reason.
-            if (g_app && (n < 300 || bring_now - last_anim_kill_ms >= 5000)) {
+            // Re-kill the boot animation: dense while a respawn is actually plausible, then rare,
+            // then NOT AT ALL. The animation is dead within the first seconds and the only thing
+            // that could bring it back is init respawning it, which the healthy path's straggler
+            // sweep already covers by ~30 s. Past a minute this is a framework call and a log line
+            // every five seconds for the life of the process — 4,585 of them in a six-hour run
+            // where bring-up never completed (cinder-home/harness, `adverse`).
+            if (g_app && bring_now < 60000 && (n < 300 || bring_now - last_anim_kill_ms >= 5000)) {
                 g_app->StopBootAnimation();
                 last_anim_kill_ms = bring_now;
             }
