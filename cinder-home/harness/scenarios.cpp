@@ -436,6 +436,116 @@ static void s_msc_cycle(void) {
     check_range(lun_writes, 1, 80, "a LUN that will not bind is retried on a timer, not continuously");
 }
 
+// ── touch and buttons: the half of the app that had no off-device exercise at all ────────────
+// cinder-home reads /dev/input directly, so until the harness grew fake nodes, every gesture and
+// every button — the whole path from a raw evdev code to carry_out — was covered by nothing.
+// (cinder-ui's 404 tests cover the NAVIGATOR's decisions; these cover getting there.)
+//
+// The navigator itself is a stub here, so `cinder_input` returns "no action" and nothing downstream
+// of it runs. What these check is everything on THIS side of that boundary: that raw codes decode
+// to the right logical button, that a contact becomes a tap and a drag becomes a drag, and the
+// screen-wake rules main.cpp owns outright.
+
+// The panel is dark and you touch it. The touch must WAKE it and must NOT also press whatever was
+// under your finger — you were reaching for a dark screen, not for a control. A wake that fails is
+// indistinguishable from a dead device, which is why this one is worth pinning.
+static void s_wake_on_touch(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_tap_at(60000, 240, 400);   // the first touch after it goes dark
+    cinder_harness_tap_at(65000, 240, 400);   // and one while it is awake
+    cinder_harness_set_budget_ms(80000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("cinder_tap", 0, 62000), 0,
+             "the tap that woke the panel was not also delivered to the UI");
+    check(cinder_harness_count_between("cinder_tap", 62000, 80000) >= 1,
+          "the next tap, on a lit panel, was");
+    long long woke = cinder_harness_first_ms("cinder_touch_down");
+    std::printf("  .... first delivered contact at %lldms (dark tap was at 60000ms)\n", woke);
+    check(woke > 62000, "…and it is the second one");
+}
+
+// A contact becomes a tap; a vertical drag becomes a drag and a fling, not a tap. The distinction
+// is 26 px of travel, and getting it wrong means either a list you cannot scroll or a row that
+// fires every time you try to.
+static void s_touch_gestures(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_tap_at(30000, 240, 400);
+    cinder_harness_swipe_at(40000, 240, 600, 240, 200, 400);   // a vertical list drag
+    cinder_harness_set_budget_ms(50000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("cinder_tap", 29000, 39000), 1, "the tap was a tap");
+    check_eq(cinder_harness_arg("cinder_tap", 0), 240, "…at the x it was aimed at");
+    check_eq(cinder_harness_count_between("cinder_tap", 39000, 50000), 0,
+             "the drag was NOT also delivered as a tap");
+    check(cinder_harness_count_between("cinder_touch_drag", 39000, 50000) >= 4,
+          "the drag streamed its travel");
+    check(cinder_harness_count_between("cinder_touch_fling", 39000, 50000) >= 1,
+          "…and ended in a fling");
+}
+
+// Raw evdev codes are device-specific and the defaults are baked in from the NW-A50. This checks
+// the decode: 116 is Power, 115/114 the volume rocker, 106/105 next/prev.
+static void s_button_codes(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    struct { long long at; int code; int btn; } keys[] = {
+        {30000, 116, 11 /* POWER   */}, {32000, 115,  9 /* VOLUP   */},
+        {34000, 114, 10 /* VOLDOWN */}, {36000, 106, 13 /* NEXT    */},
+        {38000, 105, 14 /* PREV    */},
+    };
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++) {
+        cinder_harness_key_at(keys[i].at, keys[i].code, 1);
+        cinder_harness_key_at(keys[i].at + 200, keys[i].code, 0);
+    }
+    cinder_harness_set_budget_ms(45000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("cinder_input") >= 5, "every press reached the navigator");
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++) {
+        char what[96];
+        std::snprintf(what, sizeof what, "raw %d decoded to logical button %d",
+                      keys[i].code, keys[i].btn);
+        bool seen = false;
+        for (int n = 0; n < cinder_harness_count("cinder_input"); n++)
+            if (cinder_harness_arg("cinder_input", n) == keys[i].btn) seen = true;
+        check(seen, what);
+    }
+}
+
+// The volume rocker's auto-repeat, at the level the user feels it. `vol_ramp.h` has a self-test for
+// the CURVE; this checks the app runs it — that a held rocker accelerates, that it stops the instant
+// you let go, and that a rocker which never comes back up (a stuck key, or a release event that
+// never arrives) gives up instead of driving the mixer for the rest of the session.
+static void s_volume_ramp(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_key_at(30000, 115, 1);            // Vol+ down
+    cinder_harness_key_at(36000, 115, 0);            // …released after six seconds
+    cinder_harness_key_at(60000, 114, 1);            // Vol- down and NEVER released
+    cinder_harness_set_budget_ms(120000);
+    cinder_harness_run();
+
+    // Vol+ = logical 9, Vol- = 10. The count in a one-second slice is the step rate.
+    const int early = cinder_harness_count_between("cinder_input", 30000, 31500);
+    const int late = cinder_harness_count_between("cinder_input", 34500, 36000);
+    const int after_release = cinder_harness_count_between("cinder_input", 37000, 55000);
+    std::printf("  .... %d steps in the first 1.5s of the hold, %d in the last 1.5s\n", early, late);
+    check(early >= 1, "a held rocker repeats at all");
+    check(late > early, "…and accelerates the longer it is held");
+    check_eq(after_release, 0, "and stops dead on release");
+
+    // The stuck rocker. VOL_REPEAT_MAX_MS gives up; without it a key that never releases would drive
+    // the volume for the life of the process.
+    int stuck_window = cinder_harness_count_between("cinder_input", 90000, 120000);
+    std::printf("  .... %d steps 30s after a rocker that never came back up\n", stuck_window);
+    check_eq(stuck_window, 0, "a stuck rocker gives up rather than repeating for ever");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
@@ -453,6 +563,10 @@ static const Scenario kScenarios[] = {
     {"autooff-playing",   s_auto_off_playing,        "never power off while audio is playing"},
     {"autooff-charging",  s_auto_off_charging,       "never power off a device on a charger"},
     {"dsp-reconcile",     s_dsp_reconcile_no_settings, "the DSP is reconciled even with no settings file"},
+    {"wake-on-touch",     s_wake_on_touch,           "a dark panel wakes on touch, without pressing anything"},
+    {"touch-gestures",    s_touch_gestures,          "a tap is a tap and a drag is a drag"},
+    {"button-codes",      s_button_codes,            "raw evdev codes decode to the right buttons"},
+    {"volume-ramp",       s_volume_ramp,             "the rocker accelerates, stops on release, gives up when stuck"},
     {nullptr, nullptr, nullptr},
 };
 
