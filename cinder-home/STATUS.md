@@ -1,5 +1,82 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-08-23 — standing reference: [`../docs/SHORTCOMINGS.md`](../docs/SHORTCOMINGS.md)
+>
+> What is structurally weak about this project and its GitHub setup, with evidence per claim. Not a
+> bug list — the audits below hold those; this is the conditions that let them exist and survive.
+> Headline: **41% of the tree (24,723 lines of C/C++ and shell) is never compiled by any automated
+> gate** — and it is the half that runs as root, owns the boot path and drives closed Sony services,
+> while the 311-test half is the drawing code that cannot brick anything. Cited by section ID
+> (A1, B1, D4…) so findings can be referred to later.
+
+> ## 2026-08-23 — sound-effects audit: 5 defects, all fixed
+>
+> **Write-up: [`../docs/AUDIT_2026-08-23_sound_effects.md`](../docs/AUDIT_2026-08-23_sound_effects.md).**
+> Three of the five are one failure in different clothes — *a control that says one thing while the
+> DSP does another* — the class already cleaned out of the volume row, the codec row and the BT
+> switch, but never swept for in the effects chain.
+>
+> - **The boot DSP reconcile was gated on `g_settings_loaded`.** The DSP is not ours and does not
+>   boot empty — it holds what the stock player left. With no settings file Cinder drew its own
+>   defaults and sent nothing, all session. Two of the gated calls are not preferences at all:
+>   `SetSelectUsingEq` (without it the EQ is stored but never in the path — verbatim the bug the
+>   selector was added to kill) and `SetBtAudioSoundEffect(1)` (goal #7). And `/contents` is vfat
+>   and "periodically absent", so the gate fails far more often than "fresh install" suggests.
+>   Now unconditional.
+> - **The signal-path footer had no `source_direct` field at all** — it drew a full chain over a
+>   total bypass, with only ClearAudio+'s warning available. Source Direct is set two screens away
+>   and left no trace on the screen you come back to.
+> - **…and printed `EQ (<preset>)` even under Tone Control**, which REPLACES the 10-band rather
+>   than stacking with it.
+> - **DSEE HX Custom / DSEE AI claimed nothing about their parent**, while their two immediate
+>   neighbours on the same screen both say "… is off".
+> - **DSEE AI shipped drawn like a working toggle** against this project's own note — "UNVERIFIED,
+>   treat like high gain until heard". Not removed (nobody has measured it inert, unlike high
+>   gain); the row now says what is actually known. Ear test to settle it is in the audit.
+>
+> `signal_path` is now a **pure function with 6 host tests** — it was previously checkable only by
+> looking at a screenshot, which is how both footer lies survived.
+
+> ## 2026-08-23 — three reported defects audited and (mostly) fixed
+>
+> **Full write-up: [`../docs/AUDIT_2026-08-23_three_reports.md`](../docs/AUDIT_2026-08-23_three_reports.md).**
+>
+> - **Playlists — FIXED.** The page had no plain Play (its only band was Shuffle), and tapping a
+>   member played that track's **album**, because every play funnelled through `PlayIndex`, which
+>   resolves an object id to the only context an object id has. New `Action::PlayPlaylistAt`, and
+>   the band is split PLAY | SHUFFLE. 398 host tests (3 new) + the overflow matrix.
+> - **Bluetooth — FIVE defects, not one.** A second sweep (prompted by "the BT bugs run deeper" —
+>   correct) found the one that is upstream of the rest:
+>   - **The shell decided ONCE, at boot, whether Bluetooth existed.** `cinder_set_bt_on` had
+>     exactly one call site in the whole shell — an un-retried `GetBtStatus` in `deferred_up`,
+>     inside a guard that swallows failure. `bt_status()` answers **-1** (no client) or **0**
+>     (unknown) while hagodaemon is still coming up, and `bt_radio_up()` calls both OFF. Nothing
+>     ever asked again, though `refresh_bt_route` re-read the same status every 3 s and used it
+>     only for the volume rocker. And the flag is not passive: `bt_reconnect_tick`'s "radio off"
+>     branch **actively disarms** the radio's retry and the connect-wait, and the NFC reader is
+>     gated on it. One unlucky boot read killed Bluetooth *and* NFC for the session. The route
+>     poll now reconciles it — rule in `src/bt_switch.h`, **24-case host self-test**.
+>   - **The pairing table was never seeded at boot**, so `bt_reconnect_tick` bailed on
+>     `g_bt_paired.empty()` every tick — no `RequestLastDeviceConnection`, no
+>     `RequestStartConnectWait` — and the **Bluetooth screen showed no devices** until the user
+>     drilled into Devices and back.
+>   - **NFC tap-to-pair disarmed itself ~80 ms into every boot**: five arm attempts bounded by a
+>     count, in a block that runs per-frame rather than at the 1 Hz its comment assumes.
+>   - **The radio's notification listener was only registered by `apply_bt_scan`**, so on a boot
+>     with no device scan the event-driven route path (`g_bt_state_dirty`) was dead and every link
+>     change waited out the 3–15 s poll.
+>   - **`bt_connect_wait` guessed at service state** that is sticky across process restarts, the
+>     way `bt_service_retry` explicitly does not.
+>
+>   All five fixed; all *device-unverified* (Sony IPC — see the audit's verification table for the
+>   log lines to look for).
+> - **Library auto-update — HALF fixed, half device-gated.** The change watcher compared `st_mtime`
+>   on the main DB file only, which SQLite's WAL mode can leave untouched across a whole scan; the
+>   rule is now `src/db_sig.h` (DB + `-wal` + `-journal`, mtime + size + inode) with a 10-case host
+>   self-test. **But nothing ever asks MediaStoreService to re-scan** — the stock Qt app did that,
+>   and Cinder has never called MediaStore at all. That needs the client vtable RE'd on device;
+>   §1a of the audit has the plan. **This is the live blocker for new albums appearing.**
+
 > ## Since 2026-08-16 — shipped and hardware-verified (2026-08-17)
 >
 > The matrix further down was last re-audited 2026-07-30 and several of its entries are now stale;
@@ -53,6 +130,11 @@
 >
 > **Backlog and what to do next:** [`ROADMAP.md`](ROADMAP.md) — re-audited 2026-07-28.
 >
+> **Everything that needs the device in one ordered run sheet:**
+> [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md) — safety rules, then phases from
+> "cannot affect boot" to "needs ears". Read it before a device session rather than reassembling
+> the list from here, the roadmap and the audits.
+>
 > **Production-readiness gap list (2026-07-27, refreshed 07-28):**
 > [`../docs/PRODUCTION_READINESS.md`](../docs/PRODUCTION_READINESS.md) — what is left before this is
 > a device the owner can rely on with no PC in the room. This file says what *is*; that one says
@@ -62,7 +144,14 @@
 > `/system/vendor/unknown321/bin/cinder-home`, the 2026-07-29 22:32 build, confirmed live after the
 > 07-30 08:56 boot. Offline gates all pass: **219 host tests** across the workspace (0 failed), the
 > **44-case** launcher recovery matrix, the GLIBC ≤2.23 ceiling on both channels, and the qemu
-> construction preflight. *(The "Cinder is NOT installed" note that stood here after the 2026-07-26
+> construction preflight. *(2026-08-24: the offline gates now also include an off-device harness —
+> [`harness/README.md`](harness/README.md) — which boots the real `main.cpp` against fake Sony
+> services, a fake device filesystem and fake `/dev/input` nodes, and asserts on its call trace.
+> **20 scenarios, 74 assertions, nine seconds**, run by `build.sh` as well as CI. It checks bring-up
+> ORDER, polling RATE, hardware edges and input decode — not the ABI and not audio — so it changes
+> nothing in the feature matrix below; it is why a regression in those would now be caught before a
+> device session rather than during one. Everything still needing hardware is one ordered list:
+> [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md).)* *(The "Cinder is NOT installed" note that stood here after the 2026-07-26
 > wbrt restore is obsolete — it was reinstalled in the 07-27/28 sessions.)*
 >
 > **Where Bluetooth stands (the 07-28/29 sessions turned most of it green).** The radio, reconnect,

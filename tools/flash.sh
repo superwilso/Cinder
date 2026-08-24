@@ -37,8 +37,6 @@ set -euo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SELF/.." && pwd)"
 SCSITOOL="$REPO/artifacts/repos/rockbox/utils/nwztools/scsitools/scsitool"
-DOWNLOADS="/mnt/c/Users/walkman/Downloads"
-SCRIPTS="$REPO/artifacts/repos/rockbox/utils/nwztools/scripts"
 
 if [ -t 1 ]; then
   C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[36m'; C_D=$'\e[2m'; C_0=$'\e[0m'

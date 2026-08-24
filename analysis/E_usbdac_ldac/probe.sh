@@ -1,4 +1,9 @@
 #!/system/xbin/busybox sh
+# shellcheck shell=dash
+#   ^ The shebang is busybox's `sh`, which on the device is ASH. Older shellcheck reads that as
+#   ash and emits SC2187 asking for exactly this line; newer versions stay quiet. Declaring it is
+#   not just noise-suppression — it makes shellcheck analyse the file against the shell it will
+#   really run under, instead of assuming bash features this script must never use.
 # cinder_probe.sh — Phase E device-side probe for the USB-DAC -> LDAC question.
 #
 # READ-ONLY. Captures the state needed to answer CLAUDE.md Part H6 (#1-#4):

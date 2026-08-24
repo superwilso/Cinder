@@ -2137,6 +2137,29 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 }
             }
         }
+        Action::PlayPlaylistAt(playlist_id, index) => {
+            // The playlist IS the context. `PlayIndex` cannot express this: an object id only
+            // knows its album, so a tap on a playlist member played that member's album and
+            // stopped — one song, on a playlist of singles. Same pending-play channel as
+            // `PlayPlaylist`, just starting at the tapped row instead of the top.
+            match any_playlist_tracks(r, *playlist_id) {
+                Some(seq) => {
+                    let start = (*index as usize).min(seq.len().saturating_sub(1));
+                    let (seq, start, pre) = apply_shuffle(r.np.shuffle, seq, start);
+                    set_pending(r, seq, start);
+                    if let Some(pre) = pre {
+                        r.app.note_pre_shuffle(pre);
+                    }
+                    8
+                }
+                None => {
+                    eprintln!(
+                        "cinder-ffi: PlayPlaylistAt({playlist_id}, {index}): empty or unknown — ignored"
+                    );
+                    return None;
+                }
+            }
+        }
         Action::Shuffle(scope) => {
             // Same pending-play channel again: we pre-shuffle the URI list ourselves, so the
             // order is genuinely random regardless of what PlayerService's own shuffle does.

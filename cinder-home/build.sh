@@ -188,6 +188,47 @@ if cc -O2 -o "$HERE/.jackedge_selftest" "$HERE/tools/jackedge_selftest.cpp" -lst
     else "$HERE/.jackedge_selftest"; echo "FAIL: jack edge self-test"; exit 1; fi
     rm -f "$HERE/.jackedge_selftest"
 else echo "(skip: no host cc)"; fi
+# The Bluetooth switch/radio reconcile (src/bt_switch.h). The most load-bearing of these four: the
+# flag it maintains gates auto-reconnect, the NFC reader, and whether the radio is told to keep
+# retrying — and a single un-retried boot read used to decide it for the whole session.
+if cc -O2 -o "$HERE/.btswitch_selftest" "$HERE/tools/btswitch_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.btswitch_selftest" >/dev/null 2>&1; then echo "OK: bluetooth switch reconcile"; \
+    else "$HERE/.btswitch_selftest"; echo "FAIL: bt switch self-test"; exit 1; fi
+    rm -f "$HERE/.btswitch_selftest"
+else echo "(skip: no host cc)"; fi
+# The Bluetooth poll-interval rule (src/bt_poll.h). It decides how long a DROPPED LINK can go
+# unnoticed — i.e. how long music keeps playing into headphones that are not there — so the tests
+# that matter most are the ones proving it does NOT back off without a listener to replace the timer.
+if cc -O2 -o "$HERE/.btpoll_selftest" "$HERE/tools/btpoll_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.btpoll_selftest" >/dev/null 2>&1; then echo "OK: bluetooth poll intervals"; \
+    else "$HERE/.btpoll_selftest"; echo "FAIL: bt poll self-test"; exit 1; fi
+    rm -f "$HERE/.btpoll_selftest"
+else echo "(skip: no host cc)"; fi
+# The library-database change rule (src/db_sig.h). Same reason as the two above: it is a handful of
+# lines that decides something the user sees — whether music they just copied is ever picked up —
+# and its first version (st_mtime on the main file alone) could be defeated by SQLite's WAL mode.
+if cc -O2 -o "$HERE/.dbsig_selftest" "$HERE/tools/dbsig_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.dbsig_selftest" >/dev/null 2>&1; then echo "OK: library database change rule"; \
+    else "$HERE/.dbsig_selftest"; echo "FAIL: db signature self-test"; exit 1; fi
+    rm -f "$HERE/.dbsig_selftest"
+else echo "(skip: no host cc)"; fi
+
+echo "── off-device harness: boot the app against fake services ──"
+# The self-tests above check RULES in isolation. This boots the real main.cpp — this exact source —
+# against faked Sony service clients, a faked easel framework, a faked device filesystem and a
+# virtual clock, and asserts on what it actually does: that the paired-device list and the BT
+# listener are set up during bring-up, that a service which is not up yet degrades a feature rather
+# than the Home app, that the idle polls back off, that a stalled bring-up does not freeze the frame
+# loop or fill /contents with log lines. Thirteen scenarios, about eight seconds.
+#
+# It is here, and not only in CI, because build.sh is the last thing that runs before a flash and
+# every defect it has found so far was a behaviour that only appears once the app is RUNNING. Needs
+# python3 and a host C++ compiler; skipped rather than failed if either is missing, like the
+# self-tests above.
+if command -v python3 >/dev/null 2>&1 && [ -x "$HERE/harness/run.sh" ]; then
+    if "$HERE/harness/run.sh" >/dev/null 2>&1; then echo "OK: harness — all scenarios passed"; \
+    else "$HERE/harness/run.sh"; echo "FAIL: off-device harness"; exit 1; fi
+else echo "(skip: no python3 or no harness)"; fi
 
 echo "── verify: device glibc compatibility gate ──"
 gate_glibc "$OUT"
