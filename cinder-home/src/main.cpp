@@ -6921,7 +6921,10 @@ void input_pump() {
         if (hb_next_ms == 0) hb_next_ms = hb_now + hb_gap_ms;
         else if (hb_now >= hb_next_ms) {
             clog_("input: still ZERO events from every node (foreign grab? see node diagnostics above)");
-            if (hb_gap_ms < 3600000) hb_gap_ms *= 4;   // 15 s, 1 min, 4 min, 16 min, then hourly
+            // 15 s, 1 min, 4 min, 16 min, then hourly. Clamped, or the last step would land at
+            // 64 minutes and quietly not be the "hourly" this says — the same clamp retry_log has.
+            if (hb_gap_ms < 3600000) hb_gap_ms *= 4;
+            if (hb_gap_ms > 3600000) hb_gap_ms = 3600000;
             hb_next_ms = hb_now + hb_gap_ms;
         }
     }
