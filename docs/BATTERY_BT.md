@@ -72,3 +72,76 @@ session. On a 3.5 mm session they are exactly right and must not be touched.
 **Never write `/proc/regmon/<chip>/value`** while chasing this. Selecting a register through
 `target` is a read; writing `value` changes the audio hardware under the running player, and the
 codec is the one part of this device with no software recovery path.
+
+
+---
+
+## 2026-08-23 — the sustained IPC of a steady session, and what was done about it
+
+*Written after the CI/audit work of the same day, because one of its fixes is what made this safe.*
+
+### What a connected session actually cost
+
+Connected, playing, panel dark, in a pocket — the state a Bluetooth session is almost entirely
+spent in — Cinder was making **~2.2 synchronous binder round trips per second, on the render
+thread, for the whole session**:
+
+| Call | Rate | What it is for | How often that can actually change |
+|---|---:|---|---|
+| `GetCurrentStatus` (uri) | 1.00/s | detect a track boundary | ~once per 3–4 minutes |
+| `GetSoundStatus` | 0.50/s | the negotiated codec | once per link |
+| `GetBtStatus` | 0.33/s | link up/down | on a link event |
+| `GetConnectInformation` | 0.33/s | which peer | on a link event |
+
+Every one of them already had an event-driven or free replacement in place.
+
+### Why this is safe NOW and was not before
+
+`OnNotifyBtStatus`, `OnNotifyAclStateChanged` and `OnNotifyDisconnectEnd` set `g_bt_state_dirty` the
+moment the link moves. But **until 2026-08-23 that listener was registered only by `apply_bt_scan`**
+— only if the user had opened Devices and pressed Scan. On an ordinary boot it was never registered
+at all (`AUDIT_2026-08-23_three_reports.md` §3d), so the timer genuinely *was* the mechanism, and
+3 s was the right number.
+
+With the listener registered at boot, the timer is the safety net its own comment always claimed it
+was — and can be relaxed.
+
+### The one thing this must not break
+
+**Pause-on-disconnect.** When headphones drop the music must stop promptly, and
+`cinder_bt_should_pause` rides `refresh_bt_connected`, which the route poll calls. That stays
+instant, because a listener event forces the poll on the very next frame regardless of the timer.
+
+So the relaxed interval is **gated on `g_bt_listener_on` — the real registration result, not an
+assumption that it worked.** If `AddListener` ever fails, every interval returns to its old value,
+because there the timer is once again the only thing that can notice a dropped link. The rule is in
+`src/bt_poll.h` with a host self-test whose most important cases are exactly those.
+
+### The changes
+
+* **Route poll** 3 s → **30 s** while a peer is named and the listener is up. Unchanged at 3 s while
+  connecting or searching (where latency is the point) and 15 s with the radio down.
+* **Peer re-read** (`GetConnectInformation`) 2 s → **30 s** on the same condition. Unchanged while
+  the name is still missing, which is the case that retry was written for.
+* **Codec poll** 2 s → **60 s** on the same condition. Its own comment already said the answer
+  "changes on the order of once a session", and its two event bypasses are untouched.
+* **The URI round trip is gated on a free signal.** A track boundary is always visible in two
+  numbers already in hand — the duration changes, and/or the position jumps backwards — and both
+  are atomic loads the PlayEventListener pushed (`cinder_audio_position` does no IPC at all). So the
+  round trip is now spent when something *might* have changed, with a 30 s backstop for the one
+  case the free signals cannot see: two consecutive tracks of exactly the same length whose reset
+  also lands between two samples.
+
+Arithmetic: **~2.2 IPC/s → ~0.07 IPC/s** in a steady session. Over three hours that is roughly
+23,000 round trips down to about 750.
+
+### What is NOT claimed
+
+**This has not been measured.** It is a reduction in work that is arithmetically certain and a
+battery saving that is not — each round trip is cheap, and during playback `hagodaemon` is awake
+decoding anyway, so the marginal cost of waking it is lower than the raw count suggests. Run
+`tools/btpower.sh` before and after with the same window length before putting a number on it.
+
+**The big prize is still the open question at the top of this file** — whether the CXD3778GF is
+still clocked and biased through a Bluetooth session, for an output nobody is listening to. That
+needs the device, and the A/B is specified above. Nothing here touches it.
