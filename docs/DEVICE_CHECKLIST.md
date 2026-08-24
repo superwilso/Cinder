@@ -44,7 +44,7 @@ These are not preferences. Each one is written from something that already went 
 | 0.1 | **`cinder-home/build.sh [stable\|dev]` passes** | This is the only gate that does the ARM link, the **GLIBC ≤ 2.23 ceiling** and the **qemu construction preflight**. CI deliberately does not carry the cross toolchain, so a green CI says nothing about whether the thing links for the device. |
 | 0.2 | **`cinder-home/harness/run.sh` passes** | Thirteen scenarios, ~8 s — the strongest offline check of the app's *behaviour*, and what the fixes below were written against. **`build.sh` now runs it**, so 0.1 covers this; run it alone when iterating. |
 | 0.3 | **`tools/release.sh`** if flashing a release | Verifies the committed `dist/` payload byte-for-byte against a fresh build before it will tag. |
-| 0.4 | Escape ladder intact | Bad-boot counter → auto-revert → crash supervisor → kill switch → `wbrt` restore. `tools/test_launcher.sh` covers the 44-case matrix offline; confirm it still passes. |
+| 0.4 | Escape ladder intact | Bad-boot counter → auto-revert → crash supervisor → kill switch → `wbrt` restore. `cinder-home/tools/test_launcher.sh` covers it offline and **now runs in CI**, so a green tick already says this. Run it by hand only if you changed the launcher. *(46 cases as a normal user, 45 as root — one case uses `chmod`, which does not bind uid 0, and skips itself there.)* |
 
 ---
 
