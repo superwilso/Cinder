@@ -1778,11 +1778,26 @@ void boot_to_stock() {
 // guard's whole job is to _exit on a call that does not return — which would trip the launcher's
 // bad-boot counter on the one path that is SUPPOSED to take the device away. If the helper is
 // missing or lost its setuid bit, system() returns promptly and we log a real cause and stay up.
+// How long an automatic caller waits before trying again after the helper came back. A power-off
+// that failed because the setuid bit is gone will fail identically a second later, and both
+// automatic callers sit inside the ~1 Hz housekeeping tick — so without this they fork the helper
+// once a second for the life of the process. Measured off-device (cinder-home/harness,
+// `autooff-idle`): 3,541 attempts and 10,623 flushed log lines in ONE virtual hour.
+const long POWER_RETRY_MS = 300000;   // five minutes
+
 void power_action(bool restart) {
     const char* verb = restart ? "restart" : "off";
+    // The helper does not return when it works, so this only ever counts FAILURES. The first few
+    // are worth a log line; after that the message is the same one forever and every line is an
+    // fflush to /contents. A user-initiated power-off still always ATTEMPTS — it is only the
+    // narration that stops.
+    static int fails = 0;
+    const bool speak = fails < 3;
     char m[160];
-    std::snprintf(m, sizeof m, "power: %s confirmed — exec cinder-power %s", verb, verb);
-    clog_(m);
+    if (speak) {
+        std::snprintf(m, sizeof m, "power: %s confirmed — exec cinder-power %s", verb, verb);
+        clog_(m);
+    }
     // Write the resume state at its true value before the machine goes down. The 1 Hz saver is
     // rate-limited to 5 s, so without this a deliberate power-off would come back up to five
     // seconds behind where the user actually stopped.
@@ -1795,10 +1810,16 @@ void power_action(bool restart) {
     std::snprintf(m, sizeof m, "/system/vendor/unknown321/bin/cinder-power %s", verb);
     int rc = std::system(m);
     // Reached only on failure — the helper does not return when reboot(2) succeeds.
-    std::snprintf(m, sizeof m,
-                  "power: %s FAILED (cinder-power rc=%d) — helper missing or setuid bit lost; staying up",
-                  verb, rc);
-    clog_(m);
+    fails++;
+    if (speak) {
+        std::snprintf(m, sizeof m,
+                      "power: %s FAILED (cinder-power rc=%d) — helper missing or setuid bit lost; "
+                      "staying up", verb, rc);
+        clog_(m);
+        if (fails == 3)
+            clog_("power: the helper has failed three times — it is not coming back this session "
+                  "(reinstall to restore the setuid bit); further failures will not be logged");
+    }
 }
 
 // Settings > Date & time > SET CLOCK. Hands the epoch to the setuid helper, which is the only
@@ -7178,6 +7199,12 @@ static void battery_guard(int pct) {
     }
     // CRITICAL. Go down deliberately while there is still enough charge to finish the writes,
     // rather than being cut off mid-write. power_action already syncs before handing over.
+    // Same self-guard as the idle auto-off: power_action returns only when the helper failed, and
+    // a critical battery does not un-critical itself, so without the backoff this forks the helper
+    // and repaints a toast on every battery poll until the cell is flat.
+    static long next_try_ms = 0;
+    if (now_ms() < next_try_ms) return;
+    next_try_ms = now_ms() + POWER_RETRY_MS;
     char m[128];
     std::snprintf(m, sizeof m, "power: battery %d%% and discharging — shutting down to protect /contents", pct);
     clog_(m);
@@ -7791,14 +7818,29 @@ void* render_driver(void*) {
             {
                 const int off_min = cinder_get_auto_off_min();
                 const bool audible = g_playing && cinder_audio_is_playing() != 0;
+                // A fifth guard, against ourselves: power_action only RETURNS when the helper
+                // failed, and this block runs at ~1 Hz — so a device whose setuid bit is gone used
+                // to fork the helper and write three log lines every second, for ever. Once the
+                // idle threshold is met it stays met, so nothing else here would ever stop it.
+                static long next_try_ms = 0;
+                static int  attempts = 0;
                 if (off_min > 0 && !audible && !g_msc_active && !cinder_modal_open() &&
-                    !battery_charging() &&
+                    !battery_charging() && now_ms() >= next_try_ms &&
                     now_ms() - g_last_input_ms >= (long)off_min * 60000L) {
-                    char m[128];
-                    std::snprintf(m, sizeof m,
-                                  "power: %d min idle and nothing playing — auto power off", off_min);
-                    clog_(m);
+                    // Only the first few attempts are worth announcing, for the same reason
+                    // power_action stops narrating its failures: after the third, the machine is
+                    // staying up and every line is an fflush to /contents. It keeps TRYING — the
+                    // helper could in principle come back — it just stops saying so.
+                    if (attempts < 3) {
+                        char m[128];
+                        std::snprintf(m, sizeof m,
+                                      "power: %d min idle and nothing playing — auto power off",
+                                      off_min);
+                        clog_(m);
+                    }
+                    attempts++;
                     power_action(false);
+                    next_try_ms = now_ms() + POWER_RETRY_MS;   // reached only if it did not work
                 }
             }
             // USB mass-storage is fully automatic — no menu dive:

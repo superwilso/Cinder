@@ -1,8 +1,12 @@
 # Bring-up that never completes froze the whole app
 
 **Found 2026-08-24, off-device, by the first exploratory run of
-[`cinder-home/harness/`](../cinder-home/harness/README.md).** One defect, two ordinary triggers,
-and a failure mode worse than either trigger.
+[`cinder-home/harness/`](../cinder-home/harness/README.md).** One defect, two ordinary triggers, and a failure mode
+worse than either trigger — followed by two more of the same shape, found the same way.
+
+**The pattern, stated once:** a retry that cannot succeed, run from a timer, that logs every
+attempt. Three instances in one afternoon (the boot-animation re-kill, the bad-boot counter, the
+power-off helper), all invisible to every gate this project had, all obvious in a trace.
 
 ## The defect
 
@@ -127,6 +131,27 @@ across five steady-state hours, measured from an hour in so boot is still allowe
 reads 40 today, and 18,040 before this fix. Every line is an `fflush` to `/contents`, the same vfat
 partition the user's music is on, so the count is a flash-write budget rather than a tidiness
 preference.
+
+## And a third, once the harness could fake the hardware
+
+With a filesystem behind it — a battery, a charger state, a headphone jack — the harness can enable
+features that were previously unreachable off-device. Auto power-off is one, and it turned up the
+same defect a third time.
+
+`power_action()` **only returns when the helper failed**; a successful shutdown never comes back. Both
+automatic callers sit inside the ~1 Hz housekeeping tick, and once the idle threshold is met it
+stays met — so a device whose `cinder-power` setuid bit is gone (twelve `chmod 4755` installs, one
+of the things `SHORTCOMINGS.md` §D7 is about) **forked the helper and wrote three log lines every
+second, for ever**. One virtual hour: 3,541 forks, 10,623 flushed lines. A `fork` + `exec` per
+second on this SoC is a real power cost on its own, quite apart from the writes.
+
+Both callers now back off five minutes after a returning attempt, and both the attempt announcement
+and `power_action`'s failure lines stop after the third. It keeps trying — the helper could in
+principle come back — it just stops shouting. The same hour now costs 12 forks and 9 lines.
+
+Three scenarios pin the behaviour and the three guards that keep this out of somebody's hand:
+`autooff-idle` (fires a minute after the last input, and backs off when the helper fails),
+`autooff-playing` and `autooff-charging` (never fires).
 
 ## Why nothing found this before
 
