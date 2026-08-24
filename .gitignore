@@ -49,3 +49,8 @@ ldac-bridge/cinder-ldac-bridge
 
 # Installer build output — built from dist/, published by CI; never committed.
 cinder-home/dist/*/cinder-installer*
+
+# === Off-device harness build output (rebuild: cinder-home/harness/run.sh) ===
+# Objects, the linked scenario runner, and the two tables regenerated from main.cpp and the
+# public headers on every run — none of it is a source of truth for anything.
+.harness/

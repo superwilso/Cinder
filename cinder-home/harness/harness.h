@@ -1,0 +1,72 @@
+// harness.h — the trace + scripting API the off-device harness is built on.
+//
+// WHY THIS EXISTS. Every defect this project has shipped so far has been a defect in a CALL
+// SEQUENCE, not in a value: refresh_bt_paired never called during boot, SetSelectUsingEq never
+// called at all, the DSP reconcile skipped when settings had not loaded, four services polled at
+// 2 Hz forever. None of those are visible in a unit test of a pure function, and all of them are
+// obvious in a trace. So the harness replaces everything main.cpp calls with a stub that RECORDS
+// the call — name, one integer argument, and the virtual time it happened at — and lets a test
+// script what that call returns.
+//
+// VIRTUAL TIME. main.cpp is a real-time frame loop: a 16 ms usleep per frame, housekeeping paced
+// off the wall clock, retries paced at 1 Hz, BT reconcile over a 15 s window. Running that in real
+// time would make a single boot test take half a minute. The harness overrides usleep/sleep/
+// clock_gettime/time (see harness.cpp) so the clock only advances when the frame loop sleeps —
+// one virtual minute of device time costs a few milliseconds of CPU.
+#pragma once
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// ── the stub side (called by generated stubs and the fakes) ──────────────────────────────────
+void cinder_harness_record(const char* name, long long arg);
+// Returns 1 and fills *out if the test scripted a return value for this call, else 0.
+int  cinder_harness_scripted(const char* name, long long* out);
+
+// ── the test side ────────────────────────────────────────────────────────────────────────────
+void cinder_harness_reset(void);
+// Every call to `name` returns `value`.
+void cinder_harness_script(const char* name, long long value);
+// The nth call to `name` returns vals[min(n, count-1)] — the last value sticks. That is how a
+// service that is not up yet and then comes up is expressed: {-1,-1,0,2} means three failed reads
+// then a radio that is on and stays on.
+void cinder_harness_script_seq(const char* name, const long long* vals, int count);
+
+int       cinder_harness_count(const char* name);      // how many times it was called
+long long cinder_harness_arg(const char* name, int n); // argument of the nth call (0-based)
+long long cinder_harness_first_ms(const char* name);   // virtual ms of the first call, -1 if never
+long long cinder_harness_last_ms(const char* name);    // virtual ms of the last call, -1 if never
+// Calls to `name` between [from_ms, to_ms) — the rate question ("is this still polled at 2 Hz
+// twenty seconds in?") asked directly.
+int       cinder_harness_count_between(const char* name, long long from_ms, long long to_ms);
+// Was `a` first called before `b`? -1 if either never happened. Ordering defects (the DSP
+// reconcile running before the settings load) are ordering questions.
+int       cinder_harness_before(const char* a, const char* b);
+void      cinder_harness_dump(int max_lines);          // the trace, for eyeballing a new scenario
+
+// The calling thread will never advance the virtual clock, only wait for it. The harness's own
+// main thread calls this before waiting out the run budget, so the frame loop — which is what the
+// pacing under test actually is — is guaranteed to be the thread that owns time.
+void cinder_harness_clock_never_owner(void);
+
+// ── virtual clock ────────────────────────────────────────────────────────────────────────────
+long long cinder_harness_now_ms(void);
+// Run the app's lifecycle until the virtual clock reaches `ms`, then finalize. Set before
+// cinder_harness_run().
+void cinder_harness_set_budget_ms(long long ms);
+// Boot the app (fake easel lifecycle -> render_up -> the real frame loop) and return once the
+// budget is spent. Everything main.cpp did is in the trace afterwards.
+int  cinder_harness_run(void);
+
+// ── the fake radio (fake_pst.cpp), as a test fixture ─────────────────────────────────────────
+// The Bluetooth fake is stateful: SetRfOnOff drives what GetBtStatus reports, and a connect only
+// takes if the radio is up and something is paired. These set the starting conditions.
+void cinder_harness_bt_reset(void);
+void cinder_harness_bt_set_radio(int on);
+void cinder_harness_bt_add_paired(const char* name, int addr_last);
+int  cinder_harness_bt_connected(void);
+int  cinder_harness_bt_radio_on(void);
+
+#ifdef __cplusplus
+}
+#endif

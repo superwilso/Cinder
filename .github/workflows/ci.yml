@@ -81,11 +81,12 @@ jobs:
         run: cargo clippy --all-targets -- -D clippy::correctness -D clippy::suspicious
 
   # ── the half of the tree nothing used to check ─────────────────────────────────────────────────
-  # Linux only, no cross toolchain, no matrix — about a minute. Every step here was run locally and
-  # passes before being wired, so this job is green from its first commit rather than red on
-  # arrival with a promise to fix it later.
+  # Linux only, no cross toolchain, no matrix — about a minute. Every step here is run locally and
+  # passing before being wired. (The first version of this job was NOT: the shellcheck step went
+  # red on its first run because the runner's shellcheck was older than the local one. Hence the
+  # pinning below, and hence "run it locally first" being written down rather than assumed.)
   native:
-    name: C/C++ syntax + self-tests + shell
+    name: C/C++ syntax + self-tests + shell + harness
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -130,6 +131,19 @@ jobs:
 
       - name: Shell syntax + lint
         run: tools/shell_check.sh
+
+      # The app itself, BOOTED. Everything above checks pieces in isolation; this links the real
+      # main.cpp against fake Sony services and a virtual clock, runs the easel lifecycle, and
+      # asserts on the call trace — that the paired list and the notification listener are set up
+      # during bring-up, that a service which is not there yet degrades a feature instead of the
+      # Home app, that the idle Bluetooth poll still backs off. Those are the defects this project
+      # actually ships, and nothing else in CI can see them.
+      #
+      # Costs about two seconds, build included: the harness replaces sleeping with advancing a
+      # counter, so two virtual minutes of device time is a few milliseconds of CPU.
+      # See cinder-home/harness/README.md for what it does and does not prove.
+      - name: Off-device harness (boots main.cpp against fake services)
+        run: cinder-home/harness/run.sh
 
   payload:
     name: dist payload is complete
