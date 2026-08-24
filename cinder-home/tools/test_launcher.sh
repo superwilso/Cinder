@@ -81,7 +81,18 @@ scenario "cable + /data opt-out"                  cinder 'echo CONFIGURED > $R/s
 scenario "cable + /contents opt-out"              cinder 'echo CONFIGURED > $R/sys/class/android_usb/android0/state; : > $R/contents/cinderhome_cable_off'
 scenario "power_supply online only"               stock  'echo 1 > $R/sys/class/power_supply/usb/online'
 scenario "/contents NOT mounted (the brick)"      stock  'printf "rootfs / rootfs rw 0 0\n" > $R/proc/mounts'
-scenario "/data unwritable -> no safety net"      stock  'chmod 555 $R/data/cinder'
+# THE SAFETY NET CANNOT BE ARMED. Two ways of saying it, because one of them lies when the test
+# runs as root: chmod 555 does not stop uid 0, so on a root shell the counter write SUCCEEDS, the
+# launcher correctly starts cinder, and the case reports a failure that is about the tester rather
+# than the launcher. (On the device the launcher runs as uid 100 and 555 does block it — which is
+# why the case is kept rather than replaced.) The ENOTDIR variant blocks everyone, so it is the one
+# that actually holds the launcher to account here.
+if [ "$(id -u)" = 0 ]; then
+  printf '  skip  %-46s -> chmod does not bind uid 0\n' "/data unwritable (as root)"
+else
+  scenario "/data unwritable -> no safety net"    stock  'chmod 555 $R/data/cinder'
+fi
+scenario "/data/cinder is a FILE -> no safety net" stock 'rm -rf $R/data/cinder; : > $R/data/cinder'
 scenario "counter 2 of MAXBAD 4 -> still tries"    cinder 'echo 2 > $R/data/cinder/bootcount'
 scenario "counter 4 hits MAXBAD -> latch"         stock  'echo 3 > $R/data/cinder/bootcount; touch -d "2020-01-01" $R/cinder 2>/dev/null'
 scenario "already latched (off set)"              stock  ': > $R/data/cinder/off; touch -d "2020-01-01" $R/cinder'
