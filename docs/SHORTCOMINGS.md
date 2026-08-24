@@ -377,6 +377,29 @@ Stated plainly, because the weaknesses above are only survivable *because* of th
 > degraded branch. **A2 is untouched** — `cinder-audio`'s shims are behind the stub boundary, so
 > the harness exercises the app's use of them, not the shims themselves.
 >
+> **2026-08-24, end of day — where the harness got to.** Twenty scenarios, 74 assertions, nine
+> seconds including the build, and it now also runs from `build.sh`, so it gates a flash and not
+> just a push. Beyond the bring-up and pacing work above it grew a fake device filesystem (`fopen`,
+> `open` and `stat` served from a private tree, with files that can CHANGE part way through a run)
+> and fake input (`/dev/input/event*` as real FIFOs, so touch and buttons reach the app the way the
+> driver delivers them). That closed the last two "nothing checks this at all" surfaces:
+>
+> * **hardware edges** — headphones out mid-track pauses within 496 ms; a PC appearing hands the
+>   volume over once and takes it back when the cable goes; auto power-off fires when idle and does
+>   not fire while playing or on a charger;
+> * **input** — a dark panel wakes on touch *without* also pressing what was under the finger; a
+>   tap is a tap and a drag is a drag; raw evdev codes decode to the right buttons; the volume
+>   rocker accelerates, stops on release, and gives up on a stuck key.
+>
+> Seven defects in total, all one shape — **work on a timer, for a condition that cannot change,
+> that nobody stops** — and the pacing rule now lives in one place (`retry_log`) rather than seven.
+>
+> **What it still cannot see** is written down in `cinder-home/harness/README.md` and again in
+> [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md): the ABI, the ARM link and GLIBC ceiling, `alarm()`
+> and the guard budgets, `dlopen`ed services, the navigator's own decisions, **A2's `cinder-audio`
+> shims**, and — the one worth repeating — `system`/`popen` are recording stubs, so every setuid
+> helper "fails" there and the SUCCESS paths of MSC and power-off have no coverage at all.
+>
 > **Still open: 4, 5, 6, 7, 8, 10.**
 
 | # | Action | Cost | Why this order |
