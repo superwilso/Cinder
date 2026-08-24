@@ -668,7 +668,7 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   radio on (it powered the radio down until 2026-07-29).
 - **Devices screen — switch between paired headphones** *(new 2026-07-30. Every call underneath it is
   proven on hardware — `cinder-probe --btconnect` got `rc=1` and, more to the point, the service
-  echoed the address back: `BtTransmitterService.cc:229 RequestConnection [ac:80:0a:56:a9:91]`. The
+  echoed the address back: `BtTransmitterService.cc:229 RequestConnection [00:00:5e:00:53:01]`. The
   screen itself still wants one hands-on tap-through.)*:
   Bluetooth ▸ "Pair new device" opens a list of every
   device the radio holds a link key for, read from `BtCommonServiceClient::GetPairedDeviceInfo`

@@ -1,5 +1,13 @@
 # Bluetooth pairing + NFC tap-to-pair — client vtables
 
+> **Bluetooth addresses in this file are REDACTED.** Every `00:00:5E:00:53:xx` below stood for a
+> real peer in the original capture — `:01` the WH-1000XM4, `:02` the CMF Buds Pro 2. A BD address
+> is a permanent unique identifier for somebody's physical device, and this repository is public,
+> so the real ones were replaced with the range RFC 7042 §2.1.2 reserves for documentation.
+> Nothing here depends on their value: what the findings turn on is that an address is *present*,
+> that it is six bytes, and which device it belongs to — and the device is named alongside it.
+> The same substitution was applied across `cinder-home/src/`, `STATUS.md` and `docs/`.
+
 **Status: the API surface is fully recovered. No Ghidra needed.**
 
 `pst::services::*Client` classes export only their FACTORY; every method is virtual, so calling one
@@ -204,7 +212,7 @@ looked strong and each cost a device run.
 - **Candidate 1 (`SetCurrentSource(true)` as a precondition) — dead.** Added it before the connect.
   No change: status stayed `0` for all 12 polled seconds.
 - **Candidate 2 (empty last-device record) — dead.** logcat, service side:
-  `[BT|BtTransmitterService.cc:257] last device found [AC:80:0A:56:A9:91]`. The record exists, and
+  `[BT|BtTransmitterService.cc:257] last device found [00:00:5E:00:53:01]`. The record exists, and
   `/data/Bluetooth/devdb/dev_cache` shows that MAC sitting immediately before the name
   `WH-1000XM4`, so the connect was aimed at the right headphones the whole time.
 
@@ -512,8 +520,8 @@ Typed read on device:
 
 ```text
 btinfo: typed rc=1 count=2
-  [0] AC:80:0A:56:A9:91  'WH-1000XM4'      cod=0x240404 key=16B flags=1,1
-  [1] 3C:B0:ED:3B:73:BA  'CMF Buds Pro 2'  cod=0x240404 key=16B flags=1,1
+  [0] 00:00:5E:00:53:01  'WH-1000XM4'      cod=0x240404 key=16B flags=1,1
+  [1] 00:00:5E:00:53:02  'CMF Buds Pro 2'  cod=0x240404 key=16B flags=1,1
 ```
 
 The single strongest confirmation of the ABI is in that output: the 10-character name arrived as a
@@ -623,14 +631,14 @@ was added to test the safe one of the three (a connect is reversible; `DeleteLin
 pairing this firmware's Cinder cannot recreate). Result:
 
 ```
-[cinder-probe] btconnect: RequestConnection(AC:80:0A:56:A9:91) …
+[cinder-probe] btconnect: RequestConnection(00:00:5E:00:53:01) …
 [cinder-probe] btconnect: RequestConnection rc=1
 ```
 
 and, from the service side, the address **echoed back byte for byte**:
 
 ```
-I/hagodaemon: [BT] BtTransmitterService.cc:229] RequestConnection [ac:80:0a:56:a9:91]
+I/hagodaemon: [BT] BtTransmitterService.cc:229] RequestConnection [00:00:5e:00:53:01]
 ```
 
 That is the proof — not `rc=1`, which only says the stub returned true. Since `DeleteLinkkey`,
@@ -1358,7 +1366,7 @@ by the *other* call.
 ```
 nfc: Open() slot4 rc=0
 nfc: Start(1) rc=0 (ok) -> GetCurrentMode=1
-nfc: *** BLUETOOTH OOB TAG — addr=AC:80:0A:56:A9:91 (6 bytes) ***
+nfc: *** BLUETOOTH OOB TAG — addr=00:00:5E:00:53:01 (6 bytes) ***
 ```
 
 A WH-1000XM4 held against the rear panel produced a callback within seconds — the first time
@@ -1374,7 +1382,7 @@ A WH-1000XM4 held against the rear panel produced a callback within seconds — 
 
 | offset | type | value |
 |---|---|---|
-| +0x00 | `std::vector<uint8_t>` | the BD address — begin/end 6 bytes apart, `AC:80:0A:56:A9:91` |
+| +0x00 | `std::vector<uint8_t>` | the BD address — begin/end 6 bytes apart, `00:00:5E:00:53:01` |
 | +0x0c | `uint32` | `0x240404` = class-of-device, and 0x240404 *is* the headphone CoD |
 | +0x10 | `std::vector<uint8_t>` | begin 0xb3900550, end 0xb3900560 — a **16-byte** block, the OOB pairing material |
 | +0x1c | `std::string` | `"WH-1000XM4"` — SSO form, length byte `0x14` = 10 << 1 |
@@ -1515,11 +1523,11 @@ default. With it on, the HCI trace shows exactly what the service does, and what
 arguments mean:
 
 ```
-    0.015 CMD 0x0405 Create Connection          -> 3C:B0:ED:3B:73:BA
+    0.015 CMD 0x0405 Create Connection          -> 00:00:5E:00:53:02
     5.014 CMD 0x0408 Create Connection Cancel                        <- `interval` later
     5.016 EVT 0x03   Connection Complete        status=PAGE TIMEOUT (peer did not answer)
     5.021 CMD 0x0c1a Write Scan Enable          0x02 (page scan)
-   15.032 CMD 0x0405 Create Connection          -> 3C:B0:ED:3B:73:BA  <- next attempt
+   15.032 CMD 0x0405 Create Connection          -> 00:00:5E:00:53:02  <- next attempt
 ```
 
 * **`interval` is the page timeout per attempt, not the gap.** The gap is a further ~10 s, so the

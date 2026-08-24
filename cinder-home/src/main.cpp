@@ -2635,7 +2635,7 @@ static void refresh_bt_connected() {
         // THE ADDRESS IS THE SIGNAL, NOT THE RETURN VALUE. Measured 2026-07-30 with a WH-1000XM4
         // connected and playing: `cinder-probe --btwho` reported
         //   GetBtStatus=3  AvSrc=5  Avrcp=2
-        //   GetConnectInformation rc=0 addr=AC:80:0A:56:A9:91 name='WH-1000XM4'
+        //   GetConnectInformation rc=0 addr=00:00:5E:00:53:01 name='WH-1000XM4'
         // — a filled address and name alongside a ZERO return. The client stub's int is a transaction
         // status (0 = OK), not the service method's `bool`. This code used to gate on
         // `rc && !addr.empty()`, so it threw away a perfectly good name on every real connection and
@@ -2772,11 +2772,11 @@ static std::vector<std::vector<unsigned char>> g_bt_paired;
 // What the two u32s ACTUALLY mean, read off the HCI trace (`--btlink hci on`, decoded with
 // analysis/tools/btsnoop_decode.py, 2026-08-19):
 //
-//   0.015  CMD Create Connection        -> 3C:B0:ED:3B:73:BA
+//   0.015  CMD Create Connection        -> 00:00:5E:00:53:02
 //   5.014  CMD Create Connection Cancel                       <- interval later, to the millisecond
 //   5.016  EVT Connection Complete      status=PAGE TIMEOUT
 //   5.021  CMD Write Scan Enable        0x02 (page scan)
-//  15.032  CMD Create Connection        -> 3C:B0:ED:3B:73:BA  <- and again
+//  15.032  CMD Create Connection        -> 00:00:5E:00:53:02  <- and again
 //
 // So `interval` is the PAGE TIMEOUT allowed for each attempt, not the gap between them; the gap is
 // a further ~10 s, making the cycle interval+10. Each count is therefore ~15 s of wall clock.
@@ -3466,7 +3466,7 @@ static void bt_poll_sound_status() {
 //
 // The payload, recovered from that tap rather than guessed:
 //
-//     +0x00  std::vector<uint8_t> addr    AC:80:0A:56:A9:91
+//     +0x00  std::vector<uint8_t> addr    00:00:5E:00:53:01
 //     +0x0c  uint32               cod     0x240404 (class-of-device: headphones)
 //     +0x10  std::vector<uint8_t>         16 bytes — the OOB block
 //     +0x1c  std::string          name    "WH-1000XM4"
@@ -3601,7 +3601,7 @@ static int bt_request_connection(const std::vector<unsigned char>& addr, const c
 // coincidence. Reported 2026-08-17: "the nfc turns the headphones on but i think they connect
 // because they previously were, not because of the tap." Correct, and the log agreed:
 //
-//   nfc: tapped AC:80:0A:56:A9:91 'WH-1000XM4' — pairing
+//   nfc: tapped 00:00:5E:00:53:01 'WH-1000XM4' — pairing
 //   nfc: Pairing rc=1                      <-- rc=1 IS success; the call was simply the wrong verb
 //
 // So the tap now dispatches on what the device actually is:

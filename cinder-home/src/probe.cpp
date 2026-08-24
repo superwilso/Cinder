@@ -5770,7 +5770,7 @@ static int bt_probe(bool disconnect, bool cycle) {
     // write at a garbage offset inside that struct. Recover the layout before calling it again.
     //
     // It is not needed for the connect question anyway: logcat already proves the record exists —
-    // `BtTransmitterService.cc:257  last device found [AC:80:0A:56:A9:91]`.
+    // `BtTransmitterService.cc:257  last device found [00:00:5E:00:53:01]`.
 
     g_pump_run = false;
     std::fprintf(stderr, "[cinder-probe] bt: done (%u pump ticks)\n", g_pump_ticks);

@@ -104,11 +104,11 @@ wrong moment wait up to five minutes.
 The HCI trace pins the arguments down further than the prototype does:
 
 ```
- 0.015 CMD 0x0405 Create Connection        -> 3C:B0:ED:3B:73:BA   (the LAST device, service's choice)
+ 0.015 CMD 0x0405 Create Connection        -> 00:00:5E:00:53:02   (the LAST device, service's choice)
  5.014 CMD 0x0408 Create Connection Cancel                        <- exactly `interval` later
  5.016 EVT 0x03   Connection Complete      status=PAGE TIMEOUT
  5.021 CMD 0x0c1a Write Scan Enable        0x02 (page scan)
-15.032 CMD 0x0405 Create Connection        -> 3C:B0:ED:3B:73:BA
+15.032 CMD 0x0405 Create Connection        -> 00:00:5E:00:53:02
 ```
 
 #### The count has a floor of 5, and it is enforced SILENTLY (verified 2026-08-19)
