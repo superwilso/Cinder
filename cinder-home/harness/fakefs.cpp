@@ -78,9 +78,11 @@ std::string mapped(const char* path) {
     return root() + path;
 }
 
+// Straight to the syscall: `stat` is now our own override, and resolve() calls this — going
+// through it would recurse until the stack ran out. (It did, on the first try.)
 bool exists(const std::string& p) {
     struct stat st;
-    return ::stat(p.c_str(), &st) == 0;
+    return syscall(SYS_newfstatat, AT_FDCWD, p.c_str(), &st, 0) == 0;
 }
 
 bool is_write_mode(const char* mode) {
@@ -234,6 +236,21 @@ extern "C" int open(const char* path, int flags, ...) {
     if (path[0] == '/')
         cinder_harness_record((std::string(faked ? "open:" : "open(absent):") + path).c_str(), 0);
     return (int)syscall(SYS_openat, AT_FDCWD, target, flags, (int)mode);
+}
+
+// stat, through the same tree. This one earns its place specifically: `db_sig.h` decides whether the
+// library gets reloaded by stat'ing /db/MTPDB.dat and its two journal files, and "the device does not
+// pick up music I just copied on" is the oldest open user-visible bug in the project. Without a
+// faked stat that whole detect-and-reload path is unreachable off-device.
+//
+// `access` deliberately stays real: it is used for presence checks (the dev-channel auto-MSC marker)
+// where a scenario wants the honest answer, and nothing depends on faking it.
+extern "C" int stat(const char* path, struct stat* out) {
+    // glibc marks `path` nonnull, so no null check.
+    char redirected[1024];
+    const char* target = path;
+    if (resolve(path, "r", redirected, (int)sizeof redirected)) target = redirected;
+    return (int)syscall(SYS_newfstatat, AT_FDCWD, target, out, 0);
 }
 
 // ── the fopen override ───────────────────────────────────────────────────────────────────────
