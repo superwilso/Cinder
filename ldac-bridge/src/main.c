@@ -27,7 +27,9 @@
 // .UPG flash. See ldac-bridge/TEST.md. Once those answers are in, the pump belongs here too (or,
 // more likely, this whole pipeline moves inside cinder-home, which is an easel app and therefore
 // has a live framework already).
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

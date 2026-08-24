@@ -331,6 +331,12 @@ Stated plainly, because the weaknesses above are only survivable *because* of th
 > `tools/host_syntax_check.sh`) against a **pinned** linter. A gate whose version floats is a gate
 > that can turn red with no source change: the same fragility class as the `<cstdint>` bug above.
 >
+> **2026-08-24 — the gate got stricter.** `tools/host_syntax_check.sh` now runs
+> `-Wall -Wextra -Werror`, in **both** build channels. The C/C++ had never been compiled with
+> warnings on; the first run produced seven across 19,435 lines and all seven were fixed rather
+> than tolerated. The gate then immediately caught two more that a manual sweep had missed. Deep
+> sweep and its nine clean areas: [`AUDIT_2026-08-24_deep_sweep.md`](AUDIT_2026-08-24_deep_sweep.md).
+>
 > **Still open: 4, 5, 6, 7, 8, 10.**
 
 | # | Action | Cost | Why this order |
