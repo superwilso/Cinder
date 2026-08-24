@@ -30,6 +30,7 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -359,6 +360,38 @@ time_t time(time_t* t) {
 // ── libc overrides: the device surface main.cpp shells out to ────────────────────────────────
 // Recorded, not executed. `system("… cinder-msc usb-rescue")` on a build machine would at best do
 // nothing and at worst find a same-named binary; in the trace it is a fact the test can assert on.
+
+// ── the app's log, counted ───────────────────────────────────────────────────────────────────
+// clog_ writes one prefixed line to stderr per event and fflushes it, and the launcher redirects
+// stderr to /contents/cinderhome.log — a file on the fragile vfat partition the user's music also
+// lives on. So a log line is a flash write, and a log line ON A TIMER is a flash write per tick
+// forever. Two defects of exactly that shape have already shipped (a boot-animation re-kill at
+// 62 Hz, and a bootcount retry at 1 Hz that logged its failure every time and accounted for 99.5%
+// of a six-hour log). Counting the lines makes the whole class assertable: see the `log-volume`
+// scenario.
+//
+// Only lines carrying the app's own prefix are counted. fprintf is a shared symbol — the harness
+// prints through it too — and the prefix is what tells the app's voice from ours.
+int fprintf(FILE* stream, const char* fmt, ...) {
+    char buf[2048];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (!std::strncmp(buf, "[cinder-home]", 13)) {
+        Lock l; ensure();
+        // The line itself goes into the trace name, trimmed: a dump then shows WHICH line ran away,
+        // which is the only question worth asking once the count is too high.
+        std::string text(buf);
+        while (!text.empty() && (text[text.size() - 1] == '\n' || text[text.size() - 1] == ' '))
+            text.erase(text.size() - 1);
+        if (text.size() > 96) text.resize(96);
+        g_trace->push_back(Call{"log", 1, g_now_ms});
+        g_trace->push_back(Call{text, 0, g_now_ms});
+    }
+    if (n > 0) fwrite(buf, 1, (size_t)(n < (int)sizeof buf ? n : (int)sizeof buf - 1), stream);
+    return n;
+}
 
 int system(const char* cmd) {
     cinder_harness_record("system", 0);
