@@ -20,6 +20,8 @@ extern "C" {
 
 // ── the stub side (called by generated stubs and the fakes) ──────────────────────────────────
 void cinder_harness_record(const char* name, long long arg);
+// Same, for a caller that already holds the harness lock. Only the scheduled-filesystem hook does.
+void cinder_harness_record_locked(const char* name, long long arg);
 // Returns 1 and fills *out if the test scripted a return value for this call, else 0.
 int  cinder_harness_scripted(const char* name, long long* out);
 
@@ -66,6 +68,29 @@ void cinder_harness_set_budget_ms(long long ms);
 // Boot the app (fake easel lifecycle -> render_up -> the real frame loop) and return once the
 // budget is spent. Everything main.cpp did is in the trace afterwards.
 int  cinder_harness_run(void);
+
+// ── a fake filesystem: the device's sysfs, procfs and /contents ──────────────────────────────
+// Nearly everything cinder-home knows about its hardware it reads with fopen from an absolute
+// path — the battery percentage, whether a charger is attached, whether the headphones are plugged
+// in, the persisted settings, the resume queue. On a build machine those paths are simply absent,
+// so every scenario runs against a device with a flat battery reading of -1 and nothing plugged in.
+//
+// These put files where the app will look. `fs_write` creates the file (and its parent
+// directories) inside a private tree, and the fopen override serves reads from there; `fs_mkdir`
+// makes a directory exist so that a WRITE the app performs succeeds instead of failing. Anything
+// not placed there falls through to the real filesystem, which is what makes an absent file still
+// mean absent.
+void cinder_harness_fs_write(const char* path, const char* content);
+void cinder_harness_fs_mkdir(const char* path);
+// What the app currently believes is in the file (after its own writes) — how a test checks that
+// something was persisted.
+int  cinder_harness_fs_read(const char* path, char* buf, int cap);
+// Change a file PART WAY THROUGH the run, when the virtual clock reaches `at_ms`. The device's
+// world is not static — headphones get unplugged, a charger goes in, the battery falls — and
+// almost every interesting rule in the app is an EDGE rather than a level (bt_edge.h, jack_edge.h
+// exist for exactly this). A scenario cannot make those edges happen from outside, because it is
+// blocked inside cinder_harness_run() for the whole session; so it schedules them first.
+void cinder_harness_fs_write_at(long long at_ms, const char* path, const char* content);
 
 // ── the fake radio (fake_pst.cpp), as a test fixture ─────────────────────────────────────────
 // The Bluetooth fake is stateful: SetRfOnOff drives what GetBtStatus reports, and a connect only

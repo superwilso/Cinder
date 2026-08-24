@@ -64,6 +64,7 @@ build "$OUT/main.o"       cinder-home/src/main.cpp -Dmain=cinder_app_main
 build "$OUT/harness.o"    cinder-home/harness/harness.cpp   "${WARN[@]}"
 build "$OUT/fake_easel.o" cinder-home/harness/fake_easel.cpp "${WARN[@]}" -Wno-unused-private-field
 build "$OUT/fake_pst.o"   cinder-home/harness/fake_pst.cpp  "${WARN[@]}"
+build "$OUT/fakefs.o"     cinder-home/harness/fakefs.cpp    "${WARN[@]}"
 build "$OUT/scenarios.o"  cinder-home/harness/scenarios.cpp "${WARN[@]}"
 build "$OUT/stubs.o"      "$OUT/stubs.cpp"                  "${WARN[@]}" -Wno-unused-parameter
 
@@ -71,7 +72,7 @@ build "$OUT/stubs.o"      "$OUT/stubs.cpp"                  "${WARN[@]}" -Wno-un
 # scenario with its own main, say) would otherwise break the link with a duplicate-symbol error
 # that says nothing about what is wrong.
 "$CXX" -o "$OUT/harness" \
-    "$OUT/main.o" "$OUT/harness.o" "$OUT/fake_easel.o" "$OUT/fake_pst.o" \
+    "$OUT/main.o" "$OUT/harness.o" "$OUT/fake_easel.o" "$OUT/fake_pst.o" "$OUT/fakefs.o" \
     "$OUT/scenarios.o" "$OUT/stubs.o" -lpthread || {
     echo "harness: FAILED to link" >&2; exit 1; }
 

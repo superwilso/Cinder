@@ -43,6 +43,18 @@ static void healthy_device(void) {
     cinder_harness_script("cinder_render_init", 0);
     cinder_harness_script("cinder_db_open", 0);
     cinder_harness_script("cinder_audio_init", 0);
+
+    // …and hardware for it to read. Without these the app runs against a device with no battery, no
+    // charger state and no headphone jack, which is a fine default and a useless fixture: every
+    // rule that matters here is an EDGE on one of these files.
+    cinder_harness_fs_write("/sys/class/power_supply/battery/capacity", "74\n");
+    cinder_harness_fs_write("/sys/class/power_supply/battery/status", "Discharging\n");
+    cinder_harness_fs_write("/sys/class/power_supply/usb/online", "0\n");
+    cinder_harness_fs_write("/sys/class/power_supply/usb/present", "0\n");
+    cinder_harness_fs_write("/sys/class/android_usb/android0/state", "DISCONNECTED\n");
+    cinder_harness_fs_write("/sys/class/switch/cxd3778gf_h2w/state", "1\n");   // headphones in
+    cinder_harness_fs_mkdir("/data/cinder");   // so the bad-boot counter can be cleared
+    cinder_harness_fs_mkdir("/contents");
 }
 
 // ── the app reaches the end of the easel lifecycle and brings itself up ──────────────────────
@@ -242,6 +254,51 @@ static void s_log_volume(void) {
     // verbatim — the count says there is a problem, the trace says which sentence.
 }
 
+// ── the headphones come out mid-track ────────────────────────────────────────────────────────
+// The one behaviour the Bluetooth polling work was not allowed to break, and the reason
+// jack_edge.h exists as a separate testable rule. The rule has its own self-test; this checks the
+// app RUNS it — that the jack node is still being read on a timer, that the transition is seen,
+// and that it reaches cinder_audio_pause rather than stopping at a log line.
+static void s_jack_unplug(void) {
+    healthy_device();
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_fs_write_at(60000, "/sys/class/switch/cxd3778gf_h2w/state", "0\n");
+    cinder_harness_set_budget_ms(120000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("cinder_audio_pause") >= 1, "playback was paused");
+    long long at = cinder_harness_first_ms("cinder_audio_pause");
+    std::printf("  .... paused at %lldms (unplugged at 60000ms)\n", at);
+    check_range(at, 60000, 63000, "paused within a couple of seconds of the jack going low");
+    check_eq(cinder_harness_count_between("cinder_audio_pause", 0, 59000), 0,
+             "nothing paused it before the headphones came out");
+}
+
+// ── a PC is plugged in ───────────────────────────────────────────────────────────────────────
+// The USB-MSC handoff is the one path whose own header warns that getting the ordering wrong "eats
+// the user's library". This does not check the ordering — that is shell, and the launcher's own
+// 44-case matrix covers it — but it does check the trigger: that the app notices a data host, that
+// it debounces rather than firing on the first sample, and that it goes exactly once.
+static void s_usb_msc(void) {
+    healthy_device();
+    cinder_harness_fs_write_at(60000, "/sys/class/power_supply/usb/online", "1\n");
+    cinder_harness_fs_write_at(60000, "/sys/class/power_supply/usb/present", "1\n");
+    cinder_harness_fs_write_at(60000, "/sys/class/android_usb/android0/state", "CONFIGURED\n");
+    cinder_harness_set_budget_ms(120000);
+    cinder_harness_run();
+
+    long long at = cinder_harness_first_ms("cinder_show_usb_storage");
+    std::printf("  .... MSC modal raised at %lldms (host appeared at 60000ms)\n", at);
+    check(at >= 60000, "did not hand the volume over before a host was there");
+    check_range(at, 60000, 65000, "noticed the host within a few seconds");
+    check_eq(cinder_harness_count("cinder_show_usb_storage"), 1, "handed over exactly once");
+    // The app releases PlayerService's grip on /contents before the unmount — a paused service
+    // keeps the current track's file open, and that alone makes the unmount fail EBUSY and the PC
+    // see a reader with no medium.
+    check(cinder_harness_count("cinder_audio_release_sequence") >= 1,
+          "released the pinned track sequence before handing the volume over");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
@@ -252,6 +309,8 @@ static const Scenario kScenarios[] = {
     {"stalled-bringup",   s_stalled_bringup,         "bring-up that never completes must not freeze the app"},
     {"dark-playing",      s_dark_playing,            "panel dark, BT playing: the state the device lives in"},
     {"log-volume",        s_log_volume,              "the log is a flash write: keep it rare"},
+    {"jack-unplug",       s_jack_unplug,             "headphones out mid-track pauses playback"},
+    {"usb-msc",           s_usb_msc,                 "a PC appearing hands over the volume, once"},
     {nullptr, nullptr, nullptr},
 };
 
