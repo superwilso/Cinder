@@ -114,7 +114,7 @@ static void dump_maps() {
     std::fflush(stderr);
 }
 
-static void crash_handler(int sig, siginfo_t* si, void* uc_) {
+static void crash_handler(int sig, siginfo_t* si, void* /*uc_*/) {
     unsigned long pc = 0, lr = 0;
 #if defined(__arm__)
     ucontext_t* uc = static_cast<ucontext_t*>(uc_);
@@ -1827,7 +1827,6 @@ static int btlink_probe(const char* sub, const char* a1, int a2, int a3, bool ke
 
     typedef int (*fn0)(void*);
     typedef void (*fnb)(void*, const bool*);
-    typedef int (*fna)(void*, const std::vector<unsigned char>*);
     typedef int (*fnretry)(void*, const bool*, const unsigned*, const unsigned*);
     typedef int (*fnpaired)(void*, std::vector<BtPairedDeviceInformation>*);
 
