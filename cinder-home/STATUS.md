@@ -130,6 +130,11 @@
 >
 > **Backlog and what to do next:** [`ROADMAP.md`](ROADMAP.md) — re-audited 2026-07-28.
 >
+> **Everything that needs the device in one ordered run sheet:**
+> [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md) — safety rules, then phases from
+> "cannot affect boot" to "needs ears". Read it before a device session rather than reassembling
+> the list from here, the roadmap and the audits.
+>
 > **Production-readiness gap list (2026-07-27, refreshed 07-28):**
 > [`../docs/PRODUCTION_READINESS.md`](../docs/PRODUCTION_READINESS.md) — what is left before this is
 > a device the owner can rely on with no PC in the room. This file says what *is*; that one says
