@@ -87,6 +87,13 @@ consequence is not managed:
 * There is no staging environment. `cinder-probe` is the mitigation and a good one, but it still
   requires the device.
 
+> **Partly addressed 2026-08-24.** [`cinder-home/harness/`](../cinder-home/harness/README.md) boots
+> the real `main.cpp` off-device against fake services, so bring-up ORDER, service-availability
+> behaviour and polling RATE can now be observed without hardware. It does not reduce what the
+> device must settle — ABI shapes, whether a write did anything, audio itself — but it moves the
+> "did the app do the right thing given that answer" half off the critical path, and that half is
+> where the fourteen findings of 2026-08-23 came from.
+
 There is no tracked list of "claims awaiting hardware confirmation" separate from the feature
 matrix, so unverified claims and verified ones sit in the same tables and are distinguished only by
 prose.
@@ -118,6 +125,15 @@ startup stays true, and that what it never set is unset.
 **No convention exists to catch this.** `bt_service_retry` reconciles against a getter and explains
 why in a comment; the function immediately below it does not. The correct pattern is present in the
 codebase, adjacent to violations of it, and nothing propagates it.
+
+> **2026-08-24 — now at least detectable.** A convention is still the right fix (Part F item 6),
+> but the class is no longer invisible to automation:
+> [`cinder-home/harness/`](../cinder-home/harness/README.md) boots the real `main.cpp` against fake
+> Sony services and asserts on the call trace, and every row in the table above is a question about
+> that trace. The `bt-late-service` scenario makes the factory fail four times and then work — the
+> exact shape of the first two rows — and fails if the app stops asking. The catch is that a
+> scenario has to be written: the harness proves a *known* assumption is still handled, it does not
+> find the next unexamined one.
 
 ### B2. "The write landed" keeps being treated as evidence
 
@@ -336,6 +352,30 @@ Stated plainly, because the weaknesses above are only survivable *because* of th
 > warnings on; the first run produced seven across 19,435 lines and all seven were fixed rather
 > than tolerated. The gate then immediately caught two more that a manual sweep had missed. Deep
 > sweep and its nine clean areas: [`AUDIT_2026-08-24_deep_sweep.md`](AUDIT_2026-08-24_deep_sweep.md).
+>
+> **2026-08-24 — the app now BOOTS in CI.** The deep sweep ended by saying static analysis had
+> reached its limit and that the remaining defect class needed a fake-service harness. That harness
+> exists: [`cinder-home/harness/`](../cinder-home/harness/README.md) links the real `main.cpp`
+> against faked Sony service clients, a faked easel framework and a **virtual clock**, runs the
+> appmgr lifecycle, and asserts on the resulting call trace. Five scenarios, twenty assertions,
+> about two seconds including the build — because sleeping advances a counter instead of waiting,
+> so two virtual minutes of device time costs milliseconds.
+>
+> This is the first automated check that can see **B1** at all. A test of `bt_switch.h` says the
+> reconcile rule is right; the harness says the app *runs* it, during boot, and keeps running it
+> when the service was not there the first time. Three of the five scenarios are direct regression
+> tests for defects already shipped and fixed.
+>
+> It also found a real error immediately — in itself. The hand-written slot map had `AddListener`'s
+> two indices swapped between the two Bluetooth clients, so a bring-up step that worked was
+> reported as missing. That map is now **generated from `main.cpp`'s own call sites**: a harness has
+> to be harder to be wrong about than the thing it checks.
+>
+> What it still does not cover: the ABI (the fakes agree with the RE notes, so where those are
+> wrong it is wrong with them), the ARM link and GLIBC ceiling, UI input (touch comes from
+> `/dev/input`, which does not exist off-device), and `dlopen`ed services, which take their
+> degraded branch. **A2 is untouched** — `cinder-audio`'s shims are behind the stub boundary, so
+> the harness exercises the app's use of them, not the shims themselves.
 >
 > **Still open: 4, 5, 6, 7, 8, 10.**
 

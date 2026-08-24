@@ -136,3 +136,35 @@ lifecycle/state class of defect that produced fourteen findings on 2026-08-23, b
 device-only — which is the argument for the fake-service harness sketched in the simulator
 discussion, not for more static sweeping. **This sweep has reached the end of what reading the code
 can find.**
+
+---
+
+## Follow-up, same day: the harness exists
+
+The sentence above was acted on rather than filed. [`cinder-home/harness/`](../cinder-home/harness/README.md)
+links the real `main.cpp` against faked Sony service clients, a faked `easel` framework and a
+virtual clock, runs the appmgr lifecycle, and asserts on the call trace. It is wired into the
+`native` CI job and costs about two seconds including the build.
+
+Five scenarios, twenty assertions. Three are regression tests for defects this project already
+shipped: that the paired-device list and the notification listener are set up **during bring-up**
+and not when a screen first needs them; that a Sony service which is not up yet degrades a feature
+rather than the Home app; that the idle Bluetooth poll still backs off instead of running at 2 Hz
+for the life of the process.
+
+Two things it settled immediately, neither of which reading the code had:
+
+* **The app boots off-device at all.** That was not obvious before trying — `main.cpp` is 7,900
+  lines of device assumptions — and it turned out to need only three faked factories, one faked
+  framework and a clock that advances instead of waiting.
+* **A wrong slot index is visible now.** The first, hand-written slot map had `AddListener` at 39
+  on `BtCommonServiceClient` and 30 on `BtTransmitterServiceClient`; it is the other way round, and
+  the harness duly reported a bring-up step that ran correctly as missing. The map is now generated
+  from `main.cpp`'s own call sites. This does not make the harness authoritative about the DEVICE's
+  vtables — those come from the same RE notes either way — but it does mean the harness and the app
+  can no longer disagree about them silently.
+
+What this does not close: the ABI itself, the ARM link and the GLIBC ceiling, UI input (touch
+arrives from `/dev/input`), the `dlopen`ed services, and `cinder-audio`'s shims, which sit behind
+the stub boundary. Those remain device-gated, and the list of what the next device session owes is
+unchanged.
