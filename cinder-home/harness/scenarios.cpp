@@ -352,6 +352,37 @@ static void s_auto_off_charging(void) {
              "never powers off a device sitting on a charger");
 }
 
+// ── the DSP reconcile must not depend on having found a settings file ────────────────────────
+// The DSP is not ours and does not boot empty: it holds whatever the stock player last left in it.
+// This used to run only `if (g_settings_loaded)`, so on a boot with no readable
+// /contents/cinder_settings.conf — vfat, handed wholesale to a PC for USB-MSC, "both corruptible
+// and periodically absent" by this file's own description — Cinder drew its own defaults, sent
+// nothing, and the screen said one thing while the hardware did another for the whole session.
+//
+// Two of the calls are not user preferences at all, which is what made the gate indefensible:
+// SetSelectUsingEq (the device sits on the six-band EQ, which Cinder does not expose, so without
+// it every band the EQ screen writes is stored and never put in the path) and the BT sound-effect
+// flag. Both are assertions about somebody else's state.
+static void s_dsp_reconcile_no_settings(void) {
+    healthy_device();
+    cinder_harness_script("cinder_settings_load", 0);   // no saved settings, the awkward case
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+
+    // The selector reaches SetSelectUsingEq through cinder_effects_set_tone_system, not through
+    // the identically-named cinder_effects_set_select_using_eq — two FFI entry points, one Sony
+    // method (effect_shim.cpp). The harness sees the FFI boundary, so a scenario has to name the
+    // call the app actually makes; asserting on the other one fails against perfectly good code.
+    check(cinder_harness_count("cinder_effects_set_tone_system") >= 1,
+          "the EQ/tone selector is pushed even with no settings file");
+    check(cinder_harness_count("cinder_effects_set_eq") >= 1, "the EQ is pushed at boot");
+    check(cinder_harness_count("cinder_effects_set_dsee_hx") >= 1, "the sound chain is pushed at boot");
+    check(cinder_harness_count("cinder_effects_set_vpt") >= 1, "…including VPT");
+    // The one that genuinely IS a restore stays gated: with no file there is nothing to restore.
+    check_eq(cinder_harness_count("cinder_audio_set_repeat_one"), 0,
+             "repeat-one is not 'restored' from a file that does not exist");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
@@ -367,6 +398,7 @@ static const Scenario kScenarios[] = {
     {"autooff-idle",      s_auto_off_idle,           "idle and silent: power off, and back off if it fails"},
     {"autooff-playing",   s_auto_off_playing,        "never power off while audio is playing"},
     {"autooff-charging",  s_auto_off_charging,       "never power off a device on a charger"},
+    {"dsp-reconcile",     s_dsp_reconcile_no_settings, "the DSP is reconciled even with no settings file"},
     {nullptr, nullptr, nullptr},
 };
 
