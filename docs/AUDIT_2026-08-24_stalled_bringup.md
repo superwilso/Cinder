@@ -107,6 +107,27 @@ WH-1000XM4 linked, playing, counting one minute three minutes in:
 else, and a forced full repaint runs once every 5 s as designed. That is the number the PR claimed,
 now measured rather than argued.
 
+## A second one, same shape, found the same way
+
+A six-hour virtual session (the harness runs it in about a second) turned up a smaller version of
+the same defect. `mark_healthy_maybe()` writes `/data/cinder/bootcount` to tell the launcher this
+boot was good; if the file cannot be opened it logs a failure and retries on the next housekeeping
+tick — every second, forever, with a line each time. **21,594 of that log's 21,700 lines were the
+same sentence.**
+
+The retry is right: `/data` can mount after the app has painted. The logging was not. It now writes
+two lines instead — the first carrying `errno`, which is the whole diagnosis (`ENOENT` is "/data is
+not mounted", `EROFS` is "it is, read-only"), and a second one a minute in saying what the failure
+actually **costs**: with the counter uncleared the launcher treats this boot as bad and will
+auto-revert to stock. That sentence matters and it was buried under eighty thousand copies a day of
+the first one.
+
+`cinder-home/harness/run.sh log-volume` now puts a ceiling on the whole class — under 300 log lines
+across five steady-state hours, measured from an hour in so boot is still allowed to be chatty. It
+reads 40 today, and 18,040 before this fix. Every line is an `fflush` to `/contents`, the same vfat
+partition the user's music is on, so the count is a flash-write budget rather than a tidiness
+preference.
+
 ## Why nothing found this before
 
 Every gate the project has was looking somewhere else. It is not a syntax error, not a warning, not

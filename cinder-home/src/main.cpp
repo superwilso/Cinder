@@ -723,7 +723,29 @@ void mark_healthy_maybe() {
     if (g_counter_reset || g_first_paint_at == 0) return;
     if (std::time(nullptr) - g_first_paint_at >= 8) {
         FILE* f = std::fopen("/data/cinder/bootcount", "w");
-        if (!f) { clog_("healthy: FAILED to open /data/cinder/bootcount"); return; }  // retry next tick
+        if (!f) {
+            // KEEP RETRYING, BUT STOP TALKING ABOUT IT. This is reached from the ~1 Hz
+            // housekeeping tick, and the retry is deliberate — /data can mount after we paint. The
+            // logging was not: every failure wrote a line to /contents/cinderhome.log and fflush'ed
+            // it, so a device where this path never opens spent 86,400 flushed writes a day saying
+            // the same thing. Measured off-device over six virtual hours (cinder-home/harness):
+            // 21,594 of the log's 21,700 lines were this one sentence.
+            //
+            // Two lines instead. The first carries errno, which is the whole diagnosis — ENOENT is
+            // "/data is not mounted", EROFS is "it is, read-only". The second fires once, a minute
+            // in, and says what the failure actually COSTS: with the counter uncleared the launcher
+            // treats this boot as bad and will auto-revert. That is the sentence someone reading
+            // this log needs, and it was buried in eighty thousand copies of the first one.
+            static int fails = 0;
+            if (fails == 0)
+                clog_(("healthy: FAILED to open /data/cinder/bootcount, errno=" +
+                       std::to_string(errno) + " — will keep retrying, quietly").c_str());
+            else if (fails == 60)
+                clog_("healthy: bootcount STILL unwritable after 60 tries — this boot will not be "
+                      "marked good, so the launcher will auto-revert to stock");
+            if (fails < 1000000) fails++;
+            return;   // retry next tick
+        }
         std::fputc('0', f);
         std::fclose(f);
         ::sync();
