@@ -55,6 +55,10 @@ static void healthy_device(void) {
     cinder_harness_fs_write("/sys/class/switch/cxd3778gf_h2w/state", "1\n");   // headphones in
     cinder_harness_fs_mkdir("/data/cinder");   // so the bad-boot counter can be cleared
     cinder_harness_fs_mkdir("/contents");
+    // The launcher's log target has to EXIST: entering USB-MSC moves the app's fds off /contents
+    // and puts them back on the way out, and with no file to go back to they land on /dev/null and
+    // everything after the session is invisible.
+    cinder_harness_fs_write("/contents/cinderhome.log", "");
 }
 
 // ── the app reaches the end of the easel lifecycle and brings itself up ──────────────────────
@@ -386,6 +390,44 @@ static void s_dsp_reconcile_no_settings(void) {
              "repeat-one is not 'restored' from a file that does not exist");
 }
 
+// ── the whole mass-storage round trip: cable in, cable out ───────────────────────────────────
+// The exit path is not a second feature, it is the SAME one — the modal, the remount and the USB
+// mode all have to come back, and the only way out of the modal is Back. `cinder_input` is only
+// reached from the MSC branch in this harness (input_pump never fires without /dev/input), so
+// scripting it to answer Back is how the cable-pull exit gets exercised.
+//
+// The other half of this scenario is what the app does while the session is WEDGED. `cinder-msc` is
+// a recording stub here, so the gadget LUN never gets a backing file — the "PC sees a reader with
+// no medium" case the code's own comments are about. `ensure_msc_lun` runs a retry ladder costing
+// about two seconds of sleeps, and it is called from the ~1 Hz housekeeping, so before this was
+// found the render thread spent two seconds out of every one inside it: an entire MSC session with
+// a UI that does not repaint and a Back button sampled every other second.
+static void s_msc_cycle(void) {
+    healthy_device();
+    cinder_harness_script("cinder_input", 19 /* CINDER_ACT_EXIT_USB_MSC */);
+    cinder_harness_fs_write_at(60000,  "/sys/class/power_supply/usb/online", "1\n");
+    cinder_harness_fs_write_at(60000,  "/sys/class/power_supply/usb/present", "1\n");
+    cinder_harness_fs_write_at(60000,  "/sys/class/android_usb/android0/state", "CONFIGURED\n");
+    cinder_harness_fs_write_at(120000, "/sys/class/power_supply/usb/online", "0\n");
+    cinder_harness_fs_write_at(120000, "/sys/class/power_supply/usb/present", "0\n");
+    cinder_harness_fs_write_at(120000, "/sys/class/android_usb/android0/state", "DISCONNECTED\n");
+    cinder_harness_set_budget_ms(200000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc on"), 1,
+             "handed the volume over once when the cable went in");
+    long long off = cinder_harness_first_ms("system:/system/vendor/unknown321/bin/cinder-msc off");
+    std::printf("  .... released at %lldms (cable pulled at 120000ms)\n", off);
+    check_range(off, 120000, 126000, "took it back when the cable came out");
+
+    // The wedged-session guard. The ladder writes the LUN backing file eight times per run, so the
+    // count of those writes is the count of ladders — one a second would be ~60 over the session.
+    int lun_writes = cinder_harness_count(
+        "system:echo /emmc@contents > /sys/class/android_usb/android0/f_mass_storage/lun/file 2>/dev/null");
+    std::printf("  .... %d LUN bind attempts over a 60s wedged session\n", lun_writes);
+    check_range(lun_writes, 1, 80, "a LUN that will not bind is retried on a timer, not continuously");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
@@ -398,6 +440,7 @@ static const Scenario kScenarios[] = {
     {"log-volume",        s_log_volume,              "the log is a flash write: keep it rare"},
     {"jack-unplug",       s_jack_unplug,             "headphones out mid-track pauses playback"},
     {"usb-msc",           s_usb_msc,                 "a PC appearing hands over the volume, once"},
+    {"msc-cycle",         s_msc_cycle,               "cable in and out: the whole mass-storage round trip"},
     {"autooff-idle",      s_auto_off_idle,           "idle and silent: power off, and back off if it fails"},
     {"autooff-playing",   s_auto_off_playing,        "never power off while audio is playing"},
     {"autooff-charging",  s_auto_off_charging,       "never power off a device on a charger"},

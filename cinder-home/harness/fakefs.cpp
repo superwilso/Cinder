@@ -27,25 +27,38 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 namespace {
 
 std::string g_root;
 
+void mkdirs(const std::string& path);
+std::string dirname_of(const std::string& p);
+
 // The private tree lives beside the harness build output so `run.sh` can clean it, and carries the
 // pid so scenarios running side by side cannot see each other's device.
+//
+// ABSOLUTE, resolved once at startup. It used to be the relative ".harness/fs-<pid>", and the app
+// calls chdir("/") on its way into a USB-MSC session (fds and the cwd both have to come off
+// /contents before it can be unmounted) — after which every fake file silently stopped resolving.
+// The device appeared to lose its battery, its charger and its headphone jack the moment a PC was
+// plugged in, which is a confusing way to be told your fixture is relative.
 const std::string& root() {
     if (g_root.empty()) {
-        char buf[256];
         const char* env = std::getenv("CINDER_HARNESS_FSROOT");
-        if (env && *env) {
+        if (env && *env && env[0] == '/') {
             g_root = env;
         } else {
-            std::snprintf(buf, sizeof buf, ".harness/fs-%ld", (long)getpid());
+            char cwd[512] = {0};
+            if (!::getcwd(cwd, sizeof cwd - 1)) std::snprintf(cwd, sizeof cwd, "/tmp");
+            char buf[640];
+            if (env && *env) std::snprintf(buf, sizeof buf, "%s/%s", cwd, env);
+            else             std::snprintf(buf, sizeof buf, "%s/.harness/fs-%ld", cwd, (long)getpid());
             g_root = buf;
         }
-        ::mkdir(".harness", 0755);
+        mkdirs(dirname_of(g_root));
         ::mkdir(g_root.c_str(), 0755);
     }
     return g_root;
@@ -115,7 +128,10 @@ bool resolve(const char* path, const char* mode, char* out, int cap) {
 
 // Open without going through our own fopen override.
 FILE* raw_open(const char* path, bool writing) {
-    int fd = ::open(path, writing ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY, 0644);
+    // Straight to the syscall: `open` is now our own override, and going through it here would
+    // re-resolve a path that is already inside the private tree.
+    int fd = (int)syscall(SYS_openat, AT_FDCWD, path,
+                          writing ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY, 0644);
     if (fd < 0) return nullptr;
     FILE* f = ::fdopen(fd, writing ? "w" : "r");
     if (!f) ::close(fd);
@@ -181,7 +197,40 @@ int cinder_harness_fs_read(const char* path, char* buf, int cap) {
 
 } // extern "C"
 
-// ── the override ─────────────────────────────────────────────────────────────────────────────
+// ── the overrides ────────────────────────────────────────────────────────────────────────────
+// `open` as well as `fopen`, because the app uses both and the difference matters in exactly the
+// place it is hardest to see: entering a USB-MSC session moves the app's own log fds off /contents
+// with open(), and putting them back on the way out is what makes everything after the session
+// visible at all. With only fopen faked, that came back "cannot open (errno=2)" and the rest of the
+// run went to /dev/null.
+//
+// It cannot call the real open by name either, so it goes straight to the syscall. `access` and
+// `stat` are deliberately NOT faked — they are used for presence checks the scenarios want to
+// answer honestly (a dev-channel marker file that is genuinely absent), and faking them would make
+// "the file is not there" untestable.
+extern "C" int open(const char* path, int flags, ...) {
+    mode_t mode = 0;
+    if (flags & (O_CREAT | O_TMPFILE)) {
+        va_list ap;
+        va_start(ap, flags);
+        mode = (mode_t)va_arg(ap, int);
+        va_end(ap);
+    }
+    // glibc marks `path` nonnull, so no null check — a caller passing null is already undefined.
+    char redirected[1024];
+    const char* target = path;
+    bool faked = false;
+    if (resolve(path, (flags & (O_WRONLY | O_RDWR | O_CREAT)) ? "w" : "r",
+                redirected, (int)sizeof redirected)) {
+        target = redirected;
+        faked = true;
+    }
+    if (path[0] == '/')
+        cinder_harness_record((std::string(faked ? "open:" : "open(absent):") + path).c_str(), 0);
+    return (int)syscall(SYS_openat, AT_FDCWD, target, flags, (int)mode);
+}
+
+// ── the fopen override ───────────────────────────────────────────────────────────────────────
 // main.o leaves `fopen` undefined, so this definition is the one the app gets. It cannot call the
 // real fopen by name — that name is now this function — so it opens with `open` and wraps the
 // descriptor with `fdopen`, neither of which the harness touches. No dlsym games, no recursion.
@@ -206,7 +255,7 @@ extern "C" FILE* fopen(const char* path, const char* mode) {
     else if (mode[0] == 'a')     flags = O_CREAT | O_APPEND | (std::strchr(mode, '+') ? O_RDWR : O_WRONLY);
     else                         flags = O_RDONLY;
 
-    int fd = ::open(target, flags, 0644);
+    int fd = (int)syscall(SYS_openat, AT_FDCWD, target, flags, 0644);
     if (fd < 0) return nullptr;
     FILE* f = ::fdopen(fd, mode ? mode : "r");
     if (!f) ::close(fd);

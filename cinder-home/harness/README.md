@@ -44,13 +44,15 @@ tests whether the app **runs** them, when, and how often.
   `easel_abi.hpp` the device build uses, and driving the same lifecycle appmgr does
   (Initialize → PostInitialize → Activate → Foreground). Booting *is* the test.
 * **`fakefs.cpp`** — the device's sysfs, procfs and `/contents`, as far as the app can tell. Nearly
-  everything cinder-home knows about its hardware it reads with `fopen` from an absolute path — the
-  battery percentage, whether a charger is attached, whether the headphones are plugged in — so one
-  `fopen` override serves those from a private tree and lets anything not placed there fall through
-  to the real filesystem, where absent still means absent. Files can also be scheduled to CHANGE
-  part way through a run (`cinder_harness_fs_write_at`), which is what makes edges — the headphones
-  coming out, a PC appearing — into scenarios. Every open is traced, because "opened once per second
-  for the life of the process" is a defect this project has already had to fix once.
+  everything cinder-home knows about its hardware it reads from an absolute path — the battery
+  percentage, whether a charger is attached, whether the headphones are plugged in — so `fopen` and
+  `open` are overridden to serve those from a private tree, and anything not placed there falls
+  through to the real filesystem, where absent still means absent. `access` and `stat` are
+  deliberately **not** faked: they are presence checks a scenario wants answered honestly. Files can
+  also be scheduled to CHANGE part way through a run (`cinder_harness_fs_write_at`), which is what
+  makes edges — the headphones coming out, a PC appearing — into scenarios. Every open is traced,
+  because "opened once per second for the life of the process" is a defect this project has already
+  had to fix once.
 * **`harness.cpp`** — the trace store, the scripting table, and a **virtual clock**. `usleep`,
   `sleep`, `clock_gettime` and `time` are defined here and win over libc, so sleeping does not wait,
   it advances a counter. Two virtual minutes of device time cost a few milliseconds.
@@ -62,6 +64,18 @@ tests whether the app **runs** them, when, and how often.
   created by the frame loop one statement before the frame loop's first sleep, and it sleeps for
   nine seconds and exits. Lose that race and the clock jumped nine seconds in one step and then
   belonged to a dead thread. It passed locally and hung in CI.
+
+## Two things that behave differently here
+
+* **`alarm()` is real time.** The virtual clock covers sleeping, not signals, so the app's own
+  construction watchdog and every `run_guarded` budget are measured in wall-clock seconds. Scenarios
+  therefore cannot exercise the guard timeouts cheaply — a renderer that fails to initialise takes
+  20 real seconds to trip the watchdog, which is why that case is explored by hand rather than
+  pinned as a scenario.
+* **`system` and `popen` never run anything.** They are recorded and return success and null
+  respectively, so every setuid helper "fails" — which is usually the case worth testing (three of
+  the defects found so far live in what happens when a helper does not work), but it does mean a
+  scenario cannot observe a helper's effect, only that it was asked for.
 
 ## What it does not do
 

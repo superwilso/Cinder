@@ -5669,7 +5669,18 @@ static void ensure_msc_lun() {
     }
     const char* s = cur;
     while (*s == ' ' || *s == '\t') ++s;
-    if (*s != 0) return; // already backed — nothing to do
+    static int  lun_fails = 0;
+    static long lun_next_ms = 0;
+    if (*s != 0) { lun_fails = 0; lun_next_ms = 0; return; }  // already backed — nothing to do
+    // THE RETRY LADDER BELOW MUST NOT RUN EVERY TICK. This function is called from the ~1 Hz
+    // housekeeping for the whole MSC session, and the ladder costs about two seconds of sleeps. So
+    // on a device where the LUN cannot be backed — the "reader with NO medium" case these comments
+    // are about, and one they have seen — the render thread spent two seconds out of every one
+    // inside here: a whole MSC session with a UI that does not repaint and a Back button (the only
+    // way out of the modal) sampled every other second. Measured off-device with the harness.
+    //
+    // The fast path above is a single file read and is unaffected; only the failing case backs off.
+    if (lun_next_ms != 0 && now_ms() < lun_next_ms) return;
     // The gadget is ALREADY enabled with functions=mass_storage,adb (the sys.sony.config=msc
     // trigger set that). The mass_storage LUN is REMOVABLE, so writing its backing file is a
     // media-INSERT event: the host sees the disk appear with NO re-enumeration. On-device RE
@@ -5711,7 +5722,12 @@ static void ensure_msc_lun() {
         }
         usleep(250000); // holder still dropping — retry the media-insert
     }
-    clog_("usb-msc: LUN STILL empty after retries — host will see a reader with NO medium");
+    lun_next_ms = now_ms() + 10000;
+    if (lun_fails < 3) {
+        clog_("usb-msc: LUN STILL empty after retries — host will see a reader with NO medium");
+        if (++lun_fails == 3)
+            clog_("usb-msc: LUN still unbacked after three ladders — retrying every 10 s, quietly");
+    }
 }
 
 // Forward decl: the MSC entry needs to dismiss its own modal if the handoff is refused, and
