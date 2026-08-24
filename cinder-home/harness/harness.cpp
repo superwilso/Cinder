@@ -27,6 +27,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -41,6 +42,7 @@ pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  g_tick = PTHREAD_COND_INITIALIZER;   // broadcast whenever the clock moves
 std::vector<Call>*   g_trace  = nullptr;
 std::vector<Script>* g_script = nullptr;
+std::vector<std::pair<std::string, long long> >* g_state = nullptr;   // the faked UI state store
 
 long long   g_now_ms   = 0;
 pthread_t   g_clock_owner = 0;
@@ -56,6 +58,7 @@ void ensure() {
     if (!g_trace)  g_trace  = new std::vector<Call>();
     if (!g_script) g_script = new std::vector<Script>();
     if (!g_never_owner) g_never_owner = new std::vector<pthread_t>();
+    if (!g_state) g_state = new std::vector<std::pair<std::string, long long> >();
 }
 
 // The REAL clock — the harness's own watchdog cannot use the virtual one it is policing.
@@ -143,10 +146,25 @@ int cinder_harness_scripted(const char* name, long long* out) {
     return 0;
 }
 
+void cinder_harness_state_set(const char* key, long long value) {
+    Lock l; ensure();
+    for (size_t i = 0; i < g_state->size(); i++)
+        if ((*g_state)[i].first == key) { (*g_state)[i].second = value; return; }
+    g_state->push_back(std::make_pair(std::string(key), value));
+}
+
+long long cinder_harness_state_get(const char* key, long long fallback) {
+    Lock l; ensure();
+    for (size_t i = 0; i < g_state->size(); i++)
+        if ((*g_state)[i].first == key) return (*g_state)[i].second;
+    return fallback;
+}
+
 void cinder_harness_reset(void) {
     Lock l; ensure();
     g_trace->clear();
     g_script->clear();
+    g_state->clear();
     g_now_ms = 0;
     g_owner_set = false;
     g_never_owner->clear();

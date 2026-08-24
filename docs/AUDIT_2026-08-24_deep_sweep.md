@@ -168,3 +168,9 @@ What this does not close: the ABI itself, the ARM link and the GLIBC ceiling, UI
 arrives from `/dev/input`), the `dlopen`ed services, and `cinder-audio`'s shims, which sit behind
 the stub boundary. Those remain device-gated, and the list of what the next device session owes is
 unchanged.
+
+**Its first exploratory run found a defect the sweep had missed**, of exactly the kind the sweep
+said it could no longer reach: a bring-up that never completes froze the entire frame loop — panel
+lit, buttons dead, 62 framework calls and 62 flushed log writes a second, forever — on two ordinary
+failures. Written up separately:
+[`AUDIT_2026-08-24_stalled_bringup.md`](AUDIT_2026-08-24_stalled_bringup.md).
