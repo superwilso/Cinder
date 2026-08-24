@@ -52,10 +52,11 @@ int       cinder_harness_count_between(const char* name, long long from_ms, long
 int       cinder_harness_before(const char* a, const char* b);
 void      cinder_harness_dump(int max_lines);          // the trace, for eyeballing a new scenario
 
-// The calling thread will never advance the virtual clock, only wait for it. The harness's own
-// main thread calls this before waiting out the run budget, so the frame loop — which is what the
-// pacing under test actually is — is guaranteed to be the thread that owns time.
-void cinder_harness_clock_never_owner(void);
+// The calling thread becomes PASSIVE: it waits for virtual time to arrive and contributes nothing
+// to when the clock jumps. The harness's own main thread calls this before waiting out the run
+// budget — its wake target is the end of the whole scenario, so letting it count would jump the
+// clock straight there and skip everything the scenario is about.
+void cinder_harness_clock_passive(void);
 
 // ── virtual clock ────────────────────────────────────────────────────────────────────────────
 long long cinder_harness_now_ms(void);

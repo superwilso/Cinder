@@ -174,6 +174,43 @@ static void s_stalled_bringup(void) {
           "housekeeping runs: the battery gauge still reaches the status bar");
 }
 
+// ── dark + playing: the state this device spends most of its life in ─────────────────────────
+// Screen off, in a pocket, music going to Bluetooth headphones, for hours. main.cpp calls the
+// awake/dark frame-rate drop "the single biggest battery lever in the app" and the whole idle
+// design rests on it — and until the harness existed, nothing outside a device session could show
+// that the lever was actually being pulled. A regression here (anything that keeps the loop at
+// 60 Hz while the panel is dark) would be the most expensive bug the app could have, and would be
+// invisible: the screen is off, so nobody would see it.
+static void s_dark_playing(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 30);   // a realistic idle timeout
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    cinder_harness_set_budget_ms(180000);
+    cinder_harness_run();
+
+    // Frame-loop rate: cinder_get_usb_dac is read once per iteration, so it counts iterations.
+    int frames = cinder_harness_count_between("cinder_get_usb_dac", 120000, 180000);
+    std::printf("  .... frame loop: %d iterations in the last 60s (awake would be ~3750)\n", frames);
+    check_range(frames, 30, 200, "the loop drops to ~1 Hz once the panel is dark");
+
+    check_eq(cinder_harness_count_between("cinder_render_tick", 120000, 180000), 0,
+             "nothing is painted while the panel is dark");
+    // Housekeeping keeps its own 1 Hz regardless of the loop rate — the sleep timer, the scrobbler
+    // and the USB-host debounce all ride on it, so it is the floor the dark budget may not cross.
+    check_range(cinder_harness_count_between("cinder_clock_tick", 120000, 180000), 50, 75,
+                "housekeeping still runs at 1 Hz with the panel dark");
+
+    int ipc = cinder_harness_count_between("BtCommon::GetBtStatus", 120000, 180000)
+            + cinder_harness_count_between("BtXmit::GetConnectInformation", 120000, 180000)
+            + cinder_harness_count_between("BtXmit::GetSoundStatus", 120000, 180000)
+            + cinder_harness_count_between("BtCommon::GetPairedDeviceInfo", 120000, 180000)
+            + cinder_harness_count_between("cinder_audio_current_uri", 120000, 180000);
+    std::printf("  .... Sony IPC: %d calls in the last 60s\n", ipc);
+    check_range(ipc, 0, 12, "a steady Bluetooth session costs single-digit IPC calls a minute");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
@@ -182,6 +219,7 @@ static const Scenario kScenarios[] = {
     {"bt-switch",         s_bt_switch_follows_radio, "the UI switch follows the radio, not itself"},
     {"bt-idle-poll",      s_bt_idle_poll_rate,       "the idle Bluetooth poll backs off"},
     {"stalled-bringup",   s_stalled_bringup,         "bring-up that never completes must not freeze the app"},
+    {"dark-playing",      s_dark_playing,            "panel dark, BT playing: the state the device lives in"},
     {nullptr, nullptr, nullptr},
 };
 

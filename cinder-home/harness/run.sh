@@ -67,7 +67,12 @@ build "$OUT/fake_pst.o"   cinder-home/harness/fake_pst.cpp  "${WARN[@]}"
 build "$OUT/scenarios.o"  cinder-home/harness/scenarios.cpp "${WARN[@]}"
 build "$OUT/stubs.o"      "$OUT/stubs.cpp"                  "${WARN[@]}" -Wno-unused-parameter
 
-"$CXX" -o "$OUT/harness" "$OUT"/*.o -lpthread || {
+# An explicit list, not "$OUT"/*.o: a stray object left in the build directory (an exploratory
+# scenario with its own main, say) would otherwise break the link with a duplicate-symbol error
+# that says nothing about what is wrong.
+"$CXX" -o "$OUT/harness" \
+    "$OUT/main.o" "$OUT/harness.o" "$OUT/fake_easel.o" "$OUT/fake_pst.o" \
+    "$OUT/scenarios.o" "$OUT/stubs.o" -lpthread || {
     echo "harness: FAILED to link" >&2; exit 1; }
 
 if [ $# -gt 0 ]; then

@@ -8,17 +8,24 @@
 // wants to know what the app is doing a minute into a Bluetooth session runs that minute in about
 // a millisecond, and it runs it the same way every time.
 //
-// Only one thread may drive the clock, or two sleeping threads would advance it at twice the rate
-// and the pacing under test would be a lie. The first thread to sleep claims it (that is the frame
-// loop, which sleeps once per frame); every other thread — the main thread waiting out the budget,
-// the detached healthy_timer — WAITS for virtual time to arrive instead of setting it.
+// Advancing it is discrete-event scheduling, and it took two wrong versions to get there:
 //
-// Waiters block on a condition variable rather than spinning. The first version had them
-// sched_yield() in a loop, which worked when a scenario was run on its own and fell apart when the
-// suite ran back to back: on a small container the spinning waiters starved the one thread that
-// was allowed to move the clock, and a 20-second scenario burned the whole real-time budget
-// reaching 9 virtual seconds. A busy-wait for a signal only another thread can send is a race
-// against the scheduler, and this one lost.
+//   1. "One owner, claimed by the first thread to sleep." The frame loop sleeps once per frame, so
+//      it was expected to claim it. It usually did — but the app's own healthy_timer is a detached
+//      thread created BY the frame loop one statement before the frame loop's first usleep, and it
+//      sleeps for nine seconds and then exits. Lose that race and the clock jumped to 9 s in one
+//      step and then belonged to a dead thread forever. It passed locally and hung in CI.
+//   2. Waiters spinning on sched_yield() while they waited for the owner. On a small container the
+//      spinners starved the one thread allowed to move the clock; a 20-second scenario burned the
+//      whole real-time budget reaching 9 virtual seconds.
+//
+// So there is no owner. Every sleeping thread registers the virtual time it wants to wake at, and
+// the clock jumps to the EARLIEST of those — which is what a discrete-event simulator does, and is
+// correct no matter which threads are sleeping. It only jumps once nothing is still executing app
+// code, tracked by a per-thread flag that `cinder_harness_record` sets: a thread that is running
+// has not yet said when it wants to wake, and jumping past it is exactly the bug above. A thread
+// that exits without ever sleeping again would block that forever, so quiescence in REAL time is
+// the fallback — 20 ms, against frames that take microseconds.
 #include "harness.h"
 
 #include <pthread.h>
@@ -45,9 +52,18 @@ std::vector<Script>* g_script = nullptr;
 std::vector<std::pair<std::string, long long> >* g_state = nullptr;   // the faked UI state store
 
 long long   g_now_ms   = 0;
-pthread_t   g_clock_owner = 0;
-bool        g_owner_set = false;
-std::vector<pthread_t>* g_never_owner = nullptr;
+
+// Per-thread role. 0 = not seen yet, RUNNING = executing app code, SLEEPING = parked with a wake
+// target registered, PASSIVE = the harness's own main thread, which waits out the run budget and
+// must never influence the clock (its target is the whole scenario; letting it count would jump
+// straight to the end).
+enum { T_NEW = 0, T_RUNNING = 1, T_SLEEPING = 2, T_PASSIVE = 3 };
+__thread int t_role = T_NEW;
+
+struct Waiter { pthread_t th; long long target; };
+std::vector<Waiter>* g_waiters = nullptr;   // threads parked with a wake target
+int       g_running = 0;                    // threads known to be executing app code right now
+long long g_last_move_real = 0;             // real ms of the last clock jump — the stall fallback
 
 struct Lock {
     Lock()  { pthread_mutex_lock(&g_lock); }
@@ -57,7 +73,7 @@ struct Lock {
 void ensure() {
     if (!g_trace)  g_trace  = new std::vector<Call>();
     if (!g_script) g_script = new std::vector<Script>();
-    if (!g_never_owner) g_never_owner = new std::vector<pthread_t>();
+    if (!g_waiters) g_waiters = new std::vector<Waiter>();
     if (!g_state) g_state = new std::vector<std::pair<std::string, long long> >();
 }
 
@@ -100,28 +116,88 @@ void watchdog_or_die() {
     _exit(3);
 }
 
-// Advance to `target` if this thread owns the clock; otherwise wait for it to get there.
+// This thread is about to execute app code. Called from cinder_harness_record (with the lock held),
+// so any thread that touches the app is counted even if it has never slept — which is the whole
+// point: the frame loop is mid-frame, not parked, at the moment healthy_timer first sleeps.
+void mark_running() {
+    if (t_role == T_NEW) { t_role = T_RUNNING; g_running++; }
+}
+
+// Jump to the earliest wake time anybody is waiting for, if nothing is still running. Caller holds
+// the lock.
+void try_advance() {
+    if (!g_waiters || g_waiters->empty()) return;
+    if (g_running > 0) {
+        // Something is executing app code and has not said when it wants to wake. Normally we wait
+        // for it — but a thread that exits without sleeping again would stall the clock for good,
+        // and the app has exactly one of those: healthy_timer sleeps nine seconds, clears the
+        // bad-boot counter and returns. So give up on the runners after 20 ms of real time with no
+        // progress, and FORGET them — otherwise every later advance pays that 20 ms again, which
+        // turned a two-second suite into a four-minute one. A frame takes microseconds, so this
+        // cannot fire on a thread that is genuinely working, and a forgotten thread re-counts
+        // itself when it next returns from a sleep.
+        if (real_ms() - g_last_move_real < 20) return;
+        g_running = 0;
+    }
+    long long earliest = (*g_waiters)[0].target;
+    for (size_t i = 1; i < g_waiters->size(); i++)
+        if ((*g_waiters)[i].target < earliest) earliest = (*g_waiters)[i].target;
+    if (earliest <= g_now_ms) return;
+    g_now_ms = earliest;
+    g_last_move_real = real_ms();
+    pthread_cond_broadcast(&g_tick);
+}
+
+void wait_a_moment() {   // caller holds the lock; releases it while parked
+    struct timespec until;
+    syscall(SYS_clock_gettime, CLOCK_REALTIME, &until);
+    until.tv_nsec += 20 * 1000000L;
+    if (until.tv_nsec >= 1000000000L) { until.tv_sec++; until.tv_nsec -= 1000000000L; }
+    pthread_cond_timedwait(&g_tick, &g_lock, &until);
+}
+
 void sleep_for(long long ms) {
     Lock l; ensure();
+    if (g_last_move_real == 0) g_last_move_real = real_ms();
     const long long target = g_now_ms + ms;
-    bool banned = false;
-    for (size_t i = 0; i < g_never_owner->size(); i++)
-        if (pthread_equal((*g_never_owner)[i], pthread_self())) banned = true;
-    if (!g_owner_set && !banned) { g_owner_set = true; g_clock_owner = pthread_self(); }
-    if (g_owner_set && pthread_equal(g_clock_owner, pthread_self())) {
-        if (target > g_now_ms) { g_now_ms = target; pthread_cond_broadcast(&g_tick); }
+
+    if (t_role == T_PASSIVE) {
+        // The harness's own main thread: it waits for virtual time to arrive and contributes
+        // nothing to when the clock jumps.
+        while (g_now_ms < target) {
+            try_advance();
+            if (g_now_ms >= target) break;
+            wait_a_moment();
+            watchdog_or_die();
+        }
         return;
     }
+
+    mark_running();
+    t_role = T_SLEEPING;
+    if (g_running > 0) g_running--;   // may already be 0 if the stall fallback forgot us
+    Waiter w; w.th = pthread_self(); w.target = target;
+    g_waiters->push_back(w);
+
     while (g_now_ms < target) {
-        // Bounded wait so the real-time watchdog still gets a chance to fire if the owner has
-        // stopped moving the clock altogether.
-        struct timespec until;
-        syscall(SYS_clock_gettime, CLOCK_REALTIME, &until);
-        until.tv_nsec += 50 * 1000000L;
-        if (until.tv_nsec >= 1000000000L) { until.tv_sec++; until.tv_nsec -= 1000000000L; }
-        pthread_cond_timedwait(&g_tick, &g_lock, &until);
+        try_advance();
+        // RE-CHECK BEFORE PARKING. In the common case this thread's own wake is the earliest one
+        // pending, so try_advance has just moved the clock to exactly what it was waiting for and
+        // there is nothing to park for. Parking anyway cost one wait per frame — with the wait
+        // bounded at 20 ms of REAL time for the stall fallback, that made every 16 ms virtual frame
+        // take 20 ms of wall clock, and a two-second suite ran for four minutes.
+        if (g_now_ms >= target) break;
+        wait_a_moment();
         watchdog_or_die();
     }
+
+    for (size_t i = 0; i < g_waiters->size(); i++)
+        if (pthread_equal((*g_waiters)[i].th, pthread_self())) {
+            g_waiters->erase(g_waiters->begin() + (long)i);
+            break;
+        }
+    t_role = T_RUNNING;
+    g_running++;
 }
 
 } // namespace
@@ -130,6 +206,7 @@ extern "C" {
 
 void cinder_harness_record(const char* name, long long arg) {
     Lock l; ensure();
+    mark_running();   // this thread is executing app code — the clock must not jump past it
     g_trace->push_back(Call{name ? name : "?", arg, g_now_ms});
 }
 
@@ -166,8 +243,9 @@ void cinder_harness_reset(void) {
     g_script->clear();
     g_state->clear();
     g_now_ms = 0;
-    g_owner_set = false;
-    g_never_owner->clear();
+    g_waiters->clear();
+    g_running = 0;
+    g_last_move_real = 0;
     g_started_real = 0;
 }
 
@@ -237,9 +315,10 @@ void cinder_harness_dump(int max_lines) {
     dump_unlocked(max_lines);
 }
 
-void cinder_harness_clock_never_owner(void) {
+void cinder_harness_clock_passive(void) {
     Lock l; ensure();
-    g_never_owner->push_back(pthread_self());
+    if (t_role == T_RUNNING) g_running--;
+    t_role = T_PASSIVE;
 }
 
 long long cinder_harness_now_ms(void) { Lock l; return g_now_ms; }
