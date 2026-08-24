@@ -260,6 +260,15 @@ easel::ApplicationBase* g_app = nullptr; // the app — for StopBootAnimation() 
 volatile bool g_pump_ticker_run = false; // is the pump-driver ticker thread active?
 pthread_t g_pump_ticker = 0;   // the ticker thread handle (joined at finalize)
 bool g_deferred_done = false;  // slow/blocking init (DB + PlayerService) finished?
+// Bring-up finished, OR it has been retrying long enough that it is stalled rather than in
+// progress. The frame loop treats the two the same: stop deferring the rest of the loop. See the
+// long note at the deferred-init block in render_driver for what happened when it did not.
+bool g_bringup_settled = false;
+// How long bring-up may keep the rest of the frame loop waiting. A healthy boot clears deferred_up
+// in about a second, so this is an order of magnitude of headroom before anything changes; past it,
+// the DB or PlayerService is not coming back on its own and the device still has to sleep its
+// panel, answer its buttons and run its power-off timer.
+const long DEFERRED_GRACE_MS = 10000;
 bool g_db_ready = false;       // library DB opened successfully this boot
 bool g_audio_ready = false;    // PlayerService connection succeeded this boot
 bool g_audio_pump_started = false;
@@ -681,6 +690,9 @@ void deferred_up() {
     // Sony-service connect off the boot path entirely — by the time it can run, the app has already
     // painted and cleared the bad-boot counter.
     g_deferred_done = true;
+    // Same frame the old `if (g_deferred_done)` gate would have flipped, so a healthy boot starts
+    // input and the full loop at exactly the moment it always did.
+    g_bringup_settled = true;
     g_healthy_since = std::time(nullptr);
     clog_("deferred_up: DONE");
 }
@@ -7350,10 +7362,14 @@ void* render_driver(void*) {
         // everything you touch — the "clunky" feel in Settings, which has no album art to blame.
         // Reading first means the frame we are about to paint already reflects the finger.
         //
-        // Gated on g_deferred_done to preserve the OLD ordering exactly: the deferred-init block
-        // below `continue`s before the input call ever ran, so input has never been pumped before
-        // Sony's services are up and must not start now (carry_out would drive uninitialised audio).
-        if (g_deferred_done) {
+        // Gated to preserve the OLD ordering exactly: the deferred-init block below `continue`s
+        // before the input call ever ran, so input has never been pumped before Sony's services are
+        // up and must not start now (carry_out would drive uninitialised audio).
+        //
+        // …unless bring-up has STALLED rather than being in progress, in which case waiting for it
+        // means waiting forever, and a device that ignores its own power button is worse than a
+        // carry_out whose audio calls return -1. See the deferred-init block for the whole story.
+        if (g_bringup_settled) {
             if (!g_input_started) { input_open(); g_input_started = true; }
             alarm(8); input_pump(); alarm(0);  // touch + buttons -> navigator -> actions -> carry_out
             volume_flush();                    // trailing write of a coalesced volume ramp
@@ -7634,11 +7650,57 @@ void* render_driver(void*) {
         // Paint continuously for the first ~0.5s BEFORE the slow deferred init runs (which blocks
         // this thread for several seconds). Re-issue StopBootAnimation afterward as insurance
         // against a race with init (re)starting bootanimation.
+        //
+        // ── THIS BLOCK IS NOT ONLY REACHED DURING A HEALTHY BOOT ────────────────────────────────
+        // It was written as if it were: deferred_up() completes in about a second, so re-killing
+        // the boot animation every frame and `continue`ing past the rest of the loop cost nothing.
+        // But deferred_up returns WITHOUT completing whenever the library DB will not open or
+        // PlayerService is not up, and both are ordinary failures — a rebuilt MTPDB.dat, a
+        // hagodaemon that is slow or wedged. When that happens, `g_deferred_done` never becomes
+        // true and this block is the whole frame loop, for the life of the process.
+        //
+        // Measured off-device (cinder-home/harness, `no-db` and `no-audio`): three minutes in, the
+        // app was still issuing StopBootAnimation() — a framework call, each one logged and
+        // fflush'ed to /contents — 62 times a second, and had not run a single housekeeping tick
+        // or read one input event. Everything below the `continue` was frozen: the idle screen-off,
+        // the auto power-off, the sleep timer, the battery gauge, the USB-host debounce, AND
+        // input_pump. So a device that could not open its library sat with the panel LIT, ignoring
+        // its own buttons, writing to flash sixty times a second, until the battery was flat. That
+        // is the exact failure the auto power-off was added to fix, reached from the other side.
+        //
+        // Bring-up therefore gets a GRACE WINDOW, not the whole session. Inside it, nothing changes
+        // — a healthy boot clears deferred_up in about a second, an order of magnitude inside the
+        // window, so the boot path this protects behaves exactly as before. Outside it, bring-up is
+        // stalled rather than in progress: deferred_up keeps retrying at its own 1 Hz from up here,
+        // and the rest of the loop runs so the device stays a device.
+        //
+        // Falling through re-enables input_pump too, and that is deliberate rather than incidental:
+        // screen_auto_off() below can only be undone by an input event, so running housekeeping
+        // WITHOUT input would blank the panel and leave nothing able to wake it — strictly worse
+        // than the burn it fixes. The original gate's reason ("carry_out would drive uninitialised
+        // audio") still holds in the sense that those calls do nothing: the shims null-check their
+        // client (`change_state` returns -1 with no g_ctrl) and the library screens read an empty
+        // DB, which is the state cinder-ui's host tests cover most heavily. DEVICE-UNVERIFIED —
+        // this arm is reasoned from the call sites, not observed on hardware.
+        static long deferred_stalled_since = 0;
+        static long last_anim_kill_ms = 0;
         if (!g_deferred_done) {
             if (n < 30) { ++n; usleep(16000); continue; }   // warm-up paints first
+            const long bring_now = now_ms();
+            if (deferred_stalled_since == 0) deferred_stalled_since = bring_now;
             deferred_up();
-            if (g_app) g_app->StopBootAnimation();          // re-kill in case init respawned it
-            ++n; usleep(16000); continue;
+            // Re-kill the boot animation: dense while a respawn is actually plausible, then rare —
+            // the same shape as the forced-repaint insurance above, and for the same reason.
+            if (g_app && (n < 300 || bring_now - last_anim_kill_ms >= 5000)) {
+                g_app->StopBootAnimation();
+                last_anim_kill_ms = bring_now;
+            }
+            if (bring_now - deferred_stalled_since < DEFERRED_GRACE_MS) { ++n; usleep(16000); continue; }
+            if (!g_bringup_settled) {
+                g_bringup_settled = true;
+                clog_("render_driver: bring-up has not completed in 10s — running the full loop "
+                      "anyway (screen-off, auto power-off and input are down here)");
+            }
         }
         // Straggler sweep: if the anim somehow survived (or respawned), re-kill at ~15 s and
         // ~30 s after render start. killall on a dead process is a harmless no-op.
@@ -8007,7 +8069,7 @@ void* render_driver(void*) {
             if (left > 1000) left = 1000;
         }
         if (left < 1) left = 1;
-        if (g_evn > 0 && g_deferred_done) {
+        if (g_evn > 0 && g_bringup_settled) {
             struct pollfd pfd[16];
             for (int i = 0; i < g_evn; ++i) { pfd[i].fd = g_evfds[i]; pfd[i].events = POLLIN; pfd[i].revents = 0; }
             poll(pfd, g_evn, (int)left);   // returns early on ANY input; EINTR is fine, we just loop

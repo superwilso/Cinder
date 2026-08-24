@@ -23,6 +23,14 @@ void cinder_harness_record(const char* name, long long arg);
 // Returns 1 and fills *out if the test scripted a return value for this call, else 0.
 int  cinder_harness_scripted(const char* name, long long* out);
 
+// The UI's own state store, faked. cinder-ffi remembers what `cinder_set_bt_on(1)` was told, and a
+// stub that forgets it makes the app look broken: the boot reconcile reads the switch back as OFF
+// on every poll, flips it ON again, and re-reads the radio's pairing table each time — 20 binder
+// round trips a minute that the real build never makes. Generated setter/getter PAIRS route through
+// this, so the fake UI remembers like the real one. A test that scripts the getter overrides it.
+void      cinder_harness_state_set(const char* key, long long value);
+long long cinder_harness_state_get(const char* key, long long fallback);
+
 // ── the test side ────────────────────────────────────────────────────────────────────────────
 void cinder_harness_reset(void);
 // Every call to `name` returns `value`.
