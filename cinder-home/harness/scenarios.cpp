@@ -140,6 +140,40 @@ static void s_bt_idle_poll_rate(void) {
     check_range(np, 0, 4, "now-playing does not round-trip the binder on every poll while idle");
 }
 
+// ── bring-up that never completes must not freeze the rest of the app ────────────────────────
+// The library DB will not open, ever. deferred_up retries forever and `g_deferred_done` never
+// becomes true — and until 2026-08-24 that meant the deferred-init block WAS the frame loop for
+// the life of the process: StopBootAnimation() (a framework call, each one logged and fflush'ed to
+// /contents) sixty times a second, and everything below the `continue` frozen — the idle
+// screen-off, the auto power-off, the sleep timer, the battery gauge, and input_pump. A device
+// that could not open its library sat lit, deaf and burning until the battery was flat.
+//
+// This scenario is how that was found, and it is here so it cannot come back.
+static void s_stalled_bringup(void) {
+    cinder_harness_script("cinder_frames_presented", 1);
+    cinder_harness_script("cinder_render_init", 0);
+    cinder_harness_script("cinder_db_open", -1);        // never opens
+    cinder_harness_set_budget_ms(120000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("cinder_render_tick") > 100, "still painting");
+    check(cinder_harness_count_between("cinder_db_open", 60000, 120000) >= 30,
+          "still retrying the DB, paced at ~1 Hz");
+
+    // The whole point: the last minute must look like a running app, not like a boot that never
+    // ended. Ranges rather than exact counts — the pacing is wall-clock, not frame-counted.
+    int anim = cinder_harness_count_between("easel:StopBootAnimation", 60000, 120000);
+    std::printf("  .... StopBootAnimation: %d calls in the last 60s (was ~3800)\n", anim);
+    check_range(anim, 0, 20, "the boot-animation re-kill backs off instead of running every frame");
+
+    check(cinder_harness_count_between("cinder_get_screen_off_s", 60000, 120000) >= 30,
+          "housekeeping runs: the idle screen-off is still being evaluated");
+    check(cinder_harness_count_between("cinder_sleep_should_pause", 60000, 120000) >= 30,
+          "housekeeping runs: the sleep timer is still being evaluated");
+    check(cinder_harness_count("cinder_set_battery") >= 1,
+          "housekeeping runs: the battery gauge still reaches the status bar");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
@@ -147,6 +181,7 @@ static const Scenario kScenarios[] = {
     {"bt-late-service",   s_bt_late_service,         "the BT service arrives after the app does"},
     {"bt-switch",         s_bt_switch_follows_radio, "the UI switch follows the radio, not itself"},
     {"bt-idle-poll",      s_bt_idle_poll_rate,       "the idle Bluetooth poll backs off"},
+    {"stalled-bringup",   s_stalled_bringup,         "bring-up that never completes must not freeze the app"},
     {nullptr, nullptr, nullptr},
 };
 
