@@ -38,6 +38,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <poll.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <time.h>
@@ -96,6 +97,8 @@ void ensure() {
 }
 
 extern "C" void cinder_harness_fs_due(long long now_ms);   // fakefs.cpp
+extern "C" void cinder_harness_input_due(long long now_ms);   // fakeinput.cpp
+extern "C" int  cinder_harness_input_next(long long* out);    // fakeinput.cpp
 
 // Name -> id, creating the id if this is the first time. Caller holds the lock.
 int intern(const char* name) {
@@ -181,11 +184,17 @@ void try_advance() {
     long long earliest = (*g_waiters)[0].target;
     for (size_t i = 1; i < g_waiters->size(); i++)
         if ((*g_waiters)[i].target < earliest) earliest = (*g_waiters)[i].target;
+    // A scheduled input event is a wake-up too: stop the clock there rather than stepping over it,
+    // or a tap aimed at t=50s would only reach the app when the frame it landed in finished
+    // sleeping — up to a second later with the panel dark.
+    long long ev = 0;
+    if (cinder_harness_input_next(&ev) && ev > g_now_ms && ev < earliest) earliest = ev;
     if (earliest <= g_now_ms) return;
     g_now_ms = earliest;
     if (g_passive_target != 0 && g_now_ms >= g_passive_target) pthread_cond_broadcast(&g_slow);
     // Scheduled changes to the device's world land BEFORE anything observes the new time.
     cinder_harness_fs_due(g_now_ms);
+    cinder_harness_input_due(g_now_ms);
     g_last_move_real = real_ms();
     pthread_cond_broadcast(&g_tick);
 }
@@ -411,6 +420,21 @@ int usleep(useconds_t us) {
 unsigned int sleep(unsigned int sec) {
     sleep_for((long long)sec * 1000);
     return 0;
+}
+
+// poll(), virtualised. The frame loop waits on its input descriptors with poll() rather than
+// usleep() once input is up — which is right on the device (an event returns immediately at any
+// budget) and would run the harness in REAL time, because poll is a syscall the virtual clock knows
+// nothing about. A 70-second scenario took 70 seconds and tripped the watchdog.
+//
+// So: ask the kernel whether anything is ready RIGHT NOW, and if not, sleep the timeout on the
+// virtual clock and ask once more. Events are written into the fake input FIFOs by the clock itself
+// as it crosses their scheduled time, so by the second ask they are there.
+int poll(struct pollfd* fds, nfds_t nfds, int timeout) {
+    int r = (int)syscall(SYS_poll, fds, (long)nfds, 0);
+    if (r != 0 || timeout == 0) return r;
+    sleep_for(timeout < 0 ? 1000 : timeout);
+    return (int)syscall(SYS_poll, fds, (long)nfds, 0);
 }
 
 int clock_gettime(clockid_t clk, struct timespec* ts) {
