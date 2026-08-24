@@ -50,6 +50,7 @@
 #include "cinder_tuner.h"
 #include "vol_ramp.h"
 #include "bt_edge.h"
+#include "bt_poll.h"   // how often to ask the radio anything (host-tested)
 #include "bt_switch.h" // radio-vs-switch reconcile (host-tested)
 #include "db_sig.h"   // has the library database moved? (host-tested)
 #include "jack_edge.h"
@@ -323,6 +324,7 @@ static void refresh_bt_connected();  // ditto — names the linked device for th
 void refresh_bt_paired();    // ditto — reads the radio's pairing table for the Devices screen
 void apply_bt_scan();        // ditto — starts/stops discovery (SetSearchMode + the listener)
 static bool bt_listener_register();  // ditto — the BtCommonService notification listener
+bool bt_listener_is_on();            // ditto — did AddListener actually take?
 void apply_bt_prompt_reply(bool accept); // ditto — answers a numeric-comparison / SSP prompt
 void apply_bt_pair_device(); // ditto — pairs with a device the scan turned up
 
@@ -3132,6 +3134,10 @@ struct CinderBtListener {
 // registration lives. Never make this a local or a `new` that anything can free.
 static CinderBtListener g_bt_listener;
 static bool g_bt_listener_on = false;
+// Read by the poll-interval rule (src/bt_poll.h): a relaxed interval is only safe while something
+// is actually pushing link changes at us, and this is the real registration result rather than an
+// assumption that it worked.
+bool bt_listener_is_on() { return g_bt_listener_on; }
 
 // Register once and stay registered for the life of the process. Churning registration per screen
 // would buy nothing and add a window where a notification races the removal.
@@ -3329,7 +3335,12 @@ static void bt_poll_sound_status() {
     // throttle costs nothing in responsiveness.
     static long last_ms = 0;
     const long now = now_ms();
-    if (!g_bt_sound_poll_now && now - last_ms < 2000) return;
+    // Interval from src/bt_poll.h. The comment above is right that this changes about once a
+    // session — so once the link is steady and the listener is watching it, 60 s is still far more
+    // often than it can move, and the two events that CAN move it still skip the wait entirely.
+    const long every = cinder_bt_codec_poll_ms(
+        bt_listener_is_on() ? 1 : 0, 1, g_bt_have_name ? 1 : 0);
+    if (!g_bt_sound_poll_now && now - last_ms < every) return;
     g_bt_sound_poll_now = 0;
     last_ms = now;
     void* x = bt_xmit();
@@ -3738,7 +3749,14 @@ void refresh_bt_route() {
         if (on) {
             static long bt_link_last = 0;
             const long now = now_ms();
-            if (!g_bt_have_name || now - bt_link_last >= BT_LINK_POLL_MS) {
+            // Same relaxation as the route poll itself: while a peer is named AND the listener is
+            // up, re-asking WHICH peer every 2 s learns nothing — the name changes only with the
+            // link, and the link is pushed. While the name is still MISSING this is unchanged and
+            // asks every time, which is the case the retry was written for.
+            const long peer_every = cinder_bt_link_steady(
+                bt_listener_is_on() ? 1 : 0, 1, g_bt_have_name ? 1 : 0)
+                ? CINDER_BT_POLL_STEADY_MS : BT_LINK_POLL_MS;
+            if (!g_bt_have_name || now - bt_link_last >= peer_every) {
                 bt_link_last = now;
                 refresh_bt_connected();
             }
@@ -7206,22 +7224,58 @@ static void apply_pump_interval() {
 void poll_now_playing() {
     static char last[1024];
     static unsigned last_events = 0;
+    static int  last_cur = -1, last_tot = -1;
+    static long last_uri_ms = 0;
+
+    // ── EVERYTHING FREE, FIRST ──────────────────────────────────────────────────────────────
+    // `cinder_audio_position` / `_is_playing` / `_listener_events` are atomic loads of values the
+    // PlayEventListener already pushed to us — ZERO IPC (see player_shim.cpp). `current_uri` is the
+    // only call here that costs a binder round trip, so it is the only one worth gating.
+    int cur = -1, tot = -1;
+    const bool have_pos = cinder_audio_position(&cur, &tot) != 0;
+
+    // A TRACK BOUNDARY IS VISIBLE WITHOUT ASKING. The URI can only change at one, and a boundary
+    // always shows in the two numbers already in hand: the duration changes, and/or the position
+    // jumps backwards. So the round trip is spent when something might have changed rather than
+    // once a second to discover that nothing did.
+    //
+    // This was the single largest sustained cost of a Bluetooth session with the panel dark — one
+    // IPC per second, for hours, to detect an event that happens about once every four minutes
+    // (docs/BATTERY_BT.md). The comment this replaces was right that idle costs zero; it just did
+    // not notice that PLAYING is the state a music player is actually in.
+    bool boundary = false;
+    if (have_pos) {
+        // `tot != last_tot` deliberately fires on the FIRST read too (last_tot starts -1), so a
+        // resumed sequence or a track that starts without a transport press still names itself
+        // immediately instead of waiting for the backstop.
+        if (tot != last_tot) boundary = true;
+        if (last_cur >= 0 && cur < last_cur - 1500) boundary = true;
+        last_cur = cur;
+        last_tot = tot;
+    }
+
     // The URI read is a BINDER ROUND TRIP into hagodaemon (GetCurrentStatus, plus a std::string
-    // copied out) and it ran every single second whether or not anything was playing. The
-    // PlayEventListener already tells us when something happened: onPlayTimeUpdated fires ~1x/sec
-    // while playing and not at all while stopped, and a track change always comes with events. So
-    // only ask the service when its callback count has moved. Idle now costs zero IPC; playing is
-    // unchanged at one call per second.
+    // copied out). The PlayEventListener tells us when something happened: onPlayTimeUpdated fires
+    // ~1x/sec while playing and not at all while stopped, so a moved counter is still the outer
+    // gate — idle costs zero IPC, exactly as before.
     unsigned events = cinder_audio_listener_events();
     // …EXCEPT right after the user pressed play. The listener has not necessarily fired yet at that
     // point, so waiting for it means the screen keeps showing the previous track — for up to a
     // second on the housekeeping tick, plus however long the first callback takes. That delay is
     // most of what "playing a song from the library feels laggy" actually is: the audio starts, and
     // the UI just sits there.
+    const bool moved = (events != last_events);
+    last_events = events;
     bool force = g_np_poll_now;
     g_np_poll_now = false;
-    if (force || events != last_events) {
-        last_events = events;
+    // A slow backstop, for the one case the free signals cannot see: two consecutive tracks of
+    // EXACTLY the same length, where the reset also lands between two samples. 30 s of staleness in
+    // that corner costs 0.03 IPC/s against the 1.0/s it replaces.
+    const long np_now = now_ms();
+    const bool stale = np_now - last_uri_ms >= 30000;
+
+    if (force || (moved && (boundary || stale))) {
+        last_uri_ms = np_now;
         char uri[1024];
         int n = cinder_audio_current_uri(uri, sizeof uri);
         if (n > 0 && std::strcmp(uri, last) != 0) {
@@ -7239,9 +7293,8 @@ void poll_now_playing() {
     // Adopting it immediately therefore flickered the transport glyph back to the old state right
     // after every press. So for a short grace window our own intent wins; after that the service's
     // view takes over.
-    int cur = -1, tot = -1;
-    if (cinder_audio_position(&cur, &tot)) {
-        if (now_ms() - g_transport_at > TRANSPORT_GRACE_MS)
+    if (have_pos) {
+        if (np_now - g_transport_at > TRANSPORT_GRACE_MS)
             g_playing = cinder_audio_is_playing() != 0;
         cinder_set_play_position(cur, tot, g_playing ? 1 : 0);
     }
@@ -7339,7 +7392,14 @@ void* render_driver(void*) {
             // read down) later. That latency is the whole of why stock felt faster to connect —
             // the link itself is the MTK stack's either way.
             static long last_route_ms = 0;
-            const long route_every = g_bt_radio_seen_up ? 3000 : 15000;
+            // Interval from src/bt_poll.h, host-tested. A CONNECTED link with the listener up
+            // relaxes from 3 s to 30 s, because the listener — registered at boot only since
+            // 2026-08-23 — is what actually reports a change; the timer is the backstop its own
+            // comment above always claimed it was. Everything else keeps the old rate, and a link
+            // with NO listener never relaxes at all: there the timer is the only thing that can
+            // notice headphones dropping, and pause-on-disconnect rides on it.
+            const long route_every = cinder_bt_route_poll_ms(
+                bt_listener_is_on() ? 1 : 0, g_bt_radio_seen_up ? 1 : 0, g_bt_have_name ? 1 : 0);
             if (g_bt_state_dirty || now_ms() - last_route_ms >= route_every) {
                 const bool by_event = g_bt_state_dirty != 0;
                 g_bt_state_dirty = 0;

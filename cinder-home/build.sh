@@ -196,6 +196,14 @@ if cc -O2 -o "$HERE/.btswitch_selftest" "$HERE/tools/btswitch_selftest.cpp" -lst
     else "$HERE/.btswitch_selftest"; echo "FAIL: bt switch self-test"; exit 1; fi
     rm -f "$HERE/.btswitch_selftest"
 else echo "(skip: no host cc)"; fi
+# The Bluetooth poll-interval rule (src/bt_poll.h). It decides how long a DROPPED LINK can go
+# unnoticed — i.e. how long music keeps playing into headphones that are not there — so the tests
+# that matter most are the ones proving it does NOT back off without a listener to replace the timer.
+if cc -O2 -o "$HERE/.btpoll_selftest" "$HERE/tools/btpoll_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.btpoll_selftest" >/dev/null 2>&1; then echo "OK: bluetooth poll intervals"; \
+    else "$HERE/.btpoll_selftest"; echo "FAIL: bt poll self-test"; exit 1; fi
+    rm -f "$HERE/.btpoll_selftest"
+else echo "(skip: no host cc)"; fi
 # The library-database change rule (src/db_sig.h). Same reason as the two above: it is a handful of
 # lines that decides something the user sees — whether music they just copied is ever picked up —
 # and its first version (st_mtime on the main file alone) could be defeated by SQLite's WAL mode.
