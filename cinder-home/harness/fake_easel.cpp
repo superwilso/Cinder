@@ -125,7 +125,19 @@ int cinder_app_main(int argc, char** argv);
 extern "C" void cinder_harness_set_budget_ms(long long ms) { g_budget_ms = ms; }
 
 extern "C" int cinder_harness_run(void) {
+    // The app moves its OWN stdout and stderr when it hands /contents to a PC — fds 1 and 2 point
+    // into /contents/cinderhome.log via the launcher's redirect, and an open fd there is exactly
+    // what makes the unmount fail EBUSY. Perfectly correct, and it would silently swallow the
+    // scenario's own results, which are printed after this returns. So keep a copy and put them
+    // back; a scenario should never have to know the app did this.
+    const int saved_out = ::dup(1);
+    const int saved_err = ::dup(2);
+
     char arg0[] = "cinder-home";
     char* argv[] = { arg0, nullptr };
-    return cinder_app_main(1, argv);
+    const int rc = cinder_app_main(1, argv);
+
+    if (saved_out >= 0) { ::dup2(saved_out, 1); ::close(saved_out); }
+    if (saved_err >= 0) { ::dup2(saved_err, 2); ::close(saved_err); }
+    return rc;
 }
