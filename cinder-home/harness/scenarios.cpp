@@ -238,7 +238,10 @@ static void s_dark_playing(void) {
 // hours costs about a second here.
 static void s_log_volume(void) {
     healthy_device();
-    cinder_harness_script("cinder_get_screen_off_s", 30);
+    // Panel ON for the whole six hours, deliberately: it is the chattier case. The frame loop runs
+    // at 60 Hz rather than 1 Hz, so anything paced by a frame COUNT rather than the wall clock shows
+    // up here at sixty times the rate it would in the dark — which is exactly how the silent-input
+    // heartbeat was caught writing 499 lines an hour.
     cinder_harness_script("cinder_audio_is_playing", 1);
     cinder_harness_bt_set_radio(1);
     cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
