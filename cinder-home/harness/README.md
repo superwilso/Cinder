@@ -43,6 +43,14 @@ tests whether the app **runs** them, when, and how often.
 * **`fake_easel.cpp`** — Sony's app framework, implemented against the same hand-recovered
   `easel_abi.hpp` the device build uses, and driving the same lifecycle appmgr does
   (Initialize → PostInitialize → Activate → Foreground). Booting *is* the test.
+* **`fakefs.cpp`** — the device's sysfs, procfs and `/contents`, as far as the app can tell. Nearly
+  everything cinder-home knows about its hardware it reads with `fopen` from an absolute path — the
+  battery percentage, whether a charger is attached, whether the headphones are plugged in — so one
+  `fopen` override serves those from a private tree and lets anything not placed there fall through
+  to the real filesystem, where absent still means absent. Files can also be scheduled to CHANGE
+  part way through a run (`cinder_harness_fs_write_at`), which is what makes edges — the headphones
+  coming out, a PC appearing — into scenarios. Every open is traced, because "opened once per second
+  for the life of the process" is a defect this project has already had to fix once.
 * **`harness.cpp`** — the trace store, the scripting table, and a **virtual clock**. `usleep`,
   `sleep`, `clock_gettime` and `time` are defined here and win over libc, so sleeping does not wait,
   it advances a counter. Two virtual minutes of device time cost a few milliseconds.
@@ -64,8 +72,9 @@ tests whether the app **runs** them, when, and how often.
   libc++ ABI, qemu preflight. A harness pass says nothing about whether the thing links for the
   device.
 * **No UI input yet.** Touch and buttons arrive from `/dev/input`, which does not exist here, so
-  scenarios cover bring-up, service availability and pacing — not gestures. Feeding synthetic
-  `input_event` frames through a faked `open()` on `/dev/input/event*` is the obvious next step.
+  scenarios cover bring-up, service availability, pacing and hardware edges — not gestures. Feeding
+  synthetic `input_event` frames through a faked `open()` on `/dev/input/event*` is the obvious next
+  step; `fakefs.cpp` already does the equivalent for everything reached with `fopen`.
 * **No `dlopen`ed services.** NFC, the display service and the USB manager are loaded by name at
   runtime; here `dlopen` records the request and returns null, so those paths take their
   degraded branch. Faking them is tier 2.

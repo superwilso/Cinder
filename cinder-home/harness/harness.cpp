@@ -78,6 +78,8 @@ void ensure() {
     if (!g_state) g_state = new std::vector<std::pair<std::string, long long> >();
 }
 
+extern "C" void cinder_harness_fs_due(long long now_ms);   // fakefs.cpp
+
 // The REAL clock — the harness's own watchdog cannot use the virtual one it is policing.
 long long real_ms() {
     struct timespec ts;
@@ -145,6 +147,8 @@ void try_advance() {
         if ((*g_waiters)[i].target < earliest) earliest = (*g_waiters)[i].target;
     if (earliest <= g_now_ms) return;
     g_now_ms = earliest;
+    // Scheduled changes to the device's world land BEFORE anything observes the new time.
+    cinder_harness_fs_due(g_now_ms);
     g_last_move_real = real_ms();
     pthread_cond_broadcast(&g_tick);
 }
@@ -208,6 +212,14 @@ extern "C" {
 void cinder_harness_record(const char* name, long long arg) {
     Lock l; ensure();
     mark_running();   // this thread is executing app code — the clock must not jump past it
+    g_trace->push_back(Call{name ? name : "?", arg, g_now_ms});
+}
+
+// For callers that ALREADY HOLD g_lock — currently only the scheduled-filesystem-change hook,
+// which the clock invokes from inside try_advance. Taking the lock again there deadlocks: it is a
+// plain mutex, not a recursive one.
+void cinder_harness_record_locked(const char* name, long long arg) {
+    ensure();
     g_trace->push_back(Call{name ? name : "?", arg, g_now_ms});
 }
 
