@@ -1,5 +1,13 @@
 # Bluetooth pairing + NFC tap-to-pair — client vtables
 
+> **Bluetooth addresses in this file are REDACTED.** Every `00:00:5E:00:53:xx` below stood for a
+> real peer in the original capture — `:01` the WH-1000XM4, `:02` the CMF Buds Pro 2. A BD address
+> is a permanent unique identifier for somebody's physical device, and this repository is public,
+> so the real ones were replaced with the range RFC 7042 §2.1.2 reserves for documentation.
+> Nothing here depends on their value: what the findings turn on is that an address is *present*,
+> that it is six bytes, and which device it belongs to — and the device is named alongside it.
+> The same substitution was applied across `cinder-home/src/`, `STATUS.md` and `docs/`.
+
 **Status: the API surface is fully recovered. No Ghidra needed.**
 
 `pst::services::*Client` classes export only their FACTORY; every method is virtual, so calling one
