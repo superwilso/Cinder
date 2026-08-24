@@ -96,10 +96,30 @@ def read_wav(path: str) -> list:
     return [(vals[i] + vals[i + 1]) // 2 for i in range(0, len(vals) - 1, 2)]
 
 
+def win_scratch() -> tuple:
+    """A scratch WAV path both sides can reach, as (Windows path, WSL path).
+
+    This used to be a hardcoded C:\\Users\\<someone>\\Downloads\\... — one person's actual Windows
+    username, committed to a public repo, and a path that exists on exactly one machine. Ask
+    Windows where its own TEMP directory is instead: it works anywhere and names nobody.
+    Override with CINDER_MEASURE_WAV (a /mnt/<drive>/... path).
+    """
+    env = os.environ.get("CINDER_MEASURE_WAV")
+    if env:
+        return win_path(env), env
+    tmp = subprocess.run(["powershell.exe", "-NoProfile", "-Command", "$env:TEMP"],
+                         capture_output=True, text=True).stdout.strip()
+    if not tmp or len(tmp) < 3 or tmp[1] != ":":
+        sys.exit("could not ask Windows for its TEMP directory — set CINDER_MEASURE_WAV to a "
+                 "/mnt/<drive>/... path both sides can reach")
+    out_win = tmp.rstrip("\\") + r"\cinder_measure.wav"
+    out_wsl = "/mnt/" + out_win[0].lower() + out_win[2:].replace("\\", "/")
+    return out_win, out_wsl
+
+
 def capture_ffmpeg(seconds: float, device: str) -> list:
     """Record via Windows' ffmpeg.exe. The WAV lands on the Windows side so both can reach it."""
-    out_win = r"C:\Users\walkman\Downloads\cinder_measure.wav"
-    out_wsl = "/mnt/c/Users/walkman/Downloads/cinder_measure.wav"
+    out_win, out_wsl = win_scratch()
     ff = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
                          "(Get-Command ffmpeg).Source"],
                         capture_output=True, text=True).stdout.strip()
