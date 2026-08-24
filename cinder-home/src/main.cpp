@@ -93,7 +93,7 @@ void dump_maps() {
     std::fclose(m);
     std::fflush(stderr);
 }
-void log_fault(int sig, void* uc_, siginfo_t* si, const char* tag) {
+void log_fault(int sig, void* /*uc_*/, siginfo_t* si, const char* tag) {
     unsigned long pc = 0, lr = 0;
 #if defined(__arm__)
     ucontext_t* uc = static_cast<ucontext_t*>(uc_);
@@ -5604,20 +5604,6 @@ void log_contents_holders() {
 // reader with NO MEDIUM (the "modal shows but no drive appears" symptom). Only acts when the LUN
 // is empty, so it's a safe no-op on the paths that already pointed it. Bounces the gadget so the
 // host re-enumerates and picks up the freshly-backed disk.
-// Read a system property and compare it. popen rather than __system_property_get: this is a glibc
-// process, not bionic, so the property API is not linkable here — the shell's getprop is.
-static bool prop_equals(const char* name, const char* want) {
-    char cmd[160];
-    std::snprintf(cmd, sizeof cmd, "getprop %s 2>/dev/null", name);
-    FILE* p = popen(cmd, "r");
-    if (!p) return false;
-    char buf[160] = {0};
-    bool got = std::fgets(buf, sizeof buf, p) != nullptr;
-    pclose(p);
-    if (!got) return false;
-    buf[std::strcspn(buf, "\r\n")] = 0;
-    return std::strcmp(buf, want) == 0;
-}
 
 static void ensure_msc_lun() {
     const char* lunf = "/sys/class/android_usb/android0/f_mass_storage/lun/file";
@@ -6786,6 +6772,7 @@ void power_hold_tick() {
     // holding Power in a pocket would blank/unblank the panel.
 }
 
+#ifdef CINDER_DEV
 // Consume a dev request-file: true if one was waiting. Handles the two ways /tmp defeats us —
 // cinder-home is uid `system`, /tmp is sticky (drwxrwxrwt) and `adb shell echo >` creates files
 // root-owned 0600, so an unlink() by a non-owner is EPERM and a request that cannot be removed
@@ -6815,12 +6802,12 @@ static bool take_req(const char* path, char* out, size_t cap) {
     }
     return read_ok;
 }
+#endif  // CINDER_DEV — every caller of take_req is inside one, so the definition is too
 
 void input_pump() {
     ev_event evs[32];
     static long g_ev_total = 0;   // events ever seen (any node) — for the silent-input heartbeat
     static long g_pump_calls = 0;
-    const long ev_before = g_ev_total;
     // HEARTBEAT: if the input system is silent (foreign grab / dead driver), say so in the log
     // every ~15 s instead of leaving "no events" indistinguishable from "nobody touched it".
     if (g_ev_total == 0 && ++g_pump_calls % 450 == 0)

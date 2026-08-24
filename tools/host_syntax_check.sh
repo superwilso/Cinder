@@ -36,8 +36,17 @@ INC=(-I cinder-home/src -I player/cinder-ffi/include -I cinder-audio/include -I 
 # CINDER_HOST_SYNTAX_ONLY drops the two static_asserts that state DEVICE layout facts (32-bit
 # libc++ 3.9: vector 12 B, string 12 B). They cannot hold on a 64-bit libstdc++ host and they still
 # fire on every real build, which is the only place their answer means anything.
-CXXFLAGS=(-fsyntax-only -std=c++14 -DCINDER_HOST_SYNTAX_ONLY)
-CFLAGS=(-fsyntax-only -std=gnu99 -D_GNU_SOURCE)
+# -Wall -Wextra -Werror. The C/C++ had NEVER been compiled with warnings enabled — the first run
+# with them on, 2026-08-24, produced six across 19,435 lines, which is remarkably clean. All six
+# were fixed rather than tolerated (a dead popen() helper, a dead locked wrapper, a captured-and-
+# discarded value, a DEV-only helper that warned in stable builds, an unused parameter, a
+# _GNU_SOURCE redefinition), so the tree can be held at zero from here.
+#
+# -Werror is the point. "I looked and it was clean" is worth one afternoon; a gate is worth every
+# afternoon after it — the same lesson as the six self-tests that existed for months and ran when
+# somebody remembered.
+CXXFLAGS=(-fsyntax-only -std=c++14 -Wall -Wextra -Werror -DCINDER_HOST_SYNTAX_ONLY)
+CFLAGS=(-fsyntax-only -std=gnu99 -D_GNU_SOURCE -Wall -Wextra -Werror)
 
 fails=0
 checked=0
@@ -63,6 +72,9 @@ echo
 
 echo "cinder-home (the shell, the probe):"
 check "$CXX" "src/main.cpp"     cinder-home/src/main.cpp     "${CXXFLAGS[@]}" "${INC[@]}"
+# …and again as the DEV channel builds it. take_req and the discovery dump only exist there, so a
+# warning (or an error) in that half would otherwise ship unseen.
+check "$CXX" "src/main.cpp [dev]" cinder-home/src/main.cpp "${CXXFLAGS[@]}" -DCINDER_DEV=1 "${INC[@]}"
 check "$CXX" "src/probe.cpp"    cinder-home/src/probe.cpp    "${CXXFLAGS[@]}" "${INC[@]}"
 check "$CXX" "src/discover.cpp" cinder-home/src/discover.cpp "${CXXFLAGS[@]}" "${INC[@]}"
 

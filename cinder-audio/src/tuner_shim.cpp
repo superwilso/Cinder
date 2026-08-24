@@ -147,13 +147,6 @@ int value_get() {
 int rd_l(int reg) { return put(TARGET, (unsigned)reg) ? value_get() : -1; }
 bool wr_l(int reg, unsigned v) { return put(TARGET, (unsigned)reg) && put(VALUE, v); }
 
-int rd(int reg) {
-    pthread_mutex_lock(&g_lock);
-    int v = rd_l(reg);
-    pthread_mutex_unlock(&g_lock);
-    return v;
-}
-
 // Non-blocking read, for anything on the render thread. A scan or seek slice holds the lock for a
 // few ms at a time, and the 1 Hz meter poll waiting on it would put the UI's own thread to sleep —
 // the same class of stall this file was just restructured to remove. A skipped sample is nothing;
