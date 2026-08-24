@@ -5,9 +5,10 @@
 worse than either trigger — followed by two more of the same shape, found the same way.
 
 **The pattern, stated once:** work on a timer, for a condition that cannot change, that nobody
-stops. Five instances in one afternoon — the boot-animation re-kill, the bad-boot counter, the
-power-off helper, the silent-input heartbeat, and a wedged mass-storage session — all invisible to
-every gate this project had, all obvious in a trace.
+stops. Seven instances in one afternoon — the boot-animation re-kill, the bad-boot counter, the
+power-off helper, the silent-input heartbeat, a wedged mass-storage session, and the
+bring-up retry's own narration — all invisible to every gate this project had, all obvious in a
+trace.
 
 ## The defect
 
@@ -186,6 +187,27 @@ Now: the ladder backs off ten seconds after a failure, and the line stops after 
 
 The `msc-cycle` scenario covers the whole round trip — cable in, handover, a wedged session, cable
 out, release — and pins the retry count.
+
+## A sixth and a seventh, from running everything broken at once
+
+With the fixes above in, one more run: `cinder_audio_init` failing forever, no Bluetooth services,
+auto power-off enabled, USB-DAC on — six virtual hours. Two things still repeated.
+
+**`deferred_up`'s retry lines.** All three ("DB unavailable", "audio pump unavailable", "audio
+unavailable") logged on every 1 Hz retry: **3,571 an hour, each an `fflush` to `/contents`.** The
+retry is right — `/data` can mount late and a service can arrive late — the narration was not. The
+pacing rule now lives in one place, `retry_log()`: say it immediately, then after a minute, then
+roughly tripling to hourly. Prompt enough to diagnose from the log; a device stuck for a day costs a
+couple of dozen lines instead of eighty thousand. 21,428 → 10 over six hours.
+
+**The boot-animation re-kill, again.** The earlier fix throttled it to once per 5 s; it never
+stopped, so a stalled bring-up still made a framework call and wrote a line every five seconds for
+ever — 4,585 in six hours. The animation is dead within seconds and the only thing that could bring
+it back is init respawning it, which the healthy path's straggler sweep already covers by ~30 s. It
+is now bounded to the first minute. 4,585 → 284, all of them in that minute.
+
+`stalled-bringup` asserts the quiet as well as the liveness: under 60 log lines across the last
+fifty minutes of a stalled boot. It reads 3.
 
 ## Why nothing found this before
 

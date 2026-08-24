@@ -169,7 +169,7 @@ static void s_stalled_bringup(void) {
     cinder_harness_script("cinder_frames_presented", 1);
     cinder_harness_script("cinder_render_init", 0);
     cinder_harness_script("cinder_db_open", -1);        // never opens
-    cinder_harness_set_budget_ms(120000);
+    cinder_harness_set_budget_ms(3600000);
     cinder_harness_run();
 
     check(cinder_harness_count("cinder_render_tick") > 100, "still painting");
@@ -188,6 +188,14 @@ static void s_stalled_bringup(void) {
           "housekeeping runs: the sleep timer is still being evaluated");
     check(cinder_harness_count("cinder_set_battery") >= 1,
           "housekeeping runs: the battery gauge still reaches the status bar");
+
+    // …and it has to stay QUIET while it does. Every line here is an fflush to /contents, and a
+    // bring-up that never completes is a state the device can sit in for a day: the retry itself
+    // logged 3,571 copies of "DB unavailable" an hour, and the boot-animation re-kill kept calling
+    // into the framework every five seconds for ever. Both are bounded now.
+    int lines = cinder_harness_count_between("log", 600000, 3600000);
+    std::printf("  .... %d log lines over the last 50 minutes of a stalled boot\n", lines);
+    check_range(lines, 0, 60, "a device stuck like this does not fill its flash with the news");
 }
 
 // ── dark + playing: the state this device spends most of its life in ─────────────────────────
