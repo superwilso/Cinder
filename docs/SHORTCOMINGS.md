@@ -62,6 +62,14 @@ ordering that the file's own header warns will "eat the user's library" if rever
 No `shellcheck`, no `bash -n` syntax gate, no test harness. `tools/test_launcher.sh` exists and
 covers a 44-case recovery matrix — **and nothing automatic runs it.**
 
+> **Both halves closed 2026-08-24.** `tools/shell_check.sh` (pinned `shellcheck` + `bash -n` over
+> all 36 scripts) and the launcher matrix now both run in the `native` CI job. The matrix also
+> stopped lying: one case makes `/data/cinder` unwritable with `chmod`, which does not bind uid 0,
+> so run as root it reported a failure about the tester rather than the launcher. It skips itself
+> there now, with a root-proof variant covering the same rule — 45 cases as root, 46 as a normal
+> user, zero failures either way. The launcher itself was already correct; the guard it needs was
+> added after the 2026-07-26 brick and is proven by write-then-read-back rather than `[ -w ]`.
+
 ### A4. The self-tests exist, and nothing automatic runs them
 
 `cinder-home/build.sh` runs six C++ self-tests (guard recovery, volume ramp, BT edge, jack edge,
