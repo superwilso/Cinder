@@ -119,10 +119,14 @@ def main():
         is_setter = name.startswith('cinder_set_') and key in stateful
         is_getter = name.startswith('cinder_get_') and key in stateful
         out.append(f'{rt} {name}({a}) {{')
+        # A per-call-site id cache — see cinder_harness_record_cached. These stubs are the hot path
+        # of a long scenario (millions of calls), and interning the name on every one of them was
+        # most of the cost of running it.
+        out.append('    static int slot_ = -1;')
         if first_int:
-            out.append(f'    cinder_harness_record("{name}", (long long){first_int});')
+            out.append(f'    cinder_harness_record_cached(&slot_, "{name}", (long long){first_int});')
         else:
-            out.append(f'    cinder_harness_record("{name}", 0);')
+            out.append(f'    cinder_harness_record_cached(&slot_, "{name}", 0);')
         if is_setter:
             out.append(f'    cinder_harness_state_set("{key}", (long long){first_int});')
         out.append(f'    long long scripted = 0;')

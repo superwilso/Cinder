@@ -6862,11 +6862,27 @@ static bool take_req(const char* path, char* out, size_t cap) {
 void input_pump() {
     ev_event evs[32];
     static long g_ev_total = 0;   // events ever seen (any node) — for the silent-input heartbeat
-    static long g_pump_calls = 0;
     // HEARTBEAT: if the input system is silent (foreign grab / dead driver), say so in the log
-    // every ~15 s instead of leaving "no events" indistinguishable from "nobody touched it".
-    if (g_ev_total == 0 && ++g_pump_calls % 450 == 0)
-        clog_("input: still ZERO events from every node (foreign grab? see node diagnostics above)");
+    // instead of leaving "no events" indistinguishable from "nobody touched it".
+    //
+    // PACED BY THE WALL CLOCK, AND BACKING OFF. It used to be `++calls % 450`, which is the same
+    // assumption the housekeeping block below was explicitly fixed for: the loop is 60 Hz awake and
+    // 1 Hz with the panel dark, so "every 450 calls" meant every 7.5 s awake and every 7.5 MINUTES
+    // dark — neither of them the ~15 s the comment claimed. And a genuinely dead input system never
+    // starts producing events, so it repeated for ever: measured off-device (cinder-home/harness),
+    // 499 lines an hour, each one an fflush to /contents. The condition it reports does not change,
+    // so after the first few the only useful thing it can do is stop.
+    static long hb_next_ms = 0;
+    static long hb_gap_ms  = 15000;
+    if (g_ev_total == 0) {
+        const long hb_now = now_ms();
+        if (hb_next_ms == 0) hb_next_ms = hb_now + hb_gap_ms;
+        else if (hb_now >= hb_next_ms) {
+            clog_("input: still ZERO events from every node (foreign grab? see node diagnostics above)");
+            if (hb_gap_ms < 3600000) hb_gap_ms *= 4;   // 15 s, 1 min, 4 min, 16 min, then hourly
+            hb_next_ms = hb_now + hb_gap_ms;
+        }
+    }
     for (int i = 0; i < g_evn; ++i) {
         for (;;) {
             ssize_t n = read(g_evfds[i], evs, sizeof evs);

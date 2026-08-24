@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,13 +44,23 @@
 
 namespace {
 
-struct Call { std::string name; long long arg; long long at_ms; };
+// A trace entry. The NAME IS AN INTERNED ID, not a string: a six-virtual-hour scenario with the
+// panel on is 1.3 million frames and several million calls, and storing a std::string per entry
+// spent more time in the allocator than in the app. Interning made the suite five times faster and
+// the long scenarios possible at all.
+struct Call { int name_id; long long arg; long long at_ms; };
 struct Script { std::string name; std::vector<long long> vals; size_t next; };
 
 pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  g_tick = PTHREAD_COND_INITIALIZER;   // broadcast whenever the clock moves
+// Passive waiters (the harness's own main thread) poll on this one, which is never signalled. They
+// are waiting for the END of the run, so waking them on every clock move — 1.3 million times in a
+// six-hour screen-on scenario — is pure cost for a question whose answer changes once.
+pthread_cond_t  g_slow = PTHREAD_COND_INITIALIZER;
 std::vector<Call>*   g_trace  = nullptr;
 std::vector<Script>* g_script = nullptr;
+std::vector<std::string>* g_names = nullptr;                 // id -> name
+std::map<std::string, int>* g_name_id = nullptr;             // name -> id
 std::vector<std::pair<std::string, long long> >* g_state = nullptr;   // the faked UI state store
 
 long long   g_now_ms   = 0;
@@ -76,9 +87,30 @@ void ensure() {
     if (!g_script) g_script = new std::vector<Script>();
     if (!g_waiters) g_waiters = new std::vector<Waiter>();
     if (!g_state) g_state = new std::vector<std::pair<std::string, long long> >();
+    if (!g_names) g_names = new std::vector<std::string>();
+    if (!g_name_id) g_name_id = new std::map<std::string, int>();
 }
 
 extern "C" void cinder_harness_fs_due(long long now_ms);   // fakefs.cpp
+
+// Name -> id, creating the id if this is the first time. Caller holds the lock.
+int intern(const char* name) {
+    const std::string key(name ? name : "?");
+    std::map<std::string, int>::iterator it = g_name_id->find(key);
+    if (it != g_name_id->end()) return it->second;
+    const int id = (int)g_names->size();
+    g_names->push_back(key);
+    (*g_name_id)[key] = id;
+    return id;
+}
+
+// …and the read-only direction, for the query side: -1 means "nothing was ever recorded under that
+// name", which every counter below then reports as zero rather than inventing an id for it.
+int name_id_of(const char* name) {
+    if (!g_name_id) return -1;
+    std::map<std::string, int>::const_iterator it = g_name_id->find(std::string(name ? name : "?"));
+    return it == g_name_id->end() ? -1 : it->second;
+}
 
 // The REAL clock — the harness's own watchdog cannot use the virtual one it is policing.
 long long real_ms() {
@@ -103,7 +135,7 @@ void dump_unlocked(int max_lines) {
             std::fprintf(stderr, "  ... %zu more\n", g_trace->size() - (size_t)max_lines);
             break;
         }
-        std::fprintf(stderr, "  %8lldms  %s(%lld)\n", c.at_ms, c.name.c_str(), c.arg);
+        std::fprintf(stderr, "  %8lldms  %s(%lld)\n", c.at_ms, (*g_names)[c.name_id].c_str(), c.arg);
     }
 }
 
@@ -153,12 +185,12 @@ void try_advance() {
     pthread_cond_broadcast(&g_tick);
 }
 
-void wait_a_moment() {   // caller holds the lock; releases it while parked
+void wait_a_moment(bool passive = false) {   // caller holds the lock; releases it while parked
     struct timespec until;
     syscall(SYS_clock_gettime, CLOCK_REALTIME, &until);
     until.tv_nsec += 20 * 1000000L;
     if (until.tv_nsec >= 1000000000L) { until.tv_sec++; until.tv_nsec -= 1000000000L; }
-    pthread_cond_timedwait(&g_tick, &g_lock, &until);
+    pthread_cond_timedwait(passive ? &g_slow : &g_tick, &g_lock, &until);
 }
 
 void sleep_for(long long ms) {
@@ -172,7 +204,7 @@ void sleep_for(long long ms) {
         while (g_now_ms < target) {
             try_advance();
             if (g_now_ms >= target) break;
-            wait_a_moment();
+            wait_a_moment(true);
             watchdog_or_die();
         }
         return;
@@ -209,10 +241,20 @@ void sleep_for(long long ms) {
 
 extern "C" {
 
+// The hot path. `slot` is a per-call-site cache of the interned id: the generated stubs are called
+// millions of times in a long scenario, and looking the name up in a map — under the lock, with a
+// string compare — was most of the cost of running one.
+void cinder_harness_record_cached(int* slot, const char* name, long long arg) {
+    Lock l; ensure();
+    mark_running();
+    if (*slot < 0) *slot = intern(name);
+    g_trace->push_back(Call{*slot, arg, g_now_ms});
+}
+
 void cinder_harness_record(const char* name, long long arg) {
     Lock l; ensure();
     mark_running();   // this thread is executing app code — the clock must not jump past it
-    g_trace->push_back(Call{name ? name : "?", arg, g_now_ms});
+    g_trace->push_back(Call{intern(name), arg, g_now_ms});
 }
 
 // For callers that ALREADY HOLD g_lock — currently only the scheduled-filesystem-change hook,
@@ -220,7 +262,7 @@ void cinder_harness_record(const char* name, long long arg) {
 // plain mutex, not a recursive one.
 void cinder_harness_record_locked(const char* name, long long arg) {
     ensure();
-    g_trace->push_back(Call{name ? name : "?", arg, g_now_ms});
+    g_trace->push_back(Call{intern(name), arg, g_now_ms});
 }
 
 int cinder_harness_scripted(const char* name, long long* out) {
@@ -255,6 +297,8 @@ void cinder_harness_reset(void) {
     g_trace->clear();
     g_script->clear();
     g_state->clear();
+    g_names->clear();
+    g_name_id->clear();
     g_now_ms = 0;
     g_waiters->clear();
     g_running = 0;
@@ -277,36 +321,46 @@ void cinder_harness_script_seq(const char* name, const long long* vals, int coun
 
 int cinder_harness_count(const char* name) {
     Lock l; ensure();
+    const int id = name_id_of(name);
+    if (id < 0) return 0;
     int n = 0;
-    for (auto& c : *g_trace) if (c.name == name) n++;
+    for (auto& c : *g_trace) if (c.name_id == id) n++;
     return n;
 }
 
 long long cinder_harness_arg(const char* name, int nth) {
     Lock l; ensure();
+    const int id = name_id_of(name);
+    if (id < 0) return 0;
     int n = 0;
-    for (auto& c : *g_trace) if (c.name == name && n++ == nth) return c.arg;
+    for (auto& c : *g_trace) if (c.name_id == id && n++ == nth) return c.arg;
     return 0;
 }
 
 long long cinder_harness_first_ms(const char* name) {
     Lock l; ensure();
-    for (auto& c : *g_trace) if (c.name == name) return c.at_ms;
+    const int id = name_id_of(name);
+    if (id < 0) return -1;
+    for (auto& c : *g_trace) if (c.name_id == id) return c.at_ms;
     return -1;
 }
 
 long long cinder_harness_last_ms(const char* name) {
     Lock l; ensure();
+    const int id = name_id_of(name);
+    if (id < 0) return -1;
     long long r = -1;
-    for (auto& c : *g_trace) if (c.name == name) r = c.at_ms;
+    for (auto& c : *g_trace) if (c.name_id == id) r = c.at_ms;
     return r;
 }
 
 int cinder_harness_count_between(const char* name, long long from_ms, long long to_ms) {
     Lock l; ensure();
+    const int id = name_id_of(name);
+    if (id < 0) return 0;
     int n = 0;
     for (auto& c : *g_trace)
-        if (c.name == name && c.at_ms >= from_ms && c.at_ms < to_ms) n++;
+        if (c.name_id == id && c.at_ms >= from_ms && c.at_ms < to_ms) n++;
     return n;
 }
 
@@ -316,9 +370,10 @@ int cinder_harness_before(const char* a, const char* b) {
     if (fa != fb) return fa < fb ? 1 : 0;
     // Same virtual millisecond — fall back to trace order, which is the real answer.
     Lock l; ensure();
+    const int ia = name_id_of(a), ib = name_id_of(b);
     for (auto& c : *g_trace) {
-        if (c.name == a) return 1;
-        if (c.name == b) return 0;
+        if (c.name_id == ia) return 1;
+        if (c.name_id == ib) return 0;
     }
     return -1;
 }
@@ -398,8 +453,8 @@ int fprintf(FILE* stream, const char* fmt, ...) {
         while (!text.empty() && (text[text.size() - 1] == '\n' || text[text.size() - 1] == ' '))
             text.erase(text.size() - 1);
         if (text.size() > 96) text.resize(96);
-        g_trace->push_back(Call{"log", 1, g_now_ms});
-        g_trace->push_back(Call{text, 0, g_now_ms});
+        g_trace->push_back(Call{intern("log"), 1, g_now_ms});
+        g_trace->push_back(Call{intern(text.c_str()), 0, g_now_ms});
     }
     if (n > 0) fwrite(buf, 1, (size_t)(n < (int)sizeof buf ? n : (int)sizeof buf - 1), stream);
     return n;
@@ -407,13 +462,13 @@ int fprintf(FILE* stream, const char* fmt, ...) {
 
 int system(const char* cmd) {
     cinder_harness_record("system", 0);
-    if (cmd) { Lock l; ensure(); g_trace->back().name = std::string("system:") + cmd; }
+    if (cmd) { Lock l; ensure(); g_trace->back().name_id = intern((std::string("system:") + cmd).c_str()); }
     return 0;
 }
 
 FILE* popen(const char* cmd, const char* /*mode*/) {
     Lock l; ensure();
-    g_trace->push_back(Call{std::string("popen:") + (cmd ? cmd : "?"), 0, g_now_ms});
+    g_trace->push_back(Call{intern((std::string("popen:") + (cmd ? cmd : "?")).c_str()), 0, g_now_ms});
     return nullptr;   // "the command is not available" — the app's own degraded path
 }
 
@@ -421,13 +476,13 @@ int pclose(FILE*) { return -1; }
 
 void* dlopen(const char* path, int) {
     Lock l; ensure();
-    g_trace->push_back(Call{std::string("dlopen:") + (path ? path : "?"), 0, g_now_ms});
+    g_trace->push_back(Call{intern((std::string("dlopen:") + (path ? path : "?")).c_str()), 0, g_now_ms});
     return nullptr;   // no Sony .so on a build machine — the optional-service paths degrade
 }
 
 void* dlsym(void*, const char* sym) {
     Lock l; ensure();
-    g_trace->push_back(Call{std::string("dlsym:") + (sym ? sym : "?"), 0, g_now_ms});
+    g_trace->push_back(Call{intern((std::string("dlsym:") + (sym ? sym : "?")).c_str()), 0, g_now_ms});
     return nullptr;
 }
 
