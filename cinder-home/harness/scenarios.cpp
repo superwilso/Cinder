@@ -546,6 +546,34 @@ static void s_volume_ramp(void) {
     check_eq(stuck_window, 0, "a stuck rocker gives up rather than repeating for ever");
 }
 
+// ── "it does not pick up music I just copied on" — the half that is not device-gated ─────────
+// The oldest open user-visible bug in the project has two halves. Somebody has to ask
+// MediaStoreService to RE-SCAN so the database changes at all — that is device-gated, it needs the
+// MediaStoreClient vtable recovered, and it is deliberately not guessed. But the second half is
+// ours: once the database HAS changed, the app has to notice and reload.
+//
+// `db_sig.h` is the rule (it covers the DB, its -wal and its -journal, and mtime AND size AND inode
+// for each, because a SQLite writer can leave any one of them untouched across a commit) and it has
+// a ten-case self-test. This is the other question: does the app RUN it, on a timer, and does
+// noticing actually reload the library.
+static void s_library_changed(void) {
+    healthy_device();
+    cinder_harness_fs_write("/db/MTPDB.dat", "the library as it was at boot");
+    // …and something writes to it a minute in, the way a completed MediaStore scan would.
+    cinder_harness_fs_write_at(60000, "/db/MTPDB.dat",
+                               "the library with the album you just copied on, which is longer");
+    cinder_harness_set_budget_ms(120000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("cinder_db_open", 0, 5000), 1, "opened once at boot");
+    const int reopened = cinder_harness_count_between("cinder_db_open", 60000, 90000);
+    std::printf("  .... reloaded %d time(s) within 30s of the database changing\n", reopened);
+    check(reopened >= 1, "the library was reloaded after the database changed underneath it");
+    check_range(reopened, 1, 3, "…once, not on every poll after");
+    check_eq(cinder_harness_count_between("cinder_db_open", 95000, 120000), 0,
+             "and it settles again rather than reloading for ever");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
@@ -567,6 +595,7 @@ static const Scenario kScenarios[] = {
     {"touch-gestures",    s_touch_gestures,          "a tap is a tap and a drag is a drag"},
     {"button-codes",      s_button_codes,            "raw evdev codes decode to the right buttons"},
     {"volume-ramp",       s_volume_ramp,             "the rocker accelerates, stops on release, gives up when stuck"},
+    {"library-changed",   s_library_changed,         "a database that changes underneath us is noticed and reloaded"},
     {nullptr, nullptr, nullptr},
 };
 
