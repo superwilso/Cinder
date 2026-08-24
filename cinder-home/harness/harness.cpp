@@ -57,6 +57,10 @@ pthread_cond_t  g_tick = PTHREAD_COND_INITIALIZER;   // broadcast whenever the c
 // are waiting for the END of the run, so waking them on every clock move — 1.3 million times in a
 // six-hour screen-on scenario — is pure cost for a question whose answer changes once.
 pthread_cond_t  g_slow = PTHREAD_COND_INITIALIZER;
+// The earliest virtual time a PASSIVE waiter is waiting for. They are not woken by every clock
+// move, so the clock wakes them when it crosses this — otherwise a run overshot its budget by
+// however far the frame loop got during one 20 ms poll, which at these speeds was tens of seconds.
+long long g_passive_target = 0;
 std::vector<Call>*   g_trace  = nullptr;
 std::vector<Script>* g_script = nullptr;
 std::vector<std::string>* g_names = nullptr;                 // id -> name
@@ -179,6 +183,7 @@ void try_advance() {
         if ((*g_waiters)[i].target < earliest) earliest = (*g_waiters)[i].target;
     if (earliest <= g_now_ms) return;
     g_now_ms = earliest;
+    if (g_passive_target != 0 && g_now_ms >= g_passive_target) pthread_cond_broadcast(&g_slow);
     // Scheduled changes to the device's world land BEFORE anything observes the new time.
     cinder_harness_fs_due(g_now_ms);
     g_last_move_real = real_ms();
@@ -201,12 +206,14 @@ void sleep_for(long long ms) {
     if (t_role == T_PASSIVE) {
         // The harness's own main thread: it waits for virtual time to arrive and contributes
         // nothing to when the clock jumps.
+        if (g_passive_target == 0 || target < g_passive_target) g_passive_target = target;
         while (g_now_ms < target) {
             try_advance();
             if (g_now_ms >= target) break;
             wait_a_moment(true);
             watchdog_or_die();
         }
+        g_passive_target = 0;
         return;
     }
 
@@ -302,6 +309,7 @@ void cinder_harness_reset(void) {
     g_now_ms = 0;
     g_waiters->clear();
     g_running = 0;
+    g_passive_target = 0;
     g_last_move_real = 0;
     g_started_real = 0;
 }
