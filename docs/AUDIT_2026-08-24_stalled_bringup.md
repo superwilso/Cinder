@@ -85,7 +85,8 @@ cover most heavily.
 **DEVICE-UNVERIFIED.** The throttle and the housekeeping arm are mechanical. The input arm is
 reasoned from the call sites and the shims' null checks, not observed on hardware — a device session
 should force the failure (rename `/db/MTPDB.dat`) and confirm the UI is usable, the panel sleeps,
-and nothing crashes.
+and nothing crashes. That is item **2D.1** in [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md), where it
+is flagged as the highest-risk item on the list.
 
 ## Regression test
 

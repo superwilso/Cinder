@@ -213,6 +213,23 @@ if cc -O2 -o "$HERE/.dbsig_selftest" "$HERE/tools/dbsig_selftest.cpp" -lstdc++ 2
     rm -f "$HERE/.dbsig_selftest"
 else echo "(skip: no host cc)"; fi
 
+echo "── off-device harness: boot the app against fake services ──"
+# The self-tests above check RULES in isolation. This boots the real main.cpp — this exact source —
+# against faked Sony service clients, a faked easel framework, a faked device filesystem and a
+# virtual clock, and asserts on what it actually does: that the paired-device list and the BT
+# listener are set up during bring-up, that a service which is not up yet degrades a feature rather
+# than the Home app, that the idle polls back off, that a stalled bring-up does not freeze the frame
+# loop or fill /contents with log lines. Thirteen scenarios, about eight seconds.
+#
+# It is here, and not only in CI, because build.sh is the last thing that runs before a flash and
+# every defect it has found so far was a behaviour that only appears once the app is RUNNING. Needs
+# python3 and a host C++ compiler; skipped rather than failed if either is missing, like the
+# self-tests above.
+if command -v python3 >/dev/null 2>&1 && [ -x "$HERE/harness/run.sh" ]; then
+    if "$HERE/harness/run.sh" >/dev/null 2>&1; then echo "OK: harness — all scenarios passed"; \
+    else "$HERE/harness/run.sh"; echo "FAIL: off-device harness"; exit 1; fi
+else echo "(skip: no python3 or no harness)"; fi
+
 echo "── verify: device glibc compatibility gate ──"
 gate_glibc "$OUT"
 cp "$OUT" "$OUT.unstripped"; ${TARGET}-strip "$OUT"

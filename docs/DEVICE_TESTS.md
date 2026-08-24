@@ -6,6 +6,12 @@ to do if it fails.
 
 Last updated 2026-08-17.
 
+> **For the full device-gated list — not just the ear tests — see
+> [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md).** It consolidates this file, `ROADMAP.md`'s P0
+> table, `STATUS.md`'s running unverified notes, `ldac-bridge/TEST.md` and `BATTERY_BT.md` into one
+> ordered run sheet, with the safety rules at the top. This file stays the place for the procedures
+> and the results.
+
 ---
 
 ## 1. The EQ was never in the signal path — confirm the fix
