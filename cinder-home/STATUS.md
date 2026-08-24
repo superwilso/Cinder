@@ -139,7 +139,11 @@
 > `/system/vendor/unknown321/bin/cinder-home`, the 2026-07-29 22:32 build, confirmed live after the
 > 07-30 08:56 boot. Offline gates all pass: **219 host tests** across the workspace (0 failed), the
 > **44-case** launcher recovery matrix, the GLIBC ≤2.23 ceiling on both channels, and the qemu
-> construction preflight. *(The "Cinder is NOT installed" note that stood here after the 2026-07-26
+> construction preflight. *(2026-08-24: the offline gates now also include an off-device harness —
+> [`harness/README.md`](harness/README.md) — which boots the real `main.cpp` against fake Sony
+> services and asserts on its call trace. It checks bring-up ORDER and polling RATE, not the ABI,
+> so it changes nothing in the feature matrix below; it is why a regression in those would now be
+> caught before a device session rather than during one.)* *(The "Cinder is NOT installed" note that stood here after the 2026-07-26
 > wbrt restore is obsolete — it was reinstalled in the 07-27/28 sessions.)*
 >
 > **Where Bluetooth stands (the 07-28/29 sessions turned most of it green).** The radio, reconnect,
