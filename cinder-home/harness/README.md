@@ -43,6 +43,14 @@ tests whether the app **runs** them, when, and how often.
 * **`fake_easel.cpp`** — Sony's app framework, implemented against the same hand-recovered
   `easel_abi.hpp` the device build uses, and driving the same lifecycle appmgr does
   (Initialize → PostInitialize → Activate → Foreground). Booting *is* the test.
+* **`fakeinput.cpp`** — a touchscreen and a button block. The app reads `/dev/input/event*`
+  directly: `opendir`, a non-blocking `open` per node, `EVIOCGABS` to find the panel and its
+  coordinate range, `EVIOCGRAB` to hold it, then a `read()` per node per frame. The nodes here are
+  real **FIFOs** in the fake tree with the harness holding the write ends, so the app's own `read()`
+  is untouched — it opens a path, gets a pipe, and reads `input_event` structs exactly as it would
+  from the driver. Only `opendir`, `ioctl` and `poll` are faked around that. The panel reports
+  0..480 / 0..800 so raw and UI coordinates are the same thing and a scenario's numbers are the
+  navigator's numbers.
 * **`fakefs.cpp`** — the device's sysfs, procfs and `/contents`, as far as the app can tell. Nearly
   everything cinder-home knows about its hardware it reads from an absolute path — the battery
   percentage, whether a charger is attached, whether the headphones are plugged in — so `fopen` and
@@ -67,6 +75,11 @@ tests whether the app **runs** them, when, and how often.
 
 ## Two things that behave differently here
 
+* **`poll()` is virtualised, `alarm()` is not.** The frame loop waits on its input descriptors with
+  `poll()` once input is up, which is right on the device and would run the harness in *real* time —
+  a 70-second scenario took 70 seconds. It now asks the kernel whether anything is ready right now,
+  and if not sleeps the timeout on the virtual clock; scheduled input events are part of what the
+  clock stops for, so a tap aimed at t=50s arrives at t=50s.
 * **`alarm()` is real time.** The virtual clock covers sleeping, not signals, so the app's own
   construction watchdog and every `run_guarded` budget are measured in wall-clock seconds. Scenarios
   therefore cannot exercise the guard timeouts cheaply — a renderer that fails to initialise takes
@@ -85,10 +98,10 @@ tests whether the app **runs** them, when, and how often.
 * **It does not build the shipping binary.** `cinder-home/build.sh` does — ARM, glibc ≤ 2.23,
   libc++ ABI, qemu preflight. A harness pass says nothing about whether the thing links for the
   device.
-* **No UI input yet.** Touch and buttons arrive from `/dev/input`, which does not exist here, so
-  scenarios cover bring-up, service availability, pacing and hardware edges — not gestures. Feeding
-  synthetic `input_event` frames through a faked `open()` on `/dev/input/event*` is the obvious next
-  step; `fakefs.cpp` already does the equivalent for everything reached with `fopen`.
+* **The navigator is a stub.** `fakeinput.cpp` delivers real touch and button events (below), so
+  everything between a raw evdev code and `cinder_input`/`cinder_tap` is covered — but what the
+  navigator *decides* is Rust, and it returns "no action" here. `cinder-ui`'s 404 tests cover that
+  half; a scenario that needs an action to actually happen scripts the return value.
 * **No `dlopen`ed services.** NFC, the display service and the USB manager are loaded by name at
   runtime; here `dlopen` records the request and returns null, so those paths take their
   degraded branch. Faking them is tier 2.

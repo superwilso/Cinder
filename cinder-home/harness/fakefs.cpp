@@ -179,6 +179,12 @@ void cinder_harness_fs_due(long long now_ms) {
     }
 }
 
+// Exported for the input fake, which needs the real path of /dev/input/eventN so it can replace it
+// with a FIFO and hold the write end.
+int cinder_harness_fs_resolve(const char* path, const char* mode, char* out, int cap) {
+    return resolve(path, mode, out, cap) ? 1 : 0;
+}
+
 void cinder_harness_fs_mkdir(const char* path) {
     const std::string m = mapped(path);
     if (!m.empty()) mkdirs(m);

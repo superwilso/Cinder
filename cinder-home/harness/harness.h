@@ -95,6 +95,21 @@ int  cinder_harness_fs_read(const char* path, char* buf, int cap);
 // exist for exactly this). A scenario cannot make those edges happen from outside, because it is
 // blocked inside cinder_harness_run() for the whole session; so it schedules them first.
 void cinder_harness_fs_write_at(long long at_ms, const char* path, const char* content);
+// Where a path landed inside the private tree, if it is there at all — 1 and fills `out` on a hit.
+// The input fake needs it to turn /dev/input/eventN into a real FIFO it can hold the write end of.
+int  cinder_harness_fs_resolve(const char* path, const char* mode, char* out, int cap);
+
+// ── fake input (fakeinput.cpp): a touchscreen and a button block ─────────────────────────────
+// cinder-home reads /dev/input/event* directly, so without this the whole gesture and button
+// surface — every path through carry_out — has no off-device exercise at all. The nodes are real
+// FIFOs in the fake tree; the app opens and reads them exactly as it would the driver.
+// Call cinder_harness_input_enable() BEFORE cinder_harness_run(): the app opens the nodes once,
+// during bring-up. Coordinates are UI coordinates (480x800) — the panel's reported range makes raw
+// and UI the same thing on purpose.
+void cinder_harness_input_enable(void);
+void cinder_harness_key_at(long long at_ms, int code, int value);   // raw evdev code, 1 press/0 release
+void cinder_harness_tap_at(long long at_ms, int x, int y);
+void cinder_harness_swipe_at(long long at_ms, int x0, int y0, int x1, int y1, long long dur_ms);
 
 // ── the fake radio (fake_pst.cpp), as a test fixture ─────────────────────────────────────────
 // The Bluetooth fake is stateful: SetRfOnOff drives what GetBtStatus reports, and a connect only
