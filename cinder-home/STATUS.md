@@ -146,9 +146,12 @@
 > **44-case** launcher recovery matrix, the GLIBC ≤2.23 ceiling on both channels, and the qemu
 > construction preflight. *(2026-08-24: the offline gates now also include an off-device harness —
 > [`harness/README.md`](harness/README.md) — which boots the real `main.cpp` against fake Sony
-> services and asserts on its call trace. It checks bring-up ORDER and polling RATE, not the ABI,
-> so it changes nothing in the feature matrix below; it is why a regression in those would now be
-> caught before a device session rather than during one.)* *(The "Cinder is NOT installed" note that stood here after the 2026-07-26
+> services, a fake device filesystem and fake `/dev/input` nodes, and asserts on its call trace.
+> **20 scenarios, 74 assertions, nine seconds**, run by `build.sh` as well as CI. It checks bring-up
+> ORDER, polling RATE, hardware edges and input decode — not the ABI and not audio — so it changes
+> nothing in the feature matrix below; it is why a regression in those would now be caught before a
+> device session rather than during one. Everything still needing hardware is one ordered list:
+> [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md).)* *(The "Cinder is NOT installed" note that stood here after the 2026-07-26
 > wbrt restore is obsolete — it was reinstalled in the 07-27/28 sessions.)*
 >
 > **Where Bluetooth stands (the 07-28/29 sessions turned most of it green).** The radio, reconnect,

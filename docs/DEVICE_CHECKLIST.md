@@ -58,8 +58,25 @@ Nothing here loads the easel lifecycle, so none of it can affect whether the dev
 | 0b | **`cinder-probe --analyzer`** — has never been run once | With music playing | Frames arrive | Cinder was never calling `SetPassband`; that is fixed. If it is still silent, the visualiser has a second cause |
 | 0c | **A `PlayStatus` dump with music actually playing** | `cinder-probe --pump` | Non-zero bytes | Every previous dump was all zeros because nothing was playing, which is why the byte offsets are still unmapped |
 | 0d | **`cinder-probe --discover`** | Once | The dump lands | This is the run the whole device-gated critical path has been blocked on |
-| 0e | **MediaStore re-scan probe** (§1a of the 08-23 audit) | Recover the `MediaStoreClient` vtable | The slot map | *Deliberately not guessed.* Nothing currently asks `MediaStoreService` to re-scan, which is the root of "the library does not pick up new albums" |
+| 0e | **MediaStore re-scan probe** (§1a of the 08-23 audit) | Recover the `MediaStoreClient` vtable; then `strace -f` the `hagodaemon` hosting MediaStoreService across a stock USB-MSC disconnect | The slot map, **and** whether a scan is app-driven at all | *Deliberately not guessed.* See the note below — the second half matters more than the first |
 | 0f | **`--btwho`, `--inpath 2`, `--userpreset`** | With a peer linked and music playing | Consistent with the RE notes | These are the notes the harness's fakes agree with; if the device disagrees, the harness is confidently wrong wherever it touched them |
+
+> **On 0e, and why the `strace` half is the important half.** §1a of the 08-23 audit raises a
+> possibility worth settling before any IPC is written: the scan may not be app-driven at all. If
+> `MediaStoreService` watches the volume being mounted, then Cinder's problem is that `cinder-msc`
+> does the unmount and remount **itself** (`mount(2)` directly, because uid 100 cannot use init's
+> path) and no Sony service is in the loop at the moment the volume changes. **The fix would then be
+> in `cinder-msc`, not in a vtable call** — much cheaper and much safer.
+>
+> I could not narrow this off-device: `artifacts/` is gitignored and empty in a fresh clone, so the
+> extracted rootfs and the full `init*.rc` are not here (`analysis/4a_init_system.txt` and
+> `4b_init_flow.txt` are 2 and 46 lines — summaries, not the scripts). Re-running `make phase2`
+> would recover them and might answer it without the device, and that is worth an hour before the
+> next session.
+>
+> The half that IS settled: **once the database changes, Cinder notices and reloads it, once, then
+> settles.** That is the `library-changed` harness scenario. So the remaining work is the trigger
+> alone, not the trigger plus the reload.
 
 ---
 
@@ -73,8 +90,8 @@ Flash `dist/dev/`, cable **out**.
 | 1b | Library loads | Album/artist/song counts look right for a 304-album library |
 | 1c | **Bad-boot counter cleared** | `healthy: bad-boot counter cleared` in `/contents/cinderhome.log` within ~10 s of first paint |
 | 1d | Type scale and non-Latin rendering | Eyeball; nothing clipped, no tofu |
-| 1e | Touch navigation lands where drawn | Taps hit the row you aimed at |
-| 1f | Vol± reaches the hardware | One audible press |
+| 1e | Touch navigation lands where drawn | Taps hit the row you aimed at. *(Narrower than it was: the harness now covers the decode — a contact becomes a tap, a drag becomes a drag and a fling, and the raw codes map to the right buttons. What is left here is the panel's ACTUAL coordinate range, which the harness invents, and whether the drawn geometry matches the hit test.)* |
+| 1f | Vol± reaches the hardware | One audible press. *(The ramp curve, its stop-on-release and its stuck-key dead-man are covered off-device; that the mixer write is audible is not.)* |
 | 1g | Transport buttons | Each does what it says |
 | 1h | Idle screen-off, and **it wakes** | Blank it; wake by touch **and** by Power. A failed wake is indistinguishable from a dead device |
 
@@ -185,8 +202,12 @@ shape of its blind spots, because "the harness passes" has already been mistaken
 * **`alarm()` and the guard budgets.** The virtual clock covers sleeping, not signals, so
   `run_guarded`'s timeouts and the construction watchdog are measured in real seconds and cannot be
   exercised cheaply.
-* **UI input.** Touch and buttons come from `/dev/input`, which does not exist off-device. Every
-  gesture in Phase 1 and 3 is unverified by anything but the Rust navigation tests.
+* **UI input — partly closed, 2026-08-24.** The harness now presents `/dev/input/event*` as real
+  FIFOs, so the path from a raw evdev code to `cinder_input`/`cinder_tap` is covered. Two things
+  are still device-only: the panel's **actual** coordinate range (the harness reports 0..480/0..800
+  so its numbers are the navigator's numbers, which is convenient and untrue), and what the
+  navigator then *does* — that is Rust, stubbed here, and covered instead by `cinder-ui`'s 404
+  tests.
 * **`dlopen`ed services** — NFC, the display service, the USB manager. Off-device they take their
   degraded branch, so 2A.2 in particular has had no automated exercise at all.
 * **`cinder-audio`'s shims** — 2,500 lines that are the entire IPC surface to PlayerService,
