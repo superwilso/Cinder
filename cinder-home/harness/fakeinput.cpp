@@ -68,7 +68,8 @@ bool is_touch_fd(int fd) {
             // The app holds a DIFFERENT descriptor for the same FIFO, so identity has to come from
             // the file rather than the number: same device+inode means the same node.
             struct stat a, b;
-            if (::fstat(fd, &a) == 0 && ::stat((*g_nodes)[i].path.c_str(), &b) == 0
+            if (::fstat(fd, &a) == 0
+                    && syscall(SYS_newfstatat, AT_FDCWD, (*g_nodes)[i].path.c_str(), &b, 0) == 0
                     && a.st_dev == b.st_dev && a.st_ino == b.st_ino)
                 return true;
         }
@@ -81,7 +82,7 @@ bool is_our_fd(int fd) {
     if (::fstat(fd, &a) != 0) return false;
     for (size_t i = 0; i < g_nodes->size(); i++) {
         struct stat b;
-        if (::stat((*g_nodes)[i].path.c_str(), &b) == 0
+        if (syscall(SYS_newfstatat, AT_FDCWD, (*g_nodes)[i].path.c_str(), &b, 0) == 0
                 && a.st_dev == b.st_dev && a.st_ino == b.st_ino)
             return true;
     }
