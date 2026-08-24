@@ -1,22 +1,43 @@
 name: ci
 
-# Builds and tests everything that CAN be built on a hosted runner, on every push.
+# Builds, tests and lints everything that CAN be checked on a hosted runner.
 #
 # WHY THIS EXISTS SEPARATELY FROM release.yml. The release workflow only runs on a tag, so until
 # now the first time the installer was compiled for Windows was during the release itself — which
 # is the worst possible moment to discover it does not compile. This runs the same build on every
-# push, so a tag is a formality rather than a gamble.
+# change, so a tag is a formality rather than a gamble.
 #
-# The ARM side (cinder-home and friends) is NOT built here: it needs a glibc-2.23 + libc++-3.9.0
-# cross toolchain matched to the player's runtime. It is built by a maintainer and committed under
-# cinder-home/dist/; `tools/release.sh` is what verifies that committed payload is not stale.
+# The ARM LINK is still not done here: it needs a glibc-2.23 + libc++-3.9.0 cross toolchain matched
+# to the player's runtime, which is real machinery to maintain on a runner for little gain. The
+# device binaries are built by a maintainer and committed under cinder-home/dist/, and
+# `tools/release.sh` verifies that committed payload byte-for-byte against a fresh build before it
+# will tag.
+#
+# But "we cannot LINK for ARM here" was quietly being read as "we cannot check the C++ at all", and
+# that left ~19,400 lines of C and C++ — the code that runs as root, owns the boot path and drives
+# the closed Sony services — with no automated gate of any kind (docs/SHORTCOMINGS.md §A1). The
+# `native` job below closes most of that with a stock toolchain and about a minute of runner time.
+#
+# ── TRIGGERS: ONE RUN PER CHANGE, NOT TWO ───────────────────────────────────────────────────────
+# This used to be `push: ["**"]` PLUS `pull_request`, and for a branch with a PR open — which is
+# every branch that matters — BOTH fired, so every push ran the whole matrix TWICE. Eight jobs
+# where four were wanted, for the life of the repo.
+#
+# Now `pull_request` covers branches and `push` covers main. A branch with no PR gets no CI; that
+# is the deliberate trade, and `workflow_dispatch` is the escape hatch when you want a run anyway.
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
     tags-ignore: ["v*"]     # tags are release.yml's job, no need to run twice
   pull_request:
   workflow_dispatch:
+
+# A second push supersedes the first, so cancel the run it replaced rather than paying for both to
+# finish. Never on main: a green tick there is a record of what shipped, not a preview.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   rust:
@@ -47,6 +68,96 @@ jobs:
       - name: Build
         working-directory: ${{ matrix.dir }}
         run: cargo build --release
+
+      # Clippy, scoped to the lint groups that describe BUGS rather than taste.
+      #
+      # Not `-D warnings`: the tree has 121 style/pedantic warnings today, so that gate would be
+      # red on arrival and would only teach everyone to ignore it. `correctness` and `suspicious`
+      # are the groups that catch things that are actually wrong, both pass clean right now, and a
+      # new one appearing is a real regression worth stopping on. Widen as the backlog is worked
+      # off.
+      - name: Clippy (correctness + suspicious)
+        working-directory: ${{ matrix.dir }}
+        run: cargo clippy --all-targets -- -D clippy::correctness -D clippy::suspicious
+
+  # ── the half of the tree nothing used to check ─────────────────────────────────────────────────
+  # Linux only, no cross toolchain, no matrix — about a minute. Every step here is run locally and
+  # passing before being wired. (The first version of this job was NOT: the shellcheck step went
+  # red on its first run because the runner's shellcheck was older than the local one. Hence the
+  # pinning below, and hence "run it locally first" being written down rather than assumed.)
+  native:
+    name: C/C++ syntax + self-tests + shell + harness + launcher
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ~19,400 lines of C and C++ that nothing compiled before this. It is a SYNTAX check, not a
+      # build: it cannot see the ABI, the glibc ceiling, or anything needing the device's headers.
+      # It answers "does this parse", which is the question nothing was asking — and on its first
+      # run it found probe.cpp using uintptr_t in seven places with no <cstdint>, building only
+      # because the device toolchain happened to pull it in transitively.
+      - name: C/C++ syntax check
+        run: tools/host_syntax_check.sh
+
+      # The six pure-logic rules that decide whether the device pauses, reconnects, reboots or
+      # notices new music. They live in build.sh, which needs the cross toolchain and which only
+      # tools/release.sh ever calls — so until now they ran when somebody remembered. They compile
+      # with plain cc in milliseconds and have no business being opt-in.
+      - name: C++ self-tests
+        run: |
+          fail=0
+          for t in guard volramp btedge jackedge btswitch dbsig btpoll; do
+            src="cinder-home/tools/${t}_selftest.cpp"
+            if [ ! -f "$src" ]; then echo "::error::missing self-test $src"; fail=1; continue; fi
+            if ! cc -O2 -o "/tmp/$t" "$src" -lstdc++; then
+              echo "::error::$t failed to build"; fail=1; continue
+            fi
+            if ! "/tmp/$t"; then echo "::error::$t FAILED"; fail=1; fi
+          done
+          exit $fail
+
+      # 5,288 lines of shell across 33 scripts — the launcher, the crash supervisor, the bad-boot
+      # counter, the USB-MSC ordering. All root-privileged, all on the boot path, and none of it
+      # had so much as a syntax check.
+      #
+      # PINNED, AND VIA A SCRIPT, both for the same reason. The first version of this job inlined
+      # the commands and used whatever shellcheck the runner image shipped — and it went red on its
+      # first run, because the local shellcheck used to verify it was 0.11.0 and the runner's was
+      # older, and the two disagree about `#!/system/xbin/busybox sh`. A lint gate whose version
+      # floats is a gate that can turn red with no source change. tools/shell_check.sh is what a
+      # contributor runs locally, so local and CI cannot drift into checking different things.
+      - name: Install pinned shellcheck
+        run: pipx install shellcheck-py==0.11.0.1 || pip install --user shellcheck-py==0.11.0.1
+
+      - name: Shell syntax + lint
+        run: tools/shell_check.sh
+
+      # The app itself, BOOTED. Everything above checks pieces in isolation; this links the real
+      # main.cpp against fake Sony services and a virtual clock, runs the easel lifecycle, and
+      # asserts on the call trace — that the paired list and the notification listener are set up
+      # during bring-up, that a service which is not there yet degrades a feature instead of the
+      # Home app, that the idle Bluetooth poll still backs off. Those are the defects this project
+      # actually ships, and nothing else in CI can see them.
+      #
+      # Costs about two seconds, build included: the harness replaces sleeping with advancing a
+      # counter, so two virtual minutes of device time is a few milliseconds of CPU.
+      # See cinder-home/harness/README.md for what it does and does not prove.
+      - name: Off-device harness (boots main.cpp against fake services)
+        run: cinder-home/harness/run.sh
+
+      # The escape ladder: bad-boot counter, auto-revert, crash supervisor, kill switch, the cable
+      # escape. 45 cases over the launcher generated by install_cinderhome.sh — every mechanism
+      # standing between a bad build and a device that needs wbrt to recover. It has existed since
+      # July and nothing automatic ran it (SHORTCOMINGS.md §A3), which for the one script whose
+      # failure mode is "brick" is the wrong way round. About fifteen seconds — the cases that
+      # exercise the crash supervisor have to actually wait for its backoff.
+      #
+      # Runs here as a NON-root user, which matters: one case makes /data/cinder unwritable with
+      # chmod, and chmod does not bind uid 0 — on a root shell that case silently reports a failure
+      # about the tester rather than the launcher. It skips itself there and a root-proof variant
+      # covers the same rule.
+      - name: Launcher recovery matrix
+        run: bash cinder-home/tools/test_launcher.sh
 
   payload:
     name: dist payload is complete

@@ -72,6 +72,14 @@ pub struct Advanced {
     pub source_direct: bool,
     pub clear_phase: bool,
     pub dsee_ai: bool,
+    /// Is DSEE HX itself on? Its switch is on the Sound screen, and both rows below are only in the
+    /// path while it is — `SetDseeHxCustomMode` tunes the upscaler, it does not start one, and
+    /// `SetDseeAi` selects which upscaler runs.
+    ///
+    /// The two rows underneath this comment used to claim nothing about their parent, while their
+    /// immediate neighbours — Vinyl Character and the Tone band editor — both say "… is off" when
+    /// theirs is. Same dependency, same screen, three lines apart, opposite honesty.
+    pub dsee_hx: bool,
     /// "Off", or one of [`DSEE_MODES`].
     pub dsee_custom: &'static str,
     /// One of [`VINYL_TYPES`]. Only in the path while the Vinyl Processor itself is on, which is
@@ -133,12 +141,27 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
                    "Clear Phase", "Correct headphone phase response");
     toggle(c, t, 418, cy - 11, 40, 22, 14, a.clear_phase);
 
-    let cy = a_row(c, t, f, a, y0 + rh * 2, sel == 2, ROW_DSEE_AI,
-                   "DSEE AI", "Upscaling with real-time source analysis");
+    // DSEE AI. SAYS WHAT IS KNOWN ABOUT IT, which is less than the other rows on this screen.
+    //
+    // `SetDseeAi`/`IsDseeAiOn` are exported by libEffectCtrlDmp and the write lands — and this
+    // project has already learned once, expensively, that neither of those is evidence: high gain
+    // accepted its write, read back 1, persisted, and the codec ignored it because the A50 output
+    // stage lacks the hardware (STATUS.md: "a mixer control accepting a write is not evidence the
+    // feature works"). analysis/RE_dsp_effects_surface.md says the same thing about this row in
+    // as many words — "Whether the A50 has the hardware is UNVERIFIED — treat like high gain until
+    // heard" — and it was shipped anyway, drawn exactly like the toggles that do work.
+    //
+    // NOT removed, because unlike high gain nobody has measured it inert; the honest state is "we
+    // do not know", and a subtitle can say that where a bare toggle cannot.
+    let aidesc = if a.dsee_hx { "Upscaling by source analysis — UNVERIFIED on this hardware" }
+                 else { "Upscaling by source analysis — DSEE HX is off" };
+    let cy = a_row(c, t, f, a, y0 + rh * 2, sel == 2, ROW_DSEE_AI, "DSEE AI", aidesc);
     toggle(c, t, 418, cy - 11, 40, 22, 14, a.dsee_ai);
 
-    let cy = a_row(c, t, f, a, y0 + rh * 3, sel == 3, ROW_DSEE_CUSTOM,
-                   "DSEE HX Custom", "Tune the upscaler to the material");
+    // Tuning the upscaler needs an upscaler. Same sentence shape as the two rows below, which have
+    // said this about their own parents since the screen was written.
+    let cdesc = if a.dsee_hx { "Tune the upscaler to the material" } else { "DSEE HX is off" };
+    let cy = a_row(c, t, f, a, y0 + rh * 3, sel == 3, ROW_DSEE_CUSTOM, "DSEE HX Custom", cdesc);
     crate::sound::value_pill(c, f, t, 458, cy, a.dsee_custom);
 
     let vdesc = if a.vinyl_on { "Character of the vinyl emulation" } else { "Vinyl Processor is off" };
@@ -187,7 +210,7 @@ mod tests {
 
     fn sample() -> Advanced {
         Advanced {
-            source_direct: false, clear_phase: false, dsee_ai: false,
+            source_direct: false, clear_phase: false, dsee_ai: false, dsee_hx: false,
             dsee_custom: "Off", vinyl_type: VINYL_TYPES[0], vinyl_on: false,
             tone_control: false, overridden_by: None,
         }

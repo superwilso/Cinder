@@ -60,6 +60,10 @@ dump with music actually playing, any LDAC validation, and a single `cinder-prob
 > else here. Everything after it is verification of code that is already written.
 
 ## The next device session — critical path (do in this order)
+
+> **Run sheet:** [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md) — every device-gated
+> item in the project in one ordered list, safety rules first, with what a PASS looks like for each.
+> The five steps below are its Phase 0 and Phase 1; the P0 table below is its Phase 3.
 1. **Run `ldac-bridge/TEST.md`** — the headline feature, still 0% validated. Runs under stock, so it
    is independent of everything below and carries no boot risk. Its two unknowns (does
    `SetCurrentSource(true)` open the server socket; is the USB-DAC capture `-EBUSY`) each have a

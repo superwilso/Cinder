@@ -1663,9 +1663,69 @@ pub fn playlist_content_top(pl: &crate::model::PlaylistRow) -> i32 {
     by + bh + 8 + if pl.user { PLAYLIST_ACTIONS_H } else { 0 }
 }
 
-pub fn hit_playlist_shuffle_band(x: i32, y: i32) -> bool {
+/// The playlist page's band is SPLIT: PLAY on the left, SHUFFLE on the right.
+///
+/// It used to be a single "Shuffle playlist" band, which left the page with no way to play a
+/// curated list in the order it was curated in — the one thing a playlist is for. Reported
+/// 2026-08-23: "no way to press normal non shuffled play on a playlist". Split rather than
+/// stacked so nothing below the band moves: `playlist_content_top`, the edit bar and the whole
+/// overflow test matrix all derive from this one rect.
+///
+/// The play half is the wider one. It is the ordinary action, and shuffle already has a band of
+/// its own on the Playlists tab.
+const PLAYLIST_PLAY_FRAC: i32 = 62; // percent of the band width given to PLAY
+
+pub fn playlist_play_band() -> (i32, i32, i32, i32) {
     let (bx, by, bw, bh) = shuffle_band_rect(PLAYLIST_BAND_Y);
+    (bx, by, bw * PLAYLIST_PLAY_FRAC / 100, bh)
+}
+
+pub fn playlist_shuffle_band() -> (i32, i32, i32, i32) {
+    let (bx, by, bw, bh) = shuffle_band_rect(PLAYLIST_BAND_Y);
+    let pw = bw * PLAYLIST_PLAY_FRAC / 100;
+    (bx + pw, by, bw - pw, bh)
+}
+
+/// True if `(x, y)` is on the PLAY half of the playlist band.
+pub fn hit_playlist_play_band(x: i32, y: i32) -> bool {
+    let (bx, by, bw, bh) = playlist_play_band();
     (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+}
+
+/// True if `(x, y)` is on the SHUFFLE half of the playlist band.
+pub fn hit_playlist_shuffle_band(x: i32, y: i32) -> bool {
+    let (bx, by, bw, bh) = playlist_shuffle_band();
+    (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+}
+
+/// Draw the split PLAY | SHUFFLE band. One accent rect, a divider, and two labelled halves —
+/// so the control reads as one band with two verbs rather than two stacked accent blocks (the
+/// same reason `new_playlist_row` is outlined rather than filled).
+fn playlist_band(c: &mut Canvas, t: &Theme, f: &FontSet, tracks: usize) {
+    let (px, py, pw, ph) = playlist_play_band();
+    let (sx, _, sw, _) = playlist_shuffle_band();
+    fill_rect(c, px, py, pw + sw, ph, t.acc);
+    // Divider: the two halves are one filled rect, so without this there is nothing telling the
+    // finger where one verb ends and the other begins.
+    fill_rect(c, sx, py + 10, 1, ph - 20, t.acc_ink);
+
+    let cy = py + ph / 2;
+    let lst = sty(Family::Sans, Weight::Bold, 18.0, t.acc_ink, 0.0);
+    let sst = sty(Family::Mono, Weight::Regular, 11.0, t.acc_ink, 0.06);
+    // PLAY half: the play glyph leads, the way the album page's band does.
+    icons::play(c, (px + 20) as f32, cy as f32, 18.0, t.acc_ink);
+    let lw = (pw - 52) as f32;
+    text::draw(c, f, (px + 42) as f32, (cy - 4) as f32,
+        &crate::widgets::fit(f, "Play", &lst, lw), &lst);
+    text::draw(c, f, (px + 42) as f32, (cy + 14) as f32,
+        &crate::widgets::fit(f, &format!("{} TRACKS · IN ORDER", tracks), &sst, lw), &sst);
+    // SHUFFLE half.
+    icons::shuffle(c, (sx + 20) as f32, cy as f32, 18.0, t.acc_ink);
+    let sw_txt = (sw - 46) as f32;
+    text::draw(c, f, (sx + 38) as f32, (cy - 4) as f32,
+        &crate::widgets::fit(f, "Shuffle", &lst, sw_txt), &lst);
+    text::draw(c, f, (sx + 38) as f32, (cy + 14) as f32,
+        &crate::widgets::fit(f, "RANDOM", &sst, sw_txt), &sst);
 }
 
 pub fn playlist_view_h(pl: &crate::model::PlaylistRow) -> i32 {
@@ -1780,8 +1840,7 @@ pub fn playlist_view(
         format!("{} OF {} TRACKS AVAILABLE", pl.track_list.len(), pl.tracks)
     };
     text::draw(c, f, 22.0, 126.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
-    shuffle_row(c, t, f, PLAYLIST_BAND_Y, "Shuffle playlist",
-        &format!("ALL {} TRACKS · RANDOM ORDER", pl.track_list.len()));
+    playlist_band(c, t, f, pl.track_list.len());
 
     if pl.user {
         for (i, label) in PLAYLIST_ACTIONS.iter().enumerate() {
