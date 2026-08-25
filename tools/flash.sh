@@ -23,6 +23,9 @@
 #   tools/flash.sh --log                   # shortcut: --cat cinder_install.log
 #   tools/flash.sh --push <file>           # copy a local file to the device root
 #   tools/flash.sh --pull <file> [dest]    # copy a file OFF the device (binary-safe; e.g. MTPDB_copy.dat)
+#   tools/flash.sh --clear-latch           # clear a bad-boot revert; give the build another chance
+#   tools/flash.sh --cable-off             # cable-heavy dev session: stop cable-at-boot -> stock
+#   tools/flash.sh --cable-on              # UNDO --cable-off. Do this when the session ends.
 #
 # Flags:
 #   -d /dev/sdX   force the block device (skip autodetect)
@@ -64,6 +67,8 @@ while [ $# -gt 0 ]; do
     --log)          MODE="cat"; CATFILE="cinder_home_install.log"; shift;;
     --push)         MODE="push"; PUSHFILE="${2:-}"; shift 2;;
     --clear-latch)  MODE="clearlatch"; shift;;
+    --cable-off)    MODE="cableoff"; shift;;
+    --cable-on)     MODE="cableon"; shift;;
     --pull)         MODE="pull"; shift;
                     PULLFILE="${1:-}"; [ $# -gt 0 ] && shift;
                     if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then PULLDEST="$1"; shift; fi;;
@@ -91,6 +96,8 @@ reexec_root() {
   [ "$MODE" = cat ] && a+=(--cat "$CATFILE")
   [ "$MODE" = push ] && a+=(--push "$PUSHFILE")
   [ "$MODE" = clearlatch ] && a+=(--clear-latch)
+  [ "$MODE" = cableoff ] && a+=(--cable-off)
+  [ "$MODE" = cableon ] && a+=(--cable-on)
   [ "$MODE" = pull ] && { a+=(--pull "$PULLFILE"); [ -n "$PULLDEST" ] && a+=("$PULLDEST"); }
   [ -n "$UPG" ] && a+=("$UPG")
   exec sudo -E "$0" "${a[@]}"
@@ -257,15 +264,73 @@ if [ "$MODE" = "clearlatch" ]; then
   mount "$PART" "$MNT" 2>/dev/null || mount -t exfat "$PART" "$MNT" 2>/dev/null \
     || die "could not mount $PART"
   n=0
-  for f in cinderhome_off cinderhome_bootcount cinderhome_DISABLED_badboot; do
+  # cinderhome_once is swept too, and deliberately is NOT handled by the launcher's clear path:
+  # the one-shot "Boot to stock" outranks a clear on purpose (test_launcher.sh "one-shot fires even
+  # when latched clear"). That is right for the launcher and wrong for us — running --clear-latch
+  # means "get me back to cinder", and a pending one-shot would spend the very next boot on stock,
+  # which reads exactly like the clear having silently failed.
+  for f in cinderhome_off cinderhome_bootcount cinderhome_DISABLED_badboot cinderhome_once; do
     if [ -e "$MNT/$f" ]; then rm -f "$MNT/$f" && { info "removed $f"; n=$((n+1)); }
     else info "$f not present (ok)"; fi
   done
   : > "$MNT/cinderhome_clear" && info "armed cinderhome_clear (launcher clears the /data latch)"
+  cable_off=0
+  [ -e "$MNT/cinderhome_cable_off" ] && cable_off=1
   sync
   umount "$MNT"; trap - EXIT
   ok "cleared $n legacy file(s) + armed the clear trigger."
-  ok "Boot with USB UNPLUGGED — a cable at boot is itself an escape to stock."
+  if [ "$cable_off" = 1 ]; then
+    ok "cinderhome_cable_off is SET — the cable escape is off, so you can boot with USB in."
+    warn "rung 0 of the escape ladder is disabled. Put it back with --cable-on when you are done."
+  else
+    ok "Boot with USB UNPLUGGED — a cable at boot is itself an escape to stock."
+    say "    Rebooting a lot this session? ${C_B}tools/flash.sh --cable-off${C_0} stops that,"
+    say "    and ${C_B}--cable-on${C_0} puts the escape back when you are finished."
+  fi
+  warn "One-shot 'Boot to stock' can also be latched on /data (once_stock), which USB-MSC cannot"
+  warn "reach. If this boot still lands on stock, clear it with: adb shell rm /data/cinder/once_stock"
+  exit 0
+fi
+
+# ------------------------------------------------------- --cable-off / --cable-on
+# Rung 0 of the escape ladder is "boot with the cable in -> stock". It needs no filesystem, no
+# shell and no working counter, which is exactly why it is checked first and why it is the escape
+# that recovers the failures nothing else can (see install_cinderhome.sh "cable escape").
+#
+# The cost is that a cable-heavy session — flash, reboot, flash, reboot — lands on stock every
+# time, because the flag the installer uses (/data/cinder/cable_escape_off) is on ext4 and USB-MSC
+# only ever exposes the vfat /contents. This writes its MSC-settable twin instead, which the
+# launcher honours identically:
+#     /data/cinder/cable_escape_off     persistent, needs a shell
+#     /contents/cinderhome_cable_off    same effect, settable from here
+#
+# TAKE IT BACK WHEN THE SESSION ENDS (`--cable-on`). cinder-install.sh treats the ext4 flag as a
+# LOAN for exactly this reason: leaving it set silently removes the one escape that depends on
+# nothing, and you will not notice until the boot you needed it.
+if [ "$MODE" = "cableoff" ] || [ "$MODE" = "cableon" ]; then
+  PART="$(data_partition "$DEV")"
+  [ -n "$PART" ] || die "no FAT/exFAT data partition on $DEV (is it in MSC mode?)"
+  MNT="$(mktemp -d /tmp/walkman.XXXXXX)"
+  trap 'mountpoint -q "$MNT" && umount "$MNT" 2>/dev/null; rmdir "$MNT" 2>/dev/null' EXIT
+  mount "$PART" "$MNT" 2>/dev/null || mount -t exfat "$PART" "$MNT" 2>/dev/null \
+    || die "could not mount $PART"
+  if [ "$MODE" = "cableoff" ]; then
+    : > "$MNT/cinderhome_cable_off"
+    sync; umount "$MNT"; trap - EXIT
+    ok "cable escape DISABLED — booting with the cable in now stays on cinder-home."
+    warn "rung 0 of the escape ladder is OFF. Put it back with --cable-on when you are done."
+    warn "Rung 1 (the bad-boot counter, MAXBAD=4) still covers a build that will not start."
+  else
+    if [ -e "$MNT/cinderhome_cable_off" ]; then
+      rm -f "$MNT/cinderhome_cable_off"; ok "removed cinderhome_cable_off"
+    else
+      info "cinderhome_cable_off not present (ok)"
+    fi
+    sync; umount "$MNT"; trap - EXIT
+    ok "rung 0 restored — a cable at boot escapes to stock again."
+    warn "If /data/cinder/cable_escape_off is ALSO set, this did not fully restore rung 0."
+    warn "That one needs a shell: adb shell rm /data/cinder/cable_escape_off"
+  fi
   exit 0
 fi
 
