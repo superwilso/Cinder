@@ -93,11 +93,13 @@ void dump_maps() {
     std::fclose(m);
     std::fflush(stderr);
 }
-void log_fault(int sig, void* /*uc_*/, siginfo_t* si, const char* tag) {
+void log_fault(int sig, void* uc_, siginfo_t* si, const char* tag) {
     unsigned long pc = 0, lr = 0;
 #if defined(__arm__)
     ucontext_t* uc = static_cast<ucontext_t*>(uc_);
     pc = uc->uc_mcontext.arm_pc; lr = uc->uc_mcontext.arm_lr;
+#else
+    (void)uc_;   // only the ARM mcontext has a PC/LR to read; host builds still take the param
 #endif
     std::fprintf(stderr, "[cinder-home] *** %s : sig=%d PC=0x%08lx LR=0x%08lx addr=%p ***\n",
                  tag, sig, pc, lr, si ? si->si_addr : (void*)0);

@@ -374,7 +374,9 @@ make it fixable by shipping a different table.
   `SetEffectParam`), which is the one path that logs.
 
   Recipe to finish it, if it is ever worth the churn: set an ordinal, force a track change, read the
-  log, repeat — 24 track changes. `cinder-probe --play` can drive playback, so it is automatable.
+  log, repeat — 24 track changes. `cinder-probe --pump` can drive playback, so it is automatable.
+  (**Not `--play`** — that mode is deliberately the framework-DEAD control in the A/B and cannot
+  connect; see the 2026-08-25 results below.)
   Parked instead: this only labels a picker for a control **Sony's own A50 UI does not expose at
   all**, and the Tone screen ships without it rather than with numbers Cinder invented.
 - **External tuning blobs** (#63) — the 192 KB nested `NW_WM_FW.UPG` under `/etc/.mod/tunings/`
@@ -423,3 +425,188 @@ export LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/sy
 
 `--fx` first, always: ClearAudio+, Source Direct and `BtAudioSoundEffect` each make everything else
 inaudible while still reading back exactly as written.
+
+---
+
+## RESULTS 2026-08-25 — the Phase-0 probe sweep, and a build that did not build
+
+A device session driven entirely over adb: no flash, no reboot, nothing written to `/system` except
+`cinder-probe` itself. Phase 0 of [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) is now mostly closed.
+The session ended when the device stopped enumerating on USB (see "How this session ended").
+
+### 0. The gate that was supposed to catch this, and didn't
+
+**`build.sh dev` FAILED at HEAD.** The tree did not compile for the device:
+
+```
+src/main.cpp:99:47: error: use of undeclared identifier 'uc_'
+   99 |     ucontext_t* uc = static_cast<ucontext_t*>(uc_);
+```
+
+Introduced by `f2f41a8` ("Deep sweep: … -Werror turned on"), which silenced an unused-parameter
+warning by commenting the name out — `void* /*uc_*/` — while the `#if defined(__arm__)` body below
+still used it. **Host builds skip that block, so CI stayed green and only the ARM cross-compile
+broke.** `probe.cpp:117` had the identical defect. Both now name the parameter and `(void)uc_` it on
+non-ARM.
+
+This is exactly the hole gate 0.1 exists to cover ("a green CI says nothing about whether the thing
+links for the device"), and it is the second time an ARM-only path has been broken by a host-only
+check. After the fix: ARM link OK, GLIBC ceiling OK (`2.4…2.18`, under 2.23), qemu construction
+preflight PASS, launcher escape matrix 46/0, harness all scenarios PASS. **0.1 and 0.2 PASS.**
+
+### 0a — LDAC control plane: **Q1 PASS**, first validation of the headline feature
+
+`cinder-probe --ldac`, with the framework started and pumped:
+
+```
+ldac: SetLdac(true) / SetLdacSoundQuality(Auto) / SetCurrentSource(true)
+ldac: Q1 socket name = 'pst::services::bttransmitterservice' (len 35, pump ticks 7)
+ldac: Q1 PASS — connected to the transmitter's audio socket
+```
+
+A real name and a real connection, not uninitialised stack. `TEST.md`'s first question is answered:
+**the control plane does make `BtTransmitterService` open its audio socket.** The source was
+released again at the end of the run.
+
+**Q2 INCONCLUSIVE** — no capture PCM exists to open (`Invalid value for card` on every candidate).
+That needs the gadget in UAC mode with a PC actually feeding audio, and per the FuncMode notes
+entering USB-DAC drops adb, so it is a hands-on item.
+
+### 0b — analyzer: **PASS**
+
+Frames flow. `cinder_analyzer_start` rc=0, then with audio playing alongside it:
+
+```
+analyzer: frames=4  bands=12  vals[0..7]= 156336 1141720 1457742 870771 124308 195243 1224925 1704183
+analyzer: frames=25 bands=12  vals[0..7]= 59387 691385 330639 1083123 165325 114236 695333 191591
+```
+
+**12 bands, and the values are LINEAR** (roughly 0 … 1.7e6), not dBFS — worth knowing before
+`spectrum::from_bands` is trusted to auto-detect. Frame rate came in under the 20 Hz requested
+(~6/s observed); not investigated.
+
+### 0c — PlayStatus with music actually playing: **PASS**, via `--pump` (not `--play`)
+
+```
+pump: audio_init=0  IsConnected=1
+SetTrackSequence OK; prepare ChangePlayState(1) rc=0
+ChangePlayState(Play=2) rc=0
+pump:   ALSA pcm4p = state: RUNNING
+pump: t+5s ticks=2616 events=10 pos=5000/268333 uri(95)=…/01 - American Football - Never Meant.flac
+```
+
+Position advances in real time, the listener fires, and the ALSA device really is RUNNING. The whole
+RE'd chain (JSON → Node → NodeTrackSequence → SetTrackSequence → ChangePlayState) is verified live.
+
+**Note for anyone reading the old procedure: `--play` cannot work and is not supposed to.** It is
+the deliberate framework-dead half of the A/B — it calls `cinder_audio_init` with no
+`StartForApplication` and no pump, so `Connect` returns uninitialised stack every time
+(`rc=-1229155576`, `rc=-1094638144`, …) and logcat shows the service never saw a transaction.
+`--pump` is the mode that plays.
+
+**This also settles 3d.** `duration_raw = 268333` for a 4:28 track. **It is milliseconds.**
+
+### 0d — `--discover`: root-caused, and the long-standing note was wrong
+
+The dump ran with a live link (`audio_init=0 IsConnected=1`) and **the PlayStatus block still came
+back 128 zero bytes.** Two separate defects, both now fixed:
+
+1. **`--discover` never pumped.** It called `cinder_audio_init("cinder")` with no framework and no
+   pump, so the Connect reply was never dispatched and the link was never actually up. Every dump
+   before today was taken over a dead connection. The recorded explanation — *"every previous dump
+   was all zeros because nothing was playing"* — **was wrong**; nothing was ever connected.
+2. **`PlayStatus` is per-controller.** `cinder_audio_dump_status` reads *this process's* controller,
+   which reports what this client was told to play — not what the device is playing. Running a
+   player alongside it in another shell (or letting the Home app play) dumps zeros no matter how
+   healthy the link is. **The dumping process has to own the playback.**
+
+`--discover` now starts the framework, pumps, waits for `IsConnected`, and takes media paths of its
+own, which it plays before capturing:
+
+```
+cinder-probe --discover /contents/cinder_discovery.txt /contents/MUSIC/…/01 - … .flac
+```
+
+**Built and pushed but NOT re-run** — the device left the bus first. Re-running it is the one
+outstanding piece of Phase 0.
+
+### 0e — the MediaStore half that could be settled off-device: **recovered**
+
+`libMediaStoreServiceClient.so` exports the scanner as a concrete class, so **no vtable slots have
+to be guessed at all** (checklist rule 4 is satisfied outright):
+
+```
+pst::services::mediascanner::MediaScanner::MediaScanner(IMediaStoreService*)
+pst::services::mediascanner::MediaScanner::Scan(IMediaScannerListener*, pst::mediascanner::language_t)
+pst::services::mediascanner::MediaScanner::ScanFile(IMediaScannerListener*, std::string const&, language_t)
+pst::services::mediascanner::MediaScanner::Cancel()
+pst::services::mediascanner::MediaScanner::OnProgress(int, int) / OnFinished(status_t)
+pst::services::mediastore::MediaStoreService::GetInstance() / GetMediaStoreClient()
+```
+
+`MediaStoreService` is hosted by `hagoromo9`, sharing a process with `PlayerService`
+(`init.hagoromo.rc:89`). **`strace` is present on the device at `/system/xbin/strace`**, so the
+second half — is a rescan app-driven or mount-driven — is runnable, but it needs a real USB-MSC
+disconnect, and MSC takes over the gadget and kills adb. Hands-on item.
+
+### 0f — the notes vs the device: **the notes hold**
+
+`--userpreset`, unchanged from the RE record:
+
+```
+LIVE (entry)  … sel=2
+slot 0/1/2    dsee=0 vpt=0/1 dc=0/5 norm=0 vinyl=0/7 tone=1 tv=0,0,0 eq6p=0 sel=1
+slot 3,4      EffectCtrlDmp.cc !!! unknown UserPresetNo
+```
+
+Three real slots, every one holding `SelectUsingEq=1` (the six-band), 3+ out of range. The probe put
+the chain back exactly as found (`sel=2` on re-read), so it is safe to run. `--inpath 2`, with music
+playing, in the service's own log:
+
+```
+Eq10band::UpdateProcCond … isproc is 1
+EqTone::UpdateProcCond   … isproc is 0
+```
+
+**Cinder's 10-band EQ is in the signal path.** `--btwho` ran clean and read `GetBtStatus=7` (off),
+nothing connected — consistent, but the with-a-peer half still needs headphones.
+
+One observation not in the notes: under selector 2, **`Eq6band` also reports `isproc is 1`**, and
+`FilterChain` lists `eq6band` and `eq10band` as separate filters. Both report `no desired value,
+skip`. Not necessarily a contradiction of the alternatives model, but it is not what the model
+predicts either, and it is worth a look before the six-band decision in §10 is treated as final.
+
+### Two more probe bugs found and fixed
+
+* **`--fx` exited 42 after a clean run**, with a `PC=0x00000000` backtrace. Same teardown fault
+  `--tone` already documents: the pump thread is still inside `libpstcore` while static destructors
+  unwind through Sony's vtables. `--fx` and `--discover` now `_exit()` like `--tone` and `--eq` do.
+  `--fx` now exits 0. (`--userpreset` and `--btwho` were already clean at exit 0.)
+
+### New: `cinder-probe --transport` — Phase 3, by measurement instead of by eye
+
+Four Phase-3 items are the same shape (an RE'd value nothing ever confirmed) and are all visible in
+the position/URI the listener already reports, so none of them needs a finger on the glass:
+
+| Item | What the mode does | PASS |
+|---|---|---|
+| 3a play-by-index | `play_tracks({A,B}, start=1)` | the SECOND path is what plays |
+| 3c drag-to-seek | `seek_ms_origin(0, 60000)` | lands at ~60 s, not at now+60 s (that would mean 0 is Current, not Begin) |
+| 3e repeat-one | repeat on, park 6 s from the end | the SAME uri restarts near zero |
+| 3f queue end | repeat off, single track, park 6 s from the end | records state/playing at the boundary — an observation, per the checklist |
+
+```
+cinder-probe --transport <trackA> <trackB>      # both >70 s
+```
+
+**Built and pushed; NOT yet run** — the device left the bus before it could. This is the first thing
+to run when it is back.
+
+### How this session ended
+
+The device stopped enumerating on USB after the `--ldac` run (which itself exited 0 and released the
+source). It disappeared from Windows entirely — present only under usbipd's *Persisted* list, not
+*Connected* — so this was not a WSL passthrough drop. A reboot and a fired auto power-off both look
+like this from the host side and cannot be told apart without the device in hand;
+`/contents/cinderhome.log` will say which, and if auto power-off is configured then this is **2D.4
+firing on an idle device** and is a pass, not a fault. Read that log before assuming anything broke.
