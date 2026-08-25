@@ -114,11 +114,13 @@ static void dump_maps() {
     std::fflush(stderr);
 }
 
-static void crash_handler(int sig, siginfo_t* si, void* /*uc_*/) {
+static void crash_handler(int sig, siginfo_t* si, void* uc_) {
     unsigned long pc = 0, lr = 0;
 #if defined(__arm__)
     ucontext_t* uc = static_cast<ucontext_t*>(uc_);
     pc = uc->uc_mcontext.arm_pc; lr = uc->uc_mcontext.arm_lr;
+#else
+    (void)uc_;   // only the ARM mcontext has a PC/LR to read; host builds still take the param
 #endif
     std::fprintf(stderr, "[cinder-probe] *** %s : PC=0x%08lx LR=0x%08lx addr=%p ***\n",
                  (sig == SIGALRM ? "WATCHDOG (this call HUNG — this is the culprit)" : "FATAL SIGNAL"),
@@ -325,6 +327,162 @@ static void pump_job() {
     std::fflush(stderr);
     // _exit for the same reason as --play: static teardown runs through Sony's stale vtables.
     _exit(pr == 0 ? 0 : 1);
+}
+
+// ── --transport : the Phase-3 playback unknowns, settled by measurement not by eye ──────────────
+//
+// Four items in DEVICE_CHECKLIST Phase 3 share a shape — a value RE recovered that nothing on the
+// device ever confirmed — and all four are visible in the position/URI the listener already
+// reports, so none of them actually needs a finger on the glass:
+//
+//   3a play-by-index   play_tracks(paths, n, start=1) must start on the SECOND path
+//   3c drag-to-seek    media_origin_t::Begin == 0 — seek to a known ms, read the position back
+//   3e repeat-one      OneTrackMode::On == 1 — park near the end, see if the SAME uri restarts
+//   3f queue end       no repeat-all primitive is known; this records what the state DOES
+//
+// Runs inside StartForApplication with the pump going, exactly like --pump; without that every
+// value below is uninitialised stack.
+//   --transport <trackA> <trackB>
+static const char* base_(const char* p) {
+    const char* s = std::strrchr(p, '/');
+    return s ? s + 1 : p;
+}
+
+// Wait for the position to be reported at all (the listener needs one update), then settle.
+static int tpos_(int* cur, int* tot, int tries) {
+    for (int i = 0; i < tries; ++i) {
+        sleep(1);
+        *cur = -1; *tot = -1;
+        if (cinder_audio_position(cur, tot) && *tot > 0) return 1;
+    }
+    return 0;
+}
+
+static void transport_job() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] transport: job running (fw=%p) — starting Pump()\n",
+                 (void*)&fw);
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) {
+        clog_("transport: pthread_create FAILED"); _exit(1);
+    }
+    usleep(300000);
+    wd_arm(12); int ai = cinder_audio_init("cindertrans"); wd_disarm();
+    int waited = 0;
+    while (!cinder_audio_is_connected() && waited < 50) { usleep(100000); ++waited; }
+    std::fprintf(stderr, "[cinder-probe] transport: audio_init=%d IsConnected=%d\n",
+                 ai, cinder_audio_is_connected());
+    if (ai != 0) { clog_("transport: not connected — nothing below would mean anything"); _exit(1); }
+    wd_arm(8); cinder_audio_close_player(); wd_disarm();
+
+    const char* A = g_pump_argv[2];
+    const char* B = g_pump_argv[3];
+    char uri[512];
+    int cur = -1, tot = -1;
+    int pass3a = 0, pass3c = 0, pass3e = 0;
+
+    // ── 3a — play-by-index ───────────────────────────────────────────────────────────────────
+    clog_("transport: [3a] play_tracks({A,B}, start=1) — expect the SECOND track");
+    const char* two[2] = { A, B };
+    wd_arm(15);
+    int pr = cinder_audio_play_tracks(two, 2, 1);
+    wd_disarm();
+    tpos_(&cur, &tot, 8);
+    wd_arm(8); int n = cinder_audio_current_uri(uri, sizeof uri); wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] transport: [3a] play_tracks=%d pos=%d/%d uri=%s\n",
+                 pr, cur, tot, n > 0 ? base_(uri) : "(none)");
+    if (n > 0 && std::strcmp(base_(uri), base_(B)) == 0) {
+        pass3a = 1; clog_("transport: [3a] PASS — start index selected the second path");
+    } else {
+        std::fprintf(stderr, "[cinder-probe] transport: [3a] FAIL — wanted %s\n", base_(B));
+    }
+
+    // ── 3c — seek origin: is media_origin_t::Begin really 0? ─────────────────────────────────
+    // Begin=0 means the ms is measured from the START of the track, so seeking to 60 s must land
+    // at ~60 s whatever the current position is. If 0 were really Current, it would land at
+    // now+60 s instead — which is the 2026-07-28 bug: the bar follows the finger, audio does not.
+    if (tot > 70000) {
+        clog_("transport: [3c] seek_ms_origin(origin=0, 60000) — expect ~60000, not now+60000");
+        int before = cur;
+        wd_arm(10); int sr = cinder_audio_seek_ms_origin(0, 60000); wd_disarm();
+        sleep(3);
+        cinder_audio_position(&cur, &tot);
+        std::fprintf(stderr, "[cinder-probe] transport: [3c] seek rc=%d before=%d after=%d/%d\n",
+                     sr, before, cur, tot);
+        if (cur > 56000 && cur < 70000) {
+            pass3c = 1;
+            clog_("transport: [3c] PASS — origin 0 is BEGIN (absolute); drag-to-seek lands where dropped");
+        } else if (cur > before + 50000) {
+            clog_("transport: [3c] FAIL — origin 0 behaves as CURRENT (relative). Begin is NOT 0.");
+        } else {
+            clog_("transport: [3c] INCONCLUSIVE — position did not move as either origin predicts");
+        }
+    } else {
+        clog_("transport: [3c] SKIPPED — track shorter than 70 s, pick a longer one");
+    }
+
+    // ── 3e — repeat-one: is OneTrackMode::On == 1? ───────────────────────────────────────────
+    // Park 6 s from the end with repeat-one ON. If On==1 the SAME uri restarts near zero; if the
+    // enum is wrong the sequence advances to the next track instead.
+    clog_("transport: [3e] set_repeat_one(1), then park 6 s from the end …");
+    wd_arm(8); int rr = cinder_audio_set_repeat_one(1); wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] transport: [3e] set_repeat_one=%d (0=applied live)\n", rr);
+    char before_uri[512] = {0};
+    wd_arm(8); cinder_audio_current_uri(before_uri, sizeof before_uri); wd_disarm();
+    if (tot > 12000) {
+        wd_arm(10); cinder_audio_seek_ms_origin(0, tot - 6000); wd_disarm();
+        int wrapped = 0, changed = 0;
+        for (int i = 0; i < 14; ++i) {
+            sleep(1);
+            cinder_audio_position(&cur, &tot);
+            wd_arm(8); n = cinder_audio_current_uri(uri, sizeof uri); wd_disarm();
+            if (n > 0 && std::strcmp(base_(uri), base_(before_uri)) != 0) changed = 1;
+            if (cur >= 0 && cur < 5000) wrapped = 1;
+            std::fprintf(stderr, "[cinder-probe] transport: [3e] t+%ds pos=%d/%d uri=%s\n",
+                         i + 1, cur, tot, n > 0 ? base_(uri) : "(none)");
+            if (wrapped || changed) break;
+        }
+        if (wrapped && !changed) {
+            pass3e = 1;
+            clog_("transport: [3e] PASS — same track restarted: OneTrackMode::On == 1 is correct");
+        } else if (changed) {
+            clog_("transport: [3e] FAIL — the sequence ADVANCED with repeat-one on: On != 1");
+        } else {
+            clog_("transport: [3e] INCONCLUSIVE — never reached the end inside the window");
+        }
+    }
+
+    // ── 3f — what happens when the queue runs out (no repeat-all primitive is known) ──────────
+    // Not a pass/fail: the checklist asks for an OBSERVATION of the play state at the boundary.
+    clog_("transport: [3f] repeat-one OFF, single-track sequence, park 6 s from the end …");
+    wd_arm(8); cinder_audio_set_repeat_one(0); wd_disarm();
+    const char* one[1] = { A };
+    wd_arm(15); cinder_audio_play_tracks(one, 1, 0); wd_disarm();
+    if (tpos_(&cur, &tot, 8) && tot > 12000) {
+        wd_arm(10); cinder_audio_seek_ms_origin(0, tot - 6000); wd_disarm();
+        for (int i = 0; i < 14; ++i) {
+            sleep(1);
+            cinder_audio_position(&cur, &tot);
+            wd_arm(8); n = cinder_audio_current_uri(uri, sizeof uri); wd_disarm();
+            std::fprintf(stderr,
+                         "[cinder-probe] transport: [3f] t+%ds pos=%d/%d playing=%d state=%u uri=%s\n",
+                         i + 1, cur, tot, cinder_audio_is_playing(), cinder_audio_play_state(),
+                         n > 0 ? base_(uri) : "(none)");
+        }
+        clog_("transport: [3f] OBSERVATION recorded above — read the state/playing columns at the "
+              "boundary; that is what a repeat-all would have to override.");
+    }
+
+    std::fprintf(stderr, "[cinder-probe] transport: SUMMARY 3a=%s 3c=%s 3e=%s (3f is an observation)\n",
+                 pass3a ? "PASS" : "FAIL", pass3c ? "PASS" : "FAIL/INCONCLUSIVE",
+                 pass3e ? "PASS" : "FAIL/INCONCLUSIVE");
+    const char* keep = getenv("CINDER_KEEPPLAYING");
+    if (!(keep && keep[0] == '1')) { wd_arm(8); cinder_audio_close_player(); wd_disarm(); }
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit((pass3a && pass3c && pass3e) ? 0 : 2);
 }
 
 // ── --ldac : USB-DAC -> LDAC bring-up, the two questions ldac-bridge/TEST.md asks ────────────
@@ -3771,7 +3929,11 @@ static int fx_probe() {
                   cinder_effects_get_select_using_eq());
     clog_(m);
     g_pump_run = false;
-    return 0;
+    // _exit, not return — see --tone: the pump thread is still inside libpstcore, and unwinding
+    // through static destructors while it runs faults in the BT/effect libs. Returning here is
+    // what made a clean run report exit 42 with a PC=0 backtrace.
+    std::fflush(nullptr);
+    _exit(0);
 }
 
 // --tone : settle the Tone Control and 6-band EQ units, ranges and enumerators.
@@ -6200,14 +6362,57 @@ int main(int argc, char** argv) {
         // the PlayStatus byte dump works (play a track first), then captures everything + the keymap.
         const char* path = argc > 2 ? argv[2] : "/contents/cinder_discovery.txt";
         install_diagnostics();
+        // The PlayStatus dump needs a LIVE PlayerService connection, and that needs the framework
+        // pumped — same reason --pump exists and --play does not work. Without this the Connect
+        // reply is never dispatched, every out-param stays uninitialised, and the dump comes back
+        // all zeros. That was read for months as "nothing was playing"; it was never connected.
+        clog_("discover: Framework::StartForApplication + Pump() (the dump needs a live link) …");
+        pst::core::Framework& fw = pst::core::Framework::GetReference();
+        int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+        std::fprintf(stderr, "[cinder-probe] discover: StartForApplication returned %d\n", sr);
+        g_pump_run = true;
+        pthread_t pth;
+        if (pthread_create(&pth, nullptr, pump_thread, &fw) != 0)
+            clog_("discover: pump pthread_create FAILED — the PlayStatus dump will be zeros");
+        usleep(300000);
         clog_("discover: connecting PlayerService (for the PlayStatus dump) …");
-        wd_arm(12); cinder_audio_init("cinder"); wd_disarm();
+        // Own controller name: cinder-home is normally running and holds "cinder".
+        wd_arm(12); int ai = cinder_audio_init("cinderdisc"); wd_disarm();
+        int dwait = 0;
+        while (!cinder_audio_is_connected() && dwait < 50) { usleep(100000); ++dwait; }
+        std::fprintf(stderr, "[cinder-probe] discover: audio_init=%d IsConnected=%d after %d ms\n",
+                     ai, cinder_audio_is_connected(), dwait * 100);
+        // PlayStatus is PER-CONTROLLER: it reports what THIS client's controller was told to play,
+        // not what the device is playing. Running a separate player alongside (--pump in another
+        // shell, or the Home app) therefore dumps 128 zero bytes no matter how healthy the link is
+        // — which is exactly what every dump before 2026-08-25 recorded. To get real bytes this
+        // process has to own the playback, so take the media paths here and start them ourselves.
+        //   --discover [report-path] [media paths…]
+        if (argc > 3 && ai == 0) {
+            wd_arm(8); cinder_audio_close_player(); wd_disarm();
+            wd_arm(15);
+            int dpr = cinder_audio_play_tracks(
+                const_cast<const char* const*>(argv + 3), argc - 3, 0);
+            wd_disarm();
+            int dcur = -1, dtot = -1;
+            sleep(2);                       // let the graph reach Play before the bytes are read
+            cinder_audio_position(&dcur, &dtot);
+            std::fprintf(stderr, "[cinder-probe] discover: play_tracks=%d pos=%d/%d\n",
+                         dpr, dcur, dtot);
+        } else if (argc <= 3) {
+            clog_("discover: no media paths given — PlayStatus will be zeros. Pass them after the "
+                  "report path: --discover /contents/cinder_discovery.txt /contents/MUSIC/…flac");
+        }
         clog_("discover: capturing (amixer/asound/sysfs/usb/input + PlayStatus + 12s keymap) …");
         wd_arm(40);
         cinder_run_discovery(path, 1, 1);
         wd_disarm();
         std::fprintf(stderr, "[cinder-probe] discover: DONE — report at %s (pull it back)\n", path);
-        return 0;
+        // _exit, not return — see --tone/--fx: the pump thread is still inside libpstcore, and
+        // unwinding through static destructors while it runs faults in the BT/effect libs.
+        g_pump_run = false;
+        std::fflush(nullptr);
+        _exit(0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--gpu") == 0) {
         // GPU present-path test in ISOLATION — no easel lifecycle, so it CANNOT trip the launcher's
@@ -6306,6 +6511,18 @@ int main(int argc, char** argv) {
         int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
         std::fprintf(stderr, "[cinder-probe] pump: StartForApplication returned %d\n", sr);
         pump_job();
+        _exit(0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--transport") == 0) {
+        // Phase-3 playback unknowns (play-by-index, seek origin, repeat-one, queue end). Same
+        // framework-first shape as --pump — see transport_job.
+        if (argc < 4) { clog_("transport: need TWO absolute media paths (>70 s each is ideal)"); return 1; }
+        g_pump_argc = argc; g_pump_argv = argv;
+        clog_("transport: Framework::StartForApplication(finish_job, true) …");
+        pst::core::Framework& fw = pst::core::Framework::GetReference();
+        int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+        std::fprintf(stderr, "[cinder-probe] transport: StartForApplication returned %d\n", sr);
+        transport_job();
         _exit(0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--play") == 0) {
