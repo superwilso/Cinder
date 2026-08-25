@@ -31,7 +31,17 @@ These are not preferences. Each one is written from something that already went 
    `operator new[]` inside a core Sony service. That rebooted the device twice on 2026-08-11.
 4. **Do not guess vtable slot indices** into Sony services. Recover them, or leave the feature off.
 5. **Boot with the cable OUT.** A cable at boot is itself an escape route to stock; using it up on an
-   ordinary boot means it is not there when a boot goes wrong.
+   ordinary boot means it is not there when a boot goes wrong. For a **cable-heavy session** —
+   flash, reboot, flash, reboot, which otherwise lands on stock every time — take the opt-out
+   explicitly and give it back at the end:
+   ```sh
+   sudo tools/flash.sh --cable-off     # cable at boot no longer escapes to stock
+   sudo tools/flash.sh --cable-on      # PUT IT BACK when the session ends
+   ```
+   It is a **loan, not a setting** (`cinder-install.sh` treats its `/data` twin the same way):
+   while it is set, rung 0 — the one escape that needs no filesystem, no shell and no working
+   counter — is gone, and you will not notice until the boot you needed it. Rung 1 (the bad-boot
+   counter, MAXBAD=4) still covers a build that will not start.
 6. **Probe before repointing `.appcfg`.** The probe path has no easel lifecycle, so it cannot affect
    boot. Nothing that can affect boot happens until a probe run looks clean.
 
@@ -41,7 +51,7 @@ These are not preferences. Each one is written from something that already went 
 
 | # | Check | Why it is here and not in CI |
 |---|---|---|
-| 0.1 | **`cinder-home/build.sh [stable\|dev]` passes** | This is the only gate that does the ARM link, the **GLIBC ≤ 2.23 ceiling** and the **qemu construction preflight**. CI deliberately does not carry the cross toolchain, so a green CI says nothing about whether the thing links for the device. |
+| 0.1 | **`cinder-home/build.sh [stable\|dev]` passes** | This is the only gate that does the ARM link, the **GLIBC ≤ 2.23 ceiling** and the **qemu construction preflight**. CI deliberately does not carry the cross toolchain, so a green CI says nothing about whether the thing links for the device. **This gate earned its keep on 2026-08-25**: the tree did not compile for ARM at all — `f2f41a8` silenced an unused-parameter warning by commenting out a name that the `#if defined(__arm__)` body still used, which only host builds can skip. Note `build.sh` is not executable in a fresh checkout; run it as `bash build.sh dev`. |
 | 0.2 | **`cinder-home/harness/run.sh` passes** | Thirteen scenarios, ~8 s — the strongest offline check of the app's *behaviour*, and what the fixes below were written against. **`build.sh` now runs it**, so 0.1 covers this; run it alone when iterating. |
 | 0.3 | **`tools/release.sh`** if flashing a release | Verifies the committed `dist/` payload byte-for-byte against a fresh build before it will tag. |
 | 0.4 | Escape ladder intact | Bad-boot counter → auto-revert → crash supervisor → kill switch → `wbrt` restore. `cinder-home/tools/test_launcher.sh` covers it offline and **now runs in CI**, so a green tick already says this. Run it by hand only if you changed the launcher. *(46 cases as a normal user, 45 as root — one case uses `chmod`, which does not bind uid 0, and skips itself there.)* |
@@ -54,12 +64,12 @@ Nothing here loads the easel lifecycle, so none of it can affect whether the dev
 
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|
-| 0a | **`ldac-bridge/TEST.md`** — the headline feature, **0% validated** | Run it under **stock**, cable in | Its own three-outcome table | Each outcome has a documented next step in that file |
-| 0b | **`cinder-probe --analyzer`** — has never been run once | With music playing | Frames arrive | Cinder was never calling `SetPassband`; that is fixed. If it is still silent, the visualiser has a second cause |
-| 0c | **A `PlayStatus` dump with music actually playing** | `cinder-probe --pump` | Non-zero bytes | Every previous dump was all zeros because nothing was playing, which is why the byte offsets are still unmapped |
-| 0d | **`cinder-probe --discover`** | Once | The dump lands | This is the run the whole device-gated critical path has been blocked on |
-| 0e | **MediaStore re-scan probe** (§1a of the 08-23 audit) | Recover the `MediaStoreClient` vtable; then `strace -f` the `hagodaemon` hosting MediaStoreService across a stock USB-MSC disconnect | The slot map, **and** whether a scan is app-driven at all | *Deliberately not guessed.* See the note below — the second half matters more than the first |
-| 0f | **`--btwho`, `--inpath 2`, `--userpreset`** | With a peer linked and music playing | Consistent with the RE notes | These are the notes the harness's fakes agree with; if the device disagrees, the harness is confidently wrong wherever it touched them |
+| 0a | ~~**`ldac-bridge/TEST.md`** — the headline feature, **0% validated**~~ **Q1 PASS 2026-08-25** | `cinder-probe --ldac` (no flash, no stock boot needed) | `GetSocketName` = `pst::services::bttransmitterservice`, socket connected | **Q2 still open**: no capture PCM exists until the gadget is in UAC mode with a PC feeding audio, and that drops adb — hands-on |
+| 0b | ~~**`cinder-probe --analyzer`** — has never been run once~~ **PASS 2026-08-25** | With music playing (`--pump` alongside) | Frames arrive | Recorded: **12 bands, LINEAR values ~0…1.7e6**, not dBFS |
+| 0c | ~~**A `PlayStatus` dump with music actually playing**~~ **PASS 2026-08-25** | `cinder-probe --pump` | Position advances, `ALSA pcm4p = RUNNING`, listener fires | Also settled **3d**: `duration_raw` is **milliseconds**. Note `--play` is the framework-DEAD control and cannot connect — use `--pump` |
+| 0d | **`cinder-probe --discover`** — **ROOT-CAUSED, fix built, NOT yet re-run** | `--discover <report> <media paths…>` | Non-zero PlayStatus bytes | Two bugs, both fixed: it never pumped (so it was never connected — the "all zeros because nothing was playing" note was **wrong**), and `PlayStatus` is **per-controller**, so the dumping process must own the playback |
+| 0e | **MediaStore re-scan probe** (§1a of the 08-23 audit) — **first half DONE 2026-08-25** | ~~Recover the `MediaStoreClient` vtable~~; then `strace -f` the `hagodaemon` hosting MediaStoreService across a stock USB-MSC disconnect | ~~The slot map~~, **and** whether a scan is app-driven at all | **No vtable needed**: `MediaScanner` is exported concretely — ctor takes `IMediaStoreService*`, plus `Scan()`/`ScanFile()`/`Cancel()`. `strace` is on the device at `/system/xbin/strace`; the MSC half still needs a real disconnect, which kills adb |
+| 0f | ~~**`--btwho`, `--inpath 2`, `--userpreset`**~~ **PASS 2026-08-25 (BT half pending a peer)** | With a peer linked and music playing | Consistent with the RE notes | `--userpreset` and `--inpath 2` match the notes exactly and the chain is restored on exit. `--btwho` read `GetBtStatus=7` (off) with nothing connected — the with-a-peer half needs headphones. **One anomaly:** under selector 2, `Eq6band` also reports `isproc is 1` — see the 08-25 results |
 
 > **On 0e, and why the `strace` half is the important half.** §1a of the 08-23 audit raises a
 > possibility worth settling before any IPC is written: the scan may not be app-driven at all. If
@@ -152,14 +162,19 @@ These are the ones with the least hardware exposure and the most reasoning behin
 From `ROADMAP.md`'s P0 table. Thirty-three commits deep at the time it was written; nothing since has
 changed their status.
 
+> **3a, 3c, 3e and 3f no longer need a finger on the glass.** They are all visible in the
+> position/URI the listener already reports, so `cinder-probe --transport <trackA> <trackB>` settles
+> all four by measurement — built and pushed 2026-08-25 but **not yet run** (the device left the
+> bus first). Run it before doing any of these by hand.
+
 | # | Item | PASS |
 |---|---|---|
-| 3a | **Play-by-index** — tap a track or album and it plays that one | The tapped row plays |
+| 3a | **Play-by-index** — tap a track or album and it plays that one | The tapped row plays. *(`--transport` checks the primitive: `play_tracks({A,B}, start=1)` must play B.)* |
 | 3b | **Playlists** — a playlist row plays the whole list in saved order, plain and shuffled | Both bands work; PLAY is not shuffle |
-| 3c | **Drag-to-seek** — `media_origin_t::Begin == 0` is the last unverified value in that path | It lands where you dropped it |
-| 3d | **`duration_raw` is milliseconds** | The diagnostic in `1ccb7bc` settles it on the next boot |
-| 3e | **Repeat-one** — does `OneTrackMode::On == 1` actually repeat, and is setting it live on an in-use sequence safe | Yes to both |
-| 3f | **Repeat-all** — no known primitive; needs one session watching what the play state does when a queue runs out | An observation, not a pass |
+| 3c | **Drag-to-seek** — `media_origin_t::Begin == 0` is the last unverified value in that path | It lands where you dropped it. *(`--transport`: seek to 60 s must land at ~60 s, not now+60 s.)* |
+| 3d | ~~**`duration_raw` is milliseconds**~~ **CONFIRMED 2026-08-25** | `268333` for a 4:28 track. It is milliseconds. |
+| 3e | **Repeat-one** — does `OneTrackMode::On == 1` actually repeat, and is setting it live on an in-use sequence safe | Yes to both. *(`--transport`: park 6 s from the end and see if the same URI restarts.)* |
+| 3f | **Repeat-all** — no known primitive; needs one session watching what the play state does when a queue runs out | An observation, not a pass. *(`--transport` records state/playing at the boundary.)* |
 | 3g | **Backlight / brightness** — five levels, survives a reboot | Both |
 | 3h | **The 07-26 → 07-28 batch** — escape ladder, screenshot, the pager, accents, A–Z rail, the render optimisation | One clean dev boot and an eyeball |
 | 3i | **GPU/EGL present path** — dev channel only, opt-in, **measured slower** | Only if you intend to re-test it |
@@ -171,7 +186,7 @@ changed their status.
 | # | Item | Why it matters |
 |---|---|---|
 | 4a | **The codec question — the biggest open item in the project.** Is the CXD3778GF still clocked and biased through a Bluetooth session, for an output nobody is listening to? | The A/B is specified in [`BATTERY_BT.md`](BATTERY_BT.md). **Read-only** — see rule 2 |
-| 4b | **A soak.** Nothing has ever run for hours | Memory growth, log growth within one long boot, and the art cache's first build across 304 albums are all unmeasured |
+| 4b | **A soak.** Nothing has ever run for hours — **first data points 2026-08-25, both good** | Memory growth, log growth within one long boot, and the art cache's first build across 304 albums are all unmeasured. Measured so far, over one ~42 min boot: RSS **39996 → 40008 KB** in 737 s (VSZ flat at 144488) and the log **did not grow at all** over 261 s idle with the screen off (10580 B at both samples). Nothing like a leak, but this is tens of minutes, not hours, and mostly idle |
 | 4c | **Boot time and battery life against stock** | This is goal #1's entire claim, and it has never been measured |
 | 4d | **`dacdat` volume tables** — do this one deliberately | [`DEVICE_TESTS.md` §5](DEVICE_TESTS.md) |
 | 4e | **Volume-change POP below volume 100** | [`DEVICE_TESTS.md` §12](DEVICE_TESTS.md) |
