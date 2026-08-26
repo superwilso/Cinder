@@ -413,7 +413,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                     connected: app.bt_conn == Some(i),
                 })
                 .collect();
-            pairing::render(c, theme, fonts, &paired, &[], None, None, false, 0.0)
+            pairing::render(c, theme, fonts, &paired, &[], None, None, false, 0.0, 0)
         }
         Screen::Receiver => receiver::render(c, theme, fonts, app.rx),
         Screen::Fm => fm::render(c, theme, fonts, &fm::Fm {

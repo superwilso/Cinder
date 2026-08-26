@@ -45,8 +45,40 @@ const FORGET_W: i32 = 104;
 const FOOT_Y: i32 = 736;
 /// Paired rows are capped so a long pairing history can never push the FOUND section off screen —
 /// discovery is the reason you came to this screen, so it must stay reachable.
+///
+/// THE CAP USED TO TRUNCATE, FULL STOP. `devices.iter().take(MAX_PAIRED)` in the render and
+/// `paired.min(MAX_PAIRED)` in the hit test, with the header cheerfully printing `PAIRED · 6`
+/// beside four rows. Pair a fifth device and it was invisible and unreachable — and FORGET lives
+/// only on this screen, so a link key you could see the count of could not be deleted by any path
+/// in the app. (The Bluetooth screen's summary list showed five, a different number, and had no
+/// FORGET at all.) The radio's table is the only place that state lives, and nothing else in Cinder
+/// can clear it.
+///
+/// So the cap became a WINDOW rather than a limit: `MAX_PAIRED` rows at a time, and a MORE control
+/// beside the header that advances to the next page and wraps. No scroll offset — this screen's
+/// FOUND section is positioned from the paired row count, and the one screen in this app whose
+/// render and hit test have drifted apart already is the one that grew a scroll offset (see
+/// `Screen::Advanced`). A page index is a single integer both sides derive everything from.
 pub const MAX_PAIRED: usize = 4;
 const SECTION_GAP: i32 = 30;
+/// The MORE control, beside the PAIRED header. Only drawn (and only hit) when there IS another
+/// page — a control that does nothing is worse than no control.
+const MORE_BTN: (i32, i32, i32, i32) = (352, LIST_Y0 - 30, 106, 24); // x,y,w,h
+
+/// How many pages the paired list needs, and which one `page` really is once wrapped. Both sides
+/// call these; neither computes them itself.
+pub fn paired_pages(paired: usize) -> usize {
+    if paired == 0 { 1 } else { (paired + MAX_PAIRED - 1) / MAX_PAIRED }
+}
+/// First absolute index shown on `page`. Wraps, so a page index left over from a longer list can
+/// never point past the end.
+pub fn paired_page_start(paired: usize, page: usize) -> usize {
+    (page % paired_pages(paired)) * MAX_PAIRED
+}
+/// How many rows `page` actually draws.
+pub fn paired_page_rows(paired: usize, page: usize) -> usize {
+    paired.saturating_sub(paired_page_start(paired, page)).min(MAX_PAIRED)
+}
 
 /// Y of the FOUND section's header text, given how many paired rows are drawn.
 fn found_header_y(paired: usize) -> i32 {
@@ -91,6 +123,9 @@ pub enum PairHit {
     Forget(usize),
     /// A discovered, unpaired device — pair with it.
     Pair(usize),
+    /// Advance the paired list to the next page (wrapping). Only reachable when there is more than
+    /// one page — see `hit`.
+    MorePaired,
     /// Prompt answers.
     PromptConfirm,
     PromptCancel,
@@ -159,14 +194,24 @@ pub fn render_prompt(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Prompt) {
 
 /// Map a tap. `paired`/`found` are how many devices each list holds; both are clipped exactly the
 /// way `render` clips them, so a tap can never resolve to a row that isn't on screen.
-pub fn hit(x: i32, y: i32, paired: usize, found: usize) -> PairHit {
+pub fn hit(x: i32, y: i32, paired: usize, found: usize, page: usize) -> PairHit {
     let (sx, sy, sw, sh) = SCAN_BTN;
     if (sy..sy + sh).contains(&y) && (sx..sx + sw).contains(&x) {
         return PairHit::Scan;
     }
-    let prows = paired.min(MAX_PAIRED);
+    // MORE, before the rows: it sits above LIST_Y0, but only exists when there is another page, and
+    // an inert control must not eat a tap. Same rule the SCAN button follows.
+    if paired_pages(paired) > 1 {
+        let (mx, my, mw, mh) = MORE_BTN;
+        if (my..my + mh).contains(&y) && (mx..mx + mw).contains(&x) {
+            return PairHit::MorePaired;
+        }
+    }
+    let prows = paired_page_rows(paired, page);
     if (LIST_Y0..LIST_Y0 + prows as i32 * ROW_H).contains(&y) {
-        let i = ((y - LIST_Y0) / ROW_H) as usize;
+        // ABSOLUTE index out, page-relative row in. Every caller — connect, disconnect, forget —
+        // indexes the shell's `g_bt_paired`, which is the whole list and never a page of it.
+        let i = paired_page_start(paired, page) + ((y - LIST_Y0) / ROW_H) as usize;
         return if x >= 458 - FORGET_W { PairHit::Forget(i) } else { PairHit::Row(i) };
     }
     let frows = found.min(found_capacity(paired));
@@ -187,7 +232,7 @@ fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, name: &str, sub: &str,
     let scol = if accent { t.acc } else { t.faint };
     crate::widgets::draw_fit(c, f, 58.0, (cy + 15) as f32, sub, &sty(Family::Mono, Weight::Regular, 11.0, scol, 0.06), 458.0);
     if let Some(label) = right_label {
-        // Fixed width, the same constant `hit()` splits the row on, so the touch target IS the drawn
+        // Fixed width, the same constant `hit(, 0)` splits the row on, so the touch target IS the drawn
         // button. Sizing the box to the label would leave a silent dead band beside it.
         let col = if right_accent { t.acc } else { t.dim };
         let s = sty(Family::Mono, Weight::Regular, 12.0, col, 0.1);
@@ -210,6 +255,9 @@ pub fn render(
     busy: Option<usize>,
     scanning: bool,
     busy_phase: f32,
+    // Which page of the paired list to draw. Wrapped by `paired_page_start`, so a stale value
+    // left over from a longer list is harmless.
+    page: usize,
 ) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "Devices", None);
@@ -238,16 +286,34 @@ pub fn render(
     center(c, f, (sx + sw / 2) as f32, (sy + sh / 2 + 4) as f32, if scanning { "STOP" } else { "SCAN" },
            &sty(Family::Sans, Weight::SemiBold, 15.0, if scanning { t.acc_ink } else { t.acc }, 0.04));
 
-    // PAIRED
-    let prows = devices.len().min(MAX_PAIRED);
-    crate::widgets::draw_fit(c, f, 22.0, (LIST_Y0 - 16) as f32, &format!("PAIRED · {}", devices.len()),
+    // PAIRED — one page at a time, from the same three functions `hit` uses.
+    let pages = paired_pages(devices.len());
+    let start = paired_page_start(devices.len(), page);
+    let prows = paired_page_rows(devices.len(), page);
+    // Say WHICH ones these are once there is more than one page. "PAIRED · 6" over four rows was
+    // technically true and actively misleading.
+    let head = if pages > 1 {
+        format!("PAIRED · {}-{} OF {}", start + 1, start + prows, devices.len())
+    } else {
+        format!("PAIRED · {}", devices.len())
+    };
+    crate::widgets::draw_fit(c, f, 22.0, (LIST_Y0 - 16) as f32, &head,
                &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18), 458.0);
+    if pages > 1 {
+        let (mx, my, mw, mh) = MORE_BTN;
+        stroke_rect(c, mx, my, mw, mh, t.acc, 1);
+        center(c, f, (mx + mw / 2) as f32, (my + mh / 2 + 4) as f32, "MORE \u{203a}",
+               &sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.1));
+    }
     if devices.is_empty() {
         crate::widgets::draw_fit(c, f, 58.0, (LIST_Y0 + 26) as f32, "Nothing paired yet",
                    &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0), 458.0);
     }
-    for (i, d) in devices.iter().take(prows).enumerate() {
-        let sub = if busy == Some(i) {
+    for (i, d) in devices.iter().skip(start).take(prows).enumerate() {
+        // `i` is the row on screen; `ai` is the device. Every flag the caller passes in
+        // (forget_armed, busy) is an ABSOLUTE index, because that is what the taps returned.
+        let ai = start + i;
+        let sub = if busy == Some(ai) {
             "CONNECTING…".to_string()
         } else if d.connected {
             "CONNECTED · TAP TO DISCONNECT".to_string()
@@ -256,7 +322,7 @@ pub fn render(
         } else {
             format!("{} · TAP TO CONNECT", d.kind.to_uppercase())
         };
-        let armed = forget_armed == Some(i);
+        let armed = forget_armed == Some(ai);
         let ry = LIST_Y0 + i as i32 * ROW_H;
         row(c, t, f, ry, &d.name, &sub, d.connected,
             Some(if armed { "TAP AGAIN" } else { "FORGET" }), armed);
@@ -264,7 +330,7 @@ pub fn render(
         // indistinguishable from a wedged attempt, and BT connects here can take several seconds.
         // Placed in the empty gap between the subtitle and the FORGET button — x≈30 is where the
         // row's own Bluetooth glyph lives, so the obvious spot would have drawn straight over it.
-        if busy == Some(i) {
+        if busy == Some(ai) {
             crate::widgets::spinner(c, 330, ry + ROW_H / 2, 7, 3, busy_phase, t.acc);
         }
     }
@@ -311,12 +377,76 @@ mod tests {
     /// off-by-one is not cosmetic — it connects to, forgets, or pairs with the wrong device.
     #[test]
     fn paired_rows_map_to_their_own_index_and_forget_is_the_drawn_button() {
-        assert_eq!(hit(120, LIST_Y0 + 4, 2, 0), PairHit::Row(0));
-        assert_eq!(hit(120, LIST_Y0 + ROW_H - 1, 2, 0), PairHit::Row(0));
-        assert_eq!(hit(120, LIST_Y0 + ROW_H, 2, 0), PairHit::Row(1));
-        assert_eq!(hit(458 - FORGET_W, LIST_Y0 + 4, 2, 0), PairHit::Forget(0));
-        assert_eq!(hit(479, LIST_Y0 + ROW_H + 4, 2, 0), PairHit::Forget(1));
-        assert_eq!(hit(458 - FORGET_W - 1, LIST_Y0 + 4, 2, 0), PairHit::Row(0));
+        assert_eq!(hit(120, LIST_Y0 + 4, 2, 0, 0), PairHit::Row(0));
+        assert_eq!(hit(120, LIST_Y0 + ROW_H - 1, 2, 0, 0), PairHit::Row(0));
+        assert_eq!(hit(120, LIST_Y0 + ROW_H, 2, 0, 0), PairHit::Row(1));
+        assert_eq!(hit(458 - FORGET_W, LIST_Y0 + 4, 2, 0, 0), PairHit::Forget(0));
+        assert_eq!(hit(479, LIST_Y0 + ROW_H + 4, 2, 0, 0), PairHit::Forget(1));
+        assert_eq!(hit(458 - FORGET_W - 1, LIST_Y0 + 4, 2, 0, 0), PairHit::Row(0));
+    }
+
+    /// EVERY paired device must be reachable, on some page. This is the defect the window replaced:
+    /// with more devices than `MAX_PAIRED`, the extras were drawn by nothing and hit by nothing —
+    /// and FORGET exists only on this screen, so a link key past the cap could not be deleted from
+    /// anywhere in the app.
+    #[test]
+    fn every_paired_device_is_reachable_on_some_page() {
+        for n in 0..=9usize {
+            let mut seen = vec![false; n];
+            for page in 0..paired_pages(n) {
+                let rows = paired_page_rows(n, page);
+                for r in 0..rows {
+                    let y = LIST_Y0 + r as i32 * ROW_H + 4;
+                    match hit(120, y, n, 0, page) {
+                        PairHit::Row(i) => {
+                            assert!(i < n, "n={n} page={page} row={r} gave out-of-range {i}");
+                            assert!(!seen[i], "n={n}: device {i} reachable twice");
+                            seen[i] = true;
+                        }
+                        other => panic!("n={n} page={page} row={r} gave {other:?}"),
+                    }
+                    // FORGET on the same row must name the same device, or the button deletes a
+                    // link key belonging to someone else.
+                    let f = hit(479, y, n, 0, page);
+                    assert_eq!(f, PairHit::Forget(paired_page_start(n, page) + r));
+                }
+            }
+            assert!(seen.iter().all(|s| *s), "n={n}: some devices were unreachable");
+        }
+    }
+
+    /// The row count `hit` accepts taps for is the row count `render` draws — the two used to be
+    /// written out separately (`paired.min(MAX_PAIRED)` against `.take(prows)`), which is exactly
+    /// how a hit test drifts from what is on the glass.
+    #[test]
+    fn hit_stops_where_the_last_drawn_row_ends() {
+        for n in 0..=9usize {
+            for page in 0..paired_pages(n) {
+                let rows = paired_page_rows(n, page);
+                let past = LIST_Y0 + rows as i32 * ROW_H + 1;
+                assert!(!matches!(hit(120, past, n, 0, page), PairHit::Row(_) | PairHit::Forget(_)),
+                        "n={n} page={page}: a tap below the last drawn row hit a device");
+            }
+        }
+    }
+
+    /// MORE only exists when there is somewhere to go, and it wraps rather than running off the end.
+    #[test]
+    fn more_appears_only_with_a_second_page_and_wraps() {
+        let (mx, my, mw, mh) = MORE_BTN;
+        let (cx, cy) = (mx + mw / 2, my + mh / 2);
+        for n in 0..=MAX_PAIRED {
+            assert_eq!(hit(cx, cy, n, 0, 0), PairHit::None, "n={n}: MORE was live with one page");
+        }
+        assert_eq!(hit(cx, cy, MAX_PAIRED + 1, 0, 0), PairHit::MorePaired);
+        // Five devices = two pages: page 1 shows exactly the fifth, and page 2 wraps to the first.
+        assert_eq!(paired_pages(5), 2);
+        assert_eq!(paired_page_start(5, 1), 4);
+        assert_eq!(paired_page_rows(5, 1), 1);
+        assert_eq!(paired_page_start(5, 2), 0);
+        // A page index left over from a longer list must not point past the end.
+        assert_eq!(paired_page_start(2, 7), 0);
+        assert_eq!(paired_page_rows(2, 7), 2);
     }
 
     /// The prompt is modal, so its buttons are the only things reachable — and a PASSKEY panel must
@@ -339,8 +469,8 @@ mod tests {
     #[test]
     fn the_scan_button_is_hittable_and_does_not_overlap_the_list() {
         let (sx, sy, sw, sh) = SCAN_BTN;
-        assert_eq!(hit(sx + sw / 2, sy + sh / 2, 2, 0), PairHit::Scan);
-        assert_eq!(hit(sx - 1, sy + sh / 2, 2, 0), PairHit::None);
+        assert_eq!(hit(sx + sw / 2, sy + sh / 2, 2, 0, 0), PairHit::Scan);
+        assert_eq!(hit(sx - 1, sy + sh / 2, 2, 0, 0), PairHit::None);
         assert!(sy + sh < LIST_Y0, "the scan button must sit above the first row");
     }
 
@@ -348,17 +478,17 @@ mod tests {
     /// same way `render` does — a tap must never resolve to a row that is not on screen.
     #[test]
     fn found_rows_sit_below_the_paired_list_and_both_clip() {
-        assert_eq!(hit(120, found_y0(2) + 4, 2, 3), PairHit::Pair(0));
-        assert_eq!(hit(120, found_y0(2) + ROW_H + 4, 2, 3), PairHit::Pair(1));
+        assert_eq!(hit(120, found_y0(2) + 4, 2, 3, 0), PairHit::Pair(0));
+        assert_eq!(hit(120, found_y0(2) + ROW_H + 4, 2, 3, 0), PairHit::Pair(1));
         // With no paired devices the FOUND rows move up, and the same y is a different row.
-        assert_eq!(hit(120, found_y0(0) + 4, 0, 3), PairHit::Pair(0));
+        assert_eq!(hit(120, found_y0(0) + 4, 0, 3, 0), PairHit::Pair(0));
         assert_ne!(found_y0(0), found_y0(2));
         // Past the end of each list: nothing.
-        assert_eq!(hit(120, found_y0(2) + 3 * ROW_H + 4, 2, 3), PairHit::None);
-        assert_eq!(hit(120, LIST_Y0 + 2 * ROW_H + 4, 2, 0), PairHit::None);
+        assert_eq!(hit(120, found_y0(2) + 3 * ROW_H + 4, 2, 3, 0), PairHit::None);
+        assert_eq!(hit(120, LIST_Y0 + 2 * ROW_H + 4, 2, 0, 0), PairHit::None);
         // A pairing history longer than MAX_PAIRED is clipped, and the FOUND section stays reachable.
-        assert_eq!(hit(120, LIST_Y0 + MAX_PAIRED as i32 * ROW_H - 1, 99, 1), PairHit::Row(MAX_PAIRED - 1));
-        assert_eq!(hit(120, found_y0(99) + 4, 99, 1), PairHit::Pair(0));
+        assert_eq!(hit(120, LIST_Y0 + MAX_PAIRED as i32 * ROW_H - 1, 99, 1, 0), PairHit::Row(MAX_PAIRED - 1));
+        assert_eq!(hit(120, found_y0(99) + 4, 99, 1, 0), PairHit::Pair(0));
         assert!(found_capacity(99) >= 1, "there must always be room for at least one found device");
     }
 }

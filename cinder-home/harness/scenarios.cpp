@@ -180,6 +180,31 @@ static void s_bt_clears_a_stale_jam(void) {
     check(cinder_harness_bt_connected() == 1, "and then actually connected");
 }
 
+// ── the ladder must not ask while the radio is already asking ────────────────────────────────
+// A connect request issued while a page is on the air comes back rc=0 — measured on device, and
+// benign in itself, but the ladder read that refusal as "wrong device" and jumped to naming one on
+// evidence that said nothing about which device was right. `GetAvSrcConnectionStatus` == 3 is the
+// radio saying "already trying"; the ladder stands aside for it, up to a bounded number of times so
+// a wedged status cannot silence it for good.
+static void s_bt_waits_for_a_page_in_flight(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    // Hold the fake radio in "connecting" for the whole run. Nothing can ever link, so any connect
+    // the app makes is one it should have deferred.
+    cinder_harness_script("BtXmit::GetAvSrcConnectionStatus", 3);
+    cinder_harness_set_budget_ms(90000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("BtXmit::GetAvSrcConnectionStatus") >= 1,
+          "asked the radio whether it was already trying");
+    // The skip cap is 6, so a handful of attempts do get through — that is deliberate, a status
+    // stuck at 3 must not mean silence. What must not happen is a request every time round.
+    check_range(cinder_harness_count("BtXmit::RequestLastDeviceConnection")
+                  + cinder_harness_count("BtXmit::RequestConnection"),
+                0, 3, "stood aside for the page already in flight");
+}
+
 // ── an idle radio reports 3, and 3 is not a connection ───────────────────────────────────────
 // `GetBtStatus` reaches 3 with nothing on the other end (measured 0.61 s after powering an idle
 // radio). The route used to be `st == 3`, so it flipped to BLUETOOTH the moment the radio came up:
@@ -646,6 +671,7 @@ static const Scenario kScenarios[] = {
     {"bt-no-self-jam",    s_bt_never_jams_itself,    "the app never arms the mode that refuses its own connects"},
     {"bt-stale-jam",      s_bt_clears_a_stale_jam,   "a retry mode left armed by anything else is cleared"},
     {"bt-idle-not-link",  s_bt_idle_radio_is_not_a_link, "GetBtStatus 3 with no peer is not a connection"},
+    {"bt-page-in-flight", s_bt_waits_for_a_page_in_flight, "the ladder defers to a connect already on the air"},
     {"bt-idle-poll",      s_bt_idle_poll_rate,       "the idle Bluetooth poll backs off"},
     {"stalled-bringup",   s_stalled_bringup,         "bring-up that never completes must not freeze the app"},
     {"dark-playing",      s_dark_playing,            "panel dark, BT playing: the state the device lives in"},
