@@ -83,16 +83,17 @@ Measured on device with a live LDAC link (`GetBtStatus=3 AvSrc=4`, `GetConnectIn
 ALSA PCM was open at any point, which is the expected shape: LDAC leaves through the radio, not the
 CXD3778GF.
 
-| Register | jack, idle | BT connected | BT **playing** |
-|---|---|---|---|
-| `SYSTEM` | `0x03` | `0x03` | `0x03` |
-| `OSC_ON` / `OSC_EN` | `0x10` | `0x10` | `0x10` |
-| `BLK_ON0` | `0x0F` | `0x0F` | `0x0F` |
-| `SD_ENABLE` | `0x05` | `0x05` | `0x05` |
-| `DNC1_START` | `0x50` | `0x50` | `0x50` |
-| `CODEC_PLAYVOL` | `0x00` | `0x33` | `0x33` |
-| `PHV_L` / `PHV_R` | `0xE4` | **`0x00`** | **`0x00`** |
-| `HPOUT2_CTRL1` | `0x0F` | **`0x00`** | **`0x00`** |
+| Register | **idle, NO jack** | jack, idle | BT connected | BT **playing** |
+|---|---|---|---|---|
+| `SYSTEM` | `0x03` | `0x03` | `0x03` | `0x03` |
+| `OSC_ON` / `OSC_EN` | `0x10` | `0x10` | `0x10` | `0x10` |
+| `BLK_ON0` | `0x0F` | `0x0F` | `0x0F` | `0x0F` |
+| `SD_ENABLE` | `0x05` | `0x05` | `0x05` | `0x05` |
+| `DNC1_START` | `0x50` | `0x50` | `0x50` | `0x50` |
+| `CODEC_PLAYVOL` | `0x00` | `0x00` | `0x33` | `0x33` |
+| `PHV_L` / `PHV_R` | **`0xE4`** | `0xE4` | **`0x00`** | **`0x00`** |
+| `HPOUT2_CTRL1` | **`0x0F`** | `0x0F` | **`0x00`** | **`0x00`** |
+| `SMS_NS_PMUTE` | `0x80` | `0x00` | `0x00` | `0x00` |
 
 **The Bluetooth-specific waste this file predicted is already being avoided.** The driver drops the
 headphone output stage for a Bluetooth route: both attenuators go to zero and `HPOUT2_CTRL1` clears.
@@ -112,13 +113,20 @@ Connected and playing are indistinguishable at the codec, so nothing is gated on
 **No register was written.** Every read went through `target` as a selector; `value` was only ever
 read, per rule 2.
 
-### The caveat on this measurement
+### The no-jack idle column, taken later the same day — and it makes the answer worse for idle
 
-Something was in the 3.5 mm jack throughout (`/sys/class/switch/cxd3778gf_h2w/state` = 2), so the
-"jack, idle" column is this session's own, but there is no matching **no-jack** idle column from the
-same session — that comparison is against the block recorded at the top of this file. Repeat it with
-the jack empty before treating the idle-cost figure as exact. The Bluetooth conclusion does not
-depend on it: `PHV`/`HPOUT2_CTRL1` clearing is visible within this session's own three columns.
+Captured with `h2w` state **0** (nothing in the jack), the radio **off** (`GetBtStatus=7`) and no
+PCM open. It is identical to the jack column but for `SMS_NS_PMUTE`, which sets to `0x80` when
+nothing is plugged.
+
+**The headphone amplifier is biased with nothing plugged into the player at all.** `PHV_L`/`PHV_R`
+sit at `0xE4` and `HPOUT2_CTRL1` at `0x0F` on an empty jack, exactly as they do with headphones in —
+while a Bluetooth session has all three at zero.
+
+So the ranking is the opposite of this file's original suspicion. At the codec, **Bluetooth is the
+cheapest state the player has**: the driver powers the output stage down for it, and does not for an
+idle device with an empty jack. The prize is not in a Bluetooth session; it is in idle, and it is
+there whether or not anything is connected.
 
 ### What this does NOT settle
 

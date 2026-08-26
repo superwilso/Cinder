@@ -54,3 +54,10 @@ cinder-home/dist/*/cinder-installer*
 # Objects, the linked scenario runner, and the two tables regenerated from main.cpp and the
 # public headers on every run — none of it is a source of truth for anything.
 .harness/
+
+# Debug symbols for the ARM binaries: build.sh writes these next to the stripped output so a crash
+# address can be resolved with addr2line. They are BUILD BYPRODUCTS — 6 MB each, rewritten on every
+# single build, and they were tracked for 36 commits (docs/SHORTCOMINGS.md D5), which is most of why
+# a ~19k-line source tree clones as hundreds of MB. Nothing reads them from the repo; only build.sh
+# writes them. Untracked 2026-08-26 — the local copies stay, so symbolising a crash still works.
+*.unstripped

@@ -116,6 +116,11 @@ void cinder_harness_swipe_at(long long at_ms, int x0, int y0, int x1, int y1, lo
 // takes if the radio is up and something is paired. These set the starting conditions.
 void cinder_harness_bt_reset(void);
 void cinder_harness_bt_set_radio(int on);
+// The service's connect-retry mode: sticky on the device, and while it is on the transmitter
+// REFUSES every connect request (measured 2026-08-26). Set it to model a radio someone else left
+// armed; read it to assert the app cleared it.
+void cinder_harness_bt_set_retry_mode(int on);
+int  cinder_harness_bt_retry_mode(void);
 void cinder_harness_bt_add_paired(const char* name, int addr_last);
 int  cinder_harness_bt_connected(void);
 int  cinder_harness_bt_radio_on(void);
