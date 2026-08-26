@@ -1205,11 +1205,11 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 29] = [
+const SCREEN_NAMES: [&str; 30] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
-    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick",
+    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Battery",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1224,6 +1224,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
+        S::Battery => 29,
     }
 }
 
@@ -3540,6 +3541,61 @@ pub extern "C" fn cinder_set_battery(pct: libc::c_int) {
     }
 }
 
+/// Push the full battery readout for Settings ▸ Battery.
+///
+/// Separate from `cinder_set_battery` on purpose. That one feeds the status-bar percentage and is
+/// called often and cheaply; this carries everything the Battery screen shows and involves reading
+/// several sysfs files plus forking the charger helper, so the shell paces it independently.
+///
+/// `status` and `health` are the sysfs strings VERBATIM (`Charging`, `Not charging`, `Good`, ...);
+/// the screen prints them as it receives them rather than mapping them to friendlier words, since
+/// `Not charging` and `Discharging` mean different things and only one of them is a cable problem.
+/// A null pointer is an empty string, not a crash.
+///
+/// `mv` is millivolts and `mdeg` is millidegrees C; both take `i32::MIN` for "could not read".
+/// `chg_state` / `chg_fault` are the bq24262 STATUS field and fault code, or -1 when the
+/// `cinder-battery` helper is not installed. `raw` is the raw register line for the footer.
+///
+/// # Safety
+/// Every pointer must be a valid NUL-terminated C string or null; they are only read here.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn cinder_set_battery_detail(pct: libc::c_int,
+                                                   status: *const c_char,
+                                                   health: *const c_char,
+                                                   mv: libc::c_int,
+                                                   mdeg: libc::c_int,
+                                                   chg_state: libc::c_int,
+                                                   chg_fault: libc::c_int,
+                                                   raw: *const c_char) {
+    let status = cstr(status);
+    let health = cstr(health);
+    let raw = cstr(raw);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_battery_detail(pct.clamp(0, 100) as u8, &status, &health,
+                                 mv, mdeg, chg_state, chg_fault, &raw);
+        // Only the Battery screen shows any of this, so a repaint is wasted anywhere else — and
+        // this ticks every few seconds for the life of the device.
+        if r.app.current() == cinder_ui::nav::Screen::Battery {
+            r.dirty = true;
+        }
+    }
+}
+
+/// Is the Battery screen the one on display?
+///
+/// The shell asks before forking the `cinder-battery` helper. Same idiom as the visualiser's
+/// analyzer gate: the charger registers are only ever looked at by one screen, and forking a
+/// process every few seconds for pixels nobody is looking at is exactly the kind of waste that
+/// costs runtime on a device whose whole job is to play music for a long time on one charge.
+#[no_mangle]
+pub extern "C" fn cinder_battery_wants_detail() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) if r.app.current() == cinder_ui::nav::Screen::Battery => 1,
+        _ => 0,
+    }
+}
+
 /// Raise the ordinary bottom toast — the same one queue and Shelf feedback use.
 ///
 /// For the shell to say something the user has to see (a low battery, an imminent shutdown) without
@@ -5058,7 +5114,7 @@ mod tests {
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
-            S::TrackPick,
+            S::TrackPick, S::Battery,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();

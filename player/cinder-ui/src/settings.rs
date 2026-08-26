@@ -347,9 +347,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     // (USB mode has one and acts), and this row has no arm in settings_activate — so a chevron here
     // promised a rebuild that never ran.
     y = srow(c, t, f, y, sel == ROW_DATABASE, "Database", "—", false);
-    // Battery care = Sony "Itawari" charging (caps ~90%). Live On/Off toggle (no chevron — it acts
-    // in place), wired to PowerMgrServiceClient::EnableItawariCharging via the shell.
-    y = srow(c, t, f, y, sel == ROW_BATTERY, "Battery care", if v.battery_care { "ON · 90%" } else { "OFF" }, false);
+    // Battery: chevron, because it drills into the Battery screen. It used to be a toggle in
+    // place for Sony's "Itawari" charging and nothing else, which made the level in the status bar
+    // the only battery fact Cinder ever showed. The switch moved to that screen, next to the
+    // readings that explain why you would want it. The value still names the care state, so the
+    // row answers the common question without opening it.
+    y = srow(c, t, f, y, sel == ROW_BATTERY, "Battery", if v.battery_care { "CARE ON" } else { "CARE OFF" }, true);
     // Chevron: it drills into the clock editor. The value is the live clock, so the row doubles as
     // the place you notice the time is wrong.
     y = srow(c, t, f, y, sel == ROW_CLOCK, "Date & time", v.clock, true);

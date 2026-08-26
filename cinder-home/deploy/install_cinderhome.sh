@@ -53,6 +53,7 @@ SRC_MSC=/contents/cinder-msc
 SRC_CLOCK=/contents/cinder-clock
 SRC_FM=/contents/cinder-fm
 SRC_VOLTABLE=/contents/cinder-voltable
+SRC_BATTERY=/contents/cinder-battery
 SRC_SIGNATURE=/contents/cinder-signature.sh
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
@@ -95,6 +96,7 @@ WANT_CLOCK="$(comp_bool CINDER_CLOCK 1)"
 WANT_UMOUNT="$(comp_bool CINDER_UMOUNT 1)"
 WANT_GPUNODE="$(comp_bool CINDER_GPUNODE 0)"
 WANT_FM="$(comp_bool CINDER_FM 1)"
+WANT_BATTERY="$(comp_bool CINDER_BATTERY 1)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
 
@@ -103,7 +105,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE signature=$WANT_SIGNATURE"
+echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY signature=$WANT_SIGNATURE"
 
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
@@ -311,6 +313,31 @@ if [ ! -f /contents/cinder_voltable.conf ]; then
     echo "volume curve: $WANT_VOLTABLE (wrote /contents/cinder_voltable.conf)"
 else
     echo "volume curve: keeping existing /contents/cinder_voltable.conf ($("$BB" cat /contents/cinder_voltable.conf 2>/dev/null))"
+fi
+
+# 1f4) battery/charger reader. The bq24262 charger's registers live under /proc/regmon/bq24262/,
+#      root-only, and they are the ONLY source on this device for charge state, the fault code, the
+#      input/charge current settings and the battery regulation voltage. sysfs has capacity, status,
+#      health and voltage_now and nothing more — there is no fuel gauge here and no current sense.
+#      Unlike cinder-fm this helper does NOT chmod the nodes: writing this chip reprograms a lithium
+#      battery charger, so it reads them itself and prints. Non-fatal: without it the battery screen
+#      shows the four sysfs facts and omits the charger detail.
+if [ "$WANT_BATTERY" != 1 ]; then
+    echo "components: battery NOT selected — skipping cinder-battery (no charger detail)."
+    "$BB" rm -f "$BIN/cinder-battery" 2>/dev/null
+elif [ -s "$SRC_BATTERY" ]; then
+    "$BB" cat "$SRC_BATTERY" > "$BIN/cinder-battery.tmp" 2>/dev/null
+    if [ -s "$BIN/cinder-battery.tmp" ]; then
+        "$BB" chown 0:0 "$BIN/cinder-battery.tmp" 2>/dev/null
+        "$BB" chmod 4755 "$BIN/cinder-battery.tmp"
+        "$BB" mv -f "$BIN/cinder-battery.tmp" "$BIN/cinder-battery"
+        echo "installed setuid helper: $BIN/cinder-battery (mode $("$BB" stat -c %a "$BIN/cinder-battery" 2>/dev/null))"
+    else
+        echo "WARN: cinder-battery stage empty — no charger detail on the battery screen."
+        "$BB" rm -f "$BIN/cinder-battery.tmp" 2>/dev/null
+    fi
+else
+    echo "WARN: $SRC_BATTERY not staged — no charger detail on the battery screen."
 fi
 
 # 1g) audio "sound signature". Installs the switcher and applies the chosen variant by patching

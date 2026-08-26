@@ -1,11 +1,45 @@
-# The volume-step pop — measured, localised, not yet fixed
+# The volume-step pop — cause found, mitigation shipped but not enabled
 
 Reported 2026-08-18: *"a small noticeable pop sound when volume is changed when using wired
 headphones"*, and then the detail that turned out to be the whole clue — *"only up to volume 100
 not beyond"*.
 
-Confirmed objectively the same day. This is what is known, what has been ruled out, and the one
-experiment that would settle the cause.
+## Where this stands (read this first)
+
+**The cause is known and measured.** Every volume step moves the CXD3778GF's analogue headphone
+attenuator (`0x49 PHV_L` / `0x4B PHV_R`) directly, and the curve it follows comes from the output
+volume table the codec driver loads at boot. The A50's stock table (`ov_1291.tbl`) has two dead
+zones and coarsens toward the top — 4 attenuator counts per step between volume 80 and 100, which
+is exactly where the pop was loudest, and nothing at all above 100, which is exactly why it stopped
+there. Full working in the SOLVED section below.
+
+**A mitigation is written, built and installed — and has never once run on hardware.** Sony ships a
+better table on every stock device (`ov_127x.tbl`, the NW-WM1A's own: monotonic, no dead zones,
+finer steps at the top). `cinder-home/src/cinder-voltable.c` installs it, `build.sh` step 6g builds
+it, `install_cinderhome.sh` section 1f3 installs it, and the launcher applies it on every boot
+because `load_sony_driver` re-applies the stock table each time. But:
+
+* the `voltable` component in `cinder-home/deploy/components.conf` **defaults to `stock`**, and
+* `/contents/cinder_voltable.conf` did not exist on the device, and
+* until 2026-08-26 the launcher installed on the device predated the voltable block entirely —
+  `tools/cinder-install.sh` pushed the binary and the helpers but never refreshed the launcher, so
+  the device ran a 2026-08-12 launcher against a 2026-08-26 app. See the comment on `LAUNCHER_SRC`
+  in that script.
+
+The launcher is current now, so the switch is one file away: write `wm1a` to
+`/contents/cinder_voltable.conf` and reboot. Nothing has been switched, because changing the table
+changes what every volume step does and the user has to be told, not surprised.
+
+**Whether it is audibly gone is still unmeasured.** As of 2026-08-26 the reporter says they have not
+been hearing it recently and will judge over the next few daily drives — on the STOCK curve, which
+is the one that has been running all along. That is a useful observation and it is not a
+measurement; the analogue rig (`tools/measure_output.py`) is still what would settle it.
+
+## The history that led there
+
+Everything below is the investigation in the order it happened, including two wrong turns worth
+keeping: the metric that measured loudness and called it a pop, and the gain-staging theory that
+was plausible and false.
 
 ## The measurement
 
@@ -169,3 +203,14 @@ this is a change to announce rather than to slip in.
 The remaining suspects for the pop's *character* — `SMS_SFTRMP` (soft ramp, reads **0 = disabled**)
 and the driver's `fade_amount` / `timed_mute_ms` parameters — are untested and are the next thing to
 try if a table swap is not enough.
+
+Two of those three are free to try and need no helper. Confirmed present on device 2026-08-26:
+
+```
+/sys/module/snd_soc_cxd3778gf/parameters/{fade_amount, monvol_wait_ms, timed_mute_ms}
+```
+
+`SMS_SFTRMP` is the third and is a codec register, which means a WRITE to
+`/proc/regmon/cxd3778gf/value`. That is the one operation this project has ruled out standing: the
+codec is the part with no software recovery path. Trying it needs an explicit decision, not a
+convenient moment.

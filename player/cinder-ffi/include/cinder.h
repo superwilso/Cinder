@@ -328,6 +328,25 @@ void cinder_scrobble_tick(int playing);
 void cinder_clock_tick(void);
 /* Push battery percent (0..100) to the status bar; repaints only on change. */
 void cinder_set_battery(int pct);
+/* Push the FULL battery readout for Settings > Battery. Separate from cinder_set_battery because
+ * that one is cheap and frequent (status bar) while this reads several sysfs files and forks the
+ * cinder-battery helper, so the shell paces it on its own.
+ *   status/health  the sysfs strings VERBATIM ("Charging", "Not charging", "Good", ...). The
+ *                  screen prints what it is given: "Not charging" and "Discharging" are different
+ *                  states and only one of them is a cable problem. NULL is treated as "".
+ *   mv             millivolts, or INT_MIN when voltage_now could not be read.
+ *   mdeg           millidegrees C from thermal_zone1 (the PMIC sensor — BOARD, not the cell; this
+ *                  device exposes no battery thermistor), or INT_MIN when unreadable.
+ *   chg_state      bq24262 STATUS bits 6:4 (0 ready, 1 charging, 2 done, 3 fault), -1 if unknown.
+ *   chg_fault      bq24262 STATUS bits 2:0, 0 = no fault, -1 if unknown.
+ *   raw            raw charger register hex for the footer; "" when the helper is not installed. */
+/* NB: one line, deliberately. harness/gen_stubs.py matches declarations line by line, and a
+ * wrapped signature is not skipped with a warning — it becomes a link error in the harness. */
+void cinder_set_battery_detail(int pct, const char *status, const char *health, int mv, int mdeg, int chg_state, int chg_fault, const char *raw);
+/* Is Settings > Battery the screen on display? The shell asks before forking the cinder-battery
+ * helper: only that screen shows the charger registers, and forking every few seconds for a screen
+ * nobody has open is runtime spent for nothing. 1 = open. */
+int cinder_battery_wants_detail(void);
 /* Raise the ordinary bottom toast the UI already uses for queue and Shelf feedback. For the shell
  * to say something the user must see (a low battery, an imminent shutdown) without inventing a
  * second notification surface. Fades on its own; NULL/empty is a no-op. */

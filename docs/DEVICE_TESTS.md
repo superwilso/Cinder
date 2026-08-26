@@ -270,9 +270,26 @@ There is no read-back: `dacdat` reports rc only. Judge by level.
 
 ## 12. Volume-change POP on wired headphones, only below volume 100
 
-**Full write-up: [`analysis/RE_volume_pop.md`](../analysis/RE_volume_pop.md).** Confirmed by
-measurement 2026-08-18; cause narrowed to the output-volume table; one experiment left to settle it
-(swap `ov_127x` for `ov_1291` and re-measure).
+**Full write-up: [`analysis/RE_volume_pop.md`](../analysis/RE_volume_pop.md).** RESOLVED as to
+cause. The experiment this section used to ask for was run on 2026-08-18: every volume step moves
+the codec's analogue attenuator (`0x49/0x4B PHV_L/R`) directly, along a curve set by the output
+volume table loaded at boot. The stock A50 table wastes 40 of the 120 steps and coarsens to 4
+attenuator counts per step between volume 80 and 100 — which is where the pop was loudest — and
+does nothing at all above 100, which is why it stopped there.
+
+Two things are still open, and neither is the cause:
+
+1. **Is it audibly gone on the better curve?** `cinder-voltable` ships the NW-WM1A table
+   (`ov_127x.tbl`, monotonic, no dead zones, finer steps at the top), but the `voltable` component
+   DEFAULTS TO `stock`, so it has never run on hardware. Enabling it means writing `wm1a` to
+   `/contents/cinder_voltable.conf` and rebooting — and announcing it, because a given volume
+   number is quieter through the mid range on that curve.
+2. **The pop's character**, if the curve alone is not enough: `fade_amount` / `timed_mute_ms` under
+   `/sys/module/snd_soc_cxd3778gf/parameters/` are free to try; `SMS_SFTRMP` is a codec register
+   write and is the operation this project does not do casually.
+
+Reporter's own note 2026-08-26: not hearing it recently, judging over the next few daily drives —
+on the stock curve, which is what has been running all along.
 
 A small but audible pop each time the volume changes, on the 3.5 mm output. **It stops above
 volume 100** — steps 100..120 are silent, steps below pop.
