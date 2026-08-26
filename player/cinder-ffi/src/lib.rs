@@ -162,6 +162,22 @@ impl Framebuffer {
             return Err("mmap fb0 failed".into());
         }
         let pages = (var.yres_virtual / var.yres.max(1)).max(1) as usize;
+
+        // CLEAR EVERY PAGE BEFORE THE FIRST PAINT.
+        //
+        // Nothing owns the framebuffer's contents across a reboot: mtkfb hands back the same
+        // memory, still holding whatever the last session and the boot animation drew into it.
+        // Cinder then paints ONE page (all three only when /contents/cinder_fb_allpages exists),
+        // so any page it does not touch keeps the old image — and when the panel scans that page
+        // out you get a frozen, stale UI sitting behind the live one. Reported repeatedly, most
+        // recently 2026-08-26 ("the shadow ui is still there frozen in the background", and the
+        // Sony boot screen over an already-drawn Cinder UI); it survives reboots, which is the
+        // tell that it is the buffer and not the drawing.
+        //
+        // One memset of the whole mapping at init costs a few milliseconds once and makes the
+        // starting state defined regardless of what was there before.
+        unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, map_len) };
+
         let all_pages = std::path::Path::new("/contents/cinder_fb_allpages").exists();
         println!(
             "cinder-ffi: fb {}x{} {}bpp stride {} pages {} (writing {}) — flip-on-blit active (FBIOPUT+FORCE)",
@@ -682,7 +698,7 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nbt_on={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -696,6 +712,7 @@ fn settings_body(r: &Render) -> String {
         r.app.bt_codec(),
         r.app.bt_ldac_quality(),
         r.app.bt_enhanced() as u8,
+        r.app.bt_on() as u8,
         r.app.volume_level(),
         r.app.bt_volume_level(),
         r.app.brightness_restore(), // never 0: backlight-off is transient, not a setting
@@ -2390,7 +2407,14 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // Two states, both of which do something. It used to cycle off → all → one and tell
             // PlayerService nothing at all; "all" has no known primitive, so a third position would
             // still be decorative. The shell reads cinder_get_repeat_one() and applies it.
-            r.np.repeat = if r.np.repeat == 0 { 1 } else { 0 };
+            // off -> ALL -> ONE -> off, the order every other player uses.
+            //
+            // There used to be no repeat-all because no primitive for it had been found. One has:
+            // measured 2026-08-26 (DEVICE_TESTS.md 3f), the queue boundary is unmistakable — the
+            // position pins at the duration and `playing` goes 1 -> 0 with the URI unchanged. That
+            // is a signal the shell can watch for and re-issue the queue on, which is all
+            // repeat-all needs. 1 = repeat-one (OneTrackMode), 2 = repeat-all (shell-driven).
+            r.np.repeat = match r.np.repeat { 0 => 2, 2 => 1, _ => 0 };
             23
         }
         Action::BtEnhancedChanged => 35, // shell reads cinder_get_bt_enhanced + SetControlAbsoluteVolume
@@ -2772,8 +2796,17 @@ pub extern "C" fn cinder_take_queue_flush() -> libc::c_int {
     f as libc::c_int
 }
 
-/// Repeat-one on/off (1/0). Read after a CINDER_ACT_REPEAT_CHANGED action; the shell hands it to
-/// cinder_audio_set_repeat_one.
+/// Repeat-ALL on/off (1/0). Read after a CINDER_ACT_REPEAT_CHANGED action. PlayerService has no
+/// primitive for this, so the shell implements it: watch for the queue boundary and re-issue.
+#[no_mangle]
+pub extern "C" fn cinder_get_repeat_all() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) if r.np.repeat == 2 => 1,
+        _ => 0,
+    }
+}
+
+/// Repeat-one on/off (1/0) — the OneTrackMode half. Repeat-ALL is cinder_get_repeat_all.
 #[no_mangle]
 pub extern "C" fn cinder_get_repeat_one() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {
@@ -3719,7 +3752,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "shuffle" => r.np.shuffle = v == "1",
                     // Clamped: only 0 and 1 exist (repeat-all has no primitive), so a stale file
                     // written by a build that cycled three states cannot restore a dead value.
-                    "repeat" => r.np.repeat = u8::from(v == "1"),
+                    // 0 = off, 1 = one, 2 = all. Was `v == "1"`, which silently collapsed a
+                    // saved repeat-all back to off on the next boot.
+                    "repeat" => r.np.repeat = v.parse::<u8>().unwrap_or(0).min(2),
                     "eq" => {
                         let mut arr = r.app.eq_bands();
                         for (i, part) in v.split(',').enumerate().take(10) {
@@ -3746,6 +3781,17 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         }
                     }
                     "bt_enhanced" => r.app.set_bt_enhanced(v == "1"),
+                    // The RADIO's own on/off. Everything else about Bluetooth persisted already —
+                    // codec, LDAC quality, enhanced mode, volume — but not whether the radio was
+                    // ON, so every boot came up with it off and nothing could connect until the
+                    // switch was toggled by hand (measured 2026-08-26: GetBtStatus=7 on a fresh
+                    // boot with three devices paired). bit2 says the file actually CARRIED this,
+                    // which matters because the in-app default is ON: without that distinction the
+                    // shell would power the radio up for someone who deliberately keeps it off.
+                    "bt_on" => {
+                        r.app.set_bt_on(v == "1");
+                        loaded |= 4;
+                    }
                     "volume" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_volume(n);

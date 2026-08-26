@@ -76,6 +76,59 @@ codec is the one part of this device with no software recovery path.
 
 ---
 
+## 2026-08-26 — THE A/B, ANSWERED: the hypothesis does not hold
+
+Measured on device with a live LDAC link (`GetBtStatus=3 AvSrc=4`, `GetConnectInformation` naming
+`CMF Buds Pro 2`, `GetSoundStatus codec=0x02`) and real playback running (`pos=2000/304173`). No
+ALSA PCM was open at any point, which is the expected shape: LDAC leaves through the radio, not the
+CXD3778GF.
+
+| Register | jack, idle | BT connected | BT **playing** |
+|---|---|---|---|
+| `SYSTEM` | `0x03` | `0x03` | `0x03` |
+| `OSC_ON` / `OSC_EN` | `0x10` | `0x10` | `0x10` |
+| `BLK_ON0` | `0x0F` | `0x0F` | `0x0F` |
+| `SD_ENABLE` | `0x05` | `0x05` | `0x05` |
+| `DNC1_START` | `0x50` | `0x50` | `0x50` |
+| `CODEC_PLAYVOL` | `0x00` | `0x33` | `0x33` |
+| `PHV_L` / `PHV_R` | `0xE4` | **`0x00`** | **`0x00`** |
+| `HPOUT2_CTRL1` | `0x0F` | **`0x00`** | **`0x00`** |
+
+**The Bluetooth-specific waste this file predicted is already being avoided.** The driver drops the
+headphone output stage for a Bluetooth route: both attenuators go to zero and `HPOUT2_CTRL1` clears.
+`bt` therefore does NOT match `jack` — it is strictly below it — which is the opposite of the
+condition step 2 set for the hypothesis holding. A Bluetooth session is not biasing a headphone amp
+for nobody.
+
+**What IS still on is on in every state, including idle.** The oscillators, the four `BLK_ON0`
+block-enables, the serial-data path and the DNC engine read identically on the jack, on Bluetooth
+connected, and on Bluetooth playing — and the idle block at the top of this file, taken with nothing
+playing and nothing in the jack, already had `BLK_ON0 0x0F`, `SD_ENABLE 0x05` and `DNC1_START 0x50`.
+So those bits are not a Bluetooth cost. They are an **idle** cost, present the whole time the player
+is awake, and that is where any remaining prize lives.
+
+Connected and playing are indistinguishable at the codec, so nothing is gated on the stream itself.
+
+**No register was written.** Every read went through `target` as a selector; `value` was only ever
+read, per rule 2.
+
+### The caveat on this measurement
+
+Something was in the 3.5 mm jack throughout (`/sys/class/switch/cxd3778gf_h2w/state` = 2), so the
+"jack, idle" column is this session's own, but there is no matching **no-jack** idle column from the
+same session — that comparison is against the block recorded at the top of this file. Repeat it with
+the jack empty before treating the idle-cost figure as exact. The Bluetooth conclusion does not
+depend on it: `PHV`/`HPOUT2_CTRL1` clearing is visible within this session's own three columns.
+
+### What this does NOT settle
+
+The power number. This is a register comparison, not a measurement of what those bits cost. The
+`btpower.sh start` / unplug / listen / replug / `report` cycle still has to run for idle, jack and
+bt to put a figure on the always-on block — and with the amp already being powered down, the honest
+expectation for a Bluetooth-specific saving is now close to zero.
+
+---
+
 ## 2026-08-23 — the sustained IPC of a steady session, and what was done about it
 
 *Written after the CI/audit work of the same day, because one of its fixes is what made this safe.*

@@ -40,7 +40,9 @@ void cinder_set_theme_night(int night);
 /* Load + apply persisted UI preferences (theme + visualiser + EQ + sound effects + volume) from
  * `path`, and remember it so later changes auto-save. Call once at boot after cinder_render_init.
  * Returns a bitmask: bit0 = file read (re-apply EQ/sound to the DSP), bit1 = a persisted volume
- * level was restored (apply it to the mixer instead of seeding from hardware). 0 = no file. */
+ * level was restored (apply it to the mixer instead of seeding from hardware), bit2 = a persisted
+ * Bluetooth RADIO state was restored — only then may the shell power the radio up to match it, as
+ * the in-app default is ON and would otherwise force it on at every boot. 0 = no file. */
 int cinder_settings_load(const char *path);
 
 /* Resume across a reboot. `seq_path` holds the playback context + user queue (object ids, written
@@ -468,6 +470,9 @@ int  cinder_set_bt_enhanced_supported(int on);
 int  cinder_take_queue_flush(void);
 
 /* Repeat-one state (1/0) for CINDER_ACT_REPEAT_CHANGED. */
+/* Repeat-ALL (1/0). No PlayerService primitive exists; the shell implements it by watching for the
+ * queue boundary (position pinned at duration, playing 1 -> 0, URI unchanged) and re-issuing. */
+int  cinder_get_repeat_all(void);
 int  cinder_get_repeat_one(void);
 /* The UI's panel-brightness level, 1..5 (never 0). Read after a CINDER_ACT_BRIGHTNESS_CHANGED
  * action and at boot, then map it onto the backlight node. Level 1 must stay READABLE — if the

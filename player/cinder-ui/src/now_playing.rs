@@ -93,9 +93,12 @@ pub struct NowPlaying<'a> {
     pub liked: bool,
     pub playing: bool,
     pub shuffle: bool,
-    /// Repeat: 0 = off, 1 = repeat-one. There is deliberately no repeat-ALL state: no primitive for
-    /// it has been found on PlayerService, and a third position that changed nothing would be the
-    /// same lie the shuffle icon used to tell.
+    /// Repeat: 0 = off, 1 = repeat-one, 2 = repeat-all. Repeat-all was absent for a long time
+    /// because PlayerService exposes no primitive for it — and a third position that changed
+    /// nothing would have been the same lie the shuffle icon used to tell. It is real now: the
+    /// queue boundary is detectable (position pins at duration, `playing` goes 1 -> 0, URI
+    /// unchanged — DEVICE_TESTS.md 3f), so the shell re-issues the queue itself.
+    /// The glyph needs no new art: `> 0` accents it and `== 1` adds the "one" dot.
     pub repeat: u8,
     pub viz_seed: f32, // visualiser animation phase (the shell advances it while playing)
     pub viz_kind: u8,  // which visualiser type (index into viz::from_index)

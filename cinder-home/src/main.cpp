@@ -236,6 +236,8 @@ int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
     return -1;
 }
 
+bool g_bt_on_restored = false;      // did the settings file actually carry a bt_on? (default is ON)
+bool g_bt_restore_pending = false;  // deferred_up asked for the radio; the frame loop does it
 bool g_settings_loaded = false; // did cinder_settings_load find a saved file? (→ re-apply EQ/sound)
 bool g_volume_restored = false; // did it restore a persisted volume level? (→ push to hw, not seed)
 void set_backlight(int night); // night=minimal/day=normal; boot forces day, toggle matches theme
@@ -350,6 +352,7 @@ void render_up() {
     int sl = cinder_settings_load("/contents/cinder_settings.conf");
     g_settings_loaded = (sl & 1) != 0;
     g_volume_restored = (sl & 2) != 0;
+    g_bt_on_restored  = (sl & 4) != 0;
     // Reconcile the USB-DAC toggle with the gadget's ACTUAL mode. The toggle is our intent; the
     // property is the fact, and they diverge whenever USB mode is changed outside Cinder. Without
     // this, Settings can report MASS STORAGE while the hardware sits in `uac`, and the only way out
@@ -558,7 +561,21 @@ void deferred_up() {
     // framework pump started just above.
     run_guarded("deferred_up: read Bluetooth radio state", 8,
                 []() {
+                    // Restore the radio if the user left it on — but only FLAG it here.
+                    //
+                    // deferred_up() runs ON THE RENDER THREAD, and powering the radio sets off a
+                    // cascade (link listener, volume listener, volume resync, re-apply EQ, re-apply
+                    // sound) that on 2026-08-26 hung the render thread outright: the log stopped
+                    // dead mid-cascade and the device went to a black screen. So nothing touches
+                    // the radio from in here. The frame loop does it once, after bring-up, with the
+                    // single cheapest call that exists.
+                    //
+                    // Only when the file actually CARRIED a bt_on: the in-app default is ON, so
+                    // trusting cinder_get_bt_on() with no saved key would power the radio up on
+                    // every boot for someone who deliberately keeps Bluetooth off.
                     int st = bt_status();
+                    if (g_bt_on_restored && cinder_get_bt_on() != 0 && !bt_radio_up(st))
+                        g_bt_restore_pending = true;
                     cinder_set_bt_on(bt_radio_up(st) ? 1 : 0);
                     // Same read decides where the volume rocker points, so headphones that were
                     // already connected at launch get the rocker from the very first press.
@@ -2242,6 +2259,13 @@ static void* bt_slot(void* obj, int idx) {
 // and the log all agree on what "on" means.
 static bool bt_radio_up(int st) { return st == 2 || st == 3; }
 
+// The device an EXPLICIT connect aimed at — an NFC tap, or a Devices-row tap. Empty means "no
+// particular device", which is the only case where the zero-arg RequestLastDeviceConnection is the
+// right retry. Declared here because bt_reconnect_tick (above the definition) needs both.
+static std::vector<unsigned char> g_bt_target_addr;
+static int g_bt_zeroarg_fails = 0;   // consecutive zero-arg reconnects that produced no link
+static int bt_request_connection(const std::vector<unsigned char>& addr, const char* who);
+
 // Current radio status, or -1 if the client could not be built.
 static int bt_status() {
     enum { VIDX_GetBtStatus = 3 };
@@ -2690,6 +2714,7 @@ void apply_bt_disconnect() {
     // The user said no. Park the auto-reconnect, or the link comes straight back and the button
     // looks broken.
     g_bt_user_disconnected = true;
+    g_bt_target_addr.clear();   // a deliberate hang-up must not be re-dialled by the retry ladder
     g_bt_reconnect_at = 0;
     g_bt_reconnect_wait_s = 0;
     try {
@@ -2896,6 +2921,8 @@ static void bt_reconnect_tick() {
     if (g_bt_have_name) {                     // connected — reset so the next drop starts fresh
         bt_connect_wait(false);               // one link at a time; a second device can wait
         bt_service_retry(false, false);       // nothing to retry while it is up
+        g_bt_target_addr.clear();             // reached it; a later drop retries the ordinary way
+        g_bt_zeroarg_fails = 0;
         if (g_bt_reconnect_wait_s) {
             clog_("bt-reconnect: link is up again — retry disarmed");
             g_bt_reconnect_at = 0;
@@ -2929,16 +2956,36 @@ static void bt_reconnect_tick() {
     // Zero-arg: the service looks up the last device itself. Preferred over RequestConnection with
     // an address because it is what Sony's own reconnect does, and it needs no guess about WHICH of
     // several paired devices the user meant.
+    // WHICH device to ask for. The zero-arg form lets the service pick, which is what Sony's own
+    // reconnect does — but it is only as good as the service's last-device record, and that record
+    // can be EMPTY: measured 2026-08-26, straight after an NFC tap-to-pair, GetConnectInformation
+    // returned no address while the ladder called the zero-arg form every 20 s, 40 s, 80 s…
+    // forever. The connect starts (AvSrc reaches 3) and never completes — the reported "connecting
+    // is hit and more often miss". So if the user named a device, keep asking for THAT one.
     enum { VIDX_RequestLastDeviceConnection = 7 };
     apply_bt_codec();     // A2DP negotiates during setup, so the preference must precede the link
     int rc = -1;
-    try {
-        void* x = bt_xmit();
-        if (x) {
-            typedef int (*fn0)(void*);
-            rc = ((fn0)bt_slot(x, VIDX_RequestLastDeviceConnection))(x);
-        }
-    } catch (...) { clog_("bt-reconnect: RequestLastDeviceConnection threw"); }
+    // After a reboot nothing is named — the tap that chose the device was last session. If the
+    // zero-arg form works it works in the first couple of tries; once it has demonstrably done
+    // nothing twice, aim at the most recently paired device. paired[0] IS most recent: measured
+    // across a pairing, [CMF, WONDERBOOM] became [XM4, CMF, WONDERBOOM].
+    if (g_bt_target_addr.empty() && g_bt_zeroarg_fails >= 2 && !g_bt_paired.empty()) {
+        g_bt_target_addr = g_bt_paired[0];
+        clog_("bt-reconnect: the zero-arg connect has done nothing twice — no usable last-device "
+              "record. Aiming at the most recently paired device instead.");
+    }
+    if (!g_bt_target_addr.empty()) {
+        rc = bt_request_connection(g_bt_target_addr, "bt-reconnect: retry");
+    } else {
+        g_bt_zeroarg_fails++;
+        try {
+            void* x = bt_xmit();
+            if (x) {
+                typedef int (*fn0)(void*);
+                rc = ((fn0)bt_slot(x, VIDX_RequestLastDeviceConnection))(x);
+            }
+        } catch (...) { clog_("bt-reconnect: RequestLastDeviceConnection threw"); }
+    }
 
     if (g_bt_reconnect_wait_s < BT_RECONNECT_MAX_S) {
         g_bt_reconnect_wait_s *= 2;
@@ -2946,7 +2993,11 @@ static void bt_reconnect_tick() {
     }
     g_bt_reconnect_at = now + (long)g_bt_reconnect_wait_s * 1000;
     char m[160];
-    std::snprintf(m, sizeof m, "bt-reconnect: RequestLastDeviceConnection rc=%d — next retry in %ds",
+    // Name the call that actually ran. This line said RequestLastDeviceConnection unconditionally,
+    // which after the fallback above was simply untrue and made the log read as if the zero-arg
+    // form were still being used when it had been abandoned two retries earlier.
+    std::snprintf(m, sizeof m, "bt-reconnect: %s rc=%d — next retry in %ds",
+                  g_bt_target_addr.empty() ? "RequestLastDeviceConnection" : "RequestConnection(target)",
                   rc, g_bt_reconnect_wait_s);
     clog_(m);
 }
@@ -3580,6 +3631,10 @@ static std::vector<unsigned char> g_nfc_connect_after_pair;
 // connection setup, so a codec set afterwards applies to the next link, not this one.
 static int bt_request_connection(const std::vector<unsigned char>& addr, const char* who) {
     enum { VIDX_RequestConnection = 6 };
+    // Remember WHICH device this was for, so the retry ladder can keep asking for the same one.
+    // Without this every retry after the first fell back to RequestLastDeviceConnection, which
+    // picks for itself — and picks nothing at all when the service holds no last-device record.
+    g_bt_target_addr = addr;
     int rc = -1;
     try {
         void* x = bt_xmit();
@@ -3644,6 +3699,7 @@ static void nfc_service_tap() {
         // Same reasoning as the Disconnect button: a deliberate hang-up must not be undone by the
         // auto-reconnect a few seconds later.
         g_bt_user_disconnected = true;
+    g_bt_target_addr.clear();   // a deliberate hang-up must not be re-dialled by the retry ladder
         g_bt_reconnect_at = 0;
         g_bt_reconnect_wait_s = 0;
         try {
@@ -7409,6 +7465,37 @@ void poll_now_playing() {
             g_playing = cinder_audio_is_playing() != 0;
         cinder_set_play_position(cur, tot, g_playing ? 1 : 0);
     }
+
+    // ── REPEAT-ALL ──────────────────────────────────────────────────────────────────────────────
+    // PlayerService has no loop-the-queue primitive, so the boundary is watched for instead. It is
+    // unmistakable and was measured rather than guessed (2026-08-26, DEVICE_TESTS.md 3f): at the
+    // end of a queue the position PINS at the duration, `playing` goes 1 -> 0, and the URI does not
+    // change. Nothing else in normal playback looks like that — a track boundary moves the URI, and
+    // a pause mid-track leaves the position short of the duration.
+    //
+    // Deliberately reading cinder_audio_is_playing() rather than g_playing: g_playing is held at
+    // the user's last intent for TRANSPORT_GRACE_MS after a press, which is exactly the wrong
+    // answer here — the queue ending is the service's news, not ours.
+    //
+    // The latch matters. Without it this fires every frame for as long as the player sits at the
+    // end, which would re-issue the sequence ~60 times a second. It clears as soon as the position
+    // leaves the end, so the next lap re-arms it.
+    static bool repeat_all_fired = false;
+    if (have_pos && tot > 0 && cinder_get_repeat_all()) {
+        // 1500 ms of slack: the last onPlayTimeUpdated before the end need not land exactly on the
+        // duration, and a track can stop a beat short of its own reported length.
+        const bool at_end = cur >= tot - 1500 && cinder_audio_is_playing() == 0;
+        if (at_end && !repeat_all_fired) {
+            repeat_all_fired = true;
+            clog_("repeat-all: queue ended — restarting it from the first track");
+            run_guarded("repeat-all: restart sequence", 8,
+                        []() { cinder_audio_restart_sequence(); });
+        } else if (!at_end) {
+            repeat_all_fired = false;
+        }
+    } else {
+        repeat_all_fired = false;
+    }
 }
 
 // Concrete app. The pure virtual destructor (slots 0,1) is satisfied by ~CinderApp.
@@ -7822,6 +7909,20 @@ void* render_driver(void*) {
         // ~30 s after render start. killall on a dead process is a harmless no-op.
         if (n == 900 || n == 1800) {
             if (g_app) g_app->StopBootAnimation();
+        }
+
+        // Restore the Bluetooth radio the user left on — ONCE, after bring-up.
+        //
+        // bt_set_rf is deliberately the whole job: one SetRfOnOff, no status polling, no connect,
+        // no listener churn. apply_bt_toggle would do all of that and it is what hung the render
+        // thread when this ran at boot. The radio coming up is enough — the 3 s route poll notices
+        // it, and bt_reconnect_tick's ladder does the connecting on its own schedule, off this
+        // thread's critical path. Setting the switch first so the UI agrees with the hardware.
+        if (g_bt_restore_pending && g_deferred_done) {
+            g_bt_restore_pending = false;
+            clog_("bt: radio was ON when the player was last used — restoring it");
+            cinder_set_bt_on(1);
+            run_guarded("bt: restore radio at boot", 8, []() { bt_set_rf(true); });
         }
 
         // FM scan/seek advance one channel per FRAME, not per housekeeping tick: they are the only

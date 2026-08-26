@@ -185,7 +185,7 @@ changed their status.
 
 | # | Item | Why it matters |
 |---|---|---|
-| 4a | **The codec question — the biggest open item in the project.** Is the CXD3778GF still clocked and biased through a Bluetooth session, for an output nobody is listening to? | The A/B is specified in [`BATTERY_BT.md`](BATTERY_BT.md). **Read-only** — see rule 2 |
+| 4a | ~~**The codec question**~~ **ANSWERED 2026-08-26 — hypothesis does NOT hold** | Measured on a live LDAC link, playing. The driver already powers the headphone stage down for Bluetooth (`PHV_L/R` `0xE4`->`0x00`, `HPOUT2_CTRL1` `0x0F`->`0x00`), so `bt` is strictly BELOW `jack`, not equal to it. What stays on (`OSC`, `BLK_ON0 0x0F`, `SD_ENABLE 0x05`, `DNC1_START 0x50`) is on in **idle** too — an idle cost, not a Bluetooth one. Connected and playing are identical at the codec. No register written. See [`BATTERY_BT.md`](BATTERY_BT.md); the power figure is still unmeasured |
 | 4b | **A soak.** Nothing has ever run for hours — **first data points 2026-08-25, both good** | Memory growth, log growth within one long boot, and the art cache's first build across 304 albums are all unmeasured. Measured so far, over one ~42 min boot: RSS **39996 → 40008 KB** in 737 s (VSZ flat at 144488) and the log **did not grow at all** over 261 s idle with the screen off (10580 B at both samples). Nothing like a leak, but this is tens of minutes, not hours, and mostly idle |
 | 4c | **Boot time and battery life against stock** | This is goal #1's entire claim, and it has never been measured |
 | 4d | **`dacdat` volume tables** — do this one deliberately | [`DEVICE_TESTS.md` §5](DEVICE_TESTS.md) |
