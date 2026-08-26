@@ -161,3 +161,37 @@ the paging theory is confirmed and the fix is to make all-pages the default, or 
 pages only on a screen CHANGE and page 0 for steady-state repaints.
 
 Not yet run — the device was disconnected before the test. If it recurs, that is the first thing to try.
+
+## `/data` and `/contents` are both `noexec` — only `/tmp` is executable
+
+```
+/emmc@usrdata /data     ext4 rw,nodev,noexec,noatime,...
+/emmc@contents /contents vfat rw,noexec,noatime,...
+tmpfs         /tmp      tmpfs rw,relatime,size=32768k
+```
+
+A binary or script pushed to `/data` or `/contents` returns **`permission denied`** however you
+chmod it. The mode bits are fine; the mount is not. Two consequences:
+
+* **Push probes to `/tmp`** (tmpfs, executable, 32 MB) and set
+  `LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/lib:/usr/lib`. `/tmp` is cleared by a reboot, so
+  re-push after one. `install.md` used to say `/contents/cinder-probe`, which can only ever fail.
+* **A script that must live on `/data`** (because it has to survive a reboot, or must not be handed
+  to the PC by USB-MSC) can still be RUN — feed it to an interpreter instead of exec'ing it:
+  `busybox sh /data/cinder/thing.sh`. `noexec` blocks `execve` of the file, not an interpreter
+  reading it. Its shebang is then decorative.
+
+## Detaching a long-running process from `adb`
+
+Three things, and each one silently produces "it just died with no output":
+
+1. **`setsid` is not on `PATH`.** It exists only as a busybox applet: `busybox setsid`.
+   `nohup` is present at `/xbin/nohup` but did not survive in testing; `setsid` did.
+2. **Background it AND redirect all three fds** (`>/dev/null 2>&1 </dev/null &`). adb kills the
+   process group when its shell exits.
+3. **Give it a moment before the shell exits** — `… & sleep 2`. Without that, adb tears the session
+   down before `setsid` has established the new one and the child dies having written nothing.
+   Indistinguishable from a broken script, and it is not one.
+
+Checking whether it lived: `[ -d /proc/$p ]` with `$p` EMPTY tests `/proc`, which exists — so a
+missing pidfile reads as "running". Guard the empty case explicitly.

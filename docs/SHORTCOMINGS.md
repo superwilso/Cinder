@@ -204,6 +204,18 @@ Code and docs cite `task #21`, `task #26` (×4), `task #31`, `task #40`, `task #
 **The repository has zero issues, open or closed.** Every one of those references is unresolvable by
 anyone reading the repo — including its author in six months.
 
+> **Partly closed, 2026-08-26.** The six references in **code** — the ones a developer actually
+> trips over — now point at documents that exist: every `task #26` was the same thing (the
+> render-loop poll storm behind the audio stutter) and now cites `docs/DEVICE_TESTS.md` §7;
+> `task #59` cites **B2** above, which is precisely what it was warning about; `task #21` cites
+> the Bluetooth RE findings.
+>
+> The remaining references live in **historical write-ups** (`analysis/*/RE_findings.md`,
+> `docs/AUDIT_*`, `cinder-home/STATUS.md`) and are deliberately left alone. Those files are a record
+> of what was known on a given day; editing them to tidy a citation would falsify the record for no
+> reader's benefit. They are dated, and the numbering is a maintainer's own task list that was never
+> mirrored to GitHub Issues — which is the thing worth knowing, and is now written down here.
+
 ---
 
 ## Part D — GitHub and repository setup
@@ -415,11 +427,11 @@ Stated plainly, because the weaknesses above are only survivable *because* of th
 | 1 | ✅ **Call `cinder-home/build.sh`'s self-tests from CI.** Extract the six `cc`-compiled self-tests into a `selftests` job (or a `build.sh --host-tests-only` flag). No cross toolchain needed. | ~1 h | Turns six existing, written, passing gates from opt-in into enforced. Highest ratio in the table. |
 | 2 | ✅ **Add a `bash -n` + `shellcheck` job** over the 33 scripts. | ~1 h | 5,288 lines of root-privileged, boot-path shell currently has no syntax gate at all. |
 | 3 | ✅ **Compile-check the C++ on the host** — `cinder-audio` + `cinder-home/src` against stub headers, `-fsyntax-only` if linking is impractical. | ~half day | Would have caught this session's C++ edits, which shipped uncompiled. Closes the worst of A1. |
-| 4 | **Make `release.sh` the only way to release**: have `release.yml` re-run the payload-vs-source comparison rather than an existence check. | ~2 h | The guard already exists and is correct; it is simply bypassable. Protects the flash path. |
-| 5 | **Stop committing `*.unstripped`.** `.gitignore` them; keep `dist/`. | 10 min | Stops the bleeding on D5. Does not fix history, and should not try to. |
-| 6 | **Adopt a "service state" convention** for B1 — a naming rule or a helper (`reconcile_*` vs `apply_*`) that makes "assertion about a service" visually distinct from "push a preference". | ~half day | Five defects in one audit came from this. A convention is cheaper than finding the sixth. |
-| 7 | **Add `SECURITY.md` + `CONTRIBUTING.md`.** | ~1 h | Twelve setuid binaries and an unsigned flasher, with no disclosure route. |
-| 8 | **Either use the issue tracker or stop citing it.** Fifteen dangling references. | ~2 h | Cheap, and it makes the excellent comments navigable. |
+| 4 | **Make `release.sh` the only way to release** — NOTE 2026-08-26: a runner cannot re-run the real comparison, because it has no glibc-2.23 cross toolchain. The workable shape is a manifest (payload hashes) written by `release.sh` and *verified* by `release.yml`, so a bypassed `git tag` leaves a stale manifest and fails. That is a design change, not a tweak.: have `release.yml` re-run the payload-vs-source comparison rather than an existence check. | ~2 h | The guard already exists and is correct; it is simply bypassable. Protects the flash path. |
+| 5 | ✅ **Stop committing `*.unstripped`.** Done 2026-08-26: gitignored and `git rm --cached`ed. The local copies stay, so `addr2line` on a crash address still works. History untouched, deliberately. | 10 min | Stops the bleeding on D5. Does not fix history, and should not try to. |
+| 6 | ◐ **Adopt a "service state" convention** for B1 — 2026-08-26: the convention is now written down in `CONTRIBUTING.md` (`apply_` = push intent, `refresh_` = read fact, `reconcile_` = assert intent still holds, idempotent). The tree already follows the first two; nothing has been retrofitted to `reconcile_`, deliberately — a 30-function rename is churn, and new code is where the rule pays. — a naming rule or a helper (`reconcile_*` vs `apply_*`) that makes "assertion about a service" visually distinct from "push a preference". | ~half day | Five defects in one audit came from this. A convention is cheaper than finding the sixth. |
+| 7 | ✅ **Add `SECURITY.md` + `CONTRIBUTING.md`.** Done 2026-08-26. Scope, out-of-scope, a private-advisory route, and the four rules-from-incidents; CONTRIBUTING covers the local gates, the harness and its limits, and the device rules. | ~1 h | Twelve setuid binaries and an unsigned flasher, with no disclosure route. |
+| 8 | ◐ **Either use the issue tracker or stop citing it.** 2026-08-26: the six **code** references now cite real documents; the rest are in dated historical write-ups and are left as record (see C3). | ~2 h | Cheap, and it makes the excellent comments navigable. |
 | 9 | ◐ **Add `cargo clippy`** (done, scoped to `correctness` + `suspicious`) **+ `cargo fmt --check`** (NOT done — `fmt` fails on both workspaces today, so the gate would be red on arrival; it needs a formatting commit first). | ~30 min | Low value against the rest, listed for completeness. |
 | 10 | **Require PRs on `main`.** | ~10 min | Deliberately last: the current workflow is one person moving fast, and a rule nobody wants gets bypassed. Worth doing when a second contributor appears, not before. |
 

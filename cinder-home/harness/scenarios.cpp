@@ -135,6 +135,69 @@ static void s_bt_switch_follows_radio(void) {
     check_eq(cinder_harness_arg("cinder_set_bt_on", 0), 1, "reconciled to ON, matching the radio");
 }
 
+// ── the app must never jam its own connects ──────────────────────────────────────────────────
+//
+// THE BUG THIS EXISTS FOR (2026-08-26). `bt_reconnect_tick` armed `SetConnectRetryMode(true,…)` on
+// the first tick after any drop — about a second after the radio came up. While that mode is armed
+// the real transmitter REFUSES every connect request: rc=0, and nothing reaches the air. So from
+// that moment the app could not connect to anything, and the user's own log showed three Devices-row
+// taps in a row returning rc=0 while the ladder re-armed the jam between them. Reported as
+// "pairing a new device works but connecting is hit and more often miss".
+//
+// Nothing off-device could see it, for two reasons this scenario also fixes: slots 6 and 7 shared
+// one always-succeeds handler, and the retry mode was not modelled at all.
+//
+// The assertion is about a SEQUENCE, not a value: whatever else the app does, it must not be
+// holding the retry mode on while it asks for a connection.
+static void s_bt_never_jams_itself(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    cinder_harness_set_budget_ms(60000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("BtXmit::SetConnectRetryMode"), 0,
+             "never armed the retry mode (it refuses every connect while on)");
+    check_eq(cinder_harness_bt_retry_mode(), 0, "left the radio's retry mode off");
+    check(cinder_harness_bt_connected() == 1, "the paired device is connected by the end");
+}
+
+// ── …and it must CLEAR a retry mode someone else left armed ──────────────────────────────────
+// The mode is service state and sticky: it outlives the process. A probe session, or a Cinder from
+// before the fix, leaves the radio refusing every connect. An app that only ever avoids arming it
+// would come up, ask politely, be refused, and never work out why.
+static void s_bt_clears_a_stale_jam(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_set_retry_mode(1);          // someone else left it armed
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    cinder_harness_set_budget_ms(60000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("BtXmit::GetConnectRetryMode") >= 1,
+          "asked the service what the mode really was rather than assuming");
+    check_eq(cinder_harness_bt_retry_mode(), 0, "cleared the stale jam");
+    check(cinder_harness_bt_connected() == 1, "and then actually connected");
+}
+
+// ── an idle radio reports 3, and 3 is not a connection ───────────────────────────────────────
+// `GetBtStatus` reaches 3 with nothing on the other end (measured 0.61 s after powering an idle
+// radio). The route used to be `st == 3`, so it flipped to BLUETOOTH the moment the radio came up:
+// the volume rocker left the jack with no sink to drive, and the reconnect-edge cascade fired
+// against thin air — then did NOT fire when a device really connected, because the flag was already
+// set. The address is the link.
+static void s_bt_idle_radio_is_not_a_link(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);               // radio up, NOTHING paired, so nothing can connect
+    cinder_harness_set_budget_ms(30000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("BtCommon::GetBtStatus") >= 1, "the radio was polled");
+    check_eq(cinder_harness_bt_connected(), 0, "nothing is connected");
+    check_eq(cinder_harness_count("cinder_set_bt_route"), 0,
+             "the volume route never moved to Bluetooth with no peer");
+}
+
 // ── PR #4: the idle Bluetooth poll must back off ─────────────────────────────────────────────
 // Before it did, four services were polled at ~2 Hz for the entire life of the process — a binder
 // round trip every half second into a radio that had not changed state in an hour. The numbers
@@ -580,6 +643,9 @@ static const Scenario kScenarios[] = {
     {"no-services",       s_no_services,             "no Sony service exists: degrade, never die"},
     {"bt-late-service",   s_bt_late_service,         "the BT service arrives after the app does"},
     {"bt-switch",         s_bt_switch_follows_radio, "the UI switch follows the radio, not itself"},
+    {"bt-no-self-jam",    s_bt_never_jams_itself,    "the app never arms the mode that refuses its own connects"},
+    {"bt-stale-jam",      s_bt_clears_a_stale_jam,   "a retry mode left armed by anything else is cleared"},
+    {"bt-idle-not-link",  s_bt_idle_radio_is_not_a_link, "GetBtStatus 3 with no peer is not a connection"},
     {"bt-idle-poll",      s_bt_idle_poll_rate,       "the idle Bluetooth poll backs off"},
     {"stalled-bringup",   s_stalled_bringup,         "bring-up that never completes must not freeze the app"},
     {"dark-playing",      s_dark_playing,            "panel dark, BT playing: the state the device lives in"},

@@ -69,6 +69,8 @@ Nothing here loads the easel lifecycle, so none of it can affect whether the dev
 | 0c | ~~**A `PlayStatus` dump with music actually playing**~~ **PASS 2026-08-25** | `cinder-probe --pump` | Position advances, `ALSA pcm4p = RUNNING`, listener fires | Also settled **3d**: `duration_raw` is **milliseconds**. Note `--play` is the framework-DEAD control and cannot connect — use `--pump` |
 | 0d | ~~**`cinder-probe --discover`**~~ **PASS 2026-08-26** | `--discover <report> <media path>` on a FRESH BOOT | Non-zero PlayStatus bytes | **Done — full offset map recovered**: position `+0x48`, duration `+0x4c`, channels `+0x5c`, bits `+0x60`, rate `+0x64`, bitrate `+0x68`, playstate `+0x00`. The zeros were never "nothing was playing": `cinder-home` held the audio output, so `WMX_AudioOutput::Open()` failed `OMX_ErrorHardware` and the log blamed the file (`GAP_E_UNSUPPORT_FORMAT`). Run playback probes before touching the app. |
 | 0e | **MediaStore re-scan probe** (§1a of the 08-23 audit) — **first half DONE 2026-08-25** | ~~Recover the `MediaStoreClient` vtable~~; then `strace -f` the `hagodaemon` hosting MediaStoreService across a stock USB-MSC disconnect | ~~The slot map~~, **and** whether a scan is app-driven at all | **No vtable needed**: `MediaScanner` is exported concretely — ctor takes `IMediaStoreService*`, plus `Scan()`/`ScanFile()`/`Cancel()`. `strace` is on the device at `/system/xbin/strace`; the MSC half still needs a real disconnect, which kills adb |
+
+> **USB-MSC itself is confirmed working on device (2026-08-26).** What 0e still needs is not MSC but the `strace` ACROSS a disconnect, which kills adb — so it has to be started detached, survive the disconnect, and be read back afterwards.
 | 0f | ~~**`--btwho`, `--inpath 2`, `--userpreset`**~~ **PASS 2026-08-25 (BT half pending a peer)** | With a peer linked and music playing | Consistent with the RE notes | `--userpreset` and `--inpath 2` match the notes exactly and the chain is restored on exit. `--btwho` read `GetBtStatus=7` (off) with nothing connected — the with-a-peer half needs headphones. **One anomaly:** under selector 2, `Eq6band` also reports `isproc is 1` — see the 08-25 results |
 
 > **On 0e, and why the `strace` half is the important half.** §1a of the 08-23 audit raises a
@@ -96,14 +98,14 @@ Flash `dist/dev/`, cable **out**.
 
 | # | Item | PASS |
 |---|---|---|
-| 1a | It paints | A frame reaches the glass; the boot animation does not stay latched |
-| 1b | Library loads | Album/artist/song counts look right for a 304-album library |
-| 1c | **Bad-boot counter cleared** | `healthy: bad-boot counter cleared` in `/contents/cinderhome.log` within ~10 s of first paint |
-| 1d | Type scale and non-Latin rendering | Eyeball; nothing clipped, no tofu |
-| 1e | Touch navigation lands where drawn | Taps hit the row you aimed at. *(Narrower than it was: the harness now covers the decode — a contact becomes a tap, a drag becomes a drag and a fling, and the raw codes map to the right buttons. What is left here is the panel's ACTUAL coordinate range, which the harness invents, and whether the drawn geometry matches the hit test.)* |
-| 1f | Vol± reaches the hardware | One audible press. *(The ramp curve, its stop-on-release and its stuck-key dead-man are covered off-device; that the mixer write is audible is not.)* |
-| 1g | Transport buttons | Each does what it says |
-| 1h | Idle screen-off, and **it wakes** | Blank it; wake by touch **and** by Power. A failed wake is indistinguishable from a dead device |
+| 1a | ~~It paints~~ **PASS 2026-08-26** | A frame reaches the glass; the boot animation does not stay latched |
+| 1b | ~~Library loads~~ **PASS 2026-08-26** | Album/artist/song counts look right for a 304-album library |
+| 1c | ~~**Bad-boot counter cleared**~~ **PASS 2026-08-26** | `healthy: bad-boot counter cleared` in `/contents/cinderhome.log` within ~10 s of first paint |
+| 1d | ~~Type scale and non-Latin rendering~~ **PASS 2026-08-26** | Eyeball; nothing clipped, no tofu |
+| 1e | ~~Touch navigation lands where drawn~~ **PASS 2026-08-26** | Taps hit the row you aimed at. *(Narrower than it was: the harness now covers the decode — a contact becomes a tap, a drag becomes a drag and a fling, and the raw codes map to the right buttons. What is left here is the panel's ACTUAL coordinate range, which the harness invents, and whether the drawn geometry matches the hit test.)* |
+| 1f | ~~Vol± reaches the hardware~~ **PASS 2026-08-26** | One audible press. *(The ramp curve, its stop-on-release and its stuck-key dead-man are covered off-device; that the mixer write is audible is not.)* |
+| 1g | ~~Transport buttons~~ **PASS 2026-08-26** | Each does what it says |
+| 1h | ~~Idle screen-off, and **it wakes**~~ **PASS 2026-08-26** | Blank it; wake by touch **and** by Power. A failed wake is indistinguishable from a dead device |
 
 ---
 
@@ -170,13 +172,13 @@ changed their status.
 | # | Item | PASS |
 |---|---|---|
 | 3a | ~~**Play-by-index**~~ **PASS 2026-08-26** | `play_tracks({A,B}, start=1)` played B (`pos=1000/318333`). The primitive under tap-a-row is correct. |
-| 3b | **Playlists** — a playlist row plays the whole list in saved order, plain and shuffled | Both bands work; PLAY is not shuffle |
+| 3b | ~~**Playlists** — a playlist row plays the whole list in saved order, plain and shuffled~~ **PASS 2026-08-26** | Both bands work; PLAY is not shuffle |
 | 3c | ~~**Drag-to-seek** — `media_origin_t::Begin == 0`~~ **PASS 2026-08-26** | `before=1000 after=63000/318333`, twice. Origin 0 is BEGIN (absolute). **Note:** the RAW `cinder_audio_seek_ms_origin()` is a no-op while streaming (`SeekTime(): Bad parameter. ignored`) — the shipping `cinder_audio_seek_ms()` pauses first and was always fine; the probe did not, which is what made the first two runs read INCONCLUSIVE. |
 | 3d | ~~**`duration_raw` is milliseconds**~~ **CONFIRMED 2026-08-25** | `268333` for a 4:28 track. It is milliseconds. |
 | 3e | ~~**Repeat-one**~~ **FIXED + PASS 2026-08-26** | **`OneTrackMode::On` is 2, not 1.** 0 and 1 both stop at the end; 2 wraps (`318333/318333 -> 1000`, still playing, same URI). Repeat-one had never worked — right moment, wrong value, and `SetOneTrackMode` is `void` so nothing complained. Swept with `cinder-probe --repeatsweep`. |
 | 3f | ~~**Repeat-all** — what the play state does when a queue runs out~~ **OBSERVED 2026-08-26** | At the boundary position pins at duration and `playing` goes 1 -> 0; URI unchanged, no reset. `playing == 0 && pos >= tot` is the repeat-all trigger. Do **not** use `state` (128 -> 1 here, but 1 also appears mid-track). |
-| 3g | **Backlight / brightness** — five levels, survives a reboot | Both |
-| 3h | **The 07-26 → 07-28 batch** — escape ladder, screenshot, the pager, accents, A–Z rail, the render optimisation | One clean dev boot and an eyeball |
+| 3g | **Backlight / brightness** — ~~five levels~~ **PASS**; **BACKLIGHT OFF was broken — FIXED 2026-08-26** | Levels 1–5 and reboot-persistence confirmed on device. The 6th stop did nothing: `cinder_get_brightness()` ended `.clamp(1, 5)`, so the UI's level 0 reached the shell as 1 and the shell's `if (lvl == 0)` fully-off branch was dead code. Now clamps 0..5. Safe because 0 is never persisted (`brightness_restore`) and Hold/Power restores it. **Re-test the OFF stop.** |
+| 3h | ~~**The 07-26 → 07-28 batch** — escape ladder, screenshot, the pager, accents, A–Z rail, the render optimisation~~ **PASS 2026-08-26** | One clean dev boot and an eyeball |
 | 3i | **GPU/EGL present path** — dev channel only, opt-in, **measured slower** | Only if you intend to re-test it |
 
 ---
@@ -185,9 +187,9 @@ changed their status.
 
 | # | Item | Why it matters |
 |---|---|---|
-| 4a | ~~**The codec question**~~ **ANSWERED 2026-08-26 — hypothesis does NOT hold** | Measured on a live LDAC link, playing. The driver already powers the headphone stage down for Bluetooth (`PHV_L/R` `0xE4`->`0x00`, `HPOUT2_CTRL1` `0x0F`->`0x00`), so `bt` is strictly BELOW `jack`, not equal to it. What stays on (`OSC`, `BLK_ON0 0x0F`, `SD_ENABLE 0x05`, `DNC1_START 0x50`) is on in **idle** too — an idle cost, not a Bluetooth one. Connected and playing are identical at the codec. No register written. See [`BATTERY_BT.md`](BATTERY_BT.md); the power figure is still unmeasured |
+| 4a | ~~**The codec question**~~ **ANSWERED 2026-08-26 — hypothesis does NOT hold** | Measured on a live LDAC link, playing. The driver already powers the headphone stage down for Bluetooth (`PHV_L/R` `0xE4`->`0x00`, `HPOUT2_CTRL1` `0x0F`->`0x00`), so `bt` is strictly BELOW `jack`, not equal to it. What stays on (`OSC`, `BLK_ON0 0x0F`, `SD_ENABLE 0x05`, `DNC1_START 0x50`) is on in **idle** too — an idle cost, not a Bluetooth one — and the no-jack idle column (taken with the jack EMPTY) shows the headphone amp biased with nothing plugged in at all, so Bluetooth is the CHEAPEST state at the codec. Connected and playing are identical at the codec. No register written. See [`BATTERY_BT.md`](BATTERY_BT.md); the power figure is still unmeasured |
 | 4b | **A soak.** Nothing has ever run for hours — **first data points 2026-08-25, both good** | Memory growth, log growth within one long boot, and the art cache's first build across 304 albums are all unmeasured. Measured so far, over one ~42 min boot: RSS **39996 → 40008 KB** in 737 s (VSZ flat at 144488) and the log **did not grow at all** over 261 s idle with the screen off (10580 B at both samples). Nothing like a leak, but this is tens of minutes, not hours, and mostly idle |
-| 4c | **Boot time and battery life against stock** | This is goal #1's entire claim, and it has never been measured |
+| 4c | **Boot time and battery life against stock** — **tracking started 2026-08-26** | This is goal #1's entire claim, and it has never been measured. The battery half now runs itself: `tools/battery_track.sh start` leaves an on-device sampler logging one line a minute to `/data/cinder/battery_track.tsv` while the player is USED normally, and `tools/battery_track.sh report` splits it into %/h per state (idle/playing x screen on/off), excluding charging. Leave it a day or two, then read it. Boot time is still unmeasured. |
 | 4d | **`dacdat` volume tables** — do this one deliberately | [`DEVICE_TESTS.md` §5](DEVICE_TESTS.md) |
 | 4e | **Volume-change POP below volume 100** | [`DEVICE_TESTS.md` §12](DEVICE_TESTS.md) |
 

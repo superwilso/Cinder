@@ -76,11 +76,21 @@ long thunk(void*, void*, void*, void*) {
 
 // ── the slots whose behaviour the app depends on ─────────────────────────────────────────────
 
+// AN IDLE RADIO REPORTS 3, NOT 2. This fake used to answer 2 for "on, nothing connected", which
+// made `st == 3` a safe route test off-device and a wrong one on it. Measured 2026-08-26, 0.61 s
+// after powering an idle radio with nothing in range:
+//
+//   btwho: GetBtStatus=3  AvSrc=2  Avrcp=1
+//   btwho: GetConnectInformation rc=0 addr=(none) name=''
+//
+// So 3 does not mean "connected" — the ADDRESS means connected. 2 is still reachable (the device
+// does report it), it simply is not the only idle answer, and a fake that only ever produced the
+// convenient one hid a real defect for weeks. Answer the awkward value by default.
 long h_GetBtStatus(void*, void*, void*, void*) {
     long long scripted = 0;
     int st = cinder_harness_scripted("BtCommon::GetBtStatus", &scripted)
                  ? (int)scripted
-                 : (g_radio_on ? (g_connected ? 3 : 2) : 7);
+                 : (g_radio_on ? 3 : 7);
     cinder_harness_record("BtCommon::GetBtStatus", st);
     return st;
 }
@@ -135,17 +145,71 @@ long h_GetPairedDeviceInfo(void*, void* pl, void*, void*) {
     return 1;
 }
 
-// A connect request against a powered-down radio is ACCEPTED AND SILENTLY DROPPED. That is the
-// device behaviour behind "Bluetooth doesn't connect automatically": the call returns success and
-// nothing happens, so nothing anywhere logs a failure.
-long h_Connect(void*, void*, void*, void*) {
-    cinder_harness_record("BtXmit::RequestLastDeviceConnection", g_radio_on ? 1 : 0);
-    if (g_radio_on && !g_paired.empty()) {
-        g_connected = true;
-        g_peer_name = g_paired[0].first;
-        g_peer_addr = g_paired[0].second;
-    }
-    return 0;
+// ── the connect path, and the mode that jams it ──────────────────────────────────────────────
+//
+// `SetConnectRetryMode(true, …)` puts the real transmitter into a state where **every** connect
+// request is refused: rc=0, and nothing reaches the air. Measured 2026-08-26 with an HCI capture
+// running, same address minutes apart:
+//
+//   retry OFF -> RequestConnection(AC:80:0A:56:A9:91) rc=1   CMD Create Connection -> AC:80:…:91
+//   retry ON  -> RequestConnection(AC:80:0A:56:A9:91) rc=0   nothing on the air at all
+//
+// Modelling it here is the point of this fake existing. cinder-home armed that mode on every drop
+// and then issued connects into it for a week, and nothing off-device could see it: slots 6 and 7
+// both pointed at one handler that always succeeded, so a request that the device would have
+// refused came back linked.
+//
+// rc is accept/reject on this path — **1 = accepted** — not the transaction-status 0 that
+// GetConnectInformation returns. The two conventions live side by side in the same client.
+bool g_retry_mode = false;
+
+bool connect_refused() { return g_retry_mode; }
+
+// Bring the link up if anything could. A connect against a powered-down radio is ACCEPTED AND
+// SILENTLY DROPPED — the device behaviour behind "Bluetooth doesn't connect automatically".
+void connect_to(size_t idx) {
+    if (!g_radio_on || idx >= g_paired.size()) return;
+    g_connected = true;
+    g_peer_name = g_paired[idx].first;
+    g_peer_addr = g_paired[idx].second;
+}
+
+// slot 7 — zero-arg. The service picks the last device itself; the fake picks paired[0].
+long h_ConnectLast(void*, void*, void*, void*) {
+    const bool refused = connect_refused();
+    cinder_harness_record("BtXmit::RequestLastDeviceConnection", refused ? 0 : 1);
+    if (refused) return 0;
+    connect_to(0);
+    return 1;
+}
+
+// slot 6 — addressed. Records WHICH device was asked for, so a test can tell the two calls apart;
+// they were indistinguishable while both slots shared one handler.
+long h_RequestConnection(void*, void* pa, void*, void*) {
+    const std::vector<unsigned char>* addr =
+        reinterpret_cast<const std::vector<unsigned char>*>(pa);
+    long long which = -1;
+    if (addr)
+        for (size_t i = 0; i < g_paired.size(); i++)
+            if (g_paired[i].second == *addr) { which = (long long)i; break; }
+    const bool refused = connect_refused();
+    cinder_harness_record("BtXmit::RequestConnection", refused ? -2 : which);
+    if (refused) return 0;
+    if (which >= 0) connect_to((size_t)which);
+    return 1;
+}
+
+long h_SetConnectRetryMode(void*, void* p, void*, void*) {
+    const bool on = p && *reinterpret_cast<const bool*>(p);
+    cinder_harness_record("BtXmit::SetConnectRetryMode", on ? 1 : 0);
+    const bool changed = (on != g_retry_mode);
+    g_retry_mode = on;
+    return changed ? 1 : 0;   // rc is a STATE-CHANGED flag on this one, not success
+}
+
+long h_GetConnectRetryMode(void*, void*, void*, void*) {
+    cinder_harness_record("BtXmit::GetConnectRetryMode", g_retry_mode ? 1 : 0);
+    return g_retry_mode ? 1 : 0;
 }
 
 long h_Disconnect(void*, void*, void*, void*) {
@@ -176,9 +240,11 @@ void build() {
     g_vt_common[4]  = h_SetRfOnOff;
     g_vt_common[20] = h_GetPairedDeviceInfo;
     g_vt_xmit[5]    = h_GetConnectInformation;
-    g_vt_xmit[6]    = h_Connect;
-    g_vt_xmit[7]    = h_Connect;
+    g_vt_xmit[6]    = h_RequestConnection;      // addressed — NOT the same call as slot 7
+    g_vt_xmit[7]    = h_ConnectLast;            // zero-arg
     g_vt_xmit[8]    = h_Disconnect;
+    g_vt_xmit[27]   = h_SetConnectRetryMode;
+    g_vt_xmit[28]   = h_GetConnectRetryMode;
     g_obj_common.vptr = g_vt_common;
     g_obj_xmit.vptr   = g_vt_xmit;
     g_obj_uac.vptr    = g_vt_uac;
@@ -218,11 +284,17 @@ void* _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstance
 
 // ── the fake radio, as a test fixture ────────────────────────────────────────────────────────
 void cinder_harness_bt_reset(void) {
-    g_radio_on = false; g_connected = false;
+    g_radio_on = false; g_connected = false; g_retry_mode = false;
     g_peer_name.clear(); g_peer_addr.clear(); g_paired.clear();
 }
 
 void cinder_harness_bt_set_radio(int on) { g_radio_on = on != 0; }
+
+// Leave the service's retry mode armed before the app starts — what a probe session, or a Cinder
+// from before 2026-08-26, leaves behind. The mode is STICKY on the device and outlives the
+// process, so an app that does not reconcile it comes back to a radio that refuses every connect.
+void cinder_harness_bt_set_retry_mode(int on) { g_retry_mode = on != 0; }
+int  cinder_harness_bt_retry_mode(void) { return g_retry_mode ? 1 : 0; }
 
 // Add a device to the radio's pairing table. `addr_last` is the final byte of a synthetic
 // AC:80:0A:56:A9:xx address, so two fixtures are distinguishable.
