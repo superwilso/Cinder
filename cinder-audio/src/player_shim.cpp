@@ -424,6 +424,24 @@ int cinder_audio_stop(void)  { return change_state(pl::playstate_t::Stop); }
 // track's file descriptor. Needed before handing /contents to the PC over USB-MSC: a paused
 // service keeps the media file open, and any open fd under /contents makes init's
 // unmount_msc1 fail EBUSY → the LUN write fails → the PC sees a reader with no medium.
+/// Repeat-ALL. PlayerService has no primitive for it: OneTrackMode repeats ONE track and there is
+/// nothing that loops a sequence. But the shim already holds the URIs it last handed over, so
+/// "start the same queue again from the top" is just play_tracks with the list we already have —
+/// no state for the shell to keep, and no risk of it re-deriving a different queue than the one
+/// actually playing.
+///
+/// The shell calls this when it sees the queue boundary: position pinned at duration and playing
+/// gone 1 -> 0 with the URI unchanged (measured 2026-08-26, DEVICE_TESTS.md 3f).
+int cinder_audio_restart_sequence(void) {
+    if (!g_ctrl || g_last_uris.empty()) return -1;
+    // COPY first: play_tracks reassigns g_last_uris, so pointers into it would dangle mid-call.
+    const std::vector<std::string> v = g_last_uris;
+    std::vector<const char*> p;
+    p.reserve(v.size());
+    for (const std::string& u : v) p.push_back(u.c_str());
+    return cinder_audio_play_tracks(p.data(), (int)p.size(), 0);
+}
+
 int cinder_audio_reissue_sequence(int dup_after_current) {
     // Re-hand PlayerService a sequence WHILE IT IS PLAYING, and touch nothing else — no
     // ChangePlayState, no seek. This answers the one question that decides whether an Apple-style
