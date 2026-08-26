@@ -24,7 +24,15 @@ cd "$(dirname "$0")/.." || { echo "cannot reach the repo root" >&2; exit 2; }
 # but a DISAGREEMENT is reported, because that is what made the first CI run red.
 PINNED_MAJOR_MINOR="0.11"
 
-mapfile -t SCRIPTS < <(find . -name '*.sh' -not -path './.git/*' | sort)
+# Only OUR scripts. analysis/binwalk/ and artifacts/ hold Sony's own extracted firmware — hundreds
+# of vendor scripts we neither wrote nor can fix. They are gitignored, so CI never sees them and
+# passed purely by their absence; locally they buried our findings in vendor noise and turned the
+# gate red for things that are not ours. Excluded explicitly so local and CI check the same set.
+mapfile -t SCRIPTS < <(find . -name '*.sh' \
+    -not -path './.git/*' \
+    -not -path './artifacts/*' \
+    -not -path './analysis/binwalk/*' \
+    | sort)
 if [ "${1:-}" = "--list" ]; then printf '%s\n' "${SCRIPTS[@]}"; exit 0; fi
 
 echo "── shell check ─────────────────────────────────────────────────────"
