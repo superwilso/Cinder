@@ -756,3 +756,76 @@ a message that points at the file.
   for a build that is not installed yet.
 - **`LD_LIBRARY_PATH` is not optional** even from `/tmp`: without it the loader cannot find
   `libPlayerServiceClient.so`.
+
+---
+
+## RESULTS 2026-08-26b — the framebuffer, and why Bluetooth "hit and miss"
+
+### The frozen shadow UI is the framebuffer, not the drawing
+
+Reported as a Sony boot screen sitting over an already-drawn Cinder UI, then as "the shadow ui is
+still there frozen in the background", surviving reboots. **It is the framebuffer.**
+`player/cinder-ffi/src/lib.rs` mmaps `/dev/graphics/fb0` and hands the mapping straight back with no
+clear. mtkfb returns the same memory across a reboot, still holding the last session's pixels and
+the boot animation; Cinder then paints only the page(s) it is configured for (`page 0 only` unless
+`/contents/cinder_fb_allpages` exists), so any untouched page keeps the old image, and the panel
+shows it behind the live UI. Surviving a reboot is the tell — drawing bugs do not.
+
+Fixed with one `write_bytes` of the whole mapping at init. Confirmed gone on device.
+
+**Diagnostic note for next time.** `screenshot.sh`'s `app` route asks cinder-home to save its own
+frame, so it shows what Cinder DREW, not what the panel SHOWS — it came back clean while the panel
+was wrong, which is exactly backwards from what you want when chasing this. The `raw` route reads
+fb0 and returns "empty read" while cinder-home holds it. When all routes fail, that is not a
+screenshot problem: it means the render thread is not servicing the trigger.
+
+### `GetBtStatus` cannot tell you whether Bluetooth is connected
+
+It reads **3 during connection setup and 3 when fully linked**. `AvSrc` is the field that separates
+them — 3 = setup started, 5 = linked — and `GetConnectInformation` returning an ADDRESS is the
+reliable gate (its rc is 0 either way, so rc is not a connected flag). Measured both states back to
+back on 2026-08-26.
+
+### Reconnect asked for the wrong device — the actual "hit and more often miss"
+
+`bt_request_connection()` sends `RequestConnection(addr)` for an NFC tap or a Devices-row tap, but
+stored nothing, so **every retry after the first fell back to the zero-arg
+`RequestLastDeviceConnection()`**, which lets the service pick. That is only as good as the
+service's last-device record, and the record can be empty: straight after an NFC tap-to-pair,
+`GetConnectInformation` returned no address at all while the ladder called the zero-arg form every
+20 s, 40 s, 80 s… indefinitely. The connect starts (`AvSrc` reaches 3) and never completes.
+
+Now the named device is remembered and retried. After a reboot nothing is named, so the zero-arg
+form is still tried first; once it has demonstrably done nothing twice, the ladder aims at the most
+recently paired device instead. `paired[0]` IS most recent — measured across a pairing, the list
+went `[CMF, WONDERBOOM]` -> `[XM4, CMF, WONDERBOOM]`. Verified on device: two zero-arg attempts at
+25.6 s and 45.8 s, then `RequestConnection(target)` at 86.0 s.
+
+### The radio was off after every boot
+
+`bt_codec`, `bt_ldac_quality`, `bt_enhanced` and `bt_volume127` all persisted; `bt_on` did not, so
+every boot came up with `GetBtStatus=7` and three devices paired and nothing able to connect until
+the switch was toggled by hand. Now persisted, and restored at boot — but only when the settings
+file actually CARRIED a `bt_on` (bit2 of `cinder_settings_load`), because the in-app default is ON
+and would otherwise force the radio up for someone who deliberately keeps it off.
+
+**Restore it from the frame loop, never from `deferred_up`.** `deferred_up()` runs on the render
+thread. The first version of this called `apply_bt_toggle()` from there and the render thread hung
+outright — the log stopped dead mid-cascade (link listener, volume listener, volume resync,
+re-apply EQ, re-apply sound) and the device went to a black screen. The shipping version flags it in
+`deferred_up` and does one `bt_set_rf(true)` from the frame loop after bring-up: no status polling,
+no connect, no listener churn. The 3 s route poll notices the radio and the ordinary ladder does the
+connecting.
+
+Two related facts worth keeping: `apply_bt_toggle` acts on the SWITCH, which bring-up has already
+reconciled down to the hardware — so a restore must set the switch before asking, or it faithfully
+turns the radio off again. And NFC tap-to-pair **does** work: `Pairing(addr)` completes and the
+device lands in the paired list (`bt-paired: 3 device(s)`), no OOB block required.
+
+### `deferred_up` freezes the UI for ~4.7 s at every boot
+
+Not fixed, but measured and worth recording: first frame paints at ~2.0 s, then `deferred_up` runs
+ON THE RENDER THREAD from ~3.3 s to ~8.0 s opening the DB and building the library (3438 tracks).
+Nothing paints in that window. It is survivable now that the framebuffer starts cleared, but it is
+why anything left on the panel used to stay visible for five seconds, and it is the reason adding a
+second of radio polling to `deferred_up` was so visible.

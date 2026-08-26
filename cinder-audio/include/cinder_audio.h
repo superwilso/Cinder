@@ -69,6 +69,9 @@ int  cinder_audio_stop(void);
  * cinder_audio_play_tracks. */
 /* DIAGNOSTIC: raw OneTrackMode value, for sweeping the enum. Not used by the app. */
 int  cinder_audio_set_one_track_raw(int v);
+/* Repeat-ALL: re-play the sequence the shim last issued, from its first track. Returns 0 on ok.
+ * There is no PlayerService primitive for looping a queue; this is how the shell implements it. */
+int  cinder_audio_restart_sequence(void);
 int  cinder_audio_release_sequence(void);
 
 /* Track / group skip. NextGroup/PrevGroup move by ALBUM (the shuffle-by-album primitive). */
