@@ -869,9 +869,20 @@ pub struct App {
     /// the user opts in. `screen_off_idx` cycles the presets from the Settings row.
     screen_off_idx: usize,
     screen_off_s: u32,
-    /// Panel brightness, 1..=5 (Settings row cycles it). Deliberately has no 0: the shell maps
-    /// level 1 to a dim-but-readable fraction of max_brightness, so no setting reachable from the
-    /// UI can leave a screen you can't read to change it back. Persisted.
+    /// Panel brightness, 1..=5 (Settings row cycles it). Persisted.
+    ///
+    /// PARKED FEATURE — "backlight off". The row briefly had a 6th stop at 0, and it was removed on
+    /// 2026-08-26 because it did not do what it was for. The intention was **backlight off with the
+    /// LCD content still visible** — unlit but readable in ambient light, the way a transflective
+    /// panel works. Writing 0 to this panel's backlight just gives a black screen, which is a
+    /// different and much less useful thing.
+    ///
+    /// Everything the feature needs is still here and still correct, so bringing it back is a small
+    /// job IF the panel turns out to support it: the shell keeps its `lvl == 0` fully-off branch,
+    /// `brightness_restore` keeps 0 out of the settings file, and `brightness_wake_on_input()`
+    /// restores the level on the Hold switch or Power. What is missing is the panel-side question
+    /// nobody has answered — whether mtkfb/the LCM can drop the backlight while leaving the segment
+    /// drive on. Until then the row does not offer a stop that lies about what it does.
     brightness: u8,
     /// The last VISIBLE brightness level. Level 0 (backlight off) is a transient state, not a
     /// setting: it is never persisted, and the shell restores this value on the next input. So
@@ -1966,9 +1977,13 @@ impl App {
                 // 1..5, then 0 = BACKLIGHT OFF, then wrap to 1. The shell turns the level into a
                 // raw backlight value. Level 0 is deliberately the LAST stop before the wrap, so
                 // you pass through every visible setting before reaching the invisible one.
+                // 1..5 and wrap. The 6th stop used to be 0 = BACKLIGHT OFF, and it is PARKED
+                // rather than deleted — see the note on `brightness` below. The shell's level-0
+                // handling and its Hold/Power escape are intact and unused, ready for the real
+                // feature.
                 self.brightness = match self.brightness {
+                    n if n >= 5 => 1,
                     0 => 1,
-                    5 => 0,
                     n => n + 1,
                 };
                 if self.brightness != 0 {
@@ -6475,19 +6490,21 @@ mod tests {
     /// `brightness_wake`. See `backlight_off_is_reachable_and_always_escapable`, which pins those
     /// two properties — this one only pins the cycle order.
     #[test]
-    fn brightness_cycles_one_to_five_then_backlight_off_then_wraps() {
+    fn brightness_cycles_one_to_five_and_wraps() {
         let mut app = unlocked();
         app.set_brightness(1);
         let mut seen = vec![app.brightness()];
-        for _ in 0..6 {
+        for _ in 0..5 {
             app.settings_sel = crate::settings::ROW_BRIGHTNESS;
             let acts = app.settings_activate();
             assert_eq!(acts, vec![Action::BrightnessChanged(app.brightness())]);
             seen.push(app.brightness());
         }
-        assert!(seen.iter().all(|&l| l <= 5), "level left 0..=5: {seen:?}");
-        // 1→2→3→4→5→0(off)→1 : every visible stop comes before the invisible one.
-        assert_eq!(seen, vec![1, 2, 3, 4, 5, 0, 1]);
+        // 1→2→3→4→5→1. The 0 (BACKLIGHT OFF) stop is PARKED — it was removed because zeroing this
+        // panel's backlight blanks it entirely, where the point was an unlit but still READABLE
+        // screen. Never offer a stop that lies about what it does.
+        assert_eq!(seen, vec![1, 2, 3, 4, 5, 1]);
+        assert!(!seen.contains(&0), "the parked backlight-off stop is back: {seen:?}");
     }
 
     /// Out-of-range values from a corrupt settings file are clamped, not trusted.
@@ -10275,29 +10292,25 @@ mod tests {
     // ── Brightness: level 0 is transient, never a trap ──────────────────────────────────────
 
     #[test]
-    fn backlight_off_is_reachable_and_always_escapable() {
+    fn backlight_off_is_unreachable_from_the_row_but_still_escapable() {
         let mut a = unlocked();
         a.go(Screen::Settings);
         a.settings_sel = crate::settings::ROW_BRIGHTNESS;
-        // Cycle to the top, then one more lands on 0 = backlight off.
-        for _ in 0..8 {
-            if a.brightness() == 5 { break; }
+        // THE ROW NO LONGER OFFERS 0. The backlight-off stop is parked (see `brightness`): it
+        // blanked the panel where the point was an unlit but still readable screen. Cycling must
+        // never land on it, however many presses.
+        for _ in 0..12 {
             a.press(Button::Select);
+            assert_ne!(a.brightness(), 0, "the parked backlight-off stop is reachable again");
         }
-        assert_eq!(a.brightness(), 5);
-        assert_eq!(a.press(Button::Select), vec![Action::BrightnessChanged(0)]);
-        assert_eq!(a.brightness(), 0);
-        // What gets PERSISTED is never 0 — a black panel must not survive a reboot.
-        assert_eq!(a.brightness_restore(), 5);
-        // Pressing again from 0 wraps to a VISIBLE level — the row can never stick on the dark one.
-        a.press(Button::Select);
-        assert_eq!(a.brightness(), 1);
-        // And from 0, any input at all brings it back — to the last VISIBLE level, which the
-        // press above moved to 1, not to a hardcoded default.
-        assert_eq!(a.brightness_restore(), 1);
-        a.brightness = 0;
+
+        // The ESCAPE machinery stays, because the feature is parked and not deleted — if the panel
+        // turns out to support a true unlit-but-readable mode, this is what makes it safe.
+        a.set_brightness(5);
+        a.brightness = 0;                       // as the shell's transient level-0 state would be
+        assert_eq!(a.brightness_restore(), 5);  // what gets PERSISTED is never 0
         assert!(a.brightness_wake());
-        assert_eq!(a.brightness(), 1);
+        assert_eq!(a.brightness(), 5);          // back to the last VISIBLE level
         assert!(!a.brightness_wake(), "already awake → nothing to do, no needless backlight write");
     }
 

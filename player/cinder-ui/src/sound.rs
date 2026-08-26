@@ -16,7 +16,8 @@ use crate::Canvas;
 /// does nothing with it and the output is unchanged by ear. The A50's output stage simply doesn't
 /// have the high-gain hardware the ZX/WM1 series does; the mixer control is inherited from the
 /// shared CXD3778GF driver. Kept here as a note so it isn't "discovered" and re-added: the write
-/// landing is NOT evidence the feature works. See task #59.
+/// landing is NOT evidence the feature works — the recurring mistake catalogued as B2 in
+/// docs/SHORTCOMINGS.md.
 pub const ROWS: usize = 8;
 pub const ROW_BALANCE: usize = 6;
 /// The "Advanced ›" row — pushes `Screen::Advanced`, where the rest of Sony's effect surface lives.

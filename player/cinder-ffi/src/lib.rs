@@ -2974,10 +2974,20 @@ pub extern "C" fn cinder_brightness_wake() -> libc::c_int {
     }
 }
 
-/// The UI's panel-brightness level, 0..=5 (0 = backlight off, transient — see cinder_brightness_wake). Read after a CINDER_ACT_BRIGHTNESS_CHANGED action (and
-/// at boot) and map it onto the backlight node. Never returns 0 — the shell's lowest level must
-/// stay readable, or the screen you'd use to turn it back up is unreadable. Defaults to 4 (which
-/// matches the shell's ~70% day level) if the renderer isn't up yet.
+/// The UI's panel-brightness level, **0..=5** — 0 = backlight fully off, which is TRANSIENT (see
+/// cinder_brightness_wake). Read after a CINDER_ACT_BRIGHTNESS_CHANGED action (and at boot) and map
+/// it onto the backlight node. Defaults to 4 (the shell's ~70% day level) if the renderer isn't up.
+///
+/// Clamped to 1..=5 because the UI no longer offers a 0. It briefly did: the Settings row had a
+/// BACKLIGHT OFF stop, and this getter's `.clamp(1, 5)` silently turned it into level 1 — reported
+/// 2026-08-26 as "the backlight off setting does nothing different to backlight 1", which was
+/// exactly right. Unclamping made it work, and working revealed that the feature was not what was
+/// wanted: the intent was an unlit but still READABLE screen, and zeroing this panel's backlight
+/// just blanks it. So the stop was removed and the feature parked (see `brightness` in nav.rs).
+///
+/// If it comes back, change this to `.clamp(0, 5)` — the rest of the path is still in place and
+/// still correct: 0 is never persisted (`save_settings` writes `brightness_restore()`), and
+/// `brightness_wake_on_input()` restores the level on the Hold switch or Power.
 #[no_mangle]
 pub extern "C" fn cinder_get_brightness() -> libc::c_int {
     cell()

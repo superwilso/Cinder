@@ -90,7 +90,7 @@ static void* pump_thread(void* fwp) {
     // for as long as the probe lives. Invisible on a two-second read; audible the moment a probe
     // mode HOLDS, because SoundServiceFw wants ~34% of a core while playing and a spinning thread
     // starves it. Reported 2026-08-17 as "very stuttery" during a 25 s VPT hold. Same shape as the
-    // render-loop poll storm in task #26, in a different process.
+    // render-loop poll storm measured in docs/DEVICE_TESTS.md section 7, in a different process.
     //
     // 2 ms is 500 pumps a second — orders of magnitude more than any IPC reply needs, and it takes
     // the thread from 100% of a core to nothing measurable.
