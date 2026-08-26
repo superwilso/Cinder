@@ -328,25 +328,36 @@ void cinder_scrobble_tick(int playing);
 void cinder_clock_tick(void);
 /* Push battery percent (0..100) to the status bar; repaints only on change. */
 void cinder_set_battery(int pct);
-/* Push the FULL battery readout for Settings > Battery. Separate from cinder_set_battery because
- * that one is cheap and frequent (status bar) while this reads several sysfs files and forks the
- * cinder-battery helper, so the shell paces it on its own.
- *   status/health  the sysfs strings VERBATIM ("Charging", "Not charging", "Good", ...). The
- *                  screen prints what it is given: "Not charging" and "Discharging" are different
- *                  states and only one of them is a cable problem. NULL is treated as "".
- *   mv             millivolts, or INT_MIN when voltage_now could not be read.
- *   mdeg           millidegrees C from thermal_zone1 (the PMIC sensor — BOARD, not the cell; this
- *                  device exposes no battery thermistor), or INT_MIN when unreadable.
- *   chg_state      bq24262 STATUS bits 6:4 (0 ready, 1 charging, 2 done, 3 fault), -1 if unknown.
- *   chg_fault      bq24262 STATUS bits 2:0, 0 = no fault, -1 if unknown.
- *   raw            raw charger register hex for the footer; "" when the helper is not installed. */
-/* NB: one line, deliberately. harness/gen_stubs.py matches declarations line by line, and a
- * wrapped signature is not skipped with a warning — it becomes a link error in the harness. */
-void cinder_set_battery_detail(int pct, const char *status, const char *health, int mv, int mdeg, int chg_state, int chg_fault, const char *raw);
-/* Is Settings > Battery the screen on display? The shell asks before forking the cinder-battery
- * helper: only that screen shows the charger registers, and forking every few seconds for a screen
- * nobody has open is runtime spent for nothing. 1 = open. */
-int cinder_battery_wants_detail(void);
+/* Settings > Device: the hardware's vital signs. Split into four calls rather than one wide one so
+ * each stays a single line — harness/gen_stubs.py matches declarations LINE BY LINE, and a wrapped
+ * signature is not skipped with a warning, it becomes a link error in the harness.
+ *
+ * INT_MIN means "could not be read" everywhere below; the screen renders those as a dash rather
+ * than as a zero, because a zero clock or a zero temperature looks like a measurement.
+ *
+ * Battery: status/health are the sysfs strings VERBATIM ("Charging", "Not charging", "Good", ...).
+ * The screen prints what it is given — "Not charging" and "Discharging" are different states and
+ * only one of them is a cable problem. mv is millivolts. chg_state is the bq24262 STATUS field
+ * (0 ready, 1 charging, 2 done, 3 fault) and chg_fault its fault code, both -1 without the helper;
+ * raw is the register hex for the footer. NULL pointers are treated as "". */
+void cinder_set_battery_detail(int pct, const char *status, const char *health, int mv, int chg_state, int chg_fault, const char *raw);
+/* The three thermal zones in millidegrees C: mtktscpu, mtktspmic, mtktsabb. These are DIE
+ * temperatures — this device exposes no cell thermistor, so none of them is a battery temperature
+ * and the screen does not label them as one. */
+void cinder_set_device_temps(int cpu, int pmic, int abb);
+/* Clock and maximum in kHz, cores online out of the package total, cpufreq governor name. The SoC
+ * hotplugs its second core at idle, so "1 of 2" is normal rather than a fault. */
+void cinder_set_device_cpu(int khz, int max_khz, int online, int total, const char *gov);
+/* /proc/meminfo total and available in kB, then the music volume total and free and the app-data
+ * free, in MB. */
+void cinder_set_device_storage(int mem_total_kb, int mem_avail_kb, int music_total_mb, int music_free_mb, int data_free_mb);
+/* Seconds since boot, and the kernel release string. */
+void cinder_set_device_system(int uptime_s, const char *kernel);
+/* Is Settings > Device the screen on display? The shell asks before doing the EXPENSIVE half of
+ * the readings — forking cinder-battery, walking cpufreq, statvfs on both volumes. Only that screen
+ * shows them, and doing the work every few seconds for a screen nobody has open is runtime spent
+ * for nothing. 1 = open. */
+int cinder_device_wants_detail(void);
 /* Raise the ordinary bottom toast the UI already uses for queue and Shelf feedback. For the shell
  * to say something the user must see (a low battery, an imminent shutdown) without inventing a
  * second notification surface. Fades on its own; NULL/empty is a no-op. */

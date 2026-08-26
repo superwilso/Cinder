@@ -77,32 +77,43 @@ Sony's battery-care setting is `PowerMgrServiceClient::EnableItawariCharging` /
 `IsItawariChargingEnabled`, wired through `cinder-audio/src/power_shim.cpp`. Every description of
 it, Cinder's own Settings row included, said it caps the charge at 90%.
 
-**Measured with care ON, on the cable, over about an hour:**
+**Measured with care ON, from 123 samples logged by `tools/battery_track.sh` over 2.56 h on the
+cable:**
 
 ```
-20:0x   cap=91   voltage_now=4.047 V   status=Charging   STAT=001
-20:16   cap=99   voltage_now=4.092 V   status=Charging   STAT=001
-20:56   cap=99   voltage_now=4.0929 V  status=Charging   STAT=001    (stable, six samples/48 s)
-20:57   cap=99   voltage_now=4.0931 V  status=Charging   STAT=001
+max voltage_now across every sample     4.0932 V
+max voltage_now while status == Full    4.0870 V
+samples reporting Full                  53
 ```
 
-The level climbed past 90 without pausing, settled at 99, and **stayed there**: the voltage
-plateaus at ~4.093 V and stops climbing, `status` never becomes `Full`, and the charger's STAT
-field never reaches 010 "charge done".
+and the climb, sampled by hand on the way up:
 
-A normal full charge on this chemistry is about 4.20 V. So **the cap is real and it is working** —
-the cell is being held meaningfully short of full, which is the entire point of the feature and is
-what actually slows ageing. What it is *not* is a cap at 90% of the gauge. The gauge appears to
-scale against the capped ceiling rather than the cell's true one, so the protected state reads as
-99%.
+```
+20:0x   cap=91   4.047 V   Charging
+20:16   cap=99   4.092 V   Charging
+20:56   cap=99   4.0929 V  Charging   STAT=001   (stable, six samples over 48 s)
+later   cap=100  4.0840 V  Full
+```
+
+The level climbed past 90 without pausing and the charge **terminates at about 4.09 V**. A normal
+full charge on this chemistry is ~4.20 V, so the cell is being held roughly 0.11 V short of full.
+**The cap is real and it is working** — that is the entire point of the feature and it is what
+actually slows ageing.
+
+What it is *not* is a cap at 90% of the gauge. The gauge scales against the capped ceiling rather
+than the cell's true one, so the protected state reports **100%**.
 
 That made the old Settings row value — `ON · 90%` — a promise of a number the user was never going
-to see. It says `CARE ON` now, and the Battery screen's footer says what the cap actually looks
-like: a voltage that stops climbing.
+to see. It says `CARE ON` now, and the Device screen's footer says what the cap actually looks like:
+a voltage that tops out well below 4.2.
 
-> Worth re-testing with care OFF for a full charge cycle, to confirm the cell reaches ~4.20 V and
-> `Full` when it is allowed to. That would turn "the cap is real" from a strong inference into a
-> measurement. It needs a charge cycle with the setting off, which had not been done as of writing.
+> **Correction, same day.** A first pass at this said the charge "plateaus at 99% and never reaches
+> Full". That was drawn from a single 48-second window and was wrong — it does reach `Full` at 100%,
+> 53 times in this sample set. The durable finding is the CEILING VOLTAGE, which 123 samples agree
+> on, not what the gauge or the status string say at the top.
+>
+> Still worth doing: a full charge cycle with care OFF, to confirm the cell reaches ~4.20 V when it
+> is allowed to. That would turn "4.09 is a cap" from a strong inference into a measured contrast.
 
 ## What Cinder does with all this
 
@@ -113,15 +124,20 @@ like: a voltage that stops climbing.
   regulation voltage, current limit and safety timer. Nothing in Cinder ever needs to write these,
   so the helper never makes it possible. `value` is opened `O_RDONLY` and the only write it makes is
   the register selector, from a fixed compile-time list.
-* **`player/cinder-ui/src/battery.rs`** — Settings ▸ Battery. Level, sysfs status verbatim, voltage
-  to three decimal places, board temperature, health, charger state, and the battery-care toggle
-  that used to be the Settings row itself.
+* **`player/cinder-ui/src/device.rs`** — Settings ▸ Device. Started as a Battery screen and grew,
+  because the same trip through sysfs that answers "how full is it" also answers "how hot is it",
+  "what clock is the CPU at" and "how much music space is left" — all world-readable files the app
+  was already allowed to open and simply never did. Battery first (level, status verbatim, voltage,
+  health, charger state, the care toggle), then die temperatures, CPU clock/governor/cores, memory,
+  storage and uptime.
 * **Voltage is shown to three places on purpose.** The interesting question on this device is where
   the charge tops out, and 4.09 versus 4.10 is exactly the distinction two places would lose.
-* **The temperature is labelled "board", not "battery".** `thermal_zone1` is `mtktspmic`, the PMIC's
-  own sensor. There is no cell thermistor exposed, and it reads several degrees above ambient even
-  when idle, so calling it a battery temperature would be a guess dressed as a measurement.
-* **The charger read is gated on the screen being open** (`cinder_battery_wants_detail`), the same
-  way the spectrum analyzer is gated on the visualiser being visible. It costs a fork, and forking
-  every few seconds for a screen nobody has open is runtime spent on nothing — on a device whose
-  whole job is to play music for a long time on one charge.
+* **The temperatures are labelled for what they measure** — CPU, Power IC, Analog block — not as a
+  battery temperature. There is no cell thermistor exposed, and the PMIC zone reads several degrees
+  above the others even at idle, so passing it off as a cell or ambient reading would be a guess
+  dressed as a measurement.
+* **Nothing shows a time-to-empty.** With no fuel gauge there is no honest way to compute one.
+* **The expensive readings are gated on the screen being open** (`cinder_device_wants_detail`), the
+  same way the spectrum analyzer is gated on the visualiser being visible. Forking the charger
+  helper and walking cpufreq every few seconds for a screen nobody has open is runtime spent on
+  nothing — on a device whose whole job is to play music for a long time on one charge.

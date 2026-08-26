@@ -261,8 +261,18 @@ static void s_stalled_bringup(void) {
     cinder_harness_run();
 
     check(cinder_harness_count("cinder_render_tick") > 100, "still painting");
-    check(cinder_harness_count_between("cinder_db_open", 60000, 120000) >= 30,
-          "still retrying the DB, paced at ~1 Hz");
+    // The DB retry BACKS OFF now, and this check used to assert the opposite (">= 30 in the
+    // minute, paced at ~1 Hz"). MEASURED on device 2026-08-26 (checklist 2D.2): with
+    // /db/MTPDB.dat renamed away, a flat 1 Hz meant an sqlite open against a missing file every
+    // second for the life of the boot, and 61 KB of log in ten minutes. A database that is not
+    // there at second 60 will not be there at second 61; the transient-mount race this retry
+    // exists for resolves in the first seconds, which the early fast attempts still cover.
+    //
+    // So: a handful in the window, and never ZERO — backing off must not become giving up, because
+    // the whole point of the retry is that a late mount still gets picked up.
+    int db_tries = cinder_harness_count_between("cinder_db_open", 60000, 120000);
+    std::printf("  .... cinder_db_open: %d attempts in the 60-120s window (was ~60)\n", db_tries);
+    check_range(db_tries, 1, 8, "the DB retry backs off, but has not given up");
 
     // The whole point: the last minute must look like a running app, not like a boot that never
     // ended. Ranges rather than exact counts — the pacing is wall-clock, not frame-counted.

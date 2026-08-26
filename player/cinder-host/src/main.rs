@@ -304,7 +304,8 @@ fn main() {
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber })),
+                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                    storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber })),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
             // The shuffle band's caption has to follow the filter — shuffling a filtered list
             // shuffles what is on screen, so it must not still promise the whole library.
@@ -455,7 +456,8 @@ fn main() {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
                 &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
-                    usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN",
+                    usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                    storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
                     accent: cinder_ui::Accent::Amber });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
@@ -469,34 +471,72 @@ fn main() {
             settings::render(&mut c, &theme, &fonts, settings::ROW_BRIGHTNESS,
                 settings::max_scroll_px() / 2,
                 &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
-                    usb_dac: false, battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN",
+                    usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                    storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
                     accent: cinder_ui::Accent::Amber });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, "settings_scrolled");
         }
 
-        // Settings ▸ Battery, in the two states that differ: charging with the charger helper
-        // present, and on the cable with care off and no helper installed. The second is what a
-        // build without the `battery` component looks like, and it has to stay legible — the
-        // readings simply become dashes rather than the screen looking broken.
+        // Settings ▸ Device, in the two states that differ: everything readable while charging,
+        // and the degraded case — no charger helper installed and several sysfs reads failing. The
+        // second has to stay legible: the readings become dashes rather than the screen looking
+        // broken, and a blank value column is what that looked like before `text_or_dash`.
         {
             let mut c = Canvas::new();
-            cinder_ui::battery::render(&mut c, &theme, &fonts, &cinder_ui::battery::BatteryView {
-                percent: 99, status: "Charging", health: "Good",
-                millivolts: 4093, milli_degc: 38196, care: true,
-                chg_state: 1, chg_fault: 0, charger_raw: "10 AC 78 46 10 04 18" });
+            let v = cinder_ui::device::DeviceView {
+                percent: 99, status: "Charging", health: "Good", millivolts: 4093, care: true,
+                chg_state: 1, chg_fault: 0, charger_raw: "10 AC 78 46 10 04 18",
+                temp_cpu: 34400, temp_pmic: 39365, temp_abb: 34400,
+                cpu_khz: 1300000, cpu_max_khz: 1300000, cores_online: 1, cores_total: 2,
+                governor: "hotplug",
+                mem_total_kb: 467512, mem_avail_kb: 159772,
+                music_total_mb: 56320, music_free_mb: 1024, data_free_mb: 13,
+                uptime_s: 15120, kernel: "3.10.26",
+                firmware: cinder_ui::settings::FIRMWARE_LABEL,
+            };
+            cinder_ui::device::render(&mut c, &theme, &fonts, &v, 0);
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99);
-            save(&c, "battery_charging");
+            save(&c, "device");
+        }
+        // Same screen scrolled to the bottom — the sections below the fold are the reason it
+        // scrolls at all, and the footer has to land inside the panel.
+        {
+            let mut c = Canvas::new();
+            let v = cinder_ui::device::DeviceView {
+                percent: 99, status: "Charging", health: "Good", millivolts: 4093, care: true,
+                chg_state: 1, chg_fault: 0, charger_raw: "10 AC 78 46 10 04 18",
+                temp_cpu: 34400, temp_pmic: 39365, temp_abb: 34400,
+                cpu_khz: 1300000, cpu_max_khz: 1300000, cores_online: 1, cores_total: 2,
+                governor: "hotplug",
+                mem_total_kb: 467512, mem_avail_kb: 159772,
+                music_total_mb: 56320, music_free_mb: 1024, data_free_mb: 13,
+                uptime_s: 15120, kernel: "3.10.26",
+                firmware: cinder_ui::settings::FIRMWARE_LABEL,
+            };
+            let max = cinder_ui::device::max_scroll_px(&v);
+            cinder_ui::device::render(&mut c, &theme, &fonts, &v, max);
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99);
+            save(&c, "device_scrolled");
         }
         {
             let mut c = Canvas::new();
-            cinder_ui::battery::render(&mut c, &theme, &fonts, &cinder_ui::battery::BatteryView {
-                percent: 46, status: "Discharging", health: "Good",
-                millivolts: 3781, milli_degc: 31200, care: false,
-                chg_state: -1, chg_fault: -1, charger_raw: "" });
+            let v = cinder_ui::device::DeviceView {
+                percent: 46, status: "Discharging", health: "", millivolts: 3781, care: false,
+                chg_state: -1, chg_fault: -1, charger_raw: "",
+                temp_cpu: 31200, temp_pmic: cinder_ui::device::UNKNOWN, temp_abb: 31000,
+                cpu_khz: 598000, cpu_max_khz: 1300000, cores_online: 1, cores_total: 2,
+                governor: "",
+                mem_total_kb: 467512, mem_avail_kb: 251460,
+                music_total_mb: 56320, music_free_mb: 40960,
+                data_free_mb: cinder_ui::device::UNKNOWN,
+                uptime_s: 273600, kernel: "",
+                firmware: cinder_ui::settings::FIRMWARE_LABEL,
+            };
+            cinder_ui::device::render(&mut c, &theme, &fonts, &v, 0);
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "FLAC 24/96", 46);
-            save(&c, "battery_no_helper");
+            save(&c, "device_degraded");
         }
 
         // The Now Playing PAGES: swipe the artwork to turn them. Only the block above the title
@@ -571,7 +611,7 @@ fn main() {
         let mut c = Canvas::new();
         settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
             &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false,
-                battery_care: true, storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
+                battery_care: true, device: "99% · 34.4 °C", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
                 screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: a });
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
         save(&c, &format!("accent_{lower}_settings"));
