@@ -54,6 +54,7 @@ std::shared_ptr<psu::NodeTrackSequence<psu::UriInfo>> g_nts;
 // Sticky repeat-one preference. Applied to every sequence AT CONSTRUCTION (before the service is
 // ever told about it, so nothing can be mid-read), and applied live when the user toggles it.
 bool g_repeat_one = false;
+static int g_repeat_raw = -1;  // DIAGNOSTIC: >=0 overrides the OneTrackMode value the next sequence carries
 // The last sequence we built, kept so it can be re-issued verbatim. Only used by the dev-channel
 // re-issue probe below — but it is also exactly what an "insert into the queue" feature will need,
 // because PlayerService has no insert: the only way to change the queue is to hand it a new
@@ -384,7 +385,8 @@ int cinder_audio_play_tracks(const char* const* uris, int count, int start) {
     // on EVERY track — a path that was verified working on 2026-07-27 before this call existed.
     // Leaving it out when repeat is off keeps that path byte-identical to the verified one, so a
     // wrong guess about the enum can only ever affect users who turned repeat on.
-    if (g_repeat_one) nts->SetOneTrackMode(psu::OneTrackMode::On);
+    if (g_repeat_raw >= 0) nts->SetOneTrackMode(static_cast<psu::OneTrackMode>(g_repeat_raw));
+    else if (g_repeat_one) nts->SetOneTrackMode(psu::OneTrackMode::On);
     int rc = g_ctrl->SetTrackSequence(seq);
     if (rc != 0) {
         // The raw service code, not a flattened -3: this is a wire reject and its value is the
@@ -457,7 +459,8 @@ int cinder_audio_reissue_sequence(int dup_after_current) {
     std::shared_ptr<pl::TrackSequence> seq(nts, reinterpret_cast<pl::TrackSequence*>(nts.get()));
     g_seq = seq;
     g_nts = nts;
-    if (g_repeat_one) nts->SetOneTrackMode(psu::OneTrackMode::On);
+    if (g_repeat_raw >= 0) nts->SetOneTrackMode(static_cast<psu::OneTrackMode>(g_repeat_raw));
+    else if (g_repeat_one) nts->SetOneTrackMode(psu::OneTrackMode::On);
     int rc = g_ctrl->SetTrackSequence(seq);
     std::fprintf(stderr, "[cinder-audio] reissue: n=%d start=%d dup=%d SetTrackSequence rc=%d\n",
                  (int)v.size(), g_last_start, dup_after_current, rc);
@@ -474,6 +477,17 @@ int cinder_audio_set_repeat_one(int on) {
     // wants a device to confirm rather than an argument. If it ever misbehaves, the fallback is to
     // drop this call and let the sticky flag apply from the next track onward.
     g_nts->SetOneTrackMode(g_repeat_one ? psu::OneTrackMode::On : psu::OneTrackMode::Off);
+    return 0;
+}
+
+/// DIAGNOSTIC ONLY — drives NodeTrackSequence::SetOneTrackMode with a RAW value so the probe can
+/// sweep it. OneTrackMode{Off=0,On=1} is an assumption that has never held up on device: on
+/// 2026-08-26 a track with On==1 applied BEFORE SetTrackSequence still ran to the end and stopped,
+/// on both the sticky and the live path. This is a plain int stored into a client-side struct and
+/// serialised, not a vtable guess, so sweeping it is safe. Nothing in the shipping path calls this.
+int cinder_audio_set_one_track_raw(int v) {
+    g_repeat_raw = v;                       // applied by the NEXT sequence, before SetTrackSequence
+    if (g_nts && v >= 0) g_nts->SetOneTrackMode(static_cast<psu::OneTrackMode>(v));
     return 0;
 }
 

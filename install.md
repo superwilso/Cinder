@@ -554,8 +554,10 @@ adb shell ps | grep cinder                              # is it running?
 adb pull /db/MTPDB.dat artifacts/device_pull/MTPDB.dat  # real library DB
 adb shell 'cat /proc/asound/card0/pcm*p/sub0/status'    # which ALSA device is live
 adb shell getprop | grep -iE 'usb|sony'                 # gadget mode, platform props
-adb push cinder-home/dist/dev/cinder-probe /contents/   # diagnostic binary
-adb shell '/contents/cinder-probe --discover'           # PlayStatus offset map
+adb push cinder-home/dist/dev/cinder-probe /tmp/ && adb shell 'chmod 755 /tmp/cinder-probe'   # diagnostic binary
+# /tmp is tmpfs and EXECUTABLE; /contents is mounted noexec, so a probe pushed there will not run.
+adb shell 'LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/lib:/usr/lib \
+  /system/vendor/unknown321/bin/cinder-probe --discover'   # PlayStatus offset map; NOT /contents (noexec)
 ```
 
 ---
