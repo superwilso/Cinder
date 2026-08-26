@@ -1,6 +1,8 @@
 # How Cinder, Wampy and Sony's stock player each do it
 
-Written 2026-07-28, from the wampy source at `artifacts/repos/wampy`, the extracted stock rootfs at
+Written 2026-07-28; the Bluetooth and FM claims revised 2026-08-26 after both shipped (see the
+markers below — they were the two rows this file got most wrong as Cinder caught up).
+From the wampy source at `artifacts/repos/wampy`, the extracted stock rootfs at
 `analysis/binwalk/6.bin/_6.bin.extracted/ext-root`, and the on-device discovery dump at
 `artifacts/cinder_discovery.txt`. Where a claim comes from wampy's own documentation rather than
 from code I read, it says so — wampy's notes are first-hand device work and worth more than a guess,
@@ -105,10 +107,25 @@ Cinder on 2026-07-27.
 
 | | |
 |---|---|
-| **FM radio** | Fully working, including recording. Cinder's FM screen is a static `88.6`. See below. |
+| **FM recording** | Wampy records FM to a file. Cinder does not. *(The rest of the FM row is no longer a difference — see the correction under it.)* |
 | **EQ** | Per-song settings and filter work (`MAKING_OF_EQUALIZER_*`), well past Cinder's 10-band. |
-| **Bluetooth** | Cinder has none wired at all. |
 | **Device breadth** | A30/A50/ZX300/WM1A/Z/DMP-Z1. Cinder targets NW-A55/A50 only. |
+
+> **CORRECTED 2026-08-26.** Two rows here were true when this was written and are false now.
+>
+> **"Cinder's FM screen is a static `88.6`"** — it is not. FM tunes, seeks and scans, and it does
+> so with a REAL signal meter rather than Sony's constant-1 stub, because `/proc/regmon/Si4708icx`
+> gives the chip's registers to userspace and `cinder-fm` opens that door. The band scan takes about
+> a second where the audio-spectral fallback took ninety. `analysis/RE_fm_tuner.md`.
+>
+> **"Bluetooth: Cinder has none wired at all"** — it is fully wired: scan, pair, connect, forget,
+> reconnect on boot, NFC tap-to-connect, absolute volume, and codec selection across
+> LDAC / aptX HD / aptX / SBC. `docs/AUDIT_2026-08-26_bluetooth.md`,
+> `player/cinder-ui/src/bluetooth.rs`, `player/cinder-ui/src/pairing.rs`, and the `bt_*` functions
+> in `cinder-home/src/main.cpp`.
+>
+> What is still genuinely absent on Cinder's side: **BT Receiver mode** (Walkman as an A2DP sink —
+> `receiver.rs` draws a static off screen with no `tap()` branch) and **FM recording**.
 
 ---
 
@@ -186,13 +203,16 @@ That is also the answer to "does the antenna cable have to be silent": yes, and 
 
 ### What it would actually take
 
-1. Wire `Screen::Fm` at all (it currently draws a hardcoded `88.6` and has no `tap()` branch).
+1. ~~Wire `Screen::Fm` at all (it currently draws a hardcoded `88.6` and has no `tap()` branch).~~
+   **Done.** Tune, seek, scan and a real signal meter — `analysis/RE_fm_tuner.md`.
    `TunerPlayerService` is fully RE-able: `SetFrequency`, `GetSignalLevel`, `StartAutoTuning`,
    `SetStereoMode`, `GetStereoState`, `SetMuteMode`, plus RDS via `OnReceivedPs`. Full 76–108 MHz.
 2. The mixer + wake-lock sequence above, plus the 1 Hz re-assert poll if the timer turns out to fire.
 3. Point `ldac-bridge` at `hw:0,1`.
 4. **Which needs B4 from the readiness list — the `BtTransmitterService` shim, which does not exist
-   yet.** FM→BT cannot ship before FM→wired or before Bluetooth works at all, so it belongs after
+   yet.** (Both prerequisites are met as of 2026-08-26 — FM plays to the wire and Bluetooth works.
+   The bridge itself is written end to end and has still never been run with a headphone connected.)
+   FM→BT cannot ship before FM→wired or before Bluetooth works at all, so it belongs after
    the headline USB-DAC→LDAC feature, not before it: they share the same missing piece.
 
 Honest expectation on quality: FM → ADC → LDAC adds an encode and a radio hop to an already

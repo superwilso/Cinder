@@ -336,6 +336,17 @@ echo "[6g] build cinder-voltable (setuid-root volume-table helper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-voltable" "$HERE/src/cinder-voltable.c"
 echo "built: $HERE/cinder-voltable ($(stat -c %s "$HERE/cinder-voltable") bytes)"
 
+# cinder-battery: eighth setuid-root helper — READ the bq24262 charger's seven registers, which
+# are root-only under /proc/regmon/bq24262/. sysfs offers four battery facts and no more (capacity,
+# status, health, voltage_now); there is no fuel gauge and mt-auxadc publishes only calibration
+# constants, so the charger IC is the only source for charge state, fault code, current limits and
+# the battery regulation voltage. Unlike cinder-fm this does NOT widen permissions: writing this
+# chip reprograms a lithium charger, so the helper reads and prints, and `value` is opened O_RDONLY.
+# See src/cinder-battery.c.
+echo "[6h] build cinder-battery (setuid-root charger-register reader, static)…"
+"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-battery" "$HERE/src/cinder-battery.c"
+echo "built: $HERE/cinder-battery ($(stat -c %s "$HERE/cinder-battery") bytes)"
+
 # cinder-fm: sixth setuid-root helper — chmod 0666 on /proc/regmon/Si4708icx/{target,value}, the
 # two kernel files through which Sony's own driver publishes the FM tuner's registers. That is what
 # gives the radio a real signal meter, a one-second band scan and the chip's hardware seek; Sony's
@@ -368,6 +379,7 @@ cp -f "$HERE/cinder-clock" "$DIST/cinder-clock"
 cp -f "$HERE/cinder-msc" "$DIST/cinder-msc"
 cp -f "$HERE/cinder-fm" "$DIST/cinder-fm"
 cp -f "$HERE/cinder-voltable" "$DIST/cinder-voltable"
+cp -f "$HERE/cinder-battery" "$DIST/cinder-battery"
 # cinder-gpunode ships on the DEV channel ONLY. It is setuid-root and its whole job is to make
 # four kernel graphics nodes world-writable — real attack surface — in service of a GPU present
 # path that is default OFF and measured 4.7x SLOWER than the software one (45.6 ms/present vs 9.6;

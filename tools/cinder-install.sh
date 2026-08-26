@@ -17,6 +17,10 @@
 #   tools/cinder-install.sh --status       # device + install health check
 #   tools/cinder-install.sh -h             # this help
 #
+# The launcher (cinderhome-launch.sh) is installed on EVERY run, not just --full. It is the
+# recovery ladder — bad-boot counter, escapes, crash supervisor — and must never be older than the
+# app it supervises. --status reports whether the device's copy matches this tree.
+#
 # Prereqs:
 #   - adb in PATH (apt install android-tools-adb)
 #   - dev channel already installed (adb only exists once cinder-home dev is running)
@@ -71,10 +75,56 @@ BACKUP="/data/cinder/cinder-home.last"
 NORESPAWN="/data/cinder/no_respawn"
 HELPERS_DIR="/system/vendor/unknown321/bin"
 
+# THE LAUNCHER. Until 2026-08-26 this script installed the binary and the setuid helpers and left
+# cinderhome-launch.sh alone, because only a full .UPG flash rewrites it. That was wrong, and the
+# device proved it: cinder-home was dated 08-26, the helpers 08-25, and the launcher 08-12 —
+# two weeks and several features stale.
+#
+# WHY THAT MATTERS MORE THAN A STALE BINARY: the launcher IS the recovery ladder. It is the
+# bad-boot counter, the cable/flag escapes, and the crash supervisor. A device carrying a launcher
+# older than the app it supervises is running its escapes at one version and the thing they rescue
+# at another — the exact inversion the ladder rule exists to forbid. Concretely, that device had
+# no crash supervisor at all, so an ordinary SIGPIPE left it with no Home app and burned a
+# bad-boot life on the reboot that followed.
+#
+# So the launcher now ships on EVERY install, from the single source of truth it has always had —
+# the heredoc inside deploy/install_cinderhome.sh — and it is verified on the host before the
+# device is touched.
+LAUNCHER_SRC="$REPO/cinder-home/deploy/install_cinderhome.sh"
+LAUNCHER_PATH="/system/vendor/unknown321/bin/cinderhome-launch.sh"
+LAUNCHER_STAGE="/data/local/tmp/cinderhome-launch.sh.new"
+LAUNCHER_BACKUP="/data/cinder/cinderhome-launch.sh.last"
+
 # ─── helpers ───────────────────────────────────────────────────────────────
 require_adb() {
     command -v adb >/dev/null 2>&1 || die "adb not in PATH (apt install android-tools-adb)"
     [ "$(adb get-state 2>/dev/null)" = "device" ] || die "no adb device connected (run: adb devices)"
+}
+
+# Cut the launcher out of the installer heredoc. Same awk as cinder-home/tools/test_launcher.sh,
+# deliberately — if the two ever extracted differently, the launcher the tests exercise would not
+# be the launcher the device runs, and the tests would be worth nothing.
+extract_launcher() {  # $1 = destination path
+    awk "/<<'LAUNCH_EOF'/{f=1;next} /^LAUNCH_EOF\$/{f=0} f" "$LAUNCHER_SRC" > "$1"
+}
+
+# Verify an extracted launcher on the HOST, before any of it reaches the device.
+#
+# This is the one file where a silent corruption is unrecoverable from software: a launcher that
+# does not exec anything leaves a device that boots to nothing, and the only way back is the
+# cable-at-boot escape, which is a rung this script has just borrowed. So the checks are
+# deliberately blunt and every one of them is fatal.
+verify_launcher() {  # $1 = path to the extracted launcher
+    local f="$1" lines
+    [ -s "$f" ] || die "launcher extraction produced an empty file — is the LAUNCH_EOF heredoc still in $LAUNCHER_SRC?"
+    lines="$(wc -l < "$f")"
+    [ "$lines" -ge 200 ] || die "launcher extraction produced only $lines lines — expected 200+; the heredoc markers have moved"
+    [ "$(head -1 "$f")" = "#!/system/bin/sh" ] || die "extracted launcher does not start with #!/system/bin/sh"
+    # The same sanity grep install_cinderhome.sh runs before it writes the file. If the launcher
+    # cannot exec cinder-home, installing it is how a device stops booting.
+    grep -q 'exec "\$HOME_BIN"' "$f" || die "extracted launcher never execs \$HOME_BIN — refusing to install it"
+    # Catch a truncation or a mangled quote that the greps above would sail past.
+    bash -n "$f" 2>/dev/null || die "extracted launcher is not valid shell (bash -n failed) — refusing to install it"
 }
 
 # ─── status mode ───────────────────────────────────────────────────────────
@@ -86,13 +136,36 @@ if [ "$MODE" = "status" ]; then
     # "pidof: not found" and exits non-zero, which reads as "not running" for any process at all.
     adb shell 'p=$(ps 2>/dev/null | grep /system/vendor/unknown321/bin/cinder-home | grep -v grep | awk "{print \$2}" | head -1); [ -n "$p" ] && echo "    pid: $p — running" || echo "    not running"' 2>/dev/null
     info "installed binary:"
-    adb shell "[ -f $INSTALL_PATH ] && ls -la $INSTALL_PATH | awk '{print \"    \"\$5\" bytes, mtime \"\$6\" \"\$7\" \"\$8}' || echo '    NOT INSTALLED'" 2>/dev/null
+    # This device's toolbox `ls -la` prints `perms user group size date time name` — SEVEN fields,
+    # with no link-count column and no owner/group split into more. The GNU layout these field
+    # numbers were written for has nine, so \$5 was the DATE and the line reported "2026-08-26
+    # bytes". Size is \$4, date \$5, time \$6.
+    adb shell "[ -f $INSTALL_PATH ] && ls -la $INSTALL_PATH | awk '{print \"    \"\$4\" bytes, mtime \"\$5\" \"\$6}' || echo '    NOT INSTALLED'" 2>/dev/null
     info "rollback available:"
     adb shell "[ -f $BACKUP ] && echo '    yes: $BACKUP' || echo '    no'" 2>/dev/null
     info "helpers installed:"
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-gpunode; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery cinder-gpunode; do
         adb shell "[ -f $HELPERS_DIR/$h ] && echo '    $h: present' || echo '    $h: -'" 2>/dev/null
     done
+    # LAUNCHER FRESHNESS. Worth its own line because a stale launcher is invisible from every
+    # other symptom: the app runs, the helpers are present, and the recovery ladder is quietly a
+    # different version from the thing it is meant to rescue. That went unnoticed for two weeks.
+    info "launcher:"
+    _lt="$(mktemp)"
+    extract_launcher "$_lt"
+    _repo_md5="$(md5sum "$_lt" | awk '{print $1}')"
+    _dev_md5="$(adb shell "md5sum $LAUNCHER_PATH 2>/dev/null" 2>/dev/null | awk '{print $1}' | tr -d '\r')"
+    rm -f "$_lt"
+    if [ -z "$_dev_md5" ]; then
+        echo "    NOT INSTALLED — the device has no $LAUNCHER_PATH"
+    elif [ "$_dev_md5" = "$_repo_md5" ]; then
+        echo "    up to date ($_repo_md5)"
+    else
+        echo "    STALE — device $_dev_md5, repo $_repo_md5"
+        echo "    the recovery ladder on the device is not the one in this tree."
+        echo "    run tools/cinder-install.sh to bring it level."
+    fi
+    adb shell "ls -la $LAUNCHER_PATH 2>/dev/null | awk '{print \"    \"\$4\" bytes, mtime \"\$5\" \"\$6}'" 2>/dev/null
     info "last 10 log lines:"
     adb shell 'tail -10 /contents/cinderhome.log 2>/dev/null || echo "(no log)"' 2>/dev/null | sed 's/^/    /'
     exit 0
@@ -118,6 +191,9 @@ INSTALL_PATH="$INSTALL_PATH"
 BACKUP="$BACKUP"
 NORESPAWN="$NORESPAWN"
 HELPERS_DIR="$HELPERS_DIR"
+LAUNCHER_STAGE="$LAUNCHER_STAGE"
+LAUNCHER_PATH="$LAUNCHER_PATH"
+LAUNCHER_BACKUP="$LAUNCHER_BACKUP"
 FULL=$FULL
 
 echo "[swap] source: \$STAGE"
@@ -153,7 +229,7 @@ fi
 
 #    helpers if --full
 if [ "\$FULL" = "1" ]; then
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-gpunode; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery cinder-gpunode; do
         if [ -f "/data/local/tmp/\$h.new" ]; then
             cp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"
             if cmp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"; then
@@ -183,6 +259,36 @@ if [ "\$FULL" = "1" ]; then
             rm "/data/local/tmp/\$h.new" 2>/dev/null
         fi
     done
+fi
+
+# 3b. install the LAUNCHER, still in the calm phase — before anything is killed.
+#
+# The launcher is the recovery ladder, so this is the most dangerous single write this script
+# makes: a launcher that cannot exec leaves a device that boots to nothing. Three things keep
+# that safe. The host verified the file before it was pushed (shebang, exec line, shell syntax).
+# The old launcher is copied to /data first, so --rollback can put it back. And the new one is
+# written to a .tmp, byte-compared, and only then moved into place, so an interrupted copy can
+# never be the file appmgr execs.
+#
+# A failure here is NOT fatal to the install. The old launcher is left exactly as it was, which is
+# the state the device has been booting from all along; the binary swap below still runs. Being
+# stale is a much smaller problem than being broken.
+if [ -f "\$LAUNCHER_STAGE" ]; then
+    if [ -f "\$LAUNCHER_PATH" ]; then
+        cp "\$LAUNCHER_PATH" "\$LAUNCHER_BACKUP" 2>/dev/null && \
+            echo "[swap] backed up launcher -> \$LAUNCHER_BACKUP"
+    fi
+    cp "\$LAUNCHER_STAGE" "\$LAUNCHER_PATH.tmp" 2>/dev/null
+    if cmp "\$LAUNCHER_STAGE" "\$LAUNCHER_PATH.tmp" 2>/dev/null; then
+        chmod 0755 "\$LAUNCHER_PATH.tmp"
+        mv "\$LAUNCHER_PATH.tmp" "\$LAUNCHER_PATH"
+        echo "[swap] installed launcher: \$LAUNCHER_PATH"
+    else
+        # No -f on this device's rm; it parses the flag as a filename and fails.
+        rm "\$LAUNCHER_PATH.tmp" 2>/dev/null
+        echo "[swap] WARN: launcher copy mismatch — KEEPING the existing launcher"
+    fi
+    rm "\$LAUNCHER_STAGE" 2>/dev/null
 fi
 
 
@@ -240,6 +346,16 @@ if [ "$MODE" = "rollback" ]; then
     info "rolling back to $BACKUP"
     adb shell "[ -f $BACKUP ]" 2>/dev/null \
         || die "no rollback binary at $BACKUP (nothing to roll back to — run a normal install first)"
+    # Roll the LAUNCHER back too, when there is one to roll back to. A rollback is what you reach
+    # for when the last install made the device worse, and since that install now also replaces the
+    # recovery ladder, leaving the new ladder in place would undo half of what was asked for.
+    # Staging the backup where the swap script already looks keeps this to one code path.
+    if adb shell "[ -f $LAUNCHER_BACKUP ]" 2>/dev/null; then
+        adb shell "cp $LAUNCHER_BACKUP $LAUNCHER_STAGE" 2>/dev/null \
+            && info "staged the previous launcher for rollback"
+    else
+        info "no previous launcher at $LAUNCHER_BACKUP — leaving the installed one alone"
+    fi
     SWAP_SCRIPT="$(mktemp)"
     make_swap_script "$BACKUP" > "$SWAP_SCRIPT"
     adb push "$SWAP_SCRIPT" /data/local/tmp/_cinder_swap.sh >/dev/null
@@ -275,10 +391,34 @@ info "pushing binary to $STAGE…"
 adb push "$BIN" "$STAGE" >/dev/null
 ok "pushed $BIN_SIZE bytes"
 
+# 3b. push the LAUNCHER — always, not behind --full.
+#
+# The launcher is the recovery ladder; it must never be older than the app it supervises (see the
+# comment on LAUNCHER_SRC). Extracted and fully verified on the host first, so a bad extraction
+# fails here — with the device untouched — rather than on /system.
+# Deliberately NOT cleaned up via `trap ... EXIT`: step 5b installs the trap that restores rung 0
+# (the cable-at-boot escape), and a second EXIT trap replaces the first rather than adding to it.
+# Losing that restore would leave the device's strongest escape disarmed. The file is removed
+# inline below instead.
+LAUNCHER_TMP="$(mktemp)"
+extract_launcher "$LAUNCHER_TMP"
+verify_launcher  "$LAUNCHER_TMP"
+LAUNCHER_MD5="$(md5sum "$LAUNCHER_TMP" | awk '{print $1}')"
+DEV_LAUNCHER_MD5="$(adb shell "md5sum $LAUNCHER_PATH 2>/dev/null" 2>/dev/null | awk '{print $1}' | tr -d '\r')"
+if [ "$LAUNCHER_MD5" = "$DEV_LAUNCHER_MD5" ]; then
+    info "launcher: already current on device ($LAUNCHER_MD5) — will re-verify, not rewrite"
+else
+    info "launcher: device has ${DEV_LAUNCHER_MD5:-none}, repo has $LAUNCHER_MD5 — updating"
+fi
+info "pushing launcher to $LAUNCHER_STAGE…"
+adb push "$LAUNCHER_TMP" "$LAUNCHER_STAGE" >/dev/null
+ok "pushed launcher ($(wc -l < "$LAUNCHER_TMP") lines)"
+rm -f "$LAUNCHER_TMP"
+
 # 4. push helpers if --full
 if [ "$FULL" = 1 ]; then
     info "pushing setuid helpers (--full)…"
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery; do
         if [ -f "$DIST/$h" ]; then
             adb push "$DIST/$h" "/data/local/tmp/$h.new" >/dev/null
             ok "  staged $h"

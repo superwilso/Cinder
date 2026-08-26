@@ -476,6 +476,29 @@ fn main() {
             save(&c, "settings_scrolled");
         }
 
+        // Settings ▸ Battery, in the two states that differ: charging with the charger helper
+        // present, and on the cable with care off and no helper installed. The second is what a
+        // build without the `battery` component looks like, and it has to stay legible — the
+        // readings simply become dashes rather than the screen looking broken.
+        {
+            let mut c = Canvas::new();
+            cinder_ui::battery::render(&mut c, &theme, &fonts, &cinder_ui::battery::BatteryView {
+                percent: 99, status: "Charging", health: "Good",
+                millivolts: 4093, milli_degc: 38196, care: true,
+                chg_state: 1, chg_fault: 0, charger_raw: "10 AC 78 46 10 04 18" });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99);
+            save(&c, "battery_charging");
+        }
+        {
+            let mut c = Canvas::new();
+            cinder_ui::battery::render(&mut c, &theme, &fonts, &cinder_ui::battery::BatteryView {
+                percent: 46, status: "Discharging", health: "Good",
+                millivolts: 3781, milli_degc: 31200, care: false,
+                chg_state: -1, chg_fault: -1, charger_raw: "" });
+            cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "FLAC 24/96", 46);
+            save(&c, "battery_no_helper");
+        }
+
         // The Now Playing PAGES: swipe the artwork to turn them. Only the block above the title
         // changes — same title, same progress, same transport on every one.
         for page in 0..now_playing::PAGES {

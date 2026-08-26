@@ -552,8 +552,19 @@ void deferred_up() {
     }
     // Sync the Settings "Battery care" toggle to the device's real Itawari state (guarded — the
     // PowerMgrServiceClient ctor connects to the power service). Unavailable (-1) leaves the UI default.
-    run_guarded("deferred_up: read battery care state", 8,
-                []() { cinder_set_battery_care(cinder_power_get_battery_care()); });
+    //
+    // The VALUE goes in the log, not just the fact that it was read. Without it the log said
+    // "read battery care state" and nothing else, so the only way to find out whether Sony's 90%
+    // charge cap was actually on was to walk over and look at the screen — and this is exactly the
+    // setting you reach for when a battery is behaving oddly.
+    run_guarded("deferred_up: read battery care state", 8, []() {
+        const int care = cinder_power_get_battery_care();
+        cinder_set_battery_care(care);
+        char m[96];
+        std::snprintf(m, sizeof m, "power: battery care (Itawari 90%% cap) is %s",
+                      care > 0 ? "ON" : care == 0 ? "OFF" : "UNAVAILABLE (power service unreachable)");
+        clog_(m);
+    });
     // Same treatment for the Bluetooth switch: sync it to the RADIO's real state instead of letting
     // it default to on. Statuses are 2 (on, idle) and 3 (connected) for a live radio; 7 is OFF and 0
     // reads as unknown. Anything that is not 2 or 3 reads as off, so the switch never claims a radio
@@ -7633,6 +7644,104 @@ int read_battery() {
     return 100;
 }
 
+// ── BATTERY DETAIL (Settings ▸ Battery) ───────────────────────────────────────────────────────
+//
+// Everything this device will actually say about its own cell. Cinder showed exactly one battery
+// fact — the status-bar percentage — which is also the least trustworthy number available: it is a
+// gauge estimate that moves in steps and says nothing about charging, voltage or heat.
+//
+// TWO SOURCES, kept apart on purpose.
+//   * /sys/class/power_supply/battery/ — capacity, status, health, voltage_now. World-readable
+//     (-r--r--r--), so uid 100 reads them directly with no helper. Four facts and no more: there is
+//     NO fuel gauge on this platform, hence no current, no cycle count, no cell thermistor.
+//   * /proc/regmon/bq24262/ — the charger IC, root-only, read through the setuid cinder-battery
+//     helper. That is a fork, so it is only done while the screen showing it is actually open.
+//
+// The temperature is thermal_zone1 (`mtktspmic`), the PMIC's own sensor: BOARD, not battery. The UI
+// labels it that way rather than passing it off as a cell temperature it cannot measure.
+// Matches cinder.h's INT_MIN sentinel. Spelled out rather than via <climits> because this
+// translation unit is also compiled by the off-device harness, which does not pull it in.
+#define BATT_UNKNOWN (-2147483647 - 1)
+
+// Read a small sysfs file, trimming trailing whitespace. On failure `out` is left EMPTY rather
+// than filled with a placeholder: the UI prints these strings verbatim, so a failed read must not
+// turn into a word the device never said.
+static bool read_sysfs_text(const char* path, char* out, size_t n) {
+    out[0] = '\0';
+    FILE* f = std::fopen(path, "r");
+    if (!f) return false;
+    size_t got = std::fread(out, 1, n - 1, f);
+    std::fclose(f);
+    out[got] = '\0';
+    while (got > 0 && (out[got - 1] == '\n' || out[got - 1] == '\r' ||
+                       out[got - 1] == ' '  || out[got - 1] == '\t'))
+        out[--got] = '\0';
+    return got > 0;
+}
+
+static int read_sysfs_int(const char* path) {
+    char buf[32];
+    if (!read_sysfs_text(path, buf, sizeof buf)) return BATT_UNKNOWN;
+    return (int)std::strtol(buf, nullptr, 10);
+}
+
+// The board thermal zone. Zone 1 is `mtktspmic` on this device; the loop confirms the type rather
+// than trusting the index, because a kernel that renumbers its zones would otherwise silently
+// report the CPU's temperature as the board's.
+static int read_board_milli_degc() {
+    for (int z = 0; z < 4; z++) {
+        char p[64], type[32];
+        std::snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/type", z);
+        if (!read_sysfs_text(p, type, sizeof type)) continue;
+        if (std::strcmp(type, "mtktspmic") != 0) continue;
+        std::snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/temp", z);
+        return read_sysfs_int(p);
+    }
+    return BATT_UNKNOWN;
+}
+
+// Charger state, via the setuid helper. Fills `state`/`fault` from the bq24262 STATUS register and
+// `raw` with every register as hex for the screen's footer.
+//
+// ONLY STATUS IS DECODED. STAT (bits 6:4) was checked against sysfs on device 2026-08-26 — it read
+// 001 while `status` said Charging — and the fault field is 0 on a healthy charger. The other six
+// registers are read and shown raw: this project has no bq24262 datasheet, and a plausible-looking
+// bit split for the current limit or the regulation voltage would be a number the UI invented.
+//
+// Costs a fork, so the caller only asks while the Battery screen is open.
+static void read_charger(int* state, int* fault, char* raw, size_t rawsz) {
+    *state = -1; *fault = -1; raw[0] = '\0';
+    FILE* p = ::popen("/system/vendor/unknown321/bin/cinder-battery 2>/dev/null", "r");
+    if (!p) return;
+    char line[128];
+    size_t used = 0;
+    while (std::fgets(line, sizeof line, p)) {
+        int idx = 0; unsigned v = 0;
+        if (std::sscanf(line, "reg%d 0x%x", &idx, &v) != 2) continue;
+        if (idx == 0) { *state = (int)((v >> 4) & 0x7); *fault = (int)(v & 0x7); }
+        // Two hex digits per register, space separated — the whole map fits the footer line.
+        int n = std::snprintf(raw + used, rawsz - used, used ? " %02X" : "%02X", v & 0xFF);
+        if (n > 0 && (size_t)n < rawsz - used) used += (size_t)n;
+    }
+    ::pclose(p);
+}
+
+// Gather and push the full readout. `with_charger` gates the fork; when false the charger fields
+// go through as "unknown", which the screen renders as a dash rather than as a wrong reading.
+static void push_battery_detail(int pct, bool with_charger) {
+    char status[32], health[32];
+    read_sysfs_text("/sys/class/power_supply/battery/status", status, sizeof status);
+    read_sysfs_text("/sys/class/power_supply/battery/health", health, sizeof health);
+    int uv = read_sysfs_int("/sys/class/power_supply/battery/voltage_now");
+    // voltage_now is in MICROvolts here (4091473 = 4.091 V). The UI wants millivolts.
+    const int mv = (uv == BATT_UNKNOWN) ? BATT_UNKNOWN : uv / 1000;
+    const int mdeg = read_board_milli_degc();
+    int cstate = -1, cfault = -1;
+    char raw[64] = {0};
+    if (with_charger) read_charger(&cstate, &cfault, raw, sizeof raw);
+    cinder_set_battery_detail(pct, status, health, mv, mdeg, cstate, cfault, raw);
+}
+
 // Is the battery being charged? Read alongside the level, because every low-battery decision below
 // is wrong on a charger: 3% and climbing is a device you just plugged in, not one about to die.
 // "Full" counts as charging — that is what a topped-up device on a cable reports.
@@ -8648,6 +8757,19 @@ void* render_driver(void*) {
             // Warn low, shut down before the hardware browns out mid-write. Not guarded: it is pure
             // sysfs reads plus, at the very end, the same power path the Settings row uses.
             battery_guard(pct);
+            // The Settings ▸ Battery readout. Sysfs only on this path — cheap, and it means the
+            // screen already has real values on its first frame instead of dashes that fill in a
+            // moment later. The charger helper is a fork and is left to the block below.
+            push_battery_detail(pct, false);
+        }
+        // Battery screen open: refresh faster, and include the charger. Gated on the screen for the
+        // same reason the spectrum analyzer is — this forks a helper, and doing that every few
+        // seconds for a screen nobody has open is runtime spent on nothing. Off-screen this branch
+        // costs one function call that returns 0.
+        static long last_battdetail_ms = 0;
+        if (cinder_battery_wants_detail() && house_now - last_battdetail_ms >= 2000) {
+            last_battdetail_ms = house_now;
+            push_battery_detail(read_battery(), true);
         }
         // LIBRARY / PLAYLIST RESCAN. `exit_usb_msc` already reloads the DB the moment the PC hands
         // /contents back, which is how a sync normally lands — this is the belt-and-braces path for
