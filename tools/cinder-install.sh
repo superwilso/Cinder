@@ -188,9 +188,9 @@ fi
 
 # 4. kill cinder-home (launcher stays alive; appmgr won't reboot)
 #
-# THERE IS NO `pidof` ON THIS DEVICE. It printed "pidof: not found" and every check below then
+# THERE IS NO 'pidof' ON THIS DEVICE. It printed "pidof: not found" and every check below then
 # read as "not running", so on 2026-08-18 the swap replaced the binary UNDER the live process and
-# reported success — the file changed, /proc/<pid>/exe went `(deleted)`, and the old code kept
+# reported success — the file changed, /proc/<pid>/exe went '(deleted)', and the old code kept
 # running until a reboot. Find the pid from ps instead, and match the full install path so a
 # grep of this script's own command line cannot match.
 cinder_pid() { ps 2>/dev/null | grep "\$INSTALL_PATH" | grep -v grep | awk '{print \$2}' | head -1; }

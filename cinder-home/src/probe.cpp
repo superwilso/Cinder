@@ -337,7 +337,8 @@ static void pump_job() {
 //
 //   3a play-by-index   play_tracks(paths, n, start=1) must start on the SECOND path
 //   3c drag-to-seek    media_origin_t::Begin == 0 — seek to a known ms, read the position back
-//   3e repeat-one      OneTrackMode::On == 1 — park near the end, see if the SAME uri restarts
+//   3e repeat-one      OneTrackMode::On (== 2, measured 2026-08-26) — park near the end, see if
+//                      the SAME uri restarts
 //   3f queue end       no repeat-all primitive is known; this records what the state DOES
 //
 // Runs inside StartForApplication with the pump going, exactly like --pump; without that every
@@ -356,6 +357,74 @@ static int tpos_(int* cur, int* tot, int tries) {
         if (cinder_audio_position(cur, tot) && *tot > 0) return 1;
     }
     return 0;
+}
+
+// The engine REJECTS SeekTime while it is streaming — MediaEnginePlayer.cc:221 logs
+// "SeekTime(): Bad parameter. ignored" for every origin and every offset, including 0.
+// cinder_audio_seek_ms() already knows this and wraps the call in a transport-level
+// pause/resume; cinder_audio_seek_ms_origin() is the RAW call and does not. Driving the raw
+// one mid-playback is what made 3c and 3e read INCONCLUSIVE on 2026-08-26 — the seek never
+// happened, so 3e never reached the end either. Pause around it, exactly like the shipping path.
+static int seek_origin_paused(int origin, int ms) {
+    const bool resume = cinder_audio_is_playing() != 0;
+    if (resume) cinder_audio_pause();
+    int rc = cinder_audio_seek_ms_origin(origin, ms);
+    if (resume) cinder_audio_play();
+    return rc;
+}
+
+// ── --repeatsweep : find the real OneTrackMode::On ───────────────────────────────────────────
+// {Off=0,On=1} is an assumption in playerservice_abi.hpp that the device refused on 2026-08-26:
+// repeat-one applied BEFORE SetTrackSequence still let the track run to the end and stop. The
+// value is a plain int serialised inside the sequence, so sweep it and watch for a wrap. Each
+// value costs one seek to 6 s from the end plus ~10 s of watching.
+static void repeatsweep_job() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) {
+        clog_("repeatsweep: pthread_create FAILED"); _exit(1);
+    }
+    usleep(300000);
+    int ai = cinder_audio_init("cinder-probe-repeatsweep");
+    std::fprintf(stderr, "[cinder-probe] repeatsweep: audio_init=%d IsConnected=%d\n",
+                 ai, cinder_audio_is_connected());
+    if (ai != 0) { clog_("repeatsweep: not connected"); _exit(1); }
+
+    const char* T = g_pump_argv[2];
+    int lo = 0, hi = 7;
+    if (g_pump_argc > 3) lo = hi = atoi(g_pump_argv[3]);
+    int cur = 0, tot = 0, n = 0; char uri[512];
+
+    for (int v = lo; v <= hi; ++v) {
+        std::fprintf(stderr, "[cinder-probe] repeatsweep: ── OneTrackMode = %d ──\n", v);
+        cinder_audio_set_one_track_raw(v);
+        const char* solo[1] = { T };
+        wd_arm(15); cinder_audio_play_tracks(solo, 1, 0); wd_disarm();
+        char base0[512] = {0};
+        wd_arm(8); cinder_audio_current_uri(base0, sizeof base0); wd_disarm();
+        if (!tpos_(&cur, &tot, 8) || tot < 12000) { clog_("repeatsweep: no position/duration"); continue; }
+        wd_arm(10); seek_origin_paused(0, tot - 6000); wd_disarm();
+        int wrapped = 0;
+        for (int i = 0; i < 12; ++i) {
+            sleep(1);
+            cinder_audio_position(&cur, &tot);
+            wd_arm(8); n = cinder_audio_current_uri(uri, sizeof uri); wd_disarm();
+            int playing = cinder_audio_is_playing();
+            std::fprintf(stderr, "[cinder-probe] repeatsweep: v=%d t+%ds pos=%d/%d playing=%d uri=%s\n",
+                         v, i + 1, cur, tot, playing, n > 0 ? base_(uri) : "(none)");
+            if (cur >= 0 && cur < 5000 && playing) { wrapped = 1; break; }
+        }
+        std::fprintf(stderr, "[cinder-probe] repeatsweep: v=%d -> %s\n",
+                     v, wrapped ? "REPEATED (this is On)" : "stopped at end");
+        if (wrapped) {
+            std::fprintf(stderr, "[cinder-probe] repeatsweep: RESULT OneTrackMode::On == %d\n", v);
+            break;
+        }
+    }
+    cinder_audio_set_one_track_raw(-1);
+    cinder_audio_release_sequence();
 }
 
 static void transport_job() {
@@ -405,8 +474,11 @@ static void transport_job() {
     // now+60 s instead — which is the 2026-07-28 bug: the bar follows the finger, audio does not.
     if (tot > 70000) {
         clog_("transport: [3c] seek_ms_origin(origin=0, 60000) — expect ~60000, not now+60000");
+        // Let the engine settle first. Seeking at pos=73 ms — before the demuxer has really
+        // started — read back 0/0 and made this INCONCLUSIVE on an otherwise good run.
+        for (int w = 0; w < 20 && cur < 1000; ++w) { usleep(200000); cinder_audio_position(&cur, &tot); }
         int before = cur;
-        wd_arm(10); int sr = cinder_audio_seek_ms_origin(0, 60000); wd_disarm();
+        wd_arm(10); int sr = seek_origin_paused(0, 60000); wd_disarm();
         sleep(3);
         cinder_audio_position(&cur, &tot);
         std::fprintf(stderr, "[cinder-probe] transport: [3c] seek rc=%d before=%d after=%d/%d\n",
@@ -423,7 +495,7 @@ static void transport_job() {
         clog_("transport: [3c] SKIPPED — track shorter than 70 s, pick a longer one");
     }
 
-    // ── 3e — repeat-one: is OneTrackMode::On == 1? ───────────────────────────────────────────
+    // ── 3e — repeat-one: does the OneTrackMode::On we ship actually repeat? ──────────────────
     // Park 6 s from the end with repeat-one ON. If On==1 the SAME uri restarts near zero; if the
     // enum is wrong the sequence advances to the next track instead.
     clog_("transport: [3e] set_repeat_one(1), then park 6 s from the end …");
@@ -432,7 +504,7 @@ static void transport_job() {
     char before_uri[512] = {0};
     wd_arm(8); cinder_audio_current_uri(before_uri, sizeof before_uri); wd_disarm();
     if (tot > 12000) {
-        wd_arm(10); cinder_audio_seek_ms_origin(0, tot - 6000); wd_disarm();
+        wd_arm(10); seek_origin_paused(0, tot - 6000); wd_disarm();
         int wrapped = 0, changed = 0;
         for (int i = 0; i < 14; ++i) {
             sleep(1);
@@ -446,11 +518,54 @@ static void transport_job() {
         }
         if (wrapped && !changed) {
             pass3e = 1;
-            clog_("transport: [3e] PASS — same track restarted: OneTrackMode::On == 1 is correct");
+            clog_("transport: [3e] PASS — same track restarted: the OneTrackMode::On we ship (2) repeats");
         } else if (changed) {
-            clog_("transport: [3e] FAIL — the sequence ADVANCED with repeat-one on: On != 1");
+            clog_("transport: [3e] FAIL — the sequence ADVANCED with repeat-one on: wrong On value");
         } else {
             clog_("transport: [3e] INCONCLUSIVE — never reached the end inside the window");
+        }
+    }
+
+    // ── 3e-sticky — the SAME question, asked down the path that actually works ───────────────
+    // 3e above sets repeat-one on a sequence the service is ALREADY pulling from. player_shim's
+    // own comment flags that as the unsynchronised case: SetOneTrackMode there is a store into an
+    // object we own, made after SetTrackSequence has already handed the service its copy. If that
+    // is the reason 3e did not repeat, then the enum is fine and only the LIVE toggle is broken —
+    // a different bug with a different fix. cinder_audio_play_tracks applies the sticky flag
+    // BEFORE SetTrackSequence, so setting it first and building a fresh single-track sequence
+    // asks purely "is the shipped OneTrackMode::On right", with no live-toggle in the way.
+    clog_("transport: [3e-sticky] set_repeat_one(1) FIRST, then a fresh single-track sequence …");
+    wd_arm(8); int rs = cinder_audio_set_repeat_one(1); wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] transport: [3e-sticky] set_repeat_one=%d (1=sticky only, no live seq)\n", rs);
+    {
+        const char* solo[1] = { B };
+        wd_arm(15); cinder_audio_play_tracks(solo, 1, 0); wd_disarm();
+        char s_uri[512] = {0};
+        wd_arm(8); cinder_audio_current_uri(s_uri, sizeof s_uri); wd_disarm();
+        if (tpos_(&cur, &tot, 8) && tot > 12000) {
+            wd_arm(10); seek_origin_paused(0, tot - 6000); wd_disarm();
+            int wrapped = 0, changed = 0;
+            for (int i = 0; i < 14; ++i) {
+                sleep(1);
+                cinder_audio_position(&cur, &tot);
+                wd_arm(8); n = cinder_audio_current_uri(uri, sizeof uri); wd_disarm();
+                if (n > 0 && std::strcmp(base_(uri), base_(s_uri)) != 0) changed = 1;
+                if (cur >= 0 && cur < 5000) wrapped = 1;
+                std::fprintf(stderr,
+                             "[cinder-probe] transport: [3e-sticky] t+%ds pos=%d/%d playing=%d uri=%s\n",
+                             i + 1, cur, tot, cinder_audio_is_playing(), n > 0 ? base_(uri) : "(none)");
+                if (wrapped || changed) break;
+            }
+            if (wrapped && !changed) {
+                pass3e = 1;
+                clog_("transport: [3e-sticky] PASS — the shipped OneTrackMode::On IS correct; the live "
+                      "toggle in cinder_audio_set_repeat_one is what does not reach the service.");
+            } else if (changed) {
+                clog_("transport: [3e-sticky] FAIL — advanced even on the sticky path: wrong On value");
+            } else {
+                clog_("transport: [3e-sticky] FAIL — parked at the end and stopped. Repeat-one does "
+                      "not repeat on either path; wrong On value, or the mode needs more than this enum.");
+            }
         }
     }
 
@@ -461,7 +576,7 @@ static void transport_job() {
     const char* one[1] = { A };
     wd_arm(15); cinder_audio_play_tracks(one, 1, 0); wd_disarm();
     if (tpos_(&cur, &tot, 8) && tot > 12000) {
-        wd_arm(10); cinder_audio_seek_ms_origin(0, tot - 6000); wd_disarm();
+        wd_arm(10); seek_origin_paused(0, tot - 6000); wd_disarm();
         for (int i = 0; i < 14; ++i) {
             sleep(1);
             cinder_audio_position(&cur, &tot);
@@ -6511,6 +6626,15 @@ int main(int argc, char** argv) {
         int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
         std::fprintf(stderr, "[cinder-probe] pump: StartForApplication returned %d\n", sr);
         pump_job();
+        _exit(0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--repeatsweep") == 0) {
+        if (argc < 3) { clog_("repeatsweep: need a media path (>20 s), optional single value"); return 1; }
+        g_pump_argc = argc; g_pump_argv = argv;
+        pst::core::Framework& fw = pst::core::Framework::GetReference();
+        int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+        std::fprintf(stderr, "[cinder-probe] repeatsweep: StartForApplication returned %d\n", sr);
+        repeatsweep_job();
         _exit(0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--transport") == 0) {

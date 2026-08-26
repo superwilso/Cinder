@@ -67,6 +67,8 @@ int  cinder_audio_stop(void);
  * media file (required before USB-MSC hands /contents to the PC — an open fd under /contents
  * makes the umount fail EBUSY and the PC sees no medium). Playback resumes only via a fresh
  * cinder_audio_play_tracks. */
+/* DIAGNOSTIC: raw OneTrackMode value, for sweeping the enum. Not used by the app. */
+int  cinder_audio_set_one_track_raw(int v);
 int  cinder_audio_release_sequence(void);
 
 /* Track / group skip. NextGroup/PrevGroup move by ALBUM (the shuffle-by-album primitive). */

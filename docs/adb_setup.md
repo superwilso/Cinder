@@ -98,7 +98,8 @@ adb shell ps | grep hagoromo                    # the service host processes
 
 # PlayStatus offset mapping (cinder-probe --discover) without a flash cycle:
 adb push cinder-home/dist/dev/cinder-probe /contents/
-adb shell '/contents/cinder-probe --discover'
+adb shell 'LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/lib:/usr/lib \
+  /system/vendor/unknown321/bin/cinder-probe --discover'   # NOT /contents — that is noexec
 ```
 
 Pulling `/db/MTPDB.dat` is the highest-value first step: it closes the album-art open

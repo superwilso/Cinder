@@ -154,11 +154,15 @@ private:
 // NodeTrackSequence<UriInfo> — reserved-size shell. We only ever construct it in a 0x100 buffer
 // and destroy it via the exported dtor (through the shared_ptr deleter). No fields modeled: the
 // real ctor lays them out; we just give it room.
-// OneTrackMode — the repeat-one control. Sony's enum values are NOT documented and are not
-// recoverable from the symbol table; 0/1 is the natural encoding for a two-state mode and is what
-// we pass. Treat it as unverified until a device session confirms that 1 actually repeats the
-// track (the same status as media_origin_t::Begin == 0 in the seek path).
-enum class OneTrackMode : int { Off = 0, On = 1 };
+// OneTrackMode — the repeat-one control. MEASURED ON DEVICE 2026-08-26 by sweeping the value
+// (cinder-probe --repeatsweep): On is 2, NOT 1. Values 0 and 1 both let the track run to the end
+// and stop; 2 wrapped cleanly (318333/318333 -> 1000/318333, still playing, same URI).
+//
+// The old guess of 1 is why repeat-one had never worked: it was applied correctly, before
+// SetTrackSequence, on both the sticky and the live path — the VALUE was simply wrong, and
+// SetOneTrackMode is void so nothing ever complained. What 1 means is still unknown; only 0 (off)
+// and 2 (on) are established. Do not assume 3+ are unused.
+enum class OneTrackMode : int { Off = 0, On = 2 };
 
 template <class T> class NodeTrackSequence {
 public:

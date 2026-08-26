@@ -610,3 +610,149 @@ source). It disappeared from Windows entirely — present only under usbipd's *P
 like this from the host side and cannot be told apart without the device in hand;
 `/contents/cinderhome.log` will say which, and if auto power-off is configured then this is **2D.4
 firing on an idle device** and is a pass, not a fault. Read that log before assuming anything broke.
+
+---
+
+## RESULTS 2026-08-26 — the Phase-3 transport four, and the enum that made repeat-one dead
+
+Run with `cinder-probe --transport <trackA> <trackB>`, two FLACs over 70 s, no flash. Everything
+below is measured; nothing is inferred from the harness.
+
+### 3a — play-by-index: PASS
+
+`play_tracks({A,B}, start=1)` played **B**. `pos=1000/318333 uri=05 - … Lost in the Flood.flac`.
+The start index selects the track; the primitive under tap-a-row is correct.
+
+### 3c — `media_origin_t::Begin == 0`: PASS
+
+`seek rc=0 before=1000 after=63000/318333`, twice, reproducibly. Origin 0 is **BEGIN**, absolute —
+a seek to 60 s lands at 60 s regardless of where the head was. Drag-to-seek lands where it is
+dropped.
+
+**But the first two attempts read INCONCLUSIVE, and the reason is worth keeping.** The probe drove
+`cinder_audio_seek_ms_origin()`, which is the RAW call, while the track was streaming. The engine
+refuses that: `MediaEnginePlayer.cc:221 SeekTime(): Bad parameter. ignored`, once per attempt, in
+logcat. Position moved 1000 → 4000 purely because playback carried on during the call — no seek
+happened at all, and `rc=0` said nothing, because `SeekTime` is `void`.
+
+This is the same trap `player_shim.cpp:497` already documents: the engine will not seek while it is
+streaming, so `cinder_audio_seek_ms()` — the shipping path — brackets the call in a transport-level
+pause/resume. **`cinder_audio_seek_ms_origin()` does not.** The probe now pauses around it
+(`seek_origin_paused`), and the answer fell out immediately. The shipping path was never broken;
+only the diagnostic was.
+
+### 3e — repeat-one: PASS, but only after fixing the enum
+
+`OneTrackMode::On` was **1**, an assumption written into `playerservice_abi.hpp` and flagged there
+as unverified. It is wrong. The device says:
+
+```
+repeatsweep: v=0 -> stopped at end
+repeatsweep: v=1 -> stopped at end
+repeatsweep: v=2 t+6s pos=318333/318333 playing=1
+             v=2 t+7s pos=1000/318333   playing=1
+repeatsweep: RESULT OneTrackMode::On == 2
+```
+
+`On = 2`. Values 0 and 1 both run the track to the end and stop; 2 wraps cleanly, same URI, still
+playing. With the enum corrected, 3e passes through the ordinary shipping path.
+
+**Repeat-one had therefore never worked, and nothing could have told us.** It was applied at the
+right moment — before `SetTrackSequence`, on both the sticky and the live path — with the wrong
+value, and `SetOneTrackMode` is `void`, so the service silently did nothing. Only 0 (off) and 2 (on)
+are established; what 1 means is unknown, and 3+ should not be assumed unused.
+
+Found with `cinder-probe --repeatsweep <track> [value]`, added for this. It drives the value through
+a diagnostic override (`cinder_audio_set_one_track_raw`) applied where the sequence is built, so
+each candidate is tested on the path that actually reaches the service. Nothing in the app calls it.
+
+### 3f — end of queue: the observation
+
+Repeat-one off, single-track sequence, parked 6 s from the end:
+
+```
+t+5s pos=303000/304173 playing=1 state=128
+t+6s pos=304173/304173 playing=1 state=1
+t+8s pos=304173/304173 playing=0 state=1
+```
+
+At the boundary **position pins at duration and `playing` goes 1 → 0**; it does not reset, and the
+URI does not change. That pair — `playing == 0 && pos >= tot` — is the signal a repeat-all would
+have to watch for and override. `state` also moves (128 → 1) but is not a clean flag: an earlier run
+read `state=1` mid-track, so 128 is not simply "playing" and should not be used as the trigger.
+
+### An audio-path wedge worth knowing about
+
+After roughly a dozen probe sessions in a row, the **first** play of each new session began failing:
+
+```
+GapOMXCmp.c:320 onEventError cmp = OMX.SONY.REN.AUDIO, Error = [8000100b]
+GapOMXCmp.c:347 GAP_E_UNSUPPORT_FORMAT
+```
+
+Position sticks at ~72 ms, `GetCurrentStatus` returns 0/0, and the renderer walks
+`Executing → Idle → Loaded`. It is not format-specific (a different album fails identically), not a
+settle-time problem (60 s idle did not clear it), and not caused by the enum change (3a never sets
+repeat). Later plays *within the same session* work — 3e passed on every one of these runs — so it
+is the first sequence after a fresh connect that dies.
+
+Not chased further, because the results above were already in hand and clearing it means a reboot,
+which lands the device on stock. Flagged rather than fixed: if `cinder-home` can hit this on its
+first play after a service restart, a user would see a track that will not start.
+
+### 0d — the PlayStatus offset map: DONE
+
+`--discover` with a media path, on a fresh boot, with the app not holding the output. The dump is
+no longer zeros, and every field falls out against a known track (2000 ms into a 304173 ms FLAC,
+44.1 kHz / 16-bit / stereo):
+
+| Offset | Bytes | Value | Field |
+|---|---|---|---|
+| `+0x00` | `02 00 00 00` | 2 | playstate — 2 while playing, matching `ChangePlayState(Play=2)` |
+| `+0x44` | `ff ff ff ff` | -1 | unknown sentinel |
+| `+0x48` | `d0 07 00 00` | 2000 | **position, ms** |
+| `+0x4c` | `2d a4 04 00` | 304173 | **duration, ms** |
+| `+0x5c` | `02 00 00 00` | 2 | channels |
+| `+0x60` | `10 00 00 00` | 16 | bits per sample |
+| `+0x64` | `44 ac 00 00` | 44100 | sample rate |
+| `+0x68` | `80 88 15 00` | 1411200 | bitrate (44100 x 16 x 2 — derived, not from the file) |
+| `+0x6c` | `81 …` | — | URI `std::string` (already confirmed; unchanged) |
+
+Nothing shipping depends on these yet: `cinder_audio_position()` reads the listener callbacks, not
+the struct. What the map unblocks is the format badge (rate/depth/channels are right there) and a
+better play-state source — `cinder_audio_play_state()` currently returns the LISTENER's state int,
+which its own comment calls uncalibrated and which was observed as both 1 and 128 while playing.
+`PlayStatus+0x00` was a clean 2 throughout. Not changed here; flagged for the next pass.
+
+### Why the earlier dumps were zeros, and it was never "nothing was playing"
+
+The renderer was failing to start, and the error it reports is a red herring:
+
+```
+DmcAndroidAudioRendererCmp.c:691  Failed WMX_AudioOutput::Open() (0x80001009)
+DmcAndroidAudioRendererCmp.c:1513 Failed emptyThisBufferForAudio() (0x8000100b)
+GapOMXCmp.c:347                   GAP_E_UNSUPPORT_FORMAT
+```
+
+`0x80001009` is `OMX_ErrorHardware` and comes FIRST: the audio output would not open. `0x8000100b`
+is `OMX_ErrorStreamCorrupt`, which Sony surfaces as `GAP_E_UNSUPPORT_FORMAT` — so the log blames the
+file when the real failure is one line up and is about the device. Symptom: position sticks at
+~72 ms, `GetCurrentStatus` returns 0/0, renderer walks `Executing -> Idle -> Loaded`.
+
+The cause is ordinary contention: **`cinder-home` was running and owning the audio output.** Not a
+format problem (a different album failed identically), not settle time (60 s idle did not clear it),
+not the OneTrackMode change (3a never sets repeat). It cleared completely on the next boot, and the
+same `--discover` that had dumped zeros dumped the full map.
+
+**So: a probe that plays audio needs the Home app not to be holding the output.** Run playback
+probes on a fresh boot before touching the app, or expect the first play of the session to die with
+a message that points at the file.
+
+### Two invocation gotchas that cost time
+
+- **`/contents` is mounted `noexec`.** `install.md` and `docs/adb_setup.md` both tell you to run
+  `adb shell '/contents/cinder-probe …'`; that returns `permission denied` no matter what the mode
+  bits say. Use `/system/vendor/unknown321/bin/cinder-probe`, or push to `/tmp` (tmpfs, exec, 32 MB)
+  for a build that is not installed yet.
+- **`LD_LIBRARY_PATH` is not optional** even from `/tmp`: without it the loader cannot find
+  `libPlayerServiceClient.so`.
