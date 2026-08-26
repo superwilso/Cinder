@@ -35,6 +35,10 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     // (stock/wm1a/w1), so there is no "off" that should skip the helper — the curve can be changed
     // on-device later by editing /contents/cinder_voltable.conf, and that needs the binary present.
     ("dist/{ch}/cinder-voltable", "cinder-voltable", "", true),
+    // cinder-battery READS the bq24262 charger's registers for the battery screen. Deliberately
+    // read-only — unlike cinder-fm it never widens permissions, because writing this chip
+    // reprograms a lithium charger. See cinder-home/src/cinder-battery.c.
+    ("dist/{ch}/cinder-battery", "cinder-battery", "battery", true),
     ("dist/{ch}/cinder-gpunode", "cinder-gpunode", "gpunode", false),
     ("dist/{ch}/cinder-signature.sh", "cinder-signature.sh", "", true),
     // The .UPG the Sony updater actually runs. It MUST land on the player as NW_WM_FW.UPG —

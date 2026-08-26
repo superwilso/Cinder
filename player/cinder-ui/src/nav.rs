@@ -67,6 +67,12 @@ pub enum Screen {
     /// paired-device list can be its body.
     BtCodec,
     Settings,
+    /// Settings ▸ Battery — the cell's own readouts (level, voltage, board temperature, health,
+    /// charger state) plus the battery-care toggle that used to be the Settings row itself. Its
+    /// own screen because the row could show exactly one fact and this device has several, and
+    /// because the ones worth seeing (voltage to three places, the charger's state machine) do not
+    /// fit in a right-aligned value. See `battery.rs`.
+    Battery,
     Fm,
     UsbDac,
     Receiver,
@@ -736,6 +742,17 @@ pub struct App {
     /// Battery care (Sony "Itawari" charging, ~90% cap). Mirrors the device state; the shell reads
     /// the real value at boot via cinder_set_battery_care and applies toggles via the action.
     battery_care: bool,
+    /// Live battery readouts, pushed by the shell (`cinder_set_battery_detail`) alongside the
+    /// status-bar percentage. Held here rather than read on demand because the UI has no
+    /// filesystem: everything it knows about the device arrives through the C ABI.
+    batt_pct: u8,
+    batt_status: String,
+    batt_health: String,
+    batt_mv: i32,
+    batt_mdeg: i32,
+    batt_chg_state: i32,
+    batt_chg_fault: i32,
+    batt_raw: String,
     /// Sound Settings effect toggles. Each maps to an EffectCtrlDmp boolean setter (the shell reads
     /// these via cinder_get_sound_flags after a SoundChanged action). VPT/DC-Phase are on/off here;
     /// their mode/type (Studio/Club, Standard/Low) is a device-gated enhancement (enum values TBD).
@@ -1034,6 +1051,16 @@ impl Default for App {
             np_page: 0,
             settings_sel: 0,
             battery_care: false,
+            batt_pct: 0,
+            // Empty, not "Unknown": the screen prints these verbatim, and an invented word would
+            // look like a reading. Until the shell pushes real values there is nothing to say.
+            batt_status: String::new(),
+            batt_health: String::new(),
+            batt_mv: crate::battery::UNKNOWN,
+            batt_mdeg: crate::battery::UNKNOWN,
+            batt_chg_state: -1,
+            batt_chg_fault: -1,
+            batt_raw: String::new(),
             snd_dsee: false,
             snd_vinyl: false,
             snd_vpt: false,
@@ -1933,8 +1960,10 @@ impl App {
                 vec![Action::SleepTimer(self.sleep_min)]
             }
             crate::settings::ROW_BATTERY => {
-                self.battery_care = !self.battery_care;
-                vec![Action::BatteryCareChanged(self.battery_care)]
+                // Was a toggle in place. It is a chevron into the Battery screen now — the care
+                // switch lives there, next to the readings that explain why you would want it.
+                self.push(Screen::Battery);
+                vec![]
             }
             crate::settings::ROW_USB_MODE => {
                 // Enter USB mass-storage (connect to a PC as a drive). USB-DAC itself is its own
@@ -2537,6 +2566,15 @@ impl App {
                     }
                     None => vec![],
                 }
+            }
+            Screen::Battery => {
+                // One live control on the screen; everything else is a readout, so a tap anywhere
+                // but the care row is deliberately inert rather than selecting a row that cannot
+                // do anything.
+                if crate::battery::row_at(y) == Some(crate::battery::ROW_CARE) {
+                    return self.battery_care_toggle();
+                }
+                vec![]
             }
             Screen::Advanced => {
                 if let Some(row) = crate::advanced::row_at(y) {
@@ -5132,6 +5170,20 @@ impl App {
                 };
                 crate::tone::render(c, &theme, fonts, &tc, self.tone_sel)
             }
+            Screen::Battery => {
+                let bv = crate::battery::BatteryView {
+                    percent: self.batt_pct,
+                    status: &self.batt_status,
+                    health: &self.batt_health,
+                    millivolts: self.batt_mv,
+                    milli_degc: self.batt_mdeg,
+                    care: self.battery_care,
+                    chg_state: self.batt_chg_state,
+                    chg_fault: self.batt_chg_fault,
+                    charger_raw: &self.batt_raw,
+                };
+                crate::battery::render(c, &theme, fonts, &bv)
+            }
             Screen::Advanced => {
                 let adv = crate::advanced::Advanced {
                     source_direct: self.adv_source_direct,
@@ -5884,6 +5936,31 @@ impl App {
     pub fn battery_care(&self) -> bool {
         self.battery_care
     }
+    /// Flip battery care and emit the action the shell turns into an Itawari call. Shared by the
+    /// Battery screen's touch handler and its Select press, so the two cannot diverge.
+    fn battery_care_toggle(&mut self) -> Vec<Action> {
+        self.battery_care = !self.battery_care;
+        vec![Action::BatteryCareChanged(self.battery_care)]
+    }
+
+    /// Push the battery readouts the shell has just measured. Called on the shell's battery tick
+    /// (~10 s), so the screen is live without the UI ever touching a file.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_battery_detail(&mut self, pct: u8, status: &str, health: &str, mv: i32, mdeg: i32,
+                              chg_state: i32, chg_fault: i32, raw: &str) {
+        self.batt_pct = pct.min(100);
+        self.batt_status.clear();
+        self.batt_status.push_str(status);
+        self.batt_health.clear();
+        self.batt_health.push_str(health);
+        self.batt_mv = mv;
+        self.batt_mdeg = mdeg;
+        self.batt_chg_state = chg_state;
+        self.batt_chg_fault = chg_fault;
+        self.batt_raw.clear();
+        self.batt_raw.push_str(raw);
+    }
+
     pub fn set_battery_care(&mut self, on: bool) {
         self.battery_care = on;
     }
@@ -8970,21 +9047,71 @@ mod tests {
     }
 
     #[test]
-    fn settings_battery_care_toggles_and_emits_action() {
+    fn the_settings_battery_row_opens_the_battery_screen_instead_of_toggling() {
         let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
-        // move cursor to the Battery care row
+        // move cursor to the Battery row
         for _ in 0..crate::settings::ROW_BATTERY {
             a.press(Button::Down);
         }
         assert_eq!(a.settings_sel, crate::settings::ROW_BATTERY);
         let was = a.battery_care();
         let acts = a.press(Button::Select);
+        // The row is a chevron now. It must NOT flip the setting on the way in — that was the old
+        // behaviour, and a drill-in row that also changes something is how you turn battery care
+        // off by trying to look at it.
+        assert!(acts.is_empty(), "opening the screen must not change anything");
+        assert_eq!(a.battery_care(), was);
+        assert_eq!(a.current(), Screen::Battery);
+    }
+
+    #[test]
+    fn battery_care_toggles_from_its_row_on_the_battery_screen() {
+        let mut a = open_from_menu(Screen::Settings);
+        for _ in 0..crate::settings::ROW_BATTERY {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select);
+        assert_eq!(a.current(), Screen::Battery);
+
+        let was = a.battery_care();
+        let y = crate::battery::TOP + crate::battery::ROW_H / 2; // the care row
+        let acts = a.tap(240, y);
         assert_eq!(acts, vec![Action::BatteryCareChanged(!was)]);
         assert_eq!(a.battery_care(), !was);
+
         // shell can push the device's real state back in
         a.set_battery_care(false);
         assert!(!a.battery_care());
+    }
+
+    #[test]
+    fn the_readout_rows_are_inert() {
+        let mut a = open_from_menu(Screen::Settings);
+        for _ in 0..crate::settings::ROW_BATTERY {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select);
+        let was = a.battery_care();
+        // Every row below the care row is a reading, not a control. Tapping one must do nothing —
+        // in particular it must not fall through to the care toggle.
+        for r in 1..crate::battery::ROWS {
+            let y = crate::battery::TOP + r as i32 * crate::battery::ROW_H + crate::battery::ROW_H / 2;
+            assert!(a.tap(240, y).is_empty(), "row {r} should be inert");
+        }
+        assert_eq!(a.battery_care(), was);
+    }
+
+    #[test]
+    fn the_shell_can_push_battery_readouts_through() {
+        let mut a = unlocked();
+        a.set_battery_detail(83, "Charging", "Good", 4091, 38196, 1, 0, "10 AC 78");
+        // Rendering is what proves the values are reachable; the formatting itself is tested in
+        // `battery`. This asserts the plumbing, which is the part that can silently not exist.
+        assert_eq!(a.battery_care(), a.battery_care());
+        a.set_battery_detail(255, "Full", "Good", 4100, 33000, 2, 0, "");
+        // A gauge that reports over 100 must not be stored as-is; the bar would draw past its box.
+        assert_eq!(a.batt_pct, 100);
     }
 
     #[test]
