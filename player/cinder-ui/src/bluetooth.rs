@@ -303,7 +303,18 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     // labelled "Pair new device". The codec radio list that used to occupy this space is a
     // set-once preference and has moved to its own page.
     let cap = if bt.on { t.acc } else { t.faint };
-    text::draw(c, f, 22.0, 198.0, "PAIRED DEVICES", &sty(Family::Mono, Weight::Regular, 11.0, cap, 0.18));
+    // SAY SO WHEN THIS IS ONLY PART OF THE LIST. This is a summary — the complete surface, with
+    // FORGET and a page turn, is Devices — but a list that quietly stops at five looks like the
+    // whole truth, and for a while it WAS the whole truth in the sense that nothing else could
+    // reach past it either (see pairing::MAX_PAIRED). Naming the count costs one line and makes
+    // "Pair new device", which is the route to the rest, an obvious next step rather than a
+    // guess.
+    let head = if bt.on && bt.paired.len() > PAIRED_SHOWN {
+        format!("PAIRED DEVICES · {} OF {}", PAIRED_SHOWN, bt.paired.len())
+    } else {
+        "PAIRED DEVICES".to_string()
+    };
+    text::draw(c, f, 22.0, 198.0, &head, &sty(Family::Mono, Weight::Regular, 11.0, cap, 0.18));
     if !bt.on {
         // Nothing here is actionable with the radio off, and greyed rows invite taps that do
         // nothing. Say why the list is empty instead of showing a dead one.

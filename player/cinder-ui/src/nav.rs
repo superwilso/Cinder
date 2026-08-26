@@ -673,6 +673,10 @@ pub struct App {
     /// `OnNotifySearchedDevice`, plus whether a scan is currently running. Same index-is-the-handle
     /// arrangement as `bt_paired`, against the shell's own found-list.
     bt_found: Vec<crate::pairing::PairedDevice>,
+    /// Which page of the paired list the Devices screen is showing. The list is windowed rather
+    /// than truncated (see `pairing::MAX_PAIRED`), and this is the only state that needs. Wrapped
+    /// on use, so it never has to be clamped when the list gets shorter.
+    bt_paired_page: usize,
     bt_scanning: bool,
     /// A pairing prompt the radio is waiting on, pushed by the shell from the listener. While this is
     /// `Some` the Devices screen is modal — see `pairing::hit_prompt`.
@@ -1007,6 +1011,7 @@ impl Default for App {
             bt_link_known: false,
             bt_paired: Vec::new(),
             bt_found: Vec::new(),
+            bt_paired_page: 0,
             bt_scanning: false,
             bt_prompt: None,
             bt_forget_armed: None,
@@ -2671,7 +2676,8 @@ impl App {
                         _ => vec![],
                     };
                 }
-                match crate::pairing::hit(x, y, self.bt_paired.len(), self.bt_found.len()) {
+                match crate::pairing::hit(x, y, self.bt_paired.len(), self.bt_found.len(),
+                                          self.bt_paired_page) {
                     PairHit::Scan => {
                         self.bt_forget_armed = None;
                         self.bt_scanning = !self.bt_scanning;
@@ -2715,6 +2721,14 @@ impl App {
                             self.bt_forget_armed = Some(i);
                             vec![]
                         }
+                    }
+                    PairHit::MorePaired => {
+                        // Next page, wrapping. Disarms a pending FORGET like every other tap: the
+                        // armed index is absolute, and leaving it armed across a page turn would
+                        // put "TAP AGAIN" on a row the user cannot see.
+                        self.bt_forget_armed = None;
+                        self.bt_paired_page += 1;
+                        vec![]
                     }
                     // `hit()` never returns these — the prompt has its own hit test above, and it
                     // runs first because a prompt is modal.
@@ -5201,6 +5215,7 @@ impl App {
                     self.bt_connecting,
                     self.bt_scanning,
                     self.bt_busy_phase,
+                    self.bt_paired_page,
                 );
                 // Drawn last so it sits over the list, matching how the tap handler treats it.
                 if let Some(p) = &self.bt_prompt {

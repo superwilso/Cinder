@@ -199,6 +199,19 @@ long h_RequestConnection(void*, void* pa, void*, void*) {
     return 1;
 }
 
+// slot 3 — the A2DP source's own state machine. MEASURED on device 2026-08-26:
+//   0 radio down   1 disconnected   2 idle   3 CONNECTING (a page is on the air)   4/5 connected
+// The ladder reads it to avoid asking for a connect while one is already in flight (which the
+// service refuses with rc=0). Script it to 3 to hold the fake radio in "connecting".
+long h_GetAvSrcConnectionStatus(void*, void*, void*, void*) {
+    long long scripted = 0;
+    int st = cinder_harness_scripted("BtXmit::GetAvSrcConnectionStatus", &scripted)
+                 ? (int)scripted
+                 : (!g_radio_on ? 0 : (g_connected ? 5 : 2));
+    cinder_harness_record("BtXmit::GetAvSrcConnectionStatus", st);
+    return st;
+}
+
 long h_SetConnectRetryMode(void*, void* p, void*, void*) {
     const bool on = p && *reinterpret_cast<const bool*>(p);
     cinder_harness_record("BtXmit::SetConnectRetryMode", on ? 1 : 0);
@@ -239,6 +252,7 @@ void build() {
     g_vt_common[3]  = h_GetBtStatus;
     g_vt_common[4]  = h_SetRfOnOff;
     g_vt_common[20] = h_GetPairedDeviceInfo;
+    g_vt_xmit[3]    = h_GetAvSrcConnectionStatus;
     g_vt_xmit[5]    = h_GetConnectInformation;
     g_vt_xmit[6]    = h_RequestConnection;      // addressed — NOT the same call as slot 7
     g_vt_xmit[7]    = h_ConnectLast;            // zero-arg
