@@ -846,3 +846,138 @@ ON THE RENDER THREAD from ~3.3 s to ~8.0 s opening the DB and building the libra
 Nothing paints in that window. It is survivable now that the framebuffer starts cleared, but it is
 why anything left on the panel used to stay visible for five seconds, and it is the reason adding a
 second of radio polling to `deferred_up` was so visible.
+
+---
+
+## RESULTS 2026-08-26 (evening) — the stalled bring-up, and what it turned up
+
+Run against the dev build of 2026-08-26 with the launcher current (see the note on `LAUNCHER_SRC`
+in `tools/cinder-install.sh` — until that afternoon the device had been running a 2026-08-12
+launcher with no crash supervisor at all).
+
+### The crash supervisor is real on hardware — first confirmation outside the test matrix
+
+`cinder-home` (pid 662) reported PPID 474, and `/proc/474/cmdline` is
+`/system/bin/sh /system/vendor/unknown321/bin/cinderhome-launch.sh`. The launcher shell is alive and
+is the app's parent, which is the whole mechanism: appmgr's SIGCHLD only fires for its own direct
+child, so a live shell that reaps `cinder-home` itself lets a crash be respawned instead of costing
+a reboot. Until now that was only ever shown by `cinder-home/tools/test_launcher.sh` off-device.
+
+### 2D.1 — a stalled bring-up is survivable: **PASS** (machine half)
+
+`/db/MTPDB.dat` renamed away, booted with the cable escape borrowed so adb stayed available.
+
+```
+first frame painted                  3.455 s
+deferred_up: cinder_db_open          4.090 s
+cinder-ffi: db open …: unable to open database file
+deferred_up: DB unavailable — will retry   4.101 s
+process alive, painting, housekeeping running   11+ minutes
+RSS over 600 s                       28028 -> 26532 KB   (went DOWN; no leak)
+```
+
+The app paints, survives, and stays stable. The 25 s `run_guarded` around the DB open is what makes
+this work — the stage fails, unwinds, and bring-up carries on rather than hanging the render thread.
+
+**Still needs a finger:** "touch and the Power button respond" was not verified in this boot. The
+process was alive and the input pump was running, but nobody touched the panel while the DB was
+missing, so the input arm of 2D.1 remains reasoned rather than observed. Everything else it asks
+for was observed.
+
+### 2D.2 — …and it stays quiet: **FAILED, root-caused, fixed, re-measured**
+
+It did not stay quiet. Measured over exactly 600 s with the DB missing:
+
+```
+log 34184 -> 95270 bytes   =  61,086 bytes / 10 min   (~1.3 lines/s, for ever)
+```
+
+**Root cause: two throttles, one layer apart, and only the top one existed.** The shell's own
+`deferred_up: DB unavailable — will retry` was rate-limited by `retry_log` and printed exactly
+once. But the failure ALSO printed from `cinder-ffi` one layer below
+(`cinder-ffi: db open /db/MTPDB.dat: unable to open database file`), and that print was not
+throttled at all — so the 1 Hz retry loop wrote a line a second to vfat, each one an `fflush`.
+The throttle that was supposed to cover this was sitting above the thing doing the printing.
+
+Underneath it, a second problem: the retry was paced at a **flat 1 Hz with no back-off**, so a
+device with no database opened sqlite against a missing file 3,600 times an hour, indefinitely.
+
+Two fixes:
+
+* `player/cinder-ffi/src/lib.rs` — the DB-open error is latched. First failure prints; identical
+  repeats stay silent; a *different* error prints again; a successful open resets the latch.
+* `cinder-home/src/main.cpp` — the DB retry backs off 1 s → doubling → 30 s ceiling, reset on
+  success. Backing off is not giving up: a late mount is still picked up, which is the case the
+  retry exists for. (A USB-MSC round trip reopens the library through `exit_usb_msc` and the
+  library-change watcher, not through this path, so nothing about a real sync got slower.)
+
+Re-measured on device, same conditions, 585 s:
+
+```
+log 27814 -> 28896 bytes   =  1,082 bytes / 10 min      56x less
+"db open" lines this boot  =  1        (was ~780)
+DB retry lines in 10 min   =  2        (65.9 s, 246.2 s — the back-off working)
+```
+
+The harness scenario `stalled-bringup` asserted the old behaviour (`>= 30` DB opens in the
+60–120 s window, "paced at ~1 Hz") and was updated to the measured intent: a handful, and never
+zero.
+
+### 2B.1 — the DSP reconcile with NO settings file: **PASS** (machine half)
+
+`/contents/cinder_settings.conf` moved aside, booted:
+
+```
+cinder-ffi: library loaded — 3438 tracks, 337 albums, 198 artists
+deferred_up: apply EQ            9.014 s
+deferred_up: apply sound chain   9.225 s
+healthy: bad-boot counter cleared  12.463 s
+```
+
+Both reconcile stages ran with no settings file present, which is what the row asks: the chain is
+what the UI draws, not what the stock player left behind. **Whether the EQ is audible** is the half
+that needs ears and was not tested.
+
+### 4c — boot time, the Cinder half: **13.2 s from kernel boot to first pixel**
+
+Two independent boots agree:
+
+```
+boot A   cinder-home started 10.22 s after kernel boot, first paint +3.092 s  = 13.31 s
+boot B   cinder-home started  9.72 s after kernel boot, first paint +3.436 s  = 13.16 s
+```
+
+(`starttime` from `/proc/<pid>/stat` field 22 at 100 Hz, against `render_driver: first frame
+painted` in the log.) This EXCLUDES the preloader and bootloader — everything before `/proc/uptime`
+starts counting — so it is not the number a user with a stopwatch would get. **The comparison
+against stock is still unmeasured and needs a human**, because stock has no adb.
+
+### 4b — soak: no leak in the two windows measured
+
+```
+DB missing, 600 s idle    RSS 28028 -> 26532 KB
+healthy boot, 585 s       RSS stable, log +1,082 bytes
+```
+
+Still tens of minutes, not hours.
+
+### 2A.1 — auto-reconnect: the two preconditions the row asks for are met
+
+```
+bt-paired: 3 device(s)
+bt-scan: AddListener rc=0 (registered)
+```
+
+The paired table is read and the notification listener registered at boot. The reconnect itself
+needs the headphones powered on and was not tested here.
+
+### Battery tracker (4c, battery half) — still no discharge data
+
+123 samples over 2.56 h, all of it on the cable, so `report` has nothing to divide:
+
+```
+battery   83% -> 100%      charging 2.42 h (excluded)      reboots 3 (intervals dropped)
+no discharging intervals yet — unplug and use it for a while
+```
+
+It did settle the battery-care question though — see `analysis/RE_battery.md`.

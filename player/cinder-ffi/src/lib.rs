@@ -1209,7 +1209,7 @@ const SCREEN_NAMES: [&str; 30] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
-    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Battery",
+    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1224,7 +1224,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
-        S::Battery => 29,
+        S::Device => 29,
     }
 }
 
@@ -3564,7 +3564,6 @@ pub unsafe extern "C" fn cinder_set_battery_detail(pct: libc::c_int,
                                                    status: *const c_char,
                                                    health: *const c_char,
                                                    mv: libc::c_int,
-                                                   mdeg: libc::c_int,
                                                    chg_state: libc::c_int,
                                                    chg_fault: libc::c_int,
                                                    raw: *const c_char) {
@@ -3573,25 +3572,83 @@ pub unsafe extern "C" fn cinder_set_battery_detail(pct: libc::c_int,
     let raw = cstr(raw);
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_battery_detail(pct.clamp(0, 100) as u8, &status, &health,
-                                 mv, mdeg, chg_state, chg_fault, &raw);
-        // Only the Battery screen shows any of this, so a repaint is wasted anywhere else — and
-        // this ticks every few seconds for the life of the device.
-        if r.app.current() == cinder_ui::nav::Screen::Battery {
-            r.dirty = true;
-        }
+                                 mv, chg_state, chg_fault, &raw);
+        mark_device_dirty(r);
     }
 }
 
-/// Is the Battery screen the one on display?
-///
-/// The shell asks before forking the `cinder-battery` helper. Same idiom as the visualiser's
-/// analyzer gate: the charger registers are only ever looked at by one screen, and forking a
-/// process every few seconds for pixels nobody is looking at is exactly the kind of waste that
-/// costs runtime on a device whose whole job is to play music for a long time on one charge.
+/// Only the Device screen shows any of the pushed readings, so a repaint anywhere else is wasted —
+/// and these tick every few seconds for the life of the device.
+fn mark_device_dirty(r: &mut Render) {
+    if r.app.current() == cinder_ui::nav::Screen::Device {
+        r.dirty = true;
+    }
+}
+
+/// The three die temperatures, in millidegrees C: SoC, power IC, analog block. `i32::MIN` for a
+/// zone that could not be read. These are DIE temperatures — there is no cell thermistor on this
+/// device, so none of them is a battery temperature and the screen does not label them as one.
 #[no_mangle]
-pub extern "C" fn cinder_battery_wants_detail() -> libc::c_int {
+pub extern "C" fn cinder_set_device_temps(cpu: libc::c_int, pmic: libc::c_int, abb: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_device_temps(cpu, pmic, abb);
+        mark_device_dirty(r);
+    }
+}
+
+/// Current clock and maximum in kHz, cores online out of the package total, and the cpufreq
+/// governor name. `i32::MIN` for an unreadable clock.
+///
+/// # Safety
+/// `gov` must be a valid NUL-terminated C string or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_set_device_cpu(khz: libc::c_int, max_khz: libc::c_int,
+                                               online: libc::c_int, total: libc::c_int,
+                                               gov: *const c_char) {
+    let gov = cstr(gov);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_device_cpu(khz, max_khz, online, total, &gov);
+        mark_device_dirty(r);
+    }
+}
+
+/// Memory from /proc/meminfo in kB, then the music volume total and free and the app-data free, all
+/// in MB. `i32::MIN` for anything unreadable.
+#[no_mangle]
+pub extern "C" fn cinder_set_device_storage(mem_total_kb: libc::c_int, mem_avail_kb: libc::c_int,
+                                            music_total_mb: libc::c_int, music_free_mb: libc::c_int,
+                                            data_free_mb: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_device_storage(mem_total_kb, mem_avail_kb, music_total_mb, music_free_mb,
+                                 data_free_mb);
+        mark_device_dirty(r);
+    }
+}
+
+/// Seconds since boot and the kernel release string.
+///
+/// # Safety
+/// `kernel` must be a valid NUL-terminated C string or null.
+#[no_mangle]
+pub unsafe extern "C" fn cinder_set_device_system(uptime_s: libc::c_int, kernel: *const c_char) {
+    let kernel = cstr(kernel);
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_device_system(uptime_s, &kernel);
+        mark_device_dirty(r);
+    }
+}
+
+/// Is the Device screen the one on display?
+///
+/// The shell asks before doing the expensive half of the readings — forking the `cinder-battery`
+/// helper, walking cpufreq, calling statvfs on both volumes. Same idiom as the visualiser's
+/// analyzer gate: this is only ever looked at by one screen, and doing it every few seconds for
+/// pixels nobody is looking at is exactly the kind of waste that costs runtime on a device whose
+/// whole job is to play music for a long time on one charge.
+#[no_mangle]
+pub extern "C" fn cinder_device_wants_detail() -> libc::c_int {
     match cell().lock().unwrap().as_ref() {
-        Some(r) if r.app.current() == cinder_ui::nav::Screen::Battery => 1,
+        Some(r) if r.app.current() == cinder_ui::nav::Screen::Device => 1,
         _ => 0,
     }
 }
@@ -4518,10 +4575,21 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
             r.app.set_liked_count(r.liked.len());
             r.db_path = Some(p.clone());
             start_art_cache(r, &p);
+            db_open_err_reset();
             0
         }
         Err(e) => {
-            eprintln!("cinder-ffi: db open {p}: {e}");
+            // THROTTLED, because this sits inside a RETRY LOOP. Measured on device 2026-08-26
+            // (checklist 2D.2): with /db/MTPDB.dat renamed away, the shell's own "DB unavailable —
+            // will retry" line is rate-limited by retry_log and printed exactly once, but THIS one
+            // was not, so the retry printed it about 1.3 times a second forever — 61 KB of log in
+            // ten minutes, every line an fflush to vfat. That is the same "work on a timer that
+            // never stops" class section 2D of the checklist exists to catch, hiding one layer
+            // below the throttle that was supposed to cover it.
+            //
+            // Print the FIRST failure and then stay silent until the message changes or an open
+            // succeeds — a different error is news, the same error repeated is not.
+            db_open_err_log(&p, &format!("{e}"));
             // Don't leave the demo sample library showing on device — that would look like the
             // user's music when the DB didn't actually load. Show an empty library instead so
             // it's honest (Menu shows "Empty", the Library tabs are blank). (The path is a
@@ -4530,6 +4598,25 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
             -1
         }
     }
+}
+
+/// The last DB-open error we printed, so a retry loop cannot become the log.
+static DB_OPEN_LAST_ERR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Print a DB-open failure ONCE, then stay silent until the message changes.
+///
+/// A different error is news; the same error repeated 1.3 times a second is not. Reset by
+/// `db_open_err_reset` on a successful open, so a failure that comes back later is reported again.
+fn db_open_err_log(path: &str, msg: &str) {
+    let mut last = DB_OPEN_LAST_ERR.lock().unwrap();
+    if last.as_deref() != Some(msg) {
+        eprintln!("cinder-ffi: db open {path}: {msg} (further identical failures stay silent)");
+        *last = Some(msg.to_string());
+    }
+}
+
+fn db_open_err_reset() {
+    *DB_OPEN_LAST_ERR.lock().unwrap() = None;
 }
 
 /// Would a touch at (`x`,`y`) start a drag-to-seek? True only on Now Playing, inside the progress
@@ -5114,7 +5201,7 @@ mod tests {
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
-            S::TrackPick, S::Battery,
+            S::TrackPick, S::Device,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
