@@ -67,12 +67,12 @@ pub enum Screen {
     /// paired-device list can be its body.
     BtCodec,
     Settings,
-    /// Settings ▸ Battery — the cell's own readouts (level, voltage, board temperature, health,
-    /// charger state) plus the battery-care toggle that used to be the Settings row itself. Its
-    /// own screen because the row could show exactly one fact and this device has several, and
-    /// because the ones worth seeing (voltage to three places, the charger's state machine) do not
-    /// fit in a right-aligned value. See `battery.rs`.
-    Battery,
+    /// Settings ▸ Device — the hardware's vital signs: battery (level, voltage, health, charger
+    /// state) plus die temperatures, CPU clock and governor, memory, storage and uptime. Its own
+    /// screen because the Settings row could show exactly one fact, and because everything here is
+    /// a world-readable file the app was already allowed to read and simply never did. Scrolls.
+    /// See `device.rs`.
+    Device,
     Fm,
     UsbDac,
     Receiver,
@@ -749,10 +749,26 @@ pub struct App {
     batt_status: String,
     batt_health: String,
     batt_mv: i32,
-    batt_mdeg: i32,
     batt_chg_state: i32,
     batt_chg_fault: i32,
     batt_raw: String,
+    /// Die temperatures in millidegrees C: SoC, power IC, analog block.
+    dev_temp_cpu: i32,
+    dev_temp_pmic: i32,
+    dev_temp_abb: i32,
+    dev_cpu_khz: i32,
+    dev_cpu_max_khz: i32,
+    dev_cores_online: i32,
+    dev_cores_total: i32,
+    dev_governor: String,
+    dev_mem_total_kb: i32,
+    dev_mem_avail_kb: i32,
+    dev_music_total_mb: i32,
+    dev_music_free_mb: i32,
+    dev_data_free_mb: i32,
+    dev_uptime_s: i32,
+    dev_kernel: String,
+    device_scroll_px: i32,
     /// Sound Settings effect toggles. Each maps to an EffectCtrlDmp boolean setter (the shell reads
     /// these via cinder_get_sound_flags after a SoundChanged action). VPT/DC-Phase are on/off here;
     /// their mode/type (Studio/Club, Standard/Low) is a device-gated enhancement (enum values TBD).
@@ -1056,11 +1072,28 @@ impl Default for App {
             // look like a reading. Until the shell pushes real values there is nothing to say.
             batt_status: String::new(),
             batt_health: String::new(),
-            batt_mv: crate::battery::UNKNOWN,
-            batt_mdeg: crate::battery::UNKNOWN,
+            batt_mv: crate::device::UNKNOWN,
             batt_chg_state: -1,
             batt_chg_fault: -1,
             batt_raw: String::new(),
+            // UNKNOWN, not 0 — every one of these renders as a dash until the shell has read it,
+            // because a zero clock or a zero temperature looks like a measurement.
+            dev_temp_cpu: crate::device::UNKNOWN,
+            dev_temp_pmic: crate::device::UNKNOWN,
+            dev_temp_abb: crate::device::UNKNOWN,
+            dev_cpu_khz: crate::device::UNKNOWN,
+            dev_cpu_max_khz: crate::device::UNKNOWN,
+            dev_cores_online: 0,
+            dev_cores_total: 0,
+            dev_governor: String::new(),
+            dev_mem_total_kb: 0,
+            dev_mem_avail_kb: 0,
+            dev_music_total_mb: 0,
+            dev_music_free_mb: crate::device::UNKNOWN,
+            dev_data_free_mb: crate::device::UNKNOWN,
+            dev_uptime_s: crate::device::UNKNOWN,
+            dev_kernel: String::new(),
+            device_scroll_px: 0,
             snd_dsee: false,
             snd_vinyl: false,
             snd_vpt: false,
@@ -1960,9 +1993,9 @@ impl App {
                 vec![Action::SleepTimer(self.sleep_min)]
             }
             crate::settings::ROW_BATTERY => {
-                // Was a toggle in place. It is a chevron into the Battery screen now — the care
+                // Was a toggle in place. It is a chevron into the Device screen now — the care
                 // switch lives there, next to the readings that explain why you would want it.
-                self.push(Screen::Battery);
+                self.push(Screen::Device);
                 vec![]
             }
             crate::settings::ROW_USB_MODE => {
@@ -2567,11 +2600,11 @@ impl App {
                     None => vec![],
                 }
             }
-            Screen::Battery => {
+            Screen::Device => {
                 // One live control on the screen; everything else is a readout, so a tap anywhere
                 // but the care row is deliberately inert rather than selecting a row that cannot
-                // do anything.
-                if crate::battery::row_at(y) == Some(crate::battery::ROW_CARE) {
+                // do anything. The hit follows the scroll through the same layout walk that drew it.
+                if crate::device::hit_care(&self.device_view(), y, self.device_scroll_px) {
                     return self.battery_care_toggle();
                 }
                 vec![]
@@ -3377,6 +3410,12 @@ impl App {
             Screen::Settings => {
                 let max = crate::settings::max_scroll_px();
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::Device => {
+                // The extent depends on the CONTENT (the care footnote is only drawn when care is
+                // on), so it is computed from the same view the render uses rather than a constant.
+                let max = crate::device::max_scroll_px(&self.device_view());
+                self.device_scroll_px = (self.device_scroll_px + dy_px).clamp(0, max);
             }
             Screen::PlaylistPick => {
                 let max = self.pick_max_scroll();
@@ -5170,19 +5209,8 @@ impl App {
                 };
                 crate::tone::render(c, &theme, fonts, &tc, self.tone_sel)
             }
-            Screen::Battery => {
-                let bv = crate::battery::BatteryView {
-                    percent: self.batt_pct,
-                    status: &self.batt_status,
-                    health: &self.batt_health,
-                    millivolts: self.batt_mv,
-                    milli_degc: self.batt_mdeg,
-                    care: self.battery_care,
-                    chg_state: self.batt_chg_state,
-                    chg_fault: self.batt_chg_fault,
-                    charger_raw: &self.batt_raw,
-                };
-                crate::battery::render(c, &theme, fonts, &bv)
+            Screen::Device => {
+                crate::device::render(c, &theme, fonts, &self.device_view(), self.device_scroll_px)
             }
             Screen::Advanced => {
                 let adv = crate::advanced::Advanced {
@@ -5293,6 +5321,7 @@ impl App {
                     viz_size_label: crate::viz::size_name(self.viz_size),
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
+                    device: &self.device_summary(),
                     storage: self.storage_label(),
                     sleep: &sleep_lbl,
                     brightness: &brightness_lbl,
@@ -5509,6 +5538,7 @@ impl App {
                 Screen::Artist => a.artist_scroll_px,
                 Screen::Playlist => a.playlist_scroll_px,
                 Screen::Settings => a.settings_scroll_px,
+                Screen::Device => a.device_scroll_px,
                 Screen::UpNext => a.queue_scroll_px,
                 _ => 0,
             };
@@ -5943,10 +5973,53 @@ impl App {
         vec![Action::BatteryCareChanged(self.battery_care)]
     }
 
+    /// Assemble the Device screen's view from the pushed readings. ONE builder, used by the
+    /// render, the hit test and the scroll extent — those three must agree about what is on the
+    /// screen, and the care footnote alone changes its height.
+    fn device_view(&self) -> crate::device::DeviceView<'_> {
+        crate::device::DeviceView {
+            percent: self.batt_pct,
+            status: &self.batt_status,
+            health: &self.batt_health,
+            millivolts: self.batt_mv,
+            care: self.battery_care,
+            chg_state: self.batt_chg_state,
+            chg_fault: self.batt_chg_fault,
+            charger_raw: &self.batt_raw,
+            temp_cpu: self.dev_temp_cpu,
+            temp_pmic: self.dev_temp_pmic,
+            temp_abb: self.dev_temp_abb,
+            cpu_khz: self.dev_cpu_khz,
+            cpu_max_khz: self.dev_cpu_max_khz,
+            cores_online: self.dev_cores_online,
+            cores_total: self.dev_cores_total,
+            governor: &self.dev_governor,
+            mem_total_kb: self.dev_mem_total_kb,
+            mem_avail_kb: self.dev_mem_avail_kb,
+            music_total_mb: self.dev_music_total_mb,
+            music_free_mb: self.dev_music_free_mb,
+            data_free_mb: self.dev_data_free_mb,
+            uptime_s: self.dev_uptime_s,
+            kernel: &self.dev_kernel,
+            firmware: crate::settings::FIRMWARE_LABEL,
+        }
+    }
+
+    /// A one-line summary for the Settings row that opens this screen, e.g. "99% · 34.4 °C".
+    /// Built here rather than in the shell so the same formatters the screen uses produce it.
+    pub fn device_summary(&self) -> String {
+        let t = crate::device::temp_label(self.dev_temp_cpu);
+        if t == "—" {
+            crate::device::percent_label(self.batt_pct)
+        } else {
+            format!("{} · {}", crate::device::percent_label(self.batt_pct), t)
+        }
+    }
+
     /// Push the battery readouts the shell has just measured. Called on the shell's battery tick
     /// (~10 s), so the screen is live without the UI ever touching a file.
     #[allow(clippy::too_many_arguments)]
-    pub fn set_battery_detail(&mut self, pct: u8, status: &str, health: &str, mv: i32, mdeg: i32,
+    pub fn set_battery_detail(&mut self, pct: u8, status: &str, health: &str, mv: i32,
                               chg_state: i32, chg_fault: i32, raw: &str) {
         self.batt_pct = pct.min(100);
         self.batt_status.clear();
@@ -5954,11 +6027,44 @@ impl App {
         self.batt_health.clear();
         self.batt_health.push_str(health);
         self.batt_mv = mv;
-        self.batt_mdeg = mdeg;
         self.batt_chg_state = chg_state;
         self.batt_chg_fault = chg_fault;
         self.batt_raw.clear();
         self.batt_raw.push_str(raw);
+    }
+
+    /// The three die temperatures, in millidegrees C.
+    pub fn set_device_temps(&mut self, cpu: i32, pmic: i32, abb: i32) {
+        self.dev_temp_cpu = cpu;
+        self.dev_temp_pmic = pmic;
+        self.dev_temp_abb = abb;
+    }
+
+    /// Clock (kHz), maximum clock, cores online out of total, and the cpufreq governor.
+    pub fn set_device_cpu(&mut self, khz: i32, max_khz: i32, online: i32, total: i32, gov: &str) {
+        self.dev_cpu_khz = khz;
+        self.dev_cpu_max_khz = max_khz;
+        self.dev_cores_online = online;
+        self.dev_cores_total = total;
+        self.dev_governor.clear();
+        self.dev_governor.push_str(gov);
+    }
+
+    /// Memory from /proc/meminfo (kB) and the two volumes that matter, in MB.
+    pub fn set_device_storage(&mut self, mem_total_kb: i32, mem_avail_kb: i32,
+                              music_total_mb: i32, music_free_mb: i32, data_free_mb: i32) {
+        self.dev_mem_total_kb = mem_total_kb;
+        self.dev_mem_avail_kb = mem_avail_kb;
+        self.dev_music_total_mb = music_total_mb;
+        self.dev_music_free_mb = music_free_mb;
+        self.dev_data_free_mb = data_free_mb;
+    }
+
+    /// Seconds since boot and the kernel release.
+    pub fn set_device_system(&mut self, uptime_s: i32, kernel: &str) {
+        self.dev_uptime_s = uptime_s;
+        self.dev_kernel.clear();
+        self.dev_kernel.push_str(kernel);
     }
 
     pub fn set_battery_care(&mut self, on: bool) {
@@ -9062,20 +9168,26 @@ mod tests {
         // off by trying to look at it.
         assert!(acts.is_empty(), "opening the screen must not change anything");
         assert_eq!(a.battery_care(), was);
-        assert_eq!(a.current(), Screen::Battery);
+        assert_eq!(a.current(), Screen::Device);
     }
 
-    #[test]
-    fn battery_care_toggles_from_its_row_on_the_battery_screen() {
-        let mut a = open_from_menu(Screen::Settings);
+    /// Open Settings ▸ Device the way a user does.
+    fn open_device(a: &mut App) {
         for _ in 0..crate::settings::ROW_BATTERY {
             a.press(Button::Down);
         }
         a.press(Button::Select);
-        assert_eq!(a.current(), Screen::Battery);
+        assert_eq!(a.current(), Screen::Device);
+    }
+
+    #[test]
+    fn battery_care_toggles_from_its_row_on_the_device_screen() {
+        let mut a = open_from_menu(Screen::Settings);
+        open_device(&mut a);
 
         let was = a.battery_care();
-        let y = crate::battery::TOP + crate::battery::ROW_H / 2; // the care row
+        let y = crate::device::care_row_y(&a.device_view(), a.device_scroll_px).unwrap()
+            + crate::device::ROW_H / 2;
         let acts = a.tap(240, y);
         assert_eq!(acts, vec![Action::BatteryCareChanged(!was)]);
         assert_eq!(a.battery_care(), !was);
@@ -9086,32 +9198,64 @@ mod tests {
     }
 
     #[test]
-    fn the_readout_rows_are_inert() {
+    fn every_row_but_the_care_switch_is_inert() {
         let mut a = open_from_menu(Screen::Settings);
-        for _ in 0..crate::settings::ROW_BATTERY {
-            a.press(Button::Down);
-        }
-        a.press(Button::Select);
+        open_device(&mut a);
         let was = a.battery_care();
-        // Every row below the care row is a reading, not a control. Tapping one must do nothing —
-        // in particular it must not fall through to the care toggle.
-        for r in 1..crate::battery::ROWS {
-            let y = crate::battery::TOP + r as i32 * crate::battery::ROW_H + crate::battery::ROW_H / 2;
-            assert!(a.tap(240, y).is_empty(), "row {r} should be inert");
+        let care_top = crate::device::care_row_y(&a.device_view(), 0).unwrap();
+        // Walk the whole visible column. Everything except the care row is a reading, and a tap on
+        // one must do nothing — in particular it must not fall through to the toggle.
+        let mut y = crate::chrome::HEADER_BOTTOM + 4;
+        while y < crate::canvas::H as i32 {
+            if !(care_top..care_top + crate::device::ROW_H).contains(&y) {
+                assert!(a.tap(240, y).is_empty(), "y={y} should be inert");
+            }
+            y += 9;
         }
         assert_eq!(a.battery_care(), was);
     }
 
     #[test]
-    fn the_shell_can_push_battery_readouts_through() {
+    fn the_care_switch_follows_the_screen_when_it_is_scrolled() {
+        // The bug this guards: a hit test that uses the unscrolled layout while the render uses the
+        // scrolled one. After scrolling, the OLD position must be dead and the new one live.
+        let mut a = open_from_menu(Screen::Settings);
+        open_device(&mut a);
+        let before = crate::device::care_row_y(&a.device_view(), 0).unwrap();
+        a.scroll_px(140);
+        assert!(a.device_scroll_px > 0, "the device screen must actually scroll");
+        let shifted = before - a.device_scroll_px;
+        let was = a.battery_care();
+        assert!(a.tap(240, before + crate::device::ROW_H / 2).is_empty()
+                || shifted + crate::device::ROW_H > before,
+                "the pre-scroll position must no longer be the switch");
+        a.set_battery_care(was);
+        let acts = a.tap(240, shifted + crate::device::ROW_H / 2);
+        assert_eq!(acts, vec![Action::BatteryCareChanged(!was)], "the switch moved with the render");
+    }
+
+    #[test]
+    fn the_shell_can_push_every_device_reading_through() {
         let mut a = unlocked();
-        a.set_battery_detail(83, "Charging", "Good", 4091, 38196, 1, 0, "10 AC 78");
-        // Rendering is what proves the values are reachable; the formatting itself is tested in
-        // `battery`. This asserts the plumbing, which is the part that can silently not exist.
-        assert_eq!(a.battery_care(), a.battery_care());
-        a.set_battery_detail(255, "Full", "Good", 4100, 33000, 2, 0, "");
-        // A gauge that reports over 100 must not be stored as-is; the bar would draw past its box.
-        assert_eq!(a.batt_pct, 100);
+        a.set_battery_detail(83, "Charging", "Good", 4091, 1, 0, "10 AC 78");
+        a.set_device_temps(34400, 39365, 34400);
+        a.set_device_cpu(1300000, 1300000, 1, 2, "hotplug");
+        a.set_device_storage(467512, 159772, 56320, 1024, 13);
+        a.set_device_system(711, "3.10.26");
+        // The formatting itself is tested in `device`; this asserts the PLUMBING, which is the part
+        // that can silently not exist.
+        let v = a.device_view();
+        assert_eq!(v.percent, 83);
+        assert_eq!(v.temp_pmic, 39365);
+        assert_eq!(v.cpu_khz, 1300000);
+        assert_eq!(v.governor, "hotplug");
+        assert_eq!(v.music_free_mb, 1024);
+        assert_eq!(v.kernel, "3.10.26");
+        assert_eq!(a.device_summary(), "83% · 34.4 °C");
+
+        // A gauge reporting over 100 must not be stored as-is; the bar would draw past its box.
+        a.set_battery_detail(255, "Full", "Good", 4100, 2, 0, "");
+        assert_eq!(a.device_view().percent, 100);
     }
 
     #[test]

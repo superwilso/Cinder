@@ -494,14 +494,36 @@ void deferred_up() {
     // library or playback. Retry only the failed prerequisite, paced at 1 Hz; successful stages
     // stay complete and are never repeated.
     if (!g_db_ready) {
+        // BACK-OFF, not a flat 1 Hz. MEASURED on device 2026-08-26 (checklist 2D.2): with
+        // /db/MTPDB.dat renamed away, this stage attempted an sqlite open against a missing file
+        // once a second for the life of the boot, and the log grew 61 KB in ten minutes — every
+        // line an fflush to vfat. (The shell's own "will retry" line was already throttled; the
+        // print came from cinder-ffi one layer down, which is now latched too.)
+        //
+        // A database that is not there at second 60 is not going to appear at second 61. The case
+        // this retry exists for is a transient mount losing a race during bring-up, and that
+        // resolves within the first seconds — which the early, still-fast attempts cover. So the
+        // interval doubles from 1 s to a 30 s ceiling and resets on success.
+        //
+        // Widening it cannot make a real sync take longer to appear: a USB-MSC round trip reopens
+        // the library through exit_usb_msc, and the library-change watcher reloads it — neither
+        // goes through this path.
+        static long db_next_ms = 0;
+        static long db_every_ms = 1000;
+        if (retry_now < db_next_ms) return;
         g_deferred_rc = -1;
         run_guarded("deferred_up: cinder_db_open + build library", 25,
                     []() { g_deferred_rc = cinder_db_open("/db/MTPDB.dat"); });
         if (g_deferred_rc != 0) {
             static RetryLog rl_DB = {0, 0};
             retry_log(rl_DB, "deferred_up: DB unavailable — will retry");
+            db_every_ms = db_every_ms < 30000 ? db_every_ms * 2 : 30000;
+            if (db_every_ms > 30000) db_every_ms = 30000;
+            db_next_ms = retry_now + db_every_ms;
             return;
         }
+        db_every_ms = 1000;
+        db_next_ms = 0;
         g_db_ready = true;
     }
     // Bring back what was playing when the device was last powered off — the sequence, the user's
@@ -7685,21 +7707,6 @@ static int read_sysfs_int(const char* path) {
     return (int)std::strtol(buf, nullptr, 10);
 }
 
-// The board thermal zone. Zone 1 is `mtktspmic` on this device; the loop confirms the type rather
-// than trusting the index, because a kernel that renumbers its zones would otherwise silently
-// report the CPU's temperature as the board's.
-static int read_board_milli_degc() {
-    for (int z = 0; z < 4; z++) {
-        char p[64], type[32];
-        std::snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/type", z);
-        if (!read_sysfs_text(p, type, sizeof type)) continue;
-        if (std::strcmp(type, "mtktspmic") != 0) continue;
-        std::snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/temp", z);
-        return read_sysfs_int(p);
-    }
-    return BATT_UNKNOWN;
-}
-
 // Charger state, via the setuid helper. Fills `state`/`fault` from the bq24262 STATUS register and
 // `raw` with every register as hex for the screen's footer.
 //
@@ -7735,11 +7742,119 @@ static void push_battery_detail(int pct, bool with_charger) {
     int uv = read_sysfs_int("/sys/class/power_supply/battery/voltage_now");
     // voltage_now is in MICROvolts here (4091473 = 4.091 V). The UI wants millivolts.
     const int mv = (uv == BATT_UNKNOWN) ? BATT_UNKNOWN : uv / 1000;
-    const int mdeg = read_board_milli_degc();
     int cstate = -1, cfault = -1;
     char raw[64] = {0};
     if (with_charger) read_charger(&cstate, &cfault, raw, sizeof raw);
-    cinder_set_battery_detail(pct, status, health, mv, mdeg, cstate, cfault, raw);
+    cinder_set_battery_detail(pct, status, health, mv, cstate, cfault, raw);
+}
+
+// ── THE REST OF THE DEVICE'S VITAL SIGNS ──────────────────────────────────────────────────────
+//
+// Temperatures, clock, memory, storage, uptime. Every one of these is a world-readable file the
+// app was already allowed to open — this is not new privilege, it is a screen for facts that were
+// always in reach and never shown.
+//
+// The zone TYPE is matched rather than the index being trusted: a kernel that renumbered its
+// thermal zones would otherwise silently report the CPU's temperature as the power IC's, and the
+// three are several degrees apart, so the mistake would look like a plausible reading.
+static void push_device_temps() {
+    int cpu = BATT_UNKNOWN, pmic = BATT_UNKNOWN, abb = BATT_UNKNOWN;
+    for (int z = 0; z < 8; z++) {
+        char p[64], type[32];
+        std::snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/type", z);
+        if (!read_sysfs_text(p, type, sizeof type)) continue;
+        std::snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/temp", z);
+        if (std::strcmp(type, "mtktscpu") == 0)       cpu  = read_sysfs_int(p);
+        else if (std::strcmp(type, "mtktspmic") == 0) pmic = read_sysfs_int(p);
+        else if (std::strcmp(type, "mtktsabb") == 0)  abb  = read_sysfs_int(p);
+    }
+    cinder_set_device_temps(cpu, pmic, abb);
+}
+
+// CPU clock, governor, and how many cores are actually running.
+//
+// `cpu0` is the one that is always present, so it supplies the clock and the governor. The core
+// count is walked rather than read from `/sys/devices/system/cpu/online`, whose format is a range
+// list ("0-1", "0") that has to be parsed anyway — and which was observed disagreeing with
+// `offline` a second later, because the `hotplug` governor parks the second core constantly.
+// Counting `cpuN/online` directly gives a straight answer and cannot mis-parse.
+static void push_device_cpu() {
+    char gov[32];
+    read_sysfs_text("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", gov, sizeof gov);
+    const int khz = read_sysfs_int("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
+    const int max = read_sysfs_int("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq");
+    int total = 0, online = 0;
+    for (int c = 0; c < 8; c++) {
+        char p[80];
+        std::snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cpufreq", c);
+        struct stat st;
+        // cpu0 has no `online` node on this kernel (it can never be taken down), so its presence
+        // is inferred from having a cpufreq directory at all — which is also what makes it count
+        // as online.
+        std::snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d", c);
+        if (::stat(p, &st) != 0) continue;
+        total++;
+        std::snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/online", c);
+        const int on = read_sysfs_int(p);
+        if (on == BATT_UNKNOWN || on == 1) online++;   // no node = always on
+    }
+    cinder_set_device_cpu(khz, max, online, total, gov);
+}
+
+// Memory and the two volumes worth knowing about: the music partition (which is what fills up) and
+// /data (which holds the art cache and the bad-boot state, and is small).
+static void push_device_storage() {
+    int mem_total = 0, mem_avail = 0;
+    FILE* f = std::fopen("/proc/meminfo", "r");
+    if (f) {
+        char line[128];
+        while (std::fgets(line, sizeof line, f)) {
+            long v = 0;
+            if (std::sscanf(line, "MemTotal: %ld kB", &v) == 1) mem_total = (int)v;
+            else if (std::sscanf(line, "MemAvailable: %ld kB", &v) == 1) mem_avail = (int)v;
+            // Older kernels (this one is 3.10) may not export MemAvailable. Free+cached is the
+            // conventional stand-in and is closer to the truth than MemFree alone, which on a
+            // device that caches album art reads alarmingly low for no reason.
+            else if (!mem_avail && std::sscanf(line, "MemFree: %ld kB", &v) == 1) mem_avail = (int)v;
+            else if (std::sscanf(line, "Cached: %ld kB", &v) == 1) mem_avail += (int)v;
+        }
+        std::fclose(f);
+    }
+    int music_total = 0, music_free = BATT_UNKNOWN, data_free = BATT_UNKNOWN;
+    struct statvfs vfs;
+    if (::statvfs("/contents", &vfs) == 0 && vfs.f_frsize) {
+        // In MB, computed in 64-bit: a 55 GB volume in bytes overflows a 32-bit int long before
+        // the division would bring it back into range.
+        const unsigned long long unit = (unsigned long long)vfs.f_frsize;
+        music_total = (int)((unsigned long long)vfs.f_blocks * unit / (1024ULL * 1024ULL));
+        music_free  = (int)((unsigned long long)vfs.f_bavail * unit / (1024ULL * 1024ULL));
+    }
+    if (::statvfs("/data", &vfs) == 0 && vfs.f_frsize) {
+        const unsigned long long unit = (unsigned long long)vfs.f_frsize;
+        data_free = (int)((unsigned long long)vfs.f_bavail * unit / (1024ULL * 1024ULL));
+    }
+    cinder_set_device_storage(mem_total, mem_avail, music_total, music_free, data_free);
+}
+
+// Uptime and kernel release. Uptime comes from /proc/uptime rather than from our own start time —
+// the launcher may have respawned us after a crash, and the question this row answers is how long
+// the DEVICE has been up.
+static void push_device_system() {
+    char buf[64];
+    int up = BATT_UNKNOWN;
+    if (read_sysfs_text("/proc/uptime", buf, sizeof buf))
+        up = (int)std::strtol(buf, nullptr, 10);
+    // /proc/version is a whole sentence; the release is the third word.
+    char kern[32] = {0};
+    FILE* f = std::fopen("/proc/sys/kernel/osrelease", "r");
+    if (f) {
+        if (std::fgets(kern, sizeof kern, f)) {
+            size_t n = std::strlen(kern);
+            while (n > 0 && (kern[n - 1] == '\n' || kern[n - 1] == '\r')) kern[--n] = '\0';
+        }
+        std::fclose(f);
+    }
+    cinder_set_device_system(up, kern);
 }
 
 // Is the battery being charged? Read alongside the level, because every low-battery decision below
@@ -8757,19 +8872,25 @@ void* render_driver(void*) {
             // Warn low, shut down before the hardware browns out mid-write. Not guarded: it is pure
             // sysfs reads plus, at the very end, the same power path the Settings row uses.
             battery_guard(pct);
-            // The Settings ▸ Battery readout. Sysfs only on this path — cheap, and it means the
+            // The Settings ▸ Device readout. Sysfs only on this path — cheap, and it means the
             // screen already has real values on its first frame instead of dashes that fill in a
             // moment later. The charger helper is a fork and is left to the block below.
             push_battery_detail(pct, false);
+            push_device_temps();
         }
-        // Battery screen open: refresh faster, and include the charger. Gated on the screen for the
+        // Device screen open: refresh faster, and include the readings that cost something. Gated
+        // on the screen for the
         // same reason the spectrum analyzer is — this forks a helper, and doing that every few
         // seconds for a screen nobody has open is runtime spent on nothing. Off-screen this branch
         // costs one function call that returns 0.
         static long last_battdetail_ms = 0;
-        if (cinder_battery_wants_detail() && house_now - last_battdetail_ms >= 2000) {
+        if (cinder_device_wants_detail() && house_now - last_battdetail_ms >= 2000) {
             last_battdetail_ms = house_now;
             push_battery_detail(read_battery(), true);
+            push_device_temps();
+            push_device_cpu();
+            push_device_storage();
+            push_device_system();
         }
         // LIBRARY / PLAYLIST RESCAN. `exit_usb_msc` already reloads the DB the moment the PC hands
         // /contents back, which is how a sync normally lands — this is the belt-and-braces path for

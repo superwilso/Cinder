@@ -30,7 +30,7 @@ pub mod eq;
 pub mod sound;
 pub mod advanced;
 pub mod tone;
-pub mod battery;
+pub mod device;
 pub mod settings;
 pub mod bluetooth;
 pub mod pairing;
