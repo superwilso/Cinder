@@ -2451,6 +2451,12 @@ static void bt_vol_listener_start() {
     } catch (...) { clog_("bt-vol: AddListener threw"); }
 }
 
+// The level the sink last told us it was at, in UI steps. -1 = it has never said. This is the ONLY
+// truth about the sink's volume that exists — there is no getter, and `SetCurrentVolume` is inert
+// on this hardware (see bt_send_absolute_volume) — so the connect-time restore below closes its
+// loop on this value rather than on any return code.
+static int g_bt_vol_seen = -1;
+
 // Apply whatever the sink last reported. Render-thread only. Returns true if the UI changed.
 static bool bt_vol_drain_notify() {
     int v = g_bt_vol_notify;
@@ -2461,6 +2467,7 @@ static bool bt_vol_drain_notify() {
     // than truncated so the top of the sink's scale
     // reaches the top of ours instead of stopping one step short.
     int lvl = (v * CINDER_BT_VOL_MAX + 63) / 127;
+    g_bt_vol_seen = lvl;             // recorded even when the UI does not move — the walk needs it
     if (lvl == cinder_get_bt_volume()) return false;
     cinder_set_bt_volume(lvl);
     char m[96];
@@ -2535,6 +2542,10 @@ static void bt_apply_enhanced_mode(const char* why) {
 
 // Push the UI's Bluetooth level at the sink. `up` only matters on the step fallback — with absolute
 // volume the UI has already moved its level and we just send where it landed.
+// Defined with the connect-time restore below, which owns the UI-steps -> AVRCP 0..127 mapping so
+// the rocker and the restore cannot disagree about it.
+static bool bt_send_absolute_volume(int lvl);
+
 static void apply_bt_volume(bool up) {
     enum { VIDX_SetVolumeDown = 16, VIDX_SetVolumeUp = 17, VIDX_SetCurrentVolume = 34 };
     try {
@@ -2546,17 +2557,11 @@ static void apply_bt_volume(bool up) {
         // call in the same press is what makes a flapping link still track the rocker.
         bool sent = false;
         if (bt_use_absolute_volume()) {
-            // UI steps -> the AVRCP 0..127 scale. Since 2026-08-18 CINDER_BT_VOL_MAX *is* 127, so
-            // this is an identity map and one press moves the sink by exactly one unit — the
-            // finest Bluetooth allows, absolute volume being a 7-bit field. The arithmetic stays
-            // written out because the scale is a constant somebody may change again, and the top
-            // step must land on 127 exactly or full volume would be unreachable.
-            int lvl = cinder_get_bt_volume();
-            if (lvl < 0) lvl = 0;
-            if (lvl > CINDER_BT_VOL_MAX) lvl = CINDER_BT_VOL_MAX;
-            unsigned char v = (unsigned char)(lvl * 127 / CINDER_BT_VOL_MAX);
-            typedef int (*fnu)(void*, const unsigned char*);
-            sent = ((fnu)bt_slot(x, VIDX_SetCurrentVolume))(x, &v) != 0;
+            // UI steps -> the AVRCP 0..127 scale, in bt_send_absolute_volume so the rocker and the
+            // connect-time restore cannot disagree about the mapping. Since 2026-08-18
+            // CINDER_BT_VOL_MAX *is* 127, so it is an identity map and one press moves the sink by
+            // exactly one unit — the finest Bluetooth allows, absolute volume being 7 bits.
+            sent = bt_send_absolute_volume(cinder_get_bt_volume());
             if (!sent) clog_("bt-vol: SetCurrentVolume REFUSED — falling back to a step");
         }
         if (!sent) {
@@ -2566,6 +2571,163 @@ static void apply_bt_volume(bool up) {
     } catch (...) {
         clog_("bt-vol: volume call threw");
     }
+}
+
+// ── SetCurrentVolume does nothing on this hardware ──────────────────────────────
+//
+// MEASURED 2026-08-26, on a live LDAC link to a sink whose capability bits ALL say yes
+// (`IsAvrcpTgVolumeSupported=1  GetControlAbsoluteVolume=1  IsSupportedAbsoluteVolume=1`).
+// `cinder-probe --btvollisten` registers a volume listener and prints what the sink reports back:
+//
+//   4x SetVolumeUp / SetVolumeDown   ->  *a=43  *a=39  *a=43  *a=39     <- every step reported
+//   3x SetCurrentVolume(39, 30, 39)  ->  nothing, from either listener  <- inert
+//
+// Three absolute writes, one of which would have moved the sink by nine units, produced not one
+// notification and no audible change. Four step calls produced four notifications. So on this
+// firmware the absolute-volume path is a NO-OP, and the three capability reads that gate it are all
+// lying.
+//
+// The return value is no help either: `SetCurrentVolume` returned **0 for all three**, including
+// the one that would have been a real change. It is not a success flag, and not the state-changed
+// flag `SetConnectRetryMode` uses — it carries nothing at all. `apply_bt_volume` gates its step
+// fallback on `!= 0`, so that test has always been false and the rocker has been working purely by
+// always falling through to a step. Which is why nobody noticed.
+//
+// WHAT WAS REMOVED BECAUSE OF THIS. "Push the level the user last used on connect, so a session
+// resumes where it left off" is NOT IMPLEMENTABLE against a sink like this: there is no way to
+// command a level, only to step, and stepping toward a target needs a starting point the sink only
+// volunteers when it feels like it. A deferred-and-retried push was written earlier the same day on
+// the theory that the refusal meant "AVRCP is not up yet". It retried four times over 12 s and was
+// refused every time, because there was never anything to be up for:
+//
+//   1946.617 bt-vol: the sink kept refusing the saved level after 4 tries — keeping its own instead
+//
+// It is gone. The sink keeps its own level across a reconnect — which is what earbuds do anyway,
+// and what their own buttons set — and `bt_vol_drain_notify` adopts whatever it reports, so the bar
+// follows the headphones instead of pretending to command them.
+//
+// The absolute call is still MADE on a rocker press: it is one cheap IPC, it is correct on a sink
+// that honours it, and nothing here proves the next pair behaves like this one. What changed is
+// that its return is no longer read as an answer, and the step no longer depends on it.
+static bool bt_send_absolute_volume(int lvl) {
+    enum { VIDX_SetCurrentVolume = 34 };
+    if (lvl < 0) lvl = 0;
+    if (lvl > CINDER_BT_VOL_MAX) lvl = CINDER_BT_VOL_MAX;
+    try {
+        void* x = bt_xmit();
+        if (!x) return false;
+        const unsigned char v = (unsigned char)(lvl * 127 / CINDER_BT_VOL_MAX);
+        typedef int (*fnu)(void*, const unsigned char*);
+        ((fnu)bt_slot(x, VIDX_SetCurrentVolume))(x, &v);
+        // Deliberately NOT the return value. "We transmitted" is all this can honestly report;
+        // whether the sink moved is only ever knowable from OnNotifyChangeVolume.
+        return true;
+    } catch (...) { clog_("bt-vol: SetCurrentVolume threw"); return false; }
+}
+
+// ── each output restores its OWN level when the output switches ─────────────────────────────
+//
+// The two attenuators are genuinely separate and are meant to hold different numbers: 3.5 mm is the
+// CXD3778GF codec master (ALSA card0 'master volume', 0..120) and Bluetooth is the sink's own, over
+// AVRCP. Nothing here tries to make them agree. What it does is make each one come back to the
+// level THAT output was last left at, whenever the output changes.
+//
+// The jack half is easy — its level is a number we own, and `bt_resync_volume` re-asserts it on the
+// disconnect edge (see refresh_bt_route).
+//
+// The Bluetooth half cannot be done the obvious way. `SetCurrentVolume` is inert on this hardware
+// (measured — see above), so there is no "set it to 39". But the STEP calls work and, crucially,
+// every step comes back as an `OnNotifyChangeVolume` carrying the sink's real level:
+//
+//   SetVolumeUp   -> *a=43        SetVolumeDown -> *a=39
+//   SetVolumeUp   -> *a=43        SetVolumeDown -> *a=39
+//
+// So the sink can be WALKED to a target: step toward it, read where it actually landed, repeat. The
+// loop closes on the notification rather than on a return value, which is the only thing on this
+// interface that has ever been trustworthy. One measured step is 4 units of 127, so the walk stops
+// as soon as it is within half a step — closer than that is unreachable, and a loop that insists on
+// an exact match would oscillate forever.
+#define BT_VOL_WALK_MAX_STEPS 24     // ~96 units of 127; more than the full scale, bounded anyway
+#define BT_VOL_WALK_EVERY_MS  180    // a step, then time for the sink to answer before the next
+#define BT_VOL_WALK_WAIT_MS   6000   // how long to wait for the sink to volunteer a starting point
+#define BT_VOL_WALK_CLOSE     2      // within half a measured step: as close as stepping can get
+
+static int  g_bt_vol_walk_target = -1;   // UI level to reach, -1 = not walking
+static long g_bt_vol_walk_at     = 0;    // when the next step may go out
+static long g_bt_vol_walk_until  = 0;    // give up waiting for a starting point after this
+static int  g_bt_vol_walk_steps  = 0;    // steps spent, bounded by BT_VOL_WALK_MAX_STEPS
+static int  g_bt_vol_walk_last   = -1;   // the level the previous step produced
+
+// Start walking the sink to `target`. Called on the connect edge with the level BT was last left
+// at — read before the sink's own first report can overwrite it.
+static void bt_vol_walk_start(int target) {
+    g_bt_vol_walk_target = target;
+    g_bt_vol_walk_at     = 0;
+    g_bt_vol_walk_until  = now_ms() + BT_VOL_WALK_WAIT_MS;
+    g_bt_vol_walk_steps  = 0;
+    g_bt_vol_walk_last   = -1;
+    g_bt_vol_seen        = -1;   // this link's report, not the last one's
+}
+
+static void bt_vol_walk_stop(void) { g_bt_vol_walk_target = -1; }
+
+static void bt_vol_walk_tick(void) {
+    if (g_bt_vol_walk_target < 0) return;
+    // The link went away mid-walk. Nothing to step.
+    if (!cinder_get_bt_route()) { bt_vol_walk_stop(); return; }
+    const long now = now_ms();
+    // No starting point yet. The sink volunteers one within a second of connecting on every link
+    // seen so far, but a sink that never reports cannot be walked at all — there is no way to know
+    // which direction is "toward".
+    if (g_bt_vol_seen < 0) {
+        if (now >= g_bt_vol_walk_until) {
+            clog_("bt-vol: the sink never reported its level — leaving it where it is");
+            bt_vol_walk_stop();
+        }
+        return;
+    }
+    if (now < g_bt_vol_walk_at) return;
+
+    const int cur = g_bt_vol_seen;
+    const int diff = cur - g_bt_vol_walk_target;
+    if (diff <= BT_VOL_WALK_CLOSE && diff >= -BT_VOL_WALK_CLOSE) {
+        char m[128];
+        std::snprintf(m, sizeof m, "bt-vol: walked the sink to %d/%d (wanted %d) in %d step(s)",
+                      cur, CINDER_BT_VOL_MAX, g_bt_vol_walk_target, g_bt_vol_walk_steps);
+        clog_(m);
+        bt_vol_walk_stop();
+        return;
+    }
+    // STOPPED MOVING. A sink at its own ceiling or floor answers every step with the same number,
+    // and without this the walk would spend its whole budget discovering that. One repeat is
+    // enough: the previous step produced no change at all.
+    if (g_bt_vol_walk_steps > 0 && cur == g_bt_vol_walk_last) {
+        char m[128];
+        std::snprintf(m, sizeof m, "bt-vol: the sink stopped moving at %d/%d (wanted %d) — its own "
+                      "limit, not ours", cur, CINDER_BT_VOL_MAX, g_bt_vol_walk_target);
+        clog_(m);
+        bt_vol_walk_stop();
+        return;
+    }
+    if (g_bt_vol_walk_steps >= BT_VOL_WALK_MAX_STEPS) {
+        char m[128];
+        std::snprintf(m, sizeof m, "bt-vol: gave up walking at %d/%d after %d steps (wanted %d)",
+                      cur, CINDER_BT_VOL_MAX, g_bt_vol_walk_steps, g_bt_vol_walk_target);
+        clog_(m);
+        bt_vol_walk_stop();
+        return;
+    }
+    enum { VIDX_SetVolumeDown = 16, VIDX_SetVolumeUp = 17 };
+    const bool up = diff < 0;
+    try {
+        void* x = bt_xmit();
+        if (!x) { bt_vol_walk_stop(); return; }
+        typedef int (*fn0)(void*);
+        ((fn0)bt_slot(x, up ? VIDX_SetVolumeUp : VIDX_SetVolumeDown))(x);
+    } catch (...) { clog_("bt-vol: a walk step threw"); bt_vol_walk_stop(); return; }
+    g_bt_vol_walk_last  = cur;
+    g_bt_vol_walk_steps++;
+    g_bt_vol_walk_at    = now + BT_VOL_WALK_EVERY_MS;
 }
 
 // ── Bluetooth codec ─────────────────────────────────────────────────────────────────────────
@@ -2925,6 +3087,36 @@ static void bt_connect_wait(bool on) {
     } catch (...) { clog_("bt: connect-wait call threw"); }
 }
 
+// The A2DP source's own connection state machine — BtTransmitter slot 3,
+// `GetAvSrcConnectionStatus()`, zero-arg, returns int. The probe has read it since 2026-07-30; the
+// shell never did. MEASURED on device 2026-08-26, against a radio in each state:
+//
+//   0  radio down
+//   1  disconnected (what a deliberate `--btlink drop` leaves behind)
+//   2  idle — up, nothing in flight, nothing linked
+//   3  CONNECTING — a page is on the air
+//   4  connected, still setting up
+//   5  linked
+//
+// Used for exactly one thing: "is the radio already trying?". NOT for the route — 4/5 arrive before
+// `GetConnectInformation` has an address, and the address is the link (see refresh_bt_route). One
+// value used for one question is what keeps this from becoming the next GetBtStatus.
+#define BT_AVSRC_CONNECTING 3
+static int bt_avsrc_status() {
+    enum { VIDX_GetAvSrcConnectionStatus = 3 };
+    try {
+        void* x = bt_xmit();
+        if (!x) return -1;
+        typedef int (*fn0)(void*);
+        return ((fn0)bt_slot(x, VIDX_GetAvSrcConnectionStatus))(x);
+    } catch (...) { return -1; }
+}
+
+// How many times in a row the ladder will stand aside for an attempt that is already in flight
+// before asking anyway. Bounded so a status wedged at 3 cannot silence the ladder for good — the
+// same rule the rest of this file applies to any service state it cannot verify.
+#define BT_AVSRC_MAX_SKIPS 6
+
 // Called wherever the user asks for a link, so the retry stops being parked.
 static void bt_reconnect_rearm() {
     g_bt_user_disconnected = false;
@@ -2991,6 +3183,29 @@ static void bt_reconnect_tick() {
                   "switching the headphones on will connect them.");
         }
         return;
+    }
+
+    // DON'T ASK WHILE THE RADIO IS ALREADY ASKING. A connect request issued while a page is on the
+    // air comes back rc=0 — measured on the new build:
+    //
+    //   25.220 bt-reconnect: RequestLastDeviceConnection rc=1 — next retry in 20s
+    //   45.317 bt-reconnect: RequestLastDeviceConnection rc=0 — next retry in 40s
+    //
+    // …with the first attempt still paging. That refusal means "busy", not "wrong device", and
+    // without this the ladder both wastes the attempt and mis-reads it: `g_bt_zeroarg_fails` treats
+    // any non-1 as decisive and jumps to naming a device, on evidence that says nothing about which
+    // device is right. Standing aside costs one scalar IPC and keeps the two refusals apart.
+    {
+        static int avsrc_skips = 0;
+        const int avsrc = bt_avsrc_status();
+        if (avsrc == BT_AVSRC_CONNECTING && avsrc_skips < BT_AVSRC_MAX_SKIPS) {
+            avsrc_skips++;
+            g_bt_reconnect_at = now + 5000;   // look again shortly; the page times out in ~5-20 s
+            return;
+        }
+        if (avsrc_skips >= BT_AVSRC_MAX_SKIPS)
+            clog_("bt-reconnect: AvSrc has said 'connecting' for 30 s without a link — asking anyway");
+        avsrc_skips = 0;
     }
     g_bt_reconnect_tries++;
 
@@ -3155,6 +3370,9 @@ static pthread_mutex_t g_bt_found_mx = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<BtFound> g_bt_found;                 // guarded by g_bt_found_mx
 static volatile sig_atomic_t g_bt_found_dirty  = 0;
 static volatile sig_atomic_t g_bt_pairing_done = 0;
+// The result byte OnNotifyPairingComplete carries. -1 = nothing seen yet. Recorded, not yet acted
+// on — see the callback for why the polarity has to be measured before it can gate anything.
+static volatile sig_atomic_t g_bt_pairing_result = -1;
 // The radio says its connection state moved. Set from the listener, drained by the render loop,
 // which then re-reads the route on the NEXT FRAME instead of waiting out the 3 s poll.
 //
@@ -3251,7 +3469,44 @@ struct CinderBtListener {
         unsigned shown = (a && a < 1000000u) ? a : b;
         push_prompt(BT_PROMPT_NUMERIC, addr, name, shown, a, b);
     }
-    virtual void OnNotifyPairingComplete(const void*, const void*, const void*) {
+    // Slot 4. Read by hand 2026-08-26, the same way `OnNotifySearchedDevice` was
+    // (analysis/G_bt_nfc/RE_findings.md, "The one signature needed first"): find the vtable
+    // dispatch, then read how the handler BUILDS the objects it passes rather than trusting any
+    // declaration. libBtCommonService.so:
+    //
+    //   c75e: ldr.w r0, [r9, #0x24]   ; the listener we registered
+    //   c762: sub.w r2, r7, #49       ; arg2 -> a single stack BYTE
+    //   c766: add   r3, sp, #16       ; arg3 -> a 48-byte struct
+    //   c768: ldr   r1, [r0]
+    //   c76a: ldr   r4, [r1, #16]     ; vtable[4] = OnNotifyPairingComplete
+    //   c76c: add   r1, sp, #72       ; arg1 -> a {begin,end,cap} byte vector
+    //   c76e: blx   r4
+    //
+    // (The read is anchored: the same pass finds `cb44: ldr r4, [r1, #24]` for slot 6, which is
+    // the dispatch RE_findings.md already documents verbatim.)
+    //
+    // Unpack order on the wire, above the call: `Get(1)` for one byte -> stored at r7-49; then
+    // `Get(4)` for a count; then a `Get(1)` push_back loop of that many bytes into sp+72. So:
+    //
+    //   arg1  const std::vector<uint8_t>&   a byte string — the address, or the link key
+    //   arg2  const uint8_t&                THE RESULT, and the whole point of this read
+    //   arg3  a 48-byte struct with a vector at +0, a vector at +16 and a std::string at +28 —
+    //         the layout of BtPairedDeviceInformation (its destructor runs on sp+44 = +28, and
+    //         sp+32 = +16 is freed). Taken as const void* and NOT dereferenced: nothing needs it
+    //         yet, and a struct read on a guess is how this file has crashed before.
+    //
+    // WHAT THE RESULT BYTE MEANS IS NOT YET KNOWN — `btmw_ret_code_t` one layer down
+    // (`bt::BtCommonComponentIfReceiver::NotifyPairingComplete(btmw_ret_code_t, btmw_bdaddr_t*,
+    // btmw_linkkey_t*, unsigned, unsigned char, unsigned char*)`) would make 0 = OK, but pst may
+    // have reduced it to a bool where 1 = OK. So this does NOT gate on it yet. It records the
+    // value, and the paired-list recheck below logs it beside the ground truth it establishes by
+    // polling GetPairedDeviceInfo — one real pairing settles the polarity, and then the gate is a
+    // one-line change. Guessing it now would either drop good pairings or keep pretending failed
+    // ones worked, and the second is what we already have.
+    virtual void OnNotifyPairingComplete(const std::vector<unsigned char>& /*bytes*/,
+                                         const unsigned char& result,
+                                         const void* /*info*/) {
+        g_bt_pairing_result = (int)result;
         g_bt_pairing_done = 1;
     }
     virtual void OnNotifyPasskey(const std::vector<unsigned char>& addr,
@@ -3760,15 +4015,26 @@ static void nfc_service_tap() {
     if (addr.size() != 6) { clog_("nfc: tap with no usable address"); return; }
     char m[192];
 
-    // Fresh reads: the tap may be the first thing that has ever touched Bluetooth this session, in
-    // which case both the paired list and the connected peer are empty for want of asking, not
-    // because they are really empty. Getting this wrong turns a connect into a redundant re-pair.
-    refresh_bt_paired();
-    refresh_bt_connected();
-
+    // A TAP IS A RACE AGAINST THE USER'S PATIENCE, so pay for reads only when they can change the
+    // answer. This used to refresh the paired list AND the connected peer unconditionally — three
+    // synchronous IPC round trips ahead of every tap — on the reasoning that "the tap may be the
+    // first thing that has ever touched Bluetooth this session". That stopped being true when
+    // `deferred_up` started seeding the pairing table at boot and the route poll started keeping
+    // the peer address fresh: for headphones the player already knows, both reads return exactly
+    // what is already in hand.
+    //
+    // The reads still happen when the address is UNRECOGNISED, because that is the case where a
+    // stale "no" is expensive: it turns a connect into a redundant re-pair, which is the defect
+    // this whole dispatch was written to fix.
     bool bonded = false;
     for (size_t i = 0; i < g_bt_paired.size(); i++)
         if (g_bt_paired[i] == addr) { bonded = true; break; }
+    if (!bonded) {
+        refresh_bt_paired();
+        for (size_t i = 0; i < g_bt_paired.size(); i++)
+            if (g_bt_paired[i] == addr) { bonded = true; break; }
+        refresh_bt_connected();
+    }
     const bool linked = (addr == g_bt_connected_addr);
 
     std::snprintf(m, sizeof m, "nfc: tapped %02X:%02X:%02X:%02X:%02X:%02X '%s' — %s",
@@ -3798,6 +4064,31 @@ static void nfc_service_tap() {
     }
 
     if (bonded) {
+        // SOMETHING ELSE IS ON THE LINK. The transmitter carries one sink at a time — one socket,
+        // one encoder, one connected address (see the dual-output note in
+        // docs/AUDIT_2026-08-26_bluetooth.md) — so a connect aimed at a second device while the
+        // first is up has nowhere to land. Tapping your other headphones is exactly the gesture
+        // that hits this, and without the hang-up it reads as "NFC doesn't work" while the old
+        // pair keeps playing. Drop the current one first, then dial.
+        if (!g_bt_connected_addr.empty()) {
+            enum { VIDX_RequestDisconnection8 = 8 };
+            const std::vector<unsigned char>& c = g_bt_connected_addr;
+            std::snprintf(m, sizeof m,
+                          "nfc: %02X:%02X:%02X:%02X:%02X:%02X is on the link — hanging up before "
+                          "connecting the tapped device",
+                          c[0], c[1], c[2], c[3], c[4], c[5]);
+            clog_(m);
+            try {
+                void* x = bt_xmit();
+                if (x) {
+                    typedef int (*fn0)(void*);
+                    ((fn0)bt_slot(x, VIDX_RequestDisconnection8))(x);
+                }
+            } catch (...) { clog_("nfc: hang-up before switching threw"); }
+            // Not a user disconnect: they asked for a DIFFERENT device, so the reconnect ladder
+            // must stay armed — for the new one, which bt_request_connection is about to name.
+            refresh_bt_connected();
+        }
         bt_reconnect_rearm();
         bt_request_connection(addr, "nfc");
         // The link comes up asynchronously; the route poll notices it and refreshes the name.
@@ -3999,39 +4290,37 @@ void refresh_bt_route() {
     std::snprintf(m, sizeof m, "bt-vol: rocker now drives %s (GetBtStatus=%d, peer %s)",
                   on ? "BLUETOOTH" : "the 3.5 mm jack", st, on ? "named" : "gone");
     clog_(m);
-    // On CONNECT, push the level the user last used on Bluetooth, so a session resumes where it left
-    // off instead of at whatever the headphones happen to remember. Only meaningful with absolute
-    // volume — there is no way to command a level with up/down steps, so a step-only sink just keeps
-    // its own and the UI count stays a belief until the next press.
-    // …but first re-assert "Use Enhanced Mode". The radio does not carry the preference across a
-    // link, and Sony's SetCurrentVolume checks it before transmitting, so pushing the level before
-    // this would be a silent no-op on a fresh connection.
+    // ── EACH OUTPUT COMES BACK TO ITS OWN LEVEL ─────────────────────────────────────────────
+    // The two attenuators hold different numbers on purpose and nothing here makes them agree.
+    // This edge is where each one is put back to where THAT output was last left.
+    //
+    // Re-assert "Use Enhanced Mode" first: the radio does not carry the preference across a link,
+    // and Sony's volume path checks it before transmitting anything.
     if (on) bt_apply_enhanced_mode("bt connect");
     // Subscribe to the sink's own volume reports. Done on CONNECT because that is when there is a
-    // sink to report, and it is what keeps the UI honest on a link that refuses absolute volume.
+    // sink to report — and it is the only channel that ever says what the sink's level really is.
     if (on) run_guarded("bt: volume listener", 6, bt_vol_listener_start);
-    if (on && bt_use_absolute_volume()) apply_bt_volume(true);
-    // PROVOKE THE FIRST REPORT. There is no getter for the sink's level — OnNotifyChangeVolume is
-    // the only route — so until the sink volunteers one, the bar is still the stale persisted
-    // belief from the last session. Reported as "3 was mute until I went to mute, then it worked":
-    // going to mute forced a change, the sink reported, and the bar corrected itself.
-    //
-    // One step up and straight back down is a net-zero change to what the user hears, and it makes
-    // the sink report its real level within a second of connecting. Only needed on the step path;
-    // when absolute volume is accepted the push above already tells us where it landed.
-    if (on && !bt_use_absolute_volume()) {
-        run_guarded("bt: provoke a volume report", 6, []() {
-            enum { VIDX_SetVolumeDown = 16, VIDX_SetVolumeUp = 17 };
-            try {
-                void* x = bt_xmit();
-                if (!x) return;
-                typedef int (*fn0)(void*);
-                ((fn0)bt_slot(x, VIDX_SetVolumeUp))(x);
-                usleep(150000);
-                ((fn0)bt_slot(x, VIDX_SetVolumeDown))(x);
-                clog_("bt-vol: nudged the sink to report its level (net zero)");
-            } catch (...) { clog_("bt-vol: volume nudge threw"); }
-        });
+    if (on) {
+        // BLUETOOTH: walk the sink back to the level Bluetooth was last left at. Read the target
+        // NOW, before the sink's own first report lands and overwrites the persisted value with
+        // whatever the headphones happen to remember. `SetCurrentVolume` cannot do this — it is
+        // inert here — so bt_vol_walk_tick steps, reads the notification, and steps again.
+        // Not guarded: this only sets local state. The IPC is in bt_vol_walk_tick, which is.
+        const int want = cinder_get_bt_volume();
+        bt_vol_walk_start(want);
+        char w[112];
+        std::snprintf(w, sizeof w, "bt-vol: Bluetooth was last at %d/%d — walking the sink back to it",
+                      want, CINDER_BT_VOL_MAX);
+        clog_(w);
+    } else {
+        // 3.5 mm: the jack becomes live again. Its level lives in the ALSA codec master, which
+        // nothing on the Bluetooth path touches, so this is a verify-and-repair rather than a
+        // change — bt_resync_volume compares hardware against the UI and only writes on a
+        // mismatch. It used to run on the CONNECT edge, which is the one moment the jack is not
+        // the output; the disconnect edge is when it matters.
+        bt_vol_walk_stop();
+        run_guarded("jack: restore the 3.5 mm level", 8,
+                    []() { bt_resync_volume("bt disconnect"); });
     }
 
     // ── RECONNECT EDGE: re-assert everything a re-opened output can have reset ────────────────
@@ -4047,8 +4336,8 @@ void refresh_bt_route() {
     if (on) {
         // Guarded individually: each is either a shell-out or a Sony IPC call, on the render
         // thread. Verify-first, so a resync can never fight a level the user just set.
-        run_guarded("bt: resync volume after reconnect", 8,
-                    []() { bt_resync_volume("bt reconnect"); });
+        // NOT the volume — that is the walk above, and bt_resync_volume drives the JACK's
+        // attenuator, which is not the output while a sink is connected.
         write_bt_pref();
         fx_cache_drop();   // a reconnect is exactly when the service may have moved under us
         run_guarded("bt: re-apply EQ after reconnect", 6, apply_eq_fn);
@@ -7697,6 +7986,12 @@ void* render_driver(void*) {
             // The sink told us its real level (its own buttons, or an echo of ours). Adopting it
             // is the whole fix for the UI and the headphones disagreeing.
             if (g_bt_vol_notify >= 0 && bt_vol_drain_notify()) cinder_force_dirty();
+            // …and if a connect asked for the level Bluetooth was last left at, take the next step
+            // toward it. Per-frame rather than in the 1 Hz block: the walk is a step every 180 ms
+            // and reads the sink's answer between them, so a once-a-second tick would stretch a
+            // five-step restore over five seconds of audible drift. Costs one integer test a frame
+            // while idle, which is every frame but the second or two after a connect.
+            run_guarded("loop: BT volume walk", 6, bt_vol_walk_tick);
             // The USB host started or changed its stream. Start() can only succeed once a format
             // exists, so this — not the moment the user flipped the switch — is when the DAC's
             // render path actually opens.
@@ -7736,6 +8031,7 @@ void* render_driver(void*) {
             if (now_ms() - last_bt_reconnect_ms >= 1000) {
                 last_bt_reconnect_ms = now_ms();
                 run_guarded("loop: BT reconnect", 8, bt_reconnect_tick);
+
             }
             // THE OUTPUT ROUTE CAN CHANGE WITHOUT THE TOGGLE. Headphones get switched off, run flat,
             // or walk out of range mid-session. `apply_usb_dac` only runs when the user flips the
@@ -7833,7 +8129,11 @@ void* render_driver(void*) {
             if (g_bt_pairing_done) {
                 g_bt_pairing_done = 0;
                 run_guarded("loop: BT pairing complete", 8, []() {
-                    clog_("bt-scan: pairing complete — scan off, waiting for the link key to appear");
+                    char pm[128];
+                    std::snprintf(pm, sizeof pm,
+                                  "bt-scan: pairing complete (result byte=%d) — scan off, waiting "
+                                  "for the link key to appear", (int)g_bt_pairing_result);
+                    clog_(pm);
                     cinder_set_bt_scanning(0);
                     apply_bt_scan();
                     refresh_bt_paired();
@@ -7841,6 +8141,20 @@ void* render_driver(void*) {
                     // trusting that one. Stops early the moment the new address shows up.
                     g_bt_paired_recheck_left = 20;
                     g_bt_paired_recheck_at   = now_ms() + 300;
+                    // …but TRY THE CONNECT NOW ANYWAY, if a tap asked for one. The recheck exists
+                    // because `OnNotifyPairingComplete` fires before the link key is visible, so
+                    // the connect that follows a tap-to-pair has been waiting out up to 300 ms of
+                    // polling before it is even attempted. That wait is a guess about the radio's
+                    // internals, and the radio can now be ASKED instead: RequestConnection answers
+                    // 1 for accepted and 0 for refused (see bt_service_retry). If it takes, the
+                    // link starts a beat after the pairing instead of a beat after the poll that
+                    // notices the pairing. If it refuses, nothing is lost — the recheck below is
+                    // unchanged and still does the connect the moment the key appears.
+                    if (!g_nfc_connect_after_pair.empty()) {
+                        const std::vector<unsigned char> want = g_nfc_connect_after_pair;
+                        if (bt_request_connection(want, "nfc: paired, trying at once") == 1)
+                            g_nfc_connect_after_pair.clear();   // took; don't dial it twice
+                    }
                 });
             }
             // The radio's own search duration has expired, so put the UI switch back. Nothing else
@@ -7876,7 +8190,15 @@ void* render_driver(void*) {
                         g_bt_pairing_addr.clear();
                         // It is paired now, so it must stop offering "TAP TO PAIR" in the FOUND list.
                         flush_bt_found();
-                        clog_("bt-scan: the new device is in the paired list");
+                        // GROUND TRUTH, beside the result byte that claimed it. This pairing really
+                        // worked — the device is in GetPairedDeviceInfo — so whatever the byte says
+                        // here is what SUCCESS looks like. The failing case logs the same pair in
+                        // the give-up branch below; one of each settles the polarity, and then
+                        // OnNotifyPairingComplete can gate on it instead of recording it.
+                        char sm[128];
+                        std::snprintf(sm, sizeof sm, "bt-scan: the new device is in the paired list "
+                                      "— SUCCESS came with result byte=%d", (int)g_bt_pairing_result);
+                        clog_(sm);
                         // A tap-to-pair asked for a link, not just a bond. NOW is the first moment
                         // RequestConnection can work: before the link key is visible the radio has
                         // nothing to connect with. Cleared either way so it fires exactly once.
@@ -7894,8 +8216,13 @@ void* render_driver(void*) {
                         // for a FAILED pairing too (its arguments are not decoded), so this branch
                         // is reached in ordinary use, not just in theory.
                         g_bt_pairing_addr.clear();
-                        clog_("bt-scan: paired list never showed the new device — the pairing did "
-                              "not complete. Leaving the list alone rather than inventing a row.");
+                        char fm[224];
+                        std::snprintf(fm, sizeof fm,
+                                      "bt-scan: paired list never showed the new device — the "
+                                      "pairing did NOT complete, and that came with result byte=%d. "
+                                      "Leaving the list alone rather than inventing a row.",
+                                      (int)g_bt_pairing_result);
+                        clog_(fm);
                     }
                 });
             }

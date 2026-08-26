@@ -38,6 +38,15 @@ fn preview_thumb(var: &str, edge: usize) -> Option<cinder_ui::art::Image> {
 
 fn main() {
     let fonts = FontSet::load();
+    // Six devices — one and a half pages. Named so the page turn is obvious at a glance.
+    let preview_many_paired = vec![
+        pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: true },
+        pairing::PairedDevice { name: "CMF Buds Pro 2".into(), kind: "Headphones".into(), connected: false },
+        pairing::PairedDevice { name: "WONDERBOOM".into(), kind: "Speaker".into(), connected: false },
+        pairing::PairedDevice { name: "Car audio".into(), kind: "Car".into(), connected: false },
+        pairing::PairedDevice { name: "Kitchen speaker".into(), kind: "Speaker".into(), connected: false },
+        pairing::PairedDevice { name: "(unnamed)".into(), kind: String::new(), connected: false },
+    ];
     let preview_paired_list = preview_paired();
     std::fs::create_dir_all("out").ok();
 
@@ -356,7 +365,18 @@ fn main() {
                     pairing::PairedDevice { name: "Pixel 8".into(), kind: "Phone".into(), connected: false },
                     pairing::PairedDevice { name: "(unnamed)".into(), kind: String::new(), connected: false },
                 ];
-                pairing::render(c, &theme, &fonts, &paired, &found, Some(1), None, true, 0.35)
+                pairing::render(c, &theme, &fonts, &paired, &found, Some(1), None, true, 0.35, 0)
+            }),
+            // MORE PAIRED DEVICES THAN ONE PAGE HOLDS. Previewed because the truncation this
+            // replaced was invisible in every other preview: four rows and a header saying six is
+            // exactly what the bug looked like, and it was on screen for months. Page 0 here, page
+            // 1 below — the pair proves the window moves and that the last page is short, not
+            // padded.
+            ("pairing_page1", &|c: &mut Canvas| {
+                pairing::render(c, &theme, &fonts, &preview_many_paired, &[], None, None, false, 0.0, 0)
+            }),
+            ("pairing_page2", &|c: &mut Canvas| {
+                pairing::render(c, &theme, &fonts, &preview_many_paired, &[], None, None, false, 0.0, 1)
             }),
             // A connect attempt IN FLIGHT on the second paired row: "CONNECTING…" plus the moving
             // spinner. Previewed on its own because the state is transient on device — it is the
@@ -367,7 +387,7 @@ fn main() {
                     pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: false },
                     pairing::PairedDevice { name: "CMF Buds Pro 2".into(), kind: "Headphones".into(), connected: false },
                 ];
-                pairing::render(c, &theme, &fonts, &paired, &[], None, Some(1), false, 0.35)
+                pairing::render(c, &theme, &fonts, &paired, &[], None, Some(1), false, 0.35, 0)
             }),
             // The modal pairing prompt over the list — the numeric-comparison case, which is what a
             // phone or a modern pair of headphones actually asks for.
@@ -378,7 +398,7 @@ fn main() {
                 let found = vec![
                     pairing::PairedDevice { name: "Pixel 8".into(), kind: "Phone".into(), connected: false },
                 ];
-                pairing::render(c, &theme, &fonts, &paired, &found, None, None, false, 0.0);
+                pairing::render(c, &theme, &fonts, &paired, &found, None, None, false, 0.0, 0);
                 pairing::render_prompt(c, &theme, &fonts,
                     &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "Pixel 8".into(), code: 428913 });
             }),
