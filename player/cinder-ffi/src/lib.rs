@@ -379,6 +379,9 @@ struct Render {
     // Sleep timer: counts DOWN in wall-clock ms (regardless of play/pause); 0 = inactive. When it
     // reaches 0 we raise sleep_fire, which the shell polls (cinder_sleep_should_pause) to pause.
     sleep_remaining_ms: i64,
+    /// Deadline for the Settings ▸ Database "Rescanning…" label, counted down with the same dt as
+    /// the sleep timer. See the RescanLibrary arm for why the label needs a deadline at all.
+    rescan_left_ms: i64,
     sleep_fire: bool,
     // Persisted UI preferences (theme night + visualiser type/on) so choices survive a reboot. The
     // shell points us at a file via cinder_settings_load; we re-save (best-effort) whenever one of
@@ -604,6 +607,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         scrub_act: None,
         pending_screenshot: None,
         sleep_remaining_ms: 0,
+        rescan_left_ms: 0,
         sleep_fire: false,
         settings_path: None,
         last_saved_body: String::new(),
@@ -2396,6 +2400,25 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 !r.app.unshuffle_context().is_empty()
             };
             if changed && r.last_track.is_some() {
+                // DO NOT REPLACE THE SEQUENCE MID-TRACK WHILE AUDIO IS RUNNING.
+                //
+                // This used to flush immediately, and PlayerService has no reorder operation — the
+                // only way to change a sequence is to replace the whole thing, which costs the
+                // measured 360-450 ms pause/seek/play cycle `Action::QueueChanged` below already
+                // refuses to pay at gesture time. Doing it under a playing track is audible:
+                // reported as playback stuttering when shuffle is pressed during playback.
+                //
+                // Deferring costs nothing the user can hear the other way, because `queue_shuffle`
+                // and `unshuffle_context` both leave the CURRENT song alone by construction — they
+                // only permute context entries AFTER it. So the audible track is identical whether
+                // the sequence is rebuilt now or at the boundary; the only difference is the gap.
+                //
+                // Not playing = nothing to interrupt, so take the immediate path there and keep
+                // the toggle instant in the case where it is free.
+                if r.np.playing {
+                    r.queue_pending = true;
+                    return None;
+                }
                 let current = r.last_track.as_ref().map(|t| t.filename.clone()).unwrap();
                 r.pending_play = play_order_uris(r, &current);
                 r.pending_play_start = 0;
@@ -2424,6 +2447,16 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::BrightnessChanged(_) => 20, // shell reads cinder_get_brightness() + writes the backlight
         Action::ScreenOffTimer(_) => 21,    // shell reads cinder_get_screen_off_s() + counts idle
         Action::BootToStock => 22,          // shell arms the one-shot flag + restarts into stock
+        Action::RescanLibrary => {
+            // Give the label a deadline as well as its normal exit. `set_library` clears the
+            // "Rescanning…" state when a reloaded library arrives, but a scan that finds nothing
+            // changed writes nothing, so db_signature never fires and no library ever comes back —
+            // the row would sit on "Rescanning…" for the rest of the session in exactly the case
+            // where the honest answer is "already up to date". 60 s is well past the ~25 s a full
+            // 3,400-track scan took on device.
+            r.rescan_left_ms = 60_000;
+            45
+        }
         Action::QueueChanged => {
             // PlayerService has no insert operation. Replacing its sequence at gesture time costs
             // a measured 360–450 ms pause/seek/play cycle, which made adding a song visibly lag.
@@ -3751,6 +3784,16 @@ pub extern "C" fn cinder_clock_tick() {
                 r.queue_flush = r.pending_play.len() > 1;
             }
         }
+        // Rescan label deadline. The scan runs inside a Sony service with no completion channel we
+        // subscribe to, so this is the backstop that stops "Rescanning…" outliving a scan which
+        // found nothing to change (and therefore never triggered a library reload).
+        if r.rescan_left_ms > 0 {
+            r.rescan_left_ms = (r.rescan_left_ms - dt).max(0);
+            if r.rescan_left_ms == 0 && r.app.rescanning() {
+                r.app.set_rescanning(false);
+                r.dirty = true;
+            }
+        }
         // Sleep timer: count down in wall-clock (regardless of play/pause). Push the remaining
         // minutes (ceil) to the nav for the Settings row; repaint only when the displayed minute
         // changes. On reaching 0, raise sleep_fire (the shell pauses) and clear the display.
@@ -3841,7 +3884,17 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                 let k = it.next().unwrap_or("").trim();
                 let v = it.next().unwrap_or("").trim();
                 match k {
-                    "night" => r.app.night = v == "1",
+                    // NIGHT IS NOT RESTORED. It is still WRITTEN to the settings file (one line
+                    // below), because losing it would mean losing the accent/theme pair a user set
+                    // — but it is deliberately not read back, so every boot starts in day.
+                    //
+                    // Night is now the panel's dimmest lit state, a flat raw 1 at every brightness
+                    // level, and it is the thing you reach for in a dark room. A dark-room setting
+                    // that survives into the next morning is a screen you cannot read outdoors,
+                    // set by a decision you made hours ago and have forgotten making. The backlight
+                    // already forced day on boot for exactly this reason; the theme was the half
+                    // that did not, so the panel came up bright while the palette stayed dark.
+                    "night" => {}
                     "accent" => {
                         // set_accent snaps an unknown index to the default, so a hand-edited or
                         // corrupt value can't leave the UI on a colour the picker can't reach.

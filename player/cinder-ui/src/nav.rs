@@ -323,6 +323,10 @@ pub enum Action {
     BrightnessChanged(u8),    // panel brightness level 1..5; shell maps it onto the backlight node
     ScreenOffTimer(u32),      // idle screen-off timeout in seconds (0 = off); the shell counts idle
     BootToStock,              // arm a ONE-SHOT boot into Sony's player, then restart
+    /// Settings ▸ Database: ask Sony's MediaStore to rescan the music tree. The shell does the
+    /// SetConfig + Scan; the library reload is NOT part of this action — the existing db_signature
+    /// watcher sees the store change and re-opens it on its own.
+    RescanLibrary,
     ToggleLiked,              // heart the currently playing track (cinder-ffi owns the set)
     /// Every preference just went back to its default (Settings ▸ Reset settings). The shell
     /// re-applies the whole chain from the UI's new state — EQ, sound effects, balance, high gain,
@@ -769,6 +773,15 @@ pub struct App {
     dev_uptime_s: i32,
     dev_kernel: String,
     device_scroll_px: i32,
+    /// A rescan has been asked for and the library has not come back yet. Purely a label state.
+    ///
+    /// It needs TWO ways out, not one. `set_library` clears it when a reloaded library arrives,
+    /// which is the normal case — but a scan that finds nothing changed writes nothing, the
+    /// db_signature watcher therefore never fires, and no library ever comes back. Clearing only on
+    /// reload would leave "Rescanning…" on screen for the rest of the session precisely when the
+    /// answer was "already up to date". cinder-ffi owns the second exit, a deadline (see
+    /// `rescan_until_ms` there), because that is where the frame clock lives.
+    rescanning: bool,
     /// Sound Settings effect toggles. Each maps to an EffectCtrlDmp boolean setter (the shell reads
     /// these via cinder_get_sound_flags after a SoundChanged action). VPT/DC-Phase are on/off here;
     /// their mode/type (Studio/Club, Standard/Low) is a device-gated enhancement (enum values TBD).
@@ -1094,6 +1107,7 @@ impl Default for App {
             dev_uptime_s: crate::device::UNKNOWN,
             dev_kernel: String::new(),
             device_scroll_px: 0,
+            rescanning: false,
             snd_dsee: false,
             snd_vinyl: false,
             snd_vpt: false,
@@ -1991,6 +2005,13 @@ impl App {
                 self.sleep_idx = (self.sleep_idx + 1) % PRESETS.len();
                 self.sleep_min = PRESETS[self.sleep_idx];
                 vec![Action::SleepTimer(self.sleep_min)]
+            }
+            crate::settings::ROW_DATABASE => {
+                // The row had no arm at all, which is why it was drawn without a chevron: a chevron
+                // is this screen's promise that tapping does something, and a rebuild that never ran
+                // would have been a lie. It runs now.
+                self.rescanning = true;
+                vec![Action::RescanLibrary]
             }
             crate::settings::ROW_BATTERY => {
                 // Was a toggle in place. It is a chevron into the Device screen now — the care
@@ -4353,7 +4374,21 @@ impl App {
         v
     }
 
+    /// Label state for Settings ▸ Database. See the `rescanning` field for why it has two exits.
+    pub fn set_rescanning(&mut self, on: bool) { self.rescanning = on; }
+    pub fn rescanning(&self) -> bool { self.rescanning }
+    /// What Settings ▸ Database shows: progress while a scan is outstanding, otherwise the size of
+    /// the library it would rescan — which is the number people open that row to check.
+    pub fn database_label(&self) -> String {
+        if self.rescanning { return "Rescanning…".to_string(); }
+        let n = self.library().songs.len();
+        if n == 0 { return "Empty".to_string(); }
+        format!("{n} tracks")
+    }
+
     pub fn set_library(&mut self, lib: Library) {
+        // A reloaded library is the scan's answer arriving — see the `rescanning` field.
+        self.rescanning = false;
         self.lib = lib;
         self.az_memo = None;   // a new library is a new set of letters
         self.lib_idx = 0;
@@ -4963,7 +4998,20 @@ impl App {
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
         self.reconcile_playing(np.playing);
-        let theme = Theme::for_mode(self.night, self.accent);
+        // NIGHT SPENDS THE BRIGHTNESS ROW ON THE PALETTE, NOT THE BACKLIGHT. In night the shell
+        // pins the backlight to raw 1 — the dimmest lit state this panel has — so the row would
+        // otherwise do nothing at all in the theme you reach for in the dark. Scaling the palette
+        // instead keeps it working, and it is the only remaining way to emit less light: below the
+        // backlight floor there is only backlight OFF, which on this transmissive panel is black.
+        let theme = {
+            let t = Theme::for_mode(self.night, self.accent);
+            if self.night {
+                let lvl = (self.brightness.clamp(1, 5) - 1) as usize;
+                t.scaled(Theme::NIGHT_LEVEL_PCT[lvl])
+            } else {
+                t
+            }
+        };
         match self.current() {
             Screen::Lock => {
                 let lk = crate::lock::Lock {
@@ -5315,6 +5363,7 @@ impl App {
                 // the armed state is impossible to miss because it replaces the value in place.
                 let boot_stock_lbl = if self.boot_stock_armed { "TAP AGAIN" } else { "SONY" };
                 let clock_lbl = self.clock_label(np.clock);
+                let db_label = self.database_label();
                 let view = crate::settings::SettingsView {
                     night: self.night,
                     viz_name: crate::viz::name(self.viz_kind),
@@ -5322,6 +5371,7 @@ impl App {
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
                     device: &self.device_summary(),
+                    database: &db_label,
                     storage: self.storage_label(),
                     sleep: &sleep_lbl,
                     brightness: &brightness_lbl,
@@ -9140,6 +9190,37 @@ mod tests {
         assert_eq!(a.bt_ldac_quality(), 3);
         a.set_bt_codec(99); // wraps into range, never panics
         assert!((a.bt_codec() as usize) < crate::bluetooth::CODECS.len());
+    }
+
+    /// Settings ▸ Database asks for a rescan, says so while one is out, and STOPS saying so.
+    ///
+    /// The stuck-label case is the one worth pinning: a scan that finds nothing changed writes
+    /// nothing, so no library ever comes back, and a label cleared only by `set_library` would read
+    /// "Rescanning…" for the rest of the session exactly when the answer was "already up to date".
+    #[test]
+    fn the_database_row_asks_for_a_rescan_and_the_label_always_recovers() {
+        let mut a = open_from_menu(Screen::Settings);
+        for _ in 0..crate::settings::ROW_DATABASE {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.settings_sel, crate::settings::ROW_DATABASE);
+        assert!(!a.rescanning(), "nothing has been asked for yet");
+
+        assert_eq!(a.press(Button::Select), vec![Action::RescanLibrary]);
+        assert!(a.rescanning());
+        assert_eq!(a.database_label(), "Rescanning…");
+
+        // Exit 1: a reloaded library arrives (the scan found something).
+        a.set_library(Library::default());
+        assert!(!a.rescanning(), "a reloaded library ends the rescan state");
+        assert_eq!(a.database_label(), "Empty", "no tracks -> Empty, never a bare number");
+
+        // Exit 2: the scan changed nothing, so no library ever comes back. cinder-ffi's deadline
+        // clears it; the label must not be able to stick on its own.
+        a.press(Button::Select);
+        assert!(a.rescanning());
+        a.set_rescanning(false);
+        assert_ne!(a.database_label(), "Rescanning…", "the label outlived the scan");
     }
 
     #[test]
