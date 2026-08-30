@@ -981,3 +981,49 @@ no discharging intervals yet — unplug and use it for a while
 ```
 
 It did settle the battery-care question though — see `analysis/RE_battery.md`.
+
+## Panel backlight — the PWM path is a kernel panic (2026-08-30)
+
+Chasing "lowest possible usable screen". `brightness` bottoms out at 1 of 255 and wampy records that
+1 is still too bright in a dark room (`artifacts/repos/wampy/not-done.md`), with an unexplored `duty`
+node beside it. Measured state with the panel at its dimmest:
+
+```
+/sys/class/leds/lcd-backlight/brightness  1      0666
+                              duty        21     0664 root:root
+                              div         0      0664 root:root
+                              frequency   32000  0444
+```
+
+**Writing `duty` panics the kernel.** One write, as root over adb, took the device down; `/proc/last_kmsg`:
+
+```
+[643.272429] (0)[807:sh]Unable to handle kernel NULL pointer dereference at virtual address 00000000
+ CPU 0, nested_panic_time=0
+Nested panic
+```
+
+807 was the writing shell. A `cinder-backlight` setuid helper had been written to expose duty/div to
+the app; it was **deleted** rather than shipped — it would have handed the app a reboot button, and
+reading those nodes needs no privilege anyway (0664 root:root leaves others readable).
+
+No BLS tunables exist in sysfs (`find /sys -iname '*bls*'` → only mtkfb device dirs), and
+`/sys/kernel/debug/dispsys` belongs to the driver that just panicked. So the safe dimming range is
+exactly what `brightness` exposes.
+
+**The real defect was that Cinder wasn't using that range.** The curve was `{15,30,50,70,100}` percent
+of max — linear, on a quantity the eye reads logarithmically — so the lowest step sat at 38 raw of
+255 against a hardware floor of 1, and the darkest lit state reachable at all (night theme, level 1)
+was 3. Replaced with a geometric ladder expressed in per-mille, because percent cannot express the
+bottom of the range (1% of 255 is 2):
+
+| UI level | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| day raw, was | 38 | 76 | 127 | 178 | 255 |
+| day raw, now | **1** | 4 | 16 | 64 | 255 |
+| night raw, now | 1 | 1 | 1 | 5 | 20 |
+
+Level 5 is unchanged, so no existing setting got brighter. Night flattens across the lowest three
+levels because day is already at the floor there — correct, not a regression.
+
+Still needs eyes: which of levels 1–3 is the lowest *usable* one, in a dark room and in daylight.

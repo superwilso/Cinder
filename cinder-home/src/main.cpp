@@ -1734,7 +1734,6 @@ void set_backlight(int night) {
 // Night theme as a percentage of the current day level. 8% of the level-1 day value (38 of 255)
 // lands on 3 raw units — dim enough to read in the dark without lighting the room, and well below
 // the old fixed 7.
-static const int NIGHT_PCT = 8;
 
 void recompute_day_level() {
     if (!g_bl_read) load_bl_cfg();
@@ -1745,7 +1744,32 @@ void recompute_day_level() {
     // exists for: an auto-detected node or max_brightness that produces an unreadable panel, where
     // the UI you would use to fix it is the thing that is unreadable.
     if (g_bl.day_pinned) return;
-    static const int pct[5] = { 15, 30, 50, 70, 100 };
+    // A GEOMETRIC LADDER, NOT A LINEAR ONE. This was { 15, 30, 50, 70, 100 } percent of
+    // max_brightness, which put the lowest step at 38 raw units of 255 — and the eye reads
+    // brightness roughly logarithmically, so a linear curve spends four of its five steps in the
+    // top half of the range and none of them near the bottom. The panel's floor is 1. Cinder's
+    // dimmest DAY level was 38× that, and the darkest lit state it could reach at all (night theme
+    // at level 1) was 3. Reported as the screen still being too bright in a dark room, which is the
+    // same wall wampy hit on this hardware and wrote up in not-done.md.
+    //
+    // Per-mille rather than percent because percent cannot express the bottom of this range: 1% of
+    // 255 is 2, and the steps that matter here are below that. Each step is ~4x the one under it,
+    // so level 1 sits on the hardware floor and level 5 is unchanged at full — nobody's existing
+    // setting gets brighter, and the top of the scale still means the same thing.
+    //
+    // WHY NOT THE PWM. There is a real dimming control below `brightness` — the MediaTek LED
+    // driver's `duty`, sitting at 21 while brightness was at its floor of 1. It is not usable:
+    // writing /sys/class/leds/lcd-backlight/duty took the KERNEL down on this firmware, measured
+    // 2026-08-30 — "Unable to handle kernel NULL pointer dereference at virtual address 00000000"
+    // in /proc/last_kmsg, attributed to the writing shell, followed by a nested panic and a reboot.
+    // So the backlight range this file can safely use is exactly what `brightness` exposes, and the
+    // fix is to USE it rather than to reach under it.
+    // DAY OWNS THE INCREMENTS, NIGHT OWNS THE FLOOR. The ladder starts one rung ABOVE the panel's
+    // minimum so that the night theme has somewhere lower to be: night is pinned to raw 1 below,
+    // the dimmest lit state the hardware has, and a day curve that also bottomed out at 1 would
+    // make the theme toggle do nothing at the bottom of the scale. Still geometric, still ending at
+    // full — level 5 has never changed.
+    static const int permille[5] = { 8, 31, 125, 500, 1000 };
     int lvl = cinder_get_brightness();          // 0..5 from cinder-ffi
     // LEVEL 0 = BACKLIGHT FULLY OFF, with the app still running and still taking input.
     //
@@ -1757,7 +1781,7 @@ void recompute_day_level() {
     // So the escape does not depend on being able to see anything.
     if (lvl == 0) { g_bl.day = 0; g_bl.night = 0; return; }
     if (lvl < 1 || lvl > 5) lvl = 4;
-    g_bl.day = g_bl.max * pct[lvl - 1] / 100;
+    g_bl.day = g_bl.max * permille[lvl - 1] / 1000;
     if (g_bl.day < 1) g_bl.day = 1;             // never fully dark
     // NIGHT FOLLOWS THE BRIGHTNESS ROW. It used to be a fixed 3% of max_brightness computed once
     // in load_bl_cfg(), which had two consequences: the Brightness row did nothing at all while
@@ -1768,10 +1792,19 @@ void recompute_day_level() {
     // Still floored at 1 rather than 0: this one IS persisted, and a persisted setting that blanks
     // the panel would hide the Settings screen needed to undo it. Level 0 is the transient escape
     // for true darkness, and it now works in night theme too (see set_backlight).
-    if (!g_bl.night_pinned) {
-        g_bl.night = g_bl.day * NIGHT_PCT / 100;
-        if (g_bl.night < 1) g_bl.night = 1;
-    }
+    //
+    // NIGHT IS THE FLOOR, FLAT, AT EVERY LEVEL. It used to be a percentage of the day level, which
+    // made it track the brightness row — sensible while the day curve was linear and its bottom
+    // step was 38 raw, useless once the curve became geometric, because 8% of the low rungs floors
+    // to 1 anyway and 8% of the high ones is brighter than a dark room wants. Night is not "a bit
+    // less than day": it is the dimmest lit state this panel has, which is raw 1, and it is the
+    // same 1 whatever the day level happens to be. Reported directly — every level was usable and
+    // all of them were still too bright.
+    //
+    // Below this there is only backlight OFF, which on a transmissive panel is black. See the
+    // brightness field's note in nav.rs for the parked level-0 feature and what it needs.
+    if (!g_bl.night_pinned)
+        g_bl.night = 1;
 }
 
 // When the backlight was last taken to 0 by the brightness row. The restore is debounced against
@@ -2486,7 +2519,7 @@ static void bt_vol_listener_start() {
 
 // The level the sink last told us it was at, in UI steps. -1 = it has never said. This is the ONLY
 // truth about the sink's volume that exists — there is no getter, and `SetCurrentVolume` is inert
-// on this hardware (see bt_send_absolute_volume) — so the connect-time restore below closes its
+// on this hardware (measured — see the SetCurrentVolume block below) — so the connect-time restore below closes its
 // loop on this value rather than on any return code.
 static int g_bt_vol_seen = -1;
 
@@ -2573,34 +2606,45 @@ static void bt_apply_enhanced_mode(const char* why) {
     } catch (...) { clog_("bt-enh: SetControlAbsoluteVolume threw"); }
 }
 
-// Push the UI's Bluetooth level at the sink. `up` only matters on the step fallback — with absolute
-// volume the UI has already moved its level and we just send where it landed.
-// Defined with the connect-time restore below, which owns the UI-steps -> AVRCP 0..127 mapping so
-// the rocker and the restore cannot disagree about it.
-static bool bt_send_absolute_volume(int lvl);
+// Push the UI's Bluetooth level at the sink, as an AVRCP step. See the block below for why a step
+// is the whole path on this hardware and the absolute call is not made at all.
 
 static void apply_bt_volume(bool up) {
-    enum { VIDX_SetVolumeDown = 16, VIDX_SetVolumeUp = 17, VIDX_SetCurrentVolume = 34 };
+    enum { VIDX_SetVolumeDown = 16, VIDX_SetVolumeUp = 17 };
     try {
         void* x = bt_xmit();
         if (!x) { clog_("bt-vol: BtTransmitterServiceClient unavailable"); return; }
-        // `sent` is decided by the SERVICE, not by the capability read above it. SetCurrentVolume
-        // is `virtual bool` and returns false when it declines to transmit — which it does, on a
-        // sink whose support flipped between the read and the call. Falling through to the step
-        // call in the same press is what makes a flapping link still track the rocker.
-        bool sent = false;
-        if (bt_use_absolute_volume()) {
-            // UI steps -> the AVRCP 0..127 scale, in bt_send_absolute_volume so the rocker and the
-            // connect-time restore cannot disagree about the mapping. Since 2026-08-18
-            // CINDER_BT_VOL_MAX *is* 127, so it is an identity map and one press moves the sink by
-            // exactly one unit — the finest Bluetooth allows, absolute volume being 7 bits.
-            sent = bt_send_absolute_volume(cinder_get_bt_volume());
-            if (!sent) clog_("bt-vol: SetCurrentVolume REFUSED — falling back to a step");
-        }
-        if (!sent) {
-            typedef int (*fn0)(void*);
-            ((fn0)bt_slot(x, up ? VIDX_SetVolumeUp : VIDX_SetVolumeDown))(x);
-        }
+        // THE STEP, UNCONDITIONALLY — and NOTHING may be allowed to skip it.
+        //
+        // This used to send SetCurrentVolume first and step only `if (!sent)`. That read as a
+        // fallback and was not one: the absolute sender returned true the moment it had
+        // TRANSMITTED (deliberately — see its comment: the return value carries nothing, so it
+        // reports the only thing it honestly can). So `sent` was true on every press where the
+        // sink claimed absolute support, the step became unreachable, and on a sink where absolute
+        // is inert the rocker did nothing at all.
+        //
+        // That is exactly this hardware. Measured 2026-08-26 on a live LDAC link whose three
+        // capability bits ALL say yes: three SetCurrentVolume calls produced no notification and
+        // no audible change, four step calls produced four notifications. The block above this
+        // function had already written down the consequence — "the rocker has been working purely
+        // by always falling through to a step" — and then the change that removed the return-value
+        // check closed the very fall-through it was describing. Reported as Bluetooth volume being
+        // dead while the 3.5 mm jack was fine.
+        //
+        // So the step is now the whole path. It is the call this device answers, every step comes
+        // back as an OnNotifyChangeVolume carrying the sink's real level (which is what keeps the
+        // bar honest), and AVRCP key events are the universally implemented half of the profile —
+        // which is why steps-only is also the behaviour that was working before the regression.
+        //
+        // SetCurrentVolume is NOT sent alongside it. Sending both would double-move a sink that
+        // honours absolute: the absolute call puts it at the UI level, the step then adds ~4 units
+        // of 127, and since the bar re-syncs from the sink's own notification the pair would walk
+        // each other up the scale a press at a time. Re-enabling absolute needs evidence that a
+        // given sink honours it — a notification arriving from an absolute write and nothing else
+        // — and there is no such probe yet. Precision is the only thing given up: a step is ~4
+        // units where absolute would have been 1.
+        typedef int (*fn0)(void*);
+        ((fn0)bt_slot(x, up ? VIDX_SetVolumeUp : VIDX_SetVolumeDown))(x);
     } catch (...) {
         clog_("bt-vol: volume call threw");
     }
@@ -2639,24 +2683,15 @@ static void apply_bt_volume(bool up) {
 // and what their own buttons set — and `bt_vol_drain_notify` adopts whatever it reports, so the bar
 // follows the headphones instead of pretending to command them.
 //
-// The absolute call is still MADE on a rocker press: it is one cheap IPC, it is correct on a sink
-// that honours it, and nothing here proves the next pair behaves like this one. What changed is
-// that its return is no longer read as an answer, and the step no longer depends on it.
-static bool bt_send_absolute_volume(int lvl) {
-    enum { VIDX_SetCurrentVolume = 34 };
-    if (lvl < 0) lvl = 0;
-    if (lvl > CINDER_BT_VOL_MAX) lvl = CINDER_BT_VOL_MAX;
-    try {
-        void* x = bt_xmit();
-        if (!x) return false;
-        const unsigned char v = (unsigned char)(lvl * 127 / CINDER_BT_VOL_MAX);
-        typedef int (*fnu)(void*, const unsigned char*);
-        ((fnu)bt_slot(x, VIDX_SetCurrentVolume))(x, &v);
-        // Deliberately NOT the return value. "We transmitted" is all this can honestly report;
-        // whether the sink moved is only ever knowable from OnNotifyChangeVolume.
-        return true;
-    } catch (...) { clog_("bt-vol: SetCurrentVolume threw"); return false; }
-}
+// THE SENDER IS GONE, along with the call. It used to be kept on the theory that the absolute write
+// was "one cheap IPC, correct on a sink that honours it" — but paired with a step it double-moves
+// such a sink (absolute puts it at the UI level, the step then adds ~4 units of 127, and the bar
+// re-syncs from the sink's own notification, so the two walk each other up the scale), and it was
+// keeping it that produced the regression above: a helper that always returned true made the step
+// unreachable and Bluetooth volume did nothing at all. Re-enabling it needs evidence that a given
+// sink honours absolute — a notification arriving from an absolute write and nothing else — and
+// there is no such probe. A function that only makes sense once that probe exists is better absent
+// than sitting here looking callable.
 
 // ── each output restores its OWN level when the output switches ─────────────────────────────
 //
@@ -6692,6 +6727,103 @@ static void fm_btout_fn() {
 // Carry out a navigator action via the audio/effect shims. Volume goes to the configured
 // backend (built-in CXD3778GF defaults, overridable by conf); play-by-index hands PlayerService
 // a NodeTrackSequence built from the pending-play list the UI resolved.
+// ── Library rescan: ask Sony's MediaStore to re-read the music tree ─────────────────────────
+//
+// This is the gap that made new music invisible. `/db/MTPDB.dat` is written by MediaStoreService;
+// the stock Qt app is what used to ask it to rescan after a sync, and replacing that app meant
+// nothing ever asked again. Measured 2026-08-30 before this existed: 7 albums / 68 tracks on the
+// device and absent from the database, and 84 rows pointing at files that had been deleted.
+//
+// NO VTABLE SLOTS ARE GUESSED. libMediaStoreServiceClient.so exports all of this concretely, so the
+// symbols below are bound by their exact mangled names (`nm -D`) rather than by re-declaring Sony's
+// classes — a hand-written class has to reproduce the object LAYOUT as well as the name, and
+// getting a member offset wrong writes through a live service while every symbol still resolves.
+//
+// WHY SetConfig FIRST. Scan() passes an EMPTY root string of its own, so where it scans comes
+// entirely from the service's configuration — and in our process that configuration starts empty.
+// Without it Scan returns 20 and does nothing; with it Scan returns 0 and the store is rewritten.
+// Verified end to end on device: a planted album appeared (3424 -> 3425 audio rows) and its
+// deletion was picked up on the next scan (3425 -> 3424).
+//
+// The values are the device's real content layout — /data/mnt/{internal,external,external1,limited}
+// are the symlinks prepare_contentroot.sh makes, and MUSIC/LEARNING are the category directories
+// the database's own parent-0 rows use. Overridable, because a different model could differ and an
+// assumption baked into a binary is not one anybody can fix in the field.
+class IMediaStoreService;   // opaque: `P18IMediaStoreService` in the mangling is a GLOBAL-scope class
+extern "C" {
+void* ms_get_instance()
+    asm("_ZN3pst8services10mediastore17MediaStoreService11GetInstanceEv");
+void  ms_set_config3(void* self, const void* a, const void* b, const void* c, const void* dirs)
+    asm("_ZN3pst8services10mediastore17MediaStoreService9SetConfigERKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEESB_SB_RKNS3_6vectorIS9_NS7_IS9_EEEE");
+void* ms_scanner_ctor(void* self, void* store)
+    asm("_ZN3pst8services12mediascanner12MediaScannerC1EP18IMediaStoreService");
+int   ms_scanner_scan(void* self, void* listener, int lang)
+    asm("_ZN3pst8services12mediascanner12MediaScanner4ScanEPNS1_21IMediaScannerListenerENS_12mediascanner10language_tE");
+}
+
+// Defaults, overridable by /contents/cinder_mediastore.conf (db=, root=, extra=, dirs=).
+static char g_ms_db[128]    = "/db/MTPDB.dat";
+static char g_ms_root[128]  = "/data/mnt/";
+static char g_ms_extra[128] = "";
+static char g_ms_dirs[256]  = "MUSIC,LEARNING";
+static bool g_ms_read = false;
+
+static void load_mediastore_cfg() {
+    g_ms_read = true;
+    FILE* f = std::fopen("/contents/cinder_mediastore.conf", "r");
+    if (!f) return;
+    char line[320];
+    while (std::fgets(line, sizeof line, f)) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        char* eq = std::strchr(line, '='); if (!eq) continue; *eq = 0;
+        char* k = line; char* v = eq + 1;
+        char* nl = std::strpbrk(v, "\r\n"); if (nl) *nl = 0;
+        if      (!std::strcmp(k, "db"))    std::strncpy(g_ms_db,    v, sizeof g_ms_db - 1);
+        else if (!std::strcmp(k, "root"))  std::strncpy(g_ms_root,  v, sizeof g_ms_root - 1);
+        else if (!std::strcmp(k, "extra")) std::strncpy(g_ms_extra, v, sizeof g_ms_extra - 1);
+        else if (!std::strcmp(k, "dirs"))  std::strncpy(g_ms_dirs,  v, sizeof g_ms_dirs - 1);
+    }
+    std::fclose(f);
+    clog_("mediastore: applied /contents/cinder_mediastore.conf");
+}
+
+// Non-capturing so it converts to run_guarded's plain function pointer.
+static void media_rescan() {
+    if (!g_ms_read) load_mediastore_cfg();
+    void* svc = ms_get_instance();
+    if (!svc) { clog_("rescan: MediaStoreService unavailable"); return; }
+    // MediaScanner's ctor wants the INNER binder proxy, not the singleton. Read off the singleton at
+    // +4, which is where Sony's own Scan() fetches the object it makes the call through — taken
+    // from the disassembly rather than assumed, and checked for NULL because a service still coming
+    // up would otherwise be dereferenced.
+    void* proxy = *reinterpret_cast<void**>(reinterpret_cast<char*>(svc) + 4);
+    if (!proxy) { clog_("rescan: MediaStore proxy not up yet — try again in a moment"); return; }
+
+    std::string a(g_ms_db), b(g_ms_root), c(g_ms_extra);
+    std::vector<std::string> dirs;
+    for (const char* p = g_ms_dirs; *p; ) {
+        const char* comma = std::strchr(p, ',');
+        if (comma) { dirs.push_back(std::string(p, (size_t)(comma - p))); p = comma + 1; }
+        else { dirs.push_back(std::string(p)); break; }
+    }
+    ms_set_config3(svc, &a, &b, &c, &dirs);
+
+    // 64 bytes for a 16-byte object (vptr, store, listener, listener — read from the ctor), zeroed
+    // first so a firmware whose MediaScanner carries more state writes into slack rather than off
+    // the end.
+    unsigned long long scanner[8];
+    std::memset(scanner, 0, sizeof scanner);
+    ms_scanner_ctor(scanner, proxy);
+    // NULL listener, deliberately: Sony's OnProgress/OnFinished both `cbz` it before use, so this is
+    // an explicitly handled case, and the library reload is driven by the db_signature watcher in
+    // the housekeeping block rather than by a callback. That keeps the scan's completion path the
+    // same one a scan started by anything else already takes.
+    const int rc = ms_scanner_scan(scanner, nullptr, 0);
+    char m[96];
+    std::snprintf(m, sizeof m, "rescan: MediaScanner::Scan rc=%d (0 = accepted; 20 = not configured)", rc);
+    clog_(m);
+}
+
 void carry_out(int act) {
     // PAINT THE UI'S ANSWER BEFORE DOING THE SLOW PART.
     //
@@ -6846,6 +6978,15 @@ void carry_out(int act) {
             // Just treat the change itself as activity so picking a short timeout doesn't blank the
             // screen a moment later while the user is still reading the row.
             g_last_input_ms = now_ms();
+            break;
+        case CINDER_ACT_LIBRARY_RESCAN:
+            // Guarded like every other Sony IPC: a hung MediaStore then costs this one action
+            // rather than tripping the per-frame watchdog. The scan itself is asynchronous — Scan()
+            // returns as soon as the request is queued (measured: rc back immediately, the store
+            // rewritten within ~25 s for 3,400 tracks) — so this does not block the render thread
+            // for the length of a scan.
+            clog_("rescan: Settings ▸ Database — asking MediaStore to re-scan");
+            run_guarded("carry_out: library rescan", 20, media_rescan);
             break;
         case CINDER_ACT_RESTART:  power_action(true);  break;
         case CINDER_ACT_POWER_OFF: power_action(false); break;

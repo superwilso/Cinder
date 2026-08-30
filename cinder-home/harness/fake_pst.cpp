@@ -296,6 +296,48 @@ void* _ZN3pst8services40UsbDeviceAudioPlayerServiceClientFactory14CreateInstance
     return &g_obj_uac;
 }
 
+// ── MediaStore / MediaScanner: the library rescan ───────────────────────────────────────────
+//
+// main.cpp binds these by their exact mangled names (see its `media_rescan`), so the harness has to
+// define the same names to link. They are recorded rather than simulated: what a scenario needs to
+// assert is that a rescan was ASKED FOR, and that it was configured before it was asked — the scan
+// itself happens inside a Sony service that has no host equivalent.
+//
+// The object layout matters in one place. MediaScanner's ctor takes the INNER proxy, which main.cpp
+// reads from the singleton at +4; so the fake singleton must have a non-null pointer there or the
+// real code's NULL guard fires and the rescan silently does nothing on the host.
+static void* g_ms_proxy_slot[4];   // [1] is the "+4" the real code reads
+static bool  g_ms_configured = false;
+
+void* _ZN3pst8services10mediastore17MediaStoreService11GetInstanceEv(void) {
+    cinder_harness_record("pst:MediaStoreService::GetInstance", 0);
+    long long v = 0;
+    if (cinder_harness_scripted("pst:MediaStoreService::GetInstance", &v) && !v)
+        return nullptr;   // service not up — the same race the DB retry ladder exists for
+    g_ms_proxy_slot[1] = (void*)&g_ms_proxy_slot[2];   // non-null proxy at singleton+4
+    return &g_ms_proxy_slot[0];
+}
+
+void _ZN3pst8services10mediastore17MediaStoreService9SetConfigERKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEESB_SB_RKNS3_6vectorIS9_NS7_IS9_EEEE(
+        void*, const void*, const void*, const void*, const void*) {
+    g_ms_configured = true;
+    cinder_harness_record("pst:MediaStoreService::SetConfig", 0);
+}
+
+void* _ZN3pst8services12mediascanner12MediaScannerC1EP18IMediaStoreService(void* self, void*) {
+    cinder_harness_record("pst:MediaScanner::ctor", 0);
+    return self;
+}
+
+int _ZN3pst8services12mediascanner12MediaScanner4ScanEPNS1_21IMediaScannerListenerENS_12mediascanner10language_tE(
+        void*, void*, int) {
+    // 20 unconfigured, 0 accepted — the device's own answer, and the distinction the whole feature
+    // turned on. A scenario that scans without configuring first should see the failure, not a pass.
+    const int rc = g_ms_configured ? 0 : 20;
+    cinder_harness_record("pst:MediaScanner::Scan", rc);
+    return rc;
+}
+
 // ── the fake radio, as a test fixture ────────────────────────────────────────────────────────
 void cinder_harness_bt_reset(void) {
     g_radio_on = false; g_connected = false; g_retry_mode = false;

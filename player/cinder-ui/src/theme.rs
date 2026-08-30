@@ -120,6 +120,13 @@ pub struct Theme {
     /// Fill behind the highlighted list/menu row (subtle wash, theme- and accent-aware).
     pub row_sel: Rgb888,
     pub night: bool,
+    /// Night's extra dimming, as a percentage, 100 = none. Carried on the theme rather than passed
+    /// separately because the things that need it are not theme colours: decoded album art and the
+    /// accent swatches are raw pixels and raw palette entries, so scaling the palette alone left
+    /// them at FULL brightness — a bright cover at the dimmest night step lit the room, which is
+    /// the whole thing the step exists to avoid. Anything drawing a colour the palette did not
+    /// supply must run it through `scale_color`, and `art::draw_image` applies it per pixel.
+    pub dim_pct: u32,
 }
 
 /// Scale an `0xRRGGBB` toward black by `pct`/100, per channel. Const so the palettes stay
@@ -155,6 +162,7 @@ impl Theme {
             acc_ink: rgb(p.ink_d),
             row_sel: rgb(p.sel_d),
             night: false,
+            dim_pct: 100,
         }
     }
 
@@ -185,6 +193,7 @@ impl Theme {
             acc_ink: rgb(p.ink_n),
             row_sel: d(p.sel_n),
             night: true,
+            dim_pct: 100,
         }
     }
 
@@ -195,6 +204,67 @@ impl Theme {
         } else {
             Self::day_with(a)
         }
+    }
+
+    /// How far the night palette is scaled toward black for each brightness level, 1..=5.
+    ///
+    /// THIS IS THE ONLY WAY DOWN LEFT. The panel's backlight bottoms out at raw 1 of 255 and that
+    /// is still too bright in a dark room (reported directly, after the curve was already made
+    /// geometric). Under it there is nothing: `duty`, the PWM control, KERNEL-PANICS this firmware
+    /// when written, and backlight 0 on a transmissive HX8379C is simply black.
+    ///
+    /// But less light can still be emitted, by asking the panel to pass less of it. Scaling every
+    /// colour toward black at a fixed backlight drops the light actually leaving the screen, and it
+    /// does so with the CONTRAST RATIO INTACT — every colour moves by the same factor, so the
+    /// palette stays as legible relative to itself as it was, just darker. That is what makes this
+    /// usable rather than a broken-looking screen.
+    ///
+    /// Night only. In day the brightness row drives the backlight, which is the right control when
+    /// there is backlight range to spend; night pins the backlight to its floor and spends this
+    /// instead, so the row keeps working in both themes and means "dimmer" in both.
+    pub const NIGHT_LEVEL_PCT: [u32; 5] = [22, 34, 52, 74, 100];
+
+    /// Scale the whole palette toward black by `pct`/100. `night` and the background are left
+    /// alone — bg is already true black, and the flag is state rather than colour.
+    pub fn scaled(self, pct: u32) -> Self {
+        if pct >= 100 {
+            return self;
+        }
+        use embedded_graphics::pixelcolor::RgbColor;
+        let s = |c: Rgb888| -> Rgb888 {
+            Rgb888::new(
+                ((c.r() as u32) * pct / 100) as u8,
+                ((c.g() as u32) * pct / 100) as u8,
+                ((c.b() as u32) * pct / 100) as u8,
+            )
+        };
+        Theme {
+            bg: self.bg,
+            panel: s(self.panel),
+            line: s(self.line),
+            ink: s(self.ink),
+            dim: s(self.dim),
+            faint: s(self.faint),
+            acc: s(self.acc),
+            acc_ink: s(self.acc_ink),
+            row_sel: s(self.row_sel),
+            night: self.night,
+            dim_pct: pct,
+        }
+    }
+
+    /// Apply the night dim to a colour the palette did not provide (album art average, an accent
+    /// swatch, anything raw). No-op at full brightness.
+    pub fn scale_color(&self, c: Rgb888) -> Rgb888 {
+        use embedded_graphics::pixelcolor::RgbColor;
+        if self.dim_pct >= 100 {
+            return c;
+        }
+        Rgb888::new(
+            ((c.r() as u32) * self.dim_pct / 100) as u8,
+            ((c.g() as u32) * self.dim_pct / 100) as u8,
+            ((c.b() as u32) * self.dim_pct / 100) as u8,
+        )
     }
 }
 
@@ -220,6 +290,31 @@ mod tests {
         assert_eq!(n.acc, rgb(dim_rgb(0x863810, Theme::NIGHT_DIM_PCT)));
         assert_eq!(n.acc_ink, rgb(0x000000), "ink ON the accent must not be dimmed too");
         assert_eq!(n.row_sel, rgb(dim_rgb(0x0f0c0a, Theme::NIGHT_DIM_PCT)));
+    }
+
+    /// The night brightness ladder must actually emit less light at each step DOWN, and must not
+    /// destroy the palette doing it — every colour scales by the same factor, so the ordering that
+    /// makes the UI legible (ink > dim > faint) has to survive all the way to the dimmest step.
+    /// That invariant is the whole reason this is a scale rather than a per-colour re-pick.
+    #[test]
+    fn the_night_ladder_dims_monotonically_and_keeps_its_ordering() {
+        let lum = |c: Rgb888| c.r() as u32 * 2 + c.g() as u32 * 3 + c.b() as u32;
+        let base = Theme::night();
+        let mut prev = u32::MAX;
+        for (i, pct) in Theme::NIGHT_LEVEL_PCT.iter().enumerate().rev() {
+            let t = Theme::night().scaled(*pct);
+            let l = lum(t.ink);
+            assert!(l <= prev, "level {} is not dimmer than the one above it", i + 1);
+            prev = l;
+            // Ordering intact at every rung, including the dimmest.
+            assert!(lum(t.ink) >= lum(t.dim), "ink fell below dim at level {}", i + 1);
+            assert!(lum(t.dim) >= lum(t.faint), "dim fell below faint at level {}", i + 1);
+            assert!(t.night, "scaling must not change what theme this is");
+        }
+        // Level 5 is the untouched palette — nobody's night look changes until they ask for it.
+        assert_eq!(lum(Theme::night().scaled(100).ink), lum(base.ink));
+        // And the dimmest rung really is dimmer than the palette it came from.
+        assert!(lum(Theme::night().scaled(Theme::NIGHT_LEVEL_PCT[0]).ink) < lum(base.ink));
     }
 
     /// The point of the change: night must actually emit less light than it used to, and still
