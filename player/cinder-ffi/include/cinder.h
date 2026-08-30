@@ -185,7 +185,19 @@ typedef enum {
     CINDER_ACT_FM_SEEK = 42,
     CINDER_ACT_FM_SCAN = 43,
     /* Radio out over Bluetooth: the shell captures hw:0,1 and feeds the LDAC bridge. */
-    CINDER_ACT_FM_BT_OUT = 44
+    CINDER_ACT_FM_BT_OUT = 44,
+    /* Settings ▸ Database: ask Sony's MediaStore to RE-SCAN the library, the same way the stock app
+     * does. This is the one thing Cinder could never do: /db/MTPDB.dat is written by
+     * MediaStoreService, the stock Qt app is what used to ask it to rescan, and replacing that app
+     * meant nothing ever asked again — so music copied over USB-MSC stayed invisible and deleted
+     * music stayed listed (measured 2026-08-30: 7 albums / 68 tracks missing, 84 dead rows).
+     *
+     * The shell calls MediaStoreService::SetConfig + MediaScanner::Scan. NOTHING here reloads the
+     * library: the scan is asynchronous, and the housekeeping db_signature() watcher already
+     * notices the store changing and re-opens it within 10 s. Verified end to end on device
+     * 2026-08-30 — a planted album appeared (3424 -> 3425 rows) and its removal was picked up
+     * (3425 -> 3424). */
+    CINDER_ACT_LIBRARY_RESCAN = 45
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a

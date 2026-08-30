@@ -91,6 +91,8 @@ pub struct SettingsView<'a> {
     /// helpers the Device screen uses, so the row and the screen can never disagree about a number.
     pub device: &'a str,
     pub storage: &'a str,
+    /// Settings ▸ Database value: "N tracks", "Empty", or "Rescanning…" while a scan is out.
+    pub database: &'a str,
     pub sleep: &'a str,
     /// Brightness label, e.g. "3 / 5" (nav formats it from its 1..5 level).
     pub brightness: &'a str,
@@ -306,7 +308,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     for (i, a) in Accent::ALL.iter().enumerate() {
         let sx = swatch_x(i);
         let sy = cy - SW / 2;
-        fill_rect(c, sx, sy, SW, SW, a.swatch(t.night));
+        // Through the theme's dim: a swatch is a raw palette entry, not a theme colour, so at
+        // night it would otherwise be the brightest thing on a deliberately dark screen.
+        fill_rect(c, sx, sy, SW, SW, t.scale_color(a.swatch(t.night)));
         if *a == v.accent {
             // The ring is drawn in ink, not in the accent: on BONE the swatch already *is* near-ink,
             // so an accent-coloured ring would vanish on exactly one of the six.
@@ -346,10 +350,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     y = srow(c, t, f, y, sel == ROW_AUTO_OFF, "Auto power off", v.auto_off, false);
     // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
     y = srow(c, t, f, y, sel == ROW_STORAGE, "Storage", v.storage, false);
-    // Database: no chevron. The chevron is this screen's affordance for "tapping does something"
-    // (USB mode has one and acts), and this row has no arm in settings_activate — so a chevron here
-    // promised a rebuild that never ran.
-    y = srow(c, t, f, y, sel == ROW_DATABASE, "Database", "—", false);
+    // Database: CHEVRON, because tapping now does something. The row used to be drawn without one
+    // and with a "—" value, deliberately: it had no arm in settings_activate, and a chevron would
+    // have promised a rebuild that never ran. It runs now — it asks Sony's MediaStore to rescan the
+    // music tree, which is the thing Cinder could never do and the reason new music stayed
+    // invisible and deleted music stayed listed. The value carries the library size, so the row
+    // also answers "did it work" without leaving the screen.
+    y = srow(c, t, f, y, sel == ROW_DATABASE, "Database", v.database, true);
     // Device: chevron into the hardware's vital signs — battery, die temperatures, CPU clock,
     // memory, storage, uptime. It used to be a toggle in place for Sony's "Itawari" charging and
     // nothing else, which made the status-bar level the only hardware fact Cinder ever showed. The
@@ -392,7 +399,7 @@ mod tests {
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",
-            storage: "12.4 / 58 GB",
+            database: "3,424 tracks", storage: "12.4 / 58 GB",
             sleep: "30 MIN",
             brightness: "4 / 5",
             screen_off: "OFF",

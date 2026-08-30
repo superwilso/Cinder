@@ -171,6 +171,46 @@ impl Image {
 pub fn draw_image(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, opacity: f32) {
     let (br, bg, bb) = (t.bg.r(), t.bg.g(), t.bg.b());
     let op = opacity.clamp(0.0, 1.0);
+    // NIGHT DIM APPLIES TO PIXELS, NOT JUST TO THE PALETTE. Album art is decoded image data and
+    // owes nothing to the theme's colours, so scaling the palette left covers at full brightness —
+    // at the dimmest night step the UI went black and the artwork stayed blazing, which is exactly
+    // backwards. Reported directly.
+    //
+    // A 256-entry LOOKUP TABLE rather than a multiply per channel: a full cover is 230,400 pixels
+    // and three multiplies plus three divides each is real time on this CPU, where a table costs
+    // one load. Built only when the dim is actually on, so the day path is byte-for-byte the code
+    // it was before this existed and pays nothing.
+    let lut: Option<[u8; 256]> = if t.dim_pct >= 100 {
+        None
+    } else {
+        let mut l = [0u8; 256];
+        for (i, e) in l.iter_mut().enumerate() {
+            *e = ((i as u32) * t.dim_pct / 100) as u8;
+        }
+        Some(l)
+    };
+    if let Some(l) = lut {
+        for yy in 0..img.h {
+            let Some((skip, dst)) = c.row_run(y0 + yy as i32, x0, img.w) else { continue };
+            let base = (yy * img.w + skip) * 3;
+            let Some(src) = img.rgb.get(base..) else { continue };
+            if op >= 1.0 {
+                for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
+                    *d = ((l[s[0] as usize] as u32) << 16)
+                        | ((l[s[1] as usize] as u32) << 8)
+                        | l[s[2] as usize] as u32;
+                }
+            } else {
+                for (d, s) in dst.iter_mut().zip(src.chunks_exact(3)) {
+                    let r = l[lerp(br, s[0], op) as usize];
+                    let g = l[lerp(bg, s[1], op) as usize];
+                    let b = l[lerp(bb, s[2], op) as usize];
+                    *d = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+                }
+            }
+        }
+        return;
+    }
     // Row at a time. The per-pixel `put` this replaced re-checked four bounds and recomputed an
     // index for each of a full cover's 230,400 pixels; `row_run` does the clip once per row and
     // hands back a slice, so the inner loop is just a pack-and-store the optimiser can unroll.
@@ -444,7 +484,48 @@ mod tests {
         }
     }
 
+    /// THE NIGHT DIM HAS TO REACH THE PIXELS. Scaling the palette alone left album art at full
+    /// brightness — reported directly: the UI went dark at the dimmest night step and the cover
+    /// stayed blazing. Art is decoded image data and owes the theme nothing, so it only dims if
+    /// `draw_image` applies the factor itself.
+    #[test]
+    fn album_art_honours_the_night_dim() {
+        let img = Image { w: 2, h: 1, rgb: vec![0xff, 0x80, 0x40, 0xff, 0x80, 0x40] };
+
+        // Full brightness: untouched, byte for byte.
+        let mut c = Canvas::new();
+        draw_image(&mut c, &Theme::day(), 0, 0, &img, 1.0);
+        assert_eq!(c.buf[0], 0xff8040, "the day path must not alter a single pixel");
+
+        // Dimmed: every channel scaled by the same factor, so the image keeps its own balance.
+        let dim = Theme::night().scaled(50);
+        let mut c2 = Canvas::new();
+        draw_image(&mut c2, &dim, 0, 0, &img, 1.0);
+        let px = c2.buf[0];
+        let (r, g, b) = ((px >> 16) & 0xff, (px >> 8) & 0xff, px & 0xff);
+        assert_eq!((r, g, b), (0x7f, 0x40, 0x20), "art was not scaled by the night dim");
+        assert!(r > g && g > b, "scaling changed the image's colour balance");
+
+        // And the dimmest rung really is dimmer than the brightest one.
+        let mut c3 = Canvas::new();
+        draw_image(&mut c3, &Theme::night().scaled(Theme::NIGHT_LEVEL_PCT[0]), 0, 0, &img, 1.0);
+        assert!((c3.buf[0] >> 16) & 0xff < r, "the lowest night step is not the dimmest");
+    }
+
+    /// The accent swatches are raw palette entries, not theme colours — the same bypass as art.
+    #[test]
+    fn scale_color_dims_raw_palette_colours() {
+        use embedded_graphics::pixelcolor::RgbColor;
+        let full = Theme::night();
+        let dim = Theme::night().scaled(25);
+        let c = embedded_graphics::pixelcolor::Rgb888::new(200, 100, 40);
+        assert_eq!(full.scale_color(c), c, "no dim at 100% must be a no-op");
+        let d = dim.scale_color(c);
+        assert_eq!((d.r(), d.g(), d.b()), (50, 25, 10));
+    }
+
     /// An image blitted through the rewritten row-wise path must land exactly where the old
+    /// per-pixel one did, including when it hangs off an edge.    /// An image blitted through the rewritten row-wise path must land exactly where the old
     /// per-pixel one did, including when it hangs off an edge.
     #[test]
     fn draw_image_places_and_clips_correctly() {

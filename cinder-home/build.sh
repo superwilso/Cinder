@@ -142,6 +142,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lPlayerServiceClientUtil -lEffectCtrlDmp -lPowerMgrServiceClient \
      -lUsbDeviceAudioPlayerService -lBtCommonService -lBtTransmitterService \
      -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
+     "$SONYLIB/libMediaStoreServiceClient.so" \
      -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$OUT"
@@ -259,7 +260,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -lDisplayService \
      -lUsbMgrServiceFw \
      -lConnMgrService -lUsbDeviceConnectionService -lFuncMgrService \
-     -lEffectCtrlDmp "$REPO/artifacts/rootfs_mnt/lib/libasound.so" \
+     -lEffectCtrlDmp -lMediaStoreServiceClient "$REPO/artifacts/rootfs_mnt/lib/libasound.so" \
      -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$PROBE"

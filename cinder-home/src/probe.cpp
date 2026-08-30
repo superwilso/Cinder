@@ -6228,7 +6228,334 @@ static int fm_regmon() {
     return 0;
 }
 
+// ── --scan : ask Sony's MediaStore to RE-SCAN the library ────────────────────────────────────
+//
+// WHY THIS EXISTS. `/db/MTPDB.dat` is written by Sony's MediaStoreService, and the thing that used
+// to ASK it to rescan after music arrived was the stock Qt app that Cinder replaces. Cinder reads
+// that SQLite file and has never called MediaStore at all, so music copied over USB-MSC stays
+// invisible and deleted music stays listed. Measured 2026-08-26: 7 albums / 68 tracks pushed that
+// evening were absent from a DB frozen at 16:49 the previous day, and 84 rows pointed at files
+// that no longer existed. Both symptoms, one missing call.
+//
+// WHY IT IS SAFE TO TRY. Checklist rule 4 — never guess a vtable slot into a core Sony service —
+// is satisfied outright here, because NOTHING below is guessed. `libMediaStoreServiceClient.so`
+// exports the scanner as a CONCRETE class, so every entry point is a real dynamic symbol, taken
+// verbatim from `nm -D`:
+//
+//   _ZN3pst8services10mediastore17MediaStoreService11GetInstanceEv
+//   _ZN3pst8services12mediascanner12MediaScannerC1EP18IMediaStoreService
+//   _ZN3pst8services12mediascanner12MediaScanner4ScanEPNS1_21IMediaScannerListenerENS_12mediascanner10language_tE
+//   _ZN3pst8services12mediascanner12MediaScanner8ScanFileEPNS1_21IMediaScannerListenerERKNSt3__112basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEENS_12mediascanner10language_tE
+//   _ZN3pst8services12mediascanner12MediaScanner6CancelEv
+//   _ZN3pst8services12mediascanner12MediaScannerD1Ev
+//
+// They are bound by `asm()` label rather than by re-declaring Sony's classes, deliberately: a
+// hand-written class declaration has to reproduce the object LAYOUT correctly as well as the
+// name, and getting that subtly wrong is how you corrupt a service's memory while every symbol
+// still resolves. Binding the mangled name directly means the only thing that has to be right is
+// the argument list, which the mangling states explicitly.
+//
+// THE ONE PIECE OF ABI THAT IS INFERRED, AND HOW IT WAS READ RATHER THAN GUESSED. A listener is
+// an interface WE implement, so its vtable order is on us. It was read straight off the two call
+// sites in the shipped library (objdump, addresses as-is in the 08-26 firmware):
+//
+//   MediaScanner::OnFinished  fed8: ldr r0,[r0,#8]   feda: cbz r0,...  fee4: ldr ip,[r2,#8]
+//   MediaScanner::OnProgress  ff2c: ldr r0,[r0,#12]  ff2e: cbz r0,...  ff32: ldr ip,[r3,#12]
+//
+// so the user listener lives at MediaScanner+8 (finished) and +12 (progress), and is called
+// through vtable byte offsets 8 and 12 — slots 2 and 3. With the standard Itanium two-slot
+// destructor at 0 and 1, a class declared as { virtual ~L(); virtual OnFinished; virtual
+// OnProgress; } lands exactly there, which is what Listener below is.
+//
+// AND THE SAFETY NET UNDER THAT: both call sites `cbz` the listener first. A NULL listener is
+// explicitly handled by Sony's code, so `--scan go` can be run with no listener at all
+// (`--scan go nolisten`) and the scan still happens, just silently. That is the fallback if the
+// listener shape ever turns out to be wrong on another firmware.
+//
+// STAGING. Bare `--scan` INSPECTS ONLY: it brings the framework up, takes the singleton, and
+// prints what it found without scanning anything. `--scan go` is the one that acts.
+//
+//   cinder-probe --scan                    inspect: singleton + inner proxy, no scan
+//   cinder-probe --scan go [lang=N] [secs=N]  full library scan (default lang 0, watch 120 s)
+//   cinder-probe --scan go nolisten         same, with a NULL listener (no progress output)
+//   cinder-probe --scan file <path> [lang=N] rescan ONE file
+//
+// Cancel() is called on the way out of every path that started a scan, including the watchdog.
+
+class IMediaStoreService;  // opaque: `P18IMediaStoreService` in the mangling is a GLOBAL-scope class
+
+extern "C" {
+void* ms_get_instance()
+    asm("_ZN3pst8services10mediastore17MediaStoreService11GetInstanceEv");
+void* msc_ctor(void* self, void* store)
+    asm("_ZN3pst8services12mediascanner12MediaScannerC1EP18IMediaStoreService");
+void  msc_dtor(void* self)
+    asm("_ZN3pst8services12mediascanner12MediaScannerD1Ev");
+int   msc_scan(void* self, void* listener, int lang)
+    asm("_ZN3pst8services12mediascanner12MediaScanner4ScanEPNS1_21IMediaScannerListenerENS_12mediascanner10language_tE");
+int   msc_scan_file(void* self, void* listener, const void* path_std_string, int lang)
+    asm("_ZN3pst8services12mediascanner12MediaScanner8ScanFileEPNS1_21IMediaScannerListenerERKNSt3__112basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEENS_12mediascanner10language_tE");
+int   msc_cancel(void* self)
+    asm("_ZN3pst8services12mediascanner12MediaScanner6CancelEv");
+// Scan() itself passes an EMPTY root string to the service (the PC-relative literal at fdaa
+// resolves to ""), so WHERE it scans has to come from the service's own configuration. The
+// three-string GetConfig is the cheapest window onto that: all three are plain std::string
+// out-params, so it can be called without modelling Sony's Config struct.
+void  mss_get_config3(void* self, void* a, void* b, void* c)
+    asm("_ZN3pst8services10mediastore17MediaStoreService9GetConfigERNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEESA_SA_");
+// The 3-string + category-dirs overload. Used in preference to SetConfig(Config const&) — which is
+// what the stock app calls — because `Config` is an opaque struct whose layout would have to be
+// reproduced exactly, and getting a member offset wrong writes through a core service's memory
+// while every symbol still resolves. This overload takes the same fields as plain arguments, so
+// the only thing that has to be right is the argument list, which the mangling states outright.
+void  mss_set_config3(void* self, const void* a, const void* b, const void* c, const void* dirs)
+    asm("_ZN3pst8services10mediastore17MediaStoreService9SetConfigERKNSt3__112basic_stringIcNS3_11char_traitsIcEENS3_9allocatorIcEEEESB_SB_RKNS3_6vectorIS9_NS7_IS9_EEEE");
+}
+
+// The user-side listener. Slot order is fixed by the two call sites quoted above; do not reorder.
+namespace {
+class ScanListener {
+public:
+    virtual ~ScanListener() {}
+    virtual void OnFinished(int status) {          // vtable slot 2  (MediaScanner+8)
+        std::fprintf(stderr, "[cinder-probe] scan: *** OnFinished(status=%d) ***\n", status);
+        std::fflush(stderr);
+        finished = true; last_status = status;
+    }
+    virtual void OnProgress(int done, int total) { // vtable slot 3  (MediaScanner+12)
+        // Throttled to one line a second: a 3,400-track scan would otherwise emit thousands of
+        // lines through a serial-speed stderr and slow down the very thing being measured.
+        static long last_ms = 0;
+        long now = fm_now_ms();
+        ++progress_calls;
+        if (now - last_ms < 1000 && done != total) return;
+        last_ms = now;
+        std::fprintf(stderr, "[cinder-probe] scan: progress %d/%d (%u callbacks so far)\n",
+                     done, total, progress_calls);
+        std::fflush(stderr);
+    }
+    volatile bool finished = false;
+    volatile int  last_status = -1;
+    volatile unsigned progress_calls = 0;
+};
+} // namespace
+
+// The DB's whole observable state, so a scan that commits through a write-ahead log and leaves
+// the main file's 2-second-granularity vfat mtime untouched is still seen as a change. Same
+// reasoning (and the same failure) as main.cpp's db_signature().
+static void scan_db_stat(const char* tag) {
+    struct { const char* p; } files[] = {
+        {"/db/MTPDB.dat"}, {"/db/MTPDB.dat-wal"}, {"/db/MTPDB.dat-journal"},
+    };
+    for (unsigned i = 0; i < sizeof files / sizeof files[0]; ++i) {
+        struct stat st;
+        if (::stat(files[i].p, &st) != 0) {
+            if (i == 0) std::fprintf(stderr, "[cinder-probe] scan: %s %s ABSENT\n", tag, files[i].p);
+            continue;
+        }
+        std::fprintf(stderr, "[cinder-probe] scan: %s %-22s size=%lld mtime=%ld ino=%lu\n",
+                     tag, files[i].p, (long long)st.st_size, (long)st.st_mtime,
+                     (unsigned long)st.st_ino);
+    }
+    std::fflush(stderr);
+}
+
+// --scan config: candidate MediaStore configuration to install before anything is scanned.
+// SetConfig ON ITS OWN NEVER TOUCHES THE DATABASE — only Scan/ScanFile write. That is what makes
+// guessing here safe to iterate: install a candidate, read it straight back with GetConfig, and
+// judge it on the readback and on whether Scan stops returning 20. Nothing is scanned unless the
+// command line also says `go`.
+static const char* g_cfg_a = nullptr;
+static const char* g_cfg_b = nullptr;
+static const char* g_cfg_c = nullptr;
+static const char* g_cfg_dirs = nullptr;   // comma-separated category directories
+static bool g_cfg_set = false;
+
+static int  g_scan_mode = 0;      // 0 = inspect only, 1 = full scan, 2 = single file
+static int  g_scan_lang = 0;
+static int  g_scan_secs = 120;
+static bool g_scan_listen = true;
+static const char* g_scan_path = nullptr;
+
+static void scan_job_entry() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] scan: job running (fw=%p) — starting Pump() thread\n",
+                 (void*)&fw);
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) {
+        clog_("scan: pthread_create FAILED"); _exit(1);
+    }
+    usleep(300000);
+    std::fprintf(stderr, "[cinder-probe] scan: %u pump ticks before GetInstance\n", g_pump_ticks);
+
+    scan_db_stat("before ");
+
+    // MediaStoreService::GetInstance() is a lazy singleton: `new(28)` + ctor on first call, then
+    // the cached pointer. It cannot fail without crashing inside Sony's code, so a null here means
+    // the library did not load, not that the service is down.
+    wd_arm(12);
+    void* svc = ms_get_instance();
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] scan: MediaStoreService::GetInstance() = %p  "
+                 "BinderLastError=%d\n", svc, pst::core::Framework::GetBinderLastError());
+    if (!svc) { clog_("scan: no singleton — libMediaStoreServiceClient did not initialise"); _exit(2); }
+
+    // MediaScanner's ctor takes the INNER binder proxy, not the singleton. Read off the singleton
+    // at +4, which is where both GetMediaScanner (b842: ldr r0,[r5,#4]) and Scan itself
+    // (fdd4: ldr r0,[r5,#4]) fetch the object they make the IPC call through. Taking it directly
+    // avoids modelling GetMediaScanner()'s by-value (sret) return type, which the mangling does
+    // not state and which would have to be guessed.
+    void* proxy = *reinterpret_cast<void**>(reinterpret_cast<char*>(svc) + 4);
+    std::fprintf(stderr, "[cinder-probe] scan: inner IMediaStoreService* (singleton+4) = %p\n", proxy);
+    if (!proxy) { clog_("scan: inner proxy is NULL — the service side is not up"); _exit(3); }
+    void* proxy_vptr = *reinterpret_cast<void**>(proxy);
+    std::fprintf(stderr, "[cinder-probe] scan: proxy vptr = %p (non-null means a live C++ object)\n",
+                 proxy_vptr);
+
+    if (g_cfg_set) {
+        std::string a(g_cfg_a ? g_cfg_a : ""), b(g_cfg_b ? g_cfg_b : ""), c(g_cfg_c ? g_cfg_c : "");
+        std::vector<std::string> dirs;
+        if (g_cfg_dirs) {
+            const char* p = g_cfg_dirs;
+            while (*p) {
+                const char* comma = std::strchr(p, ',');
+                if (comma) { dirs.push_back(std::string(p, (size_t)(comma - p))); p = comma + 1; }
+                else { dirs.push_back(std::string(p)); break; }
+            }
+        }
+        std::fprintf(stderr, "[cinder-probe] scan: SetConfig(\"%s\", \"%s\", \"%s\", %u dir(s):",
+                     a.c_str(), b.c_str(), c.c_str(), (unsigned)dirs.size());
+        for (size_t i = 0; i < dirs.size(); ++i) std::fprintf(stderr, " \"%s\"", dirs[i].c_str());
+        std::fprintf(stderr, ") …\n");
+        std::fflush(stderr);
+        wd_arm(15);
+        mss_set_config3(svc, &a, &b, &c, &dirs);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] scan: SetConfig returned (void)  BinderLastError=%d\n",
+                     pst::core::Framework::GetBinderLastError());
+    }
+
+    // What does the service think it is scanning? Scan() supplies no path of its own, so if these
+    // come back empty the answer to "why did Scan return 20" is that nothing told MediaStore where
+    // the music lives — which is a SetConfig problem, not a scanner problem.
+    {
+        std::string a, b, c;
+        wd_arm(12);
+        mss_get_config3(svc, &a, &b, &c);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] scan: GetConfig -> [1]=\"%s\" [2]=\"%s\" [3]=\"%s\"\n",
+                     a.c_str(), b.c_str(), c.c_str());
+        std::fflush(stderr);
+    }
+
+    if (g_scan_mode == 0) {
+        clog_("scan: INSPECT ONLY — nothing was scanned. Re-run with `--scan go` to actually scan.");
+        _exit(0);
+    }
+
+    // 64 bytes for a 16-byte object (vptr, store, listener, listener — read from the ctor at
+    // fd06/fd0e). Oversized on purpose and zeroed first: if a different firmware's MediaScanner
+    // carries more state, it writes into slack instead of off the end of the buffer.
+    static unsigned long long scanner_buf[8];
+    std::memset(scanner_buf, 0, sizeof scanner_buf);
+    void* scanner = scanner_buf;
+    wd_arm(12);
+    msc_ctor(scanner, proxy);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] scan: MediaScanner constructed at %p (vptr=%p store=%p)\n",
+                 scanner, ((void**)scanner)[0], ((void**)scanner)[1]);
+
+    static ScanListener listener;
+    void* lp = g_scan_listen ? static_cast<void*>(&listener) : nullptr;
+    std::fprintf(stderr, "[cinder-probe] scan: listener = %p%s\n", lp,
+                 lp ? "" : " (NULL — Sony's OnFinished/OnProgress cbz it, so this is handled)");
+
+    int rc;
+    if (g_scan_mode == 2) {
+        std::string path(g_scan_path);
+        std::fprintf(stderr, "[cinder-probe] scan: ScanFile(\"%s\", lang=%d) …\n",
+                     path.c_str(), g_scan_lang);
+        wd_arm(30);
+        rc = msc_scan_file(scanner, lp, &path, g_scan_lang);
+        wd_disarm();
+    } else {
+        std::fprintf(stderr, "[cinder-probe] scan: Scan(lang=%d) …\n", g_scan_lang);
+        wd_arm(30);
+        rc = msc_scan(scanner, lp, g_scan_lang);
+        wd_disarm();
+    }
+    std::fprintf(stderr, "[cinder-probe] scan: call returned %d  BinderLastError=%d\n",
+                 rc, pst::core::Framework::GetBinderLastError());
+
+    // Watch. The call is ASYNC — it returns as soon as the request is queued, and the work lands
+    // via the callbacks (or, with no listener, only in the DB). So poll the store's signature as
+    // well: that is the evidence that does not depend on the listener ABI being right.
+    for (int i = 1; i <= g_scan_secs && !listener.finished; ++i) {
+        sleep(1);
+        if (i % 10 == 0 || i == 1) {
+            char tag[32];
+            std::snprintf(tag, sizeof tag, "t+%-4d", i);
+            scan_db_stat(tag);
+            std::fprintf(stderr, "[cinder-probe] scan: t+%ds ticks=%u progress_calls=%u\n",
+                         i, g_pump_ticks, listener.progress_calls);
+        }
+    }
+    if (listener.finished)
+        std::fprintf(stderr, "[cinder-probe] scan: FINISHED with status %d\n", listener.last_status);
+    else
+        std::fprintf(stderr, "[cinder-probe] scan: watch window (%d s) elapsed without OnFinished — "
+                     "compare the signatures above to see whether the DB moved anyway\n", g_scan_secs);
+
+    scan_db_stat("after  ");
+    // Always Cancel: leaving a scan running in a core service after the probe exits is exactly the
+    // kind of orphaned state that makes the NEXT test lie.
+    wd_arm(10);
+    msc_cancel(scanner);
+    wd_disarm();
+    clog_("scan: Cancel() sent; done");
+    msc_dtor(scanner);
+    _exit(listener.finished && listener.last_status == 0 ? 0 : 1);
+}
+
+static int scan_probe() {
+    install_diagnostics();
+    clog_("scan: Framework::GetReference() …");
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    std::fprintf(stderr, "[cinder-probe] scan: got Framework=%p BinderLastError=%d\n",
+                 (void*)&fw, pst::core::Framework::GetBinderLastError());
+    clog_("scan: StartForApplication(finish_job, true) …");
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    std::fprintf(stderr, "[cinder-probe] scan: StartForApplication returned %d\n", sr);
+    scan_job_entry();
+    return 0; // unreachable: scan_job_entry() _exit()s with the real status
+}
+
 int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--scan") == 0) {
+        // FLAT KEYWORD PARSE. Every argument after --scan is independent, so a config candidate and
+        // a scan can be given in one line without the two branches disagreeing about which
+        // positional slot means what. Bare `--scan` still inspects and scans NOTHING.
+        for (int i = 2; i < argc; ++i) {
+            if      (std::strcmp(argv[i], "go") == 0)        g_scan_mode = 1;
+            else if (std::strcmp(argv[i], "nolisten") == 0)  g_scan_listen = false;
+            else if (std::strcmp(argv[i], "file") == 0 && i + 1 < argc) {
+                g_scan_mode = 2; g_scan_path = argv[++i];
+            }
+            else if (std::strncmp(argv[i], "lang=", 5) == 0) g_scan_lang = std::atoi(argv[i] + 5);
+            else if (std::strncmp(argv[i], "secs=", 5) == 0) g_scan_secs = std::atoi(argv[i] + 5);
+            else if (std::strncmp(argv[i], "a=", 2) == 0)    { g_cfg_a = argv[i] + 2; g_cfg_set = true; }
+            else if (std::strncmp(argv[i], "b=", 2) == 0)    { g_cfg_b = argv[i] + 2; g_cfg_set = true; }
+            else if (std::strncmp(argv[i], "c=", 2) == 0)    { g_cfg_c = argv[i] + 2; g_cfg_set = true; }
+            else if (std::strncmp(argv[i], "dirs=", 5) == 0) { g_cfg_dirs = argv[i] + 5; g_cfg_set = true; }
+            else std::fprintf(stderr, "[cinder-probe] scan: ignoring unrecognised argument \"%s\" "
+                              "(use go, file <path>, lang=N, secs=N, nolisten, a= b= c= dirs=)\n",
+                              argv[i]);
+        }
+        if (g_scan_secs <= 0) g_scan_secs = 120;
+        return scan_probe();
+    }
     if (argc > 1 && std::strcmp(argv[1], "--dac") == 0) {
         return dac_probe(argc > 2 && std::strcmp(argv[2], "stop") == 0);
     }

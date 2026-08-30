@@ -305,7 +305,7 @@ fn main() {
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
                 &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
-                    storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber })),
+                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber })),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
             // The shuffle band's caption has to follow the filter — shuffling a filtered list
             // shuffles what is on screen, so it must not still promise the whole library.
@@ -457,7 +457,7 @@ fn main() {
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
                 &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
                     usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
-                    storage: "12.4 / 58 GB", sleep: "30 MIN",
+                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
                     accent: cinder_ui::Accent::Amber });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
@@ -472,7 +472,7 @@ fn main() {
                 settings::max_scroll_px() / 2,
                 &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
                     usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
-                    storage: "12.4 / 58 GB", sleep: "30 MIN",
+                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
                     accent: cinder_ui::Accent::Amber });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
@@ -611,7 +611,7 @@ fn main() {
         let mut c = Canvas::new();
         settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
             &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false,
-                battery_care: true, device: "99% · 34.4 °C", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
+                battery_care: true, device: "99% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
                 screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: a });
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
         save(&c, &format!("accent_{lower}_settings"));
