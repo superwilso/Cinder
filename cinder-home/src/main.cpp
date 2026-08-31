@@ -7174,6 +7174,91 @@ static long long mono_ms() {
     return (long long)ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
 }
 
+// ── Transport presses are QUEUED, not carried out where they are decoded ─────────────────────
+//
+// REPORTED: the player goes unresponsive after skipping several tracks in quick succession — and
+// keeps skipping on its own for seconds after the last press.
+//
+// The cause is not in any one call, it is in WHERE the call was made. `carry_out` runs on the
+// render thread, and every transport action inside it is a synchronous Sony IPC: the client
+// proxies are asynchronous underneath and the reply is delivered by the Framework pump on another
+// thread (cinder-audio/src/player_shim.cpp), so a skip costs a real round trip, not an event. That
+// call used to be made from INSIDE input_pump's evdev drain loop — the `for (;;)` that keeps
+// reading a node while each read comes back full. So:
+//
+//   * the drain blocked for the whole round trip, once per press;
+//   * the panel kept streaming position frames the entire time, because a finger is still on the
+//     glass, so the next read came back full again and the loop went round again;
+//   * and the loop therefore did not end when the events did — it ended when the user did.
+//
+// Everything below input_pump in the frame loop is starved for that whole window: the paint, the
+// now-playing poll, the sleep timer, the idle screen-off, the auto power-off, the jack watch, the
+// USB-host debounce. Measured off-device (cinder-home/harness, `rapid-skip-touch`, modelling the
+// round trip at 400 ms): forty taps in four seconds left the app still issuing skips THIRTEEN
+// SECONDS after the last one, with housekeeping having run once in fifteen seconds instead of
+// fifteen times. That is the report, exactly.
+//
+// The rocker already had this right and had it for the same reason: a volume press does not call
+// carry_out where it is decoded, it sets `g_vol_btn` and lets `vol_repeat_tick()` apply it once per
+// frame, after the drain. Transport now works the same way, with one addition — the pending steps
+// are NET. Pressing ▷▷ five times and ◁ twice is three steps forward, which is what the buttons
+// say, and it costs three round trips rather than seven.
+//
+// The cap is the other half. Without it a burst is still honoured in full, one step per frame, and
+// the music carries on moving long after the thumb stopped — the part of the report that reads as
+// the device having a mind of its own. Eight steps is about 3 s of catching up at the measured
+// round-trip cost, which is the edge of what still feels like a response; past that the presses are
+// dropped deliberately rather than banked. It is above anything a user does while WATCHING the
+// screen, and only a burst aimed at a UI that had stopped answering can reach it.
+static int g_skip_pending = 0;    // net track steps owed: + forward, − back
+static int g_group_pending = 0;   // same, for album/group steps
+static const int TRANSPORT_PENDING_MAX = 8;
+
+static void queue_transport(int* slot, int step) {
+    *slot += step;
+    if (*slot > TRANSPORT_PENDING_MAX) *slot = TRANSPORT_PENDING_MAX;
+    if (*slot < -TRANSPORT_PENDING_MAX) *slot = -TRANSPORT_PENDING_MAX;
+}
+
+// Every action decoded inside the drain goes through here. Transport steps are banked; everything
+// else keeps its immediate path, because nothing else is a control a thumb can fire twenty times a
+// second — a settings toggle or a modal answer costs one round trip per deliberate gesture, and
+// deferring those would only add a frame of latency to them.
+static void carry_out_input(int act) {
+    switch (act) {
+        case CINDER_ACT_NEXT:       queue_transport(&g_skip_pending,  1); return;
+        case CINDER_ACT_PREV:       queue_transport(&g_skip_pending, -1); return;
+        case CINDER_ACT_NEXT_ALBUM: queue_transport(&g_group_pending,  1); return;
+        case CINDER_ACT_PREV_ALBUM: queue_transport(&g_group_pending, -1); return;
+        default: carry_out(act);
+    }
+}
+
+// One step per frame, after the drain — so the loop paints, polls and reads input BETWEEN steps
+// instead of after all of them. Track steps go first: an album step is the coarser gesture and can
+// wait a frame, and interleaving the two would be incoherent.
+static void transport_tick() {
+    if (g_skip_pending == 0 && g_group_pending == 0) return;
+    // A SKIP IS A TRANSPORT PRESS, and the pump has to be told. `apply_pump_interval` decides how
+    // fast the Framework pump spins, and with the panel dark it drops to 250 ms unless a transport
+    // press landed recently — which it judges by `g_transport_at`, a stamp only `set_transport`
+    // writes, and neither skip path calls it. So every skip made with the screen off waited up to a
+    // quarter of a second for its own reply, in the state (pocket, side button) where skipping is
+    // most of what the buttons are for. Stamped here and applied immediately, ahead of the call
+    // that needs it, rather than at the next 1 Hz housekeeping tick.
+    g_transport_at = now_ms();
+    apply_pump_interval();
+    if (g_skip_pending != 0) {
+        const int step = g_skip_pending > 0 ? 1 : -1;
+        g_skip_pending -= step;
+        carry_out(step > 0 ? CINDER_ACT_NEXT : CINDER_ACT_PREV);
+        return;
+    }
+    const int step = g_group_pending > 0 ? 1 : -1;
+    g_group_pending -= step;
+    carry_out(step > 0 ? CINDER_ACT_NEXT_ALBUM : CINDER_ACT_PREV_ALBUM);
+}
+
 static void scrub_carry() {
     int act = cinder_scrub_action();
     if (act == CINDER_ACT_NONE) return;
@@ -7240,16 +7325,16 @@ static void touch_release() {
         int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
         if (sx <= 38 && dx >= 120) {                 // left-edge → rightward = Back
             int act = cinder_input(CINDER_BTN_BACK);
-            if (act != CINDER_ACT_NONE) carry_out(act);
+            if (act != CINDER_ACT_NONE) carry_out_input(act);
         } else if (adx < 26 && ady < 26) {           // ~stationary = tap (26: sloppy thumbs drift)
             int act = cinder_tap(cx, cy);
-            if (act != CINDER_ACT_NONE) carry_out(act);
+            if (act != CINDER_ACT_NONE) carry_out_input(act);
         } else if (adx > ady && adx >= 60) {         // horizontal swipe: onboarding pages, NP skip,
             // rightward-on-a-song-row = add to queue (start point picks the row). Edge-back
             // already won above, so the two rightward gestures coexist: from the left edge it's
             // Back, anywhere else on a list row it's queue.
             int act = cinder_swipe(dx < 0 ? -1 : 1, sx, sy);
-            if (act != CINDER_ACT_NONE) carry_out(act);
+            if (act != CINDER_ACT_NONE) carry_out_input(act);
         }
         // (vertical drags never reach here — they became a live drag at ~12px of movement)
     }
@@ -7527,6 +7612,7 @@ void input_pump() {
         }
     }
     for (int i = 0; i < g_evn; ++i) {
+        int rounds = 0;
         for (;;) {
             ssize_t n = read(g_evfds[i], evs, sizeof evs);
             if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -7712,7 +7798,7 @@ void input_pump() {
                     g_power_down_ms = 0; g_power_consumed = false;
                     if (deferred && was_down && !spent) {
                         int act = cinder_input(CINDER_BTN_POWER);   // -> CINDER_ACT_SLEEP
-                        if (act != CINDER_ACT_NONE) carry_out(act);
+                        if (act != CINDER_ACT_NONE) carry_out_input(act);
                     }
                     continue;
                 }
@@ -7769,13 +7855,26 @@ void input_pump() {
                     if (g_power_hold_ok) continue;
                 }
                 int act = cinder_input(btn);
-                if (act != CINDER_ACT_NONE) carry_out(act);
+                if (act != CINDER_ACT_NONE) carry_out_input(act);
             }
             if (n < (ssize_t)sizeof evs) break; // drained this node
+            // …AND NEVER MORE THAN THIS MANY ROUNDS IN ONE FRAME. The loop above ends when a read
+            // comes back short, which assumes the app drains a node faster than the node fills it.
+            // A blocking call reached from in here breaks that assumption, and the loop then runs
+            // for as long as the user keeps touching the glass rather than for as long as there are
+            // events (see the transport queue above for the case that made it visible). Nothing is
+            // lost by stopping: the rest stays in the kernel's buffer and is read on the next
+            // frame. 8 rounds is 256 events from one node in a single frame, against the handful a
+            // 100 Hz panel produces in 16 ms — so a device that is keeping up never reaches it, and
+            // one that is not drains 15,000 events a second, which no input device approaches.
+            if (++rounds >= 8) break;
         }
     }
     // Held rocker: the events are all drained, so anything still down is a genuine hold.
     vol_repeat_tick();
+    // Banked transport steps, one per frame — the same shape as the rocker above, and for the same
+    // reason: a Sony round trip must not be made from inside the drain. See queue_transport.
+    transport_tick();
     // Same idea for Power: the menu opens on elapsed time, not on an event, so it needs a tick.
     power_hold_tick();
     // A level-0 blank is ended by the HOLD switch or POWER only — see brightness_wake_on_input.

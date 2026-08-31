@@ -64,6 +64,10 @@ pthread_cond_t  g_slow = PTHREAD_COND_INITIALIZER;
 long long g_passive_target = 0;
 std::vector<Call>*   g_trace  = nullptr;
 std::vector<Script>* g_script = nullptr;
+// Scripted per-call delays, indexed by interned name id — a call the app makes that COSTS virtual
+// time. See cinder_harness_script_delay in harness.h for why a stub that returns instantly is not
+// a neutral default.
+std::vector<long long>* g_delay = nullptr;
 std::vector<std::string>* g_names = nullptr;                 // id -> name
 std::map<std::string, int>* g_name_id = nullptr;             // name -> id
 std::vector<std::pair<std::string, long long> >* g_state = nullptr;   // the faked UI state store
@@ -94,6 +98,7 @@ void ensure() {
     if (!g_state) g_state = new std::vector<std::pair<std::string, long long> >();
     if (!g_names) g_names = new std::vector<std::string>();
     if (!g_name_id) g_name_id = new std::map<std::string, int>();
+    if (!g_delay) g_delay = new std::vector<long long>();
 }
 
 extern "C" void cinder_harness_fs_due(long long now_ms);   // fakefs.cpp
@@ -281,6 +286,30 @@ void cinder_harness_record_locked(const char* name, long long arg) {
     g_trace->push_back(Call{intern(name), arg, g_now_ms});
 }
 
+// Zero unless a scenario armed at least one delay, so the stubs' guard is a plain load and the
+// millions-of-calls path is untouched by this existing.
+int cinder_harness_delays_armed = 0;
+
+void cinder_harness_script_delay(const char* name, long long ms) {
+    Lock l; ensure();
+    const int id = intern(name);
+    if ((int)g_delay->size() <= id) g_delay->resize((size_t)id + 1, 0);
+    (*g_delay)[(size_t)id] = ms;
+    if (ms > 0) cinder_harness_delays_armed = 1;
+}
+
+// Called by the generated stubs, AFTER they have recorded (so the call is in the trace at the time
+// it started, which is what a rate assertion wants) and BEFORE they return. Sleeping here is
+// sleeping on the app's own thread, exactly as a blocking IPC does on device.
+void cinder_harness_delay(int slot) {
+    long long ms = 0;
+    {
+        Lock l; ensure();
+        if (slot >= 0 && slot < (int)g_delay->size()) ms = (*g_delay)[(size_t)slot];
+    }
+    if (ms > 0) sleep_for(ms);
+}
+
 int cinder_harness_scripted(const char* name, long long* out) {
     Lock l; ensure();
     for (auto& s : *g_script) {
@@ -315,6 +344,8 @@ void cinder_harness_reset(void) {
     g_state->clear();
     g_names->clear();
     g_name_id->clear();
+    g_delay->clear();
+    cinder_harness_delays_armed = 0;
     g_now_ms = 0;
     g_waiters->clear();
     g_running = 0;

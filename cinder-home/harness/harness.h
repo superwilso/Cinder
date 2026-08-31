@@ -26,6 +26,10 @@ void cinder_harness_record(const char* name, long long arg);
 void cinder_harness_record_cached(int* slot, const char* name, long long arg);
 // Same, for a caller that already holds the harness lock. Only the scheduled-filesystem hook does.
 void cinder_harness_record_locked(const char* name, long long arg);
+// Delay hook, called by the generated stubs straight after they record. `slot` is the interned name
+// id the record call just filled in. Guarded by the flag below so the no-delay path is a load.
+extern int cinder_harness_delays_armed;
+void cinder_harness_delay(int slot);
 // Returns 1 and fills *out if the test scripted a return value for this call, else 0.
 int  cinder_harness_scripted(const char* name, long long* out);
 
@@ -45,6 +49,17 @@ void cinder_harness_script(const char* name, long long value);
 // service that is not up yet and then comes up is expressed: {-1,-1,0,2} means three failed reads
 // then a radio that is on and stays on.
 void cinder_harness_script_seq(const char* name, const long long* vals, int count);
+
+// Make every call to `name` COST `ms` of virtual time before it returns, modelling a blocking
+// call the app makes on its own render thread. Sony's client proxies are asynchronous underneath —
+// a call marshals a request and the reply is delivered by the Framework pump on another thread — so
+// on the device a transport call is a real wait, measured at 360-450 ms for SetTrackSequence and
+// ~700 ms for a bracketed seek. The stubs return instantly, which quietly made every scenario a
+// test of an infinitely fast device: no amount of tapping could ever back the app up. This is how a
+// scenario says "and that call takes as long as it does on hardware".
+//
+// Costs one global load per stub call while no delay is armed, so the long scenarios are unaffected.
+void cinder_harness_script_delay(const char* name, long long ms);
 
 int       cinder_harness_count(const char* name);      // how many times it was called
 long long cinder_harness_arg(const char* name, int n); // argument of the nth call (0-based)
