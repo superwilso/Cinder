@@ -644,6 +644,82 @@ static void s_volume_ramp(void) {
     check_eq(stuck_window, 0, "a stuck rocker gives up rather than repeating for ever");
 }
 
+// ── skipping tracks faster than PlayerService can answer ─────────────────────────────────────
+// Reported: the player goes unresponsive after skipping several songs in quick succession, and
+// carries on skipping by itself afterwards.
+//
+// The shape of it is in main.cpp rather than in any one call. `carry_out` runs on the RENDER thread
+// — input_pump sits above cinder_render_tick in the same loop — and every transport action inside
+// it is a synchronous Sony round trip. The stubs answer instantly, which is why nothing in this
+// suite had ever seen it: with an infinitely fast PlayerService no amount of tapping can back the
+// app up. `cinder_harness_script_delay` is what makes the device's own cost visible here. 400 ms is
+// the measured SetTrackSequence round trip (docs/DEVICE_TESTS.md); NextTrack has not been timed
+// separately, and the defect does not depend on the figure — anything above a frame reproduces it,
+// and the pump interval alone puts a floor of one tick (20 ms lit, 250 ms dark) under every reply.
+//
+// This one is about the SEMANTICS of a burst: nothing is dropped below the cap, and opposing
+// presses cancel instead of both being paid for.
+static void s_rapid_skip(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    // Five ▷▷ then two ◁ — a run through an album with a couple of overshoots corrected.
+    static const long long acts[] = {2, 2, 2, 2, 2, 3, 3};   // CINDER_ACT_NEXT ×5, _PREV ×2
+    cinder_harness_script_seq("cinder_input", acts, 7);
+    cinder_harness_script_delay("cinder_audio_next_track", 400);
+    cinder_harness_script_delay("cinder_audio_prev_track", 400);
+    cinder_harness_script_delay("cinder_render_tick", 30);
+    for (int i = 0; i < 7; i++) {
+        cinder_harness_key_at(30000 + i * 150, i < 5 ? 106 : 105, 1);
+        cinder_harness_key_at(30000 + i * 150 + 60, i < 5 ? 106 : 105, 0);
+    }
+    cinder_harness_set_budget_ms(60000);
+    cinder_harness_run();
+
+    const int fwd = cinder_harness_count("cinder_audio_next_track");
+    const int back = cinder_harness_count("cinder_audio_prev_track");
+    std::printf("  .... 5 forward + 2 back -> %d NextTrack, %d PrevTrack\n", fwd, back);
+    check_eq(fwd, 3, "the burst is NET: five forward and two back is three forward");
+    check_eq(back, 0, "…and the two it cancels cost no round trip at all");
+    check(cinder_harness_count_between("cinder_clock_tick", 30000, 36000) >= 4,
+          "housekeeping kept running through the burst");
+}
+
+// The same burst from the GLASS rather than the side button, which is the case that wedges. A
+// finger on the panel streams position frames for as long as it is down, and those frames arrive
+// while the app is blocked inside the previous skip — so the drain loop's "read came back short"
+// exit condition is never reached and input_pump ends when the USER stops, not when the events do.
+// `swipe_at` with no travel is a real contact (down, eight position frames, up) where `tap_at` is
+// the idealised four-event version.
+//
+// Before the fix, with the same 400 ms model: forty taps in four seconds left the app still issuing
+// skips 13.1 s after the last one, and housekeeping — the paint's 1 Hz companion, which owns the
+// now-playing poll, the sleep timer, the idle screen-off and the auto power-off — ran ONCE in
+// fifteen seconds. That is the report.
+static void s_rapid_skip_touch(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 2);                          // every tap = CINDER_ACT_NEXT
+    cinder_harness_script_delay("cinder_audio_next_track", 400);
+    cinder_harness_script_delay("cinder_render_tick", 30);
+    for (int i = 0; i < 40; i++)
+        cinder_harness_swipe_at(30000 + i * 100, 350, 692, 350, 692, 90);   // the NP skip button
+    cinder_harness_set_budget_ms(70000);
+    cinder_harness_run();
+
+    const long long last_tap = 30000 + 39 * 100;
+    const long long last_skip = cinder_harness_last_ms("cinder_audio_next_track");
+    const int skips = cinder_harness_count("cinder_audio_next_track");
+    const int house = cinder_harness_count_between("cinder_clock_tick", 30000, 45000);
+    std::printf("  .... 40 taps -> %d skips; last skip %lld ms after the last tap\n",
+                skips, last_skip - last_tap);
+    std::printf("  .... housekeeping ticks over the 15s from the first tap: %d of 15\n", house);
+    check(last_skip - last_tap <= 6000,
+          "the player stops skipping soon after the thumb does, not seconds later");
+    check(skips < 40, "the backlog is capped rather than banked in full");
+    check(skips >= 8, "…but a real run of skips still moves the player a long way");
+    check(house >= 10, "the frame loop kept its 1 Hz housekeeping through the burst");
+}
+
 // ── "it does not pick up music I just copied on" — the half that is not device-gated ─────────
 // The oldest open user-visible bug in the project has two halves. Somebody has to ask
 // MediaStoreService to RE-SCAN so the database changes at all — that is device-gated, it needs the
@@ -698,6 +774,8 @@ static const Scenario kScenarios[] = {
     {"button-codes",      s_button_codes,            "raw evdev codes decode to the right buttons"},
     {"volume-ramp",       s_volume_ramp,             "the rocker accelerates, stops on release, gives up when stuck"},
     {"library-changed",   s_library_changed,         "a database that changes underneath us is noticed and reloaded"},
+    {"rapid-skip",        s_rapid_skip,              "skipping faster than PlayerService answers must not wedge the UI"},
+    {"rapid-skip-touch",  s_rapid_skip_touch,        "the same burst from the glass, where the panel keeps streaming"},
     {nullptr, nullptr, nullptr},
 };
 

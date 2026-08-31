@@ -1,5 +1,42 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-08-31 — "unresponsive after skipping quickly": found, fixed, and now gated
+>
+> Reported directly. Root cause is **where** the call was made, not what it did: `carry_out` runs on
+> the render thread, every transport action inside it is a synchronous Sony round trip, and that call
+> was being made from **inside `input_pump`'s evdev drain loop** — the `for (;;)` that keeps reading
+> a node while each read comes back full. A finger on the glass streams position frames the whole
+> time the app is blocked in the previous skip, so the next read comes back full again and the loop
+> ends when the *user* stops, not when the events do. Everything below `input_pump` in the frame loop
+> is starved meanwhile: the paint, the now-playing poll, the sleep timer, the idle screen-off, the
+> auto power-off, the jack watch, the USB-host debounce.
+>
+> Measured off-device (`cinder-home/harness`, new `rapid-skip-touch`, modelling the round trip at the
+> measured 400 ms): **40 taps in 4 s left the app still issuing skips 13.1 s after the last one, with
+> housekeeping having run ONCE in fifteen seconds.** After the fix: 3.7 s and 13 of 15.
+>
+> - **Transport presses are now queued, not carried out where they are decoded** — the same shape the
+>   volume rocker has always had (`g_vol_btn` + `vol_repeat_tick()`), applied one step per frame by
+>   `transport_tick()` after the drain, so the loop paints and polls *between* steps.
+> - **The pending steps are NET.** ▷▷ ×5 then ◁ ×2 is three steps forward and three round trips, not
+>   seven — which is also what the buttons say they do.
+> - **The backlog is capped** (`TRANSPORT_PENDING_MAX`), so a burst aimed at a UI that had stopped
+>   answering cannot leave the player skipping by itself for the next quarter minute.
+> - **The drain loop is bounded** at 8 read rounds per node per frame. It ended on a short read,
+>   which assumes the app drains a node faster than the node fills it; a blocking call reached from
+>   inside it breaks that assumption. Nothing is lost — the rest waits in the kernel buffer.
+> - **A skip now counts as a transport press for the pump.** `apply_pump_interval` drops the
+>   Framework pump to 250 ms with the panel dark unless one landed recently, and it judges that by
+>   `g_transport_at`, which only `set_transport` wrote — so every skip made with the screen off waited
+>   up to a quarter second for its own reply, in exactly the pocket case the side buttons exist for.
+>
+> Two harness scenarios (`rapid-skip`, `rapid-skip-touch`) pin all of it; both FAIL on the code
+> before this change. They needed one new harness capability — `cinder_harness_script_delay`, a call
+> that costs virtual time — because with instant stubs the backlog cannot form and the suite was
+> blind to the entire class. *Device-unverified:* the mechanism and the numbers are the harness's; the
+> 400 ms is the measured `SetTrackSequence` round trip, and `NextTrack` has never been timed on its
+> own. The defect does not depend on the figure — any cost above a frame reproduces it.
+
 > ## 2026-08-23 — standing reference: [`../docs/SHORTCOMINGS.md`](../docs/SHORTCOMINGS.md)
 >
 > What is structurally weak about this project and its GitHub setup, with evidence per claim. Not a
