@@ -127,6 +127,10 @@ def main():
             out.append(f'    cinder_harness_record_cached(&slot_, "{name}", (long long){first_int});')
         else:
             out.append(f'    cinder_harness_record_cached(&slot_, "{name}", 0);')
+        # A scenario may say this call COSTS time (cinder_harness_script_delay). Guarded by a
+        # global so the no-delay case — every scenario but the ones about backpressure — pays a
+        # load rather than a locked lookup on a path that runs millions of times.
+        out.append('    if (cinder_harness_delays_armed) cinder_harness_delay(slot_);')
         if is_setter:
             out.append(f'    cinder_harness_state_set("{key}", (long long){first_int});')
         out.append(f'    long long scripted = 0;')

@@ -73,6 +73,21 @@ tests whether the app **runs** them, when, and how often.
   nine seconds and exits. Lose that race and the clock jumped nine seconds in one step and then
   belonged to a dead thread. It passed locally and hung in CI.
 
+## Calls that cost time
+
+Stubs answer instantly, and that is not a neutral default: it quietly makes every scenario a test of
+an infinitely fast device, where no amount of tapping can back the app up. `carry_out` runs on the
+render thread and every transport action inside it is a synchronous Sony round trip, so on hardware
+a press costs a wait, not an event — and the whole frame loop is stopped for it.
+
+`cinder_harness_script_delay(name, ms)` makes a call sleep `ms` of **virtual** time before it
+returns, on the app's own thread, which is exactly what a blocking IPC does on the device. That is
+what made the `rapid-skip-touch` defect visible off-device: forty taps in four seconds left the app
+still issuing skips 13 s after the last one, with housekeeping having run once in fifteen seconds.
+Nothing else in the suite could see it, because with an instant `NextTrack` the backlog cannot form.
+
+Costs one global load per stub call while no delay is armed, so the long scenarios are unaffected.
+
 ## Two things that behave differently here
 
 * **`poll()` is virtualised, `alarm()` is not.** The frame loop waits on its input descriptors with
