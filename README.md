@@ -1,5 +1,11 @@
 # Cinder
 
+[![ci](https://github.com/superwilso/Cinder/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/superwilso/Cinder/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/superwilso/Cinder?sort=semver)](https://github.com/superwilso/Cinder/releases/latest)
+[![downloads](https://img.shields.io/github/downloads/superwilso/Cinder/total)](https://github.com/superwilso/Cinder/releases)
+[![license](https://img.shields.io/github/license/superwilso/Cinder)](LICENSE)
+[![device](https://img.shields.io/badge/device-NW--A55%20%2F%20A50%20series-blue)](docs/baseline_v1.4.md)
+
 A from-scratch replacement Home app for the Sony NW-A55/A50 Walkman — native, ~3 MB, running
 in place of Sony's stock Qt player while keeping every one of Sony's audio services (DSP,
 codecs, LDAC) intact underneath it.
@@ -35,8 +41,12 @@ device-gated — see STATUS.md for the exact matrix, it's kept current rather th
 
 Download **`cinder-installer-windows-x64.exe`** from the [latest release](../../releases/latest),
 plug the Walkman in over USB in mass-storage mode, and run it. It finds the player, asks which
-optional parts you want, copies them across, and tells you what to do next. There's a Linux build
-too.
+optional parts you want, copies them across, and tells you what to do next.
+
+**Windows only, and that is not an oversight.** The installer's last step hands the device to
+Sony's own `SoftwareUpdateTool.exe`, which owns the USB handoff and the reboot into Cinder. There is
+no Linux equivalent, so a Linux build can stage the files but cannot finish the install. Linux and
+macOS users can use the attached `cinder-home-install.upg` by hand — see [`install.md`](install.md).
 
 ```
   Cinder installer  (channel: stable)
@@ -135,9 +145,9 @@ It refuses to tag unless the tree is clean, `installer/Cargo.toml`'s version mat
 embedded payload file exists, **a fresh `build.sh stable` reproduces the committed `dist/` byte for
 byte**, and the installer's own tests pass. It never commits anything — staging stays yours.
 
-Pushing the tag is what triggers `.github/workflows/release.yml`, which builds the Windows and
-Linux installers, attaches them plus `SHA256SUMS` to a **published** (not draft) GitHub release,
-and marks it pre-release if the tag has a suffix like `-rc1`.
+Pushing the tag is what triggers `.github/workflows/release.yml`, which builds the Windows
+installer, attaches it plus the two `.upg` files and `SHA256SUMS` to a **published** (not draft)
+GitHub release, and marks it pre-release if the tag has a suffix like `-rc1`.
 
 Every other push runs `.github/workflows/ci.yml`, which builds and tests the player and the
 installer on both platforms and checks the committed payload is complete and actually ARM — so a
@@ -152,11 +162,35 @@ less than the one it rescues) exists because of a real brick during development,
 there. `cinder-home/STATUS.md` STEP 1 is the zero-risk way to test a build before ever flashing
 it as the Home app.
 
+## Documentation
+
+[`docs/README.md`](docs/README.md) is the index — it says which document answers which question,
+and which ones are history rather than current state.
+
+The four that are always current:
+
+| | |
+|---|---|
+| [`RECOVERY.md`](RECOVERY.md) | **Read before flashing.** No public DFU or EDL path exists for this device. |
+| [`cinder-home/STATUS.md`](cinder-home/STATUS.md) | The feature matrix — current state, kept current rather than aspirational. |
+| [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) | The run sheet for anything that needs the player in your hand. |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed in each release, and whether it was verified on hardware. |
+
 ## Contributing
 
 Issues and PRs welcome — this covers everything from firmware RE to UI work to just testing on
-your own device. `analysis/` is the research trail; if you're picking up an open question there,
-that's the place to start. `cinder-home/ROADMAP.md` has the current prioritized backlog.
+your own device. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), which has the local check
+commands and the safety rules for anything that runs as root or touches the boot path.
+
+**The single most useful contribution is a device report.** A large part of this project is
+code-complete and unverified on hardware; if you own an A50-series player, running one line from
+[`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) and filing the result — pass *or* fail —
+moves things that no amount of desk work can.
+
+`analysis/` is the research trail; if you're picking up an open question there, that's the place
+to start. `cinder-home/ROADMAP.md` has the current prioritized backlog.
+
+By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

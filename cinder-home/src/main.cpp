@@ -321,7 +321,10 @@ int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
     // repair and no waiting it out — see g_ipc_dead. Everything Sony is off from here.
     g_ipc_dead = true;
     g_ipc_poisoned = 1;
-    char m[192];
+    // 320, not 192: the format string alone is 209 bytes, so a 192-byte buffer truncated every
+    // one of these mid-sentence — and this is the single most important line the fault path
+    // prints. -Wformat-truncation catches it; keep the buffer ahead of the text.
+    char m[320];
     std::snprintf(m, sizeof m,
                   "GUARD RECOVERED: %s — Sony IPC is now DEAD for this boot. The client was unwound "
                   "mid-call and calling back into it is what faults (SIGSEGV/SIGBUS in libc++). "

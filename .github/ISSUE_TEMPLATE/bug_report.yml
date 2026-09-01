@@ -1,0 +1,111 @@
+name: Bug report
+description: Something Cinder does on the device is wrong.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **If your player will not boot, stop and read [RECOVERY.md](https://github.com/superwilso/Cinder/blob/main/RECOVERY.md) before doing anything else.**
+        This device has no public DFU or EDL recovery path, and the wrong next step is the one that
+        turns a recoverable boot loop into a brick.
+
+        A report with a log attached is worth ten without one. `/contents/cinderhome.log` is on the
+        music volume — plug the player in as mass storage and copy it off.
+
+  - type: input
+    id: version
+    attributes:
+      label: Cinder version
+      description: The release you installed, or the commit if you built it yourself.
+      placeholder: "v0.1.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Channel
+      options:
+        - stable
+        - dev
+        - built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: model
+    attributes:
+      label: Player model
+      options:
+        - NW-A55
+        - NW-A56
+        - NW-A57
+        - NW-A45
+        - NW-A46
+        - NW-A47
+        - NW-A35
+        - NW-A36
+        - NW-A37
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Sony firmware version underneath
+      description: Settings ▸ Device Information on stock, or whatever you flashed last.
+      placeholder: "1.20"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: If it is intermittent, say so and say roughly how often.
+      placeholder: |
+        1. Play an album from Library ▸ Albums
+        2. Press ▷▷ five times quickly
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: >
+        Paste or attach `/contents/cinderhome.log`. If the app died and came back, the interesting
+        part is the last ~50 lines before the restart. Rendered as a code block — no backticks needed.
+      render: text
+
+  - type: dropdown
+    id: recovery
+    attributes:
+      label: Did the device recover on its own?
+      description: The escape ladder is meant to hand you a working player back. Whether it did is a finding in itself.
+      options:
+        - "Yes — it came back to Cinder"
+        - "Yes — it reverted to the stock Sony player"
+        - "No — I had to reflash"
+        - "No — the device is still not booting"
+        - "Not applicable, it did not crash"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security issue or a way to brick a device (those go to SECURITY.md, privately).
+          required: true

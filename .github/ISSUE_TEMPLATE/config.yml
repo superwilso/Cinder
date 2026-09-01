@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions, ideas and show-and-tell
+    url: https://github.com/superwilso/Cinder/discussions
+    about: Anything that is not a defect report or a concrete change request.
+
+  - name: My Walkman will not boot
+    url: https://github.com/superwilso/Cinder/blob/main/RECOVERY.md
+    about: Read RECOVERY.md FIRST. This device has no public DFU or EDL path — do not flash anything else until you have read it.
+
+  - name: Security issue or a bug that can brick a device
+    url: https://github.com/superwilso/Cinder/blob/main/SECURITY.md
+    about: Report privately. Do not open a public issue for anything that runs as root or touches the boot path.
