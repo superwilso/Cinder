@@ -36,17 +36,32 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Payload sanity
+      # ── the payload must be the one tools/release.sh VERIFIED ────────────────────────────────
+      #
+      # This used to be an existence check, and that was the hole (docs/SHORTCOMINGS.md item 4 /
+      # D4: the integrity guard is "real, correct, and opt-in"). tools/release.sh rebuilds the
+      # stable channel from source and refuses to tag unless every committed byte matches — but
+      # `git tag && git push --tags` reaches this workflow directly without it, and a stale dist/
+      # then ships as an installer full of last week's binaries, green tick and all.
+      #
+      # The runner cannot repeat that comparison — it needs the glibc-2.23 cross toolchain, which
+      # is the whole reason dist/ is committed rather than built here. So release.sh leaves a
+      # manifest of what it verified and this checks the manifest still describes the tree AND was
+      # written for THIS tag; a tag cut without the script finds one naming the previous version.
+      #
+      # Via a SCRIPT, deliberately: the same rule the shellcheck gate is under. A check a
+      # contributor cannot run locally is one that fails for the first time during a release.
+      - name: Payload matches the verified manifest
+        shell: bash
+        run: tools/verify_payload_manifest.sh "${GITHUB_REF_NAME}"
+
+      # The Sony updater bundle is vendored rather than built, so it is not in the manifest and
+      # keeps a plain existence check.
+      - name: Vendored Sony updater is present
         shell: bash
         run: |
-          # The tagged commit carries the ARM binaries; if one is missing the installer builds an
-          # incomplete package or fails obscurely inside build.rs. Fail here, by name.
           missing=0
-          for f in cinder-home/dist/stable/cinder-home \
-                   cinder-home/dist/stable/cinder-probe \
-                   cinder-home/dist/stable/cinder_home_install.upg \
-                   cinder-home/dist/stable/cinder_components.conf \
-                   installer/sony-updater/SoftwareUpdateTool.exe \
+          for f in installer/sony-updater/SoftwareUpdateTool.exe \
                    installer/sony-updater/Data/App/WmFwUpdater.dll; do
             [ -f "$f" ] || { echo "::error::missing payload $f"; missing=1; }
           done

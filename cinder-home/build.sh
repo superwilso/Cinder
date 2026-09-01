@@ -175,6 +175,30 @@ if cc -O2 -o "$HERE/.volramp_selftest" "$HERE/tools/volramp_selftest.cpp" -lstdc
     rm -f "$HERE/.volramp_selftest"
 else echo "(skip: no host cc)"; fi
 
+echo "── self-test: EQ range (host) ──"
+# The rule in cinder-audio/src/eq_range.h — and the FIRST automated test of any kind over
+# cinder-audio (SHORTCOMINGS.md §A2). An out-of-range band gain does not clamp inside Sony's
+# service, it ZEROES the band, and the out-of-range value comes from the settings file on
+# /contents, which any PC can write.
+if cc -O2 -o "$HERE/.eqrange_selftest" "$HERE/tools/eqrange_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.eqrange_selftest" >/dev/null 2>&1; then echo "OK: EQ range clamp"; \
+    else "$HERE/.eqrange_selftest"; echo "FAIL: EQ range self-test"; exit 1; fi
+    rm -f "$HERE/.eqrange_selftest"
+else echo "(skip: no host cc)"; fi
+
+echo "── self-test: dark-screen frame budget (host) ──"
+# The rule in src/frame_budget.h, checked against the SAME header main.cpp uses. It decides how
+# long the render loop may sleep with the panel dark, and it is what "3.5 mm volume is not
+# responsive when the screen is off" turned out to be: a ramp step and a coalesced write's trailing
+# flush are DEADLINES, and poll() only returns early for EVENTS, so nothing woke the loop for them.
+# Must also prove the other direction — an idle dark panel still sleeps the full housekeeping
+# second, because that is the biggest battery lever in the app.
+if cc -O2 -o "$HERE/.framebudget_selftest" "$HERE/tools/framebudget_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.framebudget_selftest" >/dev/null 2>&1; then echo "OK: dark-screen frame budget"; \
+    else "$HERE/.framebudget_selftest"; echo "FAIL: frame budget self-test"; exit 1; fi
+    rm -f "$HERE/.framebudget_selftest"
+else echo "(skip: no host cc)"; fi
+
 echo "── self-test: headphone-unplug edge (host) ──"
 # The rule in src/jack_edge.h, checked against the SAME header main.cpp uses: only the
 # plugged->unplugged transition pauses, the first observation of a boot never acts, and plugging IN
