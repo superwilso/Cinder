@@ -34,7 +34,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Payload sanity
         shell: bash
@@ -69,7 +69,7 @@ jobs:
           Copy-Item target/release/cinder-installer.exe cinder-installer-windows-x64.exe
           Get-ChildItem cinder-installer-windows-x64.exe
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cinder-installer-windows-x64.exe
           path: installer/cinder-installer-windows-x64.exe
@@ -80,9 +80,9 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
           path: dist
@@ -96,7 +96,7 @@ jobs:
           # release body so a download can be checked without trusting the download itself.
           ( cd dist && sha256sum * | tee SHA256SUMS )
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           # NOT a draft. It was, and that was the bug: the workflow ran, built the installer,
