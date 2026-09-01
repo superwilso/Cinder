@@ -102,6 +102,65 @@ PAYLOAD
 [ "$MISSING" = 0 ] || die "payload incomplete — the installer would not build"
 ok "all payload files present"
 
+# ── 4b. write the payload MANIFEST, so the runner can check what this script checked ────────
+#
+# THE HOLE THIS CLOSES (docs/SHORTCOMINGS.md item 4, D4). Everything above is real verification and
+# none of it is REQUIRED: `git tag v1.2.3 && git push --tags` triggers release.yml directly, and
+# that workflow only checks the payload files EXIST. So the one guard standing between a stale
+# dist/ and a published installer full of last week's binaries was a script you had to remember to
+# use. "The release integrity guard is real, correct, and opt-in."
+#
+# The runner cannot re-run the check itself — the byte-for-byte comparison needs the glibc-2.23
+# cross toolchain, which is the whole reason dist/ is committed in the first place. So instead this
+# records WHAT WAS VERIFIED, and the runner checks the record still describes the tree:
+#
+#   * the sha256 of every payload file, so a payload edited after verification fails;
+#   * the TAG it was verified for, so a later `git tag` that skipped this script finds a manifest
+#     naming the previous version and fails;
+#   * the commit, for the log.
+#
+# It is not a signature and does not pretend to be — anyone who can push can also rewrite the
+# manifest. It closes the ACCIDENT (a forgotten step, a stale payload), which is the failure this
+# project has actually had, and it makes the deliberate bypass an explicit act rather than a
+# default. Provenance proper is D7 and needs signing.
+MANIFEST=cinder-home/dist/PAYLOAD.sha256
+note "writing the payload manifest …"
+{
+    echo "# Cinder release payload manifest."
+    echo "# Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by"
+    echo "# .github/workflows/release.yml before anything is published. Do not edit by hand —"
+    echo "# a mismatch here is the runner telling you the payload is not what was verified."
+    echo "tag $TAG"
+    echo "commit $(git rev-parse HEAD)"
+    while read -r f; do
+        [ -n "$f" ] || continue
+        sha256sum "$f"
+    done <<'PAYLOAD'
+cinder-home/dist/stable/cinder-home
+cinder-home/dist/stable/cinder-probe
+cinder-home/dist/stable/cinder-umount
+cinder-home/dist/stable/cinder-power
+cinder-home/dist/stable/cinder-msc
+cinder-home/dist/stable/cinder-clock
+cinder-home/dist/stable/cinder-signature.sh
+cinder-home/dist/stable/cinder_components.conf
+cinder-home/dist/stable/cinder_home_install.upg
+cinder-home/dist/stable/cinder_home_uninstall.upg
+PAYLOAD
+} > "$MANIFEST.tmp"
+mv "$MANIFEST.tmp" "$MANIFEST"
+
+# The tag must point at a commit that CONTAINS this manifest, so if writing it changed anything,
+# stop and ask for a commit — the same shape as the version bump above. On a re-run after that
+# commit the file is identical, git is clean, and this falls through.
+if [ -n "$(git status --porcelain "$MANIFEST")" ]; then
+    git --no-pager diff --stat "$MANIFEST" | sed 's/^/    /'
+    die "payload manifest updated for $TAG — commit it, then re-run:
+    git add $MANIFEST && git commit -m 'release: payload manifest for $TAG'
+    tools/release.sh $TAG"
+fi
+ok "payload manifest committed and current for $TAG"
+
 # ── 5. the installer itself must build and pass its tests ──────────────────────────────────
 note "building + testing the installer locally …"
 ( cd installer && cargo test --quiet && cargo build --release --quiet ) \

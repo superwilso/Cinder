@@ -53,6 +53,30 @@ Its correctness rests on hand-recovered ABI declarations in `effect_abi.hpp` /
 mis-marshalled call into a closed service. This is precisely the failure mode the project has
 already been bitten by, and it is the one part of the tree with no automated check at all.
 
+> **2026-09-01 — first crack, and a real defect with it.** `cinder-audio` now has a test:
+> `eqrange_selftest` (in CI's self-test list and in `build.sh`), over the rule extracted to
+> `cinder-audio/src/eq_range.h`. **It is not a token test — writing it found a live bug.**
+>
+> `SetEq10BandValue` takes half-dB units and a value outside ±20 does not clamp inside the
+> service: **it ZEROES the band.** `effect_shim.cpp` forwarded whatever it was handed. The UI could
+> never produce an out-of-range gain — every site in the EQ screen clamps — but the **settings
+> loader** could, and does: it parses `i8`, which accepts −128..127, from a file on `/contents`,
+> which is vfat and writable by any PC the player is plugged into. SECURITY.md already treats that
+> volume as untrusted everywhere else. One corrupted or hand-edited line silently flattened a band,
+> drew its knob outside the EQ field, and was written straight back out on the next save.
+>
+> Clamped now in both places on purpose: the Rust loader protects Cinder's own model, and the shim
+> protects the **service**, which cannot defend itself and whose failure is silent. A third defect
+> fell out of the same read — `cinder_get_eq_bands` returned early when the renderer was not up,
+> leaving the caller's `signed char bands[10]` **uninitialised** and marshalling ten bytes of stack
+> into the DSP. Unreachable today, which is exactly how it would have stayed until it wasn't.
+>
+> **What this does NOT close.** The IPC surface is still untested and mostly untestable off-device:
+> the vtable offsets, the argument shapes, the object sizes. What it shows is that the shims are
+> not *purely* IPC — there is validation logic in there, it is the last line before a closed
+> service, and it was absent. The rest of `player_shim.cpp` and `tuner_shim.cpp` deserve the same
+> read. **A2 stays open**, one rung less high.
+
 ### A3. Shell is load-bearing, and 5,288 lines of it are unlinted
 
 `install_cinderhome.sh` is 757 lines and contains the crash supervisor, the bad-boot counter, the
@@ -257,7 +281,7 @@ access.)
 This matters more than usual here, because a bad `main` is not an inconvenience: `main` is what
 `tools/release.sh` tags, and a release flashes a device with no public recovery path.
 
-### D4. The release integrity guard is real, correct, and opt-in
+### D4. The release integrity guard is real, correct, and opt-in — **CLOSED 2026-09-01**
 
 `tools/release.sh` does the right thing thoroughly: refuses a dirty tree, checks the installer
 version against the tag, **rebuilds the ARM payload from source and refuses to tag unless every
@@ -271,6 +295,25 @@ payload step verifies only that the files *exist* and are ARM — never that the
 `release.yml`'s header states the hazard plainly ("BUILD AND COMMIT dist/ BEFORE TAGGING, or the
 release ships whatever was last committed"). It is a known, documented, unenforced risk. **Four
 releases have shipped** under it.
+
+> **Closed by a manifest, which is the shape the 2026-08-26 note worked out.** The runner still
+> cannot re-run the comparison — it has no glibc-2.23 cross toolchain, which is the entire reason
+> `dist/` is committed — so instead `tools/release.sh` now records **what it verified**: the sha256
+> of every payload file, plus the **tag** it was verified for. `release.yml` checks that record
+> still describes the tree before anything is published.
+>
+> The tag line is the part that closes the hole. A release cut with `git tag && git push --tags`,
+> skipping the script entirely, finds a manifest naming the *previous* version and fails by name.
+> A payload edited after verification fails on its hash.
+>
+> Via `tools/verify_payload_manifest.sh`, run by both CI and a contributor — the rule this repo
+> already learned when an inlined linter step went red on its first run. Tested against all five
+> ways it should fail: wrong tag, tampered payload, missing manifest, manifest with no hashes, and
+> the happy path.
+>
+> **It is not a signature and does not pretend to be** — anyone who can push can rewrite it. It
+> closes the *accident*: the forgotten step, the stale payload, which is the failure this project
+> has actually had. Provenance proper is D7.
 
 ### D5. Committed binaries have permanently bloated the repository
 
@@ -289,10 +332,35 @@ deliverables, and they are the largest single contributor.
 This is unfixable without history rewriting, which is why it belongs in a permanent-record document
 rather than a to-do list.
 
+> **2026-09-01 — the numbers were badly out of date, and the bleeding was worse than recorded.**
+> `.git` is **1.3 GB**, not 83 MB. `cinder-home/dist/` alone accounts for **863 MB of it — 66% of
+> the repository** — across 117 revisions of ~3.5 MB stripped ARM ELFs, which share no deltas, so
+> every build rewrites each one in full. A `git clone` of a ~60,000-line project transfers 1.3 GB,
+> and that is the first thing anyone evaluating this repository experiences.
+>
+> `dist/dev/` is now untracked (`git rm --cached`, files left on disk, gitignored). That is **74 of
+> the 117 revisions** and it is not what anyone installs — build it with `build.sh dev` when needed,
+> and an installer compiled without it names the two commands that rebuild it. The growth stops
+> there; the existing 863 MB does not come back without a rewrite, and the judgement in "Deliberately
+> not recommended" below still stands, but it was made against 83 MB and should be re-made against
+> 1.3 GB by whoever owns the repo. See `AUDIT_2026-09-01.md` §D1 for the three options.
+
 ### D6. Missing repository hygiene
 
 Absent: `CONTRIBUTING.md`, `CODEOWNERS`, `SECURITY.md`, issue templates, PR template,
 `dependabot.yml`, `.editorconfig`.
+
+> **2026-09-01 — mostly closed.** GitHub's own community profile read **71%**. Added:
+> `CODE_OF_CONDUCT.md`, three issue templates, a PR template with a **blast-radius** section
+> separating "UI, cannot brick anything" from "runs as root / boot path / Sony IPC / USB-MSC
+> ordering", `dependabot.yml`, `CHANGELOG.md`, and `docs/README.md` as an index that says which
+> documents are *history* rather than current state (which is C1's real fix).
+>
+> One of the three issue templates is not standard furniture and is the point of the exercise:
+> **`device_report.yml`**, for reporting a `DEVICE_CHECKLIST.md` item run on real hardware, pass or
+> fail. A5 is the bottleneck this whole document keeps returning to — verification needs a device
+> and there is one — and there was no route for a stranger who owns an A50 to contribute one.
+> `CODEOWNERS` and `.editorconfig` remain absent; both are low value for a single maintainer.
 
 `SECURITY.md` is not box-ticking here. This project ships **twelve setuid-root binaries** to a
 device, distributes an **unsigned** Windows executable that drives a firmware flasher, and has no
@@ -310,6 +378,16 @@ most hobby projects manage. But:
   about whether those bytes came from this source tree (see D4).
 
 For software that flashes a device with no recovery path, that is the weakest link in the chain.
+
+> **2026-09-01 — the third bullet is closed, the first two are not.** D4's manifest means the
+> committed ARM payload is now tied to a verified rebuild and to the tag it was verified for, so a
+> release does say something about where those bytes came from. Separately, **nothing had ever
+> looked at the dependency tree** — 122 crates reaching the binary that runs as the device's Home
+> app — so `ci.yml` gained a `cargo audit` job with a weekly cron (0 vulnerabilities today).
+>
+> **Signing and build attestation are still absent**, and they are the two that would actually make
+> the installer trustworthy to someone who does not know the maintainer. Both cost money or a
+> non-trivial workflow change, so they stay recorded rather than pretended-at.
 
 ---
 
@@ -421,19 +499,50 @@ Stated plainly, because the weaknesses above are only survivable *because* of th
 > helper "fails" there and the SUCCESS paths of MSC and power-off have no coverage at all.
 >
 > **Still open: 4, 5, 6, 7, 8, 10.**
+>
+> ### Status — 2026-09-01
+>
+> **4 and 10 are done; 5 went further; D3, D6 and half of D7 came with them.** Details per item in
+> the table below, but the shape of the day is worth recording, because two of the four things
+> fixed were *caused* by the other two.
+>
+> **Item 10 turned out to be the load-bearing one, and not for the reason it was listed.** It sat
+> last as "worth doing when a second contributor appears". Then `main` went red **twice in one
+> day** — `7bfe89f` pushed straight to `main`, and a dependabot PR merged over a **failing** check
+> — and the second one left the tree not compiling for an hour. CI ran both times, was correct
+> both times, and was not *required*. Branch protection now requires all six checks.
+>
+> The wider lesson is in `AUDIT_2026-09-01.md` §A5 and it generalises past this repo: **an
+> automated gate that proposes changes must be scoped to what the automated gates can check.**
+> The dependabot config added that morning had no version limits, so its first run proposed three
+> semver-major bumps straight through the device's decode path — including `rusqlite`, whose
+> bundled SQLite C is the one thing `build.sh`'s glibc-2.23 ceiling exists to police and which **no
+> runner can check**. It is scoped now: majors are ignored for every crate the device links.
+>
+> **Item 4 needed the 2026-08-26 note's design, not a tweak** — a manifest written by `release.sh`
+> and verified by `release.yml`, so a bypassed `git tag` fails on a stale tag line. Done and tested
+> against all five failure modes.
+>
+> **§A2 got its first test ever, and it found a live defect** (see the note under A2): the EQ shim
+> forwarded out-of-range band gains that the DSP *zeroes* rather than clamps, reachable from a
+> settings file on a PC-writable vfat volume.
+>
+> **Still open: 6◐, 8◐, 9◐, and A2's IPC surface.** 9 is still blocked on the same thing it always
+> was — `cargo fmt` fails on both workspaces, so the gate would be red on arrival, and a formatting
+> commit across a comment-dense tree is a decision rather than a chore.
 
 | # | Action | Cost | Why this order |
 |---|---|---|---|
 | 1 | ✅ **Call `cinder-home/build.sh`'s self-tests from CI.** Extract the six `cc`-compiled self-tests into a `selftests` job (or a `build.sh --host-tests-only` flag). No cross toolchain needed. | ~1 h | Turns six existing, written, passing gates from opt-in into enforced. Highest ratio in the table. |
 | 2 | ✅ **Add a `bash -n` + `shellcheck` job** over the 33 scripts. | ~1 h | 5,288 lines of root-privileged, boot-path shell currently has no syntax gate at all. |
 | 3 | ✅ **Compile-check the C++ on the host** — `cinder-audio` + `cinder-home/src` against stub headers, `-fsyntax-only` if linking is impractical. | ~half day | Would have caught this session's C++ edits, which shipped uncompiled. Closes the worst of A1. |
-| 4 | **Make `release.sh` the only way to release** — NOTE 2026-08-26: a runner cannot re-run the real comparison, because it has no glibc-2.23 cross toolchain. The workable shape is a manifest (payload hashes) written by `release.sh` and *verified* by `release.yml`, so a bypassed `git tag` leaves a stale manifest and fails. That is a design change, not a tweak.: have `release.yml` re-run the payload-vs-source comparison rather than an existence check. | ~2 h | The guard already exists and is correct; it is simply bypassable. Protects the flash path. |
+| 4 | ✅ **Make `release.sh` the only way to release** — done 2026-09-01 via the manifest below.  Original note: — NOTE 2026-08-26: a runner cannot re-run the real comparison, because it has no glibc-2.23 cross toolchain. The workable shape is a manifest (payload hashes) written by `release.sh` and *verified* by `release.yml`, so a bypassed `git tag` leaves a stale manifest and fails. That is a design change, not a tweak.: have `release.yml` re-run the payload-vs-source comparison rather than an existence check. | ~2 h | The guard already exists and is correct; it is simply bypassable. Protects the flash path. |
 | 5 | ✅ **Stop committing `*.unstripped`.** Done 2026-08-26: gitignored and `git rm --cached`ed. The local copies stay, so `addr2line` on a crash address still works. History untouched, deliberately. | 10 min | Stops the bleeding on D5. Does not fix history, and should not try to. |
 | 6 | ◐ **Adopt a "service state" convention** for B1 — 2026-08-26: the convention is now written down in `CONTRIBUTING.md` (`apply_` = push intent, `refresh_` = read fact, `reconcile_` = assert intent still holds, idempotent). The tree already follows the first two; nothing has been retrofitted to `reconcile_`, deliberately — a 30-function rename is churn, and new code is where the rule pays. — a naming rule or a helper (`reconcile_*` vs `apply_*`) that makes "assertion about a service" visually distinct from "push a preference". | ~half day | Five defects in one audit came from this. A convention is cheaper than finding the sixth. |
 | 7 | ✅ **Add `SECURITY.md` + `CONTRIBUTING.md`.** Done 2026-08-26. Scope, out-of-scope, a private-advisory route, and the four rules-from-incidents; CONTRIBUTING covers the local gates, the harness and its limits, and the device rules. | ~1 h | Twelve setuid binaries and an unsigned flasher, with no disclosure route. |
 | 8 | ◐ **Either use the issue tracker or stop citing it.** 2026-08-26: the six **code** references now cite real documents; the rest are in dated historical write-ups and are left as record (see C3). | ~2 h | Cheap, and it makes the excellent comments navigable. |
 | 9 | ◐ **Add `cargo clippy`** (done, scoped to `correctness` + `suspicious`) **+ `cargo fmt --check`** (NOT done — `fmt` fails on both workspaces today, so the gate would be red on arrival; it needs a formatting commit first). | ~30 min | Low value against the rest, listed for completeness. |
-| 10 | **Require PRs on `main`.** | ~10 min | Deliberately last: the current workflow is one person moving fast, and a rule nobody wants gets bypassed. Worth doing when a second contributor appears, not before. |
+| 10 | ✅ **Require PRs on `main`.** Done 2026-09-01 — branch protection requires all six `ci` checks, force-pushes and deletions off; `enforce_admins` and required reviews deliberately left off, because this should stop a RED merge, not require a second person who does not exist. | ~10 min | ~~Deliberately last~~ — **this was wrong, and the day it was fixed is the evidence.** `main` went red twice in one day: one push straight to `main`, one PR merged over a failing check. The reason to require checks was never a second contributor; it is that a gate nobody is obliged to obey protects nothing. |
 
 ### Deliberately not recommended
 
