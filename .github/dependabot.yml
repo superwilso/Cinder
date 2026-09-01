@@ -1,6 +1,36 @@
-# Dependency updates. Grouped and monthly on purpose: this repo ships binaries that are built by a
-# maintainer and committed, so a dependency bump that lands unattended is a bump whose output
-# nobody rebuilt. Monthly batches keep that a deliberate act rather than a stream of noise.
+# Dependency updates.
+#
+# ── WHAT HAPPENED ON THE FIRST RUN (2026-09-01), AND WHY THIS FILE IS SHAPED LIKE THIS ──────────
+# The first version of this file was monthly and grouped, with no version-range limits. Within
+# minutes of landing it opened a group PR bumping SIX player crates, three of them across a
+# semver-major boundary and straight through the device's own code paths:
+#
+#     zune-jpeg  0.4.21 -> 0.5.15    album-art JPEG decode
+#     png        0.17.16 -> 0.18.1   album-art PNG decode
+#     rusqlite   0.32.1 -> 0.40.2    the media library, and its BUNDLED SQLite C source
+#
+# CI ran on that PR and went RED — the two decoders had changed their reader traits and
+# cinder-ffi no longer compiled. It was merged anyway, because `main` had no rule requiring a
+# green check, and main was broken for the next hour.
+#
+# The compile break was the visible half. The half that matters more is invisible to CI:
+# **cinder-home/build.sh is the only thing on earth that checks this tree against glibc 2.23.**
+# The device is glibc 2.23 (2016), rusqlite `bundled` compiles SQLite from vendored C, and
+# build.sh's header says that C must be built against the 2.23 headers with LFS off or it emits
+# *_time64/stat64/fcntl64 references the device's ld-2.23 refuses to resolve. No hosted runner
+# does that link — deliberately, it needs a cross toolchain and a xenial armhf sysroot — so a
+# rusqlite bump is a change **no automated gate in this repository can validate**. It can only
+# fail on a maintainer's machine, or on the player.
+#
+# So the policy below is not general caution. It is: dependabot may only propose what CI can
+# actually judge.
+#
+#   * MAJOR VERSIONS ARE IGNORED for everything the device links. Those upgrades are real work —
+#     an API port plus an ARM build plus a glibc check — and they belong in a deliberate PR by
+#     someone at a machine with the toolchain, not in an automated batch.
+#   * The interval is monthly and PRs are capped, so what does come through is reviewable.
+#   * Nothing here auto-merges. Require a passing `ci` check on `main` (see docs/AUDIT_2026-09-01.md
+#     §D5) or this file's caution is decoration — a red PR merged is a red main either way.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -11,9 +41,28 @@ updates:
     groups:
       player-deps:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Everything below is linked into cinder-ffi and shipped to the device. A major bump needs
+      # cinder-home/build.sh run by hand; see the note above.
+      - dependency-name: "rusqlite"        # + its bundled SQLite C, the glibc-2.23 tripwire
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "png"             # album-art decode
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "zune-jpeg"       # album-art decode
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "fontdue"         # glyph rasteriser; a raster change is a visual change
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "embedded-graphics"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "libc"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "deps(player)"
 
+  # The installer has ZERO dependencies — installer/Cargo.lock contains exactly one package, itself.
+  # This entry exists to keep that true rather than merely true today: if a dependency ever appears,
+  # updates for it show up here instead of silently ageing.
   - package-ecosystem: cargo
     directory: /installer
     schedule:
@@ -22,9 +71,12 @@ updates:
     groups:
       installer-deps:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     commit-message:
       prefix: "deps(installer)"
 
+  # Actions are the one ecosystem where CI genuinely does judge the result: if a bumped action
+  # breaks, the workflow that uses it goes red on the PR. Majors are allowed here.
   - package-ecosystem: github-actions
     directory: /
     schedule:

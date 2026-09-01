@@ -8,7 +8,8 @@
 > (Parts B–H are reference-grade and current), but for **where the project actually is and what to
 > do next, the live docs win:**
 > - **Current feature state (what works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
-> - **Forward plan / next stages:** [`cinder-home/ROADMAP.md`](cinder-home/ROADMAP.md) — the prioritized backlog + device-session critical path.
+> - **Forward plan / next stages:** [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — the ordered run sheet for everything device-gated. (`cinder-home/ROADMAP.md` is a 2026-07-28 snapshot; it now says so at the top.)
+> - **Open decisions right now:** [`docs/AUDIT_2026-09-01.md`](docs/AUDIT_2026-09-01.md) Part D. **Every document in `docs/` is indexed by [`docs/README.md`](docs/README.md), which also says which ones are history.**
 > - **RE detail behind each feature:** [`analysis/RE_playerservice_sound.md`](analysis/RE_playerservice_sound.md), plus per-subsystem `analysis/{E,F,G,H}_*/RE_findings.md`.
 >
 > **One-line status:** all genuinely-offline work is done and daily-usable (host tests green:

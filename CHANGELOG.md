@@ -49,6 +49,56 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 - **The guard-recovery log line was truncated.** Its buffer was 192 bytes for a 209-byte message, so
   the most important line the fault path prints lost its tail. `-Wformat-truncation` had this red in
   CI.
+- **The crash/hang guard could break more than the call it was guarding.** One `run_guarded` served
+  every caller, and four of its call sites are not Sony IPC. A slow mount or `statvfs` set
+  `g_ipc_dead` and cost the user audio and Bluetooth for the boot; and once that flag was set by
+  anything at all, the guard refused *everything* — including the `/contents` reclaim, so one
+  recovered transport timeout meant a cable plugged in later left the library missing and the album
+  art grey until a reboot. Worse, `siglongjmp` does not run destructors: unwinding out of
+  `cinder_db_open`, which holds the render `Mutex` across the SQLite open and library build, left
+  that mutex locked with no owner for the life of the process.
+
+  The guard is now three, chosen by what an abandoned call leaves behind — nothing (`GUARD_LOCAL`,
+  recover and carry on), a half-built Sony client (`GUARD_IPC`, unchanged), or something that
+  outlives the call such as a held mutex or an unreaped `system()` child (`GUARD_FATAL`, never
+  unwound — a hang there is a clean labelled `_exit(42)` into the escape ladder, which is what the
+  ladder is for). `guard_selftest.cpp` went from 4 tests to 9; the new ones fail on the old logic.
+- **Album-art decode did not compile** after `zune-jpeg` 0.5 and `png` 0.18 changed their reader
+  traits. Fixed, and `png` 0.18's `output_buffer_size()` now returning `Option` is handled with `?`
+  — a second net under the dimension gate, where 0.17 would have allocated on a wrapped value.
+  Verified beyond the host suite with a full `cinder-home/build.sh stable`: ARM link clean at
+  `GLIBC ≤ 2.18`, under the device's 2.23, with `rusqlite` 0.40's newly bundled SQLite.
+
+- **`decode_jpeg` had no test.** JPEG is what every cover in a real library is (`magic=FFD8FFE0`,
+  embedded in FLACs), and it was the one decoder with no coverage — which is why a semver-major
+  bump could break it silently. Three tests added with 8×8 fixtures: RGB channel order, the
+  grayscale fan-out branch, and a truncated file.
+
+### Added
+
+- **The Linux installer is published again** (it last shipped in `v0.1.2`). It stages every file and
+  then stops — Sony's `SoftwareUpdateTool.exe` performs the USB handoff and has no Linux equivalent
+  — and now says so and exits 0 instead of reporting a failure, printing the three manual steps that
+  finish the job.
+- **Repository groundwork:** `CHANGELOG.md`, `CODE_OF_CONDUCT.md`, issue templates (including one
+  for reporting a `DEVICE_CHECKLIST.md` item run on real hardware), a pull-request template with a
+  blast-radius section, `docs/README.md` as the documentation index, README badges, and a
+  `cargo audit` job in CI with a weekly cron.
+- `dependabot.yml`, scoped so it can only propose what CI can actually judge: semver-major updates
+  are ignored for every crate the device links, because `cinder-home/build.sh` is the only thing
+  that checks this tree against glibc 2.23 and no hosted runner runs it.
+
+### Changed
+
+- `cinder-home/dist/dev/` is no longer tracked. It was 74 of the 117 committed ARM-binary revisions
+  in a 1.3 GB `.git`, and it is not what anyone installs — build it with `build.sh dev` when needed.
+- `cinder-home/ROADMAP.md` now says which date it is a snapshot of. The forward plan is
+  `docs/DEVICE_CHECKLIST.md`.
+
+*Device-verified 2026-09-01 on an NW-A55: booted in 27.4 s with bootcount 0, library identical at
+2560 tracks / 256 albums / 166 artists, zero guard recoveries, zero faults, and the `/contents`
+reclaim observed running and succeeding at 13.3 s. Full write-up:
+[`docs/AUDIT_2026-09-01.md`](docs/AUDIT_2026-09-01.md).*
 
 ## [0.1.5] — 2026-08-30
 
