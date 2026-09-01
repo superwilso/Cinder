@@ -1,0 +1,52 @@
+name: Feature request
+description: Something Cinder should do and does not.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        [`VISION.md`](https://github.com/superwilso/Cinder/blob/main/VISION.md) is the living goals
+        list and [`cinder-home/STATUS.md`](https://github.com/superwilso/Cinder/blob/main/cinder-home/STATUS.md)
+        is the current feature matrix. Worth a look first — a fair amount is already built and
+        waiting on a device session rather than on code.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and where Cinder gets in the way. Not the solution yet.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Playback / transport
+        - Library and browsing
+        - Bluetooth
+        - USB-DAC / LDAC bridge
+        - Sound effects / EQ
+        - FM tuner
+        - Settings / UI
+        - Installer
+        - Recovery and safety
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Does stock firmware, Walkman One or Wampy do this?
+      description: >
+        If so, say how it behaves there. Half the reverse-engineering work on a feature is knowing
+        which Sony service already implements it.

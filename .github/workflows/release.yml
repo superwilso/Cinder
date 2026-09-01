@@ -99,7 +99,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          # NOT a draft. It was, and that was the bug: the workflow ran, built both installers,
+          # NOT a draft. It was, and that was the bug: the workflow ran, built the installer,
           # attached them — and left the release invisible until someone opened GitHub and pressed
           # Publish. "Automated" has to mean the artefacts are actually reachable at the end.
           # A tag with a suffix (v1.2.3-rc1) still ships, but marked pre-release.
@@ -108,6 +108,12 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           body: |
+            ## What changed
+
+            See [CHANGELOG.md](../blob/main/CHANGELOG.md) for the curated entry for this version,
+            including which items were verified on hardware and which are still device-gated. The
+            auto-generated commit list follows below.
+
             ## Installing
 
             Download **cinder-installer-windows-x64.exe**, connect the Walkman in USB mass-storage
@@ -117,7 +123,10 @@ jobs:
             SCSI command is required.
 
             `cinder-home-install.upg` and `cinder-home-uninstall.upg` are also attached for
-            advanced recovery use. The one-click Windows executable is the recommended path.
+            advanced recovery use, and are the route for Linux and macOS: the one-click installer
+            is Windows-only because its last step hands the device to Sony's own
+            `SoftwareUpdateTool.exe`, which has no Linux equivalent. The Windows executable is the
+            recommended path on Windows.
 
             **Read [RECOVERY.md](../blob/main/RECOVERY.md) first.** This device has no public
             DFU/EDL recovery path.

@@ -1,0 +1,63 @@
+name: Device verification report
+description: You ran something from DEVICE_CHECKLIST.md on real hardware. Report what it did.
+labels: ["device-verified", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A large part of this project is code-complete and **unverified on hardware** — see
+        [`docs/DEVICE_CHECKLIST.md`](https://github.com/superwilso/Cinder/blob/main/docs/DEVICE_CHECKLIST.md).
+        A result from a real player, pass or fail, is one of the most useful things anyone can
+        contribute. A FAIL is worth as much as a PASS; please file it either way.
+
+  - type: input
+    id: item
+    attributes:
+      label: Checklist item
+      description: The line from DEVICE_CHECKLIST.md you ran.
+      placeholder: "Phase 3 — Analyzer emits frames (cinder-probe --analyzer)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - PASS — behaved as the checklist says it should
+        - FAIL — did something else
+        - INCONCLUSIVE — could not tell
+    validations:
+      required: true
+
+  - type: input
+    id: build
+    attributes:
+      label: Exact build tested
+      description: Release tag or commit SHA, and the channel.
+      placeholder: "v0.1.5, stable"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Player model and Sony firmware version
+      placeholder: "NW-A55, fw 1.20"
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: What you observed
+      description: Be literal. "The bar jumped to the end and stayed there" beats "seeking is broken".
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Log excerpt, `cinder-probe` output, photo of the screen — whatever you have.
+      render: text

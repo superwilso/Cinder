@@ -32,6 +32,11 @@ on:
     tags-ignore: ["v*"]     # tags are release.yml's job, no need to run twice
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly, so a newly published advisory against unchanged code is found by the calendar rather
+    # than by the next unrelated commit. Monday 07:00 UTC.
+    - cron: "0 7 * * 1"
+
 
 # A second push supersedes the first, so cancel the run it replaced rather than paying for both to
 # finish. Never on main: a green tick there is a record of what shipped, not a preview.
@@ -158,6 +163,43 @@ jobs:
       # covers the same rule.
       - name: Launcher recovery matrix
         run: bash cinder-home/tools/test_launcher.sh
+
+  # ── the dependency tree, which nothing looked at ───────────────────────────────────────────────
+  # 122 crates reach the binary that runs as the device's Home app, and until now no gate checked
+  # any of them against the RustSec advisory database. The installer has ZERO dependencies by
+  # design — it is audited here anyway so that stays true rather than merely being true today.
+  #
+  # `cargo audit` exits non-zero on a VULNERABILITY and zero on an unmaintained-crate warning, which
+  # is the right split for this repo: a vulnerability in the tree is a stop, whereas `instant` and
+  # `ttf-parser` (both transitive via fontdue) being unmaintained is a fact to know, not a reason to
+  # go red. Both were clean of vulnerabilities when this job was added (2026-09-01).
+  #
+  # Scheduled as well as on-push: an advisory is published against code that has not changed, so a
+  # gate that only runs on a commit finds out about it on the next unrelated commit.
+  audit:
+    name: dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # A plain `cargo audit` rather than a marketplace action, for the same reason the shellcheck
+      # step is a script: this is the exact command a contributor runs locally, so local and CI
+      # cannot drift into checking different things. Pinned, and cached — the install is the slow
+      # part, not the scan.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: player
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version ^0.22
+
+      - name: player — advisory scan
+        working-directory: player
+        run: cargo audit
+
+      - name: installer — advisory scan
+        working-directory: installer
+        run: cargo audit
 
   payload:
     name: dist payload is complete
