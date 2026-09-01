@@ -1,0 +1,36 @@
+# Dependency updates. Grouped and monthly on purpose: this repo ships binaries that are built by a
+# maintainer and committed, so a dependency bump that lands unattended is a bump whose output
+# nobody rebuilt. Monthly batches keep that a deliberate act rather than a stream of noise.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /player
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      player-deps:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps(player)"
+
+  - package-ecosystem: cargo
+    directory: /installer
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      installer-deps:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps(installer)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
