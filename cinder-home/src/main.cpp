@@ -144,6 +144,10 @@ volatile pthread_t g_guard_owner = 0;
 // The backtrace said so every time — pthread_cond_wait <- std::__1::condition_variable::wait, a
 // stack with nothing of ours in it at all.
 volatile pthread_t g_watchdog_owner = 0;
+// The label of a call running under run_watchdog_only() — work that CANNOT be abandoned by a
+// siglongjmp (see the three-guard note above run_guarded_ex). A hang there is deliberately fatal,
+// so this is the only record of which call it was; fault_handler prints it with write(2).
+volatile const char* g_unguarded_what = nullptr;
 
 // Latch the bad-boot counter to MAXBAD so the NEXT boot reverts to stock, then never runs us again
 // until a newer binary is installed (the launcher self-heals on that).
@@ -196,6 +200,19 @@ void fault_handler(int sig, siginfo_t* si, void* uc_) {
         g_in_guard = 0;
         alarm(0);
         siglongjmp(g_guard_jb, 1);   // unwind back to run_guarded (same thread that set it up)
+    }
+    // NAME THE CALL, when we know it. run_watchdog_only() is used for work whose abandonment
+    // would leak something that outlives the call — a held Rust mutex, a forked child, altered
+    // signal dispositions — so a hang there is deliberately fatal rather than recovered. That
+    // makes this line the only record of WHICH call overran. write(2) because we may be here with
+    // the heap lock held; the fprintf in log_fault below is the pre-existing risk, not a new one.
+    if (sig == SIGALRM && g_unguarded_what) {
+        static const char pre[] = "[cinder-home] *** WATCHDOG: un-abandonable call overran: ";
+        ssize_t w1 = write(2, pre, sizeof pre - 1); (void)w1;
+        const char* lbl = (const char*)g_unguarded_what;
+        size_t ln = 0; while (ln < 200 && lbl[ln]) ++ln;
+        ssize_t w2 = write(2, lbl, ln); (void)w2;
+        ssize_t w3 = write(2, " ***\n", 5); (void)w3;
     }
     log_fault(sig, uc_, si,
               sig == SIGALRM ? "WATCHDOG (un-guarded hang)" : "FATAL SIGNAL");
@@ -275,8 +292,81 @@ static bool g_ipc_dead = false;
 long now_ms();                       // defined with the touch state, far below
 volatile int g_ipc_poisoned = 0;     // transport_tick drops its backlog on this
 
+// ── THREE GUARDS, BECAUSE THERE ARE THREE KINDS OF CALL ──────────────────────────────────────
+//
+// Everything above is written about Sony IPC, and all of it is right about Sony IPC. But the same
+// `run_guarded` had been reached for whenever a call might be slow, and four of its call sites are
+// not Sony IPC at all: two `system()` shell-outs, a `statvfs`, and `cinder_db_open`. Wrapping those
+// in the IPC guard was wrong in both directions at once:
+//
+//   * OUTWARDS — a slow mount set `g_ipc_dead`, so a filesystem operation cost the user audio and
+//     Bluetooth for the rest of the boot. Nothing about a `system()` overrunning says anything
+//     about the state of a Sony client.
+//   * INWARDS — once `g_ipc_dead` was set by anything at all, `run_guarded` refused *everything*,
+//     including the `/contents` reclaim. So one recovered transport timeout meant a cable plugged
+//     in later left the library missing, the art grey and the scrobbler writing to an unlinked
+//     inode, with no way back but a reboot. The user-visible shape of that is "I plugged it into
+//     my PC and all my music vanished", reached from a timeout the guard had HANDLED.
+//
+// And a third problem underneath both: **a siglongjmp does not run destructors.** That is survivable
+// for a Sony client because we then refuse to touch it again. It is not survivable for
+// `cinder_db_open`, which holds `cell().lock().unwrap()` — a std::sync::Mutex — across the SQLite
+// open, the library build, the playlist store and the likes import. Unwinding past that MutexGuard
+// leaves the mutex locked with no owner, for the life of the process; the next frame calls into
+// cinder-ffi, blocks forever, and the frame watchdog eventually kills us anyway — two watchdog
+// cycles later, with `g_ipc_dead` set as a red herring and the wrong thread's stack in the log.
+//
+// So the question a call site must answer is not "might this be slow" but:
+//
+//   **if this call is abandoned mid-flight, what does it leave behind?**
+//
+//   GUARD_IPC    A half-built container inside a closed Sony client. Recoverable exactly once, by
+//                never calling in again — that is `g_ipc_dead`, and it is what the note above
+//                describes. `run_guarded()`, the default, 125 call sites.
+//   GUARD_LOCAL  Nothing. A pure read that owns no lock, no child and no global state, so it can be
+//                dropped where it stands and the process carries on unharmed. `run_guarded_local()`.
+//   GUARD_FATAL  Something that outlives the call and cannot be repaired — a held Rust mutex, an
+//                unreaped forked child, the SIGINT/SIGQUIT dispositions `system()` swaps out and
+//                restores on return. There is no safe unwind, so we do not attempt one:
+//                `run_watchdog_only()` arms the watchdog and lets a genuine hang fall through
+//                fault_handler's un-guarded path — log, latch the bad-boot counter, `_exit(42)`,
+//                escape ladder. That is a worse outcome than a skipped subsystem and a better one
+//                than a silent freeze, and it is the outcome the ladder was built to absorb.
+//
+// The rule this is an instance of is one the project already writes down about the escape ladder —
+// *an escape must depend on less than what it rescues* — applied one level down:
+// **a guard must not be able to break more than the call it is guarding.**
+//
+// NOTE ON THE RETRY PATHS. Making the DB open fatal-on-hang does not cost the graceful degradation
+// at its call site, because that path is fed by the RETURN CODE, not by the timeout: a missing
+// /contents makes `cinder_db_open` return non-zero promptly and the caller backs off and retries,
+// exactly as before. The watchdog is only reached by a genuine hang, which the retry loop could
+// never have helped with anyway.
+enum GuardKind {
+    GUARD_IPC = 0,   // Sony IPC — a recovery ends Sony IPC for the boot
+    GUARD_LOCAL,     // owns nothing that outlives the call — recover and carry on
+    GUARD_FATAL,     // owns something a longjmp would leak — never unwound
+};
+
+static int run_guarded_ex(const char* what, unsigned timeout, void (*fn)(), GuardKind kind);
+
+// The three names the call sites use. `run_guarded` keeps its meaning and its 125 callers.
 int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
-    if (g_ipc_dead) {
+    return run_guarded_ex(what, timeout, fn, GUARD_IPC);
+}
+// Local work that can be abandoned where it stands.
+static int run_guarded_local(const char* what, unsigned timeout, void (*fn)()) {
+    return run_guarded_ex(what, timeout, fn, GUARD_LOCAL);
+}
+// Local work that CANNOT. Returns fn()'s completion only; a hang does not return at all.
+static int run_watchdog_only(const char* what, unsigned timeout, void (*fn)()) {
+    return run_guarded_ex(what, timeout, fn, GUARD_FATAL);
+}
+
+static int run_guarded_ex(const char* what, unsigned timeout, void (*fn)(), GuardKind kind) {
+    // ONLY Sony IPC is refused after a Sony IPC death. A local mount or a statvfs has nothing to do
+    // with the state of a Sony client, and refusing them here is what left /contents unmountable.
+    if (kind == GUARD_IPC && g_ipc_dead) {
         // Throttled at the PRINT, not the caller: this is reached from the frame loop, so an
         // unthrottled line here is a flash write per frame for the rest of the boot.
         static long last_said = 0;
@@ -302,6 +392,22 @@ int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
         clog_(what);
     }
     unsigned prev = alarm(0);     // pause + capture the outer watchdog's remaining time
+
+    // ── GUARD_FATAL: watchdog, no unwind ──────────────────────────────────────────────────────
+    // No sigsetjmp and no g_in_guard, deliberately. If this call hangs, fault_handler finds
+    // g_in_guard == 0, takes its un-guarded-hang path, names the call from g_unguarded_what,
+    // latches the bad-boot counter and _exit(42)s into the escape ladder. Attempting to unwind
+    // here is what would leave a Rust mutex locked with no owner or a forked child unreaped.
+    if (kind == GUARD_FATAL) {
+        g_unguarded_what = what;
+        alarm(timeout);
+        fn();
+        alarm(0);
+        g_unguarded_what = nullptr;
+        if (prev) alarm(prev);
+        return 0;
+    }
+
     g_guard_owner = pthread_self();  // only THIS thread may siglongjmp back to the buffer below
     g_in_guard = 1;
     if (sigsetjmp(g_guard_jb, 1) == 0) {
@@ -317,6 +423,20 @@ int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
     g_in_guard = 0;
     alarm(0);
     if (prev) alarm(prev);
+
+    // ── GUARD_LOCAL: recovered, and that is the end of it ─────────────────────────────────────
+    // The call owned nothing that outlives it, so there is nothing to poison and nothing to
+    // refuse afterwards. Say what was dropped and carry on.
+    if (kind == GUARD_LOCAL) {
+        char lm[256];
+        std::snprintf(lm, sizeof lm,
+                      "GUARD RECOVERED (local): %s — abandoned; it owns no state that outlives the "
+                      "call, so Sony IPC is untouched and this is retried on its normal schedule.",
+                      what);
+        clog_(lm);
+        return -1;
+    }
+
     // The call was abandoned mid-flight, so something of the client's is half-built. There is no
     // repair and no waiting it out — see g_ipc_dead. Everything Sony is off from here.
     g_ipc_dead = true;
@@ -609,7 +729,16 @@ void deferred_up() {
         static long db_every_ms = 1000;
         if (retry_now < db_next_ms) return;
         g_deferred_rc = -1;
-        run_guarded("deferred_up: cinder_db_open + build library", 25,
+        // WATCHDOG ONLY, and 45 s rather than 25. cinder_db_open holds cell().lock() across the
+        // SQLite open, build_library, the playlist store and the likes import, so a siglongjmp out
+        // of it leaves that std::sync::Mutex locked with no owner for the life of the process —
+        // every later frame then blocks in cinder-ffi and the frame watchdog kills us anyway, two
+        // cycles later and with the wrong stack in the log. The retry ladder below is unaffected:
+        // it is driven by the RETURN CODE (a missing /contents returns non-zero promptly), not by
+        // the timeout. The budget is raised because the consequence of overrunning it is now a
+        // clean exit into the escape ladder rather than a skipped subsystem, and the full build
+        // across a ~3,500-track library has never been timed.
+        run_watchdog_only("deferred_up: cinder_db_open + build library", 45,
                     []() { g_deferred_rc = cinder_db_open("/db/MTPDB.dat"); });
         if (g_deferred_rc != 0) {
             static RetryLog rl_DB = {0, 0};
@@ -781,8 +910,11 @@ void deferred_up() {
         run_guarded("deferred_up: re-apply saved repeat", 4,
                     []() { cinder_audio_set_repeat_one(cinder_get_repeat_one()); });
     }
-    // Real storage usage for Settings (statvfs — read-only, no Sony service; guarded for parity).
-    run_guarded("deferred_up: report storage", 6, report_storage);
+    // Real storage usage for Settings (statvfs — read-only, no Sony service). GUARD_LOCAL: it can
+    // block on a wedged mount, so it wants a watchdog, but it holds no lock and owns no child, so
+    // abandoning it costs nothing and must not take Sony IPC down with it. ("guarded for parity"
+    // is what this said before, and parity with the IPC guard was exactly the bug.)
+    run_guarded_local("deferred_up: report storage", 6, report_storage);
     // Volume at boot, stock-style: a PERSISTED level wins (restore it to the hardware — fixes the
     // "boots near-mute at hw level 1" failure); otherwise seed the UI from the mixer, and if that
     // reads back effectively mute (< 5/120 — the boot-default case, not a deliberate user 0),
@@ -809,7 +941,10 @@ void deferred_up() {
     // resolved inconsistently) and LOGS the outcome (OK+size / FAILED+error / SRC-missing) to
     // cinderhome.log, so one log pull tells us exactly what happened. Once adb is up (dev),
     // `adb pull /db/MTPDB.dat` is the primary route and this is just a fallback.
-    run_guarded("deferred_up: copy MTPDB.dat to /contents (dev)", 15, []() {
+    // WATCHDOG ONLY: system() forks, and it swaps out SIGINT/SIGQUIT for the duration and restores
+    // them on return. Unwinding past it leaves an unreaped child and this process' signal handling
+    // altered for good — neither of which a "recovered" app should be carrying.
+    run_watchdog_only("deferred_up: copy MTPDB.dat to /contents (dev)", 15, []() {
         std::system(
             "export PATH=/system/bin:/system/xbin:/xbin:/bin:/sbin:/usr/bin:$PATH; "
             "SRC=/db/MTPDB.dat; DST=/contents/MTPDB_copy.dat; "
@@ -843,7 +978,7 @@ void deferred_up() {
     // a dev boot only reaches this code with USB DISCONNECTED at launch (USB-at-launch boots stock),
     // so no PC is holding the gadget when we bounce it. Still fully guarded + best-effort.
     clog_("deferred_up: DEV channel — composing adb into the USB gadget + starting adbd (guarded)");
-    run_guarded("deferred_up: enable adb (dev)", 10, []() {
+    run_watchdog_only("deferred_up: enable adb (dev)", 10, []() {   // system(), see above
         std::system(
             "echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null; "
             "echo mass_storage,adb > /sys/class/android_usb/android0/functions 2>/dev/null; "
@@ -9189,7 +9324,12 @@ void* render_driver(void*) {
                     g_contents_wait = CONTENTS_WAIT_MIN;
                 } else if (++g_contents_gone >= g_contents_wait) {
                     g_contents_gone = 0;
-                    run_guarded("usb-msc: reclaim /contents", 30, reclaim_contents);
+                    // WATCHDOG ONLY, 60 s: reclaim_contents runs system("cinder-msc off") and then
+                    // a full cinder_db_open, so it carries both un-abandonable hazards at once. It
+                    // is also the site that made the old coupling user-visible — it used to be
+                    // REFUSED outright once g_ipc_dead was set by anything at all, which is how one
+                    // recovered transport timeout turned a later cable into "all my music vanished".
+                    run_watchdog_only("usb-msc: reclaim /contents", 60, reclaim_contents);
                 }
             }
             if (g_msc_active) {

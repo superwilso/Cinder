@@ -1,8 +1,47 @@
-# Cinder — Roadmap & remaining-work audit
+# Cinder — Roadmap
 
-Forward-looking companion to [`STATUS.md`](STATUS.md) (which is the *current-state* feature matrix).
-This is **what's left and in what order**, written so the next working session — especially the
-first one with the device — is a straight line, not a guessing game.
+> ## ⚠ READ THIS FIRST — most of this file is a snapshot from 2026-07-28
+>
+> Everything below the horizontal rule was written on **2026-07-28** and has not been re-audited
+> since. It is kept because its reasoning is still good and several of its entries are still open —
+> but it does **not** know about the FM tuner, `cinder-clock`, Bluetooth, NFC, playlists, the
+> on-screen keyboard, liked-songs sync, the device settings page, or the six audits that landed
+> through August. It still describes Bluetooth as "P2, backend not wired". Read it as history, the
+> same way the dated files in [`../docs/`](../docs/README.md) are read.
+>
+> **A roadmap that is five weeks stale is worse than no roadmap**, because unlike a dated audit it
+> is *supposed* to be current, and the README pointed here for the forward plan. That is what this
+> banner exists to stop. Noted 2026-09-01 ([`../docs/AUDIT_2026-09-01.md`](../docs/AUDIT_2026-09-01.md) §D2).
+>
+> ### Where the live plan actually is
+>
+> | Question | File |
+> |---|---|
+> | **What works right now, feature by feature** | [`STATUS.md`](STATUS.md) — kept current, entries through 2026-08-31 |
+> | **What to do with the device in your hand** | [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md) — the ordered run sheet, safety rules first |
+> | **What only ears or a hand can settle** | [`../docs/DEVICE_TESTS.md`](../docs/DEVICE_TESTS.md) — ordered by payoff |
+> | **What is structurally weak, and why** | [`../docs/SHORTCOMINGS.md`](../docs/SHORTCOMINGS.md) — standing reference, cited by section ID |
+> | **The open decisions right now** | [`../docs/AUDIT_2026-09-01.md`](../docs/AUDIT_2026-09-01.md) Part D |
+> | **Every audit, and which are superseded** | [`../docs/README.md`](../docs/README.md) |
+>
+> ### The three things actually blocking progress, as of 2026-09-01
+>
+> 1. **`main` can be red and still be merged.** Two red commits landed on `main` on 2026-09-01
+>    alone — one pushed directly, one a dependabot PR merged over a failing check. CI runs, catches
+>    them, and is not required. Nothing else on this list matters as much, because every other item
+>    is verified by a gate that can currently be ignored.
+> 2. **The device-gated backlog has never been worked through.** `DEVICE_CHECKLIST.md` is the list;
+>    it needs someone with an A50-series player, not more desk work.
+> 3. **`build.sh` is the only thing that checks the glibc-2.23 ceiling**, and no hosted runner runs
+>    it. Anything touching `cinder-ffi`'s dependencies — `rusqlite`'s bundled SQLite above all — can
+>    only be validated on a machine with the cross toolchain.
+
+---
+
+*Everything below: written 2026-07-28. Forward-looking companion to [`STATUS.md`](STATUS.md) (which
+is the current-state feature matrix) as it stood then — what was left and in what order, written so
+that the next working session, especially the first one with the device, was a straight line rather
+than a guessing game.*
 
 > **What stands between this tree and a device the owner can rely on:**
 > [`../docs/PRODUCTION_READINESS.md`](../docs/PRODUCTION_READINESS.md). Short version: **33 commits

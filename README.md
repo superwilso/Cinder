@@ -31,7 +31,9 @@ Full rationale and the living goals list: [`VISION.md`](VISION.md).
 
 This is a real reverse-engineering project against closed firmware, built and tested on actual
 hardware, not a simulator. Current state, feature-by-feature: [`cinder-home/STATUS.md`](cinder-home/STATUS.md).
-Forward plan: [`cinder-home/ROADMAP.md`](cinder-home/ROADMAP.md).
+Forward plan: [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — the ordered run sheet for
+everything that needs the player in hand. (`cinder-home/ROADMAP.md` is a 2026-07-28 snapshot and
+says so at the top; it is history, not the plan.)
 
 Headline feature (USB-DAC → LDAC bridge) is proven on hardware. Bluetooth pairing/playback,
 NFC tap-to-pair, and the rest of the UI are daily-usable with a handful of items still
@@ -43,10 +45,11 @@ Download **`cinder-installer-windows-x64.exe`** from the [latest release](../../
 plug the Walkman in over USB in mass-storage mode, and run it. It finds the player, asks which
 optional parts you want, copies them across, and tells you what to do next.
 
-**Windows only, and that is not an oversight.** The installer's last step hands the device to
-Sony's own `SoftwareUpdateTool.exe`, which owns the USB handoff and the reboot into Cinder. There is
-no Linux equivalent, so a Linux build can stage the files but cannot finish the install. Linux and
-macOS users can use the attached `cinder-home-install.upg` by hand — see [`install.md`](install.md).
+**On Linux, `cinder-installer-linux-x64` gets you most of the way.** It stages every file onto the
+player and then stops, because the last step — Sony's `SoftwareUpdateTool.exe` performing the USB
+handoff — has no equivalent outside Windows. It prints the three manual steps that finish the job
+(eject cleanly, then **Settings ▸ Device Settings ▸ Update** on the player). macOS users can copy
+`cinder-home-install.upg` across by hand and do the same; see [`install.md`](install.md).
 
 ```
   Cinder installer  (channel: stable)
@@ -145,9 +148,9 @@ It refuses to tag unless the tree is clean, `installer/Cargo.toml`'s version mat
 embedded payload file exists, **a fresh `build.sh stable` reproduces the committed `dist/` byte for
 byte**, and the installer's own tests pass. It never commits anything — staging stays yours.
 
-Pushing the tag is what triggers `.github/workflows/release.yml`, which builds the Windows
-installer, attaches it plus the two `.upg` files and `SHA256SUMS` to a **published** (not draft)
-GitHub release, and marks it pre-release if the tag has a suffix like `-rc1`.
+Pushing the tag is what triggers `.github/workflows/release.yml`, which builds the Windows and
+Linux installers, attaches them plus the two `.upg` files and `SHA256SUMS` to a **published** (not
+draft) GitHub release, and marks it pre-release if the tag has a suffix like `-rc1`.
 
 Every other push runs `.github/workflows/ci.yml`, which builds and tests the player and the
 installer on both platforms and checks the committed payload is complete and actually ARM — so a
@@ -188,7 +191,8 @@ code-complete and unverified on hardware; if you own an A50-series player, runni
 moves things that no amount of desk work can.
 
 `analysis/` is the research trail; if you're picking up an open question there, that's the place
-to start. `cinder-home/ROADMAP.md` has the current prioritized backlog.
+to start. [`docs/AUDIT_2026-09-01.md`](docs/AUDIT_2026-09-01.md) Part D is the current list of open
+decisions.
 
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 

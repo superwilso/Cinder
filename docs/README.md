@@ -66,6 +66,7 @@ ones where they overlap; the header of each says what it covers.
 
 | Document | Why it is still here |
 |---|---|
+| [`../cinder-home/ROADMAP.md`](../cinder-home/ROADMAP.md) | The 2026-07-28 forward plan, now carrying a banner saying so. Several entries are still open; it predates Bluetooth, NFC, FM, playlists and the August audits. The live plan is `DEVICE_CHECKLIST.md`. |
 | [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) | The 2026-07-28 gap list. Its headline count ("33 commits since the last hardware-verified one") is long out of date, but the *shape* of the argument — what has to be true before this is something a stranger relies on — is the one this project keeps returning to. |
 | [`FLASH_NEXT.md`](FLASH_NEXT.md) | The 2026-07-28 flash run sheet. Superseded by `DEVICE_CHECKLIST.md`; kept as the model of what a run sheet should contain. |
 
