@@ -62,7 +62,7 @@ jobs:
             dir: installer
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -94,7 +94,7 @@ jobs:
     name: C/C++ syntax + self-tests + shell + harness + launcher
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ~19,400 lines of C and C++ that nothing compiled before this. It is a SYNTAX check, not a
       # build: it cannot see the ABI, the glibc ceiling, or anything needing the device's headers.
@@ -180,7 +180,7 @@ jobs:
     name: dependency advisories
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
 
       # A plain `cargo audit` rather than a marketplace action, for the same reason the shellcheck
@@ -205,7 +205,7 @@ jobs:
     name: dist payload is complete
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Every file the installer embeds must be committed
         shell: bash
         run: |
