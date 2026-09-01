@@ -23,5 +23,5 @@ libc = "0.2"
 # Album-cover decoders (pure Rust — must stay glibc-2.23-clean, no C deps).
 # JPEG covers the overwhelming majority of embedded art; PNG the rest; BMP is hand-rolled
 # in art_load.rs (the DB's pre-rendered `bmpfile` thumbnails).
-zune-jpeg = "0.4"
-png = "0.17"
+zune-jpeg = "0.5"
+png = "0.18"
