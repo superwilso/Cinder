@@ -49,6 +49,7 @@
 #include "cinder_effects.h"
 #include "cinder_tuner.h"
 #include "vol_ramp.h"
+#include "frame_budget.h"
 #include "bt_edge.h"
 #include "bt_poll.h"   // how often to ask the radio anything (host-tested)
 #include "bt_switch.h" // radio-vs-switch reconcile (host-tested)
@@ -9631,6 +9632,18 @@ void* render_driver(void*) {
             // and the scrobbler both ride on it).
             left = last_house_ms + 1000 - now_ms();
             if (left > 1000) left = 1000;
+            // …BUT NEVER SLEEP PAST OUTSTANDING VOLUME WORK. Reported as "3.5 mm volume is not
+            // responsive with the screen off", and it is this line rather than anything in the
+            // volume path itself: a ramp step and a trailing flush are DEADLINES, not events, and
+            // poll() only returns early for events. The rule and the whole write-up live in
+            // src/frame_budget.h so tools/framebudget_selftest.cpp checks the SAME code — the same
+            // arrangement as vol_ramp.h and bt_poll.h.
+            left = cinder_clamp_budget(
+                left,
+                cinder_vol_deadline(g_vol_btn, g_vol_down_ms, g_vol_last_ms,
+                                    g_vol_pending, g_vol_write_ms,
+                                    VOL_REPEAT_DELAY_MS, VOL_REPEAT_EVERY_MS, VOL_WRITE_EVERY_MS),
+                now_ms());
         }
         if (left < 1) left = 1;
         if (g_evn > 0 && g_bringup_settled) {

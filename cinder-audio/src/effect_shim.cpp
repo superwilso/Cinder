@@ -8,6 +8,7 @@
 // (effect_abi.hpp), so `new EffectCtrlDmp` can't overflow.
 #include "effect_abi.hpp"
 #include "cinder_effects.h"
+#include "eq_range.h"
 
 namespace fx = pst::services::sound;
 
@@ -31,9 +32,13 @@ int cinder_effects_set_eq(const signed char* bands, int n) {
     fx::EffectCtrlDmp* e = fxc();
     if (!e || !bands) return -1;
     e->SetEq10Band(true);
-    if (n > 10) n = 10;
+    // CLAMPED. An out-of-range gain does not clamp inside the service, it ZEROES the band — so
+    // forwarding whatever we are handed turns a bad settings line into an EQ with a band silently
+    // switched off. See src/eq_range.h for the measurement and for where such a value comes from.
+    n = cinder_eq_clamp_count(n);
     for (int i = 0; i < n; ++i) {
-        e->SetEq10BandValue(static_cast<fx::Eq10Band>(i), static_cast<int>(bands[i]));
+        e->SetEq10BandValue(static_cast<fx::Eq10Band>(i),
+                            cinder_eq_clamp_gain(static_cast<int>(bands[i])));
     }
     return 0;
 }
@@ -62,7 +67,10 @@ int cinder_effects_is_clear_phase_hp_on(void)     { auto* e = fxc(); if (!e) ret
 int cinder_effects_get_select_using_eq(void)      { auto* e = fxc(); if (!e) return -1; return e->GetSelectUsingEq(); }
 int cinder_effects_get_eq_band(int i)             { auto* e = fxc(); if (!e) return 0; return e->GetEq10BandValue(static_cast<pst::services::sound::Eq10Band>(i)); }
 float cinder_effects_get_eq_band_db(int i)        { auto* e = fxc(); if (!e) return 0.0f; return e->GetEq10BandValuedB(static_cast<pst::services::sound::Eq10Band>(i)); }
-int cinder_effects_set_eq_band(int i, int gain)   { auto* e = fxc(); if (!e) return -1; e->SetEq10BandValue(static_cast<pst::services::sound::Eq10Band>(i), gain); return 0; }
+// Same clamp as the whole-curve setter above — this is the per-band path the incremental apply
+// uses, and it reaches exactly the same call. The index is bounds-checked for the same reason:
+// Eq10Band is an enum with ten values and a cast does not check.
+int cinder_effects_set_eq_band(int i, int gain)   { auto* e = fxc(); if (!e) return -1; if (i < 0 || i > 9) return -1; e->SetEq10BandValue(static_cast<pst::services::sound::Eq10Band>(i), cinder_eq_clamp_gain(gain)); return 0; }
 int cinder_effects_set_select_using_eq(int t)     { auto* e = fxc(); if (!e) return -1; e->SetSelectUsingEq(static_cast<pst::services::sound::EqType>(t)); return 0; }
 // Which tone system is IN THE PATH: 0 none, 1 the 6-band, 2 the 10-band, 3 Tone Control. Same call
 // as above, named — the ordinals were settled on device (see effect_abi.hpp EqType) and the raw

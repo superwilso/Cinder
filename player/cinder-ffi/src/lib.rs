@@ -491,6 +491,11 @@ fn current_hhmm() -> String {
 
 static R: OnceLock<Mutex<Option<Render>>> = OnceLock::new();
 
+/// Maximum EQ band gain, in the DSP's half-dB units (±20 = ±10 dB). Mirrors
+/// `cinder_ui::eq::BAND_MAX`, which is what the EQ screen clamps to; kept here because the
+/// settings loader has to clamp values that never went through the screen at all.
+const EQ_BAND_MAX: i8 = 20;
+
 fn cell() -> &'static Mutex<Option<Render>> {
     R.get_or_init(|| Mutex::new(None))
 }
@@ -2764,12 +2769,23 @@ pub extern "C" fn cinder_get_eq_bands(out: *mut i8) {
     if out.is_null() {
         return;
     }
-    if let Some(r) = cell().lock().unwrap().as_ref() {
-        let bands = r.app.eq_bands();
-        unsafe {
-            for (i, b) in bands.iter().enumerate() {
-                *out.add(i) = *b;
-            }
+    // ALWAYS WRITE ALL TEN, even when there is no renderer to read them from. The caller is
+    // `apply_eq_fn`, which declares `signed char bands[10]` on the stack and hands the result
+    // straight to `cinder_effects_set_eq` — so returning early here left ten bytes of
+    // uninitialised stack being marshalled into the DSP. Values outside ±20 do not clamp inside
+    // the service, they ZERO the band, so the visible result would have been an EQ with bands
+    // randomly flat. Not reachable today (apply_eq_fn only runs after render init, so the lock
+    // always yields Some), which is exactly why it would have gone on not being reachable until
+    // one day it was. Flat is the correct answer for "no EQ state yet".
+    let bands = cell()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|r| r.app.eq_bands())
+        .unwrap_or([0i8; 10]);
+    unsafe {
+        for (i, b) in bands.iter().enumerate() {
+            *out.add(i) = *b;
         }
     }
 }
@@ -3935,7 +3951,20 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         let mut arr = r.app.eq_bands();
                         for (i, part) in v.split(',').enumerate().take(10) {
                             if let Ok(g) = part.trim().parse::<i8>() {
-                                arr[i] = g;
+                                // CLAMPED, because this is not the UI. Every place the EQ screen
+                                // writes a band clamps to ±BAND_MAX, so the values Cinder itself
+                                // produces are always in range — but this file is on /contents,
+                                // which is vfat and writable by any PC the player is plugged into,
+                                // and `i8` parses anything from -128 to 127.
+                                //
+                                // An out-of-range gain does NOT clamp inside the DSP: Sony's
+                                // SetEq10BandValue ZEROES the band instead (measured; the scale is
+                                // half-dB, so ±20 is ±10 dB). So a hand-edited or corrupted line
+                                // silently flattens that band rather than pinning it to the
+                                // maximum, and the EQ screen would draw its knob outside the field
+                                // it belongs to. It would also be written straight back out on the
+                                // next save, so the bad value persists.
+                                arr[i] = g.clamp(-crate::EQ_BAND_MAX, crate::EQ_BAND_MAX);
                             }
                         }
                         r.app.set_eq_bands(arr);
@@ -4085,7 +4114,11 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     }
                     "bank_eq" => {
                         for (i, part) in v.split(',').take(10).enumerate() {
-                            if let Ok(g) = part.trim().parse::<i8>() { bank.eq_bands[i] = g; }
+                            // Same clamp, same reason as "eq" above — an A/B bank is loaded from
+                            // the same PC-writable file and reaches the same DSP call.
+                            if let Ok(g) = part.trim().parse::<i8>() {
+                                bank.eq_bands[i] = g.clamp(-crate::EQ_BAND_MAX, crate::EQ_BAND_MAX);
+                            }
                         }
                         bank_seen = true;
                     }
@@ -5749,5 +5782,48 @@ mod tests {
         assert!(RAIL_GRAB_BOT >= RAIL_Y + 4);
         assert!(RAIL_GRAB_BOT - RAIL_GRAB_TOP >= 40, "too thin to hit with a thumb");
         assert!(RAIL_GRAB_BOT < 692 - 44, "band overlaps the play/pause target");
+    }
+
+    // ── the settings file is not trusted input ──────────────────────────────────────────────
+    // It lives on /contents: vfat, world-writable, and shared with any PC the player is plugged
+    // into. Every EQ site in the UI clamps to ±BAND_MAX, so Cinder's own values are always in
+    // range — but this loader parses `i8`, which accepts -128..127, and an out-of-range gain does
+    // not clamp inside Sony's DSP. It ZEROES the band. So a corrupted or hand-edited line used to
+    // silently flatten a band instead of pinning it to maximum, draw its knob outside the EQ
+    // field, and then be written straight back out on the next save.
+    #[test]
+    fn eq_band_max_matches_the_ui_limit() {
+        // If these drift apart the screen and the DSP disagree about what maximum boost means.
+        assert_eq!(EQ_BAND_MAX, cinder_ui::eq::BAND_MAX);
+    }
+
+    #[test]
+    fn out_of_range_eq_gains_clamp_rather_than_zeroing_the_band() {
+        // The clamp the loader applies, asserted directly on the same expression.
+        let clamp = |g: i8| g.clamp(-EQ_BAND_MAX, EQ_BAND_MAX);
+        assert_eq!(clamp(127), EQ_BAND_MAX, "i8 max must pin to +20, not reach the DSP");
+        assert_eq!(clamp(-128), -EQ_BAND_MAX, "i8 min must pin to -20");
+        assert_eq!(clamp(100), EQ_BAND_MAX, "a hand-edited 100 pins to +20, not 0");
+        assert_eq!(clamp(21), EQ_BAND_MAX, "one over the top pins");
+        assert_eq!(clamp(-21), -EQ_BAND_MAX, "one under the bottom pins");
+        for g in -EQ_BAND_MAX..=EQ_BAND_MAX {
+            assert_eq!(clamp(g), g, "in-range gain {g} must survive exactly");
+        }
+    }
+
+    #[test]
+    fn a_clamped_band_still_lands_inside_the_eq_field() {
+        // The other half of the same defect: the EQ screen maps value -> y through BAND_MAX, so a
+        // gain of 100 would draw its knob far outside the field it belongs to. Clamped values are
+        // by construction the ones the screen can draw.
+        use cinder_ui::eq::{value_at_y, BAND_MAX};
+        for g in [-BAND_MAX, 0, BAND_MAX] {
+            assert!((-BAND_MAX..=BAND_MAX).contains(&g));
+        }
+        // value_at_y is the inverse and clamps too — nothing the field can produce is out of range.
+        for y in -500..1200 {
+            let v = value_at_y(y);
+            assert!((-BAND_MAX..=BAND_MAX).contains(&v), "y={y} produced {v}");
+        }
     }
 }

@@ -111,7 +111,7 @@ jobs:
       - name: C++ self-tests
         run: |
           fail=0
-          for t in guard volramp btedge jackedge btswitch dbsig btpoll; do
+          for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange; do
             src="cinder-home/tools/${t}_selftest.cpp"
             if [ ! -f "$src" ]; then echo "::error::missing self-test $src"; fail=1; continue; fi
             if ! cc -O2 -o "/tmp/$t" "$src" -lstdc++; then

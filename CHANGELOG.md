@@ -69,6 +69,35 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Verified beyond the host suite with a full `cinder-home/build.sh stable`: ARM link clean at
   `GLIBC ≤ 2.18`, under the device's 2.23, with `rusqlite` 0.40's newly bundled SQLite.
 
+- **3.5 mm volume was unresponsive with the screen off.** Reported directly. The volume path was
+  not at fault — the frame pacing was. With the panel dark the render loop sleeps in `poll()` to the
+  next 1 Hz housekeeping deadline, which is the single biggest battery lever in the app and is right
+  for events, because `poll()` returns immediately on one. But two things the rocker needs are not
+  events, they are *deadlines* serviced at the top of the loop: the synthesized ramp's next step
+  (every 120 ms while held) and the trailing write of a coalesced ramp (an `amixer` write is a
+  fork+exec of `/bin/sh`, so steps are batched and the level the user stopped on is written
+  afterwards). Nothing woke the loop for either, so releasing the rocker within 150 ms of the last
+  write left the final level sitting in `g_vol_pending` until the next housekeeping tick — up to a
+  second of nothing after you stopped pressing.
+
+  It only shows with the screen off *deliberately*: an idle blank wakes on any non-Power key, so the
+  panel lights, the budget snaps to 16 ms and the defect disappears. Power-off keeps it dark, which
+  is the pocket case the rocker exists for. The loop now never sleeps past owed volume work, and
+  sleeps exactly as long as before when none is owed. Rule and reasoning in `src/frame_budget.h`,
+  checked by `tools/framebudget_selftest.cpp` (the harness cannot reach this — its clock is virtual
+  and darkening the panel needs a `carry_out` it stubs).
+- **The EQ shim forwarded gains the DSP silently zeroes.** `SetEq10BandValue` takes half-dB units
+  and a value outside ±20 does not clamp inside Sony's service — it **zeroes the band**. The UI
+  could never produce one (every site in the EQ screen clamps), but the settings loader parses `i8`
+  from a file on `/contents`, which is vfat and writable by any PC the player is plugged into. One
+  corrupted or hand-edited line silently flattened a band, drew its knob outside the EQ field, and
+  was written back out on the next save. Clamped now in the loader *and* in the shim — the loader
+  protects Cinder's model, the shim protects the service, which cannot defend itself and fails
+  silently. Found while writing `cinder-audio`'s first-ever test (`SHORTCOMINGS.md` §A2).
+- **`cinder_get_eq_bands` could leave its output uninitialised.** It returned early when the
+  renderer was not up, leaving the caller's `signed char bands[10]` as stack garbage on its way into
+  the DSP. Not reachable today, which is how it would have stayed until it wasn't. It now always
+  writes all ten, flat when there is nothing to report.
 - **`decode_jpeg` had no test.** JPEG is what every cover in a real library is (`magic=FFD8FFE0`,
   embedded in FLACs), and it was the one decoder with no coverage — which is why a semver-major
   bump could break it silently. Three tests added with 8×8 fixtures: RGB channel order, the
@@ -94,6 +123,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   in a 1.3 GB `.git`, and it is not what anyone installs — build it with `build.sh dev` when needed.
 - `cinder-home/ROADMAP.md` now says which date it is a snapshot of. The forward plan is
   `docs/DEVICE_CHECKLIST.md`.
+- **A release can no longer be cut without verification.** `tools/release.sh` rebuilds the stable
+  channel and refuses to tag unless every committed byte matches — real, and until now entirely
+  opt-in, because `git tag && git push --tags` reaches the workflow directly. The runner cannot
+  repeat that comparison (no glibc-2.23 cross toolchain, which is why `dist/` is committed at all),
+  so `release.sh` now records what it verified — every payload hash, plus the tag it was verified
+  for — and `release.yml` checks the record still describes the tree. A tag cut without the script
+  finds a manifest naming the previous version and fails. Shared script, so CI and a contributor run
+  the same check (`tools/verify_payload_manifest.sh`). Not a signature; it closes the accident.
 
 *Device-verified 2026-09-01 on an NW-A55: booted in 27.4 s with bootcount 0, library identical at
 2560 tracks / 256 albums / 166 artists, zero guard recoveries, zero faults, and the `/contents`
