@@ -38,9 +38,32 @@ player/out/
 .DS_Store
 Thumbs.db
 
+# === session output that kept landing at the repo root ===
+# battery_track.tsv (tools/battery_track.sh) and the timestamped cinder_screen_*.png dumps are
+# per-session measurements, regenerable and specific to one device run — the same reasoning that
+# already excludes the rendered screen previews above. Both had drifted into being tracked at the
+# top level. They live under artifacts/session/ now, which is ignored wholesale.
+/battery_track.tsv
+/cinder_screen_*.png
+
+# === the dev channel's built payload is NOT tracked ===
+# dist/stable/ IS tracked: it is the flashable deliverable, the ARM toolchain is not reproducible
+# on a hosted runner, and tools/release.sh verifies the committed payload byte-for-byte against a
+# fresh build before it will tag. That reasoning applies to what users install. It does not apply
+# to the dev channel.
+#
+# WHY (measured 2026-09-01): .git had reached 1.3 GB, and 863 MB of it — 66% of the repository —
+# was cinder-home/dist/. Stripped ARM binaries share no deltas, so every build rewrites ~3.5 MB in
+# full, and dist/dev accounted for 74 of the 117 revisions. A `git clone` of a ~60,000-line project
+# was transferring 1.3 GB, and dev builds are not what anyone installs.
+#
+# Build them when you need them — `cinder-home/build.sh dev` then `tools/pack_upg.sh dev`. An
+# installer compiled with CINDER_CHANNEL=dev and no dist/dev/ present says exactly that and exits 2
+# (installer/build.rs collects them into MISSING; src/main.rs prints the two commands).
+cinder-home/dist/dev/
+
 # === C++ build intermediates + linked binaries (rebuild: bash cinder-home/build.sh) ===
-# dist/ stays tracked — those are the flashable deliverables. .crt223/*.o stay tracked —
-# they are glibc-2.23 toolchain INPUTS, not outputs.
+# .crt223/*.o stay tracked — they are glibc-2.23 toolchain INPUTS, not outputs.
 cinder-home/*.o
 cinder-home/cinder-home
 cinder-home/cinder-probe

@@ -272,12 +272,19 @@ fn run_sony_updater() -> io::Result<()> {
     }
 }
 
+/// Off Windows there is no updater to launch — `SoftwareUpdateTool.exe` is the only thing that
+/// performs the USB handoff, and it has no Linux or macOS equivalent.
+///
+/// This used to return `Err(Unsupported)`, which `finish_install` then reported as
+/// `ERROR: could not start the Sony updater` and `exit(1)` — on a run that had just staged every
+/// file correctly. The staging IS the useful half, and it worked; only the last step is missing.
+/// Reporting that as a failure is what made a Linux build unpublishable, and CI has been building
+/// and testing one on every push the whole time.
+///
+/// So: succeed, and be honest in `print_next_steps` about what the user has to do by hand.
 #[cfg(not(windows))]
 fn run_sony_updater() -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "the one-click updater is Windows-only; run the native Windows release executable",
-    ))
+    Ok(())
 }
 
 fn finish_install(comps: &[Comp], target: &Path) -> ! {
@@ -286,6 +293,7 @@ fn finish_install(comps: &[Comp], target: &Path) -> ! {
         eprintln!("The player may now hold a partial copy. Re-run before updating.");
         std::process::exit(1);
     }
+    #[cfg(windows)]
     println!("\n  Files staged. Sony's updater will now take over the USB connection.");
     if let Err(e) = run_sony_updater() {
         eprintln!("\nERROR: could not start the Sony updater: {e}");
@@ -462,8 +470,30 @@ fn main() {
     finish_install(&comps, &target);
 }
 
+#[cfg(windows)]
 fn print_next_steps() {
     println!("\n  Sony's updater has finished. The Walkman should reboot into Cinder.");
+    println!("\n  If a boot ever goes wrong: hold the player's USB cable in at power-on to get");
+    println!("  the stock player back, and see RECOVERY.md.");
+}
+
+/// The staging succeeded; the handoff is the user's to make. Say exactly that, and exactly what
+/// they have to do — an installer that stops halfway and does not say so is worse than one that
+/// never ran.
+#[cfg(not(windows))]
+fn print_next_steps() {
+    println!("\n  Files staged successfully.");
+    println!("\n  THIS IS AS FAR AS A NON-WINDOWS BUILD CAN GO. The last step hands the device to");
+    println!("  Sony's own SoftwareUpdateTool.exe, which performs the USB handoff and reboots the");
+    println!("  player into Cinder. There is no Linux or macOS equivalent, so you finish by hand:");
+    println!();
+    println!("    1. Eject/unmount the Walkman cleanly. Do NOT just pull the cable.");
+    println!("    2. On the player: Settings > Device Settings > Update, and confirm.");
+    println!("       (NW_WM_FW.UPG is now staged on the device for it to find.)");
+    println!("    3. Let it finish without unplugging. It reboots into Cinder on its own.");
+    println!();
+    println!("  If you have access to a Windows machine, the one-click .exe from the release page");
+    println!("  does steps 1-3 for you and is the recommended path.");
     println!("\n  If a boot ever goes wrong: hold the player's USB cable in at power-on to get");
     println!("  the stock player back, and see RECOVERY.md.");
 }
