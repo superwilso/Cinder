@@ -4552,6 +4552,26 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -2 };
     r.dirty = true; // the library (or its absence) changed -> repaint
+    // FORGET WHAT WE DECIDED ABOUT THE CURRENT COVER. `art_key` exists to stop us re-decoding the
+    // same track on every poll, and that is exactly wrong across a reopen: if the cover was read
+    // while the music volume was missing, the decode failed, the gradient went up, and art_key
+    // pinned that answer for the rest of the boot. Nothing ever asked again, so an album stayed
+    // grey after /contents came back.
+    //
+    // That is not hypothetical — it is the "anything by Sprain is just showing as a gradient"
+    // report. Sony's own stack unmounts /contents when a cable appears (see the reclaim in
+    // cinder-home), and any cover read inside that window logs `magic=unreadable` and is cached as
+    // a failure. Clearing the key here means the next paint re-requests it through the normal
+    // path; the worker installs the real cover a moment later.
+    r.art_key = None;
+    // …and make the next now-playing poll count as a TRACK CHANGE, because that is the only thing
+    // that re-reads the cover. The re-request is nested inside `if changed`, so clearing art_key on
+    // its own only helps the next song — the album sitting on screen right now, the one the user is
+    // actually looking at, would stay grey until they skipped away from it and back. Dropping
+    // last_track makes the very next poll re-derive everything for the current track.
+    // The only thing lost is one rewind-history push across a library reopen, which is not
+    // meaningful state after the library has been rebuilt underneath it.
+    r.last_track = None;
     match cinder_db::Db::open(&p) {
         Ok(db) => {
             // Build the browsable library now so the Library screen shows real music.

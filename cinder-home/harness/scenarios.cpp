@@ -38,6 +38,17 @@ static void check_range(long long got, long long lo, long long hi, const char* w
 
 // A device that is working: the renderer presents frames, the library DB opens, the audio pump
 // starts. Scenarios override individual pieces to describe the failure they are about.
+// The two states of the library volume, as /proc/mounts shows them. Only the " /contents " line
+// is load-bearing (contents_mounted greps for exactly that), but the rest is kept so the fake reads
+// like the real file rather than like a fixture.
+static const char* kMountsWithContents =
+    "rootfs / rootfs rw 0 0\n"
+    "/emmc@usrdata /data ext4 rw,nodev,noexec,noatime 0 0\n"
+    "/emmc@contents /contents vfat rw,noexec,noatime,fmask=0000,dmask=0000 0 0\n";
+static const char* kMountsNoContents =
+    "rootfs / rootfs rw 0 0\n"
+    "/emmc@usrdata /data ext4 rw,nodev,noexec,noatime 0 0\n";
+
 static void healthy_device(void) {
     cinder_harness_script("cinder_frames_presented", 1);
     cinder_harness_script("cinder_render_init", 0);
@@ -59,6 +70,12 @@ static void healthy_device(void) {
     // and puts them back on the way out, and with no file to go back to they land on /dev/null and
     // everything after the session is invisible.
     cinder_harness_fs_write("/contents/cinderhome.log", "");
+    // AND A MOUNT TABLE. /contents being mounted is a fact the app reads from /proc/mounts, and
+    // with no fake for it the app read the BUILD MACHINE's — where /contents has never been
+    // mounted, so every scenario silently ran against a device whose library volume was missing.
+    // Nothing noticed until something was taught to care (usb-msc reclaim). The MSC helper is what
+    // moves this line, so the fake `system()` moves it too; see harness.cpp.
+    cinder_harness_fs_write("/proc/mounts", kMountsWithContents);
 }
 
 // ── the app reaches the end of the easel lifecycle and brings itself up ──────────────────────
@@ -720,6 +737,55 @@ static void s_rapid_skip_touch(void) {
     check(house >= 10, "the frame loop kept its 1 Hz housekeeping through the burst");
 }
 
+// ── somebody ELSE unmounted /contents ────────────────────────────────────────────────────────
+// We are not the only thing on this device that answers a USB cable. Sony's hagodaemon writes the
+// contents partition into the mass-storage LUN and unmounts it on its own — `fsg_store_file
+// file=/emmc@contents` in dmesg — and on the dev channel, where our auto-MSC is off, nothing on our
+// side ever enters a session. So g_msc_active stays false, the exit path that remounts is never
+// reached, and /contents stays gone for the rest of the boot: no music, no album art, no library,
+// and no log either, because the log lives there too and its writes go to an inode with no name.
+//
+// Observed on device 2026-09-01, five minutes into a boot with the cable in. There is no cable
+// EVENT here on purpose: the mount simply goes away underneath a running, healthy app, which is
+// exactly how it presented.
+static void s_contents_orphan(void) {
+    healthy_device();
+    cinder_harness_fs_write_at(60000, "/proc/mounts", kMountsNoContents);
+    cinder_harness_set_budget_ms(120000);
+    cinder_harness_run();
+
+    const long long off = cinder_harness_first_ms(
+        "system:/system/vendor/unknown321/bin/cinder-msc off");
+    const int offs = cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc off");
+    std::printf("  .... unmounted at 60000ms -> reclaimed at %lldms (%d attempt(s))\n", off, offs);
+    check_range(off, 60000, 70000, "took /contents back within a few seconds of losing it");
+    check_eq(offs, 1, "…once, because it worked — not once a second for the rest of the boot");
+    check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc on"), 0,
+             "and never handed the volume OUT, which is not what happened");
+    // The library was read from the volume that went away, so it has to be re-read from the one
+    // that came back — otherwise the app is mounted but still showing an empty shelf.
+    check(cinder_harness_count("cinder_db_open") >= 2, "reopened the library after the remount");
+}
+
+// A session WE started must be left alone. Same shape as the reclaim above — /contents unmounted,
+// app running — but this time it is unmounted BECAUSE we asked for it, which is the one case where
+// taking it back would break the thing the user is doing (a transfer they can see on the PC).
+static void s_contents_orphan_not_ours(void) {
+    healthy_device();
+    // Cable in at 30 s, and stay: auto-MSC hands the volume over and the session stays open.
+    cinder_harness_fs_write_at(30000, "/sys/class/power_supply/usb/online", "1\n");
+    cinder_harness_fs_write_at(30000, "/sys/class/power_supply/usb/present", "1\n");
+    cinder_harness_fs_write_at(30000, "/sys/class/android_usb/android0/state", "CONFIGURED\n");
+    cinder_harness_set_budget_ms(120000);
+    cinder_harness_run();
+
+    const int on  = cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc on");
+    const int off = cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-msc off");
+    std::printf("  .... %d handover(s), %d reclaim(s) over a 90s session\n", on, off);
+    check_eq(on, 1, "handed the volume over when the cable went in");
+    check_eq(off, 0, "and did NOT take it back underneath the user's own transfer");
+}
+
 // ── "it does not pick up music I just copied on" — the half that is not device-gated ─────────
 // The oldest open user-visible bug in the project has two halves. Somebody has to ask
 // MediaStoreService to RE-SCAN so the database changes at all — that is device-gated, it needs the
@@ -776,6 +842,8 @@ static const Scenario kScenarios[] = {
     {"library-changed",   s_library_changed,         "a database that changes underneath us is noticed and reloaded"},
     {"rapid-skip",        s_rapid_skip,              "skipping faster than PlayerService answers must not wedge the UI"},
     {"rapid-skip-touch",  s_rapid_skip_touch,        "the same burst from the glass, where the panel keeps streaming"},
+    {"contents-orphan",   s_contents_orphan,         "/contents unmounted by something that is not us is taken back"},
+    {"contents-ours",     s_contents_orphan_not_ours,"…but a session we started is left alone"},
     {nullptr, nullptr, nullptr},
 };
 
