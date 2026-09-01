@@ -7,4 +7,4 @@ edition = "2021"
 # no libc++/IPC. Schema reverse-engineered from libMediaStoreService.so
 # (analysis/H_mediastore/RE_findings.md). Used by cinder-ffi (device) + cinder-host/sim.
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
