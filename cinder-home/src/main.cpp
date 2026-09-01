@@ -126,6 +126,24 @@ volatile sig_atomic_t g_in_guard = 0;
 // and only recover when the faulting thread IS the owner; any other thread's fault is fatal (the
 // bad-boot counter then reverts — far safer than corrupting the stack).
 volatile pthread_t g_guard_owner = 0;
+// The thread that owns the WATCHDOG — the render driver, the only one that arms alarm() and the
+// only one whose stack means anything when it fires.
+//
+// WHY THIS EXISTS (2026-09-01, three device reboots): `alarm()` is PROCESS-directed. The kernel
+// delivers SIGALRM to any thread that has it unblocked, not to the thread that armed it. The render
+// thread unblocks SIGALRM on itself and then runs deferred_up() — which starts the Framework pump,
+// connects PlayerService and brings up the presenter — so every thread SONY and cinder-ffi create
+// from in there INHERITS an unblocked SIGALRM. There are eight of them, and they spend their lives
+// parked in a condition variable.
+//
+// So when a guarded call timed out, the signal usually landed on one of those instead of on the
+// owner: `g_in_guard` was 1, `pthread_self()` was not the owner, and the handler fell through to
+// "un-guarded hang" — latch the bad-boot counter and _exit(42). A recoverable 6 s timeout on
+// NextTrack became a dead Home app and a boot to stock. It is probabilistic, which is exactly why
+// it read as "spamming skip sometimes crashes it": more presses, more timeouts, more dice rolls.
+// The backtrace said so every time — pthread_cond_wait <- std::__1::condition_variable::wait, a
+// stack with nothing of ours in it at all.
+volatile pthread_t g_watchdog_owner = 0;
 
 // Latch the bad-boot counter to MAXBAD so the NEXT boot reverts to stock, then never runs us again
 // until a newer binary is installed (the launcher self-heals on that).
@@ -160,6 +178,18 @@ void fault_handler(int sig, siginfo_t* si, void* uc_) {
         ssize_t w = write(2, m, sizeof m - 1); (void)w;
         latch_bad_boot_counter();   // a post-health crash must still auto-revert
         _exit(42);
+    }
+    // A WATCHDOG THAT WENT TO THE WRONG THREAD IS NOT A FAULT — it is a misdelivery, and the only
+    // correct response is to hand it to the thread that armed it. pthread_kill is on the POSIX
+    // async-signal-safe list. The owner then runs everything below on its own stack, where
+    // g_in_guard and g_guard_owner mean what they say: a guarded call recovers via siglongjmp, and
+    // a genuine un-guarded hang is reported with the stack of the thread that is actually stuck.
+    // Only SIGALRM is forwarded. SEGV/BUS/ILL/FPE are thread-specific — the faulting thread IS the
+    // evidence, and moving one somewhere else would report a healthy stack for a real crash.
+    if (sig == SIGALRM && g_watchdog_owner
+        && !pthread_equal(pthread_self(), (pthread_t)g_watchdog_owner)) {
+        pthread_kill((pthread_t)g_watchdog_owner, SIGALRM);
+        return;
     }
     if (g_in_guard && pthread_equal(pthread_self(), (pthread_t)g_guard_owner)) {
         log_fault(sig, uc_, si, "GUARDED CALL FAULTED — skipping that subsystem, UI continues");
@@ -204,7 +234,64 @@ void install_diagnostics() {
 // Logging: each label is traced the FIRST time only (the boot sequence stays readable in
 // cinderhome.log), plus every RECOVERY. Per-tick calls ("pump: poll now-playing" ran once a
 // second) no longer flood the log. Labels are string literals → identity compare is enough.
+// ── AFTER A RECOVERY, THE CLIENT IS NOT SAFE TO CALL AGAIN ───────────────────────────────────
+//
+// siglongjmp out of a Sony IPC does not undo the IPC. It abandons the call wherever it was — very
+// often part-way through building the std::string / std::vector the client marshals arguments
+// through — and leaves that object half-constructed inside a library that has no idea anything
+// happened. The next call in reuses it.
+//
+// MEASURED 2026-09-01, and it is the whole of the "spamming skip still crashes it" report once the
+// stray-SIGALRM misdelivery above was fixed. The log reads exactly like the mechanism:
+//     33.709  GUARD RECOVERED: carry_out: play/pause      <- timed out, unwound
+//     33.710  bt-vol / bt-enh / EQ / sound / BT status     <- Sony calls, straight after
+//     33.933  *** FATAL SIGNAL : sig=7 PC=0xb6a6de22 addr=0x9 ***
+// SIGBUS on a near-null address, and the PC resolves into /lib/libc++.so.1.0 — a container
+// dereferencing its own broken innards, not our code at all. The file already knew this shape:
+// see the SIGABRT note in fault_handler, "recovered EQ-apply abort -> wedged in the next guarded
+// call" (2026-07-02). The lesson was written down for aborts and never applied to timeouts.
+//
+// So a recovery POISONS Sony IPC for a cool-down. Every guarded call is refused for that window —
+// one chokepoint, so it covers transport, Bluetooth, EQ, the lot, without auditing each site. What
+// the user loses is a couple of seconds of a service that had just stopped answering anyway; what
+// they keep is the Home app. The window is deliberately longer than the round trip it protects
+// (~400 ms measured, 700 ms for a bracketed seek) so the in-flight call has drained before anything
+// new is marshalled through the same client.
+// PERMANENT, not a cool-down. The first attempt gave it five seconds, on the idea that letting the
+// in-flight call drain would be enough. It is not, and the device said so plainly:
+//     115.806  GUARD RECOVERED: carry_out: play/pause — poisoned for 5000ms
+//     120.818  guard: cool-down over — Sony IPC is live again
+//     120.852  bt-reconnect: RequestConnection ...          <- first calls back in
+//              *** FATAL SIGNAL : sig=11 PC=0xb6af3e3c addr=0x8 ***   (PC in libc++.so.1.0)
+// A half-built std::string does not repair itself by being left alone. Time was never the variable:
+// the object is broken, and the only safe number of further calls through it is zero.
+//
+// So a recovery ends Sony IPC for the life of the process. What survives is the UI — the panel, the
+// buttons, the library, the screen-off timer, the power menu — and what is lost is audio and
+// Bluetooth until the app is restarted. That is a bad outcome. It is a much better one than the
+// alternative this replaces, which was a SIGSEGV, `_exit(42)`, the bad-boot counter latching to
+// MAXBAD, and the user's next boot landing on stock with the escape ladder spent.
+static bool g_ipc_dead = false;
+long now_ms();                       // defined with the touch state, far below
+volatile int g_ipc_poisoned = 0;     // transport_tick drops its backlog on this
+
 int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
+    if (g_ipc_dead) {
+        // Throttled at the PRINT, not the caller: this is reached from the frame loop, so an
+        // unthrottled line here is a flash write per frame for the rest of the boot.
+        static long last_said = 0;
+        const long n = now_ms();
+        if (n - last_said > 10000) {
+            last_said = n;
+            char m[176];
+            std::snprintf(m, sizeof m,
+                          "guard: Sony IPC is DEAD for this boot after an unwound call — skipping "
+                          "'%s' (and everything else). UI stays up; restart to get audio back.",
+                          what);
+            clog_(m);
+        }
+        return -1;
+    }
     static const char* seen[64];
     static int nseen = 0;
     bool first = true;
@@ -230,8 +317,15 @@ int run_guarded(const char* what, unsigned timeout, void (*fn)()) {
     g_in_guard = 0;
     alarm(0);
     if (prev) alarm(prev);
-    char m[128];
-    std::snprintf(m, sizeof m, "GUARD RECOVERED: %s", what);
+    // The call was abandoned mid-flight, so something of the client's is half-built. There is no
+    // repair and no waiting it out — see g_ipc_dead. Everything Sony is off from here.
+    g_ipc_dead = true;
+    g_ipc_poisoned = 1;
+    char m[192];
+    std::snprintf(m, sizeof m,
+                  "GUARD RECOVERED: %s — Sony IPC is now DEAD for this boot. The client was unwound "
+                  "mid-call and calling back into it is what faults (SIGSEGV/SIGBUS in libc++). "
+                  "UI continues; audio and Bluetooth need a restart.", what);
     clog_(m);
     return -1;
 }
@@ -6053,6 +6147,38 @@ static int  g_msc_off_gone = 0;      // consecutive ticks with no cable at all
 static const int MSC_OFF_RELEASE_TICKS = 3;
 static int  g_usb_hi = 0;           // debounce: consecutive host-present samples while NOT in MSC
 
+// ── /contents taken WITHOUT US ───────────────────────────────────────────────────────────────
+// We are not the only thing on this device that answers a USB cable. Sony's own hagodaemon writes
+// the contents partition into the mass-storage LUN and unmounts it — `fsg_store_file
+// file=/emmc@contents` in dmesg — which is SONY's auto-MSC, not ours, and it needs no cooperation
+// from the Home app to happen.
+//
+// On the dev channel our auto-MSC is deliberately off (adb and mass storage cannot both own the
+// port), so nothing on our side ever enters a session: g_msc_active stays false, the exit path
+// that remounts is never reached, and /contents simply stays gone for the rest of the boot. What
+// the user sees is a player with no music, no album art and no library — and no explanation, since
+// cinderhome.log lives on /contents too and its writes go to an inode nothing can read any more.
+// Observed 2026-09-01: five minutes into a boot with the cable in, `grep contents /proc/mounts`
+// empty, /data/mnt/internal (a symlink to /contents) empty, and the app perfectly healthy.
+//
+// So: if we did not hand the volume over and it is missing anyway, take it back. cinder-msc's own
+// `off` path is exactly the right tool — it releases the LUN BEFORE remounting, so the host and
+// the kernel never hold the same vfat at once, and it mounts /contents itself rather than trusting
+// init's mount_msc1, which is `oneshot` and will not re-run within a boot.
+//
+// GATED ON g_msc_active, which is what makes this safe: a session we DID start (the modal, the
+// stable channel's auto-MSC) sets it, so a real transfer the user asked for is never interrupted.
+// This fires only in the state where the user was never told anything was happening — and in that
+// state the device is useless until someone remounts it.
+//
+// Backed off rather than retried per tick: if the reclaim cannot work (the host holding the medium
+// open, say) then hammering it once a second is a thousand pointless remount attempts an hour, and
+// the log line is at the attempt, not the caller, so the back-off throttles both.
+static int g_contents_gone = 0;                    // consecutive 1 Hz ticks with /contents missing
+static int g_contents_wait = 5;                    // ticks to wait before the next attempt
+static const int CONTENTS_WAIT_MIN = 5;            // ~5 s: past any handoff window of our own
+static const int CONTENTS_WAIT_MAX = 300;          // ~5 min ceiling once it is clearly not working
+
 // Point stdout/stderr at `path`. Returns false only if even /dev/null could not be opened.
 //
 // THE FALLBACK IS THE POINT. Entering USB-MSC redirects the log OFF /contents precisely because an
@@ -6356,6 +6482,46 @@ void exit_usb_msc() {
         g_db_sig = db_signature();
     } else {
         clog_("usb-msc: exited but /contents did NOT remount within 5 s");
+    }
+}
+
+// Take /contents back after somebody else took it. See the note on g_contents_gone for who does
+// that and why nothing else notices. Deliberately NOT exit_usb_msc(): there is no session of ours
+// to exit, no away-log to splice, and no gadget mode of ours to restore — the whole job is to undo
+// an unmount we did not perform.
+static void reclaim_contents() {
+    int rc = std::system("/system/vendor/unknown321/bin/cinder-msc off");
+    // Re-point the log FIRST, whatever the helper said. Our fds have been writing into an inode
+    // with no directory entry for as long as the mount has been gone: the bytes went somewhere, but
+    // nothing can read them back, so every line explaining this outage was lost while it mattered
+    // most. If the mount did come back, this is the moment the log becomes readable again.
+    redirect_fds("/contents/cinderhome.log", O_WRONLY | O_CREAT | O_APPEND);
+    char m[192];
+    if (contents_mounted()) {
+        g_contents_wait = CONTENTS_WAIT_MIN;
+        std::snprintf(m, sizeof m,
+                      "usb-msc: /contents was unmounted by something other than us — reclaimed it "
+                      "(cinder-msc off rc=%d). Library and album art are back.", rc);
+        clog_(m);
+        // The PC may have rewritten anything under there, and the library was read from it.
+        viz_conf_invalidate();
+        cinder_db_open("/db/MTPDB.dat");
+        // cinder_db_open IS the full rebuild; re-seed the watcher so its next poll does not do
+        // the whole ~3,500-track pass again for a reload that has already happened.
+        g_db_sig = db_signature();
+        // AND RE-OPEN THE SCROBBLER, for the same reason the log is re-pointed above. deferred_up
+        // opens /contents/.scrobbler.log about eight seconds into a boot, which on a cabled boot is
+        // BEFORE this reclaim runs — so it opened a file on the volume that was already detached,
+        // and every play logged since went to an inode with no directory entry. Silent, and only
+        // visible as a scrobble file that never grows. Measured 2026-09-01.
+        cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
+    } else {
+        if (g_contents_wait < CONTENTS_WAIT_MAX) g_contents_wait *= 2;
+        if (g_contents_wait > CONTENTS_WAIT_MAX) g_contents_wait = CONTENTS_WAIT_MAX;
+        std::snprintf(m, sizeof m,
+                      "usb-msc: /contents is unmounted and the reclaim did not take "
+                      "(cinder-msc off rc=%d) — retrying in %ds", rc, g_contents_wait);
+        clog_(m);
     }
 }
 
@@ -7212,7 +7378,13 @@ static long long mono_ms() {
 // screen, and only a burst aimed at a UI that had stopped answering can reach it.
 static int g_skip_pending = 0;    // net track steps owed: + forward, − back
 static int g_group_pending = 0;   // same, for album/group steps
-static const int TRANSPORT_PENDING_MAX = 8;
+// FIVE, not eight. Asked for directly after a device freeze, and it is the right number for a
+// reason the original note missed: the cap is not just about how long the player keeps moving
+// after the thumb stops, it is about how much UNINTERRUPTIBLE work one burst can commit the render
+// thread to. Each step is a Sony round trip the frame loop cannot abandon once started, so the cap
+// times the round trip is the worst case the UI can owe — 8 x ~400 ms is over three seconds, and
+// five is two. Below anything a person does deliberately while watching the screen.
+static const int TRANSPORT_PENDING_MAX = 5;
 
 static void queue_transport(int* slot, int step) {
     *slot += step;
@@ -7226,6 +7398,16 @@ static void queue_transport(int* slot, int step) {
 // deferring those would only add a frame of latency to them.
 static void carry_out_input(int act) {
     switch (act) {
+        // THE BANKED STEPS BELONG TO THE SEQUENCE THAT WAS PLAYING WHEN THEY WERE PRESSED. Picking
+        // a track, or committing a queue edit, replaces that sequence outright — so anything still
+        // owed is owed against something that no longer exists. Left standing, the backlog fires
+        // straight after the new sequence starts and skips off the track the user just chose: they
+        // tapped a song and the player walked away from it. Reachable in the ~3 s a full backlog
+        // takes to drain, which is long enough to mash the skip button and then pick something.
+        case CINDER_ACT_PLAY_INDEX:
+        case CINDER_ACT_QUEUE_CHANGED:
+            g_skip_pending = 0; g_group_pending = 0;
+            carry_out(act); return;
         case CINDER_ACT_NEXT:       queue_transport(&g_skip_pending,  1); return;
         case CINDER_ACT_PREV:       queue_transport(&g_skip_pending, -1); return;
         case CINDER_ACT_NEXT_ALBUM: queue_transport(&g_group_pending,  1); return;
@@ -7237,7 +7419,27 @@ static void carry_out_input(int act) {
 // One step per frame, after the drain — so the loop paints, polls and reads input BETWEEN steps
 // instead of after all of them. Track steps go first: an album step is the coarser gesture and can
 // wait a frame, and interleaving the two would be incoherent.
+// A SKIP STARTS A TRACK, and until now nothing told the screen so. `play_pending_sequence` — the
+// path a tap in the Library takes — ends by setting g_np_poll_now and g_house_due, with the note
+// "so a freshly-started track reaches the screen in one frame rather than up to a second later".
+// NextTrack/PrevTrack start a track just as much, and set neither: the new title, artist and cover
+// only appeared when the ~1 Hz housekeeping happened to come round AND the listener had moved,
+// which is most of "loading the next song once skipped takes much longer".
+//
+// Only once the backlog is EMPTY. Forcing a housekeeping pass per step would spend an extra round
+// trip apiece on tracks the user is skipping straight past and never sees — the whole point of the
+// queue is that only the last one matters.
+static void transport_settled() {
+    if (g_skip_pending != 0 || g_group_pending != 0) return;
+    g_np_poll_now = true;
+    g_house_due = true;
+}
+
 static void transport_tick() {
+    // A backlog aimed at a client that has just been unwound is the worst thing to replay into it:
+    // it is several more calls, immediately, through the object the recovery broke. Drop it. The
+    // presses are gone either way — the alternative is not "they work later", it is a crash.
+    if (g_ipc_poisoned) { g_skip_pending = 0; g_group_pending = 0; return; }
     if (g_skip_pending == 0 && g_group_pending == 0) return;
     // A SKIP IS A TRANSPORT PRESS, and the pump has to be told. `apply_pump_interval` decides how
     // fast the Framework pump spins, and with the panel dark it drops to 250 ms unless a transport
@@ -7246,17 +7448,92 @@ static void transport_tick() {
     // quarter of a second for its own reply, in the state (pocket, side button) where skipping is
     // most of what the buttons are for. Stamped here and applied immediately, ahead of the call
     // that needs it, rather than at the next 1 Hz housekeeping tick.
-    g_transport_at = now_ms();
-    apply_pump_interval();
+    //
+    // ONLY WHEN THE PANEL IS DARK. Lit, apply_pump_interval already returns 20 ms whatever the
+    // stamp says, so writing it buys nothing there — and it is not free: poll_now_playing holds
+    // g_playing at OUR intent for TRANSPORT_GRACE_MS after the stamp, so stamping once a frame
+    // through a burst suppressed the service's own view of whether it is still playing for the
+    // whole burst and three seconds past it. A queue that ended mid-burst then kept the transport
+    // glyph lying about it. Dark is the only state where the stamp changes the pump's rate, so it
+    // is the only state that pays for it.
+    if (!g_screen_on) {
+        g_transport_at = now_ms();
+        apply_pump_interval();
+    }
+    // NO EXTRA PAINT HERE, and this is load-bearing. Painting the step before blocking for it
+    // sounds free — the navigator has already moved, so the frame is one the user could have had
+    // 400 ms earlier — and it CRASHED THE DEVICE. cinder_render_tick() returns when a frame is
+    // SUBMITTED, not presented: the present runs on its own thread, and a submit with the queue
+    // full waits on a condition variable. The frame loop already calls it once per iteration, so
+    // adding a second call inside input_pump means two submits per frame — and through a skip
+    // burst, where each step also spends ~400 ms in a Sony round trip, the presenter falls behind
+    // and the second submit is the one that waits. Measured on device 2026-09-01: a long run of
+    // skips wedged the render thread in std::condition_variable::wait, the per-frame alarm(8)
+    // fired UNGUARDED, and the app took the _exit(42) path — bad-boot counter latched, next boot
+    // to stock. The backtrace named it exactly:
+    //     pthread_cond_wait <- std::__1::condition_variable::wait
+    // The frame loop's own paint, one line after input_pump returns, is the whole budget there is.
     if (g_skip_pending != 0) {
         const int step = g_skip_pending > 0 ? 1 : -1;
         g_skip_pending -= step;
         carry_out(step > 0 ? CINDER_ACT_NEXT : CINDER_ACT_PREV);
+        transport_settled();
         return;
     }
     const int step = g_group_pending > 0 ? 1 : -1;
     g_group_pending -= step;
     carry_out(step > 0 ? CINDER_ACT_NEXT_ALBUM : CINDER_ACT_PREV_ALBUM);
+    transport_settled();
+}
+
+// ── the drag-to-seek half of the same defect ─────────────────────────────────────────────────
+//
+// `scrub_carry` and the release seek are Sony round trips too — the seek is ~700 ms, and MEASURED
+// 2026-07-28 that is almost entirely two ChangePlayState calls (pause 190-254 ms, play 440-503 ms;
+// the SeekTime between them is 7-35 ms). Both were called from touch handling, which runs INSIDE
+// input_pump's evdev drain — exactly where the skip used to be, and wrong for exactly the same
+// reason: a finger on the glass keeps the node full for as long as the app is blocked, so the
+// drain's short-read exit is never reached.
+//
+// The bound added to the drain loop caps how long that can go on, but it does not stop the frame
+// loop being stopped for the round trip itself. So these are banked the same way the transport
+// steps are and applied by `scrub_tick()` after the drain. There is nothing to make net or cap:
+// a drag produces one live value and one final one, and the throttle below already coalesces the
+// live ones. Deferring to the end of the frame is itself the coalescing — a frame with eight
+// motion events now costs ONE apply instead of eight.
+static bool g_scrub_apply_pending = false;  // a slider/rail value is waiting to be applied
+static int  g_seek_pending_ms = -1;         // release seek target, -1 = nothing owed
+static int  g_seek_do_ms = 0;               // arg for the guarded call (run_guarded takes no captures)
+
+static void seek_do_fn() {
+    int rc = cinder_audio_seek_ms(g_seek_do_ms);
+    char m[80];
+    std::snprintf(m, sizeof m, "touch: seek -> %d ms (sent=%s)", g_seek_do_ms, rc == 0 ? "yes" : "NO CONTROLLER");
+    clog_(m);
+}
+
+// The banked half of the two above, run after the drain alongside transport_tick(). Order matters
+// only in the frame where both are owed: a drag is a single deliberate gesture and a backlog is
+// not, so the gesture goes first rather than queueing behind up to 8 skips.
+//
+// The seek is GUARDED where it was not before. It is a ~700 ms Sony round trip on the render
+// thread, which is precisely the shape run_guarded exists for; it was previously bare, so a
+// PlayController that faulted or hung inside SeekTime took the whole app with it. 10 s covers the
+// measured 700 ms with an order of magnitude of headroom.
+static void scrub_carry();
+static void scrub_tick() {
+    if (g_scrub_apply_pending) {
+        g_scrub_apply_pending = false;
+        scrub_carry();
+    }
+    if (g_seek_pending_ms >= 0) {
+        g_seek_do_ms = g_seek_pending_ms;
+        g_seek_pending_ms = -1;
+        // The bar is already on the target (cinder_scrub_end re-anchored it), so painting first
+        // puts the finger's own result on the glass before the engine is asked for it. ~16 ms.
+        if (g_screen_on) cinder_render_tick();
+        run_guarded("touch: seek", 10, seek_do_fn);
+    }
 }
 
 static void scrub_carry() {
@@ -7276,32 +7553,14 @@ static void touch_release() {
         // -1 means "not the rail" (a settings slider) OR "no controller"; either way, no seek.
         int ms = cinder_scrub_end();
         g_scrub_last_apply_ms = 0;   // the FINAL value must never be the one the throttle drops
-        scrub_carry();
+        g_scrub_apply_pending = true;
         if (ms >= 0) {
-            // -1 means "no controller"; 0 only means the request was SENT. SeekTime is void, so
-            // there is no acceptance to report — the old "seek REJECTED" line here was reading a
-            // leftover register and saying something it could not know. Where the seek actually
-            // landed is answered by the /tmp/cinder_seek.req dev probe, not from this call.
-            // PAINT THE NEW POSITION BEFORE BLOCKING. cinder_scrub_end has already re-anchored the
-            // bar on the target, but the seek itself takes ~700 ms — and MEASURED 2026-07-28 that
-            // is almost entirely Sony's two ChangePlayState round trips (pause 190-254 ms, play
-            // 440-503 ms; the SeekTime in the middle is 7-35 ms). The engine will not seek while it
-            // is streaming, so the pause is not optional.
-            //
-            // Nothing here can make the audio resume faster, but the render thread does not have to
-            // sit on a stale frame for the whole transaction. One tick costs ~16 ms and puts the
-            // bar where the finger left it immediately, so the wait reads as the audio catching up
-            // rather than as the UI having ignored the gesture.
-            //
-            // (The full fix is to run the sequence off the render thread. Not done: it would mean
-            // concurrent PlayController IPC with whatever carry_out is doing, and the client's
-            // thread-safety is unknown — a real risk for a ~700 ms input-blocking window that only
-            // occurs on a deliberate drag.)
-            cinder_render_tick();
-            int rc = cinder_audio_seek_ms(ms);
-            char m[80];
-            std::snprintf(m, sizeof m, "touch: seek -> %d ms (sent=%s)", ms, rc == 0 ? "yes" : "NO CONTROLLER");
-            clog_(m);
+            // BANKED, NOT CALLED HERE — see scrub_tick. cinder_scrub_end has already re-anchored
+            // the bar on the target, so the UI is correct the moment the finger lifts; what the
+            // deferral buys is that the ~700 ms the engine needs is spent with the frame loop
+            // running (it paints, it reads input, it keeps its 1 Hz housekeeping) instead of
+            // stopped dead inside the drain.
+            g_seek_pending_ms = ms;
         }
     } else if (g_touch_down && g_sbar_active) {
         // Scrollbar drag ends. Its own branch for the same reason the reorder has one: falling
@@ -7361,7 +7620,7 @@ static void touch_drag_motion() {
         if (cinder_scrub_hit(touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y))) {
             g_scrub_active = true;
             cinder_scrub_to(touch_ui_x(g_touch_cur_x), touch_ui_y(g_touch_cur_y));  // a tap on a slider also sets it
-            scrub_carry();
+            g_scrub_apply_pending = true;
             return;
         }
     }
@@ -7371,7 +7630,7 @@ static void touch_drag_motion() {
         // are vertical: an EQ band drag is a vertical gesture over a screen that does not scroll,
         // and without this it would read as a list drag the moment it left the field.
         cinder_scrub_to(touch_ui_x(g_touch_cur_x), touch_ui_y(g_touch_cur_y));
-        scrub_carry();
+        g_scrub_apply_pending = true;
         return;
     }
     if (g_hswipe_active) {
@@ -7872,6 +8131,9 @@ void input_pump() {
     }
     // Held rocker: the events are all drained, so anything still down is a genuine hold.
     vol_repeat_tick();
+    // Banked slider/rail applies and the release seek — deliberate gestures, so ahead of a
+    // backlog. Same reason as the line below: a Sony round trip must not be made from the drain.
+    scrub_tick();
     // Banked transport steps, one per frame — the same shape as the rocker above, and for the same
     // reason: a Sony round trip must not be made from inside the drain. See queue_transport.
     transport_tick();
@@ -8353,6 +8615,9 @@ void* render_driver(void*) {
     // thread). The per-frame alarm(8) and run_guarded (in deferred_up / carry_out) fire here.
     sigset_t s; sigemptyset(&s); sigaddset(&s, SIGALRM);
     pthread_sigmask(SIG_UNBLOCK, &s, nullptr);
+    // Claim the watchdog before anything is armed. Every SIGALRM in this process is meant for this
+    // thread; see g_watchdog_owner for what happened when they were allowed to land elsewhere.
+    g_watchdog_owner = pthread_self();
     long n = 0;
     bool first_painted = false, boot_anim_stopped = false;
     while (g_pump_ticker_run) {
@@ -8913,6 +9178,17 @@ void* render_driver(void*) {
             //    charger unmounts the user's library mid-charge.
             //  • IN MSC + the cable is pulled → inject Back so the modal pops AND the navigator emits
             //    ExitUsbMsc (single exit path: remount /contents + restore the USB mode + log).
+            // Somebody else's unmount, noticed and undone. Ahead of the auto-MSC chain below so a
+            // volume that is missing gets answered before anything is decided about the cable.
+            if (!g_msc_active) {
+                if (contents_mounted()) {
+                    g_contents_gone = 0;
+                    g_contents_wait = CONTENTS_WAIT_MIN;
+                } else if (++g_contents_gone >= g_contents_wait) {
+                    g_contents_gone = 0;
+                    run_guarded("usb-msc: reclaim /contents", 30, reclaim_contents);
+                }
+            }
             if (g_msc_active) {
                 g_usb_hi = 0;
                 if (usb_connected()) {

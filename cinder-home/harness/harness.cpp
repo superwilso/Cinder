@@ -487,6 +487,16 @@ time_t time(time_t* t) {
     return v;
 }
 
+// The mount table as the two cinder-msc modes leave it. Mirrors scenarios.cpp's fixture — kept
+// here as well because `system()` has to be able to move it without the scenario's help.
+static const char* kMountsWithContents =
+    "rootfs / rootfs rw 0 0\n"
+    "/emmc@usrdata /data ext4 rw,nodev,noexec,noatime 0 0\n"
+    "/emmc@contents /contents vfat rw,noexec,noatime,fmask=0000,dmask=0000 0 0\n";
+static const char* kMountsNoContents =
+    "rootfs / rootfs rw 0 0\n"
+    "/emmc@usrdata /data ext4 rw,nodev,noexec,noatime 0 0\n";
+
 // ── libc overrides: the device surface main.cpp shells out to ────────────────────────────────
 // Recorded, not executed. `system("… cinder-msc usb-rescue")` on a build machine would at best do
 // nothing and at worst find a same-named binary; in the trace it is a fact the test can assert on.
@@ -526,6 +536,15 @@ int fprintf(FILE* stream, const char* fmt, ...) {
 int system(const char* cmd) {
     cinder_harness_record("system", 0);
     if (cmd) { Lock l; ensure(); g_trace->back().name_id = intern((std::string("system:") + cmd).c_str()); }
+    // RECORDED, AND — for the one helper whose whole job is a mount — MODELLED. cinder-msc moves
+    // /contents in and out of the mount table, and the app decides what to do next by reading that
+    // table back. A fake that records the call but leaves the world unchanged makes the app's own
+    // check of its work always fail, which is worse than not faking it at all: the usb-msc exit
+    // path would report "did NOT remount" on every run. Outside the lock above — fs_write takes it.
+    if (cmd && std::strstr(cmd, "cinder-msc")) {
+        if (std::strstr(cmd, " off"))     cinder_harness_fs_write("/proc/mounts", kMountsWithContents);
+        else if (std::strstr(cmd, " on")) cinder_harness_fs_write("/proc/mounts", kMountsNoContents);
+    }
     return 0;
 }
 
