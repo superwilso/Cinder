@@ -341,8 +341,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         let ts = s(Family::Sans, Weight::Bold, 23.0, t.ink, 0.0);
         let as_ = s(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
         let cs = s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08);
-        text::draw(c, f, COL_X, 110.0, &crate::widgets::fit(f, np.title, &ts, COL_W), &ts);
-        text::draw(c, f, COL_X, 133.0, &crate::widgets::fit(f, np.artist, &as_, COL_W), &as_);
+        // Same rule as the day layout: this column is the title, so it scrolls rather than
+        // truncating. It was the tighter of the two boxes to begin with (COL_W against 372px).
+        crate::widgets::marquee(c, f, COL_X, 110.0, np.title, &ts, COL_W);
+        crate::widgets::marquee(c, f, COL_X, 133.0, np.artist, &as_, COL_W);
         text::draw(c, f, COL_X, 153.0, &crate::widgets::fit(f, np.codec, &cs, COL_W), &cs);
         // Night pages the same way the day theme does, but the block is different: there is no
         // full-bleed cover to page, only the airy negative space under the compact header. So the
@@ -396,16 +398,25 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         }
         page_dots(c, t, np.page);
         // title / artist / codec
-        text::draw(c, f, 24.0, 558.0, &crate::widgets::fit(f, np.title, &s(Family::Sans, Weight::Bold, 29.0, t.ink, 0.0), 372.0), &s(Family::Sans, Weight::Bold, 29.0, t.ink, 0.0));
+        //
+        // The title SCROLLS rather than being cut off at 372px. This is the one line on the device
+        // whose whole content matters — it is the answer to "what is this?" — and a classical or
+        // remix title loses exactly the distinguishing part to an ellipsis. Everything shorter
+        // than the box is drawn identically to before and costs nothing extra.
+        let tst = s(Family::Sans, Weight::Bold, 29.0, t.ink, 0.0);
+        crate::widgets::marquee(c, f, 24.0, 558.0, np.title, &tst, 372.0);
         // Artist (left) and codec (right) share this baseline, so they are laid out against each
         // other rather than against two fixed x values — at 140% the artist used to run straight
-        // through the codec string.
-        crate::widgets::row_pair(
-            c, f, 24.0, 456.0, 583.0,
-            np.artist, &s(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0),
-            np.codec, &s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08),
-            12.0,
-        );
+        // through the codec string. The codec keeps its full width and the artist marquees in
+        // whatever is left, which is the same precedence `row_pair` already applies — the value is
+        // short and fixed, the name is the one that can be arbitrarily long.
+        let ast = s(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
+        let cst = s(Family::Mono, Weight::Regular, 12.0, t.acc, 0.08);
+        let cw = if np.codec.is_empty() { 0.0 } else { text::measure(f, np.codec, &cst) };
+        crate::widgets::marquee(c, f, 24.0, 583.0, np.artist, &ast, (456.0 - cw - 12.0 - 24.0).max(0.0));
+        if !np.codec.is_empty() {
+            crate::widgets::right(c, f, 456.0, 583.0, np.codec, &cst);
+        }
     }
 
     // ---------- like (heart) ----------

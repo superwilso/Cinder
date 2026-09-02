@@ -16,7 +16,47 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-09-02
+
 ### Fixed
+
+- **Skipping back could kill audio, Bluetooth and the screen-off timer for the rest of the boot.**
+  `PlayController::PrevTrack` takes a `PrevTrackOption const*` and dereferences it eight
+  instructions in, before any null check — there is no null check — and both `cinder_audio_prev_track`
+  and `cinder_audio_prev_group` passed `nullptr`. The SIGSEGV landed inside a guarded call, which
+  latches `g_ipc_dead` and refuses all further Sony IPC for the boot: the UI kept working while
+  playback could not be paused or skipped, the panel would not sleep, the Bluetooth switch read OFF
+  while a headphone stayed connected, and the volume rocker no longer drove the BT sink. It needed a
+  restart, and the only trace was one line in `cinderhome.log`. Both calls now pass a real
+  zero-initialised option. Rare only because `◁` reaches `PrevTrack` just within the 3 s restart
+  grace and with no Cinder history to step back through. *Device-verified — diagnosed from
+  `cinderhome.log.1` @134.479 (`sig=11 … PrevTrack+0x13`, `addr=(nil)`), whose fault offset is the
+  `ldr r2, [r1, #0]` at `libPlayerServiceClient.so` `0x30d4`, to the instruction.*
+- **Jumping to a track in Up Next threw away a "Shuffle all songs" order.** The tap emitted
+  `PlayIndex`, and `PlayIndex` resolves an object id to its **album** — the only context an object
+  id carries — so picking a song four rows down replaced the shuffled library with that song's
+  album. The same defect `PlayPlaylistAt` was added for, reached from the other side. Up Next now
+  emits `PlayContextAt(row)`: the shell restarts the sequence it already holds at a new index,
+  without rebuilding or re-shuffling it. Rows are mapped through the same resolution filter as the
+  sequence, so a file deleted since the context was built cannot slide the start onto the wrong
+  track. *Device-unverified — two host tests pin it.*
+- **Long titles were unreadable.** Now Playing fitted the title to 372px and the artist to whatever
+  the codec left, so a classical or remix title lost exactly the part that identifies it
+  ("Sinfonia concertante for Violi…"). The title and artist now scroll — dwell, slide, dwell, slide
+  back — on both the day and night layouts, clipped to their own box by a new horizontal clip band
+  on `Canvas`. List rows keep the ellipsis: forty animating rows would be noise, and a truncated row
+  is still enough to pick from. A line that fits is drawn exactly as before and requests no
+  repaints, so the common case costs nothing. *Device-unverified — five host tests plus rendered
+  frames.*
+- **`Settings ▸ Database` only ever scanned part of the library.** One `MediaScanner::Scan()`
+  returns `rc=0` and stops well short of the whole tree: measured 2026-09-01, two presses took the
+  store from 2,560 → 2,569 → 2,727 tracks, and it stopped there because nobody pressed a third
+  time — leaving 696 tracks in 70 whole SD-card album folders absent from `MTPDB.dat`, which is the
+  "some albums aren't detected" report. Folders were missing all-or-nothing, never partially, which
+  is an interrupted walk rather than a tag or codec problem. A rescan now keeps re-issuing the scan
+  from the housekeeping tick until the store stops changing (`db_signature`), bounded at 12 rounds
+  10 s apart. *Device-verified as to the symptom and the increments; why one `Scan()` stops early is
+  not established — the NULL listener cannot report it.*
 
 - **The UI wedged after a quick run of track skips.** Transport presses were carried out inside
   `input_pump`'s evdev drain loop, where each one is a synchronous ~400 ms Sony round trip — so a
@@ -223,7 +263,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/superwilso/Cinder/compare/v0.1.5...v0.1.7
 [0.1.5]: https://github.com/superwilso/Cinder/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/superwilso/Cinder/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/superwilso/Cinder/compare/v0.1.2...v0.1.3

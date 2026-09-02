@@ -1,6 +1,6 @@
 [package]
 name = "cinder-installer"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "Windows one-click installer for Cinder and the Sony firmware updater"
 license = "MIT"
