@@ -70,7 +70,19 @@ render() {
 
 if [ "$OUT" = "-" ]; then
     render
-else
-    render > "$OUT" || exit 1
-    echo "wrote $OUT ($(wc -l < "$OUT") lines, $(grep -c '^[0-9a-f]\{64\}  ' "$OUT") checksums)"
+    exit 0
 fi
+
+render > "$OUT" || exit 1
+
+# COUNT THE HASHES, do not just check the file was non-empty. A SHA256SUMS that exists and has
+# bytes in it can still be junk — a truncated upload, an error message, a file listing — and the
+# body would publish with a code block that looks like verification and is not. Any real run has
+# at least the two installers.
+n="$(grep -c '^[0-9a-f]\{64\} \{1,2\}' "$OUT")"
+if [ "$n" -lt 1 ]; then
+    echo "rendered $OUT but it contains no sha256 lines — refusing to publish an empty" >&2
+    echo "verification section (is $SUMS actually sha256sum output?)" >&2
+    exit 1
+fi
+echo "wrote $OUT ($(wc -l < "$OUT") lines, $n checksums)"
