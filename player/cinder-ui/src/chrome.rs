@@ -4,6 +4,7 @@
 
 use crate::canvas::Canvas;
 use crate::icons;
+use core::sync::atomic::{AtomicBool, Ordering};
 use crate::text::{self, Family, FontSet, TextStyle, Weight};
 use crate::theme::Theme;
 use embedded_graphics::pixelcolor::Rgb888;
@@ -88,14 +89,64 @@ pub fn status_hit(x: i32, y: i32) -> Option<StatusTap> {
     })
 }
 
+// ── "Sony IPC is dead for this boot" ────────────────────────────────────────────────────────────
+//
+// When `run_guarded` unwinds a Sony call it latches `g_ipc_dead`, and from that moment the device
+// cannot play, pause, skip, drive Bluetooth volume or sleep its own panel until it is restarted.
+// The ONLY trace of that was one line in `/contents/cinderhome.log`. From the user's side the
+// player just stopped obeying — which on 2026-09-02 cost an evening and a reboot to guess at.
+//
+// So it gets said on the glass. Three properties this needs and a toast does not have:
+//
+//   * PERSISTENT. The condition lasts the whole boot, and the user is not necessarily looking when
+//     it trips — a 1.8 s toast that fires while the device is in a pocket has said nothing.
+//   * EVERYWHERE. `status_bar` is drawn by every screen, so one edit covers all of them.
+//   * NO LAYOUT SHIFT. It takes over the codec-badge zone rather than adding a row. The badge
+//     describes audio that is not going to play, so it is the right thing to lose, and nothing
+//     below the strip moves.
+//
+// A process global, like the marquee clock and `text::set_scale_idx`, rather than a parameter: it
+// is set from the guard's RECOVERY path, which has just siglongjmp'd and must not take a lock to
+// report itself. An atomic store is the whole of it.
+static IPC_DEAD: AtomicBool = AtomicBool::new(false);
+
+/// Latch the "Sony IPC is dead for this boot" indicator. One-way: nothing clears it but a restart,
+/// which is exactly what the flag means.
+pub fn set_ipc_dead(dead: bool) {
+    IPC_DEAD.store(dead, Ordering::Relaxed);
+}
+pub fn ipc_dead() -> bool {
+    IPC_DEAD.load(Ordering::Relaxed)
+}
+
 pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &str, battery: u8) {
     // left: clock + codec badge + (NIGHT)
     let cx = text::draw(c, f, 18.0, 27.0, clock, &sty(Family::Mono, Weight::Regular, 15.0, t.dim, 0.06));
     // Skip the whole badge when there is no codec string. Drawing it unconditionally left a bare
     // 12px accent-stroked rectangle floating next to the clock whenever nothing was loaded —
     // caught on a live device screenshot; the host harness never renders that state.
+    // The degraded banner OWNS the badge zone while it is up — see IPC_DEAD above — and NOTHING
+    // ELSE. It replaces the codec badge and the NIGHT label, then falls through to the shared
+    // right-hand block below.
+    //
+    // FALL THROUGH, NOT `return`. The first version returned here after redrawing the menu and
+    // bookmark glyphs, which silently dropped the battery readout — number, outline, nub and
+    // charge fill — from every screen for as long as the device was degraded. That is precisely
+    // backwards: a device that has just lost playback and its idle screen-off is a device whose
+    // battery you most want to see, because it will now stay awake until it is flat. Duplicating
+    // the right-hand glyphs into this branch would have "fixed" it by creating a second copy of
+    // that layout to keep in step; one path through it cannot drift.
+    let degraded = ipc_dead();
+    if degraded {
+        let wst = sty(Family::Mono, Weight::SemiBold, 12.0, t.acc_ink, 0.10);
+        let msg = "AUDIO STOPPED \u{2014} RESTART";
+        let ww = text::measure(f, msg, &wst);
+        let wx = cx + 12.0;
+        fill_rect(c, (wx - 6.0) as i32, 10, (ww + 12.0) as i32, 23, t.acc);
+        text::draw(c, f, wx, 26.0, msg, &wst);
+    }
     let mut nx = cx;
-    if !badge.is_empty() {
+    if !degraded && !badge.is_empty() {
         let bst = sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.12);
         let bw = text::measure(f, badge, &bst);
         let bx = cx + 12.0;
@@ -105,7 +156,7 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
             .ok();
         nx = text::draw(c, f, bx, 26.0, badge, &bst);
     }
-    if t.night {
+    if t.night && !degraded {
         text::draw(c, f, nx + 12.0, 26.0, "NIGHT", &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.18));
     }
 
@@ -233,4 +284,111 @@ pub fn header(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, right: Option
         text::draw(c, f, 458.0 - rw, 65.0, &r, &rs);
     }
     HEADER_BOTTOM
+}
+
+#[cfg(test)]
+mod degraded_tests {
+    use super::*;
+    use crate::canvas::{Canvas, W as CW};
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Count pixels differing from the background inside a band, so a test can say "something is
+    /// drawn here" without hard-coding glyph shapes.
+    fn ink(c: &Canvas, x0: i32, x1: i32, y0: i32, y1: i32, bg: u32) -> u32 {
+        let mut n = 0;
+        for y in y0.max(0)..y1 {
+            for x in x0.max(0)..x1.min(CW as i32) {
+                if c.buf[y as usize * CW + x as usize] != bg {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// `IPC_DEAD` is PROCESS-WIDE state and cargo runs these in parallel threads of one process,
+    /// so a latch set by one test is visible inside another's render. That is not hypothetical: it
+    /// failed on the first run here, exactly as the UI-scale global does in `tests/ui_overflow.rs`,
+    /// which solves it the same way. Every test that touches the latch takes this first.
+    static LATCH: Mutex<()> = Mutex::new(());
+
+    fn latch_lock() -> MutexGuard<'static, ()> {
+        LATCH.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn shot(dead: bool, battery: u8) -> Canvas {
+        set_ipc_dead(dead);
+        let t = Theme::day();
+        let f = FontSet::load();
+        let mut c = Canvas::new();
+        c.fill(t.bg);
+        status_bar(&mut c, &t, &f, "14:32", "FLAC 24/96", battery);
+        c
+    }
+
+    /// THE BUG THIS PINS: the degraded branch used to `return` before the right-hand block, which
+    /// silently dropped the battery readout from every screen for as long as the device was
+    /// degraded — the exact state in which the battery matters most, because the idle screen-off
+    /// is among the things that have stopped working, so the device will now stay lit until flat.
+    #[test]
+    fn the_banner_keeps_the_battery_indicator() {
+        let _g = latch_lock();
+        let bg = crate::canvas::to_u32(Theme::day().bg);
+        // The battery lives at the far right: number ~x 430..450, outline + nub 452..472.
+        let normal = ink(&shot(false, 88), 425, CW as i32, 10, 34, bg);
+        let warned = ink(&shot(true, 88), 425, CW as i32, 10, 34, bg);
+        set_ipc_dead(false);
+        assert!(normal > 0, "sanity: the battery is drawn in the normal state");
+        assert_eq!(
+            warned, normal,
+            "the degraded banner must not disturb the battery indicator \
+             (drew {warned} px where the normal strip draws {normal})"
+        );
+    }
+
+    /// The menu and shelf glyphs survive too — the strip has to stay navigable while warning.
+    #[test]
+    fn the_banner_keeps_the_strip_navigable() {
+        let _g = latch_lock();
+        let bg = crate::canvas::to_u32(Theme::day().bg);
+        let band = |dead| {
+            let c = shot(dead, 50);
+            (
+                ink(&c, 320, 356, 6, 38, bg),                                  // menu glyph
+                ink(&c, SHELF_CX - 16, SHELF_CX + 16, 6, 38, bg),              // bookmark glyph
+            )
+        };
+        let normal = band(false);
+        let warned = band(true);
+        set_ipc_dead(false);
+        assert!(normal.0 > 0 && normal.1 > 0, "sanity: both glyphs draw normally");
+        assert_eq!(warned, normal, "menu and shelf glyphs must be untouched by the banner");
+    }
+
+    /// It actually says something, in the badge zone, and only when latched.
+    #[test]
+    fn the_banner_appears_only_when_latched() {
+        let _g = latch_lock();
+        let bg = crate::canvas::to_u32(Theme::day().bg);
+        // The badge/banner zone sits between the clock and the menu glyph.
+        let quiet = ink(&shot(false, 50), 60, 300, 8, 36, bg);
+        let loud = ink(&shot(true, 50), 60, 300, 8, 36, bg);
+        set_ipc_dead(false);
+        assert!(
+            loud > quiet * 2,
+            "the warning should dominate the zone the codec badge occupies ({loud} vs {quiet})"
+        );
+    }
+
+    /// The latch is one-way from the caller's side and survives being read repeatedly — the shell
+    /// sets it once from the guard's recovery path and every later frame must still see it.
+    #[test]
+    fn the_latch_persists_across_frames() {
+        let _g = latch_lock();
+        set_ipc_dead(true);
+        assert!(ipc_dead());
+        assert!(ipc_dead(), "reading it must not clear it");
+        set_ipc_dead(false);
+        assert!(!ipc_dead());
+    }
 }

@@ -104,6 +104,10 @@ void cinder_harness_fs_mkdir(const char* path);
 // What the app currently believes is in the file (after its own writes) — how a test checks that
 // something was persisted.
 int  cinder_harness_fs_read(const char* path, char* buf, int cap);
+
+// The fake DisplayService's current backlight level (see harness.cpp). 0 = the service was told to
+// turn the panel fully off; the sysfs node alone does NOT do that on this hardware.
+int  cinder_harness_display_backlight(void);
 // Change a file PART WAY THROUGH the run, when the virtual clock reaches `at_ms`. The device's
 // world is not static — headphones get unplugged, a charger goes in, the battery falls — and
 // almost every interesting rule in the app is an EDGE rather than a level (bt_edge.h, jack_edge.h

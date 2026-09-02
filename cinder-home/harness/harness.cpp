@@ -556,15 +556,85 @@ FILE* popen(const char* cmd, const char* /*mode*/) {
 
 int pclose(FILE*) { return -1; }
 
+// ── A minimal DisplayService, because the panel-blank bug was INVISIBLE without one ─────────────
+//
+// Everything else here degrades honestly when dlopen returns null: the app takes its "service not
+// available" path and the scenario still means something. The backlight is the exception, because
+// the service is not an optional extra there — it is half of the operation.
+//
+// `set_backlight`'s own comment has recorded since 2026-08-19 that writing 0 to the sysfs node does
+// NOT darken the glass (node at 0, service at 2, panel still lit). Both blank paths — the idle
+// timeout and the Power button — wrote only the node. With dlopen stubbed to null the harness saw
+// the node go to "0" and would have called that a pass, which is exactly the shape of the bug: the
+// observable half worked and the half that mattered was missing.
+//
+// So: enough of a DisplayServiceClient to be CALLED and COUNTED. Two vtable slots, matching
+// main.cpp's VIDX_SetLCDBacklightBrightness = 11 and VIDX_GetLCDBacklightBrightness = 12. The
+// remembered level starts at 2, which is the level the real service was measured reporting.
+static unsigned g_fake_bl_level = 2;
+
+static void fake_bl_set(void*, const unsigned* level) {
+    Lock l; ensure();
+    g_fake_bl_level = level ? *level : 0;
+    g_trace->push_back(Call{intern("display:SetLCDBacklightBrightness"),
+                            (long long)g_fake_bl_level, g_now_ms});
+}
+static void fake_bl_get(void*, unsigned* out) {
+    Lock l; ensure();
+    if (out) *out = g_fake_bl_level;
+    g_trace->push_back(Call{intern("display:GetLCDBacklightBrightness"),
+                            (long long)g_fake_bl_level, g_now_ms});
+}
+
+// EVERY slot gets a body, not just the two this fake models.
+//
+// The first version filled only 11 and 12 and left the rest null — and the very first run
+// segfaulted with PC=0x00000000, because ONE DisplayServiceClient is shared by the backlight AND
+// the touch-panel switch (main.cpp says so where it builds the client): `touch_set_sleep` calls
+// slot 13, SetTouchPanelValidate, on the same object. A partially-filled vtable is a worse fake
+// than no fake at all — it turns "this service is unavailable" into a crash in code that was
+// correct. So the table is filled with a recording no-op and the modelled slots overwrite it.
+static void* g_fake_display_vtbl[32];
+static void* g_fake_display_obj[2];
+
+// Accepts and ignores its arguments. The real methods here are all `void(void*, const T*)`, and a
+// callee that never reads its arguments is safe to reach with any of those shapes.
+static void fake_display_noop(void*, const void*) {}
+
+static void* fake_display_create(void) {
+    for (unsigned i = 0; i < sizeof g_fake_display_vtbl / sizeof *g_fake_display_vtbl; ++i)
+        g_fake_display_vtbl[i] = (void*)&fake_display_noop;
+    g_fake_display_vtbl[11] = (void*)&fake_bl_set;   // VIDX_SetLCDBacklightBrightness
+    g_fake_display_vtbl[12] = (void*)&fake_bl_get;   // VIDX_GetLCDBacklightBrightness
+    // 13 = SetTouchPanelValidate — left as the no-op, but it must not be NULL.
+    g_fake_display_obj[0] = (void*)g_fake_display_vtbl;   // the vptr main.cpp reads
+    return (void*)g_fake_display_obj;
+}
+
+// A distinct non-null cookie so dlsym can tell which library it is being asked about.
+static int g_display_handle_cookie = 0;
+
+/// Current fake backlight level, for scenarios to assert on.
+int cinder_harness_display_backlight(void) { return (int)g_fake_bl_level; }
+
 void* dlopen(const char* path, int) {
     Lock l; ensure();
-    g_trace->push_back(Call{intern((std::string("dlopen:") + (path ? path : "?")).c_str()), 0, g_now_ms});
+    const std::string p = path ? path : "?";
+    g_trace->push_back(Call{intern((std::string("dlopen:") + p).c_str()), 0, g_now_ms});
+    // Only this one is faked; every other Sony .so still returns null so the optional-service
+    // paths keep being exercised in their degraded form, which is what they are here to prove.
+    if (p == "libDisplayService.so") return (void*)&g_display_handle_cookie;
     return nullptr;   // no Sony .so on a build machine — the optional-service paths degrade
 }
 
-void* dlsym(void*, const char* sym) {
+void* dlsym(void* h, const char* sym) {
     Lock l; ensure();
-    g_trace->push_back(Call{intern((std::string("dlsym:") + (sym ? sym : "?")).c_str()), 0, g_now_ms});
+    const std::string s = sym ? sym : "?";
+    g_trace->push_back(Call{intern((std::string("dlsym:") + s).c_str()), 0, g_now_ms});
+    if (h == (void*)&g_display_handle_cookie &&
+        s == "_ZN3pst8services27DisplayServiceClientFactory14CreateInstanceEv") {
+        return (void*)&fake_display_create;
+    }
     return nullptr;
 }
 
