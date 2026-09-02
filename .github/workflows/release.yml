@@ -138,9 +138,20 @@ jobs:
           cp cinder-home/dist/stable/cinder_home_install.upg dist/cinder-home-install.upg
           cp cinder-home/dist/stable/cinder_home_uninstall.upg dist/cinder-home-uninstall.upg
           ls -lR dist
-          # A published binary nobody can verify is a binary nobody should run. The sums go in the
-          # release body so a download can be checked without trusting the download itself.
-          ( cd dist && sha256sum * | tee SHA256SUMS )
+          # A published binary nobody can verify is a binary nobody should run.
+          ( cd dist && sha256sum -- * | tee SHA256SUMS )
+
+      # The sums are INLINED INTO THE RELEASE PAGE, not merely attached. Verifying a download
+      # against a checksum file fetched from beside it is close to circular: whoever could swap
+      # one could swap the other. The release body is the rendered record of what the workflow
+      # built, so that is where the hashes belong. `SHA256SUMS` stays attached as a copy for
+      # `sha256sum -c`.
+      #
+      # tools/render_release_notes.sh is the same renderer this step runs, so the body can be
+      # previewed locally instead of being discovered after publication — the rule this repo
+      # keeps relearning (see tools/shell_check.sh).
+      - name: Compose the release notes, with the checksums inlined
+        run: tools/render_release_notes.sh dist/SHA256SUMS RELEASE_BODY.md
 
       - uses: softprops/action-gh-release@v3
         with:
@@ -153,45 +164,4 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          body: |
-            ## What changed
-
-            See [CHANGELOG.md](../blob/main/CHANGELOG.md) for the curated entry for this version,
-            including which items were verified on hardware and which are still device-gated. The
-            auto-generated commit list follows below.
-
-            ## Installing
-
-            Download **cinder-installer-windows-x64.exe**, connect the Walkman in USB mass-storage
-            mode, and run it. It finds the player, stages every Cinder binary plus `NW_WM_FW.UPG`,
-            then launches Sony's native updater. Follow that updater's prompts; it performs the
-            required USB handoff and reboots the Walkman into Cinder. No WSL, usbipd, or manual
-            SCSI command is required.
-
-            ### Linux and macOS
-
-            `cinder-installer-linux-x64` stages every file onto the player and then stops, because
-            the last step — Sony's `SoftwareUpdateTool.exe` performing the USB handoff — has no
-            equivalent outside Windows. It prints the three manual steps that finish the job
-            (eject cleanly, then **Settings > Device Settings > Update** on the player). macOS
-            users can copy `cinder-home-install.upg` across by hand and do the same; see
-            [install.md](../blob/main/install.md).
-
-            `cinder-home-install.upg` and `cinder-home-uninstall.upg` are attached for that route
-            and for advanced recovery use. On Windows, the one-click executable is the recommended
-            path — it does the handoff for you.
-
-            **Read [RECOVERY.md](../blob/main/RECOVERY.md) first.** This device has no public
-            DFU/EDL recovery path.
-
-            ### Verifying the download
-
-            `SHA256SUMS` is attached. On Windows:
-
-            ```powershell
-            Get-FileHash .\cinder-installer-windows-x64.exe -Algorithm SHA256
-            ```
-
-            The installer is unsigned, so SmartScreen will warn about an unknown publisher — that
-            is expected for an unsigned binary and is not itself evidence of anything. Check the
-            hash against `SHA256SUMS` if you want more than my word for it.
+          body_path: RELEASE_BODY.md

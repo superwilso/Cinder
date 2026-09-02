@@ -18,8 +18,12 @@ forever after.
 
 Download **`cinder-installer-windows-x64.exe`** from the
 [latest release](../../releases/latest). Connect the Walkman by USB in **mass-storage mode**, so
-it shows up as a drive, and run it. A Linux build is published alongside it and behaves the same,
-looking under `/media`, `/run/media`, `/mnt` and `/Volumes`.
+it shows up as a drive, and run it.
+
+`cinder-installer-linux-x64` is published alongside it and does the same job, looking under
+`/media`, `/run/media`, `/mnt` and `/Volumes` — but **run it with `sudo`**, because the final
+upgrade command is a raw SCSI passthrough. On macOS it stages the files and stops; see
+[the platform note](#a1-what-actually-triggers-the-update) below.
 
 ```
   Cinder installer  (channel: stable)
@@ -42,15 +46,35 @@ It finds the player on its own; if you have several drives it asks, and you can 
 cinder-installer.exe D:\
 ```
 
-Then: **eject the drive safely**, unplug it, and on the player go to
-**Settings ▸ Device Settings ▸ Update**. It reboots into Cinder.
+Then leave it alone. It stages the files, tells the player to reboot into its updater, and the
+player applies the package and restarts into Cinder by itself. **It drops off USB while it works
+— that is expected.** Leave the cable in and do not touch it until it comes back.
 
 The installer only copies files. The firmware write is done by the player's own updater, which is
 what keeps this program unable to brick anything by itself.
 
+### A.1 What actually triggers the update
+
+**Nothing on the player does.** This generation has no update entry in its own menus — not under
+Settings, not anywhere. The upgrade is always triggered by the host over USB, and it is one
+12-byte vendor SCSI command that tells the player to reboot into its updater and look for
+`NW_WM_FW.UPG` on the data partition.
+
+| Host | How the command is sent | Needs |
+|---|---|---|
+| Windows | Sony's `SoftwareUpdateTool.exe`, embedded in the installer and launched for you | nothing |
+| Linux | The installer sends it directly (`SG_IO`), the same command `tools/flash.sh` ends with | `sudo` |
+| macOS | **Cannot be sent.** Raw SCSI needs an IOKit `SCSITaskUserClient`, which the kernel refuses for an already-mounted disk | finish on Linux/Windows |
+
+> Until v0.1.9 this document told you to eject the drive and pick
+> **Settings ▸ Device Settings ▸ Update** on the player. **That menu does not exist**, on any
+> platform — and the published Linux binary exited immediately with "must be run as the Windows
+> release .exe" before it staged anything. If you followed either, nothing was installed.
+
 To go back to stock, copy `cinder_home_uninstall.upg` to the storage root as `NW_WM_FW.UPG` and
-run the same update flow. Cinder never modifies the stock Qt binary — only its 78-byte `.appcfg`
-launch config, and the original is kept alongside as `.appcfg.real`.
+trigger the update the same way — the installer does this for you, or `tools/flash.sh uninstall`
+does it from a development checkout. Cinder never modifies the stock Qt binary — only its 78-byte
+`.appcfg` launch config, and the original is kept alongside as `.appcfg.real`.
 
 ### What the components are
 

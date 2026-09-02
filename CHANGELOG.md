@@ -16,6 +16,62 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Linux installer refused to run, and the instructions it would have printed were fiction.**
+  Two separate defects that together meant neither non-Windows path installed anything. First,
+  `main` opened with `if !cfg!(windows) { exit(2) }` — so `cinder-installer-linux-x64`, which the
+  release workflow has been building, testing and publishing on every push, exited immediately with
+  "this installer must be run as the Windows release .exe". Every `#[cfg(not(windows))]` branch
+  below it was unreachable code. Second, the message those branches would have printed told the
+  user to eject the drive and select **Settings ▸ Device Settings ▸ Update** on the player. **The
+  NW-A55 has no such menu entry** — this generation is updated only from the host — so a user who
+  got past the first defect would have hunted for a button that does not exist while holding a
+  correctly staged payload. *Reported from the device.*
+- **The Linux installer now finishes the install instead of stopping halfway.** The claim it made
+  about itself — that Sony's `SoftwareUpdateTool.exe` "has no equivalent outside Windows" — was
+  wrong. The tool's last act is a single 12-byte vendor SCSI command (`fc 00 04 'd' 'b' 'm' 'n'`,
+  flag byte 0x80 with an 0x00 fallback), documented by Rockbox's `nwztools/scsitool` and sent by
+  this project's own `tools/flash.sh` on every development flash. The installer now sends it
+  directly via `SG_IO`, after syncing and unmounting so the payload is actually on the flash before
+  the player reboots. This needs root; a permission failure now says so and prints the `sudo`
+  command rather than reporting a generic error. Still dependency-free — the ioctl is declared
+  inline. *Device-unverified: exercising it reboots a player into its updater.*
+- **macOS is now honest rather than wrong.** It cannot send the command at all — raw SCSI there
+  needs an IOKit `SCSITaskUserClient`, which the kernel will not grant for a disk it has already
+  mounted, which is exactly a staged Walkman. The installer stages the files and says so, and
+  points at Linux or Windows to finish.
+- The "no Walkman found" hint printed a Windows drive letter (`cinder-installer D:\`) on every
+  platform. It now suggests a mount path off Windows.
+- `README.md`, `install.md` and the GitHub release body carried the same non-existent-menu
+  instruction and the same "no equivalent outside Windows" claim; all three are corrected, and
+  `install.md` gains a table of what actually triggers the update on each host.
+
+### Changed
+
+- **The release body is now rendered from a file, with the build's checksums inlined.** It was an
+  inline `body:` block in `release.yml` carrying a comment that said "the sums go in the release
+  body so a download can be checked without trusting the download itself" — above a step that only
+  wrote them to an attached `SHA256SUMS`. Inline YAML cannot hold anything computed, so the comment
+  described something the format could not do, and a release body is invisible until it is
+  published. The prose now lives in `.github/release-notes.md` with a `{{SHA256SUMS}}` marker, and
+  `tools/render_release_notes.sh` — the same script CI runs — substitutes the real sums. It refuses
+  to render a body with no sha256 lines in it rather than publish a verification section that looks
+  done and is empty. `tools/render_release_notes.sh --preview` shows the body locally.
+  (GitHub also displays its own per-asset `sha256:` digest, computed at upload; the two were
+  checked against each other on v0.1.8 and agree on all four assets. They cover different steps —
+  GitHub's covers storage and transport, these cover the build.)
+
+### Fixed
+
+- **`tools/check_payload_attrs.sh` was committed non-executable, which broke CI.** `ci.yml` invokes
+  it as `run: tools/check_payload_attrs.sh`; the blob was mode `100644`, so the runner exited 126
+  and took the off-device harness and launcher-recovery steps down with it. It passed locally
+  because the working-tree copy had the execute bit — the index did not. `verify_payload_manifest.sh`
+  had the same defect and survived only because `release.yml` runs it on `windows-latest`, where
+  Git Bash ignores the mode; `release.sh`, `flash.sh` and the battery/BT measurement scripts are all
+  documented as bare invocations and were all `100644`. Every one is now `100755`.
+
 ## [0.1.8] — 2026-09-02
 
 ### Fixed
