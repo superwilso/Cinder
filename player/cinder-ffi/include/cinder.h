@@ -305,6 +305,17 @@ int  cinder_play_position_ms(void);
 /* Tell the UI that the SHELL seeked playback to `ms` (the ◁ rewind paths), so the progress bar
  * snaps there instead of extrapolating from the pre-seek anchor for ~1 s. */
 void cinder_notify_seek_ms(int ms);
+
+/* Latch the on-screen "AUDIO STOPPED — RESTART" banner in the status strip.
+ *
+ * Call this the moment Sony IPC is given up on for the boot (cinder-home's g_ipc_dead). Until it
+ * was wired, that condition was invisible: the UI kept working while playback, Bluetooth and the
+ * idle screen-off were all dead, and the only record was a line in cinderhome.log.
+ *
+ * LOCK-FREE by contract — it is reached from the guard's siglongjmp recovery path, where taking a
+ * mutex could deadlock against the call that was just abandoned. It stores one atomic and returns.
+ * One-way: nothing but a restart clears it. */
+void cinder_set_ipc_dead(int dead);
 int  cinder_scrub_hit(int x, int y);
 /* Both coordinates: the Now Playing rail, the UI-scale slider and the balance slider are
  * horizontal, but the Equalizer and Tone Control band fields are VERTICAL. One entry point for

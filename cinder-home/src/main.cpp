@@ -442,6 +442,15 @@ static int run_guarded_ex(const char* what, unsigned timeout, void (*fn)(), Guar
     // repair and no waiting it out — see g_ipc_dead. Everything Sony is off from here.
     g_ipc_dead = true;
     g_ipc_poisoned = 1;
+    // SAY IT ON THE GLASS. Everything below this point writes to a log file the user cannot read
+    // from the device, and the condition it describes — no playback, no Bluetooth volume, no idle
+    // screen-off, until a restart — is otherwise indistinguishable from "the player just stopped
+    // obeying me". Reported 2026-09-02 as exactly that, and it cost an evening.
+    //
+    // Safe HERE specifically because the setter takes no lock: we have just returned via
+    // siglongjmp from a faulted Sony call, so anything that blocked on a mutex could be waiting on
+    // one the abandoned call still holds. See cinder_set_ipc_dead's contract in cinder.h.
+    cinder_set_ipc_dead(1);
     // 320, not 192: the format string alone is 209 bytes, so a 192-byte buffer truncated every
     // one of these mid-sentence — and this is the single most important line the fault path
     // prints. -Wformat-truncation catches it; keep the buffer ahead of the text.
@@ -2426,6 +2435,39 @@ static void sync_hold_from_hw() {
 }
 long g_last_input_ms = 0;                // when we last saw ANY input event (see the fwd decl above)
 
+// ── Actually darken the panel ───────────────────────────────────────────────────────────────────
+//
+// THE SYSFS NODE IS NOT ENOUGH, and this file has recorded that since 2026-08-19 without acting on
+// it. `set_backlight`'s own comment states the measurement: node at 0, DisplayService at 2, panel
+// STILL LIT — "backlight off still powers the backlight". `set_backlight` handles it (level 0 →
+// `display_backlight(0)`), but the two paths that blank the screen never went through
+// `set_backlight`: both `screen_auto_off` (idle timeout) and `screen_toggle`'s off-branch did a
+// raw `fputc('0')` to the node and stopped there. So the idle timer and the Power button each
+// "turned the screen off" by writing a number that the service overrides, and the panel stayed on.
+//
+// That is a standing bug in its own right, and NOT the `g_ipc_dead` story: it does not need a
+// guard latch, a crash or anything else to have gone wrong — it is simply the service half of the
+// write missing from both callers. (It was briefly attributed to the latch while diagnosing the
+// 2026-09-02 wedge; that was wrong, and this is the actual mechanism.)
+//
+// `display_backlight_remember()` FIRST, because it is what makes the restore possible: it caches
+// the service's own level while that level is still non-zero, and `set_backlight` reads it back
+// through `g_disp_bl_saved` when the panel comes on again. Zeroing before remembering would cache
+// nothing and wake the device to a dark screen.
+//
+// Unguarded, exactly like every other `display_backlight` call site (`set_backlight` runs on each
+// theme toggle and brightness step). Wrapping only this one in `run_guarded` would make a display
+// hang cost Sony IPC for the boot — a strictly worse trade than the blank not landing.
+static void panel_dark() {
+    if (!g_bl_read) load_bl_cfg();
+    display_backlight_remember();   // cache the service level BEFORE zeroing it
+    if (g_bl.valid) {
+        FILE* f = std::fopen(g_bl.path, "w");
+        if (f) { std::fputc('0', f); std::fclose(f); }
+    }
+    display_backlight(0);           // the half that actually darkens the glass
+}
+
 // Blank the panel WITHOUT sleeping the touch controller, so a touch can wake it.
 static void screen_auto_off() {
     if (!g_screen_on) return;
@@ -2435,11 +2477,7 @@ static void screen_auto_off() {
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
     g_drag_active = false; g_drag_vel = 0.0f;
     g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
-    if (!g_bl_read) load_bl_cfg();
-    if (g_bl.valid) {
-        FILE* f = std::fopen(g_bl.path, "w");
-        if (f) { std::fputc('0', f); std::fclose(f); }
-    }
+    panel_dark();
     apply_pump_interval();   // nothing on screen needs 50 Hz IPC latency
     clog_("screen: idle timeout -> panel off (touch or Power wakes it)");
 }
@@ -2478,11 +2516,7 @@ void screen_toggle() {
         bt_resync_volume("screen wake");
         return;
     }
-    if (!g_bl_read) load_bl_cfg();
-    if (g_bl.valid) {
-        FILE* f = std::fopen(g_bl.path, "w");
-        if (f) { std::fputc('0', f); std::fclose(f); }
-    }
+    panel_dark();
 }
 
 // Persist the device-wide BT transmit codec preference to /contents/cinder_bt.conf, so every BT
@@ -6256,6 +6290,18 @@ void apply_usb_dac() {
 // move fds 1+2 to /dev/null first (mirrors cinder-device's redirect_fds), flip the mode, and on
 // exit flip back to `adb` (the stock boot default — its init block runs `mount_msc1` to remount),
 // wait for the remount, then point the log back at /contents/cinderhome.log.
+// ── The rescan CAMPAIGN state ───────────────────────────────────────────────────────────────────
+// Declared HERE, ahead of exit_usb_msc(), because both arms of the campaign are above the code
+// that runs it: the USB-MSC exit path (new music has just landed) and Settings ▸ Database. The
+// full rationale — why one Scan() is not a scan of the library — is on media_rescan() below.
+static const int  RESCAN_MAX_ROUNDS = 12;
+static const long RESCAN_ROUND_MS   = 10000;
+static int  g_rescan_rounds_left = 0;   // follow-up scans still in budget
+static long g_rescan_next_ms     = 0;   // earliest time for the next round
+static unsigned long long g_rescan_sig = 0;  // store signature when the last round was issued
+static int  g_rescan_quiet       = 0;   // consecutive checks that saw no change
+static void media_rescan();             // defined with the MediaStore block, far below
+
 static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
 static bool g_msc_seen_usb = false; // saw the cable while in MSC → unplug ends the session
 // THE USER SAID NO. Set when mass storage is left by hand (the Turn Off button, or Back) while the
@@ -6619,6 +6665,27 @@ void exit_usb_msc() {
         // Re-seed the watcher: this reload has already happened, and leaving the pre-MSC
         // signature in place would make the next poll do the whole ~3,500-track rebuild again.
         g_db_sig = db_signature();
+        // ── ASK FOR A SCAN. This is the moment new music actually arrives. ──────────────────
+        //
+        // The DB reload above re-reads /db/MTPDB.dat, and that is NOT the same thing: MTPDB.dat is
+        // written by Sony's MediaStoreService, so re-reading it after a transfer just re-reads a
+        // store that has never heard of the album the user copied. Nothing in Cinder asked for a
+        // scan except Settings ▸ Database, which meant "copy music over USB, then go and find a
+        // settings row" — and if you did not know the row existed, the music simply never appeared.
+        //
+        // The campaign rather than one Scan(), for the reason recorded over RESCAN_MAX_ROUNDS: a
+        // single scan stops well short of the tree. It is bounded and self-terminating, so on the
+        // ordinary case where nothing was added it costs two quiet checks and stops.
+        //
+        // Deliberately NOT on the reclaim path (reclaim_contents): that undoes an unmount we did
+        // not perform, with no transfer implied, and scanning the whole tree because a mount
+        // flickered is not the same event at all.
+        clog_("usb-msc: the PC had the volume — asking MediaStore to re-scan for new music");
+        run_guarded("usb-msc: rescan after transfer", 20, media_rescan);
+        g_rescan_rounds_left = RESCAN_MAX_ROUNDS;
+        g_rescan_next_ms     = now_ms() + RESCAN_ROUND_MS;
+        g_rescan_sig         = db_signature();
+        g_rescan_quiet       = 0;
     } else {
         clog_("usb-msc: exited but /contents did NOT remount within 5 s");
     }
@@ -7119,12 +7186,8 @@ static void load_mediastore_cfg() {
 // DEVICE-UNVERIFIED as to WHY one Scan() stops early — whether Sony's scanner is deliberately
 // incremental, budgeted, or cut short is not established, and the NULL listener means it cannot
 // tell us. What is device-verified is the table above: repeating the call keeps finding tracks.
-static const int  RESCAN_MAX_ROUNDS = 12;
-static const long RESCAN_ROUND_MS   = 10000;
-static int  g_rescan_rounds_left = 0;   // follow-up scans still in budget
-static long g_rescan_next_ms     = 0;   // earliest time for the next round
-static unsigned long long g_rescan_sig = 0;  // store signature when the last round was issued
-static int  g_rescan_quiet       = 0;   // consecutive checks that saw no change
+// The campaign's state and budget live UP with the MSC block, because exit_usb_msc() arms the
+// campaign too and sits ~500 lines above here. See "The rescan CAMPAIGN state" there.
 
 // Non-capturing so it converts to run_guarded's plain function pointer.
 static void media_rescan() {

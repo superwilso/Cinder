@@ -814,8 +814,69 @@ static void s_library_changed(void) {
              "and it settles again rather than reloading for ever");
 }
 
+// ── blanking the panel must reach the SERVICE, not just the sysfs node ───────────────────────
+//
+// THE BUG. `set_backlight` has carried this comment since 2026-08-19: "measured with the node at 0,
+// the service at 2 and the panel STILL LIT — the reported 'backlight off still powers the
+// backlight'". It handles that itself (level 0 -> display_backlight(0)). But the two paths that
+// actually blank the screen never went through it: `screen_auto_off` (idle timeout) and
+// `screen_toggle`'s off-branch both did a raw fputc('0') to the node and stopped. So both of them
+// "turned the screen off" by writing a number the service overrides, and the panel stayed lit.
+//
+// It went unnoticed for two weeks because the observable half worked. Anything watching the sysfs
+// node — including this harness before it grew a DisplayService fake — saw "0" and called it a
+// pass. These scenarios assert on the half that was missing.
+//
+// Both paths are covered separately on purpose: they are different callers of the same rule, and
+// fixing one and not the other is precisely the state the code was in.
+static void s_idle_blank_darkens_the_panel(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 30);   // blank after 30s idle
+    cinder_harness_set_budget_ms(120000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("log") >= 0, "");   // keep the trace alive for the dump below
+    check_eq(cinder_harness_display_backlight(), 0,
+             "the idle blank tells DisplayService to turn the panel off, not just the sysfs node");
+    // …and the node too. Both halves, or the restore path has nothing to put back.
+    char buf[32] = {0};
+    if (cinder_harness_fs_read("/sys/class/leds/lcd-backlight/brightness", buf, sizeof buf) > 0)
+        check(buf[0] == '0', "and still writes the brightness node");
+}
+
+// The restore has to put back what was there, and that is an ORDERING rule:
+// `display_backlight_remember()` caches the service's own level, and it only works while that
+// level is still non-zero. Blank first and it caches 0 — the device then "restores" to 0 and wakes
+// to a black screen with the backlight node reading normal, which is indistinguishable from dead.
+// panel_dark() therefore remembers BEFORE it writes, and this is that rule stated as a test.
+//
+// Deliberately input-free. The obvious version of this drives the Power button and then a wake tap,
+// and two attempts at it asserted nothing: synthetic key events land before the app is consuming
+// its input nodes, so the scenario passed through a device that never saw the press. An ordering
+// assertion over the trace needs no input at all and cannot fail that way. The Power-button path is
+// not separately covered because it is the same function — screen_toggle() and screen_auto_off()
+// both call panel_dark(), which is precisely the change that fixed them; they had the defect twice
+// because they each carried their own copy of those four lines.
+static void s_blank_remembers_before_zeroing(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_set_budget_ms(120000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_before("display:GetLCDBacklightBrightness",
+                                   "display:SetLCDBacklightBrightness"), 1,
+             "the service level is READ before it is ever written (else the restore caches 0)");
+    check(cinder_harness_count("display:SetLCDBacklightBrightness") >= 1,
+          "and the service is actually driven");
+    check_eq(cinder_harness_display_backlight(), 0, "ending dark, after the idle blank");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
+    { "blank-idle",  s_idle_blank_darkens_the_panel,
+      "the idle blank reaches DisplayService, not just the sysfs node" },
+    { "blank-order", s_blank_remembers_before_zeroing,
+      "the service level is read before it is zeroed, so the restore has something to restore" },
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
     {"no-services",       s_no_services,             "no Sony service exists: degrade, never die"},
     {"bt-late-service",   s_bt_late_service,         "the BT service arrives after the app does"},

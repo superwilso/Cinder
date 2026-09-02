@@ -45,6 +45,25 @@ fi
 n="$(grep -cE '^[0-9a-f]{64}  ' "$M" || true)"
 [ "${n:-0}" -ge 1 ] || die "manifest lists no payload files — it is malformed"
 
-grep -E '^[0-9a-f]{64}  ' "$M" | sha256sum -c --strict - \
-    || die "a payload file does not match the manifest — dist/ changed after it was verified"
+if ! grep -E '^[0-9a-f]{64}  ' "$M" | sha256sum -c --strict - ; then
+    # NAME THE LIKELY CAUSE. "dist/ changed after it was verified" is true but was actively
+    # misleading the one time this fired for real (v0.1.7, run 33643552973): nothing had changed —
+    # `windows-latest` checks out with core.autocrlf=true and rewrote LF→CRLF in the two TEXT
+    # members of the payload, while the binaries came through untouched. That signature — every
+    # binary OK, only the text files FAILED — means line endings, not staleness, so say so.
+    # `.gitattributes` marks cinder-home/dist/** as -text to prevent it; if this fires again with
+    # the same shape, that file is missing or is not covering the member that failed.
+    binfail=0; txtfail=0
+    while read -r _ f; do
+        [ -f "$f" ] || continue
+        if grep -qIl '' "$f" 2>/dev/null; then txtfail=1; else binfail=1; fi
+    done < <(grep -E '^[0-9a-f]{64}  ' "$M" | sha256sum -c --strict - 2>/dev/null | grep ': FAILED$' | sed 's/: FAILED$//' | sed 's/^/x /')
+    if [ "$txtfail" = 1 ] && [ "$binfail" = 0 ]; then
+        printf '\n  Only TEXT members failed and every binary passed. That is a line-ending\n'
+        printf '  rewrite (Git core.autocrlf on a Windows runner), not a stale payload —\n'
+        printf '  the bytes were changed in transit by the checkout. Check that\n'
+        printf '  .gitattributes marks cinder-home/dist/** as -text.\n'
+    fi
+    die "a payload file does not match the manifest — dist/ changed after it was verified"
+fi
 ok "all $n payload files match the manifest"

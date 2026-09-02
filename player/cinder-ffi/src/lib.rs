@@ -1341,6 +1341,18 @@ fn viz_decay_levels(levels: &mut Vec<f32>, dt_ms: u32) -> bool {
 /// Render the current state to the panel (call once per frame from the pump). No-op when
 /// nothing has changed (dirty-flag rendering) — that keeps the device idle at near-zero CPU
 /// instead of re-blitting ~4.6 MB every tick (battery, goal #1).
+/// Latch the on-screen "Sony IPC is dead for this boot" banner (see `chrome::set_ipc_dead`).
+///
+/// LOCK-FREE, and that is the whole contract. This is called from `run_guarded_ex`'s recovery
+/// path in cinder-home — i.e. immediately after a `siglongjmp` out of a faulted Sony call — and
+/// anything that took `cell().lock()` there could deadlock against whatever the abandoned call
+/// was holding, or block on a mutex whose owner no longer exists. An atomic store cannot.
+/// One-way: only a restart clears it, which is exactly what the banner tells the user to do.
+#[no_mangle]
+pub extern "C" fn cinder_set_ipc_dead(dead: libc::c_int) {
+    cinder_ui::chrome::set_ipc_dead(dead != 0);
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_render_tick() {
     let mut guard = cell().lock().unwrap();

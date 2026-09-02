@@ -2,9 +2,9 @@
 # Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
-tag v0.1.7
-21152a45d61339147b4b04deb8a6d0f18f652b423b3dabb549c57785c6d00327  cinder-home/dist/stable/cinder-home
-826bdaa90335f24704771adf003a20a4c40cc45c77fbdcdd0a43ca21e2f7cabc  cinder-home/dist/stable/cinder-probe
+tag v0.1.8
+d46871e115543607d5c99acfb6a964daeed2b14a2077680c90f906b9feec70e8  cinder-home/dist/stable/cinder-home
+ff4945ca8d1c2e40b0e5d7f7924d7a8772c45d74b8f1e5d07ae7729a3674ebf3  cinder-home/dist/stable/cinder-probe
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
 42dd6d1f20d7602bf66ef2ff67174623cfb037fdc9564158e46b21ed55d20b26  cinder-home/dist/stable/cinder-power
 b58cc1d84c61d27df20fd0cdf01a031c49d146ec0d5725745fb7ca996c99b7c1  cinder-home/dist/stable/cinder-msc
