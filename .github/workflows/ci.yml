@@ -137,6 +137,21 @@ jobs:
       - name: Shell syntax + lint
         run: tools/shell_check.sh
 
+      # The release payload must be exempt from Git's EOL rewriting — and this has to be checked
+      # HERE, on every push, not at release time.
+      #
+      # v0.1.7 is why. release.yml verifies the payload against a sha256 manifest, and that gate ran
+      # for the FIRST TIME on the v0.1.7 tag (v0.1.6 was prepared but never tagged). It failed
+      # immediately: `windows-latest` checks out with core.autocrlf=true, which rewrote the two text
+      # members of the payload, so their hashes no longer matched. Nothing was stale — the bytes were
+      # changed in transit — but the release was already cut before anything noticed.
+      #
+      # That is the same shape as the shellcheck lesson recorded in tools/shell_check.sh: a check
+      # that only ever runs during a release is a check that fails during a release. This one is
+      # cheap, deterministic, and runs on every push.
+      - name: Payload is safe from line-ending rewrites
+        run: tools/check_payload_attrs.sh
+
       # The app itself, BOOTED. Everything above checks pieces in isolation; this links the real
       # main.cpp against fake Sony services and a virtual clock, runs the easel lifecycle, and
       # asserts on the call trace — that the paired list and the notification listener are set up

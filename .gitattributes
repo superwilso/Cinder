@@ -1,0 +1,35 @@
+# ── The release payload is shipped BYTE-FOR-BYTE. Git must not rewrite any of it. ──────────────
+#
+# WHAT WENT WRONG WITHOUT THIS (v0.1.7, run 33643552973). `release.yml` builds the installer on
+# `windows-latest`, where Git's default `core.autocrlf=true` converts LF→CRLF at checkout for every
+# file it AUTO-DETECTS as text. The payload binaries have NUL bytes, so Git leaves them alone and
+# they verified fine. The two text members did not:
+#
+#     cinder-home/dist/stable/cinder-signature.sh:    FAILED
+#     cinder-home/dist/stable/cinder_components.conf: FAILED
+#     sha256sum: WARNING: 2 computed checksums did NOT match
+#
+# `tools/release.sh` hashes them on Linux (LF); the runner checked out CRLF; the manifest gate
+# rejected the release. Nothing was actually stale — the bytes were rewritten in transit. This was
+# latent from the day the manifest gate was added: v0.1.6 was never tagged, so v0.1.7 was the first
+# tag the gate ever ran on, and it failed on its first real use.
+#
+# AND IT IS NOT JUST CI. `cinder-signature.sh` is copied to an ARM device and executed there. A
+# CRLF shebang is `#!/bin/sh\r`, which the device's kernel looks up as an interpreter literally
+# named "sh\r" — the script fails with a confusing "not found" naming a binary that plainly exists.
+# So the checkout that fails the hash is also a checkout that ships a broken script; the gate was
+# right to stop it, it just could not say why.
+#
+# `-text` (rather than `eol=lf`) is deliberate: it disables the conversion in BOTH directions and
+# on every platform, rather than trusting each contributor's `core.autocrlf`. These files are
+# build OUTPUT whose bytes are the artefact.
+cinder-home/dist/** -text
+
+# The payload manifest itself, for the same reason: it is the record of those bytes, and a
+# checkout that rewrote it would be checking a rewritten record against rewritten files.
+cinder-home/dist/PAYLOAD.sha256 -text
+
+# The scripts that are installed onto the device and executed by its shell. Same shebang hazard as
+# cinder-signature.sh above; these are simply the rest of that set.
+cinder-home/deploy/*.sh -text
+player/deploy/*.sh -text

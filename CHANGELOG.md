@@ -16,6 +16,47 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-09-02
+
+### Fixed
+
+- **The screen never actually went dark.** `set_backlight` has recorded since 2026-08-19 that the
+  sysfs node alone does not darken this panel — measured with the node at 0, DisplayService at 2 and
+  the panel still lit — and handles it. But neither path that blanks the screen went through it:
+  `screen_auto_off` (idle timeout) and `screen_toggle`'s off-branch each carried their own copy of a
+  raw `fputc('0')` to the node and stopped there. So the idle timer and the Power button both
+  "turned the screen off" by writing a number the service overrides. Both now call one `panel_dark()`
+  that caches the service's level and then zeroes both halves — the duplication is why the defect
+  existed twice. *This is a standing bug in its own right and NOT the `g_ipc_dead` wedge; it was
+  briefly attributed to that latch while diagnosing v0.1.7, which was wrong.* Two harness scenarios
+  (`blank-idle`, `blank-order`) pin it, and both fail against the old code.
+- **Losing Sony IPC was completely silent.** When `run_guarded` unwinds a Sony call it latches
+  `g_ipc_dead`, and from that moment the device cannot play, pause, skip, drive Bluetooth volume or
+  sleep its panel until it is restarted — with the only trace a line in `cinderhome.log`, which
+  cannot be read from the device. The status strip now carries a persistent `AUDIO STOPPED —
+  RESTART` banner in the codec badge's place, on every screen, set from the guard's recovery path
+  through a lock-free atomic (`cinder_set_ipc_dead`) because that path must not take a mutex. The
+  banner replaces the badge and the NIGHT label and nothing else — an early version returned before
+  the right-hand block and dropped the battery readout, which is the one indicator a degraded device
+  most needs. Four host tests.
+- **New music copied over USB never appeared.** Nothing asked MediaStore to scan when a transfer
+  finished — the DB reload on USB-MSC exit re-reads a store that has never heard of the new album,
+  and the only trigger was a Settings row you had to know about. Exiting mass storage now arms the
+  same bounded rescan campaign. *Device-unverified.*
+
+### Changed
+
+- **`.gitattributes` pins the release payload to byte-exact.** `release.yml` builds on
+  `windows-latest`, where Git's `core.autocrlf` rewrote LF→CRLF at checkout for the two *text*
+  members of the payload — so their hashes stopped matching and the v0.1.7 release failed its own
+  manifest gate (run 33643552973) with every binary passing and only the text files failing. Nothing
+  was stale; the bytes were changed in transit. This was latent from the day the gate was added:
+  v0.1.6 was never tagged, so v0.1.7 was the first tag it ever ran on. `cinder-home/dist/**` is now
+  `-text`, a new `tools/check_payload_attrs.sh` runs in CI on every push so the gate can no longer
+  make its debut during a release, and `verify_payload_manifest.sh` names line endings as the cause
+  when only text members fail. It also mattered beyond CI: `cinder-signature.sh` is executed on the
+  device, and a CRLF shebang is `#!/bin/sh\r`.
+
 ## [0.1.7] — 2026-09-02
 
 ### Fixed
@@ -263,7 +304,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/superwilso/Cinder/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/superwilso/Cinder/compare/v0.1.5...v0.1.7
 [0.1.5]: https://github.com/superwilso/Cinder/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/superwilso/Cinder/compare/v0.1.3...v0.1.4
