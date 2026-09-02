@@ -448,6 +448,11 @@ struct Render {
     // would be a bad trade. `liked_path` is None until cinder_db_open supplies it.
     duration_checked: bool,         // have we compared the DB duration against the service's yet?
     last_tick: std::time::Instant,  // real-time anchor for fling/HUD animation
+    /// Monotonic anchor for animations that need an ABSOLUTE phase rather than a delta — currently
+    /// the title marquee, whose position is a function of elapsed time, not of accumulated frames.
+    /// Deriving it from `last_tick` would tie the animation to how often the screen happened to be
+    /// dirty, which is exactly what it must not depend on.
+    boot: std::time::Instant,
     last_scrob: std::time::Instant, // real-time anchor for the scrobble play clock
     liked: std::collections::BTreeSet<i64>,
     liked_path: Option<String>,
@@ -634,6 +639,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         pending_bt_device: None,
         duration_checked: false,
         last_tick: std::time::Instant::now(),
+        boot: std::time::Instant::now(),
         last_scrob: std::time::Instant::now(),
         liked: std::collections::BTreeSet::new(),
         liked_path: None,
@@ -1375,6 +1381,14 @@ pub extern "C" fn cinder_render_tick() {
             r.last_viz = std::time::Instant::now();
             r.dirty = true;
         }
+    }
+    // MARQUEE CLOCK. Advanced before the dirty gate so the phase a painted frame reads is the
+    // real elapsed time, not the time of the last frame that happened to be dirty. A long title
+    // asks for the next frame itself (see below), so this and that together are what make it move;
+    // a title that fits sets nothing and Now Playing stays exactly as cheap as it was.
+    cinder_ui::widgets::set_marquee_ms(r.boot.elapsed().as_millis() as u32);
+    if cinder_ui::widgets::marquee_scrolled() {
+        r.dirty = true;
     }
     if !r.dirty {
         return; // nothing changed — skip the render + framebuffer blit entirely
@@ -2122,6 +2136,55 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 return None;
             }
             set_pending(r, seq, (*n).min(ids.len().saturating_sub(1)));
+            8
+        }
+        Action::PlayContextAt(n) => {
+            // Jump within the sequence that is ALREADY PLAYING, keeping its order.
+            //
+            // The row tapped in Up Next is an index into the context, and `PlayIndex` cannot carry
+            // that: it resolves an object id to the track's album, so after "Shuffle all songs" a
+            // tap four rows down replaced the shuffled library with that track's album. Same
+            // pending-play channel as the queue and the playlist variants — the only difference is
+            // where the sequence comes from.
+            //
+            // NO apply_shuffle. Every other play path here pre-shuffles because it is starting a
+            // NEW sequence and `r.np.shuffle` says the user wants it random. This one is not
+            // starting anything new: the context was shuffled when it was built, the user is
+            // looking at that order on screen, and re-shuffling it here would scramble the list
+            // out from under the row they just tapped — the bug in a second form.
+            let ids: Vec<i64> = r.app.context().iter().map(|s| s.object_id).collect();
+            // ONE pass, resolving and locating the tapped row together. Resolution can DROP rows —
+            // a file deleted since the context was built — and every drop before the tapped row
+            // slides it up by one, so a start index carried over from the unresolved list starts
+            // the wrong track. Counting the survivors as we go is the same walk, and it cannot
+            // disagree with itself the way two separate passes can.
+            let mut seq: Vec<cinder_db::Track> = Vec::with_capacity(ids.len());
+            let mut start = 0usize;
+            if let Some(db) = r.db.as_ref() {
+                for (i, id) in ids.iter().enumerate() {
+                    if let Ok(Some(t)) = db.track_by_object_id(*id) {
+                        if i < *n {
+                            start += 1;
+                        }
+                        seq.push(t);
+                    }
+                }
+            }
+            if seq.is_empty() {
+                eprintln!("cinder-ffi: PlayContextAt({n}): context did not resolve — ignored");
+                return None;
+            }
+            if seq.len() != ids.len() {
+                eprintln!(
+                    "cinder-ffi: PlayContextAt({n}): {} of {} context tracks resolved",
+                    seq.len(),
+                    ids.len()
+                );
+            }
+            // Clamped, for the case where every surviving track sits BEFORE the tapped row: `start`
+            // counts survivors ahead of it, so it can land exactly one past the end.
+            let start = start.min(seq.len() - 1);
+            set_pending(r, seq, start);
             8
         }
         Action::Seek(permille) => {

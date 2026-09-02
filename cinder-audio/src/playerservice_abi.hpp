@@ -51,9 +51,53 @@ enum class media_origin_t : int { Begin = 0, Current = 1 };
 
 // Opaque types we only pass by pointer/ref and never construct here.
 class PlayEventListener;   // Connect() accepts NULL -> we poll instead of implementing this
-struct PrevTrackOption;
-struct PrevGroupOption;
 class  TrackSequence;
+
+// ── PrevTrackOption / PrevGroupOption — NOT OPAQUE, AND NOT OPTIONAL ────────────────────────────
+//
+// These were forward declarations, and both call sites passed `nullptr` for them. That is a hard
+// crash, not a tolerated default: `PrevTrack` DEREFERENCES the pointer eight instructions in,
+// before any null check, because there is no null check. From the device lib
+// (libPlayerServiceClient.so @0x30c0, `objdump -dC`):
+//
+//     30c0:  push {r7, lr}
+//     30c4:  sub  sp, #24
+//     30c8:  ldr  r2, [r0, #52]      ; controller field  -> request word 0
+//     30d4:  ldr  r2, [r1, #0]       ; opt->word0        -> request word 1   <-- r1 == the option
+//     30da:  ldr  r1, [r1, #4]       ; opt->word1        -> request word 2
+//     30e6:  blx  r3                 ; proxy vtable +0x3c
+//
+// `PrevGroup` (@0x31b8) is instruction-for-instruction the same shape. `NextTrack` (@0x3080) takes
+// no argument at all and builds a one-word request through vtable +0x38 — which is why ▷▷ was
+// always fine and only ◁ could kill the player.
+//
+// WHAT IT COST. Passing NULL faulted inside Sony's client, and a SIGSEGV inside a guarded call is
+// exactly what `g_ipc_dead` is for: cinder-home unwinds, refuses ALL further Sony IPC for the boot,
+// and the device becomes a UI that cannot pause, skip, sleep its panel or drive Bluetooth volume
+// until it is restarted. Observed on device 2026-09-02 00:23 (cinderhome.log.1 @134.479):
+//
+//     GUARDED CALL FAULTED : sig=11 PC=0xb6b520d4 addr=(nil)
+//       libPlayerServiceClient.so(...PlayController::PrevTrack(...PrevTrackOption const*)+0x13)
+//     GUARD RECOVERED: carry_out: prev — Sony IPC is now DEAD for this boot.
+//
+// +0x13 is the Thumb-adjusted offset of `30d4` — the `ldr r2, [r1, #0]` above, to the instruction.
+//
+// LAYOUT. Eight bytes, read as two words at +0 and +4; nothing else is touched. The names are
+// inferred, not measured: the client's own `OnPrevTrack(change_track_mode_t, bool)` callback takes
+// exactly this pair, which is the natural fit for what the request carries. Zero-initialised is
+// therefore the "no special request" case, and — whatever the fields turn out to mean — a
+// well-formed 8-byte object cannot fault where a null pointer always does.
+//
+// DEVICE-UNVERIFIED as to SEMANTICS: what mode 0 selects is not yet measured. The crash it removes
+// is device-verified from the log above.
+struct PrevTrackOption {
+    int mode;        // change_track_mode_t, by inference from OnPrevTrack's first parameter
+    int flag;        // OnPrevTrack's trailing bool, widened to the word the request actually copies
+};
+struct PrevGroupOption {
+    int mode;
+    int flag;
+};
 
 // PlayStatus — a plain data struct filled by GetCurrentStatus(). It has NO exported
 // accessors; fields are read by offset. Only the track URI offset is known so far

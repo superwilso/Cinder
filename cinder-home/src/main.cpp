@@ -7092,6 +7092,40 @@ static void load_mediastore_cfg() {
     clog_("mediastore: applied /contents/cinder_mediastore.conf");
 }
 
+// ── The rescan CAMPAIGN ─────────────────────────────────────────────────────────────────────────
+//
+// ONE Scan() IS NOT A SCAN OF THE LIBRARY. Measured on device 2026-09-01 (cinderhome.log.1):
+//
+//     boot                        2560 tracks, 256 albums
+//     Settings ▸ Database  rc=0   2569 tracks, 258 albums     (+9,   +2)
+//     Settings ▸ Database  rc=0   2727 tracks, 268 albums     (+158, +10)
+//
+// Two presses, two accepted scans, and the store grew by a different amount each time. It stopped
+// at 2727 because nobody pressed a third time — and 696 tracks in 70 whole SD-card album folders
+// were still missing from the DB, which is the "some albums not being detected" report. The folders
+// are missing ALL-OR-NOTHING (70 fully absent, 0 partial), which is what an interrupted walk looks
+// like rather than a tag or codec problem: the tracks it did index are indexed correctly.
+//
+// So the fix is not a different call, it is not giving up after one: keep asking until the store
+// stops changing. `db_signature()` is already the project's answer to "did the store change" — the
+// housekeeping watcher uses it to decide when to reload — so the campaign is driven by the same
+// signal rather than by a new count nobody else needs.
+//
+// BOUNDED, on purpose. A scan is IO on the whole music tree, and an unbounded retry against a
+// store that never settles is a device that never sleeps. Twelve rounds at 10 s is about two
+// minutes of effort for a user-initiated action, and the budget is the thing standing between
+// "keeps trying" and "spins forever".
+//
+// DEVICE-UNVERIFIED as to WHY one Scan() stops early — whether Sony's scanner is deliberately
+// incremental, budgeted, or cut short is not established, and the NULL listener means it cannot
+// tell us. What is device-verified is the table above: repeating the call keeps finding tracks.
+static const int  RESCAN_MAX_ROUNDS = 12;
+static const long RESCAN_ROUND_MS   = 10000;
+static int  g_rescan_rounds_left = 0;   // follow-up scans still in budget
+static long g_rescan_next_ms     = 0;   // earliest time for the next round
+static unsigned long long g_rescan_sig = 0;  // store signature when the last round was issued
+static int  g_rescan_quiet       = 0;   // consecutive checks that saw no change
+
 // Non-capturing so it converts to run_guarded's plain function pointer.
 static void media_rescan() {
     if (!g_ms_read) load_mediastore_cfg();
@@ -7292,6 +7326,12 @@ void carry_out(int act) {
             // for the length of a scan.
             clog_("rescan: Settings ▸ Database — asking MediaStore to re-scan");
             run_guarded("carry_out: library rescan", 20, media_rescan);
+            // ARM THE CAMPAIGN. One Scan() only ever gets part of the way (see the table over
+            // RESCAN_MAX_ROUNDS), and the user pressing the row twice is not a scanning strategy.
+            g_rescan_rounds_left = RESCAN_MAX_ROUNDS;
+            g_rescan_next_ms     = now_ms() + RESCAN_ROUND_MS;
+            g_rescan_sig         = db_signature();
+            g_rescan_quiet       = 0;
             break;
         case CINDER_ACT_RESTART:  power_action(true);  break;
         case CINDER_ACT_POWER_OFF: power_action(false); break;
@@ -9577,13 +9617,11 @@ void* render_driver(void*) {
         // and of both journal shapes — and any difference in any of them is a change.
         //
         // ⚠ THIS ONLY NOTICES A SCAN; IT DOES NOT CAUSE ONE. `/db/MTPDB.dat` is written by Sony's
-        // MediaStoreService, and the thing that used to ASK it to re-scan after music arrived was
-        // the stock Qt app that Cinder replaces. Cinder has never called MediaStore at all (see
-        // analysis/H_mediastore/RE_findings.md — we read the SQLite file, Path A, and Path B was
-        // never wired). So new albums copied over USB-MSC stay unknown until something else
-        // triggers a scan. Closing that needs the MediaStoreClient scan verb RE'd on device; it is
-        // NOT worth guessing a vtable slot into a core service from here — that is exactly what
-        // rebooted the device twice on 2026-08-11 (STATUS.md, the BT handshake).
+        // MediaStoreService; this block watches the file and reloads when it changes. Asking for a
+        // scan is a separate thing and is now wired — Settings ▸ Database (CINDER_ACT_LIBRARY_RESCAN
+        // → media_rescan), plus the campaign below that keeps asking until the store settles,
+        // because one Scan() only ever gets part of the way. New music copied over USB-MSC is still
+        // unknown until somebody asks; nothing here triggers a scan on its own.
         static long last_db_check_ms = 0;
         if (house_now - last_db_check_ms >= 10000 && !g_msc_active) {
             last_db_check_ms = house_now;
@@ -9593,6 +9631,43 @@ void* render_driver(void*) {
                 cinder_db_open("/db/MTPDB.dat");
             }
             if (sig != 0) g_db_sig = sig;
+        }
+
+        // ── Drive the rescan campaign ───────────────────────────────────────────────────────
+        // Runs only after the user asked for a rescan, and only until the store settles. Each
+        // round is issued from HERE rather than from a thread of its own for the same reason the
+        // FM job and the BT ladder are: this block already runs at a known rate on a thread that
+        // owns the watchdog, and a scan is not urgent enough to be worth a second one.
+        if (g_rescan_rounds_left > 0 && !g_msc_active && house_now >= g_rescan_next_ms) {
+            const unsigned long long sig = db_signature();
+            if (sig != 0 && sig == g_rescan_sig) {
+                // Nothing changed since the last round was issued. That is either a scan still
+                // running or one that found nothing, and the two are indistinguishable from out
+                // here — so wait one more round before believing it. Two quiet checks in a row is
+                // the store having settled.
+                if (++g_rescan_quiet >= 2) {
+                    g_rescan_rounds_left = 0;
+                    clog_("rescan: the library store has stopped changing — campaign finished");
+                }
+                g_rescan_next_ms = house_now + RESCAN_ROUND_MS;
+            } else {
+                // It grew. Keep going: the previous round found something, so there is every
+                // reason to think the next one will too.
+                g_rescan_quiet = 0;
+                g_rescan_sig   = sig;
+                --g_rescan_rounds_left;
+                g_rescan_next_ms = house_now + RESCAN_ROUND_MS;
+                char rm[128];
+                std::snprintf(rm, sizeof rm,
+                              "rescan: the store is still growing — round %d of %d",
+                              RESCAN_MAX_ROUNDS - g_rescan_rounds_left, RESCAN_MAX_ROUNDS);
+                clog_(rm);
+                run_guarded("pump: library rescan round", 20, media_rescan);
+                if (g_rescan_rounds_left == 0) {
+                    clog_("rescan: campaign budget spent — press Settings ▸ Database again if "
+                          "albums are still missing");
+                }
+            }
         }
         ++n;
         // FRAME PACING: sleep only the REMAINDER of the 16 ms budget, not a flat 16 ms on top of

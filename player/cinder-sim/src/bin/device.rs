@@ -121,13 +121,18 @@ fn main() {
     // shell actually does at bring-up (`render_up()` constructs `App::unlocked()`). Needed for
     // scripted/headless runs: only the Hold switch unlocks, and a synthetic X server with no
     // window manager can't deliver the keystroke.
+    let boot = std::time::Instant::now();
     let unlocked = std::env::args().any(|a| a == "--unlocked");
     let mut app = if unlocked { App::unlocked() } else { App::new() };
     app.set_library(big_library());
 
     // Sample now-playing (on the device this is pushed from PlayerService each second).
     let mut np = NowPlaying {
-        title: "Atlas Hands",
+        title: if std::env::args().any(|a| a == "--long-title") {
+            "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364 — III. Presto"
+        } else {
+            "Atlas Hands"
+        },
         artist: "Benjamin Francis Leftwich",
         codec: "FLAC · 24bit / 96.0 kHz",
         badge: "FLAC 24/96",
@@ -192,6 +197,10 @@ fn main() {
         }
         was_down = down;
         app.tick(); // advance HUD/overlay countdowns (volume), like the device pump
+        // Advance the title marquee, exactly as cinder_render_tick does on device. Without this
+        // the sim renders long titles frozen at phase 0 and the scroll looks broken here while
+        // working on hardware — the sim's whole value is that a gesture takes the same path.
+        cinder_ui::widgets::set_marquee_ms(boot.elapsed().as_millis() as u32);
         // Animate the visualiser while "playing" on Now Playing (mirrors cinder-ffi on device).
         if np.playing && app.is_now_playing() && app.viz_on() {
             np.viz_seed += 0.15;
