@@ -45,11 +45,21 @@ Download **`cinder-installer-windows-x64.exe`** from the [latest release](../../
 plug the Walkman in over USB in mass-storage mode, and run it. It finds the player, asks which
 optional parts you want, copies them across, and tells you what to do next.
 
-**On Linux, `cinder-installer-linux-x64` gets you most of the way.** It stages every file onto the
-player and then stops, because the last step — Sony's `SoftwareUpdateTool.exe` performing the USB
-handoff — has no equivalent outside Windows. It prints the three manual steps that finish the job
-(eject cleanly, then **Settings ▸ Device Settings ▸ Update** on the player). macOS users can copy
-`cinder-home-install.upg` across by hand and do the same; see [`install.md`](install.md).
+**On Linux, `cinder-installer-linux-x64` does the whole job — run it with `sudo`.** It stages the
+files and then sends the upgrade command itself. That last step is a raw SCSI passthrough, which is
+why it needs root; without it the installer still stages everything correctly and tells you what
+did not happen and why.
+
+**On macOS the installer stages but cannot finish.** The command is a vendor SCSI passthrough, and
+macOS only exposes those through an IOKit `SCSITaskUserClient`, which the kernel will not grant for
+a disk it has already mounted — the exact state a staged Walkman is in. Finish from a Linux or
+Windows machine; see [`install.md`](install.md).
+
+> **There is no update option in the player's own menus.** This generation has no such entry — the
+> upgrade is always triggered by the host over USB. Earlier versions of this README and of the
+> installer told you to find **Settings ▸ Device Settings ▸ Update** on the device. That menu does
+> not exist, and the Linux binary refused to start at all, so neither path installed anything. Both
+> are fixed in v0.1.9.
 
 ```
   Cinder installer  (channel: stable)
@@ -77,8 +87,9 @@ own stock library with **no firmware flash**, and adds three combinations Walkma
 ship, splitting its two effects apart so each can be judged separately. Derivation:
 [`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md).
 
-The installer only copies files — the firmware write is done by the player's own updater
-afterwards. Full walkthrough, every component explained, and the developer build:
+The installer only copies files — the firmware write is done by the player's own updater, which
+reboots into itself when the host sends it the upgrade command (`SoftwareUpdateTool.exe` on
+Windows, the same vendor SCSI command sent directly on Linux). Full walkthrough, every component explained, and the developer build:
 **[`install.md`](install.md)**.
 
 ## Repo layout

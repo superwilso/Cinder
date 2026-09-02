@@ -152,6 +152,16 @@ jobs:
       - name: Payload is safe from line-ending rewrites
         run: tools/check_payload_attrs.sh
 
+      # The release body is rendered from .github/release-notes.md at tag time. If the template
+      # loses its {{SHA256SUMS}} marker, the renderer fails — and it would fail for the first time
+      # DURING a release, which is the failure mode this repo keeps hitting. Render it here, on
+      # every push, against a stand-in checksum file.
+      - name: Release notes still render
+        run: |
+          printf '%s  cinder-installer-linux-x64\n' \
+            "$(printf 0%.0s $(seq 64) | tr 0 a)" > /tmp/fake-sums
+          tools/render_release_notes.sh /tmp/fake-sums /tmp/body.md
+
       # The app itself, BOOTED. Everything above checks pieces in isolation; this links the real
       # main.cpp against fake Sony services and a virtual clock, runs the easel lifecycle, and
       # asserts on the call trace — that the paired list and the notification listener are set up
