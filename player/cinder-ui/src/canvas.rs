@@ -17,6 +17,16 @@ pub struct Canvas {
     /// chrome above or below; everything else draws with the full-screen default.
     clip_top: i32,
     clip_bot: i32,
+    /// Horizontal clip band [clip_x0, clip_x1), the exact counterpart of the vertical one. The
+    /// marquee sets it around a title's box so the scrolled run is cut off at the box edge instead
+    /// of sliding across whatever is beside it.
+    ///
+    /// Like the vertical band, a rejection here is NOT counted as overflow: `note_oob` only counts
+    /// pixels that fall off the PANEL, so narrowing the band suppresses nothing a layout audit
+    /// wants to see. That is the whole reason this is a band rather than the callers pre-trimming
+    /// the string — a partially visible glyph has no substring.
+    clip_x0: i32,
+    clip_x1: i32,
     /// Horizontal translation applied to EVERY pixel write, in px. Zero for normal drawing; set
     /// while a swiped list row is drawn so the whole row — text, separators, cover art, icons —
     /// moves as one piece. Doing it here rather than threading an offset through each draw call
@@ -51,7 +61,16 @@ impl Default for Canvas {
 
 impl Canvas {
     pub fn new() -> Self {
-        Self { buf: vec![0; W * H], clip_top: 0, clip_bot: H as i32, off_x: 0, oob_x: 0, oob_y: 0 }
+        Self {
+            buf: vec![0; W * H],
+            clip_top: 0,
+            clip_bot: H as i32,
+            clip_x0: 0,
+            clip_x1: W as i32,
+            off_x: 0,
+            oob_x: 0,
+            oob_y: 0,
+        }
     }
 
     /// Translate every subsequent draw horizontally by `dx` px. Pair with `clear_offset_x`.
@@ -75,6 +94,17 @@ impl Canvas {
         self.clip_bot = H as i32;
     }
 
+    /// Restrict drawing to columns `x0..x1` (screen coords, BEFORE `off_x`). Pair with
+    /// `clear_clip_x`. Used by the marquee; everything else draws with the full-width default.
+    pub fn set_clip_x(&mut self, x0: i32, x1: i32) {
+        self.clip_x0 = x0.clamp(0, W as i32);
+        self.clip_x1 = x1.clamp(self.clip_x0, W as i32);
+    }
+    pub fn clear_clip_x(&mut self) {
+        self.clip_x0 = 0;
+        self.clip_x1 = W as i32;
+    }
+
     pub fn fill(&mut self, c: Rgb888) {
         self.buf.fill(to_u32(c));
     }
@@ -94,10 +124,26 @@ impl Canvas {
         self.oob_y = 0;
     }
 
+    /// Is the horizontal clip band NARROWED from the full panel?
+    ///
+    /// This is what separates "the marquee is drawing the rest of a title outside its box, as
+    /// designed" from "a layout ran off the right margin". A narrowed band means the caller has
+    /// taken explicit responsibility for everything outside it, so rejections there are not
+    /// counted as overflow — without this the audit reported 16,813 px of overflow for a title
+    /// that is behaving exactly as intended. At the default band every rejection is a real defect
+    /// and is counted as before.
+    #[inline]
+    fn x_band_active(&self) -> bool {
+        self.clip_x0 > 0 || self.clip_x1 < W as i32
+    }
+
     /// Record one rejected pixel, by axis. Horizontal wins when both are out: a pixel that is off
     /// to the right AND below is reported as the horizontal defect, which is the actionable one.
     #[inline]
     fn note_oob(&mut self, x: i32, y: i32) {
+        if self.x_band_active() {
+            return;
+        }
         if x < 0 || x >= W as i32 {
             self.oob_x = self.oob_x.saturating_add(1);
         } else if y < 0 || y >= H as i32 {
@@ -108,7 +154,13 @@ impl Canvas {
     #[inline]
     pub fn put(&mut self, x: i32, y: i32, v: u32) {
         let x = x + self.off_x;
-        if x >= 0 && y >= self.clip_top && y < self.clip_bot && (x as usize) < W {
+        if x >= 0
+            && (x as usize) < W
+            && x >= self.clip_x0
+            && x < self.clip_x1
+            && y >= self.clip_top
+            && y < self.clip_bot
+        {
             self.buf[y as usize * W + x as usize] = v;
             return;
         }
@@ -119,7 +171,13 @@ impl Canvas {
     #[inline]
     pub fn blend(&mut self, x: i32, y: i32, c: Rgb888, a: u8) {
         let x = x + self.off_x;
-        if x < 0 || y < self.clip_top || y >= self.clip_bot || x as usize >= W {
+        if x < 0
+            || x as usize >= W
+            || x < self.clip_x0
+            || x >= self.clip_x1
+            || y < self.clip_top
+            || y >= self.clip_bot
+        {
             // A zero-coverage blend is a no-op the rasteriser emits for glyph edges; counting it
             // would report overflow for text that merely ENDS at the margin.
             if a > 0 {
@@ -153,7 +211,7 @@ impl Canvas {
         }
         let x1 = x + len as i32;
         let over_x = (-x).max(0) + (x1 - W as i32).max(0);
-        if over_x > 0 {
+        if over_x > 0 && !self.x_band_active() {
             self.oob_x = self.oob_x.saturating_add(over_x as u32);
         }
         if y < 0 || y >= H as i32 {
@@ -162,9 +220,16 @@ impl Canvas {
         if x1 <= 0 || x >= W as i32 {
             return None;
         }
-        let skip = if x < 0 { (-x) as usize } else { 0 };
-        let dx0 = x.max(0) as usize;
-        let dx1 = x1.min(W as i32) as usize;
+        // The horizontal band narrows the RUN, and `skip` grows with it so the caller's source
+        // pointer still lines up with the first pixel actually written.
+        let lo = x.max(0).max(self.clip_x0);
+        let hi = x1.min(W as i32).min(self.clip_x1);
+        if hi <= lo {
+            return None;
+        }
+        let skip = (lo - x) as usize;
+        let dx0 = lo as usize;
+        let dx1 = hi as usize;
         if dx1 <= dx0 {
             return None;
         }

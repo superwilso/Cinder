@@ -517,9 +517,23 @@ int cinder_audio_release_sequence(void) {
 }
 
 int cinder_audio_next_track(void) { return g_ctrl ? g_ctrl->NextTrack() : -1; }
-int cinder_audio_prev_track(void) { return g_ctrl ? g_ctrl->PrevTrack(nullptr) : -1; }
+// ◁ AND ◁◁ PASS A REAL OPTION, NEVER NULL. Both of these used to pass `nullptr`, and Sony's client
+// dereferences it before it checks anything — see the disassembly quoted over PrevTrackOption in
+// playerservice_abi.hpp. The fault landed inside a guarded call, which latches `g_ipc_dead` and
+// takes audio, Bluetooth and the idle screen-off down for the rest of the boot; the user-visible
+// shape is "the UI still works but nothing plays and the screen won't sleep". Zero-initialised is
+// the no-special-request case, and the object is what makes the call survivable at all.
+int cinder_audio_prev_track(void) {
+    if (!g_ctrl) return -1;
+    const pl::PrevTrackOption opt = {};
+    return g_ctrl->PrevTrack(&opt);
+}
 int cinder_audio_next_group(void) { return g_ctrl ? g_ctrl->NextGroup() : -1; }
-int cinder_audio_prev_group(void) { return g_ctrl ? g_ctrl->PrevGroup(nullptr) : -1; }
+int cinder_audio_prev_group(void) {
+    if (!g_ctrl) return -1;
+    const pl::PrevGroupOption opt = {};
+    return g_ctrl->PrevGroup(&opt);
+}
 
 /// Seek. NOTE SeekTime IS `void` — the RE disasm (analysis/G_player_ipc/player.c @0x13200) packs
 /// {session, origin, ms} and calls proxy vtable+0x48 with a response slot it then DISCARDS, exactly

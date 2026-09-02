@@ -318,6 +318,22 @@ pub enum Action {
     /// Play the USER queue (swipe-to-queue) starting at index `n`. The shell resolves the whole
     /// queue to a track sequence, so the transport then steps through what Up Next is showing.
     PlayQueueAt(usize),
+    /// Play the CURRENT PLAY CONTEXT starting at index `n` — the sequence Up Next is displaying,
+    /// in the order it is displaying it.
+    ///
+    /// `PlayIndex` cannot express this, for the same reason `PlayPlaylistAt` had to exist: an
+    /// object id only knows its ALBUM, so tapping a row in Up Next re-derived the album context
+    /// from the tapped track and played that instead. After "Shuffle all songs" the context is the
+    /// whole library in a shuffled order, and jumping to a track four rows down therefore threw
+    /// the shuffle away and started that track's album — reported 2026-09-02: "if i shuffle all
+    /// songs and then try to jump to a specific song in the queue it deletes everything and starts
+    /// playing that album."
+    ///
+    /// The context has to travel WITH the tap, and an INDEX is what travels: the shell already
+    /// holds the resolved sequence, so this says "same list, different starting point" and nothing
+    /// is rebuilt or reshuffled. That is also why it must not go through `apply_shuffle` — the
+    /// order on screen is already the order to play.
+    PlayContextAt(usize),
     /// The UI text scale changed (Settings ▸ UI scale). Internal + persisted; no device call.
     UiScaleChanged,
     BrightnessChanged(u8),    // panel brightness level 1..5; shell maps it onto the backlight node
@@ -2440,19 +2456,21 @@ impl App {
                         self.go(Screen::NowPlaying);
                         vec![]
                     }
-                    // History and upcoming are both album tracks, so both just play that track.
-                    // Tapping upward is how you go back a song without stepping through every one.
-                    Some(Slot::History(i)) | Some(Slot::Upcoming(i)) => {
-                        match self.context.get(i).map(|t| t.object_id) {
-                            Some(id) => {
-                                // Playing something new re-arms the follow, so the list snaps to
-                                // the new track instead of staying where the finger left it.
-                                self.queue_follow = true;
-                                self.start_play(id)
-                            }
-                            None => vec![],
-                        }
+                    // History and upcoming are both rows of the CURRENT CONTEXT, so both jump
+                    // within it. Tapping upward is how you go back a song without stepping through
+                    // every one.
+                    //
+                    // `PlayContextAt`, not `PlayIndex`: the row is an index into the sequence on
+                    // screen, and `PlayIndex` would resolve the tapped track's ALBUM instead —
+                    // which after "Shuffle all songs" replaced a shuffled library with one album.
+                    // The list you are looking at is the list you get.
+                    Some(Slot::History(i)) | Some(Slot::Upcoming(i)) if i < self.context.len() => {
+                        // Playing something new re-arms the follow, so the list snaps to the new
+                        // track instead of staying where the finger left it.
+                        self.queue_follow = true;
+                        self.start_play_action(Action::PlayContextAt(i))
                     }
+                    Some(Slot::History(_)) | Some(Slot::Upcoming(_)) => vec![],
                     // A section heading, or the empty state: keep the old shortcut home.
                     _ => {
                         self.go(Screen::NowPlaying);
@@ -9549,16 +9567,80 @@ mod tests {
         let l = a.up_next_layout();
         let top = crate::chrome::HEADER_BOTTOM;
         let y_of = |slot| top + l.top_of(slot).unwrap() + crate::up_next::RH / 2;
-        // A history row plays that track and re-arms the follow.
+        // A history row jumps WITHIN the context and re-arms the follow. PlayContextAt, not
+        // PlayIndex: the row is a position in the sequence on screen, and resolving it to the
+        // track's album instead is what threw away a "Shuffle all songs" order.
         a.queue_follow = false;
-        assert_eq!(a.tap(240, y_of(crate::up_next::Slot::History(0))), vec![Action::PlayIndex(101)]);
+        assert_eq!(a.tap(240, y_of(crate::up_next::Slot::History(0))), vec![Action::PlayContextAt(0)]);
         assert!(a.queue_follow, "playing from the list re-arms the auto-follow");
         assert_eq!(a.current(), Screen::UpNext, "playing a row should not leave the screen");
         // An upcoming row does the same.
-        assert_eq!(a.tap(240, y_of(crate::up_next::Slot::Upcoming(2))), vec![Action::PlayIndex(303)]);
+        assert_eq!(a.tap(240, y_of(crate::up_next::Slot::Upcoming(2))), vec![Action::PlayContextAt(2)]);
         // The NOW PLAYING row is where you already are — it just opens Now Playing.
         assert!(a.tap(240, y_of(crate::up_next::Slot::Current(1))).is_empty());
         assert_eq!(a.current(), Screen::NowPlaying);
+    }
+
+    /// Jumping to a row in Up Next must keep the sequence that is playing.
+    ///
+    /// Reported 2026-09-02: "if i shuffle all songs and then try to jump to a specific song in the
+    /// queue it deletes everything and starts playing that album." The tap emitted `PlayIndex`,
+    /// and `PlayIndex` resolves an object id to its ALBUM — the only context an object id carries
+    /// — so a shuffled whole-library context was replaced by the tapped track's album. Exactly the
+    /// defect `PlayPlaylistAt` was added for, reached from the other direction.
+    ///
+    /// The index must be the row's position in the CONTEXT, not the track's id, and it must not
+    /// depend on the tracks belonging to one album — which is what a shuffle-all context is.
+    #[test]
+    fn up_next_jump_keeps_a_shuffled_context() {
+        let mut a = unlocked();
+        a.push(Screen::UpNext);
+        // A "Shuffle all songs" context: tracks from several different albums, in a scrambled
+        // order that belongs to no album at all. Playing at index 1.
+        a.set_play_context(
+            [501i64, 502, 503, 504, 505].iter()
+                .map(|&object_id| SongRow { object_id, ..Default::default() })
+                .collect(),
+            1,
+        );
+        a.queue_scroll_px = 0;
+        let l = a.up_next_layout();
+        let top = crate::chrome::HEADER_BOTTOM;
+        let y_of = |slot| top + l.top_of(slot).unwrap() + crate::up_next::RH / 2;
+
+        // Four rows down, well past the album any one of these tracks came from.
+        let acts = a.tap(240, y_of(crate::up_next::Slot::Upcoming(4)));
+        assert_eq!(acts, vec![Action::PlayContextAt(4)],
+                   "a jump must carry its position in the context, not an object id");
+        assert!(!acts.iter().any(|x| matches!(x, Action::PlayIndex(_))),
+                "PlayIndex would re-derive the album and discard the shuffle");
+        // The context itself is untouched by the tap — the shell reports back what is playing.
+        assert_eq!(a.context().len(), 5, "jumping must not rebuild or truncate the sequence");
+        assert_eq!(a.context().iter().map(|t| t.object_id).collect::<Vec<_>>(),
+                   vec![501, 502, 503, 504, 505], "and must not reorder it");
+    }
+
+    /// A row index past the end of the context is dropped rather than played.
+    ///
+    /// `layout()` is built from `context.len()`, so the two normally agree — but the hit test and
+    /// the context are read at different moments, and a context that shrank between them would
+    /// otherwise index off the end.
+    #[test]
+    fn up_next_jump_ignores_a_row_past_the_context() {
+        let mut a = unlocked();
+        a.push(Screen::UpNext);
+        a.set_play_context(
+            [601i64, 602, 603].iter()
+                .map(|&object_id| SongRow { object_id, ..Default::default() })
+                .collect(),
+            1,
+        );
+        let l = a.up_next_layout();
+        let top = crate::chrome::HEADER_BOTTOM;
+        let y = top + l.top_of(crate::up_next::Slot::Upcoming(2)).unwrap() + crate::up_next::RH / 2;
+        // Shrink the context behind the layout's back, then tap the row that no longer exists.
+        a.set_play_context(vec![SongRow { object_id: 601, ..Default::default() }], 0);
+        assert!(a.tap(240, y).is_empty(), "a row past the context plays nothing");
     }
 
     /// The Apple Music order, and the fact that empty sections vanish entirely.
