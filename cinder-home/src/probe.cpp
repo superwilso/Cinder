@@ -18,6 +18,7 @@
 #include "cinder_audio.h"
 #include "cinder_analyzer.h"
 #include "cinder_tuner.h"
+#include "cinder_storage.h"
 #include "discover.h"
 #include <cstdio>
 #include <cstdlib>
@@ -6532,6 +6533,120 @@ static int scan_probe() {
     return 0; // unreachable: scan_job_entry() _exit()s with the real status
 }
 
+
+// Print what is mounted where, plus what the USB gadget is holding. Both halves matter: the card
+// being absent from /proc/mounts is only half the story, because the reason it is absent is that
+// lun1 has the raw block device. Reading both together is what makes the cause obvious.
+static void storage_dump_mounts() {
+    std::FILE* f = std::fopen("/proc/mounts", "r");
+    if (f) {
+        char line[512];
+        bool any = false;
+        while (std::fgets(line, sizeof line, f)) {
+            if (std::strstr(line, "contents")) {
+                std::fprintf(stderr, "[cinder-probe] storage: mount  %s", line);
+                any = true;
+            }
+        }
+        std::fclose(f);
+        if (!any) clog_("storage: no /contents* mounts at all (unexpected)");
+    }
+    static const char* kLuns[] = {
+        "/sys/devices/platform/mt_usb/musb-hdrc.0/gadget/lun0/file",
+        "/sys/devices/platform/mt_usb/musb-hdrc.0/gadget/lun1/file",
+    };
+    for (unsigned i = 0; i < sizeof kLuns / sizeof kLuns[0]; ++i) {
+        std::FILE* g = std::fopen(kLuns[i], "r");
+        char v[256] = {0};
+        if (g) { if (!std::fgets(v, sizeof v, g)) v[0] = 0; std::fclose(g); }
+        std::fprintf(stderr, "[cinder-probe] storage: lun%u   = %s\n",
+                     i, v[0] ? v : "(empty)\n");
+    }
+}
+
+
+// --storage — read (and optionally change) the storage manager's auto-export setting, and mount
+// the microSD on demand. This is the device-side test for storage_shim.cpp / storage_abi.hpp.
+//
+// WHY IT EXISTS. Connecting USB makes Sony unmount the card and hand it to the mass-storage
+// gadget; a media scan in flight at that moment is discarded whole. Measured 2026-09-03: the card
+// scan had reached 637 of 1130 tracks (checkpoint left in /db/MTPDB.dat.scanning2) and MTPDB.dat
+// came back with zero external rows. Clearing AutoExportAsMsc stops the handover.
+//
+// Bare `--storage` is READ-ONLY and always safe. `on`/`off` change the setting; `mount` mounts
+// External0 now. Note the setting is PERSISTENT (the service writes DmpConfig FNC_MSC_AUTOEXPORT),
+// so `--storage off` keeps effect across reboots until `--storage on` puts it back — unlike most
+// probes here, this one does not restore itself, because being persistent is the point.
+static int storage_probe(const char* verb) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    // The client's replies arrive on the pump, so do not ask it anything until the pump is
+    // demonstrably turning. Without this every call below reads uninitialised stack and reports a
+    // confident wrong answer instead of failing.
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+    std::fprintf(stderr, "[cinder-probe] storage: pump ticks=%u\n", g_pump_ticks);
+
+    wd_arm(10);
+    int before = cinder_storage_get_auto_export();
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] storage: AutoExportAsMsc = %s\n",
+                 before < 0 ? "UNAVAILABLE (service down, or the library did not resolve)"
+                            : (before ? "1 (on — a USB cable takes the card away)"
+                                      : "0 (off — the card stays mounted on USB)"));
+    storage_dump_mounts();
+
+    if (!verb) {
+        clog_("storage: read-only. Re-run as --storage off to stop USB taking the card, "
+              "--storage on to restore stock behaviour, or --storage mount to mount it now.");
+        g_pump_run = false;
+        std::fflush(nullptr);
+        _exit(before < 0 ? 1 : 0);
+    }
+
+    int rc = -1;
+    if (std::strcmp(verb, "mount") == 0) {
+        wd_arm(20);
+        rc = cinder_storage_mount(CINDER_STORAGE_EXTERNAL0);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] storage: Mount(External0) -> %d\n", rc);
+        // The mount is asynchronous behind the API too: StorageMgr walks Checking -> Mounting ->
+        // Mounted. Give it a moment before looking, or the mount table below is a snapshot of the
+        // state we were trying to leave.
+        sleep(3);
+        storage_dump_mounts();
+    } else if (std::strcmp(verb, "on") == 0 || std::strcmp(verb, "off") == 0) {
+        int want = (std::strcmp(verb, "on") == 0);
+        wd_arm(10);
+        rc = cinder_storage_set_auto_export(want);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] storage: SetSettingAutoExportAsMsc(%d) -> %d\n",
+                     want, rc);
+        // Read it back through the same path. A setter that reports success and does not stick is
+        // the failure this whole file exists to catch, and it costs one more round trip to rule out.
+        wd_arm(10);
+        int after = cinder_storage_get_auto_export();
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] storage: AutoExportAsMsc now = %d (wanted %d) %s\n",
+                     after, want, after == want ? "OK" : "*** DID NOT STICK ***");
+        if (after != want) rc = -1;
+        clog_("storage: this setting is persisted to NVP (FNC_MSC_AUTOEXPORT) by the service. "
+              "Unplug and replug the cable to see the effect; the card should stay mounted.");
+    } else {
+        std::fprintf(stderr, "[cinder-probe] storage: unknown verb '%s' "
+                             "(expected on | off | mount)\n", verb);
+    }
+
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(rc == 0 ? 0 : 1);
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--scan") == 0) {
         // FLAT KEYWORD PARSE. Every argument after --scan is independent, so a config candidate and
@@ -6749,6 +6864,11 @@ int main(int argc, char** argv) {
         if (argc > 2 && std::strcmp(argv[2], "uac") == 0) want = USBFN_UAC;
         else if (argc > 2 && std::strcmp(argv[2], "msc") == 0) want = USBFN_MSC;
         return usbmgr_probe(want, argc > 3 ? std::atoi(argv[3]) : 60);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--storage") == 0) {
+        // No verb = READ-ONLY. "off" is the fix for the card-vanishes-on-USB bug; "on" restores
+        // stock; "mount" brings External0 back without waiting for a cable event.
+        return storage_probe(argc > 2 ? argv[2] : nullptr);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btvollisten") == 0) {
         return btvollisten_probe(argc > 2 ? std::atoi(argv[2]) : 12);

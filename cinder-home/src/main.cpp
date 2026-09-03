@@ -57,6 +57,7 @@
 #include "jack_edge.h"
 #include "cinder_analyzer.h"
 #include "cinder_power.h"
+#include "cinder_storage.h"
 #include "discover.h"
 // The playback-control shim over Sony's PlayerService (cinder-audio/player_shim.cpp).
 #include "cinder_audio.h"
@@ -822,6 +823,44 @@ void deferred_up() {
         std::snprintf(m, sizeof m, "power: battery care (Itawari 90%% cap) is %s",
                       care > 0 ? "ON" : care == 0 ? "OFF" : "UNAVAILABLE (power service unreachable)");
         clog_(m);
+    });
+    // Stop a USB cable taking the microSD card away.
+    //
+    // Sony's storage manager exports removable storage to the PC on ANY USB connection — a charger
+    // included. Internal storage is exempt, which is why /contents and adb survive a cable, but the
+    // card is not: it is unmounted and handed to the mass-storage gadget. If the media scanner is
+    // partway through indexing the card when that happens, the partial index is thrown away.
+    // Measured 2026-09-03 on the reference device: the scan had reached 637 of the card's 1130
+    // tracks (its checkpoint was still in /db/MTPDB.dat.scanning2) and MTPDB.dat came back with
+    // ZERO external rows — a third of the library simply absent, and absent again after every
+    // reconnect, because each one restarts the scan from the beginning. A COMPLETED index does
+    // survive the unmount, so this only bites while a scan is in flight — which is exactly the
+    // state a new card, or a card that has just gained music, is in.
+    //
+    // Nothing is lost by turning it off. Deliberate USB transfer still works: Settings ▸ USB mode
+    // goes through init (sys.sony.config), not through StorageMgr. What goes away is the automatic
+    // handover on any cable.
+    //
+    // Sony persists this to NVP itself (DmpConfig FNC_MSC_AUTOEXPORT), so this is normally a no-op
+    // read. It is re-applied every boot anyway because a factory reset — or a trip through stock
+    // firmware — restores the stock value, and the symptom when it comes back is "some albums
+    // vanished", which nobody would connect to a USB cable.
+    run_guarded("deferred_up: keep SD card mounted on USB", 8, []() {
+        const int on = cinder_storage_get_auto_export();
+        if (on < 0) {
+            clog_("storage: auto-export state UNAVAILABLE (storage service unreachable) — "
+                  "the card may still be taken away by a USB cable");
+            return;
+        }
+        if (on == 0) {
+            clog_("storage: USB auto-export already off — the SD card stays mounted on a cable");
+            return;
+        }
+        const int rc = cinder_storage_set_auto_export(0);
+        clog_(rc == 0 ? "storage: USB auto-export was ON; turned OFF so a cable can no longer "
+                        "unmount the SD card mid-scan"
+                      : "storage: USB auto-export is ON and could NOT be turned off — a cable can "
+                        "still interrupt an SD card scan");
     });
     // Same treatment for the Bluetooth switch: sync it to the RADIO's real state instead of letting
     // it default to on. Statuses are 2 (on, idle) and 3 (connected) for a live radio; 7 is OFF and 0
