@@ -16,6 +16,53 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **A USB cable could delete the microSD library, and did.** *(device-verified 2026-09-03)*
+  A third of the reference device's music was missing from the player: 121 album rows in
+  `MTPDB.dat` with no tracks behind them, including every album on the card. The internal index was
+  perfect — 2326 files in `/contents/MUSIC`, 2326 rows, zero difference in either direction — so
+  the fault was entirely on the removable side.
+
+  Sony's storage manager exports removable storage to the PC on **any** USB connection, a charger
+  included. Internal storage is exempt, which is why `/contents` and adb survive a cable; the card
+  is not, and gets unmounted and handed to the mass-storage gadget as `lun1`. If the media scanner
+  is partway through indexing the card at that moment, the partial index is discarded wholesale.
+  The evidence was still on the device: `/db/MTPDB.dat.scanning2` held the scanner's checkpoint,
+  frozen at `Burial - Untrue/04 - Ghost Hardware.flac`, and a backup DB taken earlier that day had
+  **637** external rows where the live one had none. A *completed* index does survive the unmount,
+  so this only bites while a scan is in flight — which is exactly the state a new card, or a card
+  that has just gained music, is in. Every reconnect restarts the scan from zero.
+
+  Cinder now clears Sony's `AutoExportAsMsc` setting at startup, which stops the export
+  transaction being raised at all, so both storages stay mounted across a cable. Nothing is lost:
+  deliberate USB transfer still works, because Settings ▸ USB mode goes through init
+  (`sys.sony.config`) and never touches StorageMgr. What goes away is the *automatic* handover.
+  The setting is persisted to NVP by the service itself (`FNC_MSC_AUTOEXPORT`); Cinder re-applies
+  it every boot anyway, because a factory reset restores the stock value and the symptom when it
+  returns — "some albums vanished" — is not something anyone would trace back to a USB cable.
+
+  Verified on hardware with the cable connected: `Mount(External0) -> 0`,
+  `/dev/block/mmcblk1p1` mounted at `/contents_ext`, `lun1 = (empty)`, and hagodaemon reporting
+  `status[Mounted]` with adb still up — a combination that was previously unreachable, because the
+  card and the PC could not both hold the device at once.
+
+  Two candidate causes were ruled out with measurements rather than argument. The
+  `Not exFAT or failed to access device` line in the log is informational — the card is FAT32 and
+  the vfat path works. And `/db`, which had never been measured, has **89 MB free** against a
+  5.5 MB database that grows ~1.6 KB per track; `images` stores references into the source FLACs,
+  not blobs, so album art costs it nothing. Space was never the constraint, and could not be:
+  a full disk cannot retroactively *delete* rows a backup proves existed.
+
+### Added
+
+- `cinder-probe --storage` — reads Sony's auto-export setting, and can turn it off/on or mount the
+  microSD on demand. Bare invocation is read-only. Also prints `/proc/mounts` and the gadget LUN
+  state together, because the card's absence from the mount table only makes sense next to the LUN
+  that is holding the block device.
+- `analysis/RE_storagemgr.md` — the disassembly behind the above, and the client ABI.
+
+
 ## [0.1.9] — 2026-09-02
 
 ### Fixed
