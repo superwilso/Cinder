@@ -576,3 +576,86 @@ as wired** — needs a finger to settle, not a shell.
 `stop_drawing_early_suspend: timeout waiting for userspace to stop drawing` is a full second: Cinder
 does not implement the `wait_for_fb_sleep`/`wait_for_fb_wake` handshake, so that handler always times
 out rather than being acknowledged. Implementing it would cut entry latency by ~75%.
+
+---
+
+## OFF-CABLE STAGE 1 — SOLVED, 2026-09-04
+
+`dpidle_cnt[0]` **0 → 18,509**. Log: `analysis/kernel/pm_offcable_stage1_2026-09-04.log`.
+
+| metric | value |
+|---|---|
+| climbing window | 486 s (t=1652 → t=2138) |
+| rate | **37.8 deep-idle entries/sec** |
+| `by_vtg` across the whole `as=mem` window (98 samples) | 101039 → 101039, **delta 0** |
+| `by_clk` | +2042, confined to the samples where the cable was still in |
+| `dpidle_block_mask[CG_PERI0]` | `0x00000400` (cable) → **`0x00000000`** |
+| `resume_count` | **0** for the entire run |
+| wakelock reasserts by the harness safety net | **0** |
+| USB after replug | back immediately, no reboot |
+
+**The `by_vtg` delta of zero is the headline, not the 18,509.** Every previous run had `by_vtg`
+climbing alongside `dpidle_cnt` (107569 → 121952), which is why this document and the project memory
+both carried "the gate is INTERMITTENT, not permanently open — don't claim fixed". That caveat is
+now **retired**: it climbed before because autosleep kept cycling the device in and out of suspend,
+so the early-suspend flag kept being cleared and re-set. Held open by a wakelock, the flag is set
+once and stays set, and the gate never blocks again.
+
+**And the block mask went to literally zero off-cable**, which is exactly what the PERI0 bit table
+predicted (`analysis/RE_kernel_idle_levers.md` §2): the only clock blocker on the cable was USB0,
+i.e. the cable itself.
+
+**Stage 1 delivered its actual design goal:** deep idle continuously, with the device fully alive —
+`resume_count` never moved, adb came back the instant the cable went in, and nothing needed a reboot.
+Compare the previous best: **78** entries, in short cycles, with the panel cycling dark and the USB
+gadget dead until a forced reboot.
+
+**This makes stage 2 much less interesting than it looked.** Stage 1 already gets the SoC into deep
+idle and keeps it reachable. Stage 2 buys only the delta between deep idle and full RAM-off, and
+pays for it with the unresolved gadget bug. That delta should be measured before any more work goes
+into it — and with no fuel gauge on this device, measuring it means a multi-hour voltage-decay A/B,
+not a spot check.
+
+## Codec standby during Bluetooth playback — device-verified 2026-09-04
+
+```
+[cinder-home]  216.466 codec: playing over Bluetooth 30 s -> DAC/amp to standby (not in the path)
+[cinder-home]  223.183 bt-sound: codec:0x02 channel:0x02 frequency:0x01 flag:0
+```
+
+30 s after the BT link settled, with the screen off and LDAC streaming. The `bt-sound` line *after*
+the standby — with the frequency field changing, which is the per-track source rate — is a track
+advancing with the DAC powered down.
+
+Confirmed by regmon rather than from the log, with the PMIC as a live control:
+
+| chip | 0x03 / 0x00 | 0x12 / 0x0E |
+|---|---|---|
+| `cxd3778gf` (codec) | `invalid length` | `invalid length` |
+| `mt6323` (PMIC, control) | `0x00000063` | `0x00000005` |
+
+So the headphone amplifier is genuinely off through a Bluetooth listening session, which is one of
+the two ways this device is actually used. Before this it stayed powered for the whole session,
+driving an empty jack.
+
+**Listening check, 2026-09-04: "i heard no change".** No stutter, no gap, no artefact at the moment
+the amplifier drops — which is what should happen, since it was never carrying the audio. Worth
+stating explicitly because a register readback proving the chip is off says nothing about whether
+the listener noticed.
+
+### Full test matrix — all three directions verified on device, 2026-09-04
+
+| case | expected | measured |
+|---|---|---|
+| BT playing, screen off | codec → standby | fired 30 s in; every register `invalid length`; listener heard **no change** |
+| BT link drops mid-session | codec wakes, audio falls back to the jack | woke (`0x03`→`0x03`, `0x12`→`0x0F`), `pcm4p` RUNNING, audio out of the jack |
+| **jack playing, screen off** | codec **stays awake** | awake for 60 s of sampling, `0x12` held at `0x0F`, no standby line |
+
+**The third row is the one that mattered.** It is the negative control for the risk this change
+introduced: if `cinder_get_bt_route()` went stale and still reported a BT peer after a disconnect,
+the codec would be put into standby *while carrying jack audio* and the user would get silence. The
+flag clears correctly — `bt-vol: rocker now drives the 3.5 mm jack (GetBtStatus=6, peer gone)` — and
+the codec stayed up.
+
+The disconnect fallback also confirms the property the whole standby rests on: Sony's driver clears
+standby by itself when the local PCM is opened. Nothing in Cinder had to notice the edge.

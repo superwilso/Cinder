@@ -286,6 +286,138 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   `/contents/cinderhome.log` stayed 0 bytes — which is why the failure above left no evidence of
   itself. `run_home` now falls back to `/data/cinder/cinderhome.log` (ext4, mounted at 3.98 s, never
   touched by the MSC gadget) instead of dropping the redirect.
+- **Cinder now answers the framebuffer early-suspend handshake, cutting suspend entry by ~75%.**
+  *(2026-09-04)* Every early suspend used to pay a full second to
+  `stop_drawing_early_suspend: timeout waiting for userspace to stop drawing` — measured entry cost
+  was 1.31 s wall, 1.00 s of it that one handler giving up on an answer nobody was going to send.
+
+  The protocol was read out of the kernel image rather than assumed, and the interesting part is
+  that it is the opposite of what the node names suggest: **the acknowledgement is in
+  `wait_for_fb_wake`, not `wait_for_fb_sleep`.** Reading `wait_for_fb_wake` is what takes `fb_state`
+  from REQUEST_STOP_DRAWING (1) to STOPPED_DRAWING (0) and wakes the queue the early-suspend handler
+  is sleeping on; `wait_for_fb_sleep` only waits and reports. So a correct implementation must read
+  **both** nodes in order, and must not dawdle between them or the timeout fires anyway.
+
+  Implemented as a dedicated thread (both reads block indefinitely; SIGALRM is blocked on it because
+  that signal belongs to the render worker) with `/contents/cinder_no_fbsync` as the escape. It also
+  hands Cinder a real late-resume stamp straight from the kernel, which beats noticing a
+  `resume_count` change on the next 1 Hz tick.
+
+  **Device-verified**: the timeout line is gone from dmesg entirely and entry latency fell from
+  1.31 s to **0.30 s**.
+- **`CG_PERI0` bit 24 identified as `I2C0` — and bit 10 = `USB0` is now proven rather than assumed.**
+  The `MT_CG_PERI_*` names are a contiguous table in the kernel image, so bit index is table
+  position. The deep-idle blocker seen during early suspend, `0x01000400`, is therefore the cable
+  (USB0) **plus the codec's I2C bus** — except that on re-measurement I2C0 turned out **not** to be
+  a standing blocker at all. Sampled every 2 s across a whole stage-1 window the mask reads
+  `0x00000400` throughout, USB0 only; the single sighting of bit 24 came from a window in which this
+  investigation was itself hammering `/proc/regmon/cxd3778gf`, i.e. generating the I2C traffic it
+  then observed.
+
+  Which leaves the deep-idle picture clean: `by_vtg` is opened by stage 1, and the only remaining
+  clock blocker on the cable is the cable. Off-cable there should be nothing left.
+- `analysis/RE_kernel_idle_levers.md` — the fb handshake protocol, the PERI0 bit table, the
+  connectivity-chip finding, and the closed questions (the CPU path is optimal; AFE is on with no
+  audio but does not gate deep idle; the GPU is entirely unused).
+- **DEEP IDLE IS OPEN. Off-cable stage 1: `dpidle_cnt[0]` 0 → 18,509.** *(device-verified 2026-09-04)*
+  486 s window, 37.8 deep-idle entries per second, `resume_count` **0** throughout — it never went to
+  suspend-to-RAM — and USB came straight back on replug with no reboot. That is stage 1 doing exactly
+  what it was designed for: the SoC in deep idle continuously while the device stays fully alive.
+
+  **The number that matters is not the 18,509, it is `by_vtg` moving by ZERO** (101039 → 101039
+  across all 98 stage-1 samples). Every earlier run had it climbing alongside `dpidle_cnt`, which is
+  why this changelog said "the gate is intermittent, not permanently open — this is not yet 'deep
+  idle fixed'". That caveat is now retired, and the reason is instructive: it climbed before because
+  autosleep kept cycling the device in and out of suspend, clearing and re-setting the early-suspend
+  flag each time. Held open by a wakelock, the flag is set once and the gate never blocks again.
+
+  `dpidle_block_mask[CG_PERI0]` also went to literally `0x00000000` once the cable was out — exactly
+  what the PERI0 bit table predicted, since USB0 was the only clock blocker on the cable.
+
+  For scale, the previous best was **78**, in short cycles, with the panel cycling dark and the USB
+  gadget dead until a forced reboot.
+
+  **This makes stage 2 much less interesting than it looked.** It buys only the delta between deep
+  idle and full RAM-off, and pays the unresolved gadget bug for it. Measure the delta first — and
+  with no fuel gauge, that means a multi-hour voltage-decay A/B, not a spot check.
+- **The DAC no longer stays powered through Bluetooth playback.** The codec standby's first cut
+  deliberately kept the amplifier awake on BT ("being conservative in the first cut is worth more
+  than the extra saving"), which meant the CXD3778GF was driving an empty jack for the whole of a
+  screen-off BT listening session — one of the two ways this device actually gets used. It now goes
+  to standby on a linked BT peer even while playing, because A2DP does not route through it.
+
+  Gated on `cinder_get_bt_route()` (a peer that is linked *and* whose name was read back, not merely
+  a radio claiming to be up — this device has reported a connection with no peer before). A mid-track
+  disconnect self-heals: falling back to the jack opens the local PCM and Sony's driver clears
+  standby on PCM open. It deliberately does **not** feed the SoC suspend, which keeps its stricter
+  "never while playing anything" rule — early suspend under a live A2DP stream is a separate
+  experiment with a separate failure mode.
+
+  **Device-verified 2026-09-04**: standby fired 30 s into an LDAC session with the screen off, a
+  track advanced afterwards with the DAC down, every `cxd3778gf` register read back `invalid length`
+  while the `mt6323` PMIC answered normally to the identical procedure — and the listener reported
+  no audible change at all. Both other directions were checked too: dropping the BT link mid-session
+  woke the codec and the audio came out of the jack (Sony's driver clears standby on PCM open, so
+  nothing in Cinder had to notice the edge), and — the negative control that actually mattered —
+  playing through the jack with the screen off left the codec **awake** for a full minute of
+  sampling, confirming the route flag clears rather than going stale and silencing the jack.
+- **The ~5 s after boot where the screen is up and the device ignores you is fixed: ~5.9 s → ~0.64 s.**
+  *(device-verified 2026-09-04)* The library build is 4837 ms on a 3,456-track library and it ran on
+  the render thread, with the frame loop's bring-up gate holding back paint AND input for all of it.
+
+  Two things had to change together, and either alone would have done nothing. `cinder_db_open` took
+  cinder-ffi's state lock on its first line and held it across the SQLite open, `build_library`, the
+  playlist store and the likes import — so moving it to a worker would only have relocated the stall
+  to the render thread's next frame. It now builds against local values and takes the lock once, at
+  the end, to install them. And the gate now falls through while the build is in flight, so the loop
+  paints and reads input against an empty library until the real one lands and publishes a repaint.
+
+  Measured on device: first frame 2.562 s, build starts 3.217 s, **input live 3.267 s**, build
+  finishes 8.062 s. Input comes up 50 ms after the build starts instead of 4.8 s after it ends.
+
+  The 45 s watchdog around the build is gone deliberately: it existed because a build that never
+  returned froze the render thread, and it had to be watchdog-only because `siglongjmp`ing out would
+  have left cinder-ffi's mutex locked with no owner. Neither hazard survives the move — a stuck
+  worker holds no lock and costs a library, not the app.
+- **Fixed: the boot-animation re-kill was paced by the frame counter.** `n < 300` meant "every
+  iteration for the first 300 of them", and how long that is depends on what else the loop is doing
+  — ~66 calls while bring-up blocked the loop, ~100 once it no longer did. It is now paced by the
+  clock (every 200 ms for the first 3 s, then the existing 5 s ladder to a minute). Found by the
+  harness, which caught the change pushing `autooff-idle`'s log budget from 114 to 179 lines against
+  a ceiling of 120 — a reminder that budget had six lines of headroom.
+- **Partial framebuffer blits: 0.7% of a full blit, measured on device.** *(2026-09-04)* `r.dirty`
+  is a bool, so any change repainted and re-blitted the whole 480x800 — a progress bar ticking once
+  a second cost exactly as much as a full screen change, and the forced repaint that runs every 5 s
+  for the life of the process cost 1.5 MB to the panel plus a heavy ioctl every time.
+
+  The blit now compares each row against what it last wrote and copies only the rows that differ.
+  The trade is favourable because of where the memory is: the canvas and the shadow are ordinary
+  cached RAM, while the framebuffer is a device mapping where the WRITE is the expensive side, so
+  two cached reads to avoid one device-memory write is a good deal at every scale. When nothing
+  differs it also **skips the FBIOPUT flip entirely** — the ioctl that occasionally blocks >33 ms —
+  which is what makes a genuinely static screen free rather than merely cheap.
+
+  Measured over the first 300 frames of a boot, which is the busiest the screen ever is: **1619 rows
+  written of a possible 240,000 — 0.7%.** Verified that pixels still land: fb0 page 0 holds
+  1,151,997 non-zero bytes of 1,536,000 with Cinder's background colour in the low bytes, while
+  pages 1 and 2 read exactly zero (page-0-only mode, clean init clear).
+
+  It is a pure optimisation of the TRANSFER — the bytes that end up in the framebuffer are exactly
+  the bytes a full blit would have put there — so unlike dirty-rect rasterisation it cannot produce
+  a wrong pixel. A full write still happens once a minute as insurance against anything else
+  touching fb0, and `/contents/cinder_fb_allpages` still forces the old unconditional path.
+- **Removed a leftover diagnostic that had been costing 3x framebuffer bandwidth since August.**
+  `/contents/cinder_fb_allpages` was still present on the device — `touch`ed 2026-08-18 as a one-flag
+  ghost-UI test and never undone, so every frame wrote all three fb pages (~4.6 MB) instead of page 0
+  (~1.5 MB), on a panel that only ever scans page 0. The ghost it was testing for had a different
+  cause entirely (mtkfb returns the previous session's pixels across a reboot), root-caused and fixed
+  2026-08-26 with a clear of the mapping at init. The boot log names the active mode — read it.
+- **The GPU present path is not worth enabling, and the reason is structural.** `gpu.rs` replaces only
+  the PRESENT, not the rasterisation: cinder_ui software-rasterizes the whole frame either way, so
+  the GPU path swaps a full-screen memcpy for a full-screen texture upload of the same bytes, plus a
+  quad draw, a swap, and powering up MMPLL and the Mali domain. The only gain on offer was vsync
+  pacing — and the partial blit above has now made the software path cheaper by two orders of
+  magnitude, so the comparison is worse than ever. Left off.
 - `analysis/PLAN_deep_idle.md` — the plan for getting the SoC into deep idle without repeating the
   2026-09-04 wedge: `slp_pwake_time` as a hardware self-wake, `icx_pm_helper/resume_count` as the
   single success criterion, phases with explicit abort conditions, and the standing rule that none
