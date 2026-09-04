@@ -125,6 +125,8 @@ struct Framebuffer {
     shadow: Vec<u32>,
     /// When the last unconditional full write happened (the insurance below).
     last_full: std::time::Instant,
+    /// When the mapping was opened, so the early window can distrust the shadow entirely.
+    opened: std::time::Instant,
     /// Cleared to force the next blit to write every row regardless of the shadow.
     shadow_valid: bool,
     /// One-shot efficiency sample, so the win is a measured number in the log rather than a claim.
@@ -137,6 +139,10 @@ struct Framebuffer {
 /// else is known to write fb0 during a session, but the cost of being wrong about that is a
 /// permanently stale region of screen, and the cost of the insurance is one full blit a minute.
 const FULL_BLIT_EVERY_S: u64 = 60;
+
+/// How long after opening fb0 to assume something else may also be drawing into it. Covers
+/// icx_bootanimation, which cinder-home kills repeatedly over roughly the first five seconds.
+const UNCONTESTED_AFTER_S: u64 = 15;
 
 impl Framebuffer {
     fn open() -> Result<Self, String> {
@@ -196,13 +202,13 @@ impl Framebuffer {
 
         let all_pages = std::path::Path::new("/contents/cinder_fb_allpages").exists();
         println!(
-            "cinder-ffi: fb {}x{} {}bpp stride {} pages {} (writing {}) — flip-on-blit active (FBIOPUT+FORCE)",
+            "cinder-ffi: fb {}x{} {}bpp stride {} pages {} (writing {}, ALL pages) — flip-on-blit active (FBIOPUT+FORCE)",
             var.xres,
             var.yres,
             var.bits_per_pixel,
             stride,
             pages,
-            if all_pages { "ALL" } else { "page 0 only" }
+            if all_pages { "every row" } else { "changed rows only" }
         );
         // The shadow starts as zeroes and so does the mapping (the clear above), so the very first
         // blit can already trust it — no special first-frame case, and no 1.5 MB write of pixels
@@ -218,6 +224,7 @@ impl Framebuffer {
             all_pages,
             shadow: vec![0u32; W * H],
             last_full: std::time::Instant::now(),
+            opened: std::time::Instant::now(),
             shadow_valid: true,
             stat_frames: 0,
             stat_rows: 0,
@@ -237,68 +244,47 @@ impl Framebuffer {
         let base = self.base as *mut u8;
         let copy_bytes = (W * 4).min(self.stride);
 
-        // PAGES. The panel maps 3 (yres_virtual = 3×800) and this used to memcpy the canvas into
-        // ALL of them — ~4.6 MB per frame instead of ~1.5 MB. But we never pan: both the open
-        // sequence and every flip below pin `yoffset = 0`, so page 0 is the only one the panel
-        // ever scans. Writing the other two was memory bandwidth (and heat) spent on pixels
-        // nothing displays. `/contents/cinder_fb_allpages` restores the old behaviour if a unit
-        // ever turns out to page-flip internally — the symptom would be tearing or flicker, and
-        // the active mode is logged at open. That escape hatch keeps the old unconditional path.
-        if self.all_pages {
-            for page in 0..self.pages {
-                for y in 0..H {
-                    let dst_row = (page * H + y) * self.stride;
-                    if dst_row + copy_bytes > self.map_len || (y + 1) * W > buf.len() {
-                        break; // this row (and any after, in this page) would overrun a mapping
-                    }
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            buf.as_ptr().add(y * W) as *const u8,
-                            base.add(dst_row),
-                            copy_bytes,
-                        );
-                    }
-                }
-            }
-            self.flip();
-            return;
-        }
-
-        // ── PARTIAL BLIT ──────────────────────────────────────────────────────────────────────
-        // `r.dirty` is a bool, so ANY change repaints the whole canvas and used to re-blit all
-        // 480x800 of it: a progress bar ticking once a second cost exactly as much as a full
-        // screen change. This compares each row against what we last wrote and copies only the
-        // rows that actually differ.
+        // PAGES AND ROWS ARE INDEPENDENT QUESTIONS, and conflating them cost a regression.
+        // The first version of this partial blit wrote CHANGED ROWS to PAGE 0 ONLY, on the reading
+        // that the panel never pans (`fb0/pan` reads `0,0`). It does present another page around
+        // boot: dropping to page 0 put the boot animation back on top of the Cinder UI within one
+        // boot, reported from the device 2026-09-04. `fb0/pan` is not evidence.
         //
-        // WHY THIS IS A WIN EVEN THOUGH IT READS MORE THAN IT SAVES. The canvas and the shadow are
-        // ordinary cached RAM; the framebuffer is a device mapping, where the WRITE is the
-        // expensive side. Trading two cached reads for one avoided device-memory write is a good
-        // trade, and it is the same trade at every scale — the more of the screen that is static,
-        // the better it gets.
+        // So: every page, always — and only the rows that actually differ. That keeps all three
+        // pages current no matter which one the panel scans, while still moving ~1% of the bytes.
+        // The saving was never about skipping pages; it was about skipping unchanged rows.
         //
-        // AND IT CAN SKIP THE FLIP. When nothing differs there is nothing to push, so the
-        // FBIOPUT_VSCREENINFO below is skipped entirely — the ioctl the old comment records as
-        // occasionally blocking >33 ms. That is what makes a genuinely static screen free: the
-        // forced repaint that runs every 5 s for the life of the process now costs one pass over
-        // cached memory instead of 1.5 MB to the panel plus a heavy ioctl.
+        // WHY THE COMPARISON IS WORTH IT. The canvas and the shadow are ordinary cached RAM; the
+        // framebuffer is a device mapping where the WRITE is the expensive side. Trading two cached
+        // reads for avoided device-memory writes is a good deal, and it gets better the more of the
+        // screen is static. It also lets us SKIP THE FLIP entirely when nothing differs — the
+        // FBIOPUT ioctl that the driver sometimes blocks >33 ms in — which is what makes a static
+        // screen genuinely free rather than merely cheap.
         //
         // THIS CANNOT PRODUCE AN ARTEFACT. It is a pure optimisation of the transfer: the bytes
-        // that end up in the framebuffer are exactly the bytes a full blit would have put there.
-        // That is the difference between this and dirty-rect RASTERISATION, where a missed region
-        // means a wrong pixel — worth doing later, and a much larger change.
-        let force_full = !self.shadow_valid
+        // that end up in every page are exactly the bytes a full blit would have put there. That is
+        // the difference between this and dirty-rect RASTERISATION, where a missed region means a
+        // wrong pixel.
+        //
+        // THE SHADOW ASSUMES WE ARE THE ONLY WRITER, AND EARLY IN A BOOT WE ARE NOT.
+        // icx_bootanimation draws into the same fb0 for the first seconds; a partial blit will not
+        // paint over it, because the shadow says those rows are already correct. Hence the opening
+        // window below, during which the shadow is distrusted entirely.
+        // `/contents/cinder_fb_allpages` remains the escape hatch: it forces every row, every time.
+        let force_full = self.all_pages
+            || !self.shadow_valid
+            || self.opened.elapsed().as_secs() < UNCONTESTED_AFTER_S
             || self.last_full.elapsed().as_secs() >= FULL_BLIT_EVERY_S;
         // Past the point where most of the screen is changing, comparing is pure overhead — a
-        // scroll or a screen transition dirties nearly every row. So the comparison switches
-        // itself off once more than half the rows have differed and the rest are copied blind,
-        // which bounds the worst case at half a compare on top of the write it was always doing.
+        // scroll or a screen transition dirties nearly every row. So the comparison switches itself
+        // off once more than half the rows have differed and the rest are copied blind, which
+        // bounds the worst case at half a compare on top of the write it was always doing.
         let mut compare = !force_full;
         let mut wrote = 0usize;
 
         for y in 0..H {
-            let dst_row = y * self.stride;
-            if dst_row + copy_bytes > self.map_len || (y + 1) * W > buf.len() {
-                break; // this row (and any after) would overrun a mapping
+            if (y + 1) * W > buf.len() {
+                break;
             }
             let row = y * W..(y + 1) * W;
             if compare {
@@ -310,12 +296,22 @@ impl Framebuffer {
                 }
             }
             self.shadow[row.clone()].copy_from_slice(&buf[row.clone()]);
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    buf.as_ptr().add(y * W) as *const u8,
-                    base.add(dst_row),
-                    copy_bytes,
-                );
+            // Bullet-proofing: we NEVER write past the mapped region. On the confirmed panel every
+            // row fits exactly, but if a unit ever reports a geometry where `pages*H` overruns
+            // `yres_virtual`, an unchecked offset would write off the end of the mmap. An
+            // out-of-range row is skipped rather than written — worst case a clipped frame.
+            for page in 0..self.pages {
+                let dst_row = (page * H + y) * self.stride;
+                if dst_row + copy_bytes > self.map_len {
+                    break;
+                }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        buf.as_ptr().add(y * W) as *const u8,
+                        base.add(dst_row),
+                        copy_bytes,
+                    );
+                }
             }
             wrote += 1;
         }
@@ -325,18 +321,20 @@ impl Framebuffer {
             self.last_full = std::time::Instant::now();
         }
 
-        // Report the actual ratio once, then never again. A claim about how much this saves is
-        // worth nothing next to the number from the device it runs on, and one line is cheap.
-        if !self.stat_done {
+        // Report the actual ratio once, then never again. Only frames that took the partial path
+        // are sampled: the opening window forces full writes on purpose, and counting those
+        // reported 70.3% — a true number about the wrong thing.
+        if !self.stat_done && !force_full {
             self.stat_frames += 1;
             self.stat_rows += wrote as u64;
             if self.stat_frames >= 300 {
                 self.stat_done = true;
                 println!(
-                    "cinder-ffi: partial blit — {} rows over {} frames = {:.1}% of a full blit",
+                    "cinder-ffi: partial blit — {} rows over {} frames = {:.1}% of a full blit (all {} pages)",
                     self.stat_rows,
                     self.stat_frames,
-                    100.0 * self.stat_rows as f64 / (self.stat_frames as f64 * H as f64)
+                    100.0 * self.stat_rows as f64 / (self.stat_frames as f64 * H as f64),
+                    self.pages
                 );
             }
         }
@@ -1571,7 +1569,23 @@ pub extern "C" fn cinder_render_tick() {
     };
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
     // the list/menu screens from their own state.
+    // ONE-SHOT RASTER COST SAMPLE. With the blit down to ~0.7% of a full transfer, the raster is
+    // what a painted frame now costs, and the forced repaint that runs every 5 s for the life of
+    // the process pays it in full to produce a byte-identical screen. Whether that is worth
+    // changing depends on a number nobody had, so measure it once and say so.
+    let raster_t0 = std::time::Instant::now();
     r.app.render(&mut r.canvas, &r.fonts, &np);
+    {
+        static RASTER_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        static RASTER_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        use std::sync::atomic::Ordering::Relaxed;
+        let n = RASTER_N.fetch_add(1, Relaxed) + 1;
+        let us = RASTER_US.fetch_add(raster_t0.elapsed().as_micros() as u64, Relaxed)
+            + raster_t0.elapsed().as_micros() as u64;
+        if n == 300 {
+            println!("cinder-ffi: raster — {} frames, mean {:.2} ms/frame", n, us as f64 / n as f64 / 1000.0);
+        }
+    }
     if let Some(path) = r.pending_screenshot.take() {
         match write_png(&path, &r.canvas) {
             Ok(()) => println!("cinder-ffi: screenshot written to {path}"),

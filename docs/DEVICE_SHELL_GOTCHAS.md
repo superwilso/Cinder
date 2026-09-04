@@ -196,7 +196,22 @@ Three things, and each one silently produces "it just died with no output":
 Checking whether it lived: `[ -d /proc/$p ]` with `$p` EMPTY tests `/proc`, which exists — so a
 missing pidfile reads as "running". Guard the empty case explicitly.
 
-**RESOLVED 2026-09-04 — and the flag was left on the device for three weeks.** The one-flag test
+**2026-09-04 — I CONCLUDED THIS WAS A LEFTOVER AND REMOVED IT. THAT WAS WRONG; IT IS RESTORED.**
+Removing it produced the ghost immediately: the boot animation drew over the top of the Cinder UI on
+the very next boot. So the paging theory in this section is CONFIRMED, not superseded — the panel
+does present a page other than 0 around boot, and `fb0/pan` reading `0,0` does not prove otherwise.
+The init clear fixes a stale PREVIOUS SESSION; it does nothing about another process drawing into
+pages we have stopped writing.
+
+**AND THEN SUPERSEDED PROPERLY — the flag is no longer needed and is off again.** The two questions
+had been conflated: the partial blit's saving comes from writing only the CHANGED ROWS, while the
+ghost came from writing only PAGE 0. They are independent. The blit now writes changed rows to
+**every page**, so all three stay byte-identical (verified on device: same md5 for pages 0, 1 and 2)
+and it does not matter which one the panel presents. `/contents/cinder_fb_allpages` is back to being
+a pure escape hatch — it forces every row, every frame — rather than something the display depends
+on. The (wrong) reasoning that removed it the first time follows:
+
+**~~RESOLVED 2026-09-04 — and the flag was left on the device for three weeks.~~** The one-flag test
 above was run (`touch`ed 2026-08-18) and then never undone, so every frame since wrote all three
 pages: ~4.6 MB instead of ~1.5 MB, on a panel that only ever scans page 0. The ghost it was testing
 for had a different cause entirely — mtkfb hands back the previous session's pixels across a reboot
