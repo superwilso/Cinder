@@ -43,13 +43,40 @@
  * kernel node. */
 #define PCM_BYTES 84950
 #define DSD_BYTES 13076
+#define TONE_BYTES 2888
 #define DST "/proc/icx_audio_cxd3778gf_data/ovt"
 #define DST_DSD "/proc/icx_audio_cxd3778gf_data/ovt_dsd"
+#define DST_TONE "/proc/icx_audio_cxd3778gf_data/tct"
 
 static const struct { const char *key, *pcm, *dsd; } TABLES[] = {
     { "stock", "/system/usr/share/audio_dac/ov_1291.tbl", "/system/usr/share/audio_dac/ov_dsd_1291.tbl" },
     { "w1",    "/system/usr/share/audio_dac/ov_1280.tbl", "/system/usr/share/audio_dac/ov_dsd_1280.tbl" },
     { "wm1a",  "/system/usr/share/audio_dac/ov_127x.tbl", "/system/usr/share/audio_dac/ov_dsd_127x.tbl" },
+    /* The region pair. Every model's volume table ships twice, plain and `_cew`, and `dacdat auto`
+     * picks between them from the NVP `shp` flag (this unit reads 0x00000006, swid letter E).
+     * `_cew` is uniformly the QUIETER of the two: the tables differ in 7576 bytes, in a repeating
+     * 13-byte record, and at every difference the `_cew` value is lower (e.g. 0xb3ef -> 0xa200,
+     * about -10%). So `_cew` is the region-restricted curve and the plain file is the unrestricted
+     * one.
+     *
+     * WHICH ONE THIS DEVICE BOOTS WITH IS NOT ESTABLISHED. /proc/.../ovt is write-only (a read
+     * returns nothing), and dacdat reaches its path strings PC-relatively rather than through a
+     * literal pool, so the selection was not read out of it. Settle it by measurement, not by
+     * assumption: `cinder-probe --volcurve` sweeps the volume and reads the analogue attenuator
+     * (PHV_L) at each step, which is the curve. Apply `eu`, sweep, apply `stock`, sweep, compare.
+     * If the two sweeps differ, whichever matches the untouched boot state is what dacdat chose. */
+    { "eu",    "/system/usr/share/audio_dac/ov_1291_cew.tbl", "/system/usr/share/audio_dac/ov_dsd_1291_cew.tbl" },
+};
+
+/* Tone-control tables — the other half of what W1 calls a "sound signature", and the half nobody
+ * had wired. Sony loads one of these at every boot alongside the volume table, into its own proc
+ * node. Unlike the volume tables these have NO `_cew` variant, so tone is not region-restricted.
+ * Kept as separate keys rather than folded into the entries above, so that applying a volume curve
+ * does not silently also change tone. */
+static const struct { const char *key, *tone; } TONE_TABLES[] = {
+    { "tone-stock", "/system/usr/share/audio_dac/tc_1291.tbl" },
+    { "tone-w1",    "/system/usr/share/audio_dac/tc_1280.tbl" },
+    { "tone-wm1a",  "/system/usr/share/audio_dac/tc_127x.tbl" },
 };
 
 /* Copy one table into one proc node. Returns 0 on success. */
@@ -91,8 +118,20 @@ int main(int argc, char **argv)
         return 3;
     }
     if (argc != 2) {
-        fprintf(stderr, "usage: cinder-voltable stock|w1|wm1a\n");
+        fprintf(stderr, "usage: cinder-voltable stock|w1|wm1a|eu"
+                        " | tone-stock|tone-w1|tone-wm1a\n");
         return 2;
+    }
+    for (i = 0; i < sizeof TONE_TABLES / sizeof TONE_TABLES[0]; i++) {
+        if (strcmp(argv[1], TONE_TABLES[i].key) != 0)
+            continue;
+        int rc = install_one(TONE_TABLES[i].tone, DST_TONE, TONE_BYTES);
+        if (rc != 0) {
+            fprintf(stderr, "cinder-voltable: %s failed (%d)\n", TONE_TABLES[i].key, rc);
+            return rc;
+        }
+        fprintf(stderr, "cinder-voltable: %s applied\n", TONE_TABLES[i].key);
+        return 0;
     }
     for (i = 0; i < sizeof TABLES / sizeof TABLES[0]; i++) {
         if (strcmp(argv[1], TABLES[i].key) != 0)

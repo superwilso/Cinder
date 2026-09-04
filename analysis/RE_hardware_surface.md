@@ -102,6 +102,31 @@ HPOUT3_CTRL1 = 0x00            BTL/balanced path down — SE-only, as expected f
 HPRM_CTRL0..HPRM_DATA0 = 0x00  impedance block idle
 ```
 
+## 4b. The S-Master gain mode — measured, and it is not what it looked like
+
+Tested 2026-09-04 with a bare plug in the jack (nothing on anyone's head, so the interlock could be
+forced safely). The control is accepted and reads back `1`. **No codec register changes** — not with
+an empty jack, not with a plug in so the driver treats the output as connected, and not after a PCM
+open. A full sweep of registers 0x40–0xdb was byte-identical in every case, and byte-identical again
+after restoring `normal`.
+
+That is not the same as "the control does nothing", and the driver says why. The stored value is
+read back at `0xc063accc` and `0xc063ad7c`, where it selects between return values (2/3, and
+14–19) **together with the sample rate** — the comparisons are against `0x15888` = 88200 and
+`0x2b110` = 176400. So it is a gain-index chooser, and the index is consumed by
+`cxd3778gf_ext_set_gain_index`, part of a whole `cxd3778gf_ext_*` family (`ext_restore_preamp`,
+`ext_enable_i2c_bus`, `ext_force_disable`) that drives an **external** preamp stage.
+
+`/sys/bus/i2c/devices` on this unit lists only `mt_m24c16` (an EEPROM), a run of `dummy` slots and
+`bq24262_wmport` (the charger). **There is no ext codec device on any I2C bus**, and `regmon`
+exposes no such chip either. The most consistent reading is that the gain mode selects an index for
+a stage the NW-A55 does not have fitted — which is why nothing observable moves.
+
+Not fully closed: the ext bus may be bit-banged or hang off the codec rather than appearing under
+`/sys/bus/i2c`, so "no ext device" is an absence of evidence on the buses that were checked. What
+*is* solid is the negative: no register this device exposes changes, in any output state tested. An
+ear test or an analogue measurement is the only thing left that could contradict it.
+
 ## 5. What this does and does not establish
 
 **Established:** the register map, the full control inventory with current values and ranges, that
