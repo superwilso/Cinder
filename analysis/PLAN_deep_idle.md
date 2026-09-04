@@ -75,17 +75,54 @@ Nothing suspends yet — on the cable USB holds a wakeup source. This only prove
 
 ### Phase 2 — the first off-cable test. **User holds the device.**
 
-Screen on, nothing playing. Then, in one shell before unplugging:
+Use `tools/pmtest.sh` (pushed to `/tmp/pmtest.sh`), not a bare `echo mem`. Three things found in
+the on-cable rehearsal make the naive version useless or wrong:
+
+1. **`echo mem > /sys/power/state` is asynchronous.** `state_store` calls `request_suspend_state`
+   and returns; the suspend happens later on a worker. A script that logs on the next line logs
+   *before* anything has suspended.
+2. **The evidence has to outlive a forced reboot.** `resume_count` and friends are zeroed by the
+   reboot that recovers a wedge — which is exactly how the last attempt destroyed its own data. The
+   log therefore lives on `/contents` (vfat, survives) and is `sync`'d after every line.
+3. **`trap '' HUP` is rejected by this shell** (`trap: HUP: bad trap`) — busybox ash here wants
+   signal *numbers*: `trap '' 1 2 15`. Without the trap the script dies the moment the cable is
+   pulled, taking the whole test with it.
+
+The detector is `/proc/uptime`, which **counts time spent suspended**. The script samples it once a
+second, so a jump larger than a couple of seconds between two consecutive samples *is* the length
+of a suspend — and it can only be observed by the loop that was itself frozen. On detecting one it
+immediately lights the **red** LED (off in normal use; the charge indicator is green) and raises
+the backlight, so a successful resume is visible even if the display never comes back.
 
 ```sh
-( sleep 20; echo mem > /sys/power/state ) &
+adb shell "cd /tmp && nohup /tmp/pmtest.sh 30 240 >/tmp/pm.out 2>&1 & sleep 2"
+# then UNPLUG within 30 s
 ```
 
-Unplug. Wait **two minutes** — comfortably longer than the 30 s timer.
+Wait **three minutes**. Then judge:
 
-**Success:** the screen comes back on its own, or the power key brings it back.
-**Failure:** nothing after two minutes → hold power to force a reboot. That is an accepted,
-planned outcome, not an emergency.
+| what you see | meaning |
+|---|---|
+| red LED comes on | **it suspended and resumed** — the objective |
+| screen returns by itself | same, and the display path survives too |
+| power key brings it back | resumed via EINT rather than the timer |
+| nothing after three minutes | hold power to force a reboot — planned, not an emergency |
+
+### Phase 3 — read the evidence
+
+Replug and read the log **first**, before anything else touches the counters:
+
+```sh
+adb shell cat /contents/cinder_pm.log
+```
+
+A `*** SUSPEND RETURNED: gap=NNs` line is the result. `r12` on that line names the wake source
+(decode with `analysis/kernel/spm_wakesrc.txt`): `PCM_TIMER` = the pwake timer fired, `EINT` = the
+power key path. The `pre`/`post` lines bracket `dpidle_cnt[0]` and `by_vtg` across the whole test.
+
+If the log simply stops with no gap line, the device suspended and never came back — and the last
+timestamp says when. That is a real, recorded result rather than the ambiguity the last attempt
+left behind.
 
 ### Phase 3 — read the post-mortem
 
@@ -106,7 +143,8 @@ cinder-probe --pm
 Re-arm, unplug, leave it 10 minutes, replug and read:
 
 ```sh
-cat /sys/kernel/debug/cpuidle/dpidle_state     # dpidle_cnt — the number this is all for
+cat /sys/power/idle_state    # dpidle_cnt[0] — the number this is all for
+cat /sys/power/dpidle_state  # by_vtg and the per-clock block masks
 cat /proc/clkmgr/clk_test | grep -i usb        # USB0 should now be OFF
 ```
 
