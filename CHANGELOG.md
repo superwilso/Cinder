@@ -361,7 +361,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   nothing in Cinder had to notice the edge), and — the negative control that actually mattered —
   playing through the jack with the screen off left the codec **awake** for a full minute of
   sampling, confirming the route flag clears rather than going stale and silencing the jack.
-- **The ~5 s after boot where the screen is up and the device ignores you is fixed: ~5.9 s → ~0.64 s.**
+- **ATTEMPTED AND REVERTED: moving the library build off the render thread.** *(2026-09-04)*
   *(device-verified 2026-09-04)* The library build is 4837 ms on a 3,456-track library and it ran on
   the render thread, with the frame loop's bring-up gate holding back paint AND input for all of it.
 
@@ -375,10 +375,27 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Measured on device: first frame 2.562 s, build starts 3.217 s, **input live 3.267 s**, build
   finishes 8.062 s. Input comes up 50 ms after the build starts instead of 4.8 s after it ends.
 
-  The 45 s watchdog around the build is gone deliberately: it existed because a build that never
-  returned froze the render thread, and it had to be watchdog-only because `siglongjmp`ing out would
-  have left cinder-ffi's mutex locked with no owner. Neither hazard survives the move — a stuck
-  worker holds no lock and costs a library, not the app.
+  **It does not work on this device and it is reverted.** The hotplug governor takes cpu1 offline,
+  so `/sys/devices/system/cpu/online` reads `0` — there is exactly ONE core. A concurrent build does
+  not run "in the background" there; it contends with the render and present threads for the whole
+  machine. Measured: about five render-loop iterations across the entire 4.8 s build, even with the
+  worker niced to 10.
+
+  It broke two things visibly. The boot animation's last frame was left sitting in the middle of an
+  otherwise-drawn Cinder Home for seconds, because the animation dies just after our first paint and
+  nothing repainted over it until the build finished. And letting the loop run early meant
+  `loop: BT route poll` issued a Sony IPC before hagodaemon was ready — the guard unwound out of it
+  (`sig=14`), and an unwound Sony client is dead for the rest of the boot, so audio and Bluetooth
+  were gone until a restart.
+
+  Kept from the attempt: `cinder_db_open` now builds WITHOUT holding cinder-ffi's state lock and
+  takes it only to install (a strict improvement, and the prerequisite if this is ever retried), and
+  the loop's Sony-IPC section is now gated on bring-up having actually finished rather than on the
+  loop merely being allowed to run — two different questions the old gate conflated by holding both
+  back together. **The boot dead time is back by default**, but the threaded path is KEPT behind
+  `/contents/cinder_async_library` rather than deleted — both of its failure modes now have fixes, so
+  it is a flag away from being retried. Doing it without the flag needs the paint to make progress
+  while the build runs, which on one core means slicing the build, not threading it.
 - **Fixed: the boot-animation re-kill was paced by the frame counter.** `n < 300` meant "every
   iteration for the first 300 of them", and how long that is depends on what else the loop is doing
   — ~66 calls while bring-up blocked the loop, ~100 once it no longer did. It is now paced by the
@@ -404,9 +421,19 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
   It is a pure optimisation of the TRANSFER — the bytes that end up in the framebuffer are exactly
   the bytes a full blit would have put there — so unlike dirty-rect rasterisation it cannot produce
-  a wrong pixel. A full write still happens once a minute as insurance against anything else
+  a wrong pixel. **It is nevertheless INERT as shipped**, because `/contents/cinder_fb_allpages` is
+  restored and takes the unconditional path. It also needed a correction on the way: a shadow-based
+  blit assumes Cinder is the only writer to fb0, and early in a boot it is not — `icx_bootanimation`
+  draws into the same buffer, and a partial blit will not paint over it because the shadow says
+  those rows are already correct. Hence the 15 s window after open in which the shadow is distrusted
+  entirely. A full write still happens once a minute as insurance against anything else
   touching fb0, and `/contents/cinder_fb_allpages` still forces the old unconditional path.
-- **Removed a leftover diagnostic that had been costing 3x framebuffer bandwidth since August.**
+- **WRONG, AND CORRECTED THE SAME DAY: `/contents/cinder_fb_allpages` is load-bearing.** I removed it
+  as a leftover diagnostic and the boot animation immediately appeared on top of the Cinder UI. So
+  the paging theory in `docs/DEVICE_SHELL_GOTCHAS.md` is CONFIRMED rather than superseded, and
+  `fb0/pan` reading `0,0` is not sufficient evidence that the panel never presents another page. It
+  is restored and should stay on; the partial blit below is therefore inert. The original (wrong)
+  reasoning, kept because the failure mode is worth remembering:
   `/contents/cinder_fb_allpages` was still present on the device — `touch`ed 2026-08-18 as a one-flag
   ghost-UI test and never undone, so every frame wrote all three fb pages (~4.6 MB) instead of page 0
   (~1.5 MB), on a panel that only ever scans page 0. The ghost it was testing for had a different
