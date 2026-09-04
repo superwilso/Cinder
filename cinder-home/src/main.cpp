@@ -32,6 +32,7 @@
 #include <setjmp.h>
 #include <pthread.h>
 #include <sys/stat.h>      // stat() — the dev request-file consumer (take_req)
+#include <sys/resource.h>  // setpriority() — the library build must not outrank the render thread
 #include <sys/statvfs.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>   // umount/umount2 (we unmount /contents ourselves before the MSC handoff)
@@ -508,10 +509,10 @@ bool g_audio_pump_started = false;
 bool g_resume_ready = false;   // resume/scrobble state restored after the DB became available
 long g_deferred_retry_ms = 0;  // pace retries after a transient service/storage failure
 int g_deferred_rc = -1;        // result slot for non-capturing guarded init callbacks
-// The library build runs on its own thread; these are the handshake. `g_lib_pending` is the LAST
-// thing the worker writes, after g_deferred_rc, so a reader that sees it clear sees a valid rc.
-volatile bool g_lib_pending = false;   // a library build is in flight right now
-bool g_lib_thread_started = false;     // one worker at a time (reset to allow a retry)
+// OPT-IN async library build (see the note in deferred_up). `g_lib_pending` is the LAST thing the
+// worker writes, after g_deferred_rc, so a reader that sees it clear sees a valid rc.
+volatile bool g_lib_pending = false;
+bool g_lib_thread_started = false;
 time_t g_healthy_since = 0;    // when deferred init completed (for the proven-healthy reset)
 bool g_counter_reset = false;  // have we cleared the launcher bad-boot counter this boot?
 time_t g_first_paint_at = 0;   // when the FIRST frame hit the panel (the bad-boot health signal)
@@ -718,26 +719,22 @@ void retry_log(RetryLog& st, const char* msg) {
 
 // DEFERRED bring-up: the slow/blocking parts (library DB load + scrobbler + PlayerService
 // connect). Run from the pump AFTER the first frame is painted, each under the hang watchdog
-// Build the library off the render thread. SIGALRM is blocked here for the same reason it is in
-// fbsync: that signal belongs to the render worker (run_guarded's alarm is process-directed), and a
-// guard alarm delivered to this thread would fail the owner check and take the process down.
+// Build the library off the render thread. OPT-IN — see the note at the DB stage for why it is
+// not the default. SIGALRM is blocked because that signal belongs to the render worker, and the
+// thread is niced because this device runs on ONE core.
 void* lib_open_thread(void*) {
     sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
     pthread_sigmask(SIG_BLOCK, &sa, nullptr);
+    setpriority(PRIO_PROCESS, 0, 10);
     const long t0 = now_ms();
     const int rc = cinder_db_open("/db/MTPDB.dat");
-    // ONLY NARRATE A BUILD THAT WORKED. This runs inside deferred_up's DB RETRY LADDER, so on a
-    // device whose library will never open it fires again on every retry, for the life of the
-    // process — 195 log lines in the `stalled-bringup` harness scenario, each one an fflush to
-    // vfat, which is the exact failure class the throttles elsewhere in this file exist for. A
-    // failure is already reported, throttled, by retry_log below; a success happens once.
     if (rc == 0) {
         char m[112];
         std::snprintf(m, sizeof m, "deferred_up: library build finished in %ld ms", now_ms() - t0);
         clog_(m);
     }
     g_deferred_rc = rc;
-    g_lib_pending = false;   // LAST: publishes the rc above to the render thread
+    g_lib_pending = false;   // LAST: publishes the rc above
     return nullptr;
 }
 
@@ -774,48 +771,78 @@ void deferred_up() {
         static long db_every_ms = 1000;
         if (retry_now < db_next_ms) return;
 
-        // THE BUILD RUNS ON ITS OWN THREAD, AND THAT IS THE BOOT DEAD TIME FIX. Measured
-        // 2026-09-04: cinder_db_open at t=2.165 to "restore playback context" at t=6.966 — 4.8 s of
-        // a 5.3 s window in which the device shows a Cinder screen and answers nothing, because the
-        // frame loop's bring-up gate holds back paint AND input for the whole of bring-up.
+        // REVERTED 2026-09-04: THIS RAN ON A BACKGROUND THREAD AND IT DID NOT WORK ON THIS DEVICE.
+        // The idea was sound — the ~4.8 s library build is the boot dead time, and cinder_db_open
+        // was reworked (lib.rs) to build without holding cinder-ffi's state lock so it COULD run
+        // off this thread. What defeats it is the hardware: the hotplug governor takes cpu1
+        // offline, so `/sys/devices/system/cpu/online` reads `0` and there is exactly ONE core. A
+        // concurrent build does not run "in the background" there; it contends with the render and
+        // present threads for the whole machine. Measured: about five render-loop iterations across
+        // the entire build, even with the worker niced to 10.
         //
-        // Two things had to change together. cinder_db_open used to hold cinder-ffi's state lock
-        // across the entire build, so moving it to a thread would only have relocated the stall to
-        // the render thread's next frame; it now builds against local values and takes the lock
-        // once, to install (see lib.rs). And the gate below now falls through while `g_lib_pending`
-        // is set, so the loop paints and reads input against an empty library until the real one
-        // lands and publishes a repaint.
+        // The user-visible result was the boot animation's last frame left sitting in the middle of
+        // an otherwise-drawn Cinder Home for seconds, because the animation died just after our
+        // first paint and nothing repainted over it until the build finished. It also caused a
+        // worse failure on the way: letting the loop run early meant `loop: BT route poll` issued a
+        // Sony IPC before hagodaemon was ready, the guard unwound out of it, and audio and
+        // Bluetooth were dead for the rest of that boot.
         //
-        // THE 45 s WATCHDOG IS GONE ON PURPOSE. It existed because a build that never returned
-        // froze the render thread, and it had to be watchdog-only because siglongjmp'ing out would
-        // have left cinder-ffi's mutex locked with no owner. Neither hazard survives the move: a
-        // stuck worker holds no lock and costs a library, not the app. That is strictly better than
-        // the clean exit it used to buy.
-        if (!g_lib_thread_started) {
-            g_lib_thread_started = true;
-            g_lib_pending = true;
-            g_deferred_rc = -1;
-            pthread_attr_t at;
-            pthread_attr_init(&at);
-            pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
-            pthread_t th;
-            const bool spawned = pthread_create(&th, &at, lib_open_thread, nullptr) == 0;
-            pthread_attr_destroy(&at);
-            if (spawned) {
-                // First attempt only, for the same reason the finish line is success-only: this
-                // sits in a retry ladder.
-                static bool said = false;
-                if (!said) { said = true; clog_("deferred_up: cinder_db_open + build library (background thread)"); }
-                return;
+        // So the build is synchronous BY DEFAULT and the dead time is back by default. The threaded
+        // path is kept behind /contents/cinder_async_library (above) rather than deleted, because
+        // both of its failure modes now have fixes. Doing it properly without the flag needs the
+        // paint to make progress while the build runs, which on one core means slicing the build
+        // itself rather than threading it.
+        // OPT-IN: /contents/cinder_async_library builds on a worker thread instead of here.
+        //
+        // WHY IT IS NOT THE DEFAULT. It was, briefly, and it broke two things on this hardware. The
+        // hotplug governor takes cpu1 offline (`/sys/devices/system/cpu/online` reads `0`), so a
+        // concurrent build contends with the render and present threads for the only core: about
+        // five render-loop iterations across the whole 4.8 s build, even niced. The boot animation's
+        // last frame was then left in the middle of an otherwise-drawn Cinder Home until the build
+        // finished, and letting the loop run early also put a Sony IPC (`loop: BT route poll`) in
+        // front of a hagodaemon that was not ready — the guard unwound out of it and audio and
+        // Bluetooth were dead for the rest of that boot.
+        //
+        // BOTH OF THOSE NOW HAVE FIXES. The IPC section of the loop is gated on bring-up having
+        // actually finished, not on the loop merely being allowed to run. And the present path went
+        // from a 4.6 MB full-page blit to changed-rows-only, which is the most likely reason the
+        // render thread was blocking rather than merely descheduled. So this may well work now —
+        // but it cost two bad boots on a device the user is holding, and the burden of proof is on
+        // it. Kept, off, and one file away.
+        static int async_lib = -1;
+        if (async_lib < 0) async_lib = access("/contents/cinder_async_library", F_OK) == 0 ? 1 : 0;
+        if (async_lib) {
+            if (!g_lib_thread_started) {
+                g_lib_thread_started = true;
+                g_lib_pending = true;
+                g_deferred_rc = -1;
+                pthread_attr_t at;
+                pthread_attr_init(&at);
+                pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+                pthread_t th;
+                const bool spawned = pthread_create(&th, &at, lib_open_thread, nullptr) == 0;
+                pthread_attr_destroy(&at);
+                if (spawned) {
+                    static bool said = false;
+                    if (!said) { said = true; clog_("deferred_up: cinder_db_open + build library (background thread, opt-in)"); }
+                    return;
+                }
+                g_lib_pending = false;
+                clog_("deferred_up: library thread would not start — building inline");
             }
-            // Could not get a thread. Do it inline rather than skip the library — that is the old
-            // behaviour, dead time and all, which is still much better than no music.
-            g_lib_pending = false;
-            clog_("deferred_up: library thread would not start — building inline (screen will stall)");
-            g_deferred_rc = cinder_db_open("/db/MTPDB.dat");
+            if (g_lib_pending) return;
+            g_lib_thread_started = false;
+            if (g_deferred_rc != 0) goto db_failed;
+            goto db_ok;
         }
-        if (g_lib_pending) return;      // still building; the frame loop is live meanwhile
-        g_lib_thread_started = false;   // a retry below gets a fresh worker
+        g_deferred_rc = -1;
+        // WATCHDOG ONLY, and 45 s rather than 25. cinder_db_open is long, and a siglongjmp out of
+        // it would leave cinder-ffi's mutex locked with no owner for the life of the process. The
+        // retry ladder below is unaffected: it is driven by the RETURN CODE (a missing /contents
+        // returns non-zero promptly), not by the timeout.
+        run_watchdog_only("deferred_up: cinder_db_open + build library", 45,
+                    []() { g_deferred_rc = cinder_db_open("/db/MTPDB.dat"); });
+    db_failed:
         if (g_deferred_rc != 0) {
             static RetryLog rl_DB = {0, 0};
             retry_log(rl_DB, "deferred_up: DB unavailable — will retry");
@@ -824,6 +851,7 @@ void deferred_up() {
             db_next_ms = retry_now + db_every_ms;
             return;
         }
+    db_ok:
         db_every_ms = 1000;
         db_next_ms = 0;
         g_db_ready = true;
@@ -9341,7 +9369,17 @@ public:
     void OnBackground() override     { clog_("app:OnBackground");     stop_analyzer(); easel::ApplicationBase::OnBackground(); }
     void OnInactivate() override     { clog_("app:OnInactivate");     easel::ApplicationBase::OnInactivate(); }
     void OnFinalize() override       { clog_("app:OnFinalize");       stop_analyzer(); cinder_render_shutdown(); easel::ApplicationBase::OnFinalize(); }
-    void StopBootAnimation() override{ clog_("app:StopBootAnimation");easel::ApplicationBase::StopBootAnimation(); }
+    // THROTTLED AT THE PRINT, NOT AT THE CALLER. The call is cheap and WANTS to be frequent — the
+    // boot animation is stubborn and init can respawn it — but this used to write a line every
+    // time, which welded the kill rate to the log rate. Trying to fix the log by calling less is
+    // exactly what let the animation sit on top of the Cinder UI on 2026-09-04 (reported from the
+    // device). Same rule as every other retry log in this file: the throttle belongs at the print.
+    void StopBootAnimation() override {
+        static int said = 0;
+        if (said < 5) { ++said; clog_("app:StopBootAnimation"); }
+        else if (said == 5) { ++said; clog_("app:StopBootAnimation (killing it repeatedly; further calls not logged)"); }
+        easel::ApplicationBase::StopBootAnimation();
+    }
 };
 
 // ── the render+input worker (Option-B) ──────────────────────────────────────────────────────
@@ -9409,6 +9447,21 @@ void* render_driver(void*) {
             if (!g_input_started) { input_open(); g_input_started = true; }
             alarm(8); input_pump(); alarm(0);  // touch + buttons -> navigator -> actions -> carry_out
             volume_flush();                    // trailing write of a coalesced volume ramp
+        }
+
+        // ── EVERYTHING BELOW HERE MAKES SONY IPC CALLS ────────────────────────────────────────
+        // and it waits for bring-up to have ACTUALLY FINISHED, not merely for the loop to be
+        // allowed to run. Those are two different questions and conflating them cost a boot:
+        // letting the loop fall through early for the background library build meant
+        // `loop: BT route poll` issued an IPC at ~3 s, before hagodaemon was ready. The call hung,
+        // the 4 s guard unwound out of it, and an unwound Sony client is DEAD for the rest of the
+        // boot — sig=14 in the log, then audio and Bluetooth gone until a restart (reported from
+        // the device 2026-09-04).
+        //
+        // Painting and reading input that early is safe and is the whole point of the early
+        // fall-through. Calling into Sony services that early is not. The old gate got the right
+        // answer for the wrong reason: it happened to hold BOTH back together.
+        if (g_deferred_done) {
 
             // Headphones can connect or drop without Cinder doing anything — the user powers them
             // on, or walks out of range, and the sink the volume rocker should be driving changes
@@ -9789,18 +9842,26 @@ void* render_driver(void*) {
             // sweep already covers by ~30 s. Past a minute this is a framework call and a log line
             // every five seconds for the life of the process — 4,585 of them in a six-hour run
             // where bring-up never completed (cinder-home/harness, `adverse`).
-            // PACED BY THE CLOCK, NOT THE FRAME COUNTER. `n < 300` meant "every iteration for the
-            // first 300 of them", and how long that is depends entirely on what else the loop is
-            // doing — it was ~66 calls while bring-up blocked the loop and ~100 once the library
-            // build stopped blocking it, which is how this quietly went over the harness's
-            // log budget (`autooff-idle`, 114 -> 179 lines). The job is idempotent and the
-            // animation dies on the first call that lands; the burst only exists in case init
-            // starts it slightly after we do. Every 200 ms for the first 3 s covers that for a
-            // fixed cost, then the 5 s ladder to a minute, then not at all.
-            const long anim_every = bring_now < 3000 ? 200 : 5000;
-            if (g_app && bring_now < 60000 && bring_now - last_anim_kill_ms >= anim_every) {
+            // COUNT THE CALLS. Do not use a clock here. This was `n < 300` — 300 iterations of
+            // this block — and rewriting it against now_ms() broke it twice on 2026-09-04: first
+            // as `bring_now < 3000`, which is absolute CLOCK_MONOTONIC and therefore meant "within
+            // 3 s of system BOOT" when the first frame is not painted until 2-3 s of uptime; then
+            // as a window measured from the block's first execution, which still produced only
+            // about five calls in a boot (measured: 2.558, 3.214, then nothing until 8.077 — the
+            // whole background-library window missing). Both times the boot animation survived on
+            // top of the Cinder UI and the user saw it.
+            //
+            // A counter cannot drift, cannot depend on when this block first ran, and cannot
+            // depend on the loop's cadence — which the async library build changed underneath it.
+            // 300 unconditional calls is exactly what `n < 300` delivered, and it is what was
+            // known to work. The log cost that originally motivated all this is handled where it
+            // belongs: StopBootAnimation() throttles its own print, so this costs calls, not lines.
+            static int anim_kills = 0;
+            if (g_app && bring_now < 60000
+                && (anim_kills < 300 || bring_now - last_anim_kill_ms >= 5000)) {
                 g_app->StopBootAnimation();
                 last_anim_kill_ms = bring_now;
+                ++anim_kills;
             }
             // Waiting on the BACKGROUND library build is not a reason to freeze the screen. That
             // build is ~4.8 s of a ~5.3 s bring-up, and holding paint and input back for it is the
@@ -9815,11 +9876,8 @@ void* render_driver(void*) {
                 // saying nothing: the library case is a healthy boot reaching this arm in under a
                 // second BY DESIGN, and reporting it as "has not completed in 10s" would make
                 // every normal boot look stalled in the log.
-                clog_(g_lib_pending
-                      ? "render_driver: library still building in the background — running the full "
-                        "loop now (screen and input are live)"
-                      : "render_driver: bring-up has not completed in 10s — running the full loop "
-                        "anyway (screen-off, auto power-off and input are down here)");
+                clog_("render_driver: bring-up has not completed in 10s — running the full loop "
+                      "anyway (screen-off, auto power-off and input are down here)");
             }
         }
         // Straggler sweep: if the anim somehow survived (or respawned), re-kill at ~15 s and
