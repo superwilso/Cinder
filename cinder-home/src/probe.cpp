@@ -6867,9 +6867,11 @@ static int pm_probe(void) {
         // number that looks like garbage invites someone to "fix" it.
         if (std::strcmp(kSlp[i], "slp_mode") == 0) {
             const unsigned long m = std::strtoul(val, nullptr, 10);
+            // The characters sit MSB-first in the integer: 0x7761726d is 'w','a','r','m'. Reading
+            // it LSB-first prints "mraw", which is how this was wrong the first time.
             char tag[5] = {0};
             for (int b = 0; b < 4; ++b) {
-                const unsigned c = (unsigned)((m >> (8 * b)) & 0xffu);
+                const unsigned c = (unsigned)((m >> (24 - 8 * b)) & 0xffu);
                 tag[b] = (c >= 32 && c < 127) ? (char)c : '.';
             }
             std::fprintf(stderr, "[cinder-probe] pm: %-20s = %s (\"%s\")\n", kSlp[i], val, tag);

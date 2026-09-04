@@ -2526,6 +2526,24 @@ long g_last_input_ms = 0;                // when we last saw ANY input event (se
 // suspend-to-RAM off-cable. Until someone has demonstrated that — with a way back in that does not
 // depend on the thing being suspended — this stays unwired. An escape must depend on less than
 // what it rescues, and here there was no escape at all.
+//
+// ─── THAT CONDITION WAS MET ON 2026-09-04, AND THE ABOVE IS NOW HISTORY ───────────────────────
+//
+// The device suspends and resumes correctly off-cable. Measured, repeatedly, with the harness in
+// `tools/pmtest.sh`: `icx_pm_helper/resume_count` went 0→5 in one run and 0→3 in another, and
+// `dpidle_cnt[0]` went **0 → 78** — the SoC entered deep idle for the first time, which is the
+// whole point of this exercise. Logs in `analysis/kernel/`.
+//
+// The original failure was never a failure to resume. It was three ordinary things at once:
+//   1. suspend/resume working fine, but
+//   2. NOTHING writing `on` back to /sys/power/state, so the device never left the suspend state —
+//      it just cycled (suspend, wake on a timer, ~20 s awake on Sony's resume wakelock, suspend
+//      again) with the panel dark the whole time, and
+//   3. the USB gadget not re-enumerating after a resume, so a replug found nothing.
+// From outside, a device cycling perfectly is indistinguishable from a hung one. Both earlier
+// diagnoses ("no wake source", then "the resume path is broken") were wrong.
+//
+// So the exit is the load-bearing part, and it is what the code below exists to do.
 static void panel_dark() {
     if (!g_bl_read) load_bl_cfg();
     display_backlight_remember();   // cache the service level BEFORE zeroing it
@@ -2585,6 +2603,229 @@ void screen_toggle() {
         return;
     }
     panel_dark();
+}
+
+// ── SoC suspend-to-RAM ────────────────────────────────────────────────────────────────────────
+//
+// Turning the panel off is cosmetic to the kernel; only a write to /sys/power/state starts the
+// early-suspend chain, and only that lets the SoC reach deep idle. See the long history note
+// above `panel_dark()` for why this took three attempts and two forced reboots to get right.
+//
+// The rules this obeys, each one bought with a failure:
+//
+//   * NEVER while playing. `g_playing` gates every path. Screen-off during playback must not
+//     touch the audio — that is a standing requirement, not a nicety.
+//   * NEVER without an escape. `/contents/cinder_no_suspend` disables the whole thing, and
+//     /contents is the vfat volume a PC can mount over USB-MSC — so a device that will not stay
+//     awake is still rescuable without a flash. An escape must depend on less than what it rescues.
+//   * NEVER in the first minutes of a boot. `kBootGraceS` guarantees a window in which the device
+//     is reachable no matter what this code does.
+//   * ALWAYS write the exit. A resume that nobody acknowledges leaves the device cycling with a
+//     dark screen, which is exactly what looked like a brick.
+//
+// OFF BY DEFAULT. The idle threshold is read from /contents/cinder_suspend_s; absent, empty, 0 or
+// unparseable means disabled, so an existing install gains nothing until it is asked to. The file
+// rather than the settings UI because this is still new: it is trivially inspectable and trivially
+// removable from a PC, which a Rust-side setting is not.
+namespace socsusp {
+
+const char kDisableFile[] = "/contents/cinder_no_suspend";
+const char kConfigFile[]  = "/contents/cinder_suspend_s";
+const char kRamFile[]     = "/contents/cinder_ram_suspend";
+const char kStateNode[]   = "/sys/power/state";
+const char kWakeLock[]    = "/sys/power/wake_lock";
+const char kWakeUnlock[]  = "/sys/power/wake_unlock";
+const char kResumeCount[] = "/sys/devices/platform/icx_pm_helper/resume_count";
+const char kSpmR12[]      = "/sys/devices/platform/icx_pm_helper/spm_r12";
+const char kLockName[]    = "cinder";
+
+// TWO STAGES, AND ONLY THE SECOND ONE IS RISKY. This is the shape Sony's own init file implies:
+// /init.hagoromo.rc does `chmod 0666` on /sys/power/state, wake_lock, wake_unlock AND
+// icx_pm_helper/resume_lock_cancel, i.e. the vendor intended a userspace power manager driving
+// suspend through WAKELOCKS rather than through bare state writes.
+//
+//   Stage 1 — EARLY SUSPEND, wakelock HELD.  Writing `mem` to /sys/power/state runs the
+//     early-suspend chain, which is what sets the flag the SoC's deep-idle gate reads. Holding a
+//     wakelock at the same time stops autosleep from taking the next step into suspend-to-RAM. The
+//     result is a device that reaches DEEP IDLE between timer ticks while staying fully alive:
+//     USB works, adb works, and there is nothing to recover from. Measured: `dpidle_cnt` climbs
+//     during exactly these windows.
+//   Stage 2 — SUSPEND TO RAM, wakelock RELEASED.  More saving, because the CPU is off entirely.
+//     But the USB gadget does not come back afterwards: measured 2026-09-04, after a resume the
+//     musb OTG state machine sits in `a_idle` instead of `b_peripheral` and the host never sees
+//     the device again, despite VBUS and charger-detect both being fine. Until that is fixed a
+//     suspend costs a reboot to undo, so stage 2 is OPT-IN via /contents/cinder_ram_suspend.
+//
+// Note stage 1 buys nothing while plugged in: the cable holds the USB0 clock on, and that alone
+// blocks deep idle (`dpidle_block_mask[CG_PERI0]=0x400`). It is an off-cable win, which is the
+// case that matters for battery anyway.
+//
+// DO NOT try to tell a button wake from a timer wake using SPM's R12. That was tried and it is
+// wrong on this SoC: a Power press measured 2026-09-04 woke the device after 17 s with the wake
+// timer set to 300 s — unambiguously the button — and R12 still read 0x20, which is GPT. `eint_sta`
+// is no better: bit 22 of word 4 (EINT 150, the PMIC line) reads set on runs with no button press
+// at all, so it is a mask or a latch rather than a per-wake record.
+//
+// So this does not classify the wake. On ANY resume it simply writes `on` to leave the suspend
+// state cleanly, WITHOUT lighting the panel, and lets the ordinary idle countdown start again. If
+// the user did press Power, Cinder's normal input path lights the screen on its own — no special
+// case needed. If a timer woke it, the device idles back down after the threshold.
+//
+// This is strictly better than classifying: it cannot mis-classify, it always leaves the kernel in
+// a known state, and the failure mode of a spurious wake is one extra idle countdown rather than a
+// device stuck cycling with a dark screen.
+
+const int kBootGraceS = 180;   // never suspend in the first 3 minutes of an app start
+
+bool write_node(const char* path, const char* val) {
+    FILE* f = std::fopen(path, "w");
+    if (!f) return false;
+    const bool ok = std::fputs(val, f) >= 0;
+    std::fclose(f);
+    return ok;
+}
+
+long read_node_long(const char* path) {
+    FILE* f = std::fopen(path, "r");
+    if (!f) return -1;
+    char buf[64] = {0};
+    const bool got = std::fgets(buf, sizeof buf, f) != nullptr;
+    std::fclose(f);
+    if (!got) return -1;
+    return (long)std::strtol(buf, nullptr, 0);
+}
+
+bool file_exists(const char* path) {
+    FILE* f = std::fopen(path, "r");
+    if (!f) return false;
+    std::fclose(f);
+    return true;
+}
+
+// Idle seconds before suspending, or 0 for disabled. Latched once decided: deliberately not
+// hot-reloadable, because a half-written config file should not be able to arm a suspend.
+//
+// BUT A FAILED READ IS NOT AN ANSWER. /contents is a vfat partition the USB mass-storage gadget
+// also binds as a LUN, and it does so DURING BOOT: `fsg_store_file file=/emmc@contents` at 10.1,
+// 11.1 and 12.7 s (dmesg, 2026-09-04) — cinder-home itself starts at 10.17 s. The first version
+// latched `cached = 0` on any read miss, so a boot that asked one tick too early disabled suspend
+// until the next reboot, with nothing written down anywhere. The same window is why that boot's
+// launcher log redirect fell back to the inherited fd and /contents/cinderhome.log stayed 0 bytes:
+// run_home's `can_append` probe missed for exactly the same reason.
+//
+// So latch only on an answer worth trusting — a good value, or a /contents we can actually read
+// that genuinely has no config file in it. Anything else stays undecided and asks again next
+// tick, which costs one access(2) a second and fails in the safe direction (no suspend).
+//
+// Either way the decision is LOGGED. The old version wrote a line when it enabled and stayed
+// silent when it disabled, so the failure that mattered was the one leaving no trace.
+int threshold_s() {
+    static int cached  = -1;
+    static int retries = 0;
+    if (cached >= 0) return cached;
+
+    char m[112];
+    const long v = read_node_long(kConfigFile);
+    if (v > 0 && v < 100000) {
+        cached = (int)v;
+        std::snprintf(m, sizeof m,
+                      "suspend: enabled, idle threshold %d s (/contents/cinder_suspend_s, %d retries)",
+                      cached, retries);
+        clog_(m);
+        return cached;
+    }
+
+    // Undecided: the config file is unreadable and so is the directory that should hold it.
+    if (access("/contents", R_OK | X_OK) != 0) { ++retries; return 0; }
+
+    cached = 0;
+    std::snprintf(m, sizeof m, "suspend: disabled — no /contents/cinder_suspend_s (%d retries)", retries);
+    clog_(m);
+    return cached;
+}
+
+} // namespace socsusp
+
+// Called once a second from the housekeeping block. Returns nothing; all state is internal.
+static void soc_suspend_tick(bool idle) {
+    using namespace socsusp;
+    // Boot grace measured from the first call, i.e. from when this app started running. That is
+    // the number that matters: the guarantee is a window in which the device is reachable no
+    // matter what this code does, and a long-running device that has just had cinder-home
+    // restarted needs that window as much as a cold boot does.
+    static long first_tick_ms = 0;
+    const long nowms = now_ms();
+    if (!first_tick_ms) first_tick_ms = nowms;
+    const long uptime_s = (nowms - first_tick_ms) / 1000;
+
+    const int thr = threshold_s();
+    if (!thr) return;                       // disabled — the default
+    if (file_exists(kDisableFile)) return;  // the escape hatch, checked every tick on purpose
+
+    static long last_rc   = -1;
+    static int  idle_secs = 0;
+    static bool early     = false;    // stage 1 active: `mem` written, wakelock held
+    static bool ram_ok    = false;    // stage 2 permitted (config), read once
+    static bool ram_read  = false;
+
+    // Detect a resume FIRST, before deciding anything else: the tick that observes a resume is the
+    // one running in the awake window, and it may be the only one we get.
+    const long rc = read_node_long(kResumeCount);
+    if (last_rc < 0) last_rc = rc;
+    if (rc >= 0 && rc != last_rc) {
+        const unsigned r12 = (unsigned)read_node_long(kSpmR12);
+        last_rc = rc;
+        idle_secs = 0;
+        // Came back from a full suspend. Take the wakelock straight away so the kernel cannot
+        // drop us again before this loop has decided anything, then leave the state cleanly. The
+        // panel is deliberately NOT touched: if a person woke this device they pressed something,
+        // and the ordinary input path is already the thing that lights the screen.
+        write_node(kWakeLock, kLockName);
+        write_node(kStateNode, "on");
+        early = false;
+        char m[88];
+        std::snprintf(m, sizeof m, "suspend: resumed from RAM (r12=%#x) -> awake, countdown restarts", r12);
+        clog_(m);
+        return;
+    }
+
+    // Busy, or too soon after start: undo stage 1 if we are in it and reset the clock.
+    if (!idle || uptime_s < kBootGraceS) {
+        if (early) {
+            write_node(kWakeLock, kLockName);   // ensure we hold it before leaving the state
+            write_node(kStateNode, "on");
+            early = false;
+            clog_("suspend: activity -> left early suspend");
+        }
+        idle_secs = 0;
+        return;
+    }
+
+    if (idle_secs < 100000) ++idle_secs;
+    if (idle_secs < thr) return;
+
+    if (!early) {
+        // Stage 1. Wakelock FIRST — the order matters, because writing `mem` with no lock held
+        // arms autosleep and the kernel can take the device to RAM before the next tick.
+        write_node(kWakeLock, kLockName);
+        if (write_node(kStateNode, "mem")) {
+            early = true;
+            char m[88];
+            std::snprintf(m, sizeof m, "suspend: idle %d s -> early suspend (deep idle on, still awake)", idle_secs);
+            clog_(m);
+        } else {
+            write_node(kWakeUnlock, kLockName);
+            clog_("suspend: /sys/power/state write failed, staying awake");
+        }
+        return;
+    }
+
+    // Stage 2, opt-in only. Releasing the lock lets autosleep finish the job.
+    if (!ram_read) { ram_read = true; ram_ok = file_exists(kRamFile); }
+    if (!ram_ok) return;
+    if (idle_secs < thr * 2) return;        // a second, longer dwell before going all the way down
+    clog_("suspend: releasing wakelock -> suspend to RAM (USB will need a reboot to return)");
+    write_node(kWakeUnlock, kLockName);
 }
 
 // Persist the device-wide BT transmit codec preference to /contents/cinder_bt.conf, so every BT
@@ -9445,7 +9686,24 @@ void* render_driver(void*) {
             {
                 static int  idle_secs = 0;
                 static bool we_slept  = false;
-                const bool idle = !g_screen_on && !g_playing;
+                // `!g_playing` ALONE IS NEVER TRUE ON A FRESH BOOT and this test used it, so both
+                // this standby and the SoC suspend below were dead code on every boot where nothing
+                // had been played. g_playing is INTENT, it is initialised `true`, and the only place
+                // that adopts the service's view sits behind `if (have_pos)` — with nothing ever
+                // played there is no position, so it stays true for the life of the process. That is
+                // already written down at apply_pump_interval() and worked around there and in the
+                // auto-power-off guard; this site was simply missed. Measured 2026-09-04: screen off
+                // since t=33, every PCM `closed`, and at t=304 neither the 30 s standby nor the 60 s
+                // suspend had fired.
+                //
+                // Fix is the idiom the auto-power-off guard already uses — require the SERVICE to
+                // agree, not just our intent. That guard switches the whole device off on this test,
+                // so it is more than good enough to gate a codec standby. It is also the safe
+                // direction: cinder_audio_is_playing() is derived from the position having moved
+                // recently, so it only reads 0 once playback has genuinely stopped, and a one-tick
+                // flicker costs a single increment that the next tick resets.
+                const bool audible = g_playing && cinder_audio_is_playing() != 0;
+                const bool idle = !g_screen_on && !audible;
                 if (idle) {
                     if (idle_secs < 100000) ++idle_secs;
                     if (!we_slept && idle_secs >= 30) {
@@ -9464,6 +9722,10 @@ void* render_driver(void*) {
                         cinder_codec_set_standby(0);
                     }
                 }
+                // Same idleness test drives the SoC suspend. Ordered after the codec so the DAC is
+                // already in standby by the time the whole SoC goes down — the codec fix stands on
+                // its own and must not depend on this one being enabled.
+                soc_suspend_tick(idle);
             }
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");

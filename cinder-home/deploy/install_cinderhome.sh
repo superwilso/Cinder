@@ -654,9 +654,19 @@ log_sv() {
 # command is just a non-zero rc; on `exec` it makes sh exit WITHOUT running anything, which is the
 # precise shape of the 2026-07-26 brick. /contents also legitimately disappears mid-session during
 # USB-MSC, so this path has to survive the log going away — hence the re-probe every launch.
+# AND IT RE-PICKS, it does not just give up. /contents goes away during BOOT too, not only during
+# USB-MSC: the gadget binds this vfat partition as a LUN at 10.1, 11.1 and 12.7 s
+# (`fsg_store_file file=/emmc@contents`, dmesg 2026-09-04) and cinder-home starts at 10.17 s. A
+# can_append miss in that window used to drop the redirect for the whole launch, so the app's
+# stdout went to whatever fd the launcher had inherited and the boot produced NO log at all — the
+# 2026-09-04 boot where suspend silently failed to arm left 0 bytes for exactly this reason.
+# /data is ext4, mounted at 3.98 s, and the MSC gadget never touches it, so it is the location
+# that actually survives; /contents stays first only because the user can read it over USB.
 run_home() {
     if [ -n "$LOGF" ] && can_append "$LOGF"; then
         "$HOME_BIN" "$@" >>"$LOGF" 2>&1
+    elif can_append /data/cinder/cinderhome.log; then
+        "$HOME_BIN" "$@" >>/data/cinder/cinderhome.log 2>&1
     else
         "$HOME_BIN" "$@"
     fi
