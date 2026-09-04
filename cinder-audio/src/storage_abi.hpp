@@ -31,11 +31,17 @@
 //
 // and `this+21` is exactly the byte GetSettingAutoExportAsMsc (@0x1bf68) hands back
 // (`ldrb r0, [r5, #21]`). So clearing that one flag stops the Export transaction being raised at
-// all, and both storages stay mounted across a cable. It is reversible and it is persisted:
-// StorageMgrServiceImpl::SetSettingAutoExportAsMsc (@0x1a050) calls the in-memory setter and then
-// DmpConfig::Set(key 2, value, false) — key 2 being FNC_MSC_AUTOEXPORT in libDmpConfig.so — so the
-// choice survives a reboot without Cinder having to re-apply it. (Cinder re-applies anyway; a
-// factory reset or a stock-firmware excursion would put it back.)
+// all, and both storages stay mounted across a cable. It is reversible.
+//
+// DO NOT ASSUME IT PERSISTS. StorageMgrServiceImpl::SetSettingAutoExportAsMsc (@0x1a050) does call
+// DmpConfig::Set(key 2, …) — key 2 being FNC_MSC_AUTOEXPORT — and Start() (@0x1a0e8) does call
+// DmpConfig::Get before pushing the value back in, so the round trip is all there in the code.
+// MEASURED ANYWAY, and it came back ON: after a reboot on 2026-09-03 the setting read 1 again.
+// That reboot was a kernel panic rather than a clean shutdown, so an unflushed NVP write is the
+// likely explanation and the clean-shutdown case is UNVERIFIED — but the conclusion for callers is
+// the same either way, and it is the safe one: **cinder-home re-applying this at every startup is
+// load-bearing, not belt-and-braces.** Do not remove it on the grounds that the service persists
+// the value; that was believed once and the device disagreed.
 //
 // Nothing is lost by turning it off: deliberate USB transfer still works, because Cinder enters
 // mass storage itself (Settings ▸ USB mode → setprop sys.sony.config msc, an init-level path that
