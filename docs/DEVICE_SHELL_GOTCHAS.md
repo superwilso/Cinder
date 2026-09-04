@@ -195,3 +195,11 @@ Three things, and each one silently produces "it just died with no output":
 
 Checking whether it lived: `[ -d /proc/$p ]` with `$p` EMPTY tests `/proc`, which exists — so a
 missing pidfile reads as "running". Guard the empty case explicitly.
+
+**RESOLVED 2026-09-04 — and the flag was left on the device for three weeks.** The one-flag test
+above was run (`touch`ed 2026-08-18) and then never undone, so every frame since wrote all three
+pages: ~4.6 MB instead of ~1.5 MB, on a panel that only ever scans page 0. The ghost it was testing
+for had a different cause entirely — mtkfb hands back the previous session's pixels across a reboot
+— which was root-caused and fixed on 2026-08-26 with a `write_bytes` clear of the whole mapping at
+init. The flag is removed; the boot log now reads `writing page 0 only`. If a ghost ever returns,
+`touch` it again, but check the init clear first.
