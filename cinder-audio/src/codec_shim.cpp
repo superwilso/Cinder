@@ -24,6 +24,15 @@ namespace {
 const char kControlDev[] = "/dev/snd/controlC0";
 const char kStandbyCtl[] = "standby";
 
+// The SE gain control, spelled out. There are three similarly named controls and Sony's driver
+// mis-wires one of them: `headphone smaster gain mode` and `headphone smaster btl gain mode` both
+// resolve to the BTL handler in `cxd3778gf_snd_controls`. BTL is the balanced output, which this
+// model does not have. This is the one that reaches the 3.5 mm jack.
+const char kSeGainCtl[]  = "headphone smaster se gain mode";
+const char kLatencyCtl[] = "playback latency";
+const char kJackSeCtl[]  = "jack status se";
+const char kMasterVolCtl[] = "master volume";
+
 // Fill in an element id that addresses a mixer control by name. numid stays 0 so the kernel
 // resolves by name rather than by number.
 void fill_id(snd_ctl_elem_id& id, const char* name) {
@@ -45,6 +54,43 @@ int ctl_ioctl(unsigned long req, snd_ctl_elem_value* v) {
     return rc < 0 ? -1 : 0;
 }
 
+// ENUMERATED controls carry their value in `value.enumerated.item[]`, not
+// `value.integer.value[]`. On this 32-bit ARM build the two union members happen to overlap, so
+// using the wrong one would work by accident here and break on anything else. Use the right one.
+int get_enum(const char* name) {
+    snd_ctl_elem_value v;
+    std::memset(&v, 0, sizeof(v));
+    fill_id(v.id, name);
+    if (ctl_ioctl(SNDRV_CTL_IOCTL_ELEM_READ, &v) != 0) return -1;
+    return static_cast<int>(v.value.enumerated.item[0]);
+}
+
+int set_enum(const char* name, int item) {
+    snd_ctl_elem_value v;
+    std::memset(&v, 0, sizeof(v));
+    fill_id(v.id, name);
+    v.value.enumerated.item[0] = static_cast<unsigned int>(item);
+    return ctl_ioctl(SNDRV_CTL_IOCTL_ELEM_WRITE, &v);
+}
+
+// INTEGER controls, as opposed to the ENUMERATED ones above. `value.integer.value[]` is an array
+// of `long`; the ALSA ABI is explicit about that, so do not narrow it on the way in.
+int get_int(const char* name) {
+    snd_ctl_elem_value v;
+    std::memset(&v, 0, sizeof(v));
+    fill_id(v.id, name);
+    if (ctl_ioctl(SNDRV_CTL_IOCTL_ELEM_READ, &v) != 0) return -1;
+    return static_cast<int>(v.value.integer.value[0]);
+}
+
+int set_int(const char* name, int val) {
+    snd_ctl_elem_value v;
+    std::memset(&v, 0, sizeof(v));
+    fill_id(v.id, name);
+    v.value.integer.value[0] = val;
+    return ctl_ioctl(SNDRV_CTL_IOCTL_ELEM_WRITE, &v);
+}
+
 } // namespace
 
 extern "C" {
@@ -64,5 +110,13 @@ int cinder_codec_set_standby(int on) {
     v.value.integer.value[0] = (on != 0) ? 1 : 0;
     return ctl_ioctl(SNDRV_CTL_IOCTL_ELEM_WRITE, &v);
 }
+
+int cinder_codec_get_gain_mode(void)            { return get_enum(kSeGainCtl); }
+int cinder_codec_set_gain_mode(int high)        { return set_enum(kSeGainCtl, high != 0 ? 1 : 0); }
+int cinder_codec_get_playback_latency(void)     { return get_enum(kLatencyCtl); }
+int cinder_codec_set_playback_latency(int low)  { return set_enum(kLatencyCtl, low != 0 ? 1 : 0); }
+int cinder_codec_get_jack_se(void)              { return get_enum(kJackSeCtl); }
+int cinder_codec_get_master_volume(void)        { return get_int(kMasterVolCtl); }
+int cinder_codec_set_master_volume(int v)       { return set_int(kMasterVolCtl, v); }
 
 } // extern "C"

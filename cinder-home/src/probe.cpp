@@ -6662,6 +6662,19 @@ static int storage_probe(const char* verb) {
 //
 // The register readback is the point of this probe: `standby` reporting "on" is a flag, whereas
 // regmon failing to read DEVICE_ID is the chip actually being powered down. Verify by the second.
+// Read one codec register through regmon. Selecting a register by writing `target` is a READ;
+// this never writes `value` — see SECURITY.md, where writing a codec register from userspace is
+// ruled out standing. `out` is left empty if the register could not be read, which for the standby
+// probe is the SUCCESS case (the chip has left the I2C bus).
+static void codec_read_reg(const char* reg, char* out, size_t n) {
+    out[0] = 0;
+    std::FILE* t = std::fopen("/proc/regmon/cxd3778gf/target", "w");
+    if (t) { std::fputs(reg, t); std::fclose(t); }
+    std::FILE* v = std::fopen("/proc/regmon/cxd3778gf/value", "r");
+    if (v) { if (!std::fgets(out, (int)n, v)) out[0] = 0; std::fclose(v); }
+    char* nl = std::strchr(out, '\n'); if (nl) *nl = 0;
+}
+
 static void codec_dump_regs(const char* tag) {
     static const struct { const char* reg; const char* name; } kRegs[] = {
         {"0x00", "DEVICE_ID"}, {"0x12", "BLK_ON0"},  {"0x14", "CLK_EN0"},
@@ -6670,18 +6683,204 @@ static void codec_dump_regs(const char* tag) {
     };
     std::fprintf(stderr, "[cinder-probe] codec: %-9s ", tag);
     for (unsigned i = 0; i < sizeof kRegs / sizeof kRegs[0]; ++i) {
-        // Selecting a register through `target` is a READ. This never writes `value` — see
-        // SECURITY.md; writing a codec register from userspace is ruled out standing.
-        std::FILE* t = std::fopen("/proc/regmon/cxd3778gf/target", "w");
-        if (t) { std::fputs(kRegs[i].reg, t); std::fclose(t); }
-        std::FILE* v = std::fopen("/proc/regmon/cxd3778gf/value", "r");
         char buf[64] = {0};
-        bool got = false;
-        if (v) { got = std::fgets(buf, sizeof buf, v) != nullptr; std::fclose(v); }
-        char* nl = std::strchr(buf, '\n'); if (nl) *nl = 0;
-        std::fprintf(stderr, "%s=%s ", kRegs[i].name, got && buf[0] ? buf : "UNREADABLE");
+        codec_read_reg(kRegs[i].reg, buf, sizeof buf);
+        std::fprintf(stderr, "%s=%s ", kRegs[i].name, buf[0] ? buf : "UNREADABLE");
     }
     std::fputc('\n', stderr);
+}
+
+// --gain — the S-Master high-gain output mode Sony ships disabled and never touches.
+//
+// The amplifier has a high-gain setting; the firmware selects `normal` on every code path, so the
+// extra output has never been reachable on this model. It is what drives higher-impedance
+// headphones to a usable level.
+//
+// THE CONTROL IS NOT THE OBVIOUS ONE. Sony's driver registers three similarly named controls and
+// mis-wires one: in `cxd3778gf_snd_controls` @0xc0851ac4, both `headphone smaster gain mode`
+// (numid 28) and `headphone smaster btl gain mode` (numid 30) resolve to the BTL handler. BTL is
+// the balanced output, which this model does not have wired (`HPOUT3_*` reads all zeros). Only
+// `headphone smaster se gain mode` reaches the 3.5 mm jack.
+//
+// THE INTERLOCK IS THE POINT OF THIS PROBE. Raising gain while headphones are on somebody's head
+// makes the next sound louder than they set it, so this refuses to raise gain with anything in the
+// jack. `force` overrides it, deliberately spelled out rather than a flag character.
+static int gain_probe(const char* verb, bool force) {
+    install_diagnostics();
+    const int cur  = cinder_codec_get_gain_mode();
+    const int lat  = cinder_codec_get_playback_latency();
+    const int jack = cinder_codec_get_jack_se();
+    std::fprintf(stderr, "[cinder-probe] gain: se gain mode = %s\n",
+                 cur < 0 ? "UNAVAILABLE (no control device / no such control)"
+                         : (cur ? "1 (HIGH)" : "0 (normal — Sony's shipped value)"));
+    std::fprintf(stderr, "[cinder-probe] gain: playback latency = %s\n",
+                 lat < 0 ? "UNAVAILABLE" : (lat ? "1 (low)" : "0 (normal)"));
+    std::fprintf(stderr, "[cinder-probe] gain: jack status se = %s\n",
+                 jack < 0 ? "UNAVAILABLE" : (jack ? "OCCUPIED (something is plugged in)" : "0 (empty)"));
+
+    if (!verb) {
+        clog_("gain: read-only. --gain high | normal sets the SE gain mode. Raising it makes every "
+              "later playback louder at the same volume setting and it PERSISTS — with headphones "
+              "in the jack this refuses unless you add 'force'.");
+        return cur < 0 ? 1 : 0;
+    }
+    const bool want_high = std::strcmp(verb, "high") == 0;
+    if (!want_high && std::strcmp(verb, "normal") != 0) {
+        std::fprintf(stderr, "[cinder-probe] gain: unknown verb '%s' (expected high | normal)\n", verb);
+        return 1;
+    }
+    // Only the raise is interlocked. Going back to `normal` is always allowed and always safe —
+    // it can only make the output quieter, so blocking it would be the wrong way round.
+    if (want_high && jack > 0 && !force) {
+        clog_("gain: REFUSED — something is in the headphone jack. Raising gain now would make the "
+              "next sound louder than whoever is wearing them set it. Unplug, or pass 'force' if "
+              "you are certain nothing is on a head.");
+        return 1;
+    }
+    const int rc = cinder_codec_set_gain_mode(want_high ? 1 : 0);
+    std::fprintf(stderr, "[cinder-probe] gain: set_gain_mode(%d) -> %d\n", want_high ? 1 : 0, rc);
+    const int now = cinder_codec_get_gain_mode();
+    std::fprintf(stderr, "[cinder-probe] gain: se gain mode now = %d (wanted %d) %s\n",
+                 now, want_high ? 1 : 0, now == (want_high ? 1 : 0) ? "OK" : "MISMATCH");
+    if (want_high && now == 1)
+        clog_("gain: HIGH GAIN IS NOW ACTIVE and stays that way until something sets it back. "
+              "Turn the volume down before putting headphones on. '--gain normal' restores stock.");
+    return now == (want_high ? 1 : 0) ? 0 : 1;
+}
+
+// --volcurve — measure the output volume table by reading the analogue attenuator at each step.
+//
+// The wired volume curve is a table the codec driver loads at boot (`ov_*.tbl` into
+// /proc/icx_audio_cxd3778gf_data/ovt). Every volume step moves the CXD3778GF's analogue headphone
+// attenuator directly — `0x49 PHV_L` / `0x4B PHV_R` — so reading PHV back across the range IS the
+// curve, objectively, with nothing playing and nothing to listen to.
+//
+// WHAT IT IS FOR. Sony ships each model's volume table twice, plain and `_cew`, and picks between
+// them from the NVP region flag. The `_cew` file is uniformly the quieter of the two. Which one
+// this device actually boots with is NOT established — the proc node is write-only, so it cannot
+// simply be read back. This is the instrument that settles it: sweep, apply the other table with
+// `cinder-voltable`, sweep again, compare. It is also how the WM1A curve was shown to have no dead
+// zones (analysis/RE_volume_pop.md).
+//
+// It WRITES the volume while it runs, and puts the original back. Nothing plays, so a bare jack is
+// silent — but if headphones are connected and something else starts a stream mid-sweep it would
+// be loud, so the sweep refuses on an occupied jack unless forced.
+static int volcurve_probe(int step, bool force) {
+    install_diagnostics();
+    if (step < 1) step = 10;
+    const int jack = cinder_codec_get_jack_se();
+    const int saved = cinder_codec_get_master_volume();
+    if (saved < 0) { clog_("volcurve: master volume control unavailable"); return 1; }
+    if (jack > 0 && !force) {
+        clog_("volcurve: REFUSED — something is in the headphone jack. This sweeps the volume to "
+              "maximum. Unplug, or pass 'force' if you are certain nothing is on a head.");
+        return 1;
+    }
+    std::fprintf(stderr, "[cinder-probe] volcurve: saved master volume = %d (restored at the end)\n", saved);
+    std::fprintf(stderr, "[cinder-probe] volcurve: %4s %6s %6s\n", "vol", "PHV_L", "PHV_R");
+
+    int rc = 0;
+    for (int v = 0; v <= 120; v += step) {
+        if (cinder_codec_set_master_volume(v) != 0) { rc = 1; break; }
+        // The driver writes PHV synchronously from the control put, but give the I2C write room
+        // rather than racing it — a wrong number here would be read as a dead zone in the table.
+        usleep(40000);
+        char l[64] = {0}, r[64] = {0};
+        codec_read_reg("0x49", l, sizeof l);
+        codec_read_reg("0x4b", r, sizeof r);
+        std::fprintf(stderr, "[cinder-probe] volcurve: %4d %6s %6s\n", v, l[0] ? l : "?", r[0] ? r : "?");
+    }
+    cinder_codec_set_master_volume(saved);
+    const int back = cinder_codec_get_master_volume();
+    std::fprintf(stderr, "[cinder-probe] volcurve: restored master volume = %d %s\n",
+                 back, back == saved ? "OK" : "MISMATCH — SET IT YOURSELF");
+    clog_("volcurve: a flat run of PHV across several steps is a DEAD ZONE (stock has two). "
+          "Compare tables with: cinder-voltable eu|stock|wm1a, then sweep again.");
+    return rc;
+}
+
+// --pm — what happened across the last suspend, read-only.
+//
+// Sony ships an instrumentation node at /sys/devices/platform/icx_pm_helper that MTK does not:
+// it latches the SPM wake-source bitmask, the EINT status, and the timing of the last
+// suspend/resume. That is exactly the post-mortem the 2026-09-04 early-suspend experiment did not
+// have — it wedged the device, and the forced reboot destroyed the only counters being watched.
+//
+// Nothing here writes anything. `resume_count` is the number that matters: it was 0 on every read
+// so far, i.e. this unit has never completed a suspend/resume, which makes any non-zero reading
+// afterwards unambiguously the result of whatever test produced it.
+static void pm_bit_names(unsigned v) {
+    // R12 bit order, from the argument run of the kernel's own `[SPM] wake up by %s` printk.
+    static const char* kSrc[] = {
+        "CPU", "PCM_TIMER", "TWAM", "TS", "KP", "GPT", "EINT", "CONN_WDT", "CEC", "IRRX",
+        "LOW_BAT", "CONN", "PCM_WDT", "USB_CD", "USB_PDN", "DBGSYS", "UART0", "AFE", "THERM",
+        "CIRQ", "CM4", "SYSPWREQ", "ETHERNET", "CPU0_IRQ", "CPU1_IRQ", "CPU2_IRQ", "CPU3_IRQ",
+    };
+    const unsigned n = sizeof kSrc / sizeof kSrc[0];
+    if (!v) { std::fprintf(stderr, "(none)"); return; }
+    bool first = true;
+    for (unsigned i = 0; i < n; ++i)
+        if (v >> i & 1u) { std::fprintf(stderr, "%s%s", first ? "" : " ", kSrc[i]); first = false; }
+    // A bit above the known run means the table is short for this SoC — say so rather than drop it.
+    if (v >> n) std::fprintf(stderr, " +unknown(%#x)", v >> n);
+}
+
+static int pm_probe(void) {
+    install_diagnostics();
+    static const char* kPm = "/sys/devices/platform/icx_pm_helper";
+    static const char* kNodes[] = {
+        "resume_count", "suspend_ts", "resume_ts", "suspend_prepare_ts", "post_suspend_ts",
+        "spm_r12", "spm_r13", "spm_raw_sta", "spm_isr", "spm_event_reg", "spm_debug_reg",
+        "spm_timer_out", "spm_cpu_wake", "eint_sta", "resume_lock_ms", "resume_lock_cancel",
+        "boot_powerkey", "boot_reboot", "boot_wdt", "boot_thermal", "boot_deadbat", "boot_reset",
+        "boot_option",
+    };
+    char path[256], val[256];
+    for (unsigned i = 0; i < sizeof kNodes / sizeof kNodes[0]; ++i) {
+        std::snprintf(path, sizeof path, "%s/%s", kPm, kNodes[i]);
+        slurp_(path, val, sizeof val);
+        std::fprintf(stderr, "[cinder-probe] pm: %-20s = %s\n", kNodes[i], val);
+    }
+
+    // The wake source of the last suspend, decoded. Zero here means no suspend has happened —
+    // it is NOT "woken by CPU".
+    std::snprintf(path, sizeof path, "%s/spm_r12", kPm);
+    slurp_(path, val, sizeof val);
+    const unsigned r12 = (unsigned)std::strtoul(val, nullptr, 0);
+    std::fprintf(stderr, "[cinder-probe] pm: spm_r12 decoded  = ");
+    if (!r12) std::fprintf(stderr, "0x0 — no suspend has completed this boot");
+    else pm_bit_names(r12);
+    std::fputc('\n', stderr);
+
+    // What the SoC is allowed to wake ON. KP (the keypad block) is not in the shipped mask; the
+    // power key reaches SPM through the PMIC on EINT 150 instead, which lands under EINT.
+    clog_("pm: shipped spm_sleep_wakesrc = 0x01204564 (TWAM GPT EINT CEC LOW_BAT USB_PDN SYSPWREQ "
+          "CPU1_IRQ). KP and PCM_TIMER are NOT armed — read from the kernel image, see "
+          "analysis/RE_kernel_power.md.");
+
+    static const char* kSlp[] = { "slp_pwake_time", "slp_cpu_pdn", "slp_infra_pdn", "slp_mode" };
+    for (unsigned i = 0; i < sizeof kSlp / sizeof kSlp[0]; ++i) {
+        std::snprintf(path, sizeof path, "/sys/module/mt_sleep/parameters/%s", kSlp[i]);
+        slurp_(path, val, sizeof val);
+        // slp_mode is a four-character string the module exposes through an integer param, so it
+        // prints as a meaningless nine-digit number (2002874989 = "warm"). Decode it, because a
+        // number that looks like garbage invites someone to "fix" it.
+        if (std::strcmp(kSlp[i], "slp_mode") == 0) {
+            const unsigned long m = std::strtoul(val, nullptr, 10);
+            char tag[5] = {0};
+            for (int b = 0; b < 4; ++b) {
+                const unsigned c = (unsigned)((m >> (8 * b)) & 0xffu);
+                tag[b] = (c >= 32 && c < 127) ? (char)c : '.';
+            }
+            std::fprintf(stderr, "[cinder-probe] pm: %-20s = %s (\"%s\")\n", kSlp[i], val, tag);
+            continue;
+        }
+        std::fprintf(stderr, "[cinder-probe] pm: %-20s = %s\n", kSlp[i], val);
+    }
+    clog_("pm: read-only. slp_pwake_time is the SPM periodic wake (seconds, -1 = derive from the "
+          "next alarm). Nothing here suspends the device, and nothing should without the device in "
+          "your hand — see analysis/RE_early_suspend.md.");
+    return 0;
 }
 
 static int codec_probe(const char* verb) {
@@ -6932,6 +7131,24 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--codec") == 0) {
         // No verb = READ-ONLY. "sleep" = standby (reversible; the audio path wakes it on PCM open).
         return codec_probe(argc > 2 ? argv[2] : nullptr);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--gain") == 0) {
+        // No verb = READ-ONLY. "high" raises the S-Master SE output gain and is interlocked on an
+        // empty jack unless a third arg "force" is given; "normal" restores Sony's shipped value
+        // and is never interlocked.
+        return gain_probe(argc > 2 ? argv[2] : nullptr,
+                          argc > 3 && std::strcmp(argv[3], "force") == 0);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--volcurve") == 0) {
+        // Sweeps the volume and reads the analogue attenuator back; restores the original level.
+        // Optional step size (default 10), optional "force" to sweep with the jack occupied.
+        return volcurve_probe(argc > 2 ? std::atoi(argv[2]) : 10,
+                              (argc > 3 && std::strcmp(argv[3], "force") == 0) ||
+                              (argc > 2 && std::strcmp(argv[2], "force") == 0));
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--pm") == 0) {
+        // Read-only post-mortem of the last suspend. Writes nothing, suspends nothing.
+        return pm_probe();
     }
     if (argc > 1 && std::strcmp(argv[1], "--storage") == 0) {
         // No verb = READ-ONLY. "off" is the fix for the card-vanishes-on-USB bug; "on" restores
