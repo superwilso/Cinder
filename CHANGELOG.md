@@ -163,6 +163,34 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   (`INT_CON0 = 0x0420`) — so a wake path existed. The likely failure is in the **resume** path
   instead. Nothing was re-tested: the device has still never completed a suspend/resume
   (`resume_count = 0`), and it will not be retried unattended.
+- **Tone-control tables, wired for the first time.** *(device-verified 2026-09-04)*
+  Sony loads a `tc_*.tbl` into `/proc/icx_audio_cxd3778gf_data/tct` at every boot and nothing in
+  Cinder had ever touched it — it is the other half of what Walkman One sells as a "sound
+  signature", and only the volume half was implemented. `cinder-voltable` gained `tone-stock`,
+  `tone-w1` and `tone-wm1a`. Separate keys from the volume ones on purpose: applying a volume curve
+  must not silently also change tone. Same whitelist-key pattern as before, so a caller still
+  cannot name a path (verified: `cinder-voltable ../../etc/passwd` → exit 2).
+- `cinder-probe --volcurve [step] [force]` — measures the output volume table by sweeping the
+  volume and reading the analogue attenuator (`PHV_L`/`PHV_R`) back at each step. That *is* the
+  curve, measured silently with nothing playing, so table comparisons no longer need an ear or a
+  recording rig. Restores the original volume, and refuses to sweep with something in the jack
+  unless forced.
+- `cinder-probe --gain [high|normal] [force]`, and `cinder_codec_get/set_gain_mode`,
+  `get/set_playback_latency`, `get_jack_se`, `get/set_master_volume` in the codec shim — the
+  S-Master output-gain mode Sony ships disabled. Interlocked: raising gain is refused while
+  anything is in the headphone jack, because the failure mode is somebody putting headphones on at
+  their usual volume. `normal` is never interlocked — it can only make things quieter.
+- `analysis/RE_volume_tables.md` — **a negative result, with the control experiment that makes it
+  trustworthy.** The region volume tables (`ov_1291.tbl` vs `ov_1291_cew.tbl`) differ in 7576 bytes,
+  always in the quieter direction, and looked exactly like the European output cap. Measured: they
+  produce **identical** volume curves. The `limiter_*.bin` files are a second dead end — 3 bytes
+  each and byte-identical across regions. Applying the WM1A table in the same session *does* change
+  the curve, which is what proves the writes landed and the null result is real. **There is no EU
+  cap to lift here.**
+- `analysis/PLAN_deep_idle.md` — the plan for getting the SoC into deep idle without repeating the
+  2026-09-04 wedge: `slp_pwake_time` as a hardware self-wake, `icx_pm_helper/resume_count` as the
+  single success criterion, phases with explicit abort conditions, and the standing rule that none
+  of it gets wired into cinder-home. Plan only — nothing executed.
 - `analysis/RE_hardware_surface.md` — inventory of what the audio hardware can do that the firmware
   never asks it to: the S-Master **high-gain output mode** (present, writable, applied live, and
   shipped permanently at `normal`), a headphone-**impedance measurement** block with no driver code
