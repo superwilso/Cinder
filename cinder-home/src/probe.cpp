@@ -19,6 +19,7 @@
 #include "cinder_analyzer.h"
 #include "cinder_tuner.h"
 #include "cinder_storage.h"
+#include "cinder_codec.h"
 #include "discover.h"
 #include <cstdio>
 #include <cstdlib>
@@ -6574,9 +6575,9 @@ static void storage_dump_mounts() {
 // came back with zero external rows. Clearing AutoExportAsMsc stops the handover.
 //
 // Bare `--storage` is READ-ONLY and always safe. `on`/`off` change the setting; `mount` mounts
-// External0 now. Note the setting is PERSISTENT (the service writes DmpConfig FNC_MSC_AUTOEXPORT),
-// so `--storage off` keeps effect across reboots until `--storage on` puts it back — unlike most
-// probes here, this one does not restore itself, because being persistent is the point.
+// External0 now. Unlike most probes here this one does not restore itself on exit — the whole
+// point is to leave the setting changed — but do not assume the change outlives a reboot: it was
+// measured back ON after one. cinder-home re-applies it at startup.
 static int storage_probe(const char* verb) {
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
@@ -6635,8 +6636,10 @@ static int storage_probe(const char* verb) {
         std::fprintf(stderr, "[cinder-probe] storage: AutoExportAsMsc now = %d (wanted %d) %s\n",
                      after, want, after == want ? "OK" : "*** DID NOT STICK ***");
         if (after != want) rc = -1;
-        clog_("storage: this setting is persisted to NVP (FNC_MSC_AUTOEXPORT) by the service. "
-              "Unplug and replug the cable to see the effect; the card should stay mounted.");
+        clog_("storage: do NOT assume this survives a reboot — it was measured back ON after one. "
+              "cinder-home re-applies it at startup, which is what makes it stick. Unplug and "
+              "replug the cable to see the effect; the card should stay mounted, and hagodaemon "
+              "should log 'ApiId: [Export] to storage: [External0] is disabled'.");
     } else {
         std::fprintf(stderr, "[cinder-probe] storage: unknown verb '%s' "
                              "(expected on | off | mount)\n", verb);
@@ -6645,6 +6648,67 @@ static int storage_probe(const char* verb) {
     g_pump_run = false;
     std::fflush(nullptr);
     _exit(rc == 0 ? 0 : 1);
+}
+
+
+// --codec — is the DAC/amp asleep when nothing is playing? Read-only unless given a verb.
+//
+// Measured 2026-09-03 idle (screen off, BT off, nothing in the jack, no PCM open anywhere): the
+// CXD3778GF was fully awake. `standby off`, blocks on, clocks running, charge pump up, S-Master SE
+// selected — the headphone amplifier powered to drive an empty jack. Sony's driver implements
+// standby properly (the chip drops off the I2C bus entirely) and the audio path clears it by itself
+// when a PCM opens. Nothing ever puts it back, and the kernel early-suspend hook the driver also
+// registers never fires on this system because nothing drives that chain.
+//
+// The register readback is the point of this probe: `standby` reporting "on" is a flag, whereas
+// regmon failing to read DEVICE_ID is the chip actually being powered down. Verify by the second.
+static void codec_dump_regs(const char* tag) {
+    static const struct { const char* reg; const char* name; } kRegs[] = {
+        {"0x00", "DEVICE_ID"}, {"0x12", "BLK_ON0"},  {"0x14", "CLK_EN0"},
+        {"0x15", "CLK_EN1"},   {"0x16", "CLK_EN2"},  {"0x30", "CODEC_EN"},
+        {"0x51", "CPCTL1"},    {"0x63", "DAMP_REF"}, {"0x67", "HPOUT2_CTRL1"},
+    };
+    std::fprintf(stderr, "[cinder-probe] codec: %-9s ", tag);
+    for (unsigned i = 0; i < sizeof kRegs / sizeof kRegs[0]; ++i) {
+        // Selecting a register through `target` is a READ. This never writes `value` — see
+        // SECURITY.md; writing a codec register from userspace is ruled out standing.
+        std::FILE* t = std::fopen("/proc/regmon/cxd3778gf/target", "w");
+        if (t) { std::fputs(kRegs[i].reg, t); std::fclose(t); }
+        std::FILE* v = std::fopen("/proc/regmon/cxd3778gf/value", "r");
+        char buf[64] = {0};
+        bool got = false;
+        if (v) { got = std::fgets(buf, sizeof buf, v) != nullptr; std::fclose(v); }
+        char* nl = std::strchr(buf, '\n'); if (nl) *nl = 0;
+        std::fprintf(stderr, "%s=%s ", kRegs[i].name, got && buf[0] ? buf : "UNREADABLE");
+    }
+    std::fputc('\n', stderr);
+}
+
+static int codec_probe(const char* verb) {
+    install_diagnostics();
+    const int st = cinder_codec_get_standby();
+    std::fprintf(stderr, "[cinder-probe] codec: standby = %s\n",
+                 st < 0 ? "UNAVAILABLE (no control device / no such control)"
+                        : (st ? "1 (asleep)" : "0 (AWAKE — amp and clocks powered)"));
+    codec_dump_regs("now");
+
+    if (!verb) {
+        clog_("codec: read-only. --codec sleep puts it in standby (safe: opening a PCM wakes it "
+              "again by itself), --codec wake takes it out.");
+        return st < 0 ? 1 : 0;
+    }
+    const bool want = std::strcmp(verb, "sleep") == 0;
+    if (!want && std::strcmp(verb, "wake") != 0) {
+        std::fprintf(stderr, "[cinder-probe] codec: unknown verb '%s' (expected sleep | wake)\n", verb);
+        return 1;
+    }
+    const int rc = cinder_codec_set_standby(want ? 1 : 0);
+    std::fprintf(stderr, "[cinder-probe] codec: set_standby(%d) -> %d\n", want ? 1 : 0, rc);
+    sleep(2);
+    codec_dump_regs(want ? "asleep" : "awake");
+    // UNREADABLE across the row above is the success case for `sleep`: the codec has left the I2C
+    // bus. A row of real values after asking it to sleep means the write did not take.
+    return rc;
 }
 
 int main(int argc, char** argv) {
@@ -6864,6 +6928,10 @@ int main(int argc, char** argv) {
         if (argc > 2 && std::strcmp(argv[2], "uac") == 0) want = USBFN_UAC;
         else if (argc > 2 && std::strcmp(argv[2], "msc") == 0) want = USBFN_MSC;
         return usbmgr_probe(want, argc > 3 ? std::atoi(argv[3]) : 60);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--codec") == 0) {
+        // No verb = READ-ONLY. "sleep" = standby (reversible; the audio path wakes it on PCM open).
+        return codec_probe(argc > 2 ? argv[2] : nullptr);
     }
     if (argc > 1 && std::strcmp(argv[1], "--storage") == 0) {
         // No verb = READ-ONLY. "off" is the fix for the card-vanishes-on-USB bug; "on" restores

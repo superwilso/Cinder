@@ -58,6 +58,7 @@
 #include "cinder_analyzer.h"
 #include "cinder_power.h"
 #include "cinder_storage.h"
+#include "cinder_codec.h"
 #include "discover.h"
 // The playback-control shim over Sony's PlayerService (cinder-audio/player_shim.cpp).
 #include "cinder_audio.h"
@@ -841,10 +842,13 @@ void deferred_up() {
     // goes through init (sys.sony.config), not through StorageMgr. What goes away is the automatic
     // handover on any cable.
     //
-    // Sony persists this to NVP itself (DmpConfig FNC_MSC_AUTOEXPORT), so this is normally a no-op
-    // read. It is re-applied every boot anyway because a factory reset — or a trip through stock
-    // firmware — restores the stock value, and the symptom when it comes back is "some albums
-    // vanished", which nobody would connect to a USB cable.
+    // THIS RE-APPLY IS LOAD-BEARING. Sony's service does write the value to DmpConfig
+    // (FNC_MSC_AUTOEXPORT) and does read it back in Start(), so it looks persistent in the
+    // disassembly — but measured after a reboot on 2026-09-03 it was back ON. (That reboot was a
+    // panic, so an unflushed NVP write is the likely cause and the clean case is unverified.)
+    // Either way the setting cannot be trusted to survive, and neither can a factory reset or a
+    // trip through stock firmware. The symptom when it comes back is "some albums vanished", which
+    // nobody would connect to a USB cable, so pay the two IPC calls every boot.
     run_guarded("deferred_up: keep SD card mounted on USB", 8, []() {
         const int on = cinder_storage_get_auto_export();
         if (on < 0) {
@@ -2497,6 +2501,31 @@ long g_last_input_ms = 0;                // when we last saw ANY input event (se
 // Unguarded, exactly like every other `display_backlight` call site (`set_backlight` runs on each
 // theme toggle and brightness step). Wrapping only this one in `run_guarded` would make a display
 // hang cost Sony IPC for the boot — a strictly worse trade than the blank not landing.
+// DO NOT WRITE /sys/power/state FROM HERE. There was a `soc_early_suspend()` helper here that did,
+// and it cost a forced reboot on 2026-09-04. The record, so nobody rebuilds it:
+//
+// THE PRIZE WAS REAL. Cinder's screen-off is cosmetic as far as the SoC is concerned — it writes
+// the backlight node and calls Sony's display_backlight(0), and the kernel never learns the device
+// went idle. The MTK early-suspend chain, which every driver registers its low-power handler with,
+// is started only by a write to /sys/power/state and nothing on this system writes it. Measured:
+// the SoC has entered deep idle ZERO times in every boot ever sampled, blocked on one byte that
+// only that chain sets. See analysis/RE_early_suspend.md for the disassembly.
+//
+// WHY IT CANNOT BE DONE THIS WAY. The chain does not stop at early suspend: it ends with
+// `pm_autosleep_set_state(3)`, which is the real suspend-to-RAM path. ON THE CABLE that never
+// fires, because USB holds a wakeup source — which is why four on-cable tests all looked clean and
+// resumed perfectly. OFF THE CABLE AND IDLE, nothing holds one: the device suspended to RAM and
+// **neither the Power key nor plugging USB in would wake it.** It took a forced reboot.
+//
+// The reassurance that made this look safe was that Sony's codec driver takes a `CXD3778GF` wakeup
+// source during playback (measured, and true). That protects the PLAYING case and says nothing at
+// all about the idle case — which is the only case this code ever ran in. Testing exclusively on
+// the cable hid the entire failure mode.
+//
+// WHAT WOULD HAVE TO BE TRUE FIRST: a wake source proven to bring the device back from
+// suspend-to-RAM off-cable. Until someone has demonstrated that — with a way back in that does not
+// depend on the thing being suspended — this stays unwired. An escape must depend on less than
+// what it rescues, and here there was no escape at all.
 static void panel_dark() {
     if (!g_bl_read) load_bl_cfg();
     display_backlight_remember();   // cache the service level BEFORE zeroing it
@@ -9391,6 +9420,51 @@ void* render_driver(void*) {
             // g_playing changes on its own (a track ends, the sleep timer pauses), and the screen
             // transitions are not the only way into "dark + idle" — so re-evaluate here too.
             apply_pump_interval();
+            // Put the DAC to sleep once the device has been genuinely idle for a while.
+            //
+            // MEASURED 2026-09-03: with the screen off, Bluetooth off, nothing in the headphone
+            // jack and no PCM substream open anywhere, the CXD3778GF was still fully awake —
+            // blocks on, three clock-enable registers non-zero, oscillator running, charge pump up
+            // and the S-Master single-ended path selected. That is the headphone amplifier powered
+            // to drive an empty jack, for as long as the device is switched on.
+            //
+            // Sony's driver implements standby properly: writing the control drops the chip so far
+            // that regmon cannot read it over I2C at all. The audio path CLEARS standby by itself
+            // when a PCM is opened, which is what makes this safe — the worst case is the wake
+            // latency of the next track, which the driver already pays on the first play after
+            // boot. What nothing does is put it back, and the kernel early-suspend hook the driver
+            // also registers never fires because nothing on this system drives that chain.
+            //
+            // The 30 s grace matters: pausing between tracks must not power the amp down and back
+            // up. And this deliberately does NOT sleep the codec during Bluetooth playback even
+            // though BT does not use it — g_playing is true then, and being conservative in the
+            // first cut is worth more than the extra saving.
+            //
+            // Not guarded: it is two ioctls on a character device, no Sony IPC and no service that
+            // can hang. It also latches, so a device sitting idle costs one ioctl, not one a second.
+            {
+                static int  idle_secs = 0;
+                static bool we_slept  = false;
+                const bool idle = !g_screen_on && !g_playing;
+                if (idle) {
+                    if (idle_secs < 100000) ++idle_secs;
+                    if (!we_slept && idle_secs >= 30) {
+                        if (cinder_codec_set_standby(1) == 0) {
+                            we_slept = true;
+                            clog_("codec: idle 30 s -> DAC/amp to standby (a PCM open wakes it)");
+                        }
+                    }
+                } else {
+                    idle_secs = 0;
+                    // Only if WE put it there. The driver wakes the codec on PCM open, so this is
+                    // belt-and-braces for the paths that do not open the local PCM at all — and it
+                    // costs one ioctl on the transition out of idle, not per tick.
+                    if (we_slept) {
+                        we_slept = false;
+                        cinder_codec_set_standby(0);
+                    }
+                }
+            }
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");
                 set_transport(false);

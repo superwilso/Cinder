@@ -32,8 +32,9 @@ extern "C" {
 int cinder_storage_get_auto_export(void);
 
 /* Turn that automatic handover on (on != 0) or off. Returns 0 = applied, -1 = failed.
- * The service persists this to NVP (DmpConfig FNC_MSC_AUTOEXPORT), so it survives a reboot;
- * Cinder re-applies it at startup anyway, because a factory reset restores the stock value. */
+ * NOT reliably persistent: the service writes DmpConfig FNC_MSC_AUTOEXPORT and reads it back at
+ * startup, but the setting was measured ON again after a reboot (2026-09-03). Cinder re-applies it
+ * every startup, and that re-apply is what makes the fix stick — see storage_abi.hpp. */
 int cinder_storage_set_auto_export(int on);
 
 /* Mount one storage now — used to bring the card back after it has been released by the gadget,

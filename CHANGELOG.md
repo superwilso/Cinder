@@ -18,6 +18,81 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Investigated, then REVERTED: telling the kernel the device went idle.** *(the change is not
+  shipped — it wedged the device off-cable; kept here because the RE is worth having and the
+  failure is worth not repeating)*
+  Turning the screen off wrote the backlight brightness node and called Sony's
+  `display_backlight(0)`. Neither touches the kernel PM core. The MTK early-suspend chain — which
+  every driver on this SoC registers its low-power handler with — is started only by a write to
+  `/sys/power/state`, and nothing on this system was writing it. Result: **the SoC had entered deep
+  idle exactly zero times in every boot ever sampled.**
+
+  The blocker was one byte. `dpidle_handler` gates on `mt_cpufreq_earlysuspend_status_get()`, which
+  returns `mt_cpufreq_earlysuspend_allow_deepidle_control_vproc` — and the block counter is
+  reported as `by_vtg`, which reads like a voltage problem and is nothing of the kind. That name
+  cost an hour before the kernel symbol table settled it.
+
+  Cinder was wired to write `mem` on screen blank and `on` on wake. **It does not ship.** Four
+  on-cable tests were clean — the chain ran, the panel powered down and came back with a full LCM
+  re-init every time. Off-cable it suspended the device to RAM, and **neither the Power key nor
+  plugging USB in would wake it.** Forced reboot, which also zeroed the counters the test existed
+  to read.
+
+  The chain does not stop at early suspend: it ends with `pm_autosleep_set_state(3)`, the real
+  suspend path. On the cable USB holds a wakeup source so it never completes, which is why every
+  on-cable run looked like proof. Off-cable and idle, nothing holds one.
+
+  The bad inference is worth naming: Sony's codec driver takes a `CXD3778GF` wakeup source during
+  playback, that was measured and is true, and it was used as the safety argument. It protects the
+  *playing* case and says nothing about the *idle* case — which is the only case the wiring ever ran
+  in. A measurement that is true and irrelevant is more dangerous than one that is simply wrong.
+
+  What survives: the RE (`analysis/RE_early_suspend.md`), and the knowledge that on the cable one
+  clock blocks deep idle — `/proc/clkmgr/clk_test` names it `MT_CG_PERI_USB0`, the only clock
+  currently on that sits inside the deep-idle condition mask. `main.cpp` carries a do-not-rebuild
+  note where the helper was.
+
+- **The DAC and headphone amplifier never went to sleep.** *(mechanism device-verified 2026-09-03;
+  the cinder-home wiring is device-unverified — installing it needs a reboot)*
+  With the screen off, Bluetooth off, **nothing in the headphone jack** and no PCM substream open
+  anywhere, the CXD3778GF was fully awake: blocks enabled, three clock-enable registers non-zero,
+  the oscillator running, everything out of reset, the charge pump control bits set and the S-Master
+  single-ended path selected. That is the headphone amp powered to drive an empty jack, for as long
+  as the device is switched on.
+
+  Sony's driver implements standby properly — writing the control drops the chip so far that regmon
+  cannot read a single register over I2C, which is the measurement that matters (a control reporting
+  "on" is a flag; `DEVICE_ID=UNREADABLE` is the chip actually powered down). The audio path also
+  *clears* standby by itself when a PCM opens. What nothing does is put it back, and the kernel
+  early-suspend hook the driver registers never fires because nothing on this system drives that
+  chain. So the codec woke for the first sound after boot and stayed awake.
+
+  cinder-home now puts it into standby after 30 s of screen-off and not-playing, and takes it out on
+  the way back. This cannot break playback: opening a PCM wakes the codec with no help from
+  userspace — verified by putting it to sleep, playing a second of silence, and finding every
+  register restored. The 30 s grace stops a pause between tracks cycling the amp.
+
+  Two ioctls on `/dev/snd/controlC0`, no libasound: the binary that would gain the dependency is the
+  Home app, and a Home app that will not start is a device recovered by hand. No setuid helper —
+  that node is owned by `system` and cinder-home runs as uid 100, which *is* `system` here. The
+  control is addressed by name rather than numid, since numid is an artefact of driver registration
+  order.
+
+  **This is not the SoC deep-idle block, and the two were explicitly not conflated.** Tested: with
+  the codec held in standby for 30 s, `dpidle_cnt` stayed at 0 and `dpidle_block_cnt[by_vtg]` kept
+  climbing at an identical ~240/s. Separate problem, still open.
+
+  The power saved is **not measured and cannot be here** — this unit has no `current_now`, only
+  `voltage_now`, and a USB cable pins the gauge at Full, so idle draw has to be measured cable-out.
+  The case rests on what the registers say is powered.
+
+  Surveyed the other chips at the same time. The **FM tuner is already powered down** (`POWERCFG`
+  ENABLE bit clear) and the green LED at full is the charge indicator — neither is a fault. The
+  **MTK audio front-end** reads `AFE_DAC_CON0 = 1` (AFE_ON) with no PCM open, which has the same
+  shape as the codec finding; left alone rather than guessed at, because its bit meanings are not
+  established and guessing at a power register is how devices break. Full detail:
+  `analysis/RE_codec_power.md`.
+
 - **A USB cable could delete the microSD library, and did.** *(device-verified 2026-09-03)*
   A third of the reference device's music was missing from the player: 121 album rows in
   `MTPDB.dat` with no tracks behind them, including every album on the card. The internal index was
@@ -38,14 +113,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   transaction being raised at all, so both storages stay mounted across a cable. Nothing is lost:
   deliberate USB transfer still works, because Settings ▸ USB mode goes through init
   (`sys.sony.config`) and never touches StorageMgr. What goes away is the *automatic* handover.
-  The setting is persisted to NVP by the service itself (`FNC_MSC_AUTOEXPORT`); Cinder re-applies
-  it every boot anyway, because a factory reset restores the stock value and the symptom when it
-  returns — "some albums vanished" — is not something anyone would trace back to a USB cable.
+  Cinder re-applies the setting at every startup, and that re-apply is what makes the fix stick.
+  The service does write it to NVP (`FNC_MSC_AUTOEXPORT`) and read it back at boot — the round trip
+  is right there in the disassembly — but measured after a reboot it was back ON, so it cannot be
+  relied on. (That reboot was a kernel panic rather than a clean shutdown, so the clean case is
+  unverified rather than disproved; the re-apply covers both, plus a factory reset.)
 
   Verified on hardware with the cable connected: `Mount(External0) -> 0`,
   `/dev/block/mmcblk1p1` mounted at `/contents_ext`, `lun1 = (empty)`, and hagodaemon reporting
   `status[Mounted]` with adb still up — a combination that was previously unreachable, because the
-  card and the PC could not both hold the device at once.
+  card and the PC could not both hold the device at once. Sony's own log states the fix directly:
+  `transact ApiId: [Export] to storage: [External0] is disabled`, a line that previously named only
+  `[Internal]`.
 
   Two candidate causes were ruled out with measurements rather than argument. The
   `Not exFAT or failed to access device` line in the log is informational — the card is FAT32 and
@@ -56,11 +135,41 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
+- `cinder-probe --codec` — reports whether the DAC is asleep and dumps the codec's own power
+  registers alongside the control, so the answer comes from the chip rather than from a flag.
+  `sleep`/`wake` drive standby; bare invocation is read-only.
+- `analysis/RE_codec_power.md` — the codec power finding, and the idle-state survey of the other
+  four chips `regmon` exposes.
+- `analysis/RE_early_suspend.md` — the kernel disassembly showing that the SoC has never entered
+  deep idle under Cinder, why (`by_vtg` is the early-suspend flag, not a voltage check), the
+  hardware results, and two corrections to earlier claims made in that same document. Includes how
+  the kernel was extracted from the stock `.UPG` offline, since `/dev/kmem` panics this device.
 - `cinder-probe --storage` — reads Sony's auto-export setting, and can turn it off/on or mount the
   microSD on demand. Bare invocation is read-only. Also prints `/proc/mounts` and the gadget LUN
   state together, because the card's absence from the mount table only makes sense next to the LUN
   that is holding the block device.
 - `analysis/RE_storagemgr.md` — the disassembly behind the above, and the client ABI.
+- `analysis/RE_kernel_power.md` and `analysis/kernel/` — the SoC power framework read out of the
+  stock kernel image. The SPM wake-source mask (`spm_sleep_wakesrc = 0x01204564`) with the kernel's
+  own bit names, MTK's per-scenario golden register settings for `idle`/`dpidle`/`audio_playback`,
+  the codec's 210 named registers and the PMIC's 425, and an extractor script that regenerates all
+  of it from `vmlinux.bin`. Also documents Sony's `/sys/devices/platform/icx_pm_helper/`, which
+  records the wake source and timing of the last suspend and is the post-mortem the failed
+  experiment did not have.
+
+  **This corrects the reverted entry above.** That entry says neither the Power key nor USB would
+  wake the device, and concluded there was no wake source. The tables say `KP` is genuinely not
+  armed, but `EINT` is, the PMIC is EINT 150, and the PMIC power-key interrupt is enabled
+  (`INT_CON0 = 0x0420`) — so a wake path existed. The likely failure is in the **resume** path
+  instead. Nothing was re-tested: the device has still never completed a suspend/resume
+  (`resume_count = 0`), and it will not be retried unattended.
+- `analysis/RE_hardware_surface.md` — inventory of what the audio hardware can do that the firmware
+  never asks it to: the S-Master **high-gain output mode** (present, writable, applied live, and
+  shipped permanently at `normal`), a headphone-**impedance measurement** block with no driver code
+  behind it at all, the S-Master noise-shaper and dither tuning surface, and the codec's
+  coefficient RAM. Read-only survey — none of it was written to the device, and the gain mode
+  deliberately so, because leaving amplifier gain raised is a hearing-safety matter for the user to
+  decide rather than a config default to flip.
 
 
 ## [0.1.9] — 2026-09-02

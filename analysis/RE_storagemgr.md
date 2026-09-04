@@ -93,12 +93,24 @@ The ApiId numbering is self-checking. `mgr::GetStr(ApiId const&)` indexes the .r
 hard-coded `#2` above — and the run ends at Remove (5), making the `#6` default one past the end,
 i.e. "none". `GetStr(Storage const&)` indexes `Internal External0 External1 Invalid` at 0x30d78.
 
-**It persists.** `StorageMgrServiceImpl::SetSettingAutoExportAsMsc` @0x1a050 calls the in-memory
-setter through vtable slot 10, then `DmpConfig::Set(key 2, value, false)` — key 2 being
-`FNC_MSC_AUTOEXPORT`, the only export-related key in `libDmpConfig.so`. So the choice survives a
-reboot on its own. Cinder re-applies it at startup anyway, because a factory reset or a trip
-through stock firmware puts the stock value back, and the symptom when it returns is "some albums
-vanished", which nobody would connect to a USB cable.
+**It does not reliably persist — and I claimed it did.** `StorageMgrServiceImpl::
+SetSettingAutoExportAsMsc` @0x1a050 calls the in-memory setter through vtable slot 10, then
+`DmpConfig::Set(key 2, …)` — key 2 being `FNC_MSC_AUTOEXPORT`, the only export-related key in
+`libDmpConfig.so` — and `DmpConfig::Set` reaches `Configuration::SetInt`, which is the NVP path.
+`StorageMgrServiceImpl::Start` @0x1a0e8 calls `DmpConfig::Get` and pushes the value back in. So the
+whole round trip is visible in the disassembly, and on that basis this document originally stated
+that the setting survives a reboot.
+
+**Measured, and it did not.** After a reboot on 2026-09-03 the setting read `1` again. That reboot
+was a **kernel panic**, not a clean shutdown — an unflushed NVP write is the most likely
+explanation, and the clean-shutdown case is therefore *unverified* rather than disproved. But the
+conclusion for the implementation is the same and it is the safe one: **cinder-home re-applying
+this at every startup is load-bearing, not belt-and-braces.** A factory reset or a trip through
+stock firmware would put the stock value back regardless.
+
+This is worth recording as a method note, because it is the second time in two days that reading a
+code path has produced a confident claim the hardware then contradicted: the disassembly proves the
+call is *made*, never that the value comes *back*.
 
 `err` is 0 on success — read off the service side rather than guessed: `StorageMgrServiceFw::
 GetSettingAutoExportAsMsc` @0x17b34 stores the impl's return into `rsp+0`, and the impl returns 0
@@ -145,6 +157,17 @@ storage: lun1   = (empty)
 and hagodaemon agreed — `StorageStatus: storage[External0], status[Mounted]` — with the USB cable
 still connected and adb still up. That combination was not reachable before: the card and the PC
 could not both have the device at once.
+
+The cleanest confirmation came later, from Sony's own log, once the setting was off:
+
+```
+transact ApiId: [Export] to storage: [Internal]  is disabled
+transact ApiId: [Export] to storage: [External0] is disabled
+```
+
+Before the change only `[Internal]` appeared on that line. The card is now refused for the same
+reason internal storage always was — which is the fix expressed in the service's own terms, and
+better evidence than the mount table because it names the transaction that is no longer raised.
 
 ## Implementation note
 

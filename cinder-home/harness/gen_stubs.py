@@ -19,6 +19,7 @@ HEADERS = [
     "cinder-audio/include/cinder_analyzer.h",
     "cinder-audio/include/cinder_power.h",
     "cinder-audio/include/cinder_storage.h",
+    "cinder-audio/include/cinder_codec.h",
     "cinder-audio/include/cinder_tuner.h",
 ]
 
