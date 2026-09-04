@@ -1,9 +1,10 @@
 # RE — Cinder's screen-off is cosmetic, and it costs the whole SoC idle path
 
 **Date:** 2026-09-04 · **Kernel:** Linux 3.10.26 (MT8590), extracted from the stock 1.02 `.UPG`
-**Status:** mechanism proven from kernel disassembly and executed on hardware. **The fix is
-UNWIRED and must stay that way** — off-cable it suspended the device to RAM with no working wake
-source and cost a forced reboot on 2026-09-04. Read "How this failed" before touching it.
+**Status:** **OBJECTIVE ACHIEVED 2026-09-04 — `dpidle_cnt` 0 → 78, the SoC entered deep idle.**
+Suspend/resume works off-cable and the harness now recovers without a forced reboot. One narrow bug
+left: the USB gadget does not re-enumerate after a resume. Read the top two sections first; "How
+this failed" is kept as the record of two wrong diagnoses. Still UNWIRED in cinder-home.
 
 ## The one-line finding
 
@@ -137,6 +138,108 @@ Two of the 17 handlers were the reason this was not fired unattended:
 The first concern did not materialise: the panel powered down and came back with a full LCM
 re-init, repeatably. The second is **still untested** — it needs a finger on the glass, not a shell.
 
+## THE OBJECTIVE, ACHIEVED — deep idle entered, 2026-09-04
+
+**`dpidle_cnt[0]` went 0 → 78.** The SoC entered deep idle for the first time in this project's
+history. Log: `analysis/kernel/pm_deepidle_2026-09-04.log`.
+
+```
+pre   dpidle_cnt[0]=0,  slidle_cnt[0]=78548   by_vtg=107569
+      ... 3 suspend/resume cycles, screen off, off-cable ...
+post  dpidle_cnt[0]=78, slidle_cnt[0]=87754   by_vtg=121952
+```
+
+This is exactly what the disassembly predicted. `by_vtg` is the early-suspend flag, nothing on this
+system ever set it, and deep idle was gated behind it. Drive the early-suspend chain and the gate
+opens — measured, not inferred.
+
+**Where the 78 came from.** The counter was 0 through the first awake window, read 39 immediately
+after a 168 s suspend, and 78 by the end of the run — i.e. roughly 39 deep-idle entries per awake
+window. During those ~18-20 s windows early suspend is active and nothing holds a wakelock, so the
+CPU drops into deep idle between timer ticks. `by_vtg` still climbs alongside it (107569 → 121952),
+so the gate is **intermittent, not permanently open** — some idle attempts still see the flag
+clear. That is worth understanding before anyone claims deep idle is "fixed".
+
+**The wake timer was never needed.** `slp_pwake_time` read **-1** for this entire run — a reboot had
+reset it and it was never re-armed. The device suspended and woke anyway, three times, on gaps of
+5 s, 168 s and 10 s. `r12` read `0x00000020` on all three, which against
+`analysis/kernel/spm_wakesrc.txt` is **GPT**, the general-purpose timer. So the kernel's own timers
+bring it back; the SPM periodic wake was a safety net that turned out to be unnecessary. The
+irregular gaps are consistent with ordinary kernel timers rather than a fixed 30 s period.
+
+**Self-recovery works.** After 3 cycles the harness disarmed the timer and wrote `on`:
+
+```
+--- 3 cycles done: disarming and writing 'on' to leave suspend ---
+recovered: autosleep=off pwake=-1
+```
+
+and the screen came back **unaided, with no forced reboot** — the first run of this whole
+investigation that ended without one.
+
+**One bug remains, and it is narrow: the USB gadget does not re-init after a resume.** The screen
+returns, the device is fully alive, and the host still never sees it — adb stays down until a
+reboot. That is the entire residue of what was originally recorded as "the device bricks
+off-cable". `/sys/class/android_usb/android0/enable` is world-writable and reads `1` with
+`functions=adb`, so bouncing it (0, then 1) is the obvious fix; `tools/pmtest.sh` now does that
+after leaving suspend, **untested as of this writing**.
+
+So the original catastrophic-looking failure decomposes into three separate, ordinary things:
+suspend/resume working correctly, nothing writing `on` to leave the state, and a gadget that does
+not re-enumerate. None of them was the thing it looked like.
+
+## RESOLVED 2026-09-04 — it was never a wedge
+
+**The device suspends and resumes correctly, off-cable, repeatedly.** First completed
+suspend/resume in this project's history, and it happened five times in one run:
+
+```
+*** SUSPEND RETURNED: gap=30s  rc=1 r12=0x00000001 timer_out=0x000f00a4
+*** SUSPEND RETURNED: gap=32s  rc=2 r12=0x00000001
+*** SUSPEND RETURNED: gap=32s  rc=3 r12=0x00000001
+*** SUSPEND RETURNED: gap=31s  rc=4 r12=0x00000001
+*** SUSPEND RETURNED: gap=23s  rc=5 r12=0x00000020 timer_out=0x000a5482
+```
+
+Full log: `analysis/kernel/pm_first_suspend_2026-09-04.log`. `rc` is
+`icx_pm_helper/resume_count`; the gaps are `/proc/uptime` deltas across a 1 Hz sampling loop, i.e.
+time the CPU spent powered down.
+
+**What actually happens.** With `slp_pwake_time=30` and nothing holding a wakelock, the device
+enters a stable cycle:
+
+```
+suspend ──30 s (wake timer)──> resume ──~18-20 s awake──> suspend ──> …
+```
+
+The awake window is **Sony's resume wakelock**: `icx_pm_helper/resume_lock_ms` reads **20000**, and
+the measured windows are ~18-20 s. It fits exactly, and it is the same node this investigation had
+already read without realising what it explained.
+
+**Why it looked dead.** Nothing ever writes `on` back to `/sys/power/state`, so the device never
+leaves the early-suspend state: the panel stays dark through every awake window, and a USB replug
+lands in a suspended window more often than not and does nothing. From outside, a device that is
+cycling perfectly is indistinguishable from one that is hung — which is exactly what happened on
+the first attempt, and why it was recorded as a wedge.
+
+**So the earlier diagnosis was wrong twice over.** First "there is no wake source" (falsified by the
+wake-source tables), then "the resume path does not complete" (falsified here). The real defect is
+narrower and duller than either: **nothing calls the exit.** `echo on > /sys/power/state` takes
+`autosleep` from `mem` back to `off`, verified on-cable in the same session.
+
+`tools/pmtest.sh` now does that itself after N cycles, so the test recovers without a forced reboot.
+
+**Still open:** whether `dpidle_cnt` moves during the awake windows (the run was cut short by a
+forced reboot before the post-run counters were read). Note that a real suspend is *better* than
+deep idle for power — the CPU is off entirely — so deep idle now matters mainly for the awake
+windows.
+
+**Wake source, unresolved.** `r12` read `0x00000001` on four wakes and `0x00000020` on the fifth.
+Against the bit table in `analysis/kernel/spm_wakesrc.txt` those are `CPU` and `GPT`, **not**
+`PCM_TIMER` — despite the gaps matching `slp_pwake_time=30`. Either the pwake timer surfaces as
+something other than bit 1, or another timer is doing the waking. Not settled, and the decode
+should not be quoted as fact until it is.
+
 ## How this failed — read this first
 
 Wired into cinder-home (write `mem` on screen blank, `on` on wake), then tested off-cable. **The
@@ -267,3 +370,209 @@ there, and the touch-controller behaviour decides that.
 - `analysis/RE_codec_power.md` — the DAC finding, and why its fix is a symptom fix
 - `cinder-home/src/main.cpp` — `panel_dark()`, `screen_auto_off()`
 - [[reference_device_shell_gotchas]] — why the kernel came out of the firmware, not `/dev/kmem`
+
+---
+
+## Stage 1 wired into cinder-home — verified on device 2026-09-04 (16:41–16:52)
+
+### The mechanism works, and the dmesg proof is unambiguous
+
+Driven by hand from a shell, on the cable, in this order — **wakelock first, then `mem`**:
+
+```sh
+echo cinder > /sys/power/wake_lock
+echo mem    > /sys/power/state
+```
+
+dmesg:
+
+```
+ES handlers 15: [clkmgr_early_suspend], level: 400
+early_suspend: calling pm_autosleep_set_state() with parameter: 3
+[AUTOSLEEP][pm_autosleep_set_state]pm_wakep_autosleep_enabled(true)
+[AUTOSLEEP][queue_up_suspend_work]autosleep_state: 3
+[AUTOSLEEP][try_to_suspend]pm_get_wakeup_count
+active wakeup source: cinder                 <-- ours, blocking the RAM step
+active wakeup source: pmicAuxadc irq wakelock
+active wakeup source: sys_sync
+```
+
+Result state: `autosleep=mem`, `wake_lock=[cinder]`, `resume_count=0`, adb alive throughout.
+The full early-suspend chain ran (all 15 ES handlers, `clkmgr_early_suspend` included), autosleep
+armed, and `try_to_suspend` then declined to go to RAM because our wakelock is an active wakeup
+source. That is precisely the two-stage design: **deep-idle gate open, device still up.**
+
+`dpidle_cnt[0]` stayed 0, as predicted — the cable holds the USB0 clock and
+`dpidle_block_mask[CG_PERI0]=0x400` blocks deep idle regardless of the early-suspend flag. Stage 1
+is an off-cable win by construction; the on-cable run only proves the mechanism.
+
+### `/sys/power/autosleep` is written ASYNCHRONOUSLY — do not read it back immediately
+
+Read straight after the `mem` write it still says `off`; seconds later it says `mem`. The chain runs
+on `kworker/u4:0`. **Any test that samples `autosleep` immediately after the write will conclude,
+wrongly, that the write did nothing.** Sample it at least one second later.
+
+### Why the first armed boot did nothing: /contents is not there when cinder-home starts
+
+The first attempt at this test found `autosleep=off` after 60+ s of a dark screen with the config
+file present and readable. Cause, from dmesg:
+
+```
+[   10.142139] (1)[398:hagodaemon]fsg_store_file file=/emmc@contents, count=14, curlun->cdrom=0
+[   11.121555] (0)[398:hagodaemon]fsg_store_file file=/emmc@contents, count=14, curlun->cdrom=0
+[   12.691799] (1)[398:hagodaemon]fsg_store_file file=/emmc@contents, count=14, curlun->cdrom=0
+```
+
+`/contents` is `/emmc@contents`, and the USB mass-storage gadget **rebinds it as a LUN during boot**
+at 10.1/11.1/12.7 s. cinder-home starts at 10.17 s (`/proc/<pid>/stat` field 22 = 1017 jiffies).
+
+That one window caused two failures at once:
+
+1. **`threshold_s()` latched a failed read as "disabled"** for the whole boot. It cached `0` on any
+   read miss, so a boot that asked one tick too early never armed suspend.
+2. **The launcher's log redirect silently dropped.** `run_home`'s `can_append "$LOGF"` probe missed
+   in the same window, so it took the no-redirect branch and cinder-home's stdout/stderr went to
+   the fd the launcher had inherited (`/dev/pts/10`, a pty nothing reads).
+   `/contents/cinderhome.log` stayed **0 bytes** — so failure #1 left no evidence of itself.
+
+Both fixed:
+
+- `threshold_s()` now latches only on an answer worth trusting — a good value, or an
+  `access("/contents", R_OK|X_OK)` that succeeds while the config file is genuinely absent.
+  Anything else stays undecided and retries next tick. It also **logs its decision either way**;
+  the old version logged only the enabled case, i.e. stayed silent exactly when it mattered.
+- `run_home` now falls back to `/data/cinder/cinderhome.log` instead of dropping the redirect.
+  `/data` is ext4, mounted at 3.98 s, and the MSC gadget never touches it. `/contents` stays first
+  only because the user can read it over USB.
+
+Verified on the next boot: `suspend: enabled, idle threshold 60 s (/contents/cinder_suspend_s, 0
+retries)` at t=12.950, log written to `/contents/cinderhome.log`. The `0 retries` is luck of the
+draw on that boot — which is the point of the retry path.
+
+### Boot dead time — unrelated finding, same log
+
+Between **1.574 s** (`StopBootAnimation`, glass shows Cinder) and **7.44 s** (deferred_up done) the
+device paints no frames and reads no input: `deferred_up()` runs on the render thread and the frame
+loop gates on it (`if (!g_deferred_done) { … deferred_up(); continue; }`). The library build is
+4.8 s of that (`cinder_db_open` 2.165 s -> playback restore 6.966 s; 3456 tracks, 340 albums, art
+cache). So "a couple of seconds after boot with no touch response" is ~5.3 s of a blocked render
+thread, not dropped input.
+
+### The idle test itself was dead on every fresh boot — `g_playing` starts `true`
+
+The first armed boot with a correct threshold *still* did nothing. Neither the SoC suspend (60 s) nor
+the **codec standby (30 s, shipped and previously believed working)** fired, with the screen off
+since t=33 and every ALSA PCM reading `closed` at t=304.
+
+Cause: both gate on
+
+```c
+const bool idle = !g_screen_on && !g_playing;
+```
+
+and `g_playing` is **`static bool g_playing = true;`** — it is *intent*, not state. The only place
+that adopts the service's view sits behind `if (have_pos)`, so on a boot where nothing has ever been
+played there is no position report and it **stays true for the life of the process**.
+
+This was already known and written down in this file — `apply_pump_interval()` carries the comment
+"g_playing is INTENT and it starts `true`, so on a boot where nothing has been played it stays true
+forever", and both it and the auto-power-off guard work around it. The codec/suspend site was simply
+missed, which means **the codec standby has never once fired on a fresh boot** — consistent with the
+standing "the DAC/amp never enters standby on its own" observation, which turns out to have had two
+independent causes stacked on it.
+
+Fixed with the idiom the auto-power-off guard already uses:
+
+```c
+const bool audible = g_playing && cinder_audio_is_playing() != 0;
+const bool idle    = !g_screen_on && !audible;
+```
+
+Requiring the *service* to agree, not just our intent. That same test is trusted to switch the whole
+device off, so it is more than good enough to gate a codec standby, and it fails in the safe
+direction: `cinder_audio_is_playing()` is derived from the position having moved recently, so it only
+reads 0 once playback has genuinely stopped, and a one-tick flicker costs a single increment the next
+tick resets.
+
+**Generalisation worth carrying:** three features in this file now gate on "is it idle", and each one
+had to independently discover that `g_playing` cannot answer it. Any *fourth* should use `audible`.
+
+### `adb shell` does not propagate the remote exit code
+
+`adb shell 'exit 3'; echo $?` prints **0**. So `until adb shell '<test>'; do …; done` fires on the
+first iteration and proves nothing — it produced a false "stage 1 fired" here. Match on stdout:
+
+```sh
+until adb shell 'grep -a "X" /path' 2>/dev/null | tr -d '\r' | grep -q .; do sleep 5; done
+```
+
+### Codec standby now actually engages — confirmed by regmon readback
+
+With the `audible` fix in, on a clean boot with nothing ever played:
+
+```
+[cinder-home]    8.092 suspend: enabled, idle threshold 60 s (/contents/cinder_suspend_s, 0 retries)
+[cinder-home]   40.262 screen: idle timeout -> panel off (touch or Power wakes it)
+[cinder-home]   70.579 codec: idle 30 s -> DAC/amp to standby (a PCM open wakes it)
+```
+
+30.3 s after screen-off, as designed. Verified at the hardware level rather than from the log —
+a register read is `echo <reg> > /proc/regmon/<chip>/target` then `cat …/value` (writing `target`
+is a read; writing `value` is forbidden):
+
+| chip | 0x03 / 0x00 | 0x12 / 0x0E |
+|---|---|---|
+| `cxd3778gf` (codec) | `invalid length` | `invalid length` |
+| `mt6323` (PMIC, control) | `0x00000063` | `0x00000005` |
+
+The control matters: identical procedure, same padded target form, and the PMIC answers. The codec
+does not answer **at all**, which is exactly the signature Sony's standby produces — the chip drops
+below the point where regmon can reach it over I2C. Before this fix the amplifier stayed powered to
+drive an empty jack for the whole session on any boot where nothing had been played, i.e. always.
+
+### Stage 1 verified firing from cinder-home (2026-09-04, uptime 263)
+
+```
+[cinder-home]    8.092 suspend: enabled, idle threshold 60 s (/contents/cinder_suspend_s, 0 retries)
+[cinder-home]   40.262 screen: idle timeout -> panel off (touch or Power wakes it)
+[cinder-home]   70.579 codec: idle 30 s -> DAC/amp to standby (a PCM open wakes it)
+[cinder-home]  247.501 suspend: idle 60 s -> early suspend (deep idle on, still awake)
+```
+
+Predicted 248.09 (arm at 8.092 + 180 s boot grace + 60 s idle), actual **247.501**. Kernel after:
+`autosleep=mem`, `wake_lock=[cinder]`, `resume_count=0`, adb alive. Never reached RAM, by design.
+
+**Full early-suspend handler list, in order** (`early_suspend_count = 16, forbid_id = 0x0`):
+
+| # | handler | level |
+|---|---|---|
+| 0 | `wmt_dev_early_suspend [mtk_stp_wmt_soc]` | 0 |
+| 1 | `cxd3778gf_i2c_early_suspend` | 50 |
+| 2 | `pmic_early_suspend` | 51 |
+| 3 | **`himax_hx8526_ts_early_suspend`** | 51 |
+| 4 | `hwmsen_early_suspend` | 99 |
+| 5 | `batch_early_suspend` | 99 |
+| 6 | `stop_drawing_early_suspend` | 100 |
+| 7 | `vcodec_early_suspend` | 149 |
+| 8 | `SMI_common_early_suspend` | 149 |
+| 9 | `bq24262_wmport_early_suspend` | 150 |
+| 10 | `mtkfb_early_suspend` | 150 |
+| 11 | `kick_compaction_early_suspend` | 151 |
+| 12 | `mt_emifreq_early_suspend` | 350 |
+| 13 | `mt_cpufreq_early_suspend` | 350 |
+| 14 | `mt_hotplug_mechanism_early_suspend` | 400 |
+| 15 | `clkmgr_early_suspend` | 400 |
+
+**Two consequences worth naming.**
+
+**(a) The touchscreen driver early-suspends (handler 3), BELOW Cinder.** `screen_auto_off()`
+deliberately does *not* sleep the touch controller precisely so a tap can wake the device — stage 1
+undoes that at the kernel level, where Cinder's choice does not reach. So after stage 1 engages,
+touch-to-wake is expected to stop working and Power becomes the only way back. Power is proven (a
+press woke the device in 17 s against a 300 s timer). **This is the open question on shipping stage 1
+as wired** — needs a finger to settle, not a shell.
+
+**(b) Entering costs ~1.3 s, and 1.0 s of that is avoidable.** 257.959 -> 259.268, of which
+`stop_drawing_early_suspend: timeout waiting for userspace to stop drawing` is a full second: Cinder
+does not implement the `wait_for_fb_sleep`/`wait_for_fb_wake` handshake, so that handler always times
+out rather than being acknowledged. Implementing it would cut entry latency by ~75%.

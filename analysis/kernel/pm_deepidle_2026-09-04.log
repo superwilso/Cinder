@@ -1,0 +1,52 @@
+=== pmtest armed  date=Fri Sep  4 15:09:07 UTC 2026  uptime=368s  dry=no ===
+pre  dpidle_cnt[0]=0, slidle_cnt[0]=78548, rgidle_cnt[0]=21069
+pre  [4]dpidle_block_cnt[by_vtg]=107569
+pre  resume_count=0  pwake=-1
+sleeping 30s before arming — unplug NOW
+--- writing mem to /sys/power/state at uptime=398s ---
+t=0 up=398 rc=0 r12=0x00000000 dpidle_cnt[0]=0
+t=1 up=399 rc=0 r12=0x00000000 dpidle_cnt[0]=0
+*** SUSPEND RETURNED: gap=5s at uptime=404s  rc=1 r12=0x00000020 timer_out=0x0001ec57
+t=2 up=404 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=3 up=405 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=4 up=407 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=5 up=408 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=6 up=409 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=7 up=410 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=8 up=411 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=9 up=412 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=10 up=414 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=11 up=415 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=12 up=416 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=13 up=417 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=14 up=418 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=15 up=419 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=16 up=421 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=17 up=422 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+t=18 up=423 rc=1 r12=0x00000020 dpidle_cnt[0]=0
+*** SUSPEND RETURNED: gap=168s at uptime=591s  rc=2 r12=0x00000020 timer_out=0x00534640
+t=19 up=591 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=20 up=593 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=21 up=594 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=22 up=595 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=23 up=596 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=24 up=597 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=25 up=598 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=26 up=600 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=27 up=601 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=28 up=602 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=29 up=603 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=30 up=604 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=31 up=605 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=32 up=607 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=33 up=608 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=34 up=609 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+t=35 up=610 rc=2 r12=0x00000020 dpidle_cnt[0]=39
+*** SUSPEND RETURNED: gap=10s at uptime=620s  rc=3 r12=0x00000020 timer_out=0x00046044
+--- 3 cycles done: disarming and writing 'on' to leave suspend ---
+recovered: autosleep=off pwake=-1
+=== watch window over, woke=3 ===
+post dpidle_cnt[0]=78, slidle_cnt[0]=87754, rgidle_cnt[0]=28829
+post [4]dpidle_block_cnt[by_vtg]=121952
+post resume_count=3 r12=0x00000020 eint_sta=0x00000000,0x00000000,0x00000000,0x00000000,0x00400000,0x00000000
+post suspend_ts=1788534790.626392463 resume_ts=1788534790.629894386
