@@ -120,7 +120,23 @@ struct Framebuffer {
     map_len: usize,
     /// Write every mapped page instead of just the displayed one (escape hatch — see `blit`).
     all_pages: bool,
+    /// What we last wrote to page 0. A blit compares against this and writes only the rows that
+    /// actually changed — see `blit` for why that is worth 1.5 MB of RAM.
+    shadow: Vec<u32>,
+    /// When the last unconditional full write happened (the insurance below).
+    last_full: std::time::Instant,
+    /// Cleared to force the next blit to write every row regardless of the shadow.
+    shadow_valid: bool,
+    /// One-shot efficiency sample, so the win is a measured number in the log rather than a claim.
+    stat_frames: u32,
+    stat_rows: u64,
+    stat_done: bool,
 }
+
+/// How often to write every row whether it changed or not. Insurance, not correctness: nothing
+/// else is known to write fb0 during a session, but the cost of being wrong about that is a
+/// permanently stale region of screen, and the cost of the insurance is one full blit a minute.
+const FULL_BLIT_EVERY_S: u64 = 60;
 
 impl Framebuffer {
     fn open() -> Result<Self, String> {
@@ -188,7 +204,25 @@ impl Framebuffer {
             pages,
             if all_pages { "ALL" } else { "page 0 only" }
         );
-        Ok(Framebuffer { _file: file, fd, var, base: ptr as usize, stride, pages, map_len, all_pages })
+        // The shadow starts as zeroes and so does the mapping (the clear above), so the very first
+        // blit can already trust it — no special first-frame case, and no 1.5 MB write of pixels
+        // that are already black.
+        Ok(Framebuffer {
+            _file: file,
+            fd,
+            var,
+            base: ptr as usize,
+            stride,
+            pages,
+            map_len,
+            all_pages,
+            shadow: vec![0u32; W * H],
+            last_full: std::time::Instant::now(),
+            shadow_valid: true,
+            stat_frames: 0,
+            stat_rows: 0,
+            stat_done: false,
+        })
     }
 
     /// Blit one canvas to every page (the panel is triple-buffered).
@@ -202,34 +236,123 @@ impl Framebuffer {
     fn blit(&mut self, buf: &[u32]) {
         let base = self.base as *mut u8;
         let copy_bytes = (W * 4).min(self.stride);
+
         // PAGES. The panel maps 3 (yres_virtual = 3×800) and this used to memcpy the canvas into
         // ALL of them — ~4.6 MB per frame instead of ~1.5 MB. But we never pan: both the open
         // sequence and every flip below pin `yoffset = 0`, so page 0 is the only one the panel
         // ever scans. Writing the other two was memory bandwidth (and heat) spent on pixels
         // nothing displays. `/contents/cinder_fb_allpages` restores the old behaviour if a unit
         // ever turns out to page-flip internally — the symptom would be tearing or flicker, and
-        // the active mode is logged at open.
-        let write_pages = if self.all_pages { self.pages } else { 1 };
-        for page in 0..write_pages {
-            for y in 0..H {
-                let dst_row = (page * H + y) * self.stride;
-                if dst_row + copy_bytes > self.map_len || (y + 1) * W > buf.len() {
-                    break; // this row (and any after, in this page) would overrun a mapping
-                }
-                unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        buf.as_ptr().add(y * W) as *const u8,
-                        base.add(dst_row),
-                        copy_bytes,
-                    );
+        // the active mode is logged at open. That escape hatch keeps the old unconditional path.
+        if self.all_pages {
+            for page in 0..self.pages {
+                for y in 0..H {
+                    let dst_row = (page * H + y) * self.stride;
+                    if dst_row + copy_bytes > self.map_len || (y + 1) * W > buf.len() {
+                        break; // this row (and any after, in this page) would overrun a mapping
+                    }
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            buf.as_ptr().add(y * W) as *const u8,
+                            base.add(dst_row),
+                            copy_bytes,
+                        );
+                    }
                 }
             }
+            self.flip();
+            return;
         }
-        // Push the frame to the glass. mtkfb does NOT scan the framebuffer continuously — the
-        // panel only updates on this trigger ioctl (icx_bootanimation's flip, replicated exactly).
-        // The dirty-flag gate above us means this runs only when a frame actually changed, so the
-        // idle cost stays zero. Occasionally the driver blocks >33 ms here (the anim logs it as
-        // "heavy ioctl") — harmless at our frame rate.
+
+        // ── PARTIAL BLIT ──────────────────────────────────────────────────────────────────────
+        // `r.dirty` is a bool, so ANY change repaints the whole canvas and used to re-blit all
+        // 480x800 of it: a progress bar ticking once a second cost exactly as much as a full
+        // screen change. This compares each row against what we last wrote and copies only the
+        // rows that actually differ.
+        //
+        // WHY THIS IS A WIN EVEN THOUGH IT READS MORE THAN IT SAVES. The canvas and the shadow are
+        // ordinary cached RAM; the framebuffer is a device mapping, where the WRITE is the
+        // expensive side. Trading two cached reads for one avoided device-memory write is a good
+        // trade, and it is the same trade at every scale — the more of the screen that is static,
+        // the better it gets.
+        //
+        // AND IT CAN SKIP THE FLIP. When nothing differs there is nothing to push, so the
+        // FBIOPUT_VSCREENINFO below is skipped entirely — the ioctl the old comment records as
+        // occasionally blocking >33 ms. That is what makes a genuinely static screen free: the
+        // forced repaint that runs every 5 s for the life of the process now costs one pass over
+        // cached memory instead of 1.5 MB to the panel plus a heavy ioctl.
+        //
+        // THIS CANNOT PRODUCE AN ARTEFACT. It is a pure optimisation of the transfer: the bytes
+        // that end up in the framebuffer are exactly the bytes a full blit would have put there.
+        // That is the difference between this and dirty-rect RASTERISATION, where a missed region
+        // means a wrong pixel — worth doing later, and a much larger change.
+        let force_full = !self.shadow_valid
+            || self.last_full.elapsed().as_secs() >= FULL_BLIT_EVERY_S;
+        // Past the point where most of the screen is changing, comparing is pure overhead — a
+        // scroll or a screen transition dirties nearly every row. So the comparison switches
+        // itself off once more than half the rows have differed and the rest are copied blind,
+        // which bounds the worst case at half a compare on top of the write it was always doing.
+        let mut compare = !force_full;
+        let mut wrote = 0usize;
+
+        for y in 0..H {
+            let dst_row = y * self.stride;
+            if dst_row + copy_bytes > self.map_len || (y + 1) * W > buf.len() {
+                break; // this row (and any after) would overrun a mapping
+            }
+            let row = y * W..(y + 1) * W;
+            if compare {
+                if self.shadow[row.clone()] == buf[row.clone()] {
+                    continue;
+                }
+                if wrote * 2 > H {
+                    compare = false;
+                }
+            }
+            self.shadow[row.clone()].copy_from_slice(&buf[row.clone()]);
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    buf.as_ptr().add(y * W) as *const u8,
+                    base.add(dst_row),
+                    copy_bytes,
+                );
+            }
+            wrote += 1;
+        }
+
+        if force_full {
+            self.shadow_valid = true;
+            self.last_full = std::time::Instant::now();
+        }
+
+        // Report the actual ratio once, then never again. A claim about how much this saves is
+        // worth nothing next to the number from the device it runs on, and one line is cheap.
+        if !self.stat_done {
+            self.stat_frames += 1;
+            self.stat_rows += wrote as u64;
+            if self.stat_frames >= 300 {
+                self.stat_done = true;
+                println!(
+                    "cinder-ffi: partial blit — {} rows over {} frames = {:.1}% of a full blit",
+                    self.stat_rows,
+                    self.stat_frames,
+                    100.0 * self.stat_rows as f64 / (self.stat_frames as f64 * H as f64)
+                );
+            }
+        }
+
+        // Nothing reached the panel, so there is nothing to push to it.
+        if wrote == 0 {
+            return;
+        }
+        self.flip();
+    }
+
+    /// Push the frame to the glass. mtkfb does NOT scan the framebuffer continuously — the panel
+    /// only updates on this trigger ioctl (icx_bootanimation's flip, replicated exactly).
+    /// Occasionally the driver blocks >33 ms here (the anim logs it as "heavy ioctl") — harmless
+    /// at our frame rate, and skipped entirely now when no row changed.
+    fn flip(&mut self) {
         self.var.xoffset = 0;
         self.var.yoffset = 0;
         self.var.activate |= FB_ACTIVATE_FORCE;
@@ -4657,6 +4780,111 @@ fn request_cover(r: &Render, object_id: i64) {
 #[no_mangle]
 pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     let p = unsafe { cstr(path) };
+
+    // THE EXPENSIVE PART RUNS WITHOUT THE LOCK. This function used to take `cell()` on its first
+    // line and hold it across the SQLite open, build_library, the playlist store and the likes
+    // import — about 4.8 s on a 3,456-track library (measured 2026-09-04: cinder_db_open at t=2.165
+    // to "restore playback context" at t=6.966). Every frame takes that same lock, so the whole of
+    // it was time nothing could paint and nothing could read input, which is the ~5 s after boot
+    // where the device shows a Cinder screen that ignores you.
+    //
+    // Nothing below needs the render state until there is something to install, so the build now
+    // happens against local values and the lock is taken once, at the end, to swap them in. That
+    // is what makes it safe to call this from a worker thread (cinder-home does) instead of from
+    // the render thread.
+    let db = match cinder_db::Db::open(&p) {
+        Ok(db) => db,
+        Err(e) => {
+            // THROTTLED, because this sits inside a RETRY LOOP. Measured on device 2026-08-26
+            // (checklist 2D.2): with /db/MTPDB.dat renamed away, the shell's own "DB unavailable —
+            // will retry" line is rate-limited by retry_log and printed exactly once, but THIS one
+            // was not, so the retry printed it about 1.3 times a second forever — 61 KB of log in
+            // ten minutes, every line an fflush to vfat. That is the same "work on a timer that
+            // never stops" class section 2D of the checklist exists to catch, hiding one layer
+            // below the throttle that was supposed to cover it.
+            //
+            // Print the FIRST failure and then stay silent until the message changes or an open
+            // succeeds — a different error is news, the same error repeated is not.
+            db_open_err_log(&p, &format!("{e}"));
+            let mut guard = cell().lock().unwrap();
+            let Some(r) = guard.as_mut() else { return -2 };
+            // Don't leave the demo sample library showing on device — that would look like the
+            // user's music when the DB didn't actually load. Show an empty library instead so
+            // it's honest (Menu shows "Empty", the Library tabs are blank).
+            r.app.set_library(cinder_ui::Library::default());
+            r.dirty = true;
+            r.art_key = None;
+            r.last_track = None;
+            return -1;
+        }
+    };
+
+    // Build the browsable library now so the Library screen shows real music.
+    let lib = build_library(&db);
+    eprintln!(
+        "cinder-ffi: library loaded — {} tracks, {} albums, {} artists",
+        lib.songs.len(),
+        lib.album_count(),
+        lib.artists.len()
+    );
+    let plists = playlists::Store::open(playlists::DIR);
+    eprintln!("cinder-ffi: playlists: {} of your own", plists.lists.len());
+    // Liked list lives beside the user's music on both internal storage and SD card:
+    // /contents and /contents_ext are reachable over USB-MSC.
+    let liked = likes::liked_load_all();
+    eprintln!("cinder-ffi: liked songs: {} loaded from internal and SD card", liked.len());
+
+    // A liked list pushed from the PC (likesync) lands here as artist/title rows and is resolved
+    // against the library that was just built — object ids are rebuilt whenever the database is, so
+    // they can only be matched on this side. See `likes.rs` for why the import replaces rather than
+    // merges, and what it refuses to act on. Resolved against the local `lib` rather than
+    // `r.app.library()`, which is the only reason this can happen before the install.
+    let songs: Vec<(i64, String, String, String)> = {
+        // album_id -> the artist the album is filed under, so a featured-artist track can be found
+        // by the name the PC knows it by (see likes::resolve). Scoped so the borrow of `lib` ends
+        // before `lib` is moved into the render state below.
+        let album_artist: std::collections::HashMap<i64, &str> = lib
+            .album_groups
+            .iter()
+            .flat_map(|group| {
+                group.albums.iter().map(move |album| (album.album_id, group.artist.as_str()))
+            })
+            .collect();
+        lib.songs
+            .iter()
+            .map(|s| {
+                let filed_under = album_artist.get(&s.album_id).copied().unwrap_or("");
+                (s.object_id, s.artist.clone(), s.title.clone(), filed_under.to_string())
+            })
+            .collect()
+    };
+    let (outcome, imported) = likes::apply_import_all(
+        songs
+            .iter()
+            .map(|(id, artist, title, filed)| {
+                (*id, artist.as_str(), title.as_str(), filed.as_str())
+            }),
+    );
+    match outcome {
+        likes::Outcome::None => {}
+        likes::Outcome::Ignored(why) => {
+            eprintln!("cinder-ffi: liked import ignored: {why}");
+        }
+        likes::Outcome::Unresolved(rows) => {
+            eprintln!(
+                "cinder-ffi: liked import: {rows} row(s) matched nothing in the library \
+                 — left in place for the next boot"
+            );
+        }
+        likes::Outcome::Applied(liked_n, missing) => {
+            eprintln!(
+                "cinder-ffi: liked import applied — {liked_n} liked, {missing} not on this device"
+            );
+        }
+    }
+
+    // ── INSTALL. Everything above was local; this is the only part that needs the render state,
+    // and it is all moves and assignments. ───────────────────────────────────────────────────────
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return -2 };
     r.dirty = true; // the library (or its absence) changed -> repaint
@@ -4671,6 +4899,10 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     // cinder-home), and any cover read inside that window logs `magic=unreadable` and is cached as
     // a failure. Clearing the key here means the next paint re-requests it through the normal
     // path; the worker installs the real cover a moment later.
+    //
+    // Cleared at INSTALL time rather than on entry (where it used to be): with the build outside
+    // the lock, frames keep running while it happens, and clearing the key early would just let
+    // those frames re-cache an answer derived from the library we are about to replace.
     r.art_key = None;
     // …and make the next now-playing poll count as a TRACK CHANGE, because that is the only thing
     // that re-reads the cover. The re-request is nested inside `if changed`, so clearing art_key on
@@ -4680,105 +4912,24 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     // The only thing lost is one rewind-history push across a library reopen, which is not
     // meaningful state after the library has been rebuilt underneath it.
     r.last_track = None;
-    match cinder_db::Db::open(&p) {
-        Ok(db) => {
-            // Build the browsable library now so the Library screen shows real music.
-            let lib = build_library(&db);
-            eprintln!(
-                "cinder-ffi: library loaded — {} tracks, {} albums, {} artists",
-                lib.songs.len(),
-                lib.album_count(),
-                lib.artists.len()
-            );
-            // Sony's playlist rows are kept so a later edit can re-merge the two lists without
-            // re-querying; ours come from the .m3u8 folder beside the liked list.
-            r.db_playlists = lib.playlists.clone();
-            r.app.set_library(lib);
-            r.db = Some(db);
-            r.plists = playlists::Store::open(playlists::DIR);
-            eprintln!("cinder-ffi: playlists: {} of your own", r.plists.lists.len());
-            refresh_playlists(r);
-            // Liked list lives beside the user's music on both internal storage and SD card:
-            // /contents and /contents_ext are reachable over USB-MSC.
-            r.liked = likes::liked_load_all();
-            eprintln!("cinder-ffi: liked songs: {} loaded from internal and SD card", r.liked.len());
-            r.liked_path = Some(likes::INTERNAL_LIKED_PATH.to_string());
-            // A liked list pushed from the PC (likesync) lands here as artist/title rows and is
-            // resolved against the library that was just built — object ids are rebuilt whenever
-            // the database is, so they can only be matched on this side. See `likes.rs` for why
-            // the import replaces rather than merges, and what it refuses to act on.
-            let lib_ref = r.app.library();
-            // album_id -> the artist the album is filed under, so a featured-artist track can be
-            // found by the name the PC knows it by (see likes::resolve).
-            let album_artist: std::collections::HashMap<i64, &str> = lib_ref
-                .album_groups
-                .iter()
-                .flat_map(|group| {
-                    group.albums.iter().map(move |album| (album.album_id, group.artist.as_str()))
-                })
-                .collect();
-            let songs: Vec<(i64, String, String, String)> = lib_ref
-                .songs
-                .iter()
-                .map(|s| {
-                    let filed_under = album_artist.get(&s.album_id).copied().unwrap_or("");
-                    (s.object_id, s.artist.clone(), s.title.clone(), filed_under.to_string())
-                })
-                .collect();
-            let (outcome, imported) = likes::apply_import_all(
-                songs
-                    .iter()
-                    .map(|(id, artist, title, filed)| {
-                        (*id, artist.as_str(), title.as_str(), filed.as_str())
-                    }),
-            );
-            match outcome {
-                likes::Outcome::None => {}
-                likes::Outcome::Ignored(why) => {
-                    eprintln!("cinder-ffi: liked import ignored: {why}");
-                }
-                likes::Outcome::Unresolved(rows) => {
-                    eprintln!(
-                        "cinder-ffi: liked import: {rows} row(s) matched nothing in the library \
-                         — left in place for the next boot"
-                    );
-                }
-                likes::Outcome::Applied(liked, missing) => {
-                    eprintln!(
-                        "cinder-ffi: liked import applied — {liked} liked, {missing} not on this device"
-                    );
-                }
-            }
-            if let Some(ids) = imported {
-                r.liked.extend(ids);
-                liked_save(r); // rewrites cinder_liked.conf AND the cinder_loved.tsv export
-            }
-            r.app.set_liked_count(r.liked.len());
-            r.db_path = Some(p.clone());
-            start_art_cache(r, &p);
-            db_open_err_reset();
-            0
-        }
-        Err(e) => {
-            // THROTTLED, because this sits inside a RETRY LOOP. Measured on device 2026-08-26
-            // (checklist 2D.2): with /db/MTPDB.dat renamed away, the shell's own "DB unavailable —
-            // will retry" line is rate-limited by retry_log and printed exactly once, but THIS one
-            // was not, so the retry printed it about 1.3 times a second forever — 61 KB of log in
-            // ten minutes, every line an fflush to vfat. That is the same "work on a timer that
-            // never stops" class section 2D of the checklist exists to catch, hiding one layer
-            // below the throttle that was supposed to cover it.
-            //
-            // Print the FIRST failure and then stay silent until the message changes or an open
-            // succeeds — a different error is news, the same error repeated is not.
-            db_open_err_log(&p, &format!("{e}"));
-            // Don't leave the demo sample library showing on device — that would look like the
-            // user's music when the DB didn't actually load. Show an empty library instead so
-            // it's honest (Menu shows "Empty", the Library tabs are blank). (The path is a
-            // guess — confirm /db/MTPDB.dat on device.)
-            r.app.set_library(cinder_ui::Library::default());
-            -1
-        }
+    // Sony's playlist rows are kept so a later edit can re-merge the two lists without re-querying;
+    // ours come from the .m3u8 folder beside the liked list.
+    r.db_playlists = lib.playlists.clone();
+    r.app.set_library(lib);
+    r.db = Some(db);
+    r.plists = plists;
+    refresh_playlists(r);
+    r.liked = liked;
+    r.liked_path = Some(likes::INTERNAL_LIKED_PATH.to_string());
+    if let Some(ids) = imported {
+        r.liked.extend(ids);
+        liked_save(r); // rewrites cinder_liked.conf AND the cinder_loved.tsv export
     }
+    r.app.set_liked_count(r.liked.len());
+    r.db_path = Some(p.clone());
+    start_art_cache(r, &p);
+    db_open_err_reset();
+    0
 }
 
 /// The last DB-open error we printed, so a retry loop cannot become the log.

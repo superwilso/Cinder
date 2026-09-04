@@ -508,6 +508,10 @@ bool g_audio_pump_started = false;
 bool g_resume_ready = false;   // resume/scrobble state restored after the DB became available
 long g_deferred_retry_ms = 0;  // pace retries after a transient service/storage failure
 int g_deferred_rc = -1;        // result slot for non-capturing guarded init callbacks
+// The library build runs on its own thread; these are the handshake. `g_lib_pending` is the LAST
+// thing the worker writes, after g_deferred_rc, so a reader that sees it clear sees a valid rc.
+volatile bool g_lib_pending = false;   // a library build is in flight right now
+bool g_lib_thread_started = false;     // one worker at a time (reset to allow a retry)
 time_t g_healthy_since = 0;    // when deferred init completed (for the proven-healthy reset)
 bool g_counter_reset = false;  // have we cleared the launcher bad-boot counter this boot?
 time_t g_first_paint_at = 0;   // when the FIRST frame hit the panel (the bad-boot health signal)
@@ -654,6 +658,7 @@ void apply_eq_fn();      // defined below (carry_out helpers); re-applied from d
 void fm_release_capture(); // defined below; hands hw:0,1 back before any DELIBERATE exit
 void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, before render_up)
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
+namespace fbsync { void start(); }  // defined below (before socsusp); the fb early-suspend handshake
 extern bool g_np_poll_now;  // defined with the pump state: force the next now-playing poll (see below)
 extern bool g_house_due;    // defined with the pump state: run the ~1 Hz housekeeping on the next frame
 void sync_volume_from_hw(); // defined below (volume backend); seeds the UI level from the mixer
@@ -713,9 +718,37 @@ void retry_log(RetryLog& st, const char* msg) {
 
 // DEFERRED bring-up: the slow/blocking parts (library DB load + scrobbler + PlayerService
 // connect). Run from the pump AFTER the first frame is painted, each under the hang watchdog
+// Build the library off the render thread. SIGALRM is blocked here for the same reason it is in
+// fbsync: that signal belongs to the render worker (run_guarded's alarm is process-directed), and a
+// guard alarm delivered to this thread would fail the owner check and take the process down.
+void* lib_open_thread(void*) {
+    sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
+    pthread_sigmask(SIG_BLOCK, &sa, nullptr);
+    const long t0 = now_ms();
+    const int rc = cinder_db_open("/db/MTPDB.dat");
+    // ONLY NARRATE A BUILD THAT WORKED. This runs inside deferred_up's DB RETRY LADDER, so on a
+    // device whose library will never open it fires again on every retry, for the life of the
+    // process — 195 log lines in the `stalled-bringup` harness scenario, each one an fflush to
+    // vfat, which is the exact failure class the throttles elsewhere in this file exist for. A
+    // failure is already reported, throttled, by retry_log below; a success happens once.
+    if (rc == 0) {
+        char m[112];
+        std::snprintf(m, sizeof m, "deferred_up: library build finished in %ld ms", now_ms() - t0);
+        clog_(m);
+    }
+    g_deferred_rc = rc;
+    g_lib_pending = false;   // LAST: publishes the rc above to the render thread
+    return nullptr;
+}
+
 // so a blocking Sony-IPC can't stall the device. Idempotent, one-shot.
 void deferred_up() {
     if (g_deferred_done) return;
+    // First, and exactly once: this depends on nothing below it and costs one thread that
+    // spends its life blocked in read(). Starting it here rather than after the prerequisites
+    // means a boot whose DB or PlayerService never comes up still answers the fb handshake.
+    static bool fbsync_started = false;
+    if (!fbsync_started) { fbsync_started = true; fbsync::start(); }
     const long retry_now = now_ms();
     if (retry_now - g_deferred_retry_ms < 1000) return;
     g_deferred_retry_ms = retry_now;
@@ -740,18 +773,49 @@ void deferred_up() {
         static long db_next_ms = 0;
         static long db_every_ms = 1000;
         if (retry_now < db_next_ms) return;
-        g_deferred_rc = -1;
-        // WATCHDOG ONLY, and 45 s rather than 25. cinder_db_open holds cell().lock() across the
-        // SQLite open, build_library, the playlist store and the likes import, so a siglongjmp out
-        // of it leaves that std::sync::Mutex locked with no owner for the life of the process —
-        // every later frame then blocks in cinder-ffi and the frame watchdog kills us anyway, two
-        // cycles later and with the wrong stack in the log. The retry ladder below is unaffected:
-        // it is driven by the RETURN CODE (a missing /contents returns non-zero promptly), not by
-        // the timeout. The budget is raised because the consequence of overrunning it is now a
-        // clean exit into the escape ladder rather than a skipped subsystem, and the full build
-        // across a ~3,500-track library has never been timed.
-        run_watchdog_only("deferred_up: cinder_db_open + build library", 45,
-                    []() { g_deferred_rc = cinder_db_open("/db/MTPDB.dat"); });
+
+        // THE BUILD RUNS ON ITS OWN THREAD, AND THAT IS THE BOOT DEAD TIME FIX. Measured
+        // 2026-09-04: cinder_db_open at t=2.165 to "restore playback context" at t=6.966 — 4.8 s of
+        // a 5.3 s window in which the device shows a Cinder screen and answers nothing, because the
+        // frame loop's bring-up gate holds back paint AND input for the whole of bring-up.
+        //
+        // Two things had to change together. cinder_db_open used to hold cinder-ffi's state lock
+        // across the entire build, so moving it to a thread would only have relocated the stall to
+        // the render thread's next frame; it now builds against local values and takes the lock
+        // once, to install (see lib.rs). And the gate below now falls through while `g_lib_pending`
+        // is set, so the loop paints and reads input against an empty library until the real one
+        // lands and publishes a repaint.
+        //
+        // THE 45 s WATCHDOG IS GONE ON PURPOSE. It existed because a build that never returned
+        // froze the render thread, and it had to be watchdog-only because siglongjmp'ing out would
+        // have left cinder-ffi's mutex locked with no owner. Neither hazard survives the move: a
+        // stuck worker holds no lock and costs a library, not the app. That is strictly better than
+        // the clean exit it used to buy.
+        if (!g_lib_thread_started) {
+            g_lib_thread_started = true;
+            g_lib_pending = true;
+            g_deferred_rc = -1;
+            pthread_attr_t at;
+            pthread_attr_init(&at);
+            pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+            pthread_t th;
+            const bool spawned = pthread_create(&th, &at, lib_open_thread, nullptr) == 0;
+            pthread_attr_destroy(&at);
+            if (spawned) {
+                // First attempt only, for the same reason the finish line is success-only: this
+                // sits in a retry ladder.
+                static bool said = false;
+                if (!said) { said = true; clog_("deferred_up: cinder_db_open + build library (background thread)"); }
+                return;
+            }
+            // Could not get a thread. Do it inline rather than skip the library — that is the old
+            // behaviour, dead time and all, which is still much better than no music.
+            g_lib_pending = false;
+            clog_("deferred_up: library thread would not start — building inline (screen will stall)");
+            g_deferred_rc = cinder_db_open("/db/MTPDB.dat");
+        }
+        if (g_lib_pending) return;      // still building; the frame loop is live meanwhile
+        g_lib_thread_started = false;   // a retry below gets a fresh worker
         if (g_deferred_rc != 0) {
             static RetryLog rl_DB = {0, 0};
             retry_log(rl_DB, "deferred_up: DB unavailable — will retry");
@@ -2627,6 +2691,129 @@ void screen_toggle() {
 // unparseable means disabled, so an existing install gains nothing until it is asked to. The file
 // rather than the settings UI because this is still new: it is trivially inspectable and trivially
 // removable from a PC, which a Rust-side setting is not.
+// ── FRAMEBUFFER EARLY-SUSPEND HANDSHAKE ────────────────────────────────────────────────────────
+// Android's fb early-suspend handler asks userspace to stop drawing and WAITS one second for an
+// answer. Nothing here ever answered, so every single early suspend paid the full timeout:
+//
+//   stop_drawing_early_suspend: timeout waiting for userspace to stop drawing
+//
+// Measured 2026-09-04: entering early suspend took 1.31 s wall (257.959 -> 259.268 in dmesg) and
+// 1.00 s of that was this one handler timing out. Answering cuts entry latency by ~75%.
+//
+// PROTOCOL, read out of the kernel image rather than assumed (fb_state @0xc0c37bc0, states named
+// by what the code does with them, not by AOSP convention):
+//
+//   fb_state == 2  DRAWING             set by start_drawing_late_resume  (c00be61c)
+//   fb_state == 1  REQUEST_STOP        set by stop_drawing_early_suspend (c00be8b0), which then
+//                                      waits for fb_state == 0 with a 1 s timeout
+//   fb_state == 0  STOPPED_DRAWING     set by *wait_for_fb_wake_show*    (c00be76c)
+//
+// The acknowledgement is in **wait_for_fb_wake, not wait_for_fb_sleep** — that is the whole trick,
+// and it is the opposite of what the node names suggest. Reading wait_for_fb_wake is what takes
+// fb_state 1 -> 0 and wakes the queue the early-suspend handler is sleeping on. So the loop must
+// read BOTH nodes, in order, and must not dawdle between them or the timeout fires anyway:
+//
+//   read(wait_for_fb_sleep)  blocks while fb_state == 2, returns "sleeping"  -> suspend beginning
+//   read(wait_for_fb_wake)   ACKs (1 -> 0), then blocks until fb_state == 2, returns "awake"
+//
+// Both reads return -ERESTARTSYS if a signal is pending, so EINTR is normal and must be retried.
+//
+// This needs a dedicated thread because both reads block indefinitely, and it must not be the
+// thread that owns SIGALRM — that is the render worker's (run_guarded's alarm is process-directed;
+// see the guard notes above), so SIGALRM is blocked here.
+//
+// Safe because by the time stage 1 fires, Cinder has not painted for minutes: the panel blanks on
+// its own idle timer long before the suspend threshold, so "stop drawing" is already true and the
+// ACK only tells the kernel something it could not otherwise find out.
+namespace fbsync {
+
+const char kDisable[]   = "/contents/cinder_no_fbsync";
+const char kSleepNode[] = "/sys/power/wait_for_fb_sleep";
+const char kWakeNode[]  = "/sys/power/wait_for_fb_wake";
+
+// Best-effort view of the panel, published for whoever wants it. `g_fb_last_wake_ms` is a real
+// late-resume stamp straight from the kernel — strictly better than noticing a resume_count change
+// on the next 1 Hz tick, which is how socsusp currently finds out.
+volatile int  g_fb_awake      = 1;
+volatile long g_fb_last_wake_ms = 0;
+
+// One open+read per call: these are sysfs show() handlers, so the blocking wait happens inside the
+// read and a fresh open is needed each time round.
+int read_blocking(const char* path, char* buf, size_t n) {
+    for (;;) {
+        const int fd = ::open(path, O_RDONLY);
+        if (fd < 0) return -1;
+        const ssize_t r = ::read(fd, buf, n - 1);
+        const int e = errno;
+        ::close(fd);
+        if (r >= 0) { buf[r] = 0; return (int)r; }
+        if (e == EINTR) continue;
+        return -1;
+    }
+}
+
+void* thread(void*) {
+    sigset_t sa; sigemptyset(&sa); sigaddset(&sa, SIGALRM);
+    pthread_sigmask(SIG_BLOCK, &sa, nullptr);
+
+    char buf[32];
+    int  cycles = 0;
+    int  fast   = 0;
+    for (;;) {
+        const long t0 = now_ms();
+        if (read_blocking(kSleepNode, buf, sizeof buf) < 0) {
+            clog_("fbsync: wait_for_fb_sleep unreadable — handshake off for this boot");
+            return nullptr;
+        }
+        g_fb_awake = 0;
+
+        if (read_blocking(kWakeNode, buf, sizeof buf) < 0) {
+            clog_("fbsync: wait_for_fb_wake unreadable — handshake off for this boot");
+            return nullptr;
+        }
+        g_fb_awake = 1;
+        g_fb_last_wake_ms = now_ms();
+
+        // A node that answers instantly instead of blocking would turn this into a busy loop that
+        // eats a core for the life of the process. Neither read is supposed to return quickly —
+        // one waits for suspend, the other for resume — so a fast round trip means the contract is
+        // not what the disassembly said, and the right response is to stop rather than to spin.
+        if (now_ms() - t0 < 50) {
+            if (++fast >= 20) {
+                clog_("fbsync: nodes are not blocking (20 instant cycles) — handshake off, this is a busy loop");
+                return nullptr;
+            }
+        } else {
+            fast = 0;
+        }
+
+        // Log the first few, then go quiet: this fires on every screen-off for the life of the
+        // process, and the interesting part is that it works at all.
+        if (++cycles <= 3) {
+            char m[96];
+            std::snprintf(m, sizeof m, "fbsync: fb sleep/wake cycle %d acknowledged (no 1 s stall)", cycles);
+            clog_(m);
+        }
+    }
+}
+
+void start() {
+    if (::access(kDisable, F_OK) == 0) { clog_("fbsync: disabled (/contents/cinder_no_fbsync)"); return; }
+    if (::access(kSleepNode, R_OK) != 0 || ::access(kWakeNode, R_OK) != 0) {
+        clog_("fbsync: /sys/power/wait_for_fb_* absent — nothing to answer");
+        return;
+    }
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_t th;
+    if (pthread_create(&th, &at, thread, nullptr) != 0) clog_("fbsync: pthread_create FAILED");
+    else clog_("fbsync: answering the fb early-suspend handshake (saves ~1 s per suspend)");
+    pthread_attr_destroy(&at);
+}
+
+} // namespace fbsync
+
 namespace socsusp {
 
 const char kDisableFile[] = "/contents/cinder_no_suspend";
@@ -9188,6 +9375,10 @@ void* render_driver(void*) {
         // process. Nothing writes to fb0 after boot, so that was expensive insurance against an
         // event that can no longer happen; 5 s keeps the safety net at a twentieth of the cost.
         // (While the panel is dark the paint is skipped entirely, so this costs nothing there.)
+        // The 4.6 MB figure above was the ALL-PAGES blit. /contents/cinder_fb_allpages was found
+        // still present on the device 2026-09-04 — a leftover from an 2026-08-18 ghost-UI test
+        // whose actual cause (mtkfb handing back the previous session's pixels) was root-caused and
+        // fixed on 2026-08-26 with a clear of the mapping at init. Removed; the blit is ~1.5 MB.
         static long last_forced_ms = 0;
         if (n < 600) {
             cinder_force_dirty();
@@ -9509,7 +9700,7 @@ void* render_driver(void*) {
         }
 
         // Panel dark => skip the PAINT ONLY. Nobody can see the frame, and with the visualiser
-        // running while playing this is a full repaint + 4.6 MB blit every 16 ms — the cost the
+        // running while playing this is a full repaint + full-screen blit every 16 ms — the cost the
         // screen-off timer exists to avoid, so blanking the backlight alone left the win on the
         // table. The forced-dirty calls above still run, so the flag is set when we resume, and
         // both wake paths force a repaint as well.
@@ -9598,15 +9789,37 @@ void* render_driver(void*) {
             // sweep already covers by ~30 s. Past a minute this is a framework call and a log line
             // every five seconds for the life of the process — 4,585 of them in a six-hour run
             // where bring-up never completed (cinder-home/harness, `adverse`).
-            if (g_app && bring_now < 60000 && (n < 300 || bring_now - last_anim_kill_ms >= 5000)) {
+            // PACED BY THE CLOCK, NOT THE FRAME COUNTER. `n < 300` meant "every iteration for the
+            // first 300 of them", and how long that is depends entirely on what else the loop is
+            // doing — it was ~66 calls while bring-up blocked the loop and ~100 once the library
+            // build stopped blocking it, which is how this quietly went over the harness's
+            // log budget (`autooff-idle`, 114 -> 179 lines). The job is idempotent and the
+            // animation dies on the first call that lands; the burst only exists in case init
+            // starts it slightly after we do. Every 200 ms for the first 3 s covers that for a
+            // fixed cost, then the 5 s ladder to a minute, then not at all.
+            const long anim_every = bring_now < 3000 ? 200 : 5000;
+            if (g_app && bring_now < 60000 && bring_now - last_anim_kill_ms >= anim_every) {
                 g_app->StopBootAnimation();
                 last_anim_kill_ms = bring_now;
             }
-            if (bring_now - deferred_stalled_since < DEFERRED_GRACE_MS) { ++n; usleep(16000); continue; }
+            // Waiting on the BACKGROUND library build is not a reason to freeze the screen. That
+            // build is ~4.8 s of a ~5.3 s bring-up, and holding paint and input back for it is the
+            // whole boot dead time. The loop is safe with an empty library — it is the state
+            // cinder-ui's host tests cover most heavily, and it is the same arm this gate already
+            // falls through to when bring-up stalls past DEFERRED_GRACE_MS. The difference is only
+            // that a healthy boot now reaches it in a second instead of never.
+            if (!g_lib_pending && bring_now - deferred_stalled_since < DEFERRED_GRACE_MS) { ++n; usleep(16000); continue; }
             if (!g_bringup_settled) {
                 g_bringup_settled = true;
-                clog_("render_driver: bring-up has not completed in 10s — running the full loop "
-                      "anyway (screen-off, auto power-off and input are down here)");
+                // Two very different reasons to be here, and saying the wrong one is worse than
+                // saying nothing: the library case is a healthy boot reaching this arm in under a
+                // second BY DESIGN, and reporting it as "has not completed in 10s" would make
+                // every normal boot look stalled in the log.
+                clog_(g_lib_pending
+                      ? "render_driver: library still building in the background — running the full "
+                        "loop now (screen and input are live)"
+                      : "render_driver: bring-up has not completed in 10s — running the full loop "
+                        "anyway (screen-off, auto power-off and input are down here)");
             }
         }
         // Straggler sweep: if the anim somehow survived (or respawned), re-kill at ~15 s and
@@ -9704,12 +9917,38 @@ void* render_driver(void*) {
                 // flicker costs a single increment that the next tick resets.
                 const bool audible = g_playing && cinder_audio_is_playing() != 0;
                 const bool idle = !g_screen_on && !audible;
-                if (idle) {
+
+                // THE CODEC IS ONLY IN THE PATH FOR THE 3.5 mm JACK. On a Bluetooth link the audio
+                // leaves over A2DP and the CXD3778GF is driving nothing whatsoever — so "playing"
+                // is not a reason to keep the headphone amplifier powered. The first cut of this
+                // standby deliberately kept the codec awake on BT anyway ("being conservative in
+                // the first cut is worth more than the extra saving"); that caution has now been
+                // paid for and the case is worth taking, because screen-off BT playback for hours
+                // is one of the two ways this device is actually used.
+                //
+                // `cinder_get_bt_route()` is `g_bt_have_name`, i.e. a peer that is linked AND whose
+                // name we have read back — not merely a radio that claims to be up. That
+                // distinction matters here: GetBtStatus alone has reported a connection with no
+                // peer on this device before.
+                //
+                // Safe on a mid-track disconnect: the fallback to the jack opens the local PCM, and
+                // Sony's driver clears standby on PCM open by itself — the same property that makes
+                // the whole standby safe in the first place.
+                //
+                // NOTE this deliberately does NOT feed soc_suspend_tick below. Early suspend during
+                // BT playback would put the SoC's idle path in a different state while the CPU is
+                // still feeding an A2DP stream, and that is a separate experiment with a separate
+                // failure mode. The codec is in the path or it is not; the SoC keeps its old rule.
+                const bool on_bt = cinder_get_bt_route() != 0;
+                const bool codec_idle = !g_screen_on && !(audible && !on_bt);
+                if (codec_idle) {
                     if (idle_secs < 100000) ++idle_secs;
                     if (!we_slept && idle_secs >= 30) {
                         if (cinder_codec_set_standby(1) == 0) {
                             we_slept = true;
-                            clog_("codec: idle 30 s -> DAC/amp to standby (a PCM open wakes it)");
+                            clog_(on_bt
+                                  ? "codec: playing over Bluetooth 30 s -> DAC/amp to standby (not in the path)"
+                                  : "codec: idle 30 s -> DAC/amp to standby (a PCM open wakes it)");
                         }
                     }
                 } else {
@@ -9722,9 +9961,11 @@ void* render_driver(void*) {
                         cinder_codec_set_standby(0);
                     }
                 }
-                // Same idleness test drives the SoC suspend. Ordered after the codec so the DAC is
-                // already in standby by the time the whole SoC goes down — the codec fix stands on
-                // its own and must not depend on this one being enabled.
+                // The SoC suspend uses the STRICTER `idle`, not `codec_idle`: BT playback lets the
+                // codec sleep but must not let the whole SoC go down under a live A2DP stream.
+                // Ordered after the codec so the DAC is already in standby by the time the SoC
+                // does go down — the codec fix stands on its own and must not depend on this one
+                // being enabled.
                 soc_suspend_tick(idle);
             }
             if (cinder_sleep_should_pause()) {
