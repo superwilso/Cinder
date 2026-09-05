@@ -3,7 +3,62 @@ resolver = "2"
 members = ["cinder-ui", "cinder-host", "cinder-device", "cinder-sim", "cinder-ffi", "cinder-db"]
 
 [profile.release]
-opt-level = "z"
+# OPTIMISE FOR SPEED, NOT SIZE. This was `"z"` from the first commit, with no rationale recorded
+# anywhere in the tree — and `"z"` is the wrong trade for this device. /system has 490 MB free
+# against a ~3.7 MB binary, and the SoC is one 1 GHz in-order Cortex-A7: bytes are abundant and
+# cycles are what the battery is actually spent on. `"z"` bans the inlining and vectorisation
+# that every hot loop here depends on — `grad_row`, the canvas blits, `song_order`, `az_present`
+# — so it was paying flash we have in cycles we do not.
+#
+# Measured on the host with the existing `render_bench` (2026-09-05, same machine, back to back;
+# `cargo test -p cinder-ui --release --test render_bench -- --ignored --nocapture`):
+#
+#   art::block gradient 480x480    6309.6 -> 2654.5 us   2.38x
+#   cover, viz OFF                 6435.9 -> 2779.9 us   2.32x
+#   library artists (real covers)   849.0 ->  371.0 us   2.29x
+#   library songs (gradients)       448.4 ->  203.7 us   2.20x
+#   az_present songs                 93.1 ->   29.0 us   3.21x
+#   just canvas fill                 70.2 ->   35.2 us   1.99x
+#
+# `3` is NOT measured here. PR #9's audit measured it on its own host and found it no better than
+# `2` on these loops for about twice the size growth; that is second-hand, and it is why `2` was
+# the only level carried to the device — not evidence in its own right. To ship `3`, measure it.
+#
+# ON DEVICE IT IS 1.2x, NOT 2-3x — AND THE DEVICE NUMBER IS THE ONE THAT COUNTS. Measured
+# 2026-09-05 by flashing both builds from identical source and reading the windowed raster
+# sampler in `cinder_render_tick` (NW-A55, dev channel, same boot sequence, same screens):
+#
+#                              "z"        2                     2 (+B4/B9/B10)
+#   raster frames 1..300     6.93 ms   6.14 ms   1.13x     6.32 ms   1.10x
+#   library build            4.77 s    4.52 s    1.06x     4.56 s    1.05x
+#
+# ONLY THE frames 1..300 WINDOW IS COMPARABLE, and treat it as ~1.1x, not a precise figure.
+# It follows a fixed boot sequence, so the same work is sampled every time; the two `2` builds
+# landing 6.14 and 6.32 put the noise floor at roughly +-3%, which a 10% gap clears but not by
+# much. The frames 301..600 window is NOT controlled — what is on screen by then depends on BT
+# reconnect attempts and art decoding, and it has read 4.83, 5.97 and 7.50 ms across builds in
+# no consistent order. It was briefly quoted here as a 1.24x win; that was reading noise.
+#
+# What survives is the DIRECTION, which is consistent across every host bench and every device
+# sample taken: `2` is faster, on device by around a tenth rather than the host's 2-3x. So the
+# host bench OVERSTATES this device's gain by roughly 2x, and anyone sizing future work off
+# `render_bench` alone should expect well under half of what it promises. The likely reason is
+# that the canvas is 480*800*4 = 1.5 MB — comfortably inside the host's L2/L3, nowhere near the
+# A7's cache — so on device a good share of every frame is DRAM bandwidth, which no codegen flag
+# can improve. That is inference, not measurement; only the direction above is measured.
+#
+# The library build barely moves either way (host: 28.5 -> 23.8 ms on the real 3,349-track DB).
+# That path is bundled SQLite, branch-heavy rather than loop-heavy, and not what `"z"` punishes.
+# The ~4.5 s of boot dead time is NOT a codegen problem. Recorded so nobody re-measures it.
+#
+# THE SIZE COST IS +16.9%, NOT +4.6%. PR #9's audit measured `libcinder_ffi.a` — a static archive,
+# which is not what ships. The linked, stripped ARM binary is what ships, and it goes
+# 3,661,868 -> 4,280,388 bytes (+604 KB) — measured 2026-09-05 through `cinder-home/build.sh`.
+# Still an easy trade against 490 MB free, but quote the real number, not the archive's.
+#
+# `lto` and `codegen-units = 1` below stay exactly as they were — without them the growth would
+# be considerably worse than this.
+opt-level = 2
 lto = true
 strip = true
 panic = "abort"
