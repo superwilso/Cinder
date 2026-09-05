@@ -10036,6 +10036,55 @@ void* render_driver(void*) {
                 const bool audible = g_playing && cinder_audio_is_playing() != 0;
                 const bool idle = !g_screen_on && !audible;
 
+                // ── OPT-IN: LET STAGE 1 FIRE WHILE MUSIC PLAYS DOWN THE JACK ─────────────────
+                // `!audible` is more conservative than this project's own evidence requires.
+                // RE_early_suspend.md §"Audio is unaffected — tested, because it was the
+                // requirement" ran the whole early-suspend chain during playback and measured:
+                //
+                //   playing, before suspend:  pcm4p/sub0 state: RUNNING   codecID=0x2B
+                //   playing, DURING suspend:  pcm4p/sub0 state: RUNNING   codecID=0x2B
+                //   after resume:             pcm4p/sub0 state: RUNNING
+                //
+                // Sony's driver is playback-aware and leaves an active stream alone, and handler 1
+                // of 16 IS the codec (`cxd3778gf_i2c_early_suspend`) — it runs and the chip still
+                // answers on I2C afterwards. So the audio path survives the chain.
+                //
+                // WHY THIS IS WORTH ANYTHING: deep idle on this SoC is gated behind early suspend
+                // (`dpidle_handler` -> `mt_cpufreq_earlysuspend_status_get`, reported as `by_vtg`).
+                // With the screen off and nothing playing, this device reads by_vtg=54871 and every
+                // other block counter at ZERO — the early-suspend flag is the only thing standing
+                // between it and deep idle. Screen-off-while-listening is one of the two ways this
+                // player is actually used, and today it is the one state that never deep-idles.
+                //
+                // JACK ONLY, NEVER BLUETOOTH. Handler 0 of the chain is `wmt_dev_early_suspend`
+                // (the WCN combo chip), and on A2DP the CPU is feeding a stream the sink is
+                // buffering ~200 ms of. Those two facts together are a separate experiment with a
+                // separate failure mode, and this flag does not open it.
+                //
+                // SUSPEND-TO-RAM IS NOT AT RISK. A wakelock blocks autosleep, not early suspend,
+                // and an open PCM stream means the audio driver holds one — which is why Wampy has
+                // to take an explicit `wampy_fm_lock` for FM (an analogue passthrough that opens no
+                // stream) and needs nothing for file playback. So the platform's own lock is the
+                // interlock: stage 1 runs, stage 2 cannot complete while audio is open.
+                //
+                // STILL OFF BY DEFAULT. Everything above is read from evidence rather than measured
+                // as a battery number, and the failure mode is "the music stops", which is the one
+                // thing this device must not do. Verify off-cable — `dpidle_cnt` must climb AND the
+                // music must still be playing — before this becomes the default.
+                static const bool suspend_while_playing =
+                    access("/contents/cinder_suspend_playing", F_OK) == 0;
+                const bool on_jack_now = cinder_get_bt_route() == 0;
+                const bool soc_idle =
+                    suspend_while_playing ? (!g_screen_on && (!audible || on_jack_now)) : idle;
+                // Say so once, because this changes when the SoC suspends and the log is the only
+                // place that would ever explain a behaviour difference between two units.
+                static bool said_swp = false;
+                if (suspend_while_playing && !said_swp) {
+                    said_swp = true;
+                    clog_("suspend: stage 1 ALSO while playing on the jack "
+                          "(/contents/cinder_suspend_playing) — never on Bluetooth");
+                }
+
                 // THE CODEC IS ONLY IN THE PATH FOR THE 3.5 mm JACK. On a Bluetooth link the audio
                 // leaves over A2DP and the CXD3778GF is driving nothing whatsoever — so "playing"
                 // is not a reason to keep the headphone amplifier powered. The first cut of this
@@ -10084,7 +10133,7 @@ void* render_driver(void*) {
                 // Ordered after the codec so the DAC is already in standby by the time the SoC
                 // does go down — the codec fix stands on its own and must not depend on this one
                 // being enabled.
-                soc_suspend_tick(idle);
+                soc_suspend_tick(soc_idle);   // `idle` unless the opt-in flag is set; see above
             }
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");
