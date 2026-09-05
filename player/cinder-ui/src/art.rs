@@ -345,12 +345,33 @@ pub fn block_cached(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32,
     let key: GradKey = (name_key(name), w, (op * 1000.0) as u16, bg);
     GRAD_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
+        // EVICT THE OLDEST HALF, DON'T EMPTY THE CACHE. This used to `clear()` on overflow, which
+        // threw away the entries for the rows CURRENTLY ON SCREEN along with everything else —
+        // roughly 14 of them, all of which the very next frame had to bake again. Scrolling steadily
+        // past 64 distinct album names triggered that, so it recurred every 64 rows.
+        //
+        // Each entry carries the tick it was last drawn at, so the rows on screen are by definition
+        // the most recently used and survive; what gets dropped is what has scrolled away. The cap
+        // is unchanged and is still the contract — this only decides WHICH entries live.
+        //
+        // The sort is over at most GRAD_CACHE_MAX (64) keys and runs once per 32 inserts, which is
+        // nothing against a bake (~85 us for a 48x48).
         if cache.len() >= GRAD_CACHE_MAX && !cache.contains_key(&key) {
-            cache.clear();
+            let mut by_age: Vec<(u64, GradKey)> = cache.iter().map(|(k, v)| (v.0, *k)).collect();
+            by_age.sort_unstable();
+            for (_, k) in by_age.iter().take(GRAD_CACHE_MAX / 2) {
+                cache.remove(k);
+            }
         }
-        let img = cache.entry(key).or_insert_with(|| gradient_image(t, w, h, name, op));
+        let tick = GRAD_TICK.with(|t| {
+            let n = t.get() + 1;
+            t.set(n);
+            n
+        });
+        let e = cache.entry(key).or_insert_with(|| (tick, gradient_image(t, w, h, name, op)));
+        e.0 = tick; // touch: this key is in the visible set as of this frame
         // The opacity is already baked in, so blit at 1.0 — blending again would darken it twice.
-        draw_image(c, t, x0, y0, img, 1.0);
+        draw_image(c, t, x0, y0, &e.1, 1.0);
     });
 }
 
@@ -367,8 +388,14 @@ const CACHE_MAX_EDGE: i32 = 128;
 const GRAD_CACHE_MAX: usize = 64;
 
 thread_local! {
-    static GRAD_CACHE: std::cell::RefCell<std::collections::HashMap<GradKey, Image>> =
+    /// Value is `(last-used tick, baked pixels)` — the tick is what makes eviction keep the
+    /// rows that are actually on screen. See `block_cached`.
+    static GRAD_CACHE: std::cell::RefCell<std::collections::HashMap<GradKey, (u64, Image)>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Monotonic per-thread counter for the above. Wrapping is not a concern: at one tick per
+    /// cached swatch per frame it would take longer than the device's battery lasts by a wide
+    /// margin, and the only consequence would be one early eviction.
+    static GRAD_TICK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// How many entries the cache is holding. Tests only — the cap is the contract, not the contents.
