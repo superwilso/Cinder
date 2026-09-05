@@ -1573,17 +1573,49 @@ pub extern "C" fn cinder_render_tick() {
     // what a painted frame now costs, and the forced repaint that runs every 5 s for the life of
     // the process pays it in full to produce a byte-identical screen. Whether that is worth
     // changing depends on a number nobody had, so measure it once and say so.
-    let raster_t0 = std::time::Instant::now();
+    // AND IT STOPS WHEN IT IS DONE. The previous version left two `Instant::now()` calls and two
+    // atomic RMWs on the per-frame path for the life of the process, to feed a report that had
+    // already been printed for the last time — permanent cost for a one-off diagnostic. Past the
+    // cap this is a single relaxed atomic load (no barrier on ARM) and no clock reads at all.
+    static RASTER_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static WIN_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    const RASTER_LAST: u32 = 30_000;
+    let sampling = RASTER_N.load(std::sync::atomic::Ordering::Relaxed) < RASTER_LAST;
+    let raster_t0 = if sampling { Some(std::time::Instant::now()) } else { None };
     r.app.render(&mut r.canvas, &r.fonts, &np);
-    {
-        static RASTER_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        static RASTER_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if let Some(raster_t0) = raster_t0 {
         use std::sync::atomic::Ordering::Relaxed;
+        // One clock read, not two — `elapsed()` was being called twice per frame purely to avoid
+        // naming the value.
+        let dt = raster_t0.elapsed().as_micros() as u64;
         let n = RASTER_N.fetch_add(1, Relaxed) + 1;
-        let us = RASTER_US.fetch_add(raster_t0.elapsed().as_micros() as u64, Relaxed)
-            + raster_t0.elapsed().as_micros() as u64;
-        if n == 300 {
-            println!("cinder-ffi: raster — {} frames, mean {:.2} ms/frame", n, us as f64 / n as f64 / 1000.0);
+        let us = WIN_US.fetch_add(dt, Relaxed) + dt;
+        // WINDOWED, NOT CUMULATIVE, AND NOT ONLY AT BOOT. The first version of this printed one
+        // cumulative mean at frame 300 and that number was worthless: on device those 300 frames
+        // span first-paint (t=1.2 s) to about t=14.7 s, which is the near-empty boot screen with
+        // the render thread starved by the synchronous library build. It measured the boot, not
+        // the UI — and it did so consistently enough to look trustworthy. It reported 6.21 ms
+        // before the opt-level change and 6.23 ms after, while the host bench for the same code
+        // moved 2-3x, and the reason was simply that neither sample was of the real workload.
+        //
+        // So: each window is reported on its own (the accumulator resets), and later windows keep
+        // coming, so a sample exists from a boot screen, from a settled idle screen, and from
+        // whatever the user is actually looking at. Capped so this cannot become a log leak — the
+        // last report is at RASTER_LAST frames, a few minutes of real use, after which the whole
+        // sampler switches off — see the `sampling` gate above, which is the point of the cap.
+        const WINDOW: u32 = 300;
+        if n % WINDOW == 0 {
+            let win = n / WINDOW;
+            // Every window early on (boot is where the interesting change is), then thin out.
+            if win <= 4 || win % 10 == 0 {
+                println!(
+                    "cinder-ffi: raster — frames {}..{}, mean {:.2} ms/frame",
+                    n - WINDOW + 1,
+                    n,
+                    us as f64 / WINDOW as f64 / 1000.0
+                );
+            }
+            WIN_US.store(0, Relaxed);
         }
     }
     if let Some(path) = r.pending_screenshot.take() {
@@ -5475,6 +5507,65 @@ pub extern "C" fn cinder_set_now_playing(
 mod tests {
     use super::*;
     use crate::likes::liked_load;
+
+    /// STOPWATCH, NOT A TEST. Opt-in profile of the boot-path library build, because the ~4.8 s
+    /// of dead time after boot (cinder_db_open at t=2.4 to "restore playback context" at t=7.2,
+    /// measured on device 2026-09-04) is a cost nobody has ever broken down. Threading it was
+    /// tried and reverted; the cheaper question — where does the time actually GO — was never
+    /// asked. Absolute numbers here are host numbers and mean nothing; the RATIO between the
+    /// phases is what transfers to the device.
+    ///
+    ///   CINDER_PROFILE_DB=artifacts/MTPDB_dev.dat \
+    ///     cargo test -p cinder-ffi profile_library_build -- --nocapture --test-threads=1
+    ///
+    /// Silently passes when the variable is unset, so it costs a normal `cargo test` nothing.
+    #[test]
+    fn profile_library_build() {
+        let Ok(path) = std::env::var("CINDER_PROFILE_DB") else { return };
+        let t = |label: &str, d: std::time::Duration| {
+            println!("  {label:<28} {:>9.1} ms", d.as_secs_f64() * 1000.0);
+        };
+
+        let t0 = std::time::Instant::now();
+        let db = cinder_db::Db::open(&path).expect("open");
+        let open = t0.elapsed();
+        t("Db::open", open);
+
+        // The individual queries build_library issues, timed on their own. Run BEFORE the full
+        // build so SQLite's page cache is as cold for them as it is for the real first build.
+        let t1 = std::time::Instant::now();
+        let years = db.release_years();
+        t("  db.release_years", t1.elapsed());
+
+        let t1 = std::time::Instant::now();
+        let songs_sorted = db.tracks(cinder_db::Sort::Title).unwrap_or_default();
+        t("  db.tracks(Title)", t1.elapsed());
+
+        let t1 = std::time::Instant::now();
+        let album_order = db.tracks_album_order().unwrap_or_default();
+        t("  db.tracks_album_order", t1.elapsed());
+
+        let t1 = std::time::Instant::now();
+        let albums = db.albums().unwrap_or_default();
+        t("  db.albums", t1.elapsed());
+
+        let t1 = std::time::Instant::now();
+        let lib = build_library(&db);
+        let build = t1.elapsed();
+        t("build_library (whole)", build);
+
+        println!(
+            "  -> {} tracks, {} albums, {} artists, {} years, {} sorted, {} album-order, {} album rows",
+            lib.songs.len(),
+            lib.album_count(),
+            lib.artists.len(),
+            years.len(),
+            songs_sorted.len(),
+            album_order.len(),
+            albums.len(),
+        );
+        t("TOTAL (open + build)", open + build);
+    }
 
     /// FM state has to survive a reboot. A scan is a deliberate ten-second wait the user watches,
     /// and the dial is where they left the radio — losing either is the same defect the shelf pins
