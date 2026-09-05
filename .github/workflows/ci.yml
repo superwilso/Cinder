@@ -190,7 +190,7 @@ jobs:
         run: bash cinder-home/tools/test_launcher.sh
 
   # ── the dependency tree, which nothing looked at ───────────────────────────────────────────────
-  # 122 crates reach the binary that runs as the device's Home app, and until now no gate checked
+  # ~130 crates reach the binary that runs as the device's Home app, and until now no gate checked
   # any of them against the RustSec advisory database. The installer has ZERO dependencies by
   # design — it is audited here anyway so that stays true rather than merely being true today.
   #

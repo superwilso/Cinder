@@ -506,6 +506,37 @@ impl Db {
         Ok(out)
     }
 
+    /// Resolve MANY object_ids in ONE query — the batch form of `track_by_object_id`.
+    ///
+    /// Same defect as `tracks_by_filenames` addresses, one tier less severe: `track_by_object_id`
+    /// is a full `object_body` scan per call, and three call sites run it in a loop over a list
+    /// that can be the WHOLE LIBRARY (a "Shuffle all songs" context). One of them —
+    /// `Action::PlayContextAt` — does it on the render thread while holding the renderer mutex,
+    /// which is precisely the configuration behind the 2026-08-18 "toggling shuffle can crash the
+    /// device" report; see the write-up above `play_order_uris` in cinder-ffi.
+    ///
+    /// No disambiguation tiers here, unlike the filename form: `object_id` is the primary key, so
+    /// `track_by_object_id` returns at most one row and this is a straight index.
+    pub fn tracks_by_object_ids(
+        &self,
+        ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, Track>> {
+        use std::collections::HashMap;
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let all = self.query_tracks(&format!("WHERE {TRACK_WHERE}"), "ob.object_id", [])?;
+        // Only the ids actually asked for, so the map does not pin a copy of the whole library
+        // when the caller wanted three rows. `wanted` is the small side in every current caller
+        // except the shuffle-all context, where the two are the same size anyway.
+        let wanted: std::collections::HashSet<i64> = ids.iter().copied().collect();
+        Ok(all
+            .into_iter()
+            .filter(|t| wanted.contains(&t.object_id))
+            .map(|t| (t.object_id, t))
+            .collect())
+    }
+
     /// One track by its object_id. The queue stores object_ids (they survive a re-scan; a path does
     /// not), so this is what turns a queued row back into something PlayerService can open.
     pub fn track_by_object_id(&self, object_id: i64) -> Result<Option<Track>> {
@@ -1026,6 +1057,31 @@ mod tests {
                 None => assert!(batch.get(*n).is_none(), "{n}: batch invented a match"),
             }
         }
+    }
+
+    /// The batch object_id resolver must agree with the single one, including on ids that are not
+    /// in the library (absent from the map, never a wrong row).
+    #[test]
+    fn batch_object_id_resolution_matches_single() {
+        let d = db();
+        let ids: Vec<i64> = vec![1, 2, 3, 4, 999_999, 1];
+        let batch = d.tracks_by_object_ids(&ids).unwrap();
+        for id in &ids {
+            match d.track_by_object_id(*id).unwrap() {
+                Some(expected) => {
+                    let got = batch.get(id).unwrap_or_else(|| panic!("batch lost {id}"));
+                    assert_eq!(got.object_id, expected.object_id);
+                    assert_eq!(got.title, expected.title);
+                    assert_eq!(got.filename, expected.filename);
+                }
+                None => assert!(batch.get(id).is_none(), "{id}: batch invented a match"),
+            }
+        }
+    }
+
+    #[test]
+    fn batch_object_id_resolution_handles_empty() {
+        assert!(db().tracks_by_object_ids(&[]).unwrap().is_empty());
     }
 
     /// The empty case is not a degenerate no-op here: it must not run the scan at all, because
