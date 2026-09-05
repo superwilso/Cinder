@@ -988,7 +988,16 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
 
     // Resolve release-year FKs once (best-effort; empty map if the table shape differs — years
     // then stay blank, exactly as before). Shared by the song-row builder + the album year label.
+    // PER-PHASE TIMING, ONCE PER OPEN. The whole of this function is the ~4.5 s of boot dead time
+    // (device 2026-09-05: cinder_db_open at t=2.716, "restore playback context" at t=7.271), and
+    // until now nobody had a device-side breakdown of it — only a host profile, which says roughly
+    // 77% SQLite and disagrees with the device by about 100x overall. A 1 GHz in-order A7 against
+    // that host should be nearer 20-30x for this kind of work, so the gap itself is the finding.
+    // One line per library open, which is once per boot.
+    let t_total = std::time::Instant::now();
+    let t_phase = std::time::Instant::now();
     let years = db.release_years();
+    let ms_years = t_phase.elapsed().as_millis();
     let year_num = |id: Option<i64>| -> i32 {
         id.and_then(|i| years.get(&i)).and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0)
     };
@@ -1000,7 +1009,9 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         ..song_row_of(t)
     };
 
+    let t_phase = std::time::Instant::now();
     let tracks = db.tracks(cinder_db::Sort::Title).unwrap_or_default();
+    let ms_tracks = t_phase.elapsed().as_millis();
     let mut album_artist: BTreeMap<i64, String> = BTreeMap::new();
     // Per artist: their distinct albums as name → album id, plus a track count.
     //
@@ -1050,7 +1061,11 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     let mut album_tracks: BTreeMap<i64, Vec<SongRow>> = BTreeMap::new();
     let mut album_added: BTreeMap<i64, i64> = BTreeMap::new();
     let mut album_year: BTreeMap<i64, String> = BTreeMap::new();
-    for t in db.tracks_album_order().unwrap_or_default() {
+    let t_phase = std::time::Instant::now();
+    let album_order_rows = db.tracks_album_order().unwrap_or_default();
+    let ms_album_order = t_phase.elapsed().as_millis();
+    let t_phase = std::time::Instant::now();
+    for t in album_order_rows {
         if let Some(aid) = t.album_id {
             let a = album_added.entry(aid).or_insert(0);
             if t.added > *a {
@@ -1068,9 +1083,11 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     }
 
     // Album list (ordered, with track counts) → rows, grouped by artist.
-    let mut album_rows: Vec<AlbumRow> = db
-        .albums()
-        .unwrap_or_default()
+    let ms_album_group = t_phase.elapsed().as_millis();
+    let t_phase = std::time::Instant::now();
+    let album_list = db.albums().unwrap_or_default();
+    let ms_albums = t_phase.elapsed().as_millis();
+    let mut album_rows: Vec<AlbumRow> = album_list
         .into_iter()
         .map(|a| {
             let trs = album_tracks.remove(&a.id).unwrap_or_default();
@@ -1203,6 +1220,19 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     let hires_tracks = songs.iter().filter(|s| s.is_hires).count() as u32;
     eprintln!("cinder-ffi: hi-res tracks: {hires_tracks}");
     let (folders, folder_roots) = build_folders(&tracks, &songs);
+
+    // The breakdown of the boot dead time. `sql` is the four DB calls; `model` is everything this
+    // function does with their results. If `sql` dominates on device the way it does on the host,
+    // the lever is SQLite configuration (see `Db::open`, which sets no PRAGMAs); if `model`
+    // dominates, it is this function's own BTreeMap work and no PRAGMA will touch it.
+    let ms_sql = ms_years + ms_tracks + ms_album_order + ms_albums;
+    let ms_all = t_total.elapsed().as_millis();
+    eprintln!(
+        "cinder-ffi: build_library {ms_all} ms = sql {ms_sql} (years {ms_years}, tracks \
+         {ms_tracks}, album_order {ms_album_order}, albums {ms_albums}) + model {} (grouping \
+         {ms_album_group})",
+        ms_all.saturating_sub(ms_sql)
+    );
 
     // `thumbs` is filled separately by start_art_cache: the disk cache load is I/O, not model
     // building, and the rest arrives asynchronously from the decoder thread.
@@ -2187,19 +2217,35 @@ fn user_playlist_rows(
     store: &playlists::Store,
     db: Option<&cinder_db::Db>,
 ) -> Vec<cinder_ui::model::PlaylistRow> {
+    // ONE QUERY FOR EVERY ENTRY OF EVERY PLAYLIST. This used to call `track_by_filename` per
+    // entry, and that function runs a full `object_body` scan per call — so the cost was
+    // (entries x library size), with no bound on either. On device (2026-09-05, 8 playlists over a
+    // 3,456-track library) this function measured **3,802 ms**, which was 83% of the whole boot
+    // dead time: `refresh_playlists` calls it during `cinder_db_open`, on every boot.
+    //
+    // `tracks_by_filenames` does one scan and indexes it, and is pinned to resolve every name
+    // identically to `track_by_filename` (cinder-db: `batch_filename_resolution_matches_single`).
+    // A miss stays a miss, so the `filter_map` below drops exactly the entries it dropped before.
+    let resolved = db
+        .map(|db| {
+            let names: Vec<&str> = store
+                .lists
+                .iter()
+                .flat_map(|l| l.entries.iter().map(|e| e.uri.as_str()))
+                .collect();
+            db.tracks_by_filenames(&names).unwrap_or_default()
+        })
+        .unwrap_or_default();
     store
         .lists
         .iter()
         .map(|list| {
-            let track_list: Vec<cinder_ui::model::SongRow> = db
-                .map(|db| {
-                    list.entries
-                        .iter()
-                        .filter_map(|entry| db.track_by_filename(&entry.uri).ok().flatten())
-                        .map(|t| song_row_of(&t))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let track_list: Vec<cinder_ui::model::SongRow> = list
+                .entries
+                .iter()
+                .filter_map(|entry| resolved.get(entry.uri.as_str()))
+                .map(song_row_of)
+                .collect();
             cinder_ui::model::PlaylistRow {
                 id: list.id,
                 name: list.name.clone(),
@@ -2256,10 +2302,15 @@ fn refresh_playlists(r: &mut Render) {
 fn user_playlist_tracks(r: &Render, id: i64) -> Option<Vec<cinder_db::Track>> {
     let db = r.db.as_ref()?;
     let list = r.plists.get(id)?;
+    // Same batch resolve as `user_playlist_rows` — one scan for the whole playlist instead of one
+    // per entry. Saved order is preserved because the entries drive the iteration; the map only
+    // answers lookups.
+    let names: Vec<&str> = list.entries.iter().map(|e| e.uri.as_str()).collect();
+    let resolved = db.tracks_by_filenames(&names).unwrap_or_default();
     let tracks: Vec<cinder_db::Track> = list
         .entries
         .iter()
-        .filter_map(|entry| db.track_by_filename(&entry.uri).ok().flatten())
+        .filter_map(|entry| resolved.get(entry.uri.as_str()).cloned())
         .collect();
     (!tracks.is_empty()).then_some(tracks)
 }
@@ -4838,6 +4889,12 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     // happens against local values and the lock is taken once, at the end, to swap them in. That
     // is what makes it safe to call this from a worker thread (cinder-home does) instead of from
     // the render thread.
+    // PHASE TIMING FOR THE BOOT DEAD TIME. `build_library`'s own breakdown (printed inside it)
+    // accounts for only ~417 ms of a ~4.6 s window on device, so the rest is here — and the host
+    // profile cannot see it, because on the host `/contents` and `/contents_ext` do not exist and
+    // the playlist and likes phases return instantly. One line per open, i.e. once per boot.
+    let t_open = std::time::Instant::now();
+    let t_phase = std::time::Instant::now();
     let db = match cinder_db::Db::open(&p) {
         Ok(db) => db,
         Err(e) => {
@@ -4865,19 +4922,26 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
         }
     };
 
+    let ms_dbopen = t_phase.elapsed().as_millis();
     // Build the browsable library now so the Library screen shows real music.
+    let t_phase = std::time::Instant::now();
     let lib = build_library(&db);
+    let ms_build = t_phase.elapsed().as_millis();
     eprintln!(
         "cinder-ffi: library loaded — {} tracks, {} albums, {} artists",
         lib.songs.len(),
         lib.album_count(),
         lib.artists.len()
     );
+    let t_phase = std::time::Instant::now();
     let plists = playlists::Store::open(playlists::DIR);
+    let ms_plists = t_phase.elapsed().as_millis();
     eprintln!("cinder-ffi: playlists: {} of your own", plists.lists.len());
     // Liked list lives beside the user's music on both internal storage and SD card:
     // /contents and /contents_ext are reachable over USB-MSC.
+    let t_phase = std::time::Instant::now();
     let liked = likes::liked_load_all();
+    let ms_liked = t_phase.elapsed().as_millis();
     eprintln!("cinder-ffi: liked songs: {} loaded from internal and SD card", liked.len());
 
     // A liked list pushed from the PC (likesync) lands here as artist/title rows and is resolved
@@ -4885,6 +4949,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     // they can only be matched on this side. See `likes.rs` for why the import replaces rather than
     // merges, and what it refuses to act on. Resolved against the local `lib` rather than
     // `r.app.library()`, which is the only reason this can happen before the install.
+    let t_phase = std::time::Instant::now();
     let songs: Vec<(i64, String, String, String)> = {
         // album_id -> the artist the album is filed under, so a featured-artist track can be found
         // by the name the PC knows it by (see likes::resolve). Scoped so the borrow of `lib` ends
@@ -4911,6 +4976,7 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
                 (*id, artist.as_str(), title.as_str(), filed.as_str())
             }),
     );
+    let ms_import = t_phase.elapsed().as_millis();
     match outcome {
         likes::Outcome::None => {}
         likes::Outcome::Ignored(why) => {
@@ -4931,7 +4997,10 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
 
     // ── INSTALL. Everything above was local; this is the only part that needs the render state,
     // and it is all moves and assignments. ───────────────────────────────────────────────────────
+    let t_phase = std::time::Instant::now();
     let mut guard = cell().lock().unwrap();
+    let ms_lock = t_phase.elapsed().as_millis();
+    let t_phase = std::time::Instant::now();
     let Some(r) = guard.as_mut() else { return -2 };
     r.dirty = true; // the library (or its absence) changed -> repaint
     // FORGET WHAT WE DECIDED ABOUT THE CURRENT COVER. `art_key` exists to stop us re-decoding the
@@ -4964,6 +5033,8 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     r.app.set_library(lib);
     r.db = Some(db);
     r.plists = plists;
+    // WAS 3,802 ms OF THE BOOT — 83% of the whole dead time, in this one call. See
+    // `user_playlist_rows`, which now batches its filename resolution; it is 133 ms here.
     refresh_playlists(r);
     r.liked = liked;
     r.liked_path = Some(likes::INTERNAL_LIKED_PATH.to_string());
@@ -4973,7 +5044,16 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     }
     r.app.set_liked_count(r.liked.len());
     r.db_path = Some(p.clone());
+    let ms_install = t_phase.elapsed().as_millis();
+    let t_phase = std::time::Instant::now();
     start_art_cache(r, &p);
+    let ms_art = t_phase.elapsed().as_millis();
+    eprintln!(
+        "cinder-ffi: cinder_db_open {} ms = db_open {ms_dbopen} + build {ms_build} + playlists \
+         {ms_plists} + likes {ms_liked} + import {ms_import} + lock {ms_lock} + install \
+         {ms_install} + artcache {ms_art}",
+        t_open.elapsed().as_millis()
+    );
     db_open_err_reset();
     0
 }

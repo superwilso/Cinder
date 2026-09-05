@@ -414,6 +414,98 @@ impl Db {
         Ok(v.into_iter().next())
     }
 
+    /// Resolve MANY filenames in ONE query — the batch form of `track_by_filename`.
+    ///
+    /// `track_by_filename` runs a full `object_body` scan per call. That is fine for the one-shot
+    /// now-playing lookup it was written for and catastrophic in a loop: rebuilding the playlist
+    /// model calls it once per entry of every playlist, and on device (2026-09-05, 8 playlists over
+    /// a 3,456-track library) that measured **3,802 ms — 83% of the entire boot dead time**, inside
+    /// `refresh_playlists`, which runs on every single boot.
+    ///
+    /// This does one scan and indexes it. The per-name resolution below is a LINE-FOR-LINE copy of
+    /// `track_by_filename`'s, deliberately: exact match, then suffix match either way round, then
+    /// the single-candidate fallback — the same three tiers in the same order, against the same
+    /// candidate set in the same `object_id` order. That equivalence is what
+    /// `batch_filename_resolution_matches_single` pins, and it is the whole risk of this function:
+    /// a playlist resolving to a DIFFERENT track would be far worse than a slow boot.
+    ///
+    /// Keyed by the caller's original string, so a caller can look up exactly what it asked for.
+    /// Names that resolve to nothing are simply absent, matching `filter_map` at the call sites.
+    pub fn tracks_by_filenames(
+        &self,
+        names: &[&str],
+    ) -> Result<std::collections::HashMap<String, Track>> {
+        use std::collections::HashMap;
+        let mut out: HashMap<String, Track> = HashMap::new();
+        if names.is_empty() {
+            return Ok(out);
+        }
+        // ONE scan, ordered by object_id — the same order `track_by_filename`'s query returns, so
+        // the "first candidate wins" fallbacks below pick the same row it would have picked.
+        let all = self.query_tracks(&format!("WHERE {TRACK_WHERE}"), "ob.object_id", [])?;
+        // KEYED BY BASENAME, NOT BY `Track.filename`. These are two different strings: the
+        // `ob.filename` COLUMN that `track_by_filename`'s SQL matches on holds a bare basename,
+        // while the `Track.filename` FIELD that `query_tracks` returns is the full path it
+        // reconstructs by walking parent rows. Indexing the field instead of its basename finds
+        // nothing at all — which is what the first run of
+        // `batch_filename_resolution_matches_single` reported, and the reason that test exists.
+        //
+        // Basenames repeat constantly across a real library ("01 Intro.flac"), so this is
+        // one-to-many. Values stay in object_id order because `all` is.
+        let mut by_base: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (i, t) in all.iter().enumerate() {
+            let base = t.filename.rsplit('/').next().unwrap_or(t.filename.as_str());
+            by_base.entry(base).or_default().push(i);
+        }
+
+        for name in names {
+            let filename = *name;
+            if out.contains_key(filename) {
+                continue; // a playlist may list the same file twice
+            }
+            let clean = filename.replace('\\', "/");
+            let decoded = clean.replace("%20", " ");
+            let base = clean.rsplit('/').next().unwrap_or(&clean);
+            let base_dec = decoded.rsplit('/').next().unwrap_or(&decoded);
+
+            // The single-row version asks for `ob.filename = ?1 OR ob.filename = ?2` ordered by
+            // object_id, so the candidate set is the union of both keys in object_id order. When
+            // the two keys are equal the OR still yields each row once, hence the dedupe.
+            let mut idx: Vec<usize> = by_base.get(base).cloned().unwrap_or_default();
+            if base_dec != base {
+                if let Some(more) = by_base.get(base_dec) {
+                    idx.extend(more.iter().copied());
+                    idx.sort_unstable();
+                    idx.dedup();
+                }
+            }
+            if idx.is_empty() {
+                continue;
+            }
+            let v = || idx.iter().map(|&i| &all[i]);
+
+            // Tier 1 — exact, on any of the three spellings.
+            let hit = v()
+                .position(|t| t.filename == filename || t.filename == clean || t.filename == decoded)
+                // Tier 2 — suffix, either direction (a relative playlist entry like
+                // "Artist/Album/01 Track.flac", or a bare basename against a full path).
+                .or_else(|| {
+                    v().position(|t| {
+                        t.filename.ends_with(&clean)
+                            || clean.ends_with(&t.filename)
+                            || t.filename.ends_with(&decoded)
+                            || decoded.ends_with(&t.filename)
+                    })
+                })
+                // Tier 3 — no exact match, so the first candidate is still the right answer.
+                .or(Some(0));
+            if let Some(pos) = hit {
+                out.insert(filename.to_string(), all[idx[pos]].clone());
+            }
+        }
+        Ok(out)
+    }
+
     /// One track by its object_id. The queue stores object_ids (they survive a re-scan; a path does
     /// not), so this is what turns a queued row back into something PlayerService can open.
     pub fn track_by_object_id(&self, object_id: i64) -> Result<Option<Track>> {
@@ -876,6 +968,71 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(internal.title, "Harvest Moon (Live)");
+    }
+
+    /// `tracks_by_filenames` must answer EXACTLY what `track_by_filename` answers, for every name,
+    /// including the ambiguous ones. It replaces that function in the playlist path, where a wrong
+    /// answer is not a slow boot but a playlist row pointing at the wrong song — so the equivalence
+    /// is the contract, and this pins it rather than trusting that the copied logic stayed copied.
+    ///
+    /// The fixture deliberately contains TWO tracks named `harvest.flac` in different albums (the
+    /// same shape `filename_disambiguates_same_basename` covers), because that is the case where
+    /// the candidate ORDER decides the answer and so the case a batch rewrite is most likely to
+    /// get subtly wrong.
+    #[test]
+    fn batch_filename_resolution_matches_single() {
+        let d = db();
+        d.conn()
+            .execute_batch(
+                "INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,\
+                   title,filename,series_no,disc_no,album_id) \
+                 VALUES (5,1,902,1,2,'Harvest Moon (Live)','harvest.flac',3,1,10);",
+            )
+            .unwrap();
+
+        let names: Vec<&str> = vec![
+            // the ambiguous pair, both spellings
+            "/contents_ext/MUSIC/Neil Young - Harvest Moon/harvest.flac",
+            "/contents/MUSIC/Benjamin Francis Leftwich - Last Smoke/harvest.flac",
+            // a bare basename (older callers passed these)
+            "harvest.flac",
+            // Windows separators, as a PC-synced playlist writes them
+            "\\contents_ext\\MUSIC\\Neil Young - Harvest Moon\\harvest.flac",
+            // URL encoding
+            "/contents_ext/MUSIC/Neil%20Young%20-%20Harvest%20Moon/harvest.flac",
+            // a relative entry, which only the suffix tier can match
+            "Neil Young - Harvest Moon/harvest.flac",
+            // present in the fixture under a different name
+            "atlas.flac",
+            // absent entirely — must be absent from the map, not a wrong row
+            "not-in-the-library.flac",
+            // repeated, because a playlist may list the same file twice
+            "harvest.flac",
+        ];
+
+        let batch = d.tracks_by_filenames(&names).unwrap();
+        for n in &names {
+            let single = d.track_by_filename(n).unwrap();
+            match single {
+                Some(expected) => {
+                    let got = batch.get(*n).unwrap_or_else(|| panic!("batch lost {n}"));
+                    assert_eq!(
+                        got.object_id, expected.object_id,
+                        "{n}: batch resolved to a DIFFERENT track"
+                    );
+                    assert_eq!(got.title, expected.title, "{n}");
+                    assert_eq!(got.filename, expected.filename, "{n}");
+                }
+                None => assert!(batch.get(*n).is_none(), "{n}: batch invented a match"),
+            }
+        }
+    }
+
+    /// The empty case is not a degenerate no-op here: it must not run the scan at all, because
+    /// `refresh_playlists` calls this on every boot and most users have no playlists.
+    #[test]
+    fn batch_filename_resolution_handles_empty() {
+        assert!(db().tracks_by_filenames(&[]).unwrap().is_empty());
     }
 
     #[test]
