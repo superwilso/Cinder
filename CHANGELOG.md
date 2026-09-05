@@ -16,6 +16,40 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in: stage-1 early suspend may now also fire while music plays down the 3.5 mm jack**
+  (`/contents/cinder_suspend_playing`). **Off by default; unverified as a battery number.**
+
+  The `!audible` term in the suspend gate was more conservative than this project's own evidence.
+  `analysis/RE_early_suspend.md` already ran the whole early-suspend chain during playback and
+  measured `pcm4p/sub0` at `RUNNING` before, DURING and after — Sony's driver is playback-aware and
+  leaves an open stream alone. Handler 1 of the 16 *is* the codec (`cxd3778gf_i2c_early_suspend`),
+  and the chip still answers on I2C afterwards.
+
+  That matters because deep idle on this SoC is gated behind early suspend (`dpidle_handler` ->
+  `mt_cpufreq_earlysuspend_status_get`, reported as the misleadingly-named `by_vtg`). Measured on
+  device with the screen off and nothing playing: `by_vtg=54871` with **every other block counter at
+  zero** — the early-suspend flag is the only thing between this device and deep idle. Screen-off
+  while listening is one of the two ways the player is actually used, and it was the one state that
+  could never deep-idle.
+
+  **Jack only, never Bluetooth.** Handler 0 of the chain is `wmt_dev_early_suspend` (the WCN combo
+  chip), and on A2DP the CPU is feeding a stream the sink buffers ~200 ms of. That is a separate
+  experiment with a separate failure mode and this flag does not open it.
+
+  **Suspend-to-RAM is not at risk.** A wakelock blocks autosleep, not early suspend, and an open PCM
+  stream means the audio driver holds one — which is exactly why Wampy must take an explicit
+  `wampy_fm_lock` for FM (an analogue passthrough that opens no stream) and needs nothing for file
+  playback. The platform's own lock is the interlock: stage 1 runs, stage 2 cannot complete while
+  audio is open.
+
+  Still off by default because all of the above is read from evidence rather than measured as a
+  battery number, and the failure mode is "the music stops". Verification must be **off-cable**
+  (on a cable, USB0 blocks deep idle regardless): `dpidle_cnt` must climb *and* the music must still
+  be playing.
+
+
 ### Fixed
 
 - **Up Next drew a black bar across the bottom of the screen.** *reported by the user
