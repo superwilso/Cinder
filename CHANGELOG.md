@@ -16,7 +16,60 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **The Rust half of the player is compiled for speed, not size** (`player/Cargo.toml`).
+  `opt-level` was `"z"` from the first commit, with no rationale recorded anywhere in the tree, on
+  a device whose constraint is battery rather than flash. It is now `2`. *device-verified.*
+
+  Found by the audit in PR #9, and the headline reproduced exactly on host — 2.0-3.2x across every
+  rendering and sorting bench. **On the device it is about 1.1x, not 2-3x**, measured by flashing
+  both builds from identical source and reading the windowed raster sampler: `frames 1..300`
+  (the only window that follows a fixed boot sequence, so the only comparable one) goes 6.93 ms at
+  `"z"` to 6.14 and 6.32 ms across two `2` builds, and the library build goes 4.77 s to ~4.54 s.
+  Two `2` builds three percent apart put the noise floor at about +-3%, which a 10% gap clears but
+  not by much. **The host bench overstates this device's gain by roughly 2x** — probably because the
+  1.5 MB canvas sits in the host's cache and nowhere near the A7's, so a good share of every device
+  frame is DRAM bandwidth that no codegen flag can touch. That last part is inference; only the
+  direction is measured.
+
+  Two of the audit's numbers did not survive the device. **The size cost is +16.9%, not +4.6%** —
+  the audit measured `libcinder_ffi.a`, a static archive that does not ship; the linked, stripped
+  ARM binary goes 3,661,868 -> 4,280,388 bytes (+604 KB), which is still nothing against 490 MB
+  free on `/system`. And **the boot dead time is not a codegen problem**: the ~4.5 s library build
+  moves about 5%, because that path is bundled SQLite, which is branch-heavy rather than loop-heavy
+  and is not what `"z"` punished.
+
+- **Hardware volume no longer forks a shell.** `volume_write_now` and `read_volume_hw` ran
+  `amixer` through `system()`/`popen()` — two fork+execs per step, up to eight times a second while
+  the volume rocker auto-repeats, on the one core the render thread also needs. They now use
+  `cinder_codec_set_master_volume` / `..._get_master_volume`, a single ALSA control ioctl that was
+  already written, already in the shipped binary and already declared in a header `main.cpp`
+  includes — it had simply never been called (audit B4). *device-unverified — needs a volume-key
+  press on hardware.*
+
+  Only when the configured mixer is exactly the one the shim drives (card 0, control
+  `master volume`). `/contents/cinder_volume.conf` can point the backend elsewhere, and that
+  escape hatch keeps the fork; so does any ioctl failure, so this can make volume faster but never
+  absent.
+
+- **The gradient cache evicts instead of emptying itself** (`player/cinder-ui/src/art.rs`, audit
+  B9). On overflow it called `clear()`, discarding the entries for the ~14 rows *currently on
+  screen* along with everything else, so the next frame re-baked all of them — recurring every 64
+  distinct album names while scrolling. Entries now carry a last-used tick and the oldest half is
+  dropped, which keeps the visible set by construction. The 64-entry cap is unchanged.
+
 ### Fixed
+
+- **The raster sampler was measuring the boot, not the UI, and never switched off** (audit B10).
+  It reported a single cumulative mean at frame 300; on device those 300 frames span first paint
+  (~1.2 s) to about 14.7 s, which is the near-empty boot screen with the render thread starved by
+  the synchronous library build. It read 6.21 ms before the compiler-profile change and 6.23 ms
+  after — a null result convincing enough to nearly retire the change, and in fact two samples of
+  the wrong thing. It now reports each 300-frame window on its own and keeps sampling into real
+  use, and it stops completely after 30,000 frames instead of leaving two clock reads and two
+  atomic RMWs on the per-frame path for the life of the process.
+
 
 - **Investigated, then REVERTED: telling the kernel the device went idle.** *(the change is not
   shipped — it wedged the device off-cable; kept here because the RE is worth having and the
