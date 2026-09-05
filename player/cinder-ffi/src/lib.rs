@@ -2356,11 +2356,15 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // Resolve in the queue's CURRENT order — the user may have reordered it, and the row
             // they tapped is an index into what Up Next is showing, not into any original order.
             let ids: Vec<i64> = r.app.queue().iter().map(|s| s.object_id).collect();
+            // One query for the whole queue, not one per row — see `play_order_uris` for the
+            // report this shape caused, and `Db::tracks_by_object_ids`. Order comes from `ids`,
+            // which is the order Up Next is showing; the map only answers lookups. A row that no
+            // longer resolves is dropped exactly as it was before.
             let seq: Vec<cinder_db::Track> = match r.db.as_ref() {
-                Some(db) => ids
-                    .iter()
-                    .filter_map(|id| db.track_by_object_id(*id).ok().flatten())
-                    .collect(),
+                Some(db) => {
+                    let by_id = db.tracks_by_object_ids(&ids).unwrap_or_default();
+                    ids.iter().filter_map(|id| by_id.get(id).cloned()).collect()
+                }
                 None => Vec::new(),
             };
             if seq.is_empty() {
@@ -2390,16 +2394,27 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // slides it up by one, so a start index carried over from the unresolved list starts
             // the wrong track. Counting the survivors as we go is the same walk, and it cannot
             // disagree with itself the way two separate passes can.
+            //
+            // THE RESOLUTION IS NOW ONE QUERY, the walk is unchanged. This loop used to issue a
+            // full scan per id while holding the renderer mutex, over a list that IS the whole
+            // library after "Shuffle all songs" — the exact configuration behind the 2026-08-18
+            // freeze report described above `play_order_uris`, which was fixed there and left
+            // standing here. `tracks_by_object_ids` resolves the lot in one scan; the loop below
+            // still walks `ids` in order and still counts survivors as it goes, so the start-index
+            // reasoning in the paragraph above is untouched.
+            let by_id = r
+                .db
+                .as_ref()
+                .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
+                .unwrap_or_default();
             let mut seq: Vec<cinder_db::Track> = Vec::with_capacity(ids.len());
             let mut start = 0usize;
-            if let Some(db) = r.db.as_ref() {
-                for (i, id) in ids.iter().enumerate() {
-                    if let Ok(Some(t)) = db.track_by_object_id(*id) {
-                        if i < *n {
-                            start += 1;
-                        }
-                        seq.push(t);
+            for (i, id) in ids.iter().enumerate() {
+                if let Some(t) = by_id.get(id) {
+                    if i < *n {
+                        start += 1;
                     }
+                    seq.push(t.clone());
                 }
             }
             if seq.is_empty() {
@@ -4083,8 +4098,32 @@ pub extern "C" fn cinder_clock_tick() {
         // new track's position is ~0, so re-issuing there resets nothing audible). Skipping the
         // early rebuild on BT costs only that the first queued track hands over a fraction later;
         // it does not cost the queue edit, which still applies.
+        //
+        // ...EXCEPT ON THE LAST TRACK OF THE SEQUENCE, WHERE THAT ARGUMENT IS FALSE. The paragraph
+        // above says the boundary flush "already covers this case for free", and it does — for
+        // every track that HAS a boundary after it. The final track of the sequence does not: no
+        // new track ever starts, so the track-change handler never runs, `queue_pending` is never
+        // consumed, and PlayerService simply runs off the end of the list it was given.
+        //
+        // Reported: playing the last track of an album with something queued, playback stops and
+        // the queued track never plays. Down the jack the early rebuild above hides it (the `!on_bt`
+        // test passes, so the flush happens 2.5 s out); over Bluetooth nothing fires at all.
+        //
+        // So on the last track the trade inverts. Everywhere else the choice is "a brief A2DP
+        // disruption" against "the first queued track hands over a fraction later", and skipping is
+        // right. Here it is "a brief A2DP disruption" against "the music stops", and a glitch beats
+        // silence.
+        //
+        // `pending_play` is the sequence as HANDED TO the shell and is never rewritten as playback
+        // advances, so its last entry is the final track PlayerService was given. If two entries
+        // share a filename and we are on the earlier one, this fires early: the cost is one
+        // rebuild that was not needed, not a missed queue.
+        let last_in_sequence = match (r.last_track.as_ref(), r.pending_play.last()) {
+            (Some(t), Some(last)) => *last == t.filename,
+            _ => false,
+        };
         let on_bt = r.app.bt_route();
-        if r.queue_pending && r.np.playing && !on_bt && r.cur_duration_ms > 0
+        if r.queue_pending && r.np.playing && (!on_bt || last_in_sequence) && r.cur_duration_ms > 0
             && r.play_pos_ms > 0
             && r.cur_duration_ms.saturating_sub(r.play_pos_ms) <= QUEUE_REBUILD_LEAD_MS
         {
@@ -4093,6 +4132,13 @@ pub extern "C" fn cinder_clock_tick() {
                 r.pending_play = play_order_uris(r, &current);
                 r.pending_play_start = 0;
                 r.queue_flush = r.pending_play.len() > 1;
+                if last_in_sequence {
+                    eprintln!(
+                        "cinder-ffi: queue flush on the LAST track ({} tracks) — no boundary is \
+                         coming, so this is the only chance to issue it",
+                        r.pending_play.len()
+                    );
+                }
             }
         }
         // Rescan label deadline. The scan runs inside a Sony service with no completion channel we
@@ -4549,13 +4595,20 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     r.resume_last_body = seq_body;
     r.resume_pos_last = pos_body;
 
-    // Resolve ids → tracks in ONE pass per list. A track that has left the library since the last
-    // boot drops out silently; that is the whole reason ids are stored rather than rows.
+    // Resolve ids → tracks in ONE QUERY FOR BOTH LISTS. A track that has left the library since
+    // the last boot drops out silently; that is the whole reason ids are stored rather than rows.
+    //
+    // The old comment here claimed "ONE pass per list" and the code ran a full `object_body` scan
+    // PER ID. It is bounded in practice — this device restored 17 rows — but the saved context is
+    // whatever was playing, and after "Shuffle all songs" that is the entire library, on the boot
+    // path. Resolving both lists from one scan removes the shape rather than relying on the bound.
     let Some(db) = r.db.as_ref() else { return 0 };
+    let mut all_ids: Vec<i64> = Vec::with_capacity(ctx_ids.len() + q_ids.len());
+    all_ids.extend_from_slice(&ctx_ids);
+    all_ids.extend_from_slice(&q_ids);
+    let by_id = db.tracks_by_object_ids(&all_ids).unwrap_or_default();
     let resolve = |ids: &[i64]| -> Vec<cinder_db::Track> {
-        ids.iter()
-            .filter_map(|id| db.track_by_object_id(*id).ok().flatten())
-            .collect()
+        ids.iter().filter_map(|id| by_id.get(id).cloned()).collect()
     };
     let ctx = resolve(&ctx_ids);
     let queue = resolve(&q_ids);
@@ -4756,7 +4809,14 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
                 if let Ok(mut g) = cell().lock() {
                     let Some(r) = g.as_mut() else { stop = true; break }; // renderer gone — stop
                     r.app.library_mut().thumbs.insert(album_id, t48);
-                    r.dirty = true; // the row this belongs to may be on screen right now
+                    // ONLY IF THE SCREEN CAN SHOW ARTWORK AT ALL. This was unconditional, and the
+                    // comment said "may be on screen right now" — on a first boot that is ~340
+                    // forced full-screen rasters and blits over the ~2.7 minutes the builder runs,
+                    // most of them repainting a byte-identical Settings or Bluetooth screen
+                    // (audit B11). The renderer forces a full repaint every 5 s anyway, so the
+                    // worst case here is a cover that lands up to five seconds later on a screen
+                    // that was not showing it.
+                    r.dirty = r.dirty || r.app.shows_album_art();
                 }
                 // Yield between albums. The builder is strictly background work: a cover that shows
                 // up a minute later costs the user nothing, whereas competing with the render

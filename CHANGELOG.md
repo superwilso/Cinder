@@ -16,7 +16,85 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Up Next drew a black bar across the bottom of the screen.** *reported by the user
+  2026-09-05; host-verified through the render preview, device-unverified.*
+
+  `up_next::LIST_BOTTOM` is derived from `chrome::NP_BAR_H`, so the screen has always reserved
+  the bottom 64 px for the Now Playing return bar — it just never drew one, because `UpNext` was
+  missing from `App::shows_np_bar`. The reserved space rendered as bare background.
+
+  Up Next is now on that list, so it gets the same bar every other browsing screen has: play/pause
+  in the left zone without leaving the queue, and tap-anywhere-else to return to Now Playing.
+
+  **Expanding the list to full height would have been the wrong repair.** The scrollbar Up Next
+  draws is `library::scrollbar`, and `sbar_begin` measures the thumb's travel against the
+  *library's* bottom — the comment on `up_next::LIST_BOTTOM` exists precisely to stop those two
+  drifting apart. Reclaiming the 64 px would have silently mis-scaled the scrollbar thumb on the
+  one screen where the scrollbar is also a drag target.
+
+
+- **Playback stopped at the end of an album instead of playing what was queued.** *reported by the
+  user 2026-09-05; fix is device-unverified — needs a queue added on the last track of an album.*
+
+  A queue edit is deliberately not sent to PlayerService at gesture time: replacing its sequence
+  costs a measured 360-450 ms pause/seek/play cycle, so the edit is held and applied either 2.5 s
+  before the end of the current track, or at the next track boundary. Over Bluetooth the early path
+  is skipped on purpose — a mid-stream rebuild disrupts what the sink has buffered, reported
+  2026-08-19 as tracks being "cut off at the end" with a pop — and the code justified that with:
+  *"The boundary flush in the track-change handler already covers this case for free."*
+
+  That is true of every track which HAS a boundary after it. **The last track of the sequence does
+  not.** No new track ever starts, so the track-change handler never runs, `queue_pending` is never
+  consumed, and PlayerService runs off the end of the list it was given. Down the jack the early
+  rebuild hides the defect; over Bluetooth nothing fires at all and the music simply stops.
+
+  The early rebuild is now also allowed on Bluetooth **when the current track is the last of the
+  issued sequence**, because there the trade inverts: everywhere else it is a brief A2DP disruption
+  against the first queued track handing over a fraction later, and skipping is right; here it is a
+  brief disruption against the music stopping, and a glitch beats silence. Detected by comparing
+  the playing track against the last entry of `pending_play`, which is the sequence as handed to
+  the shell and is never rewritten as playback advances.
+
 ### Changed
+
+- **The N+1 query defect is fixed at all five call sites, not one.** *device-verified (boot path);
+  device-unverified (queue and context taps).* `player/cinder-db` gains `tracks_by_object_ids`
+  beside `tracks_by_filenames`; `PlayQueueAt`, `PlayContextAt` and the boot resume now use it.
+
+  `PlayContextAt` is the one that matters most: it resolved one id at a time **on the render thread
+  while holding the renderer mutex**, over a list that is the entire library after "Shuffle all
+  songs" — the exact configuration behind the 2026-08-18 "toggling shuffle can crash the device"
+  report, which was fixed in `play_order_uris` and left standing here. Its start-index walk is
+  unchanged: it still iterates `ids` in order and still counts survivors as it goes, because a
+  dropped row must slide the tapped index.
+
+  The boot resume also claimed "ONE pass per list" in a comment while running a scan per id. It is
+  bounded in practice (this device restores 17 rows) but the saved context is whatever was playing,
+  and after shuffle-all that is the whole library, on the boot path. Both lists now resolve from
+  one scan.
+
+- **Battery: three small, cheap wins from the audit.** *device-verified (boot clean, 3.44 voluntary
+  ctxt/s with the panel dark, against the audit's predicted ~3/s).*
+
+  - **The dark audio pump backs off 250 ms to 500 ms** (B7). The only things riding it are the
+    position callback (~1/s) and the track boundary, both consumed by 1 Hz housekeeping, so 250 ms
+    was four times finer than anything downstream can observe — and the panel is dark, so nothing
+    displays position. Halves the pump's contribution, 4/s to 2/s. Deliberately not 1000 ms: that
+    would put the pump on the same period as the housekeeping tick, where they can alias.
+  - **The per-frame BT-volume-walk guard is paid only when a walk is in flight** (B8). The tick
+    costs one integer test, as its comment says; the `run_guarded` around it costs 4-5 syscalls
+    (alarm capture, a 64-entry table scan, `sigsetjmp` with `savemask=1` — an `rt_sigprocmask` —
+    and a fresh alarm), 60 times a second with the panel lit, to reach a test that returns. The
+    guard still wraps every call that actually walks, which is where a Sony IPC can hang.
+  - **A decoded cover only forces a repaint on a screen that can show artwork** (B11). The
+    art-cache builder set `dirty` unconditionally: ~340 forced full-screen rasters on a first boot,
+    spread over the ~2.7 minutes it runs, most of them repainting a byte-identical Settings or
+    Bluetooth screen. `App::shows_album_art()` lists the art-bearing screens positively; getting
+    that list wrong is cheap in the safe direction, because the renderer forces a full repaint
+    every 5 s regardless.
+
 
 - **The boot dead time is gone: ~4.6 s to ~0.9 s.** *device-verified.*
 

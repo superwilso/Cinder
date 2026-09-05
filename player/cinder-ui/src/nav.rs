@@ -1404,6 +1404,38 @@ impl App {
     }
 
     /// The screen currently on top of the route stack.
+    /// TRUE when the screen showing right now can display album artwork, so a newly decoded cover
+    /// is worth a repaint.
+    ///
+    /// The art-cache builder decodes ~340 covers on a first boot and used to set `dirty` after
+    /// every one, unconditionally — ~340 forced full-screen rasters spread over the couple of
+    /// minutes the builder runs, most of them redrawing a byte-identical screen because the user
+    /// was in Settings or on Bluetooth (audit B11). It costs nothing while the panel is dark, so
+    /// it bit during exactly the window a new user is poking at the device.
+    ///
+    /// Listed positively — a new screen is not assumed to want repaints — but getting it wrong is
+    /// cheap in the safe direction: the renderer forces a full repaint every 5 s regardless, so the
+    /// worst case for a missing entry is a cover that appears up to five seconds late.
+    /// `NowPlaying` and `Menu` are included deliberately: both can draw a cover, and a stale cover
+    /// on the screen the user is staring at is the one case worth spending a repaint to avoid.
+    pub fn shows_album_art(&self) -> bool {
+        matches!(
+            self.current(),
+            Screen::NowPlaying
+                | Screen::Menu
+                | Screen::Library
+                | Screen::Album
+                | Screen::Artist
+                | Screen::Playlist
+                | Screen::UpNext
+                | Screen::GenreFilter
+                | Screen::Folders
+                | Screen::TrackInfo
+                | Screen::TrackPick
+                | Screen::Shelf
+        )
+    }
+
     pub fn current(&self) -> Screen {
         *self.stack.last().unwrap_or(&Screen::NowPlaying)
     }
@@ -4352,8 +4384,24 @@ impl App {
     /// Screens that carry the Now Playing return bar: the library browse list and the album
     /// drill-in. These are the places you end up several pushes deep from Now Playing, which is
     /// exactly where Back-ing out one screen at a time is tedious.
+    /// UP NEXT IS ON THIS LIST BECAUSE IT ALREADY PAYS FOR THE SPACE. `up_next::LIST_BOTTOM` is
+    /// derived from `chrome::NP_BAR_H`, so the screen has always reserved the bottom 64 px — it
+    /// simply never drew anything there, which showed up as a black bar under the queue (reported
+    /// 2026-09-05).
+    ///
+    /// The alternative was to give Up Next the full height instead. That is the wrong repair: the
+    /// scrollbar Up Next draws is `library::scrollbar`, and `sbar_begin` measures the thumb's
+    /// travel against the LIBRARY's bottom — the comment on `up_next::LIST_BOTTOM` exists to keep
+    /// those two from drifting apart. Expanding the list would have silently mis-scaled the thumb
+    /// on the one screen where the scrollbar is also a drag target.
+    ///
+    /// Drawing the bar also gives Up Next the same play/pause zone and the same tap-to-return that
+    /// every other browsing screen has, which is what the space was reserved for in the first place.
     fn shows_np_bar(s: Screen) -> bool {
-        matches!(s, Screen::Library | Screen::Album | Screen::Artist | Screen::Playlist)
+        matches!(
+            s,
+            Screen::Library | Screen::Album | Screen::Artist | Screen::Playlist | Screen::UpNext
+        )
     }
 
     /// Number of rows in the current library tab (for cursor clamping).
@@ -8360,6 +8408,28 @@ mod tests {
             assert_eq!(library::hit_row(tab, &m, 0, by), None, "{tab:?} row under the bar");
             assert_eq!(library::hit_row(tab, &m, 0, by + 30), None, "{tab:?} row under the bar");
         }
+    }
+
+    /// Up Next reserves the bar's 64 px (`up_next::LIST_BOTTOM` is derived from `NP_BAR_H`), so it
+    /// must also DRAW there — otherwise the space is a black bar under the queue, which is how this
+    /// was reported. Pins both halves of the bar's behaviour on this screen, not just that it is
+    /// listed.
+    #[test]
+    fn np_bar_is_live_on_up_next() {
+        let (_, by, _, _) = crate::chrome::np_bar_rect();
+        let midy = by + crate::chrome::NP_BAR_H / 2;
+
+        let mut a = unlocked();
+        a.go_for_preview(Screen::UpNext);
+        assert!(App::shows_np_bar(Screen::UpNext), "Up Next must draw the bar it reserves space for");
+
+        // Left zone toggles playback without leaving the queue…
+        assert_eq!(a.tap(crate::chrome::NP_BAR_PLAY_W / 2, midy), vec![Action::PlayPause]);
+        assert_eq!(a.current(), Screen::UpNext, "play/pause must not navigate away");
+
+        // …and the rest returns to Now Playing, as it does from every other browsing screen.
+        a.tap(240, midy);
+        assert_eq!(a.current(), Screen::NowPlaying);
     }
 
     #[test]
