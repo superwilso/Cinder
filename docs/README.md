@@ -1,6 +1,6 @@
 # Cinder documentation
 
-Twenty-six files land in this directory over time, most of them dated audits. This index says which
+Twenty-seven files land in this directory over time, most of them dated audits. This index says which
 one to open and, just as importantly, which ones are **history rather than current state** — several
 were accurate on the day they were written and have been overtaken since. Where that is true it says
 so on the row.
@@ -43,7 +43,7 @@ The four documents that are always current live outside this directory:
 | [`BATTERY_BT.md`](BATTERY_BT.md) | Battery during Bluetooth playback: the measurement method first, then the finding. Written before any optimisation on purpose. |
 | [`PLAYLISTS.md`](PLAYLISTS.md) | Playlists made on the device (`.m3u8` under `/contents`, negative ids). |
 | [`LIKES_SYNC.md`](LIKES_SYNC.md) | The liked-songs device ⇄ PC contract, and the TSV format it crosses as. |
-| [`PERF_PLAN_2026-08-20.md`](PERF_PLAN_2026-08-20.md) | The remaining list-render cost, against measured `render_bench` numbers rather than estimates. |
+| [`PERF_PLAN_2026-08-20.md`](PERF_PLAN_2026-08-20.md) | The remaining list-render cost, against measured `render_bench` numbers rather than estimates. Its P2/P3/P6-half landed; **P4 and P5 are still open** — see `AUDIT_BATTERY_PERF_2026-09-05.md` §B5, which also argues they should be re-costed after the compiler-profile change rather than taken at these numbers. |
 
 ## Audits
 
@@ -52,7 +52,8 @@ ones where they overlap; the header of each says what it covers.
 
 | Audit | Scope | Standing |
 |---|---|---|
-| [`AUDIT_2026-09-01.md`](AUDIT_2026-09-01.md) | Repository, CI and release process, plus a defect pass over the guard/watchdog machinery. Found `main` red, two open defects in the guard, and 863 MB of committed binaries in a 1.3 GB `.git`. | **Most recent.** Its Part D is the open decision list. |
+| [`AUDIT_BATTERY_PERF_2026-09-05.md`](AUDIT_BATTERY_PERF_2026-09-05.md) | Battery, performance and optimisation, whole tree. Twelve findings ranked by impact × effort, each tied to `file:line`. The headline is measured: the player is compiled `opt-level = "z"`, and `2` is 2.2–3.2× faster for +4.6% size. Also finds the early-suspend lever shipping disabled, the 2026-08-18 N+1 freeze surviving at four more call sites, and a fork-free volume path already written but never wired up. | **Most recent.** Its Part D is the ordered work list; Part C is what must not be undone. |
+| [`AUDIT_2026-09-01.md`](AUDIT_2026-09-01.md) | Repository, CI and release process, plus a defect pass over the guard/watchdog machinery. Found `main` red, two open defects in the guard, and 863 MB of committed binaries in a 1.3 GB `.git`. | Most recent **repository** pass. Its Part D is the open decision list. |
 | [`AUDIT_2026-08-26_bluetooth.md`](AUDIT_2026-08-26_bluetooth.md) | Pairing, connecting, NFC tap-to-pair. | Most recent Bluetooth pass. |
 | [`AUDIT_2026-08-24_deep_sweep.md`](AUDIT_2026-08-24_deep_sweep.md) | Cross-thread state, the setuid helpers, the untested shim layer, panic reachability in Rust, the SQL. | Current. |
 | [`AUDIT_2026-08-24_stalled_bringup.md`](AUDIT_2026-08-24_stalled_bringup.md) | One defect: a bring-up that never completes froze the whole app. Found off-device by the harness's first exploratory run. | Fixed; kept as the worked example of what the harness is for. |
