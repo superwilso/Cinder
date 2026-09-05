@@ -1859,6 +1859,25 @@ void load_vol_cfg() {
 // Read the device's CURRENT hardware volume and seed the UI level from it (once, at boot), so the
 // first Vol± press nudges from the real level instead of jumping the hardware to the UI default.
 // amixer backend only (cget + parse "values="); sysfs backend reads the node directly. Guarded.
+// TRUE when the configured mixer is EXACTLY the one `cinder_codec_*_master_volume` drives, so the
+// fork-free ioctl can stand in for `amixer`. The shim opens /dev/snd/controlC0 and addresses the
+// control named "master volume" (codec_shim.cpp: kControlDev, kMasterVolCtl); the built-in default
+// config is card 0 / "master volume" / 0..120, i.e. the same control by the same name. Those two
+// agreeing is not a coincidence — they were derived from the same 2026-07-02 discovery dump — but
+// they are declared in different files, so this checks rather than assumes.
+//
+// WHY THE CHECK MATTERS: /contents/cinder_volume.conf can point the backend at another card, at a
+// different control name, or at a sysfs path. That file is the documented escape hatch for a unit
+// whose mixer is not this one, and an escape hatch that a later optimisation silently ignores is
+// no escape hatch. So an overridden config keeps the fork; only the default takes the ioctl.
+//
+// The min/max are deliberately NOT part of the test: they only scale the level into `val` before
+// either backend is chosen, so a conf that rescales the range still writes the same raw number to
+// the same control.
+bool vol_ctl_is_shim_control() {
+    return g_vol.amixer && g_vol.card == 0 && std::strcmp(g_vol.control, "master volume") == 0;
+}
+
 // Read the raw hardware volume through the configured backend. -1 = unreadable (no backend, the
 // node/control is missing, or the value parsed out of range). Split out of sync_volume_from_hw so
 // the reconnect resync can VERIFY the mixer before it writes anything to it.
@@ -1866,6 +1885,17 @@ long read_volume_hw() {
     if (!g_vol_read) load_vol_cfg();
     if (!g_vol.valid) return -1;
     long val = -1;
+    // Same substitution as the write, and the same fallback. `popen` here is a fork+exec of
+    // /bin/sh plus one of amixer plus parsing its human-readable output for ": values="; the shim
+    // returns the integer directly. A negative return is the shim's error signal, so it falls
+    // through to the fork rather than being mistaken for a volume of -1.
+    if (vol_ctl_is_shim_control()) {
+        const int direct = cinder_codec_get_master_volume();
+        if (direct >= 0) {
+            if (direct < g_vol.min || direct > g_vol.max) return -1;
+            return direct;
+        }
+    }
     if (g_vol.amixer) {
         char cmd[384];
         std::snprintf(cmd, sizeof cmd, "amixer -c %d cget name='%s' 2>/dev/null", g_vol.card, g_vol.control);
@@ -1952,7 +1982,18 @@ long g_vol_write_ms = 0;
 void volume_write_now(int level) {
     if (!g_vol.valid) return;
     int val = g_vol.min + (g_vol.max - g_vol.min) * level / 120;
-    if (g_vol.amixer) {
+    // ONE IOCTL INSTEAD OF TWO fork+execs. The comment above this function has always costed the
+    // amixer backend at "tens of milliseconds, eight times a second, competing with the render
+    // thread for the only core" — and the replacement was already written, already shipped in the
+    // binary and already declared in a header this file includes. It was simply never called.
+    // `cinder_codec_set_master_volume` is a single SNDRV_CTL_IOCTL_ELEM_WRITE on an fd it opens
+    // and closes; no /bin/sh, no amixer, no PATH lookup, no page-in of two executables.
+    //
+    // Falls through to the fork on ANY failure, so a unit where /dev/snd/controlC0 will not open
+    // behaves exactly as it did before — this can make volume faster, never absent.
+    if (vol_ctl_is_shim_control() && cinder_codec_set_master_volume(val) == 0) {
+        // done — the ioctl took it
+    } else if (g_vol.amixer) {
         char cmd[384];
         std::snprintf(cmd, sizeof cmd, "amixer -c %d cset name='%s' %d >/dev/null 2>&1",
                       g_vol.card, g_vol.control, val);
