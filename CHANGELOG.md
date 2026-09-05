@@ -18,6 +18,41 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
+- **The boot dead time is gone: ~4.6 s to ~0.9 s.** *device-verified.*
+
+  The ~5 s after boot in which the device shows a Cinder screen and answers nothing has been open
+  for the whole of this project's life, and every previous attempt aimed at the wrong thing. It was
+  blamed on the library build and attacked by moving that build to a thread (reverted, it starved
+  the render thread), then on the compiler profile (worth ~5% here), then on SQLite. It was none of
+  them. Device instrumentation put **3,802 ms of a 4,570 ms `cinder_db_open` inside
+  `refresh_playlists`** — 83% of the whole thing, in a function whose enclosing block a code
+  comment described as "all moves and assignments".
+
+  `user_playlist_rows` resolved every entry of every playlist with `track_by_filename`, which runs
+  a full `object_body` scan per call: cost is (entries x library size), unbounded in both. This is
+  audit B3's site `lib.rs:2166` — which the audit correctly called "the one to fix first" and
+  estimated at ~315 ms, not knowing it ran on every boot. `cinder-db` gains
+  `tracks_by_filenames`, one scan indexed by basename, and both filename call sites use it.
+
+  | | before | after |
+  |---|---:|---:|
+  | `refresh_playlists` | 3,802 ms | **133 ms** (28.6x) |
+  | `cinder_db_open` | 4,570 ms | **895 ms** (5.1x) |
+  | boot window | ~4.6 s | **~0.9 s** |
+
+  The resolver reproduces `track_by_filename`'s three-tier matching exactly — exact, then suffix
+  either way round, then first-candidate — against the same candidate set in the same `object_id`
+  order, because a playlist row pointing at the *wrong* song is far worse than a slow boot.
+  `batch_filename_resolution_matches_single` pins that equivalence over the ambiguous-basename
+  case, and it earned its keep immediately: the first implementation indexed `Track.filename` (the
+  full path `query_tracks` reconstructs) rather than the bare basename the `ob.filename` column
+  actually holds, and resolved nothing at all.
+
+  `build_library` itself is only ~420 ms of the window, and `cinder-home` now logs a one-line
+  breakdown of both it and `cinder_db_open` on every boot, so the next person to ask where the
+  time goes gets an answer instead of a guess.
+
+
 - **The Rust half of the player is compiled for speed, not size** (`player/Cargo.toml`).
   `opt-level` was `"z"` from the first commit, with no rationale recorded anywhere in the tree, on
   a device whose constraint is battery rather than flash. It is now `2`. *device-verified.*

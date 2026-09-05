@@ -793,9 +793,23 @@ against the real 3,349-track DB shows why — the build is roughly **77% SQLite*
 ```
 
 Bundled SQLite is branch-heavy, not loop-heavy, and is not what `"z"` punished (release `"z"` →
-`2` on this path: 28.5 → 23.8 ms, 1.2×). Device I/O is not the constraint either: the 5.5 MB
-`/db/MTPDB.dat` reads in ~60 ms. **The boot dead time is a query-shape problem, not a codegen one** —
-which points at B3, not B1.
+`2` on this path: 28.5 → 23.8 ms, 1.2×). Bulk device I/O is not the constraint either: the 5.5 MB
+`/db/MTPDB.dat` reads in ~60 ms.
+
+**This is NOT B3.** B3's five N+1 sites are all outside this window — the boot one (`lib.rs:4474`,
+the resume) runs *after* `build_library` returns and resolves 17 rows on this device, not 3,456:
+`resumed 17 context + 0 queued`. B3 remains worth fixing on its own terms (a shuffle-all context
+*is* the whole library, and `lib.rs:2314` pays it on the render thread holding the lock), but it
+will not move the boot.
+
+The three queries `build_library` issues are **already** the bulk shape B3 asks for. So the open
+question is narrower and more interesting than either finding: those queries cost ~46 ms on the
+host and the whole build costs ~4.5 s on device — roughly **100×**, where a 1 GHz in-order A7
+against this host should be nearer 20–30× for SQLite work. Something other than raw CPU is being
+paid. The lead is the PRAGMA note buried at the end of B3's remediation: `Db::open` sets **no
+PRAGMAs at all**, so a 3,456-row `ORDER BY ob.sort_str, ob.title` spills its sort scratch to
+SQLite's default `temp_store`, which on this device is eMMC. That is a measurement, not an
+argument, and D5 takes it.
 
 ### D4. Landed this session
 
@@ -815,5 +829,60 @@ the B1 change and 6.23 ms after, a null result convincing enough to nearly retir
 "doesn't transfer to hardware". It is now windowed, keeps sampling into real use, and switches off
 completely after 30,000 frames.
 
-**Open from this list: B2, B3, B5, B6, B7, B8, B11, B12.** B3 is the one D3 promotes — it is now
-the leading candidate for the boot dead time, not a general perf item.
+### D5. B3 *is* the boot dead time — via site `lib.rs:2166`, and it is now fixed
+
+*Measured (device).* D3 above said the boot cost was not B3. That was right about site `lib.rs:4474`
+(the resume, 17 rows) and wrong about the conclusion, because it reasoned from the host profile —
+where `/contents` does not exist, so the playlist and likes phases return instantly and the
+breakdown looks like pure SQLite. Instrumenting the phases **on device** says otherwise:
+
+```
+cinder_db_open 4570 ms = db_open 85 + build 432 + playlists 24 + likes 2
+                       + import 9 + lock 0 + install 3805 + artcache 211
+install        3805 ms = set_library 1 + refresh_playlists 3802 + liked_save 0 + set_liked_count 0
+```
+
+**`refresh_playlists` is 83% of the boot dead time.** It calls `user_playlist_rows` — audit site
+`lib.rs:2166`, the one §B3 correctly nominated to fix first — which resolves every entry of every
+playlist through `track_by_filename`, a full `object_body` scan per call. The audit estimated
+~315 ms on host and listed it as running "whenever the playlist model is rebuilt"; on this device,
+with 8 playlists over a 3,456-track library, it is **3,802 ms and it runs on every boot**.
+
+Fixed by the batch resolver §B3 proposed, `Db::tracks_by_filenames` — one scan, indexed by
+basename — used at both filename sites:
+
+| | before | after |
+|---|---:|---:|
+| `refresh_playlists` | 3,802 ms | **133 ms** (28.6×) |
+| `cinder_db_open` | 4,570 ms | **895 ms** (5.1×) |
+| boot window | ~4.6 s | **~0.9 s** |
+
+Two notes for whoever does the remaining three sites (the `track_by_object_id` ones, which still
+want `tracks_by_object_ids`):
+
+* **The equivalence test is not optional.** `Track.filename` is the full path `query_tracks`
+  reconstructs from parent rows; the `ob.filename` COLUMN that `track_by_filename` matches on is a
+  bare basename. They are different strings, the first implementation indexed the wrong one, and it
+  resolved *nothing* — caught immediately by `batch_filename_resolution_matches_single`, which
+  covers the ambiguous-basename case precisely because that is where candidate ORDER decides the
+  answer.
+* **`build_library` was never the problem** — it is ~420 ms of the window, and its own SQL is
+  ~300 ms of that. The PRAGMA lead in §B3's remediation is therefore worth at most a slice of
+  ~300 ms and should be re-costed accordingly; it is no longer the interesting question it looked
+  like in D3.
+
+`cinder-home` now logs a one-line breakdown of `build_library` and of `cinder_db_open` on every
+boot, so this question is answerable from a log rather than a flash-and-instrument cycle.
+
+### D6. A latent test flake, seen once
+
+`cinder-ui`'s `the_banner_keeps_the_battery_indicator` failed once under the parallel test runner
+(`drew 286 px where the normal strip draws 374`) and did not reproduce in 6 runs on the change or 6
+on the committed baseline. It cannot be the gradient change: `chrome.rs` never touches `art::`.
+Every writer of the `ipc_dead` global takes `latch_lock()`, so the likelier suspect is the lazily
+loaded shared `FontSet` racing across test threads — missing glyphs would explain a pixel count
+that is low rather than wrong. Device-irrelevant (fonts load once, single-threaded, at startup),
+but it is in the suite that gates every install, so it is written down rather than forgotten.
+
+**Open from this list: B2, B5, B6, B7, B8, B11, B12** — and B3's three remaining
+`track_by_object_id` sites.
