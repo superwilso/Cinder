@@ -9284,7 +9284,17 @@ static void apply_pump_interval() {
     // stays true forever and the pump never backed off at all (measured: 10.3 ctxt/s on a dark,
     // idle device that had played nothing). Hence the grace window rather than the intent flag.
     const bool just_pressed = now_ms() - g_transport_at < TRANSPORT_GRACE_MS;
-    cinder_audio_pump_set_interval(g_screen_on ? 20 : (just_pressed ? 100 : 250));
+    // 500, NOT 250. The paragraph above already contains the argument: the only things riding
+    // this pump are the position callback (~1/s) and the track boundary, and both are consumed
+    // by 1 Hz housekeeping — so 250 ms was four times finer than anything downstream can
+    // observe, and the panel is dark, so nothing is displaying position anyway (audit B7).
+    // Responsiveness after a keypress is covered separately by the `just_pressed` window.
+    //
+    // Halves the remaining pump wakeups in the pocket-playing state, 4/s to 2/s. NOT 1000 ms:
+    // that would put the pump and the 1 Hz housekeeping tick on the same period, where they
+    // can alias — a boundary event could then wait a whole second for the tick that consumes
+    // it, every time, instead of half a period on average.
+    cinder_audio_pump_set_interval(g_screen_on ? 20 : (just_pressed ? 100 : 500));
 }
 
 void poll_now_playing() {
@@ -9556,7 +9566,16 @@ void* render_driver(void*) {
             // and reads the sink's answer between them, so a once-a-second tick would stretch a
             // five-step restore over five seconds of audible drift. Costs one integer test a frame
             // while idle, which is every frame but the second or two after a connect.
-            run_guarded("loop: BT volume walk", 6, bt_vol_walk_tick);
+            // PREDICATE OUTSIDE THE GUARD. `bt_vol_walk_tick` returns immediately unless a walk
+            // is in flight, and its comment correctly says that costs one integer test a frame.
+            // The GUARD around it does not: run_guarded_ex captures the outer alarm, scans the
+            // 64-entry first-call table, sigsetjmp's with savemask=1 (an rt_sigprocmask), arms
+            // a new alarm, and unwinds all of that afterwards — roughly 4-5 syscalls, 60 times
+            // a second with the panel lit, to reach a test that returns (audit B8).
+            //
+            // The guard still wraps every call that actually walks, which is where it matters:
+            // a step issues Sony IPC and that is what can hang.
+            if (g_bt_vol_walk_target >= 0) run_guarded("loop: BT volume walk", 6, bt_vol_walk_tick);
             // The USB host started or changed its stream. Start() can only succeed once a format
             // exists, so this — not the moment the user flipped the switch — is when the DAC's
             // render path actually opens.

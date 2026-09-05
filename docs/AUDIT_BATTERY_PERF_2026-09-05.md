@@ -884,5 +884,26 @@ loaded shared `FontSet` racing across test threads — missing glyphs would expl
 that is low rather than wrong. Device-irrelevant (fonts load once, single-threaded, at startup),
 but it is in the suite that gates every install, so it is written down rather than forgotten.
 
-**Open from this list: B2, B5, B6, B7, B8, B11, B12** — and B3's three remaining
-`track_by_object_id` sites.
+### D7. B3 completed, plus B7, B8, B11
+
+*Device-verified for the boot path; the queue and context taps are code-complete and want a tap on
+hardware.*
+
+`tracks_by_object_ids` now sits beside `tracks_by_filenames`, and all five §B3 sites use one of
+them. The two remaining `track_by_object_id` / `track_by_filename` calls in `cinder-ffi` are genuine
+single lookups (one track added to a playlist; one now-playing URI) and are correct as written.
+
+`PlayContextAt` was the site worth the most care: it resolved one id at a time **on the render
+thread holding the renderer mutex**, over what is the entire library after "Shuffle all songs" —
+the configuration behind the 2026-08-18 freeze, fixed in `play_order_uris` and left standing here.
+Its start-index walk is deliberately unchanged; only the resolution moved.
+
+B7 (dark pump 250 → 500 ms), B8 (hoist the cheap predicate out of the per-frame `run_guarded`) and
+B11 (only repaint for a decoded cover on a screen that can show artwork) all landed as the audit
+proposed. Measured after: **3.44 voluntary ctxt/s across all threads with the panel dark**, against
+§B7's predicted ~3/s. The pump's own share of that is arithmetic (1/interval), not separately
+isolated — an A/B would need a second flash and the deterministic part is not in doubt.
+
+**Open from this list: B2, B5, B6, B12.** B2 and B6 both want a decision rather than a patch — B2
+is a shipping default with a genuine "nobody has put a power number on it" caveat, and B6 carries a
+real audio-underrun risk. B5 (per-frame heap churn) and B12 (flat 60 Hz while lit) are ordinary work.
