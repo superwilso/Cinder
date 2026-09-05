@@ -732,3 +732,88 @@ Ordered so that each step's measurement informs the next.
   by design (a slow runner must not fail a build) and nothing else measures. Publishing the bench
   output as a CI **artifact** — not a gate — would make a regression visible without reintroducing
   the flakiness the `#[ignore]` exists to prevent.
+
+---
+
+## Part D — Device follow-up, 2026-09-05 (same day, after the audit)
+
+The audit above is an offline document: its evidence classes say so, and every number in Part A is
+host-measured by design. Four of its findings were taken to the hardware the same afternoon. Two of
+its numbers did not survive that, and this section corrects them in place rather than leaving the
+document to be quoted as written.
+
+### D1. B1 landed, and it is ~1.1× on device, not 2–3×
+
+*Measured (device).* Both builds flashed from identical source, read through the windowed raster
+sampler in `cinder_render_tick` (rewritten for this — see D4).
+
+| | `"z"` | `2` | `2` (2nd build) |
+|---|---:|---:|---:|
+| raster, `frames 1..300` | 6.93 ms | **6.14 ms** | 6.32 ms |
+| library build | 4.77 s | **4.52 s** | 4.56 s |
+
+Only the `frames 1..300` window is comparable — it follows a fixed boot sequence, so the same work
+is sampled every time. The `frames 301..600` window is **not** controlled: what is on screen by then
+depends on Bluetooth reconnect attempts and art decoding, and it read 4.83, 5.97 and 7.50 ms across
+builds in no consistent order. It was briefly quoted as a 1.24× win; that was reading noise.
+
+Two `"2"` builds landing three percent apart put the noise floor near ±3%, which the 10% gap clears
+but not by much. **The direction is consistent across every host bench and every device sample; the
+magnitude is not.** The host bench overstates this device's gain by roughly 2×. The likely reason is
+that the canvas is 480×800×4 = 1.5 MB — comfortably inside the host's L2/L3, nowhere near the A7's
+cache — so a good share of every device frame is DRAM bandwidth, which no codegen flag can improve.
+*That last sentence is inference, not measurement.*
+
+**Anyone sizing future work off `render_bench` alone should expect well under half of what it
+promises.** That is the most useful thing this follow-up found, and it applies to B5 and B9 too.
+
+### D2. The size cost is +16.9%, not +4.6%
+
+*Measured (device toolchain).* §A4 measured `libcinder_ffi.a`. A static archive is not what ships —
+it carries per-object metadata the linker discards. The linked, stripped ARM binary is the artefact:
+
+| | `"z"` | `2` | delta |
+|---|---:|---:|---:|
+| `cinder-home` (dev, stripped ARM) | 3,674,172 B | 4,292,692 B | **+618,520 (+16.8%)** |
+| `cinder-home` (stable) | 3,661,868 B | 4,280,388 B | **+618,520 (+16.9%)** |
+
+Still an easy trade — `/system` has 490 MB free — but it is nearly four times the figure in §A4, and
+the archive number should not be quoted again.
+
+### D3. B1 does **not** fix the boot dead time
+
+*Measured (host + device).* The ~4.5 s library build moves about 5%. Profiling it with the new
+`profile_library_build` stopwatch (`player/cinder-ffi/src/lib.rs`, opt-in via `CINDER_PROFILE_DB`)
+against the real 3,349-track DB shows why — the build is roughly **77% SQLite**:
+
+```
+  Db::open                14.3 ms        db.tracks(Title)         25.1 ms
+  db.release_years         0.4 ms        db.tracks_album_order    18.2 ms
+  db.albums                2.3 ms        build_library (whole)    60.0 ms
+```
+
+Bundled SQLite is branch-heavy, not loop-heavy, and is not what `"z"` punished (release `"z"` →
+`2` on this path: 28.5 → 23.8 ms, 1.2×). Device I/O is not the constraint either: the 5.5 MB
+`/db/MTPDB.dat` reads in ~60 ms. **The boot dead time is a query-shape problem, not a codegen one** —
+which points at B3, not B1.
+
+### D4. Landed this session
+
+| Finding | State |
+|---|---|
+| **B1** | Shipped. `opt-level = 2`, with the corrections above recorded in `player/Cargo.toml`. |
+| **B4** | Shipped, *device-unverified* — needs a volume-key press. Guarded by `vol_ctl_is_shim_control()` so an overridden `cinder_volume.conf`, or any ioctl failure, keeps the fork. |
+| **B9** | Shipped. Entries carry a last-used tick; the oldest half is evicted, so the on-screen set survives by construction. Cap unchanged. |
+| **B10** | Shipped, and it was worse than the audit knew — see below. |
+
+**B10 was not merely dead weight; it was actively misleading.** The audit records that it prints
+once at frame 300 and then costs two atomics and two clock reads forever, which is true. What
+neither the audit nor this project had noticed is that *the number it printed was wrong*: on device
+those 300 frames span first paint (~1.2 s) to about 14.7 s, so it sampled the near-empty boot screen
+with the render thread starved by the synchronous library build — not the UI. It read 6.21 ms before
+the B1 change and 6.23 ms after, a null result convincing enough to nearly retire B1 as
+"doesn't transfer to hardware". It is now windowed, keeps sampling into real use, and switches off
+completely after 30,000 frames.
+
+**Open from this list: B2, B3, B5, B6, B7, B8, B11, B12.** B3 is the one D3 promotes — it is now
+the leading candidate for the boot dead time, not a general perf item.
