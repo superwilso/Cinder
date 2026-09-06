@@ -1,5 +1,46 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-09-06 — queue & playback audit: 12 defects, all fixed
+>
+> **Write-up: [`../docs/AUDIT_2026-09-06_queue_playback.md`](../docs/AUDIT_2026-09-06_queue_playback.md).**
+> A full read of everything between "the user asks for a song" and "PlayerService is holding a
+> sequence". Most of the twelve are two correct rules disagreeing at their seam, and four are the
+> class this project keeps sweeping for — *a control that says one thing while the player does
+> another*:
+>
+> - **Right-swiping a track on the album page queued it and never told the shell.** The arm called a
+>   wrapper that discarded the returned `Action::QueueChanged` and then returned `vec![]`. Toast,
+>   Up Next row, no flush ever scheduled: the track played wherever the old sequence said. Its
+>   mirror gesture (left = Play Next) always worked, which is why nobody could see it.
+> - **Up Next named the PREVIOUS song for the whole of a swipe-queued one.** A pick leaves the queue
+>   when it starts, and a pick must not move the context index — so nothing held it, and the screen
+>   asked the context what was playing and got the track the pick interrupted. `Slot::CurrentPick`
+>   now gives it the NOW PLAYING row, and `pick=<id>` in the resume file means a reboot mid-pick
+>   comes back on the right song.
+> - **Pressing SHUFFLE on a paused player started the music.** The not-playing branch flushed
+>   immediately, and a flush ends in `ChangePlayState(Play)`. Reachable from a cold boot.
+> - **Shuffle-off was still a one-way door after a Library "Shuffle …" band**, the likeliest way
+>   anyone starts a shuffle: five of six entry points recorded the un-shuffle order and those four
+>   did not, so the icon went dark while the sequence stayed permuted.
+> - **…and that band ignored the Hi-Res filter while its caption named it** — on the reference
+>   library, the difference between 1 track and 3,463.
+> - **Repeat-all looped a TRUNCATED sequence**: it replayed the shim's last URI list, which after any
+>   queue flush is `[current] + queue + tail`. Swipe-queue one song at track 5 and tracks 1–4 never
+>   played again. It also **fired on a pause inside the last 1.5 s of ANY track** — that shape is
+>   identical to a queue end — so pausing near the end of track 3 of 12 restarted from track 1.
+> - Plus: a queued copy of the *currently playing* track could never be consumed (the URI never
+>   changes, so no track start is ever reported); tapping a queue row silently emptied the queue and
+>   with it the replace prompt; a queue edit made before the first ▶ after a boot was dropped; a
+>   stale `queue_pending` fired a needless 400 ms re-issue near the end of the first track after
+>   "clear queue"; and MIX dealt the identical "random" order after every boot.
+>
+> Gates: **347 `cinder-ui` tests** (up from 342), 88 `cinder-ffi`, and **30 harness scenarios** (up
+> from 27). The end-of-queue half of `poll_now_playing` had been **unreachable from any scenario** —
+> the generated stub for `cinder_audio_position` never filled its out-parameters, so `tot > 0` was
+> false everywhere and the whole branch was dead code to the harness. It is hand-written now, and
+> both new repeat-all scenarios FAIL on the code before this change. *Device-unverified:* the
+> audit's verification table lists what to look for on the next session.
+
 > ## 2026-08-31 — "unresponsive after skipping quickly": found, fixed, and now gated
 >
 > Reported directly. Root cause is **where** the call was made, not what it did: `carry_out` runs on

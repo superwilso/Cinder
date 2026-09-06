@@ -108,6 +108,11 @@ int  cinder_harness_fs_read(const char* path, char* buf, int cap);
 // The fake DisplayService's current backlight level (see harness.cpp). 0 = the service was told to
 // turn the panel fully off; the sysfs node alone does NOT do that on this hardware.
 int  cinder_harness_display_backlight(void);
+// What cinder_audio_position() reports: the play position and the track duration, in ms. Negative
+// cur = "no position" (the app's `have_pos` goes false). Hand-written rather than generated
+// because the answer is in the OUT-PARAMETERS — see harness.cpp. Parking a scenario at
+// `cur == tot` is how the end of a queue is expressed.
+void cinder_harness_play_position(int cur_ms, int total_ms);
 // Change a file PART WAY THROUGH the run, when the virtual clock reaches `at_ms`. The device's
 // world is not static — headphones get unplugged, a charger goes in, the battery falls — and
 // almost every interesting rule in the app is an EDGE rather than a level (bt_edge.h, jack_edge.h

@@ -529,6 +529,15 @@ int  cinder_set_bt_enhanced_supported(int on);
  * (device-measured 2026-07-28: position 9000 -> 0 and playback stopped). */
 int  cinder_take_queue_flush(void);
 
+/* Is the playing track the LAST entry of the sequence the shell handed PlayerService? The
+ * queue-end signal repeat-all watches for (position pinned at the duration, playing 1 -> 0) is
+ * the same shape a pause in the final seconds of ANY track makes; this is what tells them apart. */
+int  cinder_on_last_track(void);
+/* Build the sequence a repeat-all lap should play into cinder_pending_play_* (start index 0).
+ * 1 = there is one, 0 = nothing to repeat. Prefer this to cinder_audio_restart_sequence(), which
+ * replays the URI list the shim last issued — after a queue flush that is only the TAIL of the
+ * context, so a lap would silently drop everything before the flush. */
+int  cinder_repeat_all_prepare(void);
 /* Repeat-one state (1/0) for CINDER_ACT_REPEAT_CHANGED. */
 /* Repeat-ALL (1/0). No PlayerService primitive exists; the shell implements it by watching for the
  * queue boundary (position pinned at duration, playing 1 -> 0, URI unchanged) and re-issuing. */

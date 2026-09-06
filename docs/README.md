@@ -1,6 +1,6 @@
 # Cinder documentation
 
-Twenty-seven files land in this directory over time, most of them dated audits. This index says which
+Twenty-eight files land in this directory over time, most of them dated audits. This index says which
 one to open and, just as importantly, which ones are **history rather than current state** — several
 were accurate on the day they were written and have been overtaken since. Where that is true it says
 so on the row.
@@ -52,14 +52,15 @@ ones where they overlap; the header of each says what it covers.
 
 | Audit | Scope | Standing |
 |---|---|---|
-| [`AUDIT_BATTERY_PERF_2026-09-05.md`](AUDIT_BATTERY_PERF_2026-09-05.md) | Battery, performance and optimisation, whole tree. Twelve findings ranked by impact × effort, each tied to `file:line`. The headline is measured: the player is compiled `opt-level = "z"`, and `2` is 2.2–3.2× faster for +4.6% size. Also finds the early-suspend lever shipping disabled, the 2026-08-18 N+1 freeze surviving at four more call sites, and a fork-free volume path already written but never wired up. | **Most recent.** Its Part D is the ordered work list; Part C is what must not be undone. |
+| [`AUDIT_2026-09-06_queue_playback.md`](AUDIT_2026-09-06_queue_playback.md) | The queue and playback system end to end: the queue/context model, the resolve-and-flush layer, the shell's transport and end-of-queue watcher, the sequence shim. Twelve defects, all twelve fixed — among them a swipe that queued a track and never told the shell, Up Next naming the previous song for the whole of a queued one, SHUFFLE starting playback on a paused player, and repeat-all both looping a truncated sequence and firing on a pause near the end of any track. | **Most recent.** Current; supersedes the queue/playback half of `AUDIT_2026-08-16.md`. |
+| [`AUDIT_BATTERY_PERF_2026-09-05.md`](AUDIT_BATTERY_PERF_2026-09-05.md) | Battery, performance and optimisation, whole tree. Twelve findings ranked by impact × effort, each tied to `file:line`. The headline is measured: the player is compiled `opt-level = "z"`, and `2` is 2.2–3.2× faster for +4.6% size. Also finds the early-suspend lever shipping disabled, the 2026-08-18 N+1 freeze surviving at four more call sites, and a fork-free volume path already written but never wired up. | Most recent **battery/performance** pass. Its Part D is the ordered work list; Part C is what must not be undone. |
 | [`AUDIT_2026-09-01.md`](AUDIT_2026-09-01.md) | Repository, CI and release process, plus a defect pass over the guard/watchdog machinery. Found `main` red, two open defects in the guard, and 863 MB of committed binaries in a 1.3 GB `.git`. | Most recent **repository** pass. Its Part D is the open decision list. |
 | [`AUDIT_2026-08-26_bluetooth.md`](AUDIT_2026-08-26_bluetooth.md) | Pairing, connecting, NFC tap-to-pair. | Most recent Bluetooth pass. |
 | [`AUDIT_2026-08-24_deep_sweep.md`](AUDIT_2026-08-24_deep_sweep.md) | Cross-thread state, the setuid helpers, the untested shim layer, panic reachability in Rust, the SQL. | Current. |
 | [`AUDIT_2026-08-24_stalled_bringup.md`](AUDIT_2026-08-24_stalled_bringup.md) | One defect: a bring-up that never completes froze the whole app. Found off-device by the harness's first exploratory run. | Fixed; kept as the worked example of what the harness is for. |
 | [`AUDIT_2026-08-23_sound_effects.md`](AUDIT_2026-08-23_sound_effects.md) | The DSP/effects chain. Five defects, all fixed. | Current. |
 | [`AUDIT_2026-08-23_three_reports.md`](AUDIT_2026-08-23_three_reports.md) | Three user-reported defects run to root cause. | Current. |
-| [`AUDIT_2026-08-16.md`](AUDIT_2026-08-16.md) | Sony functional parity, queue/playback behaviour, and a measured performance + battery sweep. | Largely worked off; its ordering superseded the ROADMAP's. |
+| [`AUDIT_2026-08-16.md`](AUDIT_2026-08-16.md) | Sony functional parity, queue/playback behaviour, and a measured performance + battery sweep. | Largely worked off; its ordering superseded the ROADMAP's. Its queue/playback half is superseded by `AUDIT_2026-09-06_queue_playback.md`. |
 | [`AUDIT_2026-07-26.md`](AUDIT_2026-07-26.md) | Full project audit — every existing and planned feature against the code. | **History.** Useful for the touch-input sweep in §F6b; otherwise overtaken. |
 | [`audit_notes.md`](audit_notes.md) | How two external audits were integrated into the v1.4 baseline. | History. |
 

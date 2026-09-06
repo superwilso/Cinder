@@ -18,6 +18,43 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **Queue and playback audit — twelve defects, all fixed.** *device-unverified — host tests and the
+  off-device harness; see the audit's verification table for what to look for on the next session.*
+
+  A full read of everything between "the user asks for a song" and "PlayerService is holding a
+  sequence". Write-up: [`docs/AUDIT_2026-09-06_queue_playback.md`](docs/AUDIT_2026-09-06_queue_playback.md).
+
+  - **Right-swiping a track on the album page queued it and never told the shell.** The arm called
+    a wrapper that discarded the returned `Action::QueueChanged`, so the toast and the Up Next row
+    appeared and no flush was ever scheduled — the track played wherever the previous sequence
+    said. The mirror gesture (left = Play Next) always worked, which is what hid it.
+  - **Up Next named the previous song for the whole of a swipe-queued one.** A pick leaves the
+    queue when it starts and must not move the context index, so nothing held it and the screen
+    asked the context what was playing. It now has its own NOW PLAYING row, and it survives a
+    reboot (`pick=` in the resume file) instead of resuming the track it interrupted.
+  - **Pressing SHUFFLE on a paused player started playback.** The not-playing branch flushed
+    immediately, and a flush ends in `ChangePlayState(Play)`.
+  - **Shuffle-off did nothing after a Library "Shuffle …" band** — the icon went dark while the
+    sequence stayed permuted. Four of the six shuffle entry points never recorded the order to
+    restore.
+  - **…and those bands ignored the Hi-Res filter** while their caption named it. On the reference
+    library that is the difference between 1 track and 3,463.
+  - **Repeat-all looped a truncated sequence** after any queue edit (it replayed the shim's last
+    URI list, which a flush leaves as `[current] + queue + tail`), and **fired on a pause inside
+    the last 1.5 s of any track**, restarting a twelve-track album from track 1.
+  - A queued copy of the *currently playing* track could never be consumed, so it replayed for
+    ever and left a phantom Up Next row; tapping a queue row silently emptied the queue and with it
+    the "you have a queue" prompt; a queue edit made before the first ▶ after a boot was dropped; a
+    stale pending flush fired a needless ~400 ms re-issue near the end of the first track after
+    "clear queue"; the Menu's Up Next row read "Queue empty" over a full album; the 512-track cap
+    was applied silently on the flush path; and MIX dealt the identical "random" order after every
+    boot.
+
+  Gates: 347 `cinder-ui` tests (up from 342), 88 `cinder-ffi`, and 30 harness scenarios (up from
+  27). The end-of-queue half of the now-playing poll had been unreachable from any scenario — the
+  generated stub for `cinder_audio_position` never filled its out-parameters — so it is hand-written
+  in the harness now, and both new repeat-all scenarios fail on the code before this change.
+
 - **USB mass-storage mode refused to start once anything had been played.** *device-verified —
   entered and exited cleanly on the first try after the fix.*
 

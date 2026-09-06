@@ -364,6 +364,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                 tracks: &tracks,
                 current: (!tracks.is_empty()).then(|| app.track.min(tracks.len() - 1)),
                 queue: &[],
+                pick: None,
                 lib: &app.lib,
                 scroll_px: 0,
                 drag: None,
