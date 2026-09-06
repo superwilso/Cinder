@@ -159,6 +159,50 @@ stopped on background/finalize. Validate on device first: `cinder-probe --analyz
 flow + raw band range for calibrating `from_bands`). Fallback path for a raw-PCM tap with no
 analyzer (e.g. USB-DAC): `cinder_set_pcm()` (our own radix-2 FFT, `spectrum::levels`).
 
+### 10b. What the analyzer actually IS (disasm, 2026-09-06) — and the twelve-band ceiling
+
+`libAudioAnalyzerService.so` was read properly rather than treated as a black box that emits
+numbers. It is **not an FFT**. `SpectrumAnalyzer` is a bank of 2nd-order IIR **bandpass filters**,
+one per passband, each feeding a level detector (`Lvdet`, an `EffectSetParamLvdet` client):
+
+| Symbol | Address | What it does |
+|---|---|---|
+| `SpectrumAnalyzer::SpectrumAnalyzer()` | 0x1faac | Pushes a hardcoded **12**-entry default passband list (16/31/62/125/250/500/1k/2k/4k/8k/16k/32k Hz, `mean`=10.0f) and allocates `ceil(n/5)` `Lvdet` objects — `min(remaining,5)` bands each, 0x14088 bytes apiece |
+| `SpectrumAnalyzer::SetPassband(vector<Passband>&)` | 0x1fc58 | **Only** `assign`s the vector. It does NOT resize the Lvdet vector |
+| `SpectrumAnalyzer::UpdateCoefSet()` | 0x1fe60 | Per Lvdet, walks that Lvdet's own band count and computes one biquad per band |
+| `SpectrumAnalyzer::GetSpectrumData(vector<int>&)` | 0x20158 | Concatenates `Lvdet::GetAmplitude(i)` over every Lvdet — hence one int per band, in band order |
+
+**Consequences, all load-bearing:**
+
+1. **12 bands is a hard ceiling for any client.** The detectors are built in the CONSTRUCTOR from
+   the 12-entry default; `SetPassband` never makes another one, so a 13th passband has nothing to
+   run in and is silently ignored. wampy's "caps at 12" is confirmed, and now explained.
+2. **`Passband.mean` is the filter's Q.** `UpdateCoefSet` computes `B = tan(pi*f/fs)/mean` and emits
+   `[B/D, 0, -B/D, (2-2T²)/D, (B-T²-1)/D]` with `T = tan(pi*f/fs)`, `D = T²+1+B` — an RBJ bandpass
+   whose `alpha = sin(w0)/(2Q)` equals `B` in the small-angle limit, i.e. **mean ≡ Q**. Sony's own
+   player passes 456: filters ~1/300 octave wide, twelve needles with the spectrum falling between
+   them, which is where the "40k to millions, frame to frame" behaviour comes from. Contiguous
+   coverage at our 12 log-spaced centres (ratio 1.76) is `Q = 1/(sqrt(r)-1/sqrt(r)) = 1.75`.
+3. **A band at or above fs/2 is ZEROED** (`UpdateCoefSet` compares `fs>>1` against the centre and
+   stores an all-zero coef set). The stock table's 28 kHz entry — which the shim reproduced — was a
+   dead column at every rate this device plays.
+
+Shipped as a result: `cinder_analyzer_set_bands()` (table + per-band Q, settable while running),
+`cinder_analyzer_set_window()`, a timestamped frame log with a passband-generation tag, and
+`cinder-probe --vizlab`, which measures the ceiling, the Q sweep, the detector window, the true
+emit rate, and how a live stream behaves when the table is swapped underneath it.
+
+### 10c. `--vizlab` on device, 2026-09-06 (music playing, jack out, `hw:0,4`)
+
+| Question | Measured |
+|---|---|
+| 24-entry passband table | `bands=12` in every frame — **ceiling confirmed**, and it takes the FIRST twelve entries (matching the `lvdet_idx*5 + i` indexing in `UpdateCoefSet`) |
+| `SetPassband` on a live stream | **Applies**, 1–7 ms typical (worst 60 ms). Proven unambiguously: a table with all twelve centres at 8 kHz makes all twelve reported magnitudes bit-identical (avg 122 507 900 across every band) |
+| `SetUpdateRate(60)` | Honoured — mean inter-frame 17 ms (20 Hz → 47–50 ms) |
+| `SetCalcSamples` live | Applies; visibly changes the dynamics (512 vs 4096 vs 16384) without touching the emit rate. This is the "time window" knob |
+| Q (`mean`) | Q=456: band min/max spans ~1000:1 inside 2 s (needles). Q=1.75: ~10:1, every band populated. Magnitudes with Q=1.75: band avgs 5.6e7–5.7e8, maxima 1.8–2.1e9 (hence `spectrum::FIXED_REF = 2.0e9`) |
+| **24 bands by alternating two tables** | **Not viable.** Alternating all-100 Hz against all-8 kHz separates them 5.5x at 500 ms dwell, 2.5x at 250 ms, **1.1x at 100 ms** — at display speed the two tables report the same thing. A bandpass needs ~Q/f to settle (>100 ms at the bottom of the range) and the detector averages on top. A complete 24-band frame would cost ~2 Hz against 20–60 Hz for twelve |
+
 ---
 
 ## What's now wireable vs still device-gated
@@ -171,7 +215,7 @@ analyzer (e.g. USB-DAC): `cinder_set_pcm()` (our own radix-2 FFT, `spectrum::lev
 | Effects on Bluetooth (goal #7) | **wireable** | `SetBtAudioSoundEffect(true)` |
 | Volume | mechanism found | ALSA mixer "master volume" / sysfs — confirm control name on device |
 | USB-DAC → LDAC (headline) | entry point found | PCM tap + `LdacWriteSound`; E4/E5 ALSA topology on device |
-| Real audio-reactive visualiser | **wireable (shipped, default-OFF)** | analyzer_shim over AudioAnalyzerService; `cinder-probe --analyzer` to validate + calibrate, then `cinder_viz.conf: analyzer=1` |
+| Real audio-reactive visualiser | **shipped, default-ON** | analyzer_shim over AudioAnalyzerService (12 bands, ours placed + Q'd — see §10b); `cinder_viz.conf: analyzer=0` disables. Settings ▸ Visualiser owns scale/range/response/curve/peaks/window/rate |
 | Battery care (charge limit) | **NOT wired** (UI label only) — mechanism found | `PowerMgrServiceClient::EnableItawariCharging(bool)` + `IsItawariChargingEnabled()` (§9) |
 
 ## 11. Bullet-proofing audit (2026-06-29, recursive memory/crash sweep)

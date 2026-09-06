@@ -539,7 +539,12 @@ struct Render {
     viz_phase: f32,
     last_viz: std::time::Instant, // throttle the visualiser repaint to ~20fps (battery)
     viz_levels: Vec<f32>, // real spectrum bars (0..1) from the last set_pcm/set_spectrum; empty = synthetic
-    viz_peak: f32,        // slow-decaying auto-gain peak for cinder_set_spectrum's linear branch
+    viz_peak: f32,        // slow-decaying auto-gain peak for Scale::Dynamic
+    // Peak-hold markers and how long each has been sitting where it is. Only populated while the
+    // user has the markers switched on; `hold_peaks` clears both when they are off, so the render
+    // asks one `is_empty()` rather than carrying a second setting down to the draw call.
+    viz_peaks: Vec<f32>,
+    viz_held_ms: Vec<f32>,
     // When the last spectrum frame arrived. Sony's analyzer streams at ~20 Hz WHILE IT RUNS, and it
     // now runs on demand — so it stops on every screen blank, pause and (possibly) track change,
     // and starts again up to a second later (housekeeping is 1 Hz) plus service latency. Without a
@@ -753,6 +758,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         last_viz: std::time::Instant::now(),
         viz_levels: Vec::new(),
         viz_peak: 0.0,
+        viz_peaks: Vec::new(),
+        viz_held_ms: Vec::new(),
         viz_at: std::time::Instant::now(),
         queue_pending: false,
         queue_flush: false,
@@ -865,6 +872,20 @@ fn settings_body(r: &Render) -> String {
         r.app.setup_idx(),
     );
     body.push_str(&setup_body(&r.app.setup_inactive()));
+    // The visualiser's signal settings. One line each rather than a packed field, because these
+    // are exactly the lines someone tuning the display over adb will want to edit by hand — and
+    // every one is an INDEX into a table owned by `cinder_ui::vizcfg`, so an out-of-range value
+    // from a hand-edited file is wrapped by the setter rather than accepted.
+    body.push_str(&format!(
+        "viz_scale={}\nviz_range={}\nviz_response={}\nviz_interp={}\nviz_peaks={}\nviz_window={}\nviz_rate={}\n",
+        r.app.viz_scale_idx(),
+        r.app.viz_range_idx(),
+        r.app.viz_response_idx(),
+        r.app.viz_interp_idx(),
+        r.app.viz_peak_hold() as u8,
+        r.app.viz_window_idx(),
+        r.app.viz_rate_idx(),
+    ));
     // FM: the dial position and the scanned station list. A scan is a DELIBERATE ten-second wait
     // that the user watches happen, so losing it on a reboot is the same defect as losing a shelf
     // pin — and losing the frequency drops the dial to a hardcoded 97.3 that is nobody's station.
@@ -1371,11 +1392,11 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 30] = [
+const SCREEN_NAMES: [&str; 31] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
-    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device",
+    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1390,7 +1411,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
-        S::Device => 29,
+        S::Device => 29, S::VizSet => 30,
     }
 }
 
@@ -1417,6 +1438,22 @@ fn install_panic_hook() {
 /// stream delivers one every ~50 ms; 250 ms is five missed frames, comfortably past jitter but
 /// short enough that a stopped stream is caught within a frame or two of the user noticing.
 const VIZ_FRESH_MS: u128 = 250;
+/// How many display columns the visualiser draws. The analyzer gives twelve bands whatever we do
+/// (see `cinder_analyzer.h`), so this is a DISPLAY resolution: the bands are interpolated across
+/// it. Kept as one constant because the number appeared in three call sites and a mismatch between
+/// them is a silent resample of a resample.
+const VIZ_BARS: usize = 36;
+
+/// Milliseconds since the previous spectrum frame, clamped to something a time constant can use.
+///
+/// The smoothing is now expressed as attack/decay TIMES rather than per-frame fractions, so it
+/// needs the real interval: the analyzer's emit rate is a user setting, and a frame can also be
+/// late (the service stops on screen-off and restarts up to a second later). The clamp keeps a
+/// long gap from being applied as one enormous step.
+fn frame_dt_ms(r: &Render) -> f32 {
+    (r.viz_at.elapsed().as_millis().min(500) as f32).max(1.0)
+}
+
 /// How long the bars take to fall from full to nothing once the stream has stopped. They decay
 /// rather than vanishing: bars dropping away reads as "the music stopped", bars blinking out reads
 /// as the UI breaking.
@@ -1595,6 +1632,9 @@ pub extern "C" fn cinder_render_tick() {
         page: r.app.np_page(),
         // real FFT spectrum if the shell is feeding PCM AND we're animating; else None (synthetic)
         viz_levels: if animate && !r.viz_levels.is_empty() { Some(&r.viz_levels) } else { None },
+        // Markers only exist while they are switched on AND there are bars to mark: `hold_peaks`
+        // empties the buffer when the setting is off, so this needs no second look at the config.
+        viz_peaks: if animate && !r.viz_peaks.is_empty() { Some(&r.viz_peaks) } else { None },
         scrubbing: r.scrub_ms.is_some(),
     };
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
@@ -1706,7 +1746,8 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
             clock: &np.clock, battery: np.battery, elapsed: &np.elapsed, remaining: &np.remaining,
             progress: np.progress, art: &np.art, art_full: None, art_thumb: None,
             liked: np.liked, playing: np.playing, shuffle: np.shuffle, repeat: np.repeat,
-            viz_seed: 2.0, viz_kind: 0, viz_size: 0, page: 0, viz_levels: None, scrubbing: false,
+            viz_seed: 2.0, viz_kind: 0, viz_size: 0, page: 0, viz_levels: None, viz_peaks: None,
+            scrubbing: false,
         };
         r.canvas.clear_clip();
         let t0 = std::time::Instant::now();
@@ -3175,13 +3216,35 @@ pub extern "C" fn cinder_get_repeat_one() -> libc::c_int {
     }
 }
 
+/// The analyzer emit rate the user picked, in Hz (Settings ▸ Visualiser ▸ Frame rate). The shell
+/// passes it to `cinder_analyzer_start`; it is also the visualiser's share of the render budget,
+/// which is why the row tops out well short of the panel's refresh.
+#[no_mangle]
+pub extern "C" fn cinder_viz_analyzer_rate_hz() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 20 };
+    r.app.viz_analyzer_params().0 as libc::c_int
+}
+
+/// The detector window the user picked, in MILLISECONDS, or 0 for "leave the service's default".
+/// The shell converts it to samples — the sample rate is a property of the stream, and the shell
+/// is the side that knows one. Paired with `cinder_viz_analyzer_rate_hz`; the shell polls both in
+/// its housekeeping tick and restarts the analyzer when either changes, so editing the row does
+/// not have to interrupt anything.
+#[no_mangle]
+pub extern "C" fn cinder_viz_analyzer_window_ms() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    r.app.viz_analyzer_params().1 as libc::c_int
+}
+
 /// Does the visualiser want the analyzer streaming right now? 1 when the user has it enabled, the
 /// Now Playing screen is showing, and something is actually playing.
 ///
 /// The shell polls this and starts/stops Sony's AudioAnalyzerService to match, so the service only
 /// runs while its output is on screen. Combined with the shell's own screen-on check that means no
-/// FFT, no IPC and no wakeups while the panel is dark or while you are browsing the library —
-/// which is most of the time a music player is switched on.
+/// filter bank, no IPC and no wakeups while the panel is dark or while you are browsing the
+/// library — which is most of the time a music player is switched on.
 #[no_mangle]
 pub extern "C" fn cinder_viz_wants_analyzer() -> libc::c_int {
     let guard = cell().lock().unwrap();
@@ -3850,8 +3913,14 @@ pub extern "C" fn cinder_set_pcm(samples: *const i16, n: libc::c_int) {
     }
     let pcm = unsafe { std::slice::from_raw_parts(samples, n as usize) };
     if let Some(r) = cell().lock().unwrap().as_mut() {
+        let cfg = r.app.viz_cfg();
+        let dt = frame_dt_ms(r);
         let prev = std::mem::take(&mut r.viz_levels);
-        r.viz_levels = spectrum::levels(pcm, 36, &prev);
+        r.viz_levels = spectrum::levels(pcm, VIZ_BARS, &prev, &cfg, dt);
+        let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
+        spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
+        r.viz_peaks = peaks;
+        r.viz_held_ms = held;
         r.viz_at = std::time::Instant::now();
         // Only force a repaint when the visualiser is actually on screen — the audio source may
         // stream continuously, but off Now Playing the new levels are unused, so don't burn a frame.
@@ -3875,10 +3944,16 @@ pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int)
     }
     let src = unsafe { std::slice::from_raw_parts(bands as *const i32, n as usize) };
     if let Some(r) = cell().lock().unwrap().as_mut() {
+        let cfg = r.app.viz_cfg();
+        let dt = frame_dt_ms(r);
         let prev = std::mem::take(&mut r.viz_levels);
         let mut peak = r.viz_peak;
-        r.viz_levels = spectrum::from_bands(src, 36, &prev, &mut peak);
+        r.viz_levels = spectrum::from_bands(src, VIZ_BARS, &prev, &mut peak, &cfg, dt);
         r.viz_peak = peak;
+        let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
+        spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
+        r.viz_peaks = peaks;
+        r.viz_held_ms = held;
         r.viz_at = std::time::Instant::now();
         // Only force a repaint when the visualiser is on screen (the analyzer streams continuously).
         if r.app.wants_spectrum() && r.app.is_now_playing() {
@@ -4272,6 +4347,40 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "viz_size" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_viz_size(n);
+                        }
+                    }
+                    // Settings ▸ Visualiser. Each setter wraps its index into range, so a file
+                    // written by a newer build (or by hand) can never select an option that does
+                    // not exist in this one.
+                    "viz_scale" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_viz_scale(n);
+                        }
+                    }
+                    "viz_range" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_viz_range(n);
+                        }
+                    }
+                    "viz_response" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_viz_response(n);
+                        }
+                    }
+                    "viz_interp" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_viz_interp(n);
+                        }
+                    }
+                    "viz_peaks" => r.app.set_viz_peak_hold(v == "1"),
+                    "viz_window" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_viz_window(n);
+                        }
+                    }
+                    "viz_rate" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_viz_rate(n);
                         }
                     }
                     "np_page" => {
@@ -5778,7 +5887,7 @@ mod tests {
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
-            S::TrackPick, S::Device,
+            S::TrackPick, S::Device, S::VizSet,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();

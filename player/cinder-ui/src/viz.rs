@@ -145,7 +145,7 @@ fn synth(i: i32, seed: f32) -> f32 {
 }
 
 /// Draw the visualiser of `kind` into the box (x, y, w, h) with `n` columns. If `levels` is
-/// Some (real FFT spectrum, 0..1), the columns use it; otherwise the synthetic `seed` motion.
+/// Some (real spectrum, 0..1), the columns use it; otherwise the synthetic `seed` motion.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     c: &mut Canvas,
@@ -160,6 +160,36 @@ pub fn draw(
     acc: Rgb888,
     dim: Rgb888,
     levels: Option<&[f32]>,
+    a_top: u8,
+    a_bot: u8,
+) {
+    draw_with_peaks(c, x, y, w, h, n, gap, seed, kind, acc, dim, levels, None, a_top, a_bot);
+}
+
+/// `draw`, plus peak-hold markers.
+///
+/// The markers are a separate argument rather than a field of the level slice because they are a
+/// different KIND of value: a bar is where the band is now (after a 300 ms decay), a marker is
+/// where it last peaked. Drawing them from the same array would mean either smoothing the peaks —
+/// which defeats the point of a peak — or not smoothing the bars.
+///
+/// They are drawn only for the styles where "the top of this column" is a place: a Wave has no
+/// column height to mark, and a Pulse has no columns at all.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_with_peaks(
+    c: &mut Canvas,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    n: i32,
+    gap: i32,
+    seed: f32,
+    kind: VizKind,
+    acc: Rgb888,
+    dim: Rgb888,
+    levels: Option<&[f32]>,
+    peaks: Option<&[f32]>,
     a_top: u8,
     a_bot: u8,
 ) {
@@ -319,6 +349,29 @@ pub fn draw(
             }
             // centre baseline
             vf(c, x, cy, w, 1, dim);
+        }
+    }
+
+    // ── peak-hold markers ────────────────────────────────────────────────────────────────────
+    // A 2px cap floating at each column's held peak. Skipped for the two styles where a column
+    // top is not a thing (Wave is a waveform about the centre line; Pulse has one bar for the
+    // whole spectrum), and skipped entirely when the caller passed none.
+    if let Some(pk) = peaks {
+        if !pk.is_empty() && !matches!(kind, VizKind::Wave | VizKind::Pulse) {
+            let mirror = kind == VizKind::Mirror;
+            for i in 0..n {
+                let p = pk[(i as usize * pk.len()) / n as usize % pk.len()].clamp(0.0, 1.0);
+                let bx = x + i * (bw + gap);
+                if mirror {
+                    let cy = y + h / 2;
+                    let half = ((p * (h as f32 / 2.0)).round() as i32).max(1);
+                    vf(c, bx, (cy - half).max(y), bw, 2, acc);
+                    vf(c, bx, (cy + half - 2).min(y + h - 2), bw, 2, acc);
+                } else {
+                    let ph = ((p * h as f32).round() as i32).clamp(2, h);
+                    vf(c, bx, y + h - ph, bw, 2, acc);
+                }
+            }
         }
     }
 }

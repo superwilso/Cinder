@@ -26,6 +26,8 @@ pub mod keyboard;
 pub mod library;
 pub mod playlist_pick;
 pub mod viz;
+pub mod vizcfg;
+pub mod vizset;
 pub mod eq;
 pub mod sound;
 pub mod advanced;

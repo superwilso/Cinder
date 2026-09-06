@@ -80,6 +80,11 @@ pub enum Screen {
     /// USB mass-storage mode: MODAL "connected to PC" screen while the storage volume is handed
     /// to the host. Only Back (or the shell detecting cable-unplug) leaves it.
     UsbStorage,
+    /// Settings ▸ Visualiser — style, cover size, and the analyser's signal settings (level scale,
+    /// dB range, response, curve, peak markers, the detector window and the frame rate), over a
+    /// live preview of the real spectrum. Its own screen because it is nine controls you tune by
+    /// watching, and because the Settings list is a list of unrelated preferences. See `vizset.rs`.
+    VizSet,
     /// Settings ▸ Date & time — the clock editor. Its own screen rather than an in-row cycle: five
     /// fields is too much for a row, and setting a clock is a deliberate act that deserves an
     /// explicit Set rather than applying live under the finger.
@@ -752,9 +757,37 @@ pub struct App {
     /// SBC while the preference still says LDAC. The enumerators are not mapped yet, so this is
     /// stored raw and rendered as a neutral label — see `negotiated_codec_name`.
     bt_codec_negotiated: u32,
+    // ── Bluetooth fine volume (the vernier) ─────────────────────────────────────────────────────
+    // AVRCP gives one step of 4 units in 127 — about 2 dB, and 32 usable steps for the whole range.
+    // There is no finer command: absolute volume (`SetCurrentVolume`) is inert on this firmware,
+    // measured on two sinks including Sony's own WH-1000XM4, where three absolute writes produced
+    // no notification and no movement while the relative steps either side of them reported
+    // normally. So a finer step has to come from the SOURCE, and the only source-side gain any
+    // Sony library exposes is the 10-band EQ, in half-dB units (measured: a flat -10 dB EQ moves
+    // the analyzer's reading by -9.5 dB, a flat -5 dB by -5.8 dB).
+    //
+    // `bt_fine` is the span in dB that one AVRCP step is subdivided across (0 = off). `bt_trim` is
+    // the current subdivision, in half-dB units at or below zero — attenuation only, because
+    // boosting toward a sink's own ceiling is how you clip an encoder.
+    bt_fine: u8,
+    bt_trim: i8,
     /// Now Playing visualiser type (cinder_ui::viz index) + animation on/off (UI settings).
     viz_kind: u8,
     viz_size: u8,
+    // ── the visualiser's SIGNAL settings (Settings ▸ Visualiser) ────────────────────────────────
+    // Indices, not values: every one of these is a cycling row, and the row is the thing that owns
+    // what the options are. `viz_cfg()` turns them into the struct the spectrum code takes.
+    viz_scale: u8,      // vizcfg::Scale — dynamic auto-gain vs a fixed reference
+    viz_range: u8,      // vizcfg::range_from_index — the display's dB window
+    viz_response: u8,   // vizcfg::response_from_index — the attack/decay pair
+    viz_interp: u8,     // vizcfg::Interp — how twelve bands are stretched over the columns
+    viz_peak_hold: bool,
+    // The two the SHELL acts on rather than the renderer: they are arguments to Sony's analyzer
+    // (SetCalcSamples / SetUpdateRate), so cinder-ffi only stores and reports them.
+    viz_window: u8,     // vizcfg::window_ms_from_index — the detector's averaging window
+    viz_rate: u8,       // vizcfg::rate_from_index — frames per second the service emits
+    /// Cursor on the Visualiser screen. Not persisted — a cursor is where you were, not a setting.
+    viz_sel: usize,
     /// Which Now Playing page is showing (see now_playing::NpPage). Persisted.
     np_page: u8,
     /// Settings screen cursor.
@@ -1091,8 +1124,21 @@ impl Default for App {
             usb_dac_on: false,
             usb_dac_fmt: None,
             bt_codec_negotiated: 0,
+            bt_fine: 0, // OFF: it rides on the EQ, so it is a thing you opt into
+            // NOT persisted, and deliberately: a trim is an attenuation the user cannot see in any
+            // menu, and one restored at boot would be a device that is quietly 3 dB quiet with no
+            // way to discover why.
+            bt_trim: 0,
             viz_kind: 0,
             viz_size: 1, // VEIL on the cover page; the big spectrum has its own page
+            viz_scale: 0,
+            viz_range: 0,
+            viz_response: 0,
+            viz_interp: 0,
+            viz_peak_hold: false,
+            viz_window: 0, // AUTO — leave the service's own window alone until asked otherwise
+            viz_rate: 0,   // 20 Hz, what the shell asked for before this was a setting
+            viz_sel: 0,
             np_page: 0,
             settings_sel: 0,
             battery_care: false,
@@ -2041,11 +2087,8 @@ impl App {
                 vec![]
             }
             crate::settings::ROW_VIZ => {
-                self.cycle_viz();
-                vec![]
-            }
-            crate::settings::ROW_VIZ_ANIM => {
-                self.viz_size = (self.viz_size + 1) % crate::viz::SIZE_COUNT;
+                self.viz_sel = 0;
+                self.push(Screen::VizSet);
                 vec![]
             }
             crate::settings::ROW_SLEEP => {
@@ -2684,6 +2727,13 @@ impl App {
                 if let Some(row) = crate::advanced::row_at(y) {
                     self.adv_sel = row;
                     return self.advanced_toggle_row();
+                }
+                vec![]
+            }
+            Screen::VizSet => {
+                if let Some(row) = crate::vizset::row_at(y) {
+                    self.viz_sel = row;
+                    return self.vizset_cycle_row();
                 }
                 vec![]
             }
@@ -4562,12 +4612,10 @@ impl App {
                 Button::Right | Button::Next => vec![Action::Next],
                 Button::Left | Button::Prev => vec![Action::Prev],
                 Button::VolUp => {
-                    self.vol_step(true);
-                    vec![Action::VolUp]
+                    if self.vol_step(true) { vec![Action::VolUp] } else { vec![] }
                 }
                 Button::VolDown => {
-                    self.vol_step(false);
-                    vec![Action::VolDown]
+                    if self.vol_step(false) { vec![Action::VolDown] } else { vec![] }
                 }
                 _ => vec![],
             };
@@ -4974,6 +5022,22 @@ impl App {
                 }
                 _ => vec![],
             },
+            Screen::VizSet => match b {
+                Button::Up => {
+                    self.viz_sel = self.viz_sel.saturating_sub(1);
+                    vec![]
+                }
+                Button::Down => {
+                    self.viz_sel = (self.viz_sel + 1).min(crate::vizset::ROWS - 1);
+                    vec![]
+                }
+                Button::Select => self.vizset_cycle_row(),
+                Button::Back => {
+                    self.pop();
+                    vec![]
+                }
+                _ => vec![],
+            },
             Screen::Bluetooth => match b {
                 Button::Select => {
                     self.bt_on = !self.bt_on;
@@ -5356,6 +5420,32 @@ impl App {
                 };
                 crate::advanced::render(c, &theme, fonts, &adv, self.adv_sel)
             }
+            Screen::VizSet => {
+                let (rate, window_ms) = self.viz_analyzer_params();
+                let rate_lbl = format!("{rate} HZ");
+                let range_lbl = format!("{} DB", crate::vizcfg::range_from_index(self.viz_range) as i32);
+                let vs = crate::vizset::VizSet {
+                    style: crate::viz::name_upper(self.viz_kind),
+                    cover: crate::viz::size_name(self.viz_size),
+                    scale: crate::vizcfg::Scale::from_index(self.viz_scale).name(),
+                    range: &range_lbl,
+                    response: crate::vizcfg::response_from_index(self.viz_response).2,
+                    curve: crate::vizcfg::Interp::from_index(self.viz_interp).name(),
+                    peaks: self.viz_peak_hold,
+                    window: crate::vizcfg::window_name(self.viz_window),
+                    rate: &rate_lbl,
+                    // The preview shows what Now Playing would show: the same levels, the same
+                    // markers, the same style. `viz_levels` is None whenever the analyzer is not
+                    // streaming, and the screen says so rather than passing synthetic motion off
+                    // as the signal.
+                    levels: np.viz_levels,
+                    peak_marks: np.viz_peaks,
+                    seed: np.viz_seed,
+                    kind: crate::viz::from_index(self.viz_kind),
+                };
+                let _ = window_ms;
+                crate::vizset::render(c, &theme, fonts, &vs, self.viz_sel)
+            }
             Screen::Bluetooth => {
                 let bt = Bt {
                     on: self.bt_on,
@@ -5430,10 +5520,15 @@ impl App {
                 let boot_stock_lbl = if self.boot_stock_armed { "TAP AGAIN" } else { "SONY" };
                 let clock_lbl = self.clock_label(np.clock);
                 let db_label = self.database_label();
+                // "BARS · VEIL" — the two facts the row used to spend two lines on.
+                let viz_lbl = format!(
+                    "{} · {}",
+                    crate::viz::name_upper(self.viz_kind),
+                    crate::viz::size_name(self.viz_size)
+                );
                 let view = crate::settings::SettingsView {
                     night: self.night,
-                    viz_name: crate::viz::name(self.viz_kind),
-                    viz_size_label: crate::viz::size_name(self.viz_size),
+                    viz_name: &viz_lbl,
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
                     device: &self.device_summary(),
@@ -5566,7 +5661,8 @@ impl App {
         // invisible in the one place it fires, and the volume HUD — which still responds to Vol±
         // while the sheet is open — came up half-covered.
         if self.vol_overlay > 0 && self.current() != Screen::Lock {
-            crate::overlay::volume(c, &theme, fonts, self.display_volume());
+            crate::overlay::volume_trimmed(c, &theme, fonts, self.display_volume(),
+                                           if self.bt_route { self.bt_trim } else { 0 });
         }
         if self.toast_frames > 0 && self.current() != Screen::Lock {
             crate::overlay::toast(c, &theme, fonts, &self.toast);
@@ -5744,22 +5840,95 @@ impl App {
         self.volume
     }
 
-    /// Move whichever volume the rocker currently owns. One press is one step on that route's own
-    /// scale — on Bluetooth that is one AVRCP command to the sink, so the step count IS the level.
-    fn vol_step(&mut self, up: bool) {
-        if self.bt_route {
-            self.bt_volume = if up {
-                (self.bt_volume + 1).min(crate::overlay::BT_VOL_MAX)
-            } else {
-                self.bt_volume.saturating_sub(1)
-            };
-        } else {
+    /// Move whichever volume the rocker currently owns, and report whether the ROUTE's own volume
+    /// has to move — i.e. whether the shell should send an AVRCP step / write the mixer.
+    ///
+    /// It can be false only on Bluetooth with fine volume on, where a press is absorbed by the
+    /// source-side trim instead of being sent to the sink. The shell then has nothing to do but
+    /// re-apply the EQ, which it picks up from `bt_trim_half_db` on its next tick.
+    fn vol_step(&mut self, up: bool) -> bool {
+        if !self.bt_route {
             self.volume = if up {
                 (self.volume + 1).min(crate::overlay::VOL_MAX)
             } else {
                 self.volume.saturating_sub(1)
             };
+            return true;
         }
+        let sub = self.bt_fine_substeps();
+        if sub > 0 {
+            // Down: deepen the trim until it has spent one AVRCP step's worth, THEN step the sink
+            // and release the trim. Up: the mirror. The trim is always in (-sub, 0], so the two
+            // borrow points are the only places the sink is touched, and every other press is a
+            // half-dB move that costs no Bluetooth traffic at all.
+            if up {
+                if self.bt_trim < 0 {
+                    self.bt_trim += 1;
+                    return false;
+                }
+                if self.bt_volume < crate::overlay::BT_VOL_MAX {
+                    self.bt_volume += 1;
+                    self.bt_trim = -(sub - 1);
+                    return true;
+                }
+                return false; // already at the sink's top: nothing to borrow from
+            }
+            if self.bt_trim > -(sub - 1) {
+                self.bt_trim -= 1;
+                return false;
+            }
+            if self.bt_volume > 0 {
+                self.bt_volume -= 1;
+                self.bt_trim = 0;
+                return true;
+            }
+            // At the sink's floor the trim is the only thing left, so let it run to full depth
+            // rather than refusing the press.
+            if self.bt_trim > -sub {
+                self.bt_trim -= 1;
+            }
+            return false;
+        }
+        self.bt_volume = if up {
+            (self.bt_volume + 1).min(crate::overlay::BT_VOL_MAX)
+        } else {
+            self.bt_volume.saturating_sub(1)
+        };
+        true
+    }
+
+    /// How many half-dB sub-steps one AVRCP step is divided into, limited by the EQ headroom the
+    /// user's own curve leaves.
+    ///
+    /// The trim is applied on top of the EQ curve, and a band that is already at the service's
+    /// floor cannot go lower — it would clamp, and the curve would tilt as the volume moved. So the
+    /// deepest band decides: with a flat EQ there is the full ±10 dB to work in, and with a band
+    /// parked at -10 dB there is none and the rocker quietly goes back to whole AVRCP steps.
+    fn bt_fine_substeps(&self) -> i8 {
+        if self.bt_fine == 0 {
+            return 0;
+        }
+        let want = (self.bt_fine as i8) * 2; // dB span -> half-dB steps
+        let headroom = crate::eq::BAND_MAX + self.eq_bands.iter().copied().min().unwrap_or(0);
+        want.min(headroom).max(0)
+    }
+
+    /// The Bluetooth fine-volume span in dB (0 = off), and its cycle.
+    pub fn bt_fine_span(&self) -> u8 {
+        self.bt_fine
+    }
+    pub fn set_bt_fine_span(&mut self, n: u8) {
+        self.bt_fine = n.min(3);
+        if self.bt_fine == 0 {
+            self.bt_trim = 0;
+        }
+    }
+    pub fn cycle_bt_fine(&mut self) {
+        self.set_bt_fine_span((self.bt_fine + 1) % 4);
+    }
+    /// The source-side trim in half-dB units (<= 0). The shell adds this to every EQ band.
+    pub fn bt_trim_half_db(&self) -> i8 {
+        self.bt_trim
     }
 
     /// The level the HUD draws, always on the 0..VOL_MAX scale so the bar looks the same on both
@@ -5767,8 +5936,15 @@ impl App {
     /// the 0..120 equivalent, not the raw AVRCP step.
     pub fn display_volume(&self) -> u8 {
         if self.bt_route {
-            ((self.bt_volume as u16 * crate::overlay::VOL_MAX as u16)
-                / crate::overlay::BT_VOL_MAX as u16) as u8
+            // The trim is part of what you HEAR, so it is part of what the bar shows — otherwise
+            // three of every four presses would move the volume and not the bar, which reads as a
+            // rocker that misses presses. One AVRCP step is BT_VOL_MAX/VOL_MAX of the bar; the
+            // trim moves it by the fraction of a step it represents.
+            let sub = self.bt_fine_substeps();
+            let frac = if sub > 0 { self.bt_trim as i32 * 1_000 / sub as i32 } else { 0 };
+            let scaled = (self.bt_volume as i32 * 1_000 + frac) * crate::overlay::VOL_MAX as i32
+                / (crate::overlay::BT_VOL_MAX as i32 * 1_000);
+            scaled.clamp(0, crate::overlay::VOL_MAX as i32) as u8
         } else {
             self.volume
         }
@@ -5975,6 +6151,12 @@ impl App {
     /// The shell polls the radio and pushes the answer here; the rocker follows it from the next
     /// press onward. Setting it does NOT touch either level — that is the whole point.
     pub fn set_bt_route(&mut self, on: bool) {
+        if self.bt_route != on {
+            // The trim is a Bluetooth-only attenuation applied through the GLOBAL EQ, so leaving it
+            // in place while the jack takes over would quietly play the jack up to 3 dB down. The
+            // shell re-applies the EQ when it sees the trim change.
+            self.bt_trim = 0;
+        }
         self.bt_route = on;
     }
 
@@ -5982,10 +6164,17 @@ impl App {
     pub fn eq_bands(&self) -> [i8; 10] {
         self.eq_bands
     }
-    /// Restore EQ gains (from persisted settings). Clamps each band to the editable ±6 dB range.
+    /// Restore EQ gains (from persisted settings). Clamps each band to the range the EQ screen can
+    /// actually reach.
+    ///
+    /// That range is `eq::BAND_MAX` — 20 half-dB units, i.e. ±10 dB, the same range the DSP
+    /// honours. It was ±6 here, which is ±3 dB: a hardcoded number that did not match the editor
+    /// above it or the service below it, so every band a user set past ±3 dB came back a third of
+    /// its size on the next boot. The EQ screen has always been able to reach ±10 dB, and the
+    /// service has always accepted it (`cinder_eq_clamp_gain`, same 20).
     pub fn set_eq_bands(&mut self, bands: [i8; 10]) {
         for (dst, src) in self.eq_bands.iter_mut().zip(bands.iter()) {
-            *dst = (*src).clamp(-6, 6);
+            *dst = (*src).clamp(-crate::eq::BAND_MAX, crate::eq::BAND_MAX);
         }
     }
     /// Restore the Sound-effect toggles from a bitmask (see sound_flags for the bit order).
@@ -6514,6 +6703,86 @@ impl App {
     pub fn set_viz_kind(&mut self, k: u8) {
         self.viz_kind = k % crate::viz::COUNT;
     }
+
+    /// The signal settings as the spectrum code wants them. Built fresh per frame rather than
+    /// cached: it is seven field reads and two table lookups, and a cache here would be a second
+    /// copy of the settings that has to be invalidated by every row that edits them.
+    pub fn viz_cfg(&self) -> crate::vizcfg::VizCfg {
+        let (attack_ms, decay_ms, _) = crate::vizcfg::response_from_index(self.viz_response);
+        crate::vizcfg::VizCfg {
+            scale: crate::vizcfg::Scale::from_index(self.viz_scale),
+            range_db: crate::vizcfg::range_from_index(self.viz_range),
+            attack_ms,
+            decay_ms,
+            // One hold time, not a setting: the choice a user actually has is markers or no
+            // markers, and 700 ms is long enough to read a transient without the marker becoming a
+            // second, slower bar.
+            peak_hold_ms: if self.viz_peak_hold { 700.0 } else { 0.0 },
+            peak_fall_per_s: 0.9,
+            interp: crate::vizcfg::Interp::from_index(self.viz_interp),
+        }
+    }
+
+    /// Step the selected Visualiser row to its next value.
+    ///
+    /// Every row cycles, including the two that used to live on the Settings list, so the screen
+    /// has exactly one interaction and the preview above it answers what the value did. Nothing
+    /// here returns an Action: the renderer reads the settings straight out of the app on the next
+    /// frame, and the shell picks up the two analyzer-side ones (window, rate) from
+    /// `viz_analyzer_params` in its housekeeping tick rather than being interrupted mid-list.
+    fn vizset_cycle_row(&mut self) -> Vec<Action> {
+        match self.viz_sel {
+            crate::vizset::ROW_STYLE => self.viz_kind = (self.viz_kind + 1) % crate::viz::COUNT,
+            crate::vizset::ROW_COVER => self.viz_size = (self.viz_size + 1) % crate::viz::SIZE_COUNT,
+            crate::vizset::ROW_SCALE => {
+                self.viz_scale = (self.viz_scale + 1) % crate::vizcfg::Scale::COUNT
+            }
+            crate::vizset::ROW_RANGE => {
+                self.viz_range = (self.viz_range + 1) % crate::vizcfg::RANGE_COUNT
+            }
+            crate::vizset::ROW_RESPONSE => {
+                self.viz_response = (self.viz_response + 1) % crate::vizcfg::RESPONSE_COUNT
+            }
+            crate::vizset::ROW_CURVE => {
+                self.viz_interp = (self.viz_interp + 1) % crate::vizcfg::Interp::COUNT
+            }
+            crate::vizset::ROW_PEAKS => self.viz_peak_hold = !self.viz_peak_hold,
+            crate::vizset::ROW_WINDOW => {
+                self.viz_window = (self.viz_window + 1) % crate::vizcfg::WINDOW_COUNT
+            }
+            crate::vizset::ROW_RATE => {
+                self.viz_rate = (self.viz_rate + 1) % crate::vizcfg::RATE_COUNT
+            }
+            _ => {}
+        }
+        vec![]
+    }
+
+    /// Analyzer arguments for the shell: (emit rate in Hz, detector window in ms — 0 = leave the
+    /// service default). The shell converts the window to samples, because the sample rate is a
+    /// property of the stream and only it knows one.
+    pub fn viz_analyzer_params(&self) -> (u8, u16) {
+        (
+            crate::vizcfg::rate_from_index(self.viz_rate),
+            crate::vizcfg::window_ms_from_index(self.viz_window),
+        )
+    }
+
+    // Raw index accessors — the settings page renders them and the settings FILE persists them.
+    pub fn viz_scale_idx(&self) -> u8 { self.viz_scale }
+    pub fn viz_range_idx(&self) -> u8 { self.viz_range }
+    pub fn viz_response_idx(&self) -> u8 { self.viz_response }
+    pub fn viz_interp_idx(&self) -> u8 { self.viz_interp }
+    pub fn viz_window_idx(&self) -> u8 { self.viz_window }
+    pub fn viz_rate_idx(&self) -> u8 { self.viz_rate }
+    pub fn viz_peak_hold(&self) -> bool { self.viz_peak_hold }
+    pub fn set_viz_scale(&mut self, i: u8) { self.viz_scale = i % crate::vizcfg::Scale::COUNT; }
+    pub fn set_viz_range(&mut self, i: u8) { self.viz_range = i % crate::vizcfg::RANGE_COUNT; }
+    pub fn set_viz_response(&mut self, i: u8) { self.viz_response = i % crate::vizcfg::RESPONSE_COUNT; }
+    pub fn set_viz_interp(&mut self, i: u8) { self.viz_interp = i % crate::vizcfg::Interp::COUNT; }
+    pub fn set_viz_window(&mut self, i: u8) { self.viz_window = i % crate::vizcfg::WINDOW_COUNT; }
+    pub fn set_viz_rate(&mut self, i: u8) { self.viz_rate = i % crate::vizcfg::RATE_COUNT; }
+    pub fn set_viz_peak_hold(&mut self, on: bool) { self.viz_peak_hold = on; }
     /// Legacy on/off setter — kept because a settings file written before sizes existed carries
     /// `viz_on=`, and an upgrade must not silently turn the visualiser off (or on).
     pub fn set_viz_on(&mut self, on: bool) {
@@ -9020,15 +9289,17 @@ mod tests {
             a.press(Button::Down);
         }
         assert_eq!(a.settings_sel, crate::settings::ROW_VIZ);
-        let k1 = a.viz_kind();
+        // The row is a CHEVRON now: the style and cover-size cycles moved onto the Visualiser
+        // screen, along with seven settings that never existed. Select opens it.
         a.press(Button::Select);
+        assert_eq!(a.current(), Screen::VizSet);
+        let k1 = a.viz_kind();
+        a.press(Button::Select); // row 0 is Style
         assert_eq!(a.viz_kind(), (k1 + 1) % crate::viz::COUNT);
-        // down to the Visualiser SIZE row. It is no longer an on/off toggle: it cycles
-        // OFF / EDGE / FLOOR / VEIL / FULL, because on the day theme the visualiser is drawn over
-        // the album art and "how much" is the question that matters. OFF is index 0, so a full
-        // cycle must pass through viz_on() == false exactly once and come home.
+        // Down to the cover-size row. OFF is index 0, so a full cycle must pass through
+        // viz_on() == false exactly once and come home.
         a.press(Button::Down);
-        assert_eq!(a.settings_sel, crate::settings::ROW_VIZ_ANIM);
+        assert_eq!(a.viz_sel, crate::vizset::ROW_COVER);
         let start = a.viz_size();
         let mut seen_off = false;
         for _ in 0..crate::viz::SIZE_COUNT {
@@ -9042,6 +9313,8 @@ mod tests {
         }
         assert!(seen_off, "the cycle never offered OFF");
         assert_eq!(a.viz_size(), start, "the cycle did not return to where it started");
+        a.press(Button::Back);
+        assert_eq!(a.current(), Screen::Settings);
         // cursor clamps at the last row
         for _ in 0..30 {
             a.press(Button::Down);
@@ -9427,11 +9700,102 @@ mod tests {
         assert_eq!(a.device_view().percent, 100);
     }
 
+    /// The Bluetooth vernier: with fine volume on, most presses must move the trim and NOT the
+    /// sink, the trim must never sit outside (-sub, 0], and a full cycle of presses must land back
+    /// where it started having moved the sink exactly one step.
+    #[test]
+    fn bt_fine_volume_subdivides_one_avrcp_step() {
+        let mut a = unlocked();
+        a.set_bt_route(true);
+        a.set_bt_volume(40);
+        a.set_bt_fine_span(2); // ±2 dB span -> 4 half-dB sub-steps per AVRCP step
+        let start_level = a.bt_volume_level();
+        let mut sink_moves = 0;
+        for _ in 0..4 {
+            if a.vol_step(false) {
+                sink_moves += 1;
+            }
+            assert!(a.bt_trim_half_db() <= 0, "the trim only ever attenuates");
+            assert!(a.bt_trim_half_db() >= -4, "the trim never exceeds its span");
+        }
+        assert_eq!(sink_moves, 1, "four fine presses must cost exactly one AVRCP step");
+        assert_eq!(a.bt_volume_level(), start_level - 1);
+        // And back up: the same four presses return to the starting level with no trim left.
+        for _ in 0..4 {
+            a.vol_step(true);
+        }
+        assert_eq!(a.bt_volume_level(), start_level);
+        assert_eq!(a.bt_trim_half_db(), 0);
+    }
+
+    /// Every fine press must move something the user can SEE, or the rocker reads as dropping
+    /// presses. The BAR cannot show it — one fine step is a quarter of a unit on a 0..120 bar — so
+    /// the trim readout is what has to change, and it must change on every single press.
+    #[test]
+    fn bt_fine_presses_move_the_hud() {
+        let mut a = unlocked();
+        a.set_bt_route(true);
+        a.set_bt_volume(60);
+        a.set_bt_fine_span(3);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..6 {
+            a.vol_step(false);
+            // (bar, trim) together are what is drawn; the pair must be different every press.
+            assert!(seen.insert((a.display_volume(), a.bt_trim_half_db())),
+                    "a fine press produced no visible change");
+        }
+    }
+
+    /// The trim rides on the EQ, so a curve with no headroom left must fall back to whole steps
+    /// rather than clamping bands and tilting the curve as the volume moves.
+    #[test]
+    fn bt_fine_backs_off_when_the_eq_has_no_headroom() {
+        let mut a = unlocked();
+        a.set_bt_route(true);
+        a.set_bt_volume(40);
+        a.set_bt_fine_span(3);
+        a.set_eq_bands([0, 0, 0, -crate::eq::BAND_MAX, 0, 0, 0, 0, 0, 0]); // one band at the floor
+        assert!(a.vol_step(false), "with no headroom the sink must take the press");
+        assert_eq!(a.bt_trim_half_db(), 0, "no trim may be applied without headroom");
+    }
+
+    /// A trim is an invisible attenuation applied through the global EQ; it must not survive the
+    /// route going back to the jack.
+    #[test]
+    fn leaving_bluetooth_clears_the_trim() {
+        let mut a = unlocked();
+        a.set_bt_route(true);
+        a.set_bt_fine_span(2);
+        a.vol_step(false);
+        assert!(a.bt_trim_half_db() < 0);
+        a.set_bt_route(false);
+        assert_eq!(a.bt_trim_half_db(), 0, "the jack would have played quiet");
+    }
+
+    /// Fine volume OFF is exactly the old behaviour: every press is one AVRCP step.
+    #[test]
+    fn bt_fine_off_is_one_step_per_press() {
+        let mut a = unlocked();
+        a.set_bt_route(true);
+        a.set_bt_volume(40);
+        a.set_bt_fine_span(0);
+        assert!(a.vol_step(false));
+        assert_eq!(a.bt_volume_level(), 39);
+        assert_eq!(a.bt_trim_half_db(), 0);
+    }
+
     #[test]
     fn restore_eq_and_sound_round_trip() {
         let mut a = unlocked();
-        a.set_eq_bands([3, -2, 6, -6, 0, 1, 99, -99, 4, 5]); // 99/-99 clamp to ±6
-        assert_eq!(a.eq_bands(), [3, -2, 6, -6, 0, 1, 6, -6, 4, 5]);
+        // 99/-99 clamp to the range the EQ screen can reach and the DSP honours: ±BAND_MAX, i.e.
+        // ±20 half-dB units = ±10 dB. This asserted ±6 — three dB — which is where the loader's
+        // clamp used to be, so a band the user had genuinely set to 8 dB came back at 3 on the next
+        // boot and the test agreed with the bug.
+        a.set_eq_bands([3, -2, 6, -6, 0, 1, 99, -99, 4, 5]);
+        assert_eq!(a.eq_bands(), [3, -2, 6, -6, 0, 1, 20, -20, 4, 5]);
+        // And a value the EDITOR can reach must survive the round trip untouched.
+        a.set_eq_bands([20, -20, 12, -12, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(a.eq_bands(), [20, -20, 12, -12, 0, 0, 0, 0, 0, 0]);
         a.set_sound_flags(0b101101); // dsee, vpt, dc, clear
         let f = a.sound_flags();
         assert_eq!(f, 0b101101);
@@ -10446,6 +10810,7 @@ mod tests {
             viz_size: 1,
             page: 0,
             viz_levels: None,
+            viz_peaks: None,
             scrubbing: false,
         };
         let mut c = Canvas::new();
