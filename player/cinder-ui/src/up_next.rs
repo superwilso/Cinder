@@ -130,6 +130,11 @@ pub enum Slot {
     History(usize),
     /// The playing track — index into the album's track list.
     Current(usize),
+    /// The playing track is a USER PICK, not a context row. It has already been taken out of the
+    /// queue (that is what stops it replaying), so it is not `Queued(_)` either — without this
+    /// slot the screen had nowhere to put it and drew the context row the pick INTERRUPTED as
+    /// NOW PLAYING, i.e. named the previous song for the whole of the pick.
+    CurrentPick,
     /// A user-queued track — index into the USER QUEUE. The only kind that reorders or removes.
     Queued(usize),
     /// An album track after the playing one — index into the album's track list.
@@ -179,13 +184,21 @@ pub struct Metrics {
     pub content_h: i32,
 }
 
-pub fn metrics(album_len: usize, current: Option<usize>, queued: usize) -> Metrics {
+/// `pick` = a user-queued track is the one actually playing. It takes the NOW PLAYING row, the
+/// context row it interrupted joins the history above it, and the context resumes below the queue.
+pub fn metrics(album_len: usize, current: Option<usize>, queued: usize, pick: bool) -> Metrics {
     let mut y = 0i32;
     let mut current_top = None;
-    if let Some(cur) = current {
-        if cur > 0 {
-            y += HDR_H + cur as i32 * RH; // history header + the played rows
-        }
+    // How many context rows sit in PREVIOUSLY PLAYED. Without a pick that is everything before
+    // the current row; with one, the current row has been played too.
+    let history = match current {
+        Some(cur) => cur + usize::from(pick),
+        None => 0,
+    };
+    if history > 0 {
+        y += HDR_H + history as i32 * RH; // history header + the played rows
+    }
+    if current.is_some() || pick {
         y += HDR_H; // NOW PLAYING header
         current_top = Some(y);
         y += RH;
@@ -217,28 +230,37 @@ impl Metrics {
 /// Build the slot list. `album_len`/`current` describe the album the playing track belongs to
 /// (`current == None` when nothing is playing or the track isn't in the library); `queued` is the
 /// user queue's length.
-pub fn layout(album_len: usize, current: Option<usize>, queued: usize) -> Layout {
+pub fn layout(album_len: usize, current: Option<usize>, queued: usize, pick: bool) -> Layout {
     let mut l = Layout::default();
     // RESERVE UP FRONT. Every track is a slot, and after a "Shuffle all songs" that is the whole
     // library — growing from empty meant a dozen reallocations and memcpys of a list that ends up
     // ~29 KB, once per painted frame. Measured: this is most of what an Up Next frame costs beyond
     // the ~14 rows it actually draws. Four spare for the section headings.
-    l.slots = Vec::with_capacity(album_len + queued + 4);
+    l.slots = Vec::with_capacity(album_len + queued + 5);
     let mut y = 0;
     let push = |l: &mut Layout, s: Slot, y: &mut i32| {
         l.slots.push((s, *y));
         *y += s.h();
     };
-    if let Some(cur) = current {
-        if cur > 0 {
-            push(&mut l, Slot::Head(Section::History), &mut y);
-            for i in 0..cur {
-                push(&mut l, Slot::History(i), &mut y);
-            }
+    // See `metrics`: a playing pick pushes the context row it interrupted into the history.
+    let history = match current {
+        Some(cur) => cur + usize::from(pick),
+        None => 0,
+    };
+    if history > 0 {
+        push(&mut l, Slot::Head(Section::History), &mut y);
+        for i in 0..history {
+            push(&mut l, Slot::History(i), &mut y);
         }
+    }
+    if current.is_some() || pick {
         push(&mut l, Slot::Head(Section::Now), &mut y);
         l.current_top = Some(y);
-        push(&mut l, Slot::Current(cur), &mut y);
+        match (pick, current) {
+            (true, _) => push(&mut l, Slot::CurrentPick, &mut y),
+            (false, Some(cur)) => push(&mut l, Slot::Current(cur), &mut y),
+            (false, None) => unreachable!("guarded by current.is_some() || pick"),
+        }
     }
     if queued > 0 {
         push(&mut l, Slot::Head(Section::Queue), &mut y);
@@ -343,6 +365,9 @@ pub struct QueueView<'a> {
     pub current: Option<usize>,
     /// The user's own swipe-queued picks.
     pub queue: &'a [SongRow],
+    /// The pick that is PLAYING right now, if the transport is on one. It has already left
+    /// `queue` (a pick is consumed when it starts), so this is the only handle on it.
+    pub pick: Option<&'a SongRow>,
     pub lib: &'a crate::model::Library,
     pub scroll_px: i32,
     pub drag: Option<QueueDrag>,
@@ -354,7 +379,7 @@ pub struct QueueView<'a> {
 /// exactly what is on the glass rather than rebuilding it and hoping the two agree.
 pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Layout {
     c.fill(t.bg);
-    let l = layout(v.tracks.len(), v.current, v.queue.len());
+    let l = layout(v.tracks.len(), v.current, v.queue.len(), v.pick.is_some());
 
     if l.slots.is_empty() {
         let _ = crate::chrome::header(c, t, f, "Up Next", None);
@@ -443,6 +468,15 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                     fill_rect(c, 0, y, W as i32, RH, t.panel);
                     fill_rect(c, 0, y, 4, RH, t.acc);
                     album_row(c, t, f, song, v.lib, y, i + 1, false, true);
+                }
+            }
+            Slot::CurrentPick => {
+                if let Some(song) = v.pick {
+                    fill_rect(c, 0, y, W as i32, RH, t.panel);
+                    fill_rect(c, 0, y, 4, RH, t.acc);
+                    // No track NUMBER: a pick has no position in the album under it, and printing
+                    // the context row's number here is what made the old screen unreadable.
+                    album_row(c, t, f, song, v.lib, y, 0, false, true);
                 }
             }
             Slot::Queued(_) => {
@@ -560,10 +594,19 @@ mod tests {
     /// gaps between sections where the answer is None.
     #[test]
     fn at_matches_a_linear_scan_everywhere() {
-        for (album_len, cur, queued) in
-            [(200usize, Some(100usize), 4usize), (5, Some(0), 0), (40, Some(39), 3), (0, None, 6)]
-        {
-            let l = layout(album_len, cur, queued);
+        for (album_len, cur, queued, pick) in [
+            (200usize, Some(100usize), 4usize, false),
+            (5, Some(0), 0, false),
+            (40, Some(39), 3, false),
+            (0, None, 6, false),
+            // The same sweep with a user pick on the NOW PLAYING row, which moves every section
+            // below it down by one and lengthens the history by one.
+            (200, Some(100), 4, true),
+            (5, Some(0), 0, true),
+            (40, Some(39), 3, true),
+            (0, None, 6, true),
+        ] {
+            let l = layout(album_len, cur, queued, pick);
             for scroll in [0, 37, 500, l.max_scroll_px()] {
                 for y in LIST_TOP - 2..LIST_BOTTOM + 2 {
                     let want = if !(LIST_TOP..LIST_BOTTOM).contains(&y) {
@@ -573,7 +616,7 @@ mod tests {
                         l.slots.iter().find(|(s, top)| cy >= *top && cy < *top + s.h()).map(|(s, _)| *s)
                     };
                     assert_eq!(l.at(y, scroll), want,
-                               "y={y} scroll={scroll} album={album_len} cur={cur:?} queued={queued}");
+                               "y={y} scroll={scroll} album={album_len} cur={cur:?}                                 queued={queued} pick={pick}");
                 }
             }
         }
@@ -589,18 +632,30 @@ mod tests {
                 for cur in currents {
                     // layout() only draws a current row when the index is inside the album.
                     let cur = cur.filter(|c| *c < album_len);
-                    let l = layout(album_len, cur, queued);
-                    let m = metrics(album_len, cur, queued);
-                    assert_eq!(
-                        m.content_h, l.content_h,
-                        "content_h disagrees at album={album_len} cur={cur:?} queued={queued}"
-                    );
-                    assert_eq!(
-                        m.current_top, l.current_top,
-                        "current_top disagrees at album={album_len} cur={cur:?} queued={queued}"
-                    );
-                    assert_eq!(m.follow_scroll(), l.follow_scroll());
-                    assert_eq!(m.max_scroll_px(), l.max_scroll_px());
+                    // …and both shapes: with a user pick on the NOW PLAYING row and without.
+                    for pick in [false, true] {
+                        let l = layout(album_len, cur, queued, pick);
+                        let m = metrics(album_len, cur, queued, pick);
+                        assert_eq!(
+                            m.content_h, l.content_h,
+                            "content_h disagrees at album={album_len} cur={cur:?}                              queued={queued} pick={pick}"
+                        );
+                        assert_eq!(
+                            m.current_top, l.current_top,
+                            "current_top disagrees at album={album_len} cur={cur:?}                              queued={queued} pick={pick}"
+                        );
+                        assert_eq!(m.follow_scroll(), l.follow_scroll());
+                        assert_eq!(m.max_scroll_px(), l.max_scroll_px());
+                        // Whatever the shape, the slot list is in ascending top order and its
+                        // heights add up to content_h — the two invariants the binary searches
+                        // in `at`, the draw loop and `qseen` all rest on.
+                        let mut y = 0;
+                        for (slot, top) in &l.slots {
+                            assert_eq!(*top, y, "slots are not contiguous at {slot:?}");
+                            y += slot.h();
+                        }
+                        assert_eq!(y, l.content_h);
+                    }
                 }
             }
         }
@@ -611,7 +666,7 @@ mod tests {
     /// whose BOTTOM is still below the top of the window.
     #[test]
     fn the_first_visible_slot_is_found_by_search_not_by_walking() {
-        let l = layout(200, Some(100), 4);
+        let l = layout(200, Some(100), 4, false);
         let max = l.max_scroll_px();
         for scroll in [0, 1, RH - 1, RH, RH + 1, HDR_H, 500, 1234, max / 2, max] {
             let want = l.slots.iter().position(|(s, top)| top + s.h() > scroll).unwrap_or(l.slots.len());
@@ -626,7 +681,7 @@ mod tests {
     #[test]
     fn the_skipped_queue_row_count_is_computed_not_counted() {
         for queued in [1usize, 3, 12] {
-            let l = layout(60, Some(30), queued);
+            let l = layout(60, Some(30), queued, false);
             let max = l.max_scroll_px();
             for scroll in 0..=max {
                 let counted = l
@@ -646,7 +701,7 @@ mod tests {
     /// No queue section means no queue rows to skip, whatever the scroll.
     #[test]
     fn no_queue_section_skips_nothing() {
-        let l = layout(60, Some(30), 0);
+        let l = layout(60, Some(30), 0, false);
         assert_eq!(l.queue_top(), None);
     }
 }
