@@ -1496,8 +1496,15 @@ static void apply_cpu_floor(bool playing) {
     clog_(m);
 }
 
+// Did the USER ask for the silence? `g_playing` cannot answer that: the now-playing poll
+// overwrites it with the service's own view a few seconds after every press, so by the time
+// repeat-all is evaluated a deliberate pause and a queue that has run out look identical. This is
+// only ever written by an explicit transport decision, so it stays true across the poll.
+static bool g_user_paused = false;
+
 static void set_transport(bool playing) {
     g_playing = playing;
+    g_user_paused = !playing;
     g_transport_at = now_ms();
     apply_cpu_floor(playing);
 }
@@ -9487,12 +9494,32 @@ void poll_now_playing() {
     if (have_pos && tot > 0 && cinder_get_repeat_all()) {
         // 1500 ms of slack: the last onPlayTimeUpdated before the end need not land exactly on the
         // duration, and a track can stop a beat short of its own reported length.
-        const bool at_end = cur >= tot - 1500 && cinder_audio_is_playing() == 0;
+        //
+        // TWO GATES THE ORIGINAL DID NOT HAVE, because "position pinned at the duration and
+        // `playing` gone to 0" is not unique to the end of a queue:
+        //
+        //   * `cinder_on_last_track()` — a PAUSE inside the last 1.5 s of ANY track makes exactly
+        //     this shape. Without this, pausing a second before the end of track 3 of 12 restarted
+        //     the whole queue from track 1. Only the final entry of the sequence PlayerService was
+        //     given can be a queue end.
+        //   * `!g_user_paused` — and on that final track, a pause is still a pause. `g_playing` is
+        //     no help (the poll above has already overwritten it with the service's view, which is
+        //     0 either way), so the user's own last intent is tracked separately.
+        const bool at_end = cur >= tot - 1500 && cinder_audio_is_playing() == 0
+                            && cinder_on_last_track() && !g_user_paused;
         if (at_end && !repeat_all_fired) {
             repeat_all_fired = true;
             clog_("repeat-all: queue ended — restarting it from the first track");
-            run_guarded("repeat-all: restart sequence", 8,
-                        []() { cinder_audio_restart_sequence(); });
+            // CINDER'S CONTEXT, NOT THE SHIM'S LAST URI LIST. `cinder_audio_restart_sequence`
+            // replays what was last handed over, and a queue flush hands over
+            // `[current] + queue + context[idx+1..]` — so after swipe-queueing one song at track 5
+            // of an album, every lap played 5-12 and tracks 1-4 never came back. The fallback is
+            // kept for the case where the UI has no context to rebuild from (a sequence started
+            // before a library reload), where replaying the tail beats stopping.
+            run_guarded("repeat-all: restart sequence", 8, []() {
+                if (cinder_repeat_all_prepare()) play_pending_sequence("repeat-all", false);
+                else cinder_audio_restart_sequence();
+            });
         } else if (!at_end) {
             repeat_all_fired = false;
         }

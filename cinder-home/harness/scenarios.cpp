@@ -871,6 +871,79 @@ static void s_blank_remembers_before_zeroing(void) {
     check_eq(cinder_harness_display_backlight(), 0, "ending dark, after the idle blank");
 }
 
+// ── repeat-all: the queue boundary, and the three things that look like it ───────────────────
+// PlayerService has no loop-the-queue primitive, so main.cpp watches for the shape a queue end
+// makes: the position pinned at the duration with `playing` gone 1 -> 0. That shape is NOT unique
+// to a queue end, and until this scenario existed nothing off-device could reach the code at all —
+// the generated stub for `cinder_audio_position` left its out-parameters untouched, so `tot > 0`
+// was false in every scenario and the whole branch was unreachable (see harness.cpp).
+//
+// Two things are asserted here, and both are defects this scenario was written for:
+//   * a lap is built from CINDER'S CONTEXT (`cinder_repeat_all_prepare` -> the pending-play
+//     channel), not from the URI list the shim last issued. A queue flush hands the shim
+//     `[current] + queue + context[idx+1..]`, so replaying THAT loops only the tail: swipe-queue
+//     one song at track 5 of an album and tracks 1-4 never play again.
+//   * and it only fires on the LAST track of the sequence.
+static void s_repeat_all(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_repeat_all", 1);
+    cinder_harness_script("cinder_audio_is_playing", 0);   // the service says it has stopped
+    cinder_harness_script("cinder_on_last_track", 1);      // …at the end of the sequence
+    cinder_harness_script("cinder_repeat_all_prepare", 1);
+    cinder_harness_script("cinder_pending_play_count", 3);  // a three-track context to lap
+    cinder_harness_play_position(304173, 304173);          // pinned at the duration (3f, measured)
+    cinder_harness_set_budget_ms(60000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("cinder_repeat_all_prepare") >= 1,
+          "the lap is built from Cinder's own context");
+    // …and goes down the ordinary pending-play channel: play_pending_sequence drains the URIs.
+    // (The URIs themselves come back empty here — the generated stub cannot fill a char buffer —
+    // so the assertion is that the channel was DRAINED, which only that path does.)
+    check(cinder_harness_count("cinder_pending_play_uri") >= 3,
+          "…and handed to PlayerService through the pending-play channel");
+    check_eq(cinder_harness_count("cinder_audio_restart_sequence"), 0,
+             "not the shim's last URI list, which after a queue flush is only the tail");
+    // The latch: without it this fires every frame for as long as the player sits at the end.
+    int laps = cinder_harness_count("cinder_repeat_all_prepare");
+    std::printf("  .... %d lap(s) over 60s parked at the end of the queue\n", laps);
+    check_range(laps, 1, 2, "the end of a queue is one lap, not one per frame");
+}
+
+// The same shape, in the middle of the sequence — which is what a PAUSE inside the last second and
+// a half of ANY track looks like. It must not restart the queue: the report this guards against is
+// "it jumped back to track 1 on its own".
+static void s_repeat_all_midtrack(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_repeat_all", 1);
+    cinder_harness_script("cinder_audio_is_playing", 0);
+    cinder_harness_script("cinder_on_last_track", 0);      // track 3 of 12, not the last
+    cinder_harness_script("cinder_repeat_all_prepare", 1);
+    cinder_harness_play_position(303500, 304173);          // 673 ms from the end, paused
+    cinder_harness_set_budget_ms(60000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_repeat_all_prepare"), 0,
+             "a pause near the end of a middle track is not the end of the queue");
+    check_eq(cinder_harness_count("cinder_audio_restart_sequence"), 0,
+             "and nothing restarted the sequence by the old path either");
+}
+
+// And with repeat-all OFF, the end of a queue is just the end of a queue.
+static void s_repeat_all_off(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_repeat_all", 0);
+    cinder_harness_script("cinder_audio_is_playing", 0);
+    cinder_harness_script("cinder_on_last_track", 1);
+    cinder_harness_script("cinder_repeat_all_prepare", 1);
+    cinder_harness_play_position(304173, 304173);
+    cinder_harness_set_budget_ms(60000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_repeat_all_prepare"), 0, "nothing loops with repeat off");
+    check_eq(cinder_harness_count("cinder_audio_play_tracks"), 0, "and nothing starts playing");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     { "blank-idle",  s_idle_blank_darkens_the_panel,
@@ -905,6 +978,9 @@ static const Scenario kScenarios[] = {
     {"rapid-skip-touch",  s_rapid_skip_touch,        "the same burst from the glass, where the panel keeps streaming"},
     {"contents-orphan",   s_contents_orphan,         "/contents unmounted by something that is not us is taken back"},
     {"contents-ours",     s_contents_orphan_not_ours,"…but a session we started is left alone"},
+    {"repeat-all",        s_repeat_all,              "a queue that runs out loops Cinder's context, once"},
+    {"repeat-all-mid",    s_repeat_all_midtrack,     "…and a pause near the end of a middle track does not"},
+    {"repeat-all-off",    s_repeat_all_off,          "…and with repeat off the end of a queue is the end"},
     {nullptr, nullptr, nullptr},
 };
 
