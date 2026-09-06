@@ -249,12 +249,12 @@ fn main() {
                     cinder_ui::playlist_pick::Target { name: "Sunday", tracks: 9 },
                 ];
                 cinder_ui::playlist_pick::render_targets(c, &theme, &fonts, "Add to playlist",
-                                                         "Atlas Hands", &targets, 3, 0);
+                                                         "Atlas Hands", &targets, 3, 0, false);
             }),
             ("track_pick", &|c: &mut Canvas| {
                 let songs: Vec<&cinder_ui::model::SongRow> = lib.songs.iter().collect();
                 cinder_ui::playlist_pick::render_tracks(c, &theme, &fonts, "Late Night On The Bus",
-                                                        &songs, &|i| i % 3 == 0, 0, 4);
+                                                        &songs, &|i| i % 3 == 0, 0, 4, false);
             }),
             ("up_next_remove", &|c: &mut Canvas| {
                 let l = up_next::layout(0, None, queue.len(), false);
@@ -404,7 +404,7 @@ fn main() {
                 pairing::render_prompt(c, &theme, &fonts,
                     &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "Pixel 8".into(), code: 428913 });
             }),
-            ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, true)),
+            ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts)),
             ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, &fm::Fm {
                 khz: 97300, playing: true,
                 stations: [97300, 100000, 107800, 0, 0, 0], n_stations: 3,

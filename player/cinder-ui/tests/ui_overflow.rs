@@ -96,6 +96,16 @@ fn at(screen: Screen) -> App {
         // A full-length name is the state that can overflow the field; an empty one never could.
         a.type_for_test(&"Late Night On The Bus Mix ".repeat(3));
     }
+    if screen == Screen::Device {
+        // A device screen with nothing pushed into it draws placeholders, which is the one state
+        // that CANNOT overflow — so rendering it empty would gate nothing. These are hostile but
+        // real shapes: a four-digit uptime, a long governor name, a kernel string as long as the
+        // device's own, and temperatures that need the sign and a decimal.
+        a.set_device_temps(-10, 105, 99);
+        a.set_device_cpu(1_599_000, 1_599_000, 8, 8, "interactive_powersave");
+        a.set_device_storage(2_097_152, 1_048_576, 61_035, 4_096, 512);
+        a.set_device_system(9_999_999, "3.10.26-g1b2c3d4-dirty (gcc 4.9) #1 SMP PREEMPT");
+    }
     a
 }
 
@@ -106,6 +116,12 @@ const SCREENS: &[Screen] = &[
     Screen::Receiver, Screen::Onboarding, Screen::UsbStorage, Screen::GenreFilter,
     Screen::Folders, Screen::TrackInfo, Screen::ClockSet, Screen::Advanced, Screen::Tone,
     Screen::Keyboard, Screen::PlaylistPick, Screen::TrackPick,
+    // Added 2026-09-06 by the UI audit. These three were the whole of the gap: reachable,
+    // content-bearing screens that no panel-overflow gate had ever rendered. `Canvas` clips
+    // silently, so a layout defect on them had no symptom at all — which is the exact reasoning
+    // this matrix was built on. (Shelf is the fourth `Screen` variant missing from this list and
+    // is deliberately absent: it is an overlay, covered by `overlays_and_modals_stay_on_the_panel`.)
+    Screen::BtCodec, Screen::Device, Screen::VizSet,
 ];
 
 /// The keyboard's word keys (SHIFT / SPACE / DONE / 123) are drawn centred with no `fit`, so a
