@@ -257,7 +257,7 @@ fn bench_derived_state() {
     let ctx: Vec<SongRow> = lib.songs.clone();
     time_it("context clone (shuffle-all)", n, || { let _ = ctx.clone().len(); });
     time_it("up_next::layout (shuffle-all)", n, || {
-        let _ = cinder_ui::up_next::layout(ctx.len(), Some(ctx.len() / 2), 3).slots.len();
+        let _ = cinder_ui::up_next::layout(ctx.len(), Some(ctx.len() / 2), 3, false).slots.len();
     });
 
     let t = Theme::day();
@@ -266,7 +266,7 @@ fn bench_derived_state() {
     let queue: Vec<SongRow> = ctx[..3].to_vec();
     let view = cinder_ui::up_next::QueueView {
         album: "Album 001", tracks: &ctx, current: Some(ctx.len() / 2), queue: &queue,
-        lib: &lib, scroll_px: 0, drag: None, swipe: None, sbar_active: false,
+        pick: None, lib: &lib, scroll_px: 0, drag: None, swipe: None, sbar_active: false,
     };
     time_it("up_next::render_view", n, || {
         let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view);
@@ -275,7 +275,7 @@ fn bench_derived_state() {
     // The REALISTIC case. scroll_px = 0 above is the worst case for the first-visible-slot search
     // (the window is already at the top, so there is nothing to skip); in normal use the auto-follow
     // parks NOW PLAYING a third of the way down, which after a shuffle-all is ~1800 slots in.
-    let follow = cinder_ui::up_next::metrics(ctx.len(), Some(ctx.len() / 2), 3).follow_scroll();
+    let follow = cinder_ui::up_next::metrics(ctx.len(), Some(ctx.len() / 2), 3, false).follow_scroll();
     let view_followed = cinder_ui::up_next::QueueView { scroll_px: follow, ..view };
     time_it("up_next::render_view (followed)", n, || {
         let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view_followed);
@@ -286,13 +286,13 @@ fn bench_derived_state() {
     let small: Vec<SongRow> = ctx[..12].to_vec();
     let view_small = cinder_ui::up_next::QueueView {
         album: "Album 001", tracks: &small, current: Some(6), queue: &queue,
-        lib: &lib, scroll_px: 0, drag: None, swipe: None, sbar_active: false,
+        pick: None, lib: &lib, scroll_px: 0, drag: None, swipe: None, sbar_active: false,
     };
     time_it("up_next::render_view (album)", n, || {
         let _ = cinder_ui::up_next::render_view(&mut c, &t, &f, &view_small);
     });
     time_it("up_next::layout (album)", n, || {
-        let _ = cinder_ui::up_next::layout(12, Some(6), 3).slots.len();
+        let _ = cinder_ui::up_next::layout(12, Some(6), 3, false).slots.len();
     });
     time_it("context clone (album)", n, || { let _ = small.clone().len(); });
 }

@@ -165,7 +165,7 @@ fn main() {
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
                     album, tracks,
                     current: (!tracks.is_empty()).then(|| 2.min(tracks.len() - 1)),
-                    queue: &queue[..2.min(queue.len())], lib: &lib, scroll_px: 0,
+                    queue: &queue[..2.min(queue.len())], pick: None, lib: &lib, scroll_px: 0,
                     drag: None, swipe: None, sbar_active: false,
                 });
             }),
@@ -174,12 +174,12 @@ fn main() {
             ("up_next_queue", &|c: &mut Canvas| {
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
                     album: "", tracks: &[], current: None,
-                    queue: &queue, lib: &lib, scroll_px: 0,
+                    queue: &queue, pick: None, lib: &lib, scroll_px: 0,
                     drag: None, swipe: None, sbar_active: false,
                 });
             }),
             ("up_next_reorder", &|c: &mut Canvas| {
-                let l = up_next::layout(0, None, queue.len());
+                let l = up_next::layout(0, None, queue.len(), false);
                 let from = 1usize;
                 let grab_off = up_next::RH / 2;
                 // The queue no longer starts at the top of the list, so the row's screen y comes
@@ -197,7 +197,7 @@ fn main() {
                 };
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
                     album: "", tracks: &[], current: None,
-                    queue: &queue, lib: &lib, scroll_px: 0,
+                    queue: &queue, pick: None, lib: &lib, scroll_px: 0,
                     drag: Some(d), swipe: None, sbar_active: false,
                 });
             }),
@@ -249,20 +249,20 @@ fn main() {
                     cinder_ui::playlist_pick::Target { name: "Sunday", tracks: 9 },
                 ];
                 cinder_ui::playlist_pick::render_targets(c, &theme, &fonts, "Add to playlist",
-                                                         "Atlas Hands", &targets, 3, 0);
+                                                         "Atlas Hands", &targets, 3, 0, false);
             }),
             ("track_pick", &|c: &mut Canvas| {
                 let songs: Vec<&cinder_ui::model::SongRow> = lib.songs.iter().collect();
                 cinder_ui::playlist_pick::render_tracks(c, &theme, &fonts, "Late Night On The Bus",
-                                                        &songs, &|i| i % 3 == 0, 0, 4);
+                                                        &songs, &|i| i % 3 == 0, 0, 4, false);
             }),
             ("up_next_remove", &|c: &mut Canvas| {
-                let l = up_next::layout(0, None, queue.len());
+                let l = up_next::layout(0, None, queue.len(), false);
                 let row_y = cinder_ui::chrome::HEADER_BOTTOM
                     + l.top_of(up_next::Slot::Queued(2)).unwrap_or(0) + up_next::RH / 2;
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
                     album: "", tracks: &[], current: None,
-                    queue: &queue, lib: &lib, scroll_px: 0,
+                    queue: &queue, pick: None, lib: &lib, scroll_px: 0,
                     drag: None,
                     swipe: Some(cinder_ui::library::SwipeRow { y: row_y, dx: 110 }),
                     sbar_active: false,
@@ -404,7 +404,7 @@ fn main() {
                 pairing::render_prompt(c, &theme, &fonts,
                     &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "Pixel 8".into(), code: 428913 });
             }),
-            ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, true)),
+            ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts)),
             ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, &fm::Fm {
                 khz: 97300, playing: true,
                 stations: [97300, 100000, 107800, 0, 0, 0], n_stations: 3,

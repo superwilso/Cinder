@@ -22,7 +22,15 @@ use crate::canvas::W;
 
 /// Screen-y of the first row.
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
-/// Row height — the same 56 the Songs tab uses, so a track row looks the same wherever it is.
+/// Row height.
+///
+/// This used to claim it was "the same 56 the Songs tab uses, so a track row looks the same
+/// wherever it is". The Songs tab is **68**. A track row is 68 there, 62 on the album, artist,
+/// playlist and Up Next lists, and 56 here — three heights for one thing, and this comment was the
+/// only place that said otherwise. Left at 56 deliberately rather than "corrected" to one of the
+/// others: re-pitching a list is a design decision with a blast radius across every screen and the
+/// whole overflow matrix, and it is recorded as such in `docs/AUDIT_2026-09-06_ui.md` rather than
+/// made quietly here. What is fixed is the sentence that was false.
 pub const ROW_H: i32 = 56;
 
 /// What a given visual row is.
@@ -181,7 +189,7 @@ pub fn render(
         hline(c, y + ROW_H - 1, t.line);
     }
     c.clear_clip();
-    scrollbar(c, t, TOP, scroll, content_h(lib, dir), sbar_active);
+    scrollbar(c, t, TOP, LIST_BOTTOM, scroll, content_h(lib, dir), sbar_active);
     let _ = W;
 }
 

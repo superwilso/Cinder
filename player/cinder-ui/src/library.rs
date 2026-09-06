@@ -851,14 +851,23 @@ pub fn sbar_thumb_h(track_h: i32, content_h: i32) -> i32 {
 }
 
 /// How far the thumb can travel — the denominator that converts finger px into content px.
-pub fn sbar_span(top: i32, content_h: i32) -> i32 {
-    let track_h = LIST_BOTTOM - top;
+///
+/// TAKES THE WINDOW'S OWN BOTTOM. It used to assume `LIST_BOTTOM`, i.e. that every scrollable
+/// screen ends where the library's list ends. `up_next.rs` already carried a comment pinning its
+/// own bottom to this one so "two independent literals cannot quietly stop agreeing" — and the two
+/// pickers (`playlist_pick::BOTTOM`, 24 px lower, to make room for their footer note) had already
+/// stopped agreeing. Their scrollbar drag was therefore scaled against a window 24 px shorter than
+/// the one the rows are drawn in, so dragging the thumb to the bottom did not reach the end of the
+/// list. Passing the bottom removes the assumption rather than adding a third literal to keep in
+/// step. Found by the 2026-09-06 UI audit.
+pub fn sbar_span(top: i32, bottom: i32, content_h: i32) -> i32 {
+    let track_h = bottom - top;
     (track_h - sbar_thumb_h(track_h, content_h)).max(0)
 }
 
-pub(crate) fn scrollbar(c: &mut Canvas, t: &Theme, top: i32, scroll_px: i32, content_h: i32,
-                        active: bool) {
-    let track_h = LIST_BOTTOM - top;
+pub(crate) fn scrollbar(c: &mut Canvas, t: &Theme, top: i32, bottom: i32, scroll_px: i32,
+                        content_h: i32, active: bool) {
+    let track_h = bottom - top;
     if track_h <= 0 || content_h <= track_h {
         return;
     }
@@ -1049,6 +1058,56 @@ pub fn az_render(
     }
 }
 
+/// What an EMPTY library tab should say, or `None` when it has rows to draw.
+///
+/// The four Library tabs were the only lists in the app with no empty state at all: Folders, the
+/// playlist page, Up Next, Pairing, Track information and the Shelf all have one, and these — the
+/// screens the device opens into — drew the tab strip, the accent Shuffle band and then nothing.
+///
+/// That is not a hypothetical state. `App` substitutes an EMPTY library when `cinder_db_open`
+/// fails, and `/contents` is vfat and "periodically absent" — so the case where the user most
+/// needs to be told something was the case where the screen said nothing at all, under a
+/// full-width accent band still promising to shuffle it.
+///
+/// The FILTER case is separate and was indistinguishable from it: the two axes AND together, so
+/// "Rock · Hi-Res" can easily match nothing, and a filtered-to-nothing list looked exactly like a
+/// library that had failed to load. Different cause, different sentence, different way out.
+///
+/// Pure, so both messages are testable without a framebuffer. Found by the 2026-09-06 UI audit.
+pub fn empty_note(tab: Tab, lib: &Library) -> Option<(String, String)> {
+    if row_count(tab, lib) > 0 {
+        return None;
+    }
+    // A filter that hides everything is the user's own doing and is undone from this screen.
+    if matches!(tab, Tab::Songs | Tab::Albums) && lib.filtered() && !lib.songs.is_empty() {
+        let name = lib.filter_name().unwrap_or_else(|| "this filter".to_string());
+        return Some((
+            format!("Nothing matches {name}."),
+            "Tap the filter row above to change it.".to_string(),
+        ));
+    }
+    Some(match tab {
+        // Playlists is the one tab that is legitimately empty on a working device.
+        Tab::Playlists => (
+            "No playlists yet.".to_string(),
+            "Use NEW PLAYLIST above, or drop .m3u8 files in /contents.".to_string(),
+        ),
+        _ => (
+            "No music found.".to_string(),
+            "Connect the player to a PC and copy music to it.".to_string(),
+        ),
+    })
+}
+
+/// Draw whichever of the above applies, in the list area.
+fn draw_empty_note(c: &mut Canvas, t: &Theme, f: &FontSet, top: i32, tab: Tab, lib: &Library) {
+    let Some((line, hint)) = empty_note(tab, lib) else { return };
+    let ls = sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0);
+    text::draw(c, f, 22.0, (top + 44) as f32, &crate::widgets::fit(f, &line, &ls, 436.0), &ls);
+    let hs = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
+    text::draw(c, f, 22.0, (top + 70) as f32, &crate::widgets::fit(f, &hint, &hs, 436.0), &hs);
+}
+
 pub fn render(
     c: &mut Canvas,
     t: &Theme,
@@ -1127,7 +1186,8 @@ pub fn render(
                 y += rh;
             }
             c.clear_clip();
-            scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
+            draw_empty_note(c, t, f, top, tab, lib);
+            scrollbar(c, t, top, LIST_BOTTOM, scroll_px, total as i32 * rh, sbar_active);
         }
         Tab::Albums => {
             shuffle_row(c, t, f, yt, "Shuffle by album", "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE");
@@ -1222,7 +1282,8 @@ pub fn render(
                 }
             }
             c.clear_clip();
-            scrollbar(c, t, top, scroll_px, layout.content_h, sbar_active);
+            draw_empty_note(c, t, f, top, tab, lib);
+            scrollbar(c, t, top, LIST_BOTTOM, scroll_px, layout.content_h, sbar_active);
         }
         Tab::Artists => {
             let top = shuffle_row(c, t, f, yt, "Shuffle by artist", "RANDOM ARTIST · SHUFFLED WITHIN ARTIST") + 8;
@@ -1256,7 +1317,8 @@ pub fn render(
                 y += rh;
             }
             c.clear_clip();
-            scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
+            draw_empty_note(c, t, f, top, tab, lib);
+            scrollbar(c, t, top, LIST_BOTTOM, scroll_px, total as i32 * rh, sbar_active);
         }
         Tab::Playlists => {
             shuffle_row(c, t, f, yt, "Shuffle a playlist", "RANDOM PLAYLIST · SHUFFLED");
@@ -1294,7 +1356,8 @@ pub fn render(
                 y += rh;
             }
             c.clear_clip();
-            scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
+            draw_empty_note(c, t, f, top, tab, lib);
+            scrollbar(c, t, top, LIST_BOTTOM, scroll_px, total as i32 * rh, sbar_active);
         }
     }
 }
@@ -1377,7 +1440,7 @@ pub fn album_view(
         y += rh;
     }
     c.clear_clip();
-    scrollbar(c, t, top, scroll_px, total as i32 * rh, sbar_active);
+    scrollbar(c, t, top, LIST_BOTTOM, scroll_px, total as i32 * rh, sbar_active);
 }
 
 // ── Artist drill-in ───────────────────────────────────────────────────────────────────────────
@@ -1643,7 +1706,7 @@ pub fn artist_view(
         }
     }
     c.clear_clip();
-    scrollbar(c, t, top, scroll_px, page.content_h, sbar_active);
+    scrollbar(c, t, top, LIST_BOTTOM, scroll_px, page.content_h, sbar_active);
 }
 
 // ── Playlist drill-in ────────────────────────────────────────────────────────────────────────
@@ -1914,11 +1977,60 @@ pub fn playlist_view(
         y += PLAYLIST_TRACK_RH;
     }
     c.clear_clip();
-    scrollbar(c, t, top, scroll_px, playlist_content_h(pl), sbar_active);
+    scrollbar(c, t, top, LIST_BOTTOM, scroll_px, playlist_content_h(pl), sbar_active);
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// EVERY list in this file says something when it is empty, and says the RIGHT thing.
+    ///
+    /// The four Library tabs used to say nothing at all — tab strip, accent Shuffle band, blank.
+    /// That is the state a failed `cinder_db_open` produces (App substitutes an empty library), so
+    /// the screen the device opens into on a bad boot looked like a working screen with no music
+    /// in it, under a band still offering to shuffle it.
+    #[test]
+    fn an_empty_library_tab_says_why_it_is_empty() {
+        let empty = Library::default();
+        for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
+            let (line, hint) = empty_note(tab, &empty)
+                .unwrap_or_else(|| panic!("{tab:?} said nothing when empty"));
+            assert!(!line.is_empty() && !hint.is_empty());
+        }
+        // Playlists is the one tab that is legitimately empty on a healthy device, so it must not
+        // claim the music is missing.
+        let (pl_line, _) = empty_note(Tab::Playlists, &empty).unwrap();
+        assert!(pl_line.contains("playlist"), "{pl_line:?}");
+        let (songs_line, _) = empty_note(Tab::Songs, &empty).unwrap();
+        assert!(songs_line.contains("music"), "{songs_line:?}");
+
+        // A populated library says nothing anywhere.
+        let full = Library::sample();
+        for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
+            assert!(empty_note(tab, &full).is_none(), "{tab:?} drew an empty note over real rows");
+        }
+    }
+
+    /// A filter that hides everything is a DIFFERENT situation from a library that failed to load,
+    /// and it used to be indistinguishable: both drew a blank list. The two filter axes AND
+    /// together, so "a genre · Hi-Res" matching nothing is an ordinary thing to do by accident.
+    #[test]
+    fn a_filter_that_matches_nothing_says_so_rather_than_looking_broken() {
+        let mut lib = Library::sample();
+        assert!(!lib.songs.is_empty());
+        // A genre id no track carries.
+        lib.filter_genre = Some(9_999);
+        assert_eq!(row_count(Tab::Songs, &lib), 0, "the fixture must filter to nothing");
+        let (line, hint) = empty_note(Tab::Songs, &lib).expect("a filtered-empty list must speak");
+        assert!(line.contains("Nothing matches"), "{line:?}");
+        assert!(hint.to_lowercase().contains("filter"), "{hint:?}: say how to get out of it");
+        // …and it is NOT the "no music found" message, which would send the user to look for a
+        // fault that is not there.
+        assert!(!line.contains("No music"), "{line:?}");
+        // Clearing the filter clears the note.
+        lib.filter_genre = None;
+        assert!(empty_note(Tab::Songs, &lib).is_none());
+    }
     use super::*;
     use crate::model::{AlbumRow, ArtistGroup, Library, SongRow};
 
@@ -2364,7 +2476,7 @@ pub fn genre_render(
         hline(c, y + GENRE_RH, if r == GENRE_ROW_HIRES { t.dim } else { t.line });
     }
     c.clear_clip();
-    scrollbar(c, t, GENRE_TOP, scroll, genre_content_h(lib), sbar_active);
+    scrollbar(c, t, GENRE_TOP, LIST_BOTTOM, scroll, genre_content_h(lib), sbar_active);
 }
 
 #[cfg(test)]
