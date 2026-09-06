@@ -1975,12 +1975,21 @@ impl App {
         // top of the tree does it pop the screen — which is the whole reason folder browse is its
         // own screen rather than a fifth Library tab.
         if self.current() == Screen::Folders && !self.folder_stack.is_empty() {
-            self.folder_stack.pop();
-            // Put the folder you came out of back under your finger. Without this, walking back
-            // up a hundred-row root drops you at the top every time.
-            self.folder_scroll_px = self.folder_scroll_saved.pop().unwrap_or(0);
-            self.fling_v = 0.0;
-            return;
+            // …EXCEPT BACK OUT OF THE LEVEL `open_folders` SKIPPED ON THE WAY IN. With one storage
+            // volume the root list is a single row you would always have to tap through, so
+            // entering the tree descends past it — and coming back up landed on it anyway. Back
+            // from the top of the tree therefore showed a one-row screen the design says never to
+            // show, and needed a SECOND Back to leave. Skipped in both directions now.
+            // Found by the 2026-09-06 UI audit, by the rule-test for the back chevron.
+            let leaving_the_tree = self.folder_stack.len() == 1;
+            if !(leaving_the_tree && self.lib.folder_roots.len() == 1) {
+                self.folder_stack.pop();
+                // Put the folder you came out of back under your finger. Without this, walking
+                // back up a hundred-row root drops you at the top every time.
+                self.folder_scroll_px = self.folder_scroll_saved.pop().unwrap_or(0);
+                self.fling_v = 0.0;
+                return;
+            }
         }
         if self.stack.len() > 1 {
             self.boot_stock_armed = false;
@@ -2457,7 +2466,21 @@ impl App {
         }
         // Back chevron: a generous ≥44px target (the whole header-left block, from just under
         // the status strip to the header rule) on every screen that draws one.
-        let has_header = !matches!(self.current(), Screen::NowPlaying | Screen::Menu | Screen::Lock);
+        //
+        // THE MENU DRAWS ONE. It calls `chrome::header("Menu", …)` like every other screen, and
+        // `chrome::header` unconditionally draws the chevron — but the Menu was excluded here, so
+        // the glyph sat on the glass and did nothing. On a device whose only input is a finger,
+        // a visible affordance that ignores it is worse than no affordance: the hardware Back key
+        // and the status strip's Now Playing zone both worked, so the one thing that LOOKED like
+        // the way out was the one thing that was not. Found by the 2026-09-06 UI audit.
+        //
+        // Safe on the Menu specifically because `menu::TOP == HEADER_BOTTOM`: no row is drawn in
+        // the band this claims, so nothing is being taken away from the list.
+        //
+        // Now Playing and Lock stay out because they genuinely draw no header — they are the
+        // roots, and `pop()` on a one-entry stack is a no-op, but drawing nothing and claiming the
+        // target anyway is how an invisible control gets created.
+        let has_header = !matches!(self.current(), Screen::NowPlaying | Screen::Lock);
         if has_header && (crate::chrome::STATUS_H..crate::chrome::HEADER_BOTTOM).contains(&y) && x < 80 {
             self.pop();
             return vec![];
@@ -2512,8 +2535,13 @@ impl App {
                         _ => self.push(Screen::Settings),
                     }
                     vec![]
-                } else if y < 91 {
-                    self.push(Screen::Menu); // tap the top/art → menu
+                } else if y < crate::chrome::HEADER_BOTTOM {
+                    // The band every OTHER screen gives to its back chevron. Now Playing is a root
+                    // and draws no chevron, so the band is free — and it goes to the Menu, which is
+                    // what the status strip above it already means. (Was a bare `91`; that is
+                    // `chrome::HEADER_BOTTOM`, and a literal copy of a named constant is how a
+                    // target drifts out from under the thing it belongs to.)
+                    self.push(Screen::Menu);
                     vec![]
                 } else {
                     vec![]
@@ -3963,36 +3991,57 @@ impl App {
     /// `(max_scroll_px, list_top)` of whatever the current screen scrolls, or None if it doesn't.
     /// The scrollbar's whole geometry follows from these two, so this is the only place a screen
     /// has to be taught about the drag.
-    fn sbar_metrics(&self) -> Option<(i32, i32)> {
+    /// `(max_scroll, list_top, list_bottom)` of whatever the current screen scrolls, or None if it
+    /// doesn't. The BOTTOM is part of it because not every scrolling screen ends where the
+    /// library's list ends: the two pickers stop 24 px higher to make room for their footer note,
+    /// and this used to assume `library::list_bottom()` for all of them — so their thumb travel was
+    /// scaled against the wrong window and a drag to the end of the strip stopped short of the end
+    /// of the list. Found by the 2026-09-06 UI audit.
+    fn sbar_metrics(&self) -> Option<(i32, i32, i32)> {
+        let lb = library::list_bottom();
         match self.current() {
-            Screen::Library => Some((self.lib_max_scroll(), library::list_top(self.lib_tab))),
+            Screen::Library => Some((self.lib_max_scroll(), library::list_top(self.lib_tab), lb)),
             Screen::Album => self
                 .lib
                 .albums_flat()
                 .get(self.album_view)
-                .map(|al| (library::album_max_scroll_px(al), library::album_tracks_top())),
+                .map(|al| (library::album_max_scroll_px(al), library::album_tracks_top(), lb)),
             Screen::Artist => self
                 .artist_page()
-                .map(|p| (library::artist_max_scroll_px(&p), library::artist_content_top())),
+                .map(|p| (library::artist_max_scroll_px(&p), library::artist_content_top(), lb)),
             Screen::Playlist => self
                 .playlist_row()
-                .map(|p| (library::playlist_max_scroll_px(p), library::playlist_content_top(p))),
+                .map(|p| (library::playlist_max_scroll_px(p), library::playlist_content_top(p), lb)),
             // The bar rides the WHOLE list now (history + current + queue + album), not just the
             // user queue — which is also why it appears on a plain album view, where the old
             // row-stepping window offered no way to drag at all.
             Screen::UpNext => Some((
                 self.up_next_layout().max_scroll_px(),
                 crate::chrome::HEADER_BOTTOM,
+                lb,
             )),
             Screen::GenreFilter => {
-                Some((library::genre_max_scroll_px(&self.lib), library::GENRE_TOP))
+                Some((library::genre_max_scroll_px(&self.lib), library::GENRE_TOP, lb))
             }
-            Screen::TrackInfo => Some((self.track_info_max_scroll(), crate::track_info::TOP)),
-            Screen::PlaylistPick => Some((self.pick_max_scroll(), crate::playlist_pick::TOP)),
-            Screen::TrackPick => Some((self.track_pick_max_scroll(), crate::playlist_pick::TOP)),
+            Screen::TrackInfo => Some((
+                self.track_info_max_scroll(),
+                crate::track_info::TOP,
+                crate::track_info::BOTTOM,
+            )),
+            Screen::PlaylistPick => Some((
+                self.pick_max_scroll(),
+                crate::playlist_pick::TOP,
+                crate::playlist_pick::BOTTOM,
+            )),
+            Screen::TrackPick => Some((
+                self.track_pick_max_scroll(),
+                crate::playlist_pick::TOP,
+                crate::playlist_pick::BOTTOM,
+            )),
             Screen::Folders => Some((
                 crate::folders::max_scroll_px(&self.lib, self.folder_cur()),
                 crate::folders::TOP,
+                lb,
             )),
             _ => None,
         }
@@ -4010,13 +4059,13 @@ impl App {
         if !library::sbar_hit_x(x) {
             return false;
         }
-        let Some((max, top)) = self.sbar_metrics() else { return false };
+        let Some((max, top, bottom)) = self.sbar_metrics() else { return false };
         // Nothing to scroll, or the thumb fills the track: no drag, so the contact stays available
         // to the list underneath.
-        if max <= 0 || !(top..library::list_bottom()).contains(&y) {
+        if max <= 0 || !(top..bottom).contains(&y) {
             return false;
         }
-        if library::sbar_span(top, max + (library::list_bottom() - top)) <= 0 {
+        if library::sbar_span(top, bottom, max + (bottom - top)) <= 0 {
             return false;
         }
         self.fling_v = 0.0;
@@ -4048,8 +4097,8 @@ impl App {
     /// event stream can't accumulate drift.
     pub fn sbar_track(&mut self, dy: i32) {
         let Some((start_scroll, _)) = self.sbar else { return };
-        let Some((max, top)) = self.sbar_metrics() else { return };
-        let span = library::sbar_span(top, max + (library::list_bottom() - top));
+        let Some((max, top, bottom)) = self.sbar_metrics() else { return };
+        let span = library::sbar_span(top, bottom, max + (bottom - top));
         if span <= 0 {
             return;
         }
@@ -4537,10 +4586,25 @@ impl App {
     ///
     /// Drawing the bar also gives Up Next the same play/pause zone and the same tap-to-return that
     /// every other browsing screen has, which is what the space was reserved for in the first place.
+    ///
+    /// AND FOLDERS, FOR THE IDENTICAL REASON, found by the 2026-09-06 UI audit. `folders.rs` uses
+    /// `library::LIST_BOTTOM` for its clip band, its hit test and its scroll extent — so it has
+    /// always reserved the same bottom 64 px and drawn nothing in them. It is the same defect that
+    /// was reported against Up Next on 2026-09-05, on the screen next door, left standing because
+    /// the fix was applied to the reported screen rather than to the rule.
+    ///
+    /// The rule is now stated as one: A SCREEN THAT RESERVES THE BAR'S SPACE MUST DRAW THE BAR.
+    /// `every_screen_that_reserves_the_np_bar_draws_it` holds every screen whose list stops at
+    /// `library::list_bottom()` to it, so the next one cannot be added without the bar.
     fn shows_np_bar(s: Screen) -> bool {
         matches!(
             s,
-            Screen::Library | Screen::Album | Screen::Artist | Screen::Playlist | Screen::UpNext
+            Screen::Library
+                | Screen::Album
+                | Screen::Artist
+                | Screen::Playlist
+                | Screen::UpNext
+                | Screen::Folders
         )
     }
 
@@ -5670,7 +5734,7 @@ impl App {
                     self.negotiated_codec_name(),
                 )
             }
-            Screen::Receiver => crate::receiver::render(c, &theme, fonts, false),
+            Screen::Receiver => crate::receiver::render(c, &theme, fonts),
             Screen::Keyboard => {
                 let (title, placeholder) = match self.kb_purpose {
                     KbPurpose::Rename(_) => ("Rename playlist", "Playlist name"),
@@ -5694,7 +5758,8 @@ impl App {
                     .map(|s| s.title.clone())
                     .unwrap_or_default();
                 crate::playlist_pick::render_targets(c, &theme, fonts, "Add to playlist", &track,
-                                                     &rows, sony, self.pick_scroll_px)
+                                                     &rows, sony, self.pick_scroll_px,
+                                                     self.sbar_active())
             }
             Screen::TrackPick => {
                 let songs = self.track_pick_songs();
@@ -5709,7 +5774,8 @@ impl App {
                     songs.get(row).map(|s| members.contains(&s.object_id)).unwrap_or(false)
                 };
                 crate::playlist_pick::render_tracks(c, &theme, fonts, &name, &songs, &is_in,
-                                                    self.track_pick_scroll_px, members.len())
+                                                    self.track_pick_scroll_px, members.len(),
+                                                    self.sbar_active())
             }
             // Shelf is an overlay, never the stack top — render Now Playing as a safe fallback if
             // it somehow becomes current (it shouldn't).
@@ -7897,7 +7963,8 @@ mod tests {
         assert!(a.sbar_begin(x, top + 20), "the right-edge strip must take a vertical drag");
         assert!(a.sbar_active());
 
-        let span = library::sbar_span(top, max + (library::list_bottom() - top));
+        let bottom = library::list_bottom();
+        let span = library::sbar_span(top, bottom, max + (bottom - top));
         assert!(span > 0);
         a.sbar_track(span / 2);
         let half = a.lib_scroll_px;
@@ -7910,6 +7977,67 @@ mod tests {
         assert_eq!(a.lib_scroll_px, 0, "dragging back up returns to the top");
         a.sbar_release();
         assert!(!a.sbar_active());
+    }
+
+    /// EVERY scrollable screen's thumb travel must cover ITS OWN list, not the library's window.
+    ///
+    /// `sbar_span` and `sbar_begin` both assumed `library::list_bottom()`, and the two pickers stop
+    /// 24 px higher than that to make room for their footer note. So on those screens the thumb was
+    /// scaled against a window shorter than the one the rows are drawn in: a drag to the very
+    /// bottom of the strip stopped short of the end of the list, and the last rows were reachable
+    /// only by dragging the list itself. Nothing said so, because neither picker drew a scrollbar
+    /// at all — the drag target was invisible.
+    #[test]
+    fn the_scrollbar_covers_the_whole_list_on_every_screen_that_has_one() {
+        let screens = [
+            Screen::Library, Screen::UpNext, Screen::GenreFilter, Screen::Folders,
+            Screen::TrackInfo, Screen::PlaylistPick, Screen::TrackPick,
+        ];
+        let x = crate::canvas::W as i32 - 4;
+        for screen in screens {
+            let mut a = unlocked();
+            a.push_for_test(screen);
+            // The sample library has to make this screen overflow, or there is nothing to test.
+            let Some((max, top, bottom)) = a.sbar_metrics() else {
+                panic!("{screen:?} claims no scrollbar");
+            };
+            if max <= 0 {
+                continue; // nothing to scroll on the sample data — not this test's business
+            }
+            assert!(a.sbar_begin(x, top + 10), "{screen:?}: the strip must take a drag");
+            let span = library::sbar_span(top, bottom, max + (bottom - top));
+            assert!(span > 0, "{screen:?}: the thumb has no travel");
+            // Full thumb travel reaches the END of the list. With the wrong bottom this lands short.
+            a.sbar_track(span);
+            let (m2, _, _) = a.sbar_metrics().expect("still scrollable");
+            assert_eq!(
+                a.sbar_scroll(), m2,
+                "{screen:?}: dragging the thumb to the bottom did not reach the end of the list",
+            );
+            a.sbar_track(-span * 4);
+            assert_eq!(a.sbar_scroll(), 0, "{screen:?}: dragging back up returns to the top");
+            a.sbar_release();
+
+            // …and the OLD arithmetic — the library's bottom for every screen — is shown to land
+            // short wherever the two differ, so this test cannot pass by accident on a screen that
+            // happens to end where the library does.
+            if bottom != library::list_bottom() {
+                let lb = library::list_bottom();
+                let wrong = library::sbar_span(top, lb, max + (lb - top));
+                assert!(
+                    wrong < span,
+                    "{screen:?}: the wrong bottom must give less travel, not more",
+                );
+                let mut b = unlocked();
+                b.push_for_test(screen);
+                assert!(b.sbar_begin(x, top + 10));
+                b.sbar_track(wrong);
+                assert!(
+                    b.sbar_scroll() < max,
+                    "{screen:?}: the old span reached the end anyway — this screen proves nothing",
+                );
+            }
+        }
     }
 
     /// The strip is shared with the A–Z rail and split by GESTURE. A TAP there must still jump to
@@ -8799,6 +8927,81 @@ mod tests {
     /// must also DRAW there — otherwise the space is a black bar under the queue, which is how this
     /// was reported. Pins both halves of the bar's behaviour on this screen, not just that it is
     /// listed.
+    #[test]
+    /// THE RULE, not the instance: a screen whose list stops at `library::list_bottom()` has
+    /// reserved the Now Playing bar's 64 px, so it must draw the bar.
+    ///
+    /// Up Next was reported on 2026-09-05 as having "a black bar under the queue" and was fixed by
+    /// adding it to `shows_np_bar`. Folders — which reserves exactly the same space, through the
+    /// same constant, one file away — was not, and still had the black bar a month later. Fixing
+    /// the reported screen instead of the rule is how that happens, so the rule is the test now.
+    #[test]
+    fn every_screen_that_reserves_the_np_bar_draws_it() {
+        // Screens whose list is clipped at `library::LIST_BOTTOM`, i.e. that give up the bottom
+        // 64 px on the assumption the bar is there. Adding a screen to this list without adding it
+        // to `shows_np_bar` is the defect.
+        let reserves = [
+            Screen::Library, Screen::Album, Screen::Artist, Screen::Playlist,
+            Screen::UpNext, Screen::Folders,
+        ];
+        for s in reserves {
+            assert!(
+                App::shows_np_bar(s),
+                "{s:?} reserves the Now Playing bar's space and must draw the bar",
+            );
+        }
+        // And the bar is live there: play/pause on the left, return on the right, from each one.
+        let (_, by, _, _) = crate::chrome::np_bar_rect();
+        let midy = by + crate::chrome::NP_BAR_H / 2;
+        for s in reserves {
+            let mut a = unlocked();
+            a.go_for_preview(s);
+            assert_eq!(a.tap(crate::chrome::NP_BAR_PLAY_W / 2, midy), vec![Action::PlayPause],
+                       "{s:?}: the bar's left zone must be play/pause");
+            assert_eq!(a.current(), s, "{s:?}: play/pause must not navigate away");
+            a.tap(300, midy);
+            assert_eq!(a.current(), Screen::NowPlaying, "{s:?}: the bar must return home");
+        }
+    }
+
+    /// A drawn control must answer a finger. `chrome::header` draws a back chevron unconditionally,
+    /// so every screen that calls it has one on the glass — and the Menu was excluded from the tap,
+    /// leaving a chevron that did nothing on a device whose only input is a finger.
+    #[test]
+    fn every_screen_that_draws_a_back_chevron_answers_a_tap_on_it() {
+        // The chevron's own band: below the status strip's dead edge, above the header rule.
+        let y = (crate::chrome::STATUS_H + crate::chrome::HEADER_BOTTOM) / 2;
+        // Every screen that reaches `chrome::header` — i.e. everything but the two roots and the
+        // two full-panel screens that draw their own world.
+        let with_header = [
+            Screen::Menu, Screen::Library, Screen::UpNext, Screen::Eq, Screen::Sound,
+            Screen::Advanced, Screen::Tone, Screen::Bluetooth, Screen::BtCodec, Screen::Pairing,
+            Screen::Settings, Screen::Device, Screen::Fm, Screen::UsbDac, Screen::Receiver,
+            Screen::VizSet, Screen::ClockSet, Screen::GenreFilter, Screen::Folders,
+            Screen::TrackInfo, Screen::PlaylistPick, Screen::TrackPick,
+        ];
+        for s in with_header {
+            let mut a = unlocked();
+            a.push_for_test(s);
+            assert_eq!(a.current(), s);
+            a.tap(30, y);
+            assert_ne!(a.current(), s, "{s:?}: the back chevron it draws did nothing");
+        }
+        // Now Playing and Lock draw no header, so no invisible Back is claimed there. Now Playing
+        // gives the same band to the Menu — the same thing the status strip above it means — which
+        // is a deliberate use of the space rather than a stray target, and is pinned here so it
+        // stays deliberate.
+        let mut np = unlocked();
+        assert_eq!(np.current(), Screen::NowPlaying);
+        np.tap(30, y);
+        assert_eq!(np.current(), Screen::Menu, "the header band on Now Playing opens the Menu");
+        // Locked, nothing in that band does anything at all.
+        let mut lock = App::new();
+        assert_eq!(lock.current(), Screen::Lock);
+        lock.tap(30, y);
+        assert_eq!(lock.current(), Screen::Lock, "a locked device answers no taps");
+    }
+
     #[test]
     fn np_bar_is_live_on_up_next() {
         let (_, by, _, _) = crate::chrome::np_bar_rect();

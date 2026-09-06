@@ -523,7 +523,7 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     }
 
     if l.max_scroll_px() > 0 {
-        crate::library::scrollbar(c, t, y0, scroll, l.content_h, v.sbar_active);
+        crate::library::scrollbar(c, t, y0, LIST_BOTTOM, scroll, l.content_h, v.sbar_active);
     }
     l
 }

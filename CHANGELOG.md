@@ -18,6 +18,36 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **UI and consistency audit — nine defects fixed, one gate gap closed.** *device-unverified — all
+  nine are pure UI, host-tested; the audit lists three worth a glance on the next session.*
+
+  Every screen read as code and looked at as pixels. Write-up:
+  [`docs/AUDIT_2026-09-06_ui.md`](docs/AUDIT_2026-09-06_ui.md).
+
+  - **Folders reserved the Now Playing bar's 64 px and drew nothing in them** — the same defect
+    reported against Up Next on 2026-09-05, on the screen next door. The rule is a test now.
+  - **The Menu drew a back chevron that ignored every tap.**
+  - **Back out of the folder tree landed on the one-row storage-root list** that entering the tree
+    deliberately skips, and needed a second Back to leave.
+  - **Both playlist pickers registered a scrollbar drag, drew no scrollbar, and scaled the drag
+    against a window 24 px shorter than their own** — so dragging to the bottom of the invisible
+    strip stopped short of the end of the list.
+  - **The Pairing screen said NFC tap-to-pair "IS NOT WIRED YET"**; it has worked since
+    2026-08-17, and the Bluetooth screen advertises it. Two screens, opposite claims.
+  - **BT Receiver shipped a toggle that could not be moved** and an unreachable "on" layout. The
+    feature is still unwired — the screen now says so instead.
+  - **No Library tab had an empty state**, which is what a failed database open actually produces;
+    and a filter matching nothing looked identical to a broken library.
+  - A magic `91` where `chrome::HEADER_BOTTOM` was meant.
+
+  `BtCodec`, `Device` and `VizSet` had never been rendered by any panel-overflow gate — 3 of 31
+  screens, on a canvas that clips silently. All three are in the matrix now and all three pass.
+
+  Reported and deliberately left open, as design decisions rather than audit edits: eleven row
+  heights (a track row is drawn at three of them), 24 font sizes with no type scale, seven
+  treatments of the header's right-hand slot, and three different scrolling experiences. Also that
+  the two committed preview-screenshot directories are stale, divergent and 26 MB.
+
 - **Queue and playback audit — twelve defects, all fixed.** *device-unverified — host tests and the
   off-device harness; see the audit's verification table for what to look for on the next session.*
 
