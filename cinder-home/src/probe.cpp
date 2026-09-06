@@ -243,6 +243,278 @@ static int analyzer_probe(int mode) {
     return 0; // unreachable: analyzer_job_entry _exit()s with the real status
 }
 
+// ── --vizlab: measure the analyzer instead of guessing at it ─────────────────────────────────
+//
+// Everything the visualiser's quality depends on is a property of Sony's service that we can only
+// read off the device: what the twelve-band ceiling really is, what Q does to the numbers, what
+// SetCalcSamples changes, the true emit rate, and — the one that decides whether 24 bands are
+// possible at all — how a running stream behaves when the passband table is swapped underneath it.
+// Each phase leaves the previous state behind deliberately, so the run reads as one experiment.
+//
+// PLAY MUSIC while this runs. Takes ~30 s.
+
+// The 12 log-spaced centres the shim now defaults to (32 Hz .. 16 kHz, ratio 1.76).
+static const int kCentres12[12] = { 32, 56, 100, 175, 305, 540, 950, 1670, 2930, 5160, 9080, 16000 };
+// 24 log-spaced centres over the same span (ratio 1.31); the even entries are set A, odd are set B,
+// so alternating A and B gives a 24-band display at half the temporal rate — IF the swap is clean.
+static const int kCentres24[24] = {
+      32,   42,   55,   72,   94,  123,  161,  211,  277,  363,  475,  622,
+     815, 1068, 1399, 1833, 2401, 3146, 4121, 5399, 7073, 9266, 12139, 16000 };
+
+// Wall-clock milliseconds, monotonic — the swap COST is the whole question in P5, so it is
+// measured rather than inferred from how many frames landed between two generations.
+static unsigned vl_now_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
+}
+
+static void vl_set(const int* hz, const float* q, int n, const char* what) {
+    cinder_passband_t pb[24];
+    for (int i = 0; i < n && i < 24; ++i) { pb[i].hz = hz[i]; pb[i].q = q[i]; }
+    wd_arm(6);
+    unsigned t0 = vl_now_ms();
+    int rc = cinder_analyzer_set_bands(pb, n);
+    unsigned cost = vl_now_ms() - t0;
+    wd_disarm();
+    std::fprintf(stderr, "[vizlab] set_bands(%d) %-22s -> rc=%d in %u ms\n", n, what, rc, cost);
+    std::fflush(stderr);
+}
+
+static void vl_set_q(float q, const char* what) {
+    float qs[12];
+    for (int i = 0; i < 12; ++i) qs[i] = q;
+    vl_set(kCentres12, qs, 12, what);
+}
+
+// Print every frame that arrived since `from`, and return the new watermark. `detail` prints one
+// line per frame (used for the swap test); otherwise only per-band min/max across the window.
+static int vl_report(int from, const char* label, bool detail) {
+    const int to = cinder_analyzer_log_count();
+    int vals[24], gen = 0; unsigned ts = 0, prev_ts = 0;
+    int lo[24], hi[24]; long long sum[24]; int cnt = 0, bands = 0;
+    for (int i = 0; i < 24; ++i) { lo[i] = 0x7fffffff; hi[i] = 0; sum[i] = 0; }
+    long long dt_sum = 0; int dt_n = 0;
+    for (int i = from; i < to; ++i) {
+        int n = cinder_analyzer_log_get(i, &ts, &gen, vals, 24);
+        if (n <= 0) continue;
+        if (n > bands) bands = n;
+        unsigned prev_prev = prev_ts;
+        if (prev_ts) { dt_sum += (long long)(ts - prev_ts); dt_n++; }
+        prev_ts = ts;
+        cnt++;
+        for (int b = 0; b < n && b < 24; ++b) {
+            if (vals[b] < lo[b]) lo[b] = vals[b];
+            if (vals[b] > hi[b]) hi[b] = vals[b];
+            sum[b] += vals[b];
+        }
+        if (detail) {
+            // Values scaled to thousands: the question here is the SHAPE either side of a swap,
+            // and twelve ten-digit numbers per line does not let an eye see a shape.
+            std::fprintf(stderr, "[vizlab]   f%-4d gen=%-3d +%-4ums  %7d %7d %7d %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
+                i, gen, dt_n ? (unsigned)(ts - prev_prev) : 0u,
+                vals[0]/1000, vals[1]/1000, vals[2]/1000, vals[3]/1000, vals[4]/1000, vals[5]/1000,
+                vals[6]/1000, vals[7]/1000, vals[8]/1000, vals[9]/1000, vals[10]/1000, vals[11]/1000);
+        }
+    }
+    if (cnt == 0) {
+        std::fprintf(stderr, "[vizlab] %-26s NO FRAMES\n", label);
+        std::fflush(stderr);
+        return to;
+    }
+    std::fprintf(stderr, "[vizlab] %-26s frames=%-4d bands=%-3d mean_dt=%lldms\n",
+                 label, cnt, bands, dt_n ? dt_sum / dt_n : 0);
+    for (int b = 0; b < bands && b < 24; ++b) {
+        std::fprintf(stderr, "[vizlab]   band%-3d min=%-10d avg=%-10lld max=%-10d\n",
+                     b, lo[b] == 0x7fffffff ? 0 : lo[b], sum[b] / cnt, hi[b]);
+    }
+    std::fflush(stderr);
+    return to;
+}
+
+static int vizlab_job() {
+    clog_("vizlab: starting analyzer (SPECTRUM, 20 Hz, service-default window) …");
+    wd_arm(12);
+    int rc = cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, 20.0f, 0);
+    wd_disarm();
+    std::fprintf(stderr, "[vizlab] start rc=%d\n", rc);
+    if (rc != 0) { clog_("vizlab: start failed — nothing else can be measured"); return 1; }
+
+    int wm = cinder_analyzer_log_count();
+    usleep(2000000);
+    wm = vl_report(wm, "P0 default table (Q=1.75)", false);
+
+    // P1 — the twelve-band ceiling. If the service really ignores entries past the 12th, the frames
+    // keep arriving with n=12 after a 24-entry table is installed. If it does NOT, this is where we
+    // find out, and the whole 24-band question is answered in one line.
+    float q24[24];
+    for (int i = 0; i < 24; ++i) q24[i] = 3.7f;   // contiguous at a 1.31 ratio
+    vl_set(kCentres24, q24, 24, "24 bands (cap test)");
+    usleep(2000000);
+    wm = vl_report(wm, "P1 24-band table", false);
+
+    // P2 — what Q does. Sony's own player uses 456; the ctor default is 10; contiguous is 1.75.
+    vl_set_q(456.0f, "Q=456 (Sony's app)");
+    usleep(2000000);
+    wm = vl_report(wm, "P2a Q=456", false);
+    vl_set_q(10.0f, "Q=10 (service default)");
+    usleep(2000000);
+    wm = vl_report(wm, "P2b Q=10", false);
+    vl_set_q(1.75f, "Q=1.75 (contiguous)");
+    usleep(2000000);
+    wm = vl_report(wm, "P2c Q=1.75", false);
+
+    // P3 — the detector window (SetCalcSamples). Short = twitchy, long = smeared; this is the
+    // "time window" a desktop analyser exposes.
+    for (unsigned w : { 512u, 4096u, 16384u }) {
+        wd_arm(6);
+        int wrc = cinder_analyzer_set_window(w);
+        wd_disarm();
+        std::fprintf(stderr, "[vizlab] set_window(%u) -> rc=%d\n", w, wrc);
+        usleep(2000000);
+        char lbl[48];
+        std::snprintf(lbl, sizeof lbl, "P3 window=%u", w);
+        wm = vl_report(wm, lbl, false);
+    }
+
+    // P4 — the emit rate. Ask for 60 Hz and see what mean_dt comes back as.
+    wd_arm(8); cinder_analyzer_stop(); wd_disarm();
+    usleep(300000);
+    wd_arm(12);
+    rc = cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, 60.0f, 0);
+    wd_disarm();
+    std::fprintf(stderr, "[vizlab] restart at 60 Hz rc=%d\n", rc);
+    wm = cinder_analyzer_log_count();
+    usleep(2000000);
+    wm = vl_report(wm, "P4 update_rate=60", false);
+
+    // P5 — THE ONE THAT DECIDES 24 BANDS. Alternate set A and set B every 150 ms and print every
+    // frame, so the settling behaviour after a coefficient swap is visible frame by frame: the
+    // question is how many frames carry the transient before the values are trustworthy again.
+    int hzA[12], hzB[12]; float qA[12];
+    for (int i = 0; i < 12; ++i) { hzA[i] = kCentres24[i * 2]; hzB[i] = kCentres24[i * 2 + 1]; qA[i] = 3.7f; }
+    // P5a — DOES a swap on a live stream land at all, and after how many frames? Interleaved
+    // half-step tables cannot answer that: their profiles are so alike that a swap that never
+    // applied and a swap that applied instantly look identical. Two tables that share no band at
+    // all can: LOW is twelve centres under 500 Hz, HIGH is twelve above 2 kHz, and on any real
+    // music their profiles are unmistakably different.
+    static const int hzLOW[12]  = { 32, 45, 62, 85, 118, 160, 200, 250, 300, 355, 420, 500 };
+    static const int hzHIGH[12] = { 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 11200, 12500, 14000, 16000 };
+    clog_("vizlab: P5a LOW table (all <500 Hz) then HIGH (all >2 kHz) — a swap that lands shows a "
+          "different SHAPE, and the frame it changes on is its latency");
+    vl_set(hzLOW, qA, 12, "LOW (<500 Hz)");
+    usleep(1200000);
+    wm = vl_report(wm, "P5a LOW", true);
+    vl_set(hzHIGH, qA, 12, "HIGH (>2 kHz)");
+    usleep(1200000);
+    wm = vl_report(wm, "P5a HIGH", true);
+
+    // P5c — THE UNAMBIGUOUS ONE, and it needs no assumption about the music. Every band in the
+    // table is given the SAME centre frequency: twelve identical filters must report twelve nearly
+    // identical magnitudes. If the reported frame still looks like a spectrum — a descending curve
+    // — then the table we installed is not the one being analysed, whatever the call returned.
+    // P5a compares two tables against a moving target (the music) and can be argued with; this
+    // cannot.
+    {
+        int flat[12];
+        for (int rep = 0; rep < 2; ++rep) {
+            const int hz = rep == 0 ? 100 : 8000;
+            for (int i = 0; i < 12; ++i) flat[i] = hz;
+            char lbl[48];
+            std::snprintf(lbl, sizeof lbl, "FLAT all-%d Hz", hz);
+            vl_set(flat, qA, 12, lbl);
+            usleep(1500000);
+            char rlbl[48];
+            std::snprintf(rlbl, sizeof rlbl, "P5c flat %d Hz", hz);
+            wm = vl_report(wm, rlbl, false);
+        }
+        // And the same flat table applied the way the shell applies one — installed BEFORE Start —
+        // to separate "the service ignores SetPassband entirely" from "it only reads the table when
+        // the monitor thread starts".
+        wd_arm(8); cinder_analyzer_stop(); wd_disarm();
+        usleep(300000);
+        for (int i = 0; i < 12; ++i) flat[i] = 8000;
+        vl_set(flat, qA, 12, "FLAT all-8000 (pre-start)");
+        wd_arm(12);
+        rc = cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, 20.0f, 0);
+        wd_disarm();
+        std::fprintf(stderr, "[vizlab] restart with flat table rc=%d\n", rc);
+        wm = cinder_analyzer_log_count();
+        usleep(1500000);
+        wm = vl_report(wm, "P5c flat 8 kHz at Start", false);
+    }
+
+    // P5d — THE FEASIBILITY TEST for a 24-band display, made unambiguous the same way P5c was.
+    // Alternating two REAL half-tables cannot be read frame by frame (band 3 of set A and band 3
+    // of set B are different frequencies, both plausible numbers). Alternating two FLAT tables can:
+    // every frame is a single number, and 100 Hz and 8 kHz are far enough apart in any music that
+    // "which table produced this frame" is obvious. If the printed value alternates cleanly with
+    // the generation, a multiplexed 24-band display is possible; if it lags or sticks, it is not.
+    {
+        int flatA[12], flatB[12];
+        for (int i = 0; i < 12; ++i) { flatA[i] = 100; flatB[i] = 8000; }
+        clog_("vizlab: P5d alternating FLAT 100 Hz / FLAT 8 kHz every 100 ms — the value must "
+              "follow the generation for a multiplexed display to be possible");
+        // Swept over the detector window as well, because the first run's answer was "the value
+        // does swing, but it RAMPS over ~3 frames" — and a ramp is the level detector's own
+        // averaging, which is the one part of that we can shorten. If a small window makes the
+        // step land in one frame, a multiplexed 24-band display is on; if not, the ceiling stands.
+        // DWELL SWEEP. One 100 ms run cannot separate "the swap does not land" from "the swap
+        // lands but the filters have not settled": a bandpass needs several cycles of its own
+        // centre frequency before its level means anything, which at 100 Hz is tens of ms before
+        // the detector even starts averaging. So the table is alternated at four dwell times, and
+        // what matters is the RATIO between the two tables' readings — at a dwell where the swap is
+        // really being observed, the 100 Hz table and the 8 kHz table cannot report the same
+        // number on music.
+        for (int dwell_ms : { 1000, 500, 250, 100 }) {
+            std::fprintf(stderr, "[vizlab] --- P5d dwell=%d ms ---\n", dwell_ms);
+            wm = cinder_analyzer_log_count();
+            for (int k = 0; k < 8; ++k) {
+                vl_set(k % 2 ? flatB : flatA, qA, 12, k % 2 ? "flat 8 kHz" : "flat 100 Hz");
+                usleep(dwell_ms * 1000);
+            }
+            char lbl[48];
+            std::snprintf(lbl, sizeof lbl, "P5d dwell=%dms", dwell_ms);
+            wm = vl_report(wm, lbl, true);
+        }
+    }
+
+    // P5b — only meaningful if P5a showed the swap landing: alternate the two interleaved halves
+    // of a 24-band table as fast as the emit rate allows, which is what a 24-band display would
+    // have to do for every frame it drew.
+    clog_("vizlab: P5b alternating the two halves of a 24-band table every 50 ms");
+    wm = cinder_analyzer_log_count();
+    for (int k = 0; k < 8; ++k) {
+        vl_set(k % 2 ? hzB : hzA, qA, 12, k % 2 ? "set B (odd)" : "set A (even)");
+        usleep(50000);
+    }
+    wm = vl_report(wm, "P5b A/B multiplex", true);
+
+    wd_arm(8); cinder_analyzer_stop(); wd_disarm();
+    clog_("vizlab: done. Frame values above are Sony's raw amplitudes (linear).");
+    return 0;
+}
+
+static void vizlab_job_entry() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) { clog_("vizlab: pthread_create FAILED"); _exit(1); }
+    usleep(300000);
+    // No cinder_render_init() — same reason as --analyzer: the Home app owns the framebuffer.
+    _exit(vizlab_job());
+}
+
+static int vizlab_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    std::fprintf(stderr, "[vizlab] StartForApplication returned %d\n", sr);
+    vizlab_job_entry();
+    return 0; // unreachable
+}
+
 // The --pump job: runs INSIDE pst::core::Framework::StartForApplication, i.e. with the framework
 // up, plus our own Pump() thread so binder replies get dispatched even though (unlike a Sony app)
 // nothing else is driving the loop. Everything else is identical to --play, so a difference in
@@ -3493,6 +3765,219 @@ static int btvollisten_probe(int secs) {
     catch (...) {}
     wd_disarm();
     clog_("btvollisten: unregistered");
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// ── --eqmeter : is the EQ actually in the audio path, and by how much does it move the level? ───
+//
+// This is the load-bearing question under "artificial volume steps on Bluetooth". Sony's AVRCP
+// step is 4 units of 127 (measured, both sinks), and there is no absolute-volume path on this
+// firmware (also measured), so the only way to subdivide a step is to attenuate at the SOURCE —
+// and the only source-side gain any Sony library exposes is the 10-band EQ, in half-dB units.
+//
+// A listening test is not enough to build on: "it sounded quieter" cannot tell 10 dB from 3 dB, and
+// the whole scheme depends on the EQ moving the level by the amount it claims. So the analyzer is
+// used as a METER. It reports per-band magnitudes off the live stream; a flat -10 dB EQ must show
+// up as a ~3.16x drop in every band. Anything much less means the EQ is not in the path being
+// measured, and the vernier idea dies here rather than after being built.
+//
+// Run with music playing. Prints flat / -10 dB / flat, so the restore is visible too.
+extern "C" int cinder_effects_set_eq(const signed char* bands, int n);
+extern "C" int cinder_effects_set_bt_audio_effect(int on);
+extern "C" int cinder_effects_is_bt_effect_on(void);
+
+static void eqm_set_flat_gain(int half_db) {
+    signed char bands[10];
+    for (int i = 0; i < 10; ++i) bands[i] = (signed char)half_db;
+    wd_arm(8);
+    int rc = cinder_effects_set_eq(bands, 10);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] eqmeter: EQ all bands = %d half-dB (%.1f dB) rc=%d\n",
+                 half_db, half_db / 2.0, rc);
+    std::fflush(nullptr);
+}
+
+// Mean of every band of every frame captured since `from`, as a double — one number that stands in
+// for "how loud is the stream right now".
+static double eqm_mean(int from, int* frames_out) {
+    const int to = cinder_analyzer_log_count();
+    int vals[24];
+    double sum = 0.0; long n = 0; int frames = 0;
+    for (int i = from; i < to; ++i) {
+        unsigned ts; int gen;
+        int nb = cinder_analyzer_log_get(i, &ts, &gen, vals, 24);
+        if (nb <= 0) continue;
+        frames++;
+        for (int b = 0; b < nb && b < 24; ++b) { sum += vals[b]; n++; }
+    }
+    if (frames_out) *frames_out = frames;
+    return n ? sum / (double)n : 0.0;
+}
+
+static int eqmeter_job() {
+    std::fprintf(stderr, "[cinder-probe] eqmeter: BtAudioSoundEffect on? %d\n",
+                 cinder_effects_is_bt_effect_on());
+    // Effects over A2DP are a switch of Sony's, and it is what puts the EQ in the Bluetooth path at
+    // all. Set it explicitly: measuring with it off would answer a different question.
+    wd_arm(8);
+    cinder_effects_set_bt_audio_effect(1);
+    wd_disarm();
+
+    wd_arm(12);
+    int rc = cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, 20.0f, 0);
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] eqmeter: analyzer start rc=%d\n", rc);
+    if (rc != 0) { clog_("eqmeter: no analyzer, no meter"); return 1; }
+
+    // Three phases, and the middle one is the measurement. The two flats either side are what makes
+    // it a measurement rather than an anecdote: music changes on its own, so a drop that does not
+    // come back when the EQ does is the music, not the EQ.
+    struct Phase { const char* name; int half_db; };
+    const Phase phases[] = {
+        { "flat (before)", 0 }, { "-10 dB", -20 }, { "flat (after)", 0 }, { "-5 dB", -10 },
+    };
+    double first_flat = 0.0;
+    for (const Phase& ph : phases) {
+        eqm_set_flat_gain(ph.half_db);
+        usleep(500000);                       // let the DSP settle before counting frames
+        int from = cinder_analyzer_log_count();
+        sleep(4);
+        int frames = 0;
+        double mean = eqm_mean(from, &frames);
+        double db = (first_flat > 0.0 && mean > 0.0) ? 20.0 * log10(mean / first_flat) : 0.0;
+        if (first_flat == 0.0) first_flat = mean;
+        std::fprintf(stderr, "[cinder-probe] eqmeter: %-14s frames=%-3d mean=%14.0f  %+6.1f dB vs first flat\n",
+                     ph.name, frames, mean, db);
+        std::fflush(nullptr);
+    }
+    // COST OF A TRIM. A volume vernier writes the whole 10-band EQ on every keypress, and a rocker
+    // repeats — so if one write costs tens of ms this has to be coalesced rather than applied per
+    // press. Measured here rather than assumed.
+    {
+        unsigned lo = 0xffffffffu, hi = 0, tot = 0;
+        for (int i = 0; i < 20; ++i) {
+            signed char bands[10];
+            for (int b = 0; b < 10; ++b) bands[b] = (signed char)(-(i % 4));
+            unsigned t0 = vl_now_ms();
+            wd_arm(8);
+            cinder_effects_set_eq(bands, 10);
+            wd_disarm();
+            unsigned dt = vl_now_ms() - t0;
+            if (dt < lo) lo = dt;
+            if (dt > hi) hi = dt;
+            tot += dt;
+        }
+        std::fprintf(stderr, "[cinder-probe] eqmeter: 10-band EQ write cost min=%ums avg=%ums max=%ums\n",
+                     lo, tot / 20, hi);
+        std::fflush(nullptr);
+    }
+    eqm_set_flat_gain(0);
+    wd_arm(8); cinder_analyzer_stop(); wd_disarm();
+    clog_("eqmeter: done, EQ restored flat. A -10 dB row near -10 dB means the EQ is in the metered "
+          "path and a source-side volume vernier is possible; near 0 means it is not.");
+    return 0;
+}
+
+static void eqmeter_job_entry() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) { clog_("eqmeter: pthread_create FAILED"); _exit(1); }
+    usleep(300000);
+    _exit(eqmeter_job());
+}
+
+static int eqmeter_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    std::fprintf(stderr, "[cinder-probe] eqmeter: StartForApplication returned %d\n", sr);
+    eqmeter_job_entry();
+    return 0; // unreachable
+}
+
+// ── --btvolabs : does THIS sink honour absolute volume, and how big is its step? ────────────────
+//
+// `SetCurrentVolume` was measured inert on 2026-08-26 — but on one sink (CMF Buds Pro 2), which is
+// not the same statement as "inert on this firmware". The distinction decides a feature: if a sink
+// takes absolute volume, Bluetooth has 128 real steps and nothing else needs building; if it does
+// not, the only way to subdivide its ~4-unit step is source-side attenuation.
+//
+// So: register the volume listener, then interleave RELATIVE steps (known to work, and their
+// notifications measure the sink's own step size) with ABSOLUTE writes to levels far from where the
+// sink is. Every notification is printed with the elapsed ms, so which call produced which report
+// is not a matter of interpretation. A sink that honours absolute answers the write within a few
+// hundred ms; one that does not stays silent while the steps either side of it report normally.
+static int btvolabs_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    void* x = _ZN3pst8services33BtTransmitterServiceClientFactory14CreateInstanceEv();
+    if (!x) { clog_("btvolabs: factory returned null"); g_pump_run = false; _exit(1); }
+    enum { VIDX_AddListener = 39, VIDX_RemoveListener = 40,
+           VIDX_SetVolumeUp = 17, VIDX_SetVolumeDown = 16,
+           VIDX_SetCurrentVolume = 34, VIDX_SetControlAbsoluteVolume = 31 };
+    typedef int  (*fnadd)(void*, void*, const std::string*);
+    typedef int  (*fnrem)(void*, unsigned);
+    typedef int  (*fn0)(void*);
+    typedef int  (*fnu8)(void*, const unsigned char*);
+    typedef void (*fnb)(void*, const bool*);
+    std::string key;
+    int rc = -1;
+    wd_arm(10);
+    try { rc = ((fnadd)vslot(x, VIDX_AddListener))(x, (void*)&g_vol_listener, &key); }
+    catch (...) { clog_("btvolabs: AddListener threw"); }
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] btvolabs: AddListener rc=%d\n", rc);
+    if (rc != 0) { g_pump_run = false; std::fflush(nullptr); _exit(1); }
+
+    // Absolute volume is documented (by Sony's own logging) as gated on this switch, so it is set
+    // explicitly rather than assumed: a NO here would make the whole test meaningless.
+    bool on = true;
+    wd_arm(8);
+    try { ((fnb)vslot(x, VIDX_SetControlAbsoluteVolume))(x, &on); } catch (...) {}
+    wd_disarm();
+
+    struct Step { const char* what; int slot; int val; };
+    const Step plan[] = {
+        { "relative UP   (baseline)", VIDX_SetVolumeUp,   -1 },
+        { "relative UP   (baseline)", VIDX_SetVolumeUp,   -1 },
+        { "ABSOLUTE 20",              VIDX_SetCurrentVolume, 20 },
+        { "ABSOLUTE 90",              VIDX_SetCurrentVolume, 90 },
+        { "ABSOLUTE 45",              VIDX_SetCurrentVolume, 45 },
+        { "relative DOWN (baseline)", VIDX_SetVolumeDown, -1 },
+        { "relative DOWN (baseline)", VIDX_SetVolumeDown, -1 },
+    };
+    for (const Step& st : plan) {
+        std::fprintf(stderr, "[cinder-probe] btvolabs: --- %s ---\n", st.what);
+        std::fflush(nullptr);
+        int r = -1;
+        wd_arm(8);
+        try {
+            if (st.val < 0) r = ((fn0)vslot(x, st.slot))(x);
+            else { unsigned char v = (unsigned char)st.val; r = ((fnu8)vslot(x, st.slot))(x, &v); }
+        } catch (...) { clog_("btvolabs: call threw"); }
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] btvolabs: rc=%d — waiting 2s for the sink to report\n", r);
+        std::fflush(nullptr);
+        sleep(2);
+    }
+    wd_arm(10);
+    try { ((fnrem)vslot(x, VIDX_RemoveListener))(x, (unsigned)(uintptr_t)&g_vol_listener); } catch (...) {}
+    wd_disarm();
+    clog_("btvolabs: done. A report after an ABSOLUTE line = this sink takes absolute volume; "
+          "reports only after the relative lines = it does not, and the gap between consecutive "
+          "relative reports IS its step size.");
     g_pump_run = false;
     std::fflush(nullptr);
     _exit(0);
@@ -7164,6 +7649,16 @@ int main(int argc, char** argv) {
         return btvolslot_probe(argc > 2 ? std::atoi(argv[2]) : 34,
                                argc > 3 ? std::atoi(argv[3]) : 40);
     }
+    if (argc > 1 && std::strcmp(argv[1], "--eqmeter") == 0) {
+        // Is the EQ in the audio path, and does it move the level by the dB it claims? Play music
+        // (over the route you care about) first.
+        return eqmeter_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--btvolabs") == 0) {
+        // Does the CONNECTED sink honour absolute volume, and what is its relative step? Connect
+        // headphones and play something first.
+        return btvolabs_probe();
+    }
     if (argc > 1 && std::strcmp(argv[1], "--btvol") == 0) {
         // No arg = sweep 20/60/100/40 absolute then three relative ups. An arg = that level once.
         return btvol_probe(argc > 2 ? std::atoi(argv[2]) : -1);
@@ -7205,6 +7700,11 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--analyzer") == 0) {
         int mode = argc > 2 ? std::atoi(argv[2]) : 1;
         return analyzer_probe(mode);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--vizlab") == 0) {
+        // Measures the analyzer: band ceiling, Q, detector window, emit rate, and whether the
+        // passband table can be swapped on a live stream. Play music first.
+        return vizlab_probe();
     }
     if (argc > 1 && std::strcmp(argv[1], "--discover") == 0) {
         // One-shot read-only device discovery → a report file you pull back. Inits PlayerService so

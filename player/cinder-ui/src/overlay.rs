@@ -46,6 +46,18 @@ pub const VOL_FRAMES: u8 = 96;
 
 /// Draw the volume HUD: a centered slab with a speaker icon, a level bar, and the step value.
 pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
+    volume_trimmed(c, t, f, level, 0)
+}
+
+/// The volume HUD, plus the Bluetooth fine-volume trim.
+///
+/// `trim_half_db` is the source-side attenuation the vernier is currently applying (<= 0, in
+/// half-dB units), and it is drawn as its own small readout rather than folded into the bar. It has
+/// to be visible SOMEWHERE: one AVRCP step is about a quarter of a unit on this 0..120 bar per fine
+/// press, which rounds to no movement at all, and a volume rocker that appears to miss three
+/// presses out of four is worse than a coarse one. So the bar keeps showing the sink's level and
+/// the trim says, exactly, how far below it the source is sitting.
+pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_half_db: i8) {
     // A slim pill just under the status bar, NOT a card in the middle of the screen.
     //
     // It used to be a 320x96 slab centred on the panel, parked over the focal point of the album
@@ -74,9 +86,22 @@ pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
     let vw = text::measure(f, &val, &vst);
     text::draw(c, f, (x0 + pill_w - 20) as f32 - vw, (mid + 5) as f32, &val, &vst);
 
+    // The trim, when there is one: "-1.5" in the same mono face, dimmer, immediately left of the
+    // level. Drawn before the bar is measured so the bar gives up the width rather than overlapping.
+    let trim_txt = if trim_half_db < 0 {
+        format!("-{}.{} dB", -trim_half_db / 2, if trim_half_db % 2 == 0 { 0 } else { 5 })
+    } else {
+        String::new()
+    };
+    let tst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.04);
+    let tw2 = if trim_txt.is_empty() { 0.0 } else { text::measure(f, &trim_txt, &tst) + 10.0 };
+    if !trim_txt.is_empty() {
+        text::draw(c, f, (x0 + pill_w - 20) as f32 - vw - tw2, (mid + 4) as f32, &trim_txt, &tst);
+    }
+
     // Level bar fills the space between the icon and the number.
     let bx = x0 + 48;
-    let bw = (x0 + pill_w - 32) - bx - vw as i32;
+    let bw = (x0 + pill_w - 32) - bx - vw as i32 - tw2 as i32;
     let bh = 4;
     let by = mid - bh / 2;
     if bw > 8 {

@@ -71,6 +71,7 @@ fn main() {
         viz_kind: 0,
         viz_size: 1, page: 0,
         viz_levels: None,
+        viz_peaks: None,
         scrubbing: false,
     };
     let lk = lock::Lock {
@@ -304,7 +305,7 @@ fn main() {
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { night: theme.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { night: theme.night, viz_name: "BARS · VEIL", usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber })),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
             // The shuffle band's caption has to follow the filter — shuffling a filtered list
@@ -455,7 +456,7 @@ fn main() {
                             (cinder_ui::confirm::Ask::PowerOff, "poweroff")] {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
-                &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
+                &settings::SettingsView { night: false, viz_name: "BARS · VEIL",
                     usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
@@ -470,7 +471,7 @@ fn main() {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_BRIGHTNESS,
                 settings::max_scroll_px() / 2,
-                &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL",
+                &settings::SettingsView { night: false, viz_name: "BARS · VEIL",
                     usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
@@ -584,6 +585,39 @@ fn main() {
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, &format!("viz_kind_{kind}_{}", cinder_ui::viz::name(kind).to_lowercase()));
         }
+        // Settings ▸ Visualiser, the screen that owns all of the above. Three shots: the default
+        // state, the same screen with peak markers and a fixed scale (the two settings that change
+        // what the preview DRAWS rather than only what it says), and the no-signal state, which has
+        // to admit the preview is synthetic rather than quietly animating.
+        {
+            let peaks: Vec<f32> = levels.iter().map(|v| (v + 0.18).min(1.0)).collect();
+            let shots: [(&str, cinder_ui::vizset::VizSet, usize); 3] = [
+                ("vizset_default", cinder_ui::vizset::VizSet {
+                    style: "BARS", cover: "VEIL", scale: "DYNAMIC", range: "60 DB",
+                    response: "NORMAL", curve: "SMOOTH", peaks: false, window: "AUTO", rate: "20 HZ",
+                    levels: Some(&levels), peak_marks: None, seed: 2.0,
+                    kind: cinder_ui::viz::VizKind::Bars,
+                }, cinder_ui::vizset::ROW_STYLE),
+                ("vizset_peaks_fixed", cinder_ui::vizset::VizSet {
+                    style: "SEGMENTS", cover: "FULL", scale: "FIXED", range: "48 DB",
+                    response: "FAST", curve: "LINEAR", peaks: true, window: "125 MS", rate: "45 HZ",
+                    levels: Some(&levels), peak_marks: Some(&peaks), seed: 2.0,
+                    kind: cinder_ui::viz::VizKind::Segments,
+                }, cinder_ui::vizset::ROW_PEAKS),
+                ("vizset_no_signal", cinder_ui::vizset::VizSet {
+                    style: "RIBBON", cover: "OFF", scale: "DYNAMIC", range: "72 DB",
+                    response: "SMOOTH", curve: "SMOOTH", peaks: false, window: "60 MS", rate: "30 HZ",
+                    levels: None, peak_marks: None, seed: 2.0,
+                    kind: cinder_ui::viz::VizKind::Ribbon,
+                }, cinder_ui::vizset::ROW_RATE),
+            ];
+            for (name, vs, sel) in shots {
+                let mut c = Canvas::new();
+                cinder_ui::vizset::render(&mut c, &theme, &fonts, &vs, sel);
+                cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+                save(&c, name);
+            }
+        }
         // The three low-ink styles again at BELOW ART, where the band is only 16px — a style that
         // needs height to read would fall apart there and that has to be visible, not assumed.
         for kind in [1u8, 2, 7] {
@@ -610,7 +644,7 @@ fn main() {
 
         let mut c = Canvas::new();
         settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
-            &settings::SettingsView { night: false, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: false,
+            &settings::SettingsView { night: false, viz_name: "BARS · VEIL", usb_dac: false,
                 battery_care: true, device: "99% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
                 screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: a });
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);

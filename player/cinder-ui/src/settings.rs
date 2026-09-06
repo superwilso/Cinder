@@ -13,53 +13,60 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 20;
-/// The actionable rows: Theme / Accent / UI scale / Visualiser / Visualiser animation / Sleep
-/// timer (DISPLAY) + Battery care (SYSTEM).
+pub const ROWS: usize = 19;
+/// The actionable rows: Theme / Accent / UI scale / Visualiser / Sleep timer (DISPLAY) +
+/// Battery care (SYSTEM).
 pub const ROW_THEME: usize = 0;
 /// Accent colour — six swatches, tap one directly (Select cycles).
 pub const ROW_ACCENT: usize = 1;
 /// UI text scale — a real slider (tap a stop, or drag it). See `ui_scale_idx_at`.
 pub const ROW_UI_SCALE: usize = 2;
+/// Visualiser — a CHEVRON into its own screen (`vizset`), not a control in place.
+///
+/// This was two rows, "Visualiser style" and "Cover visualiser", and they were the only two things
+/// about the analyser a user could change. Everything else — how magnitudes map to bar height, the
+/// dB window, how fast the bars chase the audio, whether peaks are marked, the analyzer's own
+/// averaging window and frame rate — was a constant in the source. Nine controls do not belong in
+/// a scrolling list of unrelated preferences, and they especially do not belong somewhere you
+/// cannot see what they do: the screen they moved to has a live preview at the top.
 pub const ROW_VIZ: usize = 3;
-pub const ROW_VIZ_ANIM: usize = 4;
-pub const ROW_SLEEP: usize = 5;
-pub const ROW_SCREEN_OFF: usize = 6;
-pub const ROW_BRIGHTNESS: usize = 7;
+pub const ROW_SLEEP: usize = 4;
+pub const ROW_SCREEN_OFF: usize = 5;
+pub const ROW_BRIGHTNESS: usize = 6;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
 /// of behaviour that has to be asked for.
-pub const ROW_AUTO_OFF: usize = 8;
-pub const ROW_STORAGE: usize = 9;
-pub const ROW_DATABASE: usize = 10;
-pub const ROW_BATTERY: usize = 11;
+pub const ROW_AUTO_OFF: usize = 7;
+pub const ROW_STORAGE: usize = 8;
+pub const ROW_DATABASE: usize = 9;
+pub const ROW_BATTERY: usize = 10;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 12;
-pub const ROW_USB_MODE: usize = 13; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 11;
+pub const ROW_USB_MODE: usize = 12; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 14;
+pub const ROW_BOOT_STOCK: usize = 13;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 15;
-pub const ROW_POWER_OFF: usize = 16;
+pub const ROW_RESTART: usize = 14;
+pub const ROW_POWER_OFF: usize = 15;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 17;
+pub const ROW_RESET: usize = 16;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 18;
-pub const ROW_MODEL: usize = 19;
+pub const ROW_FIRMWARE: usize = 17;
+pub const ROW_MODEL: usize = 18;
 
 const RH: i32 = 56;
 /// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
 /// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [8, 10, 2];
+const SECTIONS: [usize; 3] = [7, 10, 2];
 
 /// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
 /// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
@@ -82,9 +89,10 @@ pub const FIRMWARE_LABEL: &str = "CINDER 1.0 · RUST";
 /// Current settings values to display.
 pub struct SettingsView<'a> {
     pub night: bool,
+    /// The Visualiser row's value: style and cover size in one line, since the row is now a
+    /// chevron into the screen that owns both.
     pub viz_name: &'a str,
     /// Visualiser size label: OFF / EDGE / FLOOR / VEIL / FULL.
-    pub viz_size_label: &'a str,
     pub usb_dac: bool,
     pub battery_care: bool,
     /// One-line summary for the Device row, e.g. "99% · 34.4 °C". Formatted by `nav` with the same
@@ -326,15 +334,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     // can drift out of step with the render.
     y = slider_row(c, t, f, y, sel == ROW_UI_SCALE, "UI scale");
 
-    // Rows 3-4: the two visualiser axes. ROW_VIZ picks the STYLE (used by the cover overlay AND
-    // by the Now Playing spectrum page); ROW_VIZ_ANIM picks how much of the COVER it takes, where
-    // OFF means a completely clean cover.
-    y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser style", v.viz_name, false);
-    // "Cover visualiser", not "Visualiser": this row governs ONLY what is drawn on the cover
-    // page. The spectrum and level pages are pages — you reach them by swiping, and they are not
-    // affected by this. Calling it "Visualiser · OFF" would promise to switch off a feature that
-    // is still one swipe away, which is the kind of label that teaches you not to trust the rest.
-    y = srow(c, t, f, y, sel == ROW_VIZ_ANIM, "Cover visualiser", v.viz_size_label, false);
+    // Row 3: the visualiser, as one chevron. The value carries the two facts the old pair of rows
+    // showed — which style, and how much of the cover it takes — so the row still answers the
+    // question without being opened.
+    y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser", v.viz_name, true);
     // Row 3: Sleep timer (live) — pauses playback after N min. Shows the live remaining when running.
     y = srow(c, t, f, y, sel == ROW_SLEEP, "Sleep timer", v.sleep, false);
     // Row 4: idle screen-off (live). Defaults to OFF, so the panel never blanks on its own unless
@@ -394,8 +397,7 @@ mod tests {
     fn view<'a>(accent: Accent) -> SettingsView<'a> {
         SettingsView {
             night: false,
-            viz_name: "Bars",
-            viz_size_label: "VEIL",
+            viz_name: "BARS · VEIL",
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",

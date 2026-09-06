@@ -128,6 +128,7 @@ fn main() {
     let fonts = FontSet::load();
     let mut canvas = Canvas::new();
     let np = NowPlaying {
+        viz_peaks: None,
         title: "Atlas Hands",
         artist: "Benjamin Francis Leftwich",
         codec: "FLAC · 24bit / 96.0 kHz",
