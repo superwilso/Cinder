@@ -15,7 +15,25 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 
-const HEADER: &str = "#AUDIOSCROBBLER/1.1\n#TZ/UTC\n";
+// #TZ/UNKNOWN, NOT #TZ/UTC — AND THAT IS A BUG FIX, NOT A PREFERENCE. The AS/1.1 spec gives the
+// two headers different meanings: `UTC` asserts "the device knows its timezone and has already
+// converted", while `UNKNOWN` says "the device knows the time but not the zone, so the PC-side
+// uploader must apply its own timezone".
+//
+// This device is the second case and has no way of being the first. There is no timezone setting
+// anywhere in Cinder, and `clockset::epoch_from_fields` builds the epoch as
+// `days_from_civil(y,m,d)*86400 + h*3600 + …` — i.e. it takes the wall-clock time the user typed
+// and treats it AS IF it were UTC. So the numbers in this log are local time wearing a UTC label,
+// and declaring `#TZ/UTC` told every uploader not to correct them. Result: every scrobble landed
+// offset by the user's UTC offset (reported 2026-09-06 as "the scrobble time clock is wrong").
+//
+// `unknown321/scrobbler`, written for this exact hardware, declares `#TZ/UNKNOWN` for the same
+// reason — see `audioscrobbler.go`. Matching it is the fix.
+//
+// NOTE this only affects logs written from EMPTY: `append` writes the header once, and only when
+// the file has zero length, so an existing `.scrobbler.log` keeps whatever header it already has.
+// Upload and clear the old file to get the corrected one.
+const HEADER: &str = "#AUDIOSCROBBLER/1.1\n#TZ/UNKNOWN\n";
 
 /// Metadata for the track being timed (owned; sanitised at format time).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -98,13 +116,25 @@ impl Scrobbler {
     /// The now-playing track changed (or first track). Finalises the previous track if it was
     /// listened-but-not-yet-logged, then starts timing the new one. `now_unix` = current time.
     pub fn set_track(&mut self, track: Track, now_unix: u64) {
+        // A NO-OP RE-SET OF THE IDENTICAL TRACK IS IGNORED HERE, not just at the call site. The
+        // comment below used to claim this and the code did not do it — the guard lived only in
+        // `cinder_render_tick`, which checks `is_current` before calling. That worked, but it made
+        // a correctness property of THIS type depend on every caller remembering it, and the cost
+        // of forgetting is a duplicate scrobble rather than a visible bug.
+        //
+        // Why a duplicate is possible at all: a re-set restarts the play clock at zero AND clears
+        // `logged`, so a track that has already been written can qualify a second time if it is
+        // long enough to cross the threshold twice (threshold is `min(len/2, 240)`, so anything
+        // over ~8 minutes has the room). Making the no-op explicit closes that off at the source.
+        if self.is_current(&track) {
+            return;
+        }
         if let Some(p) = self.cur.take() {
             if !p.logged && is_listened(p.track.length_s, (p.played_ms / 1000) as u32) {
                 let line = format_line(&p.track, "L", p.start_unix);
                 let _ = self.append(&line);
             }
         }
-        // ignore a no-op re-set of the identical track (avoid resetting the clock on re-poll)
         self.cur = Some(Pending { track, start_unix: now_unix, played_ms: 0, logged: false });
     }
 
@@ -191,7 +221,8 @@ mod tests {
         assert!(std::fs::read_to_string(&path).is_err() || !std::fs::read_to_string(&path).unwrap().contains("Atlas"));
         s.tick_ms(true, 1000); // 30s == half of 60 → listened, logged immediately
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.starts_with("#AUDIOSCROBBLER/1.1\n#TZ/UTC\n#CLIENT/Cinder NW-A55 0.1\n"));
+        // UNKNOWN, not UTC: the device has no timezone, so the PC-side uploader must apply one.
+        assert!(body.starts_with("#AUDIOSCROBBLER/1.1\n#TZ/UNKNOWN\n#CLIENT/Cinder NW-A55 0.1\n"));
         assert!(body.contains("Atlas Hands\t1\t60\tL\t1000\t"));
         // a second tick must not double-log
         s.tick_ms(true, 1000);

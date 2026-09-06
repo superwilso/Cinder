@@ -496,10 +496,17 @@ void cinder_set_bt_volume(int level);
  * shows. */
 void cinder_set_bt_route(int on);
 int  cinder_get_bt_route(void);
-/* Does the visualiser want the analyzer streaming?1 when it is enabled, Now Playing is showing,
+/* Does the visualiser want the analyzer streaming? 1 when it is enabled, Now Playing is showing,
  * and audio is actually playing. The shell polls this and starts/stops Sony's AudioAnalyzerService
- * to match, so the FFT only runs while its output is visible. */
+ * to match, so the filter bank only runs while its output is visible. */
 int  cinder_viz_wants_analyzer(void);
+/* The analyzer settings the user picked on Settings ▸ Visualiser: the emit rate in Hz, and the
+ * detector's averaging window in MILLISECONDS (0 = leave the service's own default). The shell
+ * passes both to cinder_analyzer_start — converting the window to samples, because the sample rate
+ * belongs to the stream and only the shell knows one — and restarts the stream when either
+ * changes, since the service reads them at Start. */
+int  cinder_viz_analyzer_rate_hz(void);
+int  cinder_viz_analyzer_window_ms(void);
 /* Is night theme active? (1/0). Call after a CINDER_ACT_THEME_CHANGED action (and at boot) to set
  * the panel backlight — night = minimal light. */
 int  cinder_get_night(void);

@@ -675,14 +675,50 @@ void apply_volume();        // defined below (volume backend); writes the UI lev
 // Conditions, all required: the panel is ON, the user hasn't disabled the visualiser, Now Playing
 // is the current screen, and audio is actually playing. Anything else stops the stream. Guarded,
 // because Start/Stop are Sony-service calls; failure just means no visualiser.
+//
+// The emit rate and the detector window are now the user's (Settings ▸ Visualiser), so this also
+// watches them and restarts the stream when either changes. A restart, rather than a live poke:
+// SetUpdateRate is only read when the monitor thread starts, and the window has to be handed over
+// in SAMPLES, which means the two are set together or not at all.
+// Start arguments for the guarded lambda below. File scope because run_guarded's callback is a
+// bare function pointer; written immediately before the call that reads them, on the pump thread.
+float    g_an_rate_hz = 20.0f;
+unsigned g_an_window  = 0;
+
 void viz_analyzer_tick() {
     bool want = g_screen_on && viz_analyzer_enabled() && cinder_viz_wants_analyzer();
     bool running = cinder_analyzer_is_running() != 0;
-    if (want == running) return;
+
+    // The window arrives in MILLISECONDS because only this side knows a sample rate. 44100 is the
+    // rate this player is overwhelmingly fed; being one step out on a 48k track costs a few
+    // percent of an averaging window, which is not something an eye can see on a bar display.
+    static const unsigned kAssumedRate = 44100;
+    const int   rate_hz   = cinder_viz_analyzer_rate_hz();
+    const int   window_ms = cinder_viz_analyzer_window_ms();
+    const unsigned window_samples =
+        window_ms > 0 ? static_cast<unsigned>(window_ms) * kAssumedRate / 1000u : 0u;
+    static int      s_rate = 0;
+    static unsigned s_window = 0;
+    const bool params_changed = running && (rate_hz != s_rate || window_samples != s_window);
+
+    if (want == running && !params_changed) return;
+    if (params_changed) {
+        // Stop first; the start below re-applies both. Two guarded calls rather than one, because
+        // a hang in Stop() must not be attributed to Start().
+        run_guarded("viz: analyzer restart (settings)", 6, []() { cinder_analyzer_stop(); });
+        running = false;
+    }
     if (want) {
-        run_guarded("viz: analyzer start", 10,
-                    []() { cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, 20.0f, 0); });
-    } else {
+        // run_guarded takes a plain function pointer (it siglongjmps out of the call, so a capturing
+        // closure has nothing safe to unwind), hence the two statics rather than a capture.
+        g_an_rate_hz = static_cast<float>(rate_hz);
+        g_an_window  = window_samples;
+        run_guarded("viz: analyzer start", 10, []() {
+            cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, g_an_rate_hz, g_an_window);
+        });
+        s_rate = rate_hz;
+        s_window = window_samples;
+    } else if (running) {
         run_guarded("viz: analyzer stop", 6, []() { cinder_analyzer_stop(); });
     }
 }
@@ -870,8 +906,37 @@ void deferred_up() {
             clog_(rr == 1 ? "deferred_up: resume — context restored (plays on the first press)"
                           : "deferred_up: resume — nothing saved");
         });
-        clog_("deferred_up: cinder_scrobble_open(/contents/.scrobbler.log)");
-        cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
+        // ESCAPE HATCH, BECAUSE THIS DEVICE CAN HAVE TWO SCROBBLERS. `unknown321/scrobbler`
+        // installs as a BOOT SERVICE (`/init.scrobbler.rc`, imported by `/init.rc`) and writes
+        // `/data/mnt/internal/.scrobbler.log` — which is the same file as
+        // `/contents/.scrobbler.log`, the same volume by another mount path. With both running,
+        // one play is written twice and the upload produces duplicate scrobbles. Confirmed on
+        // device 2026-09-06: pid 291 `/system/vendor/unknown321/bin/scrobbler` alive alongside us,
+        // both logs identical in size and mtime.
+        //
+        // THE BETTER FIX IS THEIR UNINSTALLER, not this flag: it removes a whole process and its
+        // wakeups, where this only silences ours. `nw-a50.uninstaller.tar.gz` from
+        // github.com/unknown321/scrobbler/releases (v1.0.6.4) is a .UPG whose script was read
+        // before recommending it — it is surgical and cannot touch Cinder:
+        //
+        //   rm -f /system/vendor/unknown321//bin/scrobbler
+        //   sed -i "/import init.scrobbler.rc/d" <initrd>/init.rc
+        //   rm -f <initrd>/init.scrobbler.rc
+        //
+        // No `rm -rf` of the shared vendor directory (which also holds cinder-home, the setuid
+        // helpers and the launcher), and Cinder has no init.rc hook to lose — appmgr launches it
+        // (`hagodaemon appmgrservice sub_sm` -> cinderhome-launch.sh), not init.
+        //
+        // This flag remains for the case where the user wants to keep their scrobbler as-is:
+        // ours cannot simply win, because theirs lives in the boot image and stopping it needs root
+        // (`ctl.stop` is refused for uid system, the same refusal the USB-MSC path documents), so
+        // this is the half that is cheap to disable.
+        if (::access("/contents/cinder_no_scrobble", F_OK) == 0) {
+            clog_("scrobble: disabled (/contents/cinder_no_scrobble) — leaving the log to the other scrobbler");
+        } else {
+            clog_("deferred_up: cinder_scrobble_open(/contents/.scrobbler.log)");
+            cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
+        }
         g_resume_ready = true;
     }
     // THE FRAMEWORK PUMP — must come BEFORE cinder_audio_init. Sony's PlayerService client is
@@ -7137,6 +7202,31 @@ void enter_usb_msc() {
     //    function already runs under carry_out's "enter USB MSC" guard, which covers the IPC.
     set_transport(false);
     cinder_audio_release_sequence();
+    // ...AND CLOSE THE SERVICE-SIDE PLAYER. Dropping our own `g_seq`/`g_nts` handles is not the
+    // same thing: MediaStoreService keeps the track file itself OPEN under /contents after a stop,
+    // and one open fd there is all it takes for the umount below to fail EBUSY. Measured on device
+    // 2026-09-06 with playback stopped and every PCM `closed`:
+    //
+    //   FD 314 MediaStoreServi -> /contents/MUSIC/.../05 - ... .flac
+    //
+    // — held indefinitely, so entering USB-MSC failed every time with
+    // "/contents will not unmount cleanly (errno=16)" and the on-screen mode simply bounced back.
+    //
+    // BOTH SIBLING HANDOVERS ALREADY DO THIS and say why. usb-dac: "Pause is NOT enough (same
+    // lesson as USB-MSC, one layer down): a paused PlayerService still owns the track. Stop + drop
+    // the pinned sequence, then ClosePlayer". fm: "close_player releases it... the same thing the
+    // USB-MSC handover does for the same reason." That last line was simply not true — this path
+    // was the one place the third step was missing, and both comments cross-referenced it as if it
+    // were there.
+    //
+    // Safe because it is exactly what those two do: playback comes back through the normal play
+    // path, which issues a fresh SetTrackSequence, and the exit below re-inits the controller.
+    const int msc_cp = cinder_audio_close_player();
+    {
+        char m[96];
+        std::snprintf(m, sizeof m, "usb-msc: released the player so /contents can unmount (ClosePlayer rc=%d)", msc_cp);
+        clog_(m);
+    }
     (void)chdir("/");
     // 2) move our log fds (1+2 ARE /contents/cinderhome.log via the launcher redirect). A failure
     //    here falls back to /dev/null rather than leaving them on /contents — see redirect_fds; an
@@ -7224,6 +7314,10 @@ void exit_usb_msc() {
     // The PC may have rewritten anything under /contents while it held the volume, so any config
     // we cache from there is now suspect. Only cinder_viz.conf is cached; drop it.
     viz_conf_invalidate();
+    // The player was released on the way in (see the ClosePlayer there); re-init so the next play
+    // has a controller to talk to. Same shape as the FM handover's exit, and unconditional: it must
+    // happen whether or not /contents came back, or a failed remount would also cost audio.
+    cinder_audio_init("cinder");
     if (contents_mounted()) {
         clog_("usb-msc: exited (/contents remounted; log restored)");
         cinder_db_open("/db/MTPDB.dat");
@@ -10067,10 +10161,26 @@ void* render_driver(void*) {
                 // stream) and needs nothing for file playback. So the platform's own lock is the
                 // interlock: stage 1 runs, stage 2 cannot complete while audio is open.
                 //
-                // STILL OFF BY DEFAULT. Everything above is read from evidence rather than measured
-                // as a battery number, and the failure mode is "the music stops", which is the one
-                // thing this device must not do. Verify off-cable — `dpidle_cnt` must climb AND the
-                // music must still be playing — before this becomes the default.
+                // MEASURED 2026-09-06, OFF-CABLE, AND THE ANSWER IS NO. Two runs, same boot, same
+                // 60 s threshold, ~3 minutes each:
+                //
+                //   Run A  screen off, NOTHING playing   dpidle_cnt 0 -> 22,184
+                //   Run B  screen off, playing the jack  dpidle_cnt 0 -> 0      (by_clk blocking)
+                //
+                // So the SoC does NOT reach deep idle while a stream is open, no matter what the
+                // early-suspend flag says: `by_vtg` opens exactly as designed and a CLOCK condition
+                // takes over as the blocker. The audio path holds a clock up for the whole track,
+                // and no amount of early suspend changes that. The premise this flag was built on —
+                // "usually it is just the DAC that needs to be powered" — is not true of this SoC.
+                //
+                // WHAT IT DID PROVE: early suspend during playback is SAFE off-cable. 205 s of it
+                // while playing down the jack, and the music never stopped — confirming
+                // RE_early_suspend.md's on-cable finding on battery too.
+                //
+                // KEPT, OFF BY DEFAULT, for the one question it can still answer: the chain also
+                // runs mtkfb, emifreq, cpufreq and hotplug handlers, and whether THOSE are worth
+                // anything during playback has never been measured. That is a battery A/B, not a
+                // counter read. Nobody should enable this expecting deep idle.
                 static const bool suspend_while_playing =
                     access("/contents/cinder_suspend_playing", F_OK) == 0;
                 const bool on_jack_now = cinder_get_bt_route() == 0;

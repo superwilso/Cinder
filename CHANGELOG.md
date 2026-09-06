@@ -16,6 +16,94 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **USB mass-storage mode refused to start once anything had been played.** *device-verified —
+  entered and exited cleanly on the first try after the fix.*
+
+  Sony's `MediaStoreService` keeps the track file open under `/contents` after playback stops, and
+  one open fd there is all it takes for the unmount to fail `EBUSY`. Measured with every PCM
+  `closed` and the codec in standby: `FD 314 MediaStoreServi -> /contents/MUSIC/.../05 - ….flac`,
+  held indefinitely. The mode bounced straight back with
+  `/contents will not unmount cleanly (errno=16)`.
+
+  The handover needs three steps and USB-MSC only did two: `set_transport(false)` and
+  `cinder_audio_release_sequence()`, but **not `cinder_audio_close_player()`**. Releasing our own
+  handles is not the same as releasing the service-side player. Both sibling handovers already did
+  all three *and cross-referenced this one as if it did too* — usb-dac: *"same lesson as USB-MSC,
+  one layer down"*; fm: *"the same thing the USB-MSC handover does for the same reason"*. That was
+  simply not true; this path was the one place the third step was missing. Exit now re-inits the
+  controller unconditionally, so a failed remount cannot also cost audio.
+
+- **Every scrobble was timestamped an hour out** (or by whatever the local UTC offset is).
+  *device-verified.*
+
+  The log declared `#TZ/UTC`, which the AS/1.1 spec defines as *"the device knows what timezone it
+  is in and has already converted"*. This device cannot: there is no timezone setting anywhere in
+  Cinder, and `clockset::epoch_from_fields` builds the epoch as `days_from_civil(y,m,d)*86400 +
+  h*3600 + …` — it takes the wall-clock time typed on the Clock Set screen and treats it **as if it
+  were UTC**. Measured: the device reports `Sun Sep 6 19:11:38 UTC` when true UTC is `18:12:36` —
+  **+59 minutes**, exactly the BST offset — so scrobbles landed an hour in the future.
+
+  Now `#TZ/UNKNOWN`, the spec's *"knows the time but not the zone; the PC-side uploader adjusts"*,
+  which is what `unknown321/scrobbler` declares for this same hardware. Only affects logs written
+  from empty — the header is written once, when the file has zero length — so upload and clear the
+  existing `.scrobbler.log` to get the corrected one.
+
+- **`Scrobbler::set_track` now ignores a no-op re-set of the identical track**, which its own
+  comment already claimed. The guard lived only in `cinder_render_tick`; that worked, but it made a
+  property of the type depend on every caller remembering it, and the cost of forgetting is a
+  duplicate scrobble — a re-set restarts the play clock and clears `logged`, so a track over ~8
+  minutes has room to cross the threshold twice.
+
+### Added
+
+- **`/contents/cinder_no_scrobble`** stands Cinder's built-in scrobbler down.
+
+  This device can have **two** scrobblers. `unknown321/scrobbler` installs as a boot service
+  (`/init.scrobbler.rc`, imported by `/init.rc`) and writes `/data/mnt/internal/.scrobbler.log` —
+  the same file as `/contents/.scrobbler.log`, the same volume by another mount path. With both
+  alive one play is written twice and the upload produces duplicates. Confirmed on device
+  2026-09-06: pid 291 running alongside us, both paths identical in size and mtime.
+
+  **The better fix is their uninstaller**, which removes a whole process and its wakeups rather
+  than just silencing ours: `nw-a50.uninstaller.tar.gz` from
+  `github.com/unknown321/scrobbler/releases` (v1.0.6.4). Its script was extracted with `upgtool`
+  and read before recommending it — `rm -f /system/vendor/unknown321//bin/scrobbler`, delete the
+  `import init.scrobbler.rc` line, delete that rc file. No `rm -rf` of the shared vendor directory
+  (which also holds `cinder-home`, the setuid helpers and the launcher), and Cinder has no init.rc
+  hook to lose: appmgr launches it (`hagodaemon appmgrservice sub_sm` → `cinderhome-launch.sh`),
+  not init. So it cannot remove or break Cinder.
+
+  This flag remains for anyone who would rather keep their existing scrobbler: ours cannot simply
+  win — theirs is in the boot image and stopping it needs root (`ctl.stop` is refused for uid
+  system, the same refusal the USB-MSC path documents) — so this disables the half that is cheap
+  to disable.
+
+### Changed
+
+- **Stage-1 early suspend during jack playback: measured, and it does NOT reach deep idle.**
+  The `/contents/cinder_suspend_playing` flag stays, off by default, with its rationale corrected.
+
+  Two off-cable runs, same boot, same 60 s threshold, ~3 minutes each:
+
+  | run | state | `dpidle_cnt` |
+  |---|---|---:|
+  | A | screen off, nothing playing | 0 → **22,184** |
+  | B | screen off, playing the jack | 0 → **0** |
+
+  `by_vtg` opens exactly as designed and a **clock** condition takes over as the blocker: the audio
+  path holds a clock up for the whole track, and no amount of early suspend changes that. The
+  premise the flag was built on — *"usually it is just the DAC that needs to be powered"* — is not
+  true of this SoC.
+
+  It did prove one thing: **early suspend during playback is safe off-cable.** 205 s of it while
+  playing down the jack and the music never stopped, confirming `RE_early_suspend.md`'s on-cable
+  finding on battery too. The flag is kept only for the question it can still answer — the chain
+  also runs the mtkfb, emifreq, cpufreq and hotplug handlers, and whether those are worth anything
+  during playback needs a battery A/B rather than a counter read.
+
+
 ### Added
 
 - **Opt-in: stage-1 early suspend may now also fire while music plays down the 3.5 mm jack**

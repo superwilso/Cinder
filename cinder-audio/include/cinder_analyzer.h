@@ -52,6 +52,44 @@ int  cinder_analyzer_is_running(void);
  * number of spectrum frames received so far. 0 after start succeeded => the mode is wrong or no
  * audio is playing. */
 int  cinder_analyzer_frames(void);
+/* One analysis band, as Sony's service takes it: `hz` is the band's CENTRE frequency and `q` is
+ * its quality factor (Sony calls the field `mean`; RE of SpectrumAnalyzer::UpdateCoefSet shows it
+ * is used as alpha = tan(pi*f/fs) / q, which is exactly the RBJ bandpass alpha = sin(w0)/(2Q) in
+ * the small-angle limit — so it IS Q, and a bigger number is a NARROWER filter).
+ *
+ * Sony's stock player passes q = 456, i.e. filters roughly 1/300 octave wide: twelve needles with
+ * gaps between them, which is why the reported magnitudes jump three decades between frames. An
+ * octave-wide band (the width a 12-band display implies) is q ~= 1.4.
+ *
+ * A band at or above fs/2 gets its coefficients ZEROED by the service and reads 0 for ever, so
+ * anything above ~20 kHz is a dead column at 44.1/48 kHz. */
+typedef struct { int hz; float q; } cinder_passband_t;
+
+/* Install the passband table. Safe before start (stored and applied at start) and while running
+ * (pushed to the service immediately, which recomputes the filter coefficients in place).
+ * Returns 0 on success, -2 if SetPassband was not resolvable, -3 with no service instance.
+ *
+ * SONY CAPS THE ANALYZER AT 12 ACTIVE BANDS and there is no call that raises it: the service's
+ * SpectrumAnalyzer builds ceil(12/5) = 3 level-detector objects ONCE, in its constructor, from a
+ * hardcoded 12-entry default list, and SetPassband only re-assigns the vector — entries past the
+ * 12th are never given a detector and are silently ignored. Passing more is harmless but useless.
+ * Each call bumps the generation counter reported by cinder_analyzer_log_get, so a caller that
+ * alternates two tables can tell which table a frame belongs to. */
+int  cinder_analyzer_set_bands(const cinder_passband_t *bands, int n);
+
+/* Set the detector window (SetCalcSamples) while running; 0 is ignored. This is the analyzer's
+ * averaging time — the equivalent of a desktop analyser's "time window". */
+int  cinder_analyzer_set_window(unsigned calc_samples);
+
+/* ── Frame log (diagnostics; cinder-probe --vizlab) ────────────────────────────────────────────
+ * A ring of the most recent frames with arrival timestamps and the passband generation that was
+ * current when each arrived. This is what makes band placement, Q, window and update rate
+ * MEASURABLE on device instead of guessed: the timestamps give the true emit rate, and the
+ * generation tag says how many frames after a SetPassband are still filter transients. */
+int  cinder_analyzer_log_count(void);              /* frames captured since the last reset */
+int  cinder_analyzer_log_get(int idx, unsigned *ts_ms, int *gen, int *vals, int max);
+void cinder_analyzer_log_reset(void);
+
 /* Copy up to min(max,16) raw band values from the MOST RECENT frame into `out`; returns that
  * frame's true band count (n). Lets the probe print Sony's actual range/units so spectrum::from_bands
  * can be calibrated (dB-style vs linear). */

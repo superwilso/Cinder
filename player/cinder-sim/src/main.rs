@@ -344,6 +344,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             clock: "14:32", big_clock: "23:41", title: SONGS[i].t, artist: SONGS[i].a, badge, battery: 78, progress: 0.39,
         }),
         Screen::NowPlaying => now_playing::render(c, theme, fonts, &now_playing::NowPlaying {
+            viz_peaks: None,
             title: SONGS[i].t, artist: SONGS[i].a, codec, badge, clock: "14:32", battery: 78,
             elapsed: "1:47", remaining: "-2:45", progress: 0.39, art: SONGS[i].art, art_full: None, art_thumb: None, liked: app.liked, playing: app.playing,
             shuffle: app.shuffle, repeat: app.repeat, viz_seed: 2.0, viz_kind: 0, viz_size: 1, page: 0, viz_levels: None, scrubbing: false,
@@ -386,7 +387,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             source_direct: false, tone_control: false,
         }, 0, 0),
         Screen::Settings => settings::render(c, theme, fonts, 0, 0,
-            &settings::SettingsView { night: app.night, viz_name: "Bars", viz_size_label: "VEIL", usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: app.accent }),
+            &settings::SettingsView { night: app.night, viz_name: "BARS · VEIL", usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: app.accent }),
         Screen::Bluetooth => bluetooth::render(c, theme, fonts, &Bt {
             on: app.bt_on,
             connected: app.bt_conn.map(|r| PAIRED[r].name),
