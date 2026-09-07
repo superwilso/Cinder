@@ -889,6 +889,10 @@ fn settings_body(r: &Render) -> String {
     // are exactly the lines someone tuning the display over adb will want to edit by hand — and
     // every one is an INDEX into a table owned by `cinder_ui::vizcfg`, so an out-of-range value
     // from a hand-edited file is wrapped by the setter rather than accepted.
+    // The Bluetooth fine-volume SPAN, not the trim: the trim is a live attenuation the user cannot
+    // see in any menu, and restoring one at boot would be a device that plays quiet for reasons
+    // nothing on screen explains.
+    body.push_str(&format!("bt_fine={}\n", r.app.bt_fine_span()));
     body.push_str(&format!(
         "viz_scale={}\nviz_range={}\nviz_response={}\nviz_interp={}\nviz_peaks={}\nviz_window={}\nviz_rate={}\n",
         r.app.viz_scale_idx(),
@@ -3408,6 +3412,21 @@ pub extern "C" fn cinder_get_repeat_one() -> libc::c_int {
     }
 }
 
+/// The Bluetooth fine-volume trim, in HALF-dB units and never positive.
+///
+/// The shell adds this to every EQ band before pushing the curve to the DSP, which is how a volume
+/// press finer than AVRCP's ~2 dB step is made at all: `SetCurrentVolume` is inert on this firmware
+/// (measured on two sinks, one of them Sony's own), so the sink can only be stepped, and anything
+/// between two steps has to come from the source. 0 whenever fine volume is off, the route is the
+/// jack, or the user's EQ has no headroom left to attenuate into.
+#[no_mangle]
+pub extern "C" fn cinder_get_bt_trim_half_db() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.bt_trim_half_db() as libc::c_int,
+        None => 0,
+    }
+}
+
 /// The analyzer emit rate the user picked, in Hz (Settings ▸ Visualiser ▸ Frame rate). The shell
 /// passes it to `cinder_analyzer_start`; it is also the visualiser's share of the render budget,
 /// which is why the row tops out well short of the panel's refresh.
@@ -4544,6 +4563,11 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // Settings ▸ Visualiser. Each setter wraps its index into range, so a file
                     // written by a newer build (or by hand) can never select an option that does
                     // not exist in this one.
+                    "bt_fine" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_bt_fine_span(n);
+                        }
+                    }
                     "viz_scale" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_viz_scale(n);

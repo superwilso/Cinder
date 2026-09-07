@@ -2901,7 +2901,8 @@ impl App {
                         self.push(Screen::BtCodec);
                         vec![]
                     }
-                    BtHit::None => vec![],
+                    // Codec-page rows: this screen's hit map cannot produce them.
+                    BtHit::FineVolume | BtHit::None => vec![],
                 }
             }
             Screen::BtCodec => {
@@ -2918,6 +2919,13 @@ impl App {
                     BtHit::Enhanced => {
                         self.bt_enhanced = !self.bt_enhanced;
                         vec![Action::BtEnhancedChanged]
+                    }
+                    // Render-only from the shell's point of view: the trim itself is picked up from
+                    // `cinder_get_bt_trim_half_db` on the next housekeeping tick, so cycling the row
+                    // needs no action and cannot interrupt anything mid-list.
+                    BtHit::FineVolume => {
+                        self.cycle_bt_fine();
+                        vec![]
                     }
                     _ => vec![],
                 }
@@ -5609,6 +5617,7 @@ impl App {
             }
             Screen::Bluetooth => {
                 let bt = Bt {
+                    fine_volume: "OFF", // not drawn on this screen; the row lives on the codec page
                     on: self.bt_on,
                     // The REAL connected device, pushed by the shell from
                     // GetConnectInformation(vector<uint8_t>& addr, string& name). Before that call
@@ -5634,7 +5643,14 @@ impl App {
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
             Screen::BtCodec => {
+                let fine_lbl: &str = match self.bt_fine_span() {
+                    0 => "OFF",
+                    1 => "±1 dB",
+                    2 => "±2 dB",
+                    _ => "±3 dB",
+                };
                 let bt = Bt {
+                    fine_volume: fine_lbl,
                     on: self.bt_on,
                     connected: self.bt_connected.as_deref(),
                     link_known: self.bt_link_known,

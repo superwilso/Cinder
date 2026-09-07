@@ -48,6 +48,7 @@
 // this shell stays C++/libc++. See player/cinder-ffi/include/cinder.h.
 #include "cinder.h"
 #include "cinder_effects.h"
+#include "eq_range.h"   // cinder_eq_clamp_gain — the trim below must obey the DSP's own range rule
 #include "cinder_tuner.h"
 #include "vol_ramp.h"
 #include "frame_budget.h"
@@ -721,6 +722,26 @@ void viz_analyzer_tick() {
     } else if (running) {
         run_guarded("viz: analyzer stop", 6, []() { cinder_analyzer_stop(); });
     }
+}
+
+// Re-apply the EQ when the Bluetooth fine-volume trim moves.
+//
+// The trim changes on a volume press, and a press must not wait on the DSP: a 10-band EQ write
+// measured 8 ms typical but 374 ms at worst, which is a stutter if it happens inline with the
+// rocker. So the UI moves the trim, this notices, and the write happens on the housekeeping tick —
+// coalesced, latest value wins, so holding the rocker down costs one write per interval rather than
+// one per repeat.
+void bt_trim_tick() {
+    static int  s_last = 0;
+    static long s_at   = 0;
+    const int trim = cinder_get_bt_trim_half_db();
+    if (trim == s_last) return;
+    const long now = now_ms();
+    if (now < s_at) return;             // one write per BT_TRIM_APPLY_MS, however fast the presses
+    s_last = trim;
+    s_at   = now + 120;
+    fx_cache_drop();                    // the curve on the DSP is no longer what the cache claims
+    run_guarded("bt-vol: fine trim", 6, []() { apply_eq_fn(); });
 }
 
 // Stop the analyzer stream (guarded — Stop() is a Sony-service call). No-op if it was never
@@ -1690,6 +1711,22 @@ static inline bool fx_dirty(int i, int val) {
 void apply_eq_fn() {
     signed char bands[10];
     cinder_get_eq_bands(bands);
+    // THE BLUETOOTH FINE-VOLUME TRIM rides along here, and this is the only place it is applied.
+    //
+    // AVRCP gives one step of 4 units in 127 — about 2 dB — and there is no finer command to send:
+    // SetCurrentVolume is inert on this firmware, measured on a WH-1000XM4 and a set of CMF buds,
+    // both of which report every relative step and ignore every absolute write. So the steps between
+    // steps are made at the SOURCE, by attenuating the whole curve in half-dB units (measured: a
+    // flat -10 dB EQ moves the analyzer's reading -9.5 dB, a flat -5 dB moves it -5.8 dB).
+    //
+    // Folded into `bands` BEFORE the dirty-check below, so the cache compares what was actually
+    // sent. The clamp is the service's own rule (`cinder_eq_clamp_gain`): a value outside ±20 does
+    // not clamp inside the DSP, it ZEROES the band — and the UI keeps the trim within the headroom
+    // the user's curve leaves, so this is a second net rather than the only one.
+    const int trim = cinder_get_bt_trim_half_db();
+    if (trim) {
+        for (int i = 0; i < 10; i++) bands[i] = (signed char)cinder_eq_clamp_gain(bands[i] + trim);
+    }
     if (!g_eq_have) {
         // First apply, or the cache was dropped: assert the whole curve, and the 10-band's own
         // on-switch with it. cinder_effects_set_eq does both.
@@ -10410,6 +10447,7 @@ void* render_driver(void*) {
                 });
             }
             viz_analyzer_tick();              // analyzer runs only while its output is visible
+            bt_trim_tick();                   // Bluetooth fine volume, applied off the press path
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
             // Screenshot-on-demand: drop /tmp/cinder_screenshot.req and the next frame is written
             // to /tmp/cinder_screen.png. Same polled-flag idiom as ldac_on above (no new IPC

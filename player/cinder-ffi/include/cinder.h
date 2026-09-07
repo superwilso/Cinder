@@ -500,6 +500,12 @@ int  cinder_get_bt_route(void);
  * and audio is actually playing. The shell polls this and starts/stops Sony's AudioAnalyzerService
  * to match, so the filter bank only runs while its output is visible. */
 int  cinder_viz_wants_analyzer(void);
+/* The Bluetooth fine-volume trim, in HALF-dB units, always <= 0. The shell ADDS this to every EQ
+ * band before pushing the curve to the DSP: AVRCP's step on this hardware is ~2 dB and absolute
+ * volume is inert (measured on two sinks), so a finer step is made at the source or not at all.
+ * Poll it in housekeeping and re-apply the EQ when it changes; it is 0 unless the Bluetooth route
+ * is active with fine volume switched on. */
+int  cinder_get_bt_trim_half_db(void);
 /* The analyzer settings the user picked on Settings ▸ Visualiser: the emit rate in Hz, and the
  * detector's averaging window in MILLISECONDS (0 = leave the service's own default). The shell
  * passes both to cinder_analyzer_start — converting the window to samples, because the sample rate

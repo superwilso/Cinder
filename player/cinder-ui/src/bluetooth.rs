@@ -78,6 +78,14 @@ pub struct Bt<'a> {
     /// sink doesn't support the requested codec and A2DP falls back — which the radio does
     /// silently, and which is exactly the thing this screen existed to not tell you.
     pub link_codec: Option<u8>,
+    /// Bluetooth fine volume: how far one AVRCP step is subdivided, as a label ("OFF", "±2 dB").
+    ///
+    /// AVRCP's step on this firmware is 4 units of 127 — about 2 dB — and there is no finer command
+    /// to send: absolute volume is inert here (measured on a WH-1000XM4 and a set of CMF buds, both
+    /// of which report every relative step and ignore every absolute write). So the finer steps are
+    /// made at the SOURCE, by attenuating through the 10-band EQ in half-dB units, and this row is
+    /// how much of a step that trim is allowed to cover.
+    pub fine_volume: &'a str,
     /// The radio's paired devices, so this screen can CONNECT to one directly.
     ///
     /// They used to live only on the separate Devices screen, behind "Pair new device" — a button
@@ -110,6 +118,11 @@ const QUAL_Y: i32 = 420;
 const QUAL_H: i32 = 40;
 const ENH_Y: i32 = 556; // "Use Enhanced Mode" row (absolute volume)
 const ENH_H: i32 = 64;
+/// "Fine volume" — the source-side vernier, directly under Enhanced Mode because it is the row you
+/// reach for when Enhanced Mode has failed to give you the volume resolution you wanted. (It
+/// usually has: absolute volume is inert on this firmware, measured on two sinks.)
+const FINE_Y: i32 = ENH_Y + ENH_H;
+const FINE_H: i32 = 64;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum BtHit {
@@ -120,6 +133,8 @@ pub enum BtHit {
     Quality(usize),
     /// "Use Enhanced Mode" toggled — the absolute-volume switch.
     Enhanced,
+    /// "Fine volume" cycled — how far one AVRCP step is subdivided by the source-side trim.
+    FineVolume,
     Pair,
     /// A paired device row — connect to it, or hang up if it is the connected one. Which of the
     /// two is the caller's call, from its own `connected` flag, so geometry stays geometry.
@@ -144,6 +159,10 @@ pub fn quality_row_y() -> i32 {
 /// Vertical centre of the Enhanced Mode row.
 pub fn enhanced_row_y() -> i32 {
     ENH_Y + ENH_H / 2
+}
+/// Vertical centre of the Fine volume row.
+pub fn fine_row_y() -> i32 {
+    FINE_Y + FINE_H / 2
 }
 
 /// Map a tap on the BLUETOOTH screen. The codec controls moved to their own page, so this now
@@ -206,6 +225,9 @@ pub fn hit_codec(x: i32, y: i32, on: bool, codec_is_ldac: bool) -> BtHit {
     // no other tappable thing on that band.
     if (ENH_Y..ENH_Y + ENH_H).contains(&y) {
         return BtHit::Enhanced;
+    }
+    if (FINE_Y..FINE_Y + FINE_H).contains(&y) {
+        return BtHit::FineVolume;
     }
     BtHit::None
 }
@@ -467,5 +489,21 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     text::draw(c, f, 22.0, (ENH_Y + 46) as f32, &crate::widgets::fit(f, sub, &sst, avail), &sst);
     crate::widgets::toggle(c, t, 422, ENH_Y + 20, 34, 18, 12, enh_on);
     crate::widgets::hline(c, ENH_Y + ENH_H, t.line);
+
+    // Fine volume. A cycling value rather than a toggle, because "how much finer" is the actual
+    // question — and the honest answer depends on the sink, whose step size we can measure in AVRCP
+    // units but not in dB. The row says what it costs as well as what it does: the trim rides on
+    // the EQ, so a curve already at the service's floor leaves nothing to trim with.
+    text::draw(c, f, 22.0, (FINE_Y + 26) as f32,
+               &crate::widgets::fit(f, "Fine volume", &tst, avail), &tst);
+    let fsub = if bt.fine_volume == "OFF" {
+        "One AVRCP step per press (~2 dB)"
+    } else {
+        "Half-dB steps between AVRCP steps, via the EQ"
+    };
+    text::draw(c, f, 22.0, (FINE_Y + 46) as f32, &crate::widgets::fit(f, fsub, &sst, avail), &sst);
+    right(c, f, 458.0, (FINE_Y + 32) as f32, bt.fine_volume,
+          &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04));
+    crate::widgets::hline(c, FINE_Y + FINE_H, t.line);
 
 }

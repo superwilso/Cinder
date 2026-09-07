@@ -6,9 +6,9 @@
 [![license](https://img.shields.io/github/license/superwilso/Cinder)](LICENSE)
 [![device](https://img.shields.io/badge/device-NW--A55%20%2F%20A50%20series-blue)](docs/baseline_v1.4.md)
 
-A from-scratch replacement Home app for the Sony NW-A55/A50 Walkman — native, ~3 MB, running
-in place of Sony's stock Qt player while keeping every one of Sony's audio services (DSP,
-codecs, LDAC) intact underneath it.
+**Custom firmware for the Sony NW-A55 Walkman** (NW-A50 series): a from-scratch replacement Home
+app — native, ~3 MB, running in place of Sony's stock Qt player while keeping every one of Sony's
+audio services (DSP, codecs, LDAC) intact underneath it.
 
 <p align="center">
   <img src="player/cinder-ui/src/out/accent_amber_now_playing.png" width="220" alt="Cinder now-playing screen">
@@ -26,6 +26,23 @@ over their existing binder IPC, which is what keeps EQ, DSEE HX, VPT, Vinyl and 
 effect working exactly as before.
 
 Full rationale and the living goals list: [`VISION.md`](VISION.md).
+
+## Supported devices
+
+Cinder is **custom firmware for the Sony NW-A50 series** — it replaces the player UI, not the
+audio stack. What it has actually been built and run on:
+
+| Model | State |
+|---|---|
+| **NW-A55** (NW-A55L / A55HN) | **Verified.** Every feature in [`STATUS.md`](cinder-home/STATUS.md) was measured on this hardware. |
+| **NW-A56 / NW-A57** | Same `nw-a50` firmware family and the same MT8590 board — expected to work, but **nobody has run it on one**. If you have, an issue either way would be genuinely useful. |
+| NW-A45 / A46 / A47 (A40 series) | **Not supported.** Same SoC family, different model firmware; Cinder has never been built or tested for it. |
+| NW-A35 / A36 / A37 (A30 series) | **Not supported**, same reason. |
+| ZX300, WM1A / WM1Z, DMP-Z1 | **Not supported.** For these, use [Wampy](https://github.com/unknown321/wampy), which covers the whole MT8590 family. |
+
+If you are on a device Cinder does not target, the projects under [Related
+projects](#related-projects) do cover it — that list is there to send you to the right one rather
+than to keep you here.
 
 ## Status
 
@@ -189,6 +206,19 @@ The four that are always current:
 | [`cinder-home/STATUS.md`](cinder-home/STATUS.md) | The feature matrix — current state, kept current rather than aspirational. |
 | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) | The run sheet for anything that needs the player in your hand. |
 | [`CHANGELOG.md`](CHANGELOG.md) | What changed in each release, and whether it was verified on hardware. |
+
+## Related projects
+
+Cinder exists because these did the groundwork, and each of them is the right answer to a question
+Cinder is the wrong answer to:
+
+| | |
+|---|---|
+| [**Wampy**](https://github.com/unknown321/wampy) (unknown321) | A skinnable replacement UI across the whole MT8590 Walkman family — A30/A40/A50, ZX300, WM1A/Z, DMP-Z1. Broader device support than Cinder by a long way, and its `MAKING_OF` write-ups are the map this platform was first charted with. |
+| [**wbrt**](https://github.com/unknown321/wbrt) (unknown321) | Full eMMC backup and restore over the MediaTek VCOM port. **The brick insurance for every project on this list** — including this one. |
+| [**Walkman One**](https://www.mrwalkman.com/) (MrWalkman) | Modified stock firmware: Sony's own player with the region and feature locks removed. If you want stock-but-unlocked rather than a different player, this is it. |
+| [**Rockbox `nwztools`**](https://github.com/Rockbox/rockbox/tree/master/utils/nwztools) | The `.UPG` pack/unpack tooling, per-model KAS keys and the NVP slot map that make any of this reachable. |
+| [**scrobbler**](https://github.com/unknown321/scrobbler) (unknown321) | Last.fm scrobbling on-device; Cinder writes the same `.scrobbler.log` format. |
 
 ## Contributing
 
