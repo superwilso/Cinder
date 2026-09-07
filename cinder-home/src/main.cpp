@@ -740,7 +740,18 @@ void bt_trim_tick() {
     if (now < s_at) return;             // one write per BT_TRIM_APPLY_MS, however fast the presses
     s_last = trim;
     s_at   = now + 120;
-    fx_cache_drop();                    // the curve on the DSP is no longer what the cache claims
+    // NOT fx_cache_drop(). That was here on the reasoning that "the curve on the DSP is no longer
+    // what the cache claims" — but the cache records what was SENT, and `apply_eq_fn` folds the
+    // trim into `bands` before its dirty-check, so the cache is already telling the truth. What
+    // dropping it actually did was force the cold path, and the cold path calls
+    // `cinder_effects_set_eq`, which re-asserts `SetEq10Band(true)` — the 10-band's own on-switch —
+    // before writing any band. Re-asserting an effect's enable mid-stream re-instantiates its
+    // filter, and that is audible: reported 2026-09-07 as "a bit of a stutter when volume is
+    // changed with fine volume turned on", once per press. It also cleared the SOUND-flag cache
+    // (`g_fx_have`), so the next `apply_sound_fn` re-asserted all 40 effect slots as well.
+    //
+    // The warm path writes only the bands whose value moved, with no enable toggle — which for a
+    // uniform trim is ten SetEq10BandValue calls and no chain rebuild.
     run_guarded("bt-vol: fine trim", 6, []() { apply_eq_fn(); });
 }
 

@@ -111,7 +111,7 @@ fn main() {
         source_direct: false,
         tone_control: false,
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02), paired: &preview_paired_list };
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02), paired: &preview_paired_list, fine_volume: "OFF" };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
@@ -353,7 +353,8 @@ fn main() {
             ("bluetooth_connecting", &|c: &mut Canvas| {
                 let b = Bt { paired: &preview_paired_list, on: true, connected: None, link_known: true, codec_sel: 0,
                              ldac_quality: 0, enhanced: true, enhanced_supported: true,
-                             connecting: true, busy_phase: 0.35, link_codec: None };
+                             connecting: true, busy_phase: 0.35, link_codec: None,
+                             fine_volume: "OFF" };
                 bluetooth::render(c, &theme, &fonts, &b)
             }),
             // Two real pairings from the device (the same two the 07-29 GetPairedDeviceInfo pass
