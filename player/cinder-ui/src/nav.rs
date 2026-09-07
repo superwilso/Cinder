@@ -5841,7 +5841,8 @@ impl App {
         // while the sheet is open — came up half-covered.
         if self.vol_overlay > 0 && self.current() != Screen::Lock {
             crate::overlay::volume_trimmed(c, &theme, fonts, self.display_volume(),
-                                           if self.bt_route { self.bt_trim } else { 0 });
+                                           if self.bt_route { self.bt_trim } else { 0 },
+                                           self.bt_route);
         }
         if self.toast_frames > 0 && self.current() != Screen::Lock {
             crate::overlay::toast(c, &theme, fonts, &self.toast);
@@ -6123,7 +6124,11 @@ impl App {
             let frac = if sub > 0 { self.bt_trim as i32 * 1_000 / sub as i32 } else { 0 };
             let scaled = (self.bt_volume as i32 * 1_000 + frac) * crate::overlay::VOL_MAX as i32
                 / (crate::overlay::BT_VOL_MAX as i32 * 1_000);
-            scaled.clamp(0, crate::overlay::VOL_MAX as i32) as u8
+            let scaled = scaled.clamp(0, crate::overlay::VOL_MAX as i32) as u8;
+            // Never let a live sink level round down to 0. The scale is 127 -> 120, so AVRCP 1
+            // truncates to 0 — and 0 is the MIN readout, which would claim the sink is at its
+            // floor when it is a step above it. One is the smallest honest answer.
+            if scaled == 0 && self.bt_volume > 0 { 1 } else { scaled }
         } else {
             self.volume
         }
@@ -10506,6 +10511,29 @@ mod tests {
         // And the level itself cannot exceed the scale.
         a.set_bt_volume(255);
         assert_eq!(a.bt_volume_level(), BT_VOL_MAX);
+    }
+
+    /// The bottom of the Bluetooth scale is the SINK'S FLOOR, not silence, and the HUD must not
+    /// round a live level down onto it.
+    ///
+    /// Two halves of one 2026-09-07 report ("the mute on bt is not actually muted"). The label is
+    /// handled in `overlay::volume_trimmed`, which takes the route and says MIN instead of MUTE —
+    /// Sony cannot mute an A2DP sink either (analysis/RE_volume_service.md). The half that lives
+    /// here is arithmetic: the scale is 127 -> 120, so AVRCP 1 truncates to 0 and the bar would
+    /// claim the floor while the sink is a step above it.
+    #[test]
+    fn a_live_bluetooth_level_never_displays_as_the_floor() {
+        let mut a = unlocked();
+        a.set_bt_route(true);
+        // Only a genuine 0 reads as 0.
+        a.set_bt_volume(0);
+        assert_eq!(a.display_volume(), 0, "AVRCP 0 is the floor and must read as it");
+        // Every level the sink can actually be at reads as something above the floor.
+        for lvl in 1..=crate::overlay::BT_VOL_MAX {
+            a.set_bt_volume(lvl);
+            assert!(a.display_volume() > 0,
+                    "sink level {lvl} rounded onto the floor readout");
+        }
     }
 
     /// The scrollbar on this screen is `library::scrollbar`, whose drag maths measure against the

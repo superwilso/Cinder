@@ -46,7 +46,7 @@ pub const VOL_FRAMES: u8 = 96;
 
 /// Draw the volume HUD: a centered slab with a speaker icon, a level bar, and the step value.
 pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
-    volume_trimmed(c, t, f, level, 0)
+    volume_trimmed(c, t, f, level, 0, false)
 }
 
 /// The volume HUD, plus the Bluetooth fine-volume trim.
@@ -57,7 +57,8 @@ pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
 /// press, which rounds to no movement at all, and a volume rocker that appears to miss three
 /// presses out of four is worse than a coarse one. So the bar keeps showing the sink's level and
 /// the trim says, exactly, how far below it the source is sitting.
-pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_half_db: i8) {
+pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_half_db: i8,
+                      bt_route: bool) {
     // A slim pill just under the status bar, NOT a card in the middle of the screen.
     //
     // It used to be a 320x96 slab centred on the panel, parked over the focal point of the album
@@ -66,7 +67,23 @@ pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_ha
     // to be readable at a glance and gone, not to take over the screen. One icon (what it is), one
     // bar (where it is), one number (exactly where it is), out of the way of the artwork.
     let level = level.min(VOL_MAX);
-    let muted = level == 0;
+    // ZERO IS NOT MUTE ON BLUETOOTH, and saying so was a defect.
+    //
+    // On the jack, level 0 writes 0 to the codec's `master volume` and the output is silent, so
+    // "MUTE" is the truth. On Bluetooth the bar tracks the SINK's AVRCP level, and AVRCP 0 is the
+    // sink's own floor — most headphones still play there. Reported 2026-09-07 as "the mute on bt
+    // is not actually muted, i can still hear audio".
+    //
+    // Nothing can be done about that from here: A2DP PCM leaves over the BT transmitter socket and
+    // never crosses the codec, so no codec control reaches it (measured — pulsing `playback mute`
+    // through four 3 s cycles on a live A2DP stream was inaudible), and Sony's own stack has the
+    // same limit: `VolumeA2dpOut::SetVolume` is a stub that touches nothing, and Sony reaches the
+    // sink through the same AVRCP up/down steps Cinder sends. Sony's stock player cannot mute a
+    // Bluetooth sink either. See analysis/RE_volume_service.md.
+    //
+    // So the word changes rather than the behaviour: the bottom of the Bluetooth scale is MIN.
+    let at_floor = level == 0;
+    let floor_word = if bt_route { "MIN" } else { "MUTE" };
     let pill_h = 40;
     let x0 = 24;
     let y0 = crate::chrome::STATUS_H + 12;
@@ -78,11 +95,11 @@ pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_ha
     fill_rect(c, x0, y0 + pill_h - 1, pill_w, 1, t.line);
 
     let mid = y0 + pill_h / 2;
-    icons::sound(c, (x0 + 26) as f32, mid as f32, 20.0, if muted { t.faint } else { t.acc });
+    icons::sound(c, (x0 + 26) as f32, mid as f32, 20.0, if at_floor { t.faint } else { t.acc });
 
     // Number on the right, so the bar between them gets the width.
-    let val = if muted { String::from("MUTE") } else { format!("{level}") };
-    let vst = sty(Family::Mono, Weight::Bold, 15.0, if muted { t.faint } else { t.ink }, 0.04);
+    let val = if at_floor { String::from(floor_word) } else { format!("{level}") };
+    let vst = sty(Family::Mono, Weight::Bold, 15.0, if at_floor { t.faint } else { t.ink }, 0.04);
     let vw = text::measure(f, &val, &vst);
     text::draw(c, f, (x0 + pill_w - 20) as f32 - vw, (mid + 5) as f32, &val, &vst);
 
@@ -108,7 +125,7 @@ pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_ha
         fill_rect(c, bx, by, bw, bh, t.line);
         let filled = (bw as f32 * (level as f32 / VOL_MAX as f32)).round() as i32;
         if filled > 0 {
-            fill_rect(c, bx, by, filled, bh, if muted { t.faint } else { t.acc });
+            fill_rect(c, bx, by, filled, bh, if at_floor { t.faint } else { t.acc });
         }
     }
 }
