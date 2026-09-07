@@ -3890,6 +3890,156 @@ static void eqmeter_job_entry() {
     _exit(eqmeter_job());
 }
 
+// ── --avls : Sony's volume limiter — is it featured, and what does it cap at? ───────────────────
+//
+// `VolumeService` is the ONLY volume API Sony's own player uses, and it is the one surface in the
+// volume stack that does something Cinder cannot already do. Two mechanisms live behind it, and
+// they are NOT the same thing:
+//
+//   * AVLS — a fixed cap. `VolumeAdlerOut::SetVolume` CLAMPS to the threshold rather than refusing
+//     the press ("limit volume to avls threshold"), so it behaves like a ceiling, not a lockout.
+//   * VolumeLimitObserver — a listening-DOSE limiter: `StartMeasureElapsedTime`,
+//     `UpdateElapsedTime`, `CheckIfVolumeLimitAlertNeeded`, "Alert shortage was set [%d] min",
+//     and `ReplyVolumeLimitAlert` for the user's acknowledgement. This is the EN 50332-shaped
+//     "you have been listening loudly for N minutes" regulator, not a cap.
+//
+// WHY THIS NEEDS THE DEVICE. `VolumeServiceServiceImpl::GetAvls` gates on a feature flag at
+// `impl+8`; when it is clear the service logs `!!! not featured vol avls` and returns 0 without
+// consulting anything. Whether the NW-A55 has AVLS featured at all is a RUNTIME value that no
+// amount of disassembly settles — hence a probe rather than another RE pass.
+//
+// READ-ONLY. It calls no setter: nothing here changes the device's volume, its AVLS state, or the
+// DmpConfig key 226 that persists it. Full write-up in analysis/RE_volume_service.md.
+namespace pst { namespace services { namespace volume {
+
+// Layout from `VolumeServiceFwClient::WriteAvlsCondition` (@0x28d90), which marshals exactly
+// [+0]=u8, [+4]=u32, [+8]=u8, [+9]=u8 — and Sony's own log line names all four fields:
+// `FireAvlsConditionChanged([on:%u, thrs:%u, adapt:%u, work:%u])`.
+struct AvlsCondition {
+    unsigned char on;
+    unsigned char _pad0[3];
+    unsigned int  threshold;
+    unsigned char adaptive;
+    unsigned char working;
+    unsigned char _reserve[26];   // slack: the service writes, we own the buffer
+};
+
+// Non-virtual exported members, called by mangled symbol (same pattern as playerservice_abi.hpp).
+// The reserve matters: the real object is 8 bytes (the ctor does `strd r1,r1,[r0]`), and a class
+// with no members would be sizeof 1 — the 2026-06-25 sizing bug, which this avoids by over-
+// reserving rather than by guessing exactly.
+class VolumeService {
+public:
+    VolumeService();
+    ~VolumeService();
+    unsigned GetVolume();
+    bool     SetVolume(unsigned);
+    bool     GetAvls();
+    unsigned GetAvlsThresholdValue();
+    bool     GetAvlsCondition(AvlsCondition*);
+private:
+    void* _reserve[8];
+};
+
+}}} // namespace pst::services::volume
+
+// Set by the dispatcher from `--avls set <n>`: -1 means the default read-only run.
+static int g_avls_set = -1;
+
+static int avls_job() {
+    using pst::services::volume::AvlsCondition;
+    using pst::services::volume::VolumeService;
+
+    VolumeService vs;
+    std::fprintf(stderr, "[cinder-probe] avls: VolumeService constructed\n");
+
+    // GetVolume FIRST, as the canary. On the jack it is a real read; on Bluetooth and USB-DAC the
+    // framework's output class inherits a no-op that always returns 0 (RE_volume_service.md §2), so
+    // a 0 here on a BT route is the expected answer, not a failure to reach the service.
+    wd_arm(8);
+    unsigned vol = vs.GetVolume();
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] avls: GetVolume() = %u\n", vol);
+
+    wd_arm(8);
+    bool on = vs.GetAvls();
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] avls: GetAvls() = %d\n", (int)on);
+
+    wd_arm(8);
+    unsigned thr = vs.GetAvlsThresholdValue();
+    wd_disarm();
+    std::fprintf(stderr, "[cinder-probe] avls: GetAvlsThresholdValue() = %u  (volume units, 0..120)\n", thr);
+
+    AvlsCondition c;
+    std::memset(&c, 0, sizeof c);
+    wd_arm(8);
+    bool okc = vs.GetAvlsCondition(&c);
+    wd_disarm();
+    std::fprintf(stderr,
+                 "[cinder-probe] avls: GetAvlsCondition() rc=%d  on=%u thrs=%u adapt=%u work=%u\n",
+                 (int)okc, c.on, c.threshold, c.adaptive, c.working);
+
+    // OPT-IN WRITE. `--avls set <n>` exists to answer one question the read-only run cannot: the
+    // threshold came back EQUAL to the service's current volume, and a cap that happens to equal
+    // the volume is indistinguishable from a field that merely echoes it. So move the volume
+    // through Sony's own setter and read the threshold again — if it follows, it is an echo; if it
+    // holds, it is a real cap. Restores the level it found before exiting.
+    if (g_avls_set >= 0) {
+        std::fprintf(stderr, "[cinder-probe] avls: --- SetVolume(%d), then re-read ---\n", g_avls_set);
+        wd_arm(8);
+        bool sv = vs.SetVolume((unsigned)g_avls_set);
+        wd_disarm();
+        usleep(200000);
+        wd_arm(8);
+        unsigned v2 = vs.GetVolume();
+        unsigned t2 = vs.GetAvlsThresholdValue();
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] avls: SetVolume rc=%d -> GetVolume()=%u  threshold=%u\n",
+                     (int)sv, v2, t2);
+        if (t2 == thr) {
+            clog_("avls: the threshold did NOT move with the volume — it is a real cap.");
+        } else {
+            clog_("avls: the threshold FOLLOWED the volume — it is not an independent cap.");
+        }
+        // Put it back where it was, whatever happened above.
+        wd_arm(8);
+        vs.SetVolume(vol);
+        wd_disarm();
+        std::fprintf(stderr, "[cinder-probe] avls: restored volume to %u\n", vol);
+    }
+
+    // The verdict, stated so the log answers the question without needing the reader to interpret
+    // four numbers. A featured-but-off AVLS still reports a threshold; an unfeatured one cannot.
+    if (thr == 0 && !on && c.threshold == 0) {
+        clog_("avls: everything zero — check logcat for '!!! not featured vol avls'. If that line "
+              "is there, AVLS is not featured on this model and there is nothing to expose.");
+    } else {
+        clog_("avls: the service answered with real values — AVLS is featured, and the threshold "
+              "above is the cap SetVolume clamps to.");
+    }
+    return 0;
+}
+
+static void avls_job_entry() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) { clog_("avls: pthread_create FAILED"); _exit(1); }
+    usleep(300000);
+    _exit(avls_job());
+}
+
+static int avls_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    std::fprintf(stderr, "[cinder-probe] avls: StartForApplication returned %d\n", sr);
+    avls_job_entry();
+    return 0; // unreachable
+}
+
 static int eqmeter_probe() {
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
@@ -7648,6 +7798,14 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--btvolslot") == 0) {
         return btvolslot_probe(argc > 2 ? std::atoi(argv[2]) : 34,
                                argc > 3 ? std::atoi(argv[3]) : 40);
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--avls") == 0) {
+        // Sony's volume limiter: is it featured on this model, and what does it cap at?
+        // Read-only by default. `--avls set <n>` additionally moves the volume through Sony's own
+        // setter to prove whether the threshold is a cap or an echo, and restores it after.
+        // See analysis/RE_volume_service.md.
+        if (argc > 3 && std::strcmp(argv[2], "set") == 0) g_avls_set = std::atoi(argv[3]);
+        return avls_probe();
     }
     if (argc > 1 && std::strcmp(argv[1], "--eqmeter") == 0) {
         // Is the EQ in the audio path, and does it move the level by the dB it claims? Play music

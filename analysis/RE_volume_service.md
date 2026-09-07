@@ -225,6 +225,50 @@ it bottoms out at −10 dB. **There is no way to mute a Bluetooth sink from this
 
 ---
 
+## 7b. MEASURED on device 2026-09-07 (`cinder-probe --avls`)
+
+Read-only run, on the jack route, `master volume` sitting at 63:
+
+```
+avls: GetVolume() = 63
+avls: GetAvls() = 0
+avls: GetAvlsThresholdValue() = 63      (volume units, 0..120)
+avls: GetAvlsCondition() rc=0  on=0 thrs=63 adapt=1 work=0
+```
+
+**AVLS is featured on the NW-A55.** The `!!! not featured vol avls` path did not fire — the service
+returned real values, so `VolumeServiceServiceImpl`'s feature flag at `impl+8` is set on this model.
+It is currently **off** (`on=0`), not effective (`work=0`), **adaptive** (`adapt=1`, i.e.
+`IsCurrentOutputDeviceAvlsAdaptive`), with a threshold of **63 of 120**.
+
+The threshold came back equal to the current volume, which is exactly the coincidence that would
+make an echo look like a cap, so it was tested rather than assumed — `--avls set <n>` moves the
+volume through Sony's own setter and re-reads:
+
+```
+avls: SetVolume(30) rc=0 -> GetVolume()=30  threshold=63    <- volume moved, threshold did not
+avls: SetVolume(55) rc=0 -> GetVolume()=55  threshold=63
+```
+
+**The threshold is an independent cap at 63/120.** It does not track the volume.
+
+### Two facts about `SetVolume` that matter more than AVLS
+
+1. **It works, and it writes the codec master.** Mixer forced to 40 → `SetVolume(55)` → restore to
+   63 → mixer read back **63**. So `VolumeService::SetVolume` is the real, authoritative volume path
+   for the jack, on the same 0..120 scale Cinder already uses.
+2. **The service caches its own level, and a direct amixer write does not update it.** Setting
+   `master volume` to 40 behind the service's back left `GetVolume()` still reporting 63, and the
+   service later overwrote the mixer with its own 63.
+
+Cinder writes amixer directly (`apply_volume`), so Cinder's level and the service's level are two
+different numbers that happen to agree until something makes the service re-assert. That is a
+latent bug of the same shape as the `fx_cache` staleness — worth checking against the volume-drift
+and volume-pop reports (`reference_volume_pop`), and the reason to consider moving the jack path
+onto `VolumeService::SetVolume`, which would also get AVLS clamping for free.
+
+---
+
 ## 8. Method notes
 
 - The libraries keep demangled prototypes and log format strings in `.rodata`; `strings | grep
