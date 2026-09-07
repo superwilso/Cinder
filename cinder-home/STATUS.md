@@ -1,5 +1,93 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-09-06 — UI & consistency audit: 9 defects fixed, 4 design findings left open
+>
+> **Write-up: [`../docs/AUDIT_2026-09-06_ui.md`](../docs/AUDIT_2026-09-06_ui.md).** Every screen read
+> as code and **looked at as pixels**. The question was not "does each screen work" but "does this
+> behave like one product".
+>
+> - **Folders reserved the Now Playing bar's 64 px and drew nothing in them** — the identical defect
+>   reported against Up Next on 2026-09-05 and fixed there by adding one screen to a list instead of
+>   stating the rule. The rule is a test now: a screen whose list stops at `library::list_bottom()`
+>   must draw the bar.
+> - **The Menu drew a back chevron that ignored every tap.** `has_header` conflated "is a root" with
+>   "draws no header"; `chrome::header` draws the chevron unconditionally. On a touch-only device
+>   the one thing that looked like the way out was the only thing that was not.
+> - **Back out of the folder tree landed on the level `open_folders` skips on the way in** — a
+>   one-row list the design says never to show, needing a second Back to leave. Found by writing the
+>   chevron rule-test.
+> - **Both playlist pickers registered a scrollbar DRAG, drew no scrollbar, and scaled the drag
+>   against the wrong window** (they stop 24 px above `LIST_BOTTOM`, which `sbar_span` assumed) — so
+>   dragging the invisible strip to the bottom did not reach the end of the list. `up_next.rs` had a
+>   comment warning about exactly this coupling; it had already broken one file over.
+> - **Pairing told the user NFC tap-to-pair "IS NOT WIRED YET"** — it has worked since 2026-08-17,
+>   and the Bluetooth screen one push away advertises it. Two screens, one feature, opposite claims.
+> - **BT Receiver shipped a switch that could not be moved** (`render(…, false)` hardcoded, no
+>   `tap()` branch) and a whole unreachable "on" layout — breaking this project's own rule, written
+>   down two entries away about the Devices screen: a feature that cannot work *says so on screen*.
+> - **No Library tab had an empty state**, and an empty library is what a failed `cinder_db_open`
+>   produces. The screen the device opens into on a bad boot drew a tab strip, an accent SHUFFLE
+>   band and blank space. **And a filter matching nothing looked identical to it** — different
+>   cause, different way out, same blank screen.
+> - Plus a magic `91` where `chrome::HEADER_BOTTOM` was meant.
+>
+> **Gate gap closed:** `BtCodec`, `Device` and `VizSet` had never been rendered by any panel-overflow
+> gate — 3 of 31 screens, on a `Canvas` that clips silently. All three are in the matrix now (Device
+> with hostile content, since an empty one draws placeholders and would gate nothing), and **all
+> three pass**: the gap was in the gate, not in those screens.
+>
+> **Left open, deliberately** (Part C — each reflows every screen and is a design call, not an audit
+> edit): eleven row heights with a *track row* drawn at three of them; 24 font sizes with no type
+> scale and six treatments of "the name of the thing on this row"; seven treatments of the header's
+> right-hand slot; and three different scrolling experiences (fling is restricted to five screens, so
+> Track pick — the whole library — cannot be flicked, and Settings and Device scroll with no
+> scrollbar at all). Part D: the two committed preview-screenshot directories are stale and
+> divergent, 26 MB, and re-rendering changes 216 of them.
+>
+> 353 `cinder-ui` tests (up from 342 this morning). *Device-unverified* — all nine are pure UI, but
+> the audit lists three worth a glance.
+
+> ## 2026-09-06 — queue & playback audit: 12 defects, all fixed
+>
+> **Write-up: [`../docs/AUDIT_2026-09-06_queue_playback.md`](../docs/AUDIT_2026-09-06_queue_playback.md).**
+> A full read of everything between "the user asks for a song" and "PlayerService is holding a
+> sequence". Most of the twelve are two correct rules disagreeing at their seam, and four are the
+> class this project keeps sweeping for — *a control that says one thing while the player does
+> another*:
+>
+> - **Right-swiping a track on the album page queued it and never told the shell.** The arm called a
+>   wrapper that discarded the returned `Action::QueueChanged` and then returned `vec![]`. Toast,
+>   Up Next row, no flush ever scheduled: the track played wherever the old sequence said. Its
+>   mirror gesture (left = Play Next) always worked, which is why nobody could see it.
+> - **Up Next named the PREVIOUS song for the whole of a swipe-queued one.** A pick leaves the queue
+>   when it starts, and a pick must not move the context index — so nothing held it, and the screen
+>   asked the context what was playing and got the track the pick interrupted. `Slot::CurrentPick`
+>   now gives it the NOW PLAYING row, and `pick=<id>` in the resume file means a reboot mid-pick
+>   comes back on the right song.
+> - **Pressing SHUFFLE on a paused player started the music.** The not-playing branch flushed
+>   immediately, and a flush ends in `ChangePlayState(Play)`. Reachable from a cold boot.
+> - **Shuffle-off was still a one-way door after a Library "Shuffle …" band**, the likeliest way
+>   anyone starts a shuffle: five of six entry points recorded the un-shuffle order and those four
+>   did not, so the icon went dark while the sequence stayed permuted.
+> - **…and that band ignored the Hi-Res filter while its caption named it** — on the reference
+>   library, the difference between 1 track and 3,463.
+> - **Repeat-all looped a TRUNCATED sequence**: it replayed the shim's last URI list, which after any
+>   queue flush is `[current] + queue + tail`. Swipe-queue one song at track 5 and tracks 1–4 never
+>   played again. It also **fired on a pause inside the last 1.5 s of ANY track** — that shape is
+>   identical to a queue end — so pausing near the end of track 3 of 12 restarted from track 1.
+> - Plus: a queued copy of the *currently playing* track could never be consumed (the URI never
+>   changes, so no track start is ever reported); tapping a queue row silently emptied the queue and
+>   with it the replace prompt; a queue edit made before the first ▶ after a boot was dropped; a
+>   stale `queue_pending` fired a needless 400 ms re-issue near the end of the first track after
+>   "clear queue"; and MIX dealt the identical "random" order after every boot.
+>
+> Gates: **347 `cinder-ui` tests** (up from 342), 88 `cinder-ffi`, and **30 harness scenarios** (up
+> from 27). The end-of-queue half of `poll_now_playing` had been **unreachable from any scenario** —
+> the generated stub for `cinder_audio_position` never filled its out-parameters, so `tot > 0` was
+> false everywhere and the whole branch was dead code to the harness. It is hand-written now, and
+> both new repeat-all scenarios FAIL on the code before this change. *Device-unverified:* the
+> audit's verification table lists what to look for on the next session.
+
 > ## 2026-08-31 — "unresponsive after skipping quickly": found, fixed, and now gated
 >
 > Reported directly. Root cause is **where** the call was made, not what it did: `carry_out` runs on
@@ -1239,8 +1327,11 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 >   2026-07-30**: `Screen::Pairing` exists, Bluetooth ▸ "Pair new device" pushes it, and the three
 >   hardcoded "discoverable" devices it used to draw are gone — every row is now a real pairing read
 >   from the radio.
-> - `Screen::Fm` and `Screen::Receiver` have no `tap()` branch (they fall to `_ => vec![]`); only
->   Back does anything. `Screen::Fm` also renders a hardcoded `88.6`.
+> - ~~`Screen::Fm` and `Screen::Receiver` have no `tap()` branch (they fall to `_ => vec![]`); only
+>   Back does anything. `Screen::Fm` also renders a hardcoded `88.6`.~~ **FM was wired 2026-08-18**
+>   (dial, seek, scan, presets — the hardcoded 88.6 is gone). `Screen::Receiver` still has no
+>   `tap()` branch, and since 2026-09-06 the screen SAYS SO instead of drawing a switch that cannot
+>   move — see the UI audit banner at the top.
 > - ~~`NowPlaying.liked` is threaded through four crates and `icons::heart` exists, but the heart is
 >   **never drawn**.~~ **FIXED.** The glyph is drawn and tappable (`hit_heart`), and liked songs
 >   persist to `/contents/cinder_liked.conf`.
@@ -1260,7 +1351,8 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   via `BtCommonServiceClient::SetRfOnOff` and reconnects the last device, and **Disconnect** hangs up
   without powering the radio down.)*
 - *(moved out 2026-08-18: the **FM Radio** screen is no longer stationary — see Partial below.)*
-- **BT Receiver** screen: static (off).
+- **BT Receiver** screen: static, and it says so on screen since 2026-09-06 (the inert header
+  toggle and the unreachable "on" layout are gone — `docs/AUDIT_2026-09-06_ui.md` §A6).
 - *(moved to Functional 2026-07-30: the **Devices** screen — `pairing.rs` is a real route with real
   paired devices, connect / disconnect / forget. Discovering an **unpaired** device is the one part
   still missing, and it is listed under Partial rather than here because the screen says so on

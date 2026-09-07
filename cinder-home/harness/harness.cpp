@@ -617,6 +617,34 @@ static int g_display_handle_cookie = 0;
 /// Current fake backlight level, for scenarios to assert on.
 int cinder_harness_display_backlight(void) { return (int)g_fake_bl_level; }
 
+// ── the play position, hand-written because its answer is in its out-parameters ──────────────
+// The generated stubs return a scripted int and nothing else, which is exactly wrong here:
+// `cinder_audio_position(&cur, &tot)` left both at the caller's -1, so `tot > 0` was false and the
+// whole end-of-queue half of poll_now_playing — repeat-all, and the transport glyph after a queue
+// runs out — could not be reached from any scenario at all.
+//
+// Deliberately a FIXED pair rather than a clock that advances: the states worth asserting on are
+// "parked at the end" and "in the middle", and a scenario that has to wait out a track's real
+// length to reach the interesting second is a scenario nobody writes.
+static int g_pos_cur_ms = -1;
+static int g_pos_tot_ms = -1;
+
+void cinder_harness_play_position(int cur_ms, int total_ms) {
+    Lock l; ensure();
+    g_pos_cur_ms = cur_ms;
+    g_pos_tot_ms = total_ms;
+}
+
+extern "C" int cinder_audio_position(int* cur_ms, int* total_ms) {
+    static int slot_ = -1;
+    cinder_harness_record_cached(&slot_, "cinder_audio_position", 0);
+    int cur, tot;
+    { Lock l; ensure(); cur = g_pos_cur_ms; tot = g_pos_tot_ms; }
+    if (cur_ms) *cur_ms = cur;
+    if (total_ms) *total_ms = tot;
+    return cur >= 0 ? 1 : 0;
+}
+
 void* dlopen(const char* path, int) {
     Lock l; ensure();
     const std::string p = path ? path : "?";

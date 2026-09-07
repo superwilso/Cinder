@@ -555,6 +555,11 @@ struct Render {
     /// The user queue was edited and PlayerService has not been told yet. Flushed at a track
     /// boundary — see `Action::QueueChanged` for why it cannot be flushed immediately.
     queue_pending: bool,
+    /// A queue edit landed while a boot-time resume was still armed, so the sequence snapshot
+    /// `cinder_resume_load` took no longer describes what the user wants. Rebuilt at the first ▶
+    /// rather than at the edit, because rebuilding costs a library query and an edit made before
+    /// the first press is exactly the case where nothing is audible to be late for.
+    resume_stale: bool,
     /// A queue flush is sitting in `pending_play` waiting for the shell to collect it. Reported
     /// through `cinder_take_queue_flush` so the shell knows to hand it to PlayerService.
     queue_flush: bool,
@@ -726,7 +731,14 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         night: false,
         np,
         db: None,
-        app: cinder_ui::nav::App::unlocked(),
+        app: {
+            // MIX / the shuffle toggle permute inside cinder-ui, which has no clock (its 300-odd
+            // host tests depend on it having none). Hand it a per-session seed here, or the same
+            // album shuffles into the same order after every boot.
+            let mut a = cinder_ui::nav::App::unlocked();
+            a.seed_shuffle(Rng::new().next());
+            a
+        },
         scrob: None,
         last_track: None,
         play_history: Vec::new(),
@@ -762,6 +774,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         viz_held_ms: Vec::new(),
         viz_at: std::time::Instant::now(),
         queue_pending: false,
+        resume_stale: false,
         queue_flush: false,
         pending_play: Vec::new(),
         pending_bt_device: None,
@@ -2093,6 +2106,15 @@ fn set_pending(r: &mut Render, mut seq: Vec<cinder_db::Track>, start: usize) {
     r.pending_play_start = start;
     r.play_history.clear();
     r.rewind_from = None;
+    // A QUEUE EDIT OWED AGAINST THE OLD SEQUENCE IS NOT OWED AGAINST THIS ONE. The "Clear the
+    // queue?" answer emits `QueueChanged` and THEN the play action, and `cinder_tap` carries both
+    // — so `queue_pending` was left standing over a context that had just been replaced. It then
+    // fired 2.5 s before the end of the first track of whatever the user had started: a
+    // SetTrackSequence + seek (the measured 360-450 ms round trip) to install a sequence identical
+    // to the one already playing. `set_play_context` has just rebuilt everything the flush would
+    // have rebuilt, so there is nothing left to owe.
+    r.queue_pending = false;
+    r.resume_stale = false;
 }
 
 /// The order to hand PlayerService: the track playing now, then the USER'S OWN PICKS, then
@@ -2133,12 +2155,53 @@ fn play_order_uris(r: &Render, current: &str) -> Vec<String> {
     let by_id = |row: &cinder_ui::model::SongRow| -> Option<String> {
         index.get(&row.object_id).cloned()
     };
-    let mut uris: Vec<String> = vec![current.to_string()];
-    uris.extend(r.app.queue().iter().filter_map(by_id));
     let ctx = r.app.context();
     let from = r.app.context_idx() + 1;
-    if from < ctx.len() {
-        uris.extend(ctx[from..].iter().filter_map(by_id));
+    let tail = if from < ctx.len() { &ctx[from..] } else { &[][..] };
+    play_order(
+        Some(current),
+        r.app.queue().iter().chain(tail.iter()).map(by_id),
+    )
+}
+
+/// Assemble a play order: an optional leading URI (the track that is already audible), then the
+/// rows behind it, dropping anything that did not resolve to a file.
+///
+/// NO TWO ADJACENT COPIES OF THE SAME FILE. `current` leads the list, so queueing the track you
+/// are listening to produced `[A, A, …]` — and PlayerService moving from the first A to the second
+/// does not change the URI, which is the only signal the shell reports a track start on.
+/// `track_started` therefore never ran, the pick was never consumed out of the queue, and it came
+/// back in the next flush: a phantom Up Next row and a track that played twice, for ever.
+///
+/// ONLY ADJACENT ones. Queueing the same song twice with something between them is a thing people
+/// do deliberately, and there the URI does change at each boundary, so each copy is reported and
+/// consumed exactly as it should be. Collapsing those would be silently refusing an instruction
+/// rather than fixing a defect.
+///
+/// Pure, so the rule is testable without a framebuffer, a database or a device.
+fn play_order(lead: Option<&str>, rest: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
+    let mut uris: Vec<String> = Vec::new();
+    if let Some(l) = lead {
+        uris.push(l.to_string());
+    }
+    for u in rest.into_iter().flatten() {
+        if uris.last() != Some(&u) {
+            uris.push(u);
+        }
+    }
+    // AND THE CAP IS APPLIED HERE, WHERE IT CAN SAY SO. `set_pending` truncates a new context to
+    // MAX_PLAY_SEQUENCE and logs it, but a flush rebuilds `[current] + queue + tail`, which can be
+    // longer than the context it came from — and the shell's own `play_pending_sequence` then cut
+    // it back to 512 in silence, from a fixed-size buffer, with nothing anywhere saying that the
+    // last tracks in Up Next were not going to play.
+    if uris.len() > MAX_PLAY_SEQUENCE {
+        eprintln!(
+            "cinder-ffi: play order is {} tracks; PlayerService is given the first {} — Up Next \
+             shows more than will play",
+            uris.len(),
+            MAX_PLAY_SEQUENCE
+        );
+        uris.truncate(MAX_PLAY_SEQUENCE);
     }
     uris
 }
@@ -2170,22 +2233,35 @@ fn artist_tracks(db: Option<&cinder_db::Db>, name: &str) -> Option<Vec<cinder_db
     Some(v)
 }
 
-fn shuffle_tracks(db: Option<&cinder_db::Db>, scope: cinder_ui::nav::ShuffleScope) -> Option<Vec<cinder_db::Track>> {
+fn shuffle_tracks(
+    db: Option<&cinder_db::Db>,
+    scope: cinder_ui::nav::ShuffleScope,
+    keep: &dyn Fn(&cinder_db::Track) -> bool,
+) -> Option<(Vec<cinder_db::Track>, Vec<i64>)> {
     use cinder_ui::nav::ShuffleScope as S;
     let db = db?;
     let mut rng = Rng::new();
 
-    let seq: Vec<cinder_db::Track> = match scope {
+    // THE FILTER IS APPLIED BEFORE THE SCOPE IS PICKED, not after it is shuffled. Two reasons:
+    // a random artist or playlist has to be picked from what SURVIVES the filter, or the band
+    // silently does nothing whenever it lands on one the filter empties; and the returned
+    // pre-shuffle order must describe exactly the sequence handed back, which it cannot if rows
+    // are dropped afterwards.
+    match scope {
         // "N TRACKS · RANDOM ORDER"
         S::AllSongs => {
-            let mut v = db.tracks(cinder_db::Sort::Title).ok()?;
+            let mut v: Vec<cinder_db::Track> =
+                db.tracks(cinder_db::Sort::Title).ok()?.into_iter().filter(|t| keep(t)).collect();
+            let pre = v.iter().map(|t| t.object_id).collect();
             rng.shuffle(&mut v);
-            v
+            (!v.is_empty()).then_some((v, pre))
         }
         // "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE" — shuffle the albums, keep each album's
         // tracks in their disc/track order.
         S::ByAlbum => {
-            let tracks = db.tracks_album_order().ok()?;
+            let tracks: Vec<cinder_db::Track> =
+                db.tracks_album_order().ok()?.into_iter().filter(|t| keep(t)).collect();
+            let pre: Vec<i64> = tracks.iter().map(|t| t.object_id).collect();
             let mut albums: Vec<Vec<cinder_db::Track>> = Vec::new();
             let mut cur_id: Option<i64> = None;
             for t in tracks {
@@ -2196,26 +2272,27 @@ fn shuffle_tracks(db: Option<&cinder_db::Db>, scope: cinder_ui::nav::ShuffleScop
                 albums.last_mut().expect("pushed above").push(t);
             }
             rng.shuffle(&mut albums);
-            albums.into_iter().flatten().collect()
+            let v: Vec<cinder_db::Track> = albums.into_iter().flatten().collect();
+            (!v.is_empty()).then_some((v, pre))
         }
         // "RANDOM ARTIST · SHUFFLED WITHIN ARTIST" — one artist, their tracks shuffled.
         S::ByArtist => {
             let tracks = db.tracks(cinder_db::Sort::Artist).ok()?;
             let mut by_artist: std::collections::BTreeMap<String, Vec<cinder_db::Track>> = Default::default();
             for t in tracks {
-                if !t.artist.is_empty() {
+                if !t.artist.is_empty() && keep(&t) {
                     by_artist.entry(t.artist.clone()).or_default().push(t);
                 }
             }
-            let mut names: Vec<String> = by_artist.keys().cloned().collect();
+            let names: Vec<String> = by_artist.keys().cloned().collect();
             if names.is_empty() {
                 return None;
             }
             let pick = &names[(rng.next() % names.len() as u64) as usize];
             let mut v = by_artist.remove(pick).unwrap_or_default();
-            names.clear();
+            let pre = v.iter().map(|t| t.object_id).collect();
             rng.shuffle(&mut v);
-            v
+            (!v.is_empty()).then_some((v, pre))
         }
         // "RANDOM PLAYLIST · SHUFFLED"
         S::Playlist => {
@@ -2224,12 +2301,13 @@ fn shuffle_tracks(db: Option<&cinder_db::Db>, scope: cinder_ui::nav::ShuffleScop
                 return None;
             }
             let pick = &pls[(rng.next() % pls.len() as u64) as usize];
-            let mut v = playlist_tracks(Some(db), pick.id)?;
+            let mut v: Vec<cinder_db::Track> =
+                playlist_tracks(Some(db), pick.id)?.into_iter().filter(|t| keep(t)).collect();
+            let pre = v.iter().map(|t| t.object_id).collect();
             rng.shuffle(&mut v);
-            v
+            (!v.is_empty()).then_some((v, pre))
         }
-    };
-    (!seq.is_empty()).then_some(seq)
+    }
 }
 
 /// Member file URIs of a playlist, in the user's saved order. `None` when there's no DB, the id
@@ -2359,6 +2437,18 @@ fn user_playlist_tracks(r: &Render, id: i64) -> Option<Vec<cinder_db::Track>> {
 /// Map a navigator `Action` to the `cinder_action_t` the shell carries out (Some = return this
 /// code), applying the internal-only ones in place and returning None for them (theme is applied by
 /// the caller; the sleep timer arms here; BtToggle is UI-only). Shared by cinder_input + cinder_tap.
+/// Record that the sequence PlayerService holds is out of date. One place, because there are two
+/// callers and they used to disagree about the second half of it: a resume armed at boot holds a
+/// URI list snapshotted before the user touched anything, so an edit made before the first ▶ was
+/// silently dropped — the resumed sequence played, and the edit only appeared at the boundary
+/// after it.
+fn mark_queue_pending(r: &mut Render) {
+    r.queue_pending = true;
+    if r.resume_pending.is_some() {
+        r.resume_stale = true;
+    }
+}
+
 fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_int> {
     use cinder_ui::nav::Action;
     Some(match a {
@@ -2389,30 +2479,55 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             }
         }
         Action::PlayQueueAt(n) => {
-            // Play the USER queue (swipe-to-queue) as a real track sequence, starting at the
-            // tapped row. Until now a queue row played that track's ALBUM context, so Up Next
-            // displayed one list while the transport stepped through another — the queue was
-            // visible but not actually playable. Reuses the album-play channel wholesale
-            // (pending_play → the shell's NodeTrackSequence path): no new device-facing surface.
-            // Resolve in the queue's CURRENT order — the user may have reordered it, and the row
-            // they tapped is an index into what Up Next is showing, not into any original order.
-            let ids: Vec<i64> = r.app.queue().iter().map(|s| s.object_id).collect();
-            // One query for the whole queue, not one per row — see `play_order_uris` for the
-            // report this shape caused, and `Db::tracks_by_object_ids`. Order comes from `ids`,
-            // which is the order Up Next is showing; the map only answers lookups. A row that no
-            // longer resolves is dropped exactly as it was before.
-            let seq: Vec<cinder_db::Track> = match r.db.as_ref() {
-                Some(db) => {
-                    let by_id = db.tracks_by_object_ids(&ids).unwrap_or_default();
-                    ids.iter().filter_map(|id| by_id.get(id).cloned()).collect()
-                }
-                None => Vec::new(),
-            };
-            if seq.is_empty() {
-                eprintln!("cinder-ffi: PlayQueueAt({n}): queue did not resolve to any file — ignored");
+            // Play the USER queue (swipe-to-queue) from the tapped row. Until this existed a queue
+            // row played that track's ALBUM context, so Up Next displayed one list while the
+            // transport stepped through another — the queue was visible but not actually playable.
+            //
+            // A QUEUE ROW IS STILL A QUEUE ROW. This used to go through `set_pending`, i.e. through
+            // `set_play_context` — the "the user started something new" path, which makes the
+            // sequence the CONTEXT and then CLEARS the queue. Everything played in the right
+            // order, so it looked correct; what it actually did was silently turn the user's
+            // hand-built picks into ordinary context. NEXT IN QUEUE and its CLEAR chip
+            // disappeared, and the next album tapped anywhere in the app then replaced them with
+            // no "you have a queue" prompt, because there was no longer a queue to ask about.
+            //
+            // So: drop the picks ahead of the tapped one (skipping forward past them is what the
+            // tap means), leave the rest queued and the context alone, and hand PlayerService the
+            // same order any other flush would — the tapped row, then the picks behind it, then
+            // the context tail.
+            if !r.app.queue_play_at(*n) {
+                eprintln!("cinder-ffi: PlayQueueAt({n}): no such queue row — ignored");
                 return None;
             }
-            set_pending(r, seq, (*n).min(ids.len().saturating_sub(1)));
+            let ids: Vec<i64> = r.app.queue().iter().map(|s| s.object_id).collect();
+            // One query for the whole queue, not one per row — see `play_order_uris` for the
+            // report that shape caused, and `Db::tracks_by_object_ids`.
+            let by_id = match r.db.as_ref() {
+                Some(db) => db.tracks_by_object_ids(&ids).unwrap_or_default(),
+                None => Default::default(),
+            };
+            let Some(head) = ids.first().and_then(|id| by_id.get(id)).map(|t| t.filename.clone())
+            else {
+                eprintln!("cinder-ffi: PlayQueueAt({n}): the tapped row no longer resolves to a \
+                           file — ignored");
+                return None;
+            };
+            let ctx = r.app.context();
+            let from = r.app.context_idx() + 1;
+            let tail = if from < ctx.len() { &ctx[from..] } else { &[][..] };
+            r.pending_play = play_order(
+                Some(&head),
+                r.app.queue()[1..]
+                    .iter()
+                    .chain(tail.iter())
+                    .map(|row| by_id.get(&row.object_id).map(|t| t.filename.clone())),
+            );
+            r.pending_play_start = 0;
+            // Same bookkeeping `set_pending` does: ◁ walks Cinder's own history, and that history
+            // is about the sequence being replaced.
+            r.play_history.clear();
+            r.rewind_from = None;
+            r.queue_pending = false;
             8
         }
         Action::PlayContextAt(n) => {
@@ -2541,41 +2656,57 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::Shuffle(scope) => {
             // Same pending-play channel again: we pre-shuffle the URI list ourselves, so the
             // order is genuinely random regardless of what PlayerService's own shuffle does.
-            match shuffle_tracks(r.db.as_ref(), *scope) {
-                Some(seq) => {
+            //
+            // HONOUR THE FILTER — BOTH AXES. The band's caption reads "Shuffle Rock", or
+            // "Shuffle Rock · Hi-Res", and says how many tracks that is; `shuffle_tracks` resolves
+            // straight out of the DB and knows nothing about the filter, so the button promised a
+            // filtered shuffle and played the whole library. Genre was fixed for exactly that
+            // reason and Hi-Res — added later as an independent second axis — was never wired in,
+            // which on the reference library is the difference between 1 track and 3,463. The fix
+            // is the library's OWN predicate: `Library::passes` is what every filtered list asks,
+            // so the band and the list can no longer disagree about what the filter means.
+            let keep = {
+                let lib = r.app.library();
+                let filtered = lib.filtered();
+                let genre = lib.filter_genre;
+                let hires = lib.filter_hires;
+                move |t: &cinder_db::Track| {
+                    !filtered
+                        || cinder_ui::model::Library {
+                            filter_genre: genre,
+                            filter_hires: hires,
+                            ..Default::default()
+                        }
+                        .passes(&cinder_ui::model::SongRow {
+                            genre_id: t.genre_id.unwrap_or(0),
+                            is_hires: t.is_hires,
+                            ..Default::default()
+                        })
+                }
+            };
+            match shuffle_tracks(r.db.as_ref(), *scope, &keep) {
+                Some((seq, pre)) => {
                     // ASKING FOR A SHUFFLED PLAY TURNS SHUFFLE ON. Reported 2026-08-18: pressing
                     // the shuffle band on Albums / All Songs started a shuffled sequence but left
                     // the transport's shuffle indicator OFF, so the control said one thing and the
                     // player said another — and the moment the sequence ran out, playback carried
                     // on in plain order without anything having changed on screen.
                     r.np.shuffle = true;
-
-                    // HONOUR THE GENRE FILTER. The band's caption reads "Shuffle Rock" and says how
-                    // many tracks that is, but shuffle_tracks resolves straight out of the DB and
-                    // knew nothing about the filter — so the button promised a filtered shuffle and
-                    // played the whole library. A control that lies about the next hour of
-                    // listening is the exact defect class the shuffle toggle was fixed for.
-                    let seq = match r.app.library().filter_genre {
-                        None => seq,
-                        Some(g) => {
-                            let keep: Vec<cinder_db::Track> =
-                                seq.into_iter().filter(|t| t.genre_id == Some(g)).collect();
-                            // Never hand over an EMPTY sequence: if the filter and the scope do not
-                            // intersect (a genre with no album, say) it is better to do nothing and
-                            // say so than to silently start playing something unrelated.
-                            if keep.is_empty() {
-                                eprintln!("cinder-ffi: Shuffle({scope:?}): nothing matches the \
-                                           active genre filter — ignored");
-                                return None;
-                            }
-                            keep
-                        }
-                    };
                     set_pending(r, seq, 0);
+                    // AND RECORD THE ORDER IT REPLACED, so the toggle can be turned back off.
+                    // Every other shuffle entry point does this (`PlayIndex`, `PlayPlaylist*`,
+                    // `ShufflePlaylist`, `ShuffleArtist`); the four Library bands did not, which
+                    // left shuffle a one-way door on the path most likely to be taken — press
+                    // "Shuffle all songs", then press the shuffle icon to turn it off, and the
+                    // icon went dark while the sequence stayed permuted for the rest of the
+                    // session. `note_pre_shuffle` refuses an order that does not describe the
+                    // context it was just handed, so a scope that resolved to nothing is safe.
+                    r.app.note_pre_shuffle(pre);
                     8
                 }
                 None => {
-                    eprintln!("cinder-ffi: Shuffle({scope:?}): nothing to play — ignored");
+                    eprintln!("cinder-ffi: Shuffle({scope:?}): nothing to play under the active \
+                               filter — ignored");
                     return None;
                 }
             }
@@ -2769,17 +2900,21 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 // only permute context entries AFTER it. So the audible track is identical whether
                 // the sequence is rebuilt now or at the boundary; the only difference is the gap.
                 //
-                // Not playing = nothing to interrupt, so take the immediate path there and keep
-                // the toggle instant in the case where it is free.
-                if r.np.playing {
-                    r.queue_pending = true;
-                    return None;
-                }
-                let current = r.last_track.as_ref().map(|t| t.filename.clone()).unwrap();
-                r.pending_play = play_order_uris(r, &current);
-                r.pending_play_start = 0;
-                r.queue_flush = true;
-                return Some(36);
+                // NOT PLAYING = NOTHING TO INTERRUPT, AND NOTHING TO START EITHER.
+                //
+                // This used to take an "immediate path" here: build the sequence, set
+                // `queue_flush`, and return 36 — which the shell answers with
+                // `play_pending_sequence`, and that ends in `ChangePlayState(Play)` plus
+                // `set_transport(true)`. So pressing SHUFFLE on a paused player STARTED THE MUSIC.
+                // It is not a transport control, and on a device you carry in a pocket a control
+                // that begins playing when you did not ask it to is the worst kind of surprise.
+                //
+                // Deferring costs nothing here either: `queue_shuffle` and `unshuffle_context`
+                // leave the current track alone by construction, so the reordered tail only has to
+                // be in place before PlayerService reaches it — and the next ▶ hands over a fresh
+                // sequence anyway (the resume path, or the boundary flush below).
+                mark_queue_pending(r);
+                return None;
             }
             return None;
         }
@@ -2818,7 +2953,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // a measured 360–450 ms pause/seek/play cycle, which made adding a song visibly lag.
             // Hold the edit until the last couple of seconds of the current song instead: the new
             // sequence is then in place before PlayerService selects the next context track.
-            r.queue_pending = true;
+            mark_queue_pending(r);
             return None;
         }
         Action::Restart => 24,              // PowerMgrServiceClient::Reboot — back into Cinder
@@ -3188,6 +3323,63 @@ pub extern "C" fn cinder_get_battery_care() -> libc::c_int {
 /// shell drains `cinder_pending_play_*` and hands the result to PlayerService exactly as it does
 /// for a normal play request — the sequence is rebuilt with the track that just started at index 0
 /// followed by the user queue.
+/// Is the track playing right now the LAST entry of the sequence the shell handed PlayerService?
+///
+/// The queue-end signal repeat-all watches for — the position pinned at the duration with
+/// `playing` gone 1 → 0 — is the same shape a PAUSE inside the final seconds of ANY track makes.
+/// Without this the shell could not tell the two apart, so pausing 1 s before the end of track 3
+/// of 12 restarted the whole queue from track 1.
+///
+/// `pending_play` is the sequence as HANDED OVER and is not rewritten as playback advances, so its
+/// last entry is the final track PlayerService was given. Two entries sharing a filename make this
+/// answer true early; the cost is a lap that could have waited, not a missed one.
+#[no_mangle]
+pub extern "C" fn cinder_on_last_track() -> libc::c_int {
+    let guard = cell().lock().unwrap();
+    let Some(r) = guard.as_ref() else { return 0 };
+    match (r.last_track.as_ref(), r.pending_play.last()) {
+        (Some(t), Some(last)) => (*last == t.filename) as libc::c_int,
+        _ => 0,
+    }
+}
+
+/// Build the sequence a REPEAT-ALL lap should play, into the ordinary pending-play channel.
+/// 1 = there is one, 0 = nothing to repeat.
+///
+/// The shim's own `cinder_audio_restart_sequence` replays the URI list it last handed over, and
+/// that is NOT the context whenever a queue edit has been flushed: a flush hands over
+/// `[current] + queue + context[idx+1..]`, so after swipe-queueing one song at track 5 of an
+/// album, repeat-all looped tracks 5-12 for ever and tracks 1-4 never played again. Cinder holds
+/// the whole context; a lap is that, from the top, with anything still queued ahead of it —
+/// exactly the order the queue promises on any other track boundary.
+#[no_mangle]
+pub extern "C" fn cinder_repeat_all_prepare() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    if r.app.context().is_empty() && r.app.queue().is_empty() {
+        return 0;
+    }
+    let index: std::collections::HashMap<i64, String> = r
+        .db
+        .as_ref()
+        .and_then(|db| db.tracks(cinder_db::Sort::Artist).ok())
+        .map(|v| v.into_iter().map(|t| (t.object_id, t.filename)).collect())
+        .unwrap_or_default();
+    let by_id = |row: &cinder_ui::model::SongRow| index.get(&row.object_id).cloned();
+    let uris = play_order(
+        None,
+        r.app.queue().iter().chain(r.app.context().iter()).map(by_id),
+    );
+    if uris.is_empty() {
+        return 0;
+    }
+    r.pending_play = uris;
+    r.pending_play_start = 0;
+    // A lap replaces the sequence outright, so nothing is owed against the old one.
+    r.queue_pending = false;
+    1
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_take_queue_flush() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
@@ -4679,12 +4871,17 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
 
     let (mut ctx_ids, mut q_ids, mut pre) = (Vec::new(), Vec::new(), None);
     let mut idx = 0usize;
+    // The user pick that was PLAYING when the player went down. It is in neither list — a pick
+    // leaves the queue when it starts — so without this the resume came back on the context row
+    // underneath it, which is the track that played BEFORE the pick.
+    let mut pick_id: Option<i64> = None;
     for (k, v) in conf_lines(&seq_body) {
         match k {
             "ctx" => ctx_ids = id_list(v),
             "q" => q_ids = id_list(v),
             "pre" => pre = Some(id_list(v)),
             "idx" => idx = v.parse::<usize>().unwrap_or(0),
+            "pick" => pick_id = v.parse::<i64>().ok(),
             _ => {}
         }
     }
@@ -4712,16 +4909,20 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     // whatever was playing, and after "Shuffle all songs" that is the entire library, on the boot
     // path. Resolving both lists from one scan removes the shape rather than relying on the bound.
     let Some(db) = r.db.as_ref() else { return 0 };
-    let mut all_ids: Vec<i64> = Vec::with_capacity(ctx_ids.len() + q_ids.len());
+    let mut all_ids: Vec<i64> = Vec::with_capacity(ctx_ids.len() + q_ids.len() + 1);
     all_ids.extend_from_slice(&ctx_ids);
     all_ids.extend_from_slice(&q_ids);
+    all_ids.extend(pick_id);
     let by_id = db.tracks_by_object_ids(&all_ids).unwrap_or_default();
     let resolve = |ids: &[i64]| -> Vec<cinder_db::Track> {
         ids.iter().filter_map(|id| by_id.get(id).cloned()).collect()
     };
     let ctx = resolve(&ctx_ids);
     let queue = resolve(&q_ids);
-    if ctx.is_empty() && queue.is_empty() {
+    // A pick whose file has left the library is simply not restored; the context row under it
+    // then becomes what resumes, which is where playback would have gone next anyway.
+    let pick = pick_id.and_then(|id| by_id.get(&id).cloned());
+    if ctx.is_empty() && queue.is_empty() && pick.is_none() {
         return 0;
     }
 
@@ -4737,12 +4938,15 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
         idx,
         queue.iter().map(song_row_of).collect(),
         pre,
+        pick.as_ref().map(song_row_of),
     );
 
     // What to show, and what the first ▶ will hand PlayerService. The current track leads the
     // sequence for the same reason it does in `play_order_uris`: PlayerService starts at an index
     // into the list it is given, and leading with the current track keeps the two agreeing.
-    let current = ctx.get(idx).or_else(|| queue.first());
+    // A restored PICK is what was audible, so it leads — and the context row it interrupted is
+    // NOT replayed, exactly as it is not replayed while the player is running.
+    let current = pick.as_ref().or_else(|| ctx.get(idx)).or_else(|| queue.first());
     let Some(cur) = current else { return 0 };
     let uris: Vec<String> = std::iter::once(cur.filename.clone())
         .chain(queue.iter().map(|t| t.filename.clone()))
@@ -4770,9 +4974,10 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     r.resume_pending = Some((uris, 0, r.play_pos_ms));
     r.dirty = true;
     eprintln!(
-        "cinder-ffi: resumed {} context + {} queued, at index {} pos {} ms",
+        "cinder-ffi: resumed {} context + {} queued{}, at index {} pos {} ms",
         ctx.len(),
         queue.len(),
+        if pick.is_some() { " (a user pick was playing)" } else { "" },
         idx,
         r.play_pos_ms
     );
@@ -4791,6 +4996,22 @@ pub extern "C" fn cinder_resume_take_pending() -> libc::c_int {
     let mut guard = cell().lock().unwrap();
     let Some(r) = guard.as_mut() else { return 0 };
     let Some((uris, start, pos)) = r.resume_pending.take() else { return 0 };
+    // Anything the user did between the boot and this press — swipe-queued a song, reordered the
+    // queue, pressed shuffle — happened to `App`, not to this snapshot. Rebuild from the live
+    // state when that is so; the current track still leads, so the press still resumes the same
+    // song at the same offset.
+    let uris = if r.resume_stale {
+        r.resume_stale = false;
+        match r.last_track.as_ref().map(|t| t.filename.clone()) {
+            Some(current) => {
+                r.queue_pending = false;
+                play_order_uris(r, &current)
+            }
+            None => uris,
+        }
+    } else {
+        uris
+    };
     if uris.is_empty() {
         return 0;
     }
@@ -4807,6 +5028,7 @@ pub extern "C" fn cinder_resume_take_pending() -> libc::c_int {
 pub extern "C" fn cinder_resume_cancel() {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.resume_pending = None;
+        r.resume_stale = false;
     }
 }
 
@@ -5757,6 +5979,13 @@ mod tests {
     use super::*;
     use crate::likes::liked_load;
 
+    /// "No filter is active" — what `Action::Shuffle` passes when the Library's filter row is on
+    /// ALL. A named function rather than a closure at each call site so the tests below read as
+    /// "this scope, unfiltered".
+    fn keep_all(_: &cinder_db::Track) -> bool {
+        true
+    }
+
     /// STOPWATCH, NOT A TEST. Opt-in profile of the boot-path library build, because the ~4.8 s
     /// of dead time after boot (cinder_db_open at t=2.4 to "restore playback context" at t=7.2,
     /// measured on device 2026-09-04) is a cost nobody has ever broken down. Threading it was
@@ -6145,16 +6374,48 @@ mod tests {
         let all: std::collections::BTreeSet<&str> =
             ["/music/atlas.flac", "/music/box.flac", "/music/harvest.flac"].into_iter().collect();
         for scope in [S::AllSongs, S::ByAlbum, S::ByArtist, S::Playlist] {
-            let uris = uris_of(shuffle_tracks(Some(&db), scope)
-                .unwrap_or_else(|| panic!("{scope:?} empty")));
+            let (seq, pre) = shuffle_tracks(Some(&db), scope, &keep_all)
+                .unwrap_or_else(|| panic!("{scope:?} empty"));
+            let uris = uris_of(seq.clone());
             assert!(!uris.is_empty());
             for u in &uris {
                 assert!(all.contains(u.as_str()), "{scope:?} produced a non-track: {u}");
             }
+            // EVERY scope reports the order it replaced, and it describes exactly the sequence
+            // handed back — `App::note_pre_shuffle` refuses one of a different length, so a scope
+            // that got this wrong would silently leave shuffle a one-way door.
+            let mut a: Vec<i64> = pre.clone();
+            let mut b: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
+            a.sort_unstable();
+            b.sort_unstable();
+            assert_eq!(a, b, "{scope:?}: the pre-shuffle order is not this sequence");
         }
         // AllSongs is the whole library; ByAlbum keeps every track too (it only reorders albums).
-        assert_eq!(shuffle_tracks(Some(&db), S::AllSongs).unwrap().len(), 3);
-        assert_eq!(shuffle_tracks(Some(&db), S::ByAlbum).unwrap().len(), 3);
+        assert_eq!(shuffle_tracks(Some(&db), S::AllSongs, &keep_all).unwrap().0.len(), 3);
+        assert_eq!(shuffle_tracks(Some(&db), S::ByAlbum, &keep_all).unwrap().0.len(), 3);
+    }
+
+    /// The band's caption names the active filter, so the band has to obey it — on BOTH axes. The
+    /// Hi-Res one was never wired in: with "Shuffle Hi-Res" on the glass, every scope shuffled the
+    /// whole library.
+    #[test]
+    fn a_shuffle_band_plays_only_what_the_filter_leaves() {
+        use cinder_ui::nav::ShuffleScope as S;
+        let db = fixture_db();
+        // A filter nothing survives: every scope must DECLINE rather than fall back to the
+        // unfiltered library, because starting something the caption did not promise is worse
+        // than doing nothing and saying so.
+        let keep_none = |_: &cinder_db::Track| false;
+        for scope in [S::AllSongs, S::ByAlbum, S::ByArtist, S::Playlist] {
+            if let Some((seq, _)) = shuffle_tracks(Some(&db), scope, &keep_none) {
+                panic!("{scope:?} ignored the filter: {} tracks", seq.len());
+            }
+        }
+        // …and a predicate that keeps one track keeps exactly that one.
+        let one = |t: &cinder_db::Track| t.filename == "/music/harvest.flac";
+        let (seq, pre) = shuffle_tracks(Some(&db), S::AllSongs, &one).expect("one survivor");
+        assert_eq!(uris_of(seq), vec!["/music/harvest.flac".to_string()]);
+        assert_eq!(pre.len(), 1);
     }
 
     /// "TRACKS IN SEQUENCE": ByAlbum may reorder albums but must never split one up or reorder
@@ -6165,7 +6426,7 @@ mod tests {
         let db = fixture_db();
         // Album 10 = atlas then box (series_no 1,2); album 11 = harvest alone.
         for _ in 0..25 {
-            let uris = uris_of(shuffle_tracks(Some(&db), S::ByAlbum).unwrap());
+            let uris = uris_of(shuffle_tracks(Some(&db), S::ByAlbum, &keep_all).unwrap().0);
             let atlas = uris.iter().position(|u| u == "/music/atlas.flac").unwrap();
             let boxs = uris.iter().position(|u| u == "/music/box.flac").unwrap();
             assert_eq!(boxs, atlas + 1, "album 10 was split or reordered: {uris:?}");
@@ -6213,6 +6474,48 @@ mod tests {
         assert_ne!(on, uris, "queue came back in its original order");
     }
 
+    /// The play order handed to PlayerService: the audible track leads, then the user's picks,
+    /// then the context tail — and NO TWO ADJACENT ENTRIES ARE THE SAME FILE.
+    ///
+    /// Swipe-queueing the song you are listening to produced `[A, A, …]`. PlayerService plays A
+    /// twice, and the second copy does not change the URI — which is the only thing the shell
+    /// reports a track start on — so `App::track_started` never ran, the pick was never consumed
+    /// out of the queue, and the next flush put it back: a phantom Up Next row and a song that
+    /// played twice, every lap, for ever.
+    #[test]
+    fn the_play_order_never_repeats_a_file_back_to_back() {
+        let u = |s: &str| Some(s.to_string());
+        // The current track queued against itself collapses to one entry.
+        assert_eq!(
+            play_order(Some("/a.flac"), [u("/a.flac"), u("/b.flac")]),
+            vec!["/a.flac".to_string(), "/b.flac".to_string()],
+        );
+        // …and so does a doubled pick.
+        assert_eq!(
+            play_order(Some("/a.flac"), [u("/b.flac"), u("/b.flac"), u("/c.flac")]),
+            vec!["/a.flac".to_string(), "/b.flac".to_string(), "/c.flac".to_string()],
+        );
+        // But a DELIBERATE repeat with something in between is kept: the URI changes at each
+        // boundary there, so each copy is reported and consumed exactly as it should be.
+        assert_eq!(
+            play_order(Some("/a.flac"), [u("/b.flac"), u("/a.flac")]),
+            vec!["/a.flac".to_string(), "/b.flac".to_string(), "/a.flac".to_string()],
+        );
+        // Rows that no longer resolve to a file drop out rather than shortening the list around
+        // them — and dropping one must not make its neighbours adjacent duplicates by accident.
+        assert_eq!(
+            play_order(Some("/a.flac"), [None, u("/a.flac"), None, u("/b.flac")]),
+            vec!["/a.flac".to_string(), "/b.flac".to_string()],
+        );
+        // No lead at all — a repeat-all lap, which starts from the top of the context.
+        assert_eq!(
+            play_order(None, [u("/a.flac"), u("/a.flac"), u("/b.flac")]),
+            vec!["/a.flac".to_string(), "/b.flac".to_string()],
+        );
+        assert!(play_order(None, [None, None]).is_empty());
+        assert!(play_order(None, []).is_empty());
+    }
+
     /// Degenerate inputs must not panic — a panic here aborts the process, and on this device an
     /// abort is a reboot.
     #[test]
@@ -6230,7 +6533,7 @@ mod tests {
     /// No DB → no action (rather than an empty queue).
     #[test]
     fn shuffle_without_db_is_ignored() {
-        assert!(shuffle_tracks(None, cinder_ui::nav::ShuffleScope::AllSongs).is_none());
+        assert!(shuffle_tracks(None, cinder_ui::nav::ShuffleScope::AllSongs, &keep_all).is_none());
     }
 
     /// Unknown id, or no DB at all → no action, rather than handing the shell an empty sequence.

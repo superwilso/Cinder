@@ -364,6 +364,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                 tracks: &tracks,
                 current: (!tracks.is_empty()).then(|| app.track.min(tracks.len() - 1)),
                 queue: &[],
+                pick: None,
                 lib: &app.lib,
                 scroll_px: 0,
                 drag: None,
@@ -416,7 +417,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                 .collect();
             pairing::render(c, theme, fonts, &paired, &[], None, None, false, 0.0, 0)
         }
-        Screen::Receiver => receiver::render(c, theme, fonts, app.rx),
+        Screen::Receiver => receiver::render(c, theme, fonts),
         Screen::Fm => fm::render(c, theme, fonts, &fm::Fm {
             khz: 97300, playing: true,
             stations: [0; fm::PRESETS], n_stations: 0,
