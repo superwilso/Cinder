@@ -143,7 +143,7 @@ pub fn render(
         y += h;
     }
     c.clear_clip();
-    scrollbar(c, t, TOP, scroll, content_h(f, t, rows), sbar_active);
+    scrollbar(c, t, TOP, BOTTOM, scroll, content_h(f, t, rows), sbar_active);
 }
 
 #[cfg(test)]

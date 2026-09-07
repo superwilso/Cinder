@@ -1054,7 +1054,7 @@ mod tests {
                     assert_eq!(got.title, expected.title, "{n}");
                     assert_eq!(got.filename, expected.filename, "{n}");
                 }
-                None => assert!(batch.get(*n).is_none(), "{n}: batch invented a match"),
+                None => assert!(!batch.contains_key(*n), "{n}: batch invented a match"),
             }
         }
     }
@@ -1074,7 +1074,7 @@ mod tests {
                     assert_eq!(got.title, expected.title);
                     assert_eq!(got.filename, expected.filename);
                 }
-                None => assert!(batch.get(id).is_none(), "{id}: batch invented a match"),
+                None => assert!(!batch.contains_key(id), "{id}: batch invented a match"),
             }
         }
     }

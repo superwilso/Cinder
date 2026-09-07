@@ -359,12 +359,22 @@ pub fn render(
         }
     }
 
-    // Footer: the two limits that are real, stated rather than hidden.
+    // Footer: what this screen can do that is not visible from it.
+    //
+    // THE SECOND LINE USED TO READ "NFC TAP-TO-PAIR IS NOT WIRED YET", AND IT WAS TRUE WHEN IT WAS
+    // WRITTEN. NFC was wired on 2026-08-17 — the shell runs a listener, and a tap dispatches on the
+    // link state (already linked → disconnect, bonded → connect, unknown → pair then connect). The
+    // line was never revisited, so this screen went on telling the user a working feature was
+    // broken, while the Bluetooth screen one push away advertised the same feature as available
+    // ("NFC · TOUCH DEVICE TO REAR PANEL"). Two screens, one feature, opposite claims.
+    //
+    // A caption that says a feature does not work is not a harmless leftover: it is the reason
+    // nobody tries it. Found by the 2026-09-06 UI audit.
     hline(c, FOOT_Y, t.line);
     crate::widgets::draw_fit(c, f, 22.0, 760.0, "PIN AND CONFIRM PROMPTS APPEAR HERE WHEN A DEVICE ASKS",
                &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1), 458.0);
     icons::rx(c, 30.0, 776.0, 14.0, t.faint);
-    crate::widgets::draw_fit(c, f, 46.0, 780.0, "NFC TAP-TO-PAIR IS NOT WIRED YET",
+    crate::widgets::draw_fit(c, f, 46.0, 780.0, "OR TAP THE DEVICE TO THE REAR PANEL (NFC)",
                &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.08), 458.0);
 }
 

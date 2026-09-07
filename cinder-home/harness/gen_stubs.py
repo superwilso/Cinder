@@ -35,6 +35,13 @@ DECL = re.compile(r'^\s*((?:const\s+)?'
 
 ZERO = {'void': None, 'float': '0.0f', 'double': '0.0'}
 
+# Hand-written in harness.cpp instead of generated. A generated stub returns a scripted int and
+# does nothing else, which is exactly wrong for a call whose ANSWER is in its out-parameters:
+# `cinder_audio_position(&cur, &tot)` left both at the caller's -1, so `tot > 0` was false and the
+# whole end-of-queue half of poll_now_playing — repeat-all, the transport glyph after a queue runs
+# out — was unreachable from any scenario. The fake serves a scriptable (position, duration) pair.
+HAND_WRITTEN = {'cinder_audio_position'}
+
 def default_return(rt):
     rt = rt.strip()
     if rt == 'void':
@@ -63,7 +70,7 @@ def main():
             if not m:
                 continue
             rt, name, args = m.group(1).strip(), m.group(2), m.group(3).strip()
-            if not name.startswith('cinder_') or name in seen:
+            if not name.startswith('cinder_') or name in seen or name in HAND_WRITTEN:
                 continue
             seen.add(name)
             decls.append((rt, name, args))

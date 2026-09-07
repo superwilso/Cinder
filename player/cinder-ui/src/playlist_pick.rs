@@ -44,7 +44,7 @@ pub fn hit_row(rows: usize, scroll_px: i32, y: i32) -> Option<usize> {
 
 /// "Add to playlist": row 0 is always NEW PLAYLIST, then the user's own lists.
 pub fn render_targets(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, track: &str,
-                      targets: &[Target], sony_count: usize, scroll_px: i32) {
+                      targets: &[Target], sony_count: usize, scroll_px: i32, sbar_active: bool) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, title, Some(&fit_caption(f, track, t)));
     let rows = targets.len() + 1;
@@ -75,12 +75,19 @@ pub fn render_targets(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, track
         y += ROW_H;
     }
     c.clear_clip();
+    // THE SCROLLBAR THIS FILE'S OWN DOC PROMISES. It listed "the scrollbar" among the Library
+    // idioms these pickers borrow, and drew none — while `nav::sbar_metrics` registered both
+    // pickers as scrollbar-DRAG screens, so the right-hand strip claimed vertical drags with
+    // nothing on the glass to say why a drag started there behaved differently from one started
+    // anywhere else. Found by the 2026-09-06 UI audit.
+    crate::library::scrollbar(c, t, TOP, BOTTOM, scroll_px, content_h(rows), sbar_active);
     footer(c, t, f, sony_count);
 }
 
 /// "Add tracks": every song in the library, with the ones already in the playlist ticked.
 pub fn render_tracks(c: &mut Canvas, t: &Theme, f: &FontSet, playlist: &str, songs: &[&SongRow],
-                     is_in: &dyn Fn(usize) -> bool, scroll_px: i32, added: usize) {
+                     is_in: &dyn Fn(usize) -> bool, scroll_px: i32, added: usize,
+                     sbar_active: bool) {
     c.fill(t.bg);
     let caption = if added > 0 { format!("{added} ADDED") } else { "TAP TO ADD".to_string() };
     crate::chrome::header(c, t, f, playlist, Some(&caption));
@@ -111,6 +118,7 @@ pub fn render_tracks(c: &mut Canvas, t: &Theme, f: &FontSet, playlist: &str, son
         y += ROW_H;
     }
     c.clear_clip();
+    crate::library::scrollbar(c, t, TOP, BOTTOM, scroll_px, content_h(songs.len()), sbar_active);
     crate::widgets::center(c, f, 240.0, (BOTTOM + 26) as f32,
                            "BACK WHEN YOU ARE DONE",
                            &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16));
