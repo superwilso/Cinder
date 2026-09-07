@@ -665,6 +665,7 @@ extern bool g_np_poll_now;  // defined with the pump state: force the next now-p
 extern bool g_house_due;    // defined with the pump state: run the ~1 Hz housekeeping on the next frame
 void sync_volume_from_hw(); // defined below (volume backend); seeds the UI level from the mixer
 void bt_resync_volume(const char* why); // ditto — re-asserts the UI level if the mixer drifted
+void volume_forget_last_write();  // defined below: drop the write-dedupe (see bt_resync_volume)
 void apply_volume();        // defined below (volume backend); writes the UI level to the mixer
 
 // Start/stop Sony's spectrum analyzer to match what the screen is actually showing.
@@ -2081,6 +2082,19 @@ void bt_resync_volume(const char* why) {
     std::snprintf(m, sizeof m, "volume: resync after %s — hw %d/120 != UI %d/120, re-applying",
                   why, have, want);
     clog_(m);
+    // DROP THE DEDUPE FIRST, or this whole function is a log line and nothing else.
+    //
+    // apply_volume() skips the write when the level equals `g_vol_written`, its memory of what it
+    // last sent. Every resync path arrives here with the UI level unchanged — that is the entire
+    // point, the UI is right and the hardware drifted — so the dedupe matched every time and the
+    // re-apply silently did nothing. MEASURED on device 2026-09-07: the same line, three times in
+    // one boot, hardware still wrong after each.
+    //     volume: resync after screen wake — hw 63/120 != UI 94/120, re-applying   (t=587s)
+    //     volume: resync after screen wake — hw 63/120 != UI 94/120, re-applying   (t=802s)
+    //     volume: resync after jack change — hw 63/120 != UI 94/120, re-applying   (t=1131s)
+    // The mixer read 63 throughout. We have just read the hardware and it disagrees with the cache,
+    // which makes the cache provably stale — so it goes, and the write happens.
+    volume_forget_last_write();
     apply_volume();
 }
 
@@ -2096,6 +2110,13 @@ void bt_resync_volume(const char* why) {
 const long VOL_WRITE_EVERY_MS = 150;
 int  g_vol_pending = -1;      // level waiting to be written (-1 = nothing pending)
 int  g_vol_written = -1;      // last level actually written (dedupe)
+
+// Forget what we last wrote, so the next apply_volume() actually writes.
+//
+// The dedupe in apply_volume() is a claim about the HARDWARE, made from memory. `bt_resync_volume`
+// is the one caller that has just disproved that claim by reading the mixer back, so it drops the
+// cache rather than arguing with it. Same shape as fx_cache_drop() for the effect chain.
+void volume_forget_last_write() { g_vol_written = -1; }
 long g_vol_write_ms = 0;
 
 // Do the write. Split out so both the rate-limited path and the trailing flush share it.
@@ -7631,6 +7652,41 @@ void jack_watch_tick() {
         clog_(m);
         return;
     }
+    // ANY jack edge resyncs the volume — not just the unplug the pause below cares about.
+    //
+    // A jack transition is a `funcarch::OutputDevice` change, and Sony's volume framework reacts to
+    // one by re-applying ITS OWN cached level to the codec master: `VolumeAdlerOut::Reset` reads
+    // the value it stashed at `this+0xf8` on its last `SetVolume` and pushes it through
+    // `SetMasterVolume` (analysis/RE_volume_service.md §5). Cinder writes the mixer directly and so
+    // never updates that cache, which means the two numbers drift apart and Sony's wins at every
+    // route change.
+    //
+    // MEASURED on this device 2026-09-07 — Cinder's own log caught it:
+    //     volume: resync after screen wake — hw 63/120 != UI 94/120, re-applying
+    // 63 was Sony's remembered level, 94 was ours, and the drift sat there until a screen wake
+    // 587 s into the boot happened to notice. This is also, almost certainly, the mechanism behind
+    // the older "Bluetooth volume can become disconnected after it reconnects" report that
+    // `bt_resync_volume` was written for: same cause, a different route change.
+    //
+    // Verify-first, so it reads the mixer and only writes on a genuine mismatch — it cannot fight
+    // a level the user just set, and costs one read when everything is already in step.
+    //
+    // ON THE EDGE ONLY. This tick is the ~1 Hz housekeeping one, so an ungated call here is a mixer
+    // read and — while the two levels disagree, which can be the whole session — a log line EVERY
+    // SECOND. The first version of this cost 17,862 lines in the harness's `log-volume` scenario
+    // against a budget of 300, which is the flash-wear rule in retry_log() restated as a test. A
+    // transition is the only thing Sony's Reset reacts to, so it is the only thing worth reacting
+    // to here.
+    //
+    // The 1 Hz rate is also why a quick out-and-back on the cable can go unseen: both edges land
+    // between two samples and `prev == now`. That is a limit of the polling, not of the resync —
+    // the levels are still reconciled on the next screen wake, and a real unplug lasts longer than
+    // a second.
+    if (prev != now) {
+        run_guarded("jack: resync the 3.5 mm level", 8,
+                    []() { bt_resync_volume("jack change"); });
+    }
+
     if (!cinder_jack_should_pause(prev, now)) return;   // see src/jack_edge.h
     clog_("jack: headphones UNPLUGGED");
     if (g_fm_on) clog_("jack: the FM aerial is that cable — reception is gone until it is back");

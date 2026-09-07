@@ -3985,7 +3985,14 @@ static int avls_job() {
     // the volume is indistinguishable from a field that merely echoes it. So move the volume
     // through Sony's own setter and read the threshold again — if it follows, it is an echo; if it
     // holds, it is a real cap. Restores the level it found before exiting.
-    if (g_avls_set >= 0) {
+    if (g_avls_set >= 0 && vol == 0) {
+        // REFUSED. The restore below puts back `vol`, and on any route that is not the jack
+        // `GetVolume()` is the inherited stub that always returns 0 (RE_volume_service.md §2) — so
+        // "restoring" would write SILENCE and call it success. A 0 here means the active output is
+        // Bluetooth or USB-DAC; unplug/disconnect and re-run on the jack.
+        clog_("avls: GetVolume()==0 — not the jack route, refusing the write test (the restore "
+              "would write 0). Re-run on the 3.5 mm jack.");
+    } else if (g_avls_set >= 0) {
         std::fprintf(stderr, "[cinder-probe] avls: --- SetVolume(%d), then re-read ---\n", g_avls_set);
         wd_arm(8);
         bool sv = vs.SetVolume((unsigned)g_avls_set);
@@ -4007,6 +4014,12 @@ static int avls_job() {
         vs.SetVolume(vol);
         wd_disarm();
         std::fprintf(stderr, "[cinder-probe] avls: restored volume to %u\n", vol);
+        // Say plainly whose number that is. Sony's cached level and Cinder's UI level are two
+        // different things (that is the whole finding in §7b), so this restore returns the mixer to
+        // SONY's remembered value, which may not be where Cinder had it. Cinder's own
+        // `bt_resync_volume` corrects it on the next screen wake, jack edge or BT disconnect.
+        clog_("avls: NOTE — that restore is Sony's remembered level, not Cinder's UI level. If they "
+              "differ, Cinder resyncs on the next screen wake / jack edge / BT disconnect.");
     }
 
     // The verdict, stated so the log answers the question without needing the reader to interpret
