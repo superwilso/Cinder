@@ -8939,11 +8939,6 @@ mod tests {
         }
     }
 
-    /// Up Next reserves the bar's 64 px (`up_next::LIST_BOTTOM` is derived from `NP_BAR_H`), so it
-    /// must also DRAW there — otherwise the space is a black bar under the queue, which is how this
-    /// was reported. Pins both halves of the bar's behaviour on this screen, not just that it is
-    /// listed.
-    #[test]
     /// THE RULE, not the instance: a screen whose list stops at `library::list_bottom()` has
     /// reserved the Now Playing bar's 64 px, so it must draw the bar.
     ///

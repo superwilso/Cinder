@@ -403,6 +403,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             paired: &[],
             connecting: false,
             busy_phase: 0.0,
+            fine_volume: "OFF",
         }),
         Screen::Pairing => {
             // The sim has no radio, so its mock "paired" set stands in for GetPairedDeviceInfo.
