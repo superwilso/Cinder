@@ -3670,6 +3670,13 @@ pub extern "C" fn cinder_set_volume(level: libc::c_int) {
     }
 }
 
+/// Bottom-edge swipe up: open the Shelf. Returns 1 if the UI took the gesture, 0 if it declined
+/// (locked, onboarding, or the Shelf is already open) so the shell can let the contact scroll.
+#[no_mangle]
+pub extern "C" fn cinder_shelf_swipe() -> libc::c_int {
+    cell().lock().unwrap().as_mut().map_or(0, |r| r.app.shelf_swipe_open() as libc::c_int)
+}
+
 /// Is the user's volume limit on? The shell clamps to Sony's AVLS threshold when it is.
 ///
 /// The cap is NOT stored here. Sony's threshold is per output device (`adapt=1` on this unit), so

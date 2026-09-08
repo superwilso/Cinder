@@ -449,6 +449,9 @@ int  cinder_get_volume(void);
 /* Seed the UI volume from the device's real level (raw 0..120 steps), no HUD pop. Call at boot
  * after restoring the saved level (or reading the mixer), so Vol± nudges from the actual level. */
 void cinder_set_volume(int level);
+/* Bottom-edge swipe UP opens the Shelf. Returns 1 if the UI took it, 0 if it declined (locked,
+ * onboarding, or already open) — on 0 the shell should let the contact scroll as usual. */
+int  cinder_shelf_swipe(void);
 /* Is the user's volume limit switched on? The CAP itself is Sony's (below); this is only the
  * on/off the Settings row owns. Persisted with the rest of the settings. */
 int  cinder_get_volume_limit(void);

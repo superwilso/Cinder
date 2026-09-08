@@ -1548,6 +1548,22 @@ impl App {
         self.shelf_open = true;
     }
 
+    /// Open the Shelf from an upward swipe off the bottom edge of the screen.
+    ///
+    /// A separate entry point from `open_shelf` because a GESTURE has to be able to decline. The
+    /// Shelf is a global overlay, but it is wrong in three places: over the lock screen (nothing
+    /// should be reachable before unlocking), during onboarding (the pager owns vertical space and
+    /// the user has nowhere to go yet), and when it is already open (a second swipe should not
+    /// re-open what it might have been trying to dismiss). Returns whether it took the gesture, so
+    /// the shell can fall back to a scroll if it did not.
+    pub fn shelf_swipe_open(&mut self) -> bool {
+        if self.locked || self.shelf_open || self.current() == Screen::Onboarding {
+            return false;
+        }
+        self.open_shelf();
+        true
+    }
+
     /// Whether the Shelf overlay is showing (the shell can use this, e.g. to keep painting).
     pub fn shelf_is_open(&self) -> bool {
         self.shelf_open
@@ -11787,5 +11803,38 @@ mod tests {
         assert!(a.set_bt_connected(None));
         assert_eq!(a.bt_connected(), None);
         assert!(a.bt_link_known());
+    }
+}
+
+#[cfg(test)]
+mod shelf_swipe_tests {
+    use super::*;
+
+    /// The bottom-edge swipe opens the Shelf from an ordinary screen.
+    #[test]
+    fn a_bottom_edge_swipe_opens_the_shelf() {
+        let mut a = App::unlocked();
+        assert!(!a.shelf_is_open());
+        assert!(a.shelf_swipe_open(), "the gesture should have been taken");
+        assert!(a.shelf_is_open());
+    }
+
+    /// It declines rather than stacking when the Shelf is already up — a second swipe on an open
+    /// Shelf is far more likely to be someone trying to dismiss it than to open it again.
+    #[test]
+    fn a_second_swipe_is_declined_while_the_shelf_is_open() {
+        let mut a = App::unlocked();
+        assert!(a.shelf_swipe_open());
+        assert!(!a.shelf_swipe_open(), "must decline, so the shell can let the contact scroll");
+        assert!(a.shelf_is_open(), "and must not have closed it either");
+    }
+
+    /// Locked means locked: nothing should be reachable behind the lock screen by gesture.
+    #[test]
+    fn the_lock_screen_declines_the_gesture() {
+        let mut a = App::unlocked();
+        a.push_for_test(Screen::Lock);
+        assert!(!a.shelf_swipe_open(), "the Shelf must not open over the lock screen");
+        assert!(!a.shelf_is_open());
     }
 }
