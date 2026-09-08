@@ -645,7 +645,7 @@ pub struct App {
     /// Up Next: pixel scroll of the USER queue, and the row being dragged to a new position (the
     /// grab-handle gesture). `None` between drags.
     queue_scroll_px: i32,
-    queue_drag: Option<crate::up_next::QueueDrag>,
+    row_drag: Option<crate::up_next::RowDrag>,
     /// The sequence that is PLAYING — the album, playlist or shuffle scope resolved when the user
     /// started it — and where inside it the current track sits. Kept SEPARATE from `queue`, which
     /// is the user's own picks: playing an album does not "queue" it, it sets the context, and a
@@ -1104,7 +1104,7 @@ impl Default for App {
             swipe_row: None,
             swipe_live: false,
             queue_scroll_px: 0,
-            queue_drag: None,
+            row_drag: None,
             context: Vec::new(),
             context_idx: 0,
             pre_shuffle: None,
@@ -1923,7 +1923,7 @@ impl App {
         // longer mentions the first time shuffle went off.
         self.pre_shuffle = pre.filter(|p| p.len() == self.context.len());
         self.queue_scroll_px = 0;
-        self.queue_drag = None;
+        self.row_drag = None;
         self.queue_follow = true;
         self.up_next_cur = None;
         self.up_next_pick = None;
@@ -3983,30 +3983,54 @@ impl App {
         if self.locked || self.shelf_open || self.confirm.is_some() {
             return false;
         }
-        // Only the USER-QUEUE rows reorder. The album rows sharing this list are the album's own
-        // order, which is not ours to rewrite — and the layout is what tells the two apart now.
-        if self.current() != Screen::UpNext || self.queue.is_empty() {
+        // Up Next is the only screen with reorderable rows on it. What is reorderable THERE is
+        // decided by the slot under the finger, below — it used to also demand a non-empty queue,
+        // which was right while the user's picks were the only rows that moved and is wrong now
+        // that NEXT FROM moves too: an album playing with nothing hand-queued is exactly the case
+        // where rearranging what is coming up is most useful.
+        if self.current() != Screen::UpNext {
             return false;
         }
         if require_grip && !crate::up_next::queue_grip_hit(x) {
             return false;
         }
         let _ = x;
-        let Some(crate::up_next::Slot::Queued(from)) =
-            self.up_next_layout().at(y, self.queue_scroll_px)
-        else {
-            return false;
+        let lay = self.up_next_layout();
+        // BOTH reorderable sections, and which one this is decides everything after.
+        //
+        // NEXT FROM reorders too — it is the rest of what is going to play, and being unable to
+        // move it is the difference between a queue you can see and a queue you can arrange. Only
+        // the UPCOMING rows: history has already played, and the playing row is not a position in
+        // a list, it is the present. Because only rows strictly after the current one can move,
+        // `context_idx` cannot be disturbed by a reorder, which is what makes this safe to do to
+        // a live sequence.
+        //
+        // The HANDLE stays queue-only. It is drawn on queue rows and not on album rows, and a
+        // strip that lifts a row where nothing indicates it would be a trap. A hold has no such
+        // problem: it is the same gesture everywhere and it announces itself by lifting the row.
+        let (list, slot, from) = match lay.at(y, self.queue_scroll_px) {
+            Some(crate::up_next::Slot::Queued(i)) => {
+                (crate::up_next::DragList::Queue, crate::up_next::Slot::Queued(i), i)
+            }
+            Some(crate::up_next::Slot::Upcoming(i)) if !require_grip => (
+                crate::up_next::DragList::Upcoming,
+                crate::up_next::Slot::Upcoming(i),
+                // Stored RELATIVE to the first upcoming row: that is the index space the drag, the
+                // slot arithmetic and the renderer all share.
+                i.saturating_sub(lay.upcoming_first()),
+            ),
+            _ => return false,
         };
-        // The row's screen top comes from the LAYOUT, not from `from * RH` — the queue section no
-        // longer starts at the top of the list, so that arithmetic would grab the wrong offset and
-        // the lifted row would jump under the finger.
-        let Some(content_top) = self.up_next_layout().top_of(crate::up_next::Slot::Queued(from))
-        else {
+        // The row's screen top comes from the LAYOUT, not from `from * RH` — neither section
+        // starts at the top of the list, so that arithmetic would grab the wrong offset and the
+        // lifted row would jump under the finger.
+        let Some(content_top) = lay.top_of(slot) else {
             return false;
         };
         let row_top = crate::chrome::HEADER_BOTTOM + content_top - self.queue_scroll_px;
         self.fling_v = 0.0; // a pick-up must not ride a leftover flick
-        self.queue_drag = Some(crate::up_next::QueueDrag {
+        self.row_drag = Some(crate::up_next::RowDrag {
+            list,
             from,
             to: from,
             start_y: y,
@@ -4018,21 +4042,52 @@ impl App {
 
     /// Stream the drag. `dy` is total travel from the gesture's start point.
     pub fn reorder_track(&mut self, dy: i32) {
-        let Some(mut d) = self.queue_drag else { return };
+        let Some(mut d) = self.row_drag else { return };
         d.y = d.start_y + dy;
-        d.to = self.up_next_layout().queue_slot_for(d.float_top(), self.queue_scroll_px);
-        self.queue_drag = Some(d);
+        let lay = self.up_next_layout();
+        // A drag stays inside its own section, so the landing slot is asked of that section only.
+        d.to = match d.list {
+            crate::up_next::DragList::Queue => {
+                lay.queue_slot_for(d.float_top(), self.queue_scroll_px)
+            }
+            crate::up_next::DragList::Upcoming => {
+                lay.upcoming_slot_for(d.float_top(), self.queue_scroll_px)
+            }
+        };
+        self.row_drag = Some(d);
     }
 
-    /// Drop the row. Returns `QueueChanged` when the order actually moved.
+    /// Drop the row. Returns `QueueChanged` when the order actually moved — for either list, since
+    /// both change what PlayerService should be playing next and both are re-issued the same way.
     pub fn reorder_release(&mut self) -> Vec<Action> {
-        let Some(d) = self.queue_drag.take() else { return vec![] };
-        self.queue_move(d.from, d.to)
+        let Some(d) = self.row_drag.take() else { return vec![] };
+        match d.list {
+            crate::up_next::DragList::Queue => self.queue_move(d.from, d.to),
+            crate::up_next::DragList::Upcoming => self.upcoming_move(d.from, d.to),
+        }
+    }
+
+    /// Move one UPCOMING row, by index relative to the first of them. Absolute context indices are
+    /// recovered here, in the one place that needs them.
+    ///
+    /// Everything it touches is strictly after `context_idx`, so the playing track keeps its
+    /// position and nothing that has already played is disturbed. `pre_shuffle` is deliberately
+    /// left alone: it records the order to go back to when shuffle is switched OFF, and a hand
+    /// reorder made while shuffled is an edit to the shuffled order, not to the original one.
+    fn upcoming_move(&mut self, from: usize, to: usize) -> Vec<Action> {
+        let first = self.context_idx + 1;
+        let (a, b) = (first + from, first + to);
+        if from == to || a >= self.context.len() || b >= self.context.len() {
+            return vec![];
+        }
+        let row = self.context.remove(a);
+        self.context.insert(b, row);
+        vec![Action::QueueChanged]
     }
 
     /// The drag in effect, for tests and the host preview.
-    pub fn reorder_state(&self) -> Option<crate::up_next::QueueDrag> {
-        self.queue_drag
+    pub fn reorder_state(&self) -> Option<crate::up_next::RowDrag> {
+        self.row_drag
     }
 
     /// The Up Next slot list. Rebuilt on demand from the three numbers `render` publishes, rather
@@ -4426,7 +4481,7 @@ impl App {
         let row = self.queue.remove(n);
         self.queue.insert(0, row);
         self.queue_scroll_px = 0;
-        self.queue_drag = None;
+        self.row_drag = None;
         self.queue_follow = true;
         true
     }
@@ -4438,7 +4493,7 @@ impl App {
         }
         self.queue.clear();
         self.queue_scroll_px = 0;
-        self.queue_drag = None;
+        self.row_drag = None;
         vec![Action::QueueChanged]
     }
 
@@ -4464,7 +4519,7 @@ impl App {
         // A new sequence is playing from its own first track, so no pick is.
         self.playing_pick = None;
         self.queue_scroll_px = 0;
-        self.queue_drag = None;
+        self.row_drag = None;
         // RE-ARM THE FOLLOW. Every play that does not start from the Up Next screen itself arrives
         // here — a library tap, an album, a playlist, a Shuffle band. Without this, a user who had
         // scrolled Up Next once (which hands the list to them, deliberately) would find it stuck at
@@ -5568,7 +5623,7 @@ impl App {
                     pick: self.playing_pick.as_ref(),
                     lib: &self.lib,
                     scroll_px: self.queue_scroll_px,
-                    drag: self.queue_drag,
+                    drag: self.row_drag,
                     swipe: self.swipe_row,
                     sbar_active: self.sbar_active(),
                 };
@@ -6026,7 +6081,7 @@ impl App {
         // be moved further than one screenful. Time-based like everything else here, and driven
         // from the tick rather than from touch events — a finger held perfectly still delivers no
         // events at all, which is exactly when this has to keep working.
-        if let Some(mut d) = self.queue_drag {
+        if let Some(mut d) = self.row_drag {
             const EDGE_PX: i32 = 70;
             const EDGE_RATE: f32 = 520.0; // px/s at the very edge, tapering to 0 at EDGE_PX in
             let top = crate::chrome::HEADER_BOTTOM;
@@ -6049,7 +6104,7 @@ impl App {
                 // The finger hasn't moved, but the content under it has — so where the row would
                 // land has changed and the parted list must follow.
                 d.to = l.queue_slot_for(d.float_top(), self.queue_scroll_px);
-                self.queue_drag = Some(d);
+                self.row_drag = Some(d);
             }
             animating = true; // the lifted row is live; keep painting it
         }
@@ -10805,6 +10860,71 @@ mod tests {
         let mut d = seed();
         d.go(Screen::NowPlaying);
         assert!(!d.reorder_begin_hold(off_handle, row_y), "only the Up Next queue reorders");
+    }
+
+    /// NEXT FROM reorders too, and only the rows that have not played yet.
+    ///
+    /// Being able to see the rest of the sequence but not arrange it is the difference between a
+    /// queue you can read and a queue you can use. Only the UPCOMING rows move: history has
+    /// already played and the playing row is not a position in a list. Because everything that can
+    /// move is strictly after `context_idx`, a reorder cannot disturb what is playing — which is
+    /// what makes it safe to do to a live sequence.
+    #[test]
+    fn the_next_from_section_reorders_and_never_moves_the_playing_track() {
+        let seed = || {
+            let mut a = unlocked();
+            a.go(Screen::UpNext);
+            let album: Vec<SongRow> = (0..6)
+                .map(|i| SongRow { title: format!("A{i}"), object_id: 10 + i, ..Default::default() })
+                .collect();
+            a.set_play_context(album, 1); // A1 is playing; A2..A5 are upcoming
+            a
+        };
+        let ids = |a: &App| a.context().iter().map(|s| s.object_id).collect::<Vec<_>>();
+
+        // Lift the first upcoming row (A2, relative 0) and drop it two down.
+        let mut a = seed();
+        let lay = a.up_next_layout();
+        assert_eq!(lay.upcoming_first(), 2, "the section starts one past the playing track");
+        assert_eq!(lay.upcoming_len(), 4);
+        let row_y = crate::chrome::HEADER_BOTTOM
+            + lay.top_of(crate::up_next::Slot::Upcoming(2)).expect("A2 is drawn")
+            + 4;
+        assert!(
+            a.reorder_begin_hold(20, row_y),
+            "a hold lifts an upcoming row from anywhere on it"
+        );
+        let d = a.reorder_state().expect("a row is in hand");
+        assert_eq!(d.list, crate::up_next::DragList::Upcoming);
+        assert_eq!(d.from, 0, "indices are relative to the first upcoming row");
+        a.reorder_track(2 * crate::up_next::RH + 4);
+        let acts = a.reorder_release();
+        assert_eq!(acts, vec![Action::QueueChanged], "the sequence has to be re-issued");
+        assert_eq!(ids(&a), vec![10, 11, 13, 14, 12, 15], "A2 moved down two, nothing else moved");
+        // The playing track kept its place, so playback is undisturbed.
+        assert_eq!(a.context_idx(), 1);
+        assert_eq!(a.context()[1].object_id, 11);
+
+        // The grab handle is queue-only: it is not drawn on album rows, so it must not lift one.
+        let mut b = seed();
+        assert!(
+            !b.reorder_begin(crate::up_next::GRIP_X0 + 4, row_y),
+            "no handle on an album row"
+        );
+        assert!(b.reorder_state().is_none());
+
+        // A drop that goes nowhere changes nothing and asks for no re-issue.
+        let mut d2 = seed();
+        assert!(d2.reorder_begin_hold(20, row_y));
+        assert_eq!(d2.reorder_release(), Vec::<Action>::new());
+        assert_eq!(ids(&d2), vec![10, 11, 12, 13, 14, 15]);
+
+        // History is not reorderable: it has already played.
+        let mut h = seed();
+        let hy = crate::chrome::HEADER_BOTTOM
+            + h.up_next_layout().top_of(crate::up_next::Slot::History(0)).expect("A0 is history")
+            + 4;
+        assert!(!h.reorder_begin_hold(20, hy), "a played row does not move");
     }
 
     /// A user pick that is PLAYING owns the NOW PLAYING row.

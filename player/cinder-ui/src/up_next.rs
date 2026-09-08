@@ -44,14 +44,33 @@ pub fn hit_shuffle_chip(x: i32, y: i32) -> bool {
     in_rect(SHUFFLE_CHIP, x, y)
 }
 
-/// A queue row being dragged to a new position.
+/// Which of the two reorderable lists a lifted row belongs to.
+///
+/// A drag NEVER crosses between them. The queue is the user's own picks and the album section is
+/// the play context; moving a row from one to the other is queueing or un-queueing it, which is a
+/// different operation with a different meaning, not a reorder. Keeping them apart also means the
+/// index in `RowDrag` has exactly one interpretation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DragList {
+    /// NEXT IN QUEUE — indices into the user queue.
+    Queue,
+    /// NEXT FROM <album> — indices RELATIVE to the first upcoming row, not absolute context
+    /// indices. Relative because that is what makes the two lists share `drag_order`, the slot
+    /// arithmetic and the renderer; the absolute context index is recovered on release, in the one
+    /// place that needs it.
+    Upcoming,
+}
+
+/// A row being dragged to a new position, in either reorderable list.
 ///
 /// `y`/`grab_off` are in SCREEN space, not content space, so the floating row keeps sitting under
 /// the finger while the list auto-scrolls beneath it — deriving the float from `from * RH` instead
 /// would make it slide away from the thumb the moment the edge-scroll kicked in.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub struct QueueDrag {
-    /// Index in the queue the finger picked up.
+pub struct RowDrag {
+    /// Which list `from`/`to` index into.
+    pub list: DragList,
+    /// Index in that list the finger picked up.
     pub from: usize,
     /// Index it would land on if released now. The other rows part to show this slot.
     pub to: usize,
@@ -65,7 +84,7 @@ pub struct QueueDrag {
     pub grab_off: i32,
 }
 
-impl QueueDrag {
+impl RowDrag {
     /// Top of the floating row, in screen coords.
     pub fn float_top(&self) -> i32 {
         self.y - self.grab_off
@@ -82,10 +101,13 @@ pub fn queue_grip_hit(x: i32) -> bool {
     (GRIP_X0..GRIP_X1).contains(&x)
 }
 
-/// The queue in the order it is currently DRAWN: `from` lifted out and re-inserted at `to`.
-fn drag_order(len: usize, drag: Option<QueueDrag>) -> Vec<usize> {
+/// One list in the order it is currently DRAWN: `from` lifted out and re-inserted at `to`.
+///
+/// `want` is the list being drawn, so a drag in the OTHER list leaves this one in its own order —
+/// which is the whole reason a lift only ever permutes the section it came from.
+fn drag_order(len: usize, drag: Option<RowDrag>, want: DragList) -> Vec<usize> {
     let mut order: Vec<usize> = (0..len).collect();
-    if let Some(d) = drag {
+    if let Some(d) = drag.filter(|d| d.list == want) {
         if d.from < len && d.to < len {
             let it = order.remove(d.from);
             order.insert(d.to, it);
@@ -167,6 +189,12 @@ pub struct Layout {
     /// linear find over a sequence that can be the whole library is not the way to answer an
     /// arithmetic question.
     queue_top_px: Option<i32>,
+    /// The same two numbers for NEXT FROM: content-space top of its first row, and the CONTEXT
+    /// index that row holds. The section does not start at context index 0 — it starts one past
+    /// the playing track — so the offset is what converts between a drag's relative index and the
+    /// absolute one `Slot::Upcoming` carries.
+    upcoming_top_px: Option<i32>,
+    upcoming_first: usize,
 }
 
 /// The layout's SHAPE, without materialising the slot list. Pure arithmetic, O(1) in the length of
@@ -272,6 +300,8 @@ pub fn layout(album_len: usize, current: Option<usize>, queued: usize, pick: boo
     if let Some(cur) = current {
         if cur + 1 < album_len {
             push(&mut l, Slot::Head(Section::Album), &mut y);
+            l.upcoming_top_px = Some(y);
+            l.upcoming_first = cur + 1;
             for i in cur + 1..album_len {
                 push(&mut l, Slot::Upcoming(i), &mut y);
             }
@@ -328,12 +358,32 @@ impl Layout {
     /// half-row rule as before, but measured from the queue SECTION's top rather than the
     /// window's, because the queue no longer starts at row 0 of the screen.
     pub fn queue_slot_for(&self, float_top: i32, scroll_px: i32) -> usize {
-        let len = self.queued_len();
+        self.slot_for(float_top, scroll_px, self.queued_len(), self.queue_top())
+    }
+
+    /// How many rows NEXT FROM holds, its content-space top, and the context index of its first
+    /// row — the upcoming half of the same three questions the queue answers above.
+    pub fn upcoming_len(&self) -> usize {
+        self.slots.iter().filter(|(s, _)| matches!(s, Slot::Upcoming(_))).count()
+    }
+    pub fn upcoming_top(&self) -> Option<i32> {
+        self.upcoming_top_px
+    }
+    pub fn upcoming_first(&self) -> usize {
+        self.upcoming_first
+    }
+    /// Which upcoming row a floating row is over, RELATIVE to the first of them.
+    pub fn upcoming_slot_for(&self, float_top: i32, scroll_px: i32) -> usize {
+        self.slot_for(float_top, scroll_px, self.upcoming_len(), self.upcoming_top())
+    }
+
+    /// The half-row hit rule both sections share. Factored out so the two cannot drift apart:
+    /// they differ only in how many rows they have and where they start.
+    fn slot_for(&self, float_top: i32, scroll_px: i32, len: usize, top: Option<i32>) -> usize {
         if len == 0 {
             return 0;
         }
-        let base = self.queue_top().unwrap_or(0);
-        let centre = float_top - LIST_TOP + scroll_px - base + RH / 2;
+        let centre = float_top - LIST_TOP + scroll_px - top.unwrap_or(0) + RH / 2;
         (centre.div_euclid(RH)).clamp(0, len as i32 - 1) as usize
     }
 }
@@ -370,7 +420,7 @@ pub struct QueueView<'a> {
     pub pick: Option<&'a SongRow>,
     pub lib: &'a crate::model::Library,
     pub scroll_px: i32,
-    pub drag: Option<QueueDrag>,
+    pub drag: Option<RowDrag>,
     pub swipe: Option<crate::library::SwipeRow>,
     pub sbar_active: bool,
 }
@@ -423,7 +473,11 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     let scroll = v.scroll_px.clamp(0, l.max_scroll_px());
     // Queue rows are drawn in their would-be order while a row is lifted; every other kind keeps
     // its place, so the reorder only permutes the section it belongs to.
-    let qorder = drag_order(v.queue.len(), v.drag);
+    let qorder = drag_order(v.queue.len(), v.drag, DragList::Queue);
+    // The album section reorders on the same terms. Its rows are drawn from a RELATIVE order and
+    // offset back to context indices, which is why the layout stores where the section starts.
+    let ufirst = l.upcoming_first();
+    let uorder = drag_order(l.upcoming_len(), v.drag, DragList::Upcoming);
 
     // START AT THE FIRST VISIBLE SLOT. This loop used to begin at slot 0 and `continue` past
     // everything above the window — which is O(the whole sequence) to draw the ~14 rows on screen,
@@ -438,6 +492,10 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     // computing it, which is the same arithmetic the binary search just replaced.
     let mut qseen = match l.queue_top() {
         Some(qt) => (((scroll - qt).max(0) / RH) as usize).min(v.queue.len()),
+        None => 0,
+    };
+    let mut useen = match l.upcoming_top() {
+        Some(ut) => (((scroll - ut).max(0) / RH) as usize).min(uorder.len()),
         None => 0,
     };
 
@@ -455,12 +513,23 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                 text::draw(c, f, 22.0, (y + HDR_H - 11) as f32, &lbl, &hs);
                 hline(c, y + HDR_H - 1, t.line);
             }
-            Slot::History(i) | Slot::Upcoming(i) => {
+            Slot::History(i) => {
                 if let Some(song) = v.tracks.get(i) {
                     // History is dimmed — it is context, not a destination, and Apple Music reads
                     // the same way. Still tappable: that is how you go back a track.
-                    let past = matches!(*slot, Slot::History(_));
-                    album_row(c, t, f, song, v.lib, y, i + 1, past, false);
+                    album_row(c, t, f, song, v.lib, y, i + 1, true, false);
+                }
+            }
+            Slot::Upcoming(_) => {
+                // Drawn from the permuted order, not from the slot's own index: while a row is
+                // lifted the others have to part around the gap it will drop into, exactly as the
+                // queue rows do. The slot list is fixed; the ORDER is what the drag changes.
+                let ui = uorder.get(useen).copied().unwrap_or(0);
+                useen += 1;
+                if v.drag.filter(|d| d.list == DragList::Upcoming).map(|d| d.from) == Some(ui) {
+                    fill_rect(c, 0, y, W as i32, RH, t.panel); // the well the row came out of
+                } else if let Some(song) = v.tracks.get(ufirst + ui) {
+                    album_row(c, t, f, song, v.lib, y, ufirst + ui + 1, false, false);
                 }
             }
             Slot::Current(i) => {
@@ -509,14 +578,27 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     // The lifted row, last so it sits over everything and clipped so an over-drag can't smear
     // across the header.
     if let Some(d) = v.drag {
-        if let Some(song) = v.queue.get(d.from) {
+        let song = match d.list {
+            DragList::Queue => v.queue.get(d.from),
+            DragList::Upcoming => v.tracks.get(ufirst + d.from),
+        };
+        if let Some(song) = song {
             let ft = d.float_top().clamp(y0 - RH / 2, LIST_BOTTOM - RH / 2);
             c.set_clip_y(y0, LIST_BOTTOM);
             fill_rect(c, 0, ft, W as i32, RH, t.row_sel);
             fill_rect(c, 0, ft, 4, RH, t.acc);
             hline(c, ft, t.line);
             hline(c, ft + RH, t.line);
-            queue_row(c, t, f, song, v.lib, ft, d.to + 1);
+            // Both lifted rows carry a grip, whichever list they came from: it is the thing that
+            // says "this row is in your hand", and an album row in flight is in your hand just as
+            // much as a queued one. It is only the RESTING album rows that have no handle drawn,
+            // because there the handle column is not how they are picked up.
+            match d.list {
+                DragList::Queue => queue_row(c, t, f, song, v.lib, ft, d.to + 1),
+                DragList::Upcoming => {
+                    album_row(c, t, f, song, v.lib, ft, ufirst + d.to + 1, false, false)
+                }
+            }
             grip(c, t, ft, true);
             c.clear_clip();
         }
