@@ -1431,6 +1431,20 @@ static bool  g_shelfswipe_tested = false;
 // row's grab handle it owns that contact for the rest of its life, so the list must not also
 // scroll under it.
 static bool  g_reorder_active = false;
+// Long-press to lift a queue row from ANYWHERE on it, not only from the grab handle.
+//
+// The handle exists because a vertical drag on Up Next is ambiguous — reorder the row under the
+// thumb, or scroll the list? Start-point ownership settles that instantly, at the price of making
+// reordering reachable from one narrow column. A HOLD settles it just as well and from any point:
+// a finger that has not moved for the interval is not scrolling. Both live side by side; the
+// handle is still immediate, and this is the way in from everywhere else.
+//
+// Decided on ELAPSED TIME, so like the Power menu it needs a tick — a stationary finger generates
+// no further events, and there is nothing to hang an event-driven test on.
+static const long REORDER_HOLD_MS   = 350;   // long enough not to fire on a tap, short enough to feel deliberate
+static const int  REORDER_HOLD_SLOP = 10;    // px of wander still counted as "held still"
+static long  g_touch_down_ms = 0;
+static bool  g_reorder_hold_tested = false;
 // Scrollbar drag: the bar at the right edge owns the contact, like the reorder handle does.
 static bool  g_sbar_active = false;
 long now_ms() {
@@ -2904,6 +2918,7 @@ static void screen_auto_off() {
     g_drag_active = false; g_drag_vel = 0.0f;
     g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
     panel_dark();
     apply_pump_interval();   // nothing on screen needs 50 Hz IPC latency
     clog_("screen: idle timeout -> panel off (touch or Power wakes it)");
@@ -8705,6 +8720,7 @@ static void touch_release() {
     g_drag_active = false; g_drag_vel = 0.0f;
     g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
 }
 
 // Called on every touch position update while the contact is down: promote a mostly-vertical
@@ -8949,6 +8965,38 @@ void power_hold_tick() {
     // holding Power in a pocket would blank/unblank the panel.
 }
 
+// Long-press pick-up for an Up Next queue row. Same shape as power_hold_tick: the gesture is
+// decided on ELAPSED TIME, and a finger that is holding still emits no events, so there is nothing
+// event-driven to hang it on.
+//
+// Only ever offered to a contact that has claimed NOTHING yet. Every other gesture on this screen
+// takes ownership at its start point or at 12 px of travel, so by the time this fires they have all
+// declined — and the slop test means a finger already on its way into a scroll cannot be stolen
+// mid-gesture. One shot per contact: a refusal (not on a queue row, not on Up Next, locked) must
+// not be retried every frame for as long as the finger stays down.
+static void reorder_hold_tick() {
+    if (!g_touch_down || g_reorder_hold_tested || g_touch_down_ms == 0) return;
+    if (g_reorder_active || g_drag_active || g_scrub_active || g_sbar_active ||
+        g_hswipe_active  || g_shelfswipe_active) return;
+    if (g_touch_start_x < 0 || g_touch_start_y < 0 || !g_touch_saw_pos) return;
+    const int dx = touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x);
+    const int dy = touch_ui_y(g_touch_cur_y) - touch_ui_y(g_touch_start_y);
+    if ((dx < 0 ? -dx : dx) > REORDER_HOLD_SLOP || (dy < 0 ? -dy : dy) > REORDER_HOLD_SLOP) {
+        g_reorder_hold_tested = true;   // it moved: this contact is a scroll, not a hold
+        return;
+    }
+    if (now_ms() - g_touch_down_ms < REORDER_HOLD_MS) return;
+    g_reorder_hold_tested = true;       // set FIRST: whatever the answer, this contact has asked
+    if (cinder_reorder_begin_hold(touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y))) {
+        g_reorder_active = true;
+        clog_("touch: queue row lifted by long press");
+        // Paint now. The lifted row IS the feedback that the hold registered, and waiting for the
+        // next event would leave the screen unchanged until the finger moved — which is precisely
+        // the moment the user is deciding whether the gesture worked.
+        if (g_screen_on) cinder_render_tick();
+    }
+}
+
 #ifdef CINDER_DEV
 // Consume a dev request-file: true if one was waiting. Handles the two ways /tmp defeats us —
 // cinder-home is uid `system`, /tmp is sticky (drwxrwxrwt) and `adb shell echo >` creates files
@@ -9069,6 +9117,7 @@ void input_pump() {
                         g_drag_active = false; g_drag_vel = 0.0f;
                         g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
                         // AND SWALLOW THE REST OF THIS CONTACT. Clearing the state above is not
                         // enough: the finger is still on the glass and the panel keeps streaming
                         // positions, but `screen_auto_wake` has already set g_screen_on — so the
@@ -9111,6 +9160,7 @@ void input_pump() {
                             g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1;
                             g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
                             cinder_touch_down();   // finger down stops an in-flight fling
                         } else if (g_touch_start_x < 0) g_touch_start_x = val;
                         // Also drive the classifier from HERE, not only from ABS_Y: a panel that
@@ -9134,6 +9184,7 @@ void input_pump() {
                                 g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1;
                                 g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+                            g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
                                 cinder_touch_down();
                             }
                         } else {
@@ -9280,6 +9331,8 @@ void input_pump() {
     transport_tick();
     // Same idea for Power: the menu opens on elapsed time, not on an event, so it needs a tick.
     power_hold_tick();
+    // Same reason, for the queue's long-press reorder: a still finger emits no events.
+    reorder_hold_tick();
     // A level-0 blank is ended by the HOLD switch or POWER only — see brightness_wake_on_input.
     // It used to end on ANY input, which made "backlight off" last exactly until the next touch:
     // the pocket case (screen dark, music playing) was the one it could not do, because a stray
