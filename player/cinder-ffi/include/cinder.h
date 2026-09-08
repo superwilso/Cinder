@@ -449,6 +449,19 @@ int  cinder_get_volume(void);
 /* Seed the UI volume from the device's real level (raw 0..120 steps), no HUD pop. Call at boot
  * after restoring the saved level (or reading the mixer), so Vol± nudges from the actual level. */
 void cinder_set_volume(int level);
+/* Is the user's volume limit switched on? The CAP itself is Sony's (below); this is only the
+ * on/off the Settings row owns. Persisted with the rest of the settings. */
+int  cinder_get_volume_limit(void);
+void cinder_set_volume_limit(int on);
+/* Sony's AVLS threshold for the CURRENT output device, in the same 0..120 units as the UI level,
+ * or -1 if the service has no usable number. Implemented in cinder-audio/src/volume_shim.cpp, NOT
+ * in Rust: it is a binder call into pst::services::volume::VolumeService.
+ *
+ * Cinder does its own clamping with this number rather than switching Sony's AVLS flag on, because
+ * Sony enforces inside VolumeAdlerOut::SetVolume and Cinder writes the mixer directly — the flag
+ * would change nothing we do. See analysis/RE_volume_service.md. */
+int  cinder_volume_avls_threshold(void);
+int  cinder_volume_avls_enabled(void);
 /* Push the connected Bluetooth device's name into the UI (NULL or "" = nothing connected). Read it
  * from GetConnectInformation(vector<uint8_t>& addr, string& name). */
 void cinder_set_bt_connected(const char* name);

@@ -769,6 +769,10 @@ pub struct App {
     // `bt_fine` is the span in dB that one AVRCP step is subdivided across (0 = off). `bt_trim` is
     // the current subdivision, in half-dB units at or below zero — attenuation only, because
     // boosting toward a sink's own ceiling is how you clip an encoder.
+    /// Volume limit: the user's on/off for the safe-listening cap. The CAP ITSELF is not stored
+    /// here — the shell reads Sony's AVLS threshold live, because it is per output device
+    /// (`adapt=1`), so a number cached in the UI would be wrong the moment you changed output.
+    volume_limit: bool,
     bt_fine: u8,
     bt_trim: i8,
     /// Now Playing visualiser type (cinder_ui::viz index) + animation on/off (UI settings).
@@ -1110,6 +1114,7 @@ impl Default for App {
             fling_v: 0.0,
             volume: 15,
             vol_overlay: 0,
+            volume_limit: false,
             bt_volume: 15,
             bt_route: false,
             bt_connected: None,
@@ -2141,6 +2146,17 @@ impl App {
             crate::settings::ROW_VIZ => {
                 self.viz_sel = 0;
                 self.push(Screen::VizSet);
+                vec![]
+            }
+            crate::settings::ROW_VOLUME_LIMIT => {
+                // Toggle only. There is deliberately no number to cycle: the cap is Sony's AVLS
+                // threshold for whatever output is live (`adapt=1`), read by the shell at the
+                // moment it clamps, so a value picked here would go stale the moment you plugged
+                // something different in.
+                self.toggle_volume_limit();
+                // Render-only, like the accent row: the settings file is written by the shell's
+                // own save path, and the shell notices the switch on its next housekeeping tick
+                // and re-applies the volume through the clamp.
                 vec![]
             }
             crate::settings::ROW_SLEEP => {
@@ -5704,6 +5720,7 @@ impl App {
                     crate::viz::size_name(self.viz_size)
                 );
                 let view = crate::settings::SettingsView {
+                    volume_limit: self.volume_limit,
                     night: self.night,
                     viz_name: &viz_lbl,
                     usb_dac: self.usb_dac_on,
@@ -6008,6 +6025,18 @@ impl App {
 
     pub fn volume(&self) -> u8 {
         self.volume
+    }
+
+    /// The volume limit's on/off. Off by default: a cap the user did not ask for, silently
+    /// refusing to go louder, is indistinguishable from a broken volume rocker.
+    pub fn volume_limit(&self) -> bool {
+        self.volume_limit
+    }
+    pub fn set_volume_limit(&mut self, on: bool) {
+        self.volume_limit = on;
+    }
+    pub fn toggle_volume_limit(&mut self) {
+        self.volume_limit = !self.volume_limit;
     }
 
     /// Current volume as the raw 0..VOL_MAX (=120) step level. The shell writes this 1:1 to the

@@ -13,7 +13,7 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 19;
+pub const ROWS: usize = 20;
 /// The actionable rows: Theme / Accent / UI scale / Visualiser / Sleep timer (DISPLAY) +
 /// Battery care (SYSTEM).
 pub const ROW_THEME: usize = 0;
@@ -30,43 +30,53 @@ pub const ROW_UI_SCALE: usize = 2;
 /// a scrolling list of unrelated preferences, and they especially do not belong somewhere you
 /// cannot see what they do: the screen they moved to has a live preview at the top.
 pub const ROW_VIZ: usize = 3;
-pub const ROW_SLEEP: usize = 4;
-pub const ROW_SCREEN_OFF: usize = 5;
-pub const ROW_BRIGHTNESS: usize = 6;
+/// Volume limit — a safe-listening cap on the 3.5 mm level.
+///
+/// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
+/// (63/120 on this unit, `adapt=1`), and it is a real limiter — measured on device 2026-09-07,
+/// with it enabled a request for 91 came back 63. What Cinder does NOT do is switch Sony's flag
+/// on, because Sony enforces inside `VolumeAdlerOut::SetVolume` and Cinder writes the mixer
+/// directly; the flag would be a control that accepts a write and changes nothing, which is
+/// exactly what "High gain output" turned out to be (see sound.rs). So the shell reads Sony's
+/// number and clamps in its own `apply_volume`.
+pub const ROW_VOLUME_LIMIT: usize = 4;
+pub const ROW_SLEEP: usize = 5;
+pub const ROW_SCREEN_OFF: usize = 6;
+pub const ROW_BRIGHTNESS: usize = 7;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
 /// of behaviour that has to be asked for.
-pub const ROW_AUTO_OFF: usize = 7;
-pub const ROW_STORAGE: usize = 8;
-pub const ROW_DATABASE: usize = 9;
-pub const ROW_BATTERY: usize = 10;
+pub const ROW_AUTO_OFF: usize = 8;
+pub const ROW_STORAGE: usize = 9;
+pub const ROW_DATABASE: usize = 10;
+pub const ROW_BATTERY: usize = 11;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 11;
-pub const ROW_USB_MODE: usize = 12; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 12;
+pub const ROW_USB_MODE: usize = 13; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 13;
+pub const ROW_BOOT_STOCK: usize = 14;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 14;
-pub const ROW_POWER_OFF: usize = 15;
+pub const ROW_RESTART: usize = 15;
+pub const ROW_POWER_OFF: usize = 16;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 16;
+pub const ROW_RESET: usize = 17;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 17;
-pub const ROW_MODEL: usize = 18;
+pub const ROW_FIRMWARE: usize = 18;
+pub const ROW_MODEL: usize = 19;
 
 const RH: i32 = 56;
 /// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
 /// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [7, 10, 2];
+const SECTIONS: [usize; 3] = [8, 10, 2];
 
 /// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
 /// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
@@ -113,6 +123,9 @@ pub struct SettingsView<'a> {
     /// The live clock, shown as the Date & time row's value — so the row is also where you notice
     /// the time is wrong. Formatted by the caller (nav) from the same string the status bar uses.
     pub clock: &'a str,
+    /// Volume limit on/off. A toggle, not a value: the cap itself is Sony's and is read live by
+    /// the shell, so there is no number here for the user to pick.
+    pub volume_limit: bool,
     /// The selected accent — which swatch gets the ring, and the name shown beside them.
     pub accent: Accent,
 }
@@ -338,6 +351,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     // showed — which style, and how much of the cover it takes — so the row still answers the
     // question without being opened.
     y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser", v.viz_name, true);
+    // Row 4: the volume limit. A value row rather than a switch widget, because the interesting
+    // half is WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number
+    // the user did not choose, and the number is Sony's per-output AVLS threshold, read live.
+    y = srow(c, t, f, y, sel == ROW_VOLUME_LIMIT, "Volume limit",
+             if v.volume_limit { "SAFE LEVEL" } else { "OFF" }, false);
     // Row 3: Sleep timer (live) — pauses playback after N min. Shows the live remaining when running.
     y = srow(c, t, f, y, sel == ROW_SLEEP, "Sleep timer", v.sleep, false);
     // Row 4: idle screen-off (live). Defaults to OFF, so the panel never blanks on its own unless
@@ -396,6 +414,7 @@ mod tests {
 
     fn view<'a>(accent: Accent) -> SettingsView<'a> {
         SettingsView {
+            volume_limit: false,
             night: false,
             viz_name: "BARS · VEIL",
             usb_dac: false,
@@ -472,5 +491,40 @@ mod tests {
             .filter(|&i| a.buf[i] != b.buf[i])
             .count();
         assert!(differing > 5000, "scrolling barely changed the list ({differing} px)");
+    }
+}
+
+#[cfg(test)]
+mod volume_limit_tests {
+    use super::*;
+
+    /// The section table and ROWS are two statements of the same number, and `row_span` walks the
+    /// table while every caller indexes by ROWS. A row added to one and not the other silently
+    /// drops off the bottom of the screen or hands out a row index nothing renders.
+    #[test]
+    fn the_section_table_accounts_for_every_row() {
+        assert_eq!(SECTIONS.iter().sum::<usize>(), ROWS,
+                   "SECTIONS {SECTIONS:?} does not add up to ROWS {ROWS}");
+    }
+
+    /// Every row must be reachable by a tap at scroll 0 or at the bottom of the scroll range —
+    /// including the last one, which is the one a miscounted section table loses first.
+    #[test]
+    fn every_row_including_the_new_one_is_hittable() {
+        for r in 0..ROWS {
+            let top = row_top_px(r) + LIST_TOP;
+            let scroll = (top + RH / 2 - (crate::canvas::H as i32 / 2)).clamp(0, max_scroll_px());
+            let y = top - scroll + RH / 2;
+            assert_eq!(row_at(y, scroll), Some(r), "row {r} not hittable at y={y} scroll={scroll}");
+        }
+    }
+
+    /// The volume limit sits in the first section, and its label says whose limit it is. "SAFE
+    /// LEVEL" rather than a number, because the cap is Sony's AVLS threshold for whatever output
+    /// is live — a number rendered here would be stale the moment the output changed.
+    #[test]
+    fn the_volume_limit_row_is_in_the_first_section() {
+        assert!(ROW_VOLUME_LIMIT < SECTIONS[0], "the limit belongs with the player's own settings");
+        assert_eq!(ROW_VOLUME_LIMIT, ROW_VIZ + 1);
     }
 }

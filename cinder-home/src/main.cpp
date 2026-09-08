@@ -666,6 +666,7 @@ extern bool g_house_due;    // defined with the pump state: run the ~1 Hz housek
 void sync_volume_from_hw(); // defined below (volume backend); seeds the UI level from the mixer
 void bt_resync_volume(const char* why); // ditto — re-asserts the UI level if the mixer drifted
 void volume_forget_last_write();  // defined below: drop the write-dedupe (see bt_resync_volume)
+void volume_limit_forget_cap();   // defined below: re-ask Sony for the AVLS threshold
 void apply_volume();        // defined below (volume backend); writes the UI level to the mixer
 
 // Start/stop Sony's spectrum analyzer to match what the screen is actually showing.
@@ -732,6 +733,32 @@ void viz_analyzer_tick() {
 // rocker. So the UI moves the trim, this notices, and the write happens on the housekeeping tick —
 // coalesced, latest value wins, so holding the rocker down costs one write per interval rather than
 // one per repeat.
+// Re-apply the volume when the user flips the volume limit.
+//
+// Without this the switch would appear to do nothing until the next volume press: the clamp lives
+// in apply_volume(), and nothing calls apply_volume() just because a setting changed. Turning the
+// limit ON above the cap should bring the level down immediately — that is the entire point of a
+// limiter — and turning it OFF should give the headroom straight back.
+//
+// The dedupe has to go with it, for the same reason bt_resync_volume drops it: the UI level has
+// not changed, only what we are allowed to do with it, so `level == g_vol_written` would be true
+// and the write would be skipped.
+void volume_limit_tick() {
+    static int s_last = -1;
+    const int on = cinder_get_volume_limit();
+    if (on == s_last) return;
+    const bool first = (s_last == -1);
+    s_last = on;
+    // SEED, NEVER ACT, on the first read of the boot — the same rule jack_watch_tick follows.
+    // Without this the tick treats "I have not looked before" as "the user just flipped it" and
+    // logs `volume: limit toggled` on every boot, having re-applied a volume nobody changed. The
+    // boot path already applies the level with the clamp in it, so there is nothing to do here.
+    if (first) return;
+    volume_limit_forget_cap();        // re-ask Sony: the output device may have changed since
+    volume_forget_last_write();
+    run_guarded("volume: limit toggled", 6, apply_volume);
+}
+
 void bt_trim_tick() {
     static int  s_last = 0;
     static long s_at   = 0;
@@ -2147,12 +2174,45 @@ void volume_write_now(int level) {
     g_vol_write_ms = now_ms();
 }
 
+// Sony's AVLS threshold, cached for the session. -2 = not asked yet, -1 = the service has no
+// usable number. Re-read on demand rather than at boot: the condition reports `adapt=1`, so the
+// cap belongs to whatever output is live, and asking is one cheap binder round trip.
+static int g_avls_cap = -2;
+
+void volume_limit_forget_cap() { g_avls_cap = -2; }
+
+int volume_limit_cap() {
+    if (!cinder_get_volume_limit()) return -1;      // the user's switch, not Sony's
+    if (g_avls_cap == -2) {
+        g_avls_cap = cinder_volume_avls_threshold();
+        char m[96];
+        std::snprintf(m, sizeof m, "volume: AVLS cap = %d/120 (%s)", g_avls_cap,
+                      g_avls_cap > 0 ? "limit available" : "service has no usable threshold");
+        clog_(m);
+    }
+    return g_avls_cap;
+}
+
 void apply_volume() {
     if (!g_vol_read) load_vol_cfg();
     if (!g_vol.valid) return;
     int level = cinder_get_volume();
     if (level < 0) level = 0;
     if (level > 120) level = 120;
+    // THE VOLUME LIMIT, and it has to be enforced HERE rather than by switching Sony's flag on.
+    //
+    // AVLS is real and it does clamp — measured on device 2026-09-07: with it enabled, asking for
+    // 91 came back 63 against a cap of 63. But it clamps inside `VolumeAdlerOut::SetVolume`, and
+    // Cinder never calls that: the mixer is written directly, one ioctl, right below. Sony's
+    // switch would therefore be a control that accepts a write and changes nothing we do — which
+    // is precisely what "High gain output" turned out to be before it was cut (sound.rs).
+    //
+    // So Cinder reads Sony's number and does its own clamping. The cap is Sony's safe-listening
+    // threshold for the CURRENT output device, which is a better default than a number invented
+    // here. Clamped rather than refused, matching Sony's own behaviour ("limit volume to avls
+    // threshold"): the rocker keeps working, it just stops going up.
+    const int cap = volume_limit_cap();
+    if (cap > 0 && level > cap) level = cap;
     if (level == g_vol_written) { g_vol_pending = -1; return; }   // nothing changed
     if (now_ms() - g_vol_write_ms >= VOL_WRITE_EVERY_MS) {
         g_vol_pending = -1;
@@ -10515,6 +10575,7 @@ void* render_driver(void*) {
             }
             viz_analyzer_tick();              // analyzer runs only while its output is visible
             bt_trim_tick();                   // Bluetooth fine volume, applied off the press path
+            volume_limit_tick();              // the safe-listening cap, applied when it is flipped
             mark_healthy_maybe();             // clear the bad-boot counter once proven good
             // Screenshot-on-demand: drop /tmp/cinder_screenshot.req and the next frame is written
             // to /tmp/cinder_screen.png. Same polled-flag idiom as ldac_on above (no new IPC

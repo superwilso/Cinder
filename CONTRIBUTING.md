@@ -29,6 +29,25 @@ bash cinder-home/tools/test_launcher.sh   # 46 cases over the escape ladder
 The linter is **pinned** (`shellcheck-py==0.11.0.1`) and CI runs the same scripts you do. A gate
 whose version floats is a gate that can turn red with no source change — that has happened here.
 
+### Enable the pre-push hook (one line, once per clone)
+
+```sh
+git config core.hooksPath .githooks
+```
+
+`main` has gone red three times from pushes that a local check finds in seconds — a dependency gate
+that broke on arrival, a truncated buffer in the fault path, and a struct field wired only on the
+device path so `cinder-host` and `cinder-sim` would not compile at all. The gap was never
+capability; it was that nothing ran between "it works on my device" and "it is on main".
+`.githooks/pre-push` closes that: player tests, clippy (`correctness` + `suspicious`), the
+installer tests, the C/C++ syntax check and the C++ self-tests, in about 45 seconds.
+
+Hooks are not cloned, which is why it lives in `.githooks/` and needs the line above. It runs the
+DEBUG build rather than CI's `--release`, because the failures it exists for are compile-or-lint
+and debug finds them identically for a fraction of the time — so a green hook means "CI should
+agree", not "the device build works". That is still `build.sh`. Skip it with `--no-verify` or
+`CINDER_SKIP_PREPUSH=1` when you mean to.
+
 `cinder-home/build.sh [stable|dev]` is the only gate that does the ARM link, the GLIBC ≤ 2.23
 ceiling and the qemu preflight. **CI cannot do this** — it has no cross toolchain — so a green CI
 says nothing about whether the thing links for the device. Run it before claiming a change builds.
