@@ -1421,6 +1421,12 @@ static bool  g_scrub_tested = false;   // has this contact been offered to cinde
 // cinder_swipe_track reports that a TRACK row actually took the gesture — on an artist row, or the
 // empty space below a list, the contact stays a normal drag.
 static bool  g_hswipe_active = false;
+// Bottom-edge swipe-up → Shelf. `tested` is the once-per-contact latch (the band is consulted only
+// at the moment the contact becomes vertical, so a gesture that starts above the band can never
+// arm it later); `active` means this contact belongs to the gesture and must not scroll. Clearing
+// `active` on fire while leaving `tested` set is what makes the rest of the drag inert.
+static bool  g_shelfswipe_active = false;
+static bool  g_shelfswipe_tested = false;
 // Up Next queue reorder. Vertical counterpart of g_hswipe_active: once a contact lands on a queue
 // row's grab handle it owns that contact for the rest of its life, so the list must not also
 // scroll under it.
@@ -2897,6 +2903,7 @@ static void screen_auto_off() {
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1; g_touch_saw_pos = false;
     g_drag_active = false; g_drag_vel = 0.0f;
     g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
+    g_shelfswipe_active = false; g_shelfswipe_tested = false;
     panel_dark();
     apply_pump_interval();   // nothing on screen needs 50 Hz IPC latency
     clog_("screen: idle timeout -> panel off (touch or Power wakes it)");
@@ -8676,6 +8683,7 @@ static void touch_release() {
     g_touch_down = false; g_touch_start_x = -1; g_touch_start_y = -1;
     g_drag_active = false; g_drag_vel = 0.0f;
     g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
+    g_shelfswipe_active = false; g_shelfswipe_tested = false;
 }
 
 // Called on every touch position update while the contact is down: promote a mostly-vertical
@@ -8725,6 +8733,43 @@ static void touch_drag_motion() {
         int dxt = touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x);
         int adyt = dyt < 0 ? -dyt : dyt, adxt = dxt < 0 ? -dxt : dxt;
         if (adyt > 12 && adyt > adxt) {
+            // BOTTOM-EDGE SWIPE UP = the Shelf. Claimed here, before the list drag, because a
+            // vertical contact is committed to a scroll at this same 12 px and never reaches the
+            // release classifier — which is why the left-edge Back gesture can be decided at
+            // release and this one cannot.
+            //
+            // Decided on the START point, the same ownership rule the scrub rail and the reorder
+            // handle use: a gesture that begins in the band owns the contact even if it wanders
+            // out, and one that begins above the band keeps scrolling even if it ends inside it.
+            //
+            // The band is deliberately thin. Everything below SHELF_EDGE_Y on a library screen is
+            // the Now Playing bar, whose only gesture is a TAP — and a tap is stationary, so it
+            // never reaches this code. The cost of the band is that a scroll started in the last
+            // few pixels of the screen opens the Shelf instead; the cost of a wider one is that it
+            // starts happening on purpose.
+            static const int SHELF_EDGE_Y  = 800 - 28;   // the UI is 800 tall (see touch_ui_y)
+            static const int SHELF_TRAVEL  = 90;                     // and lift at least this far
+            if (!g_shelfswipe_tested && touch_ui_y(g_touch_start_y) >= SHELF_EDGE_Y && dyt < 0) {
+                g_shelfswipe_tested = true;
+                g_shelfswipe_active = true;   // owns the contact from here, scroll or not
+            }
+            if (g_shelfswipe_active) {
+                // Opened on TRAVEL, not on release: the Shelf animates in, and waiting for the
+                // finger to lift would make a long deliberate drag feel like nothing happened
+                // until the end. Once opened the contact is spent — `tested` keeps it from firing
+                // twice as the finger keeps moving.
+                if (-dyt >= SHELF_TRAVEL) {
+                    if (cinder_shelf_swipe()) {
+                        g_shelfswipe_active = false;   // consumed; the overlay owns the screen now
+                    } else {
+                        // The UI declined (locked, onboarding, already open). Release the contact
+                        // rather than swallowing it — but do NOT hand it to the scroll mid-gesture,
+                        // which would jump the list by the distance already travelled.
+                        g_shelfswipe_active = false;
+                    }
+                }
+                return;
+            }
             // A vertical drag that STARTED on an Up Next grab handle reorders that row instead of
             // scrolling the list. Offered before the scroll, and decided on the START point — the
             // same ownership rule as the scrub rail, so a drag begun elsewhere keeps scrolling even
@@ -9002,6 +9047,7 @@ void input_pump() {
                         g_touch_saw_pos = false;
                         g_drag_active = false; g_drag_vel = 0.0f;
                         g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
+    g_shelfswipe_active = false; g_shelfswipe_tested = false;
                         // AND SWALLOW THE REST OF THIS CONTACT. Clearing the state above is not
                         // enough: the finger is still on the glass and the panel keeps streaming
                         // positions, but `screen_auto_wake` has already set g_screen_on — so the
@@ -9043,6 +9089,7 @@ void input_pump() {
                         if (!g_touch_down) {
                             g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1;
                             g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
+    g_shelfswipe_active = false; g_shelfswipe_tested = false;
                             cinder_touch_down();   // finger down stops an in-flight fling
                         } else if (g_touch_start_x < 0) g_touch_start_x = val;
                         // Also drive the classifier from HERE, not only from ABS_Y: a panel that
@@ -9065,6 +9112,7 @@ void input_pump() {
                             if (!g_touch_down) {
                                 g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1;
                                 g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
+    g_shelfswipe_active = false; g_shelfswipe_tested = false;
                                 cinder_touch_down();
                             }
                         } else {
