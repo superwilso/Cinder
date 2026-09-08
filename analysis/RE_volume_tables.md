@@ -42,6 +42,14 @@ Every volume step moves the codec's analogue attenuator directly (`0x49 PHV_L` /
 reading PHV back across the range **is** the curve — objective, silent, nothing playing. That is
 what `cinder-probe --volcurve` does, and it reproduces the previously documented stock curve exactly.
 
+> **Amended 2026-09-08** — PHV is only half of it. Volume is split between the analogue attenuator
+> and a digital one (`CODEC_SDIN2VOL`, `0x29`), and in the PHV flat zone at vol 40–60 the digital
+> stage is still moving: measured at the jack, that zone gives 1 dB across 50–70 rather than nothing.
+> The 100–120 zone is the genuinely dead one — both stages pin there. So a PHV-only sweep
+> over-reports the lower dead zone and under-reports the upper. Acoustic measurements of both curves,
+> and the correction in full, are in `RE_headphone_amp_modes.md`.
+
+
 | master volume | 0 | 20 | 40 | 60 | 80 | 100 | 120 |
 |---|---|---|---|---|---|---|---|
 | **boot state** | 4 | 80 | 100 | 100 | 148 | 228 | 228 |
