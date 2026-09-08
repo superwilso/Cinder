@@ -188,7 +188,8 @@ fn main() {
                     + l.top_of(up_next::Slot::Queued(from)).unwrap_or(0);
                 let start_y = row_top + grab_off;
                 let y = start_y + 2 * up_next::RH + 14;   // dragged down past two rows
-                let d = up_next::QueueDrag {
+                let d = up_next::RowDrag {
+                    list: up_next::DragList::Queue,
                     from,
                     to: l.queue_slot_for(y - grab_off, 0),
                     start_y,
