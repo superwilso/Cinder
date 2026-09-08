@@ -893,6 +893,7 @@ fn settings_body(r: &Render) -> String {
     // see in any menu, and restoring one at boot would be a device that plays quiet for reasons
     // nothing on screen explains.
     body.push_str(&format!("bt_fine={}\n", r.app.bt_fine_span()));
+    body.push_str(&format!("volume_limit={}\n", r.app.volume_limit() as u8));
     body.push_str(&format!(
         "viz_scale={}\nviz_range={}\nviz_response={}\nviz_interp={}\nviz_peaks={}\nviz_window={}\nviz_rate={}\n",
         r.app.viz_scale_idx(),
@@ -3669,6 +3670,23 @@ pub extern "C" fn cinder_set_volume(level: libc::c_int) {
     }
 }
 
+/// Is the user's volume limit on? The shell clamps to Sony's AVLS threshold when it is.
+///
+/// The cap is NOT stored here. Sony's threshold is per output device (`adapt=1` on this unit), so
+/// the shell reads it live from `cinder_volume_avls_threshold()`; caching it in the UI would hand
+/// back a jack number while something else was plugged in.
+#[no_mangle]
+pub extern "C" fn cinder_get_volume_limit() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.volume_limit() as libc::c_int)
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_set_volume_limit(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_volume_limit(on != 0);
+    }
+}
+
 /// Read the current UI volume as the raw 0..120 step level. The shell writes it 1:1 to the device
 /// mixer ('master volume', also 0..120) after a VOLUP/VOLDOWN action.
 #[no_mangle]
@@ -4566,6 +4584,11 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "bt_fine" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_bt_fine_span(n);
+                        }
+                    }
+                    "volume_limit" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_volume_limit(n != 0);
                         }
                     }
                     "viz_scale" => {

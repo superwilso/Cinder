@@ -3934,6 +3934,7 @@ public:
     ~VolumeService();
     unsigned GetVolume();
     bool     SetVolume(unsigned);
+    bool     SetAvls(bool);
     bool     GetAvls();
     unsigned GetAvlsThresholdValue();
     bool     GetAvlsCondition(AvlsCondition*);
@@ -3945,6 +3946,143 @@ private:
 
 // Set by the dispatcher from `--avls set <n>`: -1 means the default read-only run.
 static int g_avls_set = -1;
+// Set by `--avls enforce`: run the does-it-actually-clamp test.
+static bool g_avls_enforce = false;
+
+// ── --dseemeter : is DSEE HX / DSEE AI actually in the path, or is it another high gain? ────────
+//
+// THE QUESTION. Sound ▸ Advanced carries DSEE HX and DSEE AI, and DEVICE_CHECKLIST 2B.3 marks AI
+// as *Unknown* — "labelled UNVERIFIED, not removed, because nobody has measured it inert, unlike
+// high gain, which was". High gain accepted its write, read back, persisted across a reboot, and
+// did nothing, because the A50 lacks the hardware; it was cut on 2026-08-17 and sound.rs still
+// carries the note. DSEE has never been given the same test.
+//
+// THE METHOD. The analyzer as a meter, the same instrument that settled the EQ question
+// (--eqmeter). DSEE HX is an upscaler: it synthesises content ABOVE a lossy file's cutoff, so if
+// it is in the path at all, the TOP bands must move when it is switched on. The bottom bands are
+// the control — DSEE should not touch them, so a change there would mean something else moved
+// (a track change, a level change) and the run is void.
+//
+// PLAY A LOSSY FILE. On lossless input there is nothing above the cutoff to restore and a null
+// result would mean nothing. The band table is 32 Hz..16 kHz, so a 128-320 kbps MP3/AAC (cutoff
+// ~16-20 kHz) is what puts the interesting region inside the top band.
+//
+// WHAT A NULL RESULT MEANS. If the top bands do not move, DSEE is either not in the metered path
+// or not doing anything — and the honest response is the one high gain got: measure, then say so
+// in the UI or remove the row. It is NOT proof on its own that the feature is inert; it is proof
+// that this instrument cannot see it, which is the same evidence high gain was cut on.
+extern "C" int cinder_effects_set_dsee_hx(int on);
+extern "C" int cinder_effects_set_dsee_ai(int on);
+extern "C" int cinder_effects_is_dsee_hx_on(void);
+extern "C" int cinder_effects_is_dsee_ai_on(void);
+
+// Mean of each band over the frames captured since `from`. Unlike eqm_mean (one number for the
+// whole spectrum) this keeps the bands apart, because WHERE the change lands is the entire point.
+static void dsee_band_means(int from, double* out, int nbands, int* frames_out) {
+    const int to = cinder_analyzer_log_count();
+    int vals[24];
+    long n[24] = {0};
+    for (int b = 0; b < nbands; ++b) out[b] = 0.0;
+    int frames = 0;
+    for (int i = from; i < to; ++i) {
+        unsigned ts; int gen;
+        int nb = cinder_analyzer_log_get(i, &ts, &gen, vals, 24);
+        if (nb <= 0) continue;
+        frames++;
+        for (int b = 0; b < nb && b < nbands; ++b) { out[b] += vals[b]; n[b]++; }
+    }
+    for (int b = 0; b < nbands; ++b) if (n[b]) out[b] /= (double)n[b];
+    if (frames_out) *frames_out = frames;
+}
+
+static int dseemeter_job() {
+    const int NB = 12;
+    double off_m[24], on_m[24];
+
+    std::fprintf(stderr, "[cinder-probe] dsee: at entry HX=%d AI=%d\n",
+                 cinder_effects_is_dsee_hx_on(), cinder_effects_is_dsee_ai_on());
+
+    wd_arm(12);
+    int rc = cinder_analyzer_start(CINDER_ANALYZER_SPECTRUM, 20.0f, 0);
+    wd_disarm();
+    if (rc != 0) { clog_("dsee: no analyzer, no meter"); return 1; }
+
+    // Settle, then measure OFF for 4 s, ON for 4 s, and OFF again — the second OFF is the control
+    // for drift. Music changes under us; a result that does not come back is not a result.
+    auto dwell = [&](const char* what, int hx, int ai, double* dst) {
+        wd_arm(8);
+        cinder_effects_set_dsee_hx(hx);
+        cinder_effects_set_dsee_ai(ai);
+        wd_disarm();
+        usleep(1200000);                        // let the chain settle before counting
+        int from = cinder_analyzer_log_count();
+        usleep(4000000);
+        int frames = 0;
+        dsee_band_means(from, dst, NB, &frames);
+        std::fprintf(stderr, "[cinder-probe] dsee: %-10s HX=%d AI=%d frames=%d\n", what, hx, ai, frames);
+    };
+
+    double back_m[24];
+    dwell("OFF", 0, 0, off_m);
+    dwell("HX+AI ON", 1, 1, on_m);
+    dwell("OFF again", 0, 0, back_m);
+
+    std::fprintf(stderr, "[cinder-probe] dsee: band   off            on             back           on/off\n");
+    for (int b = 0; b < NB; ++b) {
+        double ratio = off_m[b] > 0 ? on_m[b] / off_m[b] : 0.0;
+        std::fprintf(stderr, "[cinder-probe] dsee: %2d   %13.0f  %13.0f  %13.0f  %6.2fx\n",
+                     b, off_m[b], on_m[b], back_m[b], ratio);
+    }
+
+    // The verdict, computed rather than eyeballed. Top three bands vs bottom three: DSEE should
+    // move the top and leave the bottom alone, and the drift control must come back.
+    double top_off = 0, top_on = 0, bot_off = 0, bot_on = 0, top_back = 0;
+    for (int b = NB - 3; b < NB; ++b) { top_off += off_m[b]; top_on += on_m[b]; top_back += back_m[b]; }
+    for (int b = 0; b < 3; ++b)       { bot_off += off_m[b]; bot_on += on_m[b]; }
+    const double top_r = top_off > 0 ? top_on / top_off : 0.0;
+    const double bot_r = bot_off > 0 ? bot_on / bot_off : 0.0;
+    const double drift = top_off > 0 ? top_back / top_off : 0.0;
+    std::fprintf(stderr, "[cinder-probe] dsee: top3 on/off = %.3fx   bottom3 on/off = %.3fx   "
+                 "top3 drift (back/off) = %.3fx\n", top_r, bot_r, drift);
+
+    if (drift < 0.7 || drift > 1.4) {
+        clog_("dsee: VOID — the control run did not come back, so the programme material moved "
+              "more than the effect could. Re-run on a steady passage.");
+    } else if (top_r > 1.15 && bot_r > 0.85 && bot_r < 1.15) {
+        clog_("dsee: DSEE moves the top of the spectrum and leaves the bottom alone — it is in the "
+              "metered path and doing something.");
+    } else {
+        clog_("dsee: no measurable change in the top bands. Same evidence high gain was cut on — "
+              "either it is not in this path, or it does nothing. Do not claim it works.");
+    }
+
+    wd_arm(8);
+    cinder_effects_set_dsee_hx(0);
+    cinder_effects_set_dsee_ai(0);
+    cinder_analyzer_stop();
+    wd_disarm();
+    clog_("dsee: restored DSEE HX/AI to OFF");
+    return 0;
+}
+
+static void dseemeter_job_entry() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    g_pump_run = true;
+    pthread_t th;
+    if (pthread_create(&th, nullptr, pump_thread, &fw) != 0) { clog_("dsee: pthread_create FAILED"); _exit(1); }
+    usleep(300000);
+    _exit(dseemeter_job());
+}
+
+static int dseemeter_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    int sr = fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    std::fprintf(stderr, "[cinder-probe] dsee: StartForApplication returned %d\n", sr);
+    dseemeter_job_entry();
+    return 0; // unreachable
+}
 
 static int avls_job() {
     using pst::services::volume::AvlsCondition;
@@ -4020,6 +4158,47 @@ static int avls_job() {
         // `bt_resync_volume` corrects it on the next screen wake, jack edge or BT disconnect.
         clog_("avls: NOTE — that restore is Sony's remembered level, not Cinder's UI level. If they "
               "differ, Cinder resyncs on the next screen wake / jack edge / BT disconnect.");
+    }
+
+    // DOES IT ACTUALLY CLAMP? The question the read-only run cannot answer, and the one that
+    // decides whether AVLS is worth a settings row at all.
+    //
+    // THE PRECEDENT: "High gain output" shipped on this screen and was cut on 2026-08-17 because
+    // `headphone smaster gain mode` accepted `high`, read back 1, survived a reboot — and did
+    // nothing audible, the A50 simply lacking the hardware. cinder-ui/src/sound.rs still carries
+    // that note so it is not rediscovered and re-added. A control that ACCEPTS a write is not a
+    // control that WORKS, so AVLS gets asked the only question that matters: with the limiter on,
+    // does a SetVolume above the threshold come back clamped?
+    //
+    // Restores both the volume and the AVLS flag it found. AVLS persists to DmpConfig key 226
+    // (VolumeAdlerOut::SetAvls @0x1f966), so leaving it on would be a setting the user never chose.
+    if (g_avls_enforce) {
+        if (vol == 0) {
+            clog_("avls: GetVolume()==0 — not the jack route. Re-run on the 3.5 mm jack.");
+        } else if (thr == 0 || thr >= 120) {
+            clog_("avls: no usable threshold to test against.");
+        } else {
+            const unsigned over = (thr + 120u) / 2u;   // comfortably above the cap, below the max
+            std::fprintf(stderr, "[cinder-probe] avls: --- enforce test: on, then SetVolume(%u) vs cap %u ---\n",
+                         over, thr);
+            wd_arm(8); bool sa = vs.SetAvls(true); wd_disarm();
+            usleep(200000);
+            wd_arm(8); bool on2 = vs.GetAvls(); wd_disarm();
+            std::fprintf(stderr, "[cinder-probe] avls: SetAvls(true) rc=%d -> GetAvls()=%d\n", (int)sa, (int)on2);
+
+            wd_arm(8); vs.SetVolume(over); wd_disarm();
+            usleep(300000);
+            wd_arm(8); unsigned got = vs.GetVolume(); wd_disarm();
+            std::fprintf(stderr, "[cinder-probe] avls: asked for %u -> GetVolume()=%u (cap %u)\n", over, got, thr);
+
+            if (got <= thr) clog_("avls: CLAMPED — the limiter is real and enforces. Worth a settings row.");
+            else            clog_("avls: NOT clamped — it reports a cap it does not enforce. Same shape as "
+                                  "high gain (sound.rs): do NOT add a row for it.");
+
+            // Restore, in the order that cannot leave the device loud: volume first, then the flag.
+            wd_arm(8); vs.SetVolume(vol); vs.SetAvls(on); wd_disarm();
+            std::fprintf(stderr, "[cinder-probe] avls: restored volume=%u avls=%d\n", vol, (int)on);
+        }
     }
 
     // The verdict, stated so the log answers the question without needing the reader to interpret
@@ -7812,12 +7991,18 @@ int main(int argc, char** argv) {
         return btvolslot_probe(argc > 2 ? std::atoi(argv[2]) : 34,
                                argc > 3 ? std::atoi(argv[3]) : 40);
     }
+    if (argc > 1 && std::strcmp(argv[1], "--dseemeter") == 0) {
+        // Does DSEE HX/AI actually move the spectrum? Play a LOSSY file first — on lossless input
+        // there is nothing above the cutoff to restore and a null result would mean nothing.
+        return dseemeter_probe();
+    }
     if (argc > 1 && std::strcmp(argv[1], "--avls") == 0) {
         // Sony's volume limiter: is it featured on this model, and what does it cap at?
         // Read-only by default. `--avls set <n>` additionally moves the volume through Sony's own
         // setter to prove whether the threshold is a cap or an echo, and restores it after.
         // See analysis/RE_volume_service.md.
         if (argc > 3 && std::strcmp(argv[2], "set") == 0) g_avls_set = std::atoi(argv[3]);
+        if (argc > 2 && std::strcmp(argv[2], "enforce") == 0) g_avls_enforce = true;
         return avls_probe();
     }
     if (argc > 1 && std::strcmp(argv[1], "--eqmeter") == 0) {

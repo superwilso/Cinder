@@ -234,6 +234,26 @@ shape of its blind spots, because "the harness passes" has already been mistaken
 
 ---
 
+## Open from 2026-09-07/08 — measured code shipped, verification outstanding
+
+These are all device-gated and all have the code already installed. None of them is a guess: each
+names the exact evidence that would settle it.
+
+| # | Check | How | What decides it |
+|---|---|---|---|
+| 5.1 | **Volume limit actually caps** | Settings ▸ Volume limit → `SAFE LEVEL`, then hold volume up | Stops at **63/120**, not 120; `OFF` gives the headroom straight back. AVLS was measured to enforce (`--avls enforce`: asked 91, got 63) but it enforces inside `VolumeAdlerOut::SetVolume`, which Cinder never calls — so this verifies Cinder's OWN clamp in `apply_volume`, not Sony's |
+| 5.2 | **The BT fine-volume stutter is gone** | Bluetooth ▸ Audio quality ▸ Fine volume on, then press volume | No click per press. The cause was `bt_trim_tick` calling `fx_cache_drop()`, which forced the cold path and re-asserted `SetEq10Band(true)` — re-instantiating the DSP filter mid-stream |
+| 5.3 | **Bluetooth reads `MIN`, not `MUTE`** | Turn the BT volume to the bottom | `MIN`. AVRCP 0 is the sink's floor, and no firmware lever can mute an A2DP sink — Sony's own `VolumeA2dpOut::SetVolume` is a stub (`analysis/RE_volume_service.md`) |
+| 5.4 | **DSEE HX / AI is not another high gain** | Play a **lossy** file (MP3/AAC — on lossless there is nothing above the cutoff to restore), then `/tmp/pv --dseemeter` | Top three bands move on, bottom three do not, and the third pass returns. A null result is the same evidence high gain was cut on — measure before claiming it works. Supersedes 2B.3 |
+| 5.5 | **A battery number, at last** | `tools/battery_track.sh start 60`, then **unplug** and use it for hours; `tools/battery_track.sh report` | Any discharge interval at all. Every sample ever recorded is `Charging`/`Full` on the cable, which is why 2C.4 still says no saving is claimed |
+
+Repository decision, not a device test: **whether to rewrite git history** to recover the ~863 MB of
+superseded `dist/` blobs (`AUDIT_2026-09-01.md` D1). It force-pushes, invalidates every clone, and
+breaks the commit SHAs quoted throughout `docs/`. The growth is at least visible now — `.githooks/pre-push`
+warns when a non-release push carries `dist/stable` (~8.7 MB a time, 41 revisions so far).
+
+---
+
 ## Recording results
 
 Append findings to [`DEVICE_TESTS.md`](DEVICE_TESTS.md) in the style of its "RESULTS 2026-08-17"

@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# pre-push — refuse to push what CI is going to reject.
+#
+# WHY THIS EXISTS. `main` has gone red three times from pushes that a thirty-second local check
+# would have caught, and docs/AUDIT_2026-09-01.md §D5 named the pattern after the first two:
+#
+#   * 2026-09-01  a dependency gate was added and immediately broke main (§A5)
+#   * 2026-09-01  a truncated buffer in the fault path (§A1)
+#   * 2026-09-07  `fine_volume` was added to the `Bt` struct and wired only on the device path,
+#                 so cinder-host and cinder-sim would not compile at all — three initializers
+#
+# Every one of them was a compile error or a lint that the host toolchain finds in seconds. The
+# gap was never capability, it was that nothing ran between "it works on my device" and "it is on
+# main". That is what this closes.
+#
+# WHAT IT IS NOT. It is not a substitute for CI, and it deliberately does not try to be:
+#
+#   * it runs DEBUG tests, not `--release` like CI, because release builds cost minutes and the
+#     failures above were all compile-or-lint, which the debug build finds identically;
+#   * it cannot do the ARM link, the GLIBC <= 2.23 ceiling, or the qemu preflight — that is
+#     `bash cinder-home/build.sh dev`, which needs the cross toolchain (DEVICE_CHECKLIST 0.1);
+#   * it does not run the Windows installer build.
+#
+# So a green hook means "CI probably passes", not "the device build works". Run build.sh before a
+# release; this is for the everyday push.
+#
+# TO SKIP, when you know better and mean it:
+#   git push --no-verify          # skip every hook
+#   CINDER_SKIP_PREPUSH=1 git push
+#
+# INSTALL (once per clone — hooks are not cloned, which is why this lives in .githooks/):
+#   git config core.hooksPath .githooks
+
+set -uo pipefail
+
+if [ "${CINDER_SKIP_PREPUSH:-0}" = "1" ]; then
+    printf '\033[33mpre-push: skipped (CINDER_SKIP_PREPUSH=1)\033[0m\n' >&2
+    exit 0
+fi
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO" || exit 0
+
+if [ -t 1 ]; then C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[36m'; C_0=$'\e[0m'
+else C_R=; C_G=; C_Y=; C_B=; C_0=; fi
+
+FAILED=""
+step() { printf '%s==>%s %s… ' "$C_B" "$C_0" "$1"; }
+pass() { printf '%sok%s\n' "$C_G" "$C_0"; }
+fail() { printf '%sFAILED%s\n' "$C_R" "$C_0"; FAILED="$FAILED $1"; }
+
+# Keep the whole run's output; only print it for the step that failed, so a green run is four
+# lines and a red one shows exactly what CI would have shown.
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
+
+run() {  # run <label> <dir> <command...>
+    local label="$1" dir="$2"; shift 2
+    step "$label"
+    if ( cd "$dir" && "$@" ) >"$LOG" 2>&1; then
+        pass
+    else
+        fail "$label"
+        printf '%s\n' "--- $label ---" >&2
+        tail -40 "$LOG" >&2
+    fi
+}
+
+printf '%spre-push%s: checking what CI checks (skip with --no-verify)\n' "$C_B" "$C_0"
+
+# 1. The player workspace — where all three breakages landed.
+run "player tests"   player cargo test --workspace --quiet
+run "player clippy"  player cargo clippy --workspace --all-targets --quiet -- \
+                           -D clippy::correctness -D clippy::suspicious
+
+# 2. The installer workspace — CI builds it on Linux and Windows; we can only do the former.
+if [ -d installer ]; then
+    run "installer tests" installer cargo test --quiet
+fi
+
+# 3. The C/C++ half. Syntax only — it cannot see the ABI — but it is what caught probe.cpp using
+#    uintptr_t with no <cstdint>, which built on the device toolchain purely by luck.
+if [ -x tools/host_syntax_check.sh ]; then
+    run "C/C++ syntax" . tools/host_syntax_check.sh
+fi
+
+# 4. The pure-logic self-tests: the rules that decide whether the device pauses, reconnects,
+#    reboots or notices new music. Milliseconds with a stock cc, so there is no excuse to skip.
+step "C++ self-tests"
+selftest_fail=0
+for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange; do
+    src="cinder-home/tools/${t}_selftest.cpp"
+    [ -f "$src" ] || continue
+    if ! cc -O2 -o "/tmp/cinder_ph_$t" "$src" -lstdc++ >"$LOG" 2>&1; then
+        selftest_fail=1; printf '\n%s  %s failed to BUILD%s\n' "$C_R" "$t" "$C_0" >&2
+        tail -20 "$LOG" >&2; continue
+    fi
+    if ! "/tmp/cinder_ph_$t" >"$LOG" 2>&1; then
+        selftest_fail=1; printf '\n%s  %s FAILED%s\n' "$C_R" "$t" "$C_0" >&2
+        tail -20 "$LOG" >&2
+    fi
+    rm -f "/tmp/cinder_ph_$t"
+done
+if [ "$selftest_fail" = "0" ]; then pass; else fail "C++ self-tests"; fi
+
+# ── repository weight: dist/stable on a non-release push ───────────────────────────────────────
+# NOT a failure — shipping the binaries is the point of dist/stable, and a release must carry them.
+# But committing them on ORDINARY pushes is what took .git to 1.3 GB (docs/AUDIT_2026-09-01.md D1).
+# Stripped ARM ELFs share no deltas, so every touch rewrites all 8.7 MB in full, and dist/stable is
+# up to 41 revisions — most of them on feature commits, one of them on a docs-only commit. The
+# audit's recommendation (2) is "a binary per tag, not per push"; this is the reminder at the only
+# moment anyone can act on it.
+if git rev-parse --verify -q origin/main >/dev/null 2>&1; then
+    dist_changed="$(git diff --name-only origin/main..HEAD -- cinder-home/dist/stable/ 2>/dev/null | wc -l | tr -d ' ')"
+    if [ "${dist_changed:-0}" -gt 0 ] && [ -z "$(git tag --points-at HEAD 2>/dev/null)" ]; then
+        printf '%swarn%s  %s file(s) under cinder-home/dist/stable/ in this push, and HEAD is not tagged.\n' \
+               "$C_Y" "$C_0" "$dist_changed"
+        printf '      That is ~8.7 MB of ARM binaries added to history permanently, on a commit\n'
+        printf '      nobody installs. Release commits should carry them; feature commits should not.\n'
+        printf '      (docs/AUDIT_2026-09-01.md D1 — .git is 1.3 GB, ~356 MB of it this file set.)\n'
+    fi
+fi
+
+if [ -n "$FAILED" ]; then
+    printf '\n%spre-push: BLOCKED%s —%s\n' "$C_R" "$C_0" "$FAILED"
+    printf 'This is what CI would say. Fix it, or push with --no-verify if you mean to.\n'
+    exit 1
+fi
+
+printf '%spre-push: all green%s — CI should agree.\n' "$C_G" "$C_0"
+exit 0

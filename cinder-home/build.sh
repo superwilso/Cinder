@@ -118,6 +118,7 @@ for src in "$HERE/src/main.cpp:$HERE/main.o" \
            "$AUDIO/src/power_shim.cpp:$HERE/power_shim.o" \
            "$AUDIO/src/storage_shim.cpp:$HERE/storage_shim.o" \
            "$AUDIO/src/codec_shim.cpp:$HERE/codec_shim.o" \
+           "$AUDIO/src/volume_shim.cpp:$HERE/volume_shim.o" \
            "$HERE/src/discover.cpp:$HERE/discover.o"; do
     # -I../ldac-bridge/include: the minimal ALSA shim. tuner_shim.cpp needs it — the FM scanner
     # measures the capture PCM directly, because Sony's own GetSignalLevel/StartAutoTuning cannot
@@ -138,11 +139,12 @@ CRT="$HERE/.crt223"; mkdir -p "$CRT"
 cp -f "$DEVSYS/usr/lib/arm-linux-gnueabihf"/{Scrt1.o,crt1.o,crti.o,crtn.o} "$CRT/"
 $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$DEVSYS/usr/lib/arm-linux-gnueabihf" -L"$DEVSYS/lib/arm-linux-gnueabihf" \
-     "$HERE/main.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/power_shim.o" "$HERE/storage_shim.o" "$HERE/codec_shim.o" "${DISCOVER_MAIN[@]}" "$HERE/glibc223_compat.o" \
+     "$HERE/main.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/power_shim.o" "$HERE/storage_shim.o" "$HERE/codec_shim.o" "$HERE/volume_shim.o" "${DISCOVER_MAIN[@]}" "$HERE/glibc223_compat.o" \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -leaselcore -leaselcui -lpstcore -lappmgrservice -lPlayerServiceClient -lPlayerServiceClientUtil -lEffectCtrlDmp -lPowerMgrServiceClient \
      -lUsbDeviceAudioPlayerService -lBtCommonService -lBtTransmitterService \
+     -lVolumeService \
      -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
      "$SONYLIB/libMediaStoreServiceClient.so" \
      -l:libMali_linux.so \
@@ -276,7 +278,7 @@ $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
 # binder replies, which is what the "every PlayerService out-param is stack garbage" hunt needs.
 $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$DEVSYS/usr/lib/arm-linux-gnueabihf" -L"$DEVSYS/lib/arm-linux-gnueabihf" \
-     "$HERE/probe.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/storage_shim.o" "$HERE/codec_shim.o" "$HERE/discover.o" "$HERE/glibc223_compat.o" \
+     "$HERE/probe.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/storage_shim.o" "$HERE/codec_shim.o" "$HERE/volume_shim.o" "$HERE/discover.o" "$HERE/glibc223_compat.o" \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -lPlayerServiceClient -lPlayerServiceClientUtil -lpstcore -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \

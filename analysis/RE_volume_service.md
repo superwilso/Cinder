@@ -252,6 +252,27 @@ avls: SetVolume(55) rc=0 -> GetVolume()=55  threshold=63
 
 **The threshold is an independent cap at 63/120.** It does not track the volume.
 
+### AVLS enforces — measured, not assumed
+
+The read-only run says AVLS is featured and reports a cap. That is exactly what "High gain output"
+said before it was cut (it accepted `high`, read back 1, survived a reboot, and did nothing). So
+AVLS was asked the only question that matters — `cinder-probe --avls enforce`:
+
+```
+SetAvls(true) rc=0 -> GetAvls()=1
+asked for 91 -> GetVolume()=63 (cap 63)
+CLAMPED — the limiter is real and enforces
+restored volume=63 avls=0
+```
+
+It clamps rather than refusing, matching the service's own log string "limit volume to avls
+threshold". **But it clamps inside `VolumeAdlerOut::SetVolume`, which Cinder never calls** — Cinder
+writes the mixer directly. Switching Sony's flag on would therefore be a control that accepts a
+write and changes nothing Cinder does. So Cinder reads the threshold via
+`cinder_volume_avls_threshold()` (`cinder-audio/src/volume_shim.cpp`) and clamps in its own
+`apply_volume`; Settings ▸ Volume limit is the switch. The cap is read live, not cached, because
+`adapt=1` means it belongs to whatever output is plugged in.
+
 ### Two facts about `SetVolume` that matter more than AVLS
 
 1. **It works, and it writes the codec master.** Mixer forced to 40 → `SetVolume(55)` → restore to
