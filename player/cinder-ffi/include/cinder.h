@@ -243,6 +243,10 @@ void cinder_swipe_release(void);
  * cinder_reorder_release() on lift to drop the row where it sits. Start-point ownership, same rule
  * as the scrub rail: a drag that begins elsewhere scrolls even if it wanders over the handle. */
 int  cinder_reorder_begin(int x, int y);
+/* The same pick-up from ANYWHERE on a queue row, for a contact the shell has already established
+   is a long press (held still past the hold interval). The grab handle stays immediate; this is
+   how reordering is reached from the rest of the row. */
+int  cinder_reorder_begin_hold(int x, int y);
 void cinder_reorder_track(int dy_px);
 void cinder_reorder_release(void);
 /* SCROLLBAR drag — grab the bar at the right edge and drag it, as the Sony UI does. Same contract

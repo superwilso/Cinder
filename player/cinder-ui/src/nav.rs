@@ -3962,6 +3962,24 @@ impl App {
     /// if it later wanders across the handle column. Returns true when the row was picked up, so
     /// the shell knows to stream this contact here instead of to the scroll.
     pub fn reorder_begin(&mut self, x: i32, y: i32) -> bool {
+        self.reorder_begin_inner(x, y, true)
+    }
+
+    /// The same pick-up, from ANYWHERE on a queue row, for a contact the shell has already
+    /// classified as a long press.
+    ///
+    /// The grab handle exists because a vertical drag on this screen is ambiguous — reorder the row
+    /// under the thumb, or scroll the list? Start-point ownership answers that instantly, at the
+    /// cost of making reordering reachable only from one narrow column. A HOLD answers it too, and
+    /// from anywhere: a finger that has stayed still for the hold interval is not scrolling. So the
+    /// two live side by side — the handle lifts a row immediately, and a hold lifts one from any
+    /// point on it — and neither can steal a contact from the other, because by the time this is
+    /// offered the shell has already established that the finger did not move.
+    pub fn reorder_begin_hold(&mut self, x: i32, y: i32) -> bool {
+        self.reorder_begin_inner(x, y, false)
+    }
+
+    fn reorder_begin_inner(&mut self, x: i32, y: i32, require_grip: bool) -> bool {
         if self.locked || self.shelf_open || self.confirm.is_some() {
             return false;
         }
@@ -3970,9 +3988,10 @@ impl App {
         if self.current() != Screen::UpNext || self.queue.is_empty() {
             return false;
         }
-        if !crate::up_next::queue_grip_hit(x) {
+        if require_grip && !crate::up_next::queue_grip_hit(x) {
             return false;
         }
+        let _ = x;
         let Some(crate::up_next::Slot::Queued(from)) =
             self.up_next_layout().at(y, self.queue_scroll_px)
         else {
@@ -4377,8 +4396,20 @@ impl App {
         }
     }
 
-    /// Skip forward INSIDE the user queue: the picks ahead of `n` are dropped, and `n` becomes the
-    /// next thing to play. The rest of the queue, and the context underneath it, are untouched.
+    /// Play queue row `n` NEXT, keeping every other pick. The rest of the queue, and the context
+    /// underneath it, are untouched.
+    ///
+    /// NON-DESTRUCTIVE. This used to `drain(..n)`: tapping the third queued row silently threw
+    /// away the two above it. That read as "skip forward inside the queue", but it was the only
+    /// action on this screen that destroyed the user's own picks with no confirmation and no undo
+    /// — while the CLEAR chip beside it, which destroys strictly less, has both. Moving the row to
+    /// the front instead honours the tap ("play this one now") and costs nothing: the picks that
+    /// were above it simply follow it, in their existing order.
+    ///
+    /// The row STAYS IN THE QUEUE until it actually starts. That is what `App::track_started`
+    /// consumes, and it is why this rotates rather than removing: taking it out here would leave
+    /// nothing for the start to consume, so `playing_pick` would never be set and Up Next would
+    /// lose its NOW PLAYING row.
     ///
     /// Tapping a queue row used to go through `set_play_context`, which is the "the user started
     /// something new" path: it made the queue the CONTEXT and then cleared the queue. Everything
@@ -4392,7 +4423,8 @@ impl App {
         if n >= self.queue.len() {
             return false;
         }
-        self.queue.drain(..n);
+        let row = self.queue.remove(n);
+        self.queue.insert(0, row);
         self.queue_scroll_px = 0;
         self.queue_drag = None;
         self.queue_follow = true;
@@ -10684,9 +10716,11 @@ mod tests {
         assert!(miss.queue().is_empty());
     }
 
-    /// Tapping a queue row skips forward INSIDE the queue. The picks ahead of it are dropped —
-    /// that is what "play this one" means when there are three in front of it — and everything
-    /// behind it, plus the context underneath, is left exactly as it was.
+    /// Tapping a queue row plays it next and KEEPS every other pick. The context underneath, and
+    /// the order of the picks that were above it, are left exactly as they were.
+    ///
+    /// It used to `drain(..n)` — tapping the third row threw away the two above it, the only
+    /// action on this screen that destroyed the user's own picks with no confirmation and no undo.
     ///
     /// It used to run through `set_play_context`, which made the queue the CONTEXT and then
     /// cleared the queue. The music played in the right order, so nothing looked wrong; what had
@@ -10704,8 +10738,9 @@ mod tests {
             a.queue.push(SongRow { title: format!("P{i}"), object_id: 90 + i, ..Default::default() });
         }
         assert!(a.queue_play_at(1), "the middle pick is playable");
-        // P0 was skipped past; P1 and P2 are still the user's.
-        assert_eq!(a.queue().iter().map(|q| q.object_id).collect::<Vec<_>>(), vec![91, 92]);
+        // P1 is now first in line, and NOTHING was thrown away: P0 follows it, then P2.
+        // It stays IN the queue — `track_started` is what consumes a pick, and it has not run.
+        assert_eq!(a.queue().iter().map(|q| q.object_id).collect::<Vec<_>>(), vec![91, 90, 92]);
         // The context did not move and was not replaced.
         assert_eq!(a.context_idx(), 1);
         assert_eq!(a.context().len(), 4);
@@ -10720,6 +10755,56 @@ mod tests {
         b.queue.push(SongRow::default());
         assert!(!b.queue_play_at(1));
         assert_eq!(b.queue().len(), 1);
+    }
+
+    /// A HOLD lifts a queue row from anywhere on it; the grab handle still lifts one immediately.
+    ///
+    /// Reordering used to be reachable only from the handle column, because a vertical drag on this
+    /// screen is ambiguous — reorder, or scroll? — and start-point ownership is the only way to
+    /// settle that at the instant the finger moves. A hold settles it differently and from any x:
+    /// the shell only offers this once the contact has stayed still past the hold interval, and a
+    /// finger that has not moved is not scrolling.
+    #[test]
+    fn a_hold_lifts_a_queue_row_from_anywhere_the_handle_only_from_its_column() {
+        let seed = || {
+            let mut a = unlocked();
+            a.go(Screen::UpNext);
+            for i in 0..3 {
+                a.queue.push(SongRow {
+                    title: format!("P{i}"),
+                    object_id: 90 + i,
+                    ..Default::default()
+                });
+            }
+            a
+        };
+        // A y that lands on the first user-queue row, whatever the layout puts above it.
+        let mut probe = seed();
+        let row_y = crate::chrome::HEADER_BOTTOM
+            + probe
+                .up_next_layout()
+                .top_of(crate::up_next::Slot::Queued(0))
+                .expect("the queue has a first row")
+            + 4;
+        let off_handle = crate::up_next::GRIP_X0 - 40;
+        let on_handle = crate::up_next::GRIP_X0 + 4;
+
+        // Off the handle: the handle entry point declines, the hold entry point takes it.
+        assert!(!probe.reorder_begin(off_handle, row_y), "no handle there");
+        let mut a = seed();
+        assert!(a.reorder_begin_hold(off_handle, row_y), "a hold lifts it from anywhere");
+
+        // On the handle: still immediate, no hold needed.
+        let mut b = seed();
+        assert!(b.reorder_begin(on_handle, row_y), "the handle is still immediate");
+
+        // Neither entry point works with nothing queued, or off the Up Next screen.
+        let mut c = unlocked();
+        c.go(Screen::UpNext);
+        assert!(!c.reorder_begin_hold(off_handle, row_y), "an empty queue has no rows to lift");
+        let mut d = seed();
+        d.go(Screen::NowPlaying);
+        assert!(!d.reorder_begin_hold(off_handle, row_y), "only the Up Next queue reorders");
     }
 
     /// A user pick that is PLAYING owns the NOW PLAYING row.

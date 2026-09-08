@@ -3083,6 +3083,20 @@ pub extern "C" fn cinder_reorder_begin(x: libc::c_int, y: libc::c_int) -> libc::
     took as libc::c_int
 }
 
+/// The same pick-up from ANYWHERE on a queue row. The shell calls this only for a contact it has
+/// already established is a LONG PRESS — held past the hold interval without moving — which is what
+/// makes it unambiguous against a scroll. The grab-handle entry point above stays immediate.
+#[no_mangle]
+pub extern "C" fn cinder_reorder_begin_hold(x: libc::c_int, y: libc::c_int) -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let took = r.app.reorder_begin_hold(x as i32, y as i32);
+    if took {
+        r.dirty = true;
+    }
+    took as libc::c_int
+}
+
 /// Stream a reorder drag: `dy_px` is TOTAL travel from the gesture's start point.
 #[no_mangle]
 pub extern "C" fn cinder_reorder_track(dy_px: libc::c_int) {
