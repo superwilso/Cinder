@@ -8105,7 +8105,28 @@ void carry_out(int act) {
                 if (g_playing) cinder_audio_play(); else cinder_audio_pause();
             });
             break;
-        case CINDER_ACT_NEXT:       run_guarded("carry_out: next",  6, []() { cinder_audio_next_track(); }); break;
+        case CINDER_ACT_NEXT:
+            // ▷ CONSULTS THE QUEUE FIRST. A queue edit is deferred to a track boundary because
+            // handing PlayerService a new sequence restarts the music — but a skip never reaches
+            // that boundary, so NextTrack() walked the sequence the service was given BEFORE the
+            // queue existed. The user got the album's next track, then the queue took over at the
+            // boundary after it: "it jumps to what would be the next song excluding the queue, only
+            // to skip it and go to the queue."
+            //
+            // Re-issuing here is free for the same reason it is free at a boundary: the current
+            // track is being abandoned by intent, so there is no playback to preserve — which is
+            // also why this passes restore_position = false and the queued track starts at 0.
+            // cinder_prepare_skip_play returns 0 when the live sequence already leads with the
+            // queue, so an ordinary skip through an album is one NextTrack and no rebuild.
+            run_guarded("carry_out: next", 8, []() {
+                if (cinder_prepare_skip_play()) {
+                    play_pending_sequence("skip into queue", false);
+                    clog_("transport: next -> user queue");
+                    return;
+                }
+                cinder_audio_next_track();
+            });
+            break;
         case CINDER_ACT_PREV:
             // ◁ WITH A REWIND. The report was "no rewind in some queue situations", and this
             // button is the whole of it. It used to be an unconditional PrevTrack(), which has

@@ -300,6 +300,9 @@ int  cinder_prev_means_restart(void);
 /* Prepare a PlayerService sequence starting at the preceding Cinder playback-history entry.
  * Returns 1 when cinder_pending_play_* is ready, 0 when there is no earlier track. */
 int  cinder_prepare_previous_play(void);
+/* The skip button's counterpart: stage a sequence that STARTS at the user queue, so a skip does
+   not walk into the album track the queue was meant to precede. 0 = use NextTrack() as before. */
+int  cinder_prepare_skip_play(void);
 /* Best current position estimate, used when rebuilding a sequence for a queue edit. */
 int  cinder_play_position_ms(void);
 /* Tell the UI that the SHELL seeked playback to `ms` (the ◁ rewind paths), so the progress bar
