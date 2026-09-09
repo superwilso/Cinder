@@ -486,6 +486,20 @@ extern unsigned g_disp_bl_saved;
 // full scale is not known: if a later unit turns out to have more headroom, this is the one place
 // that changes.
 static const unsigned DISPLAY_BL_NIGHT = 1u;
+
+/// …and the DAY level, for when the service's own pre-Cinder level could not be read.
+///
+/// The day path used to restore `g_disp_bl_saved` and NOTHING ELSE — so when the read that fills it
+/// never succeeded, the restore was skipped entirely. The idle blank still set the service to 0 on
+/// the way down, and nothing ever put it back: the panel came back on the node's level alone, which
+/// is dimmer, and stayed that way for the rest of the session. Reported as "the screen is not at
+/// max brightness" and "it gets dimmer after a screen off and on again"; the log showed a single
+/// `SetLCDBacklightBrightness(0)` for a whole session and no restore after it.
+///
+/// 2 is the level the service was measured sitting at for normal use (see DISPLAY_BL_NIGHT). It is
+/// a fallback, not a preference: a successful read still wins, because the point is to put back
+/// what was there rather than to impose a number.
+static const unsigned DISPLAY_BL_DAY = 2u;
 extern bool g_screen_on;      // panel lit? (defined with the screen state, below)
 extern long g_last_input_ms;  // idle-screen-off clock; seeded by render_up, defined with the input state
 long now_ms();                // CLOCK_MONOTONIC ms (defined with the touch state, below)
@@ -2340,8 +2354,6 @@ void set_backlight(int night) {
     if (level < 0) return;
     // Remember the service's own level before we ever change it — that is what "back on" means.
     display_backlight_remember();
-    FILE* f = std::fopen(g_bl.path, "w");
-    if (f) { std::fprintf(f, "%d", level); std::fclose(f); }
     // …and the node is NOT the whole story. Sony's DisplayService holds its own backlight level and
     // the LED node does not override it: measured 2026-08-19 with the node at 0, the service at 2
     // and the panel still lit — the reported "backlight off still powers the backlight". Only the
@@ -2357,9 +2369,25 @@ void set_backlight(int night) {
         display_backlight(0);                       // fully off (Hold / Power / reboot restore it)
     } else if (night) {
         display_backlight(DISPLAY_BL_NIGHT);        // darker than anything the node can ask for
-    } else if (g_disp_bl_saved) {
-        display_backlight(g_disp_bl_saved);         // back to whatever it was before we touched it
+    } else {
+        // ALWAYS RESTORE SOMETHING. `g_disp_bl_saved` is 0 when the service level could not be read
+        // before we first wrote it, and this used to mean "do nothing" — which is only harmless if
+        // nothing ever lowered the service. The idle blank does exactly that, so the panel came
+        // back over a service level of 0 and stayed dim until the next reboot.
+        display_backlight(g_disp_bl_saved ? g_disp_bl_saved : DISPLAY_BL_DAY);
     }
+    // THE NODE IS WRITTEN LAST, AND THAT ORDER IS THE WHOLE POINT.
+    //
+    // Sony's DisplayService drives this same sysfs node. Writing the node first and then calling
+    // the service meant the service's own coarse level landed on top of ours: measured on device
+    // with brightness at 5, `SetLCDBacklightBrightness(2)` left the node reading 2 of 255 — the
+    // panel at ~1% when the user had asked for 100%. It was invisible for as long as the day path
+    // skipped the service call entirely, and appeared the moment that path started restoring.
+    //
+    // So the service goes first and settles the coarse state (off / night / normal), and the node
+    // goes second and settles the GRADED level, whose 0..max scale is the one we actually know.
+    FILE* f = std::fopen(g_bl.path, "w");
+    if (f) { std::fprintf(f, "%d", level); std::fclose(f); }
 }
 
 // Apply the UI's brightness level (1..5) by recomputing the DAY level, then re-writing the panel.
@@ -2686,7 +2714,21 @@ static void display_backlight_remember() {
         typedef void (*fnru)(void*, unsigned*);
         ((fnru)(*(void***)cli)[12])(cli, &cur);
     } catch (...) { return; }
-    if (cur > 0) g_disp_bl_saved = cur;
+    if (cur > 0) {
+        g_disp_bl_saved = cur;
+        char m[72];
+        std::snprintf(m, sizeof m, "display: remembered service backlight level %u", cur);
+        clog_(m);
+        return;
+    }
+    // SAY SO. A read that comes back 0 is why the day restore was silently skipped for a whole
+    // session, and nothing in the log named it — the only clue was a `SetLCDBacklightBrightness(0)`
+    // with no restore after it. Once per run: the client is either answering or it is not.
+    static bool told = false;
+    if (!told) {
+        told = true;
+        clog_("display: could not read the service backlight level — day restores use the default");
+    }
 }
 
 static bool touch_panel_service(bool valid) {
@@ -8976,24 +9018,48 @@ void power_hold_tick() {
 // not be retried every frame for as long as the finger stays down.
 static void reorder_hold_tick() {
     if (!g_touch_down || g_reorder_hold_tested || g_touch_down_ms == 0) return;
+    // WHY IT DID NOT FIRE. Reported on device as "no way to reorder NEXT FROM" while the queue's
+    // grab handle worked — i.e. the hold path never ran at all, and the log had no lift line to
+    // say which gate stopped it. Every other gesture on this screen claims a contact before this
+    // one is offered, so naming the claimant is the whole diagnosis. One line per contact.
     if (g_reorder_active || g_drag_active || g_scrub_active || g_sbar_active ||
-        g_hswipe_active  || g_shelfswipe_active) return;
+        g_hswipe_active  || g_shelfswipe_active) {
+        if (!g_reorder_hold_tested) {
+            g_reorder_hold_tested = true;
+            char m[128];
+            std::snprintf(m, sizeof m,
+                "hold: contact already claimed — drag=%d scrub=%d sbar=%d hswipe=%d shelf=%d reorder=%d",
+                (int)g_drag_active, (int)g_scrub_active, (int)g_sbar_active,
+                (int)g_hswipe_active, (int)g_shelfswipe_active, (int)g_reorder_active);
+            clog_(m);
+        }
+        return;
+    }
     if (g_touch_start_x < 0 || g_touch_start_y < 0 || !g_touch_saw_pos) return;
     const int dx = touch_ui_x(g_touch_cur_x) - touch_ui_x(g_touch_start_x);
     const int dy = touch_ui_y(g_touch_cur_y) - touch_ui_y(g_touch_start_y);
     if ((dx < 0 ? -dx : dx) > REORDER_HOLD_SLOP || (dy < 0 ? -dy : dy) > REORDER_HOLD_SLOP) {
         g_reorder_hold_tested = true;   // it moved: this contact is a scroll, not a hold
+        char m[96];
+        std::snprintf(m, sizeof m, "hold: moved %d,%d px before %ld ms — treated as a scroll",
+                      dx, dy, now_ms() - g_touch_down_ms);
+        clog_(m);
         return;
     }
     if (now_ms() - g_touch_down_ms < REORDER_HOLD_MS) return;
     g_reorder_hold_tested = true;       // set FIRST: whatever the answer, this contact has asked
-    if (cinder_reorder_begin_hold(touch_ui_x(g_touch_start_x), touch_ui_y(g_touch_start_y))) {
+    const int hx = touch_ui_x(g_touch_start_x), hy = touch_ui_y(g_touch_start_y);
+    if (cinder_reorder_begin_hold(hx, hy)) {
         g_reorder_active = true;
-        clog_("touch: queue row lifted by long press");
+        clog_("touch: row lifted by long press");
         // Paint now. The lifted row IS the feedback that the hold registered, and waiting for the
         // next event would leave the screen unchanged until the finger moved — which is precisely
         // the moment the user is deciding whether the gesture worked.
         if (g_screen_on) cinder_render_tick();
+    } else {
+        char m[96];
+        std::snprintf(m, sizeof m, "hold: UI declined a lift at %d,%d (not a reorderable row?)", hx, hy);
+        clog_(m);
     }
 }
 
