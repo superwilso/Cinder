@@ -125,29 +125,33 @@ pub fn ipc_dead() -> bool {
     IPC_DEAD.load(Ordering::Relaxed)
 }
 
-/// The x the degraded banner must stop before: the left edge of the menu glyph, less a gap.
-/// Derived from where the glyph is actually drawn so the two cannot drift apart.
-const fn banner_limit() -> f32 {
+/// The x everything in the status bar's LEFT ZONE must stop before: the left edge of the menu
+/// glyph, less a gap. Derived from where the glyph is actually drawn so the two cannot drift.
+///
+/// Three things share this zone and all three are drawn left-to-right from the clock: the degraded
+/// banner, the codec badge, and the NIGHT label. Any of them running long reaches the menu and
+/// bookmark glyphs, which are the way OUT of the screen.
+const fn zone_right() -> f32 {
     MENU_CX - MENU_W / 2.0 - 8.0
 }
 
-/// Widest the banner TEXT may be, given it starts at `wx`. The slab is drawn with 6 px of padding
+/// Widest a boxed label may be, given it starts at `wx`. The slab is drawn with 6 px of padding
 /// each side, so the text has to give up both — subtracting only the left one is what left the
 /// clamp 5 px short on the first attempt at this.
-fn banner_text_w(wx: f32) -> f32 {
-    (banner_limit() - wx - 6.0).max(0.0)
+fn zone_text_w(wx: f32) -> f32 {
+    (zone_right() - wx - 6.0).max(0.0)
 }
 
-/// The banner slab as `(x, w)`, hard-clamped to `banner_limit()`.
+/// A boxed label's slab as `(x, w)`, hard-clamped to `zone_right()`.
 ///
 /// Belt AND braces on purpose. The text is fitted to `banner_text_w` first, but that trusts
 /// `text::measure` to describe what `text::draw` will do — and this whole defect was a measured
 /// width that differed between two hosts. Clamping the RECTANGLE as well means the slab cannot
 /// reach the menu glyph even if the fit is wrong, which is the property the test asserts and the
 /// one that matters: a warning banner must never hide the control that navigates away from it.
-fn banner_rect(wx: f32, text_w: f32) -> (i32, i32) {
+fn zone_slab(wx: f32, text_w: f32) -> (i32, i32) {
     let x = wx - 6.0;
-    let w = (text_w + 12.0).min((banner_limit() - x).max(0.0));
+    let w = (text_w + 12.0).min((zone_right() - x).max(0.0));
     (x as i32, w as i32)
 }
 
@@ -190,27 +194,43 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
         // zero-width slab would still have been paired with text drawn AT `wx` — i.e. straight over
         // the glyphs, which is the exact failure this clamp exists to stop. Saying nothing is the
         // right answer there: the banner is a hint, and the way out of the screen is not.
-        let avail = banner_text_w(wx);
+        let avail = zone_text_w(wx);
         if avail > 0.0 {
             let msg = crate::widgets::fit(f, "AUDIO STOPPED \u{2014} RESTART", &wst, avail);
-            let (bx, bw) = banner_rect(wx, text::measure(f, &msg, &wst));
+            let (bx, bw) = zone_slab(wx, text::measure(f, &msg, &wst));
             fill_rect(c, bx, 10, bw, 23, t.acc);
             text::draw(c, f, wx, 26.0, &msg, &wst);
         }
     }
     let mut nx = cx;
     if !degraded && !badge.is_empty() {
+        // THE BADGE IS CALLER DATA, and it shares the banner's zone. It is a codec string built
+        // from the file being played — "FLAC 24/192", "DSF \u{00b7} Hi-Res" — so it is neither
+        // fixed-length nor pure ASCII, which is both halves of what made the banner overrun.
+        // Unclamped it drew its outline and text at whatever the font measured, straight through
+        // the menu and bookmark glyphs.
         let bst = sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.12);
-        let bw = text::measure(f, badge, &bst);
         let bx = cx + 12.0;
-        Rectangle::new(Point::new((bx - 6.0) as i32, 11), Size::new((bw + 12.0) as u32, 21))
-            .into_styled(PrimitiveStyle::with_stroke(t.acc, 1))
-            .draw(c)
-            .ok();
-        nx = text::draw(c, f, bx, 26.0, badge, &bst);
+        let avail = zone_text_w(bx);
+        if avail > 0.0 {
+            let shown = crate::widgets::fit(f, badge, &bst, avail);
+            let (ox, ow) = zone_slab(bx, text::measure(f, &shown, &bst));
+            Rectangle::new(Point::new(ox, 11), Size::new(ow as u32, 21))
+                .into_styled(PrimitiveStyle::with_stroke(t.acc, 1))
+                .draw(c)
+                .ok();
+            nx = text::draw(c, f, bx, 26.0, &shown, &bst);
+        }
     }
     if t.night && !degraded {
-        text::draw(c, f, nx + 12.0, 26.0, "NIGHT", &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.18));
+        // NIGHT rides on the END of the badge, so a long badge pushes it further right than the
+        // badge itself ever goes. Drawn only when it fits whole: a clipped "NIGH" says less than
+        // nothing, and the glyphs behind it matter more than the label does.
+        let nst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.18);
+        let nx2 = nx + 12.0;
+        if text::measure(f, "NIGHT", &nst) <= (zone_right() - nx2).max(0.0) {
+            text::draw(c, f, nx2, 26.0, "NIGHT", &nst);
+        }
     }
 
     // right: menu ≡, bookmark, bt, [battery].
@@ -432,7 +452,7 @@ mod degraded_tests {
         const BAND: i32 = 320;
         for wx in [20.0_f32, 67.5, 79.5, 120.0, 300.0, 400.0] {
             for text_w in [0.0_f32, 100.0, 193.2, 294.0, 1000.0, 10_000.0] {
-                let (x, w) = banner_rect(wx, text_w);
+                let (x, w) = zone_slab(wx, text_w);
                 assert!(w >= 0, "a slab cannot have negative width (wx {wx})");
                 // A zero-width slab draws nothing, and `status_bar` skips the text with it — that
                 // is the "the clock ran long" case, where the banner is dropped rather than
@@ -447,12 +467,52 @@ mod degraded_tests {
         // And the text is given a width that leaves room for BOTH of the slab's 6 px margins —
         // subtracting only the left one is what left the first clamp 5 px short.
         for wx in [20.0_f32, 67.5, 120.0] {
-            let (x, w) = banner_rect(wx, banner_text_w(wx));
+            let (x, w) = zone_slab(wx, zone_text_w(wx));
             assert!(w > 0, "these all have room");
             assert!(x + w <= BAND, "a text fitted to banner_text_w must still fit the band");
         }
         // Past the limit there is no room at all, and that must be 0 rather than a negative.
-        assert_eq!(banner_text_w(10_000.0), 0.0);
+        assert_eq!(zone_text_w(10_000.0), 0.0);
+    }
+
+    /// A long codec badge cannot reach the menu or bookmark glyphs — nor can the NIGHT label
+    /// riding on the end of it.
+    ///
+    /// The badge is CALLER DATA, built from the file being played, so unlike the fixed banner
+    /// string this can be made pathological from the test itself and the rule is checked on every
+    /// host rather than only on one whose fonts happen to measure wide.
+    #[test]
+    fn a_long_codec_badge_never_reaches_the_glyphs() {
+        let _g = latch_lock();
+        set_ipc_dead(false);
+        let bands = |t: &Theme, badge: &str| {
+            let f = FontSet::load();
+            let mut c = Canvas::new();
+            c.fill(t.bg);
+            status_bar(&mut c, t, &f, "14:32", badge, 50);
+            let bg = crate::canvas::to_u32(t.bg);
+            (
+                ink(&c, 320, 356, 6, 38, bg),                      // menu glyph
+                ink(&c, SHELF_CX - 16, SHELF_CX + 16, 6, 38, bg),  // bookmark glyph
+                ink(&c, 425, CW as i32, 10, 34, bg),               // battery
+            )
+        };
+        for t in [Theme::day(), Theme::night()] {
+            let short = bands(&t, "FLAC 24/96");
+            for badge in [
+                "DSF \u{00b7} Hi-Res",
+                "FLAC 32/384 \u{00b7} MULTICHANNEL \u{00b7} EXTREMELY LONG CODEC NAME",
+                &"W".repeat(200),
+                &"\u{00b7}".repeat(200),
+            ] {
+                assert_eq!(
+                    bands(&t, badge),
+                    short,
+                    "badge {badge:?} disturbed the right-hand strip (night={})",
+                    t.night
+                );
+            }
+        }
     }
 
     /// It actually says something, in the badge zone, and only when latched.
