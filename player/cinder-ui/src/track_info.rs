@@ -14,14 +14,25 @@
 use crate::library::{scrollbar, LIST_BOTTOM};
 use crate::text::{self, Family, FontSet, TextStyle, Weight};
 use crate::theme::Theme;
-use crate::widgets::{hline, sty};
+use crate::widgets::{center, fill_rect, hline, sty};
 use crate::Canvas;
 
 /// Screen-y of the first row (under the header).
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
+/// Height of the action band pinned under the list.
+pub const ACTION_H: i32 = 56;
 /// Bottom of the scrollable area. The SAME bound `scrollbar` uses for its track, so the thumb
 /// describes the window the rows are actually clipped to.
-pub const BOTTOM: i32 = LIST_BOTTOM;
+///
+/// The action band sits BELOW this, outside the scroll. "Add to playlist" is the only thing you
+/// can DO from this screen, and a control that has to be scrolled to is a control most people
+/// never find — which is how the whole picker ended up shipped and unreachable.
+pub const BOTTOM: i32 = LIST_BOTTOM - ACTION_H;
+
+/// Is this point on the "Add to playlist" band? The band spans the full width, so only y decides.
+pub fn hit_add_to_playlist(y: i32) -> bool {
+    (BOTTOM..BOTTOM + ACTION_H).contains(&y)
+}
 /// Label column x, value column x, and the right edge values wrap against.
 const LABEL_X: f32 = 22.0;
 const VALUE_X: f32 = 176.0;
@@ -120,7 +131,7 @@ pub fn render(
         let st = sty(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
         text::draw(c, f, LABEL_X, (TOP + 40) as f32, "Nothing is playing.", &st);
         c.clear_clip();
-        return;
+        return;   // and NO action band: there is no track to add.
     }
 
     let (ls, vs) = (label_style(t), value_style(t));
@@ -144,6 +155,16 @@ pub fn render(
     }
     c.clear_clip();
     scrollbar(c, t, TOP, BOTTOM, scroll, content_h(f, t, rows), sbar_active);
+    action_band(c, t, f);
+}
+
+/// The one action this screen offers, pinned under the list.
+fn action_band(c: &mut Canvas, t: &Theme, f: &FontSet) {
+    let w = crate::canvas::W as i32;
+    fill_rect(c, 0, BOTTOM, w, ACTION_H, t.panel);
+    hline(c, BOTTOM, t.line);
+    center(c, f, (w / 2) as f32, (BOTTOM + ACTION_H / 2 + 6) as f32, "+  ADD TO PLAYLIST",
+           &sty(Family::Mono, Weight::Bold, 13.0, t.acc, 0.14));
 }
 
 #[cfg(test)]

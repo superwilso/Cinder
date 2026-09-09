@@ -17,11 +17,11 @@ pub const RH: i32 = 62;
 const LIST_BOTTOM: i32 = crate::H as i32 - crate::chrome::NP_BAR_H;
 const LIST_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
-/// The reorder grab handle's hit strip on a user-queue row. Wide, because this device has no d-pad
-/// and reordering is a thumb-only gesture, but it STOPS short of the right edge: the last
-/// `library::SBAR_GRAB_W` px belong to the scrollbar drag, and one strip cannot serve both. A
-/// vertical drag starting here reorders; anywhere else it scrolls, which is the same start-point
-/// ownership rule the scrub rail uses.
+/// The reorder grab handle's hit strip on a reorderable row — a queued one or an upcoming one.
+/// Wide, because this device has no d-pad and reordering is a thumb-only gesture, but it STOPS
+/// short of the right edge: the last `library::SBAR_GRAB_W` px belong to the scrollbar drag, and
+/// one strip cannot serve both. A vertical drag starting here reorders; anywhere else it scrolls,
+/// which is the same start-point ownership rule the scrub rail uses.
 pub const GRIP_X0: i32 = 424;
 pub const GRIP_X1: i32 = W as i32 - crate::library::SBAR_GRAB_W;
 
@@ -96,7 +96,8 @@ pub fn queue_view_h() -> i32 {
     LIST_BOTTOM - LIST_TOP
 }
 
-/// Is this x on the grab handle?
+/// Is this x on the grab handle? Says nothing about the ROW: the caller pairs this with the slot
+/// under the finger, because the same column is inert on a played row and on the playing one.
 pub fn queue_grip_hit(x: i32) -> bool {
     (GRIP_X0..GRIP_X1).contains(&x)
 }
@@ -517,7 +518,7 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                 if let Some(song) = v.tracks.get(i) {
                     // History is dimmed — it is context, not a destination, and Apple Music reads
                     // the same way. Still tappable: that is how you go back a track.
-                    album_row(c, t, f, song, v.lib, y, i + 1, true, false);
+                    album_row(c, t, f, song, v.lib, y, i + 1, true, false, false);
                 }
             }
             Slot::Upcoming(_) => {
@@ -529,14 +530,14 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                 if v.drag.filter(|d| d.list == DragList::Upcoming).map(|d| d.from) == Some(ui) {
                     fill_rect(c, 0, y, W as i32, RH, t.panel); // the well the row came out of
                 } else if let Some(song) = v.tracks.get(ufirst + ui) {
-                    album_row(c, t, f, song, v.lib, y, ufirst + ui + 1, false, false);
+                    album_row(c, t, f, song, v.lib, y, ufirst + ui + 1, false, false, true);
                 }
             }
             Slot::Current(i) => {
                 if let Some(song) = v.tracks.get(i) {
                     fill_rect(c, 0, y, W as i32, RH, t.panel);
                     fill_rect(c, 0, y, 4, RH, t.acc);
-                    album_row(c, t, f, song, v.lib, y, i + 1, false, true);
+                    album_row(c, t, f, song, v.lib, y, i + 1, false, true, false);
                 }
             }
             Slot::CurrentPick => {
@@ -545,7 +546,7 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                     fill_rect(c, 0, y, 4, RH, t.acc);
                     // No track NUMBER: a pick has no position in the album under it, and printing
                     // the context row's number here is what made the old screen unreadable.
-                    album_row(c, t, f, song, v.lib, y, 0, false, true);
+                    album_row(c, t, f, song, v.lib, y, 0, false, true, false);
                 }
             }
             Slot::Queued(_) => {
@@ -590,13 +591,12 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
             hline(c, ft, t.line);
             hline(c, ft + RH, t.line);
             // Both lifted rows carry a grip, whichever list they came from: it is the thing that
-            // says "this row is in your hand", and an album row in flight is in your hand just as
-            // much as a queued one. It is only the RESTING album rows that have no handle drawn,
-            // because there the handle column is not how they are picked up.
+            // says "this row is in your hand". The row functions draw it faint; the accent
+            // overdraw below is what marks it as lifted.
             match d.list {
                 DragList::Queue => queue_row(c, t, f, song, v.lib, ft, d.to + 1),
                 DragList::Upcoming => {
-                    album_row(c, t, f, song, v.lib, ft, ufirst + d.to + 1, false, false)
+                    album_row(c, t, f, song, v.lib, ft, ufirst + d.to + 1, false, false, true)
                 }
             }
             grip(c, t, ft, true);
@@ -619,8 +619,12 @@ fn chip(c: &mut Canvas, t: &Theme, f: &FontSet, r: (i32, i32, i32, i32), label: 
 }
 
 /// An album-side row (history, current or upcoming). `past` dims it; `now` marks it playing.
+///
+/// `grippy` draws the reorder handle and gives up the width it needs. Only the UPCOMING rows ask
+/// for it: they are the ones that move. A handle on a played row or on the playing one would be a
+/// control that does nothing, which is worse than no control at all.
 fn album_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow,
-             lib: &crate::model::Library, y: i32, n: usize, past: bool, now: bool) {
+             lib: &crate::model::Library, y: i32, n: usize, past: bool, now: bool, grippy: bool) {
     let cy = (y + RH / 2) as f32;
     let idx_col = if now { t.acc } else { t.faint };
     let idx = if now { "\u{25b6}".to_string() } else { format!("{n:02}") };
@@ -630,11 +634,18 @@ fn album_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow,
     crate::library::thumb(c, t, lib, song.album_id, &song.art, 46, y + (RH - 48) / 2, 48, dim);
     let title_col = if now { t.acc } else if past { t.dim } else { t.ink };
     let tst = sty(Family::Sans, Weight::SemiBold, 20.0, title_col, 0.0);
-    text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 306.0), &tst);
+    // The text budget and the duration column both shift in when the handle is there, by exactly
+    // the amounts `queue_row` uses — the handle sits in the same column on both lists, so the
+    // clearance it needs is the same number, not a second one that has to be kept in step.
+    let (tw, aw, dx) = if grippy { (262.0, 276.0, 410.0) } else { (306.0, 320.0, 458.0) };
+    text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, tw), &tst);
     let ast = sty(Family::Sans, Weight::Regular, 15.0, if past { t.faint } else { t.dim }, 0.0);
-    text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, 320.0), &ast);
-    right(c, f, 458.0, cy + 4.0, &song.dur,
+    text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, aw), &ast);
+    right(c, f, dx, cy + 4.0, &song.dur,
           &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
+    if grippy {
+        grip(c, t, y, false);
+    }
 }
 
 /// One user-queue row's content at screen-`y`. `n` is the position label (1-based).

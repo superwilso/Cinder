@@ -7,8 +7,10 @@
 //! exactly once, ever, and keep the small result.
 //!
 //! LAYOUT: one raw file per album per size under `/data/cinder/artcache`:
-//!   `<album_id>.t48`  48x48 RGB, 6912 B   — what every list row draws
-//!   `<album_id>.t96`  96x96 RGB, 27648 B  — what the album drill-in draws
+//!   `<key>.t48`  48x48 RGB, 6912 B   — what every list row draws
+//!   `<key>.t96`  96x96 RGB, 27648 B  — what the album drill-in draws
+//!
+//! `<key>` is a hash of the cover's SOURCE FILE PATH, not the album id — see `key_of`.
 //! Raw packed RGB, no header: the size IS the validation (a short/corrupt file is rejected by
 //! length and simply re-decoded). One file per album rather than a pack file so a partial build is
 //! resumable, corruption is isolated to one album, and no rewrite of a large file is ever needed.
@@ -42,27 +44,51 @@ pub const T96: usize = 96;
 const _: () = assert!(T48 == cinder_ui::library::THUMB_PX as usize);
 const _: () = assert!(T96 == cinder_ui::library::COVER_PX as usize);
 
-fn path(album_id: i64, edge: usize) -> String {
-    format!("{}/{album_id}.t{edge}", dir())
+/// The name a cover is filed under on disk.
+///
+/// NOT the album id. `album_id` is a row number in a database Sony's scanner REBUILDS from
+/// scratch, renumbering as it goes, so it names a different album after every rescan while the
+/// cached file keeps the old name — and the list then draws last week's cover next to this week's
+/// track. Reported 2026-09-09 ("the artwork in the playlist ... are wrong but only the icons"):
+/// `365.t48` on the device was dated six days and three rebuilds earlier. Only the ICONS were
+/// wrong because the full-size cover on Now Playing is decoded live from the track, and never
+/// went near this cache.
+///
+/// The key is derived from the path of the file the picture is embedded in, which survives a
+/// rebuild. Identical covers dedupe for free; a file the user MOVES re-decodes once, which is the
+/// correct answer rather than a stale one.
+pub fn key_of(source_path: &str) -> u64 {
+    // FNV-1a. A hash, not the path itself: paths contain '/' and are far longer than a filename
+    // wants to be. Collisions cost one wrong thumbnail out of 2^64 and nothing else.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in source_path.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+fn path(key: u64, edge: usize) -> String {
+    format!("{}/{key:016x}.t{edge}", dir())
 }
 
 /// Read one cached thumbnail. None if absent, unreadable, or the wrong length.
-pub fn load(album_id: i64, edge: usize) -> Option<Image> {
+pub fn load(key: u64, edge: usize) -> Option<Image> {
     let want = edge * edge * 3;
-    let rgb = match std::fs::read(path(album_id, edge)) {
+    let rgb = match std::fs::read(path(key, edge)) {
         Ok(b) => b,
         Err(e) => {
             // Unreadable (wrong owner/mode — see `store`). Drop it so the builder can replace it
             // with one we own; the directory is world-writable precisely so this can work.
             if e.kind() == std::io::ErrorKind::PermissionDenied {
-                let _ = std::fs::remove_file(path(album_id, edge));
+                let _ = std::fs::remove_file(path(key, edge));
             }
             return None;
         }
     };
     if rgb.len() != want {
         // Truncated (a write interrupted by power loss). Drop it; the builder will redo it.
-        let _ = std::fs::remove_file(path(album_id, edge));
+        let _ = std::fs::remove_file(path(key, edge));
         return None;
     }
     Some(Image { w: edge, h: edge, rgb })
@@ -70,8 +96,8 @@ pub fn load(album_id: i64, edge: usize) -> Option<Image> {
 
 /// Write one thumbnail. Temp file + rename, so a reader can never see a half-written cover and an
 /// interrupted write leaves the old file (or none) rather than a corrupt one.
-fn store(album_id: i64, img: &Image) -> std::io::Result<()> {
-    let final_path = path(album_id, img.w);
+fn store(key: u64, img: &Image) -> std::io::Result<()> {
+    let final_path = path(key, img.w);
     let tmp = format!("{final_path}.part");
     std::fs::write(&tmp, &img.rgb)?;
     // World-readable ON PURPOSE. cinder-home runs as uid 100, but cinder-probe (and anything else
@@ -88,24 +114,30 @@ fn store(album_id: i64, img: &Image) -> std::io::Result<()> {
 /// has no permission to open, so a length-only check would mark a cover "cached" that we can never
 /// draw — and the builder would skip it forever. That is a live scenario here, because the cache
 /// may be built by cinder-probe as root or by cinder-home as uid 100.
-fn usable(album_id: i64, edge: usize) -> bool {
-    match std::fs::File::open(path(album_id, edge)) {
+fn usable(key: u64, edge: usize) -> bool {
+    match std::fs::File::open(path(key, edge)) {
         Ok(f) => f.metadata().map(|m| m.len() as usize == edge * edge * 3).unwrap_or(false),
         Err(_) => false,
     }
 }
 
-pub fn is_cached(album_id: i64) -> bool {
-    usable(album_id, T48) && usable(album_id, T96)
+pub fn is_cached(key: u64) -> bool {
+    usable(key, T48) && usable(key, T96)
 }
 
 /// Load every already-cached 48x48 thumbnail for the given albums. Called once at library build,
 /// before the builder thread starts, so a device that has run before shows covers immediately.
-pub fn load_all(album_ids: impl Iterator<Item = i64>) -> std::collections::HashMap<i64, Image> {
+/// TWO key spaces, on purpose: the map handed to the UI is keyed by `album_id`, because that is
+/// what a row on screen knows about itself in THIS database, while the file it was read from is
+/// named by the stable key. The volatile id never reaches the disk and the stable key never has
+/// to be threaded through the renderer.
+pub fn load_all(
+    sources: impl Iterator<Item = (i64, u64)>,
+) -> std::collections::HashMap<i64, Image> {
     let mut out = std::collections::HashMap::new();
-    for id in album_ids {
-        if let Some(img) = load(id, T48) {
-            out.insert(id, img);
+    for (album_id, key) in sources {
+        if let Some(img) = load(key, T48) {
+            out.insert(album_id, img);
         }
     }
     out
@@ -114,7 +146,7 @@ pub fn load_all(album_ids: impl Iterator<Item = i64>) -> std::collections::HashM
 /// Decode one album's cover and write both sizes. Returns the 48x48 for the live UI map.
 ///
 /// `object_id` is any track on the album — they all embed the same picture.
-pub fn build_one(db: &cinder_db::Db, album_id: i64, object_id: i64) -> Option<Image> {
+pub fn build_one(db: &cinder_db::Db, key: u64, object_id: i64) -> Option<Image> {
     let native = crate::art_load::load(db, object_id)?;
     let t96 = native.scaled_to(T96, T96);
     // 48 comes from the 96, not from the native decode: with an area-averaging scaler the two-step
@@ -124,11 +156,11 @@ pub fn build_one(db: &cinder_db::Db, album_id: i64, object_id: i64) -> Option<Im
     // touching the filesystem so the peak doesn't overlap with anything else this thread does —
     // this process has already died once from allocation failure under fragmentation.
     drop(native);
-    if let Err(e) = store(album_id, &t96) {
-        eprintln!("cinder-ffi: art cache: write {album_id}.t96 failed: {e}");
+    if let Err(e) = store(key, &t96) {
+        eprintln!("cinder-ffi: art cache: write {key:016x}.t96 failed: {e}");
     }
-    if let Err(e) = store(album_id, &t48) {
-        eprintln!("cinder-ffi: art cache: write {album_id}.t48 failed: {e}");
+    if let Err(e) = store(key, &t48) {
+        eprintln!("cinder-ffi: art cache: write {key:016x}.t48 failed: {e}");
         return None;
     }
     Some(t48)
@@ -155,7 +187,10 @@ pub fn ensure_dir() -> bool {
 /// are still the right LENGTH, so `load` accepts them and `is_cached` reports done, and the
 /// improved code never runs against a real library. Version 2 is the switch from bilinear to
 /// area-averaged downscaling (see `Image::scaled_to`).
-const CACHE_VERSION: &str = "2";
+/// Version 3 is the switch from album-id filenames to content-stable ones (see `key_of`). The
+/// bump is what sweeps the old id-named files: nothing will ever look them up again, so without
+/// it they would sit in the cache directory for ever.
+const CACHE_VERSION: &str = "3";
 
 /// Drop the cached thumbnails when they were produced by a different version of the scaler. Runs
 /// once per process at `ensure_dir`; a rebuild is background work the app already knows how to do,
@@ -228,9 +263,10 @@ mod tests {
         let d = tmp("truncated");
         std::env::set_var("CINDER_ART_CACHE", &d);
         assert!(ensure_dir());
-        std::fs::write(format!("{d}/9.t48"), vec![0u8; 100]).unwrap();
+        let p9 = path(9, T48);
+        std::fs::write(&p9, vec![0u8; 100]).unwrap();
         assert!(load(9, T48).is_none());
-        assert!(!std::path::Path::new(&format!("{d}/9.t48")).exists(), "corrupt file left behind");
+        assert!(!std::path::Path::new(&p9).exists(), "corrupt file left behind");
         assert!(!is_cached(9));
         std::fs::remove_dir_all(&d).ok();
     }
@@ -243,10 +279,39 @@ mod tests {
         assert!(ensure_dir());
         store(1, &img(T48, 1)).unwrap();
         store(3, &img(T48, 3)).unwrap();
-        let m = load_all([1i64, 2, 3].into_iter());
+        // album_id -> key is deliberately NOT the identity here: the map the UI gets is keyed by
+        // album id, the files are keyed by cover source, and the test should not accidentally
+        // pass by conflating the two.
+        let m = load_all([(100i64, 1u64), (200, 2), (300, 3)].into_iter());
         assert_eq!(m.len(), 2);
-        assert!(m.contains_key(&1) && m.contains_key(&3) && !m.contains_key(&2));
+        assert!(m.contains_key(&100) && m.contains_key(&300) && !m.contains_key(&200));
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    /// The cache must survive Sony renumbering the albums.
+    ///
+    /// This is the 2026-09-09 bug in miniature: the scanner rebuilds the store and hands the same
+    /// album a different `album_id`, so a cache filed under the id serves the PREVIOUS database's
+    /// cover. Keying on the file the picture came out of makes a renumber a no-op, and — the half
+    /// that actually bit — makes two DIFFERENT albums that briefly share an id impossible to
+    /// confuse.
+    #[test]
+    fn the_cache_key_follows_the_cover_not_the_album_id() {
+        let a = "/data/mnt/internal/MUSIC/Bay Ledges - Rivers/06 - Bay Ledges - Fool.flac";
+        let b = "/data/mnt/internal/MUSIC/Virgo Rising - Tristan/01 - Virgo Rising - Tristan.flac";
+
+        // Same cover source => same file, whatever the database calls the album this week.
+        assert_eq!(key_of(a), key_of(a), "the key must be a pure function of the path");
+        // Different covers => different files, even when a rebuild gives them a neighbour's id.
+        assert_ne!(key_of(a), key_of(b));
+        assert_ne!(path(key_of(a), T48), path(key_of(b), T48));
+
+        // And the name carries no album id at all, so nothing can reintroduce the coupling.
+        let name = path(key_of(a), T48);
+        assert!(name.ends_with(".t48"));
+        let stem = name.rsplit('/').next().unwrap().trim_end_matches(".t48");
+        assert_eq!(stem.len(), 16, "16 hex digits: {stem}");
+        assert!(stem.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     /// A cache written by an older scaler must be discarded, not silently reused — otherwise a

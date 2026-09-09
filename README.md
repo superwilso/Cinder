@@ -11,9 +11,12 @@ app — native, ~3 MB, running in place of Sony's stock Qt player while keeping 
 audio services (DSP, codecs, LDAC) intact underneath it.
 
 <p align="center">
-  <img src="player/cinder-ui/src/out/accent_amber_now_playing.png" width="220" alt="Cinder now-playing screen">
-  <img src="player/cinder-ui/src/out/library_albums_az_night.png" width="220" alt="Cinder library screen, night theme">
+  <img src="docs/screenshots/now-playing.png" width="220" alt="Cinder now-playing screen">
+  <img src="docs/screenshots/up-next.png" width="220" alt="Cinder Up Next queue">
+  <img src="docs/screenshots/library-albums.png" width="220" alt="Cinder album library">
 </p>
+
+<p align="center"><sub><a href="#screenshots">More screenshots ↓</a></sub></p>
 
 ## Why
 
@@ -236,6 +239,61 @@ to start. [`docs/AUDIT_2026-09-01.md`](docs/AUDIT_2026-09-01.md) Part D is the c
 decisions.
 
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+---
+
+## Screenshots
+
+Every shot is a real render of the shipping UI at the device's native 480×800, produced by the
+`cinder-host` preview harness (`cargo run -p cinder-host`) rather than a mockup. Cover art is
+generated placeholder gradients — the harness has no library of its own, and using real album art
+here would be someone else's copyright.
+
+### Playing
+
+| Now playing | Up Next | Reordering | Volume |
+|---|---|---|---|
+| <img src="docs/screenshots/now-playing.png" width="190" alt="Now playing"> | <img src="docs/screenshots/up-next.png" width="190" alt="Up Next"> | <img src="docs/screenshots/up-next-reorder.png" width="190" alt="Dragging a row to reorder"> | <img src="docs/screenshots/volume.png" width="190" alt="Volume overlay"> |
+
+The queue is one list: history, the playing track, your hand-picked queue, and the rest of the
+album it came from. Any row below the playing one can be dragged by its handle — including the
+`NEXT FROM` section, so you can rearrange the album you're already listening to without
+interrupting it.
+
+### Library
+
+| Albums | Songs | Artists | Playlists |
+|---|---|---|---|
+| <img src="docs/screenshots/library-albums.png" width="190" alt="Album list"> | <img src="docs/screenshots/library-songs.png" width="190" alt="Song list"> | <img src="docs/screenshots/library-artists.png" width="190" alt="Artist list"> | <img src="docs/screenshots/library-playlists.png" width="190" alt="Playlists"> |
+
+| Album | Artist | Folders | Track info |
+|---|---|---|---|
+| <img src="docs/screenshots/album.png" width="190" alt="Album track list"> | <img src="docs/screenshots/artist.png" width="190" alt="Artist page"> | <img src="docs/screenshots/folders.png" width="190" alt="Folder browser"> | <img src="docs/screenshots/track-info.png" width="190" alt="Track information"> |
+
+### Sound
+
+| Equalizer | Sony DSP | Bluetooth | USB-DAC |
+|---|---|---|---|
+| <img src="docs/screenshots/equalizer.png" width="190" alt="10-band equalizer"> | <img src="docs/screenshots/sound.png" width="190" alt="Sound effects"> | <img src="docs/screenshots/bluetooth.png" width="190" alt="Bluetooth and LDAC"> | <img src="docs/screenshots/usb-dac.png" width="190" alt="USB-DAC mode"> |
+
+`Sound` drives Sony's own effect services, so DSEE HX, VPT, DC Phase Linearizer, Vinyl Processor
+and the rest behave exactly as they do on stock — the footer prints the resulting signal path.
+
+### The rest
+
+| Settings | Shelf | Lock screen | FM radio |
+|---|---|---|---|
+| <img src="docs/screenshots/settings.png" width="190" alt="Settings"> | <img src="docs/screenshots/shelf.png" width="190" alt="Shelf shortcuts"> | <img src="docs/screenshots/lock.png" width="190" alt="Lock screen"> | <img src="docs/screenshots/fm-radio.png" width="190" alt="FM radio"> |
+
+### Visualisers and themes
+
+| Bars | Ribbon | Night — playing | Night — library |
+|---|---|---|---|
+| <img src="docs/screenshots/visualiser-bars.png" width="190" alt="Bar visualiser"> | <img src="docs/screenshots/visualiser-ribbon.png" width="190" alt="Ribbon visualiser"> | <img src="docs/screenshots/now-playing-night.png" width="190" alt="Now playing, night theme"> | <img src="docs/screenshots/library-albums-night.png" width="190" alt="Library, night theme"> |
+
+Eight visualisers, six accent colours, and a **night theme that is genuinely dim** — it is meant
+for a dark room at low brightness, which is why it looks nearly black next to the day theme rather
+than merely dark-grey.
 
 ## License
 

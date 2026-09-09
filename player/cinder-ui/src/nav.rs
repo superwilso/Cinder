@@ -2608,6 +2608,17 @@ impl App {
                 }
                 vec![]
             }
+            // Track information: one control, the band pinned under the list.
+            Screen::TrackInfo => {
+                if crate::track_info::hit_add_to_playlist(y) {
+                    if let Some(oid) = self.playing_object_id() {
+                        self.open_playlist_pick(oid);
+                    } else {
+                        self.notify("Nothing is playing");
+                    }
+                }
+                vec![]
+            }
             Screen::Artist => self.tap_artist(x, y),
             Screen::Playlist => self.tap_playlist(x, y),
             Screen::Keyboard => self.tap_keyboard(x, y),
@@ -2627,7 +2638,10 @@ impl App {
                 // treated as a tap: playing a track because a reorder came out too short to
                 // classify is a nasty surprise.
                 if crate::up_next::queue_grip_hit(x)
-                    && matches!(self.up_next_layout().at(y, self.queue_scroll_px), Some(Slot::Queued(_)))
+                    && matches!(
+                        self.up_next_layout().at(y, self.queue_scroll_px),
+                        Some(Slot::Queued(_)) | Some(Slot::Upcoming(_))
+                    )
                 {
                     return vec![];
                 }
@@ -3302,6 +3316,19 @@ impl App {
                 self.open_playlist(index);
             }
         }
+    }
+
+    /// The object id of the track actually PLAYING — a user pick if one is in flight, otherwise
+    /// the context row at `context_idx`.
+    ///
+    /// Not `current_song_object_id()`: that one resolves the highlighted LIBRARY row, which is
+    /// whatever list the user last scrolled and has nothing to do with what is coming out of the
+    /// headphones.
+    fn playing_object_id(&self) -> Option<i64> {
+        if let Some(p) = &self.playing_pick {
+            return Some(p.object_id);
+        }
+        self.context.get(self.context_idx).map(|s| s.object_id)
     }
 
     /// Open "Add to playlist" for one track.
@@ -4012,14 +4039,15 @@ impl App {
         // `context_idx` cannot be disturbed by a reorder, which is what makes this safe to do to
         // a live sequence.
         //
-        // The HANDLE stays queue-only. It is drawn on queue rows and not on album rows, and a
-        // strip that lifts a row where nothing indicates it would be a trap. A hold has no such
-        // problem: it is the same gesture everywhere and it announces itself by lifting the row.
+        // The HANDLE works on both, because it is now DRAWN on both. It used to be queue-only for
+        // exactly one reason — a strip that lifts a row where nothing indicates it is a trap — and
+        // that reason disappears the moment the upcoming rows carry the same three bars. The two
+        // must stay in step: the handle is offered here iff `up_next::album_row` drew one.
         let (list, slot, from) = match lay.at(y, self.queue_scroll_px) {
             Some(crate::up_next::Slot::Queued(i)) => {
                 (crate::up_next::DragList::Queue, crate::up_next::Slot::Queued(i), i)
             }
-            Some(crate::up_next::Slot::Upcoming(i)) if !require_grip => (
+            Some(crate::up_next::Slot::Upcoming(i)) => (
                 crate::up_next::DragList::Upcoming,
                 crate::up_next::Slot::Upcoming(i),
                 // Stored RELATIVE to the first upcoming row: that is the index space the drag, the
@@ -9577,6 +9605,41 @@ mod tests {
 
     /// Now Playing ▸ the toolbar's third slot adds what is playing to a playlist.
     #[test]
+    /// The "Add to playlist" picker is REACHABLE. It was built complete — renderer, hit tests,
+    /// actions, persistence — and then shipped with nothing that opened it, so the only way to add
+    /// a song to a playlist was to open the playlist and go and find the song. Reported 2026-09-09
+    /// as "no way to edit an existing playlist or add songs to it".
+    #[test]
+    fn track_info_opens_the_add_to_playlist_picker() {
+        let mut a = own_and_sony();   // the picker only ever lists YOUR OWN playlists
+        let album: Vec<SongRow> = (0..4)
+            .map(|i| SongRow {
+                title: format!("T{i}"), artist: "Someone".into(), dur: "3:00".into(),
+                object_id: 900 + i, ..Default::default()
+            })
+            .collect();
+        let want = album[1].object_id;
+        a.set_play_context(album, 1);
+        a.push(Screen::TrackInfo);
+
+        // The band is under the list, and the list cannot be scrolled over it.
+        let by = crate::track_info::BOTTOM + crate::track_info::ACTION_H / 2;
+        assert!(crate::track_info::hit_add_to_playlist(by));
+        assert!(!crate::track_info::hit_add_to_playlist(crate::track_info::BOTTOM - 1),
+                "the row above the band is still a row");
+
+        assert_eq!(a.tap(240, by), Vec::<Action>::new(), "opening a picker is navigation");
+        assert_eq!(a.current(), Screen::PlaylistPick, "the picker is on screen");
+
+        // ...and it is aimed at the PLAYING track, not at whatever library row was last touched.
+        let acts = a.tap(240, crate::playlist_pick::TOP + crate::playlist_pick::ROW_H + 4);
+        assert!(
+            acts.iter().any(|x| matches!(x, Action::PlaylistAddTrack(_, t) if *t == want)),
+            "the track added must be the one that was playing, got {acts:?}"
+        );
+    }
+
+    #[test]
     fn add_to_playlist_picker() {
         let mut a = own_and_sony();
         while a.current() != Screen::NowPlaying {
@@ -10912,13 +10975,36 @@ mod tests {
         assert_eq!(a.context_idx(), 1);
         assert_eq!(a.context()[1].object_id, 11);
 
-        // The grab handle is queue-only: it is not drawn on album rows, so it must not lift one.
+        // The grab handle lifts an upcoming row too, because it is now DRAWN on one. This pairs
+        // with `up_next::album_row`'s `grippy` flag: if that stops drawing the bars, this must
+        // stop lifting, or the column becomes a control with no mark on it.
         let mut b = seed();
         assert!(
-            !b.reorder_begin(crate::up_next::GRIP_X0 + 4, row_y),
-            "no handle on an album row"
+            b.reorder_begin(crate::up_next::GRIP_X0 + 4, row_y),
+            "the handle lifts an upcoming row"
         );
-        assert!(b.reorder_state().is_none());
+        let bd = b.reorder_state().expect("the handle put a row in hand");
+        assert_eq!(bd.list, crate::up_next::DragList::Upcoming);
+        assert_eq!(bd.from, 0);
+
+        // ...but ONLY where it is drawn. History and the playing row carry no handle, so the same
+        // column on them is inert and the contact belongs to the scroll.
+        let mut b2 = seed();
+        let hgy = crate::chrome::HEADER_BOTTOM
+            + b2.up_next_layout().top_of(crate::up_next::Slot::History(0)).expect("A0 is history")
+            + 4;
+        assert!(
+            !b2.reorder_begin(crate::up_next::GRIP_X0 + 4, hgy),
+            "no handle on a played row"
+        );
+        let cgy = crate::chrome::HEADER_BOTTOM
+            + b2.up_next_layout().top_of(crate::up_next::Slot::Current(1)).expect("A1 is playing")
+            + 4;
+        assert!(
+            !b2.reorder_begin(crate::up_next::GRIP_X0 + 4, cgy),
+            "no handle on the playing row"
+        );
+        assert!(b2.reorder_state().is_none());
 
         // A drop that goes nowhere changes nothing and asks for no re-issue.
         let mut d2 = seed();

@@ -276,15 +276,29 @@ impl Db {
     /// This is what the shell's art-cache builder walks: covers are per-track in the schema
     /// (`object_body.othumb_id`), but every track on an album embeds the same picture, so one
     /// decode per album is enough. Ordered by album so a partial build is predictable.
-    pub fn album_cover_sources(&self) -> Result<Vec<(i64, i64)>> {
+    /// One cover source per album: `(album_id, object_id, source_path)`.
+    ///
+    /// `source_path` is `images.value` — the FILE the picture is embedded in. It is returned
+    /// because `album_id` is not a stable name for anything: Sony's scanner reassigns album ids
+    /// every time it rebuilds the store, so a thumbnail filed under id 365 on Monday belongs to a
+    /// different album by Friday. Anything that PERSISTS a cover has to key it on something that
+    /// survives a rebuild, and the path of the file the cover came out of does.
+    /// (`images.digest` would be the natural choice and is NULL on all 3,461 rows of the
+    /// reference device's store, so it is not available.)
+    ///
+    /// The bare `im.value` next to `MIN(ob.object_id)` is SQLite's documented min/max bare-column
+    /// rule: it comes from the same row the MIN picked, which is the row `object_id` names.
+    pub fn album_cover_sources(&self) -> Result<Vec<(i64, i64, String)>> {
         let mut st = self.conn.prepare(&format!(
-            "SELECT ob.album_id, MIN(ob.object_id) \
-             FROM object_body ob \
+            "SELECT ob.album_id, MIN(ob.object_id), im.value \
+             FROM object_body ob JOIN images im ON im.id = ob.othumb_id \
              WHERE {TRACK_WHERE} AND ob.album_id IS NOT NULL AND ob.othumb_id IS NOT NULL \
              GROUP BY ob.album_id \
              ORDER BY ob.album_id"
         ))?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let rows = st.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default()))
+        })?;
         rows.collect()
     }
 
@@ -354,6 +368,22 @@ impl Db {
             "ob.disc_no, ob.series_no, ob.child_index",
             [album_id],
         )
+    }
+
+    /// Does the store still answer the query the whole library is built from?
+    ///
+    /// `Connection::open` SUCCEEDS on a damaged database — SQLite only faults when a query walks
+    /// into the damaged pages — so "the file opened" says nothing about whether there is a library
+    /// in it. Measured 2026-09-09 on the reference device: `albums` and `artists` read back
+    /// perfectly while every read of `object_body` returned "database disk image is malformed",
+    /// and because the caller does `tracks(..).unwrap_or_default()` that surfaced as a tidy,
+    /// entirely believable EMPTY LIBRARY rather than as an error.
+    ///
+    /// `count(*)` over the track table walks the same b-tree the real queries do, so it fails in
+    /// exactly the cases they fail, and it materialises no rows.
+    pub fn health(&self) -> Result<i64> {
+        self.conn
+            .query_row("SELECT count(*) FROM object_body", [], |r| r.get::<_, i64>(0))
     }
 
     /// Every track in (album, disc, track) order — one query to build all the per-album track
@@ -910,6 +940,26 @@ mod tests {
         assert_eq!(t[0].duration_raw, Some(272000));
         assert!(t[0].is_hires);
         assert_eq!(t[1].title, "Box of Stones");
+    }
+
+    /// `health()` must name the table the library is actually built from.
+    ///
+    /// The corrupt-store direction is proven against real data rather than a synthetic fixture:
+    /// on the device's damaged `MTPDB.dat` (2026-09-09) this exact query — `count(*)` over
+    /// `object_body` — is the one that returned "database disk image is malformed" while
+    /// `albums` and `artists` counted fine. What a fixture can still catch is the boring
+    /// regression that would silently disarm the guard: a renamed or mistyped table, which would
+    /// make `health()` fail on a PERFECTLY GOOD store and restore a backup over it.
+    #[test]
+    fn health_passes_on_a_good_store() {
+        let db = db();
+        let n = db.health().expect("a healthy store must answer the health query");
+        assert!(n > 0, "the fixture has rows, so the count must not be zero");
+        assert_eq!(
+            n,
+            db.health().unwrap(),
+            "health is a read; asking twice must not change the answer"
+        );
     }
 
     #[test]

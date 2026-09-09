@@ -829,6 +829,125 @@ void retry_log(RetryLog& st, const char* msg) {
 
 // DEFERRED bring-up: the slow/blocking parts (library DB load + scrobbler + PlayerService
 // connect). Run from the pump AFTER the first frame is painted, each under the hang watchdog
+// ── THE LIBRARY STORE'S SAFETY NET ──────────────────────────────────────────────────────────
+//
+// /db/MTPDB.dat is written by SONY's MediaStoreService, not by us, and it is not written
+// atomically: a scan keeps rewriting it for minutes after Scan() returns 0. Any unclean shutdown
+// inside that window leaves an interrupted commit — the header says N pages while interior b-tree
+// cells still point past the end of the file. SQLite opens that quite happily and then answers
+// every track query with "database disk image is malformed", so it presents as an EMPTY LIBRARY.
+//
+// Measured on the reference device 2026-09-09: 2,520 tracks one boot, 0 the next, `albums` and
+// `artists` reading back perfectly. 17 dangling pages.
+//
+// We cannot make Sony's writes atomic and we cannot lock a file against the process that owns it.
+// What we CAN do is keep a copy of the last store that was known to work, and put it back when the
+// live one stops answering. That turns "my music is gone until someone restores a backup by hand"
+// into a boot that quietly comes up with the library it had yesterday.
+static const char* DB_LIVE     = "/db/MTPDB.dat";
+static const char* DB_GOOD     = "/db/MTPDB.cinder-good";
+static const char* DB_GOOD_TMP = "/db/MTPDB.cinder-good.tmp";
+
+// Byte copy + fsync. Returns false on any short write, so a full /db can never be mistaken for a
+// good snapshot — the whole value of the copy is that it is complete.
+static bool db_copy(const char* src, const char* dst, bool in_place) {
+    FILE* in = std::fopen(src, "rb");
+    if (!in) return false;
+    // IN PLACE for a restore. Sony's services may still hold the live store open; rewriting the
+    // same inode is what makes them see the restored bytes instead of quietly keeping the broken
+    // ones until something reopens the path.
+    FILE* out = std::fopen(dst, in_place ? "r+b" : "wb");
+    if (!out && in_place) out = std::fopen(dst, "wb");
+    if (!out) { std::fclose(in); return false; }
+    char buf[64 * 1024];
+    bool ok = true;
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, in)) > 0) {
+        if (std::fwrite(buf, 1, n, out) != n) { ok = false; break; }
+    }
+    if (ok && std::ferror(in)) ok = false;
+    std::fflush(out);
+    if (ok) {
+        const long len = std::ftell(out);
+        if (in_place && len >= 0) ok = (::ftruncate(fileno(out), len) == 0);
+        if (ok) ok = (::fsync(fileno(out)) == 0);
+    }
+    std::fclose(out);
+    std::fclose(in);
+    if (!ok) ::unlink(dst);
+    return ok;
+}
+
+static bool db_mtime(const char* p, time_t* out, off_t* size) {
+    struct stat st{};
+    if (::stat(p, &st) != 0) return false;
+    if (out) *out = st.st_mtime;
+    if (size) *size = st.st_size;
+    return true;
+}
+
+// Keep a copy of a store that has just proved it works. Only when it actually changed, because
+// this is eMMC and the common case is a boot where nothing about the library moved at all.
+static void db_snapshot_keep() {
+    time_t live_t = 0, good_t = 0; off_t live_sz = 0, good_sz = 0;
+    if (!db_mtime(DB_LIVE, &live_t, &live_sz) || live_sz <= 0) return;
+    if (db_mtime(DB_GOOD, &good_t, &good_sz) && good_t >= live_t && good_sz == live_sz) return;
+    if (!db_copy(DB_LIVE, DB_GOOD_TMP, false)) {
+        clog_("db-guard: could not write the snapshot (is /db full?) — no copy kept this boot");
+        return;
+    }
+    // Rename LAST, so the visible snapshot is never a half-written one.
+    if (::rename(DB_GOOD_TMP, DB_GOOD) != 0) { ::unlink(DB_GOOD_TMP); return; }
+    ::sync();
+    char m[128];
+    std::snprintf(m, sizeof m, "db-guard: snapshot kept (%ld KB)", (long)(live_sz / 1024));
+    clog_(m);
+}
+
+// Put the last known-good store back. ONCE per boot: if the snapshot itself cannot produce a
+// library, retrying it forever would just be a slower way of showing nothing.
+static bool g_db_restored = false;
+static bool db_snapshot_restore() {
+    if (g_db_restored) {
+        clog_("db-guard: already restored once this boot — not trying again");
+        return false;
+    }
+    off_t sz = 0;
+    if (!db_mtime(DB_GOOD, nullptr, &sz) || sz <= 0) {
+        clog_("db-guard: the library store is damaged and there is NO snapshot to restore — "
+              "Settings \u25b8 Database will rebuild it (leave it alone until it settles)");
+        return false;
+    }
+    g_db_restored = true;
+    if (!db_copy(DB_GOOD, DB_LIVE, true)) {
+        clog_("db-guard: restore FAILED — the damaged store is still in place");
+        return false;
+    }
+    // A journal left over from the interrupted write would be replayed over what we just put
+    // back, which would undo the restore or re-damage it. The snapshot is a complete, consistent
+    // database on its own; anything beside it belongs to the write that died.
+    for (const char* j : { "/db/MTPDB.dat-wal", "/db/MTPDB.dat-shm", "/db/MTPDB.dat-journal" })
+        ::unlink(j);
+    ::sync();
+    clog_("db-guard: the library store was damaged — restored the last known-good snapshot");
+    return true;
+}
+
+// Every library open goes through here, so the safety net covers the boot path, the post-MSC
+// reload and the rescan campaign alike.
+int db_open_guarded(const char* path) {
+    int rc = cinder_db_open(path);
+    if (rc == -3 && db_snapshot_restore()) {
+        rc = cinder_db_open(path);
+        if (rc == 0) {
+            cinder_toast("Library restored from backup");
+            clog_("db-guard: the restored snapshot opened cleanly");
+        }
+    }
+    if (rc == 0) db_snapshot_keep();
+    return rc;
+}
+
 // Build the library off the render thread. OPT-IN — see the note at the DB stage for why it is
 // not the default. SIGALRM is blocked because that signal belongs to the render worker, and the
 // thread is niced because this device runs on ONE core.
@@ -837,7 +956,7 @@ void* lib_open_thread(void*) {
     pthread_sigmask(SIG_BLOCK, &sa, nullptr);
     setpriority(PRIO_PROCESS, 0, 10);
     const long t0 = now_ms();
-    const int rc = cinder_db_open("/db/MTPDB.dat");
+    const int rc = db_open_guarded(DB_LIVE);
     if (rc == 0) {
         char m[112];
         std::snprintf(m, sizeof m, "deferred_up: library build finished in %ld ms", now_ms() - t0);
@@ -951,7 +1070,7 @@ void deferred_up() {
         // retry ladder below is unaffected: it is driven by the RETURN CODE (a missing /contents
         // returns non-zero promptly), not by the timeout.
         run_watchdog_only("deferred_up: cinder_db_open + build library", 45,
-                    []() { g_deferred_rc = cinder_db_open("/db/MTPDB.dat"); });
+                    []() { g_deferred_rc = db_open_guarded(DB_LIVE); });
     db_failed:
         if (g_deferred_rc != 0) {
             static RetryLog rl_DB = {0, 0};
@@ -2524,6 +2643,10 @@ void apply_brightness() {
 // The restart itself needs no root: appmgr watches the Home app and calls android_reboot when it
 // dies (analysis/F_appmgr_home/RE_findings.md §2). So _exit() IS the reboot. The flag is synced
 // first, so it survives regardless of how abrupt that reboot turns out to be.
+// Defined below, with the rest of the power handling. Needed here because "boot to stock" is a
+// RESTART — see the comment in boot_to_stock() for why it stopped being an _exit.
+void power_action(bool restart);
+
 void boot_to_stock() {
     bool armed = false;
     for (const char* p : { "/data/cinder/once_stock", "/contents/cinderhome_once" }) {
@@ -2537,14 +2660,30 @@ void boot_to_stock() {
         clog_("boot-to-stock: could NOT arm the flag on either filesystem — staying on Cinder");
         return;
     }
-    clog_("boot-to-stock: armed; exiting so appmgr restarts the device into the Sony player");
+    clog_("boot-to-stock: armed; restarting into the Sony player");
     fm_release_capture();
+    // WE RESTART THE DEVICE OURSELVES. This used to _exit(0) and rely on appmgr rebooting us.
+    // It does not: appmgr never respawns the launcher (analysis/F_appmgr_home/RE_findings.md §3
+    // is about the RESPAWN path, and the launcher's own rc=0 note recorded the assumption without
+    // it ever having been tested), so the exit left the device with NO Home app — a dead screen
+    // whose only way out is a held power button.
+    //
+    // Reported 2026-09-09: "the boot to Sony button doesn't actually start a restart". That is
+    // not a cosmetic bug. The forced power-cycle it makes the user perform is an unclean shutdown,
+    // and one of them landed inside a media rescan the same evening and corrupted /db/MTPDB.dat
+    // (see db_snapshot_keep() for what now survives that).
+    //
     // ORDER MATTERS: the flag is written and sync()'d ABOVE, before anything else runs. Keep it
-    // that way. Do not tear down the renderer here: dropping the present thread joins it, and a
-    // wedged display driver can make that join block forever before appmgr gets a chance to restart
-    // us. Process exit releases the framebuffer mappings and lets appmgr perform the reboot.
-    std::fflush(nullptr);
-    _exit(0);
+    // that way — power_action() syncs again, but the flag being on disk is what makes even a
+    // hand power-cycle land on stock.
+    //
+    // power_action() only RETURNS when the helper failed. Do NOT _exit here in that case: the
+    // whole fault being fixed is a Home app that exits without a restart behind it. Staying up
+    // with the flag armed means the next restart — by any route — still goes to stock.
+    power_action(true);
+    clog_("boot-to-stock: the restart helper did not fire — staying on Cinder. The flag IS armed, "
+          "so the next restart still lands on the Sony player.");
+    cinder_toast("Restart failed \u2014 reboot by hand");
 }
 
 // Power off / Restart. Goes through the setuid-root cinder-power helper (reboot(2)), NOT through
@@ -3924,19 +4063,43 @@ void apply_bt_codec() {
         ((fnb)bt_slot(x, VIDX_SetAptxHD))(x, &aptxhd);
         ((fnb)bt_slot(x, VIDX_SetAptxClassic))(x, &aptx);
         if (ldac) {
-            // The enum's numeric values are NOT recovered — the UI order (Auto/990/660/330) mirrors
-            // Sony's own menu, so declaration order is the reasonable assumption, and it is only an
-            // assumption. It is safe to be wrong: this is a by-value scalar, so a bad value picks
-            // the wrong bitrate or gets rejected, it cannot corrupt memory. The service logs the
-            // value it received as `ldac quality:%d`, so one look at logcat while cycling the row
-            // settles it — see analysis/G_bt_nfc/RE_findings.md.
-            unsigned q = (unsigned)qi;
+            // THE UI INDEX IS NOT THE WIRE VALUE. This used to send the row index straight through
+            // on the assumption that Sony's enum was declared in menu order (Auto/990/660/330).
+            // It is not, and the assumption cost the user glitching audio. Settled 2026-09-09,
+            // from two independent pieces of evidence rather than a third guess:
+            //
+            //  1. `bt::BtAvSrcComponentIf::SetLdacQuality` (libBtCompIf.so, 0xdc90) bounds-checks
+            //     its argument and accepts EXACTLY FOUR values — `cmp r1,#3 / bcc pass` lets 0,1,2
+            //     through, `cmp r1,#255 / movne r1,#0` lets 0xFF through and CLAMPS EVERYTHING
+            //     ELSE TO 0. Three tiers plus a 0xFF sentinel, which is the classic "automatic"
+            //     encoding — and `libldacBTBC.so` exports `ldac_ABR_get_handle`/`ldac_ABR_Proc`,
+            //     so an adaptive mode is really there to be selected.
+            //  2. BtTransmitterService does NOT remap: with a headset connected, logcat showed
+            //     `BtTransmitterService.cc:445] ldac quality:3` and `...:0` for exactly the values
+            //     this function had just logged sending. What we put on the wire is what the
+            //     bounds check above sees.
+            //
+            // Together those say the old mapping was wrong at BOTH ends: index 0 "Auto" sent 0,
+            // which is a FIXED tier (the highest — hence the stutter on a marginal link), and
+            // index 3 "330" sent 3, which is out of range and was silently clamped to that same
+            // fixed tier. Two different rows, one bitrate, and neither of them adaptive.
+            //
+            // 0/1/2 are ordered highest-to-lowest, matching LDAC's own EQMID (HQ 990, SQ 660,
+            // MQ 330), which is also the order Sony's menu lists them in.
+            static const unsigned LDAC_WIRE[4] = { 0xFFu, 0u, 1u, 2u }; // Auto, 990, 660, 330
+            unsigned q = LDAC_WIRE[qi];
             typedef int (*fne)(void*, const unsigned*);
             ((fne)bt_slot(x, VIDX_SetLdacSoundQuality))(x, &q);
         }
         char m[128];
-        std::snprintf(m, sizeof m, "bt-codec: ldac=%d aptxhd=%d aptx=%d quality=%d (0=sbc baseline)",
-                      (int)ldac, (int)aptxhd, (int)aptx, qi);
+        // BOTH numbers, because they are different number spaces and the confusion between them
+        // was the bug. `quality` is the UI row; `wire` is what the BT stack bounds-checks, and it
+        // is the one to compare against logcat's `ldac quality:%d`.
+        static const unsigned LDAC_WIRE_LOG[4] = { 0xFFu, 0u, 1u, 2u };
+        std::snprintf(m, sizeof m,
+                      "bt-codec: ldac=%d aptxhd=%d aptx=%d quality=%d wire=0x%02x (0=sbc baseline)",
+                      (int)ldac, (int)aptxhd, (int)aptx, qi,
+                      ldac ? LDAC_WIRE_LOG[qi] : 0u);
         clog_(m);
         // What we asked for is a PREFERENCE; go and read what the link actually agreed on, without
         // waiting out the poll's throttle. This is the whole point of GetSoundStatus existing.
@@ -7134,6 +7297,25 @@ static void media_rescan();             // defined with the MediaStore block, fa
 
 static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
 static bool g_msc_seen_usb = false; // saw the cable while in MSC → unplug ends the session
+// UNPLUG IS DEBOUNCED TOO, and for the same reason the release below is.
+//
+// The watcher used to end the session on a SINGLE tick of `!usb_connected()`, while entry needed
+// two — an asymmetry with nothing behind it. Measured 2026-09-09 on the reference device: four
+// mass-storage sessions in one boot, 8 s to 25 s each, every one torn down mid-transfer. The log
+// states the contradiction outright, because the exit handler re-reads the same probe one step
+// later and finds the cable present: "left by hand with the cable still in". Nobody's hand was
+// anywhere near it. A ~1 Hz sampler on three sysfs nodes, read while the gadget is servicing bulk
+// transfers and `ensure_msc_lun()` may be re-binding the LUN, is going to blip; ending a file copy
+// on one sample is the bug.
+//
+// Three ticks (~3 s), matching MSC_OFF_RELEASE_TICKS. A REAL unplug costs nothing by waiting: the
+// medium is already gone by then, and all the exit does is remount /contents and restore the log.
+static int  g_msc_gone = 0;         // consecutive ticks with no cable WHILE in MSC
+static const int MSC_UNPLUG_TICKS = 3;
+// Did the WATCHER ask for this exit, rather than the user? Only the user's own Back/Turn Off may
+// latch the refusal below — latching it for a cable the watcher merely thought had gone is how one
+// bad sample turned into "auto-MSC stays off until you physically unplug".
+static bool g_msc_watch_exit = false;
 // THE USER SAID NO. Set when mass storage is left by hand (the Turn Off button, or Back) while the
 // PC is still plugged in; cleared when the data host goes away.
 //
@@ -7484,6 +7666,7 @@ void enter_usb_msc() {
     clog_("usb-msc: handed over (cinder-msc on)");
     g_msc_active = true;
     g_msc_seen_usb = false;
+    g_msc_gone = 0;
 }
 // ── the library store's fingerprint ─────────────────────────────────────────────────────────────
 //
@@ -7520,7 +7703,7 @@ void exit_usb_msc() {
     cinder_audio_init("cinder");
     if (contents_mounted()) {
         clog_("usb-msc: exited (/contents remounted; log restored)");
-        cinder_db_open("/db/MTPDB.dat");
+        db_open_guarded(DB_LIVE);
         // Re-seed the watcher: this reload has already happened, and leaving the pre-MSC
         // signature in place would make the next poll do the whole ~3,500-track rebuild again.
         g_db_sig = db_signature();
@@ -7570,7 +7753,7 @@ static void reclaim_contents() {
         clog_(m);
         // The PC may have rewritten anything under there, and the library was read from it.
         viz_conf_invalidate();
-        cinder_db_open("/db/MTPDB.dat");
+        db_open_guarded(DB_LIVE);
         // cinder_db_open IS the full rebuild; re-seed the watcher so its next poll does not do
         // the whole ~3,500-track pass again for a reload that has already happened.
         g_db_sig = db_signature();
@@ -8288,7 +8471,11 @@ void carry_out(int act) {
             run_guarded("carry_out: backlight (theme)", 4, apply_backlight);
             break;
         case CINDER_ACT_BOOT_TO_STOCK:
-            run_guarded("carry_out: boot to stock", 8, boot_to_stock);
+            // NOT run_guarded, for the same reason CINDER_ACT_RESTART below is not: this call does
+            // not return when it works, and the guard's answer to a call that does not return is
+            // _exit(42) — which hands back to the launcher with no restart behind it, i.e. exactly
+            // the dead-screen fault this path was just fixed for.
+            boot_to_stock();
             break;
         case CINDER_ACT_SCREEN_OFF_CHANGED:
             // Nothing to apply now — the countdown lives in the pump and reads the value each tick.
@@ -8448,7 +8635,7 @@ void carry_out(int act) {
             // `usb_connected()`, not `usb_data_host()`: by the time this runs the gadget may
             // already be mid-switch, and the question being asked is "is the cable in", not "is the
             // gadget enumerated right now".
-            if (usb_connected()) {
+            if (usb_connected() && !g_msc_watch_exit) {
                 g_msc_user_off = true;
                 g_msc_off_gone = 0;
                 clog_("usb-msc: left by hand with the cable still in — auto-MSC is off until unplug");
@@ -10690,8 +10877,11 @@ void* render_driver(void*) {
             //    usb_data_host() (gadget state == CONFIGURED), not usb_connected(): the latter also
             //    reads the power-supply nodes, which a dumb wall charger sets, and entering MSC on a
             //    charger unmounts the user's library mid-charge.
-            //  • IN MSC + the cable is pulled → inject Back so the modal pops AND the navigator emits
-            //    ExitUsbMsc (single exit path: remount /contents + restore the USB mode + log).
+            //  • IN MSC + the cable is pulled, for MSC_UNPLUG_TICKS consecutive samples → inject
+            //    Back so the modal pops AND the navigator emits ExitUsbMsc (single exit path:
+            //    remount /contents + restore the USB mode + log). Debounced for the same reason
+            //    entry is: this probe is sampled at ~1 Hz while the gadget is moving bulk data, and
+            //    one bad sample used to end a file copy.
             // Somebody else's unmount, noticed and undone. Ahead of the auto-MSC chain below so a
             // volume that is missing gets answered before anything is decided about the cable.
             if (!g_msc_active) {
@@ -10712,6 +10902,7 @@ void* render_driver(void*) {
                 g_usb_hi = 0;
                 if (usb_connected()) {
                     g_msc_seen_usb = true;
+                    g_msc_gone = 0;
                     // A host tool (flash.sh's unmount, Windows "safely remove") EJECTS the medium
                     // mid-session — SCSI START STOP UNIT clears lun/file, so the NEXT host op sees a
                     // reader with no medium (the "worked once, then 0B" symptom across back-to-back
@@ -10719,9 +10910,15 @@ void* render_driver(void*) {
                     // is a no-op while the LUN stays backed and re-binds the instant it goes empty.
                     ensure_msc_lun();
                 }
-                else if (g_msc_seen_usb) {
+                else if (g_msc_seen_usb && ++g_msc_gone >= MSC_UNPLUG_TICKS) {
+                    g_msc_gone = 0;
+                    // Say so, and say it was US. The old line claimed the user had left by hand,
+                    // which was the only account of a torn-down transfer anyone ever got.
+                    clog_("usb-msc: cable gone for 3 ticks — ending the session");
+                    g_msc_watch_exit = true;
                     int act = cinder_input(CINDER_BTN_BACK);
                     if (act != CINDER_ACT_NONE) carry_out(act);
+                    g_msc_watch_exit = false;
                 }
             } else if (usb_data_host() && !dev_skip_auto_msc() && !cinder_get_usb_dac()
                        && !g_msc_user_off) {
@@ -10965,7 +11162,7 @@ void* render_driver(void*) {
             const unsigned long long sig = db_signature();
             if (sig != 0 && g_db_sig != 0 && sig != g_db_sig) {
                 clog_("housekeeping: the library database changed -> reloading library and playlists");
-                cinder_db_open("/db/MTPDB.dat");
+                db_open_guarded(DB_LIVE);
             }
             if (sig != 0) g_db_sig = sig;
         }
