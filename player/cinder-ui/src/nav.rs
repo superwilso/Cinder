@@ -1800,7 +1800,14 @@ impl App {
             self.pins[i] = None;
             return;
         }
-        let Some(screen) = screen_from_token(f[0]) else {
+        // The SAME whitelist the pin gesture enforces. `shelf_tap` refuses to pin a screen that is
+        // not a "place", but this path did not re-check it, and the two are not equivalent:
+        // `screen_token`/`screen_from_token` cover screens `pinnable` excludes (Tone, BtCodec), the
+        // token table is an ON-DISK FORMAT that outlives any one build, and the settings file is
+        // plain text a user can edit. A record naming one of those would restore into a mode nobody
+        // asked for — exactly what `pinnable` exists to prevent. Enforced at both ends now, so the
+        // rule cannot be true on one side and not the other.
+        let Some(screen) = screen_from_token(f[0]).filter(|s| pinnable(*s)) else {
             self.pins[i] = None;
             return;
         };
@@ -10925,6 +10932,28 @@ mod tests {
             + h.up_next_layout().top_of(crate::up_next::Slot::History(0)).expect("A0 is history")
             + 4;
         assert!(!h.reorder_begin_hold(20, hy), "a played row does not move");
+    }
+
+    /// A saved pin naming a screen that is not a "place" is dropped, not restored.
+    ///
+    /// The pin GESTURE has always refused those, but the decoder did not re-check, and the two are
+    /// not the same thing: the token table is an on-disk format that outlives a build, it covers
+    /// screens `pinnable` excludes, and the settings file is plain text a user can edit.
+    #[test]
+    fn a_pin_naming_a_non_place_screen_is_refused_on_load() {
+        let mut a = unlocked();
+        // A well-formed record in every respect except the screen it names.
+        let rec = |tok: &str| {
+            format!("{tok}|albums|0|0|-1|0|0|0|0|0|Title|Sub|-1|-1||-1")
+        };
+        a.shelf_pin_decode(0, &rec("tone"));
+        assert!(a.pins[0].is_none(), "Tone is not a place a pin may point at");
+        a.shelf_pin_decode(0, &rec("btcodec"));
+        assert!(a.pins[0].is_none(), "nor is the BT codec picker");
+        // …and a real place still decodes, so the guard is a filter and not a wall.
+        a.shelf_pin_decode(0, &rec("album"));
+        assert!(a.pins[0].is_some(), "Album is a place");
+        assert_eq!(a.pins[0].as_ref().unwrap().screen, Screen::Album);
     }
 
     /// A user pick that is PLAYING owns the NOW PLAYING row.

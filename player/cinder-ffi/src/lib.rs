@@ -5703,9 +5703,21 @@ pub extern "C" fn cinder_prepare_skip_play() -> libc::c_int {
     // would otherwise call NextTrack against the sequence PlayerService still holds — the one
     // WITHOUT the queue — and the staged flush would then be issued on top, starting at index 0,
     // which is the track we had just skipped away from. Playback would jump backwards.
-    if (!r.queue_pending && !r.queue_flush) || r.app.queue().is_empty() {
+    if !r.queue_pending && !r.queue_flush {
         return 0;
     }
+    // AN EMPTY QUEUE IS NOT A REASON TO DECLINE, and requiring picks here was a bug of its own.
+    //
+    // `Action::ShuffleToggle` defers exactly like a queue edit: it permutes `context[idx+1..]` and
+    // raises `queue_pending`, leaving PlayerService holding the sequence it was given BEFORE the
+    // shuffle. Most people shuffle an album with nothing hand-queued, so the queue is empty — and
+    // with the old test this returned 0, the skip fell through to NextTrack, and PlayerService
+    // walked the UNSHUFFLED order. Turn shuffle on, press skip, get the next album track.
+    // Un-shuffling had the mirror of it: skip still played the shuffled successor.
+    //
+    // With no picks, `play_order_uris(r, None)` is simply `context[idx + 1..]`, so index 0 is the
+    // next track in whatever order the context holds NOW. That is the right answer for a shuffle
+    // toggle and for a queue edit alike, which is why one test covers both.
     // Lead with NOTHING, which is what makes this different from every other caller: the sequence
     // becomes [queue...] + [context still ahead of the current track], so index 0 is the user's own
     // pick rather than the track being skipped away from.
@@ -6029,7 +6041,21 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 // begun, so re-issuing the sequence resets a position that is already ~0 and the
                 // reset is invisible. Doing it any other time restarts the music (device-measured;
                 // see Action::QueueChanged).
-                if r.queue_pending {
+                // `queue_flush` matters here as much as `queue_pending`, and leaving it out was a
+                // defect: THE EARLY REBUILD CAN LEAVE A SEQUENCE LED BY THE TRACK THAT JUST ENDED.
+                //
+                // It fires 2.5 s before the end, consumes `queue_pending`, and stages
+                // `[current] + …` with `queue_flush` raised for the shell to issue. If the track
+                // runs out before the shell gets to it — a slow housekeeping pass, a Sony round
+                // trip in the way — then at THIS boundary `queue_pending` is already false, so the
+                // old code skipped the block entirely and left the stale sequence standing. The
+                // shell then handed PlayerService a list starting at index 0: the track that had
+                // just finished. Playback jumped backwards and replayed it from the top.
+                //
+                // Re-deriving it here costs nothing when it was already right — the `already_live`
+                // test below drops a re-issue that changes nothing — and when it was stale this is
+                // the only place that can still catch it.
+                if r.queue_pending || r.queue_flush {
                     r.queue_pending = false;
                     let uris = play_order_uris(r, Some(&t.filename));
                     // A RE-ISSUE THAT CHANGES NOTHING IS STILL A PAUSE/SEEK/PLAY. The commonest
@@ -6717,6 +6743,20 @@ mod tests {
         assert_eq!(
             play_order(None, [u("/b.flac"), u("/b.flac"), u("/c.flac")]),
             vec!["/b.flac".to_string(), "/c.flac".to_string()],
+        );
+        // AND WITH NO PICKS AT ALL, which is the shuffle case. `ShuffleToggle` defers exactly like
+        // a queue edit — it permutes `context[idx + 1..]` and raises `queue_pending` — so after it
+        // PlayerService still holds the sequence from BEFORE the shuffle. A skip has to rebuild
+        // from the context as it stands now, and with an empty queue that is just the tail, whose
+        // index 0 is the next track in the CURRENT order. Requiring picks here is what made a skip
+        // straight after a shuffle toggle play the un-shuffled successor.
+        assert_eq!(
+            play_order(None, [u("/shuf1.flac"), u("/shuf2.flac"), u("/shuf3.flac")]),
+            vec![
+                "/shuf1.flac".to_string(),
+                "/shuf2.flac".to_string(),
+                "/shuf3.flac".to_string()
+            ],
         );
     }
 
