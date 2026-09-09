@@ -53,6 +53,12 @@ const STATUS_MID: f32 = STATUS_H as f32 / 2.0;
 /// — it was drawn `t.faint` unconditionally and never reflected any BT state, so it was decoration
 /// occupying the scarcest space on the panel.
 const SHELF_CX: i32 = 390;
+
+/// Where the menu glyph is drawn, and how wide it is. Named because the degraded banner's right
+/// limit is derived from it: two literals that must agree is exactly how the banner came to paint
+/// over the glyph on a host whose fonts measured the warning string wider than mine did.
+const MENU_CX: f32 = 338.0;
+const MENU_W: f32 = 22.0;
 const SHELF_HALF_W: i32 = 30;
 
 /// Left zone of the strip — the clock and the codec badge. Tapping it goes straight to Now Playing.
@@ -119,6 +125,32 @@ pub fn ipc_dead() -> bool {
     IPC_DEAD.load(Ordering::Relaxed)
 }
 
+/// The x the degraded banner must stop before: the left edge of the menu glyph, less a gap.
+/// Derived from where the glyph is actually drawn so the two cannot drift apart.
+const fn banner_limit() -> f32 {
+    MENU_CX - MENU_W / 2.0 - 8.0
+}
+
+/// Widest the banner TEXT may be, given it starts at `wx`. The slab is drawn with 6 px of padding
+/// each side, so the text has to give up both — subtracting only the left one is what left the
+/// clamp 5 px short on the first attempt at this.
+fn banner_text_w(wx: f32) -> f32 {
+    (banner_limit() - wx - 6.0).max(0.0)
+}
+
+/// The banner slab as `(x, w)`, hard-clamped to `banner_limit()`.
+///
+/// Belt AND braces on purpose. The text is fitted to `banner_text_w` first, but that trusts
+/// `text::measure` to describe what `text::draw` will do — and this whole defect was a measured
+/// width that differed between two hosts. Clamping the RECTANGLE as well means the slab cannot
+/// reach the menu glyph even if the fit is wrong, which is the property the test asserts and the
+/// one that matters: a warning banner must never hide the control that navigates away from it.
+fn banner_rect(wx: f32, text_w: f32) -> (i32, i32) {
+    let x = wx - 6.0;
+    let w = (text_w + 12.0).min((banner_limit() - x).max(0.0));
+    (x as i32, w as i32)
+}
+
 pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &str, battery: u8) {
     // left: clock + codec badge + (NIGHT)
     let cx = text::draw(c, f, 18.0, 27.0, clock, &sty(Family::Mono, Weight::Regular, 15.0, t.dim, 0.06));
@@ -139,11 +171,32 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
     let degraded = ipc_dead();
     if degraded {
         let wst = sty(Family::Mono, Weight::SemiBold, 12.0, t.acc_ink, 0.10);
-        let msg = "AUDIO STOPPED \u{2014} RESTART";
-        let ww = text::measure(f, msg, &wst);
         let wx = cx + 12.0;
-        fill_rect(c, (wx - 6.0) as i32, 10, (ww + 12.0) as i32, 23, t.acc);
-        text::draw(c, f, wx, 26.0, msg, &wst);
+        // CLAMPED TO THE BADGE ZONE. This used to draw the string at its natural width and trust
+        // that it fitted, which is not a property the code had — it is one the font happened to
+        // give it. CI measured the same string 50% wider than this machine does and the accent
+        // slab covered the menu glyph completely (828 of 828 px in its band) and clipped the
+        // bookmark; `the_banner_keeps_the_strip_navigable` is the assertion that caught it.
+        //
+        // The device is the case that matters, not the runner: Sony's fallback faces are PRESENT
+        // there (`text::FALLBACK_DIR`) and are picked per glyph, so the rendered width of anything
+        // containing a non-ASCII character — this string has an em dash — is not a constant across
+        // hosts. A warning banner that hides the way out of the screen it is warning about is the
+        // worst possible failure for this particular control.
+        //
+        // The limit is derived from where the glyph is actually drawn, so the two cannot drift.
+        //
+        // NO ROOM => NO BANNER. If the clock ever ran long enough to push `wx` past the limit, a
+        // zero-width slab would still have been paired with text drawn AT `wx` — i.e. straight over
+        // the glyphs, which is the exact failure this clamp exists to stop. Saying nothing is the
+        // right answer there: the banner is a hint, and the way out of the screen is not.
+        let avail = banner_text_w(wx);
+        if avail > 0.0 {
+            let msg = crate::widgets::fit(f, "AUDIO STOPPED \u{2014} RESTART", &wst, avail);
+            let (bx, bw) = banner_rect(wx, text::measure(f, &msg, &wst));
+            fill_rect(c, bx, 10, bw, 23, t.acc);
+            text::draw(c, f, wx, 26.0, &msg, &wst);
+        }
     }
     let mut nx = cx;
     if !degraded && !badge.is_empty() {
@@ -163,7 +216,7 @@ pub fn status_bar(c: &mut Canvas, t: &Theme, f: &FontSet, clock: &str, badge: &s
     // right: menu ≡, bookmark, bt, [battery].
     // The ≡ sits LEFT of the Shelf zone on purpose: the whole strip opens the Menu, so the glyph
     // only has to be outside SHELF_CX ± SHELF_HALF_W for "tap the ≡" to mean what it looks like.
-    icons::menu(c, 338.0, STATUS_MID, 22.0, t.dim);
+    icons::menu(c, MENU_CX, STATUS_MID, MENU_W, t.dim);
     icons::bookmark(c, SHELF_CX as f32, STATUS_MID, 23.0, t.dim);
     let batt = format!("{}", battery);
     let bs = sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.04);
@@ -363,6 +416,43 @@ mod degraded_tests {
         set_ipc_dead(false);
         assert!(normal.0 > 0 && normal.1 > 0, "sanity: both glyphs draw normally");
         assert_eq!(warned, normal, "menu and shelf glyphs must be untouched by the banner");
+    }
+
+    /// The banner slab CANNOT reach the menu glyph, whatever the text measures.
+    ///
+    /// The rendering tests beside this one can only catch the failure on a host whose fonts make
+    /// the string wide enough — mine do not, CI's did, and the invariant was true here by luck for
+    /// however long. This one drives the geometry directly with widths no font would produce, so
+    /// the rule is checked on every machine rather than on the unlucky ones.
+    #[test]
+    fn the_banner_slab_never_reaches_the_menu_glyph() {
+        // 320 is where `the_banner_keeps_the_strip_navigable` starts sampling the glyph band; the
+        // slab has to finish at or before it. CI reported the slab filling that band completely
+        // (828 of 828 px) with a text width around 294 px against the 193 px measured here.
+        const BAND: i32 = 320;
+        for wx in [20.0_f32, 67.5, 79.5, 120.0, 300.0, 400.0] {
+            for text_w in [0.0_f32, 100.0, 193.2, 294.0, 1000.0, 10_000.0] {
+                let (x, w) = banner_rect(wx, text_w);
+                assert!(w >= 0, "a slab cannot have negative width (wx {wx})");
+                // A zero-width slab draws nothing, and `status_bar` skips the text with it — that
+                // is the "the clock ran long" case, where the banner is dropped rather than
+                // allowed to paint over the way out of the screen.
+                assert!(
+                    w == 0 || x + w <= BAND,
+                    "slab {x}..{} crosses the glyph band at {BAND} (wx {wx}, text {text_w})",
+                    x + w
+                );
+            }
+        }
+        // And the text is given a width that leaves room for BOTH of the slab's 6 px margins —
+        // subtracting only the left one is what left the first clamp 5 px short.
+        for wx in [20.0_f32, 67.5, 120.0] {
+            let (x, w) = banner_rect(wx, banner_text_w(wx));
+            assert!(w > 0, "these all have room");
+            assert!(x + w <= BAND, "a text fitted to banner_text_w must still fit the band");
+        }
+        // Past the limit there is no room at all, and that must be 0 rather than a negative.
+        assert_eq!(banner_text_w(10_000.0), 0.0);
     }
 
     /// It actually says something, in the badge zone, and only when latched.
