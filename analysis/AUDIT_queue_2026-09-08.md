@@ -105,7 +105,9 @@ the edit on the floor.
 
 ## Not fixed, recorded
 
-`App::queue_play_at(n)` does `queue.drain(..n)` — tapping the third queued row **discards the two
-above it**. That reads as deliberate ("skip to this one") and it is what the row tap has always
-done, but it is the one destructive action on this screen that has no confirmation and no undo,
-unlike the "Clear the queue" chip which has both. Worth a decision, not a silent change.
+~~`App::queue_play_at(n)` does `queue.drain(..n)`~~ — **decided and fixed 2026-09-09.** Tapping the
+third queued row discarded the two above it: the one destructive action on this screen with no
+confirmation and no undo, while the "Clear the queue" chip beside it, which destroys strictly less,
+has both. It now moves the tapped row to the FRONT instead, so the tap still means "play this one
+now" and the picks that were above it simply follow. The row stays in the queue until it starts,
+because `App::track_started` is what consumes a pick.
