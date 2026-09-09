@@ -269,7 +269,10 @@ int  cinder_power_held(void);
  * out from under the finger about to answer it. */
 int  cinder_modal_open(void);
 /* Open the library DB read-only (e.g. "/db/MTPDB.dat"). Call after cinder_render_init.
- * 0 = ok, -1 = open failed, -2 = renderer not initialised. */
+ * 0 = ok, -1 = open failed, -2 = renderer not initialised,
+ * -3 = the file opened but its track table is unreadable (a damaged store — SQLite opens one of
+ *      those quite happily and only faults on the query). The shell answers -3 by restoring its
+ *      known-good copy and calling again; see db_snapshot_* in cinder-home. */
 int  cinder_db_open(const char *path);
 /* Set now-playing from the track URI PlayerService reports (PlayStatus.uri): resolves
  * title/artist/codec/duration from the DB and derives elapsed/remaining from progress (0..1).

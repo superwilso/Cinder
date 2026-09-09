@@ -601,6 +601,10 @@ struct Render {
     art_full: Option<cinder_ui::art::Image>,
     art_thumb: Option<cinder_ui::art::Image>,
     art_key: Option<i64>,
+    /// This database's `album_id` -> the art cache's stable filename key. Built once by
+    /// `start_art_cache`. Needed because the album drill-in reads the 96 px cover straight off
+    /// disk, and disk is addressed by cover source, not by a row number that changes every rescan.
+    art_cache_keys: std::collections::HashMap<i64, u64>,
     /// Path the library DB was opened from, so the cover decoder can open its own read-only
     /// handle instead of borrowing this one across a thread (same reasoning as start_art_cache).
     db_path: Option<String>,
@@ -789,6 +793,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         pending_play_start: 0,
         art_full: None,
         art_thumb: None,
+        art_cache_keys: std::collections::HashMap::new(),
         art_key: None,
         db_path: None,
     });
@@ -1624,7 +1629,11 @@ pub extern "C" fn cinder_render_tick() {
     let open_album = r.app.open_album_id();
     if open_album != r.album_cover_id {
         r.album_cover_id = open_album;
-        r.app.set_album_cover(open_album.and_then(|id| art_cache::load(id, art_cache::T96)));
+        r.app.set_album_cover(
+            open_album
+                .and_then(|id| r.art_cache_keys.get(&id).copied())
+                .and_then(|k| art_cache::load(k, art_cache::T96)),
+        );
     }
     r.canvas.clear_clip();
     let np = NowPlaying {
@@ -5163,13 +5172,20 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
         }
         None => return,
     };
-    // Anything already on disk shows up on this first frame.
-    let cached = art_cache::load_all(sources.iter().map(|(aid, _)| *aid));
+    // Anything already on disk shows up on this first frame. The cache is addressed by the cover's
+    // SOURCE PATH, not by album_id — Sony renumbers album ids on every rescan, and a cache keyed on
+    // them serves the previous database's covers (see `art_cache::key_of`).
+    let sources: Vec<(i64, i64, u64)> = sources
+        .into_iter()
+        .map(|(aid, oid, src)| (aid, oid, art_cache::key_of(&src)))
+        .collect();
+    r.art_cache_keys = sources.iter().map(|(aid, _, k)| (*aid, *k)).collect();
+    let cached = art_cache::load_all(sources.iter().map(|(aid, _, k)| (*aid, *k)));
     let have = cached.len();
     r.app.library_mut().thumbs = cached;
-    let todo: Vec<(i64, i64)> = sources
+    let todo: Vec<(i64, i64, u64)> = sources
         .into_iter()
-        .filter(|(aid, _)| !art_cache::is_cached(*aid))
+        .filter(|(_, _, k)| !art_cache::is_cached(*k))
         .collect();
     eprintln!(
         "cinder-ffi: art cache: {have} cached, {} to decode (~{} s of background work)",
@@ -5228,11 +5244,11 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
             }
             let mut failed = Vec::new();
             let mut stop = false;
-            for (album_id, object_id) in std::mem::take(&mut queue) {
+            for (album_id, object_id, key) in std::mem::take(&mut queue) {
                 // Decode OUTSIDE the lock. This is the expensive part and the UI must keep painting
                 // through it.
-                let Some(t48) = art_cache::build_one(&db, album_id, object_id) else {
-                    failed.push((album_id, object_id));
+                let Some(t48) = art_cache::build_one(&db, key, object_id) else {
+                    failed.push((album_id, object_id, key));
                     continue;
                 };
                 done += 1;
@@ -5413,6 +5429,29 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     };
 
     let ms_dbopen = t_phase.elapsed().as_millis();
+
+    // IS THERE A LIBRARY IN IT? `Db::open` succeeding only means SQLite read the header; a store
+    // whose track b-tree is damaged opens cleanly and then answers every track query with
+    // "database disk image is malformed". `build_library` does `tracks(..).unwrap_or_default()`,
+    // so that damage arrives as an EMPTY LIBRARY and nothing anywhere says why — which is exactly
+    // how a corrupted store spent an evening looking like "the scan found no music"
+    // (device, 2026-09-09: 2,520 tracks one boot, 0 the next, `albums` and `artists` intact).
+    //
+    // Answered BEFORE the build, and reported as its own return code, because the shell can do
+    // something about this one: it keeps a known-good copy and can put it back. Distinguishing
+    // "corrupt" from "genuinely empty" is the whole point — restoring a backup over a library
+    // that is merely empty would throw away a real scan.
+    if let Err(e) = db.health() {
+        eprintln!("cinder-ffi: library store is CORRUPT — {e}");
+        let mut guard = cell().lock().unwrap();
+        let Some(r) = guard.as_mut() else { return -2 };
+        r.app.set_library(cinder_ui::Library::default());
+        r.dirty = true;
+        r.art_key = None;
+        r.last_track = None;
+        return -3;
+    }
+
     // Build the browsable library now so the Library screen shows real music.
     let t_phase = std::time::Instant::now();
     let lib = build_library(&db);
