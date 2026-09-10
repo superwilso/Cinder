@@ -42,7 +42,7 @@ fn show(comps: &[Comp], target: &Path, action: Action) {
 }
 
 /// Pick components, then carry the action out. Returns the process exit code.
-pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bool) -> i32 {
+pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bool, dry: bool) -> i32 {
     let state = device::read_installed(&target, &stage::payload_names());
     println!("\n  {}", state.summary());
     if !state.leftovers.is_empty() {
@@ -51,7 +51,7 @@ pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bo
     }
 
     if action.is_removal() {
-        return uninstall(&target, &state, assume_yes);
+        return uninstall(&target, &state, assume_yes, dry);
     }
 
     if action == Action::Update {
@@ -120,10 +120,10 @@ pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bo
         }
     }
 
-    carry_out(action, &comps, &target)
+    carry_out(action, &comps, &target, dry)
 }
 
-fn uninstall(target: &Path, state: &Installed, assume_yes: bool) -> i32 {
+fn uninstall(target: &Path, state: &Installed, assume_yes: bool, dry: bool) -> i32 {
     println!();
     println!("  UNINSTALL removes Cinder and puts the stock Sony player back.");
     println!("  It restores Sony's launch config from the backup the install made and deletes");
@@ -139,18 +139,26 @@ fn uninstall(target: &Path, state: &Installed, assume_yes: bool) -> i32 {
         println!("  nothing written.");
         return 0;
     }
-    carry_out(Action::Uninstall, &[], target)
+    carry_out(Action::Uninstall, &[], target, dry)
 }
 
-fn carry_out(action: Action, comps: &[Comp], target: &Path) -> i32 {
-    println!("\n  writing to {} ...", target.display());
-    let r = stage::write_payload(action, comps, crate::CHANNEL, target, |name, n| {
+fn carry_out(action: Action, comps: &[Comp], target: &Path, dry: bool) -> i32 {
+    if dry {
+        println!("\n  DRY RUN — nothing will be written and the player will not be told to flash.");
+    }
+    println!("\n  {} {} ...", if dry { "would write to" } else { "writing to" }, target.display());
+    let r = stage::write_payload(action, comps, crate::CHANNEL, target, dry, |name, n| {
         println!("    {name:<22} {n:>9} bytes");
     });
     if let Err(e) = r {
         eprintln!("\nERROR: {e}");
         eprintln!("The player may now hold a partial copy. Re-run before updating.");
         return 1;
+    }
+
+    if dry {
+        println!("\n  DRY RUN complete. Nothing was written; the player was not touched.");
+        return 0;
     }
 
     #[cfg(windows)]

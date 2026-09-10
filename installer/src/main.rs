@@ -48,6 +48,7 @@ fn help() {
     println!("  --uninstall      put the stock Sony player back");
     println!("  --check          ask GitHub whether a newer release exists, then exit");
     println!("  --clean          delete the staged payload files left in the player's root");
+    println!("  --dry-run        walk the whole flow, write nothing, flash nothing");
     println!("  -y, --yes        no questions: take the saved or default answers and go");
     println!("  --console        force the text interface");
     if cfg!(windows) {
@@ -130,12 +131,14 @@ fn main() {
     let mut force_console = false;
     let mut force_gui = false;
     let mut clean = false;
+    let mut dry = false;
 
     for a in &args {
         match a.as_str() {
             "-y" | "--yes" => assume_yes = true,
             "--console" | "--text" => force_console = true,
             "--clean" => clean = true,
+            "--dry-run" | "--dry" => dry = true,
             "--gui" => force_gui = true,
             "--install" => action = Some(Action::Install),
             "--update" => action = Some(Action::Update),
@@ -170,7 +173,7 @@ fn main() {
 
     #[cfg(windows)]
     if want_gui {
-        std::process::exit(gui::run(action));
+        std::process::exit(gui::run(action, dry));
     }
 
     println!("Cinder installer {VERSION} — channel {CHANNEL}");
@@ -231,5 +234,5 @@ fn main() {
         }
     });
 
-    std::process::exit(console::run(comps, target, action, assume_yes));
+    std::process::exit(console::run(comps, target, action, assume_yes, dry));
 }
