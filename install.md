@@ -95,6 +95,8 @@ Every action has a flag, so the whole thing scripts:
 cinder-installer --install            # pick components, stage, flash
 cinder-installer --update             # keep the choices already on the player
 cinder-installer --uninstall          # restore the stock Sony player
+cinder-installer --dry-run            # walk the whole flow, write nothing, flash nothing
+cinder-installer --gui --dry-run      # ...in the window, on Windows
 cinder-installer --clean              # delete staged payload files left in the drive root
 cinder-installer --check              # ask GitHub whether a newer release exists
 cinder-installer -y                   # no questions: saved-or-default answers, then go
@@ -104,6 +106,12 @@ cinder-installer D:\                  # name the player instead of searching for
 
 With no action given it does what the player's state implies: update what is there, install what
 is not. **Removal is never implied** — it is only ever done when asked for by name.
+
+`--dry-run` walks the entire flow — finds the player, reads its state, applies the component
+selection, resolves the plan and reports every file with its size — and **writes nothing and
+flashes nothing**. It is safe to point at a real, connected Walkman. Use it to try the interface,
+or to see exactly what an install would do before letting it. On Windows the window needs
+`--gui --dry-run`, because running the binary from a terminal otherwise gives the text interface.
 
 `--clean` removes the payload files a previous install left in the storage root. The device's own
 installer prints *"left staged binary at /contents/cinder-home (safe to delete once cinder-home is

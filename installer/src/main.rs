@@ -53,6 +53,8 @@ fn help() {
     println!("  --console        force the text interface");
     if cfg!(windows) {
         println!("  --gui            force the window (default when double-clicked)");
+        println!();
+        println!("  To try the window WITHOUT touching a player:  cinder-installer --gui --dry-run");
     }
     println!("  -h, --help       this help");
     println!();
