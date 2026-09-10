@@ -28,6 +28,33 @@ pub struct Target<'a> {
 }
 
 /// Rows fit in the window; used by the navigator to clamp scrolling.
+/// The "Add tracks" search band: a fixed strip under the header, above the list.
+///
+/// FIXED rather than a scrolling first row, because the whole point of it is to be reachable when
+/// you are 2,000 tracks down a list — a search box you have to scroll back to is a search box you
+/// will not use. It is also why the list below it gets its own TOP and hit test rather than
+/// reusing the playlist picker's: only this screen has the band.
+pub const SEARCH_H: i32 = 46;
+pub const LIST_TOP: i32 = TOP + SEARCH_H;
+
+pub fn hit_search(y: i32) -> bool {
+    (TOP..TOP + SEARCH_H).contains(&y)
+}
+
+/// Which track row is at `y`, accounting for the band above the list.
+pub fn hit_track_row(rows: usize, scroll_px: i32, y: i32) -> Option<usize> {
+    if !(LIST_TOP..BOTTOM).contains(&y) {
+        return None;
+    }
+    let i = ((y - LIST_TOP + scroll_px.max(0)) / ROW_H) as usize;
+    (i < rows).then_some(i)
+}
+
+/// Scrollable height of the track list, which is shorter than the playlist picker's by the band.
+pub fn tracks_max_scroll(rows: usize) -> i32 {
+    (content_h(rows) - (BOTTOM - LIST_TOP)).max(0)
+}
+
 pub fn content_h(rows: usize) -> i32 {
     rows as i32 * ROW_H
 }
@@ -87,13 +114,28 @@ pub fn render_targets(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, track
 /// "Add tracks": every song in the library, with the ones already in the playlist ticked.
 pub fn render_tracks(c: &mut Canvas, t: &Theme, f: &FontSet, playlist: &str, songs: &[&SongRow],
                      is_in: &dyn Fn(usize) -> bool, scroll_px: i32, added: usize,
-                     sbar_active: bool) {
+                     query: &str, total: usize, sbar_active: bool) {
     c.fill(t.bg);
     let caption = if added > 0 { format!("{added} ADDED") } else { "TAP TO ADD".to_string() };
     crate::chrome::header(c, t, f, playlist, Some(&caption));
-    c.set_clip_y(TOP, BOTTOM);
+
+    // ── the search band ──────────────────────────────────────────────────────────────────────
+    crate::widgets::fill_rect(c, 0, TOP, crate::canvas::W as i32, SEARCH_H, t.panel);
+    crate::widgets::hline(c, TOP + SEARCH_H - 1, t.line);
+    let has = !query.is_empty();
+    let qs = sty(Family::Sans, Weight::Regular, 17.0, if has { t.ink } else { t.faint }, 0.0);
+    let shown = if has { query } else { "Search titles, artists, albums" };
+    let cy = (TOP + SEARCH_H / 2 + 5) as f32;
+    text::draw(c, f, 26.0, cy, &fit(f, shown, &qs, 340.0), &qs);
+    // The count is the useful feedback: it says whether the filter found anything BEFORE you
+    // scroll, and it is the only place the size of the whole library is visible here.
+    let ns = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06);
+    let n = if has { format!("{} / {}", songs.len(), total) } else { format!("{total}") };
+    crate::widgets::right(c, f, 454.0, cy, &n, &ns);
+
+    c.set_clip_y(LIST_TOP, BOTTOM);
     let first = (scroll_px.max(0) / ROW_H) as usize;
-    let mut y = TOP - (scroll_px.max(0) % ROW_H);
+    let mut y = LIST_TOP - (scroll_px.max(0) % ROW_H);
     for index in first..songs.len() {
         if y >= BOTTOM {
             break;

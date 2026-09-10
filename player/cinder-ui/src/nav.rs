@@ -125,6 +125,9 @@ pub enum KbPurpose {
     NewPlaylistWith(i64),
     /// Rename the playlist with this id.
     Rename(i64),
+    /// Filter the "Add tracks" list. Unlike the others this commits no Action — the query is
+    /// screen state, not something the shell has to carry out.
+    TrackSearch,
 }
 
 /// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
@@ -1064,6 +1067,11 @@ pub struct App {
     /// `render` does. Caching the render's own measurement is exact and costs nothing, and the
     /// ordering is safe: a screen has to be painted before a finger can drag it.
     track_info_h: i32,
+    /// The "Add tracks" search text. Empty = the whole library.
+    track_pick_query: String,
+    /// Row heights from the last Track information frame, so a tap can resolve which row it hit
+    /// without font metrics. See `track_info::row_heights`.
+    track_info_rows: Vec<i32>,
     /// Memoised A-Z rail map, keyed on (tab, songs sort, albums order). See `az_present_memo`.
     az_memo: Option<((u8, usize, usize), [bool; 27])>,
     /// Does the queue still follow playback? True until the user scrolls it themselves; reset on
@@ -1278,6 +1286,8 @@ impl Default for App {
             track_info: Vec::new(),
             track_info_scroll_px: 0,
             track_info_h: 0,
+            track_pick_query: String::new(),
+            track_info_rows: Vec::new(),
             az_memo: None,
         }
     }
@@ -1327,6 +1337,37 @@ impl App {
     }
 
     #[doc(hidden)]
+    pub fn set_track_info_rows_for_test(&mut self, h: Vec<i32>) {
+        self.track_info_rows = h;
+    }
+    /// The keyboard's header, which must name the job it is doing.
+    #[doc(hidden)]
+    pub fn kb_title_for_test(&self) -> String {
+        match self.kb_purpose {
+            KbPurpose::Rename(_) => "Rename playlist".to_string(),
+            KbPurpose::TrackSearch => {
+                if self.kb_text.trim().is_empty() {
+                    "Find a song".to_string()
+                } else {
+                    format!("{} matching", self.track_pick_order.len())
+                }
+            }
+            _ => "New playlist".to_string(),
+        }
+    }
+    #[doc(hidden)]
+    pub fn track_pick_len_for_test(&self) -> usize {
+        self.track_pick_order.len()
+    }
+    #[doc(hidden)]
+    pub fn album_view_for_test(&self) -> usize {
+        self.album_view
+    }
+    #[doc(hidden)]
+    pub fn set_night_for_test(&mut self, n: bool) {
+        self.night = n;
+    }
+
     pub fn open_shelf_for_test(&mut self) {
         self.open_shelf();
     }
@@ -1339,6 +1380,7 @@ impl App {
             let key = if ch == ' ' { crate::keyboard::Key::Space } else { crate::keyboard::Key::Char(ch) };
             crate::keyboard::apply(key, &mut self.kb_text, &mut self.kb_shift, &mut self.kb_page);
         }
+        self.kb_after_key();
     }
 
     pub fn open_confirm_for_test(&mut self, ask: crate::confirm::Ask) {
@@ -1953,6 +1995,7 @@ impl App {
         self.track_info = rows;
         self.track_info_scroll_px = 0;
         self.track_info_h = 0;
+        self.track_info_rows.clear();
     }
 
     pub fn track_info_rows(&self) -> &[(String, String)] {
@@ -2545,7 +2588,7 @@ impl App {
                 // Playing, and hanging it off the text the question is about needs no new
                 // furniture. Tested after the heart (which overlaps this band on the right) and
                 // before the transport row (which is well below it).
-                if crate::now_playing::hit_info(x, y) {
+                if crate::now_playing::hit_info(x, y, self.night) {
                     self.track_info_scroll_px = 0;
                     self.push(Screen::TrackInfo);
                     return vec![];
@@ -2608,13 +2651,33 @@ impl App {
                 }
                 vec![]
             }
-            // Track information: one control, the band pinned under the list.
+            // Track information: the pinned action band, plus the link rows.
             Screen::TrackInfo => {
                 if crate::track_info::hit_add_to_playlist(y) {
                     if let Some(oid) = self.playing_object_id() {
                         self.open_playlist_pick(oid);
                     } else {
                         self.notify("Nothing is playing");
+                    }
+                    return vec![];
+                }
+                // "What is this part of?" — answered by going there, rather than by making the
+                // user leave, open Library and find it by hand.
+                let hit = crate::track_info::hit_row(
+                    &self.track_info_rows, self.track_info_scroll_px, y,
+                )
+                .and_then(|i| self.track_info.get(i))
+                .filter(|(label, value)| crate::track_info::is_link(label) && !value.is_empty())
+                .map(|(label, value)| (label.clone(), value.clone()));
+                if let Some((label, value)) = hit {
+                    let went = match label.as_str() {
+                        "Artist" | "Album artist" => self.open_artist_named(&value),
+                        _ => self.open_album_named(&value),
+                    };
+                    // A tag can name something the library does not have under that spelling.
+                    // Say so rather than swallowing the tap, which reads as a dead control.
+                    if !went {
+                        self.notify("Not in the library");
                     }
                 }
                 vec![]
@@ -3195,6 +3258,48 @@ impl App {
         }
     }
 
+    /// Open the artist page for a NAME, as a tag spells it. False when the library has no such
+    /// artist — a tag can say anything, and the library is the authority on what exists.
+    ///
+    /// Case-insensitive, because tags are not consistent about it and a link that fails on
+    /// capitalisation is worse than no link.
+    fn open_artist_named(&mut self, name: &str) -> bool {
+        let Some(i) = self.lib.artists.iter().position(|a| a.name.eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        self.open_artist(i);
+        true
+    }
+
+    /// Open the album page for a NAME. Album titles collide far more often than artist names
+    /// ("Greatest Hits"), so this prefers the one belonging to the track's own artist and only
+    /// falls back to the first match by title.
+    fn open_album_named(&mut self, name: &str) -> bool {
+        let artist = self
+            .track_info
+            .iter()
+            .find(|(l, _)| l == "Album artist" || l == "Artist")
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        // Index copied out before the mutation below — `albums_flat` borrows `self.lib`.
+        let idx = {
+            let flat = self.lib.albums_flat();
+            flat.iter()
+                .position(|a| {
+                    a.name.eq_ignore_ascii_case(name) && a.artist.eq_ignore_ascii_case(&artist)
+                })
+                .or_else(|| flat.iter().position(|a| a.name.eq_ignore_ascii_case(name)))
+        };
+        let Some(idx) = idx else { return false };
+        self.album_view = idx;
+        self.album_track_idx = 0;
+        self.album_scroll_px = 0;
+        self.fling_v = 0.0;
+        self.push(Screen::Album);
+        true
+    }
+
     /// Push the artist page for `lib.artists[idx]`, from its top.
     fn open_artist(&mut self, idx: usize) {
         self.artist_view = idx;
@@ -3270,6 +3375,8 @@ impl App {
         self.kb_shift = false;
         self.kb_page = 0;
         self.kb_text = match purpose {
+            // Editing a search starts from what is already typed.
+            KbPurpose::TrackSearch => self.track_pick_query.clone(),
             // Renaming starts from the current name: the common edit is a word, not a retype.
             KbPurpose::Rename(id) => self
                 .lib
@@ -3341,10 +3448,50 @@ impl App {
 
     /// Open "Add tracks" for the playlist that is open.
     fn open_track_pick(&mut self) {
-        self.track_pick_order = library::song_order(&self.lib, 0);
+        // A fresh visit starts unfiltered — the previous search was about a different errand.
+        self.track_pick_query.clear();
+        self.track_pick_rebuild();
         self.track_pick_scroll_px = 0;
         self.fling_v = 0.0;
         self.push(Screen::TrackPick);
+    }
+
+    /// Rebuild the "Add tracks" list from the current query.
+    ///
+    /// The reference device holds 3,462 tracks. Scrolling to one of them at 64 px a row is about
+    /// 220,000 px of travel, so an unfiltered flat list is not a way of FINDING anything — it is
+    /// only a way of browsing. The filter matches title, artist and album, because which of the
+    /// three you remember is not predictable.
+    ///
+    /// Indices stay ABSOLUTE into `lib.songs`, exactly as `song_order` returns them, so the row
+    /// resolution below is unchanged whether or not a filter is on.
+    fn track_pick_rebuild(&mut self) {
+        let all = library::song_order(&self.lib, 0);
+        let q = self.track_pick_query.trim().to_lowercase();
+        let order = if q.is_empty() {
+            all
+        } else {
+            // A SongRow carries `album_id`, not the album name, so the names are resolved once
+            // here rather than per row — the alternative is a linear album scan per track, which
+            // on 3,462 tracks against 343 albums is over a million comparisons for one search.
+            let albums: std::collections::HashMap<i64, String> = self
+                .lib
+                .albums_flat()
+                .iter()
+                .map(|a| (a.album_id, a.name.to_lowercase()))
+                .collect();
+            all.into_iter()
+                .filter(|i| {
+                    self.lib.songs.get(*i).is_some_and(|s| {
+                        s.title.to_lowercase().contains(&q)
+                            || s.artist.to_lowercase().contains(&q)
+                            || albums.get(&s.album_id).is_some_and(|a| a.contains(&q))
+                    })
+                })
+                .collect()
+        };
+        self.track_pick_order = order;
+        self.track_pick_scroll_px = 0;
     }
 
     fn pick_max_scroll(&self) -> i32 {
@@ -3354,8 +3501,7 @@ impl App {
     }
 
     fn track_pick_max_scroll(&self) -> i32 {
-        (crate::playlist_pick::content_h(self.track_pick_order.len())
-            - (crate::playlist_pick::BOTTOM - crate::playlist_pick::TOP)).max(0)
+        crate::playlist_pick::tracks_max_scroll(self.track_pick_order.len())
     }
 
     /// The songs the track picker is showing, in its fixed order.
@@ -3417,11 +3563,25 @@ impl App {
         }
     }
 
+    /// Anything that has to happen after a key changes the buffer, whichever route the key came
+    /// in by — so `type_for_test` cannot diverge from what a finger does.
+    ///
+    /// A SEARCH FILTERS AS YOU TYPE. Nothing has to be "submitted": the count in the header
+    /// updates on every key, so you can see the search working before committing to it, leaving by
+    /// Back keeps what you typed, and the feature does not hang on the user finding the DONE key.
+    fn kb_after_key(&mut self) {
+        if matches!(self.kb_purpose, KbPurpose::TrackSearch) {
+            self.track_pick_query = self.kb_text.clone();
+            self.track_pick_rebuild();
+        }
+    }
+
     /// A tap on the keyboard. Only Done leaves an action behind; everything else edits the buffer.
     fn tap_keyboard(&mut self, x: i32, y: i32) -> Vec<Action> {
         let Some(key) = crate::keyboard::hit(self.kb_page, x, y) else { return vec![] };
         let commit = crate::keyboard::apply(
             key, &mut self.kb_text, &mut self.kb_shift, &mut self.kb_page);
+        self.kb_after_key();
         if !commit {
             return vec![];
         }
@@ -3437,6 +3597,9 @@ impl App {
             self.pop();
         }
         match purpose {
+            // Already applied on every keystroke above; DONE just closes the keyboard. Screen
+            // state, not an Action — nothing outside this app needs to know about a filter.
+            KbPurpose::TrackSearch => vec![],
             KbPurpose::NewPlaylist => vec![Action::PlaylistCreate],
             KbPurpose::NewPlaylistWith(object_id) => vec![Action::PlaylistCreateWith(object_id)],
             KbPurpose::Rename(id) => vec![Action::PlaylistRename(id)],
@@ -3466,8 +3629,14 @@ impl App {
     /// taps, and popping back to the page after every one would make adding ten tracks ten trips.
     fn tap_track_pick(&mut self, y: i32) -> Vec<Action> {
         let Some(id) = self.playlist_row().map(|p| p.id) else { return vec![] };
+        if crate::playlist_pick::hit_search(y) {
+            self.open_keyboard(KbPurpose::TrackSearch);
+            return vec![];
+        }
         let count = self.track_pick_order.len();
-        let Some(row) = crate::playlist_pick::hit_row(count, self.track_pick_scroll_px, y) else {
+        let Some(row) =
+            crate::playlist_pick::hit_track_row(count, self.track_pick_scroll_px, y)
+        else {
             return vec![];
         };
         let Some(song) = self.track_pick_songs().get(row).map(|s| (s.object_id, s.title.clone()))
@@ -5593,6 +5762,8 @@ impl App {
             ),
             Screen::TrackInfo => {
                 self.track_info_h = crate::track_info::content_h(fonts, &theme, &self.track_info);
+                self.track_info_rows =
+                    crate::track_info::row_heights(fonts, &theme, &self.track_info);
                 let max = self.track_info_max_scroll();
                 self.track_info_scroll_px = self.track_info_scroll_px.clamp(0, max);
                 crate::track_info::render(
@@ -5907,11 +6078,26 @@ impl App {
             }
             Screen::Receiver => crate::receiver::render(c, &theme, fonts),
             Screen::Keyboard => {
+                // THE KEYBOARD HAS TO SAY WHAT IT IS FOR. This match had two arms and a catch-all,
+                // so the moment a third purpose existed the search opened a screen headed
+                // "New playlist" with the placeholder "Playlist name" — and the only reasonable
+                // reading of that is that search does not work. Reported 2026-09-10: "the playlist
+                // search to add doesn't actually search the songs". The filter was fine; the screen
+                // was lying about its own job.
                 let (title, placeholder) = match self.kb_purpose {
-                    KbPurpose::Rename(_) => ("Rename playlist", "Playlist name"),
-                    _ => ("New playlist", "Playlist name"),
+                    KbPurpose::Rename(_) => ("Rename playlist".to_string(), "Playlist name"),
+                    KbPurpose::TrackSearch => (
+                        // The live count is the proof that it IS searching, while you type.
+                        if self.kb_text.trim().is_empty() {
+                            "Find a song".to_string()
+                        } else {
+                            format!("{} matching", self.track_pick_order.len())
+                        },
+                        "Title, artist or album",
+                    ),
+                    _ => ("New playlist".to_string(), "Playlist name"),
                 };
-                crate::keyboard::render(c, &theme, fonts, title, &self.kb_text, placeholder,
+                crate::keyboard::render(c, &theme, fonts, &title, &self.kb_text, placeholder,
                                         self.kb_page, self.kb_shift)
             }
             Screen::PlaylistPick => {
@@ -5946,6 +6132,7 @@ impl App {
                 };
                 crate::playlist_pick::render_tracks(c, &theme, fonts, &name, &songs, &is_in,
                                                     self.track_pick_scroll_px, members.len(),
+                                                    &self.track_pick_query, self.lib.songs.len(),
                                                     self.sbar_active())
             }
             // Shelf is an overlay, never the stack top — render Now Playing as a safe fallback if
@@ -9603,8 +9790,98 @@ mod tests {
         );
     }
 
-    /// Now Playing ▸ the toolbar's third slot adds what is playing to a playlist.
+    /// The metadata block is tappable IN BOTH THEMES, at the place it is actually drawn.
+    ///
+    /// The two layouts are separate code paths: day puts title/artist/codec under the cover at
+    /// `INFO_TOP`, night draws a compact header at the top of the screen. The hit test was
+    /// theme-blind, so at night the only way in was a patch of empty space where the day text
+    /// would have been.
     #[test]
+    fn track_info_opens_from_the_metadata_block_in_either_theme() {
+        use crate::now_playing as np;
+        let day_y = (np::INFO_TOP + np::INFO_BOT) / 2;
+        let night_y = (np::INFO_NIGHT_TOP + np::INFO_NIGHT_BOT) / 2;
+
+        // Day: the block under the cover opens it; the night header band does not.
+        assert!(np::hit_info(200, day_y, false));
+        assert!(!np::hit_info(200, night_y, false), "the night band is not live in day mode");
+        // ...and the heart still wins its own corner.
+        assert!(!np::hit_info(np::HEART_CX, day_y, false));
+
+        // Night: the header opens it, and the empty space the day layout used does NOT — a button
+        // in blank space is how this got reported in the first place.
+        assert!(np::hit_info(200, night_y, true));
+        assert!(np::hit_info(30, night_y, true), "the thumb is part of the same block");
+        assert!(!np::hit_info(200, day_y, true), "no hidden control in the night layout's gap");
+
+        // End to end through the navigator, in night mode.
+        let mut a = own_and_sony();
+        while a.current() != Screen::NowPlaying {
+            a.press(Button::Back);
+        }
+        a.set_night_for_test(true);
+        assert_eq!(a.tap(200, night_y), Vec::<Action>::new());
+        assert_eq!(a.current(), Screen::TrackInfo, "night mode must reach Track information");
+    }
+
+    /// The Artist and Album rows are LINKS: they go to the library rather than sitting there.
+    #[test]
+    fn track_info_links_jump_to_the_artist_and_album() {
+        assert!(crate::track_info::is_link("Artist"));
+        assert!(crate::track_info::is_link("Album"));
+        assert!(!crate::track_info::is_link("Format"), "a fact about the file is not a place");
+
+        // `App::unlocked()` carries `Library::sample()`, which has real artists and albums;
+        // `own_and_sony()` replaces the library with playlists only and has neither.
+        let mut a = App::unlocked();
+        let artist = a.lib.artists[0].name.clone();
+        let album = a.lib.albums_flat()[0].name.clone();
+        let album_artist = a.lib.albums_flat()[0].artist.clone();
+
+        // Rows as the shell sends them, and the heights the renderer would measure.
+        let rows = vec![
+            ("Title".to_string(), "Whatever".to_string()),
+            ("Artist".to_string(), artist.clone()),
+            ("Album".to_string(), album.clone()),
+            ("Format".to_string(), "FLAC".to_string()),
+        ];
+        let row_y = |i: usize| crate::track_info::TOP + i as i32 * 44 + 4;
+
+        // Artist row -> the artist page.
+        a.push_for_test(Screen::TrackInfo);
+        a.set_track_info(rows.clone());
+        a.set_track_info_rows_for_test(vec![44, 44, 44, 44]);
+        assert_eq!(a.tap(240, row_y(1)), Vec::<Action>::new());
+        assert_eq!(a.current(), Screen::Artist);
+
+        // Album row -> the album page, and the RIGHT album: prefer the one by this track's artist.
+        let mut b = App::unlocked();
+        let mut rows2 = rows.clone();
+        rows2[1].1 = album_artist;
+        b.push_for_test(Screen::TrackInfo);
+        b.set_track_info(rows2);
+        b.set_track_info_rows_for_test(vec![44, 44, 44, 44]);
+        assert_eq!(b.tap(240, row_y(2)), Vec::<Action>::new());
+        assert_eq!(b.current(), Screen::Album);
+        assert_eq!(b.lib.albums_flat()[b.album_view_for_test()].name, album);
+
+        // A tag naming something absent says so instead of doing nothing silently.
+        let mut d = App::unlocked();
+        d.push_for_test(Screen::TrackInfo);
+        d.set_track_info(vec![("Album".to_string(), "No Such Record".to_string())]);
+        d.set_track_info_rows_for_test(vec![44]);
+        assert_eq!(d.tap(240, row_y(0)), Vec::<Action>::new());
+        assert_eq!(d.current(), Screen::TrackInfo, "a dead tag must not navigate");
+
+        // A non-link row is inert.
+        let mut e = App::unlocked();
+        e.push_for_test(Screen::TrackInfo);
+        e.set_track_info(rows);
+        e.set_track_info_rows_for_test(vec![44, 44, 44, 44]);
+        e.tap(240, row_y(3));
+        assert_eq!(e.current(), Screen::TrackInfo);
+    }
+
     /// The "Add to playlist" picker is REACHABLE. It was built complete — renderer, hit tests,
     /// actions, persistence — and then shipped with nothing that opened it, so the only way to add
     /// a song to a playlist was to open the playlist and go and find the song. Reported 2026-09-09
@@ -9639,6 +9916,7 @@ mod tests {
         );
     }
 
+    /// The picker itself, driven directly: row 0 makes a new playlist, the rest add to one.
     #[test]
     fn add_to_playlist_picker() {
         let mut a = own_and_sony();
@@ -9710,10 +9988,62 @@ mod tests {
         assert_eq!(a.current(), Screen::TrackPick);
 
         // The picker lists the library in title order: T0..T3. T0 and T1 are already members.
-        let row = |i: i32| crate::playlist_pick::TOP + i * crate::playlist_pick::ROW_H + 4;
+        // Rows start below the fixed SEARCH BAND, not at TOP.
+        let row = |i: i32| crate::playlist_pick::LIST_TOP + i * crate::playlist_pick::ROW_H + 4;
         assert!(a.tap(240, row(0)).is_empty(), "a track already in the playlist is not re-added");
         assert_eq!(a.tap(240, row(2)), vec![Action::PlaylistAddTrack(-42, 902)]);
         assert_eq!(a.current(), Screen::TrackPick, "the picker stays open");
+    }
+
+    /// Searching narrows the "Add tracks" list, and the rows still resolve to the right songs.
+    ///
+    /// 3,462 tracks at 64 px a row is ~220,000 px of scrolling, so an unfiltered flat list is a
+    /// way of browsing, not of finding. Reported 2026-09-10: "rework the +tracks to make it easier
+    /// to add and find songs".
+    #[test]
+    fn the_track_picker_can_be_searched() {
+        let mut a = own_and_sony();
+        a.open_playlist(0);
+        let (bx, by, bw, bh) = library::playlist_action_rect(0);
+        a.tap(bx + bw / 2, by + bh / 2);
+        assert_eq!(a.current(), Screen::TrackPick);
+        let all = a.track_pick_len_for_test();
+        assert!(all > 1, "precondition: more than one track to filter");
+
+        // The band is FIXED under the header, so it is reachable however far the list is scrolled.
+        assert!(crate::playlist_pick::hit_search(crate::playlist_pick::TOP + 4));
+        assert!(!crate::playlist_pick::hit_search(crate::playlist_pick::LIST_TOP + 4));
+        assert!(a.tap(240, crate::playlist_pick::TOP + 4).is_empty());
+        assert_eq!(a.current(), Screen::Keyboard, "the band opens the keyboard");
+
+        // THE SCREEN SAYS WHAT IT IS. It said "New playlist" — the catch-all arm — which is why
+        // the search looked broken even though the filter worked.
+        assert_eq!(a.kb_title_for_test(), "Find a song");
+
+        // Type a title that exists, and commit.
+        // `type_for_test` fills the buffer directly — the fixture's titles ("T2") need both a
+        // shift and a page flip, which is the keyboard's business and not this test's.
+        let want = a.lib.songs[2].title.clone();
+        a.type_for_test(&want);
+        // FILTERED ALREADY, before DONE — the list narrows as you type, and the header counts.
+        assert!(a.track_pick_len_for_test() < all, "typing must filter, without waiting for DONE");
+        assert_eq!(a.kb_title_for_test(), format!("{} matching", a.track_pick_len_for_test()));
+
+        assert!(kb_key(&mut a, crate::keyboard::Key::Done).is_empty(), "a filter is not an Action");
+        assert_eq!(a.current(), Screen::TrackPick, "back to the list, filtered");
+        assert!(a.track_pick_len_for_test() < all, "the search must actually narrow the list");
+
+        // The first row is now the match, and tapping it adds THAT track.
+        let acts = a.tap(240, crate::playlist_pick::LIST_TOP + 4);
+        assert!(
+            acts.iter().any(|x| matches!(x, Action::PlaylistAddTrack(_, id) if *id == a.lib.songs[2].object_id)),
+            "a filtered row must resolve to the song it shows, got {acts:?}"
+        );
+
+        // Re-entering starts clean — the last search belonged to the last errand.
+        a.press(Button::Back);
+        a.tap(bx + bw / 2, by + bh / 2);
+        assert_eq!(a.track_pick_len_for_test(), all, "a fresh visit is unfiltered");
     }
 
     /// The open page follows its playlist when the list is re-sorted under it (a rename does that).
@@ -11335,7 +11665,7 @@ mod tests {
 
         // The band itself, well left of the heart.
         let y = (np::INFO_TOP + np::INFO_BOT) / 2;
-        assert!(np::hit_info(120, y));
+        assert!(np::hit_info(120, y, false));
         assert!(a.tap(120, y).is_empty());
         assert_eq!(a.current(), Screen::TrackInfo);
         assert_eq!(a.track_info_rows().len(), 2);
@@ -11343,13 +11673,13 @@ mod tests {
         assert_eq!(a.current(), Screen::NowPlaying, "Back returns to the track");
 
         // The heart's square keeps its own taps.
-        assert!(!np::hit_info(np::HEART_CX, np::HEART_CY), "the block must not swallow the heart");
+        assert!(!np::hit_info(np::HEART_CX, np::HEART_CY, false), "the block must not swallow the heart");
         assert_eq!(a.tap(np::HEART_CX, np::HEART_CY), vec![Action::ToggleLiked]);
         assert_eq!(a.current(), Screen::NowPlaying);
 
         // And it stops above the rail's grab band, which owns drag-to-seek.
-        assert!(!np::hit_info(120, np::RAIL_GRAB_TOP));
-        assert!(!np::hit_info(120, np::RAIL_Y));
+        assert!(!np::hit_info(120, np::RAIL_GRAB_TOP, false));
+        assert!(!np::hit_info(120, np::RAIL_Y, false));
 
         // A track change replaces the rows and rewinds the scroll — a shorter list must not open
         // part-way down because the last one was long.

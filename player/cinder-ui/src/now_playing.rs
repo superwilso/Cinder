@@ -41,7 +41,30 @@ pub const INFO_TOP: i32 = 522;
 pub const INFO_BOT: i32 = RAIL_GRAB_TOP - 1;
 
 /// Is `(x, y)` on the metadata block? The right edge stops clear of the heart's square target.
-pub fn hit_info(x: i32, y: i32) -> bool {
+/// The NIGHT layout's metadata block. The two themes are separate code paths and the block does
+/// not live in the same place in both: the day layout puts title/artist/codec under the cover at
+/// `INFO_TOP`, while night draws a compact header at the TOP of the screen (thumb at y=80, title
+/// at 110, codec at 153).
+///
+/// The hit test used to be theme-blind, so in night mode the only way into Track information was
+/// to tap a patch of EMPTY SPACE at y≈522 where the day layout's text would have been — nothing
+/// there to suggest it, and the actual title, at the top, did nothing. Reported 2026-09-10 as
+/// "in night mode there is no way to enter the track information screen".
+///
+/// The band is deliberately not left active in both places: a button in blank space is not a
+/// feature, it is a thing you find by accident.
+pub const INFO_NIGHT_TOP: i32 = 78;
+pub const INFO_NIGHT_BOT: i32 = 174;
+
+/// Is this tap on the metadata block — the "tell me more about this file" button?
+///
+/// `night` picks the layout, because the block moves with it.
+pub fn hit_info(x: i32, y: i32, night: bool) -> bool {
+    if night {
+        // Full width: the thumb at x=24 is part of the same block, and nothing else on the night
+        // header is tappable, so there is no neighbour to leave room for.
+        return (INFO_NIGHT_TOP..=INFO_NIGHT_BOT).contains(&y) && (0..crate::canvas::W as i32).contains(&x);
+    }
     (INFO_TOP..=INFO_BOT).contains(&y) && x >= 0 && x < HEART_CX - HEART_HALF - 2
 }
 

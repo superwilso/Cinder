@@ -69,6 +69,26 @@ const fn caption_y(block_top: i32) -> i32 { block_top - 14 }
 /// the reader parses whatever index it finds, so old files load and new slots simply start empty.
 pub const SLOTS: usize = 6;
 
+// ── TEXT THAT IS NOT OURS ────────────────────────────────────────────────────────────────────
+// Every title and subtitle on this screen is a place the USER saved: a track name, an album, an
+// artist. Unbounded, frequently non-Latin, and drawn straight at a control. Unclamped, a long one
+// runs under the Pin button on THIS PLACE, and through both "GO ›" and the × forget column on a
+// pinned row — a control you cannot see is a control you will not press, which is the same defect
+// the status bar's degraded banner had (see `chrome::zone_slab`).
+//
+// The budget is derived from where the control is actually drawn, not from a second literal that
+// has to be kept in step with it.
+/// Room for the THIS PLACE title before the Pin button.
+fn this_text_w(x: f32) -> f32 {
+    (PIN_BTN.0 as f32 - 10.0 - x).max(0.0)
+}
+/// Room for a pinned row's title before the "GO ›" label. `go_w` is measured, not assumed.
+fn slot_text_w(f: &FontSet, x: f32, gost: &crate::text::TextStyle) -> f32 {
+    (404.0 - text::measure(f, GO_LABEL, gost) - 10.0 - x).max(0.0)
+}
+const GO_LABEL: &str = "GO \u{203a}";
+
+
 /// Centre of the header "Pin" button. Exposed so callers and tests aim at the layout instead of
 /// repeating a pixel — the coordinates in the nav tests silently stopped hitting it when the sheet
 /// was rebalanced, and the tests failed on the CONSEQUENCE (no pin was stored) rather than saying
@@ -105,8 +125,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub
     // THIS PLACE
     text::draw(c, f, 22.0, caption_y(THIS_Y) as f32, "THIS PLACE", &cap);
     stroke_rect(c, 22, THIS_Y, 436, THIS_H, t.line, 1);
-    text::draw(c, f, 36.0, (THIS_Y + 24) as f32, this_title, &sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0));
-    text::draw(c, f, 36.0, (THIS_Y + 42) as f32, this_sub, &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0));
+    let tst = sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0);
+    let sst = sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0);
+    text::draw(c, f, 36.0, (THIS_Y + 24) as f32,
+               &crate::widgets::fit(f, this_title, &tst, this_text_w(36.0)), &tst);
+    text::draw(c, f, 36.0, (THIS_Y + 42) as f32,
+               &crate::widgets::fit(f, this_sub, &sst, this_text_w(36.0)), &sst);
     let (px, py, pw, ph) = PIN_BTN;
     fill_rect(c, px, py + 6, pw, ph - 12, t.acc);
     center(c, f, (px + pw / 2) as f32, (py + ph / 2 + 4) as f32, "Pin", &sty(Family::Sans, Weight::Bold, 14.0, t.acc_ink, 0.0));
@@ -121,11 +145,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub
                 stroke_rect(c, 22, y, 436, SLOT_H, t.line, 1);
                 let mid = SLOT_H / 2;
                 text::draw(c, f, 36.0, (y + mid + 5) as f32, &format!("{}", i + 1), &sty(Family::Mono, Weight::Regular, 13.0, t.acc, 0.0));
-                text::draw(c, f, 58.0, (y + mid - 3) as f32, p.title, &sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0));
-                text::draw(c, f, 58.0, (y + mid + 15) as f32, p.sub, &sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0));
+                let pst = sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0);
+                let sub = sty(Family::Mono, Weight::Regular, 11.0, t.dim, 0.0);
+                let gost = sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.0);
+                let avail = slot_text_w(f, 58.0, &gost);
+                text::draw(c, f, 58.0, (y + mid - 3) as f32,
+                           &crate::widgets::fit(f, p.title, &pst, avail), &pst);
+                text::draw(c, f, 58.0, (y + mid + 15) as f32,
+                           &crate::widgets::fit(f, p.sub, &sub, avail), &sub);
                 // Separator makes the two tap zones legible: row body = GO, × column = forget.
                 fill_rect(c, CLEAR_X, y + 6, 1, SLOT_H - 12, t.line);
-                right(c, f, 404.0, (y + mid + 5) as f32, "GO \u{203a}", &sty(Family::Mono, Weight::Regular, 12.0, t.acc, 0.0));
+                right(c, f, 404.0, (y + mid + 5) as f32, GO_LABEL, &gost);
                 center(c, f, ((CLEAR_X + 458) / 2) as f32, (y + mid + 6) as f32, "\u{00d7}", &sty(Family::Mono, Weight::Regular, 17.0, t.faint, 0.0));
             }
             None => {

@@ -103,6 +103,48 @@ fn row_h(lines: usize) -> i32 {
 /// Total scrollable height. Shares `wrap` with the render, so the scrollbar and the last row agree
 /// about where the content ends — the two used to be independent guesses on the album screen and
 /// that is exactly how a list ends up scrolling past its own bottom.
+/// Rows whose VALUE is a place in the library rather than a fact about the file.
+///
+/// This screen answers "what is this?", and half the answer is "part of what?" — but until now
+/// the album and artist here were dead text, and getting to either meant leaving, opening
+/// Library, and finding it by hand. These become links.
+///
+/// Matched on the label because that is what the shell already sends; see the `put("Album", ..)`
+/// calls in cinder-ffi. A label that stops matching costs a link, not a crash.
+pub fn is_link(label: &str) -> bool {
+    matches!(label, "Artist" | "Album" | "Album artist")
+}
+
+/// The chevron drawn on a link row, and the gap kept clear for it.
+const LINK_MARK: &str = "\u{203a}";
+const LINK_MARK_W: f32 = 14.0;
+
+/// Each row's height, in the order `render` draws them.
+///
+/// Heights VARY — a value that wraps to three lines is a taller row — so a hit test cannot assume
+/// a constant pitch, and computing one needs font metrics that `App::tap` does not have. The
+/// renderer measures this once per frame and the navigator keeps it, exactly as it already keeps
+/// `content_h`. Same source, so the hit test cannot disagree with what was drawn.
+pub fn row_heights(f: &FontSet, t: &Theme, rows: &[(String, String)]) -> Vec<i32> {
+    let st = value_style(t);
+    rows.iter().map(|(_, v)| row_h(wrap(f, v, &st, RIGHT - VALUE_X).len())).collect()
+}
+
+/// Which row is at screen-`y`, from the heights `render` last measured.
+pub fn hit_row(heights: &[i32], scroll_px: i32, y: i32) -> Option<usize> {
+    if !(TOP..BOTTOM).contains(&y) {
+        return None;
+    }
+    let mut top = TOP - scroll_px.max(0);
+    for (i, h) in heights.iter().enumerate() {
+        if y >= top && y < top + h {
+            return Some(i);
+        }
+        top += h;
+    }
+    None
+}
+
 pub fn content_h(f: &FontSet, t: &Theme, rows: &[(String, String)]) -> i32 {
     let st = value_style(t);
     rows.iter().map(|(_, v)| row_h(wrap(f, v, &st, RIGHT - VALUE_X).len())).sum()
@@ -135,10 +177,14 @@ pub fn render(
     }
 
     let (ls, vs) = (label_style(t), value_style(t));
+    // A link differs only in COLOUR and the chevron, never in metrics — the wrap below is measured
+    // with the plain style on purpose, so a row is the same height whether or not it is a link.
+    let link_vs = TextStyle { color: t.acc, ..value_style(t) };
     let mut y = TOP - scroll;
     for (label, value) in rows {
         let lines = wrap(f, value, &vs, RIGHT - VALUE_X);
         let h = row_h(lines.len());
+        let link = is_link(label) && !value.is_empty();
         // Skip rows entirely above the window; stop once past the bottom. Cheap, and it keeps a
         // long path list from measuring text it will never draw.
         if y + h > y0 {
@@ -146,8 +192,13 @@ pub fn render(
                 break;
             }
             text::draw(c, f, LABEL_X, (y + 27) as f32, &label.to_uppercase(), &ls);
+            let st = if link { &link_vs } else { &vs };
             for (i, line) in lines.iter().enumerate() {
-                text::draw(c, f, VALUE_X, (y + 27 + i as i32 * WRAP_H) as f32, line, &vs);
+                text::draw(c, f, VALUE_X, (y + 27 + i as i32 * WRAP_H) as f32, line, st);
+            }
+            if link {
+                // Right-aligned against the same edge the values wrap to, so it never lands on one.
+                crate::widgets::right(c, f, RIGHT + LINK_MARK_W, (y + 27) as f32, LINK_MARK, &link_vs);
             }
             hline(c, y + h - 1, t.line);
         }

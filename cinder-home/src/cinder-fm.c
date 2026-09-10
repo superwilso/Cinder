@@ -37,7 +37,9 @@
  */
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #ifndef O_PATH
@@ -49,10 +51,96 @@ static const char *const nodes[] = {
     "/proc/regmon/Si4708icx/value",
 };
 
+/* The tuner driver. SONY SHIPS THIS MODULE but stock never loads it: there is no `insmod` for it
+ * anywhere in the stock ramdisk (checked against the extracted boot image — init.rc,
+ * init.project.rc, init.hagoromo.rc, init.usbcfg*.rc). The only thing on this device that ever
+ * loaded it was Wampy's `init.wampy.rc`, so a Cinder install on stock firmware — or on a device
+ * Wampy has been removed from — has no /proc/regmon/Si4708icx at all, and every FM feature that
+ * depends on it silently degrades to the ~90-second audio band scan.
+ *
+ * Loading it here rather than from an init script keeps Cinder out of the boot image: the ramdisk
+ * is regenerated from the boot partition on every boot, so an edit there does not persist without
+ * a flash. This helper is already setuid-root and already the thing that owns the tuner's
+ * permissions, so the module it needs is its business.
+ */
+static const char *const MODULE_PATH = "/system/lib/modules/radio-si4708icx.ko";
+static const char *const REGMON_DIR = "/proc/regmon/Si4708icx";
+
+/* Load the tuner module if its regmon directory is not already there.
+ *
+ * Deliberately narrow, and checked before it is trusted: ONE hard-coded path, no argv, no
+ * environment. The file must be a regular file owned by root and not writable by group or other —
+ * loading a module is the most privileged thing in this binary, so a .ko that anyone else could
+ * have replaced is refused rather than loaded. O_NOFOLLOW means a symlink planted at the path
+ * fails at open() instead of being followed.
+ *
+ * Silent and best-effort: a kernel without the module, or one that already has it, both leave the
+ * chmod loop below to do its job. Returns nothing because nothing here should stop that.
+ */
+static void load_tuner_module(void)
+{
+    struct stat st;
+    int fd;
+
+    /* Already loaded (or the driver is built in) — nothing to do. */
+    if (stat(REGMON_DIR, &st) == 0 && S_ISDIR(st.st_mode))
+        return;
+
+    fd = open(MODULE_PATH, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
+        return;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 || (st.st_mode & 022)) {
+        close(fd);
+        return;
+    }
+
+    /* finit_module(2) FIRST — it hands the kernel the descriptor we just verified, so there is no
+     * window between the check and the load. It is not available everywhere: this device's MTK
+     * 3.10 kernel has the symbol in its headers but rejects the call (measured 2026-09-10 —
+     * finit_module failed while `insmod`, which uses the older call, succeeded on the same file).
+     */
+#ifdef __NR_finit_module
+    if (syscall(__NR_finit_module, fd, "", 0) == 0) {
+        close(fd);
+        return;
+    }
+#endif
+
+    /* init_module(2) — the pre-3.8 call, which takes the image in memory. The size is bounded
+     * before allocating so a wrong path cannot be turned into an arbitrary allocation; the real
+     * module is ~17 KB.
+     */
+#ifdef __NR_init_module
+    if (st.st_size > 0 && st.st_size <= 4 * 1024 * 1024) {
+        size_t len = (size_t)st.st_size;
+        unsigned char *buf = malloc(len);
+        if (buf) {
+            size_t got = 0;
+            while (got < len) {
+                ssize_t n = read(fd, buf + got, len - got);
+                if (n <= 0)
+                    break;
+                got += (size_t)n;
+            }
+            /* A short read means the file changed under us — do not hand a truncated image to
+             * the kernel. */
+            if (got == len)
+                (void)syscall(__NR_init_module, buf, len, "");
+            free(buf);
+        }
+    }
+#endif
+    close(fd);
+}
+
 int main(void)
 {
     int failed = 0;
     unsigned i;
+
+    /* FIRST: the nodes below cannot be widened if the driver that creates them was never loaded. */
+    load_tuner_module();
+
     for (i = 0; i < sizeof(nodes) / sizeof(nodes[0]); i++) {
         struct stat st;
         char fdpath[64];

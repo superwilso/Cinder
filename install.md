@@ -191,6 +191,50 @@ of cinder-home enables adbd at boot** (`main.cpp` `deferred_up`), so adb only
 becomes available *after* the first install. The stable channel never enables
 adb.
 
+### Cinder does not require Wampy (2026-09-10)
+
+Cinder is a **complete** replacement — it does not need Wampy, Walkman One, or any
+other mod installed first, and it does not read anything they leave behind.
+
+That was not always strictly true, and the difference was one line. The reference
+device had been through Wampy, and Wampy's `init.wampy.rc` contains:
+
+```
+on post-fs-data
+    insmod /system/lib/modules/radio-si4708icx.ko
+```
+
+**Sony ships that module and never loads it.** There is no `insmod` for it anywhere in
+the stock ramdisk (checked against the extracted boot image: `init.rc`,
+`init.project.rc`, `init.hagoromo.rc`, `init.usbcfg*.rc`). Without it there is no
+`/proc/regmon/Si4708icx`, and every FM feature that reads the tuner's registers —
+the graded signal meter, hardware seek, the one-second band scan — silently falls back
+to a ~90-second audio scan. Cinder had been inheriting a working tuner from a mod it
+replaced, without owning the reason it worked.
+
+`cinder-fm` now loads the module itself when `/proc/regmon/Si4708icx` is absent, and the
+launcher runs `cinder-fm` at every boot. Nothing goes into the boot image: the ramdisk is
+rebuilt from the boot partition on each boot, so an edit there would not survive without a
+flash. Verified from a clean state on 2026-09-10 — module unloaded and the regmon
+directory gone (exactly a stock install), then `cinder-fm` → module `Live`, both nodes
+`0666`, exit 0.
+
+**What Cinder does NOT need from Wampy**, despite finding it on the reference device:
+
+| Left by Wampy | Needed? |
+|---|---|
+| `insmod radio-si4708icx.ko` (`init.wampy.rc`) | **Was.** Cinder now does this itself. |
+| `libsound_service_fw.so` | No — it is `LD_PRELOAD`ed into Sony's `SoundServiceFw` so *Wampy's own UI* can drive it. Cinder uses binder IPC and never loads it. |
+| `libdmp_feature.so` | No — same, for `MediaStoreService`. |
+| `pstserver` | No. It pumps `pst::core::Framework`'s event looper for Wampy; cinder-home runs its own pump in-process. |
+
+If you are removing Wampy from a device Cinder is already on, note that
+`/system/vendor/unknown321/lib/` holds the **only** copies of those two libraries, and
+Sony's services have them mapped while the `LD_PRELOAD` is in effect. Deleting that
+directory on a live device takes out audio and the media database. Removing Wampy's
+binary is safe; removing its libraries is not, until the `LD_PRELOAD` that references
+them is gone too.
+
 ---
 
 ## 1. Prerequisites
