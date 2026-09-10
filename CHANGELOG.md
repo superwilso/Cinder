@@ -16,7 +16,99 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-10
+
+### Added
+
+- **The installer now installs, updates AND uninstalls, and has a real window.**
+  *device-unverified — 46 host tests cover the state machine, the staging plan and the release
+  check; the USB handoff itself is a hardware step.*
+
+  The installer was one action wide: it installed. Updating meant running the installer again and
+  answering every component question from scratch, and **uninstalling meant reading `UNINSTALL.md`
+  and copying a `.UPG` by hand** — even though `cinder_home_uninstall.upg` was built, committed and
+  attached to every release the whole time. It was never embedded in the one program a user runs.
+
+  - **Update** reads `cinder_components.conf` back off the player and starts from the user's own
+    answers instead of the catalogue defaults. Without that, every update silently reset a
+    customised install. The round trip is a test: what one run writes, the next must read back
+    unchanged.
+  - **Uninstall** stages the uninstall package as `NW_WM_FW.UPG` **and nothing else** — staging the
+    binaries beside it would leave the player holding a fresh copy of everything it just removed.
+  - **State detection with no device-side cooperation.** The storage root a Walkman exposes over
+    USB *is* the device's `/contents`, so `install_cinderhome.sh`'s own append-only log is a plain
+    file on the mounted drive. The installer reduces it to the **last** session and distinguishes
+    installed / removed / *reverted by the device's sanity gate* / never finished. A reverted
+    install is reported as the failure it is rather than as a tick, and Update is only offered
+    where there is something to update.
+  - **A Win32 GUI**, and no new dependencies: `[dependencies]` is still empty. This is the one
+    artefact an end user runs, and a toolkit would have been the largest thing in the project by an
+    order of magnitude in order to carry six buttons and a log pane. Double-clicking the `.exe`
+    opens the window; running the same binary from a terminal gives the text interface, which is
+    what still works over RDP, on Linux and in a script. `GetConsoleProcessList` tells those apart.
+  - **`--clean`** removes the payload files a previous install left in the drive root. The device's
+    installer has printed *"safe to delete once cinder-home is confirmed"* since the beginning and
+    nothing ever deleted them, so they accumulated a few MB per install in the root of the user's
+    music drive. `cinder_components.conf` is deliberately excluded — sweeping up the record of the
+    user's choices would turn "free up space" into "quietly reset the next update", and that
+    exclusion is a test.
+  - **`--check`** asks GitHub whether a newer release exists. It is the only part of the program
+    that touches the network, it runs only when asked, and it changes nothing — the payload is
+    embedded, so an install on a machine that has never been online is a completely ordinary
+    install. Windows uses WinINet; elsewhere `curl`/`wget`. Version comparison is numeric, because
+    string ordering puts `v0.10.0` before `v0.9.0` and would hide exactly the release a user wants.
+  - Every file is **written and read back** before anything is triggered. A short write to a FAT32
+    volume otherwise becomes a truncated `.UPG` that the updater runs anyway, surfacing on the
+    player rather than on the PC where it could still be fixed.
+
 ### Fixed
+
+- **Uninstalling left Sony's audio HAL patched and two setuid-root helpers on the device.**
+  *device-unverified — the packaged payload was verified by unpacking the rebuilt `.UPG`.*
+
+  `uninstall_cinderhome.sh` removed eight of the eleven files an install places, and never undid
+  the one part of an install that does **not** live under `/system/vendor/unknown321/bin`: the
+  three-byte patch to `libaudiohal-adleralsa.so` behind the "sound signature" option. A device the
+  user believed was back to stock kept a modified audio HAL and a raised CPU floor, with nothing
+  left on it to explain why or undo it.
+
+  The uninstaller now calls `cinder-signature.sh revert` while that helper is still present — it
+  restores the pristine `.stock` snapshot and refuses unless its checksum is the known-stock one,
+  so it cannot make things worse — and then removes `cinder-battery`, `cinder-voltable` and
+  `cinder-signature.sh` along with the rest. `cinder-battery` and `cinder-voltable` are both
+  setuid-root, which the script's own comment already forbade outliving the app. The revert is
+  best-effort and runs *after* the brick-critical `.appcfg` restore has succeeded, so a failed
+  audio revert cannot turn a working uninstall into an aborted one.
+
+- **The release integrity check could not see the two files most likely to be stale.**
+  `tools/release.sh`'s byte-for-byte rebuild ran `cinder-home/build.sh stable` and nothing else —
+  and `build.sh` does not pack the `.UPG`s, it ends by *printing* "next: pack_upg.sh". So the guard
+  written specifically to stop a stale payload shipping rebuilt the binaries beside the packages
+  and never the packages themselves. A `.UPG` only changes when a deploy script changes, which
+  makes it the one artefact nobody thinks to rebuild — exactly the failure below. `release.sh` now
+  repacks both channels' packages inside the comparison. (Packing is byte-reproducible, verified,
+  so this does not make every release report a spurious change.)
+
+- **Three shipped binaries were outside the payload manifest.** `cinder-fm`, `cinder-voltable` and
+  `cinder-battery` are all marked `required` by the installer's `build.rs` and embedded in every
+  installer; two of them are installed setuid-root. None appeared in `PAYLOAD_FILES` in
+  `tools/release.sh` or in the matching list in `ci.yml`, so `PAYLOAD.sha256` never covered them
+  and a stale or edited copy of any of the three passed verification and shipped. Both lists now
+  carry every file the installer embeds.
+
+- **The FM tuner fix was in the deploy script but not in the shipped package.** The
+  `cinder-fm` launcher block added to `install_cinderhome.sh` was never packed into
+  `cinder_home_install.upg`, so it reached devices flashed from a checkout and nobody installing
+  from a release. Both channels repacked; the previously committed package contains zero
+  occurrences of the new block and the rebuilt one contains it. A `.UPG` only changes when a deploy
+  script changes, which is exactly the case that had been missed.
+
+- **`cinder_uninstall.upg` is a filename that exists nowhere.** `RECOVERY.md` and `UNINSTALL.md`
+  both told the reader to flash it; the real name is `cinder_home_uninstall.upg`, and
+  `tools/flash.sh uninstall` is the shortcut. `UNINSTALL.md` also carried an unresolved note asking
+  the reader to work out which of the two names was correct. Both fixed, and `UNINSTALL.md` now
+  leads with the installer instead of an adb ritual.
+
 
 - **UI and consistency audit — nine defects fixed, one gate gap closed.** *device-unverified — all
   nine are pure UI, host-tested; the audit lists three worth a glance on the next session.*
@@ -1159,7 +1251,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/superwilso/Cinder/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/superwilso/Cinder/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/superwilso/Cinder/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/superwilso/Cinder/compare/v0.1.5...v0.1.7

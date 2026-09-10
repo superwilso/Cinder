@@ -46,7 +46,17 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     ("dist/{ch}/cinder_home_install.upg", "NW_WM_FW.UPG", "", true),
 ];
 
+// The uninstall package. Deliberately NOT in FILES: it lands under the same name as the install
+// one, so staging both would mean writing NW_WM_FW.UPG twice and letting file order decide what
+// the player flashes. It is emitted as its own constant and written only by the uninstall action.
+//
+// It was previously not embedded at all, which is why removing Cinder meant reading UNINSTALL.md
+// and copying a file by hand — the uninstall .UPG was built, committed and published as a release
+// asset the whole time, and the one program the user actually runs could not reach it.
+const UNINSTALL_UPG: &str = "dist/{ch}/cinder_home_uninstall.upg";
+
 fn main() {
+    embed_manifest();
     let channel = env::var("CINDER_CHANNEL").unwrap_or_else(|_| "stable".into());
     println!("cargo:rerun-if-env-changed=CINDER_CHANNEL");
 
@@ -93,6 +103,22 @@ fn main() {
         src.push('\n');
     }
     src.push_str("];\n");
+
+    // the uninstall package, as its own optional constant
+    {
+        let rel = UNINSTALL_UPG.replace("{ch}", &channel);
+        let p = ch_root.join(&rel);
+        println!("cargo:rerun-if-changed={}", p.display());
+        if p.is_file() {
+            src.push_str(&format!(
+                "pub static UNINSTALL_UPG: Option<&[u8]> = Some(include_bytes!({:?}));\n",
+                abs(&p)
+            ));
+        } else {
+            src.push_str("pub static UNINSTALL_UPG: Option<&[u8]> = None;\n");
+            missing.push(rel);
+        }
+    }
 
     src.push_str("pub static MISSING: &[&str] = &[\n");
     for m in &missing {
@@ -154,6 +180,38 @@ fn main() {
     }
 
     fs::write(out.join("payload.rs"), src).unwrap();
+}
+
+/// Ask the MSVC linker to embed the application manifest.
+///
+/// Without it the GUI paints in the Windows 95 control style — see the manifest's own comment.
+/// Only the MSVC toolchain can do this from the linker alone; the GNU one needs `windres` to
+/// compile a resource script, which is a build tool this project does not require anyone to have.
+/// The GNU target is used for local `cargo check` only — every published Windows build is MSVC —
+/// so a check-only build losing its theming costs nothing.
+fn embed_manifest() {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("cinder-installer.manifest");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        println!("cargo:warning=cinder-installer: non-MSVC Windows build — no manifest, so the \
+                  GUI will use unthemed controls. Release builds are MSVC.");
+        return;
+    }
+    // A MISSING manifest must not fail the link. `/MANIFESTINPUT:` naming a file that is not
+    // there is a hard linker error, so an unguarded pass would turn "the manifest was not
+    // committed" into a broken release build whose message points at the linker rather than at
+    // the file. Unthemed controls are a cosmetic loss; a failed release build is not.
+    if !manifest.is_file() {
+        println!("cargo:warning=cinder-installer: {} is missing — building without an application \
+                  manifest, so the GUI will use unthemed controls.", manifest.display());
+        return;
+    }
+    println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}", manifest.display());
+    println!("cargo:rustc-link-arg-bins=/MANIFESTUAC:NO");
 }
 
 fn abs(p: &Path) -> String {
