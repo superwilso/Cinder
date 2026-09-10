@@ -196,8 +196,15 @@ fn embed_manifest() {
         return;
     }
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
-        println!("cargo:warning=cinder-installer: non-MSVC Windows build — no manifest, so the \
-                  GUI will use unthemed controls. Release builds are MSVC.");
+        // The GNU toolchain has no linker switch for this, but it ships `windres`, which compiles
+        // a resource script into a COFF object the linker will take like any other input. Worth
+        // doing rather than skipping: a locally cross-built .exe is how the GUI actually gets
+        // looked at before a release, and an unthemed one invites a bug report about the styling
+        // instead of about the program.
+        if !manifest.is_file() {
+            return;
+        }
+        gnu_manifest(&manifest);
         return;
     }
     // A MISSING manifest must not fail the link. `/MANIFESTINPUT:` naming a file that is not
@@ -212,6 +219,41 @@ fn embed_manifest() {
     println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
     println!("cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}", manifest.display());
     println!("cargo:rustc-link-arg-bins=/MANIFESTUAC:NO");
+}
+
+/// Compile the manifest into a COFF object with `windres` and hand it to the linker.
+///
+/// Best-effort by design: if `windres` is not installed the build continues without a manifest
+/// (unthemed controls, everything else identical) rather than failing. Published builds are MSVC
+/// and take the linker path above, so this never gates a release.
+fn gnu_manifest(manifest: &Path) {
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let rc = out.join("manifest.rc");
+    let obj = out.join("manifest_res.o");
+
+    // 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID, 24 = RT_MANIFEST. Forward slashes: windres reads
+    // the path out of the script, where a backslash is an escape.
+    let script = format!("1 24 \"{}\"\n", abs(manifest));
+    if fs::write(&rc, script).is_err() {
+        return;
+    }
+
+    for tool in ["x86_64-w64-mingw32-windres", "windres"] {
+        let ok = std::process::Command::new(tool)
+            .args(["-O", "coff", "-i"])
+            .arg(&rc)
+            .arg("-o")
+            .arg(&obj)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            println!("cargo:rustc-link-arg-bins={}", obj.display());
+            return;
+        }
+    }
+    println!("cargo:warning=cinder-installer: windres not found — the GUI will use unthemed \
+              controls in this build. Published builds are MSVC and are unaffected.");
 }
 
 fn abs(p: &Path) -> String {
