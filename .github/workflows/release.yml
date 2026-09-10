@@ -51,9 +51,20 @@ jobs:
       #
       # Via a SCRIPT, deliberately: the same rule the shellcheck gate is under. A check a
       # contributor cannot run locally is one that fails for the first time during a release.
+      # The tag argument is passed ONLY on a tag push. On a manual workflow_dispatch GITHUB_REF_NAME
+      # is a BRANCH name, which can never equal the tag the manifest records — so this step failed
+      # every dispatch run, and the dispatch path exists precisely to build a test .exe without
+      # cutting a release. With no argument the script still verifies every payload hash; it only
+      # skips the "verified for THIS tag" assertion, which is meaningless off a tag.
       - name: Payload matches the verified manifest
         shell: bash
-        run: tools/verify_payload_manifest.sh "${GITHUB_REF_NAME}"
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+              tools/verify_payload_manifest.sh "${GITHUB_REF_NAME}"
+          else
+              echo "manual run — checking payload hashes, skipping the tag assertion"
+              tools/verify_payload_manifest.sh
+          fi
 
       # The Sony updater bundle is vendored rather than built, so it is not in the manifest and
       # keeps a plain existence check.
