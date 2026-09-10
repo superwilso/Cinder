@@ -136,10 +136,14 @@ fn main() {
                 &now_playing::NowPlaying { title: "", artist: "", codec: "", badge: "", elapsed: "",
                                            remaining: "", progress: 0.0, playing: false, liked: false,
                                            art: "", viz_size: 0, page: 0, ..np })),
+            // One entry per page, and the NAMES track the pages. These were hand-numbered and went
+            // stale the moment a page was inserted: "onboard_2_features" was rendering the new
+            // Gestures page under the old name, so the preview said the sweep was fine.
             ("onboard_0_welcome", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 0)),
             ("onboard_1_controls", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 1)),
-            ("onboard_2_features", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 2)),
-            ("onboard_3_done", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 3)),
+            ("onboard_2_gestures", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 2)),
+            ("onboard_3_features", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 3)),
+            ("onboard_4_done", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 4)),
             ("shelf", &|c: &mut Canvas| {
                 now_playing::render(c, &theme, &fonts, &np);
                 shelf::render(c, &theme, &fonts, "Now Playing · Atlas Hands", "1:47 / 4:32",
@@ -254,8 +258,18 @@ fn main() {
             }),
             ("track_pick", &|c: &mut Canvas| {
                 let songs: Vec<&cinder_ui::model::SongRow> = lib.songs.iter().collect();
+                let n = songs.len();
                 cinder_ui::playlist_pick::render_tracks(c, &theme, &fonts, "Late Night On The Bus",
-                                                        &songs, &|i| i % 3 == 0, 0, 4, false);
+                                                        &songs, &|i| i % 3 == 0, 0, 4, "", n, false);
+            }),
+            // The same screen with a search running — the state that makes it usable on a library
+            // of thousands, and the one worth eyeballing.
+            ("track_pick_search", &|c: &mut Canvas| {
+                let songs: Vec<&cinder_ui::model::SongRow> =
+                    lib.songs.iter().filter(|s| s.title.to_lowercase().contains('a')).collect();
+                cinder_ui::playlist_pick::render_tracks(c, &theme, &fonts, "Late Night On The Bus",
+                                                        &songs, &|i| i % 3 == 0, 0, 4, "a",
+                                                        lib.songs.len(), false);
             }),
             ("up_next_remove", &|c: &mut Canvas| {
                 let l = up_next::layout(0, None, queue.len(), false);
@@ -858,13 +872,15 @@ fn main() {
     }
 
     // EQ interactivity: enter EQ, move to band 4, push it up — the selected band highlights.
+    //
+    // NAMED, not counted. This used to walk four Downs from the Menu on the strength of a comment
+    // that said "Equalizer (menu idx 4)" — and the menu has gained rows since, so the four Downs
+    // land on FM Radio and this preview has been quietly saving a picture of the RADIO under the
+    // name `eq_interactive`. A preview that renders the wrong screen is worse than a missing one:
+    // it is what you look at to decide the screen is fine.
     {
         let mut app = App::unlocked();
-        app.press(Button::Up); // Menu
-        for _ in 0..4 {
-            app.press(Button::Down);
-        }
-        app.press(Button::Select); // -> Equalizer (menu idx 4)
+        app.go_for_preview(cinder_ui::nav::Screen::Eq);
         for _ in 0..4 {
             app.press(Button::Right); // select band 4
         }

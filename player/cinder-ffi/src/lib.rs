@@ -2434,21 +2434,44 @@ fn add_track_to_playlist(r: &mut Render, playlist_id: i64, object_id: i64) {
 /// album plus one per playlist, and it would also throw away the scroll position of the screen
 /// the user is editing on.
 fn refresh_playlists(r: &mut Render) {
+    let rows = merge_playlist_rows(user_playlist_rows(&r.plists, r.db.as_ref()), &r.db_playlists);
+    r.app.set_playlists(rows);
+    r.dirty = true;
+}
+
+/// Combine OUR editable playlists with Sony's read-only index of them, one row per name.
+///
+/// Pure, and separated out so the precedence below is testable — it shipped wrong precisely
+/// because nothing asserted it.
+fn merge_playlist_rows(
+    ours: Vec<cinder_ui::model::PlaylistRow>,
+    sonys: &[cinder_ui::model::PlaylistRow],
+) -> Vec<cinder_ui::model::PlaylistRow> {
     let mut rows = Vec::new();
     let mut seen_names = std::collections::BTreeSet::new();
-    for row in r
-        .db_playlists
-        .iter()
-        .cloned()
-        .chain(user_playlist_rows(&r.plists, r.db.as_ref()))
-    {
+    // OURS FIRST, and that order is the whole point.
+    //
+    // The two sources overlap by design: our playlists are `.m3u8` FILES, and Sony's scanner
+    // indexes those very files into the media DB as container objects with the same name. So a
+    // playlist the user made shows up twice — once as a row we can rewrite, once as a read-only
+    // index OF that row. The de-dup below keeps whichever arrives first.
+    //
+    // Sony's used to arrive first, so the read-only copy won every collision and the editable one
+    // was thrown away. The effect was that NO playlist on the device had edit controls: the page
+    // draws + TRACKS / RENAME / DELETE and the per-row × only when `user` is set, and `user` was
+    // false on all 8 of the reference device's own playlists. Reported 2026-09-10 as "there is
+    // still no way from ui to edit pre existing playlists" — the controls were there the whole
+    // time, attached to rows that had been discarded in this loop.
+    //
+    // Preferring ours is not a coin toss: both rows describe the same file, and only one of them
+    // can write it back.
+    for row in ours.into_iter().chain(sonys.iter().cloned()) {
         if seen_names.insert(row.name.to_lowercase()) {
             rows.push(row);
         }
     }
     rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    r.app.set_playlists(rows);
-    r.dirty = true;
+    rows
 }
 
 /// The tracks of one of OUR playlists, in saved order, resolved to DB rows for playback.
@@ -6498,6 +6521,49 @@ mod tests {
     }
 
     #[test]
+    /// The EDITABLE row must win a name collision.
+    ///
+    /// Our playlists are `.m3u8` files; Sony's scanner indexes those same files into the media DB
+    /// under the same names, so every playlist the user owns appears in BOTH lists. Whichever the
+    /// merge keeps is the one the UI gets, and only ours carries `user: true` — which is what makes
+    /// the page draw + TRACKS / RENAME / DELETE at all.
+    ///
+    /// Sony's used to come first, so every one of the reference device's 8 playlists arrived
+    /// read-only and nothing on the device could be edited.
+    #[test]
+    fn our_editable_playlist_beats_sonys_copy_of_it() {
+        let row = |id: i64, name: &str, tracks: u32, user: bool| cinder_ui::model::PlaylistRow {
+            id,
+            name: name.to_string(),
+            tracks,
+            art: name.to_string(),
+            user,
+            track_list: Vec::new(),
+        };
+        // Same names, different case, as the de-dup folds case.
+        let ours = vec![row(-1, "Late Night On The Bus Mix 08", 24, true), row(-2, "Teef", 24, true)];
+        let sonys = [
+            row(33582, "late night on the bus mix 08", 24, false),
+            row(33406, "TEEF", 24, false),
+            row(33431, "Hi-fi", 22, false), // Sony-only: no file of ours, so it must survive
+        ];
+
+        let merged = merge_playlist_rows(ours, &sonys);
+        assert_eq!(merged.len(), 3, "one row per name, not per source");
+
+        let by = |n: &str| merged.iter().find(|r| r.name.eq_ignore_ascii_case(n)).unwrap().clone();
+        assert!(by("Teef").user, "the collision must keep OUR row, or it cannot be edited");
+        assert_eq!(by("Teef").id, -2, "and keep our id, which is what writes the file back");
+        assert!(by("Late Night On The Bus Mix 08").user);
+        // A playlist only Sony knows about is still listed — just not editable.
+        assert!(!by("Hi-fi").user);
+
+        assert!(
+            merged.windows(2).all(|w| w[0].name.to_lowercase() <= w[1].name.to_lowercase()),
+            "still sorted by name"
+        );
+    }
+
     fn build_library_from_db() {
         let db = fixture_db();
         let lib = build_library(&db);

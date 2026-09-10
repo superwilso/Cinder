@@ -628,6 +628,31 @@ if [ -x "$VOLTABLE_BIN" ] && [ -f "$VOLTABLE_CONF" ]; then
     esac
 fi
 
+# FM TUNER: load the driver and open its registers.
+#
+# Sony SHIPS radio-si4708icx.ko and never loads it — there is no `insmod` for it anywhere in the
+# stock ramdisk. On this project's reference device the only thing that ever did was Wampy's
+# `init.wampy.rc`, so Cinder inherited a working tuner without owning the reason it worked. On a
+# clean stock install, or after Wampy is removed, /proc/regmon/Si4708icx does not exist and every
+# FM feature that reads the chip degrades to the ~90-second audio band scan.
+#
+# cinder-fm loads the module (if needed) and widens the two regmon nodes. It is setuid-root, takes
+# no arguments and touches one fixed path list, so running it unconditionally at boot costs a fork.
+#
+# It also has to be RUN, which it previously was not: the helper was built and installed by every
+# release and invoked by nothing, so the nodes it exists to open stayed root-only.
+#
+# Best-effort and quiet: a device without the helper, or a kernel that refuses the module, keeps
+# the audio-scan fallback. Nothing here may stop a boot.
+FM_BIN=/system/vendor/unknown321/bin/cinder-fm
+if [ -x "$FM_BIN" ]; then
+    if "$FM_BIN" >/dev/null 2>&1; then
+        log "fm: tuner registers open"
+    else
+        log "fm: cinder-fm could not open the tuner registers — the slow audio scan stays"
+    fi
+fi
+
 # Kill switch: restores the pre-supervisor `exec`. The escape for the escape — a file drop over
 # USB-MSC needs strictly less than the supervisor it disables.
 if [ -f "$NO_RESPAWN" ] || [ -f "$MSC_NO_RESPAWN" ]; then

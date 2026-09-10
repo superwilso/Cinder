@@ -32,9 +32,19 @@ fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32) -> 
     TextStyle { fam, weight, size, color, tracking }
 }
 
+/// Screen margin the centred text may not cross. The lock screen has no controls to hide, so this
+/// is not the status bar's problem — it is the CENTRING that makes an unclamped string harmful:
+/// `240 - w/2` goes negative on a long one, so the overflow is split across BOTH edges and the
+/// title loses its beginning as well as its end. A trailing ellipsis at least starts at the start.
+const SIDE_MARGIN: f32 = 22.0;
+
 fn centered(c: &mut Canvas, f: &FontSet, baseline: f32, s: &str, st: &TextStyle) {
-    let w = text::measure(f, s, st);
-    text::draw(c, f, 240.0 - w / 2.0, baseline, s, st);
+    // Clamp HERE rather than at each call: the two unbounded strings on this screen are the track
+    // title and the artist, and putting the budget in the shared helper is what stops the next one
+    // added from arriving unclamped.
+    let s = crate::widgets::fit(f, s, st, 480.0 - SIDE_MARGIN * 2.0);
+    let w = text::measure(f, &s, st);
+    text::draw(c, f, 240.0 - w / 2.0, baseline, &s, st);
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, l: &Lock) {
@@ -59,4 +69,44 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, l: &Lock) {
     let startx = 240.0 - total / 2.0;
     icons::lock(c, startx + 6.0, 771.0, 13.0, t.faint);
     text::draw(c, f, startx + 21.0, 775.0, hint, &hs);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A long title must not run off the edges. It is CENTRED, so an unclamped one loses its
+    /// start as well as its end — the reader gets the middle of a name and no way to tell.
+    #[test]
+    fn a_long_title_stays_on_screen() {
+        let f = FontSet::load();
+        let t = Theme::day();
+        let mut c = Canvas::new();
+        let long = "\u{041a}\u{043e}\u{0440}\u{043e}\u{043b}\u{0435}\u{0432}\u{0441}\u{043a}\u{0438}\u{0439} \
+                    Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364";
+        let l = Lock {
+            clock: "23:41",
+            big_clock: "23:41",
+            title: long,
+            artist: long,
+            badge: "FLAC 24/96",
+            battery: 78,
+            progress: 0.5,
+        };
+        render(&mut c, &t, &f, &l);
+
+        // Nothing painted in the side margins on the title/artist baselines. The clock and the
+        // status bar are drawn elsewhere on the screen, so these rows see only the two strings
+        // this test is about.
+        let bg = t.bg;
+        for y in [396i32, 400, 416, 420] {
+            for x in [0i32, 4, 475, 479] {
+                assert_eq!(
+                    c.buf[y as usize * crate::canvas::W as usize + x as usize],
+                    crate::canvas::to_u32(bg),
+                    "text reached the screen edge at ({x},{y}) — the centred clamp is not holding"
+                );
+            }
+        }
+    }
 }
