@@ -340,6 +340,8 @@ struct App {
     brush_panel: HBRUSH,
     dpi: u32,
     ok: bool,
+    /// Walk everything, touch nothing. Set from --dry-run and shown in the header.
+    dry: bool,
 }
 
 thread_local! {
@@ -389,7 +391,7 @@ pub fn owns_its_console() -> bool {
     n == 1
 }
 
-pub fn run(action: Option<Action>) -> i32 {
+pub fn run(action: Option<Action>, dry: bool) -> i32 {
     // SAFETY: all three take no arguments or a well-formed local, and are safe to call once at
     // startup before any window exists.
     unsafe {
@@ -463,7 +465,11 @@ pub fn run(action: Option<Action>) -> i32 {
         MIN_H.store(sc(460), Ordering::SeqCst);
         let x = (GetSystemMetrics(SM_CXSCREEN) - ww) / 2;
         let y = ((GetSystemMetrics(SM_CYSCREEN) - wh) / 2).max(0);
-        let title = w(&format!("Cinder installer {}", crate::VERSION));
+        let title = w(&format!(
+            "Cinder installer {}{}",
+            crate::VERSION,
+            if dry { "  —  DRY RUN" } else { "" }
+        ));
         let hwnd = CreateWindowExW(
             0,
             class.as_ptr(),
@@ -522,6 +528,7 @@ pub fn run(action: Option<Action>) -> i32 {
             brush_panel: CreateSolidBrush(C_PANEL),
             dpi,
             ok: false,
+            dry,
         });
         app.rescan();
         BG_BRUSH.store(app.brush_bg as usize, Ordering::SeqCst);
@@ -851,7 +858,14 @@ impl App {
                 let text = self.confirm_text();
                 self.body = self.mk("STATIC", &text, SS_NOPREFIX, ID_BODY, f);
                 self.back = self.mk("BUTTON", "Back", WS_TABSTOP, ID_BACK, f);
-                let go = if self.action.is_removal() { "Uninstall Cinder" } else { self.action.verb() };
+                let go = if self.dry {
+                    "Dry run".to_string()
+                } else if self.action.is_removal() {
+                    "Uninstall Cinder".to_string()
+                } else {
+                    self.action.verb().to_string()
+                };
+                let go = go.as_str();
                 self.next = self.mk("BUTTON", go, BS_DEFPUSHBUTTON | WS_TABSTOP, ID_NEXT, fb);
             }
             Page::Working | Page::Done => {
@@ -1081,12 +1095,13 @@ impl App {
         let Some(target) = self.target.clone() else { return };
         let action = self.action;
         let comps = self.comps.clone();
+        let dry = self.dry;
         self.go(Page::Working);
         BUSY.store(true, Ordering::SeqCst);
         let hwnd = self.hwnd as usize;
 
         std::thread::spawn(move || {
-            let ok = carry_out(action, &comps, &target, hwnd);
+            let ok = carry_out(action, &comps, &target, dry, hwnd);
             BUSY.store(false, Ordering::SeqCst);
             EXIT_CODE.store(i32::from(!ok), Ordering::SeqCst);
             // SAFETY: see check_release.
@@ -1235,7 +1250,11 @@ impl App {
             let sub = w("Custom firmware for the Sony NW-A50 series");
             DrawTextW(dc, sub.as_ptr(), -1, &mut r, DT_LEFT | DT_END_ELLIPSIS);
 
-            let stamp = w(&format!("{}   ·   {} channel", crate::VERSION, crate::CHANNEL));
+            let stamp = w(&if self.dry {
+                format!("{}  ·  {} channel  ·  DRY RUN", crate::VERSION, crate::CHANNEL)
+            } else {
+                format!("{}   ·   {} channel", crate::VERSION, crate::CHANNEL)
+            });
             let mut r = RECT { left: rc.right / 2, top: self.s(52), right: rc.right - pad, bottom: head - self.s(6) };
             SetTextColor(dc, C_ACCENT);
             DrawTextW(dc, stamp.as_ptr(), -1, &mut r, 0x0002 | DT_END_ELLIPSIS); // DT_RIGHT
@@ -1244,7 +1263,9 @@ impl App {
             if self.page == Page::Done {
                 SelectObject(dc, self.font_bold);
                 SetTextColor(dc, if self.ok { C_ACCENT } else { C_WARN });
-                let msg = if self.ok {
+                let msg = if self.ok && self.dry {
+                    "Dry run finished — the player was not touched."
+                } else if self.ok {
                     if self.action.is_removal() {
                         "Done — the player reboots into the stock Sony player."
                     } else {
@@ -1265,18 +1286,22 @@ impl App {
 
 /// Runs off the UI thread. Every line it produces goes through `push_log` + `WM_APP_LOG`, so the
 /// window shows progress live instead of freezing until the flash is over.
-fn carry_out(action: Action, comps: &[Comp], target: &std::path::Path, hwnd: usize) -> bool {
+fn carry_out(action: Action, comps: &[Comp], target: &std::path::Path, dry: bool, hwnd: usize) -> bool {
     let tick = || {
         // SAFETY: posting to a window that has gone away fails; it does not execute anything.
         unsafe { PostMessageW(hwnd as HWND, WM_APP_LOG, 0, 0) };
     };
 
     push_log(format!("{} — {}", action.verb(), target.display()));
+    if dry {
+        push_log("DRY RUN — nothing is written and the player is not told to flash.");
+    }
     push_log(String::new());
     tick();
 
-    let r = stage::write_payload(action, comps, crate::CHANNEL, target, |name, n| {
-        push_log(format!("  wrote {name:<24} {n:>9} bytes"));
+    let verb = if dry { "would write" } else { "wrote" };
+    let r = stage::write_payload(action, comps, crate::CHANNEL, target, dry, |name, n| {
+        push_log(format!("  {verb} {name:<24} {n:>9} bytes"));
         tick();
     });
     if let Err(e) = r {
@@ -1289,6 +1314,11 @@ fn carry_out(action: Action, comps: &[Comp], target: &std::path::Path, hwnd: usi
     }
 
     push_log(String::new());
+    if dry {
+        push_log("DRY RUN complete. Nothing was written; the player was not touched.");
+        tick();
+        return true;
+    }
     push_log("Everything is staged and read back clean.");
     tick();
 

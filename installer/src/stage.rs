@@ -104,17 +104,25 @@ pub fn plan(action: Action, comps: &[Comp], channel: &str) -> Result<Plan, Strin
 }
 
 /// Copy the plan onto the player. `progress` is called after each file with (name, bytes).
+///
+/// `dry` walks the whole plan and writes NOTHING. It exists so the interface can be exercised
+/// end to end — on a real player, with a real component selection — without putting a package on
+/// the device or triggering a flash. A GUI that can only be tested by flashing a Walkman is a GUI
+/// that does not get tested.
 pub fn write_payload(
     action: Action,
     comps: &[Comp],
     channel: &str,
     target: &Path,
+    dry: bool,
     mut progress: impl FnMut(&str, usize),
 ) -> io::Result<()> {
     if action.is_removal() {
         let bytes = crate::payload::UNINSTALL_UPG
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no uninstall package embedded"))?;
-        write_verified(&target.join(UPG_NAME), bytes)?;
+        if !dry {
+            write_verified(&target.join(UPG_NAME), bytes)?;
+        }
         progress(UPG_NAME, bytes.len());
         return Ok(());
     }
@@ -123,11 +131,15 @@ pub fn write_payload(
         if !selected(comps, owner) {
             continue;
         }
-        write_verified(&target.join(name), bytes)?;
+        if !dry {
+            write_verified(&target.join(name), bytes)?;
+        }
         progress(name, bytes.len());
     }
     let conf = crate::catalogue::conf_text(comps, channel);
-    write_verified(&target.join(CONF_NAME), conf.as_bytes())?;
+    if !dry {
+        write_verified(&target.join(CONF_NAME), conf.as_bytes())?;
+    }
     progress(CONF_NAME, conf.len());
     Ok(())
 }
@@ -506,6 +518,24 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
         assert!(Action::Uninstall.is_removal());
         assert!(!Action::Install.is_removal());
         assert!(!Action::Update.is_removal());
+    }
+
+    /// A dry run must touch nothing at all. The whole value of the flag is that it can be
+    /// pointed at a real, connected Walkman.
+    #[test]
+    fn a_dry_run_writes_no_files_but_still_reports_the_plan() {
+        let c = parse_catalogue(SAMPLE).unwrap();
+        let dir = std::env::temp_dir().join(format!("cinder-dry-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let mut seen = 0usize;
+        write_payload(Action::Install, &c, "stable", &dir, true, |_, _| seen += 1).unwrap();
+
+        assert!(seen > 0, "a dry run still reports every file it would write");
+        let left: Vec<_> = fs::read_dir(&dir).unwrap().flatten().collect();
+        assert!(left.is_empty(), "a dry run left {} file(s) behind", left.len());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The component conf is the user's saved answers, and the only copy of them. A cleanup that
