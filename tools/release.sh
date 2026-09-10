@@ -135,6 +135,18 @@ note "rebuilding the stable channel …"
 BEFORE="$(find cinder-home/dist/stable -type f -exec md5sum {} + | sort -k2)"
 bash cinder-home/build.sh stable >/tmp/cinder-release-build.log 2>&1 \
     || { tail -20 /tmp/cinder-release-build.log; die "build failed — see /tmp/cinder-release-build.log"; }
+
+# AND REPACK THE .UPGs. build.sh does not do this — it ends by PRINTING "next: pack_upg.sh" — so
+# for as long as this step was `build.sh` alone, the byte-for-byte check that exists to catch a
+# stale payload could not see the two files most likely to be stale.
+#
+# That is not hypothetical. A .UPG only changes when a deploy script changes, which makes it the
+# one artefact nobody thinks to rebuild: on 2026-09-10 a fix to install_cinderhome.sh had been
+# committed for hours with the packed cinder_home_install.upg still holding the version before it.
+# It would have shipped, verified, with a green tick — because the verification rebuilt the
+# binaries beside it and never the package itself.
+bash cinder-home/tools/pack_upg.sh stable >>/tmp/cinder-release-build.log 2>&1 \
+    || { tail -20 /tmp/cinder-release-build.log; die "pack_upg failed — see /tmp/cinder-release-build.log"; }
 AFTER="$(find cinder-home/dist/stable -type f -exec md5sum {} + | sort -k2)"
 
 if [ "$BEFORE" != "$AFTER" ]; then
@@ -149,6 +161,11 @@ fi
 # build.rs fails loudly on a missing payload, but failing HERE names the file and costs no CI run.
 # One list, used by both the existence check and the manifest below — they drifted apart as two
 # copies of the same ten lines, which is one edit away from a manifest that verifies nine files.
+#
+# EVERY file installer/build.rs marks `required` belongs here. cinder-fm, cinder-voltable and
+# cinder-battery were absent for as long as they have existed: all three are embedded in every
+# installer, two of them are installed setuid-root, and none of them was covered by the manifest —
+# so a stale or edited copy of any of the three passed verification and shipped.
 PAYLOAD_FILES=(
     cinder-home/dist/stable/cinder-home
     cinder-home/dist/stable/cinder-probe
@@ -156,6 +173,9 @@ PAYLOAD_FILES=(
     cinder-home/dist/stable/cinder-power
     cinder-home/dist/stable/cinder-msc
     cinder-home/dist/stable/cinder-clock
+    cinder-home/dist/stable/cinder-fm
+    cinder-home/dist/stable/cinder-voltable
+    cinder-home/dist/stable/cinder-battery
     cinder-home/dist/stable/cinder-signature.sh
     cinder-home/dist/stable/cinder_components.conf
     cinder-home/dist/stable/cinder_home_install.upg

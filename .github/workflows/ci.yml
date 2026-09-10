@@ -251,6 +251,9 @@ jobs:
           cinder-home/dist/stable/cinder-power
           cinder-home/dist/stable/cinder-msc
           cinder-home/dist/stable/cinder-clock
+          cinder-home/dist/stable/cinder-fm
+          cinder-home/dist/stable/cinder-voltable
+          cinder-home/dist/stable/cinder-battery
           cinder-home/dist/stable/cinder-signature.sh
           cinder-home/dist/stable/cinder_components.conf
           cinder-home/dist/stable/cinder_home_install.upg

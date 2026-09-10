@@ -149,7 +149,7 @@ tools/flash.sh --push /tmp/ldac_off        # stop the LDAC bridge supervisor
 ## Step 2 — flash the uninstaller
 Removes the wrapper entirely and restores the original scrobbler:
 ```bash
-tools/flash.sh /mnt/c/Users/<you>/Downloads/cinder_uninstall.upg
+tools/flash.sh uninstall
 ```
 The next boot enters the Sony updater (which never runs the wrapper), so this breaks a loop.
 

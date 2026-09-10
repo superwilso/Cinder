@@ -61,44 +61,64 @@ device-gated — see STATUS.md for the exact matrix, it's kept current rather th
 
 ## Install
 
-Download **`cinder-installer-windows-x64.exe`** from the [latest release](../../releases/latest),
-plug the Walkman in over USB in mass-storage mode, and run it. It finds the player, asks which
-optional parts you want, copies them across, and tells you what to do next.
+Download **`cinder-installer-windows-x64.exe`** from the [latest
+release](../../releases/latest), connect the Walkman by USB in mass-storage mode, and run it.
 
-**On Linux, `cinder-installer-linux-x64` does the whole job — run it with `sudo`.** It stages the
-files and then sends the upgrade command itself. That last step is a raw SCSI passthrough, which is
-why it needs root; without it the installer still stages everything correctly and tells you what
-did not happen and why.
+| You are on | Download | What it does |
+|---|---|---|
+| **Windows** | `cinder-installer-windows-x64.exe` | The whole job. Double-click for the window; Sony's own updater performs the USB handoff and reboot. |
+| **Linux** | `cinder-installer-linux-x64` | The whole job, from the terminal — **run it with `sudo`**. The last step is a raw SCSI passthrough, which is why it needs root. |
+| **macOS** | `cinder-installer-linux-x64` is not for you | It can stage the files but cannot finish; see below. Use a Linux or Windows machine. |
+| Recovering a device | `cinder-home-uninstall.upg` | Flash by hand when the player will not boot far enough for anything else. [`RECOVERY.md`](RECOVERY.md). |
 
-**On macOS the installer stages but cannot finish.** The command is a vendor SCSI passthrough, and
-macOS only exposes those through an IOKit `SCSITaskUserClient`, which the kernel will not grant for
-a disk it has already mounted — the exact state a staged Walkman is in. Finish from a Linux or
-Windows machine; see [`install.md`](install.md).
+The installer carries everything it needs. There is **no separate download, no WSL, no usbipd, no
+driver setup, and no network connection required** — the device binaries, the component catalogue
+and Sony's updater are all inside the one file.
 
-> **There is no update option in the player's own menus.** This generation has no such entry — the
-> upgrade is always triggered by the host over USB. Earlier versions of this README and of the
-> installer told you to find **Settings ▸ Device Settings ▸ Update** on the device. That menu does
-> not exist, and the Linux binary refused to start at all, so neither path installed anything. Both
-> are fixed in v0.1.9.
+### The three things it does
 
 ```
-  Cinder installer  (channel: stable)
-  player: D:\
-  ------------------------------------------------------------
-    1  [x]     Power off / Restart menu                   power
-    2  [x]     USB mass storage (put music on the device) msc
-    3  [x]     Set the clock and RTC                      clock
-    4  [x]     Unmount helper for USB mass storage        umount
-    5  [ ]     GPU present path (experimental, dev only)  gpunode
-    6  <stock> Audio "sound signature"                    signature
-  ------------------------------------------------------------
-   <number> toggle/cycle   ?<number> describe   i install   q quit
+┌────────────────────────────────────────────────────────────────┐
+│  Cinder                                       0.2.0 · stable   │
+├────────────────────────────────────────────────────────────────┤
+│   Player:  D:\                                    [ Rescan ]   │
+│   Cinder is installed (installer 0.1.9, stable) — Wed Sep 10    │
+│                                                                 │
+│   ┌──────────────────────────────────────────────────────────┐ │
+│   │ Install Cinder                                           │ │
+│   │ Fresh install: choose the optional parts, then flash.    │ │
+│   ├──────────────────────────────────────────────────────────┤ │
+│   │ Update Cinder                                            │ │
+│   │ Same components as last time, new build.                 │ │
+│   ├──────────────────────────────────────────────────────────┤ │
+│   │ Uninstall                                                │ │
+│   │ Put the stock Sony player back.                          │ │
+│   └──────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│   [ Check for a newer release ]   [ Clean up 11 staged files ] │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-Cinder is modular on purpose. Four of its parts are small setuid-root helpers, each buying one
-specific feature (power off, USB mass storage, setting the clock) with one specific piece of
-attack surface — so each is a choice rather than an assumption, and the descriptions in the picker
-say what saying no actually costs you.
+**Install** asks which optional parts you want, then stages them. **Update** reads the choices
+already on the player out of its own `cinder_components.conf` and keeps them, so a new build never
+silently resets your settings. **Uninstall** restores Sony's launch config from the backup the
+install made and removes Cinder's binaries — your music, playlists and settings are untouched.
+
+The window reads the player's state from the device's own install log before offering anything, so
+it says what is actually on the player rather than guessing: whether Cinder is there, which
+version put it there, and whether the last attempt succeeded, was reverted by the device's sanity
+gate, or never finished.
+
+Everything is available from the command line too — `--install`, `--update`, `--uninstall`,
+`--clean`, `--check`, `-y` — and running the same binary from a terminal gives the text interface
+instead of the window, which is what works over RDP, in a VM and from a script.
+
+### Choosing components
+
+Cinder is modular on purpose. Several of its parts are small setuid-root helpers, each buying one
+specific feature (power off, USB mass storage, setting the clock, the FM signal meter) with one
+specific piece of attack surface — so each is a choice rather than an assumption, and the
+description beside each one says what saying no actually costs you.
 
 The `signature` option patches **three bytes** of Sony's audio HAL to pick which DAC path the
 output stream uses and what CPU clock floor is held while playing. That is the entirety of what
@@ -107,10 +127,27 @@ own stock library with **no firmware flash**, and adds three combinations Walkma
 ship, splitting its two effects apart so each can be judged separately. Derivation:
 [`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md).
 
-The installer only copies files — the firmware write is done by the player's own updater, which
-reboots into itself when the host sends it the upgrade command (`SoftwareUpdateTool.exe` on
-Windows, the same vendor SCSI command sent directly on Linux). Full walkthrough, every component explained, and the developer build:
-**[`install.md`](install.md)**.
+### What actually writes the firmware
+
+Not the installer. It only copies files to the player's storage and then sends the one command
+that makes the player reboot into **its own updater**, which finds `NW_WM_FW.UPG` and applies it.
+On Windows that command comes from Sony's `SoftwareUpdateTool.exe`, embedded in the installer; on
+Linux the same 12-byte vendor SCSI command is sent directly.
+
+> **There is no update option in the player's own menus.** This generation has no such entry — the
+> upgrade is always triggered by the host over USB. Earlier versions of this README and of the
+> installer told you to find **Settings ▸ Device Settings ▸ Update** on the device. That menu does
+> not exist, and the Linux binary refused to start at all, so neither path installed anything. Both
+> were fixed in v0.1.9.
+
+**On macOS the installer stages but cannot finish.** The upgrade command is a vendor SCSI
+passthrough, and macOS only exposes those through an IOKit `SCSITaskUserClient`, which the kernel
+will not grant for a disk it has already mounted — the exact state a staged Walkman is in. Finish
+from a Linux or Windows machine.
+
+Full walkthrough, every component explained, and the developer build:
+**[`install.md`](install.md)**. Removing Cinder: **[`UNINSTALL.md`](UNINSTALL.md)**. If a boot ever
+goes wrong: **[`RECOVERY.md`](RECOVERY.md)** — read it before you need it.
 
 ## Repo layout
 
@@ -120,7 +157,7 @@ Windows, the same vendor SCSI command sent directly on Linux). Full walkthrough,
 | `player/cinder-ui/` | The Rust UI — pure render + navigation state machine, no I/O |
 | `player/cinder-ffi/` | The Rust↔C++ boundary: render tick, input, scrobbler, SQLite |
 | `player/cinder-host/`, `player/cinder-sim/` | Host-side dev tools — render every screen to PNG, or drive the real navigator in a window, without a device |
-| `installer/` | The end-user installer — dependency-free Rust, embeds the device binaries and the component catalogue, ships as a single `.exe` |
+| `installer/` | The end-user installer — install, update, uninstall; a Win32 GUI and a text interface over one core. Dependency-free Rust, embeds the device binaries, both `.UPG` packages and the component catalogue, ships as a single `.exe` |
 | `ldac-bridge/` | Standalone LDAC transmit research binary (superseded by the bridge now built into `cinder-home`, kept for the RE trail) |
 | `analysis/` | Reverse-engineering findings — per-subsystem `RE_findings.md`, the extracted UI asset catalogue, IPC vtable maps |
 | `docs/`, `phases/` | The host-side firmware-analysis pipeline (`make phase1`…`phase7`) and its output docs |

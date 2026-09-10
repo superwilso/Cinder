@@ -25,8 +25,106 @@ it shows up as a drive, and run it.
 upgrade command is a raw SCSI passthrough. On macOS it stages the files and stops; see
 [the platform note](#a1-what-actually-triggers-the-update) below.
 
+The installer carries everything it needs inside the one file: the device binaries, the component
+catalogue, both `.UPG` packages, and Sony's own Windows updater. **No separate download, no WSL,
+no usbipd, no driver install, and no network connection.**
+
+### A.0 Install, update, uninstall
+
+Double-clicking the `.exe` on Windows opens a window; running the same binary from a terminal
+gives the text interface. Both offer the same three things, and both drive the same code.
+
 ```
-  Cinder installer  (channel: stable)
+┌────────────────────────────────────────────────────────────────┐
+│  Cinder                                       0.2.0 · stable   │
+├────────────────────────────────────────────────────────────────┤
+│   Player:  D:\                                    [ Rescan ]   │
+│   Cinder is installed (installer 0.1.9, stable) — Wed Sep 10    │
+│                                                                 │
+│   ┌──────────────────────────────────────────────────────────┐ │
+│   │ Install Cinder                                           │ │
+│   │ Fresh install: choose the optional parts, then flash.    │ │
+│   ├──────────────────────────────────────────────────────────┤ │
+│   │ Update Cinder                                            │ │
+│   │ Same components as last time, new build.                 │ │
+│   ├──────────────────────────────────────────────────────────┤ │
+│   │ Uninstall                                                │ │
+│   │ Put the stock Sony player back.                          │ │
+│   └──────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│   [ Check for a newer release ]   [ Clean up 11 staged files ] │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**Install** shows the component picker, stages what you chose, and flashes.
+
+**Update** is the same mechanics — the device-side installer is idempotent, and re-running it is
+how a new build lands — with one difference that matters: it reads
+`cinder_components.conf` back off the player and starts from *your* answers rather than the
+catalogue defaults. Without that, every update silently reset a customised install.
+
+**Uninstall** stages `cinder_home_uninstall.upg` as `NW_WM_FW.UPG` and nothing else, so the player
+restores Sony's launch config from the backup the install made and deletes Cinder's binaries. Your
+music, playlists and settings on the data partition are untouched. It is a no-op on a device that
+never had Cinder, so running it to be sure is harmless.
+
+### A.0.1 How it knows what is on the player
+
+It reads the device's own records. The storage root a Walkman exposes over USB **is** the device's
+`/contents`, so `install_cinderhome.sh`'s log and the component conf it read are both plain files
+on the drive the host has just mounted — no agent, no handshake, nothing to install first.
+
+The log is append-only across every install and uninstall the player has ever run, so the
+installer reduces it to the **last** session and reports one of four states:
+
+| | |
+|---|---|
+| Cinder is installed | The last package was an install and the device's final sanity gate passed. |
+| Cinder was removed | The last package was the uninstaller; the player is on the stock UI. |
+| The last install aborted safely | The sanity gate failed and the device reverted `.appcfg` to stock. That is the **safe** failure — the player boots — but Cinder is not running, and it is reported as a failure rather than a tick. |
+| The last package did not finish | A banner with no terminator: interrupted, or still in flight. |
+
+**Update** is only offered for the first and last of those. On the other two there is nothing to
+update and a fresh install is the only correct action.
+
+### A.0.2 From the command line
+
+Every action has a flag, so the whole thing scripts:
+
+```
+cinder-installer --install            # pick components, stage, flash
+cinder-installer --update             # keep the choices already on the player
+cinder-installer --uninstall          # restore the stock Sony player
+cinder-installer --clean              # delete staged payload files left in the drive root
+cinder-installer --check              # ask GitHub whether a newer release exists
+cinder-installer -y                   # no questions: saved-or-default answers, then go
+cinder-installer --console            # force the text interface on Windows
+cinder-installer D:\                  # name the player instead of searching for it
+```
+
+With no action given it does what the player's state implies: update what is there, install what
+is not. **Removal is never implied** — it is only ever done when asked for by name.
+
+`--clean` removes the payload files a previous install left in the storage root. The device's own
+installer prints *"left staged binary at /contents/cinder-home (safe to delete once cinder-home is
+confirmed)"* and nothing has ever deleted them, so they accumulate a few MB per install in the
+root of your music drive. It is never automatic: those files are the fallback if a flash has to be
+repeated, and "confirmed" means *after the player has booted into it*, which only you can judge.
+`cinder_components.conf` is deliberately **not** swept up with them — it is the record of your
+component choices and the thing an update reads back.
+
+`--check` is the only part of the program that touches the network, it only runs when asked, and
+it changes nothing: the installer carries its own copy of Cinder, so a newer release means
+downloading a newer installer. Everything else works with no connection at all.
+
+### A.0.3 The component picker
+
+Type a number to toggle or cycle it, `?6` to read the full description of item 6, `i` to install
+(or `u` to update). The window shows the same catalogue as checkboxes and drop-downs with the
+description underneath.
+
+```
+  Cinder install  (channel: stable)
   player: D:\
   ------------------------------------------------------------
     1  [x]     Power off / Restart menu                   power
@@ -34,24 +132,25 @@ upgrade command is a raw SCSI passthrough. On macOS it stages the files and stop
     3  [x]     Set the clock and RTC                      clock
     4  [x]     Unmount helper for USB mass storage        umount
     5  [ ]     GPU present path (experimental, dev only)  gpunode
-    6  <stock> Audio "sound signature"                    signature
+    6  [x]     FM signal meter, fast scan, hardware seek  fm
+    7  [x]     Battery / charger detail                   battery
+    8  <stock> Wired volume curve                         voltable
+    9  <stock> Audio "sound signature"                    signature
   ------------------------------------------------------------
    <number> toggle/cycle   ?<number> describe   i install   q quit
 ```
 
-Type a number to toggle or cycle it, `?6` to read the full description of item 6, `i` to install.
-It finds the player on its own; if you have several drives it asks, and you can always name one:
-
-```
-cinder-installer.exe D:\
-```
+It finds the player on its own; if you have several drives it asks.
 
 Then leave it alone. It stages the files, tells the player to reboot into its updater, and the
-player applies the package and restarts into Cinder by itself. **It drops off USB while it works
-— that is expected.** Leave the cable in and do not touch it until it comes back.
+player applies the package and restarts by itself. **It drops off USB while it works — that is
+expected.** Leave the cable in and do not touch it until it comes back.
 
 The installer only copies files. The firmware write is done by the player's own updater, which is
-what keeps this program unable to brick anything by itself.
+what keeps this program unable to brick anything by itself. Every file it writes is **read back
+and compared** before anything is triggered — a short write to a FAT32 volume otherwise becomes a
+truncated `.UPG` that the updater runs anyway, surfacing on the player rather than on the PC where
+it could still be fixed.
 
 ### A.1 What actually triggers the update
 
@@ -161,9 +260,24 @@ CINDER_CHANNEL=stable cargo build --release --target x86_64-pc-windows-gnu   # .
 ```
 
 The Windows cross-build needs mingw (`apt install mingw-w64`). The installer is dependency-free
-Rust and embeds the device binaries, the `.UPG` and the component catalogue at compile time, so a
-single file is all an end user needs. `build.rs` fails loudly if a payload file is missing rather
-than shipping an incomplete installer — so build the device side first (§1–§2).
+Rust and embeds the device binaries, both `.UPG` packages and the component catalogue at compile
+time, so a single file is all an end user needs. `build.rs` fails loudly if a payload file is
+missing rather than shipping an incomplete installer — so build the device side first (§1–§2).
+
+`cargo check --target x86_64-pc-windows-gnu` compiles the Windows-only code (the window, the
+Sony-updater handoff, the WinINet release check) without needing a linker, which is worth running
+before a release even from Linux.
+
+**`[dependencies]` is empty and stays empty.** This is the one artefact an end user runs, and every
+crate added is a crate somebody has to trust in order to plug in a music player. That constraint is
+why the GUI talks to `user32`/`gdi32`/`comctl32` directly instead of pulling in a toolkit, and why
+the release check rides Windows' own WinINet (or `curl`/`wget` elsewhere) rather than an HTTPS
+stack. It is also what keeps the advisory scan in CI trivially green.
+
+The window needs `cinder-installer.manifest` embedded to get themed controls — without it Windows
+hands the process comctl32 v5 and every button paints in the Windows 95 style, on Windows 11.
+`build.rs` passes it to the **MSVC** linker, which is what every published build uses; the GNU
+target skips it (it would need `windres`) and prints a warning saying so.
 
 Releases are cut by [`.github/workflows/release.yml`](.github/workflows/release.yml) on a `v*` tag.
 It builds **only** the installer; the ARM binaries under `cinder-home/dist/` are committed, because

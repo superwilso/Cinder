@@ -23,10 +23,34 @@ auto-generated commit list follows below.
 ## Installing
 
 Download **cinder-installer-windows-x64.exe**, connect the Walkman in USB mass-storage
-mode, and run it. It finds the player, stages every Cinder binary plus `NW_WM_FW.UPG`,
-then launches Sony's native updater. Follow that updater's prompts; it performs the
-required USB handoff and reboots the Walkman into Cinder. No WSL, usbipd, or manual
-SCSI command is required.
+mode, and run it. Double-clicking opens a window; running it from a terminal gives the
+same thing as text.
+
+It does three things:
+
+| | |
+|---|---|
+| **Install** | Choose the optional components, stage them, flash. |
+| **Update** | Reads the choices already on the player and keeps them, so a new build never silently resets a customised install. |
+| **Uninstall** | Restores Sony's launch config from the backup the install made and removes Cinder's binaries. Your music, playlists and settings are untouched. |
+
+It reads what is on the player out of the device's own install log before offering
+anything — whether Cinder is there, which version put it there, and whether the last
+attempt succeeded, was reverted by the device's sanity gate, or never finished.
+
+Everything the installer needs is inside the one file: the device binaries, both `.UPG`
+packages, the component catalogue and Sony's own updater. **No separate download, no WSL,
+no usbipd, no driver setup, and no network connection.** Sony's `SoftwareUpdateTool.exe`
+performs the USB handoff and reboots the player.
+
+Command line, if you prefer it:
+
+```
+cinder-installer --install | --update | --uninstall
+cinder-installer --clean       # delete staged payload files left in the drive root
+cinder-installer --check       # ask GitHub whether a newer release exists
+cinder-installer -y            # no questions
+```
 
 ### Linux
 
