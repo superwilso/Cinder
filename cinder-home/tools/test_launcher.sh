@@ -83,18 +83,28 @@ scenario "cable + /data opt-out"                  cinder 'echo CONFIGURED > $R/s
 scenario "cable + /contents opt-out"              cinder 'echo CONFIGURED > $R/sys/class/android_usb/android0/state; : > $R/contents/cinderhome_cable_off'
 scenario "power_supply online only"               stock  'echo 1 > $R/sys/class/power_supply/usb/online'
 
-# The power-key escape (2026-09-11). $R/proc/klog stands in for dmesg. PWR_ON is the release of the
-# press that powered the device on, which a real boot logs at ~0.4 s — copied from the device.
-# Exported because the scenarios reach it through `eval` — shellcheck cannot see that use.
-export PWR_ON='<5>[    0.434840] (1)[28:pmic_thread_kth][Power/PMIC] [pwrkey_int_handler] Release pwrkey'
-PWR_AT() { printf '<5>[ %11s] (0)[28:pmic_thread_kth][Power/PMIC] [pwrkey_int_handler] Release pwrkey\n' "$1"; }
-scenario "power pressed during boot (fs-free)"     stock  '{ echo "$PWR_ON"; PWR_AT 6.201337; } > $R/proc/klog'
-scenario "power-on press only (a normal boot)"     cinder 'echo "$PWR_ON" > $R/proc/klog'
-scenario "slow power-on release, under threshold"  cinder 'PWR_AT 1.912000 > $R/proc/klog'
-scenario "busybox log with no <n> level prefix"    stock  'printf "[    6.201337] (0)[28:pmic_thread_kth] [pwrkey_int_handler] Release pwrkey\n" > $R/proc/klog'
-scenario "kernel log with no timestamps"           cinder 'printf "(0)[28:pmic_thread_kth][Power/PMIC] [pwrkey_int_handler] Release pwrkey\n" > $R/proc/klog'
-scenario "power escape ignores the cable opt-out"  stock  ': > $R/data/cinder/cable_escape_off; { echo "$PWR_ON"; PWR_AT 12.000001; } > $R/proc/klog'
-scenario "a press that never released"             cinder '{ echo "$PWR_ON"; printf "<5>[    6.2] [pwrkey_int_handler] Press pwrkey\n"; } > $R/proc/klog'
+# The power-key escape (2026-09-11). $R/proc/klog stands in for dmesg, and every line below was
+# copied from the device. BOOT is what a power-on logs before anyone presses anything: the PMIC's
+# one report of the key at ~0.43 s, before the input device exists, and the release of that press.
+# The first fixture here was INVENTED — a "Release pwrkey" line at 6.2 s, which the kernel never
+# prints — and the escape it passed never fired on hardware. Exported because the scenarios reach
+# these through `eval` — shellcheck cannot see that use.
+export BOOT='<5>[    0.434804] (1)[28:pmic_thread_kth][Power/PMIC] [pwrkey_int_handler] Press pwrkey
+<4>[    0.434815] (1)[28:pmic_thread_kth]kpd: Power Key generate, pressed=1
+<4>[    0.434824] (1)[28:pmic_thread_kth]KPD input device not ready
+<4>[    0.871671] (0)[28:pmic_thread_kth]kpd: Power Key generate, pressed=0
+<4>[    0.871690] (0)[28:pmic_thread_kth]kpd: (released) HW keycode =116 using PMIC'
+KPD() { printf '<4>[ %11s] (0)[28:pmic_thread_kth]kpd: Power Key generate, pressed=%s\n' "$1" "$2"; }
+HWK() { printf '<4>[ %11s] (0)[28:pmic_thread_kth]kpd: (%s) HW keycode =116 using PMIC\n' "$1" "$2"; }
+scenario "power pressed in the logo (21:20 boot)"   stock  '{ echo "$BOOT"; KPD 3.576327 1; HWK 3.576368 pressed; KPD 4.284579 0; } > $R/proc/klog'
+scenario "power-on press only (a normal boot)"      cinder 'echo "$BOOT" > $R/proc/klog'
+scenario "long hold to power on: late release"      cinder '{ KPD 0.434815 1; KPD 5.200000 0; HWK 5.200030 released; } > $R/proc/klog'
+scenario "a press just under the threshold"         cinder '{ echo "$BOOT"; KPD 1.912000 1; } > $R/proc/klog'
+scenario "busybox log with no <n> level prefix"     stock  '{ echo "$BOOT"; KPD 3.576327 1; } | sed "s/^<[0-9]>//" > $R/proc/klog'
+scenario "only the HW keycode line"                 stock  '{ echo "$BOOT"; HWK 6.201337 pressed; } > $R/proc/klog'
+scenario "kernel log with no timestamps"            cinder 'printf "(0)[28:pmic_thread_kth]kpd: Power Key generate, pressed=1\n" > $R/proc/klog'
+scenario "power escape ignores the cable opt-out"   stock  ': > $R/data/cinder/cable_escape_off; { echo "$BOOT"; KPD 12.000001 1; } > $R/proc/klog'
+scenario "late pwrkey_int_handler line: no count"   cinder '{ echo "$BOOT"; printf "<5>[    6.201337] (0)[28:pmic_thread_kth][Power/PMIC] [pwrkey_int_handler] Release pwrkey\n"; } > $R/proc/klog'
 scenario "/contents NOT mounted (the brick)"      stock  'printf "rootfs / rootfs rw 0 0\n" > $R/proc/mounts'
 # THE SAFETY NET CANNOT BE ARMED. Two ways of saying it, because one of them lies when the test
 # runs as root: chmod 555 does not stop uid 0, so on a root shell the counter write SUCCEEDS, the

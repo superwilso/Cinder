@@ -478,12 +478,24 @@ fi
 # IT ASKS THE KERNEL, NOT THE KEY. This launcher runs ~10 s after power-on, and holding POWER that
 # long is not an option: past about eight seconds the PMIC's own forced reset takes over (measured,
 # docs/FLASH_NEXT.md). So the question is not "is it held now" but "was it pressed during boot" —
-# and the kernel already records that, logging every power-key release with its boot timestamp:
-#     <5>[    0.434840] (1)[28:pmic_thread_kth][Power/PMIC] [pwrkey_int_handler] Release pwrkey
-# Every boot logs a press/release at ~0.4–0.5 s, even a software reboot nobody touched (measured
-# 2026-09-11: 0.434 s / 0.511 s), and a brief press to power on lands there too. A release at or
-# after PWRKEY_AFTER_S is therefore a second press, made on purpose — escape verified on hardware
-# 2026-09-11. Whether a LONG power-on hold stays under it is DEVICE_CHECKLIST 11.3.
+# and the kernel already records that. The key driver logs every change of the power key with its
+# boot timestamp (copied from the device 2026-09-11; busybox's dmesg drops the "<4>" prefix):
+#     <4>[    0.434815] (1)[28:pmic_thread_kth]kpd: Power Key generate, pressed=1
+#     <4>[    0.871671] (0)[28:pmic_thread_kth]kpd: Power Key generate, pressed=0
+#     <4>[    3.576327] (0)[28:pmic_thread_kth]kpd: Power Key generate, pressed=1    <- pressed in the logo
+#     <4>[    3.576368] (0)[28:pmic_thread_kth]kpd: (pressed) HW keycode =116 using PMIC
+# The PMIC reports the key once at ~0.43 s, before the input device exists (0.83 s): the press that
+# powered the device on, and present on a software reboot nobody touched as well. Everything after
+# it is a real change. So a PRESS at or after PWRKEY_AFTER_S is POWER going down again on purpose. A
+# long hold to power on is one press — its release logs pressed=0 and never counts, however late.
+#
+# THE FIRST VERSION NEVER FIRED. It looked for "[pwrkey_int_handler] Release pwrkey", which the
+# kernel prints only before the key driver takes over at ~0.8 s, so no line could carry 2 s. On
+# hardware 2026-09-11 21:20: POWER pressed at 3.58 s, and the boot went to Cinder.
+#
+# A press before the kernel starts (roughly the first second or two of the logo) is not logged at
+# all, and one after this launcher runs (~10 s) is too late: tell people "press POWER once or twice
+# while the logo is up", not "the instant it appears".
 #
 # Same dependency class as the cable escape — the kernel log and a shell, no filesystem — so it is
 # checked before /contents for the same reason. A missing or unreadable log, or a line with no
@@ -491,7 +503,7 @@ fi
 PWRKEY_AFTER_S=2
 klog() { /xbin/busybox dmesg 2>/dev/null || dmesg 2>/dev/null; }
 pwrkey_pressed_during_boot() {
-    _k="$(klog | grep 'Release pwrkey')"
+    _k="$(klog | grep 'pressed')"
     [ -n "$_k" ] || return 1
     set -f                      # the lines are full of [..] — they must never be globbed
     _ifs=$IFS
@@ -499,6 +511,8 @@ pwrkey_pressed_during_boot() {
 '
     _hit=1
     for _l in $_k; do
+        # A press, not a release. The second form is printed while kpd_show_hw_keycode=1 (it is).
+        case "$_l" in *"Power Key generate, pressed=1"*|*"(pressed) HW keycode =116"*) ;; *) continue ;; esac
         # "<5>[    6.201337] (0)[28:..." -> "6". The first "[" opens the timestamp whether or not
         # busybox kept the "<5>" level prefix; no timestamp leaves text that is not a number.
         _t="${_l#*\[}"; _t="${_t%%]*}"; _t="${_t%%.*}"; _t="${_t##* }"

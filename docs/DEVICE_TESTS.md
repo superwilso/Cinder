@@ -1033,7 +1033,35 @@ Still needs eyes: which of levels 1–3 is the lowest *usable* one, in a dark ro
 Dev build of 2026-09-11 installed at 19:02 with its launcher (`tools/cinder-install.sh`; rung 0
 borrowed for the one boot and restored). Items from `DEVICE_CHECKLIST.md` "Open from 2026-09-11".
 
-### 11.2 — the power-key escape fires: **PASS**
+### 11.2 — the power-key escape fires: **FAILED** (first recorded as a pass; corrected the same night)
+
+**Correction, 21:30.** The escape as installed could never fire, so the stock boot below was not it.
+The player was switched off from Cinder's power menu (21:19:48), switched on, and POWER pressed again
+in the logo; it came up on Cinder. That boot's kernel log:
+
+```
+[    0.434804] [pwrkey_int_handler] Press pwrkey
+[    0.434815] kpd: Power Key generate, pressed=1       the press that switched it on
+[    0.434824] KPD input device not ready
+[    0.871671] kpd: Power Key generate, pressed=0
+[    3.576327] kpd: Power Key generate, pressed=1       the press in the logo
+[    3.576368] kpd: (pressed) HW keycode =116 using PMIC
+[    4.284579] kpd: Power Key generate, pressed=0
+```
+
+The launcher looked for `[pwrkey_int_handler] Release pwrkey`. The kernel prints those only before
+the key driver registers its input device at 0.83 s — every one seen on 2026-09-11 is under 0.52 s —
+and logs through `kpd:` alone after that. A line at 2 s or later cannot exist. The launcher tests
+passed because their fixture invented one. What sent the earlier boot to stock is unknown (the
+launcher logs nothing); the cable escape, with USB power still present when the launcher ran, is the
+likeliest.
+
+Fixed the same night: the launcher counts a `Power Key generate, pressed=1` (or `(pressed) HW keycode
+=116`, printed while `kpd_show_hw_keycode=1`, which it is) at 2 s or later. The ~0.43 s report is the
+PMIC's one reading before the input device exists; a long hold to power on is that same press, and
+its release logs `pressed=0`, so it cannot count. 11.2 is open again.
+
+What was recorded first, left as it was:
 
 Cable unplugged, Settings ▸ Restart, POWER pressed once while the Sony logo showed: stock Sony UI.
 Powered back on, and after a plain Settings ▸ Restart from there, Cinder both times.
