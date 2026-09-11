@@ -46,10 +46,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   refactor underneath changed no pixel, and the new Settings row changed exactly the 13 previews that
   draw Settings.
 
-- **Press POWER while the Sony logo is showing to boot to stock.** *device-verified 2026-09-11 —
-  pressed during the logo it booted stock, and the next plain boot was Cinder; the launcher suite
-  covers seven cases. Not yet seen: that a long hold to power on never trips it, so the cable escape
-  stays until that has passed too.*
+- **Press POWER while the Sony logo is showing to boot to stock.** *device-unverified — the version
+  in v0.3.0-rc1 could not fire, and an earlier note here calling it verified was wrong (below). The
+  fixed launcher's suite covers nine power-key cases built from lines copied off the device.*
 
   Asked for after the cable escape stranded a user who force-restarted while charging. The cable
   escape counts any USB power, so "restart while charging" meant stock on every retry, with nothing
@@ -57,10 +56,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
   It cannot be "hold POWER until it boots": the launcher runs ~10 s after power-on, and past about
   eight seconds the PMIC's own forced reset takes over (docs/FLASH_NEXT.md). So the launcher asks
-  the kernel whether POWER was pressed during boot. Every power-key release is logged with its boot
-  timestamp. Every boot logs one at about half a second, pressed or not, so a release two seconds or
-  more in is a second press, made on purpose. Like the cable escape it needs no filesystem, and it fails
-  toward Cinder: no log, an unreadable log, or a line with no timestamp all read as "not pressed".
+  the kernel whether POWER was pressed during boot. The key driver logs every press with its boot
+  timestamp. The one report before the driver is ready, at about 0.4 s, is the press that switched
+  the player on, so a press two seconds or more in is a second press, made on purpose — and a long
+  hold to switch on is still one press, so it never counts. Press once or twice while the logo is
+  up: a press in its first second or two comes before the kernel is running, and nothing records it.
+  Like the cable escape it needs no filesystem, and it fails toward Cinder: no log, an unreadable
+  log, or a line with no timestamp all read as "not pressed".
+
+  **v0.3.0-rc1 shipped a version that could not fire.** It looked for a kernel line that is only
+  printed in the first second of boot, so no press ever matched, and its tests passed on a log line
+  that was made up rather than copied from the player. A stock boot with another cause was then
+  taken as proof it worked. Found from a boot where POWER went down at 3.6 s and Cinder came up.
 
 - **The Library's shuffle band slides away as the list scrolls, and comes back on the way up.**
   *device-verified 2026-09-11; NEW PLAYLIST going with it is device-unverified — 8 host tests cover
