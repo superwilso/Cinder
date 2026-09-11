@@ -7,7 +7,7 @@
 [![device](https://img.shields.io/badge/device-NW--A55%20%2F%20A50%20series-blue)](docs/baseline_v1.4.md)
 
 **Custom firmware for the Sony NW-A55 Walkman** (NW-A50 series): a from-scratch replacement Home
-app — native, ~3 MB, running in place of Sony's stock Qt player while keeping every one of Sony's
+app — native, ~4 MB, running in place of Sony's stock Qt player while keeping every one of Sony's
 audio services (DSP, codecs, LDAC) intact underneath it.
 
 <p align="center">
@@ -37,8 +37,8 @@ audio stack. What it has actually been built and run on:
 
 | Model | State |
 |---|---|
-| **NW-A55** (NW-A55L / A55HN) | **Verified.** Every feature in [`STATUS.md`](cinder-home/STATUS.md) was measured on this hardware. |
-| **NW-A56 / NW-A57** | Same `nw-a50` firmware family and the same MT8590 board — expected to work, but **nobody has run it on one**. If you have, an issue either way would be genuinely useful. |
+| **The development unit** — an NW-A50-series player with 64 GB of storage (the NW-A57's capacity; the NW-A55 is 16 GB) | **Developed and tested on — one unit.** Each [`CHANGELOG.md`](CHANGELOG.md) entry says whether it has run on this hardware (*device-verified*) or not yet (*device-unverified*). |
+| **NW-A55 / NW-A56 / NW-A57** | The same `nw-a50` firmware family and MT8590 board, so expected to work — but **not tried model by model**. If you run it on one, a [device report](../../issues/new/choose) either way is genuinely useful. |
 | NW-A45 / A46 / A47 (A40 series) | **Not supported.** Same SoC family, different model firmware; Cinder has never been built or tested for it. |
 | NW-A35 / A36 / A37 (A30 series) | **Not supported**, same reason. |
 | ZX300, WM1A / WM1Z, DMP-Z1 | **Not supported.** For these, use [Wampy](https://github.com/unknown321/wampy), which covers the whole MT8590 family. |
@@ -50,14 +50,27 @@ than to keep you here.
 ## Status
 
 This is a real reverse-engineering project against closed firmware, built and tested on actual
-hardware, not a simulator. Current state, feature-by-feature: [`cinder-home/STATUS.md`](cinder-home/STATUS.md).
-Forward plan: [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — the ordered run sheet for
-everything that needs the player in hand. (`cinder-home/ROADMAP.md` is a 2026-07-28 snapshot and
-says so at the top; it is history, not the plan.)
+hardware — one player, the developer's. Feature by feature: [`cinder-home/STATUS.md`](cinder-home/STATUS.md);
+what still needs a device session: [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md). Every
+[`CHANGELOG.md`](CHANGELOG.md) entry says whether it has run on hardware.
 
-Headline feature (USB-DAC → LDAC bridge) is proven on hardware. Bluetooth pairing/playback,
-NFC tap-to-pair, and the rest of the UI are daily-usable with a handful of items still
-device-gated — see STATUS.md for the exact matrix, it's kept current rather than aspirational.
+In daily use: playback through Sony's full effects chain, the library, the queue and Up Next,
+playlists, Bluetooth pairing and playback (LDAC, aptX HD, aptX and SBC), FM radio, a built-in
+scrobbler log, and an escape ladder back to the stock player. The headline — **USB-DAC input out
+over LDAC** — is half proven: audio fed into Sony's LDAC encoder plays in the headphones, but the
+whole path from a PC over USB has not yet been run end to end.
+
+### Known limitations
+
+- **One test unit.** Other NW-A50-series models share its firmware and are expected to work; none
+  has been tried.
+- **Not implemented yet:** Bluetooth receiver mode (the Walkman as a Bluetooth speaker), lyrics,
+  search across the whole library (search exists only when adding songs to a playlist), and FM
+  recording.
+- **Boot time and battery life are unmeasured against stock.** Cinder draws its first frame 13.2 s
+  after the kernel starts; stock has not been timed on the same unit, and there is no battery-drain
+  figure yet.
+- **The Windows installer is unsigned** — see [Install](#install).
 
 ## Install
 
@@ -74,6 +87,11 @@ release](../../releases/latest), connect the Walkman by USB in mass-storage mode
 The installer carries everything it needs. There is **no separate download, no WSL, no usbipd, no
 driver setup, and no network connection required** — the device binaries, the component catalogue
 and Sony's updater are all inside the one file.
+
+The `.exe` is **unsigned**, so Windows SmartScreen will warn that its publisher is unknown. That is
+what any unsigned binary gets and is not evidence either way — check the download against the
+`SHA256SUMS` attached to the release; the release notes give the one-line command for Windows and
+Linux.
 
 ### The three things it does
 
@@ -337,10 +355,14 @@ than merely dark-grey.
 Cinder's own code (`cinder-home/`, `player/`, `ldac-bridge/`, `tools/`) is MIT — see
 [`LICENSE`](LICENSE).
 
-**Third-party / not ours:** `analysis/ui_assets/` contains UI graphics extracted directly from
-Sony's stock firmware for reference during development — that's Sony's copyrighted art, kept here
-as research material, not covered by this project's license, and not an original contribution of
-this project. Bundled fonts (`player/cinder-ui/assets/fonts/`) are SIL Open Font License 1.1 —
+**Third-party / not ours:** `installer/sony-updater/` is **Sony's own Windows firmware updater**
+(`SoftwareUpdateTool.exe` and its DLLs, as Sony ships them with its firmware downloads). The Windows
+installer embeds it to perform the USB handoff. It is Sony's software, not covered by this
+project's license, and replacing it with a native trigger is an open item
+([`docs/HISTORY_REWRITE.md`](docs/HISTORY_REWRITE.md)). Apart from that the tree holds no Sony code
+or artwork: the reverse-engineering notes describe interfaces — symbol names, vtable slots, call
+sequences — and the images, QML and decompiled listings they were worked out from are kept out of
+the repository. Bundled fonts (`player/cinder-ui/assets/fonts/`) are SIL Open Font License 1.1 —
 see the `*-OFL.txt` next to each family. `analysis/`'s pipeline references the Rockbox project
 (`nwztools`, GPL) for `.UPG` packing/unpacking and per-model firmware keys; that tooling is used
 as an external build dependency, not vendored into this repo.

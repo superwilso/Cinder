@@ -2,8 +2,8 @@
 
 Source: `HgrmMediaPlayerApp` (stock firmware v1.02). 131 QML screens, organized by
 functional area. Screen IDs (`sid_NNNN`) are Sony's own identifiers. Use this as the
-sitemap; see `QML_INDEX.md` for each screen's buttons and English text, and
-`index.html` for the visual assets.
+sitemap. The QML, English labels and images this map was built from are Sony's and are not
+kept in the repository; the extraction is reproducible from the stock firmware.
 
 Display: 480×854 portrait, eglfs (OpenGL ES). Navigation is swipe + the side
 buttons (back, option, vol±, play/pause, prev/next).

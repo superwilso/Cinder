@@ -1027,3 +1027,46 @@ Level 5 is unchanged, so no existing setting got brighter. Night flattens across
 levels because day is already at the floor there — correct, not a regression.
 
 Still needs eyes: which of levels 1–3 is the lowest *usable* one, in a dark room and in daylight.
+
+## RESULTS 2026-09-11 (evening) — the power-key escape, the Bluetooth queue, the band, palettes
+
+Dev build of 2026-09-11 installed at 19:02 with its launcher (`tools/cinder-install.sh`; rung 0
+borrowed for the one boot and restored). Items from `DEVICE_CHECKLIST.md` "Open from 2026-09-11".
+
+### 11.2 — the power-key escape fires: **PASS**
+
+Cable unplugged, Settings ▸ Restart, POWER pressed once while the Sony logo showed: stock Sony UI.
+Powered back on, and after a plain Settings ▸ Restart from there, Cinder both times.
+
+The launcher logs nothing, and the stock boot's kernel log is gone (`/proc/last_kmsg` is empty), so
+the evidence is the report plus the clock. The restart at 19:20:14 (`resume.conf` written on the way
+down) reached Cinder's next `main: start` at 19:21:00: 46 s. The plain restart after it (19:21:16)
+reached `main: start` at about 19:21:33: 17 s. The difference is a stock boot and a power cycle.
+
+**Found on the way: the kernel logs a power-key press on every boot, pressed or not.** The 19:21:24
+boot was a software reboot with nobody touching the key, and it logged `Press pwrkey` at 0.434 s and
+`Release pwrkey` at 0.511 s: a 78 ms "press", timed to the PMIC thread starting. So the release "at
+~0.4 s" that the launcher's comment calls the power-on press is a boot artifact, present with or
+without a finger. `PWRKEY_AFTER_S=2` ignores it either way, so nothing changes. It says nothing
+about when a real power-on press held for a few seconds releases, which is still 11.3.
+
+### 11.5, 11.6 — the Bluetooth queue: **PASS**
+
+With buds connected: a song queued mid-album played at the track boundary and the album carried on
+after it; ◁ with a song queued went back a track and kept the song queued.
+
+### 11.7 — the shuffle band: **PASS**, with one change asked for
+
+Slides on all four tabs and comes back on the way up; no shuffle from its old spot. Asked for on the
+spot: NEW PLAYLIST should leave with it. Done the same evening (`library::band_slide(Tab::Playlists)`
+runs to that row's bottom edge), and back on the checklist as 11.7 until it has been seen.
+
+### 11.12 — palettes: **PASS**
+
+Both boots' `cinderhome.log`: `palettes: [paper, slate] from /contents/cinder_palettes`, and
+`broken.palette` skipped with all three of its reasons (ink on bg 1.00, ink on panel 1.04, dim no
+dimmer than ink). Paper chosen, its Accent row read SET BY PALETTE, and `palette=paper` in
+`cinder_settings.conf` came back through the restarts.
+
+The install boot's `input: still ZERO events from every node` at 25.8 s was only an untouched
+screen: the next boot's log is full of touch reports from the same node.

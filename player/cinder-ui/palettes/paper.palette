@@ -1,0 +1,29 @@
+# Paper — dark ink on warm off-white by day; Cinder's own night after dark.
+#
+# A light palette has to bring its own accent. Cinder's six were tuned against near-black,
+# and the lighter ones all but disappear on a light background, so the player refuses a light
+# palette that leaves the accent to the picker. With all six accent keys set, Settings ▸ Accent
+# steps aside and says so.
+
+name = Paper
+
+day.bg    = #f4f1ea
+day.panel = #ebe6dc
+day.line  = #d6d0c4
+day.ink   = #1c1a17
+day.dim   = #5f5a52
+day.faint = #8f887d
+
+night.bg    = #000000
+night.panel = #0a0908
+night.line  = #161310
+night.ink   = #8d8170
+night.dim   = #5b5347
+night.faint = #3b362d
+
+day.accent       = #c4471a
+day.accent_ink   = #ffffff
+day.row_select   = #e9e2d4
+night.accent     = #863810
+night.accent_ink = #000000
+night.row_select = #0f0c0a

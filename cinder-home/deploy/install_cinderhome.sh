@@ -480,8 +480,10 @@ fi
 # docs/FLASH_NEXT.md). So the question is not "is it held now" but "was it pressed during boot" —
 # and the kernel already records that, logging every power-key release with its boot timestamp:
 #     <5>[    0.434840] (1)[28:pmic_thread_kth][Power/PMIC] [pwrkey_int_handler] Release pwrkey
-# The press that powers the device on releases at ~0.4 s (measured 2026-09-11). A release at or
-# after PWRKEY_AFTER_S is therefore a second press, made on purpose.
+# Every boot logs a press/release at ~0.4–0.5 s, even a software reboot nobody touched (measured
+# 2026-09-11: 0.434 s / 0.511 s), and a brief press to power on lands there too. A release at or
+# after PWRKEY_AFTER_S is therefore a second press, made on purpose — escape verified on hardware
+# 2026-09-11. Whether a LONG power-on hold stays under it is DEVICE_CHECKLIST 11.3.
 #
 # Same dependency class as the cable escape — the kernel log and a shell, no filesystem — so it is
 # checked before /contents for the same reason. A missing or unreadable log, or a line with no

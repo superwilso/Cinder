@@ -29,6 +29,12 @@ The installer carries everything it needs inside the one file: the device binari
 catalogue, both `.UPG` packages, and Sony's own Windows updater. **No separate download, no WSL,
 no usbipd, no driver install, and no network connection.**
 
+The Windows `.exe` is **unsigned**, so SmartScreen warns about an unknown publisher. That warning is
+what an unsigned binary gets, not evidence either way: check the file against the release's
+`SHA256SUMS` before running it — `Get-FileHash .\cinder-installer-windows-x64.exe -Algorithm SHA256`
+in PowerShell, or `sha256sum -c SHA256SUMS` on Linux — and compare it with the value in the release
+notes.
+
 ### A.0 Install, update, uninstall
 
 Double-clicking the `.exe` on Windows opens a window; running the same binary from a terminal

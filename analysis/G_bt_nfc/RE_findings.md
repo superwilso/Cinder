@@ -130,7 +130,8 @@ void FUN_0001d8a4(undefined4 param_1, undefined1 *param_2)   // (this, const boo
 `SetLdac(void*, const bool*)`. `GetBtStatus` (slot 3) decompiles with no parameter beyond `this`,
 so it returns its value rather than filling an out-param.
 
-Full output: `decomp_BtCommonServiceClient.txt`.
+The full decompilation is Sony's code and is not kept in the repository; regenerate it from the
+stock firmware with `analysis/E_usbdac_ldac/ghidra/DecompileAll.java`.
 
 ## USB-DAC audio path — `UsbDeviceAudioPlayerServiceClient` (group base `0x36418`)
 

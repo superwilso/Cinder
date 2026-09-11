@@ -1,10 +1,8 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row. Rows:
-//! DISPLAY (Theme, Accent, Visualiser style, Cover visualiser, Sleep, Screen-off, Brightness),
-//! SYSTEM (Storage, Database, Battery care, USB mode, Boot to stock, Restart, Power off),
-//! ABOUT (Firmware, Model).
-//! Live rows: Theme, Accent, Visualiser style, Cover visualiser, Sleep, Screen-off, Brightness
-//! (DISPLAY), Battery care and USB mode (SYSTEM). Database is drawn but NOT wired (shows "—" — see
-//! the dead-UI audit in cinder-home/STATUS.md); Firmware/Model are static info.
+//! DISPLAY (Theme, Palette, Accent, UI scale, Visualiser, Volume limit, Sleep, Screen-off,
+//! Brightness), SYSTEM (Auto power off, Storage, Database, Device, Date & time, USB mode, Boot to
+//! stock, Restart, Power off, Reset), ABOUT (Firmware, Model).
+//! Every row acts except Storage, Firmware and Model, which are information.
 
 use crate::icons;
 use crate::text::{self, Family, FontSet, Weight};
@@ -13,14 +11,17 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 20;
-/// The actionable rows: Theme / Accent / UI scale / Visualiser / Sleep timer (DISPLAY) +
-/// Battery care (SYSTEM).
+pub const ROWS: usize = 21;
+/// Day / Night.
 pub const ROW_THEME: usize = 0;
-/// Accent colour — six swatches, tap one directly (Select cycles).
-pub const ROW_ACCENT: usize = 1;
+/// Palette — which colour scheme: Cinder's own, or one read from the player's `cinder_palettes`
+/// folder (see `palette.rs`). Select cycles; the value is the palette's name.
+pub const ROW_PALETTE: usize = 1;
+/// Accent colour — six swatches, tap one directly (Select cycles). Out of play while the palette
+/// brings an accent of its own.
+pub const ROW_ACCENT: usize = 2;
 /// UI text scale — a real slider (tap a stop, or drag it). See `ui_scale_idx_at`.
-pub const ROW_UI_SCALE: usize = 2;
+pub const ROW_UI_SCALE: usize = 3;
 /// Visualiser — a CHEVRON into its own screen (`vizset`), not a control in place.
 ///
 /// This was two rows, "Visualiser style" and "Cover visualiser", and they were the only two things
@@ -29,7 +30,7 @@ pub const ROW_UI_SCALE: usize = 2;
 /// averaging window and frame rate — was a constant in the source. Nine controls do not belong in
 /// a scrolling list of unrelated preferences, and they especially do not belong somewhere you
 /// cannot see what they do: the screen they moved to has a live preview at the top.
-pub const ROW_VIZ: usize = 3;
+pub const ROW_VIZ: usize = 4;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -39,44 +40,44 @@ pub const ROW_VIZ: usize = 3;
 /// directly; the flag would be a control that accepts a write and changes nothing, which is
 /// exactly what "High gain output" turned out to be (see sound.rs). So the shell reads Sony's
 /// number and clamps in its own `apply_volume`.
-pub const ROW_VOLUME_LIMIT: usize = 4;
-pub const ROW_SLEEP: usize = 5;
-pub const ROW_SCREEN_OFF: usize = 6;
-pub const ROW_BRIGHTNESS: usize = 7;
+pub const ROW_VOLUME_LIMIT: usize = 5;
+pub const ROW_SLEEP: usize = 6;
+pub const ROW_SCREEN_OFF: usize = 7;
+pub const ROW_BRIGHTNESS: usize = 8;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
 /// of behaviour that has to be asked for.
-pub const ROW_AUTO_OFF: usize = 8;
-pub const ROW_STORAGE: usize = 9;
-pub const ROW_DATABASE: usize = 10;
-pub const ROW_BATTERY: usize = 11;
+pub const ROW_AUTO_OFF: usize = 9;
+pub const ROW_STORAGE: usize = 10;
+pub const ROW_DATABASE: usize = 11;
+pub const ROW_BATTERY: usize = 12;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 12;
-pub const ROW_USB_MODE: usize = 13; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 13;
+pub const ROW_USB_MODE: usize = 14; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 14;
+pub const ROW_BOOT_STOCK: usize = 15;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 15;
-pub const ROW_POWER_OFF: usize = 16;
+pub const ROW_RESTART: usize = 16;
+pub const ROW_POWER_OFF: usize = 17;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 17;
+pub const ROW_RESET: usize = 18;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 18;
-pub const ROW_MODEL: usize = 19;
+pub const ROW_FIRMWARE: usize = 19;
+pub const ROW_MODEL: usize = 20;
 
 const RH: i32 = 56;
 /// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
 /// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [8, 10, 2];
+const SECTIONS: [usize; 3] = [9, 10, 2];
 
 /// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
 /// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
@@ -128,6 +129,10 @@ pub struct SettingsView<'a> {
     pub volume_limit: bool,
     /// The selected accent — which swatch gets the ring, and the name shown beside them.
     pub accent: Accent,
+    /// The palette being drawn, by name, for the Palette row.
+    pub palette: &'a str,
+    /// The palette brings its own accent, so the Accent row says so instead of offering swatches.
+    pub accent_locked: bool,
 }
 
 /// Total height of the row content, from the top of the screen to the bottom of the last row.
@@ -317,7 +322,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     hline(c, y + RH, t.line);
     y += RH;
 
-    // Row 1: Accent — all six swatches at once, the selected one ringed. Showing every choice is
+    // Palette: a value that cycles, like the sleep timer. The list is short, and every step repaints
+    // the whole screen in the new colours — which is the preview.
+    y = srow(c, t, f, y, sel == ROW_PALETTE, "Palette", &v.palette.to_uppercase(), false);
+
+    // Accent — all six swatches at once, the selected one ringed. Showing every choice is
     // the point: a "next colour" row makes you cycle blind through five wrong answers to see the
     // sixth, and on a touch device there is room to just offer them. Tapping a swatch selects it.
     if sel == ROW_ACCENT {
@@ -326,16 +335,23 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     let cy = y + RH / 2;
     let lc = if sel == ROW_ACCENT { t.acc } else { t.ink };
     text::draw(c, f, 22.0, (cy + 5) as f32, "Accent", &sty(Family::Sans, Weight::SemiBold, 20.0, lc, 0.0));
-    for (i, a) in Accent::ALL.iter().enumerate() {
-        let sx = swatch_x(i);
-        let sy = cy - SW / 2;
-        // Through the theme's dim: a swatch is a raw palette entry, not a theme colour, so at
-        // night it would otherwise be the brightest thing on a deliberately dark screen.
-        fill_rect(c, sx, sy, SW, SW, t.scale_color(a.swatch(t.night)));
-        if *a == v.accent {
-            // The ring is drawn in ink, not in the accent: on BONE the swatch already *is* near-ink,
-            // so an accent-coloured ring would vanish on exactly one of the six.
-            stroke_rect(c, sx - 3, sy - 3, SW + 6, SW + 6, t.ink, 2);
+    if v.accent_locked {
+        // The palette brings its own accent, so six swatches would be a picker that picks nothing.
+        // Say whose choice it is; a tap on the row says the same (see nav's settings_activate).
+        right(c, f, 458.0, (cy + 4) as f32, "SET BY PALETTE",
+              &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04));
+    } else {
+        for (i, a) in Accent::ALL.iter().enumerate() {
+            let sx = swatch_x(i);
+            let sy = cy - SW / 2;
+            // Through the theme's dim: a swatch is a raw palette entry, not a theme colour, so at
+            // night it would otherwise be the brightest thing on a deliberately dark screen.
+            fill_rect(c, sx, sy, SW, SW, t.scale_color(a.swatch(t.night)));
+            if *a == v.accent {
+                // The ring is drawn in ink, not in the accent: on BONE the swatch already *is*
+                // near-ink, so an accent-coloured ring would vanish on exactly one of the six.
+                stroke_rect(c, sx - 3, sy - 3, SW + 6, SW + 6, t.ink, 2);
+            }
         }
     }
     hline(c, y + RH, t.line);
@@ -427,6 +443,8 @@ mod tests {
             auto_off: "OFF",
             boot_stock: "SONY", clock: "17 Aug · 09:01",
             accent,
+            palette: "Cinder",
+            accent_locked: false,
         }
     }
 

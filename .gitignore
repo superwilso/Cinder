@@ -16,9 +16,15 @@ artifacts/
 analysis/binwalk/
 analysis/boot_image/
 analysis/ramdisk/
-# ui_assets IS tracked (UI-design reference: indexes, labels, gallery,
-# extracted QML, PNG assets) except the large regenerable boot animation.
-analysis/ui_assets/bootanim/
+# ui_assets: only UI_FEATURE_MAP.md — our own map of the stock UI — is tracked. What it was built
+# from (the QML, English labels and images extracted from Sony's player) is Sony's and stays out of
+# the repository; keep a local copy under artifacts/. Decompiler output from Sony's libraries too:
+# the RE notes are tracked, the listings they were read from are not. See docs/HISTORY_REWRITE.md.
+analysis/ui_assets/*
+!analysis/ui_assets/UI_FEATURE_MAP.md
+analysis/**/decomp_*
+analysis/F_appmgr_home/*.c
+analysis/G_player_ipc/*.c
 
 # === Replacement-player Rust workspace (player/) ===
 # Source, Cargo.lock, and the bundled OFL fonts ARE tracked. Build output and

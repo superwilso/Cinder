@@ -535,7 +535,8 @@ int cinder_audio_prev_group(void) {
     return g_ctrl->PrevGroup(&opt);
 }
 
-/// Seek. NOTE SeekTime IS `void` — the RE disasm (analysis/G_player_ipc/player.c @0x13200) packs
+/// Seek. NOTE SeekTime IS `void` — the RE disasm (PlayerService client @0x13200, see
+/// analysis/G_player_ipc/RE_findings.md) packs
 /// {session, origin, ms} and calls proxy vtable+0x48 with a response slot it then DISCARDS, exactly
 /// like NextTrack. It used to be declared `int` here and the shell logged "seek REJECTED" whenever
 /// the leftover r0 happened to be non-zero, which was pure noise: a rejected seek and an accepted

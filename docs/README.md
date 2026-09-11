@@ -22,6 +22,7 @@ The four documents that are always current live outside this directory:
 |---|---|
 | [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) | **The run sheet.** Every device-gated item in the project in one ordered list, safety rules first, with what a PASS looks like for each. If you have the player in your hand, this is the file. |
 | [`SHORTCOMINGS.md`](SHORTCOMINGS.md) | Standing reference: what is structurally weak about the project and its repository, with evidence per claim. Cited by section ID (A1, B1, D4…) from other documents. |
+| [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md) | **Open repository decision.** Taking Sony's files and superseded build output out of every commit — prepared and rehearsed, never pushed: what it removes, what it breaks, and the order to do it in — and the commands that first move Sony's files to a repository of their own. |
 | [`DEVICE_TESTS.md`](DEVICE_TESTS.md) | The backlog of things only ears or a hand can settle, ordered by payoff. |
 | [`DEVICE_SHELL_GOTCHAS.md`](DEVICE_SHELL_GOTCHAS.md) | The device's busybox is not your shell. Written after an install reported success while doing three things wrong. Read before writing anything that runs on the player. |
 
@@ -40,6 +41,8 @@ The four documents that are always current live outside this directory:
 | Document | What it is |
 |---|---|
 | [`PLAN_bluetooth_stack.md`](PLAN_bluetooth_stack.md) | Reaching the Bluetooth stack below Sony's services. Rewritten 2026-08-19 from measurement — the earlier route was wrong. |
+| [`PALETTES.md`](PALETTES.md) | Writing a palette: the colour keys, the readability rules the player enforces, and previewing one on a PC. |
+| [`PLAN_skins.md`](PLAN_skins.md) | Swappable UIs: palettes (done), then skins behind one layout contract — the coupling measured, the design, and the order. |
 | [`BATTERY_BT.md`](BATTERY_BT.md) | Battery during Bluetooth playback: the measurement method first, then the finding. Written before any optimisation on purpose. |
 | [`PLAYLISTS.md`](PLAYLISTS.md) | Playlists made on the device (`.m3u8` under `/contents`, negative ids). |
 | [`LIKES_SYNC.md`](LIKES_SYNC.md) | The liked-songs device ⇄ PC contract, and the TSV format it crosses as. |

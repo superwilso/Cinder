@@ -509,6 +509,9 @@ struct Render {
     // them changes. last_saved is the fingerprint we last wrote, to avoid redundant writes.
     settings_path: Option<String>,
     last_saved_body: String, // the file body we last wrote (compare to skip redundant writes)
+    /// The palette folder (`cinder_palettes/`, next to the settings file). Known once
+    /// cinder_settings_load has run; read then, and again whenever Settings opens.
+    palette_dir: Option<std::path::PathBuf>,
     // ── Resume across a reboot ─────────────────────────────────────────────────────────────
     // Two files, not one, because the two halves change at completely different rates. The
     // SEQUENCE (context + queue + un-shuffle order) is tens of kilobytes and changes when the
@@ -763,6 +766,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         sleep_fire: false,
         settings_path: None,
         last_saved_body: String::new(),
+        palette_dir: None,
         resume_path: None,
         resume_last_body: String::new(),
         resume_pos_path: None,
@@ -899,6 +903,9 @@ fn settings_body(r: &Render) -> String {
     // nothing on screen explains.
     body.push_str(&format!("bt_fine={}\n", r.app.bt_fine_span()));
     body.push_str(&format!("volume_limit={}\n", r.app.volume_limit() as u8));
+    // The palette by id — the CHOICE, not what happens to be drawn. If the folder could not be read
+    // this boot, Cinder is on screen, but the palette the user picked is still the one to keep.
+    body.push_str(&format!("palette={}\n", r.app.palette_id()));
     body.push_str(&format!(
         "viz_scale={}\nviz_range={}\nviz_response={}\nviz_interp={}\nviz_peaks={}\nviz_window={}\nviz_rate={}\n",
         r.app.viz_scale_idx(),
@@ -945,6 +952,52 @@ fn save_settings(r: &mut Render) {
     if let Some(path) = r.settings_path.clone() {
         let _ = std::fs::write(&path, &body);
         r.last_saved_body = body;
+    }
+}
+
+/// Read the player's palette folder into the navigator.
+///
+/// A folder that does not exist means "no palettes". Any OTHER failure — the volume handed to a
+/// PC, a FAT error — keeps whatever was loaded before, so a transient read error cannot drop the
+/// palette on screen back to Cinder. The outcome is logged only when it changes: this runs every
+/// time Settings opens, and the same broken file must not print on every visit.
+fn scan_palettes(r: &mut Render) {
+    let Some(dir) = r.palette_dir.clone() else { return };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if r.app.set_palettes(Vec::new(), Vec::new()) {
+                r.dirty = true;
+            }
+            return;
+        }
+        Err(e) => {
+            eprintln!("cinder-ffi: palettes: cannot read {}: {e} — keeping the loaded set", dir.display());
+            return;
+        }
+    };
+    let mut files = Vec::new();
+    for ent in entries.flatten() {
+        let name = ent.file_name().to_string_lossy().into_owned();
+        if cinder_ui::palette::palette_stem(&name).is_none() {
+            continue;
+        }
+        let body = match ent.metadata() {
+            Ok(m) if m.len() > cinder_ui::palette::MAX_BYTES => {
+                Err(format!("{} bytes, far larger than a palette", m.len()))
+            }
+            _ => std::fs::read_to_string(ent.path()).map_err(|e| e.to_string()),
+        };
+        files.push((name, body));
+    }
+    let (list, skipped) = cinder_ui::palette::load_files(files);
+    let loaded: Vec<String> = list.iter().map(|p| p.id.clone()).collect();
+    if r.app.set_palettes(list, skipped.clone()) {
+        eprintln!("cinder-ffi: palettes: [{}] from {}", loaded.join(", "), dir.display());
+        for s in &skipped {
+            eprintln!("cinder-ffi: palette skipped: {s}");
+        }
+        r.dirty = true;
     }
 }
 
@@ -1577,6 +1630,11 @@ pub extern "C" fn cinder_render_tick() {
     r.last_tick = now;
     if r.app.tick_dt(dt_ms) {
         r.dirty = true;
+    }
+    // Settings was just opened: read the palette folder again, so a palette copied over USB shows
+    // up without a reboot. Once per visit — the flag clears — and a handful of small files.
+    if r.app.take_palettes_stale() {
+        scan_palettes(r);
     }
     {
         // Panic context, refreshed once a frame. Three relaxed stores — no ordering is needed
@@ -4654,6 +4712,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_accent(n);
                         }
                     }
+                    // By id. A palette that is not loaded (yet) keeps the choice and draws Cinder
+                    // until the folder is read — see App::set_palette_wanted.
+                    "palette" => r.app.set_palette_wanted(v),
                     "viz_kind" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_viz_kind(n);
@@ -4971,6 +5032,10 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
             r.night = r.app.night;
             r.dirty = true;
         }
+        r.palette_dir = std::path::Path::new(&p)
+            .parent()
+            .map(|d| d.join(cinder_ui::palette::DIR_NAME));
+        scan_palettes(r);
         r.settings_path = Some(p);
         r.last_saved_body = settings_body(r);
         // First run (intro not completed / no settings file yet) → show onboarding before anything.

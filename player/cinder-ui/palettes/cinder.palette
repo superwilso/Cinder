@@ -1,0 +1,36 @@
+# Cinder — the built-in palette, written out as a file.
+#
+# This is the template. Copy it, rename the copy (the file name is the palette's id, and
+# "cinder" belongs to the built-in), change what you like, and put it in the player's
+# cinder_palettes folder over USB. Every key is optional: delete one and it falls back to
+# the value below. Preview it on a PC first:
+#
+#     cd player && cargo run -p cinder-host -- --palette path/to/yours.palette
+#
+# Night values are written BEFORE night mode's dimming, the same way Cinder's own are; the
+# player scales them down on the way to the panel. Full guide: docs/PALETTES.md
+
+name = Cinder
+
+day.bg    = #0d0c0b
+day.panel = #13110f
+day.line  = #221f1b
+day.ink   = #ece7df
+day.dim   = #95908a
+day.faint = #5f5a52
+
+night.bg    = #000000
+night.panel = #0a0908
+night.line  = #161310
+night.ink   = #8d8170
+night.dim   = #5b5347
+night.faint = #3b362d
+
+# Leave the accent out and Settings ▸ Accent picks one of Cinder's six. Set all six keys to
+# give the palette an accent of its own; the Accent row then says the palette has chosen.
+# day.accent       = #f4651f
+# day.accent_ink   = #1a0a02
+# day.row_select   = #1c1713
+# night.accent     = #863810
+# night.accent_ink = #000000
+# night.row_select = #0f0c0a

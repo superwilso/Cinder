@@ -135,7 +135,7 @@ public:
     int  PrevTrack(const pst::playservice::PrevTrackOption* opt);
     int  NextGroup();
     int  PrevGroup(const pst::playservice::PrevGroupOption* opt);
-    // VOID, not int: the disasm (analysis/G_player_ipc/player.c @0x13200) discards the response
+    // VOID, not int: the disasm (PlayerService client @0x13200) discards the response
     // slot, so there is no status to read. Declaring it int made the shell log a bogus "seek
     // REJECTED" off whatever r0 happened to hold.
     void SeekTime(pst::playservice::media_origin_t origin, int ms);
