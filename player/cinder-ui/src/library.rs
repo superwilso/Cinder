@@ -152,17 +152,26 @@ pub fn filter_top() -> i32 {
     by + bh + FILTER_GAP
 }
 
-/// How far the shuffle band can slide up: exactly far enough to go fully under the tab strip,
-/// which puts the filter strip (or NEW PLAYLIST row) directly beneath the tabs. Derived, not a
-/// constant, so it follows the band if the band ever moves.
+/// How far the block under the tabs can slide up on `tab`. Derived, not a constant, so it follows
+/// the band if the band ever moves.
 ///
-/// ONLY THE BAND GOES. The filter and NEW PLAYLIST stay reachable at any scroll depth — the band is
-/// the one control nobody needs mid-list, and the one that costs the list the most height.
-pub fn band_slide() -> i32 {
-    filter_top() - TABS_BOTTOM
+/// On Songs, Albums and Artists it is exactly far enough for the shuffle band to go fully under the
+/// tab strip, which puts the filter strip (or the list) directly beneath the tabs. The filter stays
+/// reachable at any scroll depth: it says what the list is showing.
+///
+/// On Playlists NEW PLAYLIST goes too, all the way to the tab strip — asked for 2026-09-11, once the
+/// band had passed on the device. Like the band it is back the moment the list scrolls up.
+pub fn band_slide(tab: Tab) -> i32 {
+    match tab {
+        Tab::Playlists => {
+            let (_, y, _, h) = new_playlist_rect();
+            y + h - TABS_BOTTOM
+        }
+        _ => filter_top() - TABS_BOTTOM,
+    }
 }
 
-/// The offset actually used for drawing and hit-testing: the stored slide, clamped to the slide
+/// The offset actually used for drawing and hit-testing: the stored slide, clamped to `tab`'s slide
 /// range AND to the scroll position.
 ///
 /// The scroll clamp is what makes this safe to read from anywhere. The band's bottom edge sits
@@ -170,8 +179,8 @@ pub fn band_slide() -> i32 {
 /// than the scroll would open a gap of empty background between them. Clamping here means no
 /// caller has to keep the two in step — a tab switch that zeroes the scroll brings the band back
 /// on the same frame, for free.
-pub fn band_offset(hide: i32, scroll_px: i32) -> i32 {
-    hide.clamp(0, band_slide()).min(scroll_px.max(0))
+pub fn band_offset(tab: Tab, hide: i32, scroll_px: i32) -> i32 {
+    hide.clamp(0, band_slide(tab)).min(scroll_px.max(0))
 }
 
 /// Is `(x, y)` on the filter strip? x is unused — the whole width is the target, because a 32px
@@ -199,7 +208,7 @@ pub fn list_top(tab: Tab) -> i32 {
 }
 
 /// The "NEW PLAYLIST" row on the Playlists tab: the only way to make one, so it is a full-width
-/// row rather than a corner button, and it never scrolls away.
+/// row rather than a corner button. It slides away with the band ([`band_slide`]).
 pub const NEW_PLAYLIST_H: i32 = 62;
 
 pub fn new_playlist_rect() -> (i32, i32, i32, i32) {
@@ -1222,7 +1231,7 @@ pub fn render(
     band_hide: i32,
 ) {
     let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib, album_sort, album_expanded));
-    let hide = band_offset(band_hide, scroll_px);
+    let hide = band_offset(tab, band_hide, scroll_px);
     c.fill(t.bg);
     // Songs shows a tappable SORT chip; Albums an ORDER chip; the others show their count.
     let rc = match tab {

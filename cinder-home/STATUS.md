@@ -1357,14 +1357,15 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   paired devices, connect / disconnect / forget. Discovering an **unpaired** device is the one part
   still missing, and it is listed under Partial rather than here because the screen says so on
   screen instead of drawing a scanner that cannot work.)*
-- **Settings (info/placeholder rows)**: Screen-off timer, Database "REBUILD" take no action. The
-  manual **Brightness** slider row is still static (but night-mode backlight dimming IS wired — see
-  Functional). **USB mode** row now enters mass-storage **with a modal UsbStorage screen and a clean
-  log-fd handoff** (fds → /dev/null before `umount /contents`; Back or unplug remounts + restores
-  the log — device-gated `setprop`, validate live). Firmware & Model
-  are **honest static info labels** — Firmware reads `CINDER 1.0` (stable) / `CINDER DEV` (dev channel).
-- **Now Playing heart** (like) + the library **shuffle-by-album/artist** rows: decorative — no
-  on-device action yet. *(Shuffle/repeat on the transport row ARE tappable now — see Functional.)*
+- ~~**Settings (info/placeholder rows)**: Screen-off timer, Database "REBUILD" take no action…~~
+  **Corrected 2026-09-11** — this entry had gone stale. Every Settings row acts except Storage,
+  Firmware and Model, which are information: the Screen-off timer, Brightness (five levels and
+  backlight off), Database (asks Sony's MediaStore to rescan), USB mode, and since 2026-09-11 the
+  Palette row (`player/cinder-ui/src/palette.rs`). Firmware reads `CINDER 1.0` (stable) /
+  `CINDER DEV` (dev channel).
+- ~~**Now Playing heart** (like) + the library **shuffle-by-album/artist** rows: decorative~~
+  **Corrected 2026-09-11** — both are wired: the heart persists liked songs to
+  `/contents/cinder_liked.conf`, and each Library tab's shuffle band plays its scope.
 
 ---
 

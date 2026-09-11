@@ -45,7 +45,7 @@ Code: `player/cinder-ffi/src/playlists.rs` (store), `user_playlist_rows` / `refr
 
 | where | what |
 |---|---|
-| **Library ▸ Playlists** | a **NEW PLAYLIST** row between the shuffle band and the list — the only way in, so it is a full-width row and it never scrolls away. Rows made here read "*n* tracks · YOURS". |
+| **Library ▸ Playlists** | a **NEW PLAYLIST** row between the shuffle band and the list — the only way in, so it is a full-width row. It slides away under the tabs with the band as the list scrolls down, and comes back the moment it scrolls up. Rows made here read "*n* tracks · YOURS". |
 | **the playlist page** (yours only) | an edit bar: **+ TRACKS**, **RENAME**, **DELETE**, and a **×** on each row. |
 | **× on a row** | two taps: the first arms the row and it says REMOVE?, the second removes. A tap anywhere else disarms. The same idiom as Settings ▸ Boot to stock, for the same reason. |
 | **DELETE** | a yes/no modal (`confirm::Ask::DeletePlaylist`). The two-tap idiom is already spent on the ×, and "remove one track" and "delete the whole list" must not be the same gesture. |

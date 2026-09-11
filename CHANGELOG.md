@@ -18,9 +18,36 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
-- **Press POWER while the Sony logo is showing to boot to stock.** *device-unverified — the launcher
-  suite covers seven cases; the kernel's log line was copied from the device, but the escape itself
-  has not yet fired on hardware, so the cable escape stays until it has.*
+- **Palettes: Cinder's colours, from a text file.** *device-verified 2026-09-11 — two palettes
+  loaded, a broken one skipped with its reasons logged, the choice kept across restarts; 23 host
+  tests cover the parser, the readability rules, the Settings row and the pixels.*
+
+  Settings ▸ Palette steps through Cinder's own colours and any `.palette` files in
+  `cinder_palettes/` on the player's storage. A palette sets the six neutral colours for day and for
+  night and, only if it needs one, an accent of its own. A light palette does — Cinder's six accents
+  were tuned against near-black — and then the Accent row says the palette has chosen instead of
+  offering swatches that would do nothing. The folder is read at boot and again whenever Settings
+  opens, so a palette copied over USB appears without a reboot.
+
+  A palette that would be hard to read is refused and the reason logged, rather than loaded:
+  contrast floors for text and accents in both modes, set a margin under what Cinder itself
+  measures, and a night background that has to stay dark. On a device with one screen and no other
+  way in, an unreadable palette would leave nothing to read your way back out with.
+  `cargo run -p cinder-host -- --palette FILE` runs the same check on a PC and draws every screen in
+  the palette. Slate and Paper ship as examples in `player/cinder-ui/palettes/`, next to Cinder's
+  own values as the template. Guide: `docs/PALETTES.md`; this is step 1 of `docs/PLAN_skins.md`.
+
+- **Every preview screen is pinned by a pixel hash.** `player/cinder-host/golden.txt` holds one hash
+  for each of the 228 previews and `cargo test` checks them, so a change that moves a single pixel
+  anywhere fails until someone has looked and re-blessed (`cargo run -p cinder-host -- --bless`) —
+  and the diff names exactly which screens moved. The palette work was built against it: the colour
+  refactor underneath changed no pixel, and the new Settings row changed exactly the 13 previews that
+  draw Settings.
+
+- **Press POWER while the Sony logo is showing to boot to stock.** *device-verified 2026-09-11 —
+  pressed during the logo it booted stock, and the next plain boot was Cinder; the launcher suite
+  covers seven cases. Not yet seen: that a long hold to power on never trips it, so the cable escape
+  stays until that has passed too.*
 
   Asked for after the cable escape stranded a user who force-restarted while charging. The cable
   escape counts any USB power, so "restart while charging" meant stock on every retry, with nothing
@@ -29,18 +56,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   It cannot be "hold POWER until it boots": the launcher runs ~10 s after power-on, and past about
   eight seconds the PMIC's own forced reset takes over (docs/FLASH_NEXT.md). So the launcher asks
   the kernel whether POWER was pressed during boot. Every power-key release is logged with its boot
-  timestamp; the press that turns the device on releases at ~0.4 s, so a release two seconds or more
-  in is a second press, made on purpose. Like the cable escape it needs no filesystem, and it fails
+  timestamp. Every boot logs one at about half a second, pressed or not, so a release two seconds or
+  more in is a second press, made on purpose. Like the cable escape it needs no filesystem, and it fails
   toward Cinder: no log, an unreadable log, or a line with no timestamp all read as "not pressed".
 
 - **The Library's shuffle band slides away as the list scrolls, and comes back on the way up.**
-  *device-unverified — 7 host tests cover the slide, the no-gap rule and the hit tests; looked at
-  as pixels half-slid and fully hidden.*
+  *device-verified 2026-09-11; NEW PLAYLIST going with it is device-unverified — 8 host tests cover
+  the slide, the no-gap rule and the hit tests; looked at as pixels half-slid and fully hidden.*
 
   On Songs, Albums, Artists and Playlists the band slides up under the tab strip, tracking the
-  finger, and returns the moment the list scrolls up — mid-list, not only at the top. Only the band
-  leaves: the filter strip and NEW PLAYLIST ride up with it and stay reachable at any depth, since
-  the band is the one control nobody needs mid-list and the one that costs the list the most height.
+  finger, and returns the moment the list scrolls up — mid-list, not only at the top. On Playlists
+  the NEW PLAYLIST row goes with it and comes back with it. The filter strip on Songs and Albums
+  stays reachable at any depth, because it says what the list is showing.
 
   One offset, `library::band_offset`, is read by the renderer and every hit test, so a tap cannot
   land on a band that has already gone. It is clamped to the scroll position, which is what stops it
@@ -50,9 +77,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
-- **A song queued over Bluetooth played one track late.** *device-unverified — the decision is a
-  tested pure function and the context step is tested in cinder-ui; the Bluetooth boundary itself
-  needs the headphones.*
+- **A song queued over Bluetooth played one track late.** *device-verified 2026-09-11 — the queued
+  song played at the boundary and the album carried on, and ◁ with a song queued still went back;
+  the decision is a tested pure function and the context step is tested in cinder-ui.*
 
   Reported 2026-09-11: play an album, queue a song, and the next album track played first, then the
   queue. Over Bluetooth a queue edit is deliberately not issued mid-track (it cuts the end of the
@@ -84,6 +111,19 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
   **Not fixed: why the seek hung.** That is inside PlayerService, and the record that would say
   where was exactly what was lost. The next occurrence will be logged.
+
+### Removed
+
+- **Sony's files are out of the tree.** The UI images, QML and English labels extracted from Sony's
+  player (`analysis/ui_assets/`, apart from our own `UI_FEATURE_MAP.md`) and the Ghidra
+  decompilations of Sony libraries (`analysis/F_appmgr_home/*.c`, `analysis/G_player_ipc/player.c`,
+  `analysis/G_bt_nfc/decomp_BtCommonServiceClient.txt`). The findings drawn from them stay. They
+  remain in git history — with a device screenshot showing a real album cover — until that is
+  rewritten: `tools/rewrite_history.sh` prepares it on a scratch mirror and never pushes, and
+  `docs/HISTORY_REWRITE.md` is the decision and the order of operations. The same document has the
+  commands that move the files, with their history, to a repository of their own first;
+  `tools/sony_paths.txt` is the one list both read. Still in the tree and still
+  Sony's: the Windows updater the installer embeds, `installer/sony-updater/`.
 
 ## [0.2.0] — 2026-09-10
 

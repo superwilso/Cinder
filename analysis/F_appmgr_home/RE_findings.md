@@ -166,6 +166,8 @@ of the module:
    pass). Until then `CinderApp` is abstract and won't instantiate.
 
 ## Artifacts
-`easelcore.c`, `appmgr.c`, `easel_run.c`, `appbase_vtable.txt` (Ghidra, this dir); reusable
-`analysis/E_usbdac_ldac/ghidra/DecompileByName.java` + `DumpVtableSym.java`. Scaffold:
+`appbase_vtable.txt` and the other vtable and symbol dumps (Ghidra, this dir). The decompiled
+listings these findings were read from (`easelcore.c`, `appmgr.c`, `easel_run.c`, …) are Sony's code
+in another form and are no longer kept in the repository; regenerate them from the stock firmware
+with `analysis/E_usbdac_ldac/ghidra/DecompileByName.java` + `DumpVtableSym.java`. Scaffold:
 `cinder-home/` (README + src/easel_abi.hpp + src/main.cpp + build.sh).

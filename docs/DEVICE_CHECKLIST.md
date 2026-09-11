@@ -247,28 +247,31 @@ names the exact evidence that would settle it.
 | 5.4 | **DSEE HX / AI is not another high gain** | Play a **lossy** file (MP3/AAC — on lossless there is nothing above the cutoff to restore), then `/tmp/pv --dseemeter` | Top three bands move on, bottom three do not, and the third pass returns. A null result is the same evidence high gain was cut on — measure before claiming it works. Supersedes 2B.3 |
 | 5.5 | **A battery number, at last** | `tools/battery_track.sh start 60`, then **unplug** and use it for hours; `tools/battery_track.sh report` | Any discharge interval at all. Every sample ever recorded is `Charging`/`Full` on the cable, which is why 2C.4 still says no saving is claimed |
 
-Repository decision, not a device test: **whether to rewrite git history** to recover the ~863 MB of
-superseded `dist/` blobs (`AUDIT_2026-09-01.md` D1). It force-pushes, invalidates every clone, and
-breaks the commit SHAs quoted throughout `docs/`. The growth is at least visible now — `.githooks/pre-push`
-warns when a non-release push carries `dist/stable` (~8.7 MB a time, 41 revisions so far).
+Repository decision, not a device test: **the history rewrite** in
+[`HISTORY_REWRITE.md`](HISTORY_REWRITE.md). It takes Sony's files and the superseded `dist/` build
+output out of every commit, has been rehearsed on a scratch mirror, and force-pushes, which cannot
+be undone — so it waits for the owner. Sony's files can move to a repository of their own first
+(rehearsed; commands in the same document). Until then `.githooks/pre-push` still warns when a
+non-release push carries `dist/stable`.
 
 ---
 
-## Open from 2026-09-11 — the crash, the queue and the power-key escape
+## Open from 2026-09-11 — the power-key escape, the band and the release
 
-Code-complete and host-tested; none of it has run on hardware. **Do 11.1 before installing
-anything** — it needs no new build and decides whether 11.2 can work at all.
+11.1, 11.2 (the power-key escape fires), 11.5, 11.6 (the Bluetooth queue) and 11.12 (palettes)
+**passed on 2026-09-11**, and the shuffle band passed with one change asked for, which is 11.7 now.
+Results: [`DEVICE_TESTS.md`](DEVICE_TESTS.md) "RESULTS 2026-09-11 (evening)".
 
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|
-| 11.1 | **The kernel logs a press made during boot** (zero risk — current launcher) | Power on, then press and RELEASE power once while the Sony logo shows. Once up: `adb shell 'cat /proc/sys/kernel/dmesg_restrict; dmesg \| grep pwrkey'` | `0`, and a `Release pwrkey` line at **≥ 2 s** besides the power-on one at ~0.4 s | No second line = this kernel does not log it and the escape can never fire — do NOT install it. `dmesg_restrict` 1 = the launcher's user cannot read the log |
-| 11.2 | **The power-key escape fires** | Install. Power on, press power once during the logo | Stock Sony UI. Next plain boot is Cinder again | Check 11.1 first; then run `klog` / `pwrkey_pressed_during_boot` from the launcher by hand as the launcher's user |
-| 11.3 | **A quiet boot never goes to stock** | Five boots, power pressed only to turn it on — held briefly, then held for ~3 s | Cinder every time | A false positive is the exact trap the cable escape set. `dmesg \| grep pwrkey` for the stray release, and raise `PWRKEY_AFTER_S` or pull the escape |
-| 11.4 | **Only after 11.2 and 11.3 pass:** decide the cable escape | Keep, narrow to a PC connection, or remove | — | The cable escape stays exactly as it is until then |
-| 11.5 | **A queued song plays next over Bluetooth** | Buds connected, play an album, swipe-queue a song from elsewhere mid-track | At the track end the queued song plays, then the album continues from where it was | Log for `PlayerService moved on before the picks were issued`. Absent = the boundary case was not taken; check `owed`/`idx` at the boundary |
-| 11.6 | **◁ with a song queued still goes back** | As 11.5, then press ◁ before the track ends | The previous track plays; the queued song is still queued | The preempt must never fire on a backward move — that is its `idx + 1` test |
-| 11.7 | **The shuffle band slides on all four tabs** | Songs, Albums, Artists, Playlists: scroll down, then up mid-list | Band slides under the tabs with the finger and returns on the way up; filter strip / NEW PLAYLIST stay tappable | A tap on the band's old spot while hidden must never start a shuffle |
+| 11.3 | **A quiet boot never goes to stock** | Five boots, power pressed only to turn it on — held briefly, then held for ~3 s | Cinder every time | A false positive is the exact trap the cable escape set. `dmesg \| grep pwrkey` for the stray release, and raise `PWRKEY_AFTER_S` or pull the escape. Every boot logs a press/release at ~0.4–0.5 s even untouched (2026-09-11) — that one is not the stray |
+| 11.4 | **Now that 11.2 has passed, and only after 11.3 does:** decide the cable escape | Keep, narrow to a PC connection, or remove | — | The cable escape stays exactly as it is until then |
+| 11.7 | **NEW PLAYLIST slides away with the band** | Library ▸ Playlists, with enough playlists to scroll: scroll down, then up mid-list | NEW PLAYLIST goes up under the tabs with the band, the rows meet the tab strip, and both come back on the way up — tappable the moment it is back | A tap on its old spot while hidden must open a playlist or nothing, never the keyboard |
 | 11.8 | **Power key after a guard recovery** | Hard to force. If `GUARD RECOVERED` ever appears again: press power, touch the screen | The UI stays responsive (screen may stay lit); log carries the fault record after a forced restart | A frozen UI = a fifth unguarded Sony call; the fault record now survives to say which |
+| 11.9 | **The release installer, end to end** — what a stranger will run | From the GitHub release, on Windows: `cinder-installer-windows-x64.exe` → Install → boots into Cinder → Update → Uninstall → Install again | Each step lands; the window names the state the player is really in; music, playlists and settings survive all four | `cinder_home_install.log` in the drive root says which step. A revert by the device's sanity gate must read as reverted, not as a tick |
+| 11.10 | **USB-DAC → LDAC, the whole path** — the headline, never run end to end | Headphones on LDAC; Menu ▸ USB-DAC on; play audio on the PC into the Walkman | Sound in the headphones; the Bluetooth screen names LDAC | The transmit half is proven (STATUS.md, 2026-08-11), so silence points at capture: log for `snd_pcm_open` / `-EBUSY` on the UAC card |
+| 11.11 | **Which model is this unit?** | Read the label on the back of the player | Record it in README ▸ Supported devices | `/contents` reads 55 GB — the 64 GB NW-A57, not the 16 GB NW-A55 the README used to name. The README now says "64 GB"; correct it if the label disagrees |
+| 11.12 | **Palettes** | Copy `player/cinder-ui/palettes/slate.palette` and `paper.palette` into `cinder_palettes/` on the player's storage over USB; unplug; Settings ▸ Palette | Both appear and each repaints the UI; Paper's Accent row reads SET BY PALETTE; the choice survives a reboot; a deliberately broken file is skipped and `cinderhome.log` says why | Nothing listed: the log line `palettes: cannot read` names the error. Folder read at boot but not after USB: check Settings was re-opened, which is the rescan trigger |
 
 ## Recording results
 

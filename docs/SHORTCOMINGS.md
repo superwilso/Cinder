@@ -344,6 +344,9 @@ rather than a to-do list.
 > there; the existing 863 MB does not come back without a rewrite, and the judgement in "Deliberately
 > not recommended" below still stands, but it was made against 83 MB and should be re-made against
 > 1.3 GB by whoever owns the repo. See `AUDIT_2026-09-01.md` §D1 for the three options.
+>
+> **2026-09-11 — and that 1.3 GB was a local `.git` full of unpacked objects.** A clone from GitHub
+> is about 124 MB. The rewrite is now prepared and rehearsed: [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md).
 
 ### D6. Missing repository hygiene
 

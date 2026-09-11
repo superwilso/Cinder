@@ -1,0 +1,21 @@
+# Sony's own files, once part of this repository: the UI extracted from Sony's music player
+# (analysis/ui_assets/) and Ghidra decompilations of Sony libraries. One list, read by both tools
+# that act on them, so the two can never cover different files:
+#   * `git filter-repo --paths-from-file` builds the separate repository that keeps these, with
+#     their history (docs/HISTORY_REWRITE.md, "Their own repository");
+#   * tools/rewrite_history.sh takes them out of every commit here.
+# A trailing / means the whole directory. Blank lines and lines starting with # are ignored.
+analysis/ui_assets/hgrm_player/
+analysis/ui_assets/qml_src/
+analysis/ui_assets/labels_en.json
+analysis/ui_assets/gallery.html
+analysis/ui_assets/index.html
+analysis/ui_assets/QML_INDEX.md
+analysis/F_appmgr_home/easelcore_all.c
+analysis/F_appmgr_home/easelcore.c
+analysis/F_appmgr_home/appmgr.c
+analysis/F_appmgr_home/cui.c
+analysis/F_appmgr_home/easel_run.c
+analysis/F_appmgr_home/qtapp_ctor.c
+analysis/G_player_ipc/player.c
+analysis/G_bt_nfc/decomp_BtCommonServiceClient.txt

@@ -35,7 +35,7 @@ pub enum Accent {
 /// One accent's colours: `(acc, acc_ink, row_sel)` for day, then the same three for night.
 /// Night values are the day ones taken down to roughly 55% luminance — the same relationship the
 /// original amber pair had, kept by hand so each accent can be nudged where the eye needs it.
-struct Palette {
+struct AccentRow {
     name: &'static str,
     acc_d: u32,
     ink_d: u32,
@@ -47,27 +47,27 @@ struct Palette {
 
 // Order is the cycle order and the swatch order in Settings. Amber first: it is the default and
 // the one the design was drawn against.
-const PALETTES: [Palette; 6] = [
+const ACCENT_ROWS: [AccentRow; 6] = [
     // Cinder amber — the original. These six values are unchanged from the pre-accent theme.
-    Palette { name: "AMBER",   acc_d: 0xf4651f, ink_d: 0x1a0a02, sel_d: 0x1c1713,
+    AccentRow { name:"AMBER",   acc_d: 0xf4651f, ink_d: 0x1a0a02, sel_d: 0x1c1713,
                                acc_n: 0x863810, ink_n: 0x000000, sel_n: 0x0f0c0a },
-    Palette { name: "CRIMSON", acc_d: 0xe0392f, ink_d: 0x1a0403, sel_d: 0x1c1214,
+    AccentRow { name:"CRIMSON", acc_d: 0xe0392f, ink_d: 0x1a0403, sel_d: 0x1c1214,
                                acc_n: 0x7a1f1a, ink_n: 0x000000, sel_n: 0x0f0a0b },
-    Palette { name: "VIOLET",  acc_d: 0x9a6ff0, ink_d: 0x0b0618, sel_d: 0x15141f,
+    AccentRow { name:"VIOLET",  acc_d: 0x9a6ff0, ink_d: 0x0b0618, sel_d: 0x15141f,
                                acc_n: 0x553d84, ink_n: 0x000000, sel_n: 0x0b0a10 },
-    Palette { name: "AZURE",   acc_d: 0x2f8fe0, ink_d: 0x020a16, sel_d: 0x12161f,
+    AccentRow { name:"AZURE",   acc_d: 0x2f8fe0, ink_d: 0x020a16, sel_d: 0x12161f,
                                acc_n: 0x1a4e7a, ink_n: 0x000000, sel_n: 0x0a0b10 },
-    Palette { name: "MINT",    acc_d: 0x2fc98a, ink_d: 0x02120c, sel_d: 0x121a17,
+    AccentRow { name:"MINT",    acc_d: 0x2fc98a, ink_d: 0x02120c, sel_d: 0x121a17,
                                acc_n: 0x1a6e4c, ink_n: 0x000000, sel_n: 0x0a0e0c },
     // Bone is the "no colour" option: the accent is the ink itself. Nothing on screen is tinted,
     // which is the point — it is the closest Cinder gets to a monochrome instrument panel.
-    Palette { name: "BONE",    acc_d: 0xd8d2c8, ink_d: 0x0d0c0b, sel_d: 0x1a1917,
+    AccentRow { name:"BONE",    acc_d: 0xd8d2c8, ink_d: 0x0d0c0b, sel_d: 0x1a1917,
                                acc_n: 0x77736e, ink_n: 0x000000, sel_n: 0x0e0d0c },
 ];
 
 impl Accent {
     /// How many accents there are — the cycle length, and the number of swatches Settings draws.
-    pub const COUNT: usize = PALETTES.len();
+    pub const COUNT: usize = ACCENT_ROWS.len();
 
     /// All accents in cycle/swatch order.
     pub const ALL: [Accent; 6] = [
@@ -92,13 +92,13 @@ impl Accent {
 
     /// Short display name for the Settings row ("AMBER", "MINT", …).
     pub fn name(self) -> &'static str {
-        PALETTES[self.index()].name
+        ACCENT_ROWS[self.index()].name
     }
 
     /// The accent colour itself, in the given theme mode. Used by Settings to paint the swatches,
     /// which have to show every accent at once — not just the selected one.
     pub fn swatch(self, night: bool) -> Rgb888 {
-        let p = &PALETTES[self.index()];
+        let p = &ACCENT_ROWS[self.index()];
         rgb(if night { p.acc_n } else { p.acc_d })
     }
 
@@ -106,8 +106,116 @@ impl Accent {
     pub fn next(self) -> Accent {
         Self::from_index((self.index() + 1) % Self::COUNT)
     }
+
+    /// This accent's colours for one mode, as written in the table — night values BEFORE the night
+    /// dim, like every other entry in [`Tokens`].
+    pub fn tokens(self, night: bool) -> AccentTokens {
+        let p = &ACCENT_ROWS[self.index()];
+        if night {
+            AccentTokens { acc: p.acc_n, acc_ink: p.ink_n, row_sel: p.sel_n }
+        } else {
+            AccentTokens { acc: p.acc_d, acc_ink: p.ink_d, row_sel: p.sel_d }
+        }
+    }
 }
 
+/// The six neutral colours of one mode, as `0xRRGGBB`.
+///
+/// For NIGHT these are the values BEFORE the night dim: [`Tokens::theme`] scales them by
+/// `Theme::NIGHT_DIM_PCT` on the way to the panel, exactly as the built-in night always has. So a
+/// palette file and this module describe night the same way, and Cinder's own numbers copied into
+/// a file reproduce Cinder.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Neutrals {
+    pub bg: u32,
+    pub panel: u32,
+    pub line: u32,
+    pub ink: u32,
+    pub dim: u32,
+    pub faint: u32,
+}
+
+/// One accent in one mode: the accent itself, what is drawn ON it, and the wash behind a
+/// highlighted row. Same pre-dim rule for night as [`Neutrals`].
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct AccentTokens {
+    pub acc: u32,
+    pub acc_ink: u32,
+    pub row_sel: u32,
+}
+
+/// A whole colour scheme apart from the user's accent choice: day and night neutrals, and — only
+/// if the scheme needs one — an accent of its own as `(day, night)`. `None` leaves the Accent
+/// picker in charge, which is right for any dark scheme; a light one has to bring its own, because
+/// the six built-in accents were tuned against near-black.
+///
+/// This is what a palette file (`palette.rs`) parses into, and what `CINDER` is.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Tokens {
+    pub day: Neutrals,
+    pub night: Neutrals,
+    pub accent: Option<(AccentTokens, AccentTokens)>,
+}
+
+/// Cinder's own palette — the neutrals `Theme::day_with` / `night_with` have always produced.
+pub const CINDER: Tokens = Tokens {
+    day: Neutrals { bg: 0x0d0c0b, panel: 0x13110f, line: 0x221f1b, ink: 0xece7df, dim: 0x95908a, faint: 0x5f5a52 },
+    night: Neutrals { bg: 0x000000, panel: 0x0a0908, line: 0x161310, ink: 0x8d8170, dim: 0x5b5347, faint: 0x3b362d },
+    accent: None,
+};
+
+impl Tokens {
+    /// The accent in force: the palette's own if it has one, otherwise the user's pick.
+    pub fn accent_tokens(&self, night: bool, a: Accent) -> AccentTokens {
+        match self.accent {
+            Some((day, nt)) => if night { nt } else { day },
+            None => a.tokens(night),
+        }
+    }
+
+    /// The theme for a (mode, accent) pair.
+    pub fn theme(&self, night: bool, a: Accent) -> Theme {
+        let ac = self.accent_tokens(night, a);
+        if night {
+            let n = &self.night;
+            let d = |c: u32| rgb(dim_rgb(c, Theme::NIGHT_DIM_PCT));
+            Theme {
+                // Cinder's night background is already true black, so scaling it changes nothing
+                // there; a palette's near-black gets the same treatment as every other token.
+                bg: d(n.bg),
+                panel: d(n.panel),
+                line: d(n.line),
+                ink: d(n.ink),
+                dim: d(n.dim),
+                faint: d(n.faint),
+                acc: d(ac.acc),
+                // NOT dimmed: this is the ink drawn ON the accent band, and it is already the dark
+                // half of that pair. Dimming both sides would collapse the contrast between them.
+                acc_ink: rgb(ac.acc_ink),
+                row_sel: d(ac.row_sel),
+                night: true,
+                dim_pct: 100,
+            }
+        } else {
+            let n = &self.day;
+            Theme {
+                bg: rgb(n.bg),
+                panel: rgb(n.panel),
+                line: rgb(n.line),
+                ink: rgb(n.ink),
+                dim: rgb(n.dim),
+                faint: rgb(n.faint),
+                acc: rgb(ac.acc),
+                acc_ink: rgb(ac.acc_ink),
+                row_sel: rgb(ac.row_sel),
+                night: false,
+                dim_pct: 100,
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Theme {
     pub bg: Rgb888,
     pub panel: Rgb888,
@@ -150,20 +258,7 @@ impl Theme {
     }
 
     pub fn day_with(a: Accent) -> Self {
-        let p = &PALETTES[a.index()];
-        Theme {
-            bg: rgb(0x0d0c0b),
-            panel: rgb(0x13110f),
-            line: rgb(0x221f1b),
-            ink: rgb(0xece7df),
-            dim: rgb(0x95908a),
-            faint: rgb(0x5f5a52),
-            acc: rgb(p.acc_d),
-            acc_ink: rgb(p.ink_d),
-            row_sel: rgb(p.sel_d),
-            night: false,
-            dim_pct: 100,
-        }
+        CINDER.theme(false, a)
     }
 
     /// How much of the night palette's light to keep. The BACKLIGHT cannot go below its floor —
@@ -177,24 +272,7 @@ impl Theme {
     const NIGHT_DIM_PCT: u32 = 55;
 
     pub fn night_with(a: Accent) -> Self {
-        let p = &PALETTES[a.index()];
-        let d = |c: u32| rgb(dim_rgb(c, Self::NIGHT_DIM_PCT));
-        Theme {
-            // Already true black; scaling it would change nothing.
-            bg: rgb(0x000000),
-            panel: d(0x0a0908),
-            line: d(0x161310),
-            ink: d(0x8d8170),
-            dim: d(0x5b5347),
-            faint: d(0x3b362d),
-            acc: d(p.acc_n),
-            // NOT dimmed: this is the ink drawn ON the accent band, and it is already the dark
-            // half of that pair. Dimming both sides would collapse the contrast between them.
-            acc_ink: rgb(p.ink_n),
-            row_sel: d(p.sel_n),
-            night: true,
-            dim_pct: 100,
-        }
+        CINDER.theme(true, a)
     }
 
     /// The theme for a (mode, accent) pair — what the navigator actually calls.

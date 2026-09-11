@@ -12,7 +12,8 @@ use crate::menu::MenuItem;
 use crate::model::{AlbumRow, Library, SongRow};
 use crate::now_playing::NowPlaying;
 use crate::sound::Sound;
-use crate::theme::Accent;
+use crate::palette::Palette;
+use crate::theme::{Accent, Tokens, CINDER};
 use crate::{data, Canvas, FontSet, Theme};
 
 /// Logical buttons (the physical NW-A50 keys, mapped from raw codes by the backend).
@@ -607,6 +608,26 @@ pub struct App {
     /// The chosen accent colour. Purely a render input — no shell action, no Sony service, so
     /// changing it costs one repaint and a settings write.
     pub accent: Accent,
+    /// The active palette's colour tokens — what `render` builds the theme from. Copied out of
+    /// `palettes` (or `theme::CINDER`) whenever the choice resolves, so a frame looks nothing up.
+    palette: Tokens,
+    /// Palettes read from the player's `cinder_palettes/` folder, in cycle order. The built-in
+    /// Cinder palette is not in here: it is always present, always first, and cannot fail to load.
+    palettes: Vec<Palette>,
+    /// Index into `palettes`, or None for the built-in.
+    palette_active: Option<usize>,
+    /// The persisted choice, by id. Kept apart from `palette_active` because the folder can be
+    /// unreadable when the settings load — /contents arrives late at boot — and a choice that
+    /// resolved to nothing must still be written back as the user's choice, not quietly replaced
+    /// by Cinder the next time anything else is saved.
+    palette_wanted: String,
+    /// Why files in the folder were not loaded, one line each. The shell logs them; the Palette
+    /// row says how many, once.
+    palette_skipped: Vec<String>,
+    palette_skipped_told: bool,
+    /// Settings was opened since the folder was last read. The shell rescans on its next frame, so
+    /// a palette copied over USB shows up without a reboot.
+    palettes_stale: bool,
     pub locked: bool,
     pub playing: bool,
     menu_idx: usize,
@@ -1095,6 +1116,13 @@ impl Default for App {
             album_cover: None,
             night: false,
             accent: Accent::default(),
+            palette: CINDER,
+            palettes: Vec::new(),
+            palette_active: None,
+            palette_wanted: String::from(crate::palette::BUILTIN_ID),
+            palette_skipped: Vec::new(),
+            palette_skipped_told: false,
+            palettes_stale: false,
             locked: true,
             playing: true,
             menu_idx: 0,
@@ -1414,6 +1442,10 @@ impl App {
         let mut lib = std::mem::take(&mut self.lib);
         lib.filter_genre = None;
         lib.filter_hires = false;
+        // The palette FILES are not a preference — they are what is in the folder, like the library.
+        // The choice between them resets; the list of them stays.
+        let palettes = std::mem::take(&mut self.palettes);
+        let palette_skipped = std::mem::take(&mut self.palette_skipped);
         let keep = (
             std::mem::take(&mut self.context),
             self.context_idx,
@@ -1425,6 +1457,8 @@ impl App {
         );
         *self = App {
             lib,
+            palettes,
+            palette_skipped,
             context: keep.0,
             context_idx: keep.1,
             queue: keep.2,
@@ -2043,6 +2077,11 @@ impl App {
                 self.queue_follow = true;
                 self.up_next_cur = None;   // forces the next render to treat this as a track change
             }
+            // Arriving at Settings re-reads the palette folder, so a palette copied over USB is
+            // there to pick without a reboot. The shell does the reading; this only asks.
+            if s == Screen::Settings {
+                self.palettes_stale = true;
+            }
             self.stack.push(s);
         }
     }
@@ -2198,10 +2237,21 @@ impl App {
                 self.night = !self.night;
                 vec![Action::ThemeChanged(self.night)]
             }
+            crate::settings::ROW_PALETTE => {
+                // Render-only, like the accent: the shell's save path writes the choice, and the
+                // folder is re-read whenever Settings opens (see `palettes_stale`).
+                self.cycle_palette();
+                vec![]
+            }
             crate::settings::ROW_ACCENT => {
-                // Select (the physical button) cycles; a tap on a specific swatch is handled in
-                // `tap` and picks that colour outright. Render-only, so nothing for the shell.
-                self.accent = self.accent.next();
+                if self.palette_pins_accent() {
+                    // Cycling here would change a colour nothing is drawn in. Say why instead.
+                    self.notify("This palette sets its own accent");
+                } else {
+                    // Select (the physical button) cycles; a tap on a specific swatch is handled in
+                    // `tap` and picks that colour outright. Render-only, so nothing for the shell.
+                    self.accent = self.accent.next();
+                }
                 vec![]
             }
             crate::settings::ROW_CLOCK => {
@@ -2791,7 +2841,12 @@ impl App {
                 // A swatch tap picks that accent directly. Checked first because it lives inside
                 // the Accent row's band, and falling through to `settings_activate` would advance
                 // the cycle by one instead of honouring the colour under the finger.
-                if let Some(i) = crate::settings::accent_hit(x, y, self.settings_scroll_px) {
+                // Not while the palette has its own accent: the swatches are not drawn then, and the
+                // row's tap falls through to `settings_activate`, which explains.
+                let swatch = (!self.palette_pins_accent())
+                    .then(|| crate::settings::accent_hit(x, y, self.settings_scroll_px))
+                    .flatten();
+                if let Some(i) = swatch {
                     self.settings_sel = crate::settings::ROW_ACCENT;
                     self.boot_stock_armed = false; // same disarm rule as any other row touch
                     self.accent = Accent::from_index(i);
@@ -3820,7 +3875,7 @@ impl App {
     /// The shuffle band's slide as drawn and hit-tested RIGHT NOW. Every reader goes through this so
     /// the renderer and the tap handler can never disagree about where the band is.
     fn lib_band(&self) -> i32 {
-        library::band_offset(self.lib_band_hide, self.lib_scroll_px)
+        library::band_offset(self.lib_tab, self.lib_band_hide, self.lib_scroll_px)
     }
 
     /// Live drag-scroll of the current list by `dy_px` PIXELS (positive = content moves up /
@@ -3841,7 +3896,7 @@ impl App {
                 // The band follows what the LIST actually did, not what the finger asked for: a
                 // drag past the end moves nothing and must slide nothing.
                 let moved = self.lib_scroll_px - before;
-                self.lib_band_hide = library::band_offset(self.lib_band_hide + moved, self.lib_scroll_px);
+                self.lib_band_hide = library::band_offset(self.lib_tab, self.lib_band_hide + moved, self.lib_scroll_px);
             }
             Screen::Album => {
                 if let Some(al) = self.lib.albums_flat().get(self.album_view) {
@@ -4922,6 +4977,9 @@ impl App {
     }
 
     fn go(&mut self, s: Screen) {
+        if s == Screen::Settings {
+            self.palettes_stale = true; // see `push`
+        }
         self.stack = vec![s];
     }
 
@@ -5657,7 +5715,7 @@ impl App {
         // instead keeps it working, and it is the only remaining way to emit less light: below the
         // backlight floor there is only backlight OFF, which on this transmissive panel is black.
         let theme = {
-            let t = Theme::for_mode(self.night, self.accent);
+            let t = self.palette.theme(self.night, self.accent);
             if self.night {
                 let lvl = (self.brightness.clamp(1, 5) - 1) as usize;
                 t.scaled(Theme::NIGHT_LEVEL_PCT[lvl])
@@ -6082,6 +6140,8 @@ impl App {
                     boot_stock: boot_stock_lbl,
                     clock: &clock_lbl,
                     accent: self.accent,
+                    palette: self.palette_name(),
+                    accent_locked: self.palette_pins_accent(),
                 };
                 crate::settings::render(c, &theme, fonts, self.settings_sel, self.settings_scroll_px, &view)
             }
@@ -7150,6 +7210,90 @@ impl App {
     /// so a corrupt settings file can never restore a colour the picker can't reach.
     pub fn set_accent(&mut self, i: u8) {
         self.accent = Accent::from_index(i as usize);
+    }
+
+    /// The persisted palette choice, by id — `cinder` for the built-in.
+    pub fn palette_id(&self) -> &str {
+        &self.palette_wanted
+    }
+
+    /// Restore a persisted palette choice. It applies the moment a palette with that id is loaded:
+    /// now, if one already is, or whenever the folder is next read.
+    pub fn set_palette_wanted(&mut self, id: &str) {
+        let id = id.trim().to_ascii_lowercase();
+        self.palette_wanted = if id.is_empty() { crate::palette::BUILTIN_ID.to_string() } else { id };
+        self.resolve_palette();
+    }
+
+    /// Install what the palette folder holds (see `palette::load_files`). Returns true when either
+    /// the loaded set or the skip reasons changed — the shell's cue to log, once, rather than on
+    /// every visit to Settings.
+    pub fn set_palettes(&mut self, list: Vec<Palette>, skipped: Vec<String>) -> bool {
+        let same_ids = list.len() == self.palettes.len()
+            && list.iter().zip(&self.palettes).all(|(a, b)| a.id == b.id);
+        let skipped_changed = skipped != self.palette_skipped;
+        if skipped_changed {
+            self.palette_skipped_told = false;
+        }
+        self.palettes = list;
+        self.palette_skipped = skipped;
+        self.resolve_palette();
+        !same_ids || skipped_changed
+    }
+
+    fn resolve_palette(&mut self) {
+        self.palette_active = self.palettes.iter().position(|p| p.id == self.palette_wanted);
+        self.palette = self.palette_active.map_or(CINDER, |i| self.palettes[i].tokens);
+    }
+
+    /// The Palette row's value: the palette being drawn, which is Cinder until a chosen palette
+    /// has actually loaded.
+    pub fn palette_name(&self) -> &str {
+        self.palette_active.map_or(crate::palette::BUILTIN_NAME, |i| self.palettes[i].name.as_str())
+    }
+
+    /// A palette with an accent of its own takes the Accent row out of play.
+    pub fn palette_pins_accent(&self) -> bool {
+        self.palette.accent.is_some()
+    }
+
+    /// True once per visit to Settings: the shell should read the palette folder again.
+    pub fn take_palettes_stale(&mut self) -> bool {
+        std::mem::take(&mut self.palettes_stale)
+    }
+
+    /// Settings ▸ Palette: the next palette, wrapping back to Cinder after the last one.
+    fn cycle_palette(&mut self) {
+        let skipped = self.palette_skipped.len();
+        let skipped_msg = format!(
+            "{skipped} palette file{} skipped — see cinderhome.log",
+            if skipped == 1 { "" } else { "s" }
+        );
+        if self.palettes.is_empty() {
+            // Nothing to cycle to. Say why rather than doing nothing: an inert row is exactly what
+            // the dead-UI audits removed from this screen.
+            if skipped > 0 {
+                self.palette_skipped_told = true;
+                self.notify(&skipped_msg);
+            } else {
+                self.notify("No palettes in cinder_palettes");
+            }
+            return;
+        }
+        let next = match self.palette_active {
+            None => Some(0),
+            Some(i) if i + 1 < self.palettes.len() => Some(i + 1),
+            Some(_) => None,
+        };
+        self.palette_wanted = match next {
+            Some(i) => self.palettes[i].id.clone(),
+            None => crate::palette::BUILTIN_ID.to_string(),
+        };
+        self.resolve_palette();
+        if skipped > 0 && !self.palette_skipped_told {
+            self.palette_skipped_told = true;
+            self.notify(&skipped_msg);
+        }
     }
     pub fn bt_codec(&self) -> u8 {
         self.bt_codec
@@ -8751,7 +8895,7 @@ mod tests {
     #[test]
     fn the_shuffle_band_slides_away_on_the_way_down_and_back_on_the_way_up() {
         let mut a = long_songs();
-        let slide = library::band_slide();
+        let slide = library::band_slide(Tab::Songs);
         assert_eq!(a.lib_band(), 0, "at the top it is fully shown");
 
         a.scroll_px(30);
@@ -8775,7 +8919,7 @@ mod tests {
             a.scroll_px(d);
             let (band, scroll) = (a.lib_band(), a.lib_scroll_px);
             assert!(band <= scroll, "slide {band} > scroll {scroll} after a {d} px scroll");
-            assert!((0..=library::band_slide()).contains(&band), "slide {band} out of range");
+            assert!((0..=library::band_slide(Tab::Songs)).contains(&band), "slide {band} out of range");
         }
     }
 
@@ -8793,7 +8937,7 @@ mod tests {
         // that leaves, so the filter stays reachable mid-list. That spot is the filter now.
         let mut b = long_songs();
         b.scroll_px(600);
-        assert_eq!(b.lib_band(), library::band_slide());
+        assert_eq!(b.lib_band(), library::band_slide(Tab::Songs));
         assert!(!library::hit_shuffle_band_at(x, y, b.lib_band()), "hidden: the band is not there");
         assert!(library::filter_hit_at(Tab::Songs, y, b.lib_band()), "hidden: the filter moved up under it");
         let acts = b.tap(x, y);
@@ -8808,7 +8952,7 @@ mod tests {
         }
         ar.lib_scroll_px = 0;
         ar.scroll_px(600);
-        assert_eq!(ar.lib_band(), library::band_slide());
+        assert_eq!(ar.lib_band(), library::band_slide(Tab::Artists));
         assert!(
             library::hit_row_at(Tab::Artists, &ar.lib, ar.lib_scroll_px, y, ar.lib_band()).is_some(),
             "hidden: on a tab with no filter that y is an artist row"
@@ -8821,10 +8965,49 @@ mod tests {
     fn a_fresh_list_always_shows_its_band() {
         let mut a = long_songs();
         a.scroll_px(600);
-        assert_eq!(a.lib_band(), library::band_slide());
+        assert_eq!(a.lib_band(), library::band_slide(Tab::Songs));
         a.lib_tab = Tab::Albums;
         a.lib_scroll_px = 0;
         assert_eq!(a.lib_band(), 0);
+    }
+
+    /// NEW PLAYLIST leaves with the band and comes back with it — asked for 2026-09-11, once the band
+    /// had passed on the device. While it is away its old place is list, and a tap there is a playlist.
+    #[test]
+    fn new_playlist_slides_away_with_the_band_and_comes_back() {
+        let many = || {
+            let mut a = own_and_sony();
+            let base = a.lib.playlists.clone();
+            for _ in 0..20 {
+                a.lib.playlists.extend(base.iter().cloned());
+            }
+            a
+        };
+        let mut a = many();
+        let slide = library::band_slide(Tab::Playlists);
+        assert!(slide > library::band_slide(Tab::Songs), "the row goes as well as the band");
+        assert!(a.lib_max_scroll() > slide + 200, "the fixture must scroll well past the row");
+        let (x, y, w, h) = library::new_playlist_rect();
+        let (px, py) = (x + w / 2, y + h / 2);
+
+        a.scroll_px(600);
+        assert_eq!(a.lib_band(), slide);
+        assert_eq!(y + h - a.lib_band(), library::TABS_BOTTOM, "fully under the tab strip, and no further");
+        assert!(!library::hit_new_playlist_at(Tab::Playlists, px, py, a.lib_band()), "hidden: it is not there");
+        assert!(
+            library::hit_row_at(Tab::Playlists, &a.lib, a.lib_scroll_px, py, a.lib_band()).is_some(),
+            "hidden: its old place is a playlist row"
+        );
+        let mut b = many();
+        b.scroll_px(600);
+        b.tap(px, py);
+        assert_ne!(b.current(), Screen::Keyboard, "hidden: a tap where it was must not open the keyboard");
+
+        a.scroll_px(-slide);
+        assert_eq!(a.lib_band(), 0, "scrolling up brings it straight back");
+        assert!(a.lib_scroll_px > 0, "mid-list, not only at the top");
+        assert!(a.tap(px, py).is_empty());
+        assert_eq!(a.current(), Screen::Keyboard, "and it works the moment it is back");
     }
 
     /// Q2, the regression. Shuffle used to be a one-way door — ON permuted the remainder, OFF did
@@ -12653,5 +12836,155 @@ mod shelf_swipe_tests {
         a.push_for_test(Screen::Lock);
         assert!(!a.shelf_swipe_open(), "the Shelf must not open over the lock screen");
         assert!(!a.shelf_is_open());
+    }
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+    use crate::settings::{ROW_ACCENT, ROW_PALETTE};
+
+    fn slate() -> Palette {
+        Palette::parse("slate", include_str!("../palettes/slate.palette")).expect("slate loads")
+    }
+
+    fn paper() -> Palette {
+        Palette::parse("paper", include_str!("../palettes/paper.palette")).expect("paper loads")
+    }
+
+    fn on_settings_row(a: &mut App, row: usize) {
+        a.go(Screen::Settings);
+        a.settings_sel = row;
+    }
+
+    /// Select on the Palette row walks the folder in order and comes back round to Cinder.
+    #[test]
+    fn the_palette_row_cycles_through_the_folder_and_back_to_cinder() {
+        let mut a = App::unlocked();
+        a.set_palettes(vec![paper(), slate()], Vec::new());
+        on_settings_row(&mut a, ROW_PALETTE);
+        assert_eq!((a.palette_id(), a.palette_name()), ("cinder", "Cinder"));
+        a.settings_activate();
+        assert_eq!((a.palette_id(), a.palette_name()), ("paper", "Paper"));
+        assert_eq!(a.palette, paper().tokens);
+        a.settings_activate();
+        assert_eq!((a.palette_id(), a.palette_name()), ("slate", "Slate"));
+        a.settings_activate();
+        assert_eq!((a.palette_id(), a.palette_name()), ("cinder", "Cinder"));
+        assert_eq!(a.palette, CINDER);
+    }
+
+    /// The settings file is read at boot, before /contents can be relied on, so the folder can
+    /// come back empty. The saved choice has to survive that — it is what gets written back.
+    #[test]
+    fn a_saved_palette_that_has_not_loaded_is_kept_rather_than_forgotten() {
+        let mut a = App::unlocked();
+        a.set_palette_wanted(" Slate ");
+        assert_eq!(a.palette_id(), "slate", "trimmed, lowercased, and remembered");
+        assert_eq!(a.palette, CINDER, "nothing is loaded yet, so Cinder draws");
+        a.set_palettes(Vec::new(), Vec::new());
+        assert_eq!(a.palette_id(), "slate", "an empty read must not overwrite the choice");
+        a.set_palettes(vec![slate()], Vec::new());
+        assert_eq!(a.palette, slate().tokens, "and it applies the moment it loads");
+        assert_eq!(a.palette_name(), "Slate");
+    }
+
+    #[test]
+    fn a_palette_with_its_own_accent_takes_the_accent_row_out_of_play() {
+        let mut a = App::unlocked();
+        a.set_palettes(vec![paper()], Vec::new());
+        a.set_palette_wanted("paper");
+        assert!(a.palette_pins_accent());
+        on_settings_row(&mut a, ROW_ACCENT);
+        let before = a.accent;
+        a.settings_activate();
+        assert_eq!(a.accent, before, "Select must not cycle an accent that is not in use");
+        assert_eq!(a.toast, "This palette sets its own accent");
+        // A tap where the last swatch would be changes nothing either, and explains the same way.
+        a.toast.clear();
+        let y = (0..crate::canvas::H as i32)
+            .find(|&y| crate::settings::row_at(y, 0) == Some(ROW_ACCENT))
+            .expect("the Accent row is on screen at scroll 0");
+        let x = (0..crate::canvas::W as i32)
+            .find(|&x| crate::settings::accent_hit(x, y, 0) == Some(Accent::COUNT - 1))
+            .expect("the last swatch has a hit zone");
+        a.tap(x, y);
+        assert_eq!(a.accent, before);
+        assert_eq!(a.toast, "This palette sets its own accent");
+    }
+
+    #[test]
+    fn opening_settings_asks_the_shell_to_read_the_folder_again() {
+        let mut a = App::unlocked();
+        assert!(!a.take_palettes_stale());
+        a.push(Screen::Settings);
+        assert!(a.take_palettes_stale(), "arriving on Settings is the cue");
+        assert!(!a.take_palettes_stale(), "once per visit, not once per frame");
+        a.push(Screen::Settings);
+        assert!(!a.take_palettes_stale(), "already there, so nothing new to read");
+    }
+
+    #[test]
+    fn an_empty_folder_says_where_palettes_go() {
+        let mut a = App::unlocked();
+        on_settings_row(&mut a, ROW_PALETTE);
+        a.settings_activate();
+        assert_eq!(a.palette_id(), "cinder");
+        assert_eq!(a.toast, "No palettes in cinder_palettes");
+    }
+
+    #[test]
+    fn skipped_files_are_mentioned_once() {
+        let mut a = App::unlocked();
+        let why = vec!["bad.palette: day.ink on day.bg: contrast 1.00, needs at least 4.50".to_string()];
+        assert!(a.set_palettes(vec![slate()], why.clone()), "a new set is news");
+        assert!(!a.set_palettes(vec![slate()], why), "the same set is not");
+        on_settings_row(&mut a, ROW_PALETTE);
+        a.settings_activate();
+        assert_eq!(a.palette_id(), "slate");
+        assert_eq!(a.toast, "1 palette file skipped — see cinderhome.log");
+        a.toast.clear();
+        a.settings_activate();
+        assert!(a.toast.is_empty(), "told once, not on every tap");
+    }
+
+    #[test]
+    fn reset_settings_goes_back_to_cinder_but_keeps_what_the_folder_holds() {
+        let mut a = App::unlocked();
+        a.set_palettes(vec![slate()], Vec::new());
+        a.set_palette_wanted("slate");
+        let _ = a.reset_settings();
+        assert_eq!(a.palette_id(), "cinder");
+        assert_eq!(a.palette, CINDER);
+        assert_eq!(a.palettes.len(), 1, "the file is still in the folder; only the choice resets");
+    }
+
+    /// The whole point: the chosen palette is what reaches the panel.
+    #[test]
+    fn the_palette_reaches_the_pixels() {
+        let _scale = crate::text::scale_guard();
+        let fonts = FontSet::load();
+        let np = NowPlaying {
+            title: "", artist: "", codec: "", badge: "", clock: "12:00", battery: 50, elapsed: "",
+            remaining: "", progress: 0.0, art: "", art_full: None, art_thumb: None, liked: false,
+            playing: false, shuffle: false, repeat: 0, viz_seed: 0.0, viz_kind: 0, viz_size: 0,
+            page: 0, viz_levels: None, viz_peaks: None, scrubbing: false,
+        };
+        // The background is the colour most of the frame is painted in.
+        let dominant = |a: &mut App| {
+            let mut c = Canvas::new();
+            a.render(&mut c, &fonts, &np);
+            let mut n = std::collections::HashMap::new();
+            for &p in &c.buf {
+                *n.entry(p).or_insert(0u32) += 1;
+            }
+            n.into_iter().max_by_key(|&(_, k)| k).map(|(p, _)| p).unwrap()
+        };
+        let mut a = App::unlocked();
+        a.go(Screen::Menu);
+        assert_eq!(dominant(&mut a), crate::canvas::to_u32(Theme::day().bg));
+        a.set_palettes(vec![slate()], Vec::new());
+        a.set_palette_wanted("slate");
+        assert_eq!(dominant(&mut a), 0x0e1116, "the Menu is painted in slate's day.bg");
     }
 }

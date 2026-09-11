@@ -1,4 +1,19 @@
 //! Host preview backend: render every screen to PNG for device-free iteration.
+//!
+//! ```text
+//! cargo run -p cinder-host              every preview -> out/<name>.png
+//! cargo run -p cinder-host -- --check   compare every preview with golden.txt; exit 1 on any change
+//! cargo run -p cinder-host -- --bless   record the pixels as they are now as the new golden.txt
+//! cargo run -p cinder-host -- --palette FILE.palette
+//!                                       check a palette the way the player will, then draw every
+//!                                       preview in it -> out/palette_<id>/
+//! ```
+//!
+//! `golden.txt` holds one pixel hash per preview and `cargo test -p cinder-host` checks it, so a
+//! change that moves a single pixel on any screen fails until someone has looked at it and blessed
+//! it. That is the guard a render-layer refactor needs — "this changed nothing" becomes a test
+//! rather than a claim — and the review aid a deliberate UI change needs: the diff of golden.txt
+//! names exactly which screens moved, and no others.
 
 use cinder_ui::bluetooth::Bt;
 use cinder_ui::library::Tab;
@@ -6,7 +21,7 @@ use cinder_ui::menu::MenuItem;
 use cinder_ui::sound::Sound;
 use cinder_ui::{
     bluetooth, clockset, eq, fm, library, lock, menu, now_playing, pairing, receiver, settings, shelf, sound,
-    up_next, usbdac, Canvas, FontSet, Library, Theme, H, W,
+    up_next, usbdac, Canvas, FontSet, Library, H, W,
 };
 
 /// Paired devices for the Bluetooth preview — the list is the body of that screen now.
@@ -20,11 +35,20 @@ fn preview_paired() -> Vec<cinder_ui::pairing::PairedDevice> {
         .collect()
 }
 
-fn save(c: &Canvas, name: &str) {
+fn save_png(c: &Canvas, name: &str) {
     let img = image::RgbImage::from_raw(W as u32, H as u32, c.to_rgb_bytes()).expect("buffer size");
     let path = format!("out/{name}.png");
     img.save(&path).expect("save png");
     println!("wrote {path}");
+}
+
+/// What a run needs to know beyond "render everything".
+struct Opts {
+    /// Reproducible output only. Ignores the `CINDER_PREVIEW_T48` real-cover override, which makes
+    /// the pixels depend on a file outside the tree.
+    golden: bool,
+    /// Draw every preview in this palette instead of Cinder's own (`--palette FILE`).
+    palette: Option<cinder_ui::palette::Palette>,
 }
 
 /// Load a raw NxN RGB thumbnail (the on-device art-cache format) so the host preview can render
@@ -36,8 +60,27 @@ fn preview_thumb(var: &str, edge: usize) -> Option<cinder_ui::art::Image> {
     (rgb.len() == edge * edge * 3).then(|| cinder_ui::art::Image { w: edge, h: edge, rgb })
 }
 
-fn main() {
+/// Render every preview, handing each finished frame to `out` under its name. One list, used by
+/// both the PNG writer and the golden check, so the check can never cover a different set of
+/// screens from the one people look at.
+fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
+    let mut save = |c: &Canvas, name: &str| out(name, c);
     let fonts = FontSet::load();
+    // Every theme below comes from these tokens, so `--palette` repaints the whole set, and the
+    // default run is Cinder byte for byte (CINDER.theme is what Theme::day_with/night_with return).
+    let tokens = opts.palette.as_ref().map_or(cinder_ui::theme::CINDER, |p| p.tokens);
+    let th = move |night: bool, a: cinder_ui::Accent| tokens.theme(night, a);
+    let amber = cinder_ui::Accent::Amber;
+    let pal_name = opts.palette.as_ref().map_or(cinder_ui::palette::BUILTIN_NAME, |p| p.name.as_str());
+    let pal_locked = tokens.accent.is_some();
+    let new_app = || {
+        let mut a = cinder_ui::nav::App::unlocked();
+        if let Some(p) = &opts.palette {
+            a.set_palettes(vec![p.clone()], Vec::new());
+            a.set_palette_wanted(&p.id);
+        }
+        a
+    };
     // Six devices — one and a half pages. Named so the page turn is obvious at a glance.
     let preview_many_paired = vec![
         pairing::PairedDevice { name: "WH-1000XM4".into(), kind: "Headphones".into(), connected: true },
@@ -48,7 +91,6 @@ fn main() {
         pairing::PairedDevice { name: "(unnamed)".into(), kind: String::new(), connected: false },
     ];
     let preview_paired_list = preview_paired();
-    std::fs::create_dir_all("out").ok();
 
     let np = now_playing::NowPlaying {
         title: "Atlas Hands",
@@ -116,7 +158,7 @@ fn main() {
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
     // enough to check placement, scaling and the day/night dim against a real cover.
-    if let Some(t48) = preview_thumb("CINDER_PREVIEW_T48", 48) {
+    if let Some(t48) = (!opts.golden).then(|| preview_thumb("CINDER_PREVIEW_T48", 48)).flatten() {
         for id in 0..8 {
             lib.thumbs.insert(id, t48.clone());
         }
@@ -126,7 +168,7 @@ fn main() {
     // A stand-in USER queue for the Up Next previews (the real one is built by swiping rows in).
     let queue: Vec<cinder_ui::model::SongRow> = lib.songs.iter().take(9).cloned().collect();
 
-    for (name, theme) in [("day", Theme::day()), ("night", Theme::night())] {
+    for (name, theme) in [("day", th(false, amber)), ("night", th(true, amber))] {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
             ("now_playing", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts, &np)),
             ("now_playing_sleep", &|c: &mut Canvas| { now_playing::render(c, &theme, &fonts, &np); now_playing::sleep_badge(c, &theme, &fonts, 23); }),
@@ -316,6 +358,15 @@ fn main() {
             ("library_albums_az", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 1, None, &lib, None, false, 0)),
             ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &lib, None, false, 0)),
             ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &lib, None, false, 0)),
+            // NEW PLAYLIST gone with the band (library::band_slide(Playlists)): the rows meet the tabs.
+            ("library_playlists_band_hidden", &|c: &mut Canvas| {
+                let mut big = lib.clone();
+                let base = big.playlists.clone();
+                for _ in 0..8 {
+                    big.playlists.extend(base.iter().cloned());
+                }
+                library::render(c, &theme, &fonts, Tab::Playlists, 0, 300, 0, 0, None, &big, None, false, 999);
+            }),
             // The artist drill-in, built from the SAMPLE LIBRARY like every other list preview —
             // it used to render three hard-coded albums from `data::ARTIST_*` regardless of who
             // the artist was, which is precisely why nothing ever pushed it.
@@ -339,7 +390,7 @@ fn main() {
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
                 &settings::SettingsView { volume_limit: false, night: theme.night, viz_name: "BARS · VEIL", usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
-                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber })),
+                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber, palette: pal_name, accent_locked: pal_locked })),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
             // The shuffle band's caption has to follow the filter — shuffling a filtered list
             // shuffles what is on screen, so it must not still promise the whole library.
@@ -463,7 +514,7 @@ fn main() {
     // only the visualiser changes. "Intrusive" is not a thing that can be settled in prose, and
     // comparing styles against different bar heights would be meaningless.
     {
-        let theme = Theme::day();
+        let theme = th(false, amber);
         // A PLAUSIBLE spectrum, not a test pattern: energy falling off with frequency plus a
         // couple of slow ripples. The first version alternated near-full-scale between adjacent
         // bands, which no real music does, and it made every contour style look like a sawtooth —
@@ -494,7 +545,7 @@ fn main() {
                     usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
-                    accent: cinder_ui::Accent::Amber });
+                    accent: cinder_ui::Accent::Amber, palette: pal_name, accent_locked: pal_locked });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
             save(&c, &format!("confirm_{name}"));
@@ -509,7 +560,7 @@ fn main() {
                     usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
-                    accent: cinder_ui::Accent::Amber });
+                    accent: cinder_ui::Accent::Amber, palette: pal_name, accent_locked: pal_locked });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, "settings_scrolled");
         }
@@ -587,7 +638,7 @@ fn main() {
         // cover), so the pages must be checked there separately or a collision would only show up
         // on device, at night, which is the worst place to find one.
         for page in 0..now_playing::PAGES {
-            let nt = Theme::night();
+            let nt = th(true, amber);
             let mut c = Canvas::new();
             now_playing::render(&mut c, &nt, &fonts,
                 &now_playing::NowPlaying { page, viz_size: 1, viz_kind: 1, viz_levels: Some(&levels), ..np });
@@ -668,7 +719,7 @@ fn main() {
     // day-side; the night halves come out of the same table, so a night-only mistake would be a
     // table typo, and `theme::tests::night_accents_are_dimmer_than_day` already guards that.
     for a in cinder_ui::Accent::ALL {
-        let theme = Theme::day_with(a);
+        let theme = th(false, a);
         let lower = a.name().to_lowercase();
 
         let mut c = Canvas::new();
@@ -680,15 +731,16 @@ fn main() {
         settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
             &settings::SettingsView { volume_limit: false, night: false, viz_name: "BARS · VEIL", usb_dac: false,
                 battery_care: true, device: "99% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
-                screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: a });
+                screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: a,
+                palette: pal_name, accent_locked: pal_locked });
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
         save(&c, &format!("accent_{lower}_settings"));
     }
 
     // Navigator demo: drive the nav state machine through a press sequence and dump the
     // resulting frames — proves the screen-aware render dispatch (cinder-ffi uses the same).
-    use cinder_ui::nav::{App, Button};
-    let mut app = App::unlocked();
+    use cinder_ui::nav::Button;
+    let mut app = new_app();
     let steps: &[(&str, Option<Button>)] = &[
         ("nav_0_now_playing", None),
         ("nav_1_menu", Some(Button::Up)),       // NowPlaying -> Menu
@@ -767,7 +819,7 @@ fn main() {
             .collect();
         let big = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
 
-        let mut app = App::unlocked();
+        let mut app = new_app();
         app.press(Button::Up); // Menu
         app.press(Button::Down); // -> Library row
         app.press(Button::Select); // enter Library
@@ -847,7 +899,7 @@ fn main() {
             .map(|(_, a, _)| ArtistRow { name: a.to_string(), albums: 1, tracks: 8, arts: vec![a.to_string()] , album_ids: Vec::new() })
             .collect();
 
-        let mut app = App::unlocked();
+        let mut app = new_app();
         app.press(Button::Up);
         app.press(Button::Down);
         app.press(Button::Select);
@@ -859,13 +911,13 @@ fn main() {
 
         let np_jp = now_playing::NowPlaying { title: "夜に駆ける", artist: "YOASOBI", ..np };
         let mut c2 = Canvas::new();
-        now_playing::render(&mut c2, &Theme::night(), &fonts, &np_jp);
+        now_playing::render(&mut c2, &th(true, amber), &fonts, &np_jp);
         save(&c2, "i18n_now_playing");
     }
 
     // Volume HUD over Now Playing (press Vol Up a few times).
     {
-        let mut app = App::unlocked();
+        let mut app = new_app();
         app.press(Button::VolUp);
         app.press(Button::VolUp);
         app.press(Button::VolUp);
@@ -876,7 +928,7 @@ fn main() {
 
     // Album drill-in: Library → Albums → Select an album → its track list.
     {
-        let mut app = App::unlocked();
+        let mut app = new_app();
         app.press(Button::Up); // Menu
         app.press(Button::Down); // Library row
         app.press(Button::Select); // enter Library (Albums tab default)
@@ -897,7 +949,7 @@ fn main() {
     // name `eq_interactive`. A preview that renders the wrong screen is worse than a missing one:
     // it is what you look at to decide the screen is fine.
     {
-        let mut app = App::unlocked();
+        let mut app = new_app();
         app.go_for_preview(cinder_ui::nav::Screen::Eq);
         for _ in 0..4 {
             app.press(Button::Right); // select band 4
@@ -915,7 +967,7 @@ fn main() {
     // goes accent-coloured at exactly the travel where releasing will commit, so the gesture says
     // what it will do BEFORE you let go.
     {
-        let theme = Theme::day();
+        let theme = th(false, amber);
         // A row in the middle of the Songs list, picked from the same geometry the renderer uses
         // rather than a literal — the frames have to sit on a real row or the reveal never shows.
         let row_y = library::list_top(Tab::Songs) + library::row_h(Tab::Songs) * 2 + 24;
@@ -940,7 +992,7 @@ fn main() {
     // fixed), so the failure mode to look for here is text colliding with a neighbour or running
     // past a fixed-position value — which is exactly what these frames are for.
     {
-        use cinder_ui::nav::{App, Screen};
+        use cinder_ui::nav::Screen;
         for pct in [80u32, 100, 120, 140] {
             cinder_ui::text::set_scale_pct(pct);
             for (name, screen) in [
@@ -952,14 +1004,14 @@ fn main() {
                 ("upnext", Screen::UpNext),
                 ("eq", Screen::Eq),
             ] {
-                let mut app = App::unlocked();
+                let mut app = new_app();
                 app.go_for_preview(screen);
                 let mut c = Canvas::new();
                 app.render(&mut c, &fonts, &np);
                 save(&c, &format!("uiscale_{pct}_{name}"));
             }
             // Settings scrolled to the end, where the value column is densest.
-            let mut app = App::unlocked();
+            let mut app = new_app();
             app.go_for_preview(Screen::Settings);
             app.scroll_px(10_000);
             let mut c = Canvas::new();
@@ -973,7 +1025,197 @@ fn main() {
     for k in 0..cinder_ui::viz::COUNT {
         let np_k = now_playing::NowPlaying { viz_seed: 1.7, viz_kind: k, ..np };
         let mut c = Canvas::new();
-        now_playing::render(&mut c, &Theme::day(), &fonts, &np_k);
+        now_playing::render(&mut c, &th(false, amber), &fonts, &np_k);
         save(&c, &format!("viz_{}_{}", k, cinder_ui::viz::name(k).to_lowercase()));
+    }
+}
+
+// ── Golden pixel hashes ────────────────────────────────────────────────────────────────────────
+
+const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/golden.txt");
+
+/// FNV-1a over each 32-bit pixel. Not a security hash: the one question it answers is "did any
+/// pixel change", and it answers it with no dependency and in a single pass.
+fn pixel_hash(c: &Canvas) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &px in &c.buf {
+        h ^= px as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Every preview's name and pixel hash, in render order.
+fn hashes() -> Vec<(String, u64)> {
+    // The i18n previews pull glyphs from CINDER_FONT_DIR when it is set, so a developer who has
+    // pointed it at Sony's fonts would otherwise fail the check for reasons that are not in the
+    // tree. Golden pixels are the bundled fonts only.
+    std::env::remove_var("CINDER_FONT_DIR");
+    cinder_ui::text::set_scale_pct(100);
+    let mut got = Vec::new();
+    render_all(
+        &mut |name, c| got.push((name.to_string(), pixel_hash(c))),
+        &Opts { golden: true, palette: None },
+    );
+    got
+}
+
+fn read_golden() -> Vec<(String, u64)> {
+    let body = std::fs::read_to_string(GOLDEN).unwrap_or_default();
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let (h, name) = l.split_once(char::is_whitespace)?;
+            Some((name.trim().to_string(), u64::from_str_radix(h, 16).ok()?))
+        })
+        .collect()
+}
+
+fn write_golden(got: &[(String, u64)]) {
+    let mut body = String::from(
+        "# One pixel hash per cinder-host preview (FNV-1a over the XRGB buffer), in render order.\n\
+         # Checked by `cargo test -p cinder-host`. After a deliberate UI change, look at the PNGs\n\
+         # (`cargo run -p cinder-host`) and then record the new pixels:\n\
+         #   cargo run -p cinder-host -- --bless\n",
+    );
+    for (name, h) in got {
+        body.push_str(&format!("{h:016x} {name}\n"));
+    }
+    std::fs::write(GOLDEN, body).expect("write golden.txt");
+}
+
+/// Human-readable differences between the recorded and the rendered set. Empty = identical.
+fn compare(want: &[(String, u64)], got: &[(String, u64)]) -> Vec<String> {
+    use std::collections::HashMap;
+    let mut out = Vec::new();
+    let mut seen: HashMap<&str, u64> = HashMap::new();
+    for (name, h) in got {
+        // Two previews under one name overwrite each other's PNG, so one of them has never been
+        // looked at. That is a defect in the preview list whatever the pixels say.
+        if seen.insert(name, *h).is_some() {
+            out.push(format!("duplicate {name} (two previews share this name)"));
+        }
+    }
+    let recorded: HashMap<&str, u64> = want.iter().map(|(n, h)| (n.as_str(), *h)).collect();
+    for (name, h) in want {
+        match seen.get(name.as_str()) {
+            None => out.push(format!("missing   {name} (in golden.txt, no longer rendered)")),
+            Some(g) if g != h => out.push(format!("changed   {name}")),
+            _ => {}
+        }
+    }
+    for (name, _) in got {
+        if !recorded.contains_key(name.as_str()) {
+            out.push(format!("new       {name} (not in golden.txt yet)"));
+        }
+    }
+    out
+}
+
+fn main() {
+    match std::env::args().nth(1).as_deref() {
+        None => {
+            std::fs::create_dir_all("out").ok();
+            render_all(&mut |name, c| save_png(c, name), &Opts { golden: false, palette: None });
+        }
+        Some("--palette") => {
+            let Some(path) = std::env::args().nth(2) else {
+                eprintln!("usage: cinder-host --palette FILE.palette");
+                std::process::exit(2);
+            };
+            let file = std::path::Path::new(&path);
+            let Some(id) = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(cinder_ui::palette::palette_stem)
+                .map(str::to_ascii_lowercase)
+            else {
+                eprintln!("{path}: a palette's file name has to end in .palette");
+                std::process::exit(2);
+            };
+            let body = std::fs::read_to_string(file).unwrap_or_else(|e| {
+                eprintln!("{path}: {e}");
+                std::process::exit(2)
+            });
+            match cinder_ui::palette::Palette::parse(&id, &body) {
+                Err(problems) => {
+                    eprintln!("{path} would be skipped by the player:\n  {}", problems.join("\n  "));
+                    std::process::exit(1);
+                }
+                Ok(p) => {
+                    let dir = format!("palette_{id}");
+                    std::fs::create_dir_all(format!("out/{dir}")).ok();
+                    let mut n = 0;
+                    render_all(
+                        &mut |name, c| {
+                            save_png(c, &format!("{dir}/{name}"));
+                            n += 1;
+                        },
+                        &Opts { golden: false, palette: Some(p) },
+                    );
+                    println!("{path}: loads — {n} previews in out/{dir}/");
+                }
+            }
+        }
+        Some("--bless") => {
+            let got = hashes();
+            write_golden(&got);
+            println!("golden.txt: recorded {} previews", got.len());
+        }
+        Some("--check") => {
+            let diff = compare(&read_golden(), &hashes());
+            if diff.is_empty() {
+                println!("golden.txt: every preview matches");
+            } else {
+                eprintln!("{} preview(s) differ from golden.txt:\n  {}", diff.len(), diff.join("\n  "));
+                std::process::exit(1);
+            }
+        }
+        Some(other) => {
+            eprintln!("unknown argument {other:?}\nusage: cinder-host [--check | --bless | --palette FILE]");
+            std::process::exit(2);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every screen the preview harness can draw, pixel for pixel, against what was last blessed.
+    #[test]
+    fn every_preview_matches_its_golden_hash() {
+        let want = read_golden();
+        assert!(!want.is_empty(), "golden.txt is missing or empty — run: cargo run -p cinder-host -- --bless");
+        let diff = compare(&want, &hashes());
+        assert!(
+            diff.is_empty(),
+            "\n{} preview(s) differ from golden.txt:\n  {}\n\nIf the change is intended, look at the \
+             PNGs (cargo run -p cinder-host) and record it:\n  cargo run -p cinder-host -- --bless\n",
+            diff.len(),
+            diff.join("\n  ")
+        );
+    }
+
+    /// The hash has to see a one-pixel change, or the test above proves nothing.
+    #[test]
+    fn a_single_pixel_changes_the_hash() {
+        let mut c = Canvas::new();
+        let before = pixel_hash(&c);
+        c.buf[W * H / 2] ^= 1;
+        assert_ne!(before, pixel_hash(&c));
+    }
+
+    #[test]
+    fn compare_names_every_kind_of_difference() {
+        let want = vec![("a".to_string(), 1), ("b".to_string(), 2), ("gone".to_string(), 3)];
+        let got = vec![("a".to_string(), 1), ("b".to_string(), 9), ("fresh".to_string(), 4), ("a".to_string(), 1)];
+        let d = compare(&want, &got);
+        assert!(d.iter().any(|l| l.starts_with("changed") && l.contains(" b")), "{d:?}");
+        assert!(d.iter().any(|l| l.starts_with("missing") && l.contains("gone")), "{d:?}");
+        assert!(d.iter().any(|l| l.starts_with("new") && l.contains("fresh")), "{d:?}");
+        assert!(d.iter().any(|l| l.starts_with("duplicate") && l.contains(" a")), "{d:?}");
+        assert!(compare(&want[..2], &got[..2]).len() == 1, "only b differs there");
     }
 }

@@ -14,6 +14,7 @@ pub mod data;
 pub mod icons;
 pub mod model;
 pub mod overlay;
+pub mod palette;
 pub mod theme;
 pub mod text;
 pub mod widgets;
