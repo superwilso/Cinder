@@ -114,6 +114,13 @@ void log_fault(int sig, void* uc_, siginfo_t* si, const char* tag) {
     backtrace_symbols_fd(bt, n, 2 /*stderr*/);
     std::fflush(stderr);
     dump_maps();
+    // FORCE IT TO FLASH. The log is on vfat, and fflush only reaches the page cache. A fault is
+    // exactly the moment the user is about to hold the power button, and a held-power shutdown
+    // discards unsynced pages: on 2026-09-10 the guard recovered a hung seek and put its banner on
+    // the glass, the UI then froze, and after the forced restart the log ended at "touch: seek" —
+    // the fault record, the recovery and everything after it were gone. fsync is on the POSIX
+    // async-signal-safe list.
+    fsync(2);
 }
 
 // ── crash/hang GUARD ────────────────────────────────────────────────────────────────────
@@ -185,6 +192,7 @@ void fault_handler(int sig, siginfo_t* si, void* uc_) {
         static const char m[] = "[cinder-home] *** FATAL SIGABRT (heap corruption / library abort)"
                                 " — no recovery possible, latching bad-boot + exiting ***\n";
         ssize_t w = write(2, m, sizeof m - 1); (void)w;
+        fsync(2);                   // the only record of this abort — see log_fault
         latch_bad_boot_counter();   // a post-health crash must still auto-revert
         _exit(42);
     }
@@ -464,6 +472,7 @@ static int run_guarded_ex(const char* what, unsigned timeout, void (*fn)(), Guar
                   "mid-call and calling back into it is what faults (SIGSEGV/SIGBUS in libc++). "
                   "UI continues; audio and Bluetooth need a restart.", what);
     clog_(m);
+    fsync(2);   // the most important line this path prints — see log_fault
     return -1;
 }
 
@@ -2827,6 +2836,12 @@ static bool display_backlight(unsigned level) {
     // to keep up with. Observed sending the identical level five times in one session.
     static unsigned last = 0xFFFFFFFFu;
     if (level == last) return true;
+    // AFTER A RECOVERY, NOT ONE MORE SONY CALL. This is a synchronous binder round trip on the
+    // render thread with no guard around it, and the power key reaches it. Once run_guarded has
+    // unwound a Sony call the IPC may be wedged, and this call then never returns: the recovery
+    // banner is painted, the user presses power, and the UI is frozen for good. That is the
+    // 2026-09-10 incident. The screen staying lit is recoverable; a frozen render thread is not.
+    if (g_ipc_dead) return false;
     void* cli = display_client();
     if (!cli) return false;
     void** vt = *(void***)cli;
@@ -2846,6 +2861,7 @@ unsigned g_disp_bl_saved = 0;
 
 static void display_backlight_remember() {
     if (g_disp_bl_saved) return;
+    if (g_ipc_dead) return;   // unguarded Sony IPC — see display_backlight
     void* cli = display_client();
     if (!cli) return;
     unsigned cur = 0;
@@ -2872,6 +2888,9 @@ static void display_backlight_remember() {
 
 static bool touch_panel_service(bool valid) {
     enum { VIDX_SetTouchPanelValidate = 13 };
+    // Unguarded Sony IPC on the power-key path — see display_backlight. Returning false is not a
+    // loss of function: the caller falls through to the sysfs sleep node, which needs no service.
+    if (g_ipc_dead) return false;
     void* cli = display_client();
     if (!cli) return false;
     try {
@@ -9993,7 +10012,9 @@ void poll_now_playing() {
     if (force || (moved && (boundary || stale))) {
         last_uri_ms = np_now;
         char uri[1024];
-        int n = cinder_audio_current_uri(uri, sizeof uri);
+        // GetCurrentStatus is a binder round trip, unguarded, reached from housekeeping at every
+        // track boundary. Refused after a recovery for the same reason as display_backlight.
+        int n = g_ipc_dead ? -1 : cinder_audio_current_uri(uri, sizeof uri);
         if (n > 0 && std::strcmp(uri, last) != 0) {
             std::strncpy(last, uri, sizeof last - 1);
             last[sizeof last - 1] = 0;

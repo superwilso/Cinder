@@ -254,6 +254,22 @@ warns when a non-release push carries `dist/stable` (~8.7 MB a time, 41 revision
 
 ---
 
+## Open from 2026-09-11 — the crash, the queue and the power-key escape
+
+Code-complete and host-tested; none of it has run on hardware. **Do 11.1 before installing
+anything** — it needs no new build and decides whether 11.2 can work at all.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 11.1 | **The kernel logs a press made during boot** (zero risk — current launcher) | Power on, then press and RELEASE power once while the Sony logo shows. Once up: `adb shell 'cat /proc/sys/kernel/dmesg_restrict; dmesg \| grep pwrkey'` | `0`, and a `Release pwrkey` line at **≥ 2 s** besides the power-on one at ~0.4 s | No second line = this kernel does not log it and the escape can never fire — do NOT install it. `dmesg_restrict` 1 = the launcher's user cannot read the log |
+| 11.2 | **The power-key escape fires** | Install. Power on, press power once during the logo | Stock Sony UI. Next plain boot is Cinder again | Check 11.1 first; then run `klog` / `pwrkey_pressed_during_boot` from the launcher by hand as the launcher's user |
+| 11.3 | **A quiet boot never goes to stock** | Five boots, power pressed only to turn it on — held briefly, then held for ~3 s | Cinder every time | A false positive is the exact trap the cable escape set. `dmesg \| grep pwrkey` for the stray release, and raise `PWRKEY_AFTER_S` or pull the escape |
+| 11.4 | **Only after 11.2 and 11.3 pass:** decide the cable escape | Keep, narrow to a PC connection, or remove | — | The cable escape stays exactly as it is until then |
+| 11.5 | **A queued song plays next over Bluetooth** | Buds connected, play an album, swipe-queue a song from elsewhere mid-track | At the track end the queued song plays, then the album continues from where it was | Log for `PlayerService moved on before the picks were issued`. Absent = the boundary case was not taken; check `owed`/`idx` at the boundary |
+| 11.6 | **◁ with a song queued still goes back** | As 11.5, then press ◁ before the track ends | The previous track plays; the queued song is still queued | The preempt must never fire on a backward move — that is its `idx + 1` test |
+| 11.7 | **The shuffle band slides on all four tabs** | Songs, Albums, Artists, Playlists: scroll down, then up mid-list | Band slides under the tabs with the finger and returns on the way up; filter strip / NEW PLAYLIST stay tappable | A tap on the band's old spot while hidden must never start a shuffle |
+| 11.8 | **Power key after a guard recovery** | Hard to force. If `GUARD RECOVERED` ever appears again: press power, touch the screen | The UI stays responsive (screen may stay lit); log carries the fault record after a forced restart | A frozen UI = a fifth unguarded Sony call; the fault record now survives to say which |
+
 ## Recording results
 
 Append findings to [`DEVICE_TESTS.md`](DEVICE_TESTS.md) in the style of its "RESULTS 2026-08-17"

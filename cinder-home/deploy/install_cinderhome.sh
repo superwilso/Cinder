@@ -396,6 +396,8 @@ fi
 #    process "survives" → it never accumulated → soft-brick. That bug is removed.)
 #  * ESCAPES, weakest dependency first (each works when the one below it cannot):
 #      1. USB cable connected at boot          -> stock. No fs, no shell, no counter. Always works.
+#     1b. POWER pressed while the logo shows    -> stock. No fs either: reads the kernel log.
+#         (added 2026-09-11 — NOT yet verified on hardware; the cable escape stays until it is)
 #      2. /contents/cinderhome_off  (USB-MSC)  -> stock. Needs a mountable /contents.
 #      3. /contents/cinderhome_clear (USB-MSC) -> clears the latch and retries.
 #      4. bad-boot counter hits MAXBAD         -> stock, automatically. Needs a writable /data.
@@ -467,6 +469,45 @@ if [ ! -f /data/cinder/cable_escape_off ] && [ ! -f /contents/cinderhome_cable_o
     sleep 3
     usb_connected && run_stock "$@"
 fi
+
+# ── POWER-KEY ESCAPE (added 2026-09-11) ───────────────────────────────────────────────────────
+# Press POWER once while the Sony logo is up -> stock. Asked for after the cable escape stranded a
+# user who force-restarted while charging: "charge overnight -> wake up on stock" is the price the
+# cable escape was always known to carry, and this is the same escape without it.
+#
+# IT ASKS THE KERNEL, NOT THE KEY. This launcher runs ~10 s after power-on, and holding POWER that
+# long is not an option: past about eight seconds the PMIC's own forced reset takes over (measured,
+# docs/FLASH_NEXT.md). So the question is not "is it held now" but "was it pressed during boot" —
+# and the kernel already records that, logging every power-key release with its boot timestamp:
+#     <5>[    0.434840] (1)[28:pmic_thread_kth][Power/PMIC] [pwrkey_int_handler] Release pwrkey
+# The press that powers the device on releases at ~0.4 s (measured 2026-09-11). A release at or
+# after PWRKEY_AFTER_S is therefore a second press, made on purpose.
+#
+# Same dependency class as the cable escape — the kernel log and a shell, no filesystem — so it is
+# checked before /contents for the same reason. A missing or unreadable log, or a line with no
+# timestamp, reads as "not pressed": this fails toward Cinder, never toward stock.
+PWRKEY_AFTER_S=2
+klog() { /xbin/busybox dmesg 2>/dev/null || dmesg 2>/dev/null; }
+pwrkey_pressed_during_boot() {
+    _k="$(klog | grep 'Release pwrkey')"
+    [ -n "$_k" ] || return 1
+    set -f                      # the lines are full of [..] — they must never be globbed
+    _ifs=$IFS
+    IFS='
+'
+    _hit=1
+    for _l in $_k; do
+        # "<5>[    6.201337] (0)[28:..." -> "6". The first "[" opens the timestamp whether or not
+        # busybox kept the "<5>" level prefix; no timestamp leaves text that is not a number.
+        _t="${_l#*\[}"; _t="${_t%%]*}"; _t="${_t%%.*}"; _t="${_t##* }"
+        case "$_t" in ''|*[!0-9]*) continue ;; esac
+        if [ "$_t" -ge "$PWRKEY_AFTER_S" ]; then _hit=0; break; fi
+    done
+    IFS=$_ifs
+    set +f
+    return $_hit
+}
+pwrkey_pressed_during_boot && run_stock "$@"
 
 # /contents present? Cinder's DB, settings, art cache and log all live there, and a missing
 # /contents is the signature of a corrupt vfat — exactly the state that bricked the device on

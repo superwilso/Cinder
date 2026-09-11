@@ -147,7 +147,7 @@ fn bench_library_tabs() {
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Albums, "albums"),
                         (Tab::Artists, "artists"), (Tab::Playlists, "playlists")] {
         time_it(&format!("library {name} (gradients)"), n, || {
-            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false)
+            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false, 0)
         });
     }
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Artists, "artists")] {
@@ -163,7 +163,7 @@ fn bench_library_tabs() {
     }
     for (tab, name) in [(Tab::Songs, "songs"), (Tab::Albums, "albums"), (Tab::Artists, "artists")] {
         time_it(&format!("library {name} (real covers)"), n, || {
-            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false)
+            library::render(&mut c, &t, &f, tab, 0, 0, 0, 0, None, &lib, None, false, 0)
         });
     }
 

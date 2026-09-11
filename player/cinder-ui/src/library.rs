@@ -116,8 +116,15 @@ pub fn hit_album_play_band(x: i32, y: i32) -> bool {
 
 /// True if `(x, y)` is inside the Library shuffle band.
 pub fn hit_shuffle_band(x: i32, y: i32) -> bool {
+    hit_shuffle_band_at(x, y, 0)
+}
+
+/// [`hit_shuffle_band`] with the band slid `hide` px up. Whatever has gone under the tab strip is
+/// not on the glass, so it is not a target: the test stops at `TABS_BOTTOM`.
+pub fn hit_shuffle_band_at(x: i32, y: i32, hide: i32) -> bool {
     let (bx, by, bw, bh) = library_shuffle_band();
-    (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
+    let by = by - hide;
+    y > TABS_BOTTOM && (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
 }
 
 /// Top y of each tab's row area — derived from the band it sits under, so moving the band moves
@@ -145,10 +152,38 @@ pub fn filter_top() -> i32 {
     by + bh + FILTER_GAP
 }
 
+/// How far the shuffle band can slide up: exactly far enough to go fully under the tab strip,
+/// which puts the filter strip (or NEW PLAYLIST row) directly beneath the tabs. Derived, not a
+/// constant, so it follows the band if the band ever moves.
+///
+/// ONLY THE BAND GOES. The filter and NEW PLAYLIST stay reachable at any scroll depth — the band is
+/// the one control nobody needs mid-list, and the one that costs the list the most height.
+pub fn band_slide() -> i32 {
+    filter_top() - TABS_BOTTOM
+}
+
+/// The offset actually used for drawing and hit-testing: the stored slide, clamped to the slide
+/// range AND to the scroll position.
+///
+/// The scroll clamp is what makes this safe to read from anywhere. The band's bottom edge sits
+/// `hide` px above the list top and the first row sits `scroll_px` px above it, so a slide larger
+/// than the scroll would open a gap of empty background between them. Clamping here means no
+/// caller has to keep the two in step — a tab switch that zeroes the scroll brings the band back
+/// on the same frame, for free.
+pub fn band_offset(hide: i32, scroll_px: i32) -> i32 {
+    hide.clamp(0, band_slide()).min(scroll_px.max(0))
+}
+
 /// Is `(x, y)` on the filter strip? x is unused — the whole width is the target, because a 32px
 /// strip is already a small one and splitting it would make it smaller.
 pub fn filter_hit(tab: Tab, y: i32) -> bool {
-    has_filter(tab) && (filter_top()..filter_top() + FILTER_H).contains(&y)
+    filter_hit_at(tab, y, 0)
+}
+
+/// [`filter_hit`] with the band slid `hide` px up — the strip rides up with it.
+pub fn filter_hit_at(tab: Tab, y: i32, hide: i32) -> bool {
+    let top = filter_top() - hide;
+    has_filter(tab) && y > TABS_BOTTOM && (top..top + FILTER_H).contains(&y)
 }
 
 pub fn list_top(tab: Tab) -> i32 {
@@ -172,16 +207,21 @@ pub fn new_playlist_rect() -> (i32, i32, i32, i32) {
 }
 
 pub fn hit_new_playlist(tab: Tab, x: i32, y: i32) -> bool {
+    hit_new_playlist_at(tab, x, y, 0)
+}
+
+/// [`hit_new_playlist`] with the band slid `hide` px up — the row rides up with it.
+pub fn hit_new_playlist_at(tab: Tab, x: i32, y: i32, hide: i32) -> bool {
     if tab != Tab::Playlists {
         return false;
     }
     let (rx, ry, rw, rh) = new_playlist_rect();
-    (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
+    let ry = ry - hide;
+    y > TABS_BOTTOM && (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
 }
 
 /// The filter strip: what is filtering the list right now, and a way to change it.
-fn filter_strip(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library) {
-    let y = filter_top();
+fn filter_strip(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, y: i32) {
     let cy = y + FILTER_H / 2;
     fill_rect(c, 0, y, W as i32, FILTER_H, t.panel);
     let lst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18);
@@ -473,8 +513,21 @@ pub fn albums_hit(
     x: i32,
     y: i32,
 ) -> Option<AlbumsHit> {
+    albums_hit_at(lib, sort, expanded, scroll_px, x, y, 0)
+}
+
+/// [`albums_hit`] with the band slid `hide` px up — see [`hit_row_at`].
+pub fn albums_hit_at(
+    lib: &Library,
+    sort: usize,
+    expanded: Option<usize>,
+    scroll_px: i32,
+    x: i32,
+    y: i32,
+    hide: i32,
+) -> Option<AlbumsHit> {
     let top = list_top(Tab::Albums);
-    if y < top || y >= LIST_BOTTOM {
+    if y < top - hide || y >= LIST_BOTTOM {
         return None;
     }
     let cy = y - top + scroll_px.max(0);
@@ -796,8 +849,15 @@ pub fn song_at(lib: &Library, sort: usize, rank: usize) -> Option<&crate::model:
 /// (`y - top + scroll_px`) and resolved against the same geometry the renderer used —
 /// including partially visible edge rows. None = chrome/gap/header/off-list.
 pub fn hit_row(tab: Tab, lib: &Library, scroll_px: i32, y: i32) -> Option<usize> {
+    hit_row_at(tab, lib, scroll_px, y, 0)
+}
+
+/// [`hit_row`] with the band slid `hide` px up. Rows are where they always were for a given
+/// `scroll_px` — only the top of the visible window rises, into the space the band gave up — so the
+/// content-space mapping below is unchanged and just accepts taps from that higher top.
+pub fn hit_row_at(tab: Tab, lib: &Library, scroll_px: i32, y: i32, hide: i32) -> Option<usize> {
     let top = list_top(tab);
-    if y < top || y >= LIST_BOTTOM {
+    if y < top - hide || y >= LIST_BOTTOM {
         return None;
     }
     let cy = y - top + scroll_px.max(0); // content-space y
@@ -988,6 +1048,44 @@ fn tabs(c: &mut Canvas, t: &Theme, f: &FontSet, y0: i32, active: Tab) -> i32 {
     y0 + 34
 }
 
+/// The block between the tab strip and the list — the shuffle band, and the filter strip or the
+/// NEW PLAYLIST row under it — drawn `hide` px up the screen.
+///
+/// It moves as ONE piece, so nothing in it can open a gap against its neighbour, and it goes UNDER
+/// the tab strip (clipped just below the strip's hairline) rather than over it. Its bottom edge is
+/// `list_top - hide`, which is exactly where the rows' clip begins: the two regions never overlap,
+/// so draw order between them does not matter, and at `hide == 0` the screen is pixel-identical to
+/// how it was before any of this existed.
+fn band_block(c: &mut Canvas, t: &Theme, f: &FontSet, tab: Tab, lib: &Library, yt: i32, hide: i32) {
+    c.set_clip_y(TABS_BOTTOM + 1, list_top(tab) - hide);
+    let y = yt - hide;
+    match tab {
+        Tab::Songs => {
+            // The band's caption follows the FILTER: shuffling a filtered list shuffles what is
+            // on screen, so promising "3,463 tracks" while showing 429 would be a lie about the
+            // next hour of listening.
+            let scope = lib.filter_name().map(|g| format!("Shuffle {g}"))
+                .unwrap_or_else(|| "Shuffle all songs".to_string());
+            shuffle_row(c, t, f, y, &scope,
+                &format!("{} TRACKS · RANDOM ORDER", group_thousands(lib.visible_songs())));
+        }
+        Tab::Albums => {
+            shuffle_row(c, t, f, y, "Shuffle by album", "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE");
+        }
+        Tab::Artists => {
+            shuffle_row(c, t, f, y, "Shuffle by artist", "RANDOM ARTIST · SHUFFLED WITHIN ARTIST");
+        }
+        Tab::Playlists => {
+            shuffle_row(c, t, f, y, "Shuffle a playlist", "RANDOM PLAYLIST · SHUFFLED");
+            new_playlist_row(c, t, f, hide);
+        }
+    }
+    if has_filter(tab) {
+        filter_strip(c, t, f, lib, filter_top() - hide);
+    }
+    c.clear_clip();
+}
+
 /// Accent shuffle row (scope-aware). Returns the y below it.
 fn shuffle_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str, sub: &str) -> i32 {
     let (bx, top, bw, h) = shuffle_band_rect(y);
@@ -1121,8 +1219,10 @@ pub fn render(
     lib: &Library,
     swipe: Option<SwipeRow>,
     sbar_active: bool,
+    band_hide: i32,
 ) {
     let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib, album_sort, album_expanded));
+    let hide = band_offset(band_hide, scroll_px);
     c.fill(t.bg);
     // Songs shows a tappable SORT chip; Albums an ORDER chip; the others show their count.
     let rc = match tab {
@@ -1133,27 +1233,18 @@ pub fn render(
     let y0 = crate::chrome::header(c, t, f, "Library", Some(&rc));
     let yt = tabs(c, t, f, y0, tab);
     let total = row_count(tab, lib);
-    // Drawn AFTER the per-tab arms below place the shuffle band, but its geometry is fixed and
-    // independent of them, so it can be issued here — one call for both tabs that have it.
-    if has_filter(tab) {
-        filter_strip(c, t, f, lib);
-    }
+    band_block(c, t, f, tab, lib, yt, hide);
 
     match tab {
         Tab::Songs => {
-            // The band's caption follows the FILTER: shuffling a filtered list shuffles what is
-            // on screen, so promising "3,463 tracks" while showing 429 would be a lie about the
-            // next hour of listening.
-            let scope = lib.filter_name().map(|g| format!("Shuffle {g}"))
-                .unwrap_or_else(|| "Shuffle all songs".to_string());
-            shuffle_row(c, t, f, yt, &scope,
-                &format!("{} TRACKS · RANDOM ORDER", group_thousands(lib.visible_songs())));
             let top = list_top(Tab::Songs);
             let rh = row_h(Tab::Songs);
             let order = song_order(lib, sort); // shared with hit_row/selection — keep in sync
-            let first = (scroll_px / rh) as usize;
-            let mut y = top - (scroll_px % rh);
-            c.set_clip_y(top, LIST_BOTTOM);
+            // While the band is slid away the rows show from `hide` px higher. Every row sits where
+            // it always did for this scroll_px; only the clip and the first row drawn move up.
+            let first = ((scroll_px - hide) / rh) as usize;
+            let mut y = top - hide - ((scroll_px - hide) % rh);
+            c.set_clip_y(top - hide, LIST_BOTTOM);
             for rank in first..order.len() {
                 if y >= LIST_BOTTOM {
                     break;
@@ -1190,11 +1281,10 @@ pub fn render(
             scrollbar(c, t, top, LIST_BOTTOM, scroll_px, total as i32 * rh, sbar_active);
         }
         Tab::Albums => {
-            shuffle_row(c, t, f, yt, "Shuffle by album", "RANDOM ALBUM ORDER · TRACKS IN SEQUENCE");
             let top = list_top(Tab::Albums);
             let flat = lib.albums_flat();
             let layout = albums_build(lib, album_sort, album_expanded);
-            c.set_clip_y(top, LIST_BOTTOM);
+            c.set_clip_y(top - hide, LIST_BOTTOM);
             let mut rank = 0; // album display rank (skips headers/tracks) — matches the button cursor
             for (vy, row) in &layout.rows {
                 let h = match row {
@@ -1203,7 +1293,7 @@ pub fn render(
                     AlbumsRow::Track { .. } => ALBUM_CHILD_H,
                 };
                 let y = top + *vy - scroll_px;
-                if y + h <= top {
+                if y + h <= top - hide {
                     if let AlbumsRow::Album { .. } = row {
                         rank += 1;
                     }
@@ -1286,11 +1376,13 @@ pub fn render(
             scrollbar(c, t, top, LIST_BOTTOM, scroll_px, layout.content_h, sbar_active);
         }
         Tab::Artists => {
-            let top = shuffle_row(c, t, f, yt, "Shuffle by artist", "RANDOM ARTIST · SHUFFLED WITHIN ARTIST") + 8;
+            // From `list_top`, like every other tab: the hit test reads the same function. (This
+            // was the band's return value + 8, which is the same number — until the band moves.)
+            let top = list_top(Tab::Artists);
             let rh = row_h(Tab::Artists);
-            let first = (scroll_px / rh) as usize;
-            let mut y = top - (scroll_px % rh);
-            c.set_clip_y(top, LIST_BOTTOM);
+            let first = ((scroll_px - hide) / rh) as usize;
+            let mut y = top - hide - ((scroll_px - hide) % rh);
+            c.set_clip_y(top - hide, LIST_BOTTOM);
             for idx in first..lib.artists.len() {
                 if y >= LIST_BOTTOM {
                     break;
@@ -1321,15 +1413,13 @@ pub fn render(
             scrollbar(c, t, top, LIST_BOTTOM, scroll_px, total as i32 * rh, sbar_active);
         }
         Tab::Playlists => {
-            shuffle_row(c, t, f, yt, "Shuffle a playlist", "RANDOM PLAYLIST · SHUFFLED");
-            new_playlist_row(c, t, f);
             // From `list_top`, not from the band: the hit test reads the same function, so the
             // row you press is always the row that was drawn.
             let top = list_top(Tab::Playlists);
             let rh = row_h(Tab::Playlists);
-            let first = (scroll_px / rh) as usize;
-            let mut y = top - (scroll_px % rh);
-            c.set_clip_y(top, LIST_BOTTOM);
+            let first = ((scroll_px - hide) / rh) as usize;
+            let mut y = top - hide - ((scroll_px - hide) % rh);
+            c.set_clip_y(top - hide, LIST_BOTTOM);
             for idx in first..lib.playlists.len() {
                 if y >= LIST_BOTTOM {
                     break;
@@ -1815,8 +1905,9 @@ pub fn playlist_hit_track(pl: &crate::model::PlaylistRow, scroll_px: i32, y: i32
 
 /// The "NEW PLAYLIST" row. Outlined rather than filled: the accent band directly above it is
 /// filled, and two solid accent blocks stacked read as one control.
-fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet) {
+fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet, hide: i32) {
     let (x, y, w, h) = new_playlist_rect();
+    let y = y - hide;
     let cy = y + h / 2;
     stroke_rect(c, x + 22, y + 4, w - 44, h - 8, t.acc, 2);
     // A `+` drawn from two bars — `icons` has no plus.
