@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-11
+
 ### Added
 
 - **Palettes: Cinder's colours, from a text file.** *device-verified 2026-09-11 — two palettes
@@ -1360,7 +1362,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/superwilso/Cinder/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/superwilso/Cinder/compare/v0.1.9...v0.2.0
 [0.1.9]: https://github.com/superwilso/Cinder/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/superwilso/Cinder/compare/v0.1.7...v0.1.8
