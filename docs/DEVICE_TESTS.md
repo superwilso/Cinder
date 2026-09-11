@@ -1098,3 +1098,23 @@ dimmer than ink). Paper chosen, its Accent row read SET BY PALETTE, and `palette
 
 The install boot's `input: still ZERO events from every node` at 25.8 s was only an untouched
 screen: the next boot's log is full of touch reports from the same node.
+
+### 11.2 again, with the fixed launcher: **PASS** (23:40)
+
+Launcher `c274e26fb26ce3aec9316dd635e977ae` installed, cable unplugged. Powered off from Cinder's
+power menu at 23:39:56 (`power: off confirmed`, 7358.9 s into that session), powered on, POWER
+pressed while the Sony logo showed: **stock Sony UI**. The boot after it came up on Cinder.
+
+What the player shows afterwards:
+
+- `cinderhome.log.1` is still that whole two-hour session, ending at 23:39:56. Log rotation would
+  have replaced it with the next boot's log had Cinder started in between — so the boot in between
+  ran no Cinder.
+- 73 s separate that power-off from the next Cinder kernel start (23:41:09). A power-on straight
+  into Cinder reaches the launcher in about 10 s. The gap is a stock boot and a power cycle.
+- That following Cinder boot logged `kpd: Power Key generate, pressed=0` at 0.434 s and nothing
+  after it: the key was already released when the PMIC read it, and no press at 2 s or later. It
+  stayed on Cinder, which is what it should do.
+
+11.3 — five quiet boots, one holding POWER ~3 s to switch on — is still open, and the cable escape
+stays exactly as it is until it passes.

@@ -90,7 +90,7 @@ covers a 44-case recovery matrix — **and nothing automatic runs it.**
 > all 36 scripts) and the launcher matrix now both run in the `native` CI job. The matrix also
 > stopped lying: one case makes `/data/cinder` unwritable with `chmod`, which does not bind uid 0,
 > so run as root it reported a failure about the tester rather than the launcher. It skips itself
-> there now, with a root-proof variant covering the same rule — 45 cases as root, 46 as a normal
+> there now, with a root-proof variant covering the same rule — 55 cases as a normal
 > user, zero failures either way. The launcher itself was already correct; the guard it needs was
 > added after the 2026-07-26 brick and is proven by write-then-read-back rather than `[ -w ]`.
 

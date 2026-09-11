@@ -12,6 +12,7 @@ the whole design: the 2026-07-26 brick happened because every escape that existe
 | # | Escape | Depends on |
 |---|--------|-----------|
 | 0 | **Boot with the USB cable connected → stock.** | Nothing. No filesystem, no shell, no counter. |
+| 0b | **Press POWER while the Sony logo shows → stock**, for that boot only (verified 2026-09-11). Once or twice while the logo is up: a press in its first second or two is before the kernel, and after the launcher runs (~10 s) is too late. Holding POWER to switch on is one press and never counts. | The kernel's own log and a shell. No filesystem, no counter. |
 | 1 | **Bad-boot counter** hits `MAXBAD=4` → stock, by itself. | A writable `/data` (ext4). |
 | 2 | `/contents/cinderhome_off` over USB-MSC → stock. | A mountable `/contents` + a PC. |
 | 3 | `/contents/cinderhome_clear` over USB-MSC → clears the latch, tries again. | Same. |
@@ -75,7 +76,7 @@ Nobody has tested this. Until someone does, treat a bad `bootimg` as "wbrt only"
 Stay in the first two rows. The third is the only tier that bets the device on wbrt, and no FM work
 so far justifies going there.
 
-**Rung 0 is the important one.** Plug the cable in, power on, and you land on stock — no matter
+**Rung 0 is the important one, and 0b is the one to reach for without a PC.** Plug the cable in, power on, and you land on stock — no matter
 how broken the filesystem is. The cost is that charging at boot also lands on stock; turn that off
 for cable-heavy dev with `/data/cinder/cable_escape_off` (or `/contents/cinderhome_cable_off`).
 
