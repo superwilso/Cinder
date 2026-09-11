@@ -2,9 +2,9 @@
 # Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
-tag v0.2.0
-279841463853020c5d1a6436cce9b349ccad95e83ac9fad4bf80434e06eb3d2c  cinder-home/dist/stable/cinder-home
-50f01224b527bba88f60b185df932bc103707205132274d10d263575cbeb170b  cinder-home/dist/stable/cinder-probe
+tag v0.3.0-rc1
+cdd0c40807eb4a952e9afdec20f3f5a7dad70c01a8920e13158b3b110c893579  cinder-home/dist/stable/cinder-home
+38534b658d13882afc3d79d6d29d6868ac59f7aff4508eccb4dbd9813f5b04a5  cinder-home/dist/stable/cinder-probe
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
 42dd6d1f20d7602bf66ef2ff67174623cfb037fdc9564158e46b21ed55d20b26  cinder-home/dist/stable/cinder-power
 b58cc1d84c61d27df20fd0cdf01a031c49d146ec0d5725745fb7ca996c99b7c1  cinder-home/dist/stable/cinder-msc
@@ -14,5 +14,5 @@ d2eeb22e165bd9dcf01b9862af6e17dbdd157817cbfac54fd14adf77516193fd  cinder-home/di
 f7682696f4f1c200c5ceb9ae04b82aac7ca5a7515ba3ff76db8f92cf61624898  cinder-home/dist/stable/cinder-battery
 763b0c422a3eb185b7a58466881d6fde0c6233994f73767178edbca3dd2bbb22  cinder-home/dist/stable/cinder-signature.sh
 458a402e8e1a5b5c37721e5a33298ecbb76173552f1ff2daa4708e1eb7735e05  cinder-home/dist/stable/cinder_components.conf
-05cad04569c42be85643ee122c6d345b187f9563458a88ff02016abf6703e4c8  cinder-home/dist/stable/cinder_home_install.upg
+aff19c3c328dc78579e9536bf703dd03dfd7f75379ea686fbfedc867943033e9  cinder-home/dist/stable/cinder_home_install.upg
 fe9acb1510a259078163858fe5268d7e43bb3f33e0244856c197e5e585242954  cinder-home/dist/stable/cinder_home_uninstall.upg
