@@ -589,6 +589,14 @@ cost is that charging at boot also lands on stock — disable that for
 cable-heavy dev with `/data/cinder/cable_escape_off` (or
 `/contents/cinderhome_cable_off`).
 
+**Or press POWER while the Sony logo is showing → stock** (verified on the
+player 2026-09-11). Cable-free, and it needs no filesystem either: the
+launcher asks the kernel whether the power key went down again during boot.
+Press it once or twice while the logo is up — a press in the first second or
+two happens before the kernel is running and is not recorded, and one after
+the launcher runs (~10 s) is too late. Holding POWER to switch the player on
+never counts, however long you hold it, because that is a single press.
+
 For the first install, **boot with the cable UNPLUGGED** so Cinder actually
 runs.
 
@@ -848,6 +856,10 @@ Possible causes, in order of likelihood:
 
 1. **USB cable was plugged in at boot.** Rung 0 of the escape ladder → stock.
    Unplug and reboot.
+1. **POWER was pressed while the Sony logo showed.** The power-key escape →
+   stock, for that boot only. The next boot is Cinder again. To check:
+   `adb shell 'dmesg | grep -a "Power Key generate"'` on the boot after it
+   shows the press that did it, at 2 s or later.
 2. **Bad-boot counter hit `MAXBAD=4`.** Cinder crashed 4 times in a row and
    the counter reverted to stock. Check `/contents/cinderhome.log` for crash
    patterns. Clear with `tools/flash.sh --clear-latch` (over MSC).
@@ -888,6 +900,7 @@ the one below it):
 | # | Escape | Depends on |
 |---|--------|-----------|
 | 0 | Boot with USB cable connected → stock | Nothing |
+| 0b | Press POWER while the Sony logo shows → stock | Nothing — the kernel's own log and a shell |
 | 1 | Bad-boot counter hits `MAXBAD=4` → stock | A writable `/data` (ext4) |
 | 2 | `/contents/cinderhome_off` over USB-MSC → stock | A mountable `/contents` + a PC |
 | 3 | `/contents/cinderhome_clear` → clears the latch, retries | Same |
@@ -895,7 +908,8 @@ the one below it):
 | 5 | `wbrt` eMMC restore | Nothing — but it wipes `/contents` |
 
 **Rung 0 is the important one.** Plug the cable in, power on, and you land
-on stock — no matter how broken the filesystem is.
+on stock — no matter how broken the filesystem is. With no cable to hand,
+rung 0b does the same: press POWER while the Sony logo is showing.
 
 ### 7.1 Rollback to the previous binary
 

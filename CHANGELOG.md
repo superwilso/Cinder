@@ -46,9 +46,11 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   refactor underneath changed no pixel, and the new Settings row changed exactly the 13 previews that
   draw Settings.
 
-- **Press POWER while the Sony logo is showing to boot to stock.** *device-unverified — the version
-  in v0.3.0-rc1 could not fire, and an earlier note here calling it verified was wrong (below). The
-  fixed launcher's suite covers nine power-key cases built from lines copied off the device.*
+- **Press POWER while the Sony logo is showing to boot to stock.** *device-verified 2026-09-11 —
+  pressed during the logo, the player came up in Sony's stock UI, and the boot after it was Cinder.
+  The version in v0.3.0-rc1 could not fire at all (below); the launcher suite covers nine power-key
+  cases built from lines copied off the device. Still open: that a long hold to switch on never
+  trips it (`docs/DEVICE_CHECKLIST.md` 11.3), so the cable escape stays until that passes too.*
 
   Asked for after the cable escape stranded a user who force-restarted while charging. The cable
   escape counts any USB power, so "restart while charging" meant stock on every retry, with nothing

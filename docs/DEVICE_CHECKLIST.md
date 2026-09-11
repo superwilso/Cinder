@@ -54,7 +54,7 @@ These are not preferences. Each one is written from something that already went 
 | 0.1 | **`cinder-home/build.sh [stable\|dev]` passes** | This is the only gate that does the ARM link, the **GLIBC ≤ 2.23 ceiling** and the **qemu construction preflight**. CI deliberately does not carry the cross toolchain, so a green CI says nothing about whether the thing links for the device. **This gate earned its keep on 2026-08-25**: the tree did not compile for ARM at all — `f2f41a8` silenced an unused-parameter warning by commenting out a name that the `#if defined(__arm__)` body still used, which only host builds can skip. Note `build.sh` is not executable in a fresh checkout; run it as `bash build.sh dev`. |
 | 0.2 | **`cinder-home/harness/run.sh` passes** | Thirteen scenarios, ~8 s — the strongest offline check of the app's *behaviour*, and what the fixes below were written against. **`build.sh` now runs it**, so 0.1 covers this; run it alone when iterating. |
 | 0.3 | **`tools/release.sh`** if flashing a release | Verifies the committed `dist/` payload byte-for-byte against a fresh build before it will tag. |
-| 0.4 | Escape ladder intact | Bad-boot counter → auto-revert → crash supervisor → kill switch → `wbrt` restore. `cinder-home/tools/test_launcher.sh` covers it offline and **now runs in CI**, so a green tick already says this. Run it by hand only if you changed the launcher. *(46 cases as a normal user, 45 as root — one case uses `chmod`, which does not bind uid 0, and skips itself there.)* |
+| 0.4 | Escape ladder intact | Bad-boot counter → auto-revert → crash supervisor → kill switch → `wbrt` restore. `cinder-home/tools/test_launcher.sh` covers it offline and **now runs in CI**, so a green tick already says this. Run it by hand only if you changed the launcher. *(55 cases as a normal user; one of them uses `chmod`, which does not bind uid 0, so it skips itself when the suite is run as root.)* |
 
 ---
 
@@ -260,13 +260,12 @@ non-release push carries `dist/stable`.
 
 11.5, 11.6 (the Bluetooth queue) and 11.12 (palettes) **passed on 2026-09-11**, and the shuffle band
 passed with one change asked for, which is 11.7 now. 11.1 is answered — the kernel does log a press
-made during boot, through `kpd:` lines rather than the ones it named. **11.2 did not pass**: it was
-recorded as passing that evening and corrected the same night, when the log showed the escape could
-never fire. Results: [`DEVICE_TESTS.md`](DEVICE_TESTS.md) "RESULTS 2026-09-11 (evening)".
+made during boot, through `kpd:` lines rather than the ones it named. **11.2 passed at 23:40 on the
+fixed launcher**, after the first version was found unable to fire at all. Results:
+[`DEVICE_TESTS.md`](DEVICE_TESTS.md) "RESULTS 2026-09-11 (evening)".
 
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|
-| 11.2 | **The power-key escape fires** — the fixed launcher | Cable UNPLUGGED (or the cable escape decides first). Power on; while the Sony logo is up, press POWER once or twice — not in its first second or two | Stock Sony UI. Next plain boot is Cinder | Plug in on the Cinder boot and `adb shell 'dmesg \| grep -a "Power Key generate"'`: no `pressed=1` at ≥ 2 s means the press came before the kernel started or after the launcher ran (~10 s) |
 | 11.3 | **A quiet boot never goes to stock** | Five boots, power pressed only to turn it on — held briefly, then held for ~3 s | Cinder every time | A false positive is the exact trap the cable escape set. `dmesg \| grep -a "Power Key generate"` for a stray `pressed=1` at ≥ 2 s. The ~0.43 s `pressed=1` is the PMIC's boot-time reading and never counts |
 | 11.4 | **Only after 11.2 and 11.3 pass:** decide the cable escape | Keep, narrow to a PC connection, or remove | — | The cable escape stays exactly as it is until then |
 | 11.7 | **NEW PLAYLIST slides away with the band** | Library ▸ Playlists, with enough playlists to scroll: scroll down, then up mid-list | NEW PLAYLIST goes up under the tabs with the band, the rows meet the tab strip, and both come back on the way up — tappable the moment it is back | A tap on its old spot while hidden must open a playlist or nothing, never the keyboard |

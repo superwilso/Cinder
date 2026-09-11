@@ -21,7 +21,7 @@ Everything CI runs, you can run locally, and you should:
 tools/host_syntax_check.sh          # C/C++ parse + -Wall -Wextra -Werror, both channels
 tools/shell_check.sh                # bash -n + pinned shellcheck over the shell scripts
 cinder-home/harness/run.sh          # boots the real main.cpp against fake Sony services
-bash cinder-home/tools/test_launcher.sh   # 46 cases over the escape ladder
+bash cinder-home/tools/test_launcher.sh   # 55 cases over the escape ladder
 (cd player && cargo test --release)
 (cd installer && cargo test --release)
 ```
