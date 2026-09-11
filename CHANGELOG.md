@@ -16,6 +16,75 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Press POWER while the Sony logo is showing to boot to stock.** *device-unverified — the launcher
+  suite covers seven cases; the kernel's log line was copied from the device, but the escape itself
+  has not yet fired on hardware, so the cable escape stays until it has.*
+
+  Asked for after the cable escape stranded a user who force-restarted while charging. The cable
+  escape counts any USB power, so "restart while charging" meant stock on every retry, with nothing
+  on the screen to say why — the price it was always known to carry.
+
+  It cannot be "hold POWER until it boots": the launcher runs ~10 s after power-on, and past about
+  eight seconds the PMIC's own forced reset takes over (docs/FLASH_NEXT.md). So the launcher asks
+  the kernel whether POWER was pressed during boot. Every power-key release is logged with its boot
+  timestamp; the press that turns the device on releases at ~0.4 s, so a release two seconds or more
+  in is a second press, made on purpose. Like the cable escape it needs no filesystem, and it fails
+  toward Cinder: no log, an unreadable log, or a line with no timestamp all read as "not pressed".
+
+- **The Library's shuffle band slides away as the list scrolls, and comes back on the way up.**
+  *device-unverified — 7 host tests cover the slide, the no-gap rule and the hit tests; looked at
+  as pixels half-slid and fully hidden.*
+
+  On Songs, Albums, Artists and Playlists the band slides up under the tab strip, tracking the
+  finger, and returns the moment the list scrolls up — mid-list, not only at the top. Only the band
+  leaves: the filter strip and NEW PLAYLIST ride up with it and stay reachable at any depth, since
+  the band is the one control nobody needs mid-list and the one that costs the list the most height.
+
+  One offset, `library::band_offset`, is read by the renderer and every hit test, so a tap cannot
+  land on a band that has already gone. It is clamped to the scroll position, which is what stops it
+  ever opening a strip of bare background above the first row, and what brings the band back on a
+  tab switch without anything having to remember to reset it. At rest the screen is pixel-identical
+  to before.
+
+### Fixed
+
+- **A song queued over Bluetooth played one track late.** *device-unverified — the decision is a
+  tested pure function and the context step is tested in cinder-ui; the Bluetooth boundary itself
+  needs the headphones.*
+
+  Reported 2026-09-11: play an album, queue a song, and the next album track played first, then the
+  queue. Over Bluetooth a queue edit is deliberately not issued mid-track (it cuts the end of the
+  song over A2DP), so it waits for the track boundary — but by the time a boundary is visible,
+  PlayerService has already chosen the next track from the old sequence, which never held the pick.
+  The rebuild then led with that track. Turning shuffle off was incidental; any Bluetooth queue edit
+  hit it.
+
+  At that boundary the pick now goes first and the context track steps back behind it, so nothing
+  is skipped and nothing plays twice. It fires only when an edit was genuinely still owed and the
+  context moved forward by exactly one — ◁ and Up Next jumps move it otherwise, and overriding a
+  track the user chose would be refusing an instruction. It also closes the documented wired race
+  where the early rebuild does not reach the shell before the track ends.
+
+- **After a guard recovery the UI could freeze, and the evidence did not survive the restart.**
+  *device-unverified.*
+
+  The 2026-09-10 incident: a seek hung inside Sony's player over Bluetooth, the guard recovered and
+  put "audio stopped — restart" on the glass, and then the UI froze. Four Sony calls were still
+  reachable after IPC had been declared dead, unguarded, on the render thread — the display
+  backlight and touch-panel calls the power key makes, and the now-playing URI read. With Sony's IPC
+  wedged, the first power press blocked forever. All four now refuse once IPC is dead; the touch
+  path falls through to its sysfs node.
+
+  The log could not say any of this, because the fault record never reached flash: it lives on
+  vfat, and the held-power restart that follows a freeze discards unsynced pages. The log ended at
+  `touch: seek`, and the diagnosis had to be rebuilt from `/proc/aed`, the boot reason and the
+  user's description of the banner. The fault, abort and recovery paths now `fsync` what they write.
+
+  **Not fixed: why the seek hung.** That is inside PlayerService, and the record that would say
+  where was exactly what was lost. The next occurrence will be logged.
+
 ## [0.2.0] — 2026-09-10
 
 ### Added

@@ -372,7 +372,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                 sbar_active: false,
             });
         }
-        Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, 0, None, &app.lib, None, false),
+        Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, 0, None, &app.lib, None, false, 0),
         Screen::Artist => {
             let name = app.lib.artists.first().map(|a| a.name.as_str()).unwrap_or("");
             let page = library::artist_page(&app.lib, name);

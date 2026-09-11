@@ -614,6 +614,10 @@ pub struct App {
     lib_idx: usize,
     /// Library list scroll in PIXELS (live drag + fling; rows render at a sub-row offset).
     lib_scroll_px: i32,
+    /// How far the Library's shuffle band has slid up under the tab strip, in px. Moved only by a
+    /// real scroll gesture (drag or fling, via `scroll_px`), so it tracks the finger: down hides,
+    /// up brings it back. Read through `lib_band()`, never directly — see `library::band_offset`.
+    lib_band_hide: i32,
     lib_sort: usize,
     /// Albums-tab ORDER chip (index into library::ALBUM_SORTS: 0 artist-grouped, 1 A-Z, 2 added,
     /// 3 year) + the one expanded accordion album (a lib.albums_flat() index, stable across
@@ -1097,6 +1101,7 @@ impl Default for App {
             lib_tab: Tab::Albums,
             lib_idx: 0,
             lib_scroll_px: 0,
+            lib_band_hide: 0,
             lib_sort: 0,
             album_sort: 0,
             album_expanded: None,
@@ -3169,14 +3174,15 @@ impl App {
         }
         // The genre filter strip, above the list. Checked before the rows for the same reason the
         // A-Z rail is: it is not part of the list, so a tap here must never reach one.
-        if library::filter_hit(self.lib_tab, y) {
+        let band = self.lib_band();
+        if library::filter_hit_at(self.lib_tab, y, band) {
             self.genre_scroll_px = 0;
             self.push(Screen::GenreFilter);
             return vec![];
         }
         // "NEW PLAYLIST", between the shuffle band and the list on the Playlists tab. Tested
         // before the rows for the same reason as the filter strip: it is not part of the list.
-        if library::hit_new_playlist(self.lib_tab, x, y) {
+        if library::hit_new_playlist_at(self.lib_tab, x, y, band) {
             self.open_keyboard(KbPurpose::NewPlaylist);
             return vec![];
         }
@@ -3200,7 +3206,7 @@ impl App {
         }
         // The accent band sits above the list on every tab, so test it before the rows (it is the
         // largest target on the screen; it used to be drawn but hit-tested nowhere).
-        if library::hit_shuffle_band(x, y) {
+        if library::hit_shuffle_band_at(x, y, band) {
             return vec![Action::Shuffle(match self.lib_tab {
                 Tab::Songs => ShuffleScope::AllSongs,
                 Tab::Albums => ShuffleScope::ByAlbum,
@@ -3214,7 +3220,7 @@ impl App {
         }
         // The other tabs route through the render-mirroring hit test (library::hit_row): it knows
         // each tab's list top/row height and returns None for the shuffle band / gaps / off-list.
-        let Some(row) = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y) else {
+        let Some(row) = library::hit_row_at(self.lib_tab, &self.lib, self.lib_scroll_px, y, self.lib_band()) else {
             return vec![];
         };
         match self.lib_tab {
@@ -3676,7 +3682,7 @@ impl App {
     // toggles the inline track list; a track row plays that track in album context.
     fn tap_albums(&mut self, x: i32, y: i32) -> Vec<Action> {
         use crate::library::AlbumsHit;
-        match library::albums_hit(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, x, y) {
+        match library::albums_hit_at(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, x, y, self.lib_band()) {
             Some(AlbumsHit::AlbumToggle(flat)) => {
                 // KEEP THE TAPPED ROW UNDER THE FINGER.
                 //
@@ -3743,7 +3749,7 @@ impl App {
         use crate::library::AlbumsHit;
         // x is inside the row body: the accordion's own hit test only reports Track for the
         // track band, and the swipe already established this is a horizontal gesture on a row.
-        match library::albums_hit(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, 240, y) {
+        match library::albums_hit_at(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, 240, y, self.lib_band()) {
             Some(AlbumsHit::Track(flat, track)) => {
                 self.lib.albums_flat().get(flat).and_then(|al| al.track_list.get(track)).cloned()
             }
@@ -3763,7 +3769,7 @@ impl App {
     /// The album under `y` in the Albums accordion header row, for the swipe-to-queue gesture.
     fn albums_album_at(&self, y: i32) -> Option<AlbumRow> {
         use crate::library::AlbumsHit;
-        match library::albums_hit(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, 240, y) {
+        match library::albums_hit_at(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, 240, y, self.lib_band()) {
             Some(AlbumsHit::AlbumToggle(flat) | AlbumsHit::AlbumOpen(flat)) => {
                 self.lib.albums_flat().get(flat).map(|a| (*a).clone())
             }
@@ -3811,6 +3817,12 @@ impl App {
         self.lib_scroll_px = self.lib_scroll_px.clamp(0, max);
     }
 
+    /// The shuffle band's slide as drawn and hit-tested RIGHT NOW. Every reader goes through this so
+    /// the renderer and the tap handler can never disagree about where the band is.
+    fn lib_band(&self) -> i32 {
+        library::band_offset(self.lib_band_hide, self.lib_scroll_px)
+    }
+
     /// Live drag-scroll of the current list by `dy_px` PIXELS (positive = content moves up /
     /// show later rows). Called per pump tick while a vertical drag is in progress, so the list
     /// tracks the finger; clamped to the content height.
@@ -3824,7 +3836,12 @@ impl App {
         match self.current() {
             Screen::Library => {
                 let max = self.lib_max_scroll();
+                let before = self.lib_scroll_px;
                 self.lib_scroll_px = (self.lib_scroll_px + dy_px).clamp(0, max);
+                // The band follows what the LIST actually did, not what the finger asked for: a
+                // drag past the end moves nothing and must slide nothing.
+                let moved = self.lib_scroll_px - before;
+                self.lib_band_hide = library::band_offset(self.lib_band_hide + moved, self.lib_scroll_px);
             }
             Screen::Album => {
                 if let Some(al) = self.lib.albums_flat().get(self.album_view) {
@@ -4116,7 +4133,7 @@ impl App {
         // does nothing is worse feedback than a row that never moved.
         let has_track = match self.current() {
             Screen::Library => match self.lib_tab {
-                Tab::Songs => library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
+                Tab::Songs => library::hit_row_at(self.lib_tab, &self.lib, self.lib_scroll_px, y, self.lib_band())
                     .and_then(|r| library::song_at(&self.lib, self.lib_sort, r))
                     .is_some(),
                 Tab::Albums => self.albums_track_at(y).is_some() || self.albums_album_at(y).is_some(),
@@ -4483,7 +4500,7 @@ impl App {
             Screen::Library if dir < 0 => {
                 match self.lib_tab {
                     Tab::Songs => {
-                        let song = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
+                        let song = library::hit_row_at(self.lib_tab, &self.lib, self.lib_scroll_px, y, self.lib_band())
                             .and_then(|rank| library::song_at(&self.lib, self.lib_sort, rank))
                             .cloned();
                         match song {
@@ -4549,7 +4566,7 @@ impl App {
             Screen::Library if dir > 0 => {
                 match self.lib_tab {
                     Tab::Songs => {
-                        let song = library::hit_row(self.lib_tab, &self.lib, self.lib_scroll_px, y)
+                        let song = library::hit_row_at(self.lib_tab, &self.lib, self.lib_scroll_px, y, self.lib_band())
                             .and_then(|rank| library::song_at(&self.lib, self.lib_sort, rank))
                             .cloned();
                         match song {
@@ -4797,6 +4814,27 @@ impl App {
         self.playing_pick = None;
         self.set_context_playing(object_id);
         false
+    }
+
+    /// Put the context track that just started back BEHIND the user's picks. Returns true if it did.
+    ///
+    /// For the boundary where PlayerService chose the next track itself, from a sequence that never
+    /// contained the picks (a queue edit over Bluetooth waits for a boundary — see cinder-ffi). By
+    /// then `track_started` has advanced the context onto that track, so the rebuilt sequence was
+    /// `[that track] + picks` and the queued song played one track late.
+    ///
+    /// Stepping back exactly one puts it at the head of the remainder, so the rebuild is
+    /// `picks + [that track] + rest`. Only one step, and only when that track is the current one —
+    /// anything else is not this case, and a guess is how tracks get dropped.
+    pub fn defer_context_track(&mut self, object_id: i64) -> bool {
+        if self.queue.is_empty() || self.context_idx == 0 {
+            return false;
+        }
+        if self.context.get(self.context_idx).map(|t| t.object_id) != Some(object_id) {
+            return false;
+        }
+        self.context_idx -= 1;
+        true
     }
 
     /// Shuffle what is still to come, leaving the current track and the user's own picks alone.
@@ -5702,7 +5740,7 @@ impl App {
                 crate::library::render(
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
-                    self.sbar_active(),
+                    self.sbar_active(), self.lib_band(),
                 );
                 let az = self.az_present_memo();
                 crate::library::az_render(
@@ -5720,7 +5758,7 @@ impl App {
                     crate::library::render(
                         c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                         self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
-                        self.sbar_active(),
+                        self.sbar_active(), self.lib_band(),
                     );
                 }
             }
@@ -5735,7 +5773,7 @@ impl App {
                 None => crate::library::render(
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
-                    self.sbar_active(),
+                    self.sbar_active(), self.lib_band(),
                 ),
             },
             Screen::Artist => match self.artist_page() {
@@ -5748,7 +5786,7 @@ impl App {
                 None => crate::library::render(
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
-                    self.sbar_active(),
+                    self.sbar_active(), self.lib_band(),
                 ),
             },
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
@@ -8658,6 +8696,135 @@ mod tests {
         assert!(a.queue().is_empty());
         assert_eq!(a.context_idx(), 1);
         assert_eq!(a.context().len(), 6, "the context is not rewritten by a pick");
+    }
+
+    /// The 2026-09-11 queue report, on the navigator's side. Over Bluetooth PlayerService stepped
+    /// from T1 onto T2 using a sequence that never held the pick. Deferring T2 puts it back at the
+    /// head of the remainder, so the rebuild is `pick + T2 + rest`: nothing skipped, nothing twice.
+    #[test]
+    fn a_context_track_the_service_stepped_onto_goes_back_behind_the_picks() {
+        let mut a = ctx6(1); // T1 playing
+        a.queue.push(SongRow { title: "Queued".into(), object_id: 777, ..Default::default() });
+
+        assert!(!a.track_started(12), "T2 is the context moving, not a pick");
+        assert_eq!(a.context_idx(), 2);
+        assert!(a.defer_context_track(12));
+        assert_eq!(a.context_idx(), 1, "back exactly one step");
+
+        let rest: Vec<i64> =
+            a.context()[a.context_idx() + 1..].iter().map(|t| t.object_id).collect();
+        assert_eq!(rest, vec![12, 13, 14, 15], "T2 leads what is left, behind the queue");
+        assert_eq!(a.queue().len(), 1, "the pick is untouched until it actually starts");
+    }
+
+    /// Everything that is not exactly that case is left alone — a guess here drops tracks.
+    #[test]
+    fn deferring_refuses_anything_but_the_current_track_with_a_queue_behind_it() {
+        let mut a = ctx6(2);
+        assert!(!a.defer_context_track(12), "nothing queued: nothing to go behind");
+        a.queue.push(SongRow { object_id: 777, ..Default::default() });
+        assert!(!a.defer_context_track(13), "not the track that is current");
+        assert_eq!(a.context_idx(), 2, "and a refusal moves nothing");
+
+        let mut b = ctx6(0);
+        b.queue.push(SongRow { object_id: 777, ..Default::default() });
+        assert!(!b.defer_context_track(10), "index 0 has nowhere to step back to");
+        assert_eq!(b.context_idx(), 0);
+    }
+
+    /// A Songs list long enough to scroll far past the band's slide.
+    fn long_songs() -> App {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        let base = a.lib.songs.clone();
+        for n in 1..40 {
+            a.lib.songs.extend(base.iter().map(|s| SongRow { object_id: s.object_id + n * 100_000, ..s.clone() }));
+        }
+        assert!(a.lib_max_scroll() > 1000, "the fixture must scroll well past the band");
+        a
+    }
+
+    /// The Library's shuffle band slides up under the tab strip as the list scrolls down, tracking
+    /// the finger, and comes back the moment the list scrolls up — mid-list, not only at the top.
+    /// Requested 2026-09-11 for Songs, Albums, Artists and Playlists, which share this one offset.
+    #[test]
+    fn the_shuffle_band_slides_away_on_the_way_down_and_back_on_the_way_up() {
+        let mut a = long_songs();
+        let slide = library::band_slide();
+        assert_eq!(a.lib_band(), 0, "at the top it is fully shown");
+
+        a.scroll_px(30);
+        assert_eq!(a.lib_band(), 30, "it tracks the finger");
+        a.scroll_px(400);
+        assert_eq!(a.lib_band(), slide, "and stops once it is fully under the tabs");
+
+        a.scroll_px(-20);
+        assert_eq!(a.lib_band(), slide - 20, "scrolling up brings it straight back");
+        a.scroll_px(-60);
+        assert_eq!(a.lib_band(), 0, "all the way");
+        assert!(a.lib_scroll_px > 0, "without having to go back to the top of the list");
+    }
+
+    /// A slide bigger than the scroll would leave a strip of bare background between the band and
+    /// the first row. No sequence of gestures may produce one.
+    #[test]
+    fn the_band_never_opens_a_gap_above_the_first_row() {
+        let mut a = long_songs();
+        for d in [5, 40, -30, 200, -190, -40, 7, -3, 90, -95, 300, -299, -50] {
+            a.scroll_px(d);
+            let (band, scroll) = (a.lib_band(), a.lib_scroll_px);
+            assert!(band <= scroll, "slide {band} > scroll {scroll} after a {d} px scroll");
+            assert!((0..=library::band_slide()).contains(&band), "slide {band} out of range");
+        }
+    }
+
+    /// Once the band has gone, its old place on the glass is list: a tap there opens a song instead
+    /// of starting a shuffle. That is the single-source rule — the tap reads the offset the renderer
+    /// drew with, so the two cannot disagree about where the band is.
+    #[test]
+    fn a_hidden_band_takes_no_taps_and_the_rows_that_replaced_it_do() {
+        let mut a = long_songs();
+        let (bx, by, bw, bh) = library::library_shuffle_band();
+        let (x, y) = (bx + bw / 2, by + bh / 2);
+        assert!(a.tap(x, y).iter().any(|t| matches!(t, Action::Shuffle(_))), "shown: the band shuffles");
+
+        // On Songs the FILTER STRIP rides up into the band's old place — the band is the only thing
+        // that leaves, so the filter stays reachable mid-list. That spot is the filter now.
+        let mut b = long_songs();
+        b.scroll_px(600);
+        assert_eq!(b.lib_band(), library::band_slide());
+        assert!(!library::hit_shuffle_band_at(x, y, b.lib_band()), "hidden: the band is not there");
+        assert!(library::filter_hit_at(Tab::Songs, y, b.lib_band()), "hidden: the filter moved up under it");
+        let acts = b.tap(x, y);
+        assert!(!acts.iter().any(|t| matches!(t, Action::Shuffle(_))), "hidden: no shuffle — {acts:?}");
+
+        // Artists has no filter strip, so there the ROWS take the band's place.
+        let mut ar = long_songs();
+        ar.lib_tab = Tab::Artists;
+        let base = ar.lib.artists.clone();
+        for _ in 0..40 {
+            ar.lib.artists.extend(base.iter().cloned());
+        }
+        ar.lib_scroll_px = 0;
+        ar.scroll_px(600);
+        assert_eq!(ar.lib_band(), library::band_slide());
+        assert!(
+            library::hit_row_at(Tab::Artists, &ar.lib, ar.lib_scroll_px, y, ar.lib_band()).is_some(),
+            "hidden: on a tab with no filter that y is an artist row"
+        );
+    }
+
+    /// Changing tab zeroes the scroll, and the clamp in `band_offset` brings the band back on the same
+    /// frame — nothing has to remember to reset it.
+    #[test]
+    fn a_fresh_list_always_shows_its_band() {
+        let mut a = long_songs();
+        a.scroll_px(600);
+        assert_eq!(a.lib_band(), library::band_slide());
+        a.lib_tab = Tab::Albums;
+        a.lib_scroll_px = 0;
+        assert_eq!(a.lib_band(), 0);
     }
 
     /// Q2, the regression. Shuffle used to be a one-way door — ON permuted the remainder, OFF did

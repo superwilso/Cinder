@@ -236,7 +236,7 @@ fn main() {
                 if let Some(first) = mine.playlists.first_mut() {
                     first.user = true;
                 }
-                library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &mine, None, false);
+                library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &mine, None, false, 0);
                 cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands",
                                           "Benjamin Francis Leftwich", true, 0.39);
             }),
@@ -284,20 +284,38 @@ fn main() {
                 });
             }),
             ("library_songs", &|c: &mut Canvas| {
-                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib, None, false);
+                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib, None, false, 0);
                 // nav draws the Now Playing return bar over the library screens; mirror that here
                 // so the preview shows the real bottom of the screen, not a list running to the edge.
                 cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
             }),
             // Songs sorted by ADDED (sort chip index 4) — shows the SORT chip label + reorder.
-            ("library_songs_added", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 4, 0, None, &lib, None, false)),
-            ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, None, &lib, None, false)),
+            ("library_songs_added", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 4, 0, None, &lib, None, false, 0)),
+            // The shuffle band mid-slide and fully away (library::band_slide) — for looking at the
+            // seam against the tab strip, which no test can judge.
+            ("library_songs_band_half", &|c: &mut Canvas| {
+                let mut big = lib.clone();
+                let base = big.songs.clone();
+                for n in 1..20 {
+                    big.songs.extend(base.iter().map(|s| cinder_ui::model::SongRow { object_id: s.object_id + n * 100_000, ..s.clone() }));
+                }
+                library::render(c, &theme, &fonts, Tab::Songs, 0, 300, 0, 0, None, &big, None, false, 36);
+            }),
+            ("library_songs_band_hidden", &|c: &mut Canvas| {
+                let mut big = lib.clone();
+                let base = big.songs.clone();
+                for n in 1..20 {
+                    big.songs.extend(base.iter().map(|s| cinder_ui::model::SongRow { object_id: s.object_id + n * 100_000, ..s.clone() }));
+                }
+                library::render(c, &theme, &fonts, Tab::Songs, 0, 300, 0, 0, None, &big, None, false, 999);
+            }),
+            ("library_albums", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, None, &lib, None, false, 0)),
             // Albums with the first album's accordion expanded (tracks listed inline).
-            ("library_albums_expanded", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, Some(0), &lib, None, false)),
+            ("library_albums_expanded", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, Some(0), &lib, None, false, 0)),
             // Albums flat-ordered A-Z (ORDER chip index 1 — no artist headers).
-            ("library_albums_az", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 1, None, &lib, None, false)),
-            ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &lib, None, false)),
-            ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &lib, None, false)),
+            ("library_albums_az", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 1, None, &lib, None, false, 0)),
+            ("library_artists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &lib, None, false, 0)),
+            ("library_playlists", &|c: &mut Canvas| library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &lib, None, false, 0)),
             // The artist drill-in, built from the SAMPLE LIBRARY like every other list preview —
             // it used to render three hard-coded albums from `data::ARTIST_*` regardless of who
             // the artist was, which is precisely why nothing ever pushed it.
@@ -331,7 +349,7 @@ fn main() {
             ("library_songs_filtered", &|c: &mut Canvas| {
                 let mut l = lib.clone();
                 l.filter_genre = l.genres.first().map(|g| g.id);
-                library::render(c, &theme, &fonts, library::Tab::Songs, 0, 0, 0, 0, None, &l, None, false);
+                library::render(c, &theme, &fonts, library::Tab::Songs, 0, 0, 0, 0, None, &l, None, false, 0);
                 let az = library::az_present(library::Tab::Songs, &l, 0, 0);
                 library::az_render(c, &theme, &fonts, library::Tab::Songs, &az, 0, 0);
             }),
@@ -907,7 +925,7 @@ fn main() {
                 let dx = library::swipe_offset(raw * dir);
                 let mut c = Canvas::new();
                 library::render(&mut c, &theme, &fonts, Tab::Songs, 99, 0, 0, 0, None, &lib,
-                    Some(cinder_ui::library::SwipeRow { y: row_y, dx }), false);
+                    Some(cinder_ui::library::SwipeRow { y: row_y, dx }), false, 0);
                 cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
                 cinder_ui::chrome::np_bar(&mut c, &theme, &fonts, "Atlas Hands",
                     "Benjamin Francis Leftwich", true, 0.39);

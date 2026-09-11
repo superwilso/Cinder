@@ -2198,6 +2198,24 @@ fn play_order_uris(r: &Render, lead: Option<&str>) -> Vec<String> {
     )
 }
 
+/// Did PlayerService choose this track from a sequence that never contained the user's picks?
+///
+/// All four have to hold. A queue edit was still owed (otherwise the picks WERE live and the
+/// service played them in order); the track that started is not a pick (a pick starting is the
+/// queue working); there is something to put first; and the context moved forward by EXACTLY one.
+/// That last test is what separates the service stepping on by itself from the user going
+/// somewhere on purpose — ◁ moves the index backwards and an Up Next tap can move it anywhere, and
+/// jumping ahead of a track the user just chose would be refusing an instruction.
+fn boundary_preempts_picks(
+    owed: bool,
+    took_pick: bool,
+    queued: usize,
+    idx_before: usize,
+    idx_after: usize,
+) -> bool {
+    owed && !took_pick && queued > 0 && idx_after == idx_before + 1
+}
+
 /// Assemble a play order: an optional leading URI (the track that is already audible), then the
 /// rows behind it, dropping anything that did not resolve to a file.
 ///
@@ -6096,8 +6114,39 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 // first and a pick taken from the album already playing dragged the index forward
                 // with it, dropping every track in between. The rule is one function now, in
                 // cinder-ui, where it is unit-testable: see App::track_started.
-                if r.app.track_started(t.object_id) {
+                // Both captured BEFORE the reconcile, which moves the context and raises
+                // `queue_pending` itself when a pick starts. `owed` is whether a queue edit was still
+                // not live in the sequence PlayerService was running when it chose this track.
+                let owed = r.queue_pending || r.queue_flush;
+                let idx_before = r.app.context_idx();
+                let took_pick = r.app.track_started(t.object_id);
+                if took_pick {
                     r.queue_pending = true;   // the queue changed; re-issue at THIS boundary
+                }
+                // PLAYERSERVICE GOT HERE FIRST. Over Bluetooth a queue edit is not issued mid-track
+                // (see the early-rebuild note above: it cuts the end of the song), so it waits for
+                // this boundary — and by the time a boundary is visible, the service has already
+                // chosen the next track from the OLD sequence, which never contained the picks.
+                // Rebuilding with that track in the lead gave `[next album track] + picks`: the song
+                // the user queued played one track late. Reported 2026-09-11 as "it plays the next
+                // in the album, then the queue".
+                //
+                // So put the pick first. The position is ~0, so replacing what just started is the
+                // same near-invisible reset every boundary flush already relies on, and the context
+                // track goes back behind the picks rather than being skipped.
+                let preempt =
+                    boundary_preempts_picks(owed, took_pick, r.app.queue().len(), idx_before, r.app.context_idx())
+                        && r.app.defer_context_track(t.object_id);
+                if preempt {
+                    r.pending_play = play_order_uris(r, None);
+                    r.pending_play_start = 0;
+                    r.queue_flush = !r.pending_play.is_empty();
+                    r.queue_pending = false;
+                    eprintln!(
+                        "cinder-ffi: queue — PlayerService moved on before the picks were issued; \
+                         starting the pick instead ({} tracks)",
+                        r.pending_play.len()
+                    );
                 }
                 // TRACK BOUNDARY — the one moment a queue change is free. The new track has just
                 // begun, so re-issuing the sequence resets a position that is already ~0 and the
@@ -6117,7 +6166,7 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 // Re-deriving it here costs nothing when it was already right — the `already_live`
                 // test below drops a re-issue that changes nothing — and when it was stale this is
                 // the only place that can still catch it.
-                if r.queue_pending || r.queue_flush {
+                if !preempt && (r.queue_pending || r.queue_flush) {
                     r.queue_pending = false;
                     let uris = play_order_uris(r, Some(&t.filename));
                     // A RE-ISSUE THAT CHANGES NOTHING IS STILL A PAUSE/SEEK/PLAY. The commonest
@@ -6151,6 +6200,11 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 r.np.liked = r.liked.contains(&t.object_id);
                 r.cur_duration_ms = t.duration_raw.unwrap_or(0).max(0);
                 r.play_pos_ms = (r.cur_duration_ms as f32 * progress.clamp(0.0, 1.0)) as i64;
+                // The shell restores THIS position into whatever the flush leads with, and after a
+                // preempt that is the pick, which must start from the top.
+                if preempt {
+                    r.play_pos_ms = 0;
+                }
                 // Drop the previous track's service-position anchor: interpolating the new track's
                 // bar from the old track's position would show a wrong (often near-full) bar until
                 // the next onPlayTimeUpdated lands.
@@ -6781,6 +6835,20 @@ mod tests {
     /// reports a track start on — so `App::track_started` never ran, the pick was never consumed
     /// out of the queue, and the next flush put it back: a phantom Up Next row and a song that
     /// played twice, every lap, for ever.
+    /// "Play an album, queue a song over Bluetooth, and it plays the next album track first." The
+    /// preempt decision is the whole fix, and each of its conditions guards a different way of
+    /// getting it wrong.
+    #[test]
+    fn a_track_the_service_stepped_onto_over_owed_picks_is_preempted() {
+        assert!(boundary_preempts_picks(true, false, 1, 3, 4), "the reported case");
+        assert!(!boundary_preempts_picks(false, false, 1, 3, 4), "picks already live: nothing to fix");
+        assert!(!boundary_preempts_picks(true, true, 1, 3, 3), "a pick starting is the queue working");
+        assert!(!boundary_preempts_picks(true, false, 0, 3, 4), "nothing queued to put first");
+        assert!(!boundary_preempts_picks(true, false, 1, 3, 2), "◁ went back on purpose");
+        assert!(!boundary_preempts_picks(true, false, 1, 3, 7), "a jump the user chose");
+        assert!(!boundary_preempts_picks(true, false, 1, 3, 3), "the context did not move");
+    }
+
     #[test]
     fn the_play_order_never_repeats_a_file_back_to_back() {
         let u = |s: &str| Some(s.to_string());
