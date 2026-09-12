@@ -4,7 +4,7 @@ A full read of everything between "the user asks for a song" and "PlayerService 
 sequence": `cinder-ui`'s queue/context model (`nav.rs`, `up_next.rs`), the resolution and flush
 layer (`cinder-ffi/src/lib.rs`), the shell's transport and end-of-queue watcher
 (`cinder-home/src/main.cpp`), and the shim that owns the `NodeTrackSequence`
-(`cinder-audio/src/player_shim.cpp`). Audited against `d9bcea0`.
+(`cinder-audio/src/player_shim.cpp`). Audited against `4e4e3c6`.
 
 **Twelve defects, all twelve fixed here.** Nine are host-testable and now have tests; three are
 device-facing and are pinned by three new harness scenarios that FAIL on the code before this
