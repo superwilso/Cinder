@@ -63,6 +63,19 @@ pub fn set_scale_idx(idx: usize) {
 /// the full run.) Every test that changes the scale — or depends on it, which means every test
 /// that renders — takes this ONE crate-wide lock, and the guard restores 100% on the way out even
 /// if the test panics.
+///
+/// **It is not reentrant.** It is a plain `std::sync::Mutex`, so a test that takes it twice hangs
+/// forever rather than failing — and `nav.rs` wraps it in a local `lock_scale()`, so "this test
+/// does not mention `scale_guard`" is not the same as "this test does not hold it". Check for the
+/// alias before adding a guard to an existing test.
+///
+/// **What it costs to forget.** `chrome::degraded_tests::the_banner_keeps_the_battery_indicator`
+/// rendered the status strip without taking it, and on 2026-09-12 it failed a release push with
+/// "drew 374 px where the normal strip draws 286" — 286 x 1.3, i.e. a concurrent test's 130%
+/// scale, reported as a banner bug in a test that had nothing to do with the scale. Thirteen
+/// rendering tests were missing the guard that day. The pixel-only tests (`art.rs` gradients,
+/// `library.rs`'s art cache) deliberately do NOT take it: no text, nothing to corrupt, and they
+/// stay parallel.
 #[cfg(test)]
 pub fn scale_guard() -> ScaleGuard {
     static SCALE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

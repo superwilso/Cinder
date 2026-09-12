@@ -301,6 +301,7 @@ mod marquee_tests {
     /// repainting for them would be a battery regression disguised as a feature.
     #[test]
     fn text_that_fits_does_not_animate() {
+        let _scale = crate::text::scale_guard();
         let f = fonts();
         let mut c = Canvas::new();
         marquee_scrolled(); // clear anything a neighbouring test left
@@ -313,6 +314,7 @@ mod marquee_tests {
     /// A long line scrolls, and asks for the next frame while it does.
     #[test]
     fn long_text_scrolls_and_requests_repaints() {
+        let _scale = crate::text::scale_guard();
         let f = fonts();
         let mut c = Canvas::new();
         let long = "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364 — III. Presto";
@@ -330,6 +332,7 @@ mod marquee_tests {
     /// than wrong. Measured as pixels written outside the box.
     #[test]
     fn scrolled_text_stays_inside_its_box() {
+        let _scale = crate::text::scale_guard();
         let f = fonts();
         let long = "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364 — III. Presto";
         let (x, boxw) = (24.0f32, 372.0f32);
@@ -358,6 +361,7 @@ mod marquee_tests {
     /// The slide actually moves: the same string at two phases is not the same picture.
     #[test]
     fn the_phase_moves_the_text() {
+        let _scale = crate::text::scale_guard();
         let f = fonts();
         let long = "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364 — III. Presto";
         let shot = |ms: u32| {
@@ -379,6 +383,7 @@ mod marquee_tests {
     /// helper treated "no room" as "it fits" — 3,187 px of artist across the panel.
     #[test]
     fn no_room_draws_nothing() {
+        let _scale = crate::text::scale_guard();
         let f = fonts();
         let mut c = Canvas::new();
         c.fill(Rgb888::new(0, 0, 0));

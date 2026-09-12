@@ -641,7 +641,7 @@ pub fn trigger_fw_upgrade(target: &Path, mut log: impl FnMut(&str)) -> io::Resul
     // SAFETY: c is NUL-terminated and lives across the call.
     unsafe { sg::umount(c.as_ptr()) };
 
-    log(&format!("telling the player to reboot into Sony's updater ({})", dev.display()));
+    log(&format!("telling the player to reboot into its own updater ({})", dev.display()));
     match send_fw_upgrade(&dev, 0x80) {
         Ok(()) => Ok(()),
         Err(first) => {
