@@ -46,7 +46,8 @@ than a guessing game.*
 > **What stands between this tree and a device the owner can rely on:**
 > [`../docs/PRODUCTION_READINESS.md`](../docs/PRODUCTION_READINESS.md). Short version: **33 commits
 > have landed since the last hardware-verified one** (`eb07f7f`), several of them on the boot path;
-> the headline LDAC feature has never been executed; and shuffle/repeat still draw as real while
+> the headline LDAC feature has never been executed *(superseded: it ran end to end 2026-09-12,
+> owner-reported — see STATUS.md)*; and shuffle/repeat still draw as real while
 > doing nothing.
 
 > **NEWER PASS — [`../docs/AUDIT_2026-08-16.md`](../docs/AUDIT_2026-08-16.md)** covers Sony

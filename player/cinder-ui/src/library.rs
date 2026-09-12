@@ -253,9 +253,12 @@ fn filter_strip(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, y: i32) {
 /// (`hit_row`/`content_h`/`row_top_px`) read this, so a tap always resolves to the drawn row.
 pub fn row_h(tab: Tab) -> i32 {
     match tab {
-        Tab::Songs => 68,
-        Tab::Albums => ALBUM_ROW_H,
-        Tab::Artists | Tab::Playlists => 70,
+        // A track row is a track row: the same 62 as the album, artist, playlist and Up Next
+        // lists (`scale::TRACK_ROW_H`). It was 68 here alone.
+        Tab::Songs => crate::scale::TRACK_ROW_H,
+        // A row standing for a GROUP of tracks, which carries stacked art and a count. Albums
+        // were 68 and Artists/Playlists 70, for no reason either screen recorded.
+        Tab::Albums | Tab::Artists | Tab::Playlists => crate::scale::GROUP_ROW_H,
     }
 }
 
@@ -416,7 +419,7 @@ pub fn album_tracks_top() -> i32 {
     let (_, by, _, bh) = shuffle_band_rect(ALBUM_BAND_Y);
     by + bh + 6
 }
-pub const ALBUM_TRACK_RH: i32 = 62;
+pub const ALBUM_TRACK_RH: i32 = crate::scale::TRACK_ROW_H;
 
 // ── Albums tab: sortable + expandable (accordion) display list ────────────────────────────
 // The Albums tab is a single flat list of variable-height rows: an artist header (grouped sort
@@ -424,7 +427,7 @@ pub const ALBUM_TRACK_RH: i32 = 62;
 // list (with content-space y tops) once per render/hit; layout/hit/scroll all read from it so the
 // three can never drift.
 pub const ALBUM_HDR_H: i32 = 34; // artist section header (grouped sort)
-pub const ALBUM_ROW_H: i32 = 68; // an album row
+pub const ALBUM_ROW_H: i32 = crate::scale::GROUP_ROW_H; // an album row
 pub const ALBUM_CHILD_H: i32 = 50; // an expanded track row (indented under its album)
 /// A tap on an album row left of this x opens the drill-in page (cover art); right of it toggles
 /// the inline accordion. Keeps both affordances on one row.
@@ -1209,7 +1212,7 @@ pub fn empty_note(tab: Tab, lib: &Library) -> Option<(String, String)> {
 /// Draw whichever of the above applies, in the list area.
 fn draw_empty_note(c: &mut Canvas, t: &Theme, f: &FontSet, top: i32, tab: Tab, lib: &Library) {
     let Some((line, hint)) = empty_note(tab, lib) else { return };
-    let ls = sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0);
+    let ls = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0);
     text::draw(c, f, 22.0, (top + 44) as f32, &crate::widgets::fit(f, &line, &ls, 436.0), &ls);
     let hs = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
     text::draw(c, f, 22.0, (top + 70) as f32, &crate::widgets::fit(f, &hint, &hs, 436.0), &hs);
@@ -1271,7 +1274,7 @@ pub fn render(
                 }
                 thumb(c, t, lib, sgn.album_id, &sgn.art, 22, y + (rh - THUMB_PX) / 2, THUMB_PX, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
-                let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
+                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                 text::draw(c, f, 78.0, (cy - 2) as f32, &crate::widgets::fit(f, &sgn.title, &tst, 300.0), &tst);
                 let ast = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
                 text::draw(c, f, 78.0, (cy + 16) as f32, &crate::widgets::fit(f, &sgn.artist, &ast, 320.0), &ast);
@@ -1335,7 +1338,7 @@ pub fn render(
                         // Truncate against the space actually available (art at 80 → caret at 444).
                         // These two were drawn untruncated, so a long album name simply ran off the
                         // right edge of the panel.
-                        let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
+                        let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                         text::draw(c, f, 80.0, (cy - 2) as f32,
                             &crate::widgets::fit(f, &al.name, &tst, 356.0), &tst);
                         let sub = if al.year.is_empty() {
@@ -1407,7 +1410,7 @@ pub fn render(
                 let tcol = if now { t.acc } else { t.ink };
                 // Text clears the cover stack: it is 22 + STACK_OFFSET + THUMB_PX wide.
                 let tx = (22 + ART_STACK_W + 10) as f32;
-                let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
+                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                 text::draw(c, f, tx, (cy - 2) as f32,
                     &crate::widgets::fit(f, &ar.name, &tst, 402.0 - tx), &tst);
                 let sub = format!("{} · {} tracks", plural(ar.albums, "album"), ar.tracks);
@@ -1441,7 +1444,7 @@ pub fn render(
                 }
                 art::block_cached(c, t, 22, y + (rh - 48) / 2, 48, 48, &pl.art, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, 20.0, tcol));
+                text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol));
                 // Cinder's own playlists are editable and Sony's are not, so the row says which
                 // it is — otherwise the missing controls on the page look like a bug.
                 let sub = if pl.user {
@@ -1526,7 +1529,7 @@ pub fn album_view(
         text::draw(c, f, 28.0, (cy + 4) as f32, &num,
             &sty(Family::Mono, Weight::Regular, 13.0, if now { t.acc } else { t.faint }, 0.0));
         let tcol = if now { t.acc } else { t.ink };
-        let tst = body_label(Family::Sans, Weight::SemiBold, 20.0, tcol);
+        let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
         text::draw(c, f, 56.0, (cy - 2) as f32, &crate::widgets::fit(f, &sgn.title, &tst, 320.0), &tst);
         if now {
             tiny_bars(c, 386, cy, t.acc);
@@ -1565,8 +1568,8 @@ pub fn hit_artist_shuffle_band(x: i32, y: i32) -> bool {
 }
 
 pub const ARTIST_SEC_H: i32 = 36; // "ALBUMS · n" / "SONGS · n" section header
-pub const ARTIST_ALBUM_RH: i32 = 68;
-pub const ARTIST_TRACK_RH: i32 = 62;
+pub const ARTIST_ALBUM_RH: i32 = crate::scale::GROUP_ROW_H;
+pub const ARTIST_TRACK_RH: i32 = crate::scale::TRACK_ROW_H;
 
 /// One row of the artist page's scrolling content.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -1758,7 +1761,7 @@ pub fn artist_view(
                     swipe_reveal(c, t, f, y, ARTIST_ALBUM_RH, dx, SwipeIntent::Queue);
                 }
                 thumb(c, t, lib, al.album_id, &al.art, 22, y + (ARTIST_ALBUM_RH - THUMB_PX) / 2, THUMB_PX, artdim(t));
-                let tst = body_label(Family::Sans, Weight::SemiBold, 19.0, t.ink);
+                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink);
                 text::draw(c, f, 80.0, (cy - 2) as f32,
                     &crate::widgets::fit(f, &al.name, &tst, 340.0), &tst);
                 let sub = if al.year.is_empty() {
@@ -1789,7 +1792,7 @@ pub fn artist_view(
                 text::draw(c, f, 26.0, (cy + 4) as f32, &format!("{}", i + 1),
                     &sty(Family::Mono, Weight::Regular, 12.0, if now { t.acc } else { t.faint }, 0.0));
                 let tcol = if now { t.acc } else { t.ink };
-                let tst = body_label(Family::Sans, Weight::SemiBold, 18.0, tcol);
+                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
                 text::draw(c, f, 58.0, (cy - 2) as f32,
                     &crate::widgets::fit(f, &sgn.title, &tst, 300.0), &tst);
                 let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
@@ -2019,7 +2022,7 @@ pub fn playlist_view(
     if pl.track_list.is_empty() {
         let st = sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0);
         text::draw(c, f, 22.0, (top + 40) as f32, "Nothing in this playlist.",
-            &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
+            &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
         // Two different empty states, and saying the wrong one is worse than saying nothing: a
         // playlist you just made is empty because you have not added anything yet, while a Sony
         // one that renders empty has members whose files no longer resolve.
@@ -2052,7 +2055,7 @@ pub fn playlist_view(
         thumb(c, t, lib, sgn.album_id, &sgn.art, 52, y + (PLAYLIST_TRACK_RH - THUMB_PX) / 2,
               THUMB_PX, artdim(t));
         let tcol = if now { t.acc } else { t.ink };
-        let tst = body_label(Family::Sans, Weight::SemiBold, 18.0, tcol);
+        let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
         text::draw(c, f, 110.0, (cy - 2) as f32,
             &crate::widgets::fit(f, &sgn.title, &tst, 268.0), &tst);
         let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
@@ -2493,7 +2496,7 @@ mod tests {
 // no second control.
 
 /// Row height in the picker.
-pub const GENRE_RH: i32 = 56;
+pub const GENRE_RH: i32 = crate::scale::PICKER_ROW_H;
 /// Screen-y of the first picker row.
 pub const GENRE_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
@@ -2565,7 +2568,7 @@ pub fn genre_render(
             fill_rect(c, 0, y, 4, GENRE_RH, t.acc);
         }
         let cy = y + GENRE_RH / 2;
-        let ns = body_label(Family::Sans, Weight::SemiBold, 20.0, if on { t.acc } else { t.ink });
+        let ns = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, if on { t.acc } else { t.ink });
         text::draw(c, f, 22.0, (cy + 5) as f32, &crate::widgets::fit(f, &name, &ns, 320.0), &ns);
         let cs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06);
         let cl = format!("{count}");

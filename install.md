@@ -175,9 +175,15 @@ Settings, not anywhere. The upgrade is always triggered by the host over USB, an
 
 | Host | How the command is sent | Needs |
 |---|---|---|
-| Windows | Sony's `SoftwareUpdateTool.exe`, embedded in the installer and launched for you | nothing |
+| Windows | The installer sends it directly (SCSI pass-through on the drive's volume handle) | **Run as administrator** — Windows grants raw volume access to nothing less |
 | Linux | The installer sends it directly (`SG_IO`), the same command `tools/flash.sh` ends with | `sudo` |
 | macOS | **Cannot be sent.** Raw SCSI needs an IOKit `SCSITaskUserClient`, which the kernel refuses for an already-mounted disk | finish on Linux/Windows |
+
+> Until v0.3.1 the Windows installer sent this command by launching **Sony's own
+> `SoftwareUpdateTool.exe`**, which it carried inside itself. It sends the command directly now.
+> The visible difference is the UAC prompt at startup: raw access to the player's drive is a right
+> Windows does not give an ordinary process, and the installer asks for it up front rather than
+> staging every file and then failing at the last step.
 
 > Until v0.1.9 this document told you to eject the drive and pick
 > **Settings ▸ Device Settings ▸ Update** on the player. **That menu does not exist**, on any

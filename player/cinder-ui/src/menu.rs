@@ -75,7 +75,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, items: &[MenuItem]) {
         let icol = if m.active { t.acc } else { t.dim };
         draw_icon(c, m.icon, 33.0, cy, 19.0, icol);
         let label_end = text::draw(c, f, 56.0, cy + 6.0, m.label,
-                                   &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
+                                   &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
         // The value is right-aligned by measuring it, so an over-long one puts its start x NEGATIVE
         // and it runs off the LEFT edge — under the icon, through the label, and off the panel.
         // Nothing here scrolls sideways, so those pixels are simply gone. The Now Playing row's

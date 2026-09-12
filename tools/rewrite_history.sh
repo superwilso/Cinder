@@ -39,6 +39,11 @@ SONY_PATHS="$ROOT/tools/sony_paths.txt"
 mapfile -t REMOVE_PATHS < <(grep -v -e '^#' -e '^[[:space:]]*$' "$SONY_PATHS")
 [ "${#REMOVE_PATHS[@]}" -gt 0 ] || die "$SONY_PATHS lists no paths"
 REMOVE_PATHS+=(
+    # Sony's own Windows firmware updater — SoftwareUpdateTool.exe, Sony's WmFwUpdater.dll and
+    # Microsoft's Visual C++ 2010 runtime — embedded in every Windows installer until 0.3.1 for
+    # one vendor SCSI command the installer now sends itself (installer/src/stage.rs). It shipped
+    # inside release downloads as well as living here, which made it the larger exposure of the two.
+    installer/sony-updater/
     cinder_screen_20260826_113143.png
     cinder-home/cinder-home.unstripped
     cinder-home/cinder-probe.unstripped

@@ -161,25 +161,10 @@ fn carry_out(action: Action, comps: &[Comp], target: &Path, dry: bool) -> i32 {
         return 0;
     }
 
-    #[cfg(windows)]
-    {
-        let Some(upg) = stage::package_for(action) else {
-            eprintln!("\nERROR: this build has no {} package embedded.", action.verb().to_lowercase());
-            return 2;
-        };
-        println!("\n  Files staged. Sony's updater will now take over the USB connection.");
-        if let Err(e) = stage::run_sony_updater(upg) {
-            eprintln!("\nERROR: could not start the Sony updater: {e}");
-            eprintln!("The files are staged; reconnect the Walkman and run this again.");
-            return 1;
-        }
-        print_next_steps(action);
-        0
-    }
-    // Off Windows the trigger is ours to send. A failure is reported and then explained rather
-    // than exited on: the payload is staged and valid either way, and the user's next move
-    // depends on WHY it failed (not root, device unmounted by a file manager, macOS at all).
-    #[cfg(not(windows))]
+    // Every platform that can send the command sends the same one. A failure is reported and
+    // then explained rather than exited on: the payload is staged and valid either way, and the
+    // user's next move depends on WHY it failed (not elevated, drive held by a file manager,
+    // macOS at all).
     {
         println!("\n  Files staged.");
         match stage::trigger_fw_upgrade(target, |m| println!("  {m}")) {
@@ -190,21 +175,10 @@ fn carry_out(action: Action, comps: &[Comp], target: &Path, dry: bool) -> i32 {
     }
 }
 
-#[cfg(windows)]
-fn print_next_steps(action: Action) {
-    if action.is_removal() {
-        println!("\n  Sony's updater has finished. The Walkman should reboot into the stock player.");
-    } else {
-        println!("\n  Sony's updater has finished. The Walkman should reboot into Cinder.");
-    }
-    recovery_note();
-}
-
 /// The command went out and the player is rebooting into the updater on its own.
-#[cfg(not(windows))]
 fn print_upgrade_sent(action: Action) {
     let landing = if action.is_removal() { "the stock player" } else { "Cinder" };
-    println!("\n  Upgrade command accepted. The player is rebooting into Sony's updater.");
+    println!("\n  Upgrade command accepted. The player is rebooting into its own updater.");
     println!();
     println!("    * The screen shows the updater, then it reboots into {landing} by itself.");
     println!("    * It DROPS OFF USB while it works. That is expected — leave the cable in and");
@@ -215,18 +189,26 @@ fn print_upgrade_sent(action: Action) {
 /// The staging worked and the trigger did not. Which of those two happened decides what the user
 /// should do next, so say which, and say why — this is the path that used to print instructions
 /// for a menu the NW-A55 does not have.
-#[cfg(not(windows))]
 fn print_trigger_failed(e: &io::Error) {
     println!("\n  Every file is staged on the player, including NW_WM_FW.UPG.");
     println!("  What did NOT happen is the last step: telling it to reboot into its updater.");
     println!("\n    reason: {e}");
     println!();
     if e.kind() == io::ErrorKind::PermissionDenied {
-        println!("  That is a permissions error. Sending a raw SCSI command needs root:");
-        println!();
-        println!("      sudo {}", std::env::args().next().unwrap_or_else(|| "cinder-installer".into()));
-        println!();
-        println!("  Re-running it is safe — it stages the same files again, then fires.");
+        if cfg!(windows) {
+            println!("  That is a permissions error. Sending the command needs raw access to the");
+            println!("  player's drive, and Windows grants that only to an elevated process:");
+            println!();
+            println!("      right-click cinder-installer.exe -> Run as administrator");
+            println!();
+            println!("  Re-running it is safe — it stages the same files again, then fires.");
+        } else {
+            println!("  That is a permissions error. Sending a raw SCSI command needs root:");
+            println!();
+            println!("      sudo {}", std::env::args().next().unwrap_or_else(|| "cinder-installer".into()));
+            println!();
+            println!("  Re-running it is safe — it stages the same files again, then fires.");
+        }
     } else if cfg!(target_os = "macos") {
         println!("  macOS cannot send this command at all. It is a vendor SCSI passthrough, and");
         println!("  macOS only exposes that through an IOKit SCSITaskUserClient, which the kernel");

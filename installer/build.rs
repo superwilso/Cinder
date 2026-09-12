@@ -23,10 +23,14 @@ use std::{env, fs};
 const FILES: &[(&str, &str, &str, bool)] = &[
     ("dist/{ch}/cinder-home", "cinder-home", "", true),
     ("dist/{ch}/cinder-probe", "cinder-probe", "", true),
-    ("dist/{ch}/cinder-umount", "cinder-umount", "umount", true),
-    ("dist/{ch}/cinder-power", "cinder-power", "power", true),
-    ("dist/{ch}/cinder-msc", "cinder-msc", "msc", true),
-    ("dist/{ch}/cinder-clock", "cinder-clock", "clock", true),
+    // Empty id = always staged. These four were catalogue components until 2026-09-12, when the
+    // four "choices" that removed the power menu, file transfer, the clock and the unmount helper
+    // were taken out of deploy/components.conf: each one's own description said the feature was
+    // gone without it. They are part of every install now, and 60 KB between them.
+    ("dist/{ch}/cinder-umount", "cinder-umount", "", true),
+    ("dist/{ch}/cinder-power", "cinder-power", "", true),
+    ("dist/{ch}/cinder-msc", "cinder-msc", "", true),
+    ("dist/{ch}/cinder-clock", "cinder-clock", "", true),
     // Built on both channels, so `required` — a stable build missing either is a real defect, not
     // a channel difference. cinder-fm backs the FM signal meter / fast scan / hardware seek;
     // cinder-voltable installs the chosen output volume table on every boot.
@@ -126,47 +130,11 @@ fn main() {
     }
     src.push_str("];\n");
 
-    // Sony's native Windows updater performs the required safe-eject and SCSI firmware
-    // transition. Embed its complete runtime so the end-user installer needs no WSL, usbipd,
-    // driver setup, or separate download.
-    let updater_root = manifest.join("sony-updater");
-    let updater_files = [
-        "SoftwareUpdateTool.exe",
-        "Data/App/WmFwUpdater.dll",
-        "Data/App/msvcp100.dll",
-        "Data/App/msvcr100.dll",
-        "Data/Device/SWUpdate.xml",
-        "Data/Device/disclaimer_de.txt",
-        "Data/Device/disclaimer_en.txt",
-        "Data/Device/disclaimer_es.txt",
-        "Data/Device/disclaimer_fr.txt",
-        "Data/Device/disclaimer_it.txt",
-        "Data/Device/disclaimer_ja.txt",
-        "Data/Device/disclaimer_ko.txt",
-        "Data/Device/disclaimer_pt-br.txt",
-        "Data/Device/disclaimer_pt-pt.txt",
-        "Data/Device/disclaimer_ru.txt",
-        "Data/Device/disclaimer_zh-Hans.txt",
-        "Data/Device/disclaimer_zh-Hant.txt",
-    ];
-    src.push_str("pub static UPDATER_PAYLOAD: &[(&str, &[u8])] = &[\n");
-    let mut updater_missing = Vec::new();
-    for rel in updater_files {
-        let p = updater_root.join(rel);
-        println!("cargo:rerun-if-changed={}", p.display());
-        if p.is_file() {
-            src.push_str(&format!("    ({:?}, include_bytes!({:?})),\n", rel, abs(&p)));
-        } else {
-            updater_missing.push(rel);
-            println!("cargo:warning=cinder-installer: missing Sony updater file {rel}");
-        }
-    }
-    src.push_str("];\n");
-    src.push_str("pub static UPDATER_MISSING: &[&str] = &[\n");
-    for rel in updater_missing {
-        src.push_str(&format!("    {:?},\n", rel));
-    }
-    src.push_str("];\n");
+    // NO SONY UPDATER HERE, deliberately. Until 0.3.1 this embedded Sony's
+    // SoftwareUpdateTool.exe, WmFwUpdater.dll and the Visual C++ 2010 runtime into every Windows
+    // installer, for one thing: the 12-byte vendor SCSI command that reboots the player into its
+    // updater. installer/src/stage.rs now sends that command itself on Windows (SCSI pass-through)
+    // as it already did on Linux (SG_IO), so no part of Sony's software ships in this binary.
 
     if !missing.is_empty() {
         println!(

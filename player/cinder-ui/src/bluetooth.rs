@@ -102,7 +102,7 @@ const DISC: (i32, i32, i32, i32) = (348, 136, 104, 34); // x,y,w,h
 
 // ---- main screen: the paired list is the content ----
 const PAIRED_Y0: i32 = 212;
-const PAIRED_RH: i32 = 62;
+const PAIRED_RH: i32 = crate::scale::TRACK_ROW_H;
 /// Rows shown before the list is cut off. Five fills the space between the card and the footer
 /// without pushing either off; a longer pairing history is managed on the Devices screen, which is
 /// where forgetting lives anyway.
@@ -113,7 +113,7 @@ const PAIR_Y: i32 = 640;
 
 // ---- codec page (its own screen now) ----
 const CODEC_Y0: i32 = 150;
-const CODEC_RH: i32 = 56;
+const CODEC_RH: i32 = crate::scale::PICKER_ROW_H;
 const QUAL_Y: i32 = 420;
 const QUAL_H: i32 = 40;
 const ENH_Y: i32 = 556; // "Use Enhanced Mode" row (absolute volume)
@@ -354,7 +354,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
             }
             let icol = if d.connected { t.acc } else { t.dim };
             icons::bt(c, 38.0, cy as f32, 16.0, icol);
-            let nst = sty(Family::Sans, Weight::SemiBold, 18.0,
+            let nst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW,
                           if d.connected { t.acc } else { t.ink }, 0.0);
             // Leave room for the right-hand status word rather than running under it.
             crate::widgets::draw_fit(c, f, 64.0, (cy - 2) as f32, &d.name, &nst, 360.0);
@@ -378,7 +378,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     crate::widgets::hline(c, ADV_Y, t.line);
     let acol = if bt.on { t.ink } else { t.faint };
     text::draw(c, f, 22.0, (ADV_Y + 26) as f32, "Audio quality",
-               &sty(Family::Sans, Weight::SemiBold, 17.0, acol, 0.0));
+               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, acol, 0.0));
     let live = bt.link_codec.map(link_codec_label);
     let want = CODECS[(bt.codec_sel as usize).min(CODECS.len() - 1)].0;
     let detail = match live {
@@ -427,7 +427,7 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         let active = bt.on && bt.codec_sel as usize == i;
         radio(c, 38, cy, active, t);
         let ncol = if active { t.acc } else { body };
-        text::draw(c, f, 64.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, 18.0, ncol, 0.0));
+        text::draw(c, f, 64.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, ncol, 0.0));
         text::draw(c, f, 64.0, (cy + 15) as f32, sub, &sty(Family::Mono, Weight::Regular, 11.0, subc, 0.04));
         // "LIVE" marks the codec the link actually negotiated, which is not necessarily the one
         // selected: A2DP picks during connection setup and falls back without telling anyone. A
@@ -473,7 +473,7 @@ pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     crate::widgets::hline(c, ENH_Y, t.line);
     let enh_on = bt.on && bt.enhanced;
     let tcol = if bt.on { t.ink } else { t.faint };
-    let tst = sty(Family::Sans, Weight::SemiBold, 17.0, tcol, 0.0);
+    let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol, 0.0);
     let sst = sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.dim } else { t.faint }, 0.04);
     // 22 → the switch's left edge (422) less a gap; both strings truncate rather than run under it.
     let avail = (422 - 22 - 14) as f32;

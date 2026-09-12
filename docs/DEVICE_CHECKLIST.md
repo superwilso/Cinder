@@ -270,8 +270,8 @@ fixed launcher**, after the first version was found unable to fire at all. Resul
 | 11.4 | **Only after 11.2 and 11.3 pass:** decide the cable escape | Keep, narrow to a PC connection, or remove | — | The cable escape stays exactly as it is until then |
 | 11.7 | **NEW PLAYLIST slides away with the band** | Library ▸ Playlists, with enough playlists to scroll: scroll down, then up mid-list | NEW PLAYLIST goes up under the tabs with the band, the rows meet the tab strip, and both come back on the way up — tappable the moment it is back | A tap on its old spot while hidden must open a playlist or nothing, never the keyboard |
 | 11.8 | **Power key after a guard recovery** | Hard to force. If `GUARD RECOVERED` ever appears again: press power, touch the screen | The UI stays responsive (screen may stay lit); log carries the fault record after a forced restart | A frozen UI = a fifth unguarded Sony call; the fault record now survives to say which |
-| 11.9 | **The release installer, end to end** — what a stranger will run | From the GitHub release, on Windows: `cinder-installer-windows-x64.exe` → Install → boots into Cinder → Update → Uninstall → Install again | Each step lands; the window names the state the player is really in; music, playlists and settings survive all four | `cinder_home_install.log` in the drive root says which step. A revert by the device's sanity gate must read as reverted, not as a tick |
-| 11.10 | **USB-DAC → LDAC, the whole path** — the headline, never run end to end | Headphones on LDAC; Menu ▸ USB-DAC on; play audio on the PC into the Walkman | Sound in the headphones; the Bluetooth screen names LDAC | The transmit half is proven (STATUS.md, 2026-08-11), so silence points at capture: log for `snd_pcm_open` / `-EBUSY` on the UAC card |
+| 11.9 | **The release installer, end to end** — what a stranger will run. **RE-OPENED 2026-09-12**: the Windows handoff was replaced that day (it no longer launches Sony's updater; it sends the vendor SCSI command itself and asks for administrator), so a pass recorded before that date does not cover the path a stranger now runs | From the GitHub release, on Windows: `cinder-installer-windows-x64.exe` → Install → boots into Cinder → Update → Uninstall → Install again | Each step lands; the window names the state the player is really in; music, playlists and settings survive all four | `cinder_home_install.log` in the drive root says which step. A revert by the device's sanity gate must read as reverted, not as a tick |
+| 11.10 | ~~**USB-DAC → LDAC, the whole path** — the headline, never run end to end~~ **PASS 2026-09-12, owner-reported** (no log captured — see the note under this table) | Headphones on LDAC; Menu ▸ USB-DAC on; play audio on the PC into the Walkman | Sound in the headphones; the Bluetooth screen names LDAC | The transmit half is proven (STATUS.md, 2026-08-11), so silence points at capture: log for `snd_pcm_open` / `-EBUSY` on the UAC card |
 | 11.11 | **Which model is this unit?** | Read the label on the back of the player | Record it in README ▸ Supported devices | `/contents` reads 55 GB — the 64 GB NW-A57, not the 16 GB NW-A55 the README used to name. The README now says "64 GB"; correct it if the label disagrees |
 | 11.12 | **Palettes** | Copy `player/cinder-ui/palettes/slate.palette` and `paper.palette` into `cinder_palettes/` on the player's storage over USB; unplug; Settings ▸ Palette | Both appear and each repaints the UI; Paper's Accent row reads SET BY PALETTE; the choice survives a reboot; a deliberately broken file is skipped and `cinderhome.log` says why | Nothing listed: the log line `palettes: cannot read` names the error. Folder read at boot but not after USB: check Settings was re-opened, which is the rescan trigger |
 
@@ -281,3 +281,23 @@ Append findings to [`DEVICE_TESTS.md`](DEVICE_TESTS.md) in the style of its "RES
 section — what was run, what happened, and what it settles — and update the status column of
 whatever table above the item came from. An item that passes should stop being on this list; an item
 that fails should gain a root cause, not just a retry.
+
+---
+
+## How a pass gets recorded here
+
+Two kinds of PASS appear above, and the difference matters more as more of them accumulate.
+
+**Log-backed.** A date and a captured artefact: a `cinderhome.log` excerpt, a `cinder-probe` dump,
+a `dmesg` line, a measurement. Everything struck through before 2026-09-11 is this kind, and each
+one names what was seen.
+
+**Owner-reported.** The owner ran it and it worked, with nothing captured. `11.10` on 2026-09-12 is
+this kind. It is recorded because the person who ran it is the one who built it and there is no
+reason to doubt it — and it is labelled, because a feature this project has described for months as
+"0% validated" should not silently become "verified" on a sentence, and because the *detail* a log
+would have carried is what the next debugging session needs: which LDAC quality was negotiated,
+whether the capture opened first time, what the Bluetooth screen named.
+
+If you have the player and five minutes, re-run 11.10 with `adb shell 'tail -f /contents/cinderhome.log'`
+running and paste the excerpt into `cinder-home/STATUS.md`. That upgrades the row and costs nothing.

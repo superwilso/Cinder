@@ -190,47 +190,271 @@ pub fn payload_names() -> Vec<&'static str> {
     crate::payload::PAYLOAD.iter().map(|(n, _, _)| *n).collect()
 }
 
-// ── the handoff, on Windows ────────────────────────────────────────────────────────────────
+// ── the firmware-upgrade trigger, on Windows ───────────────────────────────────────────────
+//
+// WHAT THIS REPLACED. Until 0.3.1 this section launched Sony's own `SoftwareUpdateTool.exe` from
+// a temporary directory, and every Windows installer carried Sony's updater — the .exe, Sony's
+// `WmFwUpdater.dll` and Microsoft's Visual C++ 2010 runtime — embedded in it. That is Sony's
+// software shipped inside a Cinder download, and it was the largest piece of someone else's
+// property this project distributed.
+//
+// It was never needed for its own sake. Sony's tool ends in exactly one thing this installer
+// already does on Linux: the 12-byte vendor SCSI command below, which tells the player to reboot
+// into its updater and apply the `NW_WM_FW.UPG` sitting on its data partition. `write_payload`
+// stages that file on every platform, so the tool was copying a file that was already there and
+// then sending a command Windows can send itself.
+//
+// WHY IT NEEDS ADMINISTRATOR. The command goes to a *volume* handle (`\\.\E:`) opened for read
+// and write, and Windows gives raw volume access only to an elevated process. That is why
+// `cinder-installer.manifest` asks for `requireAdministrator` — the one thing in this installer
+// that needs a right beyond writing files to a removable drive.
 
-/// Launch Sony's own Windows updater from an embedded temporary bundle. It owns the device
-/// handoff: do not manually eject or trigger a Linux SCSI command before this returns.
+/// The vendor CDB. `fc` is Sony's NWZ passthrough opcode; subcommand `04` + the `dbmn` tag is
+/// "do firmware upgrade". Byte 8 is a flag: newer devices want 0x80, older ones 0x00, so the
+/// caller tries 0x80 first and falls back — the same two-shot `do_fw_upgrade` does.
 ///
-/// `upg` is the package to hand it, so the same function serves install and uninstall.
+/// The same twelve bytes go out on Linux through `SG_IO` and on Windows through SCSI
+/// pass-through. Keeping one constant is deliberate: two copies of a device command drift.
+#[cfg(any(target_os = "linux", windows))]
+pub const FW_UPGRADE_CDB: [u8; 12] = [0xfc, 0, 0x04, b'd', b'b', b'm', b'n', 0, 0, 0, 0, 0];
+
 #[cfg(windows)]
-pub fn run_sony_updater(upg: &[u8]) -> io::Result<()> {
-    use std::process::Command;
-    let root = std::env::temp_dir().join(format!("cinder-updater-{}", std::process::id()));
-    if root.exists() {
-        fs::remove_dir_all(&root)?;
+mod scsi {
+    use std::os::raw::c_void;
+
+    pub type Handle = *mut c_void;
+
+    pub const GENERIC_READ: u32 = 0x8000_0000;
+    pub const GENERIC_WRITE: u32 = 0x4000_0000;
+    pub const FILE_SHARE_READ: u32 = 0x0000_0001;
+    pub const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    pub const OPEN_EXISTING: u32 = 3;
+
+    /// `CTL_CODE(IOCTL_SCSI_BASE, 0x0405, METHOD_BUFFERED, FILE_READ_ACCESS|FILE_WRITE_ACCESS)`,
+    /// i.e. `(4 << 16) | (3 << 14) | (0x405 << 2)`. Spelled out because the arithmetic is the
+    /// only thing that says this value is not a magic number.
+    pub const IOCTL_SCSI_PASS_THROUGH_DIRECT: u32 = (4 << 16) | (3 << 14) | (0x405 << 2);
+    pub const FSCTL_LOCK_VOLUME: u32 = 0x0009_0018;
+    pub const FSCTL_DISMOUNT_VOLUME: u32 = 0x0009_0020;
+
+    /// `SCSI_IOCTL_DATA_IN` — the device sends, we receive. Matches `SG_DXFER_FROM_DEV` on Linux.
+    pub const SCSI_IOCTL_DATA_IN: u8 = 1;
+    pub const ERROR_ACCESS_DENIED: i32 = 5;
+
+    /// `SCSI_PASS_THROUGH_DIRECT` from `ntddscsi.h`. `#[repr(C)]` reproduces the padding the
+    /// header gets from the compiler, and `Length` is filled from `size_of` rather than a
+    /// literal, so the 32-bit and 64-bit builds each declare their own size.
+    #[repr(C)]
+    pub struct PassThroughDirect {
+        pub length: u16,
+        pub scsi_status: u8,
+        pub path_id: u8,
+        pub target_id: u8,
+        pub lun: u8,
+        pub cdb_length: u8,
+        pub sense_info_length: u8,
+        pub data_in: u8,
+        pub data_transfer_length: u32,
+        pub timeout_value: u32,
+        pub data_buffer: *mut c_void,
+        pub sense_info_offset: u32,
+        pub cdb: [u8; 16],
     }
-    for (relative, bytes) in crate::payload::UPDATER_PAYLOAD {
-        let path = root.join(relative);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, bytes)?;
+
+    /// The struct and its sense buffer in one allocation, which is what `SenseInfoOffset` is for:
+    /// the port driver writes the sense data at that offset from the start of the request.
+    #[repr(C)]
+    pub struct WithSense {
+        pub spt: PassThroughDirect,
+        pub sense: [u8; 32],
     }
-    fs::write(root.join("Data/Device/NW_WM_FW.UPG"), upg)?;
-    let exe = root.join("SoftwareUpdateTool.exe");
-    let status = Command::new(&exe).current_dir(&root).status()?;
-    fs::remove_dir_all(&root).ok();
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!("Sony updater exited with {status}")))
+
+    /// The data buffer a DIRECT request hands to the port driver, which maps it and therefore
+    /// requires it to satisfy the adapter's alignment mask. USB mass storage asks for 0 or 3;
+    /// a page is a safe superset and costs one page.
+    #[repr(C, align(4096))]
+    pub struct AlignedBuf(pub [u8; 128]);
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *mut c_void,
+            disposition: u32,
+            flags: u32,
+            template: Handle,
+        ) -> Handle;
+        pub fn DeviceIoControl(
+            device: Handle,
+            code: u32,
+            in_buf: *mut c_void,
+            in_len: u32,
+            out_buf: *mut c_void,
+            out_len: u32,
+            returned: *mut u32,
+            overlapped: *mut c_void,
+        ) -> i32;
+        pub fn FlushFileBuffers(h: Handle) -> i32;
+        pub fn CloseHandle(h: Handle) -> i32;
     }
 }
 
-/// The bytes of the package `action` flashes, for handing to Sony's updater.
+/// `E:\` → `\\.\E:`, as a NUL-terminated UTF-16 string.
+///
+/// The installer's target is a mount root chosen from the drive list, so it always starts with a
+/// letter and a colon. Anything else — a UNC share, a mounted folder — has no volume device path
+/// of this shape, and guessing one would send a device command to whatever it did resolve to.
 #[cfg(windows)]
-pub fn package_for(action: Action) -> Option<&'static [u8]> {
-    if action.is_removal() {
-        crate::payload::UNINSTALL_UPG
-    } else {
-        crate::payload::PAYLOAD
-            .iter()
-            .find(|(name, _, _)| *name == UPG_NAME)
-            .map(|(_, _, bytes)| *bytes)
+fn volume_device_path(target: &Path) -> io::Result<Vec<u16>> {
+    let text = target.to_string_lossy();
+    let mut chars = text.chars();
+    let letter = chars.next().unwrap_or(' ');
+    if !letter.is_ascii_alphabetic() || chars.next() != Some(':') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a drive letter, so it has no volume to send the command to", text),
+        ));
+    }
+    let path = format!(r"\\.\{}:", letter.to_ascii_uppercase());
+    Ok(path.encode_utf16().chain(std::iter::once(0)).collect())
+}
+
+/// Fire the vendor command at an open volume handle with one flag byte. Ok(()) means the drive
+/// accepted it — the same contract as the Linux `send_fw_upgrade`.
+#[cfg(windows)]
+fn send_fw_upgrade(vol: scsi::Handle, flag: u8) -> io::Result<()> {
+    let mut buf = scsi::AlignedBuf([0u8; 128]);
+    let mut cdb = [0u8; 16];
+    cdb[..FW_UPGRADE_CDB.len()].copy_from_slice(&FW_UPGRADE_CDB);
+    cdb[8] = flag;
+
+    let mut req = scsi::WithSense {
+        spt: scsi::PassThroughDirect {
+            length: std::mem::size_of::<scsi::PassThroughDirect>() as u16,
+            scsi_status: 0,
+            path_id: 0,
+            target_id: 0,
+            lun: 0,
+            cdb_length: FW_UPGRADE_CDB.len() as u8,
+            sense_info_length: 32,
+            data_in: scsi::SCSI_IOCTL_DATA_IN,
+            data_transfer_length: buf.0.len() as u32,
+            timeout_value: 30,
+            data_buffer: buf.0.as_mut_ptr().cast(),
+            sense_info_offset: std::mem::size_of::<scsi::PassThroughDirect>() as u32,
+            cdb,
+        },
+        sense: [0u8; 32],
+    };
+
+    let len = std::mem::size_of::<scsi::WithSense>() as u32;
+    let mut returned = 0u32;
+    // SAFETY: req outlives the call; data_buffer addresses buf, which is alive and at least
+    // data_transfer_length bytes; the request is passed as both input and output buffer, which is
+    // what a METHOD_BUFFERED pass-through expects.
+    let ok = unsafe {
+        scsi::DeviceIoControl(
+            vol,
+            scsi::IOCTL_SCSI_PASS_THROUGH_DIRECT,
+            (&mut req as *mut scsi::WithSense).cast(),
+            len,
+            (&mut req as *mut scsi::WithSense).cast(),
+            len,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // A non-zero SCSI status means the drive understood the transport and rejected the command —
+    // the signal to try the other flag byte, not to fail the install. The sense key is the top
+    // nibble of byte 2 of fixed-format sense data, and it is worth reporting: 0x5 is "illegal
+    // request", which is what the wrong flag byte looks like.
+    if req.spt.scsi_status != 0 {
+        return Err(io::Error::other(format!(
+            "drive rejected the upgrade command (status {:#x}, sense key {:#x})",
+            req.spt.scsi_status,
+            req.sense[2] & 0x0f
+        )));
+    }
+    Ok(())
+}
+
+/// Flush, dismount, then tell the player to reboot into its updater.
+///
+/// ORDER MATTERS, for the same reason it does on Linux: the payload has just been written through
+/// the cache, and a device that reboots before those bytes reach flash finds a truncated
+/// `NW_WM_FW.UPG`. `FlushFileBuffers` on the volume handle is the write-back; the lock and
+/// dismount are best-effort, because Explorer may hold the volume and a flushed-but-mounted
+/// player still updates correctly, while one that never got the bytes does not.
+#[cfg(windows)]
+pub fn trigger_fw_upgrade(target: &Path, mut log: impl FnMut(&str)) -> io::Result<()> {
+    let name = volume_device_path(target)?;
+    let invalid = usize::MAX as scsi::Handle;
+
+    // SAFETY: name is NUL-terminated and lives across the call.
+    let vol = unsafe {
+        scsi::CreateFileW(
+            name.as_ptr(),
+            scsi::GENERIC_READ | scsi::GENERIC_WRITE,
+            scsi::FILE_SHARE_READ | scsi::FILE_SHARE_WRITE,
+            std::ptr::null_mut(),
+            scsi::OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if vol == invalid {
+        let e = io::Error::last_os_error();
+        return Err(if e.raw_os_error() == Some(scsi::ERROR_ACCESS_DENIED) {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Windows refused raw access to the player's drive. \
+                 Run the installer as administrator.",
+            )
+        } else {
+            e
+        });
+    }
+
+    struct Owned(scsi::Handle);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            // SAFETY: self.0 came from a successful CreateFileW and is closed exactly once.
+            unsafe { scsi::CloseHandle(self.0) };
+        }
+    }
+    let vol = Owned(vol);
+
+    // SAFETY: vol.0 is a live volume handle for every call below; each in/out buffer pointer is
+    // null with a zero length, which is what these two FSCTLs take.
+    unsafe {
+        scsi::FlushFileBuffers(vol.0);
+        let mut returned = 0u32;
+        for code in [scsi::FSCTL_LOCK_VOLUME, scsi::FSCTL_DISMOUNT_VOLUME] {
+            scsi::DeviceIoControl(
+                vol.0,
+                code,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    log("telling the player to reboot into its updater");
+    match send_fw_upgrade(vol.0, 0x80) {
+        Ok(()) => Ok(()),
+        Err(first) => {
+            log(&format!("newer-style command refused: {first} — trying the older one"));
+            send_fw_upgrade(vol.0, 0x00)
+        }
     }
 }
 
@@ -245,12 +469,6 @@ pub fn package_for(action: Action) -> Option<&'static [u8]> {
 //
 // WHY NOT SHELL OUT TO scsitool: it is a build-it-yourself binary from a vendored Rockbox
 // checkout. The whole point of this installer is that it is one file an end user can run.
-
-/// The vendor CDB. `fc` is Sony's NWZ passthrough opcode; subcommand `04` + the `dbmn` tag is
-/// "do firmware upgrade". Byte 8 is a flag: newer devices want 0x80, older ones 0x00, so the
-/// caller tries 0x80 first and falls back — the same two-shot `do_fw_upgrade` does.
-#[cfg(target_os = "linux")]
-pub const FW_UPGRADE_CDB: [u8; 12] = [0xfc, 0, 0x04, b'd', b'b', b'm', b'n', 0, 0, 0, 0, 0];
 
 /// Resolve a mount point to the block device backing it, via /proc/self/mountinfo.
 ///

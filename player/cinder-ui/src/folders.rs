@@ -31,7 +31,11 @@ pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
 /// others: re-pitching a list is a design decision with a blast radius across every screen and the
 /// whole overflow matrix, and it is recorded as such in `docs/AUDIT_2026-09-06_ui.md` rather than
 /// made quietly here. What is fixed is the sentence that was false.
-pub const ROW_H: i32 = 56;
+// A folder-tree row IS a track row (the audit's C1: `folders.rs` claimed its 56 was "the same 56
+// the Songs tab uses", and the Songs tab was 68). It is 62 like every other track row now. The
+// 48 px cover thumbnail the other lists draw is NOT here yet — a folder row has no album-art
+// lookup — so the row is taller with the tick it always had; see scale.rs for what is still open.
+pub const ROW_H: i32 = crate::scale::TRACK_ROW_H;
 
 /// What a given visual row is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -133,7 +137,7 @@ pub fn render(
 
     let all = rows(lib, dir);
     if all.is_empty() {
-        let st = sty(Family::Sans, Weight::Regular, 17.0, t.dim, 0.0);
+        let st = sty(Family::Sans, Weight::Regular, crate::scale::ROW, t.dim, 0.0);
         let msg = if lib.folders.is_empty() {
             "No folders — the library has not been read yet."
         } else {

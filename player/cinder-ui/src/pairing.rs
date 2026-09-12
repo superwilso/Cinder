@@ -40,7 +40,7 @@ const CARD_Y: i32 = 100;
 const CARD_H: i32 = 72;
 const SCAN_BTN: (i32, i32, i32, i32) = (340, 118, 118, 36); // x,y,w,h
 const LIST_Y0: i32 = 218;
-const ROW_H: i32 = 62;
+const ROW_H: i32 = crate::scale::TRACK_ROW_H;
 const FORGET_W: i32 = 104;
 const FOOT_Y: i32 = 736;
 /// Paired rows are capped so a long pairing history can never push the FOUND section off screen —
@@ -181,14 +181,14 @@ pub fn render_prompt(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Prompt) {
         // One button, spanning where the pair would be: there is nothing to accept.
         stroke_rect(c, ox, oy, nx + nw - ox, oh, t.line, 1);
         center(c, f, 240.0, (oy + oh / 2 + 5) as f32, "DISMISS",
-               &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0));
+               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.dim, 0.0));
     } else {
         fill_rect(c, ox, oy, ow, oh, t.acc);
         center(c, f, (ox + ow / 2) as f32, (oy + oh / 2 + 5) as f32, "YES, PAIR",
                &sty(Family::Sans, Weight::Bold, 16.0, t.acc_ink, 0.0));
         stroke_rect(c, nx, ny, nw, nh, t.line, 1);
         center(c, f, (nx + nw / 2) as f32, (ny + nh / 2 + 5) as f32, "CANCEL",
-               &sty(Family::Sans, Weight::SemiBold, 16.0, t.dim, 0.0));
+               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.dim, 0.0));
     }
 }
 
@@ -228,7 +228,7 @@ fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, name: &str, sub: &str,
        accent: bool, right_label: Option<&str>, right_accent: bool) {
     let cy = y + ROW_H / 2;
     icons::bt(c, 34.0, cy as f32, 16.0, if accent { t.acc } else { t.dim });
-    crate::widgets::draw_fit(c, f, 58.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, 17.0, t.ink, 0.0), 458.0);
+    crate::widgets::draw_fit(c, f, 58.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0), 458.0);
     let scol = if accent { t.acc } else { t.faint };
     crate::widgets::draw_fit(c, f, 58.0, (cy + 15) as f32, sub, &sty(Family::Mono, Weight::Regular, 11.0, scol, 0.06), 458.0);
     if let Some(label) = right_label {
@@ -267,7 +267,7 @@ pub fn render(
     fill_rect(c, 22, CARD_Y, 436, CARD_H, t.panel);
     stroke_rect(c, 22, CARD_Y, 436, CARD_H, t.line, 1);
     crate::widgets::draw_fit(c, f, 40.0, (CARD_Y + 30) as f32, "Scan for new devices",
-               &sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0), 458.0);
+               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0), 458.0);
     let sub = if scanning {
         format!("SEARCHING… {} FOUND", found.len())
     } else if found.is_empty() {

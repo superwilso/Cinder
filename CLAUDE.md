@@ -54,7 +54,7 @@ Windows-only drivers:
 |---|---|---|
 | Phases 1–7 (firmware analysis, cross-compile) | **WSL2 (Ubuntu)** | Linux toolchain; loop-mount; qemu |
 | Reading/editing/decrypting `.UPG` (`upgtool`) | **WSL2** | Rockbox tool builds on Linux |
-| Installing a `.UPG` to the device (Sony updater) | **Native Windows** | `SoftwareUpdateTool.exe` is Windows-only |
+| Installing a `.UPG` to the device | **Either** | `cinder-installer` sends the vendor SCSI command itself: SCSI pass-through on Windows (administrator), `SG_IO` on Linux (root). Sony's `SoftwareUpdateTool.exe` is no longer used or embedded |
 | Installing Walkman One / Wampy / scrobbler | **Native Windows** | Their installers are `.exe` |
 | Full eMMC backup/restore (`wbrt`) | **Native Windows** | Needs MediaTek USB VCOM driver (`VID_0E8D`) |
 | Low-level MediaTek access (`mtkclient`, SP Flash Tool) | **Native Windows** (or WSL2 + usbipd) | MTK preloader/BROM USB driver |

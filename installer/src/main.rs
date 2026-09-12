@@ -10,11 +10,12 @@
 //!   5. writes the chosen package as NW_WM_FW.UPG
 //!   6. tells the player to reboot into its updater, which applies the package
 //!
-//! HOW STEP 6 DIFFERS BY PLATFORM. On Windows it runs Sony's own `SoftwareUpdateTool.exe`, which
-//! owns the whole handoff. On Linux it sends the same vendor SCSI command that tool ends with,
-//! directly (see `stage::trigger_fw_upgrade`) — this needs root. On macOS it cannot be sent at all
-//! and the installer says so instead of inventing a step. There is NO update entry in the player's
-//! own menus on this generation; a host has to trigger it.
+//! HOW STEP 6 DIFFERS BY PLATFORM. It is one vendor SCSI command either way (see
+//! `stage::trigger_fw_upgrade`): Windows sends it through SCSI pass-through on a volume handle,
+//! which needs administrator; Linux sends it through `SG_IO`, which needs root. Neither ships any
+//! part of Sony's updater any more. On macOS it cannot be sent at all and the installer says so
+//! instead of inventing a step. There is NO update entry in the player's own menus on this
+//! generation; a host has to trigger it.
 //!
 //! TWO FRONT ENDS, one core. `gui` is a plain Win32 window (no toolkit, no crates — see its
 //! module docs for why); `console` is the text one, and is what runs on Linux, over RDP, and with
@@ -30,7 +31,7 @@ mod stage;
 #[cfg(windows)]
 mod gui;
 
-pub use payload::{CATALOGUE, CHANNEL, MISSING, UPDATER_MISSING};
+pub use payload::{CATALOGUE, CHANNEL, MISSING};
 
 use std::path::PathBuf;
 use stage::Action;
@@ -59,7 +60,7 @@ fn help() {
     println!("  -h, --help       this help");
     println!();
     if cfg!(windows) {
-        println!("  The last step runs Sony's SoftwareUpdateTool.exe for the USB handoff and reboot.");
+        println!("  The last step is a raw SCSI passthrough — NEEDS ADMINISTRATOR.");
     } else if cfg!(target_os = "linux") {
         println!("  The last step is a raw SCSI passthrough — NEEDS ROOT (run with sudo).");
     } else {
@@ -78,14 +79,6 @@ fn check_payload() -> Result<(), i32> {
         }
         eprintln!("\nBuild them first:  cinder-home/build.sh {CHANNEL}");
         eprintln!("                   cinder-home/tools/pack_upg.sh {CHANNEL}");
-        return Err(2);
-    }
-    if !UPDATER_MISSING.is_empty() {
-        eprintln!("\nERROR: the embedded Sony Windows updater is incomplete:");
-        for m in UPDATER_MISSING {
-            eprintln!("    {m}");
-        }
-        eprintln!("This release must be built from the authorized updater bundle.");
         return Err(2);
     }
     Ok(())
