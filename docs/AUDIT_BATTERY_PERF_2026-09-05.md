@@ -1,6 +1,6 @@
 # Cinder — battery, performance and optimisation audit, 2026-09-05
 
-*Run against tree `7d55c97` (`refactor: Revert async library build changes…`), the head of
+*Run against tree `63e8b51` (`refactor: Revert async library build changes…`), the head of
 `claude/project-audit-battery-performance-9o98u0` at the time of writing. Offline: no device was
 attached for this pass, so every device claim below is either cited from an existing
 device-verified document or explicitly marked device-gated.*
@@ -18,7 +18,7 @@ This document follows `docs/README.md`'s convention, and states the class **per 
 | **Device-gated** | Cannot be settled without the player in hand. The test that would settle it is given. |
 
 Nothing in this audit was changed in the tree. It is a reading and measuring pass only; the working
-tree is identical to `7d55c97` apart from this file and its index entry.
+tree is identical to `63e8b51` apart from this file and its index entry.
 
 ---
 

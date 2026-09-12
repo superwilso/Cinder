@@ -511,7 +511,7 @@ Stated plainly, because the weaknesses above are only survivable *because* of th
 >
 > **Item 10 turned out to be the load-bearing one, and not for the reason it was listed.** It sat
 > last as "worth doing when a second contributor appears". Then `main` went red **twice in one
-> day** — `7bfe89f` pushed straight to `main`, and a dependabot PR merged over a **failing** check
+> day** — `15b0fb8` pushed straight to `main`, and a dependabot PR merged over a **failing** check
 > — and the second one left the tree not compiling for an hour. CI ran both times, was correct
 > both times, and was not *required*. Branch protection now requires all six checks.
 >

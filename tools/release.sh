@@ -20,7 +20,7 @@
 #
 # ── TWO RUNS, ONE COMMIT ────────────────────────────────────────────────────────────────────────
 # It used to take three. Each of the version bump, the payload rebuild and the manifest was its own
-# "stop, commit, re-run" — so cutting v0.1.6 cost three commits (3b67cd4, 788099b, aefbca6), and
+# "stop, commit, re-run" — so cutting v0.1.6 cost three commits (3b67cd4, 4997cfa, aefbca6), and
 # each stop re-ran the multi-minute cross build to discover the next thing that also needed
 # committing. Now PREPARE does the whole job in one pass:
 #

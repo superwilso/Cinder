@@ -522,7 +522,7 @@ src/main.cpp:99:47: error: use of undeclared identifier 'uc_'
    99 |     ucontext_t* uc = static_cast<ucontext_t*>(uc_);
 ```
 
-Introduced by `f2f41a8` ("Deep sweep: … -Werror turned on"), which silenced an unused-parameter
+Introduced by `a1f91f2` ("Deep sweep: … -Werror turned on"), which silenced an unused-parameter
 warning by commenting the name out — `void* /*uc_*/` — while the `#if defined(__arm__)` body below
 still used it. **Host builds skip that block, so CI stayed green and only the ARM cross-compile
 broke.** `probe.cpp:117` had the identical defect. Both now name the parameter and `(void)uc_` it on
