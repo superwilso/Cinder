@@ -39,9 +39,10 @@ anything — whether Cinder is there, which version put it there, and whether th
 attempt succeeded, was reverted by the device's sanity gate, or never finished.
 
 Everything the installer needs is inside the one file: the device binaries, both `.UPG`
-packages, the component catalogue and Sony's own updater. **No separate download, no WSL,
-no usbipd, no driver setup, and no network connection.** Sony's `SoftwareUpdateTool.exe`
-performs the USB handoff and reboots the player.
+packages and the component catalogue. **No separate download, no WSL, no usbipd, no driver
+setup, and no network connection.** It sends the player's own upgrade command itself — SCSI
+pass-through on Windows (so it asks for administrator), `SG_IO` on Linux (so it asks for
+`sudo`). Sony's updater is no longer embedded in it.
 
 Command line, if you prefer it:
 

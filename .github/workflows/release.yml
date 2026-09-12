@@ -66,18 +66,6 @@ jobs:
               tools/verify_payload_manifest.sh
           fi
 
-      # The Sony updater bundle is vendored rather than built, so it is not in the manifest and
-      # keeps a plain existence check.
-      - name: Vendored Sony updater is present
-        shell: bash
-        run: |
-          missing=0
-          for f in installer/sony-updater/SoftwareUpdateTool.exe \
-                   installer/sony-updater/Data/App/WmFwUpdater.dll; do
-            [ -f "$f" ] || { echo "::error::missing payload $f"; missing=1; }
-          done
-          [ "$missing" = 0 ]
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -101,9 +89,9 @@ jobs:
           path: installer/cinder-installer-windows-x64.exe
           if-no-files-found: error
 
-  # The Linux build stages the payload and then stops, because the last step — Sony's
-  # SoftwareUpdateTool.exe performing the USB handoff — has no Linux equivalent. It says exactly
-  # that and exits 0 (installer/src/main.rs, print_next_steps).
+  # The Linux build sends the same vendor SCSI command the Windows build does (SG_IO rather than
+  # SCSI pass-through), so both finish the install; it needs root, and says so when it does not
+  # have it (installer/src/console.rs, print_trigger_failed).
   #
   # It shipped in v0.1.2 and then quietly stopped: the v0.1.3 rework moved to the Sony-updater
   # handoff and dropped this job, while the README went on promising a Linux build for six weeks.

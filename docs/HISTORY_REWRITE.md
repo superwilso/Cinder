@@ -42,20 +42,30 @@ The script checks each of those itself and stops if any of them fails.
 > objects `git gc` had never packed — a clone from GitHub has been about 124 MB all along. The
 > rewrite takes it to about 35 MB.
 
-## What it does not remove: Sony's updater
+## Sony's updater: replaced 2026-09-12, and now purged with the rest
 
-`installer/sony-updater/` is **Sony's own Windows firmware updater** — `SoftwareUpdateTool.exe` and
+`installer/sony-updater/` was **Sony's own Windows firmware updater** — `SoftwareUpdateTool.exe` and
 `WmFwUpdater.dll`, with Microsoft's Visual C++ 2010 runtime beside them — embedded in every Windows
-installer to send the player the command that starts its update. The rewrite leaves it alone on
-purpose: removing it from history while the installer still needs it would break the release build.
+installer to send the player the command that starts its update. It was the larger exposure of the
+two, because it shipped inside release downloads and not only in the repository.
 
-It is the same exposure as the files above, and a bigger one, because it ships inside a release
-download and not only the repository. Removing it means replacing it. On Linux the installer already
-sends the same 12-byte vendor SCSI command itself (`installer/src/stage.rs`); Windows can do the same
-through SCSI pass-through (`DeviceIoControl` with `IOCTL_SCSI_PASS_THROUGH_DIRECT`), which needs
-administrator rights the installer does not ask for today, and which has to be proven on the device.
-When that lands, add `installer/sony-updater/` to `REMOVE_PATHS` in the script, so both go in one
-rewrite rather than two.
+Removing it meant replacing it, and that has now happened: `installer/src/stage.rs` sends the
+12-byte vendor CDB itself on Windows through `DeviceIoControl` /
+`IOCTL_SCSI_PASS_THROUGH_DIRECT` on a volume handle, as it already did on Linux through `SG_IO`.
+The bundle is out of the working tree and `installer/sony-updater/` is in `REMOVE_PATHS`, so it
+goes in the same rewrite as Sony's UI files rather than needing a second one.
+
+**One thing about it is device-unverified.** The Windows pass-through path has been compiled
+(`cargo check --target x86_64-pc-windows-gnu`) and read against `ntddscsi.h`, but the command has
+never gone out from a Windows machine — only from Linux, where this project has sent it for months.
+It costs one install to find out, and the failure mode is benign: the payload is staged and
+verified before the command is sent, so a refusal leaves a player holding a valid package and
+nothing else, and the installer says so. Verify it before the next release is announced, because
+it is now the only way a Windows user can install anything.
+
+The cost of the change, stated plainly: the Windows installer now asks for administrator at
+startup. Raw volume access is not given to an ordinary process, and asking up front beats staging
+every file and then failing at the one step that matters.
 
 ## Their own repository
 

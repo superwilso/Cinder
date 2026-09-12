@@ -5,9 +5,16 @@
   WHY THIS FILE EXISTS. Without a manifest naming Common Controls 6, Windows hands the process the
   version 5 comctl32 and every button, combo box and edit control paints in the Windows 95 style —
   on Windows 11. InitCommonControlsEx alone does not change that; the manifest is what selects the
-  themed library. It also declares DPI awareness (so text is not bitmap-scaled on a high-DPI
-  laptop) and asInvoker, so the installer never asks for administrator rights it has no use for:
-  everything it does is writing files to a removable drive and starting Sony's updater.
+  themed library. It also declares DPI awareness, so text is not bitmap-scaled on a high-DPI
+  laptop.
+
+  WHY requireAdministrator, when this used to be asInvoker. The last step of an install is one
+  vendor SCSI command that tells the player to reboot into its updater. Until 0.3.1 that command
+  came from Sony's own SoftwareUpdateTool.exe, embedded in this installer; it is now sent directly
+  through SCSI pass-through, which needs a volume handle opened for read and write — and Windows
+  gives raw volume access only to an elevated process. Asking up front is the honest version:
+  staging the files without elevation and then failing at the one step that matters would leave a
+  player holding a payload nobody told it to apply.
 -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity type="win32" name="Cinder.Installer" version="1.0.0.0" processorArchitecture="*"/>
@@ -24,7 +31,7 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

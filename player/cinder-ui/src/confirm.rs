@@ -262,7 +262,7 @@ fn render_menu(c: &mut Canvas, t: &Theme, f: &FontSet, ask: Ask) {
         // as equal in weight to the two that take the device away.
         let col = if *what == Hit::Cancel { t.dim } else { t.ink };
         center(c, f, 240.0, (ry + MENU_ROW_H / 2 + 7) as f32, label,
-               &sty(Family::Sans, Weight::SemiBold, 20.0, col, 0.0));
+               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, col, 0.0));
     }
 }
 

@@ -16,6 +16,89 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **The Windows installer no longer ships Sony's firmware updater.** *device-unverified on Windows —
+  compiled for `x86_64-pc-windows-gnu` and read against `ntddscsi.h`; the same twelve bytes have gone
+  out from Linux for months, but never yet from Windows.*
+
+  Every Windows installer up to 0.3.0 carried Sony's own `SoftwareUpdateTool.exe`, Sony's
+  `WmFwUpdater.dll` and Microsoft's Visual C++ 2010 runtime inside itself, and launched them for the
+  last step of an install. That step is one 12-byte vendor SCSI command telling the player to reboot
+  into its own updater and apply the `NW_WM_FW.UPG` the installer has already staged — a command
+  this project has sent directly from Linux (`SG_IO`) since v0.2.0. Windows now sends it the same
+  way, through `DeviceIoControl` / `IOCTL_SCSI_PASS_THROUGH_DIRECT` on the drive's volume handle, so
+  no part of Sony's software is in the download.
+
+  **It asks for administrator at startup now.** Windows grants raw volume access to nothing less,
+  and asking up front beats staging every file and then failing at the one step that matters. If it
+  is refused anyway, both front ends say which step did not happen and that the payload on the
+  player is intact.
+
+- **The installer stopped offering to remove things the player needs.** `power`, `msc`, `clock` and
+  `umount` were components in `cinder-home/deploy/components.conf`, which means they were checkboxes
+  in the picker — and each one's own description said what clearing it cost: "there is no way to
+  power the device off from the UI", "this is how files get onto the player", "the clock cannot be
+  set at all", and a helper whose only job is to serve `msc`. Those are not choices. All four are
+  part of every install now, 60 KB between them, and the picker holds only genuine preferences: the
+  FM register helper, the charger-detail reader, the experimental GPU path, the wired volume curve
+  and the sound signature. An old `cinder_components.conf` that says `CINDER_MSC=0` is simply no
+  longer consulted; the device side already defaulted every one of them to on when the answer was
+  absent.
+
+- **One track row height, and a type scale.** *device-unverified — 399 host tests including the
+  31-screen panel-overflow matrix pass, and every screen was re-rendered and looked at.*
+
+  The 2026-09-06 audit counted eleven row heights, with a **track row drawn at three of them**
+  (68 in the Songs tab, 62 on album/artist/playlist/Up Next lists, 56 in Folders — where a comment
+  claimed its 56 was "the same 56 the Songs tab uses"), and 24 font sizes with **six treatments of
+  "the name of the thing on this row"**. It left both open as design calls. They were decided on
+  2026-09-12 and live in one new file, `player/cinder-ui/src/scale.rs`:
+
+  - **A track row is 62 px everywhere** — the height four of the five lists already used, so the
+    fewest screens move; a folder row grows to it (its 48 px cover thumbnail is still missing, and
+    `scale.rs` says so). An album, artist or playlist row — a row standing for a *group* of tracks,
+    with stacked art and a count — is 68, one number instead of 68-and-70.
+  - **Four body sizes, three weights**: 22 title / 19 row label / 16 secondary / 13 caption. Forty-
+    three primary row labels across thirteen screens, previously drawn at 16, 17, 18, 19 and 20,
+    now name `scale::ROW`. The lock clock (76) and FM dial (86/88) stay one-offs.
+
+  `scale.rs` also records what is deliberately **not** migrated: the 10-12 px caption tier, which
+  is the largest group of call sites in the UI and grows by up to 30% on collapse — exactly the
+  strings that live in fixed-width badges — and the header's right-hand slot (audit C3), which is
+  an API change rather than a number. Both need the overflow matrix re-baselined against rendered
+  pixels, not a green test run.
+
+### Fixed
+
+- **Three pieces of the installer's window could not be read.** *device-unverified — Win32 layout,
+  no host test can see pixels; each one is arithmetic that can be checked by reading it.*
+
+  All three were layout, not colour. Component descriptions were flattened into a fixed 76-px
+  `STATIC`, which clips silently — no scrollbar, no ellipsis — so most of what the longer entries
+  say about what a helper does (the `fm` one runs to nine lines at that width) was invisible; the
+  panel is a read-only, scrolling `EDIT` now and takes whatever height the page has spare. On the
+  Home page the footer line was placed at a fixed offset from the bottom and the action cards at a
+  fixed offset from the top, so at the minimum window size grey body text was drawn across the
+  Uninstall button's own label. And on the Done page the log control started 18 px above the
+  sentence that reports how the install went, covering it.
+
+  The minimum window size is now derived from what the Home page needs (620 × 560 logical, was
+  560 × 460 — a minimum that could not show the page it was the minimum for), and the component
+  rows tighten their step before they can ever be laid out underneath the description panel.
+
+### Verified
+
+- **USB-DAC → LDAC ran end to end on the unit.** *device-verified 2026-09-12 — owner-reported, no
+  log captured.* Goal #3, the reason the project exists: USB audio in from a PC, LDAC out to
+  headphones, with the 3.5 mm output still there. The transmit half was proven on 2026-08-11 and
+  the socket handshake on 2026-08-25; the whole path had never been executed.
+  `docs/DEVICE_CHECKLIST.md` 11.10 records it as owner-reported rather than log-backed, and says
+  what a log would still be worth.
+
+  `11.9` (the release installer, end to end) is **re-opened** by the change above: a pass recorded
+  before 2026-09-12 does not cover a Windows handoff that was replaced on it.
+
 ## [0.3.0] — 2026-09-11
 
 ### Added

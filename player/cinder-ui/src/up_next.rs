@@ -10,7 +10,7 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline, right, sty};
 use crate::Canvas;
 
-pub const RH: i32 = 62;
+pub const RH: i32 = crate::scale::TRACK_ROW_H;
 // Must equal `library::list_bottom()`: the scrollbar this screen draws is `library::scrollbar`,
 // and `sbar_begin` measures the thumb's travel against the LIBRARY's bottom. Two independent
 // literals happened to agree (800 - 64); deriving it means they cannot quietly stop agreeing.
@@ -435,7 +435,7 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     if l.slots.is_empty() {
         let _ = crate::chrome::header(c, t, f, "Up Next", None);
         text::draw(c, f, 22.0, 360.0, "Nothing queued.",
-                   &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
+                   &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
         text::draw(c, f, 22.0, 386.0, "Play a track and its album appears here.",
                    &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0));
         return l;
@@ -633,7 +633,7 @@ fn album_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow,
     let dim = if past { 0.34 } else if t.night { 0.30 } else { 1.0 };
     crate::library::thumb(c, t, lib, song.album_id, &song.art, 46, y + (RH - 48) / 2, 48, dim);
     let title_col = if now { t.acc } else if past { t.dim } else { t.ink };
-    let tst = sty(Family::Sans, Weight::SemiBold, 20.0, title_col, 0.0);
+    let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, title_col, 0.0);
     // The text budget and the duration column both shift in when the handle is there, by exactly
     // the amounts `queue_row` uses — the handle sits in the same column on both lists, so the
     // clearance it needs is the same number, not a second one that has to be kept in step.
@@ -658,7 +658,7 @@ fn queue_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow, lib: &crate
     // window above it.
     crate::library::thumb(c, t, lib, song.album_id, &song.art,
                           46, y + (RH - 48) / 2, 48, if t.night { 0.30 } else { 1.0 });
-    let tst = sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0);
+    let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0);
     text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 262.0), &tst);
     let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
     text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, 276.0), &ast);

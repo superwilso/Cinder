@@ -230,7 +230,7 @@ pub(crate) fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, lab
         fill_rect(c, 0, y, crate::canvas::W as i32, rh, t.row_sel);
     }
     let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy - 3) as f32, label, &sty(Family::Sans, Weight::SemiBold, 18.0, lc, 0.0));
+    text::draw(c, f, 22.0, (cy - 3) as f32, label, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
     text::draw(c, f, 22.0, (cy + 15) as f32, desc, &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
     hline(c, y + rh, t.line);
     cy
@@ -271,7 +271,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
     }
     let lc = if sel { t.acc } else { t.ink };
     text::draw(c, f, 22.0, (y + 36) as f32, "Balance",
-               &sty(Family::Sans, Weight::SemiBold, 18.0, lc, 0.0));
+               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
     let sub = if s.bt_route {
         "Wired output only — Bluetooth is not affected"
     } else {
@@ -425,7 +425,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
         let ay = advanced_top();
         let cy = row(c, t, f, ay, sel == ROW_ADVANCED, "Advanced",
                      "Source Direct, Clear Phase, DSEE AI, Tone Control");
-        let chev = sty(Family::Sans, Weight::SemiBold, 20.0, t.dim, 0.0);
+        let chev = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.dim, 0.0);
         right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
     }
 

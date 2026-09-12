@@ -430,6 +430,68 @@ them off, and switch them back on a minute later without touching the player. Th
 
 ---
 
+## 14. Boot time and battery drain against stock — goal #1, still a claim
+
+**Why this is here.** "Faster boot and better battery life" is the first line of the goals list and
+the README now says outright that it is unmeasured. Half of it exists: Cinder paints its first frame
+**13.2 s** after the kernel starts, taken from its own log. Nothing comparable has ever been taken
+from the stock player on the same unit, and no discharge figure exists at all because every battery
+sample ever recorded was on a cable — which is a charger, not a measurement.
+
+Both halves need the player in your hand, and neither needs a flash beyond the one you have.
+
+### 14a. Boot: Cinder
+
+The marker is already in the log, once per boot:
+
+```sh
+adb shell 'grep -n "first frame painted" /contents/cinderhome.log'
+# render_driver: first frame painted (our own loop)
+```
+
+Each line's leading number is uptime in seconds, so the value is read straight off it. Take
+**three boots**, report the median, and note whether the library thread had a cold art cache — the
+first boot after a library change is not the same measurement as a warm one (the playlist scan
+alone was measured at 3,802 ms over a 3,456-track library, and it runs every boot).
+
+### 14b. Boot: stock, on the same unit
+
+There is no equivalent log, so this is a stopwatch, and the stopwatch has to be started and stopped
+on the same events for both players or the comparison is worthless:
+
+* **start** — the instant the screen first lights up after the power press, not the press itself
+  (the PMIC's own delay is not either player's fault);
+* **stop** — the first frame you could *act on*: the library or Now Playing drawn, not the splash.
+
+Three runs, median, same battery level bracket, same library, screen brightness fixed. Write all six
+numbers down, not the difference — the difference is what the README will quote and the six are what
+makes it checkable.
+
+### 14c. Drain, both players
+
+`tools/battery_track.sh` exists for this and has never produced a discharge interval:
+
+```sh
+tools/battery_track.sh start 60     # sample every 60 s
+# UNPLUG. Use the player normally for hours. Do not connect the cable — adb wakes the core.
+tools/battery_track.sh report
+```
+
+The rules that make the number mean anything, each learned the hard way:
+
+* **Off the cable, or it is not a drain test.** `adb` alone wakes the SoC; a cabled session measures
+  the charger.
+* **There is no fuel gauge on this board** — no current sense, no cycle count. The only honest
+  figures are *voltage over time* and *the gauge's own percentage over time*, sampled by the
+  tracker, and they are only comparable between runs of the same length and the same use.
+* **Same use, both players.** An hour of album playback with the screen off, on the same files, at
+  the same volume, with Bluetooth in the same state. A drain figure against "normal use" compares
+  two different afternoons.
+
+Deep idle is the thing worth watching underneath it: `dpidle_cnt` went from zero to 18,509 in a run
+once the early-suspend flag was driven, and none of that has ever been seen alongside a battery
+curve.
+
 ## Running a probe
 
 ```sh

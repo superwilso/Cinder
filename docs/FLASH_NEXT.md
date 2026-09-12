@@ -216,7 +216,7 @@ always on, and it widens nothing — two fixed verbs, no caller-supplied paths.
 
 | Thing | State |
 |---|---|
-| **LDAC** | `ldac-bridge` builds, is **not installed**, `TEST.md` never run. 0% validated. Goal #3. |
+| **LDAC** | ~~`ldac-bridge` builds, is **not installed**, `TEST.md` never run. 0% validated.~~ **Goal #3 ran end to end 2026-09-12** (owner-reported, DEVICE_CHECKLIST 11.10). |
 | **Bluetooth** | Deferred by request. Needs the `BtTransmitterService` shim, which also unblocks route-aware volume and FM→BT. |
 | **Album-art decode latency** | ~365 ms inline on the render thread at every track change. Needs moving onto the background decoder with the gradient shown until it lands. The biggest remaining win. |
 | **Drag-and-drop queue reorder** | `queue_move` exists; the gesture does not. |

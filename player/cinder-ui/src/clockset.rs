@@ -228,7 +228,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
                         weekday(y, m, d), d, MONTHS[(m - 1) as usize], y,
                         fields[F_HOUR], fields[F_MIN]);
         center(c, f, 240.0, (TOP + 36) as f32, &s,
-               &sty(Family::Sans, Weight::SemiBold, 17.0, t.acc, 0.0));
+               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.acc, 0.0));
         center(c, f, 240.0, (TOP + 54) as f32, "UTC — THE DEVICE KEEPS NO TIME ZONE",
                &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.16));
     }
@@ -243,7 +243,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, fields: &Fields, sel: usiz
         }
         let lc = if i == sel { t.acc } else { t.ink };
         text::draw(c, f, 22.0, (cy + 6) as f32, label_of(i),
-                   &sty(Family::Sans, Weight::SemiBold, 18.0, lc, 0.0));
+                   &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
         // The value sits left of the buttons, right-aligned, so the digits line up down the column.
         right(c, f, (MINUS_X - 16) as f32, (cy + 7) as f32, &value_of(fields, i),
               &sty(Family::Mono, Weight::Bold, 20.0, t.ink, 0.04));

@@ -243,7 +243,6 @@ const MB_YESNO: u32 = 0x0004;
 const IDYES: i32 = 6;
 const TRANSPARENT: i32 = 1;
 const DT_LEFT: u32 = 0x0000;
-const DT_WORDBREAK: u32 = 0x0010;
 const DT_END_ELLIPSIS: u32 = 0x8000;
 const LOGPIXELSX: i32 = 88;
 const SM_CXSCREEN: i32 = 0;
@@ -408,14 +407,6 @@ pub fn run(action: Option<Action>, dry: bool) -> i32 {
             return 2;
         }
     };
-    if !crate::UPDATER_MISSING.is_empty() {
-        fatal(&format!(
-            "This build is incomplete — the embedded Sony updater is missing {} file(s):\n\n{}\n\nWithout it the files can be staged but the player cannot be told to flash them.",
-            crate::UPDATER_MISSING.len(),
-            crate::UPDATER_MISSING.join("\n")
-        ));
-        return 2;
-    }
     if !crate::MISSING.is_empty() {
         fatal(&format!(
             "This build is incomplete — {} payload file(s) were missing when it was compiled:\n\n{}\n\nDownload a release build rather than one made from a checkout with no dist/.",
@@ -461,8 +452,12 @@ pub fn run(action: Option<Action>, dry: bool) -> i32 {
         };
         let sc = |px: i32| px * dpi as i32 / 96;
         let (ww, wh) = (sc(760), sc(620));
-        MIN_W.store(sc(560), Ordering::SeqCst);
-        MIN_H.store(sc(460), Ordering::SeqCst);
+        // MEASURED FROM THE LAYOUT, not guessed: the Home page needs the band (84), the drive
+        // row and the state line (74), three 72 px cards, two lines of footer and the bottom
+        // button row with its padding. At the old 460 the cards, the footer and the buttons were
+        // laid out on top of each other; a minimum that cannot show the page is not a minimum.
+        MIN_W.store(sc(620), Ordering::SeqCst);
+        MIN_H.store(sc(560), Ordering::SeqCst);
         let x = (GetSystemMetrics(SM_CXSCREEN) - ww) / 2;
         let y = ((GetSystemMetrics(SM_CYSCREEN) - wh) / 2).max(0);
         let title = w(&format!(
@@ -849,7 +844,19 @@ impl App {
                     };
                     self.comp_ctl.push((i, h, label));
                 }
-                self.hint = self.mk("STATIC", "Select a component for what it does.", SS_NOPREFIX, ID_HINT, f);
+                // A READ-ONLY EDIT, NOT A STATIC. The descriptions in components.conf are
+                // paragraphs — the `fm` one runs to nine lines at this width — and a STATIC
+                // silently clips whatever does not fit its box, with no scrollbar and no
+                // ellipsis to say so. Two thirds of what `fm` and `signature` do was
+                // unreadable. An EDIT scrolls. It is not a tabstop, so it does not appear in
+                // the keyboard order between the checkboxes and the buttons.
+                self.hint = self.mk(
+                    "EDIT",
+                    "Select a component to read what it does.",
+                    ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
+                    ID_HINT,
+                    f,
+                );
                 self.back = self.mk("BUTTON", "Back", WS_TABSTOP, ID_BACK, f);
                 self.next = self.mk("BUTTON", "Continue", BS_DEFPUSHBUTTON | WS_TABSTOP, ID_NEXT, f);
                 self.show_desc(0);
@@ -1176,17 +1183,37 @@ impl App {
                 for (n, h) in [self.b_install, self.b_update, self.b_uninstall].into_iter().enumerate() {
                     mv(h, pad, y + n as i32 * (card + self.s(10)), wd - pad * 2, card);
                 }
+                let cards_end = y + 3 * (card + self.s(10));
                 let bottom = ht - pad - btn_h;
                 mv(self.b_check, pad, bottom, self.s(220), btn_h);
                 mv(self.b_clean, pad + self.s(230), bottom, self.s(200), btn_h);
-                mv(self.hint, pad, bottom - row * 2 - self.s(8), wd - pad * 2, row * 2);
+                // The footer sits above the bottom row, but never on top of the Uninstall card:
+                // at the old minimum window size it was drawn across it, which put grey body text
+                // over a button's own label and made both unreadable.
+                let hint_top = (bottom - row * 2 - self.s(8)).max(cards_end + self.s(4));
+                mv(self.hint, pad, hint_top, wd - pad * 2, (bottom - hint_top - self.s(4)).max(row));
             }
             Page::Options => {
                 let mut y = head + pad;
                 mv(self.body, pad, y, wd - pad * 2, row);
                 y += row + self.s(6);
-                let hint_h = self.s(76);
                 let bottom = ht - pad - btn_h;
+
+                // NOTHING HERE IS PLACED AT A FIXED OFFSET ANY MORE. The rows used to step by a
+                // constant 30 px from the top while the description panel sat at a constant
+                // offset from the bottom, so on a short window — or with one component more than
+                // the catalogue happened to have — the last rows were drawn underneath the
+                // description and the buttons, which is not a clipped label but an invisible
+                // control the user can still click. The panel takes the slack that is left, the
+                // rows take what remains, and the step tightens before anything overlaps.
+                let n = self.comp_ctl.len().max(1) as i32;
+                let rows_h = n * self.s(30);
+                let hint_h = (bottom - self.s(10) - (y + rows_h + self.s(8)))
+                    .clamp(self.s(52), self.s(150));
+                let hint_top = bottom - hint_h - self.s(10);
+                let space = (hint_top - y - self.s(8)).max(self.s(24));
+                let step = if rows_h > space { (space / n).max(self.s(22)) } else { self.s(30) };
+
                 for (_, h, label) in self.comp_ctl.clone() {
                     if label.is_null() {
                         mv(h, pad + self.s(4), y, wd - pad * 2 - self.s(8), self.s(24));
@@ -1197,9 +1224,9 @@ impl App {
                         mv(label, pad + self.s(4), y + self.s(4), wd - pad * 2 - cw - self.s(16), self.s(20));
                         mv(h, wd - pad - cw, y, cw, self.s(240));
                     }
-                    y += self.s(30);
+                    y += step;
                 }
-                mv(self.hint, pad, bottom - hint_h - self.s(10), wd - pad * 2, hint_h);
+                mv(self.hint, pad, hint_top, wd - pad * 2, hint_h);
                 mv(self.back, pad, bottom, self.s(110), btn_h);
                 mv(self.next, wd - pad - self.s(150), bottom, self.s(150), btn_h);
             }
@@ -1211,7 +1238,12 @@ impl App {
             }
             Page::Working | Page::Done => {
                 let bottom = ht - pad - btn_h;
-                mv(self.log, pad, head + pad, wd - pad * 2, bottom - head - pad * 2);
+                // The Done page paints one line under the band — "Done — the player reboots into
+                // Cinder", or where it stopped. `paint` drew it from head+4 to head+28 while the
+                // log started at head+22, so the sentence that reports the OUTCOME of the whole
+                // install was half-covered by the control on top of it. The log starts below it.
+                let top = head + pad + if self.page == Page::Done { self.s(26) } else { 0 };
+                mv(self.log, pad, top, wd - pad * 2, bottom - top - pad);
                 mv(self.back, pad, bottom, self.s(130), btn_h);
                 mv(self.next, wd - pad - self.s(130), bottom, self.s(130), btn_h);
             }
@@ -1275,8 +1307,8 @@ impl App {
                     "That did not finish. The log below says where it stopped."
                 };
                 let t = w(msg);
-                let mut r = RECT { left: pad, top: head + self.s(4), right: rc.right - pad, bottom: head + self.s(28) };
-                DrawTextW(dc, t.as_ptr(), -1, &mut r, DT_LEFT | DT_WORDBREAK);
+                let mut r = RECT { left: pad, top: head + self.s(8), right: rc.right - pad, bottom: head + self.s(34) };
+                DrawTextW(dc, t.as_ptr(), -1, &mut r, DT_LEFT | DT_END_ELLIPSIS);
             }
         }
     }
@@ -1322,39 +1354,31 @@ fn carry_out(action: Action, comps: &[Comp], target: &std::path::Path, dry: bool
     push_log("Everything is staged and read back clean.");
     tick();
 
-    #[cfg(windows)]
-    {
-        let Some(upg) = stage::package_for(action) else {
-            push_log(format!("FAILED: this build has no {} package embedded.", action.verb().to_lowercase()));
-            tick();
-            return false;
-        };
-        push_log(String::new());
-        push_log("Handing over to Sony's updater. It takes the USB connection, flashes the");
-        push_log("player, and reboots it. Do not unplug it.");
+    push_log(String::new());
+    push_log("Telling the player to reboot into its updater. It applies the package and");
+    push_log("restarts itself. Do not unplug it.");
+    tick();
+    match stage::trigger_fw_upgrade(target, |m| {
+        push_log(format!("  {m}"));
         tick();
-        match stage::run_sony_updater(upg) {
-            Ok(()) => {
-                push_log(String::new());
-                push_log("Sony's updater finished.");
-                push_log(String::new());
-                push_log("If a boot ever goes wrong: hold the USB cable in at power-on to get the");
-                push_log("stock player back, and see RECOVERY.md.");
-                tick();
-                true
-            }
-            Err(e) => {
-                push_log(String::new());
-                push_log(format!("FAILED to start Sony's updater: {e}"));
-                push_log("The files are staged. Reconnect the Walkman and run this again.");
-                tick();
-                false
-            }
+    }) {
+        Ok(()) => {
+            push_log(String::new());
+            push_log("The player has been told to update. Its own updater takes over now.");
+            push_log(String::new());
+            push_log("If a boot ever goes wrong: hold the USB cable in at power-on to get the");
+            push_log("stock player back, and see RECOVERY.md.");
+            tick();
+            true
         }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = tick;
-        true
+        Err(e) => {
+            push_log(String::new());
+            push_log(format!("FAILED to send the update command: {e}"));
+            push_log("The files ARE staged and verified. Nothing on the player was damaged.");
+            push_log("Reconnect it and run this again; if it says access was refused, run the");
+            push_log("installer as administrator.");
+            tick();
+            false
+        }
     }
 }

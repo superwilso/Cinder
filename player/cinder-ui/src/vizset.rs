@@ -91,7 +91,7 @@ fn vrow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, 
         fill_rect(c, 0, y, crate::canvas::W as i32, ROW_H, t.row_sel);
     }
     let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, 20.0, lc, 0.0));
+    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
     right(c, f, 458.0, (cy + 4) as f32, value, &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04));
     hline(c, y + ROW_H, t.line);
     y + ROW_H
@@ -137,7 +137,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
         }
         let lc = if sel == ROW_PEAKS { t.acc } else { t.ink };
         text::draw(c, f, 22.0, (cy + 5) as f32, "Peak markers",
-                   &sty(Family::Sans, Weight::SemiBold, 20.0, lc, 0.0));
+                   &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
         toggle(c, t, 418, cy - 11, 40, 22, 14, v.peaks);
         hline(c, y + ROW_H, t.line);
         y += ROW_H;

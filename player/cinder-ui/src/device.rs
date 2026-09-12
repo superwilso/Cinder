@@ -373,7 +373,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
             Item::Row { label, value, toggle: is_toggle } => {
                 let cy = y + ROW_H / 2;
                 text::draw(c, f, 22.0, (cy + 5) as f32, label,
-                           &sty(Family::Sans, Weight::SemiBold, 19.0, t.ink, 0.0));
+                           &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
                 if *is_toggle {
                     toggle(c, t, 424, cy - 9, 34, 18, 12, v.care);
                 } else {

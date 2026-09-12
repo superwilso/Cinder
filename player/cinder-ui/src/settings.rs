@@ -237,7 +237,7 @@ fn slider_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: 
         fill_rect(c, 0, y, crate::canvas::W as i32, RH, t.row_sel);
     }
     let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, 20.0, lc, 0.0));
+    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
 
     let n = text::SCALE_STEPS.len() as i32;
     let idx = text::scale_idx() as i32;
@@ -267,7 +267,7 @@ fn srow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, 
         fill_rect(c, 0, y, crate::canvas::W as i32, RH, t.row_sel);
     }
     let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, 20.0, lc, 0.0));
+    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
     let vx = if chevron { 438.0 } else { 458.0 };
     right(c, f, vx, (cy + 4) as f32, value, &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04));
     if chevron {
@@ -300,7 +300,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     hline(c, y, t.line);
     let cy = y + RH / 2;
     let lc = if sel == ROW_THEME { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, "Theme", &sty(Family::Sans, Weight::SemiBold, 20.0, lc, 0.0));
+    text::draw(c, f, 22.0, (cy + 5) as f32, "Theme", &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
     let segs = [("DAY", !v.night), ("NIGHT", v.night)];
     let sh = 26;
     let mut widths = [0i32; 2];
@@ -334,7 +334,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     }
     let cy = y + RH / 2;
     let lc = if sel == ROW_ACCENT { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, "Accent", &sty(Family::Sans, Weight::SemiBold, 20.0, lc, 0.0));
+    text::draw(c, f, 22.0, (cy + 5) as f32, "Accent", &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
     if v.accent_locked {
         // The palette brings its own accent, so six swatches would be a picker that picks nothing.
         // Say whose choice it is; a tap on the row says the same (see nav's settings_activate).

@@ -6,9 +6,12 @@
 [![license](https://img.shields.io/github/license/superwilso/Cinder)](LICENSE)
 [![device](https://img.shields.io/badge/device-NW--A55%20%2F%20A50%20series-blue)](docs/baseline_v1.4.md)
 
-**Custom firmware for the Sony NW-A55 Walkman** (NW-A50 series): a from-scratch replacement Home
-app — native, ~4 MB, running in place of Sony's stock Qt player while keeping every one of Sony's
-audio services (DSP, codecs, LDAC) intact underneath it.
+**A replacement music player for the Sony NW-A55 Walkman** (and its NW-A50-series siblings).
+
+You install it from your computer over the USB cable, in one program, in about a minute. The player
+then starts up into Cinder instead of Sony's music app. Same device, same headphone jack, same
+sound — a different, faster program in front of it. If you don't like it, the same installer puts
+Sony's app back.
 
 <p align="center">
   <img src="docs/screenshots/now-playing.png" width="220" alt="Cinder now-playing screen">
@@ -17,6 +20,57 @@ audio services (DSP, codecs, LDAC) intact underneath it.
 </p>
 
 <p align="center"><sub><a href="#screenshots">More screenshots ↓</a></sub></p>
+
+## Overveiw
+
+| | |
+|---|---|
+| **What you get** | The short list is below, and the [screenshots](#screenshots) are further down. |
+| **How to install it** | [Install](#install) — one download, no drivers, no WSL, nothing to build. |
+| **How to undo it** | The installer's own **Uninstall** button. If the player ever won't start: [`RECOVERY.md`](RECOVERY.md). |
+| **Whether it works yet** | [Status](#status), and every [`CHANGELOG.md`](CHANGELOG.md) entry says whether it has been run on real hardware. |
+
+### What you get
+
+- **A player that keeps up with you.** Sony's app is a Qt application on a 2016 board and it feels
+  like one. Cinder is 4.4 MB of native code with no framework under it.
+- **A play queue, and an Up Next list.** Stock has neither: on Sony's player there is no way to say
+  "play this after the current track". Cinder has both, and you can reorder the queue by dragging.
+- **USB-DAC in and LDAC out at the same time.** Use the Walkman as your computer's sound card *and*
+  send that audio on to Bluetooth headphones at LDAC bitrates. Sony's app blocks that combination
+  with a dialog box; the hardware never minded.
+- **Every Sony sound feature, unchanged.** DSEE HX, VPT, DC Phase Linearizer, Vinyl Processor, the
+  10-band EQ and tone control are Sony's own code, still running underneath. Cinder drives them; it
+  does not replace them or add a layer of its own.
+- **A scrobbler built in**, writing the standard `.scrobbler.log` — no add-on, no daemon.
+- **FM radio with a real signal meter and a scan that takes a second**, because Cinder reads the
+  tuner chip's registers directly. Sony's own service reports a constant signal strength.
+- **Your own colours.** A palette is a text file you drop on the player's storage.
+
+### What it does not touch
+
+Your music, your playlists and your liked songs stay where they are — Cinder reads the same library
+the stock player does.
+
+It is **not a firmware replacement**, even though it is installed through the player's own
+firmware-update mechanism: the kernel, Sony's audio services and the DSP are Sony's and are left
+alone. What changes is which program starts. Nothing resamples your audio and nothing adds a
+software mixer — playback takes the same low-power hardware path to the headphone jack that Sony's
+player uses, which is also why battery life is not sacrificed for the UI.
+
+Sony's app stays on the device, one file swap away. That is what makes uninstalling a button rather
+than a rescue operation.
+
+### A few words this README can't avoid
+
+| | |
+|---|---|
+| **USB-DAC** | The player acting as a computer's external sound card, over the USB cable. |
+| **LDAC** | Sony's high-bitrate Bluetooth audio codec, up to 990 kbit/s. |
+| **DSEE HX** | Sony's upscaler for lossy files — it tries to restore what MP3/AAC threw away. |
+| **The Home app** | The one program this device starts into and never leaves. Replacing it is what Cinder is. |
+| **`.UPG`** | Sony's firmware package format. Installing Cinder hands the player one of these. |
+| **setuid helper** | A tiny program allowed to do one privileged thing (reboot, mount the drive, set the clock) because the player's UI itself runs unprivileged. |
 
 ## Why
 
@@ -56,9 +110,13 @@ what still needs a device session: [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHEC
 
 In daily use: playback through Sony's full effects chain, the library, the queue and Up Next,
 playlists, Bluetooth pairing and playback (LDAC, aptX HD, aptX and SBC), FM radio, a built-in
-scrobbler log, and an escape ladder back to the stock player. The headline — **USB-DAC input out
-over LDAC** — is half proven: audio fed into Sony's LDAC encoder plays in the headphones, but the
-whole path from a PC over USB has not yet been run end to end.
+scrobbler log, and an escape ladder back to the stock player.
+
+**The headline works.** USB-DAC input out over LDAC ran end to end on the development unit on
+2026-09-12 — the whole path, from a PC over the cable to headphones on LDAC. That run is recorded
+as *owner-reported*: it worked, and no log was captured, so
+[`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) says exactly that rather than claiming an
+artefact that does not exist.
 
 ### Known limitations
 
@@ -69,8 +127,14 @@ whole path from a PC over USB has not yet been run end to end.
   recording.
 - **Boot time and battery life are unmeasured against stock.** Cinder draws its first frame 13.2 s
   after the kernel starts; stock has not been timed on the same unit, and there is no battery-drain
-  figure yet.
-- **The Windows installer is unsigned** — see [Install](#install).
+  figure yet. "Faster and longer-lasting" is the goal, not a measurement — when there are numbers
+  they will be here.
+- **The Windows install path is new and has never been run on Windows.** From 0.3.1 the installer
+  sends the player's upgrade command itself instead of launching Sony's updater
+  ([details](#what-actually-writes-the-firmware)). It compiles and the same command has been sent
+  from Linux for months; it has not yet been sent from Windows. If it fails it fails safely — the
+  files are staged and verified first, and the installer tells you which step did not happen.
+- **The Windows installer is unsigned**, and now asks for administrator — see [Install](#install).
 
 ## Install
 
@@ -79,14 +143,15 @@ release](../../releases/latest), connect the Walkman by USB in mass-storage mode
 
 | You are on | Download | What it does |
 |---|---|---|
-| **Windows** | `cinder-installer-windows-x64.exe` | The whole job. Double-click for the window; Sony's own updater performs the USB handoff and reboot. |
+| **Windows** | `cinder-installer-windows-x64.exe` | The whole job. Double-click for the window. **Say yes to the administrator prompt** — the last step needs raw access to the player's drive, and Windows gives that to nothing less. |
 | **Linux** | `cinder-installer-linux-x64` | The whole job, from the terminal — **run it with `sudo`**. The last step is a raw SCSI passthrough, which is why it needs root. |
 | **macOS** | `cinder-installer-linux-x64` is not for you | It can stage the files but cannot finish; see below. Use a Linux or Windows machine. |
 | Recovering a device | `cinder-home-uninstall.upg` | Flash by hand when the player will not boot far enough for anything else. [`RECOVERY.md`](RECOVERY.md). |
 
 The installer carries everything it needs. There is **no separate download, no WSL, no usbipd, no
-driver setup, and no network connection required** — the device binaries, the component catalogue
-and Sony's updater are all inside the one file.
+driver setup, and no network connection required** — the device binaries, both firmware packages and
+the component catalogue are all inside the one file. Nothing of Sony's is: until 0.3.1 the Windows
+build embedded Sony's own updater, and it now sends the one command that needed itself.
 
 The `.exe` is **unsigned**, so Windows SmartScreen will warn that its publisher is unknown. That is
 what any unsigned binary gets and is not evidence either way — check the download against the
@@ -97,10 +162,10 @@ Linux.
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│  Cinder                                       0.2.0 · stable   │
+│  Cinder                                       0.3.1 · stable   │
 ├────────────────────────────────────────────────────────────────┤
 │   Player:  D:\                                    [ Rescan ]   │
-│   Cinder is installed (installer 0.1.9, stable) — Wed Sep 10    │
+│   Cinder is installed (installer 0.3.0, stable) — Thu Sep 11    │
 │                                                                 │
 │   ┌──────────────────────────────────────────────────────────┐ │
 │   │ Install Cinder                                           │ │
@@ -133,10 +198,15 @@ instead of the window, which is what works over RDP, in a VM and from a script.
 
 ### Choosing components
 
-Cinder is modular on purpose. Several of its parts are small setuid-root helpers, each buying one
-specific feature (power off, USB mass storage, setting the clock, the FM signal meter) with one
-specific piece of attack surface — so each is a choice rather than an assumption, and the
-description beside each one says what saying no actually costs you.
+You can leave parts of Cinder out, and the picker explains each one — but only the parts that are
+genuinely a matter of taste. **There are five choices:** the FM register helper (a real signal meter
+and a one-second band scan), the charger-detail reader on the battery screen, an experimental GPU
+path that is off by default and measures slower than the software one, the wired volume curve, and
+the sound signature below.
+
+Until 0.3.1 the same picker also offered to leave out the power menu, USB file transfer and the
+clock, each with help text admitting the feature was gone without it. Those were not choices, and
+they are part of every install now. The four helpers behind them are 60 KB together.
 
 The `signature` option patches **three bytes** of Sony's audio HAL to pick which DAC path the
 output stream uses and what CPU clock floor is held while playing. That is the entirety of what
@@ -149,8 +219,11 @@ ship, splitting its two effects apart so each can be judged separately. Derivati
 
 Not the installer. It only copies files to the player's storage and then sends the one command
 that makes the player reboot into **its own updater**, which finds `NW_WM_FW.UPG` and applies it.
-On Windows that command comes from Sony's `SoftwareUpdateTool.exe`, embedded in the installer; on
-Linux the same 12-byte vendor SCSI command is sent directly.
+The installer sends that 12-byte vendor SCSI command itself on both platforms — through SCSI
+pass-through on Windows (which needs administrator, because Windows grants raw volume access only
+to an elevated process) and through `SG_IO` on Linux (which needs `sudo`). Until 0.3.1 the Windows
+build shipped Sony's own `SoftwareUpdateTool.exe` to send it; no part of Sony's software is in the
+download any more.
 
 > **There is no update option in the player's own menus.** This generation has no such entry — the
 > upgrade is always triggered by the host over USB. Earlier versions of this README and of the
@@ -355,11 +428,11 @@ than merely dark-grey.
 Cinder's own code (`cinder-home/`, `player/`, `ldac-bridge/`, `tools/`) is MIT — see
 [`LICENSE`](LICENSE).
 
-**Third-party / not ours:** `installer/sony-updater/` is **Sony's own Windows firmware updater**
-(`SoftwareUpdateTool.exe` and its DLLs, as Sony ships them with its firmware downloads). The Windows
-installer embeds it to perform the USB handoff. It is Sony's software, not covered by this
-project's license, and replacing it with a native trigger is an open item
-([`docs/HISTORY_REWRITE.md`](docs/HISTORY_REWRITE.md)). Apart from that the tree holds no Sony code
+**Third-party / not ours:** nothing, as of 0.3.1. The Windows installer used to embed
+**Sony's own firmware updater** (`installer/sony-updater/`: `SoftwareUpdateTool.exe`, Sony's
+`WmFwUpdater.dll` and Microsoft's Visual C++ 2010 runtime) to perform the USB handoff; the
+installer now sends that one vendor SCSI command itself on Windows as it already did on Linux, and
+the bundle is gone from the tree and from every release. The tree holds no Sony code
 or artwork: the reverse-engineering notes describe interfaces — symbol names, vtable slots, call
 sequences — and the images, QML and decompiled listings they were worked out from are kept out of
 the repository. Bundled fonts (`player/cinder-ui/assets/fonts/`) are SIL Open Font License 1.1 —

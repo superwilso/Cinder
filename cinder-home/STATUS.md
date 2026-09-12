@@ -1,5 +1,33 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-09-12 — the headline path is reported working, and the installer stopped shipping Sony's updater
+>
+> **USB-DAC → LDAC ran end to end** on the unit (`docs/DEVICE_CHECKLIST.md` 11.10). Goal #3 — USB
+> audio in, LDAC out — is the reason this project exists and had never been executed; it works.
+> Recorded as **owner-reported**: no log was captured, so the row says so rather than claiming a
+> verification artefact that does not exist. What a log would still be worth: the negotiated LDAC
+> quality, whether the UAC capture opened first time, and what the Bluetooth screen named.
+>
+> **The Windows installer no longer embeds Sony's firmware updater.** It sends the 12-byte vendor
+> SCSI command itself through SCSI pass-through, as the Linux build already did through `SG_IO`
+> (`installer/src/stage.rs`). That path is **compiled but never executed on Windows** — the one
+> genuinely new, device-unverified thing in the tree today, and now the only way a Windows user can
+> install anything. It asks for administrator at startup, because Windows gives raw volume access
+> to nothing less.
+>
+> **The installer stopped offering to break the player.** `power`, `msc`, `clock` and `umount` were
+> catalogue components, i.e. checkboxes; each one's own description said what was lost by clearing
+> it — no way to power off from the UI, no way to get music onto the player, no way to set the
+> clock. Four choices that were defects. They are part of every install now
+> (`cinder-home/deploy/components.conf`), which leaves the picker holding only real preferences:
+> `fm`, `battery`, `gpunode`, the volume curve and the sound signature.
+>
+> **Three pieces of the installer's own window were unreadable**, all of them layout rather than
+> colour: component descriptions were flattened into a box that clipped roughly half of the longer
+> ones with no scrollbar, the Home page's footer text was drawn across the Uninstall button at the
+> minimum window size, and on the Done page the log covered the sentence that says how the install
+> went. Fixed, and the minimum window size is now derived from what the page actually needs.
+
 > ## 2026-09-06 — UI & consistency audit: 9 defects fixed, 4 design findings left open
 >
 > **Write-up: [`../docs/AUDIT_2026-09-06_ui.md`](../docs/AUDIT_2026-09-06_ui.md).** Every screen read

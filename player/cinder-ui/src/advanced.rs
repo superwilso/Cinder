@@ -42,7 +42,7 @@ pub const ROW_TONE_BANDS: usize = 6;
 /// Row pitch and list top — SINGLE SOURCE for the render below and `nav`'s hit test. The banner
 /// sits BELOW the rows so it cannot shift them: a row that moves when an unrelated toggle flips is
 /// how a hit test drifts out of step with what is drawn.
-pub const ROW_H: i32 = 64;
+pub const ROW_H: i32 = crate::scale::SETTING_ROW_H;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
 
 /// Which row is under `y`, or None if the point is outside the list.
@@ -107,7 +107,7 @@ fn dim_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &st
         fill_rect(c, 0, y, crate::canvas::W as i32, ROW_H, t.row_sel);
     }
     text::draw(c, f, 22.0, (cy - 3) as f32, label,
-               &sty(Family::Sans, Weight::SemiBold, 18.0, t.faint, 0.0));
+               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.faint, 0.0));
     text::draw(c, f, 22.0, (cy + 15) as f32, desc,
                &sty(Family::Sans, Weight::Regular, 13.0, t.faint, 0.0));
     hline(c, y + ROW_H, t.line);
@@ -178,7 +178,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, a: &Advanced, sel: usize) 
     // the same thing about the Vinyl Processor.
     let bdesc = if a.tone_control { "Three bands, ±10 dB" } else { "Three bands — Tone Control is off" };
     let cy = a_row(c, t, f, a, y0 + rh * 6, sel == 6, ROW_TONE_BANDS, "Adjust bands", bdesc);
-    let chev = sty(Family::Sans, Weight::SemiBold, 20.0, t.dim, 0.0);
+    let chev = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.dim, 0.0);
     crate::widgets::right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
 
     // ── the override banner ─────────────────────────────────────────────────────────────────

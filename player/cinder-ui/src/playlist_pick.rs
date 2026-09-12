@@ -92,8 +92,8 @@ pub fn render_targets(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, track
         } else {
             let target = &targets[index - 1];
             text::draw(c, f, 26.0, (cy - 2) as f32, &fit(f, target.name,
-                       &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0), 400.0),
-                       &sty(Family::Sans, Weight::SemiBold, 20.0, t.ink, 0.0));
+                       &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0), 400.0),
+                       &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
             text::draw(c, f, 26.0, (cy + 17) as f32, &format!("{} tracks", target.tracks),
                        &sty(Family::Sans, Weight::Regular, 14.0, t.dim, 0.0));
             crate::icons::chevron(c, 452.0, cy as f32, 13.0, t.faint);
@@ -143,7 +143,7 @@ pub fn render_tracks(c: &mut Canvas, t: &Theme, f: &FontSet, playlist: &str, son
         let song = songs[index];
         let cy = y + ROW_H / 2;
         let inside = is_in(index);
-        let title_style = sty(Family::Sans, Weight::SemiBold, 19.0,
+        let title_style = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW,
                               if inside { t.dim } else { t.ink }, 0.0);
         text::draw(c, f, 26.0, (cy - 2) as f32, &fit(f, &song.title, &title_style, 372.0), &title_style);
         text::draw(c, f, 26.0, (cy + 17) as f32,
