@@ -79,6 +79,7 @@ mod tests {
     /// start as well as its end — the reader gets the middle of a name and no way to tell.
     #[test]
     fn a_long_title_stays_on_screen() {
+        let _scale = crate::text::scale_guard();
         let f = FontSet::load();
         let t = Theme::day();
         let mut c = Canvas::new();

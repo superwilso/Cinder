@@ -10,8 +10,9 @@
 //!
 //! STRUCTURE. One window, five pages, one state struct in thread-local storage (the window
 //! procedure only ever runs on the thread that made the window). The actual work — staging files
-//! and handing off to Sony's updater — runs on a worker thread so the window keeps painting, and
-//! talks back through a queue plus `PostMessage`. Everything it does goes through `stage`, the
+//! and telling the player to reboot into its updater — runs on a worker thread so the window
+//! keeps painting, and talks back through a queue plus `PostMessage`. Everything goes through
+//! `stage`, the
 //! same module the text front end uses, so there is exactly one implementation of "install".
 
 #![allow(non_snake_case)]
@@ -211,6 +212,11 @@ const ES_READONLY: u32 = 0x0800;
 const ES_AUTOVSCROLL: u32 = 0x0040;
 const CBS_DROPDOWNLIST: u32 = 0x0003;
 const SS_NOPREFIX: u32 = 0x0080;
+/// End a line that does not fit with "…" instead of cutting it mid-glyph. Every single-line
+/// STATIC here carries it: a Win32 static with neither this nor room for its text just stops
+/// drawing, so "Cinder is installed (installer 0.3.0, stable) — Thu Sep 11" becomes "Cinder is
+/// installed (installer 0.3.0, sta" with nothing to say it was truncated.
+const SS_ENDELLIPSIS: u32 = 0x4000;
 
 const WM_DESTROY: u32 = 0x0002;
 const WM_SIZE: u32 = 0x0005;
@@ -658,7 +664,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
         }
         WM_CLOSE => {
             // A flash in flight must not be abandoned by closing the window: the player is being
-            // driven by Sony's updater and the payload on it is mid-write.
+            // driven by its own updater and the payload on it is mid-write.
             if BUSY.load(Ordering::SeqCst) {
                 let (t, c) = (
                     w("The player is being written to right now.\n\nClosing during a flash can leave it holding a partial package. Close anyway?"),
@@ -784,7 +790,7 @@ impl App {
                 self.b_rescan = self.mk("BUTTON", "Rescan", WS_TABSTOP, ID_RESCAN, f);
 
                 let status = self.state.summary();
-                self.status = self.mk("STATIC", &status, SS_NOPREFIX, ID_STATUS, f);
+                self.status = self.mk("STATIC", &status, SS_NOPREFIX | SS_ENDELLIPSIS, ID_STATUS, f);
 
                 let have = self.target.is_some();
                 let present = self.state.present();
@@ -817,7 +823,7 @@ impl App {
                 } else {
                     "Choose the optional parts. Everything not listed here is part of every install."
                 };
-                self.body = self.mk("STATIC", title, SS_NOPREFIX, ID_BODY, fb);
+                self.body = self.mk("STATIC", title, SS_NOPREFIX | SS_ENDELLIPSIS, ID_BODY, fb);
 
                 for i in 0..self.comps.len() {
                     let c = self.comps[i].clone();
@@ -831,7 +837,7 @@ impl App {
                             h
                         }
                         Kind::Enum(vals) => {
-                            label = self.mk("STATIC", &format!("{}:", c.title), SS_NOPREFIX, id + 1000, f);
+                            label = self.mk("STATIC", &format!("{}:", c.title), SS_NOPREFIX | SS_ENDELLIPSIS, id + 1000, f);
                             let h = self.mk("COMBOBOX", "", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, id, f);
                             for v in vals {
                                 let t = w(v);
@@ -862,8 +868,19 @@ impl App {
                 self.show_desc(0);
             }
             Page::Confirm => {
+                // A READ-ONLY EDIT for the same reason the Options description is one: this is
+                // the longest text in the program — the action, the player, a line per component,
+                // the file count, and what happens to the device — and it grows with the
+                // catalogue. In a STATIC the tail simply stops being drawn, and the tail here is
+                // the recovery sentence. It scrolls now, and the buttons never move.
                 let text = self.confirm_text();
-                self.body = self.mk("STATIC", &text, SS_NOPREFIX, ID_BODY, f);
+                self.body = self.mk(
+                    "EDIT",
+                    &text,
+                    ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,
+                    ID_BODY,
+                    f,
+                );
                 self.back = self.mk("BUTTON", "Back", WS_TABSTOP, ID_BACK, f);
                 let go = if self.dry {
                     "Dry run".to_string()
@@ -917,7 +934,7 @@ impl App {
                 );
             }
             s.push_str(
-                "The player reboots into Sony's updater, drops off USB while it works, and comes \
+                "The player reboots into its own updater, drops off USB while it works, and comes \
                  back on its own. Do not unplug it.",
             );
             return s;
@@ -941,7 +958,7 @@ impl App {
             Err(e) => s.push_str(&format!("\r\nERROR: {e}\r\n")),
         }
         s.push_str(
-            "\r\nNothing is flashed by this program. The player reboots into Sony's updater and \
+            "\r\nNothing is flashed by this program. The player reboots into its own updater and \
              applies the package itself, then comes back on its own. Do not unplug it.\r\n\r\n\
              If a boot ever goes wrong: hold the USB cable in at power-on to get the stock player \
              back, and see RECOVERY.md.",

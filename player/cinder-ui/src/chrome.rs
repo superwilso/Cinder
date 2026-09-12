@@ -406,6 +406,7 @@ mod degraded_tests {
     #[test]
     fn the_banner_keeps_the_battery_indicator() {
         let _g = latch_lock();
+        let _scale = crate::text::scale_guard();
         let bg = crate::canvas::to_u32(Theme::day().bg);
         // The battery lives at the far right: number ~x 430..450, outline + nub 452..472.
         let normal = ink(&shot(false, 88), 425, CW as i32, 10, 34, bg);
@@ -423,6 +424,7 @@ mod degraded_tests {
     #[test]
     fn the_banner_keeps_the_strip_navigable() {
         let _g = latch_lock();
+        let _scale = crate::text::scale_guard();
         let bg = crate::canvas::to_u32(Theme::day().bg);
         let band = |dead| {
             let c = shot(dead, 50);
@@ -484,6 +486,7 @@ mod degraded_tests {
     #[test]
     fn a_long_codec_badge_never_reaches_the_glyphs() {
         let _g = latch_lock();
+        let _scale = crate::text::scale_guard();
         set_ipc_dead(false);
         let bands = |t: &Theme, badge: &str| {
             let f = FontSet::load();
@@ -519,6 +522,7 @@ mod degraded_tests {
     #[test]
     fn the_banner_appears_only_when_latched() {
         let _g = latch_lock();
+        let _scale = crate::text::scale_guard();
         let bg = crate::canvas::to_u32(Theme::day().bg);
         // The badge/banner zone sits between the clock and the menu glyph.
         let quiet = ink(&shot(false, 50), 60, 300, 8, 36, bg);

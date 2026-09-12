@@ -16,6 +16,46 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-09-12
+
+### Fixed
+
+- **Text that overflowed its control in the installer window, horizontally this time.**
+  *device-unverified — Win32 layout; the arithmetic is checkable by reading it.* The 0.3.2 pass
+  fixed three ways text was hidden *vertically*; these are the three ways it was cut off sideways
+  or off the bottom without saying so.
+
+  - **Every single-line `STATIC` now carries `SS_ENDELLIPSIS`** — the player-state line on the
+    first page, the Options page's own title, and the enum row labels. A Win32 static with no room
+    and no ellipsis style simply stops drawing: "Cinder is installed (installer 0.3.0, stable) —
+    Thu Sep 11" became "…(installer 0.3.0, sta" with nothing to mark the truncation.
+  - **The confirm page scrolls.** It holds the longest text in the program — the action, the
+    player, a line per component, the file count, then what the device does and how to recover it
+    — and it grows with the catalogue. It was a `STATIC`, so on a short window the tail stopped
+    being drawn, and the tail is the recovery sentence. It is a read-only scrolling `EDIT` now,
+    the same treatment the component descriptions got.
+  - **"Sony's updater" is gone from the text the user reads.** Four places still told them the
+    player "reboots into Sony's updater" — true of the device's own updater, but the phrase now
+    reads as the PC tool that 0.3.2 stopped shipping. They say "its own updater". The comment in
+    `stage.rs` that explains what was removed keeps the name, because there it is the point.
+
+  Known and left: a checkbox label longer than the window would still clip, since a checkbox has
+  no ellipsis style and its row is one line tall. The longest in the catalogue today needs about
+  310 px of the 560 available at the minimum window size.
+
+- **A flaky test could block a release push, blaming the wrong screen.** *host-only — no device
+  behaviour changes.* `cinder-ui`'s UI text scale is a process-global (one UI per process on the
+  device, so that is the right shape there), and `text::scale_guard()` exists to serialise the
+  tests around it. Thirteen rendering tests never took it. The visible symptom on 2026-09-12 was
+  the pre-push gate failing on `chrome::degraded_tests::the_banner_keeps_the_battery_indicator`
+  with "drew 374 px where the normal strip draws 286" — 286 x 1.3, i.e. another test's 130% scale
+  leaking in, reported as a status-bar defect in a test that has nothing to do with the scale, and
+  passing on the retry. All thirteen take the guard now; the pixel-only tests (`art.rs` gradients,
+  `library.rs`'s art cache) still do not, because they draw no text and staying parallel is worth
+  more. `scale_guard`'s own documentation now carries the trap that made this easy to get wrong:
+  the lock is not reentrant, and `nav.rs` holds it through a local `lock_scale()` alias, so a test
+  that never mentions `scale_guard` may already own it.
+
 ## [0.3.2] — 2026-09-12
 
 ### Changed
@@ -1456,7 +1496,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/superwilso/Cinder/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/superwilso/Cinder/compare/v0.3.0...v0.3.2
 [0.3.0]: https://github.com/superwilso/Cinder/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/superwilso/Cinder/compare/v0.1.9...v0.2.0

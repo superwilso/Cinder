@@ -12364,6 +12364,7 @@ mod tests {
     /// pause the app did not initiate, left the bar showing the opposite of the truth.
     #[test]
     fn library_play_pause_follows_the_player_after_its_optimistic_hold() {
+        let _scale = crate::text::scale_guard();
         let mut a = unlocked();
         a.go_for_preview(Screen::Library);
 
