@@ -89,6 +89,36 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   device itself ran both for a week. Cinder now looks for the other scrobbler's process and stands
   its own down while it runs, including when `/contents` is reclaimed mid-boot.
 
+- **A default install could lift Sony's regional volume restriction.** *Found by decoding the table
+  files against Wampy's layout; device-unverified — no player from a restricted region has run
+  either build.* Sony ships every volume table twice, plain and `_cew`, and its boot script loads
+  the quieter `_cew` one on players sold where volume is restricted (Wampy's jack measurements name
+  regions CEW2 and KR3). Cinder's launcher re-applied the *plain* table on every boot even with the
+  wired volume curve left at `stock`, so on those players a default install made every volume step
+  louder than Sony shipped it. `stock` now applies nothing. `wm1a` and `w1` are plain tables and
+  still replace Sony's choice; the installer's description of them now says so.
+
+- **The installer offered volume curves a stock player cannot load.** *The missing table and the
+  logcat-only failure are device-verified 2026-09-13; the new warnings are covered by launcher test
+  scenarios and are device-unverified.* The `voltable` component's `wm1a`
+  and `w1` choices load the NW-WM1A's and Walkman One's tables (`ov_127x.tbl`, `ov_1280.tbl`), and
+  the installer said both were "already present on every stock device". They are not: a stock
+  NW-A50's `/system/usr/share/audio_dac` holds only its own `1291` tables, which Wampy's notes
+  confirm. The claim came from a reference device an earlier session had copied the files onto.
+  Once they were gone, every boot logged `volume curve: cinder-voltable wm1a FAILED — stock curve
+  stays` — to logcat, where nobody would see it — and the player quietly kept the stock curve.
+  Cinder does not ship Sony's files, so on a stock player those two choices still do nothing — but
+  now visibly. The installer's description says so; the install log warns when the chosen table is
+  missing; and at boot `cinderhome.log` says `volume curve: 'wm1a' needs …/ov_127x.tbl, which is not
+  part of the stock firmware and is not on this player — stock curve stays` instead of a bare
+  FAILED in logcat.
+
+- **Withdrawn: "there is no EU volume cap".** `analysis/RE_volume_tables.md` (2026-09-04) compared
+  the two region tables by sweeping the codec's analogue attenuator and found identical curves.
+  Decoded field by field, the tables are identical *there* and differ only in the two digital volume
+  stages — so the result was guaranteed and showed nothing. The document now carries the decode;
+  the jack measurement that settles it is `docs/DEVICE_CHECKLIST.md` 13.6.
+
 ### Added
 
 - **Settings ▸ Storage shows the SD card.** *The label is built on device; the row itself has not
@@ -100,8 +130,26 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   2281, SD 1130, unresolved 0` and `storage: SD card mounted at /contents_ext (vfat)`.* One line per
   library open and one per change in the card's mount state, with the filesystem type. "My SD music
   is missing" can now be answered from `cinderhome.log`.
-- **README: Walkman One is listed as untested.** Walkman One makes the player identify as a different
-  model, and Cinder's package is packed for the stock NW-A50 model.
+- **Lyrics.** *Host-tested (parser, screen, navigation); device-unverified — the reference library
+  has no `.lrc` files.* Put `Song.lrc` next to `Song.flac`, the same convention Sony's player uses,
+  and Track information gains a Lyrics row that opens them. Timestamped lyrics follow the song: the
+  line being sung is highlighted and held a third of the way down the page until you scroll it
+  yourself. The parser takes what LRC tools actually write — repeated timestamps on one line,
+  `[offset:]`, per-word stamps, and UTF-8, UTF-16 or Windows-1252 text. The highlight moves on the
+  shell's position tick, so it can trail a line's start by up to a second. Lyrics embedded in tags
+  (ID3 `USLT`/`SYLT`, FLAC `LYRICS`) are not read yet.
+- **Library search, as an install option.** *Host-tested, plus harness scenarios `search-off` and
+  `search-on`; device-unverified.* Off by default. When chosen, a magnifier in the Library header
+  opens a search with the keyboard already up; results update on every key, matching title, artist
+  or album name exactly as "Add tracks" does, and a tap plays the song. It installs no binary — only
+  a flag file in `/data/cinder`, written or removed on every install, so an Update that turns it off
+  really does. Songs only for now: albums and artists do not appear as results.
+- **README: Coming from Walkman One.** Walkman One is listed as untested, with the likeliest failure
+  (it changes the updater's key, so stock packages are refused), and a new section points to
+  unknown321's write-ups on what Walkman One changes, what actually measures different at the jack,
+  and SensMe. The README and the installer no longer call the `signature` component the whole of
+  Walkman One's sound signature: it reproduces the plus modes, and the external tunings are another
+  model's firmware.
 
 ## [0.3.3] — 2026-09-12
 

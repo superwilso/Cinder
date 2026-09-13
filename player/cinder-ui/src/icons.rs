@@ -170,6 +170,19 @@ pub fn close(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     polyline(c, cx, cy, s, col, w, &[(18.0, 6.0), (6.0, 18.0)]);
 }
 
+/// A magnifier — "search": a ring and a handle, stroked at the same weight as every other icon.
+pub fn search(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let w = stroke_w(s);
+    let ring: Vec<(f32, f32)> = (0..=20)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::TAU / 20.0;
+            (10.5 + 6.5 * a.cos(), 10.5 + 6.5 * a.sin())
+        })
+        .collect();
+    polyline(c, cx, cy, s, col, w, &ring);
+    polyline(c, cx, cy, s, col, w, &[(15.3, 15.3), (20.0, 20.0)]);
+}
+
 pub fn chevron(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     let w = stroke_w(s).max(2);
     polyline(c, cx, cy, s, col, w, &[(9.0, 5.0), (16.0, 12.0), (9.0, 19.0)]);

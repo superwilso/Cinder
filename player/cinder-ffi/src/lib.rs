@@ -15,6 +15,7 @@ mod art_cache;
 mod art_load;
 mod gpu;
 mod likes;
+mod lyrics;
 mod playlists;
 mod present;
 mod scrobble;
@@ -1496,11 +1497,12 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 31] = [
+const SCREEN_NAMES: [&str; 33] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
-    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet",
+    "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet", "Lyrics",
+    "Search",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1515,7 +1517,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
-        S::Device => 29, S::VizSet => 30,
+        S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32,
     }
 }
 
@@ -3735,6 +3737,16 @@ pub extern "C" fn cinder_set_bt_on(on: libc::c_int) {
     }
 }
 
+/// Library search is an opt-in component. The shell calls this at startup when the installer left
+/// `/data/cinder/search_on`; without it the Library header draws no search button.
+#[no_mangle]
+pub extern "C" fn cinder_set_search_enabled(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_search_enabled(on != 0);
+        r.dirty = true;
+    }
+}
+
 /// Force the USB-DAC toggle to match the gadget's real mode. The shell calls this at startup with
 /// the result of reading `sys.sony.config`, so a mode set outside Cinder (a probe, a crash between
 /// the property write and our state, a stock-side change) cannot leave Settings reporting the
@@ -4569,6 +4581,11 @@ pub extern "C" fn cinder_clock_tick() {
             // Repaint only when Now Playing is on screen (the bar/labels are only visible there); the
             // position still advances off-screen so it's correct when you return.
             if r.app.is_now_playing() {
+                r.dirty = true;
+            }
+            // The Lyrics page repaints only when the sung line changes. This tick is ~1 s, so the
+            // highlight can trail a line's start by up to that much.
+            if r.app.set_lyrics_position(pos.clamp(0, u32::MAX as i64) as u32) {
                 r.dirty = true;
             }
         }
@@ -6339,7 +6356,17 @@ pub extern "C" fn cinder_set_now_playing_uri(
             // The Track information screen is filled HERE, on the track change, rather than when
             // the screen opens: it is ~10 short strings, the DB row is already in hand, and doing
             // it on entry would mean a query on the render thread the first time you tapped.
-            r.app.set_track_info(track_info_rows(r, &t));
+            //
+            // Lyrics likewise: at most three stats for the `.lrc` spellings and, when one exists, a
+            // read of a few kilobytes. The row sits with the other links, not below the file facts.
+            let lyr = lyrics::load_for(&t.filename);
+            let mut rows = track_info_rows(r, &t);
+            if let Some(l) = &lyr {
+                let at = rows.iter().position(|(k, _)| k == "Album").map_or(rows.len().min(2), |i| i + 1);
+                rows.insert(at, ("Lyrics".to_string(), l.summary()));
+            }
+            r.app.set_track_info(rows);
+            r.app.set_lyrics(lyr);
             r.last_track = Some(t);
             0
         }
@@ -6351,6 +6378,8 @@ pub extern "C" fn cinder_set_now_playing_uri(
             r.play_pos_ms = 0;
             set_progress(&mut r.np, 0, 0);
             r.last_track = None;
+            // No path to look beside, and the last song's words must not stay up for this one.
+            r.app.set_lyrics(None);
             // A URI the library doesn't know still shows a gradient, and it was being recomputed
             // per frame here exactly as it was for a track with no artwork. Bake it once for this
             // state; the sentinel key keeps a re-poll of the same unresolved URI from rebuilding
@@ -6534,7 +6563,7 @@ mod tests {
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
-            S::TrackPick, S::Device, S::VizSet,
+            S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();

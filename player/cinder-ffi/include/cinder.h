@@ -601,6 +601,9 @@ int  cinder_get_bt_on(void);
 /* Force the Bluetooth switch to match the radio's real state (from GetBtStatus). Sets state only,
    raises no action. Call at startup so the switch cannot claim the radio is on when it is not. */
 void cinder_set_bt_on(int on);
+/* Library search is an opt-in install component. Call with 1 at startup when the installer left
+   /data/cinder/search_on; without it the Library header draws no search button. */
+void cinder_set_search_enabled(int on);
 int  cinder_get_usb_dac(void);
 /* Force the USB-DAC toggle to match the gadget's real mode (from sys.sony.config). Sets state
    only — raises no action, since the gadget is already there. Call at startup to stop Settings

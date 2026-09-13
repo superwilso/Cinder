@@ -50,7 +50,7 @@ fn value_style(t: &Theme) -> TextStyle {
 
 /// Split `v` into lines that each fit the value column. Greedy by word, then by character for a
 /// single "word" longer than the column — which is the normal case for a file path.
-fn wrap(f: &FontSet, v: &str, st: &TextStyle, w: f32) -> Vec<String> {
+pub(crate) fn wrap(f: &FontSet, v: &str, st: &TextStyle, w: f32) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut line = String::new();
     let fits = |s: &str| text::measure(f, s, st) <= w;
@@ -111,8 +111,11 @@ fn row_h(lines: usize) -> i32 {
 ///
 /// Matched on the label because that is what the shell already sends; see the `put("Album", ..)`
 /// calls in cinder-ffi. A label that stops matching costs a link, not a crash.
+///
+/// "Lyrics" is the one link that goes to a page rather than a place in the library. The shell only
+/// sends that row when the song has a `.lrc`, so the link never opens an empty page.
 pub fn is_link(label: &str) -> bool {
-    matches!(label, "Artist" | "Album" | "Album artist")
+    matches!(label, "Artist" | "Album" | "Album artist" | "Lyrics")
 }
 
 /// The chevron drawn on a link row, and the gap kept clear for it.

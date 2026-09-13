@@ -359,7 +359,9 @@ echo "built: $HERE/cinder-clock ($(stat -c %s "$HERE/cinder-clock") bytes)"
 # cinder-voltable: seventh setuid-root helper — install one of Sony's OUTPUT VOLUME TABLES into
 # /proc/icx_audio_cxd3778gf_data/{ovt,ovt_dsd}, which are root-only. The stock A50 curve has two
 # dead zones (vol 40-60 and 100-120 do nothing, measured) and coarsens toward the top where the
-# volume pop is worst; the NW-WM1A table Sony already ships has neither problem. Must run every
+# volume pop is worst; the NW-WM1A table has neither problem — but it is NOT part of a stock
+# player's firmware (only the A50's own 1291 tables ship), so it applies only where it has already
+# been put in /system/usr/share/audio_dac. Must run every
 # boot, because load_sony_driver re-applies the stock table each time. See
 # analysis/RE_volume_pop.md and src/cinder-voltable.c.
 echo "[6g] build cinder-voltable (setuid-root volume-table helper, static)…"

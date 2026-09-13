@@ -543,6 +543,25 @@ static void s_scrobble_yields(void) {
              "stands down while unknown321/scrobbler is running");
 }
 
+// ── opt-in components ────────────────────────────────────────────────────────────────────────
+// Library search installs no binary, only a flag. The shell must turn the button on exactly when
+// the installer left that flag — the default install says no.
+static void s_search_off_by_default(void) {
+    healthy_device();
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_set_search_enabled"), 0, "no flag, no search button");
+}
+
+static void s_search_on_with_flag(void) {
+    healthy_device();
+    cinder_harness_fs_write("/data/cinder/search_on", "1\n");
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_set_search_enabled"), 1,
+             "the installer's flag turns search on, once");
+}
+
 static void s_low_battery_warns(void) {
     low_battery("8\n", "Not charging\n", "0\n");
     check(cinder_harness_count("cinder_toast") >= 1, "warns below 10% on battery");
@@ -1041,6 +1060,8 @@ static const Scenario kScenarios[] = {
     {"lowbatt-warn",      s_low_battery_warns,       "low battery on battery: warn, do not power off"},
     {"scrobble-opens",    s_scrobble_opens,          "the built-in scrobbler opens when it is alone"},
     {"scrobble-yields",   s_scrobble_yields,         "…and stands down while unknown321/scrobbler runs"},
+    {"search-off",        s_search_off_by_default,   "library search stays off without the installer's flag"},
+    {"search-on",         s_search_on_with_flag,     "…and turns on, once, when the flag is there"},
     {"dsp-reconcile",     s_dsp_reconcile_no_settings, "the DSP is reconciled even with no settings file"},
     {"wake-on-touch",     s_wake_on_touch,           "a dark panel wakes on touch, without pressing anything"},
     {"touch-gestures",    s_touch_gestures,          "a tap is a tap and a drag is a drag"},

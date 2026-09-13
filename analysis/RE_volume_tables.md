@@ -1,8 +1,9 @@
-# RE — the region volume tables, and why there is no cap to lift
+# RE — the region volume tables
 
 **Date:** 2026-09-04 · **Status:** measured on hardware, with a control experiment.
-**Result: negative.** The region difference is real in the files and does **not** reach the wired
-volume curve. There is no EU output cap reachable this way.
+**Result: WITHDRAWN 2026-09-13** — see [the amendment](#amended-2026-09-13--the-sweep-could-not-see-the-difference)
+at the end. The sweep below reads the one register the two files agree on, so its "identical"
+rows say nothing about the region difference. The original text is kept as it was written.
 
 ## The hypothesis
 
@@ -81,6 +82,56 @@ which removes both dead zones and makes the whole range usable — and that was 
 
 Not established: what the `_cew` bytes *do* control, and which of the two files this device boots
 with. Both are now moot for output level, which is why neither was chased further.
+
+## Amended 2026-09-13 — the sweep could not see the difference
+
+Wampy's [`MAKING_OF_VOLUME_TABLES.md`](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md)
+measured an NW-A50's line output at the jack across all 19 regions (REW, 28 runs, effects off) and
+found exactly three settings that change the signal: regions **CEW2** and **KR3**, which boot the
+`_cew` table, and gain mode 1. That contradicts the conclusion above, so the two files were decoded
+field by field instead of compared as bytes.
+
+**Layout.** Wampy's `src/dac/cxd3778gf_table.h`, taken from Sony's kernel source: sound effect
+off/on × 27 output tables × volume 0..120 × 13 one-byte register values, then a sum/xor checksum.
+That is `2 × 27 × 121 × 13 + 8` = **84950 bytes, exactly the file size.** The "repeating 13-byte
+record" above is one volume step.
+
+**What `_cew` changes.** 7569 data bytes, all inside tables 1–9 (the S-Master single-ended, BTL and
+class-AB headphone tables, with their noise-cancel and ambient variants). Line out and every DSD
+table are identical. In the two tables this model's headphone path uses — `SMASTER_SE_LG` and
+`SMASTER_SE_HG` — **only `play` and `sdin2` differ. `hpout` is identical in both files.**
+
+| table 1, sound effect off | vol 0 | 40 | 60 | 80 | 120 |
+|---|---|---|---|---|---|
+| `hpout` (the PHV attenuator) | same | same | same | same | same |
+| `play`, plain → `_cew` | 179 → 162 | 216 → 199 | 236 → 219 | 0 → 239 | 0 → 239 |
+| `sdin2`, plain → `_cew` | 239 → 0 | 239 → 0 | 219 → 236 | 199 → 216 | 167 → 184 |
+
+**So the 2026-09-04 sweep read the one field the two files agree on.** `cinder-probe --volcurve`
+reads `PHV_L`/`PHV_R`, which is `hpout`. Identical rows were guaranteed whatever the tables do to the
+signal. The control experiment proved the writes land; it could not prove the instrument sees this
+kind of difference, because the WM1A table differs in `hpout` and the region pair does not. **"There
+is no EU volume cap to lift here" is withdrawn.**
+
+What is and is not established now:
+
+- **Established:** `_cew` moves `play` and `sdin2` by 17 codes at every step, in opposite
+  directions, and leaves the analogue attenuator alone.
+- **Not established:** what a code is in dB, and how the two digital stages combine. That needs
+  Sony's driver (`cxd3778gf_volume.c` in the kernel source), which has not been read. Wampy's jack
+  measurement says the net effect on a CEW2/KR3 unit is quieter.
+- **Inferred, from one register read:** this unit boots the **plain** table.
+  `RE_headphone_amp_modes.md` read `CODEC_SDIN2VOL` (`0x29`) = `0xC7` (199) at master volume 60;
+  that is `ov_1291`'s sound-effect-on value at that step, and `_cew`'s is 216. A European unit
+  (`shp` 0x6) is therefore probably not a restricted one, and the curve work in `RE_volume_pop.md`
+  stands.
+- **The consequence that matters:** `cinder-voltable`'s `stock`, `w1` and `wm1a` are all **plain**
+  tables. On a CEW2 or KR3 unit, loading any of them removes the region restriction, so the same
+  volume number is louder than its owner is used to.
+
+**To settle it:** the jack rig from `RE_headphone_amp_modes.md` — line input, the fixed tone file,
+volume pinned — with `eu` against `stock`, nothing on anyone's head. Not `--volcurve`. Tracked as
+`docs/DEVICE_CHECKLIST.md` 13.6.
 
 ## What was wired
 

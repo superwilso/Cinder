@@ -5,9 +5,12 @@
  * vol 40..60 and vol 100..120 are both dead — and the live steps get coarser toward the top, which
  * is where the volume-change pop is worst.
  *
- * Sony ships a better one on every stock device. `ov_127x.tbl` is the NW-WM1A's own curve: no dead
- * zones, the whole range usable, and smaller steps at the top. Measured, same instrument, on this
- * unit:
+ * There is a better one. `ov_127x.tbl` is the NW-WM1A's own curve: no dead zones, the whole range
+ * usable, and smaller steps at the top. BUT IT IS NOT ON A STOCK PLAYER: only the A50's own 1291
+ * tables ship in /system/usr/share/audio_dac, and this helper does not ship Sony's files. On a
+ * stock player `wm1a` and `w1` fail with rc 4 (source missing) and the stock curve stays — what
+ * the reference device did on every boot once an earlier session's copies were gone (2026-09-13).
+ * Measured, same instrument, on this unit while the file was there:
  *
  *     vol      0   20   40   60   80   90  100  110  120
  *     stock    4   80  100  100  148  188  228  228  228     <- two dead zones
@@ -54,17 +57,17 @@ static const struct { const char *key, *pcm, *dsd; } TABLES[] = {
     { "wm1a",  "/system/usr/share/audio_dac/ov_127x.tbl", "/system/usr/share/audio_dac/ov_dsd_127x.tbl" },
     /* The region pair. Every model's volume table ships twice, plain and `_cew`, and `dacdat auto`
      * picks between them from the NVP `shp` flag (this unit reads 0x00000006, swid letter E).
-     * `_cew` is uniformly the QUIETER of the two: the tables differ in 7576 bytes, in a repeating
-     * 13-byte record, and at every difference the `_cew` value is lower (e.g. 0xb3ef -> 0xa200,
-     * about -10%). So `_cew` is the region-restricted curve and the plain file is the unrestricted
-     * one.
+     * Layout (Wampy's src/dac/cxd3778gf_table.h): sound effect off/on x 27 output tables x 121
+     * steps x 13 one-byte register values, then an 8-byte checksum — exactly PCM_BYTES.
      *
-     * WHICH ONE THIS DEVICE BOOTS WITH IS NOT ESTABLISHED. /proc/.../ovt is write-only (a read
-     * returns nothing), and dacdat reaches its path strings PC-relatively rather than through a
-     * literal pool, so the selection was not read out of it. Settle it by measurement, not by
-     * assumption: `cinder-probe --volcurve` sweeps the volume and reads the analogue attenuator
-     * (PHV_L) at each step, which is the curve. Apply `eu`, sweep, apply `stock`, sweep, compare.
-     * If the two sweeps differ, whichever matches the untouched boot state is what dacdat chose. */
+     * `_cew` changes only DIGITAL stages. In the S-Master headphone tables `play` and `sdin2` each
+     * move 17 codes at every step and `hpout` — PHV, the analogue attenuator — is IDENTICAL. So
+     * `cinder-probe --volcurve`, which reads PHV, reports the two as the same curve whatever they
+     * do to the signal; it cannot settle this. Wampy measured CEW2/KR3 units quieter at the jack.
+     * Compare `eu` with `stock` at the jack. analysis/RE_volume_tables.md, amended 2026-09-13.
+     *
+     * Every other key here is a PLAIN table. On a unit that boots `_cew`, any of them removes the
+     * region restriction. */
     { "eu",    "/system/usr/share/audio_dac/ov_1291_cew.tbl", "/system/usr/share/audio_dac/ov_dsd_1291_cew.tbl" },
 };
 

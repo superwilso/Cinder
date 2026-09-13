@@ -97,6 +97,7 @@ WANT_UMOUNT="$(comp_bool CINDER_UMOUNT 1)"
 WANT_GPUNODE="$(comp_bool CINDER_GPUNODE 0)"
 WANT_FM="$(comp_bool CINDER_FM 1)"
 WANT_BATTERY="$(comp_bool CINDER_BATTERY 1)"
+WANT_SEARCH="$(comp_bool CINDER_SEARCH 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
 
@@ -105,7 +106,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY signature=$WANT_SIGNATURE"
+echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH signature=$WANT_SIGNATURE"
 
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
@@ -313,6 +314,17 @@ if [ ! -f /contents/cinder_voltable.conf ]; then
     echo "volume curve: $WANT_VOLTABLE (wrote /contents/cinder_voltable.conf)"
 else
     echo "volume curve: keeping existing /contents/cinder_voltable.conf ($("$BB" cat /contents/cinder_voltable.conf 2>/dev/null))"
+fi
+# The two non-stock curves need tables a stock NW-A50 does not have (only its own 1291 set ships,
+# and Cinder does not ship Sony's files). Say so here, where the choice lands, as well as at boot.
+vt_now="$("$BB" cat /contents/cinder_voltable.conf 2>/dev/null | "$BB" tr -d ' \t\r\n')"
+case "$vt_now" in
+    wm1a) vt_tbl=ov_127x.tbl ;;
+    w1)   vt_tbl=ov_1280.tbl ;;
+    *)    vt_tbl="" ;;
+esac
+if [ -n "$vt_tbl" ] && [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ]; then
+    echo "WARN: volume curve '$vt_now' needs /system/usr/share/audio_dac/$vt_tbl, which this player does not have (it is not part of the stock firmware) — the stock curve stays."
 fi
 
 # 1f4) battery/charger reader. The bq24262 charger's registers live under /proc/regmon/bq24262/,
@@ -670,18 +682,40 @@ RESPAWN_MAX_TOTAL=10      # absolute cap per boot, so a 31-s crash cycle cannot 
 # boot — the audio path is already up by now either way.
 VOLTABLE_CONF=/contents/cinder_voltable.conf
 VOLTABLE_BIN=/system/vendor/unknown321/bin/cinder-voltable   # same dir as HOME_BIN above
+# To cinderhome.log as well as logcat. Until 2026-09-13 these lines went to logcat only, and the
+# reference device failed to apply its chosen curve on every boot with nobody able to see why.
+# $LOGF is picked above and run_home APPENDS to it, so a line written here survives the launch.
+vt_log() {
+    log "$1"
+    [ -n "$LOGF" ] && ( echo "cinderhome-launch: $1" >> "$LOGF" ) 2>/dev/null
+    true
+}
 if [ -x "$VOLTABLE_BIN" ] && [ -f "$VOLTABLE_CONF" ]; then
     vt=$(cat "$VOLTABLE_CONF" 2>/dev/null | tr -d " \t\r\n")
     case "$vt" in
-        stock|wm1a|w1)
-            if "$VOLTABLE_BIN" "$vt" >/dev/null 2>&1; then
-                log "volume curve: $vt applied"
+        stock)
+            # Apply NOTHING. Sony's boot script already loaded the table for this player's region:
+            # the plain file, or the quieter `_cew` one on players sold where volume is restricted
+            # (CEW2 and KR3 in Wampy's jack measurements). Re-applying the plain file here — which
+            # this did until 2026-09-13 — lifted that restriction on exactly those players, on a
+            # default install. analysis/RE_volume_tables.md, amended 2026-09-13.
+            vt_log "volume curve: stock — keeping the table the boot script loaded"
+            ;;
+        wm1a|w1)
+            # Both need a table a STOCK NW-A50 DOES NOT HAVE: only its own 1291 set ships, and
+            # Cinder does not ship Sony's files. Look first, so the log says why instead of a bare
+            # FAILED — the helper's rc 4 means the same thing, silently.
+            case "$vt" in wm1a) vt_tbl=ov_127x.tbl ;; *) vt_tbl=ov_1280.tbl ;; esac
+            if [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ]; then
+                vt_log "volume curve: '$vt' needs /system/usr/share/audio_dac/$vt_tbl, which is not part of the stock firmware and is not on this player — stock curve stays"
+            elif "$VOLTABLE_BIN" "$vt" >/dev/null 2>&1; then
+                vt_log "volume curve: $vt applied"
             else
-                log "volume curve: cinder-voltable $vt FAILED — stock curve stays"
+                vt_log "volume curve: cinder-voltable $vt FAILED — stock curve stays"
             fi
             ;;
         "") : ;;
-        *)  log "volume curve: unknown value '$vt' in $VOLTABLE_CONF — stock curve stays" ;;
+        *)  vt_log "volume curve: unknown value '$vt' in $VOLTABLE_CONF — stock curve stays" ;;
     esac
 fi
 
@@ -857,6 +891,19 @@ fi
 # location and the legacy /contents one (an upgrade from a pre-2026-07-26 build leaves those).
 "$BB" mkdir -p /data/cinder 2>/dev/null
 "$BB" rm -f /data/cinder/off /data/cinder/bootcount /data/cinder/DISABLED_badboot /data/cinder/once_stock 2>/dev/null
+# Library search: an opt-in component with no files, so the choice itself is what gets installed.
+# A flag in /data/cinder — machine-written state, off the MSC volume a PC can edit — that
+# cinder-home reads at startup. Written or removed on EVERY install, so an Update that turns it
+# off really does.
+if [ "$WANT_SEARCH" = 1 ]; then
+    # 0644 explicitly: this runs as root, cinder-home as uid 100, and a root umask of 077 leaves a
+    # flag the app can never open — which is exactly what an `adb shell` write produced.
+    echo 1 > /data/cinder/search_on 2>/dev/null && "$BB" chmod 644 /data/cinder/search_on 2>/dev/null \
+        && echo "library search: on"
+else
+    "$BB" rm -f /data/cinder/search_on 2>/dev/null
+    echo "library search: off"
+fi
 "$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot /contents/cinderhome_once 2>/dev/null
 echo "cleared prior disable flags (fresh install = enabled)"
 echo "left staged binary at $SRC (safe to delete once cinder-home is confirmed)"

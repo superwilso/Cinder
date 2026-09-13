@@ -345,13 +345,26 @@ pub fn np_bar(
 pub const HEADER_BOTTOM: i32 = 91;
 
 pub fn header(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, right: Option<&str>) -> i32 {
+    header_caption_from(c, t, f, title, right, 0.0)
+}
+
+/// [`header`] with the right caption also kept right of `min_x` — for a screen that puts a control
+/// of its own between the title and the caption (the Library's search button).
+pub fn header_caption_from(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    title: &str,
+    right: Option<&str>,
+    min_x: f32,
+) -> i32 {
     icons::back(c, 30.0, 62.0, 20.0, t.dim);
     let ts = sty(Family::Sans, Weight::Bold, 30.0, t.ink, -0.01);
     let title_end = text::draw(c, f, 50.0, 70.0, title, &ts);
     if let Some(r) = right {
         let rs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
         // Clamp the caption to the space right of the title (never let it overlap the title).
-        let avail = (458.0 - (title_end + 16.0)).max(0.0);
+        let avail = (458.0 - (title_end + 16.0).max(min_x)).max(0.0);
         let r = crate::widgets::fit(f, r, &rs, avail);
         let rw = text::measure(f, &r, &rs);
         text::draw(c, f, 458.0 - rw, 65.0, &r, &rs);
