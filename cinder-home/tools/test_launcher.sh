@@ -17,6 +17,8 @@ build_launcher() {   # $1 = sandbox root
         -e "s#|| dmesg 2>/dev/null#|| true#" \
         -e "s#/system/vendor/sony/bin/HgrmMediaPlayerApp#$R/stock#g" \
         -e "s#/system/vendor/unknown321/bin/cinder-home#$R/cinder#g" \
+        -e "s#/system/vendor/unknown321/bin/cinder-voltable#$R/voltable#g" \
+        -e "s#/system/usr/share/audio_dac#$R/audio_dac#g" \
         -e "s#/system/vendor/unknown321/bin/ldac-run.sh#$R/noldac#g" \
         -e "s#^sleep 3\$#sleep 0#" -e "s#    sleep 3\$#    sleep 0#" \
         -e "s#^    sleep 1\$#    sleep 0#" \
@@ -205,6 +207,23 @@ check "  ran once" "$(runs_of "$LAST_R")" 1
 # boot destroyed the previous boot's log: the exact evidence the rotation exists to keep. This
 # sandbox cannot catch that, because the host's GNU mv accepts the flag — so it is asserted on the
 # text instead. (`rm -f` is fine: toolbox rm complains about the flag and still removes the files.)
+# ── the wired volume curve (2026-09-13) ─────────────────────────────────────────────────────────
+# `wm1a` and `w1` need tables a stock NW-A50 does not have. The reference device failed to apply
+# its curve on every boot and the only record was a bare FAILED in logcat. The launcher now looks
+# for the table first and says which one is missing in cinderhome.log; `stock` runs nothing at all.
+# The helper stub records the argument it was run with, so "not run" is observable.
+VT_STUB='mkdir -p $R/audio_dac; printf "#!/bin/sh\necho \$1 > $R/voltable_ran\n" > $R/voltable; chmod +x $R/voltable'
+vt_ran() { cat "$1/voltable_ran" 2>/dev/null || echo not-run; }
+scenario "volume curve wm1a, table missing"        cinder "$VT_STUB"'; echo wm1a > $R/contents/cinder_voltable.conf'
+check "  the log names the missing table" "$(grep -c "needs $LAST_R/audio_dac/ov_127x.tbl" "$LAST_R/contents/cinderhome.log")" 1
+check "  the helper is not run" "$(vt_ran "$LAST_R")" not-run
+scenario "volume curve wm1a, table present"        cinder "$VT_STUB"'; : > $R/audio_dac/ov_127x.tbl; echo wm1a > $R/contents/cinder_voltable.conf'
+check "  the helper runs with wm1a" "$(vt_ran "$LAST_R")" wm1a
+check "  the log says applied" "$(grep -c 'volume curve: wm1a applied' "$LAST_R/contents/cinderhome.log")" 1
+scenario "volume curve stock applies nothing"       cinder "$VT_STUB"'; echo stock > $R/contents/cinder_voltable.conf'
+check "  the helper is not run" "$(vt_ran "$LAST_R")" not-run
+check "  the log says the boot table stays" "$(grep -c 'keeping the table the boot script loaded' "$LAST_R/contents/cinderhome.log")" 1
+
 R="$(mktemp -d "$SP/static.XXXXXX")"; build_launcher "$R"
 # Code lines only — the comment above the rotation names the broken form on purpose.
 if grep -n '^[^#]*mv -f' "$R/launch.sh" >/dev/null 2>&1; then

@@ -122,9 +122,11 @@ artefact that does not exist.
 
 - **One test unit.** Other NW-A50-series models share its firmware and are expected to work; none
   has been tried.
-- **Not implemented yet:** Bluetooth receiver mode (the Walkman as a Bluetooth speaker), lyrics,
-  search across the whole library (search exists only when adding songs to a playlist), and FM
+- **Not implemented yet:** Bluetooth receiver mode (the Walkman as a Bluetooth speaker) and FM
   recording.
+- **Lyrics and library search are new and untested on a player.** Lyrics come from a `.lrc` file
+  next to the song only — lyrics embedded in the file's own tags are not read. Library search is an
+  install option, off by default, and finds songs, not albums or artists.
 - **Boot time and battery life are unmeasured against stock.** Cinder draws its first frame 13.2 s
   after the kernel starts; stock has not been timed on the same unit, and there is no battery-drain
   figure yet. "Faster and longer-lasting" is the goal, not a measurement — when there are numbers
@@ -137,8 +139,11 @@ artefact that does not exist.
 - **The Windows installer is unsigned**, and now asks for administrator — see [Install](#install).
 - **Untested on top of Walkman One.** Walkman One makes the player identify as a different model,
   and Cinder's install package is packed for the stock NW-A50 model. Nobody has tried the
-  combination yet; the likeliest failure is the player's updater refusing the package. Make a wbrt
-  backup first either way, and please open an issue saying what happened.
+  combination yet; the likeliest failure is the player's updater refusing the package — Walkman One
+  also changes the updater's decryption key, so that stock packages are refused
+  ([unknown321's notes](https://github.com/unknown321/wampy/blob/master/MAKING_OF.md#walkman-one-compatibility-again)).
+  Make a wbrt backup first either way, and please open an issue saying what happened. More in
+  [Coming from Walkman One](#coming-from-walkman-one).
 
 ## Install
 
@@ -203,20 +208,22 @@ instead of the window, which is what works over RDP, in a VM and from a script.
 ### Choosing components
 
 You can leave parts of Cinder out, and the picker explains each one — but only the parts that are
-genuinely a matter of taste. **There are five choices:** the FM register helper (a real signal meter
+genuinely a matter of taste. **There are six choices:** the FM register helper (a real signal meter
 and a one-second band scan), the charger-detail reader on the battery screen, an experimental GPU
-path that is off by default and measures slower than the software one, the wired volume curve, and
-the sound signature below.
+path that is off by default and measures slower than the software one, library search (new, and
+off by default), the wired volume curve, and the sound signature below.
 
 Until 0.3.1 the same picker also offered to leave out the power menu, USB file transfer and the
 clock, each with help text admitting the feature was gone without it. Those were not choices, and
 they are part of every install now. The four helpers behind them are 60 KB together.
 
 The `signature` option patches **three bytes** of Sony's audio HAL to pick which DAC path the
-output stream uses and what CPU clock floor is held while playing. That is the entirety of what
-Walkman One's paid "sound signature" does; Cinder reproduces its variants byte-for-byte from your
-own stock library with **no firmware flash**, and adds three combinations Walkman One doesn't
-ship, splitting its two effects apart so each can be judged separately. Derivation:
+output stream uses and what CPU clock floor is held while playing. Those three bytes are Walkman
+One's plus modes: Cinder reproduces both byte-for-byte from your own stock library with **no
+firmware flash**, and adds three combinations Walkman One doesn't ship, splitting its two effects
+apart so each can be judged separately. Walkman One's other "sound signatures", the external
+tunings, are not reproducible — each is another model's firmware. Measured at the jack, neither
+kind changes the signal ([more](#coming-from-walkman-one)). Derivation:
 [`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md).
 
 ### What actually writes the firmware
@@ -353,7 +360,40 @@ Cinder is the wrong answer to:
 | [**wbrt**](https://github.com/unknown321/wbrt) (unknown321) | Full eMMC backup and restore over the MediaTek VCOM port. **The brick insurance for every project on this list** — including this one. |
 | [**Walkman One**](https://www.mrwalkman.com/) (MrWalkman) | Modified stock firmware: Sony's own player with the region and feature locks removed. If you want stock-but-unlocked rather than a different player, this is it. |
 | [**Rockbox `nwztools`**](https://github.com/Rockbox/rockbox/tree/master/utils/nwztools) | The `.UPG` pack/unpack tooling, per-model KAS keys and the NVP slot map that make any of this reachable. |
-| [**scrobbler**](https://github.com/unknown321/scrobbler) (unknown321) | Last.fm scrobbling on-device; Cinder writes the same `.scrobbler.log` format. |
+| [**scrobbler**](https://github.com/unknown321/scrobbler) (unknown321) | Last.fm scrobbling on-device; Cinder writes the same `.scrobbler.log` format. If it is installed, Cinder's own scrobbler stands down so plays are not counted twice. |
+
+### Coming from Walkman One
+
+The same questions come up in every thread. The best answers are mostly unknown321's, in the Wampy
+repository:
+
+- **What does Walkman One actually change?**
+  [Making of sound settings](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md)
+  takes it apart file by file. The plus modes are an audio library that picks a different output
+  path and CPU floor; the gain setting is another model's volume table; the external tunings are
+  another model's nvram and bootloader, not a hand-made tuning. Cinder's own teardown reached the
+  same place: [`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md).
+- **Does it change the sound?** The same document ends with line-output measurements across all 19
+  regions and every Walkman One mode
+  ([*There is more!*](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md#there-is-more)).
+  Three settings changed the signal: regions CEW2 and KR3, which load Sony's quieter volume table,
+  and gain mode 1. The plus modes, the sound signatures and DAC mode measured the same as stock.
+- **Can Cinder do the same without flashing?** The plus modes, yes — the
+  [`signature` component](install.md#the-sound-signature). The other models' volume tables, not
+  on a stock player: they are not part of the NW-A50's firmware and Cinder does not ship Sony's
+  files, so the installer's `wm1a` and `w1` volume curves only take effect on a player that
+  already holds those tables. The external tunings, no.
+- **Can I put Cinder on top of Walkman One?** Untested — see [Known limitations](#known-limitations).
+- **What about my region's volume limit?** If your player was sold where Sony restricts volume,
+  Cinder leaves the restriction in place unless you choose a different volume curve, which replaces
+  it — turn the volume down before the first boot. Cinder's first reading of those tables was
+  wrong; the [corrected analysis](analysis/RE_volume_tables.md) says how.
+- **SensMe channels?** Not yet. The data comes from Sony's PC software, which analyses each song
+  and stores the result in a tag; the player's scanner copies it into the library database, where
+  Cinder could read it. No library Cinder has been tested with contains any — if yours does, please
+  open an issue. The format itself is undocumented; unknown321's
+  [notes on SensMe](https://github.com/unknown321/wampy/blob/master/MAKING_OF.md#sensme-channels)
+  cover what is known.
 
 ## Contributing
 

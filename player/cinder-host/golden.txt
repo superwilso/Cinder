@@ -49,6 +49,9 @@ f5715a4d225a91fa library_songs_filtered_day
 1502b690f7f1b536 folders_root_day
 66723034485ea7f5 folders_dir_day
 f6bfa63123bc48a9 track_info_day
+f639417a99b94d6f lyrics_day
+3ee2aaa0deb93890 search_day
+262bd634c86d3f25 library_search_button_day
 64d9c69f490a9b78 bluetooth_day
 bb651bb4082b3e0b bluetooth_codec_day
 4b53977d37c4b9ea bluetooth_connecting_day
@@ -107,6 +110,9 @@ b6a9b0efdb4cec0e library_songs_filtered_night
 0fe1ff330af32285 folders_root_night
 ac7857d59e158310 folders_dir_night
 9a214c5458319a30 track_info_night
+cac7ec63b511ce42 lyrics_night
+2207010141d3c827 search_night
+0b6b0b759d42fe0b library_search_button_night
 ffcb631bb1483868 bluetooth_night
 cab3474ca91fe725 bluetooth_codec_night
 3e07c2dc3202568a bluetooth_connecting_night
@@ -219,7 +225,7 @@ f92e7f91efbc19c9 uiscale_100_eq
 1cf5d645a1e62bb0 uiscale_140_library
 67fd0c56dc5b7145 uiscale_140_settings
 d97db347a317e2c6 uiscale_140_bluetooth
-ef471cbe37bb9896 uiscale_140_sound
+522dffeced958ff6 uiscale_140_sound
 ba74ab1d7f4c1026 uiscale_140_nowplaying
 09d5e177d00f001d uiscale_140_upnext
 aee79fa1b2fc1277 uiscale_140_eq

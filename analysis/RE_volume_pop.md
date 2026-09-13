@@ -13,9 +13,11 @@ zones and coarsens toward the top — 4 attenuator counts per step between volum
 is exactly where the pop was loudest, and nothing at all above 100, which is exactly why it stopped
 there. Full working in the SOLVED section below.
 
-**A mitigation is written, built and installed — and has never once run on hardware.** Sony ships a
-better table on every stock device (`ov_127x.tbl`, the NW-WM1A's own: monotonic, no dead zones,
-finer steps at the top). `cinder-home/src/cinder-voltable.c` installs it, `build.sh` step 6g builds
+**A mitigation is written, built and installed — and has never once run on hardware.** There is a
+better table (`ov_127x.tbl`, the NW-WM1A's own: monotonic, no dead zones, finer steps at the top).
+*Corrected 2026-09-13: it is NOT on a stock device — only the A50's own `1291` tables ship; the
+reference device had it because an earlier session copied it in. See
+`RE_walkmanone_extract.md`.* `cinder-home/src/cinder-voltable.c` installs it, `build.sh` step 6g builds
 it, `install_cinderhome.sh` section 1f3 installs it, and the launcher applies it on every boot
 because `load_sony_driver` re-applies the stock table each time. But:
 

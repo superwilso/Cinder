@@ -1156,6 +1156,14 @@ void deferred_up() {
             clog_(rr == 1 ? "deferred_up: resume — context restored (plays on the first press)"
                           : "deferred_up: resume — nothing saved");
         });
+        // LIBRARY SEARCH is an opt-in component with no binary of its own: the installer leaves
+        // /data/cinder/search_on (machine-written state, off the MSC volume) and this turns the
+        // Library header's button on. No flag = off, the default.
+        if (FILE* sf = std::fopen("/data/cinder/search_on", "r")) {
+            std::fclose(sf);
+            cinder_set_search_enabled(1);
+            clog_("deferred_up: library search enabled (/data/cinder/search_on)");
+        }
         // ESCAPE HATCH, BECAUSE THIS DEVICE CAN HAVE TWO SCROBBLERS. `unknown321/scrobbler`
         // installs as a BOOT SERVICE (`/init.scrobbler.rc`, imported by `/init.rc`) and writes
         // `/data/mnt/internal/.scrobbler.log` — which is the same file as

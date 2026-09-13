@@ -230,6 +230,14 @@ two effects apart so each can be judged separately. **The 1.3 GHz floor costs ba
 audio is playing.** Full derivation:
 [`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md).
 
+Expect a small difference, if any. unknown321 measured an NW-A50's line output with each of Walkman
+One's plus modes and sound signatures against stock and found the same signal every time —
+[*There is more!* in Making of sound settings](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md#there-is-more),
+in the Wampy repository, which also explains what the external tunings actually are. Cinder's own
+jack measurement of the two ALSA paths agrees
+([`analysis/RE_headphone_amp_modes.md`](analysis/RE_headphone_amp_modes.md)). The variants are here
+so you can hear that for yourself without flashing anything.
+
 Change it later on the device, without reinstalling:
 
 ```sh

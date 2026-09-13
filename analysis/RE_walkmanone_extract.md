@@ -272,6 +272,16 @@ it holds — with one finding that makes item 3 considerably better than it read
 
 ### Every volume table W1 uses ALREADY SHIPS IN STOCK FIRMWARE
 
+> **WRONG — corrected 2026-09-13.** A stock NW-A50's `/system/usr/share/audio_dac/` holds **55**
+> files and only the A50's own set: `ov_1291`, `ov_1291_cew`, `ov_dsd_1291`, `ov_dsd_1291_cew`,
+> `tc_1291`. That is the device listing on 2026-09-13, the extracted stock rootfs
+> (`artifacts/rootfs_mnt`), and the listing in Wampy's `MAKING_OF_VOLUME_TABLES.md`. The six extra
+> files below were on the reference device because an earlier session had copied them in from the
+> Walkman One image — `ov_127x`'s md5 `39a60adc…` is W1's `gain_l/ov_127x.tbl` — and a copy that
+> keeps the source's mtime makes "dated 2019-07-31" prove nothing. By 2026-09-13 they were gone, and
+> `cinder-voltable wm1a` failed on every boot. The md5 and equality notes below still describe the
+> files themselves; what is wrong is that a stock player has them.
+
 `/system/usr/share/audio_dac/` on the stock device, 61 files, **all dated 2019-07-31 — Sony's own
 build stamp, not anything staged by us**:
 

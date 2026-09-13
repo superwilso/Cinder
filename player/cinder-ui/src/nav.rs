@@ -101,6 +101,12 @@ pub enum Screen {
     /// Track information — Sony's "Detailed Information". Pushed by tapping the title/artist/codec
     /// block on Now Playing, which is where the eye already is when the question comes up.
     TrackInfo,
+    /// Lyrics for the playing song, pushed from the Lyrics row on Track information. Synced lyrics
+    /// follow the song until the user scrolls. See `lyrics.rs`.
+    Lyrics,
+    /// Library search — the opt-in `search` component. Pushed from the Library header's button,
+    /// with the keyboard opened on top of it. See `search.rs`.
+    Search,
     /// Free text — naming or renaming a playlist. The device's only keyboard (`keyboard.rs`);
     /// there is no d-pad and no hardware keys to type with, so this is a touch grid.
     Keyboard,
@@ -129,6 +135,8 @@ pub enum KbPurpose {
     /// Filter the "Add tracks" list. Unlike the others this commits no Action — the query is
     /// screen state, not something the shell has to carry out.
     TrackSearch,
+    /// Library search. Like `TrackSearch`, screen state only: applied on every key, no Action.
+    LibrarySearch,
 }
 
 /// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
@@ -1097,6 +1105,24 @@ pub struct App {
     /// Row heights from the last Track information frame, so a tap can resolve which row it hit
     /// without font metrics. See `track_info::row_heights`.
     track_info_rows: Vec<i32>,
+    /// The playing song's lyrics, pushed by the shell on every track change. `None` = no `.lrc`.
+    lyrics: Option<crate::lyrics::Lyrics>,
+    lyrics_scroll_px: i32,
+    /// Line heights from the last Lyrics frame — measured by the render for the same reason as
+    /// `track_info_rows`: wrapping needs font metrics, and only `render` has them.
+    lyrics_heights: Vec<i32>,
+    /// The playback position the highlight follows, pushed by the shell's position tick.
+    lyrics_pos_ms: u32,
+    /// Does the view still follow the song? True on every entry; the user's own scroll clears it,
+    /// the same rule as `queue_follow`.
+    lyrics_follow: bool,
+    /// Is the opt-in `search` component installed? Set once by the shell at startup; without it
+    /// the Library header has no search button.
+    search_enabled: bool,
+    search_query: String,
+    /// Matching songs as ABSOLUTE indices into `lib.songs`, like `track_pick_order`.
+    search_order: Vec<usize>,
+    search_scroll_px: i32,
     /// Memoised A-Z rail map, keyed on (tab, songs sort, albums order). See `az_present_memo`.
     az_memo: Option<((u8, usize, usize), [bool; 27])>,
     /// Does the queue still follow playback? True until the user scrolls it themselves; reset on
@@ -1321,6 +1347,15 @@ impl Default for App {
             track_info_h: 0,
             track_pick_query: String::new(),
             track_info_rows: Vec::new(),
+            lyrics: None,
+            lyrics_scroll_px: 0,
+            lyrics_heights: Vec::new(),
+            lyrics_pos_ms: 0,
+            lyrics_follow: true,
+            search_enabled: false,
+            search_query: String::new(),
+            search_order: Vec::new(),
+            search_scroll_px: 0,
             az_memo: None,
         }
     }
@@ -1363,6 +1398,26 @@ impl App {
                     ("Artist".into(), "Королевский филармонический оркестр / 東京都交響楽団".into()),
                     ("Path".into(), "/contents_ext/Music/Classical/Mozart/Sinfonia concertante K364/03 - III. Presto.flac".into()),
                 ];
+            }
+            Screen::Lyrics => {
+                // Enough lines to scroll, long ones that wrap, three scripts, and a current line.
+                let lines = (0..24u32)
+                    .map(|i| crate::lyrics::Line {
+                        at_ms: Some(i * 4000),
+                        text: match i % 3 {
+                            0 => "A line long enough that it cannot fit the page and has to wrap onto the next row".into(),
+                            1 => "Королевский филармонический оркестр".into(),
+                            _ => "東京都交響楽団".into(),
+                        },
+                    })
+                    .collect();
+                self.lyrics = Some(crate::lyrics::Lyrics { lines });
+                self.lyrics_pos_ms = 9_000;
+            }
+            Screen::Search => {
+                // Results rather than the empty prompt: the rows are what can overflow.
+                self.search_query = "a".into();
+                self.search_rebuild();
             }
             _ => {}
         }
@@ -1581,6 +1636,8 @@ impl App {
                 | Screen::GenreFilter
                 | Screen::Folders
                 | Screen::TrackInfo
+                | Screen::Lyrics
+                | Screen::Search
                 | Screen::TrackPick
                 | Screen::Shelf
         )
@@ -2044,6 +2101,83 @@ impl App {
     /// How far the track-information list can scroll, from the height its last paint measured.
     fn track_info_max_scroll(&self) -> i32 {
         (self.track_info_h - (crate::track_info::BOTTOM - crate::track_info::TOP)).max(0)
+    }
+
+    /// The playing song's lyrics. Like `set_track_info`, a different song's lyrics open at the top
+    /// and following again.
+    pub fn set_lyrics(&mut self, lyrics: Option<crate::lyrics::Lyrics>) {
+        self.lyrics = lyrics;
+        self.lyrics_scroll_px = 0;
+        self.lyrics_heights.clear();
+        self.lyrics_pos_ms = 0;
+        self.lyrics_follow = true;
+    }
+
+    /// Feed the playback position. True when it moved the highlighted line on the Lyrics screen —
+    /// the only case worth a repaint, so the shell does not redraw a static page every second.
+    pub fn set_lyrics_position(&mut self, pos_ms: u32) -> bool {
+        let Some(l) = self.lyrics.as_ref() else { return false };
+        let moved = l.current(self.lyrics_pos_ms) != l.current(pos_ms);
+        self.lyrics_pos_ms = pos_ms;
+        moved && self.current() == Screen::Lyrics
+    }
+
+    fn open_lyrics(&mut self) {
+        self.lyrics_follow = true;
+        self.lyrics_scroll_px = 0;
+        self.push(Screen::Lyrics);
+    }
+
+    fn lyrics_max_scroll(&self) -> i32 {
+        crate::lyrics::max_scroll_px(&self.lyrics_heights)
+    }
+
+    /// The shell says whether the opt-in `search` component is installed.
+    pub fn set_search_enabled(&mut self, on: bool) {
+        self.search_enabled = on;
+    }
+
+    /// Open library search with the keyboard already up: on an empty search page the only thing to
+    /// do is type, so it should not take a second tap to start. The last query is kept, and
+    /// re-run against the library as it is now.
+    fn open_search(&mut self) {
+        self.search_rebuild();
+        self.fling_v = 0.0;
+        self.push(Screen::Search);
+        self.open_keyboard(KbPurpose::LibrarySearch);
+    }
+
+    /// Re-run the query. An empty one finds nothing rather than everything: this list is answers,
+    /// and 3,400 unasked-for rows would read as a search that matched every song.
+    fn search_rebuild(&mut self) {
+        let order = if self.search_query.trim().is_empty() {
+            Vec::new()
+        } else {
+            self.songs_matching(&self.search_query)
+        };
+        self.search_order = order;
+        self.search_scroll_px = 0;
+    }
+
+    fn search_songs(&self) -> Vec<&crate::model::SongRow> {
+        self.search_order.iter().filter_map(|i| self.lib.songs.get(*i)).collect()
+    }
+
+    fn search_max_scroll(&self) -> i32 {
+        crate::playlist_pick::tracks_max_scroll(self.search_order.len())
+    }
+
+    /// Search: the band edits the query, a row plays that song.
+    fn tap_search(&mut self, y: i32) -> Vec<Action> {
+        if crate::playlist_pick::hit_search(y) {
+            self.open_keyboard(KbPurpose::LibrarySearch);
+            return vec![];
+        }
+        let row = crate::playlist_pick::hit_track_row(self.search_order.len(), self.search_scroll_px, y);
+        let Some(id) = row.and_then(|r| self.search_songs().get(r).map(|s| s.object_id)) else {
+            return vec![];
+        };
+        self.start_play(id)
     }
 
     /// True when the Now Playing screen is showing (so the shell only animates the visualiser
@@ -2726,6 +2860,10 @@ impl App {
                 .map(|(label, value)| (label.clone(), value.clone()));
                 if let Some((label, value)) = hit {
                     let went = match label.as_str() {
+                        "Lyrics" => {
+                            self.open_lyrics();
+                            true
+                        }
                         "Artist" | "Album artist" => self.open_artist_named(&value),
                         _ => self.open_album_named(&value),
                     };
@@ -2742,6 +2880,7 @@ impl App {
             Screen::Keyboard => self.tap_keyboard(x, y),
             Screen::PlaylistPick => self.tap_playlist_pick(y),
             Screen::TrackPick => self.tap_track_pick(y),
+            Screen::Search => self.tap_search(y),
             Screen::UpNext => {
                 use crate::up_next::Slot;
                 // CLEAR belongs to the user queue and is only drawn when there is one.
@@ -3200,6 +3339,11 @@ impl App {
     // track; Albums expand inline (accordion) / drill in via the art / play an expanded track;
     // Artists/Playlists select.
     fn tap_library(&mut self, x: i32, y: i32) -> Vec<Action> {
+        // SEARCH, when the component is installed: a fixed button between the title and the chip.
+        if self.search_enabled && library::hit_search(x, y) {
+            self.open_search();
+            return vec![];
+        }
         // SORT/ORDER chip in the header's right slot (right of the back chevron's x<80 band).
         // Songs cycles the SORT chip; Albums cycles the ORDER chip. Both reset the list position.
         if (34..91).contains(&y) && x >= 300 {
@@ -3438,6 +3582,7 @@ impl App {
         self.kb_text = match purpose {
             // Editing a search starts from what is already typed.
             KbPurpose::TrackSearch => self.track_pick_query.clone(),
+            KbPurpose::LibrarySearch => self.search_query.clone(),
             // Renaming starts from the current name: the common edit is a word, not a retype.
             KbPurpose::Rename(id) => self
                 .lib
@@ -3527,9 +3672,18 @@ impl App {
     /// Indices stay ABSOLUTE into `lib.songs`, exactly as `song_order` returns them, so the row
     /// resolution below is unchanged whether or not a filter is on.
     fn track_pick_rebuild(&mut self) {
+        let order = self.songs_matching(&self.track_pick_query);
+        self.track_pick_order = order;
+        self.track_pick_scroll_px = 0;
+    }
+
+    /// Songs whose title, artist or album name contains `query`, case-insensitively, as absolute
+    /// indices into `lib.songs` in title order. An empty query is every song. Shared by "Add tracks"
+    /// and library search, so the two can never disagree about what matches.
+    fn songs_matching(&self, query: &str) -> Vec<usize> {
         let all = library::song_order(&self.lib, 0);
-        let q = self.track_pick_query.trim().to_lowercase();
-        let order = if q.is_empty() {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
             all
         } else {
             // A SongRow carries `album_id`, not the album name, so the names are resolved once
@@ -3550,9 +3704,7 @@ impl App {
                     })
                 })
                 .collect()
-        };
-        self.track_pick_order = order;
-        self.track_pick_scroll_px = 0;
+        }
     }
 
     fn pick_max_scroll(&self) -> i32 {
@@ -3635,6 +3787,10 @@ impl App {
             self.track_pick_query = self.kb_text.clone();
             self.track_pick_rebuild();
         }
+        if matches!(self.kb_purpose, KbPurpose::LibrarySearch) {
+            self.search_query = self.kb_text.clone();
+            self.search_rebuild();
+        }
     }
 
     /// A tap on the keyboard. Only Done leaves an action behind; everything else edits the buffer.
@@ -3660,7 +3816,7 @@ impl App {
         match purpose {
             // Already applied on every keystroke above; DONE just closes the keyboard. Screen
             // state, not an Action — nothing outside this app needs to know about a filter.
-            KbPurpose::TrackSearch => vec![],
+            KbPurpose::TrackSearch | KbPurpose::LibrarySearch => vec![],
             KbPurpose::NewPlaylist => vec![Action::PlaylistCreate],
             KbPurpose::NewPlaylistWith(object_id) => vec![Action::PlaylistCreateWith(object_id)],
             KbPurpose::Rename(id) => vec![Action::PlaylistRename(id)],
@@ -3932,6 +4088,10 @@ impl App {
                 let max = self.track_pick_max_scroll();
                 self.track_pick_scroll_px = (self.track_pick_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::Search => {
+                let max = self.search_max_scroll();
+                self.search_scroll_px = (self.search_scroll_px + dy_px).clamp(0, max);
+            }
             Screen::GenreFilter => {
                 let max = library::genre_max_scroll_px(&self.lib);
                 self.genre_scroll_px = (self.genre_scroll_px + dy_px).clamp(0, max);
@@ -3939,6 +4099,14 @@ impl App {
             Screen::TrackInfo => {
                 let max = self.track_info_max_scroll();
                 self.track_info_scroll_px = (self.track_info_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::Lyrics => {
+                let max = self.lyrics_max_scroll();
+                self.lyrics_scroll_px = (self.lyrics_scroll_px + dy_px).clamp(0, max);
+                // Reading ahead, or back: the song must stop dragging the page out from under you.
+                if dy_px != 0 {
+                    self.lyrics_follow = false;
+                }
             }
             Screen::Folders => {
                 let max = crate::folders::max_scroll_px(&self.lib, self.folder_cur());
@@ -4418,8 +4586,18 @@ impl App {
                 crate::track_info::TOP,
                 crate::track_info::BOTTOM,
             )),
+            Screen::Lyrics => Some((
+                self.lyrics_max_scroll(),
+                crate::lyrics::TOP,
+                crate::lyrics::BOTTOM,
+            )),
             Screen::PlaylistPick => Some((
                 self.pick_max_scroll(),
+                crate::playlist_pick::TOP,
+                crate::playlist_pick::BOTTOM,
+            )),
+            Screen::Search => Some((
+                self.search_max_scroll(),
                 crate::playlist_pick::TOP,
                 crate::playlist_pick::BOTTOM,
             )),
@@ -4472,9 +4650,11 @@ impl App {
             Screen::UpNext => self.queue_scroll_px,
             Screen::GenreFilter => self.genre_scroll_px,
             Screen::TrackInfo => self.track_info_scroll_px,
+            Screen::Lyrics => self.lyrics_scroll_px,
             Screen::Folders => self.folder_scroll_px,
             Screen::PlaylistPick => self.pick_scroll_px,
             Screen::TrackPick => self.track_pick_scroll_px,
+            Screen::Search => self.search_scroll_px,
             _ => self.lib_scroll_px,
         }
     }
@@ -5798,7 +5978,7 @@ impl App {
                 crate::library::render(
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
-                    self.sbar_active(), self.lib_band(),
+                    self.sbar_active(), self.lib_band(), self.search_enabled,
                 );
                 let az = self.az_present_memo();
                 crate::library::az_render(
@@ -5816,7 +5996,7 @@ impl App {
                     crate::library::render(
                         c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                         self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
-                        self.sbar_active(), self.lib_band(),
+                        self.sbar_active(), self.lib_band(), self.search_enabled,
                     );
                 }
             }
@@ -5831,7 +6011,7 @@ impl App {
                 None => crate::library::render(
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
-                    self.sbar_active(), self.lib_band(),
+                    self.sbar_active(), self.lib_band(), self.search_enabled,
                 ),
             },
             Screen::Artist => match self.artist_page() {
@@ -5844,7 +6024,7 @@ impl App {
                 None => crate::library::render(
                     c, &theme, fonts, self.lib_tab, self.lib_idx, self.lib_scroll_px, self.lib_sort,
                     self.album_sort, self.album_expanded, &self.lib, self.swipe_row,
-                    self.sbar_active(), self.lib_band(),
+                    self.sbar_active(), self.lib_band(), self.search_enabled,
                 ),
             },
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
@@ -5864,6 +6044,25 @@ impl App {
                 self.track_info_scroll_px = self.track_info_scroll_px.clamp(0, max);
                 crate::track_info::render(
                     c, &theme, fonts, &self.track_info, self.track_info_scroll_px,
+                    self.sbar_active(),
+                )
+            }
+            Screen::Lyrics => {
+                let cur = self.lyrics.as_ref().and_then(|l| l.current(self.lyrics_pos_ms));
+                self.lyrics_heights = self
+                    .lyrics
+                    .as_ref()
+                    .map(|l| crate::lyrics::heights(fonts, &theme, l))
+                    .unwrap_or_default();
+                // Following writes the scroll itself, so a drag that ends following starts from
+                // exactly where the page was rather than jumping back to the top.
+                if let (true, Some(i)) = (self.lyrics_follow, cur) {
+                    self.lyrics_scroll_px = crate::lyrics::follow_scroll(&self.lyrics_heights, i);
+                }
+                let max = self.lyrics_max_scroll();
+                self.lyrics_scroll_px = self.lyrics_scroll_px.clamp(0, max);
+                crate::lyrics::render(
+                    c, &theme, fonts, self.lyrics.as_ref(), cur, self.lyrics_scroll_px,
                     self.sbar_active(),
                 )
             }
@@ -6193,6 +6392,14 @@ impl App {
                         },
                         "Title, artist or album",
                     ),
+                    KbPurpose::LibrarySearch => (
+                        if self.kb_text.trim().is_empty() {
+                            "Search the library".to_string()
+                        } else {
+                            format!("{} matching", self.search_order.len())
+                        },
+                        "Title, artist or album",
+                    ),
                     _ => ("New playlist".to_string(), "Playlist name"),
                 };
                 crate::keyboard::render(c, &theme, fonts, &title, &self.kb_text, placeholder,
@@ -6232,6 +6439,12 @@ impl App {
                                                     self.track_pick_scroll_px, members.len(),
                                                     &self.track_pick_query, self.lib.songs.len(),
                                                     self.sbar_active())
+            }
+            Screen::Search => {
+                let songs = self.search_songs();
+                crate::search::render(c, &theme, fonts, &songs, &self.search_query,
+                                      self.lib.songs.len(), self.search_scroll_px,
+                                      self.sbar_active())
             }
             // Shelf is an overlay, never the stack top — render Now Playing as a safe fallback if
             // it somehow becomes current (it shouldn't).
@@ -6372,6 +6585,7 @@ impl App {
                 Screen::Settings => a.settings_scroll_px,
                 Screen::Device => a.device_scroll_px,
                 Screen::UpNext => a.queue_scroll_px,
+                Screen::Lyrics => a.lyrics_scroll_px,
                 _ => 0,
             };
             let before = scroll_of(self);
@@ -8548,7 +8762,7 @@ mod tests {
     fn the_scrollbar_covers_the_whole_list_on_every_screen_that_has_one() {
         let screens = [
             Screen::Library, Screen::UpNext, Screen::GenreFilter, Screen::Folders,
-            Screen::TrackInfo, Screen::PlaylistPick, Screen::TrackPick,
+            Screen::TrackInfo, Screen::Lyrics, Screen::PlaylistPick, Screen::TrackPick,
         ];
         let x = crate::canvas::W as i32 - 4;
         for screen in screens {
@@ -9698,7 +9912,7 @@ mod tests {
             Screen::Advanced, Screen::Tone, Screen::Bluetooth, Screen::BtCodec, Screen::Pairing,
             Screen::Settings, Screen::Device, Screen::Fm, Screen::UsbDac, Screen::Receiver,
             Screen::VizSet, Screen::ClockSet, Screen::GenreFilter, Screen::Folders,
-            Screen::TrackInfo, Screen::PlaylistPick, Screen::TrackPick,
+            Screen::TrackInfo, Screen::Lyrics, Screen::Search, Screen::PlaylistPick, Screen::TrackPick,
         ];
         for s in with_header {
             let mut a = unlocked();
@@ -10230,6 +10444,68 @@ mod tests {
         e.set_track_info_rows_for_test(vec![44, 44, 44, 44]);
         e.tap(240, row_y(3));
         assert_eq!(e.current(), Screen::TrackInfo);
+    }
+
+    /// Lyrics open from their Track information row, follow the song until the user scrolls, ask
+    /// for a repaint only when the sung line changes, and start over for the next song.
+    #[test]
+    fn lyrics_open_from_track_info_and_follow_until_scrolled() {
+        use crate::lyrics::{Line, Lyrics};
+        let mut a = App::unlocked();
+        let lines = (0..40u32).map(|i| Line { at_ms: Some(i * 1000), text: format!("line {i}") }).collect();
+        a.set_lyrics(Some(Lyrics { lines }));
+        a.push_for_test(Screen::TrackInfo);
+        a.set_track_info(vec![
+            ("Title".to_string(), "Whatever".to_string()),
+            ("Lyrics".to_string(), "Synced, 40 lines".to_string()),
+        ]);
+        a.set_track_info_rows_for_test(vec![44, 44]);
+        assert!(!a.set_lyrics_position(3_000), "a new line off the Lyrics page is not a repaint");
+
+        assert_eq!(a.tap(240, crate::track_info::TOP + 44 + 4), Vec::<Action>::new());
+        assert_eq!(a.current(), Screen::Lyrics);
+        assert!(a.lyrics_follow, "opening the page follows the song");
+        assert!(a.set_lyrics_position(5_000), "line 3 -> line 5 on the page");
+        assert!(!a.set_lyrics_position(5_400), "still line 5");
+
+        a.lyrics_heights = vec![38; 40]; // what the render measures
+        a.scroll_px(30);
+        assert!(!a.lyrics_follow, "the user's own scroll stops the song dragging the page");
+        assert_eq!(a.lyrics_scroll_px, 30);
+
+        a.set_lyrics(None);
+        assert!(a.lyrics_follow && a.lyrics_scroll_px == 0, "the next song starts over");
+        assert!(!a.set_lyrics_position(9_000), "no lyrics, nothing to repaint");
+    }
+
+    /// Library search is opt-in: no button without the component. With it, the header button opens
+    /// search with the keyboard up, typing filters as you go, an empty query finds nothing, and a
+    /// result plays.
+    #[test]
+    fn library_search_is_opt_in_and_plays_what_it_finds() {
+        let (bx, by) = ((library::SEARCH_X0 + library::SEARCH_X1) / 2, 62);
+        let mut off = App::unlocked();
+        off.push_for_test(Screen::Library);
+        assert_eq!(off.tap(bx, by), Vec::<Action>::new());
+        assert_eq!(off.current(), Screen::Library, "not installed: the header has no button");
+
+        let mut a = App::unlocked();
+        a.set_search_enabled(true);
+        a.push_for_test(Screen::Library);
+        assert_eq!(a.tap(bx, by), Vec::<Action>::new());
+        assert_eq!(a.current(), Screen::Keyboard, "the keyboard is already up");
+        assert!(a.search_order.is_empty(), "nothing typed, nothing found");
+
+        let want = a.lib.songs[0].clone();
+        a.kb_text = want.title.clone();
+        a.kb_after_key();
+        assert!(a.search_songs().iter().any(|s| s.object_id == want.object_id), "found while typing");
+        a.pop();
+        assert_eq!(a.current(), Screen::Search);
+
+        let row = a.search_songs().iter().position(|s| s.object_id == want.object_id).unwrap();
+        let y = crate::playlist_pick::LIST_TOP + row as i32 * crate::playlist_pick::ROW_H + 10;
+        assert_eq!(a.tap(240, y), vec![Action::PlayIndex(want.object_id)]);
     }
 
     /// The "Add to playlist" picker is REACHABLE. It was built complete — renderer, hit tests,

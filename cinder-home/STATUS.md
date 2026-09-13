@@ -887,6 +887,19 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 
 ### ◐ Partial (UI works; backend/hardware leg pending — device-gated)
 
+- **Lyrics — built and host-tested, not yet seen on the panel.** *(2026-09-13)* A `.lrc` beside the
+  song (`Song.lrc` for `Song.flac`, Sony's own convention) adds a Lyrics row to Track information,
+  which opens a page that follows timestamped lyrics: the sung line highlighted and held a third of
+  the way down until the user scrolls. Parser tests cover repeated stamps, `[offset:]`, per-word
+  stamps and UTF-8 / UTF-16 / Windows-1252; nav tests cover opening, following, and repainting only
+  on a line change. Partial because the reference library has no `.lrc` files to try —
+  `docs/DEVICE_CHECKLIST.md` 13.7. Lyrics embedded in tags are not read.
+- **Library search — an install option, off by default.** *(2026-09-13)* A magnifier in the Library
+  header opens a search page with the keyboard up; it finds songs (title, artist or album name —
+  the "Add tracks" matcher) and a tap plays one. Turned on by `/data/cinder/search_on`, which the
+  installer writes or removes on every install; harness scenarios `search-off` / `search-on` prove
+  the shell honours the flag. Partial: not yet run on a player — checklist 13.8.
+
 - **FM Radio — the tuner is REAL; the Bluetooth leg is not.** *(built 2026-08-17/18, measured on
   hardware — `analysis/RE_fm_tuner.md`)* Tune, play, a graded signal meter, a ~10 s band scan and
   the chip's own hardware seek all work, and all of them are driven through the CHIP rather than

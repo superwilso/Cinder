@@ -1218,6 +1218,16 @@ fn draw_empty_note(c: &mut Canvas, t: &Theme, f: &FontSet, top: i32, tab: Tab, l
     text::draw(c, f, 22.0, (top + 70) as f32, &crate::widgets::fit(f, &hint, &hs, 436.0), &hs);
 }
 
+/// The search button's tap zone in the Library header, drawn only when the `search` component is
+/// installed. Fixed, between the title and the SORT/ORDER chip (whose zone starts at x 300), so it
+/// is in the same place on every tab and at every UI scale.
+pub const SEARCH_X0: i32 = 244;
+pub const SEARCH_X1: i32 = 300;
+
+pub fn hit_search(x: i32, y: i32) -> bool {
+    (34..91).contains(&y) && (SEARCH_X0..SEARCH_X1).contains(&x)
+}
+
 pub fn render(
     c: &mut Canvas,
     t: &Theme,
@@ -1232,6 +1242,7 @@ pub fn render(
     swipe: Option<SwipeRow>,
     sbar_active: bool,
     band_hide: i32,
+    search: bool,
 ) {
     let scroll_px = scroll_px.clamp(0, max_scroll_px(tab, lib, album_sort, album_expanded));
     let hide = band_offset(tab, band_hide, scroll_px);
@@ -1242,7 +1253,13 @@ pub fn render(
         Tab::Albums => format!("ORDER \u{00b7} {}", ALBUM_SORTS[album_sort.min(ALBUM_SORTS.len() - 1)]),
         _ => count_caption(tab, lib),
     };
-    let y0 = crate::chrome::header(c, t, f, "Library", Some(&rc));
+    let y0 = if search {
+        let y0 = crate::chrome::header_caption_from(c, t, f, "Library", Some(&rc), SEARCH_X1 as f32);
+        crate::icons::search(c, ((SEARCH_X0 + SEARCH_X1) / 2) as f32, 62.0, 24.0, t.dim);
+        y0
+    } else {
+        crate::chrome::header(c, t, f, "Library", Some(&rc))
+    };
     let yt = tabs(c, t, f, y0, tab);
     let total = row_count(tab, lib);
     band_block(c, t, f, tab, lib, yt, hide);
