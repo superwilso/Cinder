@@ -1107,8 +1107,30 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     };
 
     let t_phase = std::time::Instant::now();
-    let tracks = db.tracks(cinder_db::Sort::Title).unwrap_or_default();
+    // A FAILED QUERY SAYS SO. These three used to be `unwrap_or_default()`, which turned any error
+    // into an empty list and logged nothing — so a library that would not read looked exactly like a
+    // card with no music on it (reported 2026-09-13: `library loaded — 0 tracks`, no reason given).
+    let tracks = db.tracks(cinder_db::Sort::Title).unwrap_or_else(|e| {
+        eprintln!("cinder-ffi: track query FAILED — {e} (the library will show no songs)");
+        Vec::new()
+    });
     let ms_tracks = t_phase.elapsed().as_millis();
+    // WHERE THE MUSIC IS, one line per open. "The music on my SD card doesn't show up" can only be
+    // answered from a log if the log says how much of the library each storage holds: a card whose
+    // rows are missing from Sony's store reads `SD 0` here, and rows whose storage root did not map
+    // onto either mount read as unresolved. Reported 2026-09-13 with nothing in the log to say which.
+    let (mut on_internal, mut on_sd, mut unresolved) = (0usize, 0usize, 0usize);
+    for t in &tracks {
+        let f = t.filename.as_str();
+        if f.starts_with("/contents_ext/") || f.starts_with("/data/mnt/external/") {
+            on_sd += 1;
+        } else if f.starts_with("/contents/") || f.starts_with("/data/mnt/internal/") {
+            on_internal += 1;
+        } else {
+            unresolved += 1;
+        }
+    }
+    eprintln!("cinder-ffi: library by storage — internal {on_internal}, SD {on_sd}, unresolved {unresolved}");
     let mut album_artist: BTreeMap<i64, String> = BTreeMap::new();
     // Per artist: their distinct albums as name → album id, plus a track count.
     //
@@ -1159,7 +1181,10 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     let mut album_added: BTreeMap<i64, i64> = BTreeMap::new();
     let mut album_year: BTreeMap<i64, String> = BTreeMap::new();
     let t_phase = std::time::Instant::now();
-    let album_order_rows = db.tracks_album_order().unwrap_or_default();
+    let album_order_rows = db.tracks_album_order().unwrap_or_else(|e| {
+        eprintln!("cinder-ffi: album-order track query FAILED — {e} (albums will list no songs)");
+        Vec::new()
+    });
     let ms_album_order = t_phase.elapsed().as_millis();
     let t_phase = std::time::Instant::now();
     for t in album_order_rows {
@@ -1182,7 +1207,10 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     // Album list (ordered, with track counts) → rows, grouped by artist.
     let ms_album_group = t_phase.elapsed().as_millis();
     let t_phase = std::time::Instant::now();
-    let album_list = db.albums().unwrap_or_default();
+    let album_list = db.albums().unwrap_or_else(|e| {
+        eprintln!("cinder-ffi: album query FAILED — {e} (the Albums tab will be empty)");
+        Vec::new()
+    });
     let ms_albums = t_phase.elapsed().as_millis();
     let mut album_rows: Vec<AlbumRow> = album_list
         .into_iter()
@@ -3448,6 +3476,21 @@ pub extern "C" fn cinder_set_storage(label: *const c_char) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         if s != r.app.storage_label() {
             r.app.set_storage(&s);
+            r.dirty = true;
+        }
+    }
+}
+
+/// The shell declined a Settings ▸ Database scan — the SD card is in the slot but not mounted, and
+/// a scan then records every album on it as deleted. The action already put the row into
+/// "Rescanning…" with a 60 s deadline; clear both, so the row does not claim a scan that is not
+/// happening.
+#[no_mangle]
+pub extern "C" fn cinder_rescan_refused() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.rescan_left_ms = 0;
+        if r.app.rescanning() {
+            r.app.set_rescanning(false);
             r.dirty = true;
         }
     }

@@ -16,6 +16,93 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **One unusual tag could empty the whole library.** *Reproduced and fixed on the host
+  (`tracks_read_legacy_text_and_numbers_stored_as_text` failed with `Utf8Error` on the artist column
+  before the change and passes after it); device-unverified on the reporter's library.* Reported
+  2026-09-13 on r/walkman: a 1 TB card whose music shows on stock and not in Cinder. Their log settled
+  where the fault was not — the card was mounted and its files read fine — and where it was:
+
+  ```
+  housekeeping: the library database changed -> reloading library and playlists
+  [cinder-db] genres: 1196 entries
+  cinder-ffi: library loaded — 0 tracks, 0 albums, 0 artists
+  ```
+
+  SQLite types values, not columns, and Sony's scanner stores what the tags said. A legacy-encoded tag
+  (Latin-1 "Björk") arrives as text that is not valid UTF-8, and a track number written `03/12` stays
+  text inside an integer column. The track query read both with strict types, so one such value made
+  the *whole* query an error — and the library build turned that error into an empty list without a
+  word. Every column the scanner fills from a tag is now read leniently (invalid UTF-8 replaced,
+  `03/12` read as 3), a row that still will not read is skipped and logged instead of taking the
+  library with it, and a failed query now logs `track query FAILED — <reason>` rather than showing
+  "no music".
+
+- **The player never powered itself off on a flat battery.** *Cause device-verified 2026-09-13;
+  the fix is harness-verified, and the shutdown itself is device-unverified (it needs a real
+  discharge).* Reported by the owner: "I don't think it actually powers off." Sony's critical-battery
+  shutdown lives in the stock Qt app (`ForceShutdown.cpp`), which Cinder replaces, so Cinder's own
+  low-battery guard is the only thing that can do it — and that guard decided "on battery" from
+  `status == "Discharging"`. This board's battery driver never reports that. Pulling the cable with a
+  2 s sysfs logger running:
+
+  ```
+  status=Full         cap=100 usb=1 dc=0    on the cable
+  status=Not charging cap=94  usb=0 dc=0    cable out: this is what "on battery" looks like
+  status=Not charging cap=91  usb=1 dc=0    cable back in, before charging resumes
+  status=Charging     cap=99  usb=1 dc=0
+  ```
+
+  So every discharge read as charging, the guard returned on its first line, and the player ran to
+  the hardware cutoff with no "charge soon" warning and no clean shutdown, `/contents` still mounted
+  read-write. The same string also appears with the cable in, so no reading of it separates the two
+  states. The guard now asks the charger-detect nodes (`usb/online`, `dc/online`, `ac/online`), and
+  falls back to the status string only on a board without them. Manual power-off was already working
+  (the same helper, device-verified again today). Four new harness scenarios pin both directions:
+  `lowbatt-off`, `lowbatt-discharging`, `lowbatt-charger`, `lowbatt-warn`.
+
+- **An exFAT microSD card stayed unmounted after USB file transfer.** *The mount command is
+  device-verified against an exFAT image; the round trip with a real exFAT card is
+  device-unverified.* Any card over 32 GB is exFAT, and the player formats a big card that way
+  itself. Sony mounts one through FUSE (`mount.exfat` → `exfatfuse`), but `cinder-msc` only knew
+  vfat: leaving mass-storage mode it tried a vfat mount twelve times, failed every time, and the card
+  was gone for the rest of the boot. It now tells the two apart by the boot sector and remounts exFAT
+  with Sony's own script and option string (`batch_sync,waitonfat,noatime,iocharset=UTF-8`,
+  recovered from `libStorageMgrServiceFw.so`; the vfat string next to it is refused by `exfatfuse`,
+  which is how the two were told apart). On the way *into* mass storage it also waits for the
+  `exfatfuse` daemon to exit before handing the card to the PC, so the daemon's buffered writes can
+  never overlap the PC's.
+
+- **A library scan could erase the SD card's albums.** *Harness-verified that nothing changes for a
+  card-less build; the card path is device-unverified.* The scanner rebuilds the store from what it
+  can see, so a scan run while a card is in the slot but unmounted records every album on it as
+  deleted. The automatic scan after a USB session now waits for the card, and Settings ▸ Database
+  says "SD card not mounted — restart, then scan" instead of scanning.
+
+- **Duplicate scrobbles with unknown321's scrobbler installed.** *Device-verified 2026-09-13 on the
+  reference device, which had been running both: the boot logs `scrobble — unknown321/scrobbler is
+  running (pid 308) … standing down`, and cinder-home holds no `.scrobbler.log` descriptor. Harness
+  scenarios `scrobble-opens` and `scrobble-yields`.* Both scrobblers append to the same
+  `.scrobbler.log`, so every play reached Last.fm twice. `/contents/cinder_no_scrobble` could silence
+  Cinder's, but only for someone who had noticed the duplicates and found the flag — the reference
+  device itself ran both for a week. Cinder now looks for the other scrobbler's process and stands
+  its own down while it runs, including when `/contents` is reclaimed mid-boot.
+
+### Added
+
+- **Settings ▸ Storage shows the SD card.** *The label is built on device; the row itself has not
+  yet been looked at on the panel.* A card in the slot reads `SD 612 / 954 GB`, or
+  `SD not mounted` — before, the row showed internal storage only, so a card that had not mounted
+  looked the same as one that had. It refreshes when the card's state changes, including a big exFAT
+  card whose filesystem check finishes well after boot.
+- **The log says where the library is.** *Device-verified 2026-09-13: `library by storage — internal
+  2281, SD 1130, unresolved 0` and `storage: SD card mounted at /contents_ext (vfat)`.* One line per
+  library open and one per change in the card's mount state, with the filesystem type. "My SD music
+  is missing" can now be answered from `cinderhome.log`.
+- **README: Walkman One is listed as untested.** Walkman One makes the player identify as a different
+  model, and Cinder's package is packed for the stock NW-A50 model.
+
 ## [0.3.3] — 2026-09-12
 
 ### Fixed

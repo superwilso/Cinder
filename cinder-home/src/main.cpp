@@ -976,6 +976,54 @@ void* lib_open_thread(void*) {
     return nullptr;
 }
 
+// ── ONE SCROBBLER PER PLAY ──────────────────────────────────────────────────────────────────────
+// `unknown321/scrobbler` appends to the same `.scrobbler.log` Cinder writes (the rationale is at the
+// call in deferred_up). This finds it by its PROCESS, not by its install: `/init.scrobbler.rc` only
+// says it was installed, a live process is what writes the log, and someone whose copy is installed
+// but not running should still get scrobbles from us. `/proc/<pid>/cmdline` is world-readable, so
+// uid system can read a root daemon's argv[0] with no privilege at all. Returns its pid, or 0.
+static const char kOtherScrobbler[] = "/system/vendor/unknown321/bin/scrobbler";
+
+static int other_scrobbler_pid() {
+    DIR* pd = opendir("/proc");
+    if (!pd) return 0;
+    int pid = 0;
+    struct dirent* pe;
+    while (pid == 0 && (pe = readdir(pd))) {
+        if (pe->d_name[0] < '1' || pe->d_name[0] > '9') continue;
+        char path[288];                               // d_name can be 255 bytes as far as gcc knows
+        std::snprintf(path, sizeof path, "/proc/%s/cmdline", pe->d_name);
+        FILE* f = std::fopen(path, "r");
+        if (!f) continue;
+        char argv0[128] = {0};                        // args are NUL-separated: strcmp sees argv[0]
+        size_t got = std::fread(argv0, 1, sizeof argv0 - 1, f);
+        std::fclose(f);
+        if (got > 0 && std::strcmp(argv0, kOtherScrobbler) == 0) pid = std::atoi(pe->d_name);
+    }
+    closedir(pd);
+    return pid;
+}
+
+// Open Cinder's scrobbler unless something else already owns the log. `who` prefixes the log line.
+static void scrobble_open_ours(const char* who) {
+    char m[224];
+    if (::access("/contents/cinder_no_scrobble", F_OK) == 0) {
+        std::snprintf(m, sizeof m, "%s: scrobble disabled (/contents/cinder_no_scrobble) — leaving "
+                      "the log to the other scrobbler", who);
+        clog_(m);
+        return;
+    }
+    if (const int pid = other_scrobbler_pid()) {
+        std::snprintf(m, sizeof m, "%s: scrobble — unknown321/scrobbler is running (pid %d) and writes "
+                      "the same .scrobbler.log; standing down so each play is logged once", who, pid);
+        clog_(m);
+        return;
+    }
+    std::snprintf(m, sizeof m, "%s: cinder_scrobble_open(/contents/.scrobbler.log)", who);
+    clog_(m);
+    cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
+}
+
 // so a blocking Sony-IPC can't stall the device. Idempotent, one-shot.
 void deferred_up() {
     if (g_deferred_done) return;
@@ -1129,16 +1177,16 @@ void deferred_up() {
         // helpers and the launcher), and Cinder has no init.rc hook to lose — appmgr launches it
         // (`hagodaemon appmgrservice sub_sm` -> cinderhome-launch.sh), not init.
         //
-        // This flag remains for the case where the user wants to keep their scrobbler as-is:
-        // ours cannot simply win, because theirs lives in the boot image and stopping it needs root
-        // (`ctl.stop` is refused for uid system, the same refusal the USB-MSC path documents), so
-        // this is the half that is cheap to disable.
-        if (::access("/contents/cinder_no_scrobble", F_OK) == 0) {
-            clog_("scrobble: disabled (/contents/cinder_no_scrobble) — leaving the log to the other scrobbler");
-        } else {
-            clog_("deferred_up: cinder_scrobble_open(/contents/.scrobbler.log)");
-            cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
-        }
+        // For a user who keeps their scrobbler, ours has to be the one that yields: theirs lives in
+        // the boot image and stopping it needs root (`ctl.stop` is refused for uid system, the same
+        // refusal the USB-MSC path documents).
+        //
+        // AND IT YIELDS ON ITS OWN NOW, rather than waiting for somebody to create a flag file. A
+        // flag only helps a user who has already noticed duplicates on Last.fm, traced them to two
+        // writers and found this comment — and the reference device itself ran both for a week
+        // after the note above was written (2026-09-13: pid 321 alongside cinder-home, no flag).
+        // `scrobble_open_ours` holds the rule; the flag still silences Cinder unconditionally.
+        scrobble_open_ours("deferred_up");
         g_resume_ready = true;
     }
     // THE FRAMEWORK PUMP — must come BEFORE cinder_audio_init. Sony's PlayerService client is
@@ -7436,6 +7484,36 @@ bool contents_mounted() {
     std::fclose(f);
     return found;
 }
+// The microSD asks two separate questions: is a card in the slot, and is it mounted? A card that
+// is present and NOT mounted is the state in which every album on it looks deleted — the library
+// has rows for files nobody can open, and a media scan run then drops them. `mmcblk1` is the slot's
+// whole-card node, which exists for any inserted card whether or not it carries a partition table.
+static bool sd_card_present() {
+    struct stat st;
+    return ::stat("/dev/block/mmcblk1", &st) == 0;
+}
+// `fstype`, when given, receives the mount's type field: `vfat` for a card up to 32 GB, and
+// `fuse.exfatfuse` for an exFAT one, which Sony mounts through a FUSE daemon.
+static bool sd_card_mounted(char* fstype = nullptr, size_t fstype_len = 0) {
+    FILE* f = std::fopen("/proc/mounts", "r");
+    if (!f) return false;
+    char line[512]; bool found = false;
+    while (std::fgets(line, sizeof line, f)) {
+        const char* at = std::strstr(line, " /contents_ext ");
+        if (!at) continue;
+        found = true;
+        if (fstype && fstype_len) {
+            const char* type = at + std::strlen(" /contents_ext ");
+            size_t n = std::strcspn(type, " \n");
+            if (n >= fstype_len) n = fstype_len - 1;
+            std::memcpy(fstype, type, n);
+            fstype[n] = 0;
+        }
+        break;
+    }
+    std::fclose(f);
+    return found;
+}
 // Same probe as the launcher's usb_connected(): gadget state / power-supply online.
 bool usb_connected() {
     static const char* paths[] = { "/sys/class/android_usb/android0/state",
@@ -7741,12 +7819,25 @@ void exit_usb_msc() {
         // Deliberately NOT on the reclaim path (reclaim_contents): that undoes an unmount we did
         // not perform, with no transfer implied, and scanning the whole tree because a mount
         // flickered is not the same event at all.
-        clog_("usb-msc: the PC had the volume — asking MediaStore to re-scan for new music");
-        run_guarded("usb-msc: rescan after transfer", 20, media_rescan);
-        g_rescan_rounds_left = RESCAN_MAX_ROUNDS;
-        g_rescan_next_ms     = now_ms() + RESCAN_ROUND_MS;
-        g_rescan_sig         = db_signature();
-        g_rescan_quiet       = 0;
+        //
+        // …BUT NEVER WITH THE CARD MISSING. The scanner rebuilds the store from what it can see,
+        // and with /contents_ext unmounted it sees none of the card, so a scan now would record
+        // every album on it as deleted. That is exactly the state an exFAT card was left in by the
+        // vfat-only remount cinder-msc used to do, and a remount can still fail for reasons of its
+        // own. The automatic scan waits for the card; Settings ▸ Database still scans on request.
+        if (sd_card_present() && !sd_card_mounted()) {
+            clog_("usb-msc: the SD card did NOT come back — skipping the automatic re-scan, which "
+                  "would drop every album on it. Restart the player to remount the card, then run "
+                  "Settings ▸ Database.");
+        } else {
+            clog_("usb-msc: the PC had the volume — asking MediaStore to re-scan for new music");
+            run_guarded("usb-msc: rescan after transfer", 20, media_rescan);
+            g_rescan_rounds_left = RESCAN_MAX_ROUNDS;
+            g_rescan_next_ms     = now_ms() + RESCAN_ROUND_MS;
+            g_rescan_sig         = db_signature();
+            g_rescan_quiet       = 0;
+        }
+        report_storage();   // the card's line in Settings ▸ Storage follows whatever just happened
     } else {
         clog_("usb-msc: exited but /contents did NOT remount within 5 s");
     }
@@ -7781,7 +7872,9 @@ static void reclaim_contents() {
         // BEFORE this reclaim runs — so it opened a file on the volume that was already detached,
         // and every play logged since went to an inode with no directory entry. Silent, and only
         // visible as a scrobble file that never grows. Measured 2026-09-01.
-        cinder_scrobble_open("/contents/.scrobbler.log", "Cinder NW-A55 0.1");
+        // Through the same rule as the boot-time open, or a reclaim would quietly bring back the
+        // duplicate writer that deferred_up stood down.
+        scrobble_open_ours("usb-msc reclaim");
     } else {
         if (g_contents_wait < CONTENTS_WAIT_MAX) g_contents_wait *= 2;
         if (g_contents_wait > CONTENTS_WAIT_MAX) g_contents_wait = CONTENTS_WAIT_MAX;
@@ -8503,6 +8596,18 @@ void carry_out(int act) {
             g_last_input_ms = now_ms();
             break;
         case CINDER_ACT_LIBRARY_RESCAN:
+            // NOT WITH THE CARD MISSING — the same rule as the automatic scan after a USB session
+            // (see exit_usb_msc). With a card in the slot but unmounted, the scanner sees none of it
+            // and records every album on it as deleted, which turns "my SD music isn't showing" into
+            // "my SD music is gone from the library". Say why instead. Taking the card out is the
+            // way to scan internal storage on its own.
+            if (sd_card_present() && !sd_card_mounted()) {
+                clog_("rescan: Settings ▸ Database declined — the SD card is in the slot but not "
+                      "mounted, and a scan now would drop every album on it");
+                cinder_rescan_refused();
+                cinder_toast("SD card not mounted — restart, then scan");
+                break;
+            }
             // Guarded like every other Sony IPC: a hung MediaStore then costs this one action
             // rather than tripping the per-frame watchdog. The scan itself is asynchronous — Scan()
             // returns as soon as the request is queued (measured: rc back immediately, the store
@@ -9825,28 +9930,63 @@ static void push_device_system() {
     cinder_set_device_system(up, kern);
 }
 
-// Is the battery being charged? Read alongside the level, because every low-battery decision below
+// Is external power attached? Read alongside the level, because every low-battery decision below
 // is wrong on a charger: 3% and climbing is a device you just plugged in, not one about to die.
-// "Full" counts as charging — that is what a topped-up device on a cable reports.
+//
+// THE CHARGER-DETECT NODES DECIDE IT, NOT THE BATTERY'S `status` STRING. This used to be
+// `status != "Discharging"`, and this board's battery driver NEVER SAYS "Discharging". Measured on
+// the reference device 2026-09-13, cable pulled and put back with a 2 s sysfs logger running:
+//
+//     status=Full         cap=100 usb=1 dc=0     (on the cable)
+//     status=Not charging cap=94  usb=0 dc=0     (cable out — this is what "on battery" looks like)
+//     status=Not charging cap=91  usb=1 dc=0     (cable back in, before charging resumes)
+//     status=Charging     cap=99  usb=1 dc=0
+//
+// So on battery the old test read "charging", battery_guard returned on its first line for every
+// discharge, and the player never warned and never powered off — it ran to the hardware cutoff with
+// /contents mounted read-write. (Sony's own critical shutdown lives in the stock Qt app, which
+// Cinder replaces, so nothing else was going to do it.) The same string also appears WITH the cable
+// in, so no reading of it can separate the two states. `usb/online` and `dc/online` are the
+// charger-detect result itself: both 0 on battery, one of them 1 on any cable or wall charger.
+//
+// The status string survives only as the fallback for a board with no online nodes, where
+// "Discharging" and "Not charging" both mean nothing is feeding the cell. If nothing is readable at
+// all, assume external power, i.e. never auto-shut-down: an unreadable device must not be switched
+// off by a guess.
 static bool battery_charging() {
-    static const char* paths[] = {
+    static const char* online[] = {
+        "/sys/class/power_supply/usb/online",
+        "/sys/class/power_supply/dc/online",    // this board's wall-charger supply (type Mains)
+        "/sys/class/power_supply/ac/online",    // the same thing's name on other boards
+    };
+    bool any_node = false;
+    for (const char* p : online) {
+        FILE* f = std::fopen(p, "r");
+        if (!f) continue;
+        char buf[8] = {0};
+        size_t got = std::fread(buf, 1, sizeof buf - 1, f);
+        std::fclose(f);
+        if (got == 0) continue;
+        any_node = true;
+        if (buf[0] == '1') return true;
+    }
+    if (any_node) return false;               // every supply that answered says it is offline
+
+    static const char* status[] = {
         "/sys/class/power_supply/battery/status",
         "/sys/class/power_supply/Battery/status",
         "/sys/class/power_supply/bat/status",
     };
-    for (const char* p : paths) {
+    for (const char* p : status) {
         FILE* f = std::fopen(p, "r");
         if (!f) continue;
         char buf[24] = {0};
         size_t got = std::fread(buf, 1, sizeof buf - 1, f);
         std::fclose(f);
         if (got == 0) continue;
-        // Anything that is not clearly "Discharging" is treated as charging. An unreadable or
-        // unfamiliar status must NOT be read as "on battery" — that direction ends in a shutdown
-        // nobody asked for, and this file's job is to prevent surprise power loss, not cause it.
-        return std::strncmp(buf, "Discharging", 11) != 0;
+        return std::strncmp(buf, "Discharging", 11) != 0 && std::strncmp(buf, "Not charging", 12) != 0;
     }
-    return true;   // no status node at all: assume charging, i.e. never auto-shut-down
+    return true;   // nothing readable at all: assume charging, i.e. never auto-shut-down
 }
 
 // Low battery: warn once, then shut down cleanly before the hardware browns out.
@@ -9890,23 +10030,87 @@ static void battery_guard(int pct) {
     power_action(false);
 }
 
-// Real internal-storage usage for the Settings ▸ Storage row, via statvfs (read-only — no Sony
-// service). Formats "used / total GB" and pushes it. 64-bit math (f_blocks*frsize overflows 32-bit
-// at this capacity). Tries the music mount first, then sensible fallbacks.
+// Real storage usage for the Settings ▸ Storage row, via statvfs (read-only — no Sony service).
+// Formats "used / total GB" and pushes it. 64-bit math (f_blocks*frsize overflows 32-bit at this
+// capacity). Tries the music mount first, then sensible fallbacks.
+//
+// AND THE CARD. The row used to report internal storage only, so a card that was in the slot but
+// not mounted looked identical to a card that was fine — and "my SD music is missing" had no
+// on-screen answer at all. Reported 2026-09-13 ("under storage it only shows the internal amount").
+// A card in the slot now always says either its size or "SD not mounted". ASCII only: the row is
+// drawn in the Mono face, and a glyph the bundled fonts lack costs the whole font fallback chain.
+static bool storage_usage(const char* mount_point, double* used_gb, double* total_gb) {
+    struct statvfs st;
+    if (statvfs(mount_point, &st) != 0) return false;
+    unsigned long frsize = st.f_frsize ? st.f_frsize : st.f_bsize;
+    unsigned long long total = (unsigned long long)st.f_blocks * frsize;
+    if (total == 0) return false;
+    unsigned long long used = (unsigned long long)(st.f_blocks - st.f_bfree) * frsize;
+    const double g = 1024.0 * 1024.0 * 1024.0;
+    *used_gb = (double)used / g;
+    *total_gb = (double)total / g;
+    return true;
+}
+
 void report_storage() {
     static const char* mounts[] = { "/contents", "/mnt/media0", "/data", "/" };
+    char buf[96] = {0};
     for (const char* m : mounts) {
-        struct statvfs st;
-        if (statvfs(m, &st) != 0) continue;
-        unsigned long frsize = st.f_frsize ? st.f_frsize : st.f_bsize;
-        unsigned long long total = (unsigned long long)st.f_blocks * frsize;
-        if (total == 0) continue;
-        unsigned long long used = (unsigned long long)(st.f_blocks - st.f_bfree) * frsize;
-        const double g = 1024.0 * 1024.0 * 1024.0;
-        char buf[48];
-        std::snprintf(buf, sizeof buf, "%.1f / %.0f GB", (double)used / g, (double)total / g);
-        cinder_set_storage(buf);
-        return;
+        double used, total;
+        if (!storage_usage(m, &used, &total)) continue;
+        std::snprintf(buf, sizeof buf, "%.1f / %.0f GB", used, total);
+        break;
+    }
+    if (sd_card_present()) {
+        const size_t len = std::strlen(buf);
+        const char* sep = len ? ", " : "";
+        double used, total;
+        if (sd_card_mounted() && storage_usage("/contents_ext", &used, &total))
+            std::snprintf(buf + len, sizeof buf - len, "%sSD %.0f / %.0f GB", sep, used, total);
+        else
+            std::snprintf(buf + len, sizeof buf - len, "%sSD not mounted", sep);
+    }
+    if (buf[0]) cinder_set_storage(buf);
+}
+
+// Watch the card's mount state from housekeeping: a stat and a read of /proc/mounts every 5 s, no
+// Sony IPC.
+//
+// Two jobs. KEEP THE STORAGE ROW TRUE after boot: deferred_up reports storage once, a few seconds
+// in, and Sony's storage service mounts a card only after checking its filesystem — for an exFAT
+// card that check scales with the card, so on a big one the mount lands long after the report and
+// the row would say "SD not mounted" for the whole boot. AND LEAVE EVIDENCE. "My SD music is
+// missing" arrives as a comment on a forum, not a debugger session, and this log is the only
+// witness: each change of state is one line, with the filesystem type, and a card that is in the
+// slot but still unmounted a minute on says so once. Silent while a mass-storage session holds the
+// card, because unmounted is then the correct state and the exit path reports on its own.
+static void sd_watch_tick(long now) {
+    static long next_ms = 0;
+    if (now < next_ms || g_msc_active) return;
+    next_ms = now + 5000;
+
+    static int  last = -1;              // -1 not yet seen, 0 no card, 1 in the slot but unmounted, 2 mounted
+    static long unmounted_since = 0;
+    static bool said_late = false;
+    char type[32] = {0};
+    const int state = !sd_card_present() ? 0 : (sd_card_mounted(type, sizeof type) ? 2 : 1);
+    if (state != last) {
+        char m[160];
+        if (state == 2)
+            std::snprintf(m, sizeof m, "storage: SD card mounted at /contents_ext (%s)", type);
+        else
+            std::snprintf(m, sizeof m, "storage: %s", state == 0 ? "no SD card in the slot"
+                                                          : "SD card in the slot but NOT mounted");
+        clog_(m);
+        if (last != -1) report_storage();
+        last = state;
+        unmounted_since = now;
+        said_late = false;
+    }
+    if (state == 1 && !said_late && now - unmounted_since >= 60000) {
+        said_late = true;
+        clog_("storage: the SD card is still not mounted a minute later — its albums cannot play, "
+              "and a library scan now would drop them");
     }
 }
 
@@ -10663,6 +10867,7 @@ void* render_driver(void*) {
             g_house_due = false;
             last_house_ms = house_now;
             cinder_clock_tick();
+            sd_watch_tick(house_now);   // self-paced to 5 s; see its note
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             run_guarded("pump: headphone unplug", 4, jack_watch_tick);
             // FM signal meter. Register reads only — no Sony service call, no ALSA — so it is far

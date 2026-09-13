@@ -62,6 +62,10 @@ static void healthy_device(void) {
     cinder_harness_fs_write("/sys/class/power_supply/battery/status", "Discharging\n");
     cinder_harness_fs_write("/sys/class/power_supply/usb/online", "0\n");
     cinder_harness_fs_write("/sys/class/power_supply/usb/present", "0\n");
+    // The other charger-detect nodes, faked so a scenario never reads the build machine's: `dc` is
+    // this board's wall-charger supply (type Mains), `ac` the name other boards use for it.
+    cinder_harness_fs_write("/sys/class/power_supply/dc/online", "0\n");
+    cinder_harness_fs_write("/sys/class/power_supply/ac/online", "0\n");
     cinder_harness_fs_write("/sys/class/android_usb/android0/state", "DISCONNECTED\n");
     cinder_harness_fs_write("/sys/class/switch/cxd3778gf_h2w/state", "1\n");   // headphones in
     cinder_harness_fs_mkdir("/data/cinder");   // so the bad-boot counter can be cleared
@@ -480,6 +484,69 @@ static void s_auto_off_charging(void) {
     cinder_harness_run();
     check_eq(cinder_harness_count("system:/system/vendor/unknown321/bin/cinder-power off"), 0,
              "never powers off a device sitting on a charger");
+}
+
+// ── low battery: warn, then power off before the cell browns out ─────────────────────────────
+// Sony's critical-battery shutdown lives in the stock Qt app (model/force_shutdown/ForceShutdown.cpp)
+// — the app Cinder replaces — so battery_guard is the ONLY thing on this device that turns it off on
+// a flat battery. It shipped deciding "on battery" from status == "Discharging", and this board's
+// battery driver reports "Not charging" with no charger attached: the guard returned on its first
+// line for every discharge, and the player ran to the hardware cutoff with no warning and no clean
+// shutdown. The rule is now the charger-detect nodes, and these pin both directions of it.
+static const char* kPowerOff = "system:/system/vendor/unknown321/bin/cinder-power off";
+
+static void low_battery(const char* pct, const char* status, const char* usb_online) {
+    healthy_device();
+    cinder_harness_fs_write("/sys/class/power_supply/battery/capacity", pct);
+    cinder_harness_fs_write("/sys/class/power_supply/battery/status", status);
+    cinder_harness_fs_write("/sys/class/power_supply/usb/online", usb_online);
+    cinder_harness_set_budget_ms(60000);
+    cinder_harness_run();
+}
+
+static void s_low_battery_not_charging(void) {
+    low_battery("3\n", "Not charging\n", "0\n");   // what the device reports on battery alone
+    long long at = cinder_harness_first_ms(kPowerOff);
+    std::printf("  .... first power-off attempt at %lldms\n", at);
+    check_range(at, 0, 25000, "a critical battery with no charger attached powers off");
+    check_eq(cinder_harness_count(kPowerOff), 1, "once — the retry back-off holds for a minute's run");
+}
+
+static void s_low_battery_discharging(void) {
+    low_battery("3\n", "Discharging\n", "0\n");    // the kernel's other name for the same state
+    check_range(cinder_harness_first_ms(kPowerOff), 0, 25000,
+                "\"Discharging\" with no charger attached powers off too");
+}
+
+static void s_low_battery_on_charger(void) {
+    low_battery("3\n", "Not charging\n", "1\n");   // cable in, charge held: plugged in, not dying
+    check_eq(cinder_harness_count(kPowerOff), 0,
+             "never powers off at 3% while a charger is attached, whatever the status string says");
+}
+
+// ── one scrobbler per play ───────────────────────────────────────────────────────────────────
+// unknown321/scrobbler appends to the same .scrobbler.log, so with both alive every play reached
+// Last.fm twice. Cinder stands its own down when that process is running — and only then.
+static void s_scrobble_opens(void) {
+    healthy_device();
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_scrobble_open"), 1, "scrobbles when it is the only scrobbler");
+}
+
+static void s_scrobble_yields(void) {
+    healthy_device();
+    cinder_harness_fs_write("/proc/321/cmdline", "/system/vendor/unknown321/bin/scrobbler");
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count("cinder_scrobble_open"), 0,
+             "stands down while unknown321/scrobbler is running");
+}
+
+static void s_low_battery_warns(void) {
+    low_battery("8\n", "Not charging\n", "0\n");
+    check(cinder_harness_count("cinder_toast") >= 1, "warns below 10% on battery");
+    check_eq(cinder_harness_count(kPowerOff), 0, "…and does not power off above the critical level");
 }
 
 // ── the DSP reconcile must not depend on having found a settings file ────────────────────────
@@ -968,6 +1035,12 @@ static const Scenario kScenarios[] = {
     {"autooff-idle",      s_auto_off_idle,           "idle and silent: power off, and back off if it fails"},
     {"autooff-playing",   s_auto_off_playing,        "never power off while audio is playing"},
     {"autooff-charging",  s_auto_off_charging,       "never power off a device on a charger"},
+    {"lowbatt-off",       s_low_battery_not_charging, "critical battery, no charger (\"Not charging\"): power off"},
+    {"lowbatt-discharging", s_low_battery_discharging, "critical battery reported as \"Discharging\": power off"},
+    {"lowbatt-charger",   s_low_battery_on_charger,  "critical battery on a charger: stay up"},
+    {"lowbatt-warn",      s_low_battery_warns,       "low battery on battery: warn, do not power off"},
+    {"scrobble-opens",    s_scrobble_opens,          "the built-in scrobbler opens when it is alone"},
+    {"scrobble-yields",   s_scrobble_yields,         "…and stands down while unknown321/scrobbler runs"},
     {"dsp-reconcile",     s_dsp_reconcile_no_settings, "the DSP is reconciled even with no settings file"},
     {"wake-on-touch",     s_wake_on_touch,           "a dark panel wakes on touch, without pressing anything"},
     {"touch-gestures",    s_touch_gestures,          "a tap is a tap and a drag is a drag"},

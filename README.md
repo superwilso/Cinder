@@ -135,6 +135,10 @@ artefact that does not exist.
   from Linux for months; it has not yet been sent from Windows. If it fails it fails safely — the
   files are staged and verified first, and the installer tells you which step did not happen.
 - **The Windows installer is unsigned**, and now asks for administrator — see [Install](#install).
+- **Untested on top of Walkman One.** Walkman One makes the player identify as a different model,
+  and Cinder's install package is packed for the stock NW-A50 model. Nobody has tried the
+  combination yet; the likeliest failure is the player's updater refusing the package. Make a wbrt
+  backup first either way, and please open an issue saying what happened.
 
 ## Install
 

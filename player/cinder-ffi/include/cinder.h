@@ -404,6 +404,9 @@ void cinder_set_battery_care(int on);
 /* Push the real storage usage label (e.g. "12.4 / 58 GB") for the Settings Storage row, formatted
  * from statvfs of the music mount. NULL/empty leaves the neutral placeholder. */
 void cinder_set_storage(const char *label);
+/* The shell declined a Settings > Database scan (the SD card is in the slot but not mounted, and a
+ * scan would record its albums as deleted). Clears the "Rescanning..." state the action set. */
+void cinder_rescan_refused(void);
 /* Sleep timer: returns 1 ONCE when the user's sleep timer (set in Settings) has just expired — the
  * shell then pauses playback. Poll ~1x/sec from the pump. The countdown itself is internal. */
 int  cinder_sleep_should_pause(void);
