@@ -33,6 +33,9 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <time.h>
 
 #define LUN0 "/sys/class/android_usb/android0/f_mass_storage/lun/file"
 #define LUN1 "/sys/class/android_usb/android0/f_mass_storage/lun1/file"
@@ -93,6 +96,87 @@ static int is_mounted(const char *mp)
     }
     fclose(f);
     return hit;
+}
+
+/* ── exFAT cards ────────────────────────────────────────────────────────────────────────────────
+ * Any card over 32 GB is exFAT (SDXC), and the Walkman formats a big card that way itself. Sony
+ * mounts one through FUSE — StorageMgr runs /system/bin/mount.exfat, which starts an `exfatfuse`
+ * daemon — and this helper used to know only vfat: after a mass-storage session it tried a vfat
+ * mount twelve times, failed every time, and the card stayed unmounted for the rest of the boot.
+ * Reported 2026-09-13 with a 1 TB card the player had formatted.
+ *
+ * Told apart by the boot sector rather than by a mount attempt: exFAT writes the OEM name
+ * "EXFAT   " at offset 3, and no FAT variant does. */
+static int is_exfat(const char *dev)
+{
+    unsigned char bs[11];
+    int fd = open(dev, O_RDONLY);
+    if (fd < 0) return 0;
+    ssize_t got = pread(fd, bs, sizeof bs, 0);
+    close(fd);
+    return got == (ssize_t)sizeof bs && memcmp(bs + 3, "EXFAT   ", 8) == 0;
+}
+
+/* Is an exfatfuse daemon still serving `dev`? umount(2) returning is not the end of a FUSE
+ * filesystem: the daemon then flushes whatever it buffered (Sony mounts with batch_sync) and exits
+ * on its own schedule. Pointing the gadget at the card before it has gone would give the PC and the
+ * daemon the same exFAT to write at once — the two-writer corruption this file exists to prevent. */
+static int exfatfuse_alive(const char *dev)
+{
+    DIR *pd = opendir("/proc");
+    if (!pd) return 0;
+    struct dirent *pe;
+    int alive = 0;
+    while (!alive && (pe = readdir(pd))) {
+        if (pe->d_name[0] < '1' || pe->d_name[0] > '9') continue;
+        char path[288], args[512];   /* d_name can be 255 bytes as far as the compiler knows */
+        snprintf(path, sizeof path, "/proc/%s/cmdline", pe->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        size_t n = fread(args, 1, sizeof args - 1, f);
+        fclose(f);
+        args[n] = 0;
+        /* argv is NUL-separated: look for the daemon's name and the device among the arguments. */
+        int is_fuse = 0, has_dev = 0;
+        for (size_t i = 0; i < n; i += strlen(args + i) + 1) {
+            if (strstr(args + i, "exfatfuse")) is_fuse = 1;
+            if (strcmp(args + i, dev) == 0) has_dev = 1;
+        }
+        alive = is_fuse && has_dev;
+    }
+    closedir(pd);
+    return alive;
+}
+
+/* Remount an exFAT card the way StorageMgr does: Sony's own mount script, with the option string
+ * StorageMgr hands it. Both recovered from libStorageMgrServiceFw.so and checked on device
+ * 2026-09-13 against an image made with Sony's mkexfatfs: the mount came up as
+ * `fuse.exfatfuse rw,nosuid,nodev,relatime,allow_other` with every entry 0777, so cinder-home
+ * (uid system) can read and write it. The library also holds a vfat option string; exfatfuse
+ * refuses that one ("utf8: option not supported"), which is how the two were told apart.
+ *
+ * The script waits on /proc/mounts itself (up to 30 s, from /etc/exfatfuse.conf) and exits 0 only
+ * once the mount exists. PATH and LD_LIBRARY_PATH are inline and are StorageMgr's own values, for
+ * the AT_SECURE reason ENVP documents: the script calls busybox, grep, sed and awk by name. One
+ * retry, and only after a FAST failure — the gadget can still hold the card for a moment after the
+ * LUN is cleared, but a slow failure is the script's own timeout and repeating it only doubles it. */
+static void remount_exfat_sd(void)
+{
+    for (int attempt = 0; attempt < 2 && !is_mounted("/contents_ext"); ++attempt) {
+        if (attempt) usleep(1000000);
+        time_t t0 = time(NULL);
+        int rc = system("LD_LIBRARY_PATH=/system/lib:/system/usr/local/lib:/usr/lib:/usr/local/lib "
+                        "PATH=/bin:/usr/bin:/sbin:/xbin:/system/bin:/system/usr/bin:/system/sbin "
+                        "/system/bin/mount.exfat " SDCARD " /contents_ext "
+                        "-o batch_sync,waitonfat,noatime,iocharset=UTF-8");
+        if (is_mounted("/contents_ext")) {
+            fprintf(stderr, "cinder-msc: exFAT SD card remounted at /contents_ext\n");
+            return;
+        }
+        fprintf(stderr, "cinder-msc: exFAT SD card did not remount (mount.exfat rc=%d, %lds)\n",
+                rc, (long)(time(NULL) - t0));
+        if (time(NULL) - t0 > 5) return;
+    }
 }
 
 /* Unmount, lazily if a holder is still closing. The lazy path is safe here because the gadget only
@@ -200,6 +284,17 @@ static int msc_on(void)
                         "only. Stop playback from the card and re-enter mass storage.\n");
         return rc;
     }
+    if (is_exfat(SDCARD)) {
+        /* Ten seconds for exfatfuse to flush and exit; see exfatfuse_alive for why the gadget
+         * must not be pointed at the card while it is still there. */
+        for (int i = 0; i < 40 && exfatfuse_alive(SDCARD); ++i) usleep(250000);
+        if (exfatfuse_alive(SDCARD)) {
+            fprintf(stderr, "cinder-msc: SD card is exFAT and its exfatfuse daemon is still running "
+                            "10 s after the unmount — offering the internal drive only, rather than "
+                            "hand the PC a card that is still being written\n");
+            return rc;
+        }
+    }
     for (int i = 0; i < 8 && !node_is_bound(LUN1); ++i) {
         write_node(LUN1, SDCARD);
         if (node_is_bound(LUN1)) break;
@@ -249,10 +344,14 @@ static int msc_off(void)
      * block device for a moment after the LUN is cleared, and a missing SD library looks to the
      * user like their music vanished. Nothing mounts /contents_ext except a Sony service at boot,
      * so if we give up here it stays gone for the rest of the boot. */
-    for (int i = 0; i < 12 && !is_mounted("/contents_ext"); ++i) {
-        if (mount(SDCARD, "/contents_ext", "vfat", MS_NOEXEC | MS_NOATIME, kVfat) == 0) break;
-        if (i == 11) fprintf(stderr, "cinder-msc: mount /contents_ext failed errno=%d\n", errno);
-        usleep(250000);
+    if (!is_mounted("/contents_ext") && access(SDCARD, F_OK) == 0 && is_exfat(SDCARD)) {
+        remount_exfat_sd();   /* a vfat mount of an exFAT card can only fail — see is_exfat */
+    } else {
+        for (int i = 0; i < 12 && !is_mounted("/contents_ext"); ++i) {
+            if (mount(SDCARD, "/contents_ext", "vfat", MS_NOEXEC | MS_NOATIME, kVfat) == 0) break;
+            if (i == 11) fprintf(stderr, "cinder-msc: mount /contents_ext failed errno=%d\n", errno);
+            usleep(250000);
+        }
     }
 
     if (!is_mounted("/contents")) {

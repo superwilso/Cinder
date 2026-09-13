@@ -275,6 +275,22 @@ fixed launcher**, after the first version was found unable to fire at all. Resul
 | 11.11 | **Which model is this unit?** | Read the label on the back of the player | Record it in README ▸ Supported devices | `/contents` reads 55 GB — the 64 GB NW-A57, not the 16 GB NW-A55 the README used to name. The README now says "64 GB"; correct it if the label disagrees |
 | 11.12 | **Palettes** | Copy `player/cinder-ui/palettes/slate.palette` and `paper.palette` into `cinder_palettes/` on the player's storage over USB; unplug; Settings ▸ Palette | Both appear and each repaints the UI; Paper's Accent row reads SET BY PALETTE; the choice survives a reboot; a deliberately broken file is skipped and `cinderhome.log` says why | Nothing listed: the log line `palettes: cannot read` names the error. Folder read at boot but not after USB: check Settings was re-opened, which is the rescan trigger |
 
+---
+
+## Open from 2026-09-13 — the community round: battery, exFAT cards, scrobbles
+
+Came out of the first public thread (r/walkman) and the owner's own report. The scrobbler stand-down
+and the new storage log lines **passed on 2026-09-13** on the reference device; the rest needs a
+state the desk cannot produce. Detail: CHANGELOG `[Unreleased]`.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 13.1 | **The player powers itself off on a flat battery** — never happened before this build: the guard read `status` and the driver says `Not charging` on battery | Run it down off the cable, screen off or on | At ≤10 % a "Battery N% — charge soon" toast; at ≤3 % "Battery critical — shutting down" and the player turns off. Next boot's `bootreason` is `power_key` | Stays on at 0 %: `grep -a "power:" /contents/cinderhome.log.1`. No line at all means the guard never decided — read `usb/online` and `dc/online` on battery |
+| 13.2 | **An exFAT card survives USB mode** (any card over 32 GB, or one the player formatted) | Card in; Settings ▸ USB mode; copy a file; leave USB mode | `cinder-msc: exFAT SD card remounted at /contents_ext`, then `storage: SD card mounted at /contents_ext (fuse.exfatfuse)`; the card's albums still play; Settings ▸ Storage shows the card | `exFAT SD card did not remount (mount.exfat rc=…)` names the failure. The automatic re-scan must say it was SKIPPED — a scan with the card missing is the data-loss case |
+| 13.3 | **A FAT32 card still survives USB mode** (regression check — `cinder-msc` changed) | The same round trip on the reference card | `storage: SD card mounted at /contents_ext (vfat)`, and the usual post-transfer re-scan runs | `mount /contents_ext failed errno=…` from the vfat path |
+| 13.4 | **Settings ▸ Storage shows the card** | Open Settings with the card in, then with it out | `… GB, SD N / M GB` with it in; internal only with it out. A card in the slot but unmounted reads `SD not mounted` | Row unchanged after a state change: look for the `storage:` line that should have refreshed it |
+| 13.5 | **The reporter's library appears** (1 TB, formatted by the player; music on stock, `library loaded — 0 tracks` in Cinder while the card was mounted and readable) | Their `cinderhome.log` from a boot with this build | `library by storage — … SD N` with N > 0, and their albums on screen. At most a `[cinder-db] a track row would not read and was skipped` line, never an empty library | `track query FAILED — <reason>` names the column. `SD 0` with the card mounted and no failure line → the store really lacks its rows: Settings ▸ Database |
+
 ## Recording results
 
 Append findings to [`DEVICE_TESTS.md`](DEVICE_TESTS.md) in the style of its "RESULTS 2026-08-17"

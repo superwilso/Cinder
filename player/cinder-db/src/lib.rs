@@ -105,6 +105,62 @@ pub struct Db {
 // is set on every playable track (and only those), so it's the correct, format-agnostic gate.
 const TRACK_WHERE: &str = "ob.filename IS NOT NULL AND ob.media_type = 1";
 
+// ── Reading what Sony's scanner wrote, however it wrote it ──────────────────────────────────────
+// SQLite types VALUES, not columns, and this store is filled from whatever the tags said. Two shapes
+// a typed `r.get` refuses turn up in real libraries: TEXT that is not valid UTF-8 (a legacy-encoded
+// tag — Latin-1 "Björk"), and a number stored as text (a track number written "03/12", which an
+// INTEGER column keeps as TEXT because it does not parse). Worse than the refusal is where it went:
+// `query_map(..).collect()` makes one refused value an error for the WHOLE query, and the library
+// build maps that to "no tracks". Reported 2026-09-13 from a 1 TB library — `library loaded —
+// 0 tracks` straight after a clean scan, the store healthy — and reproduced by
+// `tracks_read_legacy_text_and_numbers_stored_as_text` as `Utf8Error` on the artist column.
+
+/// Text from any storage class: invalid UTF-8 is replaced rather than refused, a number is
+/// formatted, NULL is None.
+fn opt_text_at(r: &rusqlite::Row<'_>, i: usize) -> Result<Option<String>> {
+    use rusqlite::types::ValueRef;
+    Ok(match r.get_ref(i)? {
+        ValueRef::Null => None,
+        ValueRef::Integer(v) => Some(v.to_string()),
+        ValueRef::Real(v) => Some(v.to_string()),
+        ValueRef::Text(b) | ValueRef::Blob(b) => Some(String::from_utf8_lossy(b).into_owned()),
+    })
+}
+
+/// [`opt_text_at`], with NULL as the empty string.
+fn text_at(r: &rusqlite::Row<'_>, i: usize) -> Result<String> {
+    Ok(opt_text_at(r, i)?.unwrap_or_default())
+}
+
+/// An integer from any storage class. Text yields its leading number ("03/12" -> 3, " 7" -> 7);
+/// text with no number in it, a blob and NULL are None.
+fn opt_int_at(r: &rusqlite::Row<'_>, i: usize) -> Result<Option<i64>> {
+    use rusqlite::types::ValueRef;
+    Ok(match r.get_ref(i)? {
+        ValueRef::Null | ValueRef::Blob(_) => None,
+        ValueRef::Integer(v) => Some(v),
+        ValueRef::Real(v) => Some(v as i64),
+        ValueRef::Text(b) => leading_int(b),
+    })
+}
+
+/// [`opt_int_at`], with no number as 0.
+fn int_at(r: &rusqlite::Row<'_>, i: usize) -> Result<i64> {
+    Ok(opt_int_at(r, i)?.unwrap_or(0))
+}
+
+fn leading_int(b: &[u8]) -> Option<i64> {
+    let s = String::from_utf8_lossy(b);
+    let s = s.trim_start();
+    let (negative, digits) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    let end = digits.bytes().take_while(|c| c.is_ascii_digit()).count();
+    let n: i64 = digits[..end].parse().ok()?; // no digits, or too many for an i64: None
+    Some(if negative { -n } else { n })
+}
+
 impl Db {
     /// Open the library DB read-only (won't perturb the scanner's writes).
     pub fn open(path: &str) -> Result<Self> {
@@ -196,7 +252,9 @@ impl Db {
              FROM object_body WHERE media_type <> 1 OR filename IS NULL",
         ) {
             if let Ok(rows) = st.query_map([], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+                // A folder whose name will not read would otherwise drop out of the map, taking the
+                // path of every track under it — so its name is read leniently too.
+                Ok((r.get::<_, i64>(0)?, int_at(r, 1)?, text_at(r, 2)?))
             }) {
                 for row in rows.flatten() {
                     raw.insert(row.0, (row.1, row.2));
@@ -266,7 +324,7 @@ impl Db {
             ),
         )?;
         let rows = st.query_map([], |r| {
-            Ok(Album { id: r.get(0)?, name: r.get(1)?, track_count: r.get(2)? })
+            Ok(Album { id: r.get(0)?, name: text_at(r, 1)?, track_count: r.get(2)? })
         })?;
         rows.collect()
     }
@@ -297,7 +355,7 @@ impl Db {
              ORDER BY ob.album_id"
         ))?;
         let rows = st.query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get::<_, Option<String>>(2)?.unwrap_or_default()))
+            Ok((r.get(0)?, r.get(1)?, text_at(r, 2)?))
         })?;
         rows.collect()
     }
@@ -306,7 +364,7 @@ impl Db {
         let mut st = self
             .conn
             .prepare("SELECT id, value FROM artists ORDER BY sort_str, value")?;
-        let rows = st.query_map([], |r| Ok(Artist { id: r.get(0)?, name: r.get(1)? }))?;
+        let rows = st.query_map([], |r| Ok(Artist { id: r.get(0)?, name: text_at(r, 1)? }))?;
         rows.collect()
     }
 
@@ -339,7 +397,7 @@ impl Db {
              ORDER BY p.sort_str, p.title",
         )?;
         let rows = st.query_map([], |r| {
-            Ok(Playlist { id: r.get(0)?, name: r.get(1)?, track_count: r.get(2)? })
+            Ok(Playlist { id: r.get(0)?, name: text_at(r, 1)?, track_count: r.get(2)? })
         })?;
         rows.collect()
     }
@@ -675,35 +733,57 @@ impl Db {
              {dur_join} {where_clause} ORDER BY {order_by}"
         );
         let mut st = self.conn.prepare(&sql)?;
-        let rows = st.query_map(params, |r| {
-            Ok(Track {
-                object_id: r.get(0)?,
-                title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                artist: r.get(2)?,
-                album: r.get(3)?,
-                // The DB's `filename` is a BARE BASENAME; the directories live in the parent
-                // chain. Resolve to the absolute path here so every consumer — play_tracks,
-                // now-playing lookup, the queue — gets something that actually opens. Falls back
-                // to the basename when the folder sits under an unrecognised root, which is the
-                // pre-2026-07-28 behaviour rather than a new failure.
-                filename: {
-                    let base = r.get::<_, Option<String>>(4)?.unwrap_or_default();
-                    let parent: i64 = r.get(14)?;
-                    self.track_path(parent, &base).unwrap_or(base)
-                },
-                disc_no: r.get(5)?,
-                track_no: r.get(6)?,
-                duration_raw: r.get(7)?,
-                album_artist: r.get(8)?,
-                is_hires: r.get::<_, i64>(9)? != 0,
-                othumb_id: r.get(10)?,
-                album_id: r.get(11)?,
-                added: r.get(12)?,
-                releaseyear_id: r.get(13)?,
-                genre_id: r.get(15)?,
-            })
-        })?;
-        rows.collect()
+        let mut rows = st.query(params)?;
+        let mut out = Vec::new();
+        let mut skipped = 0usize;
+        // Row by row, so a row that will not read costs that row and not the library. Stepping
+        // errors (a damaged store) still propagate: that is a different failure, and db-guard's.
+        while let Some(r) = rows.next()? {
+            match self.track_of(r) {
+                Ok(t) => out.push(t),
+                Err(e) => {
+                    if skipped == 0 {
+                        eprintln!("[cinder-db] a track row would not read and was skipped: {e}");
+                    }
+                    skipped += 1;
+                }
+            }
+        }
+        if skipped > 1 {
+            eprintln!("[cinder-db] {skipped} track rows skipped in all");
+        }
+        Ok(out)
+    }
+
+    /// One [`Db::query_tracks`] row. Every column the scanner fills from a tag goes through the
+    /// lenient readers, so an odd tag costs at most that one value.
+    fn track_of(&self, r: &rusqlite::Row<'_>) -> Result<Track> {
+        Ok(Track {
+            object_id: r.get(0)?, // INTEGER PRIMARY KEY: always an integer
+            title: text_at(r, 1)?,
+            artist: text_at(r, 2)?,
+            album: text_at(r, 3)?,
+            // The DB's `filename` is a BARE BASENAME; the directories live in the parent
+            // chain. Resolve to the absolute path here so every consumer — play_tracks,
+            // now-playing lookup, the queue — gets something that actually opens. Falls back
+            // to the basename when the folder sits under an unrecognised root, which is the
+            // pre-2026-07-28 behaviour rather than a new failure.
+            filename: {
+                let base = text_at(r, 4)?;
+                let parent = int_at(r, 14)?;
+                self.track_path(parent, &base).unwrap_or(base)
+            },
+            disc_no: int_at(r, 5)?,
+            track_no: int_at(r, 6)?,
+            duration_raw: opt_int_at(r, 7)?,
+            album_artist: text_at(r, 8)?,
+            is_hires: int_at(r, 9)? != 0,
+            othumb_id: opt_int_at(r, 10)?,
+            album_id: opt_int_at(r, 11)?,
+            added: int_at(r, 12)?,
+            releaseyear_id: opt_int_at(r, 13)?,
+            genre_id: opt_int_at(r, 15)?,
+        })
     }
 
     /// Resolve `releaseyear_id` → the display year string, best-effort. The MediaStore's release-year
@@ -758,7 +838,7 @@ impl Db {
             }
         };
         let rows = st.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default()))
+            Ok((r.get::<_, i64>(0)?, text_at(r, 1)?))
         });
         match rows {
             Ok(rows) => {
@@ -867,6 +947,40 @@ mod tests {
             "#,
         ).unwrap();
         Db::wrap(conn)
+    }
+
+    /// ONE ODD TAG MUST NOT EMPTY THE LIBRARY. Sony's scanner stores whatever the tags said, and
+    /// SQLite types values, not columns: a legacy-encoded tag arrives as TEXT that is not valid
+    /// UTF-8, and a track number written "03/12" stays TEXT inside an INTEGER column because it
+    /// does not parse as a number. A typed `get` refuses both, and `collect()` turned one refusal
+    /// into an error for the whole query — which the library build maps to "no tracks". Reported
+    /// 2026-09-13 from a 1 TB library: `library loaded — 0 tracks` right after a clean scan.
+    #[test]
+    fn tracks_read_legacy_text_and_numbers_stored_as_text() {
+        let d = db();
+        d.conn()
+            .execute_batch(
+                r#"
+            -- Latin-1 "Björk" and "Poét": neither is valid UTF-8.
+            INSERT INTO artists VALUES (22,0,'bjork','bjork',CAST(X'426AF6726B' AS TEXT),NULL,0,0,0,0);
+            INSERT INTO albums  VALUES (13,0,'post','post',CAST(X'506FE974' AS TEXT));
+            INSERT INTO object_body (object_id,object_type,parent_id,media_type,child_index,title,filename,series_no,disc_no,is_high_resolution,album_id,artist_id,addedtime)
+              VALUES (4,1,902,1,2,'Hyper-Ballad','hyper.flac','03/12','1/2',0,13,22,5002);
+            "#,
+            )
+            .unwrap();
+        let all = d.tracks(Sort::Title).expect("one odd row must not fail the whole query");
+        assert_eq!(all.len(), 4, "every track still reads: {all:?}");
+        let t = all.iter().find(|t| t.object_id == 4).unwrap();
+        assert_eq!(t.artist, "Bj\u{FFFD}rk", "invalid UTF-8 is replaced, not refused");
+        assert_eq!(t.album, "Po\u{FFFD}t");
+        assert_eq!(t.track_no, 3, "\"03/12\" reads as track 3");
+        assert_eq!(t.disc_no, 1, "\"1/2\" reads as disc 1");
+        assert!(t.filename.ends_with("/MUSIC/Benjamin Francis Leftwich - Last Smoke/hyper.flac"), "{}", t.filename);
+        let albums = d.albums().expect("the album list reads the same odd name");
+        assert!(albums.iter().any(|a| a.id == 13 && a.name == "Po\u{FFFD}t"), "{albums:?}");
+        let artists = d.artists().expect("and so does the artist list");
+        assert!(artists.iter().any(|a| a.id == 22 && a.name == "Bj\u{FFFD}rk"), "{artists:?}");
     }
 
     #[test]
