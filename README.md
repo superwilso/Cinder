@@ -125,8 +125,9 @@ artefact that does not exist.
 - **Not implemented yet:** Bluetooth receiver mode (the Walkman as a Bluetooth speaker) and FM
   recording.
 - **Lyrics and library search are new and untested on a player.** Lyrics come from a `.lrc` file
-  next to the song only — lyrics embedded in the file's own tags are not read. Library search is an
-  install option, off by default, and finds songs, not albums or artists.
+  next to the song or from the song's own tags (FLAC, MP3 `USLT`, M4A); binary synced ID3 `SYLT`
+  frames and Ogg/DSF tags are not read. Library search is an install option, off by default, and
+  finds songs, not albums or artists.
 - **Boot time and battery life are unmeasured against stock.** Cinder draws its first frame 13.2 s
   after the kernel starts; stock has not been timed on the same unit, and there is no battery-drain
   figure yet. "Faster and longer-lasting" is the goal, not a measurement — when there are numbers

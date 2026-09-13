@@ -6357,8 +6357,9 @@ pub extern "C" fn cinder_set_now_playing_uri(
             // the screen opens: it is ~10 short strings, the DB row is already in hand, and doing
             // it on entry would mean a query on the render thread the first time you tapped.
             //
-            // Lyrics likewise: at most three stats for the `.lrc` spellings and, when one exists, a
-            // read of a few kilobytes. The row sits with the other links, not below the file facts.
+            // Lyrics likewise: at most three stats for the `.lrc` spellings, then the tag headers —
+            // a few seeks and a read of the Vorbis comment block or `USLT` frame, never the pictures
+            // or the audio. The row sits with the other links, not below the file facts.
             let lyr = lyrics::load_for(&t.filename);
             let mut rows = track_info_rows(r, &t);
             if let Some(l) = &lyr {
