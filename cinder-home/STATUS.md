@@ -888,12 +888,15 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 ### ◐ Partial (UI works; backend/hardware leg pending — device-gated)
 
 - **Lyrics — built and host-tested, not yet seen on the panel.** *(2026-09-13)* A `.lrc` beside the
-  song (`Song.lrc` for `Song.flac`, Sony's own convention) adds a Lyrics row to Track information,
-  which opens a page that follows timestamped lyrics: the sung line highlighted and held a third of
-  the way down until the user scrolls. Parser tests cover repeated stamps, `[offset:]`, per-word
-  stamps and UTF-8 / UTF-16 / Windows-1252; nav tests cover opening, following, and repainting only
-  on a line change. Partial because the reference library has no `.lrc` files to try —
-  `docs/DEVICE_CHECKLIST.md` 13.7. Lyrics embedded in tags are not read.
+  song (`Song.lrc` for `Song.flac`, Sony's own convention), or lyrics embedded in its tags (FLAC
+  Vorbis `LYRICS`/`UNSYNCEDLYRICS`, ID3v2 `USLT`, MP4 `©lyr`), adds a Lyrics row to Track
+  information, which opens a page that follows timestamped lyrics: the sung line highlighted and
+  held a third of the way down until the user scrolls. A `.lrc` wins over tags; among tags, synced
+  wins. Parser tests cover repeated stamps, `[offset:]`, per-word stamps and UTF-8 / UTF-16 /
+  Windows-1252; tag tests cover each container; nav tests cover opening, following, and repainting
+  only on a line change. The reference library has embedded lyrics in 160 of 285 sampled FLACs
+  (both LRC-in-tag and plain CRLF text), so it can now be tried — `docs/DEVICE_CHECKLIST.md` 13.7.
+  Not read: ID3 `SYLT`, Ogg and DSF tags.
 - **Library search — an install option, off by default.** *(2026-09-13)* A magnifier in the Library
   header opens a search page with the keyboard up; it finds songs (title, artist or album name —
   the "Add tracks" matcher) and a tap plays one. Turned on by `/data/cinder/search_on`, which the

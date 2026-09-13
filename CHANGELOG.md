@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-09-13
+
 ### Fixed
 
 - **One unusual tag could empty the whole library.** *Reproduced and fixed on the host
@@ -130,14 +132,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   2281, SD 1130, unresolved 0` and `storage: SD card mounted at /contents_ext (vfat)`.* One line per
   library open and one per change in the card's mount state, with the filesystem type. "My SD music
   is missing" can now be answered from `cinderhome.log`.
-- **Lyrics.** *Host-tested (parser, screen, navigation); device-unverified — the reference library
-  has no `.lrc` files.* Put `Song.lrc` next to `Song.flac`, the same convention Sony's player uses,
-  and Track information gains a Lyrics row that opens them. Timestamped lyrics follow the song: the
-  line being sung is highlighted and held a third of the way down the page until you scroll it
-  yourself. The parser takes what LRC tools actually write — repeated timestamps on one line,
-  `[offset:]`, per-word stamps, and UTF-8, UTF-16 or Windows-1252 text. The highlight moves on the
-  shell's position tick, so it can trail a line's start by up to a second. Lyrics embedded in tags
-  (ID3 `USLT`/`SYLT`, FLAC `LYRICS`) are not read yet.
+- **Lyrics.** *Host-tested (parser, tag readers, screen, navigation); device-unverified.* Lyrics
+  embedded in a song's tags — FLAC `LYRICS` / `UNSYNCEDLYRICS`, MP3 `USLT`, M4A `©lyr` — or a
+  `Song.lrc` next to `Song.flac` (the same convention Sony's player uses, and it wins over the tags)
+  give Track information a Lyrics row that opens them. Taggers store both timestamped and plain
+  lyrics in the same tag, and both work. Timestamped lyrics follow the song: the line being sung is
+  highlighted and held a third of the way down the page until you scroll it yourself. The parser
+  takes what LRC tools actually write — repeated timestamps on one line, `[offset:]`, per-word
+  stamps, and UTF-8, UTF-16 or Windows-1252 text. The highlight moves on the shell's position tick,
+  so it can trail a line's start by up to a second. Not read: binary synced ID3 `SYLT` frames, and
+  Ogg or DSF tags.
 - **Library search, as an install option.** *Host-tested, plus harness scenarios `search-off` and
   `search-on`; device-unverified.* Off by default. When chosen, a magnifier in the Library header
   opens a search with the keyboard already up; results update on every key, matching title, artist
@@ -1631,7 +1635,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/superwilso/Cinder/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/superwilso/Cinder/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/superwilso/Cinder/compare/v0.3.0...v0.3.2
 [0.3.0]: https://github.com/superwilso/Cinder/compare/v0.2.0...v0.3.0
