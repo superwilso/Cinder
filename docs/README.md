@@ -20,6 +20,7 @@ The four documents that are always current live outside this directory:
 
 | Document | What it is |
 |---|---|
+| [`PLAN_2026-09-14.md`](PLAN_2026-09-14.md) | **The current audit and forward plan.** Every offline gate re-run against v0.3.4, what is open and in what order, the revised skins contract, and how the maintainer watch works. Start here if you are asking "what should I do next". |
 | [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) | **The run sheet.** Every device-gated item in the project in one ordered list, safety rules first, with what a PASS looks like for each. If you have the player in your hand, this is the file. |
 | [`SHORTCOMINGS.md`](SHORTCOMINGS.md) | Standing reference: what is structurally weak about the project and its repository, with evidence per claim. Cited by section ID (A1, B1, D4…) from other documents. |
 | [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md) | **Open repository decision.** Taking Sony's files and superseded build output out of every commit — prepared and rehearsed, never pushed: what it removes, what it breaks, and the order to do it in — and the commands that first move Sony's files to a repository of their own. |
