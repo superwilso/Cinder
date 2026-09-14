@@ -102,6 +102,16 @@ On Windows:
 Get-FileHash .\cinder-installer-windows-x64.exe -Algorithm SHA256
 ```
 
+Every file above also has a GitHub build attestation. With the [GitHub CLI](https://cli.github.com):
+
+```
+gh attestation verify cinder-installer-windows-x64.exe -R superwilso/Cinder
+```
+
+A pass means the file was built by this repository's release workflow from the tagged commit, and
+is signed in a way an uploaded replacement cannot fake. The checksums say the file is intact; the
+attestation says where it came from.
+
 The installer is unsigned, so SmartScreen will warn about an unknown publisher — that
 is expected for an unsigned binary and is not itself evidence of anything. Check the
 hash if you want more than my word for it.

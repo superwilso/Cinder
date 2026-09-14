@@ -315,16 +315,62 @@ if [ ! -f /contents/cinder_voltable.conf ]; then
 else
     echo "volume curve: keeping existing /contents/cinder_voltable.conf ($("$BB" cat /contents/cinder_voltable.conf 2>/dev/null))"
 fi
-# The two non-stock curves need tables a stock NW-A50 does not have (only its own 1291 set ships,
-# and Cinder does not ship Sony's files). Say so here, where the choice lands, as well as at boot.
+# 1f3b) the tables `wm1a` and `w1` need. A stock NW-A50 has only its own 1291 set, and Cinder does
+#       not ship Sony's files: they are Sony's copyright, not Cinder's to license (install.md, "The
+#       volume curve tables"). So they come from where the user already has them —
+#         /contents/<name>          copied to the top of the player's drive over USB
+#         Wampy's sound_settings    the same bytes, named for the model Wampy took them from
+#       — and are installed ONLY when they are byte-for-byte Sony's file. This is the step where a
+#       file from the user-writable drive enters root-owned /system, and cinder-voltable writes what
+#       it finds there straight into the codec, so the hash is checked again on the copy that lands.
+#       Every install looks, whatever curve is chosen, so the curve can be changed later over USB
+#       without a reinstall; a table installed earlier stays when no candidate is found.
+#       VT_DIR must match CINDER_DIR in src/cinder-voltable.c and the launcher's check below.
+VT_DIR=/system/vendor/unknown321/usr/share/cinder/audio_dac
+WAMPY_SS=/system/vendor/unknown321/usr/share/wampy/sound_settings
+vt_sha() { "$BB" sha256sum "$1" 2>/dev/null | "$BB" cut -d' ' -f1; }
+vt_take() {  # vt_take <name> <sha256> <candidate>... — install the first candidate that IS Sony's <name>
+    vt_name="$1"; vt_want="$2"; shift 2
+    for vt_cand in "$@"; do
+        [ -f "$vt_cand" ] || continue
+        vt_got="$(vt_sha "$vt_cand")"
+        if [ "$vt_got" != "$vt_want" ]; then
+            # Wampy's folders hold other tables too; only a file put on the drive is worth a word.
+            case "$vt_cand" in
+                /contents/*) echo "WARN: $vt_cand is not Sony's $vt_name (SHA-256 ${vt_got:-unreadable}) — not installed" ;;
+            esac
+            continue
+        fi
+        "$BB" mkdir -p "$VT_DIR" 2>/dev/null
+        "$BB" cat "$vt_cand" > "$VT_DIR/$vt_name.tmp" 2>/dev/null
+        if [ "$(vt_sha "$VT_DIR/$vt_name.tmp")" = "$vt_want" ]; then
+            "$BB" chmod 644 "$VT_DIR/$vt_name.tmp"
+            "$BB" mv -f "$VT_DIR/$vt_name.tmp" "$VT_DIR/$vt_name"
+            echo "volume table: installed $vt_name from $vt_cand (SHA-256 matches Sony's)"
+            return 0
+        fi
+        "$BB" rm -f "$VT_DIR/$vt_name.tmp" 2>/dev/null
+        echo "WARN: copying $vt_cand to $VT_DIR did not verify — not installed"
+    done
+    return 1
+}
+# The hashes are of Sony's own files: the NW-WM1A's ov_127x / ov_dsd_127x (Wampy's ZX-300 1288
+# pair is the same bytes) and Walkman One's ov_1280 (Wampy's ov_1280_nw-wm1a).
+vt_take ov_127x.tbl     b5dd878b0484c43312f3a93c6675d40d546f78ef7494684991eea0aef8651320 \
+    /contents/ov_127x.tbl "$WAMPY_SS"/master_volume/*.tbl
+vt_take ov_dsd_127x.tbl b777b7e2786f952797e82830d5d17565d03a4758555436a376bf6daff5e50ac7 \
+    /contents/ov_dsd_127x.tbl "$WAMPY_SS"/master_volume_dsd/*.tbl
+vt_take ov_1280.tbl     0902981b0b00b5f98eb04d00713f4ddc96f4bb91af76289d8cce15486c30a9c7 \
+    /contents/ov_1280.tbl "$WAMPY_SS"/master_volume/*.tbl
+# Say so here, where the choice lands, as well as at boot, when the chosen curve still has no table.
 vt_now="$("$BB" cat /contents/cinder_voltable.conf 2>/dev/null | "$BB" tr -d ' \t\r\n')"
 case "$vt_now" in
     wm1a) vt_tbl=ov_127x.tbl ;;
     w1)   vt_tbl=ov_1280.tbl ;;
     *)    vt_tbl="" ;;
 esac
-if [ -n "$vt_tbl" ] && [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ]; then
-    echo "WARN: volume curve '$vt_now' needs /system/usr/share/audio_dac/$vt_tbl, which this player does not have (it is not part of the stock firmware) — the stock curve stays."
+if [ -n "$vt_tbl" ] && [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ] && [ ! -f "$VT_DIR/$vt_tbl" ]; then
+    echo "WARN: volume curve '$vt_now' needs Sony's $vt_tbl, which this player's firmware does not include and which was not found at the top of the drive or in Wampy — the stock curve stays. Put $vt_tbl on the drive and install again (install.md: The volume curve tables)."
 fi
 
 # 1f4) battery/charger reader. The bq24262 charger's registers live under /proc/regmon/bq24262/,
@@ -702,12 +748,13 @@ if [ -x "$VOLTABLE_BIN" ] && [ -f "$VOLTABLE_CONF" ]; then
             vt_log "volume curve: stock — keeping the table the boot script loaded"
             ;;
         wm1a|w1)
-            # Both need a table a STOCK NW-A50 DOES NOT HAVE: only its own 1291 set ships, and
-            # Cinder does not ship Sony's files. Look first, so the log says why instead of a bare
-            # FAILED — the helper's rc 4 means the same thing, silently.
+            # Both need a table a STOCK NW-A50 DOES NOT HAVE: only its own 1291 set ships. An
+            # install puts the user's own copy in Cinder's directory once its SHA-256 matches Sony's
+            # (step 1f3b above), and cinder-voltable looks in both places. Look first, so the log
+            # says why instead of a bare FAILED — the helper's rc 4 means the same thing, silently.
             case "$vt" in wm1a) vt_tbl=ov_127x.tbl ;; *) vt_tbl=ov_1280.tbl ;; esac
-            if [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ]; then
-                vt_log "volume curve: '$vt' needs /system/usr/share/audio_dac/$vt_tbl, which is not part of the stock firmware and is not on this player — stock curve stays"
+            if [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ] && [ ! -f "/system/vendor/unknown321/usr/share/cinder/audio_dac/$vt_tbl" ]; then
+                vt_log "volume curve: '$vt' needs Sony's $vt_tbl, which this player's firmware does not include and no install has supplied — stock curve stays (put it at the top of the drive and install again)"
             elif "$VOLTABLE_BIN" "$vt" >/dev/null 2>&1; then
                 vt_log "volume curve: $vt applied"
             else
