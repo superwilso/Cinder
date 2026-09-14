@@ -135,6 +135,7 @@ fn bench_library_tabs() {
         album_groups.push(ArtistGroup { artist: name, albums });
     }
     let mut lib = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
+    lib.prepare_order(); // what App::set_library does on the device
     println!("library: {} songs, {} albums, {} artists",
         lib.songs.len(), lib.album_count(), lib.artists.len());
 
@@ -230,8 +231,9 @@ fn bench_derived_state() {
         }
         album_groups.push(ArtistGroup { artist: name, albums });
     }
-    let lib = Library { songs, album_groups, artists: Vec::new(), playlists: Vec::new(),
+    let mut lib = Library { songs, album_groups, artists: Vec::new(), playlists: Vec::new(),
                         thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
+    lib.prepare_order(); // what App::set_library does on the device
     println!("library: {} songs, {} albums", lib.songs.len(), lib.album_count());
 
     let n = 200;

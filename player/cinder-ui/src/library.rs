@@ -4,6 +4,7 @@
 
 use crate::art;
 use crate::canvas::{H, W};
+use crate::collate;
 use crate::icons;
 use crate::model::Library;
 use crate::text::{self, Family, FontSet, TextStyle, Weight};
@@ -374,20 +375,24 @@ fn swipe_for(swipe: Option<SwipeRow>, y: i32, rh: i32) -> Option<i32> {
 pub const AZ_W: i32 = 26;            // rail width — narrow enough not to eat row taps
 pub const AZ_LETTERS: &[u8] = b"#ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-/// The sort key a row is indexed by, per tab. Matches what the list is ordered by, so a jump always
-/// lands where the eye expects: Songs by title, Albums by artist (grouped) or album name, Artists
-/// by artist name, Playlists by playlist name.
-fn az_key(c: char) -> u8 {
-    let u = c.to_ascii_uppercase();
-    if u.is_ascii_alphabetic() { u as u8 } else { b'#' }
+/// First letter of `s` as the rail files it: case and accents fold (`bôa` → B, `Édith` → E), and
+/// anything that does not start with a Latin letter buckets under '#'. For titles, album names and
+/// playlists; artist names go through [`az_letter`], which honours Ignore "The" in artists.
+///
+/// It is `collate::initial`, the SAME folding every list here is ordered by (`collate::cmp`), so a
+/// row can never be filed under one letter and sorted among another.
+pub fn az_bucket(s: &str) -> u8 {
+    collate::initial(s)
 }
 
-/// First letter of `s`, normalised: leading "The " is skipped (it is a sort-order artefact, not how
-/// anyone looks a band up), and anything non-alphabetic buckets under '#'.
-pub fn az_bucket(s: &str) -> u8 {
-    let t = s.trim();
-    let t = t.strip_prefix("The ").or_else(|| t.strip_prefix("the ")).unwrap_or(t);
-    t.chars().next().map(az_key).unwrap_or(b'#')
+/// The rail letter of `s` when it is the field `key` names: artist names skip a leading "The"
+/// exactly when the Library sorts them that way (`Library::ignore_the`); everything else is
+/// [`az_bucket`]. The one place the rail asks, so its letters and the list's order cannot disagree.
+pub fn az_letter(lib: &Library, key: AzKey, s: &str) -> u8 {
+    match key {
+        AzKey::Artist => collate::artist_initial(s, lib.ignore_the),
+        AzKey::Title | AzKey::AlbumName => collate::initial(s),
+    }
 }
 
 /// Which letter is at screen y on the rail? None when y is outside it.
@@ -465,10 +470,17 @@ pub fn album_display_order(lib: &Library, sort: usize) -> Vec<usize> {
         })
         .collect();
     let year = |i: usize| flat[i].year.trim().parse::<i32>().unwrap_or(0);
+    // Precomputed ranks when the library has them (it always does on the device — see
+    // `Library::prepare_order`); the folding comparator otherwise. Same order either way.
+    let ranks = lib.ranks();
+    let by_name = |a: usize, b: usize| match ranks {
+        Some(r) => r.album_name(a).cmp(&r.album_name(b)),
+        None => collate::cmp(&flat[a].name, &flat[b].name),
+    };
     match sort {
-        1 => order.sort_by(|&a, &b| flat[a].name.cmp(&flat[b].name)),
-        2 => order.sort_by(|&a, &b| flat[b].added.cmp(&flat[a].added).then_with(|| flat[a].name.cmp(&flat[b].name))),
-        3 => order.sort_by(|&a, &b| year(b).cmp(&year(a)).then_with(|| flat[a].name.cmp(&flat[b].name))),
+        1 => order.sort_by(|&a, &b| by_name(a, b)),
+        2 => order.sort_by(|&a, &b| flat[b].added.cmp(&flat[a].added).then_with(|| by_name(a, b))),
+        3 => order.sort_by(|&a, &b| year(b).cmp(&year(a)).then_with(|| by_name(a, b))),
         _ => {} // 0 = ARTIST: albums_flat() is already artist-then-name
     }
     order
@@ -598,10 +610,10 @@ pub fn az_scroll_for(
             // name. `az_key_for` already rejected the orderings that are neither.
             layout.rows.iter().find_map(|(vy, row)| match row {
                 AlbumsRow::Group { flat: fi } if key == AzKey::Artist => {
-                    (az_bucket(&flat[*fi].artist) == letter).then_some(*vy)
+                    (az_letter(lib, key, &flat[*fi].artist) == letter).then_some(*vy)
                 }
                 AlbumsRow::Album { flat: fi, .. } if key == AzKey::AlbumName => {
-                    (az_bucket(&flat[*fi].name) == letter).then_some(*vy)
+                    (az_letter(lib, key, &flat[*fi].name) == letter).then_some(*vy)
                 }
                 _ => None,
             })?
@@ -613,11 +625,11 @@ pub fn az_scroll_for(
             let order = song_order(lib, sort);
             let rank = order
                 .iter()
-                .position(|&i| az_bucket(song_az_field(&lib.songs[i], key)) == letter)?;
+                .position(|&i| az_letter(lib, key, song_az_field(&lib.songs[i], key)) == letter)?;
             rank as i32 * row_h(tab)
         }
         Tab::Artists => {
-            let i = lib.artists.iter().position(|r| az_bucket(&r.name) == letter)?;
+            let i = lib.artists.iter().position(|r| az_letter(lib, key, &r.name) == letter)?;
             i as i32 * row_h(tab)
         }
         Tab::Playlists => {
@@ -713,7 +725,7 @@ pub fn az_present(tab: Tab, lib: &Library, sort: usize, album_sort: usize) -> [b
     // `az_render` draws nothing and `az_hit_x` stops claiming taps (see `az_key_for`).
     let Some(key) = az_key_for(tab, sort, album_sort) else { return out };
     let mut mark = |s: &str| {
-        if let Some(i) = az_index(az_bucket(s)) {
+        if let Some(i) = az_index(az_letter(lib, key, s)) {
             out[i] = true;
         }
     };
@@ -831,11 +843,23 @@ pub fn song_order(lib: &Library, sort: usize) -> Vec<usize> {
     // than at each call site.
     let mut order: Vec<usize> =
         (0..s.len()).filter(|i| lib.passes(&s[*i])).collect();
-    let by_title = |a: usize, b: usize| s[a].title.cmp(&s[b].title);
+    // The Library's collation, not `str::cmp`: byte order sorted every lowercase or accented name
+    // below "Z" (127 titles on the reference library, 2026-09-15). This runs every frame the Songs
+    // tab is drawn, so it compares the ranks `Library::prepare_order` computed once; the folding
+    // comparator is the fallback for a library that has none, and gives the same order.
+    let ranks = lib.ranks();
+    let by_title = |a: usize, b: usize| match ranks {
+        Some(r) => r.title(a).cmp(&r.title(b)),
+        None => collate::cmp(&s[a].title, &s[b].title),
+    };
+    let by_artist = |a: usize, b: usize| match ranks {
+        Some(r) => r.artist(a).cmp(&r.artist(b)),
+        None => collate::cmp_artist(&s[a].artist, &s[b].artist, lib.ignore_the),
+    };
     match sort {
         0 => order.sort_by(|&a, &b| by_title(a, b)),
-        1 => order.sort_by(|&a, &b| s[a].artist.cmp(&s[b].artist).then_with(|| by_title(a, b))),
-        2 => order.sort_by(|&a, &b| s[b].artist.cmp(&s[a].artist).then_with(|| by_title(a, b))),
+        1 => order.sort_by(|&a, &b| by_artist(a, b).then_with(|| by_title(a, b))),
+        2 => order.sort_by(|&a, &b| by_artist(b, a).then_with(|| by_title(a, b))),
         3 => order.sort_by(|&a, &b| dur_secs(&s[a].dur).cmp(&dur_secs(&s[b].dur)).then_with(|| by_title(a, b))),
         // Recently added: newest addedtime first.
         4 => order.sort_by(|&a, &b| s[b].added.cmp(&s[a].added).then_with(|| by_title(a, b))),
@@ -2203,6 +2227,88 @@ mod tests {
         assert!(song_at(&l, 0, 3).is_none());
     }
 
+    /// The reported bug (2026-09-15): byte order sorted every lowercase or accented name below "Z",
+    /// so on the device library `alt‐J`, `bôa` and `the north` sat under `Zola Jesus` while the rail
+    /// filed them under A, B and N. Titles and artists both sort in the one collation now; a title
+    /// keeps its "The", an artist loses it only with the setting; and under either setting the rail
+    /// letters never go backwards down the list.
+    #[test]
+    fn names_sort_case_and_accent_blind_and_the_rail_agrees() {
+        let mut l = Library {
+            songs: vec![
+                song("zebra", "widowdusk", "1:00", 1),
+                song("Apple", "The North", "1:00", 2),
+                song("bôa", "alt‐J", "1:00", 3),
+                song("The Beatles Song", "The Beatles", "1:00", 4),
+                song("Édith", "bôa", "1:00", 5),
+            ],
+            ..Default::default()
+        };
+        let field = |l: &Library, sort: usize| -> Vec<String> {
+            song_order(l, sort)
+                .iter()
+                .map(|&i| if sort == 0 { l.songs[i].title.clone() } else { l.songs[i].artist.clone() })
+                .collect()
+        };
+        assert_eq!(field(&l, 0), ["Apple", "bôa", "Édith", "The Beatles Song", "zebra"]);
+        assert_eq!(field(&l, 1), ["alt‐J", "bôa", "The Beatles", "The North", "widowdusk"]);
+
+        l.ignore_the = true;
+        assert_eq!(field(&l, 0), ["Apple", "bôa", "Édith", "The Beatles Song", "zebra"], "titles keep The");
+        assert_eq!(field(&l, 1), ["alt‐J", "The Beatles", "bôa", "The North", "widowdusk"]);
+
+        for ignore in [false, true] {
+            l.ignore_the = ignore;
+            for (sort, key) in [(0, AzKey::Title), (1, AzKey::Artist)] {
+                let letters: Vec<u8> = field(&l, sort).iter().map(|s| az_letter(&l, key, s)).collect();
+                assert!(letters.windows(2).all(|w| w[0] <= w[1]),
+                        "ignore_the={ignore} sort {sort}: rail letters {letters:?}");
+            }
+        }
+    }
+
+    /// The precomputed ranks must give EXACTLY the comparator's order — every song sort, every
+    /// album sort, both settings — including identical names, which is where dense ranks and a
+    /// stable sort have to agree about ties.
+    #[test]
+    fn ranked_orders_match_the_comparator() {
+        let mk = || Library {
+            songs: vec![
+                song("zebra", "widowdusk", "3:00", 1),
+                song("Apple", "The North", "1:00", 2),
+                song("apple", "alt‐J", "2:00", 3),
+                song("The Beatles Song", "The Beatles", "1:00", 4),
+                song("Édith", "bôa", "4:00", 5),
+                song("Apple", "The North", "1:00", 6),
+                song("édith", "Bôa", "4:00", 7),
+            ],
+            album_groups: vec![
+                ArtistGroup { artist: "Two".into(), albums: vec![album("b1", "Two", 4), album("The End", "Two", 1)] },
+                ArtistGroup { artist: "One".into(), albums: vec![album("A1", "One", 3), album("a1", "One", 2)] },
+            ],
+            ..Default::default()
+        };
+        for ignore in [false, true] {
+            let mut plain = mk();
+            plain.ignore_the = ignore;
+            let mut ranked = plain.clone();
+            ranked.prepare_order();
+            // Same artist-group order on both sides, so album indices mean the same albums.
+            plain.sort_artists();
+            assert!(plain.ranks().is_none() && ranked.ranks().is_some());
+            for sort in 0..SORTS.len() {
+                assert_eq!(song_order(&plain, sort), song_order(&ranked, sort), "ignore_the={ignore} song sort {sort}");
+            }
+            for sort in 0..ALBUM_SORTS.len() {
+                assert_eq!(album_display_order(&plain, sort), album_display_order(&ranked, sort),
+                           "ignore_the={ignore} album sort {sort}");
+            }
+            // A library changed after its ranks were built must not use them.
+            ranked.songs.push(song("new", "new", "1:00", 99));
+            assert!(ranked.ranks().is_none(), "stale ranks are ignored");
+        }
+    }
+
     #[test]
     fn albums_grouped_hit_accounts_for_headers_and_art_split() {
         let l = lib();
@@ -2398,7 +2504,7 @@ mod tests {
                 }
                 let rank = (px / row_h(Tab::Songs)) as usize;
                 let hit = &l.songs[order[rank]];
-                let landed = az_bucket(song_az_field(hit, key)) == ch;
+                let landed = az_letter(&l, key, song_az_field(hit, key)) == ch;
                 let clamped = px == max_scroll_px(Tab::Songs, &l, 0, None);
                 assert!(landed || clamped, "SORT={} letter {:?} landed on {:?}",
                         SORTS[sort], ch as char, hit.title);

@@ -389,7 +389,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { volume_limit: false, night: theme.night, viz_name: "BARS · VEIL", usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { ignore_the: false, volume_limit: false, night: theme.night, viz_name: "BARS · VEIL", usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber, palette: pal_name, accent_locked: pal_locked })),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
             // The shuffle band's caption has to follow the filter — shuffling a filtered list
@@ -579,7 +579,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                             (cinder_ui::confirm::Ask::PowerOff, "poweroff")] {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
-                &settings::SettingsView { volume_limit: false, night: false, viz_name: "BARS · VEIL",
+                &settings::SettingsView { ignore_the: false, volume_limit: false, night: false, viz_name: "BARS · VEIL",
                     usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
@@ -594,7 +594,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_BRIGHTNESS,
                 settings::max_scroll_px() / 2,
-                &settings::SettingsView { volume_limit: false, night: false, viz_name: "BARS · VEIL",
+                &settings::SettingsView { ignore_the: false, volume_limit: false, night: false, viz_name: "BARS · VEIL",
                     usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
@@ -767,7 +767,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
 
         let mut c = Canvas::new();
         settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
-            &settings::SettingsView { volume_limit: false, night: false, viz_name: "BARS · VEIL", usb_dac: false,
+            &settings::SettingsView { ignore_the: false, volume_limit: false, night: false, viz_name: "BARS · VEIL", usb_dac: false,
                 battery_care: true, device: "99% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
                 screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: a,
                 palette: pal_name, accent_locked: pal_locked });

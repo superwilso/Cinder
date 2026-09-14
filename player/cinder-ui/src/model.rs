@@ -131,6 +131,66 @@ pub struct PlaylistRow {
     pub track_list: Vec<SongRow>,
 }
 
+/// Alphabetical ranks, computed once per library so the lists that re-sort EVERY FRAME compare
+/// integers instead of folding strings. Measured 2026-09-15 on the 3,400-song bench library: the
+/// folding comparator alone took Songs by TITLE from 27.8 to 268 us/frame and by ARTIST from 37 to
+/// 577 — on the device that is milliseconds of every frame the tab is drawn.
+///
+/// Ranks are DENSE: names that compare equal share a rank, so "artist, then title" still breaks
+/// ties on the title exactly as the comparator does. Built by [`Library::prepare_order`]; a
+/// `Library` assembled by hand has none, and [`Library::ranks`] then says to sort with `collate`.
+#[derive(Clone, Default)]
+pub struct SortRanks {
+    title: Vec<u32>,
+    artist: Vec<u32>,
+    album_name: Vec<u32>,
+    /// The `ignore_the` the artist ranks were built under.
+    ignore_the: bool,
+}
+
+impl SortRanks {
+    /// Rank of song `i` by title.
+    pub fn title(&self, i: usize) -> u32 {
+        self.title[i]
+    }
+    /// Rank of song `i` by artist, under the setting the ranks were built with.
+    pub fn artist(&self, i: usize) -> u32 {
+        self.artist[i]
+    }
+    /// Rank of album `i` (an index into `albums_flat()`) by name.
+    pub fn album_name(&self, i: usize) -> u32 {
+        self.album_name[i]
+    }
+
+    fn build(lib: &Library) -> Self {
+        let s = &lib.songs;
+        let flat = lib.albums_flat();
+        SortRanks {
+            title: dense_ranks(s.len(), |a, b| crate::collate::cmp(&s[a].title, &s[b].title)),
+            artist: dense_ranks(s.len(), |a, b| {
+                crate::collate::cmp_artist(&s[a].artist, &s[b].artist, lib.ignore_the)
+            }),
+            album_name: dense_ranks(flat.len(), |a, b| crate::collate::cmp(&flat[a].name, &flat[b].name)),
+            ignore_the: lib.ignore_the,
+        }
+    }
+}
+
+/// `out[i]` = position of element `i` in `cmp` order, with elements that compare Equal sharing one.
+fn dense_ranks(n: usize, cmp: impl Fn(usize, usize) -> std::cmp::Ordering) -> Vec<u32> {
+    let mut idx: Vec<usize> = (0..n).collect();
+    idx.sort_by(|&a, &b| cmp(a, b));
+    let mut out = vec![0u32; n];
+    let mut rank = 0u32;
+    for k in 0..idx.len() {
+        if k > 0 && cmp(idx[k - 1], idx[k]) != std::cmp::Ordering::Equal {
+            rank += 1;
+        }
+        out[idx[k]] = rank;
+    }
+    out
+}
+
 /// The whole browsable library, as owned rows. Built once (from the DB on device, or the
 /// sample constants on host) and held by `nav::App`.
 #[derive(Clone, Default)]
@@ -166,6 +226,14 @@ pub struct Library {
     /// How many tracks carry the Hi-Res flag. Counted once at library build so the picker can
     /// label the row without sweeping every track each frame it is on screen.
     pub hires_tracks: u32,
+    /// Settings ▸ Ignore "The" in artists. Artist names — the Artists tab, the Albums tab's artist
+    /// groups, Songs by artist, and the rail letters of all three — sort as if a leading "The" were
+    /// not there. On the LIBRARY for the reason `filter_genre` is: every ordering function already
+    /// takes `&Library`. `App` owns the preference, copies it in, and calls `prepare_order`.
+    pub ignore_the: bool,
+    /// Precomputed alphabetical ranks (see [`SortRanks`]). Rebuilt by `prepare_order`; checked by
+    /// `ranks()` before use, so a stale or missing table falls back to sorting with `collate`.
+    pub ranks: SortRanks,
     /// The FOLDER tree, flattened. Built once at library build; `folder_roots` are the entries
     /// with no parent (one per storage volume that holds music).
     pub folders: Vec<FolderRow>,
@@ -209,6 +277,34 @@ impl Library {
             (None, true) => Some("Hi-Res".to_string()),
             (None, false) => None,
         }
+    }
+
+    /// Put the Artists tab and the Albums tab's artist groups in artist order under the current
+    /// `ignore_the`. Stable, so albums keep their order inside a group. Called when a library
+    /// arrives and whenever the setting changes — the lists themselves are built once.
+    pub fn sort_artists(&mut self) {
+        let ignore = self.ignore_the;
+        self.artists.sort_by(|a, b| crate::collate::cmp_artist(&a.name, &b.name, ignore));
+        self.album_groups.sort_by(|a, b| crate::collate::cmp_artist(&a.artist, &b.artist, ignore));
+    }
+
+    /// Everything the Library's orderings need, done once: the artist lists sorted under
+    /// `ignore_the`, then the rank tables rebuilt to match. Called when a library arrives and when
+    /// the setting changes — never per frame.
+    pub fn prepare_order(&mut self) {
+        self.sort_artists();
+        self.ranks = SortRanks::build(self);
+    }
+
+    /// The rank tables, if they still describe this library: built for these songs and albums and
+    /// under the current `ignore_the`. `None` means sort with `collate` directly (a hand-built
+    /// library, or one changed since `prepare_order`).
+    pub fn ranks(&self) -> Option<&SortRanks> {
+        let r = &self.ranks;
+        (r.title.len() == self.songs.len()
+            && r.album_name.len() == self.album_count()
+            && r.ignore_the == self.ignore_the)
+            .then_some(r)
     }
 
     /// Total album count across all groups (for the header caption).
@@ -343,7 +439,7 @@ impl Library {
                 total: songs.len().saturating_sub(4) as u32,
             },
         ];
-        Library {
+        let mut lib = Library {
             songs,
             album_groups,
             artists,
@@ -352,9 +448,13 @@ impl Library {
             genres,
             filter_genre: None,
             filter_hires: false,
+            ignore_the: false,
+            ranks: SortRanks::default(),
             hires_tracks,
             folders,
             folder_roots: vec![0],
-        }
+        };
+        lib.prepare_order();
+        lib
     }
 }

@@ -139,7 +139,7 @@ impl Store {
                 }
             }
         }
-        lists.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        lists.sort_by(|a, b| cinder_ui::collate::cmp(&a.name, &b.name));
         Store { dir: primary_dir, lists }
     }
 
@@ -225,8 +225,10 @@ impl Store {
             .collect()
     }
 
+    // The Library's one collation, so the store's order is the order the Playlists tab draws and
+    // the A–Z rail files (`cinder_ui::collate`).
     fn sort(&mut self) {
-        self.lists.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.lists.sort_by(|a, b| cinder_ui::collate::cmp(&a.name, &b.name));
     }
 }
 

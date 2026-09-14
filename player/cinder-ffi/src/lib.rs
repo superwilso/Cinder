@@ -904,6 +904,7 @@ fn settings_body(r: &Render) -> String {
     // nothing on screen explains.
     body.push_str(&format!("bt_fine={}\n", r.app.bt_fine_span()));
     body.push_str(&format!("volume_limit={}\n", r.app.volume_limit() as u8));
+    body.push_str(&format!("ignore_the={}\n", r.app.ignore_the() as u8));
     // The palette by id — the CHOICE, not what happens to be drawn. If the folder could not be read
     // this boot, Cinder is on screen, but the palette the user picked is still the one to keep.
     body.push_str(&format!("palette={}\n", r.app.palette_id()));
@@ -1262,7 +1263,11 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         });
     }
 
-    album_rows.sort_by(|x, y| x.artist.cmp(&y.artist).then_with(|| x.name.cmp(&y.name)));
+    // One alphabetical order for the whole Library (cinder_ui::collate): byte order put every
+    // lowercase or accented name after "Z" — `alt‐J`, `bôa`, `the north` below `Zola Jesus`.
+    album_rows.sort_by(|x, y| {
+        cinder_ui::collate::cmp(&x.artist, &y.artist).then_with(|| cinder_ui::collate::cmp(&x.name, &y.name))
+    });
     let mut album_groups: Vec<ArtistGroup> = Vec::new();
     for ar in album_rows {
         match album_groups.last_mut() {
@@ -1285,7 +1290,7 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
             ArtistRow { albums: albs.len() as u32, tracks: tr, arts, album_ids, name }
         })
         .collect();
-    artists.sort_by(|a, b| a.name.cmp(&b.name));
+    artists.sort_by(|a, b| cinder_ui::collate::cmp(&a.name, &b.name));
 
     // Playlists: real ones from the DB (Sony keeps them as containers in a second object tree —
     // see Db::playlists). Empty-but-honest if the DB has none, rather than sample data.
@@ -1372,6 +1377,9 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         hires_tracks,
         filter_genre: None,
         filter_hires: false,
+        // The App's preference, applied by `set_library` (which also re-sorts the artists).
+        ignore_the: false,
+        ranks: Default::default(),
         folders,
         folder_roots,
     }
@@ -1461,14 +1469,14 @@ fn build_folders(
 
     // Tracks in filename order — on a music folder that is track order, and it is the order the
     // files are actually in on the volume, which is the whole point of browsing this way.
-    // Subdirectories alphabetically, case-insensitively.
-    let names: Vec<String> = out.iter().map(|f| f.name.to_lowercase()).collect();
+    // Subdirectories alphabetically, in the Library's one collation (case and accents folded).
+    let names: Vec<String> = out.iter().map(|f| f.name.clone()).collect();
     for f in out.iter_mut() {
         f.tracks.sort_by(|a, b| a.track.cmp(&b.track).then_with(|| a.title.cmp(&b.title)));
     }
     for i in 0..out.len() {
         let mut subs = std::mem::take(&mut out[i].subdirs);
-        subs.sort_by(|a, b| names[*a].cmp(&names[*b]));
+        subs.sort_by(|a, b| cinder_ui::collate::cmp(&names[*a], &names[*b]));
         // Prune the branches that hold no music at all.
         subs.retain(|s| out[*s].total > 0);
         out[i].subdirs = subs;
@@ -1477,7 +1485,7 @@ fn build_folders(
     let mut roots: Vec<usize> = (0..out.len())
         .filter(|i| out[*i].parent.is_none() && out[*i].total > 0)
         .collect();
-    roots.sort_by(|a, b| names[*a].cmp(&names[*b]));
+    roots.sort_by(|a, b| cinder_ui::collate::cmp(&names[*a], &names[*b]));
     eprintln!("cinder-ffi: folders: {} dirs, {} root(s)", out.len(), roots.len());
     (out, roots)
 }
@@ -2576,7 +2584,7 @@ fn merge_playlist_rows(
             rows.push(row);
         }
     }
-    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    rows.sort_by(|a, b| cinder_ui::collate::cmp(&a.name, &b.name));
     rows
 }
 
@@ -4803,6 +4811,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_volume_limit(n != 0);
                         }
                     }
+                    // Settings ▸ Ignore "The" in artists. Read before the library arrives, and
+                    // `set_library` applies it to whatever library comes next.
+                    "ignore_the" => r.app.set_ignore_the(v == "1"),
                     "viz_scale" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_viz_scale(n);
