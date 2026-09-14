@@ -7,6 +7,7 @@
 [![device](https://img.shields.io/badge/device-NW--A55%20%2F%20A50%20series-blue)](docs/baseline_v1.4.md)
 
 **A replacement music player for the Sony NW-A55 Walkman** (and its NW-A50-series siblings).
+This is a personal project that I made for my self if people want to tweak it and adapt it to their personal use, please do so but I can't confirm any features or time for this project. If you have issues please raise them in the issues section but I can't promise that issues will be patched. Please use https://github.com/unknown321/wbrt before you install Cinder And if you have the time and skill please contribute with pull requests. I have deliberately not included any way to sponsor or pay for this project. Not least because I want it to be free, but because I don't want the obligation for support that comes with it, as said before I made this for me. The single best way to support is to test, feedback and patch. 
 
 You install it from your computer over the USB cable, in one program, in about a minute. The player
 then starts up into Cinder instead of Sony's music app. Same device, same headphone jack, same

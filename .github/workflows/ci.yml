@@ -282,4 +282,6 @@ jobs:
       # tools/release.sh (docs/SHORTCOMINGS.md A1).
       - name: The ARM binaries fit the player's runtime
         shell: bash
-        run: tools/check_arm_payload.sh
+        # Through bash, not by path: this clone has core.filemode=false, so a new script can land in
+        # git without its executable bit — which is exactly how this step first failed (rc 126).
+        run: bash tools/check_arm_payload.sh
