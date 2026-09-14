@@ -1,7 +1,7 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row. Rows:
 //! DISPLAY (Theme, Palette, Accent, UI scale, Visualiser, Volume limit, Sleep, Screen-off,
-//! Brightness), SYSTEM (Auto power off, Storage, Database, Device, Date & time, USB mode, Boot to
-//! stock, Restart, Power off, Reset), ABOUT (Firmware, Model).
+//! Brightness, Ignore "The" in artists), SYSTEM (Auto power off, Storage, Database, Device, Date &
+//! time, USB mode, Boot to stock, Restart, Power off, Reset), ABOUT (Firmware, Model).
 //! Every row acts except Storage, Firmware and Model, which are information.
 
 use crate::icons;
@@ -11,7 +11,7 @@ use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 21;
+pub const ROWS: usize = 22;
 /// Day / Night.
 pub const ROW_THEME: usize = 0;
 /// Palette — which colour scheme: Cinder's own, or one read from the player's `cinder_palettes`
@@ -44,40 +44,44 @@ pub const ROW_VOLUME_LIMIT: usize = 5;
 pub const ROW_SLEEP: usize = 6;
 pub const ROW_SCREEN_OFF: usize = 7;
 pub const ROW_BRIGHTNESS: usize = 8;
+/// Ignore "The" in artists — sort "The Beatles" among the B's in the Artists tab, the Albums tab's
+/// artist groups and Songs by artist (and file it under B on the rail). OFF by default: artists
+/// sort as written. Titles and album names keep their "The" either way. See `collate`.
+pub const ROW_IGNORE_THE: usize = 9;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
 /// of behaviour that has to be asked for.
-pub const ROW_AUTO_OFF: usize = 9;
-pub const ROW_STORAGE: usize = 10;
-pub const ROW_DATABASE: usize = 11;
-pub const ROW_BATTERY: usize = 12;
+pub const ROW_AUTO_OFF: usize = 10;
+pub const ROW_STORAGE: usize = 11;
+pub const ROW_DATABASE: usize = 12;
+pub const ROW_BATTERY: usize = 13;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 13;
-pub const ROW_USB_MODE: usize = 14; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 14;
+pub const ROW_USB_MODE: usize = 15; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 15;
+pub const ROW_BOOT_STOCK: usize = 16;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 16;
-pub const ROW_POWER_OFF: usize = 17;
+pub const ROW_RESTART: usize = 17;
+pub const ROW_POWER_OFF: usize = 18;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 18;
+pub const ROW_RESET: usize = 19;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 19;
-pub const ROW_MODEL: usize = 20;
+pub const ROW_FIRMWARE: usize = 20;
+pub const ROW_MODEL: usize = 21;
 
 const RH: i32 = 56;
 /// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
 /// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [9, 10, 2];
+const SECTIONS: [usize; 3] = [10, 10, 2];
 
 /// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
 /// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
@@ -133,6 +137,8 @@ pub struct SettingsView<'a> {
     pub palette: &'a str,
     /// The palette brings its own accent, so the Accent row says so instead of offering swatches.
     pub accent_locked: bool,
+    /// Ignore "The" at the start of artist names when sorting (`ROW_IGNORE_THE`).
+    pub ignore_the: bool,
 }
 
 /// Total height of the row content, from the top of the screen to the bottom of the last row.
@@ -379,6 +385,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     y = srow(c, t, f, y, sel == ROW_SCREEN_OFF, "Screen-off timer", v.screen_off, false);
     // Row 5: brightness is live — tapping cycles 1..5 and the shell writes the backlight node.
     y = srow(c, t, f, y, sel == ROW_BRIGHTNESS, "Brightness", v.brightness, false);
+    // How artist names sort. A value row like Volume limit: tapping flips it, and the Library
+    // re-sorts at once (nav's set_ignore_the).
+    y = srow(c, t, f, y, sel == ROW_IGNORE_THE, "Ignore \"The\" in artists",
+             if v.ignore_the { "ON" } else { "OFF" }, false);
 
     y = eyebrow(c, t, f, y + 14, "SYSTEM");
     // Auto power-off. Distinct from the Screen-off timer above it: that one blanks the panel and
@@ -445,6 +455,7 @@ mod tests {
             accent,
             palette: "Cinder",
             accent_locked: false,
+            ignore_the: false,
         }
     }
 

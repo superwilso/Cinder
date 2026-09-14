@@ -809,6 +809,9 @@ pub struct App {
     /// here — the shell reads Sony's AVLS threshold live, because it is per output device
     /// (`adapt=1`), so a number cached in the UI would be wrong the moment you changed output.
     volume_limit: bool,
+    /// Settings ▸ Ignore "The" in artists. Mirrored into `lib.ignore_the`, which every ordering
+    /// function reads; the copy here is what survives a library reload.
+    ignore_the: bool,
     bt_fine: u8,
     bt_trim: i8,
     /// Now Playing visualiser type (cinder_ui::viz index) + animation on/off (UI settings).
@@ -1182,6 +1185,7 @@ impl Default for App {
             volume: 15,
             vol_overlay: 0,
             volume_limit: false,
+            ignore_the: false,
             bt_volume: 15,
             bt_route: false,
             bt_connected: None,
@@ -1528,6 +1532,8 @@ impl App {
             onboarding_seen: true,
             ..App::default()
         };
+        // The kept library is still sorted under the old preference; put it back in default order.
+        self.set_ignore_the(false);
         self.toast = "Settings reset".to_string();
         self.toast_frames = TOAST_FRAMES;
         vec![Action::SettingsReset]
@@ -2412,6 +2418,11 @@ impl App {
                 // Render-only, like the accent row: the settings file is written by the shell's
                 // own save path, and the shell notices the switch on its next housekeeping tick
                 // and re-applies the volume through the clamp.
+                vec![]
+            }
+            crate::settings::ROW_IGNORE_THE => {
+                // Render-only, like Volume limit: the shell's save path writes the file.
+                self.set_ignore_the(!self.ignore_the);
                 vec![]
             }
             crate::settings::ROW_SLEEP => {
@@ -5263,9 +5274,13 @@ impl App {
         format!("{n} tracks")
     }
 
-    pub fn set_library(&mut self, lib: Library) {
+    pub fn set_library(&mut self, mut lib: Library) {
         // A reloaded library is the scan's answer arriving — see the `rescanning` field.
         self.rescanning = false;
+        // The shell builds every library in plain order; the artist lists are put in the user's
+        // order here, so a reload can never quietly drop the Ignore "The" setting.
+        lib.ignore_the = self.ignore_the;
+        lib.prepare_order();
         self.lib = lib;
         self.az_memo = None;   // a new library is a new set of letters
         self.lib_idx = 0;
@@ -6325,6 +6340,7 @@ impl App {
                 );
                 let view = crate::settings::SettingsView {
                     volume_limit: self.volume_limit,
+                    ignore_the: self.ignore_the,
                     night: self.night,
                     viz_name: &viz_lbl,
                     usb_dac: self.usb_dac_on,
@@ -6666,6 +6682,36 @@ impl App {
 
     /// The volume limit's on/off. Off by default: a cap the user did not ask for, silently
     /// refusing to go louder, is indistinguishable from a broken volume rocker.
+    /// Settings ▸ Ignore "The" in artists.
+    pub fn ignore_the(&self) -> bool {
+        self.ignore_the
+    }
+
+    /// Set Ignore "The" in artists and re-sort the artist lists under it at once. The Artists tab
+    /// and the Albums tab's groups are STORED in order, so a flip that only changed the flag would
+    /// draw the old order under the new rail letters.
+    ///
+    /// The artist and album pages hold indices into exactly those lists, so what they point at is
+    /// kept by name and album id, not by position.
+    pub fn set_ignore_the(&mut self, on: bool) {
+        if self.ignore_the == on && self.lib.ignore_the == on {
+            return;
+        }
+        let artist = self.artist_name_at(self.artist_view).map(str::to_string);
+        let album = self.lib.albums_flat().get(self.album_view).map(|a| a.album_id);
+        self.ignore_the = on;
+        self.lib.ignore_the = on;
+        self.lib.prepare_order();
+        if let Some(i) = artist.and_then(|n| self.lib.artists.iter().position(|r| r.name == n)) {
+            self.artist_view = i;
+        }
+        if let Some(i) = album.and_then(|id| self.lib.albums_flat().iter().position(|a| a.album_id == id)) {
+            self.album_view = i;
+        }
+        self.album_expanded = None; // a flat index too, and an accordion is cheap to reopen
+        self.az_memo = None;
+    }
+
     pub fn volume_limit(&self) -> bool {
         self.volume_limit
     }
@@ -9577,17 +9623,75 @@ mod tests {
         }
     }
 
-    /// "The Beatles" files under B, and anything not a letter buckets under '#'. Sorting already
-    /// works this way, so the rail has to agree or the jump lands nowhere near the eye.
+    /// The rail files a name under its first letter with case and accents folded, and anything not
+    /// a Latin letter under '#'. A title keeps its "The"; an ARTIST loses it only with Settings ▸
+    /// Ignore "The" in artists — the rail follows the list's order either way, or a jump lands
+    /// nowhere near the eye.
     #[test]
-    fn az_buckets_ignore_a_leading_the_and_fold_non_letters() {
-        assert_eq!(library::az_bucket("The Beatles"), b'B');
-        assert_eq!(library::az_bucket("the xx"), b'X');
-        assert_eq!(library::az_bucket("Theatre of Tragedy"), b'T', "only a whole leading word");
+    fn az_buckets_fold_case_and_accents_and_artists_follow_the_setting() {
         assert_eq!(library::az_bucket("aphex twin"), b'A');
+        assert_eq!(library::az_bucket("bôa"), b'B');
+        assert_eq!(library::az_bucket("Édith Piaf"), b'E');
         assert_eq!(library::az_bucket("65daysofstatic"), b'#');
         assert_eq!(library::az_bucket("...And Justice For All"), b'#');
         assert_eq!(library::az_bucket(""), b'#');
+        assert_eq!(library::az_bucket("アルク"), b'#', "other scripts file under #");
+        assert_eq!(library::az_bucket("The Beatles"), b'T', "a title keeps its The");
+
+        let artist = |lib: &crate::model::Library, s: &str| {
+            library::az_letter(lib, library::AzKey::Artist, s)
+        };
+        let mut lib = crate::model::Library::default();
+        assert_eq!(artist(&lib, "The Beatles"), b'T', "off by default: artists as written");
+        lib.ignore_the = true;
+        assert_eq!(artist(&lib, "The Beatles"), b'B');
+        assert_eq!(artist(&lib, "THE NORTH"), b'N', "a leading The in any case");
+        assert_eq!(artist(&lib, "the xx"), b'X');
+        assert_eq!(artist(&lib, "Theatre of Tragedy"), b'T', "only a whole leading word");
+    }
+
+    /// Settings ▸ Ignore "The" in artists: flipping it re-sorts the STORED artist lists at once, an
+    /// open artist page and album keep what they point at rather than their index, a rescan's
+    /// reload keeps the setting, and Reset settings turns it back off.
+    #[test]
+    fn ignore_the_resorts_artists_keeps_open_pages_and_survives_a_reload() {
+        use crate::model::{AlbumRow, ArtistGroup, ArtistRow, Library};
+        let artist = |name: &str| ArtistRow {
+            name: name.into(), albums: 1, tracks: 1, arts: Vec::new(), album_ids: Vec::new(),
+        };
+        let group = |name: &str, id: i64| ArtistGroup {
+            artist: name.into(),
+            albums: vec![AlbumRow { name: format!("{name} LP"), artist: name.into(), album_id: id, ..Default::default() }],
+        };
+        // Built in no particular order, the way a shell hands a library over.
+        let lib = || Library {
+            artists: vec![artist("Tycho"), artist("The Beatles"), artist("Muse"), artist("Arcade Fire")],
+            album_groups: vec![group("Tycho", 4), group("The Beatles", 3), group("Muse", 2), group("Arcade Fire", 1)],
+            ..Default::default()
+        };
+        let names = |a: &App| a.lib.artists.iter().map(|r| r.name.clone()).collect::<Vec<_>>();
+        let groups = |a: &App| a.lib.album_groups.iter().map(|g| g.artist.clone()).collect::<Vec<_>>();
+
+        let mut a = App::unlocked();
+        a.set_library(lib());
+        assert_eq!(names(&a), ["Arcade Fire", "Muse", "The Beatles", "Tycho"], "off by default: as written");
+        assert_eq!(groups(&a), names(&a));
+        a.artist_view = 1; // Muse's page is open underneath Settings
+        a.album_view = 1; // and so is Muse LP (one album per group, so flat index = group index)
+
+        a.set_ignore_the(true);
+        assert_eq!(names(&a), ["Arcade Fire", "The Beatles", "Muse", "Tycho"]);
+        assert_eq!(groups(&a), names(&a), "the Albums tab's groups follow the same order");
+        assert_eq!(a.lib.artists[a.artist_view].name, "Muse", "the open artist page keeps its artist");
+        assert_eq!(a.lib.albums_flat()[a.album_view].album_id, 2, "the open album keeps its album");
+
+        a.set_library(lib());
+        assert!(a.lib.ignore_the);
+        assert_eq!(names(&a), ["Arcade Fire", "The Beatles", "Muse", "Tycho"], "a reload keeps the setting");
+
+        let _ = a.reset_settings();
+        assert!(!a.ignore_the() && !a.lib.ignore_the);
+        assert_eq!(names(&a), ["Arcade Fire", "Muse", "The Beatles", "Tycho"], "reset puts artists back as written");
     }
 
     /// The rail's hit test must cover the whole list height and map monotonically onto the letters,

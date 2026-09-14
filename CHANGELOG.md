@@ -16,6 +16,28 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Library sorted lowercase and accented names below "Z".** *Host-tested against names from
+  the reference library; device-unverified.* Every list compared names byte by byte, so every
+  capital came before every lowercase letter and every accented letter after `z`: 12 of 310
+  artists (`alt‐J`, `bôa`, `julie`, `the north` …) and 127 song titles sat under `Zola Jesus`,
+  while the A–Z rail filed them under their letters. Artists, albums, songs, folders and playlists
+  now share one order: case-blind, accents folded (`bôa` beside `Boa`, `Édith` among the E's),
+  names starting with a digit or punctuation first and other scripts after Z, as Sony's own
+  scanner groups them. The rail uses the same folding, so `bôa` and `Édith` are reachable from B
+  and E. The rail also used to file "The Beatles" under B while the list sorted it under T; the two
+  now agree, and the setting below decides which.
+
+### Added
+
+- **Settings ▸ Ignore "The" in artists.** *Host-tested; device-unverified.* Off by default, so
+  artists sort as written. On, "The Beatles" sorts among the B's — in the Artists tab, the Albums
+  tab's artist groups and Songs sorted by artist, and on the A–Z rail — the way Sony's own player
+  files it. Song titles and album names keep their "The" either way. The lists re-sort the moment
+  it is switched, an open artist or album page stays on what it was showing, and Reset settings
+  turns it off.
+
 ## [0.3.5] — 2026-09-14
 
 ### Added
