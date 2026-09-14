@@ -2,6 +2,23 @@
 
 *Written 2026-09-11. Steps 0 and 1 are done and host-tested; steps 2–4 are the plan.*
 
+> **⚠ Step 2's contract is REVISED — see [`PLAN_2026-09-14.md`](PLAN_2026-09-14.md) Part C.**
+>
+> The `Skin` trait below registers hit regions *as they are drawn*
+> (`ui.hit(rect, Hit::Play)` inside `render`). Measured 2026-09-14: of the **229** coordinate-driven
+> interactions in `nav.rs`'s tests, **exactly 5 call `render()` first**. Under paint-time
+> registration the other 224 would look up taps in an empty hit map, and the headless suite — the
+> thing that makes refactoring a 13,267-line `App` survivable — could not run at all.
+>
+> The revision keeps the goal (render and hit-test cannot disagree) and changes the mechanism:
+> `layout(&View) -> LayoutMap` is a **pure function** that both `render` and `tap` call. It also
+> makes the contract tests in "The contract tests" below far cheaper, since region size and overlap
+> become assertions on a `LayoutMap` rather than on a rendered frame.
+>
+> Everything else in this file — the three layers, the fallback rule, the ordering, and the
+> "Not recommended: layouts as data" verdict (**confirmed by the owner, 2026-09-14: skins only**) —
+> stands.
+
 The goal: a standard way to design a new look for Cinder and swap it in and out, without forking the
 app and without a second copy of the logic that decides what a tap does.
 
