@@ -150,6 +150,24 @@ Owning the Sony repository from a different GitHub account is what actually keep
 3. **Optionally delete the merged `claude/*` branches** on GitHub. Nothing on them is not on `main`.
 4. **Run the script**: `tools/rewrite_history.sh` (or pass a directory). It mirrors GitHub, rewrites,
    checks, writes the doc patch, and prints the push commands. It pushes nothing.
+
+   **To take the real Bluetooth addresses out of every commit as well**, give it a redaction file.
+   The tree has used the RFC 7042 documentation range since 2026-08-24 and 2026-09-14, but older
+   commits still hold the real addresses, in text and in a raw HCI capture (the capture's whole
+   path is already in the removal list). The file holds the real values, so it is built from the
+   history into a directory **outside the clone** and is never committed:
+
+   ```sh
+   git log -p --all | grep -oiE '\b([0-9a-f]{2}:){5}[0-9a-f]{2}\b' | sort -fu \
+       | grep -viE '^00:00:5e:00:53:|^00:00:00:00:00:00$|^ff:ff:ff:ff:ff:ff$' > ../bt-addrs.txt
+   # read ../bt-addrs.txt: keep only real device addresses, then map them, one per line
+   n=0; while read -r a; do n=$((n+1)); printf '%s==>00:00:5E:00:53:%02X\n' "$a" $((0x10+n)); done \
+       < ../bt-addrs.txt > ../redact.txt
+   REDACT_FILE=../redact.txt tools/rewrite_history.sh
+   ```
+
+   `git-filter-repo` skips binary files when replacing text, which is why the capture is removed by
+   path instead. Check the mirror afterwards with `git log -p --all | grep -ci <an address>` → 0.
 5. **Push — the step that cannot be undone.** In GitHub, Settings ▸ Branches ▸ the rule for `main`:
    allow force pushes. Then:
 

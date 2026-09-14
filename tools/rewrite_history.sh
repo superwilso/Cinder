@@ -105,6 +105,16 @@ say "rewriting"
 args=(--force --invert-paths)
 for p in "${REMOVE_PATHS[@]}"; do args+=(--path "$p"); done
 args+=(--strip-blobs-with-ids "$WORK/strip-blobs.txt")
+# Text that must not survive in ANY commit — real Bluetooth addresses, above all. The expressions
+# file maps each real value to its documentation stand-in, so it holds the very values being
+# removed: it lives OUTSIDE the repository and is passed in, never committed.
+# docs/HISTORY_REWRITE.md "The order", step 4, generates it.
+if [ -n "${REDACT_FILE:-}" ]; then
+    [ -r "$REDACT_FILE" ] || die "REDACT_FILE=$REDACT_FILE is not readable"
+    case "$(cd "$(dirname "$REDACT_FILE")" && pwd)/" in "$ROOT"/*) die "REDACT_FILE must live outside the repository" ;; esac
+    say "replacing text from $REDACT_FILE ($(grep -c '==>' "$REDACT_FILE") expressions)"
+    args+=(--replace-text "$REDACT_FILE")
+fi
 if ! (cd "$M" && "${FILTER[@]}" "${args[@]}") > "$WORK/filter-repo.log" 2>&1; then
     tail -20 "$WORK/filter-repo.log" >&2
     die "git-filter-repo failed — full log: $WORK/filter-repo.log"
