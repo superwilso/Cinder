@@ -19,6 +19,16 @@ survivable.
 
 ### A1. 41% of the codebase is never compiled by any automated gate
 
+> **2026-09-14 — the table below is out of date in the project's favour.** CI has since gained a
+> `-fsyntax-only -Werror` pass over every C/C++ file, nine C++ self-tests, 41 harness scenarios that
+> boot `main.cpp` against fake services, the launcher recovery matrix and pinned `shellcheck`;
+> `PLAN_2026-09-14.md` §A1 has today's coverage. **What is still true, stated plainly: nothing in CI
+> links an ARM build, and nothing can.** `cinder-home` links against a dozen of Sony's own libraries
+> from the firmware, which cannot be put on a public runner. The link gate is `tools/release.sh`,
+> which rebuilds the payload from source before every tag and refuses to tag unless the committed
+> bytes match (D4). What CI does check is the shape of what ships — `tools/check_arm_payload.sh`:
+> ARM, glibc ≤ 2.23, only libraries the firmware has, static setuid helpers.
+
 | Surface | Lines | Compiled by CI? | Tested by CI? |
 |---|---:|---|---|
 | Rust (`player/`, `installer/`) | 35,921 | **yes** | **yes** (404 tests) |

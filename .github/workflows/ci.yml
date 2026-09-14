@@ -74,6 +74,22 @@ jobs:
         working-directory: ${{ matrix.dir }}
         run: cargo build --release
 
+      # Every preview, rendered from this commit, downloadable from the run. This replaces the
+      # PNGs that used to be committed: golden.txt already fails the job on a pixel change, so the
+      # images are for LOOKING at a change, and a run artifact is always current where a committed
+      # folder was two months stale.
+      - name: Render UI previews
+        if: matrix.dir == 'player'
+        working-directory: player
+        run: cargo run --release -p cinder-host >/dev/null
+      - uses: actions/upload-artifact@v7
+        if: matrix.dir == 'player'
+        with:
+          name: ui-previews
+          path: player/out/
+          retention-days: 14
+          if-no-files-found: error
+
       # Clippy, scoped to the lint groups that describe BUGS rather than taste.
       #
       # Not `-D warnings`: the tree has 121 style/pedantic warnings today, so that gate would be
@@ -261,16 +277,9 @@ jobs:
           PAYLOAD
           [ "$missing" = 0 ] || { echo "::error::dist/stable is incomplete — the installer cannot be built"; exit 1; }
 
-      - name: The ARM binaries must actually be ARM
+      # Architecture, glibc floor, allowed libraries, static helpers. A script, so it runs locally
+      # exactly as here. It is NOT a link check: the link needs Sony's libraries, so that gate is
+      # tools/release.sh (docs/SHORTCOMINGS.md A1).
+      - name: The ARM binaries fit the player's runtime
         shell: bash
-        run: |
-          # Guards against someone committing a host build by accident, which would produce an
-          # installer that ships x86 binaries to an armv7 player and fails only on the device.
-          for f in cinder-home/dist/stable/cinder-home cinder-home/dist/stable/cinder-probe; do
-            t=$(file -b "$f")
-            echo "  $f: $t"
-            case "$t" in
-              *ARM*) ;;
-              *) echo "::error::$f is not an ARM binary"; exit 1 ;;
-            esac
-          done
+        run: tools/check_arm_payload.sh

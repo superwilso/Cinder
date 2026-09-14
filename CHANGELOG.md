@@ -32,6 +32,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   `.UPG` was built by this repository's release workflow from the tagged commit. The release notes
   and `SECURITY.md` explain how to check (`docs/SHORTCOMINGS.md` D7).
 
+### Changed
+
+- **The README's screenshots are re-rendered at every release.** `tools/render_screenshots.sh` maps
+  each image to the cinder-host preview it was copied from, and `tools/release.sh` runs it before
+  tagging, so the pictures show the UI the release ships. Fourteen of them were stale.
+- **The 432 committed preview PNGs are gone** (32 MB of the August UI). `golden.txt` still fails CI
+  on any pixel change, and every CI run now publishes a fresh render as the `ui-previews` artifact.
+- **CI checks that the ARM binaries fit the player**: 32-bit ARM, glibc no newer than 2.23, only
+  libraries the firmware has, static setuid helpers (`tools/check_arm_payload.sh`). CI still cannot
+  link the ARM build — it needs Sony's libraries — so `tools/release.sh` stays the link gate, and
+  `docs/SHORTCOMINGS.md` A1 now says so.
+- **`install.md`'s component table** matched the installer of 2026-09-11: it offered `power`, `msc`,
+  `clock` and `umount` as choices and left out `fm`, `battery`, `search` and `voltable`.
+
 ### Security and privacy
 
 - **`SECURITY.md` said Cinder ships twelve setuid-root helpers. It ships eight**, and the list left

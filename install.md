@@ -197,17 +197,32 @@ does it from a development checkout. Cinder never modifies the stock Qt binary �
 
 ### What the components are
 
+**Part of every install** — not offered as choices since 2026-09-12, because turning any of them off
+removes something the player cannot do without (`components.conf` explains the decision):
+
+| helper | what it is for |
+|---|---|
+| `cinder-power` | Power off / Restart. Sony's power service can't serve those while Cinder is the Home app — its shutdown barrier waits on an ACK Cinder never sends — so a small helper calls `reboot(2)`. |
+| `cinder-msc` | USB mass storage, i.e. putting music on the player over USB. Both privileged steps are root-only. |
+| `cinder-umount` | Releases `/contents` during that handoff. |
+| `cinder-clock` | Setting the clock. Nothing in Sony's libraries exposes a clock setter, so the kernel is the only route and that needs `CAP_SYS_TIME`. |
+| `cinder-voltable` | Loads the chosen volume curve at boot. With `voltable` left at `stock` it is never run. |
+
+**The choices:**
+
 | id | default | what saying no costs you |
 |---|---|---|
-| `power` | on | No Power off / Restart in the UI. Sony's power service can't serve those while Cinder is the Home app — its shutdown barrier waits on an ACK Cinder never sends — so this needs a small setuid-root helper calling `reboot(2)`. |
-| `msc` | on | No USB mass storage, i.e. no way to put music on the device over USB. Both privileged steps are root-only, hence setuid. |
-| `clock` | on | The clock can't be set at all. Nothing in Sony's libraries exposes a clock setter, so the kernel is the only route and that needs `CAP_SYS_TIME`. |
-| `umount` | on | Only useful alongside `msc`; releases `/contents` during the handoff. |
-| `gpunode` | **off** | Nothing. It is setuid-root purely to make four kernel graphics nodes world-writable, for a GPU present path that is default-off and measured **4.7× slower** than the software one. |
+| `fm` | on | The radio still plays, but without a real signal meter, and a band scan takes about a minute instead of seconds. Installs `cinder-fm`, which opens the FM chip's two register files and nothing else on the bus. |
+| `battery` | on | The battery screen omits the charger detail (charge state, fault code, currents, the voltage it charges to). Installs `cinder-battery`, which only READS the charger's registers. |
+| `gpunode` | **off** | Nothing. Dev channel only. It is setuid-root purely to make four kernel graphics nodes world-writable, for a GPU present path that is default-off and measured **4.7× slower** than the software one. |
+| `search` | **off** | The Library's search button. Installs nothing: a flag file in `/data/cinder`. New, so off for now. |
+| `voltable` | `stock` | See [The volume curve tables](#the-volume-curve-tables). |
 | `signature` | `stock` | See below. |
 
-Four are setuid-root helpers. That is exactly why they are choices and not assumptions: each buys
-one feature with one piece of attack surface, and you should be able to decline any of them.
+Eight setuid-root helpers exist, and a stable install carries seven of them (`cinder-gpunode` is
+dev-only). The three that are choices are choices for the reason the helpers are listed at all:
+each buys one feature with one piece of attack surface, and where the player works without it you
+should be able to decline it.
 
 ### The "sound signature"
 

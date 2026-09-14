@@ -157,6 +157,30 @@ else
     ok "dist/stable matches a fresh build"
 fi
 
+# ── 3b. the README's screenshots must show the UI this release ships ────────────────────────
+# They are cinder-host previews copied into docs/screenshots, and for as long as copying them was a
+# manual step nobody took, the README showed a UI two releases old. Same shape as the payload
+# above: re-render, and anything that changed joins the one release commit.
+note "re-rendering the README screenshots …"
+if [ -n "$DRY" ]; then
+    set +e; tools/render_screenshots.sh --check >/tmp/cinder-release-shots.log 2>&1; shots=$?; set -e
+    case "$shots" in
+        0) ok "README screenshots match the current UI" ;;
+        1) act "README screenshots are stale — preparing would re-render them"
+           CHANGED+=("README screenshots") ;;
+        *) tail -5 /tmp/cinder-release-shots.log; die "could not render the README screenshots — see /tmp/cinder-release-shots.log" ;;
+    esac
+else
+    tools/render_screenshots.sh >/tmp/cinder-release-shots.log 2>&1 \
+        || { tail -5 /tmp/cinder-release-shots.log; die "could not render the README screenshots — see /tmp/cinder-release-shots.log"; }
+    if [ -n "$(git status --porcelain docs/screenshots)" ]; then
+        act "README screenshots re-rendered from the current UI"
+        CHANGED+=("README screenshots")
+    else
+        ok "README screenshots match the current UI"
+    fi
+fi
+
 # ── 4. every file the installer embeds must exist ───────────────────────────────────────────
 # build.rs fails loudly on a missing payload, but failing HERE names the file and costs no CI run.
 # One list, used by both the existence check and the manifest below — they drifted apart as two
