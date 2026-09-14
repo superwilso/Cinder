@@ -341,7 +341,12 @@ vt_take() {  # vt_take <name> <sha256> <candidate>... — install the first cand
             esac
             continue
         fi
+        # 755 on BOTH levels, explicitly: this runs as root with umask 077, so mkdir -p made them
+        # 0700 and the launcher — uid 100 — could not see a table that was there (device,
+        # 2026-09-14: "no install has supplied" with the file present). Root-owned is the trust
+        # boundary; nobody else can write here either way.
         "$BB" mkdir -p "$VT_DIR" 2>/dev/null
+        "$BB" chmod 755 "${VT_DIR%/audio_dac}" "$VT_DIR" 2>/dev/null
         "$BB" cat "$vt_cand" > "$VT_DIR/$vt_name.tmp" 2>/dev/null
         if [ "$(vt_sha "$VT_DIR/$vt_name.tmp")" = "$vt_want" ]; then
             "$BB" chmod 644 "$VT_DIR/$vt_name.tmp"
