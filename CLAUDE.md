@@ -1,6 +1,37 @@
 # NW-A55 Project — Setup & Next Steps (v1.5)
 
-> ## PROJECT STATE (audited 2026-07-25) — device is IN HAND; read this first
+> ## ⚠ READ THIS FIRST — the banner below it is a 2026-07-25 snapshot and is SEVEN WEEKS STALE
+>
+> **Updated 2026-09-14.** This file is loaded into every session automatically, which makes a stale
+> banner here more expensive than anywhere else in the repository — it is the first thing any new
+> reader, human or agent, believes. The 07-25 text below says the last code change was 2026-07-03,
+> that host tests are "39 UI + 8 DB", and that the whole critical path is blocked on one device
+> session. **All three are wrong.** This is the same failure already caught for `ROADMAP.md`
+> ([`docs/AUDIT_2026-09-01.md`](docs/AUDIT_2026-09-01.md) §D2) and fixed there the same way.
+>
+> **Where the project actually is, 2026-09-14 (`7860396`, v0.3.4):**
+>
+> | | |
+> |---|---|
+> | Releases shipped | **v0.3.0 → v0.3.4**, with a one-click Windows/Linux installer |
+> | Offline gates | **549 Rust tests**, **41 harness scenarios**, 23 C/C++ files syntax-clean, **234 golden pixel hashes** — all green, all re-run 2026-09-14 |
+> | The headline feature | **USB-DAC → LDAC ran end to end** (2026-09-12, owner-reported, no log captured) |
+> | Landed since this banner | FM tuner, Bluetooth, NFC, playlists, on-screen keyboard, liked-songs sync, device settings, palettes (device-verified), type scale, **lyrics and search** |
+> | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **11.9, the Windows installer** (the only Windows install path): the owner reports running the v0.3.3 installer, whose `installer/` is identical to v0.3.4's; platform and log not yet recorded |
+>
+> **The live documents, in order of what you probably want:**
+> - **What to do next, and the skins design system:** [`docs/PLAN_2026-09-14.md`](docs/PLAN_2026-09-14.md) — current audit + ordered plan.
+> - **Feature state (works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
+> - **Device run sheet:** [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — safety rules first.
+> - **Structural weaknesses:** [`docs/SHORTCOMINGS.md`](docs/SHORTCOMINGS.md) — cited by section ID (note: §A1's coverage table is superseded by `PLAN_2026-09-14.md` §A1).
+> - **Every audit, and which are history:** [`docs/README.md`](docs/README.md).
+> - **RE detail:** [`analysis/RE_playerservice_sound.md`](analysis/RE_playerservice_sound.md), plus `analysis/{E,F,G,H}_*/RE_findings.md`.
+>
+> **Parts B–H below remain reference-grade and current** — the environment setup, the RE findings
+> and the `.UPG` procedure are all still accurate. It is only the *state and plan* text that has
+> aged, and it is kept verbatim below as history.
+
+> ## PROJECT STATE (audited 2026-07-25) — HISTORY, superseded by the banner above
 > This document began (v1.4) as a *pre-device* onboarding plan ("when the NW-A55 arrives").
 > **That premise is now historical.** The device has been in hand for weeks, backed up (wbrt),
 > flashed, soft-bricked-and-recovered twice, and the **Cinder replacement player runs on it as
