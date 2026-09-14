@@ -250,6 +250,51 @@ It verifies the library against a known checksum before touching it, keeps a pri
 backup, and rebuilds every variant from that backup — so variants never stack and a revert is
 exact. Takes effect on the next reboot, because the HAL is loaded at play time.
 
+### The volume curve tables
+
+The `voltable` choice picks the table that maps each volume step to the headphone amplifier's gain.
+`stock` is the one your player already uses. `wm1a` and `w1` are Sony's curves from other models,
+and **their files are not part of the NW-A50's firmware** — so for those two, you bring the table.
+
+> **Needs the release after v0.3.4.** The v0.3.4 installer does not look for your copy; with it,
+> `wm1a` and `w1` still leave the stock curve in place and say so in the log.
+
+| choice | file you need | SHA-256 the installer checks |
+|---|---|---|
+| `wm1a` | `ov_127x.tbl` (and `ov_dsd_127x.tbl` for DSD) | `b5dd878b0484c43312f3a93c6675d40d546f78ef7494684991eea0aef8651320` (DSD: `b777b7e2786f952797e82830d5d17565d03a4758555436a376bf6daff5e50ac7`) |
+| `w1` | `ov_1280.tbl` | `0902981b0b00b5f98eb04d00713f4ddc96f4bb91af76289d8cce15486c30a9c7` |
+
+**Where to get them.** Any one of these works — the bytes are the same:
+
+* **You already have Wampy installed:** nothing to do. Wampy keeps these exact tables on the player
+  (`ov_1288_zx-300.tbl`, `ov_1280_nw-wm1a.tbl` …) and the installer finds and uses them.
+* **From the NW-WM1A's own firmware**, or from a Walkman One package, which carries the same files.
+* **From the [cinder-sony-analysis releases](https://github.com/superwilso/cinder-sony-analysis/releases)**,
+  where they are kept with their checksums and an explanation of why they live there.
+
+**How.** Copy the file to the **top of the player's drive**, next to the `MUSIC` folder, choose
+`wm1a` (or `w1`), and install or update. The install log then says
+`volume table: installed ov_127x.tbl from /contents/ov_127x.tbl (SHA-256 matches Sony's)`, and after
+the reboot `cinderhome.log` says `volume curve: wm1a applied`. You can delete the file from the
+drive afterwards — the installer keeps its own copy in `/system`.
+
+**What is checked.** A file only counts if its SHA-256 is exactly Sony's (the table above); anything
+else is logged as `WARN: … is not Sony's ov_127x.tbl … — not installed` and the stock curve stays.
+The copy is re-checked after it lands in `/system`, and the setuid helper that loads it reads only
+fixed file names in two root-owned directories — never the drive. A malformed table fed to the
+amplifier is the risk this guards against.
+
+**Why Cinder does not just include them.** The tables are Sony's copyrighted files. Cinder is MIT
+licensed, and it cannot put someone else's files under that licence or ship them inside its
+installer. Keeping them out of this repository and out of every release is the same rule that took
+Sony's UI assets and decompilations out of the tree (`docs/HISTORY_REWRITE.md`). Copying a table
+from a firmware you own onto a player you own, for it to work with other software, is a different
+thing from redistributing it.
+
+> **Curves are not region caps.** The EU tables (`ov_*_cew`) give identical curves to the others.
+> A different curve changes how loud each step is, not the amplifier's maximum — but `wm1a` does
+> reach high output sooner, so start low.
+
 ### Choosing components without the GUI
 
 `cinder-home/tools/configure.sh` is the same picker as a shell script, driving the same catalogue:

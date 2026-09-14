@@ -151,8 +151,8 @@ long h_GetPairedDeviceInfo(void*, void* pl, void*, void*) {
 // request is refused: rc=0, and nothing reaches the air. Measured 2026-08-26 with an HCI capture
 // running, same address minutes apart:
 //
-//   retry OFF -> RequestConnection(AC:80:0A:56:A9:91) rc=1   CMD Create Connection -> AC:80:…:91
-//   retry ON  -> RequestConnection(AC:80:0A:56:A9:91) rc=0   nothing on the air at all
+//   retry OFF -> RequestConnection(00:00:5E:00:53:03) rc=1   CMD Create Connection -> 00:00:5E:…:03
+//   retry ON  -> RequestConnection(00:00:5E:00:53:03) rc=0   nothing on the air at all
 //
 // Modelling it here is the point of this fake existing. cinder-home armed that mode on every drop
 // and then issued connects into it for a week, and nothing off-device could see it: slots 6 and 7
@@ -353,9 +353,9 @@ void cinder_harness_bt_set_retry_mode(int on) { g_retry_mode = on != 0; }
 int  cinder_harness_bt_retry_mode(void) { return g_retry_mode ? 1 : 0; }
 
 // Add a device to the radio's pairing table. `addr_last` is the final byte of a synthetic
-// AC:80:0A:56:A9:xx address, so two fixtures are distinguishable.
+// 00:00:5E:00:53:xx address (RFC 7042 documentation range), so two fixtures are distinguishable.
 void cinder_harness_bt_add_paired(const char* name, int addr_last) {
-    unsigned char a[6] = {0xAC, 0x80, 0x0A, 0x56, 0xA9, (unsigned char)addr_last};
+    unsigned char a[6] = {0x00, 0x00, 0x5E, 0x00, 0x53, (unsigned char)addr_last};
     g_paired.push_back(std::make_pair(std::string(name ? name : ""),
                                       std::vector<unsigned char>(a, a + 6)));
 }

@@ -7603,6 +7603,16 @@ static int volcurve_probe(int step, bool force) {
               "maximum. Unplug, or pass 'force' if you are certain nothing is on a head.");
         return 1;
     }
+    // A codec in standby is off the I2C bus, and every PHV read comes back empty — the sweep used to
+    // print a column of "?" and look like a broken table (device, 2026-09-14: cinder-home parks the
+    // codec 30 s after boot). Wake it for the sweep, silently — no PCM is opened — and put it back.
+    const bool was_asleep = cinder_codec_get_standby() == 1;
+    if (was_asleep) {
+        std::fprintf(stderr, "[cinder-probe] volcurve: codec in standby — waking it for the sweep "
+                             "(set_standby(0) -> %d; it goes back to sleep at the end)\n",
+                     cinder_codec_set_standby(0));
+        sleep(2);
+    }
     std::fprintf(stderr, "[cinder-probe] volcurve: saved master volume = %d (restored at the end)\n", saved);
     std::fprintf(stderr, "[cinder-probe] volcurve: %4s %6s %6s\n", "vol", "PHV_L", "PHV_R");
 
@@ -7621,6 +7631,9 @@ static int volcurve_probe(int step, bool force) {
     const int back = cinder_codec_get_master_volume();
     std::fprintf(stderr, "[cinder-probe] volcurve: restored master volume = %d %s\n",
                  back, back == saved ? "OK" : "MISMATCH — SET IT YOURSELF");
+    if (was_asleep)
+        std::fprintf(stderr, "[cinder-probe] volcurve: codec back to standby (set_standby(1) -> %d)\n",
+                     cinder_codec_set_standby(1));
     clog_("volcurve: a flat run of PHV across several steps is a DEAD ZONE (stock has two). "
           "Compare tables with: cinder-voltable eu|stock|wm1a, then sweep again.");
     return rc;

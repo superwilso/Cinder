@@ -48,6 +48,10 @@ REMOVE_PATHS+=(
     cinder-home/cinder-home.unstripped
     cinder-home/cinder-probe.unstripped
     cinder-home/dist/dev/
+    # A raw HCI snoop capture: the CMF Buds Pro 2's real Bluetooth address, 84 times. The tree's
+    # 2026-08-24 redaction cleaned text but missed this binary. The same capture, with that address
+    # swapped for 00:00:5E:00:53:02, is analysis/G_bt_nfc/hci_reconnect_20260819_redacted.btsnoop.
+    analysis/G_bt_nfc/hci_reconnect_20260819.btsnoop
 )
 
 command -v python3 >/dev/null || die "python3 is needed: git-filter-repo is a Python script"

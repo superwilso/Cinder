@@ -16,8 +16,8 @@ Method: read every BT call path in `cinder-home/src/main.cpp`, then measure on d
 connect request is refused. Measured, same address, minutes apart, capture running throughout:
 
 ```
-retry OFF -> RequestConnection(AC:80:0A:56:A9:91) rc=1   CMD Create Connection -> AC:80:…:91
-retry ON  -> RequestConnection(AC:80:0A:56:A9:91) rc=0   nothing on the air at all
+retry OFF -> RequestConnection(00:00:5E:00:53:03) rc=1   CMD Create Connection -> 00:00:5E:…:03
+retry ON  -> RequestConnection(00:00:5E:00:53:03) rc=0   nothing on the air at all
 retry OFF -> RequestLastDeviceConnection()        rc=1   LINK IN 1.53 s
 ```
 
