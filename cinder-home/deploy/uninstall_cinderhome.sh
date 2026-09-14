@@ -79,6 +79,9 @@ if [ "$restored" = 1 ]; then
         "$BIN/cinder-clock" "$BIN/cinder-fm" "$BIN/cinder-voltable" "$BIN/cinder-battery" \
         "$BIN/cinder-probe" 2>/dev/null
     "$BB" rm -f "$SIG" 2>/dev/null
+    # The volume tables an install copied in for `wm1a`/`w1` (install_cinderhome.sh 1f3b). Sony's
+    # own /system/usr/share/audio_dac is never touched.
+    "$BB" rm -rf /system/vendor/unknown321/usr/share/cinder 2>/dev/null
     "$BB" rm -rf /data/cinder 2>/dev/null
     "$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot /contents/cinder_gpu_on /contents/cinderhome_clear /contents/cinderhome_cable_off 2>/dev/null
     # The volume curve is applied by the LAUNCHER on every boot, so removing the launcher already

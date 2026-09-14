@@ -7,6 +7,10 @@
 > Nothing here depends on their value: what the findings turn on is that an address is *present*,
 > that it is six bytes, and which device it belongs to — and the device is named alongside it.
 > The same substitution was applied across `cinder-home/src/`, `STATUS.md` and `docs/`.
+> **2026-09-14:** two more were found and replaced the same way — `:03`, the peer in the 2026-08-26
+> retry-mode measurement (`main.cpp`, `fake_pst.cpp`, `AUDIT_2026-08-26_bluetooth.md`), and the
+> CMF Buds' raw address inside the committed HCI capture, now
+> `hci_reconnect_20260819_redacted.btsnoop` (`:02`, byte-for-byte otherwise).
 
 **Status: the API surface is fully recovered. No Ghidra needed.**
 

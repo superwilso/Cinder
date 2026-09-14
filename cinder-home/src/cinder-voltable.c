@@ -7,9 +7,10 @@
  *
  * There is a better one. `ov_127x.tbl` is the NW-WM1A's own curve: no dead zones, the whole range
  * usable, and smaller steps at the top. BUT IT IS NOT ON A STOCK PLAYER: only the A50's own 1291
- * tables ship in /system/usr/share/audio_dac, and this helper does not ship Sony's files. On a
- * stock player `wm1a` and `w1` fail with rc 4 (source missing) and the stock curve stays — what
- * the reference device did on every boot once an earlier session's copies were gone (2026-09-13).
+ * tables ship in /system/usr/share/audio_dac, and Cinder cannot ship Sony's files. The installer
+ * copies a user's own copy into CINDER_DIR below — from the top of the drive, or from Wampy's
+ * sound_settings — and only when its SHA-256 is Sony's (install_cinderhome.sh, 1f3b). With neither,
+ * `wm1a` and `w1` fail with rc 4 (source missing) and the stock curve stays.
  * Measured, same instrument, on this unit while the file was there:
  *
  *     vol      0   20   40   60   80   90  100  110  120
@@ -25,9 +26,11 @@
  * install-time patch.
  *
  * SAFETY. The argument is a keyword from a fixed whitelist, never a path: the caller cannot name a
- * file, so it cannot ask this to write arbitrary bytes into a kernel node. The source is opened
- * O_NOFOLLOW under a hardcoded directory, verified to be a regular file of the exact size every one
- * of these tables has, and copied whole. Nothing about the destination comes from the caller.
+ * file, so it cannot ask this to write arbitrary bytes into a kernel node. Sources are looked up by
+ * fixed name in two fixed directories, both on /system and writable only by root; the one Cinder
+ * owns is filled only by the installer, after the hash check. Each source is opened O_NOFOLLOW,
+ * verified to be a regular file of the exact size every one of these tables has, and copied whole.
+ * Nothing about the destination comes from the caller.
  *
  * This changes what every volume step does. It does NOT raise the maximum — both curves reach the
  * same ceiling — but at a given number the WM1A curve is quieter through the mid range, so it is a
@@ -51,10 +54,16 @@
 #define DST_DSD "/proc/icx_audio_cxd3778gf_data/ovt_dsd"
 #define DST_TONE "/proc/icx_audio_cxd3778gf_data/tct"
 
+/* Where a table is looked for, in order: Sony's own directory, then Cinder's. Keep CINDER_DIR in
+ * step with VT_DIR in install_cinderhome.sh and the launcher's check. */
+#define SONY_DIR "/system/usr/share/audio_dac/"
+#define CINDER_DIR "/system/vendor/unknown321/usr/share/cinder/audio_dac/"
+static const char *const DIRS[] = { SONY_DIR, CINDER_DIR };
+
 static const struct { const char *key, *pcm, *dsd; } TABLES[] = {
-    { "stock", "/system/usr/share/audio_dac/ov_1291.tbl", "/system/usr/share/audio_dac/ov_dsd_1291.tbl" },
-    { "w1",    "/system/usr/share/audio_dac/ov_1280.tbl", "/system/usr/share/audio_dac/ov_dsd_1280.tbl" },
-    { "wm1a",  "/system/usr/share/audio_dac/ov_127x.tbl", "/system/usr/share/audio_dac/ov_dsd_127x.tbl" },
+    { "stock", "ov_1291.tbl", "ov_dsd_1291.tbl" },
+    { "w1",    "ov_1280.tbl", "ov_dsd_1280.tbl" },
+    { "wm1a",  "ov_127x.tbl", "ov_dsd_127x.tbl" },
     /* The region pair. Every model's volume table ships twice, plain and `_cew`, and `dacdat auto`
      * picks between them from the NVP `shp` flag (this unit reads 0x00000006, swid letter E).
      * Layout (Wampy's src/dac/cxd3778gf_table.h): sound effect off/on x 27 output tables x 121
@@ -68,7 +77,7 @@ static const struct { const char *key, *pcm, *dsd; } TABLES[] = {
      *
      * Every other key here is a PLAIN table. On a unit that boots `_cew`, any of them removes the
      * region restriction. */
-    { "eu",    "/system/usr/share/audio_dac/ov_1291_cew.tbl", "/system/usr/share/audio_dac/ov_dsd_1291_cew.tbl" },
+    { "eu",    "ov_1291_cew.tbl", "ov_dsd_1291_cew.tbl" },
 };
 
 /* Tone-control tables — the other half of what W1 calls a "sound signature", and the half nobody
@@ -77,13 +86,13 @@ static const struct { const char *key, *pcm, *dsd; } TABLES[] = {
  * Kept as separate keys rather than folded into the entries above, so that applying a volume curve
  * does not silently also change tone. */
 static const struct { const char *key, *tone; } TONE_TABLES[] = {
-    { "tone-stock", "/system/usr/share/audio_dac/tc_1291.tbl" },
-    { "tone-w1",    "/system/usr/share/audio_dac/tc_1280.tbl" },
-    { "tone-wm1a",  "/system/usr/share/audio_dac/tc_127x.tbl" },
+    { "tone-stock", "tc_1291.tbl" },
+    { "tone-w1",    "tc_1280.tbl" },
+    { "tone-wm1a",  "tc_127x.tbl" },
 };
 
-/* Copy one table into one proc node. Returns 0 on success. */
-static int install_one(const char *src, const char *dst, off_t want)
+/* Copy one table file into one proc node. Returns 0 on success. */
+static int copy_one(const char *src, const char *dst, off_t want)
 {
     static char buf[PCM_BYTES];
     struct stat st;
@@ -108,6 +117,23 @@ static int install_one(const char *src, const char *dst, off_t want)
     n = write(out, buf, (size_t)want);
     close(out);
     return (n == (ssize_t)want) ? 0 : 5;
+}
+
+/* Install the table called `name` from the first directory that has a valid copy. Returns 0 on
+ * success, 4 when no directory has one, 5 when the write itself failed. */
+static int install_one(const char *name, const char *dst, off_t want)
+{
+    char src[160];
+    unsigned i;
+
+    for (i = 0; i < sizeof DIRS / sizeof DIRS[0]; i++) {
+        if (snprintf(src, sizeof src, "%s%s", DIRS[i], name) >= (int)sizeof src)
+            return 4;
+        int rc = copy_one(src, dst, want);
+        if (rc != 4)
+            return rc;
+    }
+    return 4;
 }
 
 int main(int argc, char **argv)

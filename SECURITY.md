@@ -1,8 +1,8 @@
 # Security policy
 
-Cinder replaces the Home application on a Sony NW-A50-series Walkman. It ships twelve setuid-root
-helpers, an installer that drives Sony's own firmware updater, and a launcher that runs on the boot
-path. **This device has no public DFU or EDL recovery path**: a bad boot is recovered by the
+Cinder replaces the Home application on a Sony NW-A50-series Walkman. It ships eight setuid-root
+helpers, an installer that triggers the player's own firmware updater, and a launcher that runs on
+the boot path. **This device has no public DFU or EDL recovery path**: a bad boot is recovered by the
 escape ladder described below, or by an eMMC restore, or not at all.
 
 That is the context for everything here. Please read it before reporting, and before contributing
@@ -23,15 +23,17 @@ no SLA, and there is no bug bounty.
 
 The parts where a defect can cost someone their device or their root:
 
-* **The setuid helpers** (`cinder-power`, `cinder-msc`, `cinder-clock`, `cinder-fm`,
-  `cinder-voltable`, `cinder-gpunode`, `cinder-umount`, …). They run as root on behalf of an
+* **The setuid helpers** — all eight: `cinder-power`, `cinder-msc`, `cinder-clock`, `cinder-fm`,
+  `cinder-voltable`, `cinder-battery`, `cinder-gpunode`, `cinder-umount` (the `chmod 4755` lines
+  in `install_cinderhome.sh` are the authoritative list). They run as root on behalf of an
   unprivileged UI. Argument handling, path handling and anything reachable from `/contents`
   (which is FAT, world-writable, and shared with any PC the player is plugged into) matter most.
 * **The launcher and the escape ladder** — `install_cinderhome.sh`'s launcher, the bad-boot
   counter, the auto-revert, the crash supervisor, the kill switch. A defect that disarms an escape
   is more serious than one that crashes the app, because the app crashing is what the escapes are
   for.
-* **The installer** — it writes `NW_WM_FW.UPG` to a device root and triggers Sony's updater.
+* **The installer** — it writes `NW_WM_FW.UPG` to a device root and sends the player's vendor
+  SCSI upgrade command (pass-through on Windows, `SG_IO` on Linux), which runs as administrator/root.
 * **Anything that can make the device unbootable**, whether or not an attacker is involved.
 
 ## What is out of scope
@@ -68,5 +70,16 @@ sha256sum -c SHA256SUMS
 ```
 
 `SHA256SUMS` is attached to each release. It proves the download matches what the release workflow
-produced. It does **not** prove the workflow built this source tree — there is no build
-attestation yet (D7).
+produced. On its own it does **not** prove the workflow built this source tree.
+
+Releases tagged after 2026-09-14 also carry a GitHub build attestation for every published file:
+
+```sh
+gh attestation verify cinder-installer-windows-x64.exe -R superwilso/Cinder
+```
+
+A pass means the file was produced by `.github/workflows/release.yml` in this repository, from the
+commit the tag points at — signed through Sigstore, so it cannot be forged by whoever uploads a
+file. What it does not cover (D7): the installer is still unsigned for SmartScreen, and the ARM
+payload inside it is committed rather than built on the runner, so for those bytes the attestation
+leans on `tools/release.sh`'s rebuild-and-compare manifest (D4).
