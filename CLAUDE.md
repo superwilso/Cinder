@@ -17,7 +17,7 @@
 > | Offline gates | **549 Rust tests**, **41 harness scenarios**, 23 C/C++ files syntax-clean, **234 golden pixel hashes** — all green, all re-run 2026-09-14 |
 > | The headline feature | **USB-DAC → LDAC ran end to end** (2026-09-12, owner-reported, no log captured) |
 > | Landed since this banner | FM tuner, Bluetooth, NFC, playlists, on-screen keyboard, liked-songs sync, device settings, palettes (device-verified), type scale, **lyrics and search** |
-> | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — and **11.9, the Windows installer, has never been executed once** while being the only Windows install path |
+> | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **11.9, the Windows installer** (the only Windows install path): the owner reports running the v0.3.3 installer, whose `installer/` is identical to v0.3.4's; platform and log not yet recorded |
 >
 > **The live documents, in order of what you probably want:**
 > - **What to do next, and the skins design system:** [`docs/PLAN_2026-09-14.md`](docs/PLAN_2026-09-14.md) — current audit + ordered plan.
