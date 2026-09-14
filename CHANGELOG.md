@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.5] — 2026-09-14
+
 ### Added
 
 - **The `wm1a` and `w1` volume curves work from a table you bring.** *Launcher sandbox and host
@@ -1676,7 +1678,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/superwilso/Cinder/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/superwilso/Cinder/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/superwilso/Cinder/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/superwilso/Cinder/compare/v0.3.0...v0.3.2
