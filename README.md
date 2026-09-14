@@ -380,8 +380,8 @@ repository:
   Three settings changed the signal: regions CEW2 and KR3, which load Sony's quieter volume table,
   and gain mode 1. The plus modes, the sound signatures and DAC mode measured the same as stock.
 - **Can Cinder do the same without flashing?** The plus modes, yes — the
-  [`signature` component](install.md#the-sound-signature). The NW-WM1A's volume curve, yes, once you
-  bring the table: it is not part of the NW-A50's firmware and Cinder cannot include Sony's files,
+  [`signature` component](install.md#the-sound-signature). The NW-WM1A's volume curve, yes, from the release
+  after v0.3.4 and once you bring the table: it is not part of the NW-A50's firmware and Cinder cannot include Sony's files,
   so the installer uses a copy you put on the player's drive, or the one Wampy already installed,
   and only if it is byte-for-byte Sony's — see
   [The volume curve tables](install.md#the-volume-curve-tables). The external tunings, no.
