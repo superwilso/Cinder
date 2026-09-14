@@ -256,6 +256,9 @@ The `voltable` choice picks the table that maps each volume step to the headphon
 `stock` is the one your player already uses. `wm1a` and `w1` are Sony's curves from other models,
 and **their files are not part of the NW-A50's firmware** — so for those two, you bring the table.
 
+> **Needs the release after v0.3.4.** The v0.3.4 installer does not look for your copy; with it,
+> `wm1a` and `w1` still leave the stock curve in place and say so in the log.
+
 | choice | file you need | SHA-256 the installer checks |
 |---|---|---|
 | `wm1a` | `ov_127x.tbl` (and `ov_dsd_127x.tbl` for DSD) | `b5dd878b0484c43312f3a93c6675d40d546f78ef7494684991eea0aef8651320` (DSD: `b777b7e2786f952797e82830d5d17565d03a4758555436a376bf6daff5e50ac7`) |
