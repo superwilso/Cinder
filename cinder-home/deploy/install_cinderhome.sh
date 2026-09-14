@@ -458,7 +458,9 @@ fi
 #    after MAXBAD. (The old launcher reset the counter on a blind 60 s timer, which a hung
 #    process "survives" → it never accumulated → soft-brick. That bug is removed.)
 #  * ESCAPES, weakest dependency first (each works when the one below it cannot):
-#      1. USB cable connected at boot          -> stock. No fs, no shell, no counter. Always works.
+#      1. USB cable connected at boot          -> stock. No fs, no shell, no counter. Always works,
+#         except the ONE boot after an install: the installer's pass stands it down so the updated
+#         player comes back on Cinder with the cable in (see CABLE_PASS below).
 #     1b. POWER pressed while the logo shows    -> stock. No fs either: reads the kernel log.
 #         (added 2026-09-11 — NOT yet verified on hardware; the cable escape stays until it is)
 #      2. /contents/cinderhome_off  (USB-MSC)  -> stock. Needs a mountable /contents.
@@ -527,7 +529,28 @@ usb_connected() {
 }
 # Cost is zero on a cable-free boot: nothing sleeps unless a cable is actually present. The 3 s
 # re-check rejects the transient CONNECTED blip the gadget emits while enumerating.
-if [ ! -f /data/cinder/cable_escape_off ] && [ ! -f /contents/cinderhome_cable_off ] \
+#
+# FIRST BOOT AFTER AN INSTALL: the escape stands down ONCE (added 2026-09-14). The installer tells
+# people not to unplug the player while it updates, so the boot that follows an install always has
+# a cable in — and this escape sent every one of them to Sony's player, which looks exactly like a
+# failed install ("it refuses to switch into your bootloader now", the first community tester).
+# install_cinderhome.sh writes $CABLE_PASS after its sanity gate; this spends it.
+#   * SPENT BEFORE IT IS HONOURED, on every boot, cable or not. The pass covers the next boot and
+#     no other, whether or not the new build ever starts: it never waits on the app it would rescue.
+#     A build that hangs on that boot costs one more restart, and the restart escapes.
+#   * HONOURED ONLY IF THE DELETE WORKED. A pass that cannot be removed would stand the escape down
+#     on every boot, so a failed rm leaves the escape armed — this fails toward stock.
+#   * /data only, never /contents: it is not a switch a PC or a person can leave set.
+#   * Nothing else stands down. POWER in the logo (1b) and the bad-boot counter cover this boot.
+# cinder-home also deletes a leftover pass once it has proven healthy (mark_healthy_maybe).
+CABLE_PASS=$STATE/cable_pass_once
+CABLE_PASS_SPENT=0
+if [ -e "$CABLE_PASS" ]; then
+    rm "$CABLE_PASS" 2>/dev/null; sync
+    [ -e "$CABLE_PASS" ] || CABLE_PASS_SPENT=1
+fi
+if [ "$CABLE_PASS_SPENT" = 0 ] \
+   && [ ! -f /data/cinder/cable_escape_off ] && [ ! -f /contents/cinderhome_cable_off ] \
    && usb_connected; then
     sleep 3
     usb_connected && run_stock "$@"
@@ -818,6 +841,10 @@ log_sv() {
     [ -n "$LOGF" ] && ( echo "cinderhome-launch: $*" >> "$LOGF" ) 2>/dev/null
     true
 }
+# Said here, not at rung 0: the log is only chosen above. DEVICE_CHECKLIST 11.9 looks for this line.
+if [ "$CABLE_PASS_SPENT" = 1 ]; then
+    log_sv "cable escape stood down for this boot: first boot after an install (the pass is spent)"
+fi
 # The redirect rides on a SIMPLE COMMAND, never on `exec`. A redirection failure on a simple
 # command is just a non-zero rc; on `exec` it makes sh exit WITHOUT running anything, which is the
 # precise shape of the 2026-07-26 brick. /contents also legitimately disappears mid-session during
@@ -943,6 +970,13 @@ fi
 # location and the legacy /contents one (an upgrade from a pre-2026-07-26 build leaves those).
 "$BB" mkdir -p /data/cinder 2>/dev/null
 "$BB" rm -f /data/cinder/off /data/cinder/bootcount /data/cinder/DISABLED_badboot /data/cinder/once_stock 2>/dev/null
+# The post-install cable pass ($CABLE_PASS in the launcher above). The installer tells people not to
+# unplug, so the boot after this one has a cable in, and without the pass it lands on Sony's player
+# and the install looks as if it failed. Written only past the sanity gate, so an aborted install
+# never leaves one; the launcher spends it on the next boot. 0644 for the same umask reason as
+# search_on below.
+echo 1 > /data/cinder/cable_pass_once 2>/dev/null && "$BB" chmod 644 /data/cinder/cable_pass_once 2>/dev/null \
+    && echo "cable pass: the next boot starts Cinder with the cable in"
 # Library search: an opt-in component with no files, so the choice itself is what gets installed.
 # A flag in /data/cinder — machine-written state, off the MSC volume a PC can edit — that
 # cinder-home reads at startup. Written or removed on EVERY install, so an Update that turns it
@@ -964,7 +998,8 @@ umount /system 2>/dev/null
 echo "== done. reboot to normal; appmgr launches cinder-home as the Home app. =="
 echo "   SAFETY: a failed/hung launch AUTO-REVERTS to stock after 4 boots (no wbrt)."
 echo "   Escapes, in order of how little they depend on:"
-echo "     1. boot with the USB CABLE CONNECTED -> stock. Needs no filesystem, always works."
+echo "     1. boot with the USB CABLE CONNECTED -> stock. Needs no filesystem, always works —"
+echo "        except the NEXT boot, which ignores the cable once so Cinder starts with it in."
 echo "     2. create /contents/cinderhome_off over USB-MSC -> stock."
 echo "     3. create /contents/cinderhome_clear over USB-MSC -> clears the latch, tries again"
 echo "        (same as tools/flash.sh --clear-latch)."

@@ -181,6 +181,28 @@ else
     fi
 fi
 
+# ── 3c. and its pictures of the installer, when this machine can draw them ──────────────────
+# Those come from the real Win32 window, so they need the Windows under WSL; anywhere else they are
+# left as they are and this says so. Never fatal: a stale picture of a dialog is no reason to stop a
+# release, and the pixels differ between machines, so there is nothing to --check against. Run
+# through bash so a checkout without the executable bit cannot fail it with 126.
+if [ -z "$DRY" ]; then
+    note "re-rendering the installer screenshots …"
+    set +e; bash tools/render_installer_screenshots.sh >/tmp/cinder-release-installer-shots.log 2>&1; ishots=$?; set -e
+    case "$ishots" in
+        0) if [ -n "$(git status --porcelain -- 'docs/screenshots/installer-*.png')" ]; then
+               act "installer screenshots re-rendered from the real window"
+               CHANGED+=("installer screenshots")
+           else
+               ok "installer screenshots unchanged"
+           fi ;;
+        3) note "installer screenshots left as they are: this machine has no Windows interop" ;;
+        *) note "could not render the installer screenshots (see /tmp/cinder-release-installer-shots.log); left as they are" ;;
+    esac
+else
+    note "installer screenshots: re-rendered when preparing, on a machine with Windows interop"
+fi
+
 # ── 4. every file the installer embeds must exist ───────────────────────────────────────────
 # build.rs fails loudly on a missing payload, but failing HERE names the file and costs no CI run.
 # One list, used by both the existence check and the manifest below — they drifted apart as two

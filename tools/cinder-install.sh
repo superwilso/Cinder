@@ -453,23 +453,26 @@ adb push "$SWAP_SCRIPT" /data/local/tmp/_cinder_swap.sh >/dev/null
 adb shell "chmod 755 /data/local/tmp/_cinder_swap.sh"
 rm -f "$SWAP_SCRIPT"
 
-# 5b. BORROW rung 0 for exactly one boot.
+# 5b. Let the cable through for exactly one boot.
 #
 # The launcher treats ANY cable at boot as the escape to stock (`usb_connected` reads
 # android_usb/state and power_supply/usb/{online,present} — there is no adb-vs-charging
 # distinction). So a flash over adb would reboot straight into the Sony player every time, which is
 # useless for verifying the thing you just installed.
 #
-# The opt-out is therefore taken here and GIVEN BACK below, as close to the boot as possible. It is
-# a loan, not a setting: leaving it set silently removes the one escape that depends on nothing.
-# If this script dies before the restore, the trap still puts it back on the next adb contact, and
-# rung 1 (the bad-boot counter, MAXBAD=4) covers the window regardless.
+# Since 2026-09-14 this writes the installer's one-shot pass instead of borrowing the persistent
+# opt-out. The LAUNCHER deletes $CABLE_PASS on the boot it covers, so the escape comes back even if
+# this script is killed or the device never returns to adb — the two ways the old loan was left
+# outstanding. The trap below still checks on the next adb contact and removes the legacy
+# cable_escape_off as well, because a flash always gives rung 0 back. The power-key escape and
+# rung 1 (the bad-boot counter, MAXBAD=4) cover the one boot regardless.
+CABLE_PASS=/data/cinder/cable_pass_once
 CABLE_FLAG=/data/cinder/cable_escape_off
 restore_cable_escape() {
     adb wait-for-device >/dev/null 2>&1 || return 0
-    adb shell "rm $CABLE_FLAG 2>/dev/null; sync" >/dev/null 2>&1 || true
-    if adb shell "[ -e $CABLE_FLAG ] && echo set" 2>/dev/null | grep -q set; then
-        warn "could NOT remove $CABLE_FLAG — rung 0 is still disabled, remove it by hand"
+    adb shell "rm $CABLE_PASS 2>/dev/null; rm $CABLE_FLAG 2>/dev/null; sync" >/dev/null 2>&1 || true
+    if adb shell "[ -e $CABLE_PASS ] || [ -e $CABLE_FLAG ] && echo set" 2>/dev/null | grep -q set; then
+        warn "could NOT remove $CABLE_PASS or $CABLE_FLAG — rung 0 may still be off, remove them by hand"
     else
         ok "rung 0 restored (cable-at-boot -> stock is armed again)"
     fi
@@ -480,8 +483,8 @@ restore_cable_escape() {
 # script being killed, or it is not much of an escape.
 trap 'restore_cable_escape; exit 143' INT TERM
 trap restore_cable_escape EXIT
-info "borrowing rung 0 for this boot (cable-at-boot escape off)…"
-adb shell "touch $CABLE_FLAG; sync" >/dev/null 2>&1 || warn "could not set $CABLE_FLAG — this boot will land on STOCK if a cable is attached"
+info "cable pass: the next boot ignores the cable once (the launcher spends it)…"
+adb shell "echo 1 > $CABLE_PASS; sync" >/dev/null 2>&1 || warn "could not set $CABLE_PASS — this boot will land on STOCK if a cable is attached"
 
 info "running swap on device…"
 adb shell "sh /data/local/tmp/_cinder_swap.sh" || die "swap failed (see above — rollback with: $0 --rollback)"

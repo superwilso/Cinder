@@ -397,10 +397,41 @@ pub fn owns_its_console() -> bool {
 }
 
 pub fn run(action: Option<Action>, dry: bool) -> i32 {
+    let hwnd = match open_window(action, dry, false) {
+        Ok(h) => h,
+        Err(rc) => return rc,
+    };
+    // SAFETY: hwnd is the live window open_window just made on this thread; msg is a live local.
+    unsafe {
+        ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
+
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            // Without this, Tab does not move between controls and Enter does not press the
+            // default button — the two things every Windows user tries first.
+            if IsDialogMessageW(hwnd, &mut msg) == 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+    EXIT_CODE.load(Ordering::SeqCst)
+}
+
+/// Make the window and its app state, with the first page built but not yet shown. Shared by
+/// `run` and `screenshots`, so the pictures come from the same window people get. `shot` is the
+/// screenshot mode's three differences: keep the console (it reports what it wrote, and a message
+/// box would stall the script), read no drive (the state is canned), and put the window off
+/// screen.
+fn open_window(action: Option<Action>, dry: bool, shot: bool) -> Result<HWND, i32> {
+    let fail = |msg: &str| if shot { eprintln!("{msg}") } else { fatal(msg) };
     // SAFETY: all three take no arguments or a well-formed local, and are safe to call once at
     // startup before any window exists.
     unsafe {
-        FreeConsole();
+        if !shot {
+            FreeConsole();
+        }
         SetProcessDPIAware();
         let icc = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: 0x0000_00FF };
         InitCommonControlsEx(&icc);
@@ -409,17 +440,17 @@ pub fn run(action: Option<Action>, dry: bool) -> i32 {
     let comps = match crate::CATALOGUE.and_then(|t| crate::catalogue::parse_catalogue(t).ok()) {
         Some(c) => c,
         None => {
-            fatal("This build has no component catalogue embedded, so it cannot install anything.\n\ncinder-home/deploy/components.conf was missing when it was compiled.");
-            return 2;
+            fail("This build has no component catalogue embedded, so it cannot install anything.\n\ncinder-home/deploy/components.conf was missing when it was compiled.");
+            return Err(2);
         }
     };
     if !crate::MISSING.is_empty() {
-        fatal(&format!(
+        fail(&format!(
             "This build is incomplete — {} payload file(s) were missing when it was compiled:\n\n{}\n\nDownload a release build rather than one made from a checkout with no dist/.",
             crate::MISSING.len(),
             crate::MISSING.join("\n")
         ));
-        return 2;
+        return Err(2);
     }
 
     // SAFETY: every pointer handed to Win32 below outlives its call; the class name and window
@@ -442,8 +473,8 @@ pub fn run(action: Option<Action>, dry: bool) -> i32 {
             hIconSm: std::ptr::null_mut(),
         };
         if RegisterClassExW(&cls) == 0 {
-            fatal("Could not register the window class. Run with --console for the text interface.");
-            return 2;
+            fail("Could not register the window class. Run with --console for the text interface.");
+            return Err(2);
         }
 
         // Read the DPI BEFORE the window exists, because the window's own size depends on it.
@@ -464,15 +495,22 @@ pub fn run(action: Option<Action>, dry: bool) -> i32 {
         // laid out on top of each other; a minimum that cannot show the page is not a minimum.
         MIN_W.store(sc(620), Ordering::SeqCst);
         MIN_H.store(sc(560), Ordering::SeqCst);
-        let x = (GetSystemMetrics(SM_CXSCREEN) - ww) / 2;
-        let y = ((GetSystemMetrics(SM_CYSCREEN) - wh) / 2).max(0);
+        let (x, y, ex) = if shot {
+            // Past the right-hand edge of every monitor. DWM still composes a window out there, so
+            // PrintWindow gets real pixels without the window covering anything; a tool window
+            // that never activates stays off the taskbar and out of Alt-Tab.
+            let right = GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            (right + sc(40), 0, WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+        } else {
+            ((GetSystemMetrics(SM_CXSCREEN) - ww) / 2, ((GetSystemMetrics(SM_CYSCREEN) - wh) / 2).max(0), 0)
+        };
         let title = w(&format!(
             "Cinder installer {}{}",
             crate::VERSION,
             if dry { "  —  DRY RUN" } else { "" }
         ));
         let hwnd = CreateWindowExW(
-            0,
+            ex,
             class.as_ptr(),
             title.as_ptr(),
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
@@ -488,8 +526,8 @@ pub fn run(action: Option<Action>, dry: bool) -> i32 {
         if hwnd.is_null() {
             // FreeConsole has already run, so there is nowhere left to print. Without this the
             // program would vanish on a double-click with no window and no message.
-            fatal("Could not create the window. Run with --console for the text interface.");
-            return 2;
+            fail("Could not create the window. Run with --console for the text interface.");
+            return Err(2);
         }
 
         let mk = |px: i32, weight: i32, face: &str| -> HFONT {
@@ -531,25 +569,203 @@ pub fn run(action: Option<Action>, dry: bool) -> i32 {
             ok: false,
             dry,
         });
-        app.rescan();
+        if !shot {
+            app.rescan();
+        }
         BG_BRUSH.store(app.brush_bg as usize, Ordering::SeqCst);
         APP.with(|a| *a.borrow_mut() = Some(app));
 
         with_app(|a| a.build_page());
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
+        Ok(hwnd)
+    }
+}
 
-        let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
-            // Without this, Tab does not move between controls and Enter does not press the
-            // default button — the two things every Windows user tries first.
-            if IsDialogMessageW(hwnd, &mut msg) == 0 {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+// ── screenshots ────────────────────────────────────────────────────────────────────────────
+//
+// `--screenshots <dir>` renders the pages the README shows into PNGs, from the real window: stock
+// controls in the system theme are most of how this program looks, and nothing but Windows draws
+// them. The player is canned (a "Cinder is installed" state), no drive is read, and nothing is
+// written but the images. Run by tools/render_installer_screenshots.sh, which tools/release.sh
+// calls on a machine with Windows interop.
+
+#[repr(C)]
+struct BITMAPINFOHEADER {
+    biSize: u32,
+    biWidth: i32,
+    biHeight: i32,
+    biPlanes: u16,
+    biBitCount: u16,
+    biCompression: u32,
+    biSizeImage: u32,
+    biXPelsPerMeter: i32,
+    biYPelsPerMeter: i32,
+    biClrUsed: u32,
+    biClrImportant: u32,
+}
+
+/// The header, and room for the three colour masks GDI may write after it.
+#[repr(C)]
+struct BITMAPINFO {
+    hdr: BITMAPINFOHEADER,
+    masks: [u32; 3],
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn PrintWindow(h: HWND, dc: HDC, flags: u32) -> i32;
+    fn PeekMessageW(m: *mut MSG, h: HWND, min: u32, max: u32, remove: u32) -> i32;
+}
+
+#[link(name = "gdi32")]
+extern "system" {
+    fn CreateCompatibleDC(dc: HDC) -> HDC;
+    fn CreateCompatibleBitmap(dc: HDC, w: i32, h: i32) -> *mut c_void;
+    fn DeleteDC(dc: HDC) -> i32;
+    fn GetDIBits(dc: HDC, bmp: *mut c_void, start: u32, lines: u32, bits: *mut c_void, info: *mut BITMAPINFO, usage: u32) -> i32;
+}
+
+const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+const WS_EX_NOACTIVATE: u32 = 0x0800_0000;
+const SW_SHOWNOACTIVATE: i32 = 4;
+const SM_XVIRTUALSCREEN: i32 = 76;
+const SM_CXVIRTUALSCREEN: i32 = 78;
+const PM_REMOVE: u32 = 0x0001;
+const PW_CLIENTONLY: u32 = 0x0001;
+/// Ask DWM for the composed pixels (Windows 8.1+), which is what themed controls look like on
+/// screen. Where there is no composition to ask, the plain WM_PRINT path is tried instead.
+const PW_RENDERFULLCONTENT: u32 = 0x0002;
+
+/// The pages the README shows, in its order.
+const SHOTS: [(&str, Page, Action); 3] = [
+    ("installer-home", Page::Home, Action::Install),
+    ("installer-options", Page::Options, Action::Install),
+    ("installer-confirm", Page::Confirm, Action::Install),
+];
+
+pub fn screenshots(dir: &std::path::Path) -> i32 {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("screenshots: cannot create {}: {e}", dir.display());
+        return 2;
+    }
+    let hwnd = match open_window(None, false, true) {
+        Ok(h) => h,
+        Err(rc) => return rc,
+    };
+    with_app(|a| {
+        a.players = vec![PathBuf::from("D:\\")];
+        a.target = a.players.first().cloned();
+        a.state = Installed {
+            last: Some(device::LastRun::Installed),
+            channel: Some(crate::CHANNEL.to_string()),
+            installer_version: Some(crate::VERSION.to_string()),
+            ..Installed::default()
+        };
+    });
+    // SAFETY: hwnd is the live window open_window made on this thread.
+    unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
+
+    let mut rc = 0;
+    for (name, page, action) in SHOTS {
+        with_app(|a| {
+            a.action = action;
+            a.page = page;
+            a.build_page();
+        });
+        // SAFETY: as above. Repaint the whole client area now that no borrow of the app is held,
+        // so WM_PAINT can reach it — paints sent while build_page ran were dropped.
+        unsafe {
+            InvalidateRect(hwnd, std::ptr::null(), 1);
+            UpdateWindow(hwnd);
+        }
+        pump(std::time::Duration::from_millis(400));
+        let path = dir.join(format!("{name}.png"));
+        match capture(hwnd) {
+            Some((wd, ht, rgb)) => match std::fs::write(&path, crate::png::encode_rgb(wd, ht, &rgb)) {
+                Ok(()) => println!("wrote {} ({wd}x{ht})", path.display()),
+                Err(e) => {
+                    eprintln!("screenshots: {}: {e}", path.display());
+                    rc = 2;
+                }
+            },
+            None => {
+                eprintln!("screenshots: could not capture the {name} page");
+                rc = 2;
             }
         }
     }
-    EXIT_CODE.load(Ordering::SeqCst)
+    // SAFETY: hwnd is live; WM_DESTROY releases the app state.
+    unsafe { DestroyWindow(hwnd) };
+    rc
+}
+
+/// Dispatch whatever the window has queued (paints, mostly) for `span`.
+fn pump(span: std::time::Duration) {
+    let end = std::time::Instant::now() + span;
+    // SAFETY: msg is a live local, and this is the thread that owns the window.
+    unsafe {
+        let mut msg: MSG = std::mem::zeroed();
+        while std::time::Instant::now() < end {
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+/// The client area as RGB rows from the top: through DWM first, then the plain print path if that
+/// gave nothing usable (every pixel one colour, which no page of this window is).
+fn capture(hwnd: HWND) -> Option<(u32, u32, Vec<u8>)> {
+    [PW_CLIENTONLY | PW_RENDERFULLCONTENT, PW_CLIENTONLY]
+        .into_iter()
+        .filter_map(|flags| capture_with(hwnd, flags))
+        .find(|(_, _, rgb)| rgb.chunks_exact(3).any(|p| p != &rgb[..3]))
+}
+
+fn capture_with(hwnd: HWND, flags: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let mut rc = RECT::default();
+    // SAFETY: every GDI object made here is released before returning; the bitmap is deselected
+    // before GetDIBits reads it, as GDI requires; `bgra` holds exactly `ht` rows of 32-bit pixels.
+    unsafe {
+        GetClientRect(hwnd, &mut rc);
+        let (wd, ht) = (rc.right, rc.bottom);
+        if wd <= 0 || ht <= 0 {
+            return None;
+        }
+        let screen = GetDC(std::ptr::null_mut());
+        let mem = CreateCompatibleDC(screen);
+        let bmp = CreateCompatibleBitmap(screen, wd, ht);
+        let old = SelectObject(mem, bmp);
+        let printed = PrintWindow(hwnd, mem, flags);
+        SelectObject(mem, old);
+        let mut info = BITMAPINFO {
+            hdr: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: wd,
+                biHeight: -ht, // negative: rows from the top
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: 0, // BI_RGB
+                biSizeImage: 0,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            masks: [0; 3],
+        };
+        let mut bgra = vec![0u8; wd as usize * ht as usize * 4];
+        let lines = GetDIBits(mem, bmp, 0, ht as u32, bgra.as_mut_ptr().cast(), &mut info, 0);
+        DeleteObject(bmp);
+        DeleteDC(mem);
+        ReleaseDC(std::ptr::null_mut(), screen);
+        if printed == 0 || lines != ht {
+            return None;
+        }
+        let rgb = bgra.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0]]).collect();
+        Some((wd as u32, ht as u32, rgb))
+    }
 }
 
 fn fatal(msg: &str) {
@@ -960,8 +1176,10 @@ impl App {
         s.push_str(
             "\r\nNothing is flashed by this program. The player reboots into its own updater and \
              applies the package itself, then comes back on its own. Do not unplug it.\r\n\r\n\
-             If a boot ever goes wrong: hold the USB cable in at power-on to get the stock player \
-             back, and see RECOVERY.md.",
+             It comes back on Cinder with the cable still in: the first start after an install \
+             ignores the cable. From the next start on, a cable at power-on starts the stock player \
+             instead (the recovery escape), so unplug it before you restart the player. If a boot \
+             ever goes wrong, see RECOVERY.md.",
         );
         s
     }
@@ -1383,8 +1601,13 @@ fn carry_out(action: Action, comps: &[Comp], target: &std::path::Path, dry: bool
             push_log(String::new());
             push_log("The player has been told to update. Its own updater takes over now.");
             push_log(String::new());
-            push_log("If a boot ever goes wrong: hold the USB cable in at power-on to get the");
-            push_log("stock player back, and see RECOVERY.md.");
+            if action.is_removal() {
+                push_log("It comes back on the stock Sony player by itself.");
+            } else {
+                push_log("It comes back on Cinder with the cable still in: the first start after an");
+                push_log("install ignores the cable. After that, a cable at power-on starts the stock");
+                push_log("player (the recovery escape), so unplug before restarting. See RECOVERY.md.");
+            }
             tick();
             true
         }

@@ -72,7 +72,9 @@ sha256sum -c SHA256SUMS
 `SHA256SUMS` is attached to each release. It proves the download matches what the release workflow
 produced. On its own it does **not** prove the workflow built this source tree.
 
-Releases tagged after 2026-09-14 also carry a GitHub build attestation for every published file:
+Releases from v0.3.5 on also carry a GitHub build attestation for every published file. Checking
+it needs GitHub CLI 2.49 or later; older versions, including the 2.45 Ubuntu packages, do not have
+the command:
 
 ```sh
 gh attestation verify cinder-installer-windows-x64.exe -R superwilso/Cinder

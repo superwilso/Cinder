@@ -108,6 +108,22 @@ scenario "only the HW keycode line"                 stock  '{ echo "$BOOT"; HWK 
 scenario "kernel log with no timestamps"            cinder 'printf "(0)[28:pmic_thread_kth]kpd: Power Key generate, pressed=1\n" > $R/proc/klog'
 scenario "power escape ignores the cable opt-out"   stock  ': > $R/data/cinder/cable_escape_off; { echo "$BOOT"; KPD 12.000001 1; } > $R/proc/klog'
 scenario "late pwrkey_int_handler line: no count"   cinder '{ echo "$BOOT"; printf "<5>[    6.201337] (0)[28:pmic_thread_kth][Power/PMIC] [pwrkey_int_handler] Release pwrkey\n"; } > $R/proc/klog'
+# The post-install cable pass (2026-09-14). The installer says "do not unplug", so the first boot
+# after an install always has a cable in, and rung 0 sent every one of them to stock.
+# install_cinderhome.sh now leaves a one-shot pass on /data: spent on the next boot whatever
+# happens, honoured only if the launcher could delete it, and never a reason to skip POWER.
+CABLE='echo CONFIGURED > $R/sys/class/android_usb/android0/state'
+pass_state() { [ -e "$1/data/cinder/cable_pass_once" ] && echo present || echo spent; }
+scenario "cable + post-install pass -> cinder"       cinder "$CABLE"'; : > $R/data/cinder/cable_pass_once'
+check "  the pass is spent" "$(pass_state "$LAST_R")" spent
+check "  the log says the escape stood down" "$(grep -c 'cable escape stood down' "$LAST_R/contents/cinderhome.log")" 1
+check "  the next cable boot escapes again" "$(sh "$LAST_R/launch.sh" 2>/dev/null | grep -c STOCK)" 1
+check "  and does not claim a pass" "$(grep -c 'cable escape stood down' "$LAST_R/contents/cinderhome.log")" 1
+scenario "pass with no cable is spent all the same"  cinder ': > $R/data/cinder/cable_pass_once'
+check "  the pass is spent" "$(pass_state "$LAST_R")" spent
+scenario "a pass on /contents grants nothing"        stock  "$CABLE"'; : > $R/contents/cable_pass_once'
+scenario "a pass that cannot be deleted -> stock"    stock  "$CABLE"'; mkdir -p $R/data/cinder/cable_pass_once/x'
+scenario "POWER in the logo beats the pass"          stock  "$CABLE"'; : > $R/data/cinder/cable_pass_once; { echo "$BOOT"; KPD 3.576327 1; } > $R/proc/klog'
 scenario "/contents NOT mounted (the brick)"      stock  'printf "rootfs / rootfs rw 0 0\n" > $R/proc/mounts'
 # THE SAFETY NET CANNOT BE ARMED. Two ways of saying it, because one of them lies when the test
 # runs as root: chmod 555 does not stop uid 0, so on a root shell the counter write SUCCEEDS, the

@@ -20,8 +20,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **An install or update through the installer ended on Sony's player.** *Launcher-tested;
+  device-unverified.* The installer tells people not to unplug the player while it updates, so the
+  boot after an install always had a cable in — and a cable at power-on is the escape to Sony's
+  player, so the install looked as if it had failed. The installer now leaves a one-shot pass on
+  `/data`: the next boot starts Cinder with the cable in, and the launcher spends the pass on that
+  boot whether or not Cinder starts, so from the boot after it a cable at power-on reaches Sony's
+  player again. The launcher honours the pass only if it could delete it; POWER in the logo and the
+  bad-boot counter still cover that boot, and cinder-home removes any pass left over once it is
+  healthy. `tools/cinder-install.sh` uses the same pass in place of the persistent opt-out it used
+  to borrow and give back.
 - **The Library sorted lowercase and accented names below "Z".** *Host-tested against names from
-  the reference library; device-unverified.* Every list compared names byte by byte, so every
+  the reference library; device-verified 2026-09-14.* Every list compared names byte by byte, so every
   capital came before every lowercase letter and every accented letter after `z`: 12 of 310
   artists (`alt‐J`, `bôa`, `julie`, `the north` …) and 127 song titles sat under `Zola Jesus`,
   while the A–Z rail filed them under their letters. Artists, albums, songs, folders and playlists
@@ -33,12 +43,22 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Added
 
-- **Settings ▸ Ignore "The" in artists.** *Host-tested; device-unverified.* Off by default, so
+- **Settings ▸ Ignore "The" in artists.** *Host-tested; device-verified 2026-09-14.* Off by default, so
   artists sort as written. On, "The Beatles" sorts among the B's — in the Artists tab, the Albums
   tab's artist groups and Songs sorted by artist, and on the A–Z rail — the way Sony's own player
   files it. Song titles and album names keep their "The" either way. The lists re-sort the moment
   it is switched, an open artist or album page stays on what it was showing, and Reset settings
   turns it off.
+
+### Changed
+
+- **The README shows the installer's real window** instead of an ASCII sketch of it. The pictures
+  come from the installer itself: `--screenshots <dir>` (Windows, not in `--help`) renders the
+  Home, Options and Confirm pages for a stand-in player, reading no drive, and
+  `tools/render_installer_screenshots.sh` runs it from WSL. `tools/release.sh` re-renders them when
+  the machine it runs on has Windows interop.
+- **Release notes and `SECURITY.md` say which GitHub CLI can check an attestation**: 2.49 or later.
+  Ubuntu's packaged 2.45 does not have `gh attestation verify`.
   
 ## [0.3.6] — 2026-09-14
 

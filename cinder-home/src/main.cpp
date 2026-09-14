@@ -1529,6 +1529,13 @@ void mark_healthy_maybe() {
         ::sync();
         g_counter_reset = true;
         clog_("healthy: bad-boot counter cleared");
+        // The post-install cable pass ($CABLE_PASS in deploy/install_cinderhome.sh). The launcher
+        // spends it on the boot after an install and honours it only if that delete worked, so one
+        // still here means the delete failed and the cable escape was armed this boot anyway.
+        // Removing it now stops a stale pass standing the escape down on some later boot.
+        // The path MUST stay in step with $CABLE_PASS.
+        if (::unlink("/data/cinder/cable_pass_once") == 0)
+            clog_("healthy: removed a leftover post-install cable pass — the cable escape is armed");
     }
 }
 

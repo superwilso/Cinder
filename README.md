@@ -173,27 +173,15 @@ Linux.
 
 ### The three things it does
 
-```
-┌────────────────────────────────────────────────────────────────┐
-│  Cinder                                       0.3.1 · stable   │
-├────────────────────────────────────────────────────────────────┤
-│   Player:  D:\                                    [ Rescan ]   │
-│   Cinder is installed (installer 0.3.0, stable) — Thu Sep 11    │
-│                                                                 │
-│   ┌──────────────────────────────────────────────────────────┐ │
-│   │ Install Cinder                                           │ │
-│   │ Fresh install: choose the optional parts, then flash.    │ │
-│   ├──────────────────────────────────────────────────────────┤ │
-│   │ Update Cinder                                            │ │
-│   │ Same components as last time, new build.                 │ │
-│   ├──────────────────────────────────────────────────────────┤ │
-│   │ Uninstall                                                │ │
-│   │ Put the stock Sony player back.                          │ │
-│   └──────────────────────────────────────────────────────────┘ │
-│                                                                 │
-│   [ Check for a newer release ]   [ Clean up 11 staged files ] │
-└────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/screenshots/installer-home.png" width="440" alt="The installer's home page: the player it found, what is installed on it, and Install, Update and Uninstall">
+</p>
+<p align="center">
+  <img src="docs/screenshots/installer-options.png" width="330" alt="Choosing the optional components, with the selected one described below the list">
+  <img src="docs/screenshots/installer-confirm.png" width="330" alt="The confirmation page: every choice, what is copied, and what the player does next">
+</p>
+
+*The real window, rendered by `tools/render_installer_screenshots.sh` for a stand-in player.*
 
 **Install** asks which optional parts you want, then stages them. **Update** reads the choices
 already on the player out of its own `cinder_components.conf` and keeps them, so a new build never
