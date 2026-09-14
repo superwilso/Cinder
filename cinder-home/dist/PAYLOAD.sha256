@@ -2,17 +2,17 @@
 # Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
-tag v0.3.4
+tag v0.3.5
 38e8f3c35e2904e77dcce88f0fa0b9c6be22625128eee3b5dfc6ff1cccf9f5ae  cinder-home/dist/stable/cinder-home
-0343bc8bba61db48c48ab24fc6f793927ac7a1414b277fb196eae28fb6d02678  cinder-home/dist/stable/cinder-probe
+db909f4013fde64191a6b9f0374a17ffa1edb24e259d14638416dd552053f1f6  cinder-home/dist/stable/cinder-probe
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
 42dd6d1f20d7602bf66ef2ff67174623cfb037fdc9564158e46b21ed55d20b26  cinder-home/dist/stable/cinder-power
 20fc63ca7991999feef6b5599351502d0fd207802a6c85515050820162f0cb92  cinder-home/dist/stable/cinder-msc
 d2eeb22e165bd9dcf01b9862af6e17dbdd157817cbfac54fd14adf77516193fd  cinder-home/dist/stable/cinder-clock
 6774e9aace1185c5c9361a7c21d43f5b51b68d586f01ed204211c01b681d3d38  cinder-home/dist/stable/cinder-fm
-42ff8f82a73ea4af3aa119cdcdcdf4946ba7909b5ad04e5dcbb43bab8759a7e2  cinder-home/dist/stable/cinder-voltable
+9d494618f308f54ac3b4afc4ce02ffe762a8a0ffcb30f9fb0a9447876f0fccf3  cinder-home/dist/stable/cinder-voltable
 f7682696f4f1c200c5ceb9ae04b82aac7ca5a7515ba3ff76db8f92cf61624898  cinder-home/dist/stable/cinder-battery
 763b0c422a3eb185b7a58466881d6fde0c6233994f73767178edbca3dd2bbb22  cinder-home/dist/stable/cinder-signature.sh
 458a402e8e1a5b5c37721e5a33298ecbb76173552f1ff2daa4708e1eb7735e05  cinder-home/dist/stable/cinder_components.conf
-93452add94c038a96279b2f533928f4ee38362b7cf7a681c085d7173f5e2d2e2  cinder-home/dist/stable/cinder_home_install.upg
-fe9acb1510a259078163858fe5268d7e43bb3f33e0244856c197e5e585242954  cinder-home/dist/stable/cinder_home_uninstall.upg
+f26d8a7a050ac4442f5c42c7c0e144eca7c52205bbb09d64a358a7d3aa509842  cinder-home/dist/stable/cinder_home_install.upg
+5f625e06593da7a7f7fef4ef1e2fd23990e39a614440c60265e58ff0562ea648  cinder-home/dist/stable/cinder_home_uninstall.upg
