@@ -11,7 +11,7 @@ the whole design: the 2026-07-26 brick happened because every escape that existe
 
 | # | Escape | Depends on |
 |---|--------|-----------|
-| 0 | **Boot with the USB cable connected → stock.** | Nothing. No filesystem, no shell, no counter. |
+| 0 | **Boot with the USB cable connected → stock.** Except the first boot after an install or update: the installer leaves a one-shot pass so the player comes back on Cinder with the cable still in, and the launcher spends that pass on that boot whether Cinder starts or not. The boot after it escapes again. | Nothing. No filesystem, no shell, no counter. (A pass the launcher cannot delete is ignored, so a broken `/data` leaves the escape on.) |
 | 0b | **Press POWER while the Sony logo shows → stock**, for that boot only (verified 2026-09-11). Once or twice while the logo is up: a press in its first second or two is before the kernel, and after the launcher runs (~10 s) is too late. Holding POWER to switch on is one press and never counts. | The kernel's own log and a shell. No filesystem, no counter. |
 | 1 | **Bad-boot counter** hits `MAXBAD=4` → stock, by itself. | A writable `/data` (ext4). |
 | 2 | `/contents/cinderhome_off` over USB-MSC → stock. | A mountable `/contents` + a PC. |

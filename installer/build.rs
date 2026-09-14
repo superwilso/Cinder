@@ -158,10 +158,24 @@ fn main() {
 /// The GNU target is used for local `cargo check` only — every published Windows build is MSVC —
 /// so a check-only build losing its theming costs nothing.
 fn embed_manifest() {
-    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("cinder-installer.manifest");
+    let mut manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("cinder-installer.manifest");
     println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rerun-if-env-changed=CINDER_INSTALLER_AS_INVOKER");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
+    }
+    // SCREENSHOT BUILDS ONLY. tools/render_installer_screenshots.sh starts the .exe from WSL, and
+    // Windows will not start a requireAdministrator program from there at all: there is no UAC
+    // prompt to show, so CreateProcess just fails. This embeds a copy of the manifest that asks for
+    // nothing, for a build that only ever runs --screenshots. Nothing in release.yml sets it, and
+    // without elevation such a build could not send the upgrade command anyway.
+    if env::var_os("CINDER_INSTALLER_AS_INVOKER").is_some_and(|v| !v.is_empty()) && manifest.is_file() {
+        let text = fs::read_to_string(&manifest).unwrap();
+        let swapped = text.replace("level=\"requireAdministrator\"", "level=\"asInvoker\"");
+        assert_ne!(swapped, text, "CINDER_INSTALLER_AS_INVOKER: the manifest no longer says requireAdministrator");
+        let copy = PathBuf::from(env::var("OUT_DIR").unwrap()).join("cinder-installer.as-invoker.manifest");
+        fs::write(&copy, swapped).unwrap();
+        manifest = copy;
     }
     if env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
         // The GNU toolchain has no linker switch for this, but it ships `windres`, which compiles

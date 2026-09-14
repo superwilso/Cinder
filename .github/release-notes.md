@@ -102,7 +102,8 @@ On Windows:
 Get-FileHash .\cinder-installer-windows-x64.exe -Algorithm SHA256
 ```
 
-Every file above also has a GitHub build attestation. With the [GitHub CLI](https://cli.github.com):
+Every file above also has a GitHub build attestation. With the [GitHub CLI](https://cli.github.com)
+2.49 or later (older versions, including the 2.45 Ubuntu packages, do not have this command):
 
 ```
 gh attestation verify cinder-installer-windows-x64.exe -R superwilso/Cinder

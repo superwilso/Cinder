@@ -30,6 +30,9 @@ mod stage;
 
 #[cfg(windows)]
 mod gui;
+// Only the window's screenshot mode writes images; the tests run everywhere.
+#[cfg(any(windows, test))]
+mod png;
 
 pub use payload::{CATALOGUE, CHANNEL, MISSING};
 
@@ -120,6 +123,13 @@ fn check_for_updates() -> i32 {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Not in --help: renders the README's pictures of the window from a canned player, for
+    // tools/render_installer_screenshots.sh. It reads no drive and writes only the PNGs.
+    #[cfg(windows)]
+    if let Some(i) = args.iter().position(|a| a == "--screenshots") {
+        let dir = args.get(i + 1).map_or_else(|| PathBuf::from("."), PathBuf::from);
+        std::process::exit(gui::screenshots(&dir));
+    }
     let mut explicit: Option<PathBuf> = None;
     let mut assume_yes = false;
     let mut action: Option<Action> = None;

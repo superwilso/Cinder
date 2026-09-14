@@ -228,8 +228,9 @@ fn print_trigger_failed(e: &io::Error) {
 }
 
 fn recovery_note() {
-    println!("\n  If a boot ever goes wrong: hold the player's USB cable in at power-on to get");
-    println!("  the stock player back, and see RECOVERY.md.");
+    println!("\n  A cable at power-on starts the stock player (the recovery escape), except on the");
+    println!("  first start after an install, which ignores it so Cinder comes up with the cable");
+    println!("  still in. Unplug before restarting it. If a boot ever goes wrong, see RECOVERY.md.");
 }
 
 /// Ask which player to use when more than one is plugged in.
