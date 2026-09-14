@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+
+
 ### Fixed
 
 - **The Library sorted lowercase and accented names below "Z".** *Host-tested against names from
@@ -37,6 +39,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   files it. Song titles and album names keep their "The" either way. The lists re-sort the moment
   it is switched, an open artist or album page stays on what it was showing, and Reset settings
   turns it off.
+  
+## [0.3.6] — 2026-09-14
 
 ## [0.3.5] — 2026-09-14
 
@@ -1700,7 +1704,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/superwilso/Cinder/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/superwilso/Cinder/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/superwilso/Cinder/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/superwilso/Cinder/compare/v0.3.2...v0.3.3
