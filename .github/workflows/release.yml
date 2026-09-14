@@ -124,6 +124,13 @@ jobs:
     needs: [build, build-linux]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    # Job-level permissions REPLACE the workflow's, so contents: write is restated. id-token lets
+    # the job ask GitHub's OIDC issuer for the short-lived identity Sigstore signs with;
+    # attestations lets it store the result against this repository.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -139,6 +146,20 @@ jobs:
           ls -lR dist
           # A published binary nobody can verify is a binary nobody should run.
           ( cd dist && sha256sum -- * | tee SHA256SUMS )
+
+      # BUILD PROVENANCE (docs/SHORTCOMINGS.md D7). SHA256SUMS proves a download matches what this
+      # job published; it cannot prove this workflow, from this commit, produced it — anyone able to
+      # replace a file could replace the sums beside it. An attestation is signed through Sigstore
+      # with the run's own OIDC identity (repository, workflow file, commit), so it can be checked
+      # with `gh attestation verify <file> -R superwilso/Cinder` and cannot be minted outside a run.
+      #
+      # One step over SHA256SUMS rather than one per build job: every published file, the two
+      # .UPGs included, is covered by the same list the release body inlines. It says nothing about
+      # where the committed ARM payload came from — that is D4's manifest, checked above.
+      - name: Attest build provenance for every published file
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: dist/SHA256SUMS
 
       # The sums are INLINED INTO THE RELEASE PAGE, not merely attached. Verifying a download
       # against a checksum file fetched from beside it is close to circular: whoever could swap

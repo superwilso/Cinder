@@ -4366,8 +4366,8 @@ static std::vector<std::vector<unsigned char>> g_bt_paired;
 // Measured on device 2026-08-26 — same address, minutes apart, HCI snoop running throughout
 // (`--btlink hci on`, decoded with analysis/tools/btsnoop_decode.py):
 //
-//   retry OFF -> RequestConnection(AC:80:0A:56:A9:91) rc=1   CMD Create Connection -> AC:80:…:91
-//   retry ON  -> RequestConnection(AC:80:0A:56:A9:91) rc=0   nothing on the air at all
+//   retry OFF -> RequestConnection(00:00:5E:00:53:03) rc=1   CMD Create Connection -> 00:00:5E:…:03
+//   retry ON  -> RequestConnection(00:00:5E:00:53:03) rc=0   nothing on the air at all
 //   retry OFF -> RequestLastDeviceConnection()        rc=1   LINK IN 1.53 s
 //
 // **rc is accept/reject here, 1 = accepted** — the `Pairing` convention, not the

@@ -29,7 +29,9 @@ survivable.
 That would be defensible if the uncovered 41% were peripheral. **It is the opposite.** The
 uncovered half is the code that:
 
-* runs as **root** — twelve `chmod 4755` setuid installs in `install_cinderhome.sh` alone;
+* runs as **root** — eight setuid-root helpers, each installed by a `chmod 4755` in
+  `install_cinderhome.sh` (this said "twelve" until 2026-09-14, counting installs across scripts
+  rather than binaries);
 * owns the **boot path** — the launcher, the crash supervisor, the bad-boot counter, the
   auto-revert ladder, i.e. every mechanism standing between a bad build and a brick;
 * drives **closed Sony services** over hand-recovered vtable offsets, where a wrong argument shape
@@ -365,7 +367,7 @@ Absent: `CONTRIBUTING.md`, `CODEOWNERS`, `SECURITY.md`, issue templates, PR temp
 > and there is one — and there was no route for a stranger who owns an A50 to contribute one.
 > `CODEOWNERS` and `.editorconfig` remain absent; both are low value for a single maintainer.
 
-`SECURITY.md` is not box-ticking here. This project ships **twelve setuid-root binaries** to a
+`SECURITY.md` is not box-ticking here. This project ships **eight setuid-root binaries** to a
 device, distributes an **unsigned** Windows executable that drives a firmware flasher, and has no
 stated way to report a vulnerability in any of it.
 
@@ -391,6 +393,15 @@ For software that flashes a device with no recovery path, that is the weakest li
 > **Signing and build attestation are still absent**, and they are the two that would actually make
 > the installer trustworthy to someone who does not know the maintainer. Both cost money or a
 > non-trivial workflow change, so they stay recorded rather than pretended-at.
+>
+> **2026-09-14 — the second bullet is closed, in the workflow; unproven until a tag runs it.**
+> `release.yml`'s release job now runs `actions/attest-build-provenance` over `SHA256SUMS`, so every
+> published file (both installers and both `.UPG`s) gets a Sigstore-signed provenance statement
+> naming the workflow, the repository and the commit. `gh attestation verify <file> -R
+> superwilso/Cinder` checks it; `SECURITY.md` and the release notes say how. It is free for a public
+> repository, which is why it came before signing. Signing is still open, and so is the part no
+> attestation can close: the ARM payload is committed, so provenance for those bytes still rests on
+> D4's manifest.
 
 ---
 

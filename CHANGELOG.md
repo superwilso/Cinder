@@ -109,11 +109,10 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   confirm. The claim came from a reference device an earlier session had copied the files onto.
   Once they were gone, every boot logged `volume curve: cinder-voltable wm1a FAILED — stock curve
   stays` — to logcat, where nobody would see it — and the player quietly kept the stock curve.
-  Cinder does not ship Sony's files, so on a stock player those two choices still do nothing — but
-  now visibly. The installer's description says so; the install log warns when the chosen table is
-  missing; and at boot `cinderhome.log` says `volume curve: 'wm1a' needs …/ov_127x.tbl, which is not
-  part of the stock firmware and is not on this player — stock curve stays` instead of a bare
-  FAILED in logcat.
+  Cinder cannot ship Sony's files, so the two choices now work from a table the user brings (see
+  Added) and say so when there is none: the install log warns, and at boot `cinderhome.log` says
+  `volume curve: 'wm1a' needs Sony's ov_127x.tbl, which this player's firmware does not include and
+  no install has supplied — stock curve stays` instead of a bare FAILED in logcat.
 
 - **Withdrawn: "there is no EU volume cap".** `analysis/RE_volume_tables.md` (2026-09-04) compared
   the two region tables by sweeping the codec's analogue attenuator and found identical curves.
@@ -154,6 +153,29 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   and SensMe. The README and the installer no longer call the `signature` component the whole of
   Walkman One's sound signature: it reproduces the plus modes, and the external tunings are another
   model's firmware.
+- **The `wm1a` and `w1` volume curves work from a table you bring.** *Launcher sandbox and host
+  checks; device-unverified.* Put Sony's `ov_127x.tbl` (or `ov_1280.tbl`) at the top of the drive,
+  or have Wampy installed, which already keeps the same files on the player. The installer takes a
+  copy only if its SHA-256 is exactly Sony's, re-checks it after copying it into `/system`, and
+  says in the install log which file it used or why it refused one. The setuid helper now looks in
+  Sony's directory and then Cinder's, and reads nothing else. Uninstall removes Cinder's copy.
+  `install.md` ▸ *The volume curve tables* says where to get them and why Cinder cannot include
+  them: they are Sony's files, and Cinder's MIT licence cannot cover them.
+- **Release downloads carry a GitHub build attestation.** *Workflow change; runs for the first time
+  on the next tag.* `gh attestation verify <file> -R superwilso/Cinder` shows each installer and
+  `.UPG` was built by this repository's release workflow from the tagged commit. The release notes
+  and `SECURITY.md` explain how to check (`docs/SHORTCOMINGS.md` D7).
+
+### Security and privacy
+
+- **`SECURITY.md` said Cinder ships twelve setuid-root helpers. It ships eight**, and the list left
+  out `cinder-battery`. It also still described the installer as driving Sony's updater, which it no
+  longer does. `docs/SHORTCOMINGS.md` repeated the same wrong count.
+- **Two real Bluetooth addresses were still in the tree** after the 2026-08-24 redaction: 84 times
+  inside the committed HCI capture, and in the retry-mode measurement quoted in `main.cpp`, the
+  host harness and the 2026-08-26 Bluetooth audit. Both now use the documentation range, and the
+  capture is `hci_reconnect_20260819_redacted.btsnoop`. The original capture is added to
+  `tools/rewrite_history.sh`; the addresses stay in older commits until that rewrite is pushed.
 
 ## [0.3.3] — 2026-09-12
 
