@@ -16,13 +16,18 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-09-15
+
 
 
 ### Fixed
 
-- **An install or update through the installer ended on Sony's player.** *Launcher-tested;
-  device-unverified.* The installer tells people not to unplug the player while it updates, so the
-  boot after an install always had a cable in — and a cable at power-on is the escape to Sony's
+- **An install or update through the installer ended on Sony's player.** *Launcher-tested; half
+  device-verified 2026-09-15: after a `tools/cinder-install.sh` flash with the cable in, the player
+  came up on Cinder, logged the stood-down line and spent the pass. The installer's own write of the
+  pass, and the cable boot after it, are not yet verified.* The installer tells people not to
+  unplug the player while it updates, so the boot after an install always had a cable in — and a
+  cable at power-on is the escape to Sony's
   player, so the install looked as if it had failed. The installer now leaves a one-shot pass on
   `/data`: the next boot starts Cinder with the cable in, and the launcher spends the pass on that
   boot whether or not Cinder starts, so from the boot after it a cable at power-on reaches Sony's
@@ -1724,7 +1729,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/superwilso/Cinder/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/superwilso/Cinder/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/superwilso/Cinder/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/superwilso/Cinder/compare/v0.3.3...v0.3.4
