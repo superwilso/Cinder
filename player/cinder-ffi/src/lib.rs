@@ -864,7 +864,7 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nbt_on={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nbt_on={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nmono={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -885,6 +885,7 @@ fn settings_body(r: &Render) -> String {
         r.app.screen_off_s(),
         r.app.auto_off_min(),
         r.app.balance(),
+        u8::from(r.app.mono()),
         r.app.vpt_mode(),
         r.app.dc_type(),
         r.app.adv_flags(),
@@ -3151,6 +3152,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::BatteryCareChanged(_) => 13,
         Action::SoundChanged => 14,
         Action::BalanceChanged => 38,
+        Action::MonoChanged => 46,
         Action::ClockSet => 39,
         Action::SoundBypass(_) => 15,
         Action::ShuffleToggle => {
@@ -3967,6 +3969,19 @@ pub extern "C" fn cinder_get_auto_off_min() -> libc::c_int {
 
 /// L/R balance position, 0..=100 with 50 = centre. The shell turns it into the codec's two
 /// attenuation controls; the UI only remembers the position.
+/// MONO (accessibility) — 1 when left and right should be summed into both channels.
+///
+/// The shell applies it to the PCM it owns. See `analysis/RE_mono_audio.md` for why that is the
+/// USB-DAC -> LDAC bridge and nothing else on this hardware.
+#[no_mangle]
+pub extern "C" fn cinder_get_mono() -> libc::c_int {
+    cell()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|r| libc::c_int::from(r.app.mono())))
+        .unwrap_or(0)
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_get_balance() -> libc::c_int {
     cell()
@@ -5078,6 +5093,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_balance(n);
                         }
                     }
+                    // MONO (accessibility). Absent from files written by older builds, which is
+                    // fine — it stays off, which is what it was before the key existed.
+                    "mono" => r.app.set_mono(v == "1"),
                     // Which VPT room. Absent from files written by older builds, which is fine —
                     // it just stays at 0 (Studio), and VPT's on/off still comes from `sound=`.
                     // set_vpt_mode clamps, so a hand-edited value cannot reach the device as an

@@ -393,6 +393,8 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             bt_codec: if app.bt_on && app.bt_conn.is_some() { Some(BT_CODECS[app.bt_codec]) } else { None },
             // The sim has no Advanced screen, so neither override is reachable here.
             source_direct: false, tone_control: false,
+            // …and no transport, so mono has nothing to reach.
+            mono: false, mono_live: false,
         }, 0, 0),
         Screen::Settings => settings::render(c, theme, fonts, 0, 0,
             &settings::SettingsView { ignore_the: false, volume_limit: false, night: app.night, viz_name: "BARS · VEIL", usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: app.accent, palette: "Cinder", accent_locked: false }),

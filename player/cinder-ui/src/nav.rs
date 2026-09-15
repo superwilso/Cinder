@@ -320,6 +320,12 @@ pub enum Action {
     BtPromptCancel,
     BatteryCareChanged(bool), // shell calls PowerMgrServiceClient::EnableItawariCharging
     SoundChanged,             // shell reads cinder_get_sound_flags + applies via EffectCtrlDmp
+    /// Mono (accessibility) toggled. Its own action for the same reason `BalanceChanged` has one:
+    /// nothing in Sony's DSP chain is involved, so re-applying the chain would be six EffectCtrlDmp
+    /// round trips to change something none of them control. The shell reads `cinder_get_mono()`
+    /// and applies it to every PCM path CINDER owns — see `analysis/RE_mono_audio.md` for why that
+    /// is the whole of what it can reach.
+    MonoChanged,
     /// Balance only. Deliberately NOT SoundChanged: that action re-applies the whole DSP chain
     /// (six EffectCtrlDmp round trips) plus a settings write, and the balance slider emits on every
     /// motion event. This one lands on a single cached amixer call.
@@ -724,6 +730,12 @@ pub struct App {
     sbar: Option<(i32, i32)>,
     /// Fling (momentum) velocity in px/s for the current scrollable list; decays each tick.
     fling_v: f32,
+    /// MONO — sum left and right so both ears get the whole mix. The accessibility setting.
+    ///
+    /// On `App` rather than in `SoundSetup`, so the A/B control does not carry it: A and B are two
+    /// tunings to compare, and someone who needs mono needs it on both sides of any comparison.
+    /// Persisted like the rest of the preferences.
+    mono: bool,
     /// Hardware volume (0..VOL_MAX steps) + frames the volume HUD stays visible. This is the
     /// 3.5 mm level specifically — the CXD3778GF master, which is where the rocker lands whenever
     /// audio is going out the jack.
@@ -1377,6 +1389,7 @@ impl Default for App {
             queue: Vec::new(),
             playing_pick: None,
             history: Vec::new(),
+            mono: false,
             toast: String::new(),
             toast_frames: 0,
             queue_anim_y: 0,
@@ -3140,9 +3153,18 @@ impl App {
                 }
                 // CENTRE reset, before the row dispatch: it sits inside the Balance row, so the
                 // row's own handling would otherwise swallow it.
+                // MONO, left of CENTRE in the same row. Tested BEFORE the reset, because the two
+                // sit side by side and the slack in neither may reach the other.
+                if crate::sound::hit_balance_mono(x, y) {
+                    self.sound_sel = crate::sound::ROW_BALANCE;
+                    self.mono = !self.mono;
+                    return vec![Action::MonoChanged];
+                }
                 if crate::sound::hit_balance_reset(x, y) {
                     self.sound_sel = crate::sound::ROW_BALANCE;
-                    if self.snd_balance == crate::sound::BALANCE_CENTRE {
+                    // Dead under mono, and the row draws it that way: with one signal in both
+                    // channels there is no image to re-centre.
+                    if self.mono || self.snd_balance == crate::sound::BALANCE_CENTRE {
                         return vec![];
                     }
                     self.snd_balance = crate::sound::BALANCE_CENTRE;
@@ -6388,6 +6410,14 @@ impl App {
                     balance: self.snd_balance,
                     balance_drag: matches!(self.scrub, Scrub::Balance),
                     bt_route: self.bt_route,
+                    mono: self.mono,
+                    // IS MONO ACTUALLY REACHING WHAT IS PLAYING? Only on the one path Cinder owns
+                    // the PCM for — USB-DAC in, LDAC out, where the bridge does the downmix itself.
+                    // Ordinary playback goes through Sony's PlayerService to a codec with no
+                    // channel-sum control and a DSP surface with no mono call, and Bluetooth
+                    // transmit never passes either. `analysis/RE_mono_audio.md` is the evidence;
+                    // the row says which of the two it is in rather than implying it is global.
+                    mono_live: self.usb_dac_on,
                     // Both are set on OTHER screens and both change what this one's footer means:
                     // Source Direct (Sound ▸ Advanced) bypasses the whole chain, and Tone Control
                     // replaces the 10-band EQ rather than stacking with it.
@@ -7567,6 +7597,14 @@ impl App {
     /// end of the track.
     pub fn set_balance(&mut self, i: usize) {
         self.snd_balance = i.min(crate::sound::BALANCE_MAX);
+    }
+    /// MONO (accessibility) — sum left and right. See the field, and `analysis/RE_mono_audio.md`
+    /// for how far it reaches on this hardware.
+    pub fn mono(&self) -> bool {
+        self.mono
+    }
+    pub fn set_mono(&mut self, on: bool) {
+        self.mono = on;
     }
 
     /// Which VPT room is selected, 0..=3 — handed straight to Sony's `SetVptMode`. Its own value
@@ -12626,6 +12664,53 @@ mod tests {
         let mut c = own_and_sony();
         c.open_playlist(1);
         assert!(!library::hit_playlist_cover(c.playlist_row().unwrap(), tap_x, tap_y));
+    }
+
+    /// MONO is an ACCESSIBILITY setting, not a tuning — so it does not travel with A/B, it turns
+    /// the balance control off rather than fighting it, and it persists like a preference.
+    #[test]
+    fn mono_is_a_preference_not_part_of_the_ab_setup() {
+        let mut a = unlocked();
+        a.go(Screen::Sound);
+        let (mx, my, mw, mh) = crate::sound::balance_mono_rect();
+        let (tap_x, tap_y) = (mx + mw / 2, my + mh / 2);
+
+        assert!(!a.mono(), "off by default — it is an accommodation, not a default");
+        assert_eq!(a.tap(tap_x, tap_y), vec![Action::MonoChanged]);
+        assert!(a.mono());
+        assert_eq!(a.sound_sel, crate::sound::ROW_BALANCE, "the tap selects its own row");
+        assert_eq!(a.tap(tap_x, tap_y), vec![Action::MonoChanged]);
+        assert!(!a.mono(), "it latches both ways");
+
+        // IT SURVIVES THE A/B SWITCH. A and B are two tunings to compare; someone who needs mono
+        // needs it on both sides, and having it vanish on one would be a defect, not a feature.
+        a.set_mono(true);
+        let before = a.setup_idx();
+        let ab = |seg: usize| {
+            let (x, y, w, h) = crate::sound::ab_rect(seg);
+            (x + w / 2, y + h / 2)
+        };
+        let (bx, by) = ab(1);
+        a.tap(bx, by);
+        assert_ne!(a.setup_idx(), before, "the A/B control moved");
+        assert!(a.mono(), "mono must not be part of the setup being compared");
+        let (ax, ay) = ab(0);
+        a.tap(ax, ay);
+        assert!(a.mono());
+
+        // CENTRE is dead while mono is on: with one signal in both channels there is no image to
+        // re-centre, and the row draws it greyed to say so.
+        let mut b = unlocked();
+        b.go(Screen::Sound);
+        b.set_balance(20);
+        b.set_mono(true);
+        let (rx, ry, rw, rh) = crate::sound::balance_reset_rect();
+        assert!(b.tap(rx + rw / 2, ry + rh / 2).is_empty(), "CENTRE acted under mono");
+        assert_eq!(b.balance(), 20, "…and the balance the user tuned is still there");
+        // Switching mono off hands the slider back exactly as it was, rather than resetting it.
+        b.set_mono(false);
+        assert_eq!(b.tap(rx + rw / 2, ry + rh / 2), vec![Action::SoundChanged]);
+        assert_eq!(b.balance(), crate::sound::BALANCE_CENTRE);
     }
 
     /// A saved pin naming a screen that is not a "place" is dropped, not restored.
