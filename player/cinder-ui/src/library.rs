@@ -77,6 +77,26 @@ pub(crate) fn thumb(
     }
 }
 
+/// Draw a PLAYLIST's cover, falling back to the generated gradient exactly as [`thumb`] does.
+///
+/// Its own function, and its own map (`Library::playlist_thumbs`), because a playlist id and an
+/// album id are different number spaces that happen to overlap — see the field's own note.
+pub(crate) fn playlist_thumb(
+    c: &mut Canvas, t: &Theme, lib: &Library, pl: &crate::model::PlaylistRow,
+    x: i32, y: i32, size: i32, op: f32,
+) {
+    let fits = |img: &art::Image| img.w == size as usize && img.h == size as usize;
+    // A picture chosen for THIS playlist wins; then the album cover it borrows; then the gradient.
+    // Three steps rather than two because only the first needs a map of its own — see the fields.
+    if let Some(img) = lib.playlist_thumbs.get(&pl.id).filter(|i| fits(i)) {
+        return art::draw_image(c, t, x, y, img, op);
+    }
+    if let Some(img) = lib.thumbs.get(&pl.cover_album_id).filter(|i| fits(i)) {
+        return art::draw_image(c, t, x, y, img, op);
+    }
+    art::block_cached(c, t, x, y, size, size, &pl.art, op);
+}
+
 /// Y where the tab bar ends on the Library screen — `chrome::header` returns a fixed 91 and
 /// `tabs` adds 34, so this is constant and both the renderer and the hit test can rely on it.
 pub const TABS_BOTTOM: i32 = 125;
@@ -1483,7 +1503,7 @@ pub fn render(
                 if now {
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
                 }
-                art::block_cached(c, t, 22, y + (rh - 48) / 2, 48, 48, &pl.art, artdim(t));
+                playlist_thumb(c, t, lib, pl, 22, y + (rh - 48) / 2, 48, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
                 text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol));
                 // No "· YOURS" suffix. It used to mark Cinder's own playlists so the edit bar's
@@ -1859,6 +1879,26 @@ pub fn artist_view(
 /// The "Shuffle playlist" band. Sits higher than the artist page's because there is no
 /// albums/tracks stat pair above it, just the one count.
 pub const PLAYLIST_BAND_Y: i32 = 134;
+
+/// The playlist page's COVER: `(x, y, w, h)`.
+///
+/// 64 px, not the album page's 96. The album page has nothing between its cover and the list, so a
+/// 96 px block at y=82 has room to breathe; this page's band starts at y=150, and `PLAYLIST_BAND_Y`
+/// is the one number the edit bar, `playlist_content_top` and the whole panel-overflow matrix all
+/// derive from. A cover that pushed the band down would move every one of them to buy 32 px.
+///
+/// TAPPING IT is how a cover gets chosen, on a user playlist. There is no file browser on this
+/// device and no room for a fourth button in the edit bar (three at 140 px already fill the width),
+/// and tapping the artwork to change it is what every phone does.
+pub const PLAYLIST_COVER: (i32, i32, i32, i32) = (22, 74, 64, 64);
+
+/// Is `(x, y)` on the playlist page's cover? Only a playlist Cinder OWNS can carry one — Sony's
+/// live in a database this app must not write — so the tap is refused on the others rather than
+/// opening a picker whose result could not be saved.
+pub fn hit_playlist_cover(pl: &crate::model::PlaylistRow, x: i32, y: i32) -> bool {
+    let (cx, cy, cw, ch) = PLAYLIST_COVER;
+    pl.user && (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y)
+}
 pub const PLAYLIST_TRACK_RH: i32 = ARTIST_TRACK_RH;
 
 /// Top of the member list. A user playlist gives up 56 px of it to the edit bar; a Sony one has
@@ -2035,9 +2075,20 @@ pub fn playlist_view(
     icons::back(c, 30.0, 62.0, 20.0, t.dim);
     text::draw(c, f, 50.0, 66.0, "PLAYLIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
 
+    // The cover, then the name and stats beside it. Both text runs move in to clear the block.
+    {
+        let (cx, cy, cw, _) = PLAYLIST_COVER;
+        playlist_thumb(c, t, lib, pl, cx, cy, cw, artdim(t));
+        // A hairline on a user playlist's cover: it is a control, and the only thing that would
+        // otherwise say so is a tap that does something. Not on Sony's, which cannot carry one.
+        if pl.user {
+            stroke_rect(c, cx, cy, cw, cw, t.line, 1);
+        }
+    }
+    let text_x = (PLAYLIST_COVER.0 + PLAYLIST_COVER.2 + 14) as f32;
     let nst = sty(Family::Sans, Weight::ExtraBold, 28.0, t.ink, -0.01);
-    let name = crate::widgets::fit(f, &pl.name, &nst, W as f32 - 44.0);
-    text::draw(c, f, 22.0, 104.0, &name, &nst);
+    let name = crate::widgets::fit(f, &pl.name, &nst, W as f32 - text_x - 22.0);
+    text::draw(c, f, text_x, 104.0, &name, &nst);
     // The DB's own count, not the resolved length: a member whose file is gone still counts in
     // Sony's container, and silently showing a smaller number would hide that.
     let stats = if pl.track_list.len() as u32 == pl.tracks {
@@ -2045,7 +2096,7 @@ pub fn playlist_view(
     } else {
         format!("{} OF {} TRACKS AVAILABLE", pl.track_list.len(), pl.tracks)
     };
-    text::draw(c, f, 22.0, 126.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
+    text::draw(c, f, text_x, 126.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
     playlist_band(c, t, f, pl.track_list.len());
 
     if pl.user {
