@@ -359,11 +359,18 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                     ..Default::default()
                 })
                 .collect();
+            let cur = (!tracks.is_empty()).then(|| app.track.min(tracks.len() - 1));
+            // The sim has no transport, so it has no real play history either. Standing in the
+            // tracks before the current one keeps PREVIOUSLY PLAYED populated in the preview —
+            // which is what this screen looked like before the history became a real list, and
+            // all a layout preview needs it to be.
+            let history = &tracks[..cur.unwrap_or(0)];
             up_next::render_view(c, theme, fonts, &up_next::QueueView {
                 album: "Now Playing",
                 tracks: &tracks,
-                current: (!tracks.is_empty()).then(|| app.track.min(tracks.len() - 1)),
+                current: cur,
                 queue: &[],
+                history,
                 pick: None,
                 lib: &app.lib,
                 scroll_px: 0,
