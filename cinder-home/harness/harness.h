@@ -145,6 +145,9 @@ void cinder_harness_bt_set_radio(int on);
 // armed; read it to assert the app cleared it.
 void cinder_harness_bt_set_retry_mode(int on);
 int  cinder_harness_bt_retry_mode(void);
+// A page on the air until `ms` of virtual time: the A2DP source reports CONNECTING (3) and refuses
+// every connect request with rc=0 until then, as the device does while one is already in flight.
+void cinder_harness_bt_page_until(long long ms);
 void cinder_harness_bt_add_paired(const char* name, int addr_last);
 int  cinder_harness_bt_connected(void);
 int  cinder_harness_bt_radio_on(void);

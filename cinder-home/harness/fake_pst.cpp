@@ -163,7 +163,14 @@ long h_GetPairedDeviceInfo(void*, void* pl, void*, void*) {
 // GetConnectInformation returns. The two conventions live side by side in the same client.
 bool g_retry_mode = false;
 
-bool connect_refused() { return g_retry_mode; }
+// A page on the air until this virtual time, set by cinder_harness_bt_page_until(). While it is, the
+// A2DP source reports CONNECTING and refuses any new connect with rc=0 — the busy refusal measured on
+// the device for the ladder (2026-08-26) and for 23 of 24 Devices-row taps (2026-09-15).
+long long g_page_until_ms = 0;
+
+bool paging() { return cinder_harness_now_ms() < g_page_until_ms; }
+
+bool connect_refused() { return g_retry_mode || paging(); }
 
 // Bring the link up if anything could. A connect against a powered-down radio is ACCEPTED AND
 // SILENTLY DROPPED — the device behaviour behind "Bluetooth doesn't connect automatically".
@@ -207,7 +214,7 @@ long h_GetAvSrcConnectionStatus(void*, void*, void*, void*) {
     long long scripted = 0;
     int st = cinder_harness_scripted("BtXmit::GetAvSrcConnectionStatus", &scripted)
                  ? (int)scripted
-                 : (!g_radio_on ? 0 : (g_connected ? 5 : 2));
+                 : (!g_radio_on ? 0 : (g_connected ? 5 : (paging() ? 3 : 2)));
     cinder_harness_record("BtXmit::GetAvSrcConnectionStatus", st);
     return st;
 }
@@ -340,7 +347,7 @@ int _ZN3pst8services12mediascanner12MediaScanner4ScanEPNS1_21IMediaScannerListen
 
 // ── the fake radio, as a test fixture ────────────────────────────────────────────────────────
 void cinder_harness_bt_reset(void) {
-    g_radio_on = false; g_connected = false; g_retry_mode = false;
+    g_radio_on = false; g_connected = false; g_retry_mode = false; g_page_until_ms = 0;
     g_peer_name.clear(); g_peer_addr.clear(); g_paired.clear();
 }
 
@@ -351,6 +358,10 @@ void cinder_harness_bt_set_radio(int on) { g_radio_on = on != 0; }
 // process, so an app that does not reconcile it comes back to a radio that refuses every connect.
 void cinder_harness_bt_set_retry_mode(int on) { g_retry_mode = on != 0; }
 int  cinder_harness_bt_retry_mode(void) { return g_retry_mode ? 1 : 0; }
+
+// Hold a page on the air until `ms` of virtual time: a radio already busy connecting, as the
+// ladder's own attempt had left it when the user started tapping on 2026-09-15.
+void cinder_harness_bt_page_until(long long ms) { g_page_until_ms = ms; }
 
 // Add a device to the radio's pairing table. `addr_last` is the final byte of a synthetic
 // 00:00:5E:00:53:xx address (RFC 7042 documentation range), so two fixtures are distinguishable.

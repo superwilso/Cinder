@@ -4522,10 +4522,33 @@ static int bt_avsrc_status() {
     } catch (...) { return -1; }
 }
 
-// How many times in a row the ladder will stand aside for an attempt that is already in flight
-// before asking anyway. Bounded so a status wedged at 3 cannot silence the ladder for good — the
-// same rule the rest of this file applies to any service state it cannot verify.
-#define BT_AVSRC_MAX_SKIPS 6
+// How long the ladder will stand aside for an attempt that is already in flight before asking
+// anyway. Bounded so a status wedged at 3 cannot silence the ladder for good — the same rule the
+// rest of this file applies to any service state it cannot verify. A TIME rather than a count of
+// skips (it was 6 skips at 5 s apiece): the ladder now looks every second while a user is waiting,
+// and a count would have made the same wedge five times shorter for exactly that case.
+#define BT_AVSRC_MAX_BUSY_MS 30000
+// How soon the ladder looks again after a Devices tap it could not act on.
+#define BT_RECONNECT_SOON_S 2
+
+// A TAP THE RADIO CANNOT TAKE IS HANDED TO THE LADDER, NOT DROPPED. Measured 2026-09-15 on the
+// device, 24 taps on the headphones' row in 21 s:
+//
+//   377.557 bt-paired: row 1: RequestConnection rc=0 (REJECTED — nothing will reach the air …)
+//     … 22 more like it …
+//   394.696 bt-paired: row 1: RequestConnection rc=1 (accepted)
+//   401.904 bt-vol: rocker now drives BLUETOOTH (GetBtStatus=3, peer named)   <- 7.2 s later
+//
+// rc=0 there is the busy refusal the ladder already stands aside for (see bt_reconnect_tick): a page
+// was on the air, first the ladder's own earlier attempt and then the one tap that got through. The
+// Devices-row path never asked, so each tap requested into the page, was refused, and nothing kept
+// the device the user wanted — while every tap also re-armed the ladder and pushed its next look ten
+// seconds out. The UI's spinner vanished with the list refresh each tap triggers, so nothing on
+// screen said a connect was under way either; hence 24 taps.
+//
+// Now a tap during a page, or one refused for any other reason, makes that device the ladder's
+// target, and the ladder looks every second until the radio is free and then asks for it.
+static bool g_bt_user_pending = false;
 
 // Called wherever the user asks for a link, so the retry stops being parked.
 static void bt_reconnect_rearm() {
@@ -4533,6 +4556,20 @@ static void bt_reconnect_rearm() {
     g_bt_reconnect_at = 0;
     g_bt_reconnect_wait_s = 0;
     g_bt_reconnect_tries = 0;   // a user gesture buys a fresh set of attempts
+    g_bt_user_pending = false;  // …and replaces whatever an earlier gesture was still waiting on
+}
+
+// The ladder takes over a connect the user asked for and the radio refused. It sets up what the
+// ladder's own first notice of a drop would (retry mode off; connect-wait on, but not while a link is
+// up, which would let a second device walk in), aims at `addr`, and schedules a look soon.
+static void bt_connect_when_free(const std::vector<unsigned char>& addr) {
+    g_bt_target_addr = addr;
+    bt_service_retry(false, false);
+    if (!g_bt_have_name) bt_connect_wait(true);
+    g_bt_reconnect_wait_s = BT_RECONNECT_SOON_S;
+    g_bt_reconnect_at = now_ms() + BT_RECONNECT_SOON_S * 1000L;
+    g_bt_reconnect_tries = 0;
+    g_bt_user_pending = true;
 }
 
 // Runs from the 1 Hz housekeeping. Cheap: the common paths are two boolean tests.
@@ -4543,6 +4580,7 @@ static void bt_reconnect_tick() {
         // broken.
         bt_connect_wait(false);
         bt_service_retry(false, false);
+        g_bt_user_pending = false;
         return;
     }
     if (g_bt_have_name) {                     // connected — reset so the next drop starts fresh
@@ -4551,6 +4589,7 @@ static void bt_reconnect_tick() {
         g_bt_target_addr.clear();             // reached it; a later drop retries the ordinary way
         g_bt_zeroarg_fails = 0;
         g_bt_reconnect_tries = 0;
+        g_bt_user_pending = false;
         if (g_bt_reconnect_wait_s) {
             clog_("bt-reconnect: link is up again — ladder disarmed");
             g_bt_reconnect_at = 0;
@@ -4606,16 +4645,19 @@ static void bt_reconnect_tick() {
     // any non-1 as decisive and jumps to naming a device, on evidence that says nothing about which
     // device is right. Standing aside costs one scalar IPC and keeps the two refusals apart.
     {
-        static int avsrc_skips = 0;
+        static long avsrc_busy_since = 0;
         const int avsrc = bt_avsrc_status();
-        if (avsrc == BT_AVSRC_CONNECTING && avsrc_skips < BT_AVSRC_MAX_SKIPS) {
-            avsrc_skips++;
-            g_bt_reconnect_at = now + 5000;   // look again shortly; the page times out in ~5-20 s
-            return;
-        }
-        if (avsrc_skips >= BT_AVSRC_MAX_SKIPS)
+        if (avsrc == BT_AVSRC_CONNECTING) {
+            if (avsrc_busy_since == 0) avsrc_busy_since = now;
+            if (now - avsrc_busy_since < BT_AVSRC_MAX_BUSY_MS) {
+                // The page times out in ~5-20 s. Look again in 5, or in 1 while a user is waiting on
+                // a tap, so the device they asked for is asked for the moment the radio is free.
+                g_bt_reconnect_at = now + (g_bt_user_pending ? 1000 : 5000);
+                return;
+            }
             clog_("bt-reconnect: AvSrc has said 'connecting' for 30 s without a link — asking anyway");
-        avsrc_skips = 0;
+        }
+        avsrc_busy_since = 0;
     }
     g_bt_reconnect_tries++;
 
@@ -4657,6 +4699,7 @@ static void bt_reconnect_tick() {
         if (rc != 1) g_bt_zeroarg_fails = BT_ZEROARG_GIVEUP;   // rejected: decisive
         else         g_bt_zeroarg_fails++;
     }
+    if (rc == 1) g_bt_user_pending = false;   // on the air now; the ordinary backoff takes over
 
     if (g_bt_reconnect_wait_s < BT_RECONNECT_MAX_S) {
         g_bt_reconnect_wait_s *= 2;
@@ -5396,6 +5439,28 @@ static int bt_request_connection(const std::vector<unsigned char>& addr, const c
     return rc;
 }
 
+// A connect the USER asked for: a Devices row, or an NFC tap on bonded headphones. It never asks into
+// a page already on the air (the ladder's rule, which these paths lacked) and never drops a refusal:
+// either way the device becomes the ladder's target, asked for as soon as the radio is free. See
+// bt_connect_when_free for the 2026-09-15 log that found this.
+static void bt_user_connect(const std::vector<unsigned char>& addr, const char* who) {
+    const bool again = g_bt_user_pending && addr == g_bt_target_addr;
+    bt_reconnect_rearm();   // an explicit connect re-arms the retry
+    char m[160];
+    if (bt_avsrc_status() == BT_AVSRC_CONNECTING) {
+        bt_connect_when_free(addr);
+        if (!again) {       // a repeat tap on the same device says nothing new
+            std::snprintf(m, sizeof m, "%s: a connect is already on the air — asking for this "
+                          "device the moment it ends", who);
+            clog_(m);
+        }
+    } else if (bt_request_connection(addr, who) != 1) {
+        bt_connect_when_free(addr);
+        std::snprintf(m, sizeof m, "%s: refused — asking again once the radio is free", who);
+        clog_(m);
+    }
+}
+
 // Called from the render loop when a tap landed.
 //
 // A TAP IS NOT ALWAYS A PAIRING. This used to call `Pairing` unconditionally, which is right only
@@ -5499,8 +5564,7 @@ static void nfc_service_tap() {
             // must stay armed — for the new one, which bt_request_connection is about to name.
             refresh_bt_connected();
         }
-        bt_reconnect_rearm();
-        bt_request_connection(addr, "nfc");
+        bt_user_connect(addr, "nfc");
         // The link comes up asynchronously; the route poll notices it and refreshes the name.
         return;
     }
@@ -5532,10 +5596,9 @@ void apply_bt_connect_device() {
     int i = cinder_pending_bt_device();
     if (i < 0 || (size_t)i >= g_bt_paired.size()) { clog_("bt-paired: connect for an unknown row"); return; }
     const std::vector<unsigned char> addr = g_bt_paired[(size_t)i];
-    bt_reconnect_rearm();          // an explicit connect re-arms the retry
     char who[48];
     std::snprintf(who, sizeof who, "bt-paired: row %d", i);
-    bt_request_connection(addr, who);
+    bt_user_connect(addr, who);
     // The connection completes asynchronously; the 3 s route poll notices it and refreshes the name.
     refresh_bt_paired();
 }

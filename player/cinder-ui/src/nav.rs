@@ -748,10 +748,14 @@ pub struct App {
     /// A pairing prompt the radio is waiting on, pushed by the shell from the listener. While this is
     /// `Some` the Devices screen is modal — see `pairing::hit_prompt`.
     bt_prompt: Option<crate::pairing::Prompt>,
-    /// Row whose FORGET is armed (two-tap), and the row with a connect in flight. Both are transient
-    /// UI state, cleared whenever the list is replaced.
+    /// Row whose FORGET is armed (two-tap), and the row with a connect in flight. FORGET is cleared
+    /// whenever the list is replaced; the connect is found again by name (see `bt_paired_add`).
     bt_forget_armed: Option<usize>,
     bt_connecting: Option<usize>,
+    /// The device a connect is in flight for, which is what survives a list refresh, and how long
+    /// its spinner has run. See `bt_connect_row`.
+    bt_connecting_name: Option<String>,
+    bt_connecting_ms: u32,
     /// Spinner phase in SECONDS for the "connecting"/"scanning" indicators. Advanced by tick_dt
     /// from real elapsed time (never a frame count — this project has already been bitten once by
     /// assuming 60 fps when the device renders at ~32), and only while something is actually in
@@ -1197,6 +1201,8 @@ impl Default for App {
             bt_prompt: None,
             bt_forget_armed: None,
             bt_connecting: None,
+            bt_connecting_name: None,
+            bt_connecting_ms: 0,
             bt_busy_phase: 0.0,
             playing_hold_ms: 0,
             eq_bands: data::EQ_PRESETS[3].1, // "A1"
@@ -3217,10 +3223,7 @@ impl App {
                     // two-way rule the Devices screen uses: the connected row hangs up.
                     BtHit::PairedRow(i) => match self.bt_paired.get(i) {
                         Some(d) if d.connected => vec![Action::BtDisconnect],
-                        Some(_) => {
-                            self.bt_connecting = Some(i);
-                            vec![Action::BtConnectDevice(i)]
-                        }
+                        Some(_) => self.bt_connect_row(i),
                         None => vec![],
                     },
                     BtHit::Advanced => {
@@ -3297,10 +3300,7 @@ impl App {
                             // Already connected → hang up. Same call the Bluetooth screen's
                             // Disconnect makes, so there is one code path for "drop the link".
                             Some(d) if d.connected => vec![Action::BtDisconnect],
-                            Some(_) => {
-                                self.bt_connecting = Some(i);
-                                vec![Action::BtConnectDevice(i)]
-                            }
+                            Some(_) => self.bt_connect_row(i),
                             None => vec![],
                         }
                     }
@@ -6579,6 +6579,14 @@ impl App {
         let dt = (dt_ms.max(1)).min(200) as f32;
         // Run the optimistic play/pause hold down in REAL time, like everything else here.
         self.playing_hold_ms = self.playing_hold_ms.saturating_sub(dt_ms);
+        // A connect that has spun this long went nowhere the shell could see: free the row so it can
+        // be tapped again.
+        if self.bt_connecting_name.is_some() {
+            self.bt_connecting_ms = self.bt_connecting_ms.saturating_add(dt_ms);
+            if self.bt_connecting_ms >= Self::BT_CONNECT_SPIN_MS {
+                self.clear_bt_connecting();
+            }
+        }
         // Bluetooth busy spinner. Only runs while a connect attempt or a scan is genuinely in
         // flight, so an idle Devices screen costs nothing and repaints nothing. Wrapped at 8s (one
         // whole number of 8-dot revolutions) to keep the f32 exact forever.
@@ -6877,6 +6885,9 @@ impl App {
         if next.is_none() || next != self.bt_connected {
             self.bt_codec_negotiated = 0;
         }
+        if next.is_some() && next == self.bt_connecting_name {
+            self.clear_bt_connecting(); // the device being connected is the one that linked
+        }
         self.bt_connected = next;
         self.bt_link_known = true;
         changed
@@ -6987,6 +6998,7 @@ impl App {
     pub fn bt_paired_clear(&mut self) {
         self.bt_paired.clear();
         self.bt_forget_armed = None;
+        // The row INDEX belonged to the old ordering; the device it was for is found again below.
         self.bt_connecting = None;
     }
 
@@ -6996,6 +7008,42 @@ impl App {
             kind: kind.to_string(),
             connected,
         });
+        // A connect in flight survives the list refresh the shell answers every connect with.
+        if self.bt_connecting_name.as_deref() == Some(name) {
+            if connected {
+                self.clear_bt_connecting(); // it worked
+            } else if self.bt_connecting.is_none() {
+                self.bt_connecting = Some(self.bt_paired.len() - 1);
+            }
+        }
+    }
+
+    /// How long a connect spinner runs before the row is freed for another tap. The shell's retry
+    /// carries on regardless; this only bounds how long the row refuses to ask again.
+    const BT_CONNECT_SPIN_MS: u32 = 30_000;
+
+    /// A tap on a paired row that is not the connected one.
+    ///
+    /// On 2026-09-15 the headphones' row was tapped 24 times in 21 s: the spinner a tap started
+    /// was cleared by the paired-list refresh the shell answers every connect with, so it lasted a
+    /// frame, nothing on screen said a connect was under way, and each tap sent the radio a fresh
+    /// request while its own page was still on the air. Now the spinner survives the refresh (see
+    /// `bt_paired_add`), and while it runs the same row asks for nothing more.
+    fn bt_connect_row(&mut self, i: usize) -> Vec<Action> {
+        let name = self.bt_paired.get(i).map(|d| d.name.clone());
+        if self.bt_connecting == Some(i) && self.bt_connecting_name == name {
+            return vec![];
+        }
+        self.bt_connecting = Some(i);
+        self.bt_connecting_name = name;
+        self.bt_connecting_ms = 0;
+        vec![Action::BtConnectDevice(i)]
+    }
+
+    fn clear_bt_connecting(&mut self) {
+        self.bt_connecting = None;
+        self.bt_connecting_name = None;
+        self.bt_connecting_ms = 0;
     }
 
     pub fn bt_paired_len(&self) -> usize {
@@ -7599,6 +7647,9 @@ impl App {
     /// wedged). Raises no action — the radio is already in this state.
     pub fn set_bt_on(&mut self, on: bool) {
         self.bt_on = on;
+        if !on {
+            self.clear_bt_connecting(); // nothing connects through a radio that is off
+        }
     }
 
     /// Force the USB-DAC toggle to match reality, without raising a `UsbDacToggle` action.
@@ -13184,6 +13235,47 @@ mod tests {
         assert!(a.set_bt_connected(None));
         assert_eq!(a.bt_connected(), None);
         assert!(a.bt_link_known());
+    }
+
+    /// 2026-09-15: a connect's spinner died within a frame, because the paired-list refresh every
+    /// connect triggers cleared it, and the headphones' row was tapped 24 times in 21 s. The spinner
+    /// must outlive a refresh of the same list, the same row must not ask again while it spins, and
+    /// the spinner must stop when the device links.
+    #[test]
+    fn a_paired_row_connect_spins_through_a_refresh_and_asks_once() {
+        let mut a = unlocked();
+        a.bt_paired_clear();
+        a.bt_paired_add("WH-1000XM4", "Headphones", false);
+        a.bt_paired_add("WONDERBOOM", "Speaker", false);
+        assert_eq!(a.bt_connect_row(1), vec![Action::BtConnectDevice(1)]);
+        // The shell answers every connect with a list refresh.
+        a.bt_paired_clear();
+        a.bt_paired_add("WH-1000XM4", "Headphones", false);
+        a.bt_paired_add("WONDERBOOM", "Speaker", false);
+        assert_eq!(a.bt_connecting, Some(1), "the spinner survived the refresh");
+        assert!(a.bt_connect_row(1).is_empty(), "a second tap while it spins asks for nothing");
+        assert_eq!(a.bt_connect_row(0), vec![Action::BtConnectDevice(0)], "another row is a new request");
+        // The link comes up: the refresh marks the row connected and the spinner stops.
+        a.bt_paired_clear();
+        a.bt_paired_add("WH-1000XM4", "Headphones", true);
+        a.bt_paired_add("WONDERBOOM", "Speaker", false);
+        assert_eq!(a.bt_connecting, None);
+    }
+
+    /// …and a connect that never lands must not lock its row forever.
+    #[test]
+    fn a_connect_that_goes_nowhere_frees_its_row() {
+        let mut a = unlocked();
+        a.bt_paired_clear();
+        a.bt_paired_add("WH-1000XM4", "Headphones", false);
+        assert_eq!(a.bt_connect_row(0), vec![Action::BtConnectDevice(0)]);
+        for _ in 0..(App::BT_CONNECT_SPIN_MS / 200 + 1) {
+            a.tick_dt(200);
+        }
+        assert_eq!(a.bt_connecting, None, "the spinner gave up");
+        assert_eq!(a.bt_connect_row(0), vec![Action::BtConnectDevice(0)], "and the row can be tapped again");
+        a.set_bt_on(false);
+        assert_eq!(a.bt_connecting, None, "switching the radio off stops it too");
     }
 }
 

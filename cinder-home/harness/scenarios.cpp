@@ -219,11 +219,41 @@ static void s_bt_waits_for_a_page_in_flight(void) {
 
     check(cinder_harness_count("BtXmit::GetAvSrcConnectionStatus") >= 1,
           "asked the radio whether it was already trying");
-    // The skip cap is 6, so a handful of attempts do get through — that is deliberate, a status
+    // The wait is capped at 30 s, so a handful of attempts do get through — that is deliberate, a status
     // stuck at 3 must not mean silence. What must not happen is a request every time round.
     check_range(cinder_harness_count("BtXmit::RequestLastDeviceConnection")
                   + cinder_harness_count("BtXmit::RequestConnection"),
                 0, 3, "stood aside for the page already in flight");
+}
+
+// ── a Devices tap while a page is on the air ─────────────────────────────────────────────────
+// 2026-09-15 on the device: 24 taps on the headphones' row in 21 s, 23 of them refused
+// `RequestConnection rc=0`, the busy refusal the ladder already stands aside for. The tap path never
+// asked, so every tap requested into the page, was refused, and nothing kept the device the user
+// wanted. The tap must hand its request to the ladder instead, which asks for THAT device once the
+// page ends. (Against the old tap path this fails its first check with five refused requests.)
+static void s_bt_tap_waits_for_the_page(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);   // row 0
+    cinder_harness_bt_add_paired("WONDERBOOM", 0x92);   // row 1, the one tapped
+    cinder_harness_bt_page_until(40000);
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 28 /* CINDER_ACT_BT_CONNECT_DEVICE */);
+    cinder_harness_script("cinder_pending_bt_device", 1);
+    for (int i = 0; i < 5; i++)
+        cinder_harness_tap_at(20000 + i * 400, 240, 400);   // impatient, like the real log
+    cinder_harness_set_budget_ms(60000);
+    cinder_harness_run();
+
+    check(cinder_harness_count_between("cinder_tap", 20000, 23000) >= 1, "the taps reached carry_out");
+    check_eq(cinder_harness_count_between("BtXmit::RequestConnection", 20000, 40000), 0,
+             "no connect was asked into the page");
+    check(cinder_harness_count_between("BtXmit::RequestConnection", 40000, 43000) >= 1,
+          "the device was asked for within a few seconds of the page ending");
+    check_eq(cinder_harness_arg("BtXmit::RequestConnection", 0), 1,
+             "…and it was the device that was tapped");
+    check(cinder_harness_bt_connected() == 1, "and it connected");
 }
 
 // ── an idle radio reports 3, and 3 is not a connection ───────────────────────────────────────
@@ -1044,6 +1074,7 @@ static const Scenario kScenarios[] = {
     {"bt-stale-jam",      s_bt_clears_a_stale_jam,   "a retry mode left armed by anything else is cleared"},
     {"bt-idle-not-link",  s_bt_idle_radio_is_not_a_link, "GetBtStatus 3 with no peer is not a connection"},
     {"bt-page-in-flight", s_bt_waits_for_a_page_in_flight, "the ladder defers to a connect already on the air"},
+    {"bt-tap-in-page",    s_bt_tap_waits_for_the_page, "a Devices tap during a page is asked for when it ends"},
     {"bt-idle-poll",      s_bt_idle_poll_rate,       "the idle Bluetooth poll backs off"},
     {"stalled-bringup",   s_stalled_bringup,         "bring-up that never completes must not freeze the app"},
     {"dark-playing",      s_dark_playing,            "panel dark, BT playing: the state the device lives in"},

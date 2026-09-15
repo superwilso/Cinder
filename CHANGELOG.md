@@ -16,6 +16,16 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tapping headphones in Bluetooth ▸ Devices often did nothing.** *Harness- and host-tested;
+  device-unverified.* A tap while the radio was already paging (its own reconnect attempt, or an
+  earlier tap) was refused by Sony's transmitter and simply dropped, and the row's "connecting"
+  spinner vanished within a frame, so it looked as if nothing had happened: on 2026-09-15, 23 of 24
+  taps in 21 seconds were refused that way. A tap during a page is now held and asked for the moment
+  the radio is free, a refused tap is retried, NFC taps on paired headphones follow the same rule,
+  and the spinner stays until the device connects or 30 seconds pass, without sending more requests.
+
 ## [0.3.7] — 2026-09-15
 
 
@@ -66,6 +76,9 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   Ubuntu's packaged 2.45 does not have `gh attestation verify`.
   
 ## [0.3.6] — 2026-09-14
+
+*Tagged (`4e1f76a`) but never pushed or published. v0.3.7 is the first release carrying these
+changes, so its links compare against that commit rather than a tag GitHub does not have.*
 
 ## [0.3.5] — 2026-09-14
 
@@ -1730,8 +1743,8 @@ First tagged release.
   the shell or any mixer control ([`docs/`](docs/)).
 
 [Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.7...HEAD
-[0.3.7]: https://github.com/superwilso/Cinder/compare/v0.3.6...v0.3.7
-[0.3.6]: https://github.com/superwilso/Cinder/compare/v0.3.5...v0.3.6
+[0.3.7]: https://github.com/superwilso/Cinder/compare/4e1f76a...v0.3.7
+[0.3.6]: https://github.com/superwilso/Cinder/compare/v0.3.5...4e1f76a
 [0.3.5]: https://github.com/superwilso/Cinder/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/superwilso/Cinder/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/superwilso/Cinder/compare/v0.3.2...v0.3.3
