@@ -104,6 +104,24 @@ pub fn hit_balance_reset(x: i32, y: i32) -> bool {
     (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
 }
 
+/// The MONO button, immediately left of CENTRE and the same height.
+///
+/// IN THE BALANCE ROW rather than a row of its own, and that is a layout fact as much as a design
+/// one: the six effect rows end at 475, the balance slider runs to 607, "Advanced ›" to 671 and the
+/// signal-path footer starts at 700. There is no 64 px row left on this screen, and moving the
+/// footer to make one would reflow the whole panel-overflow matrix to buy a control that belongs
+/// beside the balance slider anyway — mono and balance answer the same question, "what reaches
+/// which ear", and every phone groups them for that reason.
+pub const BAL_MONO_W: i32 = 96;
+pub fn balance_mono_rect() -> (i32, i32, i32, i32) {
+    let (rx, ry, _, rh) = balance_reset_rect();
+    (rx - BAL_MONO_W - 10, ry, BAL_MONO_W, rh)
+}
+pub fn hit_balance_mono(x: i32, y: i32) -> bool {
+    let (rx, ry, rw, rh) = balance_mono_rect();
+    (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
+}
+
 /// Slider steps within which a drag snaps to dead centre. Without it, "centred" is a 1-in-101 shot
 /// and the control has no null you can actually land on — the detent tick would be decoration.
 pub const BAL_SNAP: usize = 3;
@@ -195,6 +213,21 @@ pub struct Sound {
     /// True while the finger is on the slider — the knob grows and the readout goes accent, so a
     /// touch-only device gives some sign it took the gesture (same idea as the scrollbar thumb).
     pub balance_drag: bool,
+    /// MONO — sum left and right so both ears carry the same signal. The accessibility setting,
+    /// not an effect: it is what makes a stereo mix usable with hearing in one ear.
+    ///
+    /// It lives in the Balance row because it is the same question ("what reaches which ear") and
+    /// because that is where every phone puts it, and it turns the slider off: with one signal in
+    /// both channels there is no image left to shift.
+    ///
+    /// NOT part of `SoundSetup`, so the A/B control does not carry it. A and B are two tunings to
+    /// compare; needing mono is not a tuning, and having it vanish on one side of a comparison
+    /// would be a defect rather than a feature.
+    pub mono: bool,
+    /// How far mono actually reaches TODAY, for the row's subtitle. See `analysis/RE_mono_audio.md`:
+    /// this device gives Cinder no way to sum the channels on the path to the 3.5 mm jack, so the
+    /// row says what it does reach rather than implying it is global.
+    pub mono_live: bool,
     /// Source Direct — set two screens away, on Sound ▸ Advanced, and it bypasses EVERYTHING this
     /// screen lists.
     ///
@@ -272,20 +305,53 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
     let lc = if sel { t.acc } else { t.ink };
     text::draw(c, f, 22.0, (y + 36) as f32, "Balance",
                &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
-    let sub = if s.bt_route {
-        "Wired output only — Bluetooth is not affected"
+    // THE SUBTITLE SAYS WHAT IS ACTUALLY REACHED, in every state. Mono first, because when it is
+    // on the slider below is inert and saying anything else about the slider would be the more
+    // misleading of the two truths.
+    let (sub, warn) = if s.mono && !s.mono_live {
+        // The honest case, and the one this device is in for ordinary playback: see
+        // `analysis/RE_mono_audio.md`. Same rule as the Bluetooth line below it — a control that
+        // silently does nothing to what you are hearing is the defect this screen has had cleaned
+        // out of it twice.
+        ("Mono — not reachable on this output; USB-DAC to Bluetooth only", true)
+    } else if s.mono {
+        ("Mono — both ears carry the same signal", true)
+    } else if s.bt_route {
+        ("Wired output only — Bluetooth is not affected", true)
     } else {
-        "Drag the slider to shift the stereo image"
+        ("Drag the slider to shift the stereo image", false)
     };
-    text::draw(c, f, 22.0, (y + 58) as f32, sub,
-               &sty(Family::Sans, Weight::Regular, 13.0, if s.bt_route { t.acc } else { t.dim }, 0.0));
+    // BELOW the two buttons, not beside them. At the old y+58 the subtitle's cap height reached
+    // into the y+12..y+50 button band, so it had to be squeezed into the 204 px left of MONO —
+    // which truncated the ordinary "Drag the slider to shift the stereo image" to "…stereo i…".
+    // Four pixels lower clears the buttons and gives the line the whole row width back; the slider
+    // track is at y+86, so there is still 20 px under it.
+    let sst = sty(Family::Sans, Weight::Regular, 13.0, if warn { t.acc } else { t.dim }, 0.0);
+    text::draw(c, f, 22.0, (y + 62) as f32,
+               &crate::widgets::fit(f, sub, &sst, (BAL_X1 - 22) as f32), &sst);
+
+    // MONO. A latching button rather than a switch, because it sits in a row of buttons and a
+    // 40x22 switch here would be the only one of its kind on the screen.
+    {
+        let (rx, ry, rw, rh) = balance_mono_rect();
+        let col = if s.mono { t.acc_ink } else { t.dim };
+        if s.mono {
+            fill_rect(c, rx, ry, rw, rh, t.acc);
+        } else {
+            stroke_rect(c, rx, ry, rw, rh, t.line, 1);
+        }
+        center(c, f, (rx + rw / 2) as f32, (ry + rh / 2 + 5) as f32, "MONO",
+               &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14));
+    }
 
     // CENTRE reset. Greyed out when already centred — it is not a state, it is an action, and an
-    // action with nothing to do should say so rather than looking armed.
+    // action with nothing to do should say so rather than looking armed. Mono greys it for the
+    // same reason: with one signal in both channels there is no image to re-centre.
     {
         let (rx, ry, rw, rh) = balance_reset_rect();
-        let col = if centred { t.faint } else { t.acc };
-        stroke_rect(c, rx, ry, rw, rh, if centred { t.line } else { t.acc }, 1);
+        let dead = centred || s.mono;
+        let col = if dead { t.faint } else { t.acc };
+        stroke_rect(c, rx, ry, rw, rh, if dead { t.line } else { t.acc }, 1);
         center(c, f, (rx + rw / 2) as f32, (ry + rh / 2 + 5) as f32, "CENTRE",
                &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14));
     }
@@ -294,29 +360,48 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
     let cx = balance_x(BALANCE_CENTRE);
     let kx = balance_x(s.balance);
 
+    // THE SLIDER GOES DEAD UNDER MONO. Both channels carry one signal, so there is no image left
+    // to shift and every part of the control below says so — drawn faint, with no deflection fill
+    // and no detent highlight. The drag still works (nav does not special-case it): the position
+    // is remembered and comes back the moment mono is switched off, which is kinder than resetting
+    // a setting the user tuned.
+    let live = !s.mono;
+    let track_col = if live { t.line } else { t.line };
+    let knob_col = if !live {
+        t.faint
+    } else if centred && !s.balance_drag {
+        t.dim
+    } else {
+        t.acc
+    };
+
     // Track, then the deflection fill from the centre detent out to the knob, so the direction and
     // the amount are both readable at a glance without doing arithmetic on the label.
-    fill_rect(c, BAL_X0, ty - 1, BAL_X1 - BAL_X0, 3, t.line);
-    if !centred {
+    fill_rect(c, BAL_X0, ty - 1, BAL_X1 - BAL_X0, 3, track_col);
+    if !centred && live {
         let (fx, fw) = if kx < cx { (kx, cx - kx) } else { (cx, kx - cx) };
         fill_rect(c, fx, ty - 1, fw, 3, t.acc);
     }
     // Centre detent: a taller tick, so you can see where the null is while dragging.
-    fill_rect(c, cx - 1, ty - 11, 2, 23, if centred { t.acc } else { t.dim });
+    fill_rect(c, cx - 1, ty - 11, 2, 23,
+              if !live { t.faint } else if centred { t.acc } else { t.dim });
 
     // Knob. Square, to match the toggle's knob — this UI has no circle primitive and a hand-rolled
     // one here would be the only round thing on the screen. It grows under a finger.
-    let k = if s.balance_drag { 32 } else { 24 };
-    fill_rect(c, kx - k / 2, ty - k / 2, k, k, if centred && !s.balance_drag { t.dim } else { t.acc });
+    let k = if s.balance_drag && live { 32 } else { 24 };
+    fill_rect(c, kx - k / 2, ty - k / 2, k, k, knob_col);
 
     // End caps and the live readout share the line under the track. L and R sit at the extremes so
     // they never collide with the knob at full stop; the value sits between them, centred, where it
     // is closest to where you are looking while dragging.
     let cap = sty(Family::Mono, Weight::Bold, 12.0, t.faint, 0.12);
-    let vc = if centred { t.faint } else { t.acc };
+    let vc = if !live || centred { t.faint } else { t.acc };
     text::draw(c, f, BAL_X0 as f32, (ty + 32) as f32, "L", &cap);
     right(c, f, BAL_X1 as f32, (ty + 32) as f32, "R", &cap);
-    center(c, f, 240.0, (ty + 32) as f32, &balance_label(s.balance).to_uppercase(),
+    // Under mono the readout names the STATE, not a position the ear cannot hear.
+    let readout =
+        if live { balance_label(s.balance).to_uppercase() } else { "BOTH CHANNELS".to_string() };
+    center(c, f, 240.0, (ty + 32) as f32, &readout,
            &sty(Family::Mono, Weight::Regular, 13.0, vc, 0.1));
     hline(c, y + BALANCE_ROW_H, t.line);
 }
@@ -451,6 +536,42 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
 mod tests {
     use super::*;
 
+    /// MONO and CENTRE sit side by side in the Balance row, so neither may reach the other — the
+    /// class of near-miss this screen's geometry constants exist to prevent.
+    #[test]
+    fn the_mono_button_owns_its_own_pixels() {
+        let (mx, my, mw, mh) = balance_mono_rect();
+        let (rx, ry, rw, rh) = balance_reset_rect();
+        assert_eq!((my, mh), (ry, rh), "the two buttons share a baseline");
+        assert!(mx + mw < rx, "MONO overlaps CENTRE");
+        assert!(mx > BAL_X0, "MONO runs off the left of the row");
+        assert!(rx + rw <= BAL_X1, "CENTRE runs off the right of the row");
+
+        // Every pixel of each button hits that button and not the other.
+        for x in mx..mx + mw {
+            assert!(hit_balance_mono(x, my + mh / 2), "MONO dead at x={x}");
+            assert!(!hit_balance_reset(x, my + mh / 2), "CENTRE claims a MONO pixel at x={x}");
+        }
+        for x in rx..rx + rw {
+            assert!(hit_balance_reset(x, ry + rh / 2), "CENTRE dead at x={x}");
+            assert!(!hit_balance_mono(x, ry + rh / 2), "MONO claims a CENTRE pixel at x={x}");
+        }
+        // …and both are inside the Balance row, so `row_at` agrees they belong to it.
+        assert_eq!(row_at(my + mh / 2), Some(ROW_BALANCE));
+        // The gap between them belongs to neither.
+        assert!(!hit_balance_mono(mx + mw + 4, my + mh / 2));
+        assert!(!hit_balance_reset(mx + mw + 4, my + mh / 2));
+    }
+
+    /// The buttons sit ABOVE the slider's grab band, so pressing one cannot also move the knob.
+    #[test]
+    fn pressing_mono_does_not_grab_the_slider() {
+        let (_, my, _, mh) = balance_mono_rect();
+        for y in my..my + mh {
+            assert!(!balance_grab(y), "the slider grab band reaches the buttons at y={y}");
+        }
+    }
+
     /// A live chain with everything on, so each test can switch off the one thing it is about.
     fn loud() -> Sound {
         Sound {
@@ -467,6 +588,8 @@ mod tests {
             balance_drag: false,
             source_direct: false,
             tone_control: false,
+            mono: false,
+            mono_live: false,
         }
     }
 

@@ -143,6 +143,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     let snd = Sound {
         dsee: true,
         balance: cinder_ui::sound::BALANCE_CENTRE, balance_drag: false, bt_route: false,
+        mono: false, mono_live: false,
         vinyl: false,
         vpt: "Studio",
         dcphase: "Low A",
@@ -387,6 +388,20 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("sound_balance", &|c: &mut Canvas| {
                 let s = Sound { balance: 14, balance_drag: true, ..snd };
+                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
+            }),
+            // MONO, in both the states it has — and this is the LONGEST subtitle on the screen,
+            // which is exactly why it is rendered rather than reasoned about. The 2026-09-06 audit
+            // found three unreachable screens by adding them to this matrix; a state that is never
+            // drawn is a state whose overflow nobody has checked.
+            ("sound_mono", &|c: &mut Canvas| {
+                // Off the live path: the honest case for ordinary playback on this device, and the
+                // one whose subtitle has to fit. See analysis/RE_mono_audio.md.
+                let s = Sound { balance: 14, mono: true, mono_live: false, ..snd };
+                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
+            }),
+            ("sound_mono_live", &|c: &mut Canvas| {
+                let s = Sound { mono: true, mono_live: true, ..snd };
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
