@@ -80,12 +80,23 @@ pub struct Entry {
     pub label: String,
 }
 
+/// Image extensions a playlist cover may use, lower-case. Exactly what `art_load::decode` can
+/// read — listing anything else here would put a file on screen that silently never renders.
+pub const COVER_EXTS: [&str; 4] = ["jpg", "jpeg", "png", "bmp"];
+
 #[derive(Clone, Debug, Default)]
 pub struct Playlist {
     pub id: i64,
     pub name: String,
     pub file: PathBuf,
     pub entries: Vec<Entry>,
+    /// The playlist's own picture, as an `#EXTIMG:` path — set by the user, or by a PC-side tool.
+    ///
+    /// It may name EITHER an image file or a MUSIC file. A music file means "use this track's
+    /// cover", which is how a cover gets chosen on a device with no file browser: every candidate
+    /// is already a row in the playlist. Both resolve through the same art cache, keyed by the
+    /// path, so neither needs a second decode path — see `cover_source`.
+    pub cover: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -160,7 +171,7 @@ impl Store {
         let name = clean_name(name);
         let stem = unique_stem(&name, &self.taken_stems());
         let file = self.dir.join(format!("{stem}.{EXT}"));
-        let list = Playlist { id: id_for(&stem), name, file, entries: Vec::new() };
+        let list = Playlist { id: id_for(&stem), name, file, entries: Vec::new(), cover: None };
         write_file(&list)?;
         let id = list.id;
         self.lists.push(list);
@@ -214,6 +225,23 @@ impl Store {
             return Ok(false);
         }
         self.lists[index].entries.remove(position);
+        write_file(&self.lists[index])?;
+        Ok(true)
+    }
+
+    /// Set (or clear) the playlist's picture. `path` names an image file or a music file whose
+    /// embedded cover to borrow; `None` goes back to the automatic cover.
+    ///
+    /// Returns false for an id this store does not own — Sony's playlists live in a database this
+    /// app must not write, so they can never carry one. Their rows still get the AUTOMATIC cover,
+    /// which needs nothing stored anywhere.
+    pub fn set_cover(&mut self, id: i64, path: Option<&str>) -> std::io::Result<bool> {
+        let Some(index) = self.index_of(id) else { return Ok(false) };
+        let next = path.map(|p| p.replace('\\', "/")).filter(|p| !p.trim().is_empty());
+        if self.lists[index].cover == next {
+            return Ok(false);
+        }
+        self.lists[index].cover = next;
         write_file(&self.lists[index])?;
         Ok(true)
     }
@@ -298,6 +326,66 @@ pub fn id_for(stem: &str) -> i64 {
     -(((hash % (i64::MAX as u64 - 1)) + 1) as i64)
 }
 
+impl Playlist {
+    /// The FILE whose picture this playlist draws, or None to keep the generated gradient.
+    ///
+    /// Three sources, most deliberate first. Each one is a thing the user did, and the later ones
+    /// only answer when the earlier ones have nothing to say:
+    ///
+    ///   1. **`#EXTIMG:`** — chosen on the device, or written by a PC-side tool.
+    ///   2. **A picture beside the playlist file** (`Night Drives.m3u8` → `Night Drives.jpg`).
+    ///      This is the whole PC story: drop a JPEG next to the playlist and it is the cover, with
+    ///      nothing to edit and nothing to learn. Checked on every open rather than cached,
+    ///      because the volume it lives on is the one Windows mounts.
+    ///   3. **The first member track**, whose embedded art becomes the cover automatically. This
+    ///      is what makes a playlist look like something without anyone doing anything, and it is
+    ///      what Sony's own playlists get, since they cannot carry the other two.
+    ///
+    /// The returned path is handed to the art cache, which keys on it — so a cover shared with an
+    /// album (case 3, the common one) costs nothing extra to decode or store.
+    pub fn cover_source(&self) -> Option<String> {
+        if let Some(explicit) = self.cover.as_ref().filter(|c| !c.trim().is_empty()) {
+            return Some(explicit.clone());
+        }
+        if let Some(sidecar) = self.sidecar_cover() {
+            return Some(sidecar);
+        }
+        self.entries.first().map(|e| e.uri.clone())
+    }
+
+    /// An image file sitting next to the playlist and sharing its stem, if there is one. Tried in
+    /// [`COVER_EXTS`] order, and in both cases of each extension — this volume is exFAT, which is
+    /// case-insensitive, but the SD card may be mounted by a driver that is not.
+    fn sidecar_cover(&self) -> Option<String> {
+        for ext in COVER_EXTS {
+            for cand in [self.file.with_extension(ext), self.file.with_extension(ext.to_uppercase())] {
+                if cand.is_file() {
+                    return cand.to_str().map(str::to_string);
+                }
+            }
+        }
+        None
+    }
+
+    /// Was this playlist's picture CHOSEN, rather than inherited from its first track? True for
+    /// an `#EXTIMG:` line and for a picture dropped beside the file; false for the automatic one.
+    ///
+    /// The page asks, so it knows whether it has anything to offer putting back.
+    pub fn cover_is_custom(&self) -> bool {
+        self.cover.as_ref().is_some_and(|c| !c.trim().is_empty()) || self.sidecar_cover().is_some()
+    }
+
+    /// Is this cover source a PICTURE (decode the file itself), rather than a music file whose
+    /// embedded art we want?
+    pub fn cover_is_image(path: &str) -> bool {
+        Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| COVER_EXTS.contains(&e.to_lowercase().as_str()))
+            .unwrap_or(false)
+    }
+}
+
 fn parse_file(path: &Path) -> Option<Playlist> {
     let body = fs::read_to_string(path).unwrap_or_else(|_| {
         fs::read(path)
@@ -311,6 +399,7 @@ fn parse_file(path: &Path) -> Option<Playlist> {
     let mut name = stem.clone();
     let mut entries: Vec<Entry> = Vec::new();
     let mut pending_label = String::new();
+    let mut cover: Option<String> = None;
 
     for line in body.lines() {
         let line = line.trim_end_matches(['\r', '\n']);
@@ -322,6 +411,13 @@ fn parse_file(path: &Path) -> Option<Playlist> {
             let candidate = clean_name(rest);
             if !candidate.is_empty() {
                 name = candidate;
+            }
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("#EXTIMG:") {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                cover = Some(rest.replace('\\', "/").replace("%20", " "));
             }
             continue;
         }
@@ -340,7 +436,7 @@ fn parse_file(path: &Path) -> Option<Playlist> {
         entries.push(Entry { uri: norm_uri, label: std::mem::take(&mut pending_label) });
     }
 
-    Some(Playlist { id: id_for(&stem), name, file: path.to_path_buf(), entries })
+    Some(Playlist { id: id_for(&stem), name, file: path.to_path_buf(), entries, cover })
 }
 
 fn write_file(list: &Playlist) -> std::io::Result<()> {
@@ -349,6 +445,11 @@ fn write_file(list: &Playlist) -> std::io::Result<()> {
     }
     let mut body = String::from("#EXTM3U\n");
     body.push_str(&format!("#PLAYLIST:{}\n", list.name));
+    // Written back on every save, so adding a track or renaming the list cannot quietly drop the
+    // cover the user chose. Before the members, where a header directive belongs.
+    if let Some(cover) = &list.cover {
+        body.push_str(&format!("#EXTIMG:{cover}\n"));
+    }
     for entry in &list.entries {
         if !entry.label.is_empty() {
             body.push_str(&format!("#EXTINF:-1,{}\n", entry.label));
@@ -500,6 +601,69 @@ mod tests {
         assert_eq!(store.lists[0].name, "Hand Made");
         assert_eq!(uris(&store.lists[0]), vec!["/x/a.flac", "/x/b.flac"]);
         assert_eq!(store.lists[0].entries[0].label, "A - One");
+    }
+
+    /// The cover survives every other edit, and `#EXTIMG:` round-trips.
+    #[test]
+    fn a_chosen_cover_is_written_back_and_survives_the_other_edits() {
+        let d = Dir::new("cover");
+        let mut store = Store::open(&d.0);
+        let id = store.create("Night Bus").unwrap();
+        store.add(id, "/contents/MUSIC/a.flac", "A - a").unwrap();
+        assert!(!store.get(id).unwrap().cover_is_custom(), "a new playlist has no chosen cover");
+        // …and its AUTOMATIC cover is its first member.
+        assert_eq!(store.get(id).unwrap().cover_source().as_deref(), Some("/contents/MUSIC/a.flac"));
+
+        assert!(store.set_cover(id, Some("/contents/MUSIC/b.flac")).unwrap());
+        assert!(!store.set_cover(id, Some("/contents/MUSIC/b.flac")).unwrap(), "no-op is reported");
+        assert!(store.get(id).unwrap().cover_is_custom());
+        assert_eq!(store.get(id).unwrap().cover_source().as_deref(), Some("/contents/MUSIC/b.flac"));
+
+        // It is IN THE FILE, and it survives adding a track and a rename — both rewrite the file,
+        // and a cover dropped by an unrelated edit is exactly the bug this asserts against.
+        let body = fs::read_to_string(&store.get(id).unwrap().file).unwrap();
+        assert!(body.contains("#EXTIMG:/contents/MUSIC/b.flac"), "{body}");
+        store.add(id, "/contents/MUSIC/c.flac", "C - c").unwrap();
+        store.rename(id, "Late Bus").unwrap();
+        let reopened = Store::open(&d.0);
+        let pl = reopened.get(id).unwrap();
+        assert_eq!(pl.cover.as_deref(), Some("/contents/MUSIC/b.flac"), "an edit dropped the cover");
+        assert_eq!(pl.name, "Late Bus");
+        assert_eq!(uris(pl).len(), 2);
+
+        // Clearing puts it back to automatic — the first member again.
+        let mut store = reopened;
+        assert!(store.set_cover(id, None).unwrap());
+        assert!(!store.get(id).unwrap().cover_is_custom());
+        assert_eq!(store.get(id).unwrap().cover_source().as_deref(), Some("/contents/MUSIC/a.flac"));
+        assert!(!fs::read_to_string(&store.get(id).unwrap().file).unwrap().contains("#EXTIMG"));
+    }
+
+    /// A picture dropped beside the playlist is its cover, with nothing to configure. This is the
+    /// whole PC story for arbitrary artwork, so it is the one that must not need a directive.
+    #[test]
+    fn a_picture_beside_the_playlist_is_its_cover() {
+        let d = Dir::new("sidecar");
+        let mut store = Store::open(&d.0);
+        let id = store.create("Night Bus").unwrap();
+        store.add(id, "/contents/MUSIC/a.flac", "A - a").unwrap();
+        let jpg = store.get(id).unwrap().file.with_extension("jpg");
+        fs::write(&jpg, b"not really a jpeg").unwrap();
+
+        let store = Store::open(&d.0);
+        let pl = store.get(id).unwrap();
+        assert_eq!(pl.cover_source().as_deref(), jpg.to_str(), "the sidecar wins over the member");
+        assert!(pl.cover_is_custom(), "a picture the owner placed is a chosen cover");
+        assert!(pl.cover.is_none(), "…and it needed no #EXTIMG to say so");
+        assert!(Playlist::cover_is_image(jpg.to_str().unwrap()));
+        assert!(!Playlist::cover_is_image("/contents/MUSIC/a.flac"));
+
+        // An explicit #EXTIMG still beats it: it is the more deliberate of the two.
+        let mut store = store;
+        store.set_cover(id, Some("/contents/MUSIC/z.flac")).unwrap();
+        assert_eq!(
+            store.get(id).unwrap().cover_source().as_deref(), Some("/contents/MUSIC/z.flac"),
+        );
     }
 
     #[test]

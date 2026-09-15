@@ -238,7 +238,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let y = start_y + 2 * up_next::RH + 14;   // dragged down past two rows
                 let d = up_next::RowDrag {
                     from,
-                    to: l.movable_slot_for(y - grab_off, 0),
+                    to: l.movable_slot_for(from, y - grab_off, 0),
                     start_y,
                     y,
                     grab_off,

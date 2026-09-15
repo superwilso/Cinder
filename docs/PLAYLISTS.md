@@ -22,6 +22,7 @@ liked list at `/contents`, which is the volume Windows mounts.
 ```
 #EXTM3U
 #PLAYLIST:Late Night On The Bus      ← the display name, so it can hold anything a name can
+#EXTIMG:/contents/Art/late-night.jpg ← the cover (optional) — see "Covers" below
 #EXTINF:-1,Wunderhorse - Teal        ← readable label; never used for matching
 /contents/MUSIC/Wunderhorse - Cub/06 - Wunderhorse - Teal.flac
 ```
@@ -41,12 +42,47 @@ Consequences, all deliberate:
 Code: `player/cinder-ffi/src/playlists.rs` (store), `user_playlist_rows` / `refresh_playlists`
 (merge into the UI's list), `add_track_to_playlist` (object id → path, via the DB).
 
+## Covers
+
+*Added 2026-09-15.* Every playlist has a picture, and it costs almost nothing: the one it shows is
+normally an album cover that is **already decoded and cached**, borrowed by id
+(`PlaylistRow::cover_album_id`) rather than stored a second time. So a cover that arrives from the
+background art builder appears on the playlist the same moment it appears on the album.
+
+Three sources, most deliberate first (`playlists::Playlist::cover_source`):
+
+| | source | set by |
+|---|---|---|
+| 1 | **`#EXTIMG:<path>`** in the `.m3u8` | the device, or a PC-side tool |
+| 2 | **a picture beside the playlist file** — `Night Drives.m3u8` → `Night Drives.jpg` | dropping it there over USB-MSC |
+| 3 | **the first member track's album art** | nobody — this is the automatic one |
+
+`#EXTIMG:` may name **either a picture or a music file**. A music file means "use that track's
+cover", which is how a cover is chosen on a device with no file browser: every candidate is already
+a row in the playlist. `.jpg`, `.jpeg`, `.png` and `.bmp` are the picture extensions, which is
+exactly what `art_load::decode` reads — listing anything else would put a file on screen that
+silently never rendered.
+
+**On the device:** tap the cover on a playlist's page. Each tap moves to the next album the list
+contains, wrapping back to automatic, and a toast names each one. A cycle rather than a picker
+screen because the candidates are few and already on the page; a playlist whose members are all one
+album says so instead of flashing an identical picture. Sony's playlists have nowhere to store a
+choice, so their cover is not a control — it is the automatic one and nothing else.
+
+**From a PC:** drop a JPEG next to the `.m3u8`. Nothing to edit, nothing to learn, and it is the
+route for artwork that is not any album's — the one thing the device cannot offer. A picture cover
+is decoded once and cached like album art (`art_cache::store_image`), keyed by its path.
+
+Every failure here is silent and falls back to the next source, and finally to the generated
+gradient: a cover is decoration, and a missing one must never be why a list does not draw.
+
 ## On screen
 
 | where | what |
 |---|---|
 | **Library ▸ Playlists** | a **NEW PLAYLIST** row between the shuffle band and the list — the only way in, so it is a full-width row. It slides away under the tabs with the band as the list scrolls down, and comes back the moment it scrolls up. Rows read "*n* tracks" — the "· YOURS" suffix was dropped 2026-09-15, because on a device where nearly every playlist is the owner's it was a word repeated down the whole list to say "normal". |
-| **the playlist page** (yours only) | an edit bar: **+ TRACKS**, **RENAME**, **DELETE**, and a **×** on each row. |
+| **the playlist page** | a 64 px cover beside the name, then an edit bar (yours only): **+ TRACKS**, **RENAME**, **DELETE**, and a **×** on each row. |
+| **the cover** (yours only) | tap to cycle it through the albums in the list — see "Covers". It carries a hairline to say it is a control; Sony's does not, because on those it is not one. |
 | **× on a row** | two taps: the first arms the row and it says REMOVE?, the second removes. A tap anywhere else disarms. The same idiom as Settings ▸ Boot to stock, for the same reason. |
 | **DELETE** | a yes/no modal (`confirm::Ask::DeletePlaylist`). The two-tap idiom is already spent on the ×, and "remove one track" and "delete the whole list" must not be the same gesture. |
 | **+ TRACKS** | the library in title order, one tap adds one track, ticks show what is already in. The screen stays open — building a playlist is a run of taps. |

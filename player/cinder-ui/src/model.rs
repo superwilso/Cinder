@@ -111,7 +111,7 @@ pub struct ArtistRow {
 /// One playlist row (Playlists tab). `id` is the DB container's `object_id` — the handle
 /// `cinder-db::playlist_tracks` takes to resolve the member tracks in saved order. It is 0 for
 /// the host/sim sample data, which has no DB behind it.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PlaylistRow {
     pub id: i64,
     pub name: String,
@@ -129,6 +129,24 @@ pub struct PlaylistRow {
     /// the drill-in page is a pure view and needs no DB access per frame. `tracks` is the DB's own
     /// count and can legitimately exceed this when a member file no longer resolves.
     pub track_list: Vec<SongRow>,
+    /// True when this playlist's picture was CHOSEN — an `#EXTIMG:` line or a file dropped beside
+    /// the `.m3u8` — rather than inherited from its first track.
+    ///
+    /// Only the page uses it, to say whether its cover can be put back to automatic. The row does
+    /// not care: a cover is a cover to look at.
+    pub cover_custom: bool,
+    /// The album whose decoded cover this playlist DRAWS, or 0 for none.
+    ///
+    /// This is what makes playlist covers nearly free. A playlist's picture is almost always some
+    /// track's album art — the automatic cover is its first member's, and picking one on the device
+    /// means picking a member — and that art is already decoded, scaled and cached in
+    /// [`Library::thumbs`]. So the row borrows it by id instead of decoding, storing or
+    /// invalidating a second copy, and a cover that arrives from the background decoder appears on
+    /// the playlist at the same moment it appears on the album.
+    ///
+    /// Only a cover that is a PICTURE FILE — an `#EXTIMG:` or a sidecar JPEG the owner synced — has
+    /// no album behind it, and that is the one case [`Library::playlist_thumbs`] exists for.
+    pub cover_album_id: i64,
 }
 
 /// Alphabetical ranks, computed once per library so the lists that re-sort EVERY FRAME compare
@@ -210,6 +228,18 @@ pub struct Library {
     /// device (they're 1425x1425 JPEGs embedded in the FLACs), which is why they cannot be
     /// resolved during a scroll.
     pub thumbs: std::collections::HashMap<i64, crate::art::Image>,
+    /// Playlist COVERS, keyed by playlist id and pre-scaled the same way `thumbs` is.
+    ///
+    /// Its own map rather than a few more keys in `thumbs`: that one is keyed by `album_id`, and
+    /// Sony's playlist container ids are drawn from the same positive number space as its album
+    /// ids, so sharing the map would let a playlist and an album collide and swap pictures. The
+    /// user's own playlists have NEGATIVE ids and would not collide, which is exactly the kind of
+    /// "safe for half the rows" that gets found on a device six weeks later.
+    ///
+    /// Only playlists whose cover is a PICTURE FILE appear here — everything else borrows an
+    /// album's cover through `PlaylistRow::cover_album_id`, which costs nothing. So this map is
+    /// normally empty, and a playlist missing from it is the rule rather than a failure.
+    pub playlist_thumbs: std::collections::HashMap<i64, crate::art::Image>,
     /// Every genre that at least one track carries, with its count. Built once at library build.
     pub genres: Vec<GenreRow>,
     /// The ACTIVE genre filter: `Some(id)` hides every track that does not carry it.
@@ -407,6 +437,8 @@ impl Library {
                 art: p.art.into(),
                 // Sample data stands in for Sony's database rows on the host preview.
                 user: false,
+                cover_custom: false,
+                cover_album_id: 0,
                 track_list: (0..p.k as usize)
                     .filter_map(|i| songs.get((i + pi) % songs.len().max(1)).cloned())
                     .collect(),
@@ -445,6 +477,7 @@ impl Library {
             artists,
             playlists,
             thumbs: Default::default(),
+            playlist_thumbs: Default::default(),
             genres,
             filter_genre: None,
             filter_hires: false,
