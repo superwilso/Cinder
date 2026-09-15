@@ -1,18 +1,21 @@
 # RE — mono audio (accessibility), and why it stops where it does
 
 **Date:** 2026-09-15 · **Device:** NW-A55, firmware 1.02 · **Codec:** Sony CXD3778GF
-**Status:** settled for every path except one, and the exception is named at the end. Nothing here
-was written to the device; this is an inventory question and the inventories already existed.
+**Status:** §1–6 settle where a *cheap* mono can and cannot go, and §6 is what shipped. §7, added on
+a second pass, answers the separate question of what a genuinely **system-wide** toggle would take —
+it is possible, it is two userspace shims, and the mechanism is already proven in production by
+someone else. Nothing here was written to the device.
 
 **The question.** "Mono audio" in the accessibility sense: sum left and right so that both ears get
 the whole mix. It is what makes a stereo recording usable with hearing in one ear, and every phone
 has it. Asked for on 2026-09-15, with the follow-up "can audio also be mono over bt as well, like
 system wide if it is turned on".
 
-**The answer in one line.** Cinder can sum the channels only on audio it carries itself, which on
-this device is the USB-DAC → LDAC bridge and nothing else. It is not a gap in the UI and it is not
-device-gated work waiting on a session: three of the four routes are closed by evidence and the
-fourth is closed by this project's own security policy.
+**The answer in one line.** *Without new machinery*, Cinder can sum the channels only on audio it
+carries itself — the USB-DAC → LDAC bridge and nothing else, which is what §6 ships. *With* new
+machinery, system-wide mono is reachable: §7 shows it takes two `LD_PRELOAD` shims into Sony's own
+audio services, using an injection mechanism that has been running on this device in production for
+years. What it never takes is a codec register (§5, §7.6).
 
 ## 1. There is no ALSA control that does it
 
@@ -104,7 +107,142 @@ flag that lands somewhere.
 * Read **once per session**. The pump runs ~86 times a second and the getter takes the renderer's
   lock; a change lands on the next session, and `CINDER_ACT_MONO_CHANGED` logs that it will.
 
-## 7. What is left, honestly
+## 7. What a SYSTEM-WIDE toggle would actually take
+
+*Added 2026-09-15, second pass, after the question "if I want a system wide mono toggle what is
+needed".* §1–6 say where mono cannot go; this says what it would cost to put it there anyway. The
+new evidence is `unknown321/wampy`, which has been doing userspace injection on this exact device in
+production for years and publishes its sources — a stronger reference than a fresh Ghidra pass,
+because it is running code rather than a reading.
+
+**No Ghidra was used and none could be.** The firmware binaries are not in this clone (`artifacts/`
+is gitignored and `make phase1` needs a `.UPG` that only a browser can fetch from Sony), and Ghidra
+is not installed here. Everything below is from published RE, this repo's own measurements, and the
+kernel/driver sources Wampy quotes. Where something needs the binary in hand to settle, it says so.
+
+### 7.1 The injection mechanism is proven, and it is not exotic
+
+Wampy adds a line to the service's entry in the boot ramdisk's `init.hagoromo.rc`
+(`wampy/installer/run.sh`):
+
+```sh
+sed -i '/SoundServiceFw/a \ setenv LD_PRELOAD /system/vendor/unknown321/lib/libsound_service_fw.so' \
+    ${INITRD_UNPACKED}/init.hagoromo.rc
+```
+
+…and does the same for `PlayerService` with `libdmp_feature.so`. The shim recovers each original
+with `dlsym(RTLD_NEXT, "<mangled C++ symbol>")` and calls through. So **arbitrary code can be run
+inside Sony's audio services**, per service, and this repo's own install notes already record both
+libraries as present on the reference device.
+
+The cost is a boot-image edit, which means repacking and flashing a `.UPG` — machinery Cinder's
+installer already has.
+
+### 7.2 Sony's DSP chain, and why no filter list can give us mono
+
+`SoundServiceFw` runs a **named, ordered filter chain over FLOAT samples**. Wampy intercepts
+`FilterChain::Create(DynamicAllocPacketPool*, const std::vector<std::string>&)` and substitutes its
+own list; the full A50 chain it installs is:
+
+```
+i2f → dseeai → heq → dynamicnormalizer → attn → eq6band → eq10band → eqtone
+    → vpt → clearphase → alc → dcphaselinear → vinylizer → f2i
+```
+
+`i2f`/`f2i` bracket the chain, so everything between them is floating-point DSP — which is exactly
+the shape a channel sum wants. Two things follow:
+
+* **Sony has more filters than its UI exposes** (`alc`, `attn`, `heq` are in the chain and on no
+  screen), and Wampy turns them on simply by naming them.
+* **None of them is mono.** The complete set Wampy enumerates is `alc, attn, clearphase,
+  dcphaselinear, dseeai, dseehxcustom, dseehxlegacy, dynamicnormalizer, eq10band, eq6band, eqtone,
+  heq, vinylizer, vpt` — and the WM1Z chain, i.e. the flagship, has the same members with a
+  different DSEE. **There is no channel operation anywhere in Sony's DSP, on any model here.** That
+  closes §2 with the implementation's own list rather than an ABI dump.
+
+So a filter list cannot deliver mono. A *new filter object* spliced into that chain could — see
+7.5.
+
+### 7.3 The cheapest thing that works: interpose the ALSA write (jack only)
+
+`libaudiohal-adleralsa.so` is the HAL that opens the codec's PCM. That is not inferred: Walkman One
+ships patched copies of that exact file (`etc/.mod/adler/{normal,normal_nt,pv1,pv2}/`) whose entire
+difference is the ALSA device name — "Plus v1 changes output `hw:0,4` (cxd3778gf-icx-lowpower) to
+`hw:0,0` (cxd3778gf-hires-out)" (`wampy/MAKING_OF_VOLUME_TABLES.md`). The device string is inside
+that library, so that library opens and writes the PCM.
+
+Preload into the service that hosts it, interpose `snd_pcm_writei` (and the mmap variant), sum the
+two channels in the buffer, call through. Roughly the same four lines already in `ldac_pump`.
+
+**The one thing that has to be checked on the binary first:** LD_PRELOAD only interposes symbols
+resolved through the PLT of a `DT_NEEDED` dependency. If `libaudiohal-adleralsa.so` `dlopen`s
+libasound and `dlsym`s the entry points — which is exactly what `cinder-home` itself does for the
+same library — **interposition silently does nothing**. One command settles it:
+
+```sh
+readelf -d /system/vendor/sony/lib/libaudiohal-adleralsa.so | grep NEEDED
+readelf -r /system/vendor/sony/lib/libaudiohal-adleralsa.so | grep snd_pcm
+```
+
+If it is `dlopen`'d, the fallback is to **replace the HAL** with a wrapper that forwards to a
+renamed original — and Walkman One already replaces this specific file, so the pattern and the
+risk are both known.
+
+**Covers:** the 3.5 mm jack, all local playback. **Does not cover Bluetooth** (§4).
+
+### 7.4 Bluetooth needs its own hook
+
+A2DP PCM never reaches ALSA. It is written to `BtTransmitterService`'s socket by Sony's
+`AudioInRecorder` after an OMX capture (`E_usbdac_ldac/RE_findings.md`). So the second hook is a
+preload into whichever `hagoromo` hosts that producer, interposing `write`/`send`/`sendmsg` and
+filtering by the socket fd — the frames are S16_LE stereo, which this project has already confirmed
+by draining the socket at exactly `rate x channels x 2` bytes per second.
+
+**This one needs a device session before it can be written**, and the questions are small:
+
+1. Which `hagoromo` process holds the connected socket while A2DP plays (`ls -l /proc/*/fd` for the
+   abstract name `pst::services::bttransmitterservice`)?
+2. Is `AudioInRecorder` in that same process, or does it hand off again?
+
+Nothing on the host can answer those.
+
+### 7.5 The single point that would cover everything
+
+The chain in 7.2 sits **before** the jack/Bluetooth split, so one filter there is the only place a
+single switch covers every route at once. Adding one means constructing a filter object Sony's
+factory never makes: its vtable, its per-packet entry point, and the packet layout
+(`DynamicAllocPacketPool` — Wampy has a partial shape for it in `sound_service_fw.h`, carried as
+opaque byte arrays, which is a good sign of how much is understood and how much is not).
+
+This is the deepest option and the only one that can crash a core audio service on a bad guess,
+which is the failure mode `SECURITY.md` rule 3 exists for ("never guess vtable slot indices").
+It is also the only one that is genuinely, architecturally *system-wide*.
+
+### 7.6 The forbidden route does not become the right route
+
+The codec register from §5 is what this project's rules rule out, and lifting that rule does not
+buy the feature:
+
+* **There is no evidence any codec register sums channels.** `CODEC_DATA_SEL` is a name that
+  sounds promising in a 210-entry map; nothing in the driver or the register map says it mixes.
+* **Even if it did, it would not be system-wide** — Bluetooth never passes the codec (§4). It
+  would buy exactly what 7.3 buys, for far more risk.
+
+So the honest ranking is: **7.3 + 7.4 for a real system-wide toggle** (two small shims, both
+recoverable by deleting a file and re-flashing), **7.5 if one clean switch is worth deep RE**, and
+**the codec register never** — not because it is forbidden, but because it is the worst trade on
+the list.
+
+### 7.7 What to do first
+
+In order, cheapest first, and the first two are a single short device session:
+
+1. `readelf -d`/`-r` on `libaudiohal-adleralsa.so` → decides 7.3's shape (preload vs. replace).
+2. `ls -l /proc/*/fd` with LDAC playing → names the process for 7.4.
+3. Build the 7.3 shim against the answer to (1), flash, listen. That is mono on the jack.
+4. Then 7.4, and mono is system-wide in the sense that was asked for.
+
+## 8. The lever nobody has swept
 
 One lever has not been swept: **`Audio I2sout Mch Config`** (numid unknown, value `5,6`, range
 0..6) — an MTK-side multichannel I2S output configuration, not a codec register, so it is an
