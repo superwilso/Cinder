@@ -2,8 +2,8 @@
 # Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
-tag v0.3.6
-51064a44149b7f99401d2be438118516ac07e18fcee3defde214c85015d161ff  cinder-home/dist/stable/cinder-home
+tag v0.3.7
+8af0e3b22664b462ba0bb72756bb987e7390c271ea48e359beabf24a1b42ca29  cinder-home/dist/stable/cinder-home
 3a89166e4073432cfb8dab1c1ee4f05d87a1bc9e0ca6ae1860bb94e4c604677b  cinder-home/dist/stable/cinder-probe
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
 42dd6d1f20d7602bf66ef2ff67174623cfb037fdc9564158e46b21ed55d20b26  cinder-home/dist/stable/cinder-power
@@ -14,5 +14,5 @@ d2eeb22e165bd9dcf01b9862af6e17dbdd157817cbfac54fd14adf77516193fd  cinder-home/di
 f7682696f4f1c200c5ceb9ae04b82aac7ca5a7515ba3ff76db8f92cf61624898  cinder-home/dist/stable/cinder-battery
 763b0c422a3eb185b7a58466881d6fde0c6233994f73767178edbca3dd2bbb22  cinder-home/dist/stable/cinder-signature.sh
 458a402e8e1a5b5c37721e5a33298ecbb76173552f1ff2daa4708e1eb7735e05  cinder-home/dist/stable/cinder_components.conf
-f26d8a7a050ac4442f5c42c7c0e144eca7c52205bbb09d64a358a7d3aa509842  cinder-home/dist/stable/cinder_home_install.upg
+0d3f0781fbd740ab19a6c102bcc15e0a3d33562d6e170b4c18761a136b597775  cinder-home/dist/stable/cinder_home_install.upg
 5f625e06593da7a7f7fef4ef1e2fd23990e39a614440c60265e58ff0562ea648  cinder-home/dist/stable/cinder_home_uninstall.upg
