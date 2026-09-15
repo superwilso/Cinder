@@ -198,8 +198,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
             // The unified queue: history above the playing track, then the user's own queue,
-            // then the rest of the album. `current: Some(2)` so the PREVIOUSLY PLAYED section is
-            // actually populated in the preview — at track 0 it is omitted entirely.
+            // then the rest of the album. The history is its OWN list now, so the preview passes
+            // one explicitly rather than relying on `current` to imply it.
             ("up_next", &|c: &mut Canvas| {
                 let al = lib.album_groups.first()
                     .and_then(|g| g.albums.iter().find(|a| !a.track_list.is_empty()));
@@ -211,7 +211,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
                     album, tracks,
                     current: (!tracks.is_empty()).then(|| 2.min(tracks.len() - 1)),
-                    queue: &queue[..2.min(queue.len())], pick: None, lib: &lib, scroll_px: 0,
+                    queue: &queue[..2.min(queue.len())],
+                    history: &tracks[..2.min(tracks.len())],
+                    pick: None, lib: &lib, scroll_px: 0,
                     drag: None, swipe: None, sbar_active: false,
                 });
             }),
@@ -220,12 +222,12 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("up_next_queue", &|c: &mut Canvas| {
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
                     album: "", tracks: &[], current: None,
-                    queue: &queue, pick: None, lib: &lib, scroll_px: 0,
+                    queue: &queue, history: &[], pick: None, lib: &lib, scroll_px: 0,
                     drag: None, swipe: None, sbar_active: false,
                 });
             }),
             ("up_next_reorder", &|c: &mut Canvas| {
-                let l = up_next::layout(0, None, queue.len(), false);
+                let l = up_next::layout(0, 0, None, queue.len(), false);
                 let from = 1usize;
                 let grab_off = up_next::RH / 2;
                 // The queue no longer starts at the top of the list, so the row's screen y comes
@@ -235,16 +237,15 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let start_y = row_top + grab_off;
                 let y = start_y + 2 * up_next::RH + 14;   // dragged down past two rows
                 let d = up_next::RowDrag {
-                    list: up_next::DragList::Queue,
                     from,
-                    to: l.queue_slot_for(y - grab_off, 0),
+                    to: l.movable_slot_for(y - grab_off, 0),
                     start_y,
                     y,
                     grab_off,
                 };
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
                     album: "", tracks: &[], current: None,
-                    queue: &queue, pick: None, lib: &lib, scroll_px: 0,
+                    queue: &queue, history: &[], pick: None, lib: &lib, scroll_px: 0,
                     drag: Some(d), swipe: None, sbar_active: false,
                 });
             }),
@@ -314,12 +315,12 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                                                         lib.songs.len(), false);
             }),
             ("up_next_remove", &|c: &mut Canvas| {
-                let l = up_next::layout(0, None, queue.len(), false);
+                let l = up_next::layout(0, 0, None, queue.len(), false);
                 let row_y = cinder_ui::chrome::HEADER_BOTTOM
                     + l.top_of(up_next::Slot::Queued(2)).unwrap_or(0) + up_next::RH / 2;
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
                     album: "", tracks: &[], current: None,
-                    queue: &queue, pick: None, lib: &lib, scroll_px: 0,
+                    queue: &queue, history: &[], pick: None, lib: &lib, scroll_px: 0,
                     drag: None,
                     swipe: Some(cinder_ui::library::SwipeRow { y: row_y, dx: 110 }),
                     sbar_active: false,

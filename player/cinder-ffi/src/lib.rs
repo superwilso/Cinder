@@ -5144,6 +5144,8 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     let pos_body = std::fs::read_to_string(&pos_path).unwrap_or_default();
 
     let (mut ctx_ids, mut q_ids, mut pre) = (Vec::new(), Vec::new(), None);
+    // PREVIOUSLY PLAYED, capped at `HISTORY_MAX` when it was written.
+    let mut hist_ids: Vec<i64> = Vec::new();
     let mut idx = 0usize;
     // The user pick that was PLAYING when the player went down. It is in neither list — a pick
     // leaves the queue when it starts — so without this the resume came back on the context row
@@ -5156,6 +5158,7 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
             "pre" => pre = Some(id_list(v)),
             "idx" => idx = v.parse::<usize>().unwrap_or(0),
             "pick" => pick_id = v.parse::<i64>().ok(),
+            "hist" => hist_ids = id_list(v),
             _ => {}
         }
     }
@@ -5183,9 +5186,11 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     // whatever was playing, and after "Shuffle all songs" that is the entire library, on the boot
     // path. Resolving both lists from one scan removes the shape rather than relying on the bound.
     let Some(db) = r.db.as_ref() else { return 0 };
-    let mut all_ids: Vec<i64> = Vec::with_capacity(ctx_ids.len() + q_ids.len() + 1);
+    let mut all_ids: Vec<i64> =
+        Vec::with_capacity(ctx_ids.len() + q_ids.len() + hist_ids.len() + 1);
     all_ids.extend_from_slice(&ctx_ids);
     all_ids.extend_from_slice(&q_ids);
+    all_ids.extend_from_slice(&hist_ids);
     all_ids.extend(pick_id);
     let by_id = db.tracks_by_object_ids(&all_ids).unwrap_or_default();
     let resolve = |ids: &[i64]| -> Vec<cinder_db::Track> {
@@ -5193,9 +5198,15 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     };
     let ctx = resolve(&ctx_ids);
     let queue = resolve(&q_ids);
+    let history = resolve(&hist_ids);
     // A pick whose file has left the library is simply not restored; the context row under it
     // then becomes what resumes, which is where playback would have gone next anyway.
     let pick = pick_id.and_then(|id| by_id.get(&id).cloned());
+    // The history is restored BEFORE the early return below. A device that was last playing
+    // nothing still has a "previously played", and dropping it because there is no sequence to
+    // resume would empty the list on exactly the reboot where the user wants to see what they
+    // were listening to.
+    r.app.history_restore(history.iter().map(song_row_of).collect());
     if ctx.is_empty() && queue.is_empty() && pick.is_none() {
         return 0;
     }

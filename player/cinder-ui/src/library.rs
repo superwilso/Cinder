@@ -1486,13 +1486,12 @@ pub fn render(
                 art::block_cached(c, t, 22, y + (rh - 48) / 2, 48, 48, &pl.art, artdim(t));
                 let tcol = if now { t.acc } else { t.ink };
                 text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol));
-                // Cinder's own playlists are editable and Sony's are not, so the row says which
-                // it is — otherwise the missing controls on the page look like a bug.
-                let sub = if pl.user {
-                    format!("{} tracks · YOURS", pl.tracks)
-                } else {
-                    format!("{} tracks", pl.tracks)
-                };
+                // No "· YOURS" suffix. It used to mark Cinder's own playlists so the edit bar's
+                // absence on a Sony one did not read as a bug — but on a device where nearly every
+                // playlist IS the owner's, it was a word repeated down the whole list to say
+                // "normal". The distinction still lands where it matters: the page draws the edit
+                // bar for `pl.user` and not otherwise, and a custom cover is Cinder-only.
+                let sub = format!("{} tracks", pl.tracks);
                 text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
                 icons::chevron(c, 456.0, cy as f32, 14.0, t.faint);
                 hline(c, y + rh, t.line);
