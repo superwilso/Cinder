@@ -56,6 +56,7 @@ const char* slot_name(int svc, int slot) {
 // ── the fake radio's state ───────────────────────────────────────────────────────────────────
 bool        g_radio_on  = false;
 bool        g_connected = false;
+void self_connect_due();   // with the page model below
 std::string g_peer_name;
 std::vector<unsigned char> g_peer_addr;
 std::vector<std::pair<std::string, std::vector<unsigned char> > > g_paired;
@@ -108,6 +109,7 @@ long h_SetRfOnOff(void* /*self*/, void* p, void*, void*) {
 // a bug this project actually shipped. The fake reproduces that: 0 always, address only when
 // connected.
 long h_GetConnectInformation(void*, void* pa, void* pn, void*) {
+    self_connect_due();
     cinder_harness_record("BtXmit::GetConnectInformation", g_connected ? 1 : 0);
     if (pa) {
         std::vector<unsigned char>* addr = reinterpret_cast<std::vector<unsigned char>*>(pa);
@@ -169,6 +171,18 @@ bool g_retry_mode = false;
 long long g_page_until_ms = 0;
 
 bool paging() { return cinder_harness_now_ms() < g_page_until_ms; }
+
+// Headphones that connect THEMSELVES at this virtual time (0 = never), if the radio is up by then —
+// the device's ordinary case after power-on, and the one link the app did not ask for.
+long long g_self_connect_ms = 0;
+void connect_to(size_t idx);
+void self_connect_due() {
+    if (g_self_connect_ms && cinder_harness_now_ms() >= g_self_connect_ms && g_radio_on
+        && !g_connected && !g_paired.empty()) {
+        g_self_connect_ms = 0;
+        connect_to(0);
+    }
+}
 
 bool connect_refused() { return g_retry_mode || paging(); }
 
@@ -347,7 +361,7 @@ int _ZN3pst8services12mediascanner12MediaScanner4ScanEPNS1_21IMediaScannerListen
 
 // ── the fake radio, as a test fixture ────────────────────────────────────────────────────────
 void cinder_harness_bt_reset(void) {
-    g_radio_on = false; g_connected = false; g_retry_mode = false; g_page_until_ms = 0;
+    g_radio_on = false; g_connected = false; g_retry_mode = false; g_page_until_ms = 0; g_self_connect_ms = 0;
     g_peer_name.clear(); g_peer_addr.clear(); g_paired.clear();
 }
 
@@ -362,6 +376,7 @@ int  cinder_harness_bt_retry_mode(void) { return g_retry_mode ? 1 : 0; }
 // Hold a page on the air until `ms` of virtual time: a radio already busy connecting, as the
 // ladder's own attempt had left it when the user started tapping on 2026-09-15.
 void cinder_harness_bt_page_until(long long ms) { g_page_until_ms = ms; }
+void cinder_harness_bt_self_connect_at(long long ms) { g_self_connect_ms = ms; }
 
 // Add a device to the radio's pairing table. `addr_last` is the final byte of a synthetic
 // 00:00:5E:00:53:xx address (RFC 7042 documentation range), so two fixtures are distinguishable.

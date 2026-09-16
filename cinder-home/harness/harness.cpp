@@ -102,6 +102,7 @@ void ensure() {
 }
 
 extern "C" void cinder_harness_fs_due(long long now_ms);   // fakefs.cpp
+extern "C" void cinder_harness_state_due(long long now_ms);   // below, with the state store
 extern "C" void cinder_harness_input_due(long long now_ms);   // fakeinput.cpp
 extern "C" int  cinder_harness_input_next(long long* out);    // fakeinput.cpp
 
@@ -199,6 +200,7 @@ void try_advance() {
     if (g_passive_target != 0 && g_now_ms >= g_passive_target) pthread_cond_broadcast(&g_slow);
     // Scheduled changes to the device's world land BEFORE anything observes the new time.
     cinder_harness_fs_due(g_now_ms);
+    cinder_harness_state_due(g_now_ms);
     cinder_harness_input_due(g_now_ms);
     g_last_move_real = real_ms();
     pthread_cond_broadcast(&g_tick);
@@ -330,6 +332,36 @@ void cinder_harness_state_set(const char* key, long long value) {
     g_state->push_back(std::make_pair(std::string(key), value));
 }
 
+// Scheduled writes to the same store, applied by the clock like cinder_harness_fs_write_at. How a
+// scenario says "the user flipped the switch" in the same instant as the tap that carries it: the
+// real navigator changes its own state before handing the shell the action, and the shell reads it.
+struct StateAt { long long at; std::string key; long long value; };
+std::vector<StateAt>* g_state_at = nullptr;
+
+void cinder_harness_state_set_at(long long at_ms, const char* key, long long value) {
+    Lock l; ensure();
+    if (!g_state_at) g_state_at = new std::vector<StateAt>();
+    StateAt s;
+    s.at = at_ms;
+    s.key = key ? key : "";
+    s.value = value;
+    g_state_at->push_back(s);
+}
+
+// Clock lock held.
+void cinder_harness_state_due(long long now) {
+    if (!g_state_at) return;
+    for (size_t i = 0; i < g_state_at->size();) {
+        const StateAt& s = (*g_state_at)[i];
+        if (s.at > now) { i++; continue; }
+        bool found = false;
+        for (size_t j = 0; j < g_state->size(); j++)
+            if ((*g_state)[j].first == s.key) { (*g_state)[j].second = s.value; found = true; break; }
+        if (!found) g_state->push_back(std::make_pair(s.key, s.value));
+        g_state_at->erase(g_state_at->begin() + (long)i);
+    }
+}
+
 long long cinder_harness_state_get(const char* key, long long fallback) {
     Lock l; ensure();
     for (size_t i = 0; i < g_state->size(); i++)
@@ -342,6 +374,7 @@ void cinder_harness_reset(void) {
     g_trace->clear();
     g_script->clear();
     g_state->clear();
+    if (g_state_at) g_state_at->clear();
     g_names->clear();
     g_name_id->clear();
     g_delay->clear();

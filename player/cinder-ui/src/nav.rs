@@ -7154,6 +7154,23 @@ impl App {
         if next.is_some() && next == self.bt_connecting_name {
             self.clear_bt_connecting(); // the device being connected is the one that linked
         }
+        // THE ROWS FOLLOW THE LINK, not the last list read. A row's `connected` flag decides what a
+        // tap on it does, and the shell only re-reads the list on entry and after a connect — so on
+        // 2026-09-16 the headphones' row still said connected after a disconnect, and eleven taps
+        // meant as "connect" each sent another hang-up. A row stays connected only while the live
+        // peer has its name; a row the list did not mark is marked when its name links, unless
+        // another row of the same name already holds the flag.
+        let held = self.bt_paired.iter().any(|d| d.connected && next.as_deref() == Some(&d.name));
+        let mut marked = held;
+        for d in &mut self.bt_paired {
+            let named = next.as_deref() == Some(&d.name);
+            if !named {
+                d.connected = false;
+            } else if !marked {
+                d.connected = true;
+                marked = true;
+            }
+        }
         self.bt_connected = next;
         self.bt_link_known = true;
         changed
@@ -13979,6 +13996,35 @@ mod tests {
         assert_eq!(a.bt_connect_row(0), vec![Action::BtConnectDevice(0)], "and the row can be tapped again");
         a.set_bt_on(false);
         assert_eq!(a.bt_connecting, None, "switching the radio off stops it too");
+    }
+
+    /// 2026-09-16 on the device: after a disconnect the headphones' row still said connected, so
+    /// every tap meant as "connect" sent another hang-up. The rows must follow the live link.
+    #[test]
+    fn a_dropped_link_turns_its_row_back_into_a_connect() {
+        let mut a = unlocked();
+        a.bt_paired_clear();
+        a.bt_paired_add("WH-1000XM4", "Headphones", true);
+        a.bt_paired_add("WONDERBOOM", "Speaker", false);
+        a.set_bt_connected(Some("WH-1000XM4"));
+        assert!(a.bt_paired[0].connected);
+        a.set_bt_connected(None); // the link went away; nobody re-read the list
+        assert!(!a.bt_paired[0].connected, "the row stopped saying connected");
+        assert_eq!(a.bt_connect_row(0), vec![Action::BtConnectDevice(0)], "so a tap connects");
+        // The link comes back before the list is read again: the row says so.
+        a.set_bt_connected(Some("WH-1000XM4"));
+        assert!(a.bt_paired[0].connected && !a.bt_paired[1].connected);
+    }
+
+    /// Two paired devices with one name: the one the list marked keeps the flag.
+    #[test]
+    fn a_shared_name_keeps_the_row_the_list_marked() {
+        let mut a = unlocked();
+        a.bt_paired_clear();
+        a.bt_paired_add("Speaker", "Speaker", false);
+        a.bt_paired_add("Speaker", "Speaker", true);
+        a.set_bt_connected(Some("Speaker"));
+        assert!(!a.bt_paired[0].connected && a.bt_paired[1].connected);
     }
 }
 
