@@ -94,6 +94,25 @@ for b in "${HELPERS[@]}"; do
     fi
 done
 
+# libcinder_mono.so is loaded INTO Sony's SoundServiceFw, where a loader error or a crash switches the
+# player off. So its rules are tighter than the app's: a shared object, glibc 2.23, and nothing but
+# glibc itself — the service must not have to find a library it did not already load.
+b=libcinder_mono.so; f="$DIR/$b"
+if [ ! -f "$f" ]; then
+    bad "$b" "missing"
+elif ! is_arm "$f" || ! file -b "$f" | grep -q 'shared object'; then
+    bad "$b" "not a 32-bit ARM EABI5 shared object: $(file -b "$f")"
+else
+    too_new="$(readelf -V "$f" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -uV \
+               | awk -F'[_.]' '$2 > 2 || ($2 == 2 && $3 > 23)')"
+    needed="$(readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | tr '\n' ' ')"
+    extra=""
+    for lib in $needed; do case "$lib" in libc.so.6|libdl.so.2|libpthread.so.0) ;; *) extra="$extra $lib" ;; esac; done
+    [ -z "$too_new" ] || bad "$b" "needs glibc newer than the player's 2.23: $(echo $too_new)"
+    [ -z "$extra" ] || bad "$b" "needs more than glibc inside SoundServiceFw:$extra"
+    [ -z "$too_new$extra" ] && good "$b" "ARM shared object, glibc <= 2.23, needs only: $needed"
+fi
+
 if [ "$FAIL" = 0 ]; then
     echo "ARM payload fits the player's runtime ($DIR)."
 else

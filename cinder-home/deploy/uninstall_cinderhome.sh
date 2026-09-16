@@ -70,6 +70,20 @@ if [ "$restored" = 1 ]; then
         echo "signature: no helper installed, nothing to revert"
     fi
 
+    # 1b. Give Wampy its library back if the mono shim holds its place (install_cinderhome.sh 1g2).
+    #     A rename, so it is right even on a live system. Best-effort, like the revert above.
+    MONO_PATH=/system/vendor/unknown321/lib/libsound_service_fw.so
+    MONO_WAMPY=/system/vendor/unknown321/lib/libsound_service_fw.wampy.so
+    if [ -f "$MONO_PATH" ] && "$BB" grep -q libcinder_mono.so "$MONO_PATH" 2>/dev/null; then
+        if [ -s "$MONO_WAMPY" ]; then
+            "$BB" mv -f "$MONO_WAMPY" "$MONO_PATH" && echo "mono: Wampy's library restored to $MONO_PATH"
+        else
+            "$BB" rm -f "$MONO_PATH" && echo "mono: shim removed (no Wampy library was kept to restore)"
+        fi
+    else
+        echo "mono: no shim installed, nothing to restore"
+    fi
+
     # 2. Now the binaries. EVERY file install_cinderhome.sh puts in $BIN is listed here; the three
     #    that used to be missing (cinder-battery, cinder-voltable, cinder-signature.sh) meant two
     #    setuid-root helpers survived a "full uninstall" — exactly what the comment below forbids.

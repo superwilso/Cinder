@@ -16,6 +16,24 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Mono now reaches the headphone jack and Bluetooth, on players with Wampy.** *Device-verified
+  2026-09-16 by the library's own log during real playback: summed on the jack, then over LDAC,
+  with the stream staying up and no reboot. The owner's listening check is still to come.* Until now
+  Sound ▸ MONO could only reach USB-DAC → LDAC, because both the jack and Bluetooth are fed by
+  Sony's own sound service. A small library, `libcinder_mono.so`, now runs inside that service
+  and sums left and right after all of Sony's effects, halved rather than clipped, while leaving DSD
+  and anything that is not plain stereo untouched. It gets there through the one library Sony's
+  boot already loads into that service, Wampy's, which it keeps and loads straight back, so Wampy
+  keeps working. Without Wampy nothing changes. A crash in that service switches the player off,
+  so the library counts its own loads and stands aside after two boots where neither Cinder nor
+  any audio started.
+- **Two new install options.** `mono` (on by default) installs the library above; turning it
+  off or uninstalling puts Wampy's file back. `scrobble` (on by default) lets you turn off the
+  `.scrobbler.log`. There is no need to turn it off for unknown321's scrobbler: Cinder already
+  writes nothing while that one is running.
+
 ### Fixed
 
 - **Tapping headphones in Bluetooth ▸ Devices often did nothing.** *Harness- and host-tested;

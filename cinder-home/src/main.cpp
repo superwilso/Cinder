@@ -1049,6 +1049,13 @@ static int other_scrobbler_pid() {
 // Open Cinder's scrobbler unless something else already owns the log. `who` prefixes the log line.
 static void scrobble_open_ours(const char* who) {
     char m[224];
+    // The install option (deploy/components.conf `scrobble`). Machine-written, off the MSC volume;
+    // the /contents flag below is the hand-made switch and still works without a reinstall.
+    if (::access("/data/cinder/scrobble_off", F_OK) == 0) {
+        std::snprintf(m, sizeof m, "%s: scrobble log not selected at install (/data/cinder/scrobble_off)", who);
+        clog_(m);
+        return;
+    }
     if (::access("/contents/cinder_no_scrobble", F_OK) == 0) {
         std::snprintf(m, sizeof m, "%s: scrobble disabled (/contents/cinder_no_scrobble) — leaving "
                       "the log to the other scrobbler", who);

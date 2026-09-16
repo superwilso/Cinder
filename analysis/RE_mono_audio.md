@@ -2,9 +2,9 @@
 
 **Date:** 2026-09-15 · **Device:** NW-A55, firmware 1.02 · **Codec:** Sony CXD3778GF
 **Status:** §1–6 settle where a *cheap* mono can and cannot go, and §6 is what shipped. §7, added on
-a second pass, answers the separate question of what a genuinely **system-wide** toggle would take —
-it is possible, it is two userspace shims, and the mechanism is already proven in production by
-someone else. Nothing here was written to the device.
+a second pass, answers the separate question of what a genuinely **system-wide** toggle would take.
+**§9 (2026-09-16) is what was built on it and verified on the device:** one library in
+SoundServiceFw covers both the jack and Bluetooth, carried by Wampy's existing preload.
 
 **The question.** "Mono audio" in the accessibility sense: sum left and right so that both ears get
 the whole mix. It is what makes a stereo recording usable with hearing in one ear, and every phone
@@ -254,3 +254,50 @@ by measurement rather than by ear.
 
 **Until something is measured, nothing about the jack changes on screen.** The Balance row says what
 mono actually reaches and no more, which is the same rule that row already follows for Bluetooth.
+
+## 9. What shipped: `libcinder_mono.so` (2026-09-16, device-verified)
+
+**One library, not two.** §7.4 expected the Bluetooth hook to need its own process. The reading
+(13.12) put both writers in the same one: SoundServiceFw writes the jack through
+`libaudiohal-adleralsa.so` → `snd_pcm_writei`, and the A2DP stream through
+`libaudiohal-a2dpsnksingletrack.so` → `write`/`send` on its connected
+`pst::services::bttransmitterservice` socket. `cinder-home/src/cinder-mono.c` interposes both; the
+arithmetic is `src/mono_sum.h` (host-tested by `tools/mono_selftest.cpp`, the interposition by
+`tools/test_mono_shim.sh` on the host and under qemu with the device's glibc).
+
+**How it gets in.** Cinder does not edit the boot image, so it has no `setenv LD_PRELOAD` of its own.
+Wampy's installer added one for its `libsound_service_fw.so`. The shim takes that path, keeps
+Wampy's file as `libsound_service_fw.wampy.so` and `dlopen`s it back with `RTLD_GLOBAL` in its
+constructor, so Wampy's FilterChain hooks are still in the global scope. Install option `mono`
+(`deploy/components.conf`); a player without Wampy gets nothing and keeps §6.
+
+**Readings on the device.**
+
+| | |
+|---|---|
+| Jack | `jack: pcm 0xb434bcc0 fmt 2 — summing`: the HAL was handed S16_LE for a 16-bit track |
+| Bluetooth | `bt: fd 17 handshake: 2 ch, 44100 Hz — PCM from here` on every play start and every reconnect (a new fd each time), then `bt: fd 17 — summing` over LDAC; the stream stayed up, no reboot |
+| Not yet | the owner's listening check, and the Sound ▸ MONO button driving the flag (the tests set `/tmp/cinder_mono` by hand) |
+| Cost with mono off | one cached `access()` every 250 ms on the audio path |
+
+**Two traps, both found on the device.**
+
+- *The constructor runs as root; the service then becomes uid 100.* hagodaemon loads the preload
+  first and drops to `system` (CapEff `0x800000`, CAP_SYS_NICE only) afterwards, and root's umask
+  here is 077. The first build created its log as root 0600, so every line from the audio threads
+  failed silently and an empty log after real playback proved nothing. Files the shim means to
+  write again are now `fchmod` 0666 when root creates them, opened `O_NOFOLLOW`.
+- *`logwrapper` gets the preload too.* init runs `logwrapper hagodaemon SoundServiceFw …`, so a
+  command-line match alone loaded the shim twice per boot and counted two loads, which would reach
+  safe mode after one uncleared boot. argv[0] `logwrapper` is now excluded.
+
+**Safety, since a SoundServiceFw that dies powers the player off** (`stop hagoromo11` did, 2026-09-16).
+Every load counts itself in `/data/cinder/mono_shim_boots` before doing anything else; the first
+audio through a hook, or cinder-home's healthy mark, clears it; at two uncleared loads the shim
+loads in SAFE MODE (no hooks, no Wampy chain). `/data/cinder/mono_shim_off` turns the hooks off
+by hand. A running service has the file mapped, so it is only ever replaced by rename.
+
+**What it does not change.** DSD over PCM (0x05/0xFA markers) and any stream that is not 2-channel
+linear PCM pass through untouched. On the socket nothing changes until the type-1 handshake has
+gone by: a wrong length there reboots the player. The sum is halved, never clipped.
+
