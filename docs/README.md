@@ -36,6 +36,7 @@ The four documents that are always current live outside this directory:
 | [`COMPARISON_cinder_wampy_sony.md`](COMPARISON_cinder_wampy_sony.md) | How Cinder, Wampy and the stock player each solve the same problems. Bluetooth and FM rows revised 2026-08-26. |
 | [`adb_setup.md`](adb_setup.md) | adb on the dev channel — fast iteration and reverse-engineering access. |
 | [`open-questions.md`](open-questions.md) | What is still unknown about the device. Several entries closed by on-device work; see the header. |
+| [cinder-sony-analysis](https://github.com/superwilso/cinder-sony-analysis) | **Reverse-engineering without the player.** The Sony-derived material kept out of this repository: a scrubbed map of a running NW-A55 (services, sockets, kernel config, I2C, mixer), catalogues of the A50 and ZX100 firmware images (files, hashes, dependencies, every exported symbol), and the Clear Bass tables and decompilations. Regenerated with [`../tools/device_map/device_map.py`](../tools/device_map/device_map.py) and [`../tools/firmware_catalogue.py`](../tools/firmware_catalogue.py). |
 
 ## Subsystems
 

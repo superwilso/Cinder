@@ -5242,6 +5242,68 @@ static int eq6custom_probe() {
     _exit(0);
 }
 
+// --clearbass <level> [secs] [selector] : HOLD Sony's own Clear Bass so it can be heard.
+//
+// Clear Bass is not missing from this firmware; it is band 0 of the six-band EQ. libSoundServiceFw
+// exports the whole Walkman implementation as CB_6bandEQ_* (analysis/RE_clear_bass.md §4):
+// CB_6bandEQ_eq runs band 0 through the two low resonators in CB_6bandEQ_geq_coef (about 45 and
+// 173 Hz at 44.1 kHz) with its own limiter, then bands 1-5 (400 Hz .. 16 kHz). Levels are -10..+10.
+//
+// Only presets 9 and 10 (Custom 1/2) keep band writes (--eq6custom), so this selects Custom 1,
+// remembers what Custom 1 held, writes band 0, and sits on it like --vpt does: the setting belongs
+// to this process's EffectCtrlDmp client. `selector` is SetSelectUsingEq (1 = six-band, 2 = the
+// ten-band Cinder drives); pass 2 to hear whether Clear Bass still processes next to Cinder's EQ —
+// Eq6band::UpdateProcCond also wants a field == 1 that may be exactly that selector. Everything is
+// put back on the way out, selector last.
+static int clearbass_probe(int level, int hold_s, int selector) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    const int sel0 = cinder_effects_get_select_using_eq();
+    const int on0 = cinder_effects_is_eq6_on();
+    const int pre0 = cinder_effects_get_eq6_preset();
+    std::snprintf(m, sizeof m, "clearbass: entry selector=%d Eq6On=%d preset=%d", sel0, on0, pre0);
+    clog_(m);
+    if (sel0 == -1) {
+        clog_("clearbass: no effects client — is the sound service up?");
+        return 2;
+    }
+
+    cinder_effects_set_eq6(1);
+    cinder_effects_set_eq6_preset(9);
+    const int keep = cinder_effects_get_eq6_band(0);
+    cinder_effects_set_eq6_band(0, level);
+    if (selector >= 0) cinder_effects_set_select_using_eq(selector);
+    std::snprintf(m, sizeof m,
+                  "clearbass: band0 %d -> reads %d (%.1f dB), preset %d, Eq6On %d, selector %d — "
+                  "HOLDING %ds, listen now",
+                  level, cinder_effects_get_eq6_band(0), cinder_effects_get_eq6_band_db(0),
+                  cinder_effects_get_eq6_preset(), cinder_effects_is_eq6_on(),
+                  cinder_effects_get_select_using_eq(), hold_s);
+    clog_(m);
+    for (int i = 0; i < hold_s; i++) sleep(1);
+
+    cinder_effects_set_eq6_band(0, keep);
+    cinder_effects_set_eq6_preset(pre0);
+    cinder_effects_set_eq6(on0);
+    cinder_effects_set_select_using_eq(sel0);
+    std::snprintf(m, sizeof m, "clearbass: restored selector=%d Eq6On=%d preset=%d (Custom 1 band0 back to %d)",
+                  cinder_effects_get_select_using_eq(), cinder_effects_is_eq6_on(),
+                  cinder_effects_get_eq6_preset(), keep);
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
 // --userpreset [--write] : settle UserPresetNo, and find out what Sony's saved setups hold.
 //
 // Cinder's A/B is its own thing — two `SoundSetup`s in Cinder's settings file. Sony has its own
@@ -7845,6 +7907,10 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--eq6custom") == 0) {
         return eq6custom_probe();
+    }
+    if (argc > 2 && std::strcmp(argv[1], "--clearbass") == 0) {
+        return clearbass_probe(std::atoi(argv[2]), argc > 3 ? std::atoi(argv[3]) : 20,
+                               argc > 4 ? std::atoi(argv[4]) : -1);
     }
     if (argc > 1 && std::strcmp(argv[1], "--inpath") == 0) {
         return inpath_probe(argc > 2 ? std::atoi(argv[2]) : 2);
