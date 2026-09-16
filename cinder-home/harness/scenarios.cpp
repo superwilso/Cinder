@@ -256,6 +256,63 @@ static void s_bt_tap_waits_for_the_page(void) {
     check(cinder_harness_bt_connected() == 1, "and it connected");
 }
 
+// ── the switch off and straight back on ──────────────────────────────────────────────────────
+// 2026-09-16 on the device: headphones connected, Bluetooth switched off and on 0.6 s apart. Nothing
+// re-read the peer in between — the name was still set, so the steady-state throttle skipped the
+// read — the headphones were back before anyone looked, and the route never saw the drop. So the
+// connect edge (volume listener, volume walk, enhanced mode) never ran on the new link and the
+// rocker stopped reaching the headphones. The switch going off IS the drop; the route must say so
+// at once, and the link that follows must be a new one.
+static void s_bt_quick_toggle_is_a_new_link(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 26 /* CINDER_ACT_BT_TOGGLE */);
+    // The navigator flips its switch before it hands over the action, so the state lands with the tap.
+    cinder_harness_state_set_at(18000, "bt_on", 0);
+    cinder_harness_tap_at(18000, 240, 400);
+    cinder_harness_state_set_at(18600, "bt_on", 1);
+    cinder_harness_tap_at(18600, 240, 400);
+    cinder_harness_set_budget_ms(40000);
+    cinder_harness_run();
+
+    check(cinder_harness_bt_connected() == 1, "the headphones connected");
+    check_eq(cinder_harness_count_between("cinder_tap", 18000, 19000), 2, "both taps reached carry_out");
+    const int before = cinder_harness_count_between("cinder_set_bt_route", 0, 18000);
+    check(before >= 1 && cinder_harness_arg("cinder_set_bt_route", before - 1) == 1,
+          "the route was on Bluetooth before the switch");
+    check(cinder_harness_count_between("cinder_set_bt_route", 18000, 18600) == 1
+              && cinder_harness_arg("cinder_set_bt_route", before) == 0,
+          "switching off moved the route to the jack at once");
+    check(cinder_harness_count_between("cinder_set_bt_route", 18600, 40000) >= 1
+              && cinder_harness_arg("cinder_set_bt_route", before + 1) == 1,
+          "the link that came back was a new one (the connect edge ran)");
+}
+
+// ── the codec preference reaches a radio restored at boot ────────────────────────────────────
+// 2026-09-16 on the device: the saved codec was sent at 3.3 s with the radio still OFF, the radio was
+// restored at 9.5 s, and the headphones connected themselves at 16.3 s — before the ladder's first
+// attempt, the only thing that sent the preference again. That link stuttered until a manual toggle
+// (which does send it). The radio must get the preference as soon as it is seen up.
+static void s_bt_codec_follows_the_radio_up(void) {
+    healthy_device();
+    cinder_harness_script("cinder_settings_load", 4);   // the file carried bt_on
+    cinder_harness_state_set("bt_on", 1);
+    cinder_harness_bt_set_radio(0);                    // off at boot, so the frame loop restores it
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    cinder_harness_bt_self_connect_at(8000);           // ~7 s after the restore, as measured
+    cinder_harness_set_budget_ms(30000);
+    cinder_harness_run();
+
+    const long long rf_on = cinder_harness_first_ms("BtCommon::SetRfOnOff");
+    const long long link = cinder_harness_first_ms("cinder_set_bt_route");
+    check(rf_on >= 0 && cinder_harness_arg("BtCommon::SetRfOnOff", 0) == 1, "the radio was restored");
+    check(link > rf_on && cinder_harness_bt_connected() == 1, "the headphones connected themselves");
+    check(cinder_harness_count_between("BtXmit::SetLdacSoundQuality", rf_on, link) >= 1,
+          "the LDAC quality reached the radio after it came up and before that link");
+}
+
 // ── an idle radio reports 3, and 3 is not a connection ───────────────────────────────────────
 // `GetBtStatus` reaches 3 with nothing on the other end (measured 0.61 s after powering an idle
 // radio). The route used to be `st == 3`, so it flipped to BLUETOOTH the moment the radio came up:
@@ -1072,6 +1129,8 @@ static const Scenario kScenarios[] = {
     {"bt-switch",         s_bt_switch_follows_radio, "the UI switch follows the radio, not itself"},
     {"bt-no-self-jam",    s_bt_never_jams_itself,    "the app never arms the mode that refuses its own connects"},
     {"bt-stale-jam",      s_bt_clears_a_stale_jam,   "a retry mode left armed by anything else is cleared"},
+    {"bt-quick-toggle",   s_bt_quick_toggle_is_a_new_link, "switched off and on fast, the link that comes back is a new one"},
+    {"bt-codec-after-rf", s_bt_codec_follows_the_radio_up, "the codec preference reaches a radio restored at boot"},
     {"bt-idle-not-link",  s_bt_idle_radio_is_not_a_link, "GetBtStatus 3 with no peer is not a connection"},
     {"bt-page-in-flight", s_bt_waits_for_a_page_in_flight, "the ladder defers to a connect already on the air"},
     {"bt-tap-in-page",    s_bt_tap_waits_for_the_page, "a Devices tap during a page is asked for when it ends"},

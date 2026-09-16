@@ -26,6 +26,20 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   taps in 21 seconds were refused that way. A tap during a page is now held and asked for the moment
   the radio is free, a refused tap is retried, NFC taps on paired headphones follow the same rule,
   and the spinner stays until the device connects or 30 seconds pass, without sending more requests.
+- **Bluetooth stuttered on the first connection after power-on.** *Harness-tested; device-unverified.*
+  The saved codec choice (LDAC quality *Auto*) was sent at boot while the radio was still off, and
+  nothing sent it again when the radio came up. Headphones that connected on their own got the
+  fixed top LDAC bitrate, which stutters on a weak link, until Bluetooth was switched off and on.
+  The choice is now sent whenever the radio is seen coming up.
+- **After switching Bluetooth off and on, the volume buttons stopped reaching the headphones.**
+  *Harness-tested; device-unverified.* With the switch flipped quickly, the headphones were back
+  before Cinder noticed they had gone, so the set-up that follows a new connection never ran:
+  no volume listener, no volume walk, no enhanced mode. The next switch then paused playback for a
+  "dropped" link that was already back. Switching off now counts as the disconnect straight away.
+- **Tapping a device that had just disconnected disconnected it again.** *Host-tested;
+  device-unverified.* The paired-device rows kept saying "connected" until the list was read again,
+  so each tap meant as "connect" sent another hang-up (11 in a row on 2026-09-16). The rows now
+  follow the live connection.
 
 ## [0.3.7] — 2026-09-15
 

@@ -40,6 +40,8 @@ int  cinder_harness_scripted(const char* name, long long* out);
 // this, so the fake UI remembers like the real one. A test that scripts the getter overrides it.
 void      cinder_harness_state_set(const char* key, long long value);
 long long cinder_harness_state_get(const char* key, long long fallback);
+// Set `key` when the virtual clock reaches `at_ms` — a user changing a setting mid-run.
+void      cinder_harness_state_set_at(long long at_ms, const char* key, long long value);
 
 // ── the test side ────────────────────────────────────────────────────────────────────────────
 void cinder_harness_reset(void);
@@ -148,6 +150,8 @@ int  cinder_harness_bt_retry_mode(void);
 // A page on the air until `ms` of virtual time: the A2DP source reports CONNECTING (3) and refuses
 // every connect request with rc=0 until then, as the device does while one is already in flight.
 void cinder_harness_bt_page_until(long long ms);
+// The paired headphones connect on their own at `ms` if the radio is up — nobody asked for this link.
+void cinder_harness_bt_self_connect_at(long long ms);
 void cinder_harness_bt_add_paired(const char* name, int addr_last);
 int  cinder_harness_bt_connected(void);
 int  cinder_harness_bt_radio_on(void);

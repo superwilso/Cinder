@@ -497,7 +497,10 @@ if adb wait-for-device >/dev/null 2>&1; then
     # might itself hang.
     restore_cable_escape
     trap - EXIT
-    PID_BACK="$(adb shell 'ps 2>/dev/null | grep /system/vendor/unknown321/bin/cinder-home | grep -v grep | awk "{print \$2}" | head -1' 2>/dev/null | tr -d '\r')"
+    # `|| true`: adb is often back before the launcher has started the app, the grep then matches
+    # nothing, and under `set -euo pipefail` that ended the script with rc=1 and no message after a
+    # good install (2026-09-16). "Not seen yet" is the warning below, not a failure.
+    PID_BACK="$(adb shell 'ps 2>/dev/null | grep /system/vendor/unknown321/bin/cinder-home | grep -v grep | awk "{print \$2}" | head -1' 2>/dev/null | tr -d '\r' || true)"
     if [ -n "$PID_BACK" ]; then ok "cinder-home running (pid $PID_BACK)"
     else warn "cinder-home not seen yet — check: $0 --status"; fi
 else

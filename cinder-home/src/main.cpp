@@ -592,6 +592,7 @@ extern bool g_bt_radio_seen_up;  // ditto — last GetBtStatus said the radio wa
 void apply_bt_codec();       // ditto — pushes the codec choice to the radio (not just the conf file)
 static void bt_apply_enhanced_mode(const char* why); // ditto — Sony's "Use Enhanced Mode" (absolute volume)
 static void refresh_bt_connected();  // ditto — names the linked device for the Bluetooth screen
+static void bt_link_gone_by_switch(); // ditto — the user switched the radio off: the link is gone now
 void refresh_bt_paired();    // ditto — reads the radio's pairing table for the Devices screen
 void apply_bt_scan();        // ditto — starts/stops discovery (SetSearchMode + the listener)
 static bool bt_listener_register();  // ditto — the BtCommonService notification listener
@@ -3690,6 +3691,15 @@ void apply_bt_toggle() {
         bt_connect_wait(false);
         bt_service_retry(false, false);
         bt_set_rf(false);
+        // The link is gone by the user's own hand — say so NOW, not on some later poll. Measured
+        // 2026-09-16: switched off and on again 0.6 s apart, nothing re-read the peer in between
+        // (the name was still set, so the steady-state throttle skipped the read), the headphones
+        // were back before anyone looked, and the route never saw a drop. So the connect edge did
+        // not run on the new link — no volume listener, no volume walk, no enhanced mode — and
+        // the rocker stopped reaching the headphones. The next toggle then reported the OLD link as
+        // "DROPPED" after the radio was already back on.
+        bt_link_gone_by_switch();
+        refresh_bt_route();
         return;
     }
 
@@ -4283,6 +4293,24 @@ static void refresh_bt_connected() {
         clog_(g_bt_user_disconnected
                   ? "bt: disconnected by the user — pausing playback"
                   : "bt: link DROPPED (range, sink powered off, or stolen) — pausing playback");
+        set_transport(false);
+        run_guarded("bt: pause", 6, []() { cinder_audio_pause(); });
+    }
+}
+
+// The user switched the radio off: forget the peer without asking the radio. For a second or so
+// after SetRfOnOff(false) the service can still be mid-teardown, so a read there proves nothing;
+// the switch is the evidence. Pauses like any other drop — audio that was going to the headphones
+// must not carry on out of the jack.
+static void bt_link_gone_by_switch() {
+    if (!g_bt_have_name && g_bt_connected_addr.empty()) return;
+    cinder_set_bt_connected("");
+    g_bt_have_name = false;
+    g_bt_connected_addr.clear();
+    const bool drop = cinder_bt_should_pause(g_bt_link_last, 0, g_playing ? 1 : 0) != 0;
+    g_bt_link_last = 0;
+    if (drop) {
+        clog_("bt: switched off by the user — pausing playback");
         set_transport(false);
         run_guarded("bt: pause", 6, []() { cinder_audio_pause(); });
     }
@@ -5728,7 +5756,34 @@ void refresh_bt_route() {
     //
     // The ADDRESS is the link. `refresh_bt_connected` already knows that and is the only thing that
     // can answer it, so it runs before the decision rather than inside one branch of it.
-    if (bt_radio_up(st)) {
+    //
+    // Except just after the user switched the radio OFF: the service can still name the old peer
+    // while it tears down, and believing that read would put back the link apply_bt_toggle has
+    // just dropped. Inside the settle window the switch is the answer; after it, the reconcile
+    // above has had its say and the radio is asked again.
+    const bool switched_off = cinder_get_bt_on() == 0 && g_bt_toggle_at != 0
+                           && now_ms() - g_bt_toggle_at < BT_TOGGLE_SETTLE_MS;
+
+    // THE CODEC PREFERENCE, EVERY TIME THE RADIO COMES UP — however it came up. deferred_up applies
+    // it at boot, but on a boot that restores the radio that read lands while the radio is still
+    // OFF (2026-09-16: `bt-codec: … wire=0xff` at 3.3 s, radio powered at 9.5 s), and nothing sent it
+    // again: the headphones connected themselves at 16.3 s, before the ladder's first attempt (which
+    // is what applies it), and the link stuttered all the way to the first manual toggle. The toggle
+    // path applies it after power-up, and that link was clean. A fixed top LDAC tier on a marginal
+    // link is exactly that stutter (see apply_bt_codec), so the radio gets the preference whenever
+    // it is seen coming up. Sending it twice to an up radio costs four IPC calls; not sending it
+    // costs the session.
+    {
+        // Starts "not up": the first poll can land after the boot restore, and a radio first seen
+        // already up has had nothing sent to it since it powered either.
+        static int was_up = 0;
+        const int up = bt_radio_up(st) ? 1 : 0;
+        if (up && was_up == 0) apply_bt_codec();
+        was_up = up;
+    }
+    if (switched_off) {
+        bt_link_gone_by_switch();
+    } else if (bt_radio_up(st)) {
         static long bt_link_last = 0;
         const long now = now_ms();
         // While a peer is named AND the listener is up, re-asking WHICH peer every 2 s learns
@@ -10978,6 +11033,10 @@ void* render_driver(void*) {
             // disabled for the session. This was the one radio-power path with no guard.
             g_bt_toggle_at = now_ms();
             run_guarded("bt: restore radio at boot", 8, []() { bt_set_rf(true); });
+            // …and look again at the 3 s rate, not the 15 s one for a radio last read down: the
+            // first poll that sees it up is what sends the codec preference (refresh_bt_route), and
+            // headphones that connect themselves take about 7 s from here.
+            g_bt_radio_seen_up = true;
         }
 
         // FM scan/seek advance one channel per FRAME, not per housekeeping tick: they are the only
