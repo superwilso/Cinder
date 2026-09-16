@@ -864,7 +864,7 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
 fn settings_body(r: &Render) -> String {
     let eq: Vec<String> = r.app.eq_bands().iter().map(|b| b.to_string()).collect();
     let mut body = format!(
-        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nbt_on={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
+        "night={}\naccent={}\nviz_kind={}\nviz_size={}\nnp_page={}\nshuffle={}\nrepeat={}\neq={}\nsound={}\nonboarding={}\nbt_codec={}\nbt_ldac_quality={}\nbt_enhanced={}\nbt_on={}\nvolume={}\nbt_volume127={}\nbrightness={}\nscreen_off={}\nauto_off={}\nbalance100={}\nmono={}\nvpt_mode={}\ndc_type={}\nadv={}\ndsee_mode={}\nvinyl_type={}\ntone={}\nui_scale={}\nsetup={}\n",
         r.app.night as u8,
         r.app.accent(),
         r.app.viz_kind(),
@@ -885,6 +885,7 @@ fn settings_body(r: &Render) -> String {
         r.app.screen_off_s(),
         r.app.auto_off_min(),
         r.app.balance(),
+        u8::from(r.app.mono()),
         r.app.vpt_mode(),
         r.app.dc_type(),
         r.app.adv_flags(),
@@ -1302,6 +1303,10 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
             id: p.id,
             // From Sony's database: browsable and playable, but not ours to edit.
             user: false,
+            // …and therefore never a CHOSEN cover: there is no file to write it in. These still
+            // get the automatic one, off their first member track, like everything else.
+            cover_custom: false,
+            cover_album_id: 0, // the automatic cover, filled by `auto_playlist_covers` below
             name: p.name.clone(),
             tracks: p.track_count.max(0) as u32,
             // Members in the saved order, resolved once here so the drill-in page never touches
@@ -1367,12 +1372,20 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
 
     // `thumbs` is filled separately by start_art_cache: the disk cache load is I/O, not model
     // building, and the rest arrives asynchronously from the decoder thread.
+    // Automatic covers for the Sony rows built above. Ours get theirs in `user_playlist_rows`,
+    // and `refresh_playlists` re-runs this over the merged list on every edit.
+    let mut playlists: Vec<cinder_ui::model::PlaylistRow> = playlists;
+    auto_playlist_covers(&mut playlists);
+
     cinder_ui::Library {
         songs,
         album_groups,
         artists,
         playlists,
         thumbs: Default::default(),
+        // Filled by `refresh_playlists`, which runs right after this — and normally empty, since
+        // only a playlist whose cover is a PICTURE FILE needs one.
+        playlist_thumbs: Default::default(),
         genres,
         hires_tracks,
         filter_genre: None,
@@ -2476,6 +2489,58 @@ fn any_playlist_tracks(r: &Render, id: i64) -> Option<Vec<cinder_db::Track>> {
     }
 }
 
+/// Give every playlist without a chosen cover the art of its first member track.
+///
+/// This is what makes a playlist look like something with nobody having done anything, and it is
+/// the only cover Sony's own playlists can ever have — they live in a database this app must not
+/// write, so there is nowhere to record a choice.
+///
+/// It runs over the MERGED rows rather than inside each builder, because "the first track that
+/// actually resolved" is a property of the finished row: a playlist whose first two files are
+/// missing should show the third one's cover, not a gradient.
+fn auto_playlist_covers(rows: &mut [cinder_ui::model::PlaylistRow]) {
+    for row in rows.iter_mut() {
+        if row.cover_album_id == 0 {
+            row.cover_album_id = row.track_list.first().map_or(0, |t| t.album_id);
+        }
+    }
+}
+
+/// Decode the playlists whose cover is a PICTURE FILE — an `#EXTIMG:` naming an image, or a JPEG
+/// dropped beside the `.m3u8` from a PC.
+///
+/// This is the only case that needs a decode of its own: every other cover is some album's, and
+/// that art is already in the cache. So the map this returns is normally EMPTY, and the work here
+/// is bounded by how many pictures the owner has actually placed — not by the library.
+///
+/// Cached on disk like album art, keyed by the picture's path, so it survives a reboot and costs
+/// one decode ever. Any failure is silent and leaves the playlist on its automatic cover: a cover
+/// is decoration, and a missing one must never be the reason a list does not draw.
+fn playlist_cover_images(
+    store: &playlists::Store,
+) -> std::collections::HashMap<i64, cinder_ui::art::Image> {
+    let mut out = std::collections::HashMap::new();
+    for list in &store.lists {
+        let Some(src) = list.cover_source() else { continue };
+        if !playlists::Playlist::cover_is_image(&src) {
+            continue;
+        }
+        let key = art_cache::key_of(&src);
+        let img = art_cache::load(key, art_cache::T48).or_else(|| {
+            let bytes = std::fs::read(&src).ok()?;
+            let full = art_load::decode(&bytes)?;
+            art_cache::store_image(key, &full)
+        });
+        match img {
+            Some(img) => {
+                out.insert(list.id, img);
+            }
+            None => eprintln!("cinder-ffi: playlist cover: {src:?} would not decode"),
+        }
+    }
+    out
+}
+
 /// Build the UI rows for Cinder's own playlists, resolving each member path back to a library
 /// track. A path that no longer resolves is dropped from the list but still counts in `tracks`,
 /// which is the same honesty the Sony rows already have: "3 OF 4 TRACKS AVAILABLE" says the file
@@ -2495,10 +2560,20 @@ fn user_playlist_rows(
     // A miss stays a miss, so the `filter_map` below drops exactly the entries it dropped before.
     let resolved = db
         .map(|db| {
+            // The members, PLUS each list's cover source when that names a music file: an
+            // `#EXTIMG:` can point at a track the playlist does not contain, and resolving it in
+            // the same batch keeps this one query per boot rather than one per playlist.
+            let covers: Vec<String> = store
+                .lists
+                .iter()
+                .filter_map(|l| l.cover_source())
+                .filter(|src| !playlists::Playlist::cover_is_image(src))
+                .collect();
             let names: Vec<&str> = store
                 .lists
                 .iter()
                 .flat_map(|l| l.entries.iter().map(|e| e.uri.as_str()))
+                .chain(covers.iter().map(String::as_str))
                 .collect();
             db.tracks_by_filenames(&names).unwrap_or_default()
         })
@@ -2520,6 +2595,18 @@ fn user_playlist_rows(
                 art: list.name.clone(),
                 track_list,
                 user: true,
+                // An `#EXTIMG:` line or a picture dropped beside the file — either way, a cover
+                // the owner chose, which is what the page offers to put back to automatic.
+                cover_custom: list.cover_is_custom(),
+                // The album whose decoded cover this playlist borrows. An `#EXTIMG:` naming a
+                // MUSIC file means "use that track's art", and resolves through the same map the
+                // members just did — no extra query, and no second decode. A picture file has no
+                // album behind it and is handled by `playlist_cover_images`.
+                cover_album_id: list
+                    .cover_source()
+                    .filter(|src| !playlists::Playlist::cover_is_image(src))
+                    .and_then(|src| resolved.get(src.as_str())?.album_id)
+                    .unwrap_or(0),
             }
         })
         .collect()
@@ -2548,8 +2635,14 @@ fn add_track_to_playlist(r: &mut Render, playlist_id: i64, object_id: i64) {
 /// album plus one per playlist, and it would also throw away the scroll position of the screen
 /// the user is editing on.
 fn refresh_playlists(r: &mut Render) {
-    let rows = merge_playlist_rows(user_playlist_rows(&r.plists, r.db.as_ref()), &r.db_playlists);
+    let mut rows =
+        merge_playlist_rows(user_playlist_rows(&r.plists, r.db.as_ref()), &r.db_playlists);
+    // The two cover passes, in the order they depend on each other: the automatic cover needs the
+    // finished rows (it reads the first member that actually resolved), and the picture covers are
+    // independent of them.
+    auto_playlist_covers(&mut rows);
     r.app.set_playlists(rows);
+    r.app.library_mut().playlist_thumbs = playlist_cover_images(&r.plists);
     r.dirty = true;
 }
 
@@ -2956,6 +3049,26 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             }
             return None;
         }
+        Action::PlaylistSetCover(playlist_id, object_id) => {
+            // Object id 0 is "back to automatic". Otherwise the track's PATH is what gets stored,
+            // for the same reason a member is: object ids are re-issued whenever Sony's database
+            // is rebuilt, and a cover that forgot which track it came from on a rescan would be a
+            // cover that quietly reverted.
+            let path = (*object_id != 0)
+                .then(|| r.db.as_ref().and_then(|db| db.track_by_object_id(*object_id).ok().flatten()))
+                .flatten()
+                .map(|t| t.filename);
+            if *object_id != 0 && path.is_none() {
+                eprintln!("cinder-ffi: playlist cover: object {object_id} is not in the library");
+                return None;
+            }
+            match r.plists.set_cover(*playlist_id, path.as_deref()) {
+                Ok(true) => refresh_playlists(r),
+                Ok(false) => {}
+                Err(e) => eprintln!("cinder-ffi: playlist cover: {e}"),
+            }
+            return None;
+        }
         Action::ShuffleArtist(idx) => {
             // One named artist, their tracks shuffled — the Artists-row button and the band on the
             // artist page. Same pending-play channel as every other "play these URIs" action.
@@ -3039,6 +3152,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::BatteryCareChanged(_) => 13,
         Action::SoundChanged => 14,
         Action::BalanceChanged => 38,
+        Action::MonoChanged => 46,
         Action::ClockSet => 39,
         Action::SoundBypass(_) => 15,
         Action::ShuffleToggle => {
@@ -3855,6 +3969,19 @@ pub extern "C" fn cinder_get_auto_off_min() -> libc::c_int {
 
 /// L/R balance position, 0..=100 with 50 = centre. The shell turns it into the codec's two
 /// attenuation controls; the UI only remembers the position.
+/// MONO (accessibility) — 1 when left and right should be summed into both channels.
+///
+/// The shell applies it to the PCM it owns. See `analysis/RE_mono_audio.md` for why that is the
+/// USB-DAC -> LDAC bridge and nothing else on this hardware.
+#[no_mangle]
+pub extern "C" fn cinder_get_mono() -> libc::c_int {
+    cell()
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|r| libc::c_int::from(r.app.mono())))
+        .unwrap_or(0)
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_get_balance() -> libc::c_int {
     cell()
@@ -4966,6 +5093,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                             r.app.set_balance(n);
                         }
                     }
+                    // MONO (accessibility). Absent from files written by older builds, which is
+                    // fine — it stays off, which is what it was before the key existed.
+                    "mono" => r.app.set_mono(v == "1"),
                     // Which VPT room. Absent from files written by older builds, which is fine —
                     // it just stays at 0 (Studio), and VPT's on/off still comes from `sound=`.
                     // set_vpt_mode clamps, so a hand-edited value cannot reach the device as an
@@ -5144,6 +5274,8 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     let pos_body = std::fs::read_to_string(&pos_path).unwrap_or_default();
 
     let (mut ctx_ids, mut q_ids, mut pre) = (Vec::new(), Vec::new(), None);
+    // PREVIOUSLY PLAYED, capped at `HISTORY_MAX` when it was written.
+    let mut hist_ids: Vec<i64> = Vec::new();
     let mut idx = 0usize;
     // The user pick that was PLAYING when the player went down. It is in neither list — a pick
     // leaves the queue when it starts — so without this the resume came back on the context row
@@ -5156,6 +5288,7 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
             "pre" => pre = Some(id_list(v)),
             "idx" => idx = v.parse::<usize>().unwrap_or(0),
             "pick" => pick_id = v.parse::<i64>().ok(),
+            "hist" => hist_ids = id_list(v),
             _ => {}
         }
     }
@@ -5183,9 +5316,11 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     // whatever was playing, and after "Shuffle all songs" that is the entire library, on the boot
     // path. Resolving both lists from one scan removes the shape rather than relying on the bound.
     let Some(db) = r.db.as_ref() else { return 0 };
-    let mut all_ids: Vec<i64> = Vec::with_capacity(ctx_ids.len() + q_ids.len() + 1);
+    let mut all_ids: Vec<i64> =
+        Vec::with_capacity(ctx_ids.len() + q_ids.len() + hist_ids.len() + 1);
     all_ids.extend_from_slice(&ctx_ids);
     all_ids.extend_from_slice(&q_ids);
+    all_ids.extend_from_slice(&hist_ids);
     all_ids.extend(pick_id);
     let by_id = db.tracks_by_object_ids(&all_ids).unwrap_or_default();
     let resolve = |ids: &[i64]| -> Vec<cinder_db::Track> {
@@ -5193,9 +5328,15 @@ pub extern "C" fn cinder_resume_load(seq_path: *const c_char, pos_path: *const c
     };
     let ctx = resolve(&ctx_ids);
     let queue = resolve(&q_ids);
+    let history = resolve(&hist_ids);
     // A pick whose file has left the library is simply not restored; the context row under it
     // then becomes what resumes, which is where playback would have gone next anyway.
     let pick = pick_id.and_then(|id| by_id.get(&id).cloned());
+    // The history is restored BEFORE the early return below. A device that was last playing
+    // nothing still has a "previously played", and dropping it because there is no sequence to
+    // resume would empty the list on exactly the reboot where the user wants to see what they
+    // were listening to.
+    r.app.history_restore(history.iter().map(song_row_of).collect());
     if ctx.is_empty() && queue.is_empty() && pick.is_none() {
         return 0;
     }
@@ -6742,6 +6883,7 @@ mod tests {
             art: name.to_string(),
             user,
             track_list: Vec::new(),
+            ..Default::default()
         };
         // Same names, different case, as the de-dup folds case.
         let ours = vec![row(-1, "Late Night On The Bus Mix 08", 24, true), row(-2, "Teef", 24, true)];

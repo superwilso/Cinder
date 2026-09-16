@@ -197,7 +197,16 @@ typedef enum {
      * notices the store changing and re-opens it within 10 s. Verified end to end on device
      * 2026-08-30 — a planted album appeared (3424 -> 3425 rows) and its removal was picked up
      * (3425 -> 3424). */
-    CINDER_ACT_LIBRARY_RESCAN = 45
+    CINDER_ACT_LIBRARY_RESCAN = 45,
+    /* MONO (accessibility) toggled — sum left and right so both ears carry the whole mix.
+     *
+     * Read cinder_get_mono() and apply it to every PCM path the SHELL owns. On this device that is
+     * the USB-DAC -> LDAC bridge and nothing else: the 3.5 mm path goes through Sony's
+     * PlayerService to a codec with no channel-sum control (51 ALSA controls, none of them does
+     * it), Sony's DSP surface has no mono call, and Bluetooth transmit never passes either because
+     * its PCM goes straight to BtTransmitterService over a socket. Writing the codec register that
+     * might do it is ruled out standing by SECURITY.md rule 1. See analysis/RE_mono_audio.md. */
+    CINDER_ACT_MONO_CHANGED = 46
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -594,6 +603,11 @@ int  cinder_get_auto_off_min(void);
  * `l balance volume` / `r balance volume` (0..88 of ATTENUATION, in HALF-decibels): panning left
  * turns the RIGHT channel down, because the mixer only offers attenuation. */
 int  cinder_get_balance(void);
+/* MONO (accessibility): sum L and R into both channels (1/0). Read after CINDER_ACT_MONO_CHANGED
+ * and at boot. The LDAC bridge applies it to the frames it pumps; nothing else on this device can
+ * (see the action's note, and analysis/RE_mono_audio.md). */
+int cinder_get_mono(void);
+
 /* Is USB-DAC mode engaged? (1/0). Read after a CINDER_ACT_USBDAC_LDAC action to start/stop the LDAC
  * bridge + switch the USB gadget to UAC, without disconnecting Bluetooth. */
 /* Is the Bluetooth switch on? (1/0). Read after a CINDER_ACT_BT_TOGGLE action. */

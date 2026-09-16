@@ -166,6 +166,28 @@ pub fn build_one(db: &cinder_db::Db, key: u64, object_id: i64) -> Option<Image> 
     Some(t48)
 }
 
+/// Cache a decoded PICTURE at both sizes and hand back the 48. The same two writes `build_one`
+/// makes, for a cover that came from an image file rather than out of a track — a playlist's own
+/// artwork (`playlist_cover_images`).
+///
+/// Split from `build_one` rather than parameterised: that one's whole job is resolving an
+/// `object_id` through the media database, and there is no object id here.
+pub fn store_image(key: u64, native: &Image) -> Option<Image> {
+    let t96 = native.scaled_to(T96, T96);
+    // 48 from the 96, for the reason `build_one` gives: with an area-averaging scaler the two-step
+    // reduction is equivalent and reads 96x96 instead of the native decode.
+    let t48 = t96.scaled_to(T48, T48);
+    if let Err(e) = store(key, &t96) {
+        eprintln!("cinder-ffi: art cache: write {key:016x}.t96 failed: {e}");
+    }
+    if let Err(e) = store(key, &t48) {
+        eprintln!("cinder-ffi: art cache: write {key:016x}.t48 failed: {e}");
+    }
+    // The thumbnail is returned even when the WRITE failed: it is already decoded and correct, and
+    // a read-only cache directory should cost a re-decode next boot, not a missing cover now.
+    Some(t48)
+}
+
 /// Create the cache directory. Returns false if it isn't usable (then the whole feature no-ops).
 pub fn ensure_dir() -> bool {
     let d = dir();
