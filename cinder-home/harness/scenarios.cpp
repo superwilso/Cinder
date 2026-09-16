@@ -313,6 +313,32 @@ static void s_bt_codec_follows_the_radio_up(void) {
           "the LDAC quality reached the radio after it came up and before that link");
 }
 
+// ── a Disconnect tap must show on screen promptly ────────────────────────────────────────────
+// 2026-09-16: Disconnect tapped at 230.8 s; the read straight after the call still named the
+// headphones (the hang-up lands about a second later), and with a device named the peer read is
+// throttled to 30 s. The screen said connected until the user tapped again at 238.7 s.
+static void s_bt_disconnect_shows_promptly(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    cinder_harness_bt_disconnect_lag(700);
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 27 /* CINDER_ACT_BT_DISCONNECT */);
+    cinder_harness_tap_at(20000, 240, 400);
+    cinder_harness_set_budget_ms(40000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("BtXmit::RequestDisconnection", 20000, 21000), 1,
+             "the tap hung up once");
+    check_eq(cinder_harness_bt_connected(), 0, "the headphones are disconnected");
+    const int before = cinder_harness_count_between("cinder_set_bt_route", 0, 20000);
+    check(before >= 1 && cinder_harness_arg("cinder_set_bt_route", before - 1) == 1,
+          "the route was on Bluetooth before the tap");
+    check(cinder_harness_count_between("cinder_set_bt_route", 20000, 22500) >= 1
+              && cinder_harness_arg("cinder_set_bt_route", before) == 0,
+          "the route (and the screen) followed within 2.5 s");
+}
+
 // ── an idle radio reports 3, and 3 is not a connection ───────────────────────────────────────
 // `GetBtStatus` reaches 3 with nothing on the other end (measured 0.61 s after powering an idle
 // radio). The route used to be `st == 3`, so it flipped to BLUETOOTH the moment the radio came up:
@@ -1131,6 +1157,7 @@ static const Scenario kScenarios[] = {
     {"bt-stale-jam",      s_bt_clears_a_stale_jam,   "a retry mode left armed by anything else is cleared"},
     {"bt-quick-toggle",   s_bt_quick_toggle_is_a_new_link, "switched off and on fast, the link that comes back is a new one"},
     {"bt-codec-after-rf", s_bt_codec_follows_the_radio_up, "the codec preference reaches a radio restored at boot"},
+    {"bt-disconnect-shows", s_bt_disconnect_shows_promptly, "a Disconnect tap reaches the screen once the link is down"},
     {"bt-idle-not-link",  s_bt_idle_radio_is_not_a_link, "GetBtStatus 3 with no peer is not a connection"},
     {"bt-page-in-flight", s_bt_waits_for_a_page_in_flight, "the ladder defers to a connect already on the air"},
     {"bt-tap-in-page",    s_bt_tap_waits_for_the_page, "a Devices tap during a page is asked for when it ends"},

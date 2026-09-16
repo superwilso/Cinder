@@ -593,12 +593,52 @@ void apply_bt_codec();       // ditto — pushes the codec choice to the radio (
 static void bt_apply_enhanced_mode(const char* why); // ditto — Sony's "Use Enhanced Mode" (absolute volume)
 static void refresh_bt_connected();  // ditto — names the linked device for the Bluetooth screen
 static void bt_link_gone_by_switch(); // ditto — the user switched the radio off: the link is gone now
+
+// ASK WHO IS CONNECTED, NOW. The peer read below is throttled to 30 s while a device is named and the
+// listener is up, on the theory that the listener reports every change — but the listener's event
+// only re-ran THIS function, and the throttle then skipped the very read the event was about.
+// Measured 2026-09-16: Disconnect tapped at 230.8 s, the radio's disconnect notice at 231.5 s, and the
+// screen still said connected until a second tap at 238.7 s; a real drop at 251.2 s reached the
+// route at 281.2 s, exactly one steady interval later. An event sets this; the next route read
+// honours it.
+static bool g_bt_peer_read_now = false;
+// …and after the user hangs up, keep asking every half second until the peer is gone (or 10 s pass):
+// RequestDisconnection returns before the link is down, so the read it triggers still names the
+// device, and a disconnect notice is not guaranteed to follow.
+static long g_bt_peer_fast_until = 0;
+#define BT_PEER_FAST_EVERY_MS 500
+#define BT_PEER_FAST_FOR_MS   10000
 void refresh_bt_paired();    // ditto — reads the radio's pairing table for the Devices screen
 void apply_bt_scan();        // ditto — starts/stops discovery (SetSearchMode + the listener)
 static bool bt_listener_register();  // ditto — the BtCommonService notification listener
 bool bt_listener_is_on();            // ditto — did AddListener actually take?
 void apply_bt_prompt_reply(bool accept); // ditto — answers a numeric-comparison / SSP prompt
 void apply_bt_pair_device(); // ditto — pairs with a device the scan turned up
+
+// ── MONO beyond the LDAC bridge: libcinder_mono.so ───────────────────────────────────────────────
+// The library (src/cinder-mono.c) runs inside Sony's SoundServiceFw and sums every stereo buffer on
+// its way to the jack and to the Bluetooth transmitter while /tmp/cinder_mono exists. Cinder owns
+// that file — it is the Mono switch — and reads the library's own marker, /tmp/cinder_mono_shim, to
+// tell the Balance row whether mono reaches everything or only USB-DAC -> LDAC. Both live in tmpfs:
+// a boot starts with neither, the library writes its marker when it loads, and this writes the flag
+// from the saved setting.
+static void mono_flag_apply() {
+    if (cinder_get_mono()) {
+        int fd = ::open("/tmp/cinder_mono", O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+        if (fd >= 0) ::close(fd);
+    } else {
+        ::unlink("/tmp/cinder_mono");
+    }
+}
+static int g_mono_shim_seen = -1;
+static void mono_shim_poll() {
+    const int up = ::access("/tmp/cinder_mono_shim", F_OK) == 0 ? 1 : 0;
+    if (up == g_mono_shim_seen) return;
+    g_mono_shim_seen = up;
+    cinder_set_mono_shim(up);
+    clog_(up ? "mono: libcinder_mono.so is loaded in SoundServiceFw — mono reaches the jack and Bluetooth"
+             : "mono: libcinder_mono.so is not loaded — mono reaches USB-DAC -> LDAC only");
+}
 
 void render_up() {
     if (g_render_ready) return;
@@ -610,6 +650,7 @@ void render_up() {
     // If a file was loaded, deferred_up re-applies the saved EQ/sound to the DSP once audio is up.
     int sl = cinder_settings_load("/contents/cinder_settings.conf");
     g_settings_loaded = (sl & 1) != 0;
+    mono_flag_apply();   // tmpfs: SoundServiceFw's mono library reads it from its first buffer
     g_volume_restored = (sl & 2) != 0;
     g_bt_on_restored  = (sl & 4) != 0;
     // Reconcile the USB-DAC toggle with the gadget's ACTUAL mode. The toggle is our intent; the
@@ -1530,6 +1571,10 @@ void mark_healthy_maybe() {
         ::sync();
         g_counter_reset = true;
         clog_("healthy: bad-boot counter cleared");
+        // The mono library's load count (src/cinder-mono.c): SoundServiceFw came up and this boot is
+        // healthy, so that load did not take the player down. Two uncleared counts put the library in
+        // safe mode on the next boot.
+        ::unlink("/data/cinder/mono_shim_boots");
         // The post-install cable pass ($CABLE_PASS in deploy/install_cinderhome.sh). The launcher
         // spends it on the boot after an install and honours it only if that delete worked, so one
         // still here means the delete failed and the cable escape was armed this boot anyway.
@@ -4335,6 +4380,7 @@ void apply_bt_disconnect() {
         std::snprintf(m, sizeof m, "bt: RequestDisconnection() rc=%d (radio stays on)", rc);
         clog_(m);
     } catch (...) { clog_("bt: RequestDisconnection threw"); }
+    g_bt_peer_fast_until = now_ms() + BT_PEER_FAST_FOR_MS;
     refresh_bt_connected();
     refresh_bt_route();
 }
@@ -5793,9 +5839,12 @@ void refresh_bt_route() {
         const long peer_every = cinder_bt_link_steady(
             bt_listener_is_on() ? 1 : 0, 1, g_bt_have_name ? 1 : 0)
             ? CINDER_BT_POLL_STEADY_MS : BT_LINK_POLL_MS;
-        if (!g_bt_have_name || now - bt_link_last >= peer_every) {
+        if (!g_bt_have_name || g_bt_peer_read_now || now < g_bt_peer_fast_until
+            || now - bt_link_last >= peer_every) {
             bt_link_last = now;
+            g_bt_peer_read_now = false;
             refresh_bt_connected();
+            if (!g_bt_have_name) g_bt_peer_fast_until = 0;   // gone: back to the ordinary pace
         }
     } else if (g_bt_have_name) {
         // Radio down: nothing can be linked to it, and leaving the name behind strands the
@@ -8739,6 +8788,8 @@ void carry_out(int act) {
             run_guarded("carry_out: balance", 4, []() { apply_balance(cinder_get_balance()); });
             break;
         case CINDER_ACT_MONO_CHANGED: {
+            mono_flag_apply();
+            mono_shim_poll();
             // NOTHING TO APPLY HERE, and that is the honest state of this feature rather than an
             // omission. The only frames Cinder can sum are the LDAC bridge's, and `ldac_pump`
             // reads the flag when a session starts — so a change made mid-session takes effect on
@@ -8751,8 +8802,11 @@ void carry_out(int act) {
             const int on = cinder_get_mono();
             char m[160];
             std::snprintf(m, sizeof m,
-                          "sound: mono %s — applies to USB-DAC->LDAC only (next session); "
-                          "no channel-sum control exists for the jack or for A2DP",
+                          g_mono_shim_seen == 1
+                              ? "sound: mono %s — jack and Bluetooth at once (libcinder_mono.so), "
+                                "USB-DAC->LDAC from its next session"
+                              : "sound: mono %s — applies to USB-DAC->LDAC only (next session); "
+                                "libcinder_mono.so is not loaded in SoundServiceFw",
                           on ? "ON" : "off");
             clog_(m);
             break;
@@ -10612,9 +10666,12 @@ void* render_driver(void*) {
             // notice headphones dropping, and pause-on-disconnect rides on it.
             const long route_every = cinder_bt_route_poll_ms(
                 bt_listener_is_on() ? 1 : 0, g_bt_radio_seen_up ? 1 : 0, g_bt_have_name ? 1 : 0);
-            if (g_bt_state_dirty || now_ms() - last_route_ms >= route_every) {
+            const bool fast = now_ms() < g_bt_peer_fast_until
+                           && now_ms() - last_route_ms >= BT_PEER_FAST_EVERY_MS;
+            if (g_bt_state_dirty || fast || now_ms() - last_route_ms >= route_every) {
                 const bool by_event = g_bt_state_dirty != 0;
                 g_bt_state_dirty = 0;
+                if (by_event) g_bt_peer_read_now = true;   // the event IS about the peer — ask
                 last_route_ms = now_ms();
                 run_guarded("loop: BT route poll", 4, refresh_bt_route);
                 // A connect edge also wants the device NAME, which refresh_bt_route only re-asks for
@@ -11056,6 +11113,7 @@ void* render_driver(void*) {
             last_house_ms = house_now;
             cinder_clock_tick();
             sd_watch_tick(house_now);   // self-paced to 5 s; see its note
+            mono_shim_poll();           // one access() on tmpfs; logs and repaints only on a change
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             run_guarded("pump: headphone unplug", 4, jack_watch_tick);
             // FM signal meter. Register reads only — no Sony service call, no ALSA — so it is far

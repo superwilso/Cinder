@@ -607,6 +607,9 @@ int  cinder_get_balance(void);
  * and at boot. The LDAC bridge applies it to the frames it pumps; nothing else on this device can
  * (see the action's note, and analysis/RE_mono_audio.md). */
 int cinder_get_mono(void);
+/* libcinder_mono.so is loaded in SoundServiceFw (1/0): mono then reaches the jack and Bluetooth, and
+ * the Balance row says so. The shell reads the library's marker file and calls this on a change. */
+void cinder_set_mono_shim(int on);
 
 /* Is USB-DAC mode engaged? (1/0). Read after a CINDER_ACT_USBDAC_LDAC action to start/stop the LDAC
  * bridge + switch the USB gadget to UAC, without disconnecting Bluetooth. */

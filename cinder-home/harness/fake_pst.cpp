@@ -176,7 +176,12 @@ bool paging() { return cinder_harness_now_ms() < g_page_until_ms; }
 // the device's ordinary case after power-on, and the one link the app did not ask for.
 long long g_self_connect_ms = 0;
 void connect_to(size_t idx);
+// A hang-up that takes this long to land (0 = at once). The real service returns from
+// RequestDisconnection before the link is down, so a read straight after it still names the peer.
+long long g_disconnect_lag_ms = 0;
+long long g_drop_at_ms = 0;
 void self_connect_due() {
+    if (g_drop_at_ms && cinder_harness_now_ms() >= g_drop_at_ms) { g_drop_at_ms = 0; g_connected = false; }
     if (g_self_connect_ms && cinder_harness_now_ms() >= g_self_connect_ms && g_radio_on
         && !g_connected && !g_paired.empty()) {
         g_self_connect_ms = 0;
@@ -248,7 +253,8 @@ long h_GetConnectRetryMode(void*, void*, void*, void*) {
 
 long h_Disconnect(void*, void*, void*, void*) {
     cinder_harness_record("BtXmit::RequestDisconnection", 0);
-    g_connected = false;
+    if (g_disconnect_lag_ms > 0) g_drop_at_ms = cinder_harness_now_ms() + g_disconnect_lag_ms;
+    else g_connected = false;
     return 0;
 }
 
@@ -361,7 +367,7 @@ int _ZN3pst8services12mediascanner12MediaScanner4ScanEPNS1_21IMediaScannerListen
 
 // ── the fake radio, as a test fixture ────────────────────────────────────────────────────────
 void cinder_harness_bt_reset(void) {
-    g_radio_on = false; g_connected = false; g_retry_mode = false; g_page_until_ms = 0; g_self_connect_ms = 0;
+    g_radio_on = false; g_connected = false; g_retry_mode = false; g_page_until_ms = 0; g_self_connect_ms = 0; g_disconnect_lag_ms = 0; g_drop_at_ms = 0;
     g_peer_name.clear(); g_peer_addr.clear(); g_paired.clear();
 }
 
@@ -377,6 +383,7 @@ int  cinder_harness_bt_retry_mode(void) { return g_retry_mode ? 1 : 0; }
 // ladder's own attempt had left it when the user started tapping on 2026-09-15.
 void cinder_harness_bt_page_until(long long ms) { g_page_until_ms = ms; }
 void cinder_harness_bt_self_connect_at(long long ms) { g_self_connect_ms = ms; }
+void cinder_harness_bt_disconnect_lag(long long ms) { g_disconnect_lag_ms = ms; }
 
 // Add a device to the radio's pairing table. `addr_last` is the final byte of a synthetic
 // 00:00:5E:00:53:xx address (RFC 7042 documentation range), so two fixtures are distinguishable.

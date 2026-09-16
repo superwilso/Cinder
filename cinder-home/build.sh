@@ -396,6 +396,17 @@ echo "[6d] build cinder-msc (setuid-root USB-MSC helper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-msc" "$HERE/src/cinder-msc.c"
 echo "built: $HERE/cinder-msc ($(stat -c %s "$HERE/cinder-msc") bytes)"
 
+# libcinder_mono.so: system-wide mono, LD_PRELOADed into Sony's SoundServiceFw (src/cinder-mono.c).
+# NOT a helper binary and NOT static: it is loaded into a Sony process, so it links against the
+# device's own glibc 2.23 (RAMLIB) with nothing else — no libc++, no Rust. Host- and qemu-tested by
+# tools/test_mono_shim.sh; the sums by tools/mono_selftest.cpp.
+echo "[6i] build libcinder_mono.so (mono shim for SoundServiceFw, glibc 2.23)…"
+$CC -O2 -Wall -shared -fPIC "${T32[@]}" "${SYS223[@]}" -I"$HERE/src" -Wl,-soname,libcinder_mono.so \
+    -o "$HERE/libcinder_mono.so" "$HERE/src/cinder-mono.c" \
+    -nostdlib -L"$RAMLIB" -l:libc.so.6 -l:libdl.so.2 -l:libpthread.so.0 "$($CC -print-libgcc-file-name)"
+gate_glibc "$HERE/libcinder_mono.so"
+echo "built: $HERE/libcinder_mono.so ($(stat -c %s "$HERE/libcinder_mono.so") bytes)"
+
 mkdir -p "$DIST"
 cp -f "$OUT" "$DIST/cinder-home"
 cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"
@@ -409,6 +420,7 @@ cp -f "$HERE/cinder-umount" "$DIST/cinder-umount"
 cp -f "$HERE/cinder-power" "$DIST/cinder-power"
 cp -f "$HERE/cinder-clock" "$DIST/cinder-clock"
 cp -f "$HERE/cinder-msc" "$DIST/cinder-msc"
+cp -f "$HERE/libcinder_mono.so" "$DIST/libcinder_mono.so"
 cp -f "$HERE/cinder-fm" "$DIST/cinder-fm"
 cp -f "$HERE/cinder-voltable" "$DIST/cinder-voltable"
 cp -f "$HERE/cinder-battery" "$DIST/cinder-battery"

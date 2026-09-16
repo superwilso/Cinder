@@ -3982,6 +3982,20 @@ pub extern "C" fn cinder_get_mono() -> libc::c_int {
         .unwrap_or(0)
 }
 
+/// Tell the UI whether libcinder_mono.so is running inside Sony's SoundServiceFw (1/0), so the
+/// Balance row can say mono reaches every output rather than only USB-DAC -> LDAC. Repaints only
+/// when it changes.
+#[no_mangle]
+pub extern "C" fn cinder_set_mono_shim(on: libc::c_int) {
+    if let Ok(mut g) = cell().lock() {
+        if let Some(r) = g.as_mut() {
+            if r.app.set_mono_shim(on != 0) {
+                r.dirty = true;
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_get_balance() -> libc::c_int {
     cell()
