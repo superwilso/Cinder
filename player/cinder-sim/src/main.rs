@@ -359,11 +359,18 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                     ..Default::default()
                 })
                 .collect();
+            let cur = (!tracks.is_empty()).then(|| app.track.min(tracks.len() - 1));
+            // The sim has no transport, so it has no real play history either. Standing in the
+            // tracks before the current one keeps PREVIOUSLY PLAYED populated in the preview —
+            // which is what this screen looked like before the history became a real list, and
+            // all a layout preview needs it to be.
+            let history = &tracks[..cur.unwrap_or(0)];
             up_next::render_view(c, theme, fonts, &up_next::QueueView {
                 album: "Now Playing",
                 tracks: &tracks,
-                current: (!tracks.is_empty()).then(|| app.track.min(tracks.len() - 1)),
+                current: cur,
                 queue: &[],
+                history,
                 pick: None,
                 lib: &app.lib,
                 scroll_px: 0,
@@ -386,6 +393,8 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             bt_codec: if app.bt_on && app.bt_conn.is_some() { Some(BT_CODECS[app.bt_codec]) } else { None },
             // The sim has no Advanced screen, so neither override is reachable here.
             source_direct: false, tone_control: false,
+            // …and no transport, so mono has nothing to reach.
+            mono: false, mono_live: false,
         }, 0, 0),
         Screen::Settings => settings::render(c, theme, fonts, 0, 0,
             &settings::SettingsView { ignore_the: false, volume_limit: false, night: app.night, viz_name: "BARS · VEIL", usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: app.accent, palette: "Cinder", accent_locked: false }),

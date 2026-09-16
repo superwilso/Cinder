@@ -6752,6 +6752,15 @@ static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev, unsigned rate
     int stall_rounds = 0;      // ~5 s stalls survived while the host still claims to be streaming
     int dry_waits    = 0;      // consecutive 1 s waits that produced no data at all
     ldac_end why = LDAC_END_STOPPED;
+    // Read ONCE per session, not per buffer: this loop runs ~86 times a second and the FFI getter
+    // takes the renderer's lock. A change lands on the next session, which for a setting you turn
+    // on once is the right trade — and CINDER_ACT_MONO_CHANGED logs that it will.
+    const bool mono = cinder_get_mono() != 0;
+    {
+        char m[64];
+        std::snprintf(m, sizeof m, "ldac: mono downmix %s", mono ? "ON" : "off");
+        clog_(m);
+    }
 
     while (g_ldac_run) {
         // NEVER BLOCK INDEFINITELY IN readi. The first on-device run sat inside one blocking read
@@ -6855,10 +6864,33 @@ static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev, unsigned rate
         // probe's tone at exactly rate x channels x 2 bytes per second, and a 16-bit sine came out
         // of the headphones as a clean 440 Hz tone rather than noise. Taking the top 16 bits is the
         // whole conversion: the gadget's low half is padding on a 24-bit-in-32 container.
+        //
+        // MONO (accessibility) is applied HERE, and this is the only place on the device it can
+        // be: these are the only audio frames Cinder ever has its hands on. Ordinary playback goes
+        // Sony's PlayerService -> SoundServiceFw -> codec, and Bluetooth transmit goes straight
+        // from Sony's AudioInRecorder to BtTransmitterService over a socket — neither passes any
+        // code of ours, neither exposes a channel-sum control, and the codec register that might
+        // do it is ruled out standing by SECURITY.md rule 1. See analysis/RE_mono_audio.md.
+        //
+        // The SUM IS HALVED, not clipped: L+R of a correlated mix is up to +6 dB, and a bridge
+        // that distorted the moment mono was switched on would be worse than no mono at all. The
+        // wire format stays TWO channels carrying the same signal rather than switching the
+        // handshake to chans=1 — that is what "both ears get everything" means, it needs no
+        // renegotiation mid-session, and the handshake's channel field is read once at connect.
         static short out16[512 * 2];
         {
             const int* s32 = (const int*)buf;
-            for (long i = 0; i < got * 2; i++) out16[i] = (short)(s32[i] >> 16);
+            if (mono) {
+                for (long i = 0; i < got; i++) {
+                    const int l = s32[i * 2] >> 16;
+                    const int r = s32[i * 2 + 1] >> 16;
+                    const short m = (short)((l + r) / 2);
+                    out16[i * 2] = m;
+                    out16[i * 2 + 1] = m;
+                }
+            } else {
+                for (long i = 0; i < got * 2; i++) out16[i] = (short)(s32[i] >> 16);
+            }
         }
         size_t want = (size_t)got * 4;
         const unsigned char* p = (const unsigned char*)out16;
@@ -8651,6 +8683,25 @@ void carry_out(int act) {
             // turn a drag into the poll storm that caused the audio stutter (docs/DEVICE_TESTS.md section 7).
             run_guarded("carry_out: balance", 4, []() { apply_balance(cinder_get_balance()); });
             break;
+        case CINDER_ACT_MONO_CHANGED: {
+            // NOTHING TO APPLY HERE, and that is the honest state of this feature rather than an
+            // omission. The only frames Cinder can sum are the LDAC bridge's, and `ldac_pump`
+            // reads the flag when a session starts — so a change made mid-session takes effect on
+            // the next one. Every other path belongs to Sony end to end: no ALSA control sums
+            // channels (51 on card 0, all inventoried), the DSP surface has no mono call, and
+            // Bluetooth transmit never passes either. analysis/RE_mono_audio.md has the evidence.
+            //
+            // Logged, because "I turned it on and nothing happened" is exactly the report this
+            // note exists to answer, and the log is where that gets answered.
+            const int on = cinder_get_mono();
+            char m[160];
+            std::snprintf(m, sizeof m,
+                          "sound: mono %s — applies to USB-DAC->LDAC only (next session); "
+                          "no channel-sum control exists for the jack or for A2DP",
+                          on ? "ON" : "off");
+            clog_(m);
+            break;
+        }
         case CINDER_ACT_SOUND_BYPASS:
             // A/B compare: bypass or re-enable the whole effect chain, guarded.
             run_guarded("carry_out: A/B bypass", 6,
