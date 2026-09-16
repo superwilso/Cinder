@@ -45,6 +45,10 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     ("dist/{ch}/cinder-battery", "cinder-battery", "battery", true),
     ("dist/{ch}/cinder-gpunode", "cinder-gpunode", "gpunode", false),
     ("dist/{ch}/cinder-signature.sh", "cinder-signature.sh", "", true),
+    // The mono shim (cinder-home/src/cinder-mono.c). Staged only when `mono` is selected; the
+    // device installer then puts it in place of Wampy's preloaded library, or skips it when Wampy
+    // is not installed.
+    ("dist/{ch}/libcinder_mono.so", "libcinder_mono.so", "mono", true),
     // The .UPG the Sony updater actually runs. It MUST land on the player as NW_WM_FW.UPG —
     // that filename is what the device's own "update firmware" flow looks for.
     ("dist/{ch}/cinder_home_install.upg", "NW_WM_FW.UPG", "", true),

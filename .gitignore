@@ -79,6 +79,8 @@ cinder-home/dist/dev/
 cinder-home/*.o
 cinder-home/cinder-home
 cinder-home/cinder-probe
+# The mono shim is copied into dist/<channel>/ by build.sh; that copy is the committed one.
+cinder-home/libcinder_mono.so
 ldac-bridge/*.o
 ldac-bridge/cinder-ldac-bridge
 

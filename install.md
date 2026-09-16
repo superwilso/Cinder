@@ -216,6 +216,8 @@ removes something the player cannot do without (`components.conf` explains the d
 | `battery` | on | The battery screen omits the charger detail (charge state, fault code, currents, the voltage it charges to). Installs `cinder-battery`, which only READS the charger's registers. |
 | `gpunode` | **off** | Nothing. Dev channel only. It is setuid-root purely to make four kernel graphics nodes world-writable, for a GPU present path that is default-off and measured **4.7× slower** than the software one. |
 | `search` | **off** | The Library's search button. Installs nothing: a flag file in `/data/cinder`. New, so off for now. |
+| `scrobble` | on | The `.scrobbler.log` of what you listen to. Installs nothing: turning it off leaves a flag file in `/data/cinder` and keeps any log you have. **You do not need to turn it off if you use unknown321's scrobbler** (the one installed with Wampy): Cinder checks for it at every start and writes nothing while it runs, so each play is logged once. |
+| `mono` | on | Sound ▸ MONO then reaches only USB-DAC → LDAC. With it, mono reaches the headphone jack and Bluetooth too. **Needs Wampy**: it goes in place of Wampy's `libsound_service_fw.so`, the one library Sony's boot already loads into the sound service, keeps Wampy's file as `libsound_service_fw.wampy.so` and loads it back, so Wampy keeps working. Without Wampy nothing is installed. Turning it off or uninstalling puts Wampy's file back; reinstalling Wampy replaces it, so install Cinder again afterwards. |
 | `voltable` | `stock` | See [The volume curve tables](#the-volume-curve-tables). |
 | `signature` | `stock` | See below. |
 

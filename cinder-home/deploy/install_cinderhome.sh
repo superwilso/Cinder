@@ -55,6 +55,7 @@ SRC_FM=/contents/cinder-fm
 SRC_VOLTABLE=/contents/cinder-voltable
 SRC_BATTERY=/contents/cinder-battery
 SRC_SIGNATURE=/contents/cinder-signature.sh
+SRC_MONO=/contents/libcinder_mono.so
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
 LAUNCH=$BIN/cinderhome-launch.sh
@@ -98,6 +99,8 @@ WANT_GPUNODE="$(comp_bool CINDER_GPUNODE 0)"
 WANT_FM="$(comp_bool CINDER_FM 1)"
 WANT_BATTERY="$(comp_bool CINDER_BATTERY 1)"
 WANT_SEARCH="$(comp_bool CINDER_SEARCH 0)"
+WANT_SCROBBLE="$(comp_bool CINDER_SCROBBLE 1)"
+WANT_MONO="$(comp_bool CINDER_MONO 1)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
 
@@ -106,7 +109,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH signature=$WANT_SIGNATURE"
+echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE"
 
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
@@ -429,6 +432,65 @@ if [ -s "$SRC_SIGNATURE" ]; then
     fi
 elif [ "$WANT_SIGNATURE" != stock ]; then
     echo "WARN: $SRC_SIGNATURE not staged but signature=$WANT_SIGNATURE requested — NOT applied."
+fi
+
+# 1g2) system-wide mono: libcinder_mono.so inside Sony's SoundServiceFw (src/cinder-mono.c).
+#      The jack and Bluetooth are both fed from that one service, and Cinder never edits the boot
+#      image, so it has no preload of its own to get in there. Wampy's installer put one in:
+#      `setenv LD_PRELOAD $MONO_PATH` on the service. The shim takes that path, keeps Wampy's file
+#      byte for byte at $MONO_WAMPY, and dlopens it back (RTLD_GLOBAL) before anything else, so
+#      Wampy's hooks keep working. No Wampy library here = no preload = nothing installed.
+#      Wampy's file is COPIED aside before the shim is renamed over the path, so a failure at any
+#      step leaves Wampy's library where Wampy put it. Non-fatal throughout.
+MONO_PATH=$VENDOR/lib/libsound_service_fw.so
+MONO_WAMPY=$VENDOR/lib/libsound_service_fw.wampy.so
+is_mono_shim() { "$BB" grep -q libcinder_mono.so "$1" 2>/dev/null; }
+mono_restore() {   # give Wampy its library back, if the shim holds its place
+    [ -f "$MONO_PATH" ] && is_mono_shim "$MONO_PATH" || return 0
+    if [ -s "$MONO_WAMPY" ]; then
+        "$BB" mv -f "$MONO_WAMPY" "$MONO_PATH" && echo "mono: Wampy's library restored to $MONO_PATH"
+    else
+        "$BB" rm -f "$MONO_PATH" && echo "mono: shim removed (no Wampy library was kept to restore)"
+    fi
+    "$BB" rm -f /data/cinder/mono_shim_boots 2>/dev/null
+}
+if [ "$WANT_MONO" != 1 ]; then
+    echo "components: mono NOT selected — mono reaches USB-DAC -> LDAC only."
+    mono_restore
+elif [ ! -s "$SRC_MONO" ]; then
+    echo "WARN: $SRC_MONO not staged — mono reaches USB-DAC -> LDAC only."
+elif [ ! -f "$MONO_PATH" ]; then
+    echo "mono: Wampy is not installed ($MONO_PATH absent), so Sony's sound service has no preload to"
+    echo "      carry the shim — nothing installed; mono reaches USB-DAC -> LDAC only."
+else
+    mono_ok=1
+    if ! is_mono_shim "$MONO_PATH"; then
+        "$BB" cat "$MONO_PATH" > "$MONO_WAMPY.tmp" 2>/dev/null
+        if [ -s "$MONO_WAMPY.tmp" ] && "$BB" cmp -s "$MONO_PATH" "$MONO_WAMPY.tmp"; then
+            "$BB" chmod 755 "$MONO_WAMPY.tmp"
+            "$BB" mv -f "$MONO_WAMPY.tmp" "$MONO_WAMPY"
+            echo "mono: kept Wampy's library as $MONO_WAMPY"
+        else
+            "$BB" rm -f "$MONO_WAMPY.tmp" 2>/dev/null
+            mono_ok=0
+            echo "WARN: mono — could not keep a copy of Wampy's library; left as found, mono not installed."
+        fi
+    fi
+    if [ "$mono_ok" = 1 ]; then
+        "$BB" cat "$SRC_MONO" > "$MONO_PATH.tmp" 2>/dev/null
+        if [ -s "$MONO_PATH.tmp" ] && "$BB" cmp -s "$SRC_MONO" "$MONO_PATH.tmp" && is_mono_shim "$MONO_PATH.tmp"; then
+            "$BB" chown 0:0 "$MONO_PATH.tmp" 2>/dev/null
+            "$BB" chmod 755 "$MONO_PATH.tmp"
+            # rename, never write in place: on a live system the running service has this file mapped
+            "$BB" mv -f "$MONO_PATH.tmp" "$MONO_PATH"
+            # a new build starts with a clean load count (the shim's safe-mode counter)
+            "$BB" rm -f /data/cinder/mono_shim_boots 2>/dev/null
+            echo "installed: $MONO_PATH (mono shim, $("$BB" wc -c < "$MONO_PATH" | "$BB" tr -cd '0-9') bytes; chains $MONO_WAMPY)"
+        else
+            "$BB" rm -f "$MONO_PATH.tmp" 2>/dev/null
+            echo "WARN: mono — the staged shim failed verification; the library there is unchanged."
+        fi
+    fi
 fi
 
 # 2) back up the ORIGINAL .appcfg BEFORE writing anything. If this fails we must NOT touch
@@ -989,6 +1051,15 @@ if [ "$WANT_SEARCH" = 1 ]; then
 else
     "$BB" rm -f /data/cinder/search_on 2>/dev/null
     echo "library search: off"
+fi
+# Scrobble log: ON by default, so the flag records the OFF choice. Same rules as search_on. Nothing
+# to do for unknown321/scrobbler here: cinder-home stands down by itself while that one runs.
+if [ "$WANT_SCROBBLE" = 1 ]; then
+    "$BB" rm -f /data/cinder/scrobble_off 2>/dev/null
+    echo "scrobble log: on"
+else
+    echo 1 > /data/cinder/scrobble_off 2>/dev/null && "$BB" chmod 644 /data/cinder/scrobble_off 2>/dev/null \
+        && echo "scrobble log: off"
 fi
 "$BB" rm -f /contents/cinderhome_off /contents/cinderhome_bootcount /contents/cinderhome_DISABLED_badboot /contents/cinderhome_once 2>/dev/null
 echo "cleared prior disable flags (fresh install = enabled)"

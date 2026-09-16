@@ -881,7 +881,15 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   `EnterFuncMode(MediaPlay)` put all of it back. What remains is the last link only: a real host
   streaming, which cannot be observed over the usbipd passthrough that carries adb.
 - **Status bar**: live clock (local time) + battery % (sysfs); **tap anywhere on it → Menu**.
-- **Scrobbler**: appends `/contents/.scrobbler.log` (Audioscrobbler/1.1) as you listen.
+- **Scrobbler**: appends `/contents/.scrobbler.log` (Audioscrobbler/1.1) as you listen. An install
+  option (`scrobble`, on by default; `/data/cinder/scrobble_off`) since 2026-09-16, and it stands
+  down by itself while unknown321/scrobbler runs, so the two never log one play twice.
+- **Mono on the jack and Bluetooth** *(device-verified 2026-09-16 by the shim's log during real
+  playback, on a Wampy install; listening check pending)*: `libcinder_mono.so` in Sony's SoundServiceFw sums L/R after the whole DSP chain —
+  `jack: pcm … fmt 2 — summing`, then over LDAC `bt: fd 17 handshake: 2 ch, 44100 Hz` and
+  `bt: fd 17 — summing`, stream up, no reboot. It rides Wampy's preload (install option `mono`); without
+  Wampy mono still reaches only USB-DAC → LDAC and the Sound row says so.
+  `analysis/RE_mono_audio.md` §9.
 - **Safety**: bad-boot counter → auto-revert to stock after **2** bad boots; per-frame + construction
   watchdog; every Sony-IPC call inside `run_guarded`; USB-at-launch / `cinderhome_off` escape.
 

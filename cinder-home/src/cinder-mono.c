@@ -89,6 +89,19 @@ static int (*real_set_format)(void*, void*, int);
 static int (*real_set_channels)(void*, void*, unsigned int);
 static int (*real_pcm_close)(void*);
 
+/* hagodaemon runs the constructor as ROOT and only then becomes `system` (uid 100, no
+ * CAP_DAC_OVERRIDE), and root's umask here is 077 — so a file the constructor creates in /tmp is
+ * root 0600 and every later line from the audio threads fails silently (read off the device
+ * 2026-09-16: an empty log after real playback proved nothing). Files meant to be written again, or
+ * read by cinder-home, get their mode set explicitly. O_NOFOLLOW: the root phase must not be
+ * steered through a link someone left in /tmp. */
+static int open_shared(const char* path, int flags)
+{
+    int fd = (int)syscall(SYS_open, path, flags | O_CLOEXEC | O_NOFOLLOW, 0666);
+    if (fd >= 0 && (flags & O_CREAT) && geteuid() == 0) (void)syscall(SYS_fchmod, fd, 0666);
+    return fd;
+}
+
 /* ── log: a few lines per session, never the audio path's problem ────────────────────────────── */
 static int g_log_lines = 0;
 static void mlog(const char* fmt, ...)
@@ -106,7 +119,7 @@ static void mlog(const char* fmt, ...)
     if (k <= 0) return;
     if (k >= (int)sizeof m - 1) k = (int)sizeof m - 2;
     m[k++] = '\n';
-    int fd = (int)syscall(SYS_open, kLog, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    int fd = open_shared(kLog, O_WRONLY | O_CREAT | O_APPEND);
     if (fd < 0) return;
     (void)syscall(SYS_write, fd, m, (size_t)k);
     (void)syscall(SYS_close, fd);
@@ -199,7 +212,7 @@ __attribute__((constructor)) static void cinder_mono_init(void)
         return;
     }
     g_active = 1;
-    int a = (int)syscall(SYS_open, kAlive, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    int a = open_shared(kAlive, O_WRONLY | O_CREAT | O_TRUNC);
     if (a >= 0) {
         char p[24];
         int k = snprintf(p, sizeof p, "%d\n", (int)getpid());
