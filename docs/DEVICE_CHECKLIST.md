@@ -123,6 +123,7 @@ proves the app *does the thing*; it cannot prove the thing is the right thing to
 | 2A.3 | **The Bluetooth switch matches the radio** | Toggle it; also boot with the radio left on by stock | The switch and the radio never disagree | The reconcile needs three consecutive `GetBtStatus == 7` reads to decide "off" — see `src/bt_switch.h` |
 | 2A.4 | **The Bluetooth screen names the connected device** | With a peer linked and playing | The name, not "No device connected" | The address is the signal, not the return value |
 | 2A.5 | **Enhanced Mode / absolute volume** | Change volume from the headphones | The UI level follows | `bt_apply_enhanced_mode("boot")` now runs at boot |
+| 2A.6 | **A Devices tap while the radio is already paging** — new 2026-09-15 — **PASS once 2026-09-15** (dev build flashed that day) | Bluetooth ▸ Devices: tap the headphones' row while a reconnect is under way (headphones off, tap, then switch them on) | The tap logs `bt-paired: row N: a connect is already on the air — asking for this device the moment it ends`; the spinner stays on the row and more taps send nothing; the link follows within seconds. Seen: one tap at 65.68 s held behind the reconnect's page, linked at 70.61 s | Before the fix, 23 of 24 taps were refused `RequestConnection rc=0` and dropped. A `bt-reconnect: retry … rc=0` about a second before the link is the link already forming, not a failure |
 
 ### 2B. Sound (PR #3, merged)
 

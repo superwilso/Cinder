@@ -19,7 +19,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 ### Fixed
 
 - **Tapping headphones in Bluetooth ▸ Devices often did nothing.** *Harness- and host-tested;
-  device-unverified.* A tap while the radio was already paging (its own reconnect attempt, or an
+  device-verified once 2026-09-15: a tap during the reconnect's own page was held instead of
+  refused, and the headphones linked five seconds later.* A tap while the radio was already paging (its own reconnect attempt, or an
   earlier tap) was refused by Sony's transmitter and simply dropped, and the row's "connecting"
   spinner vanished within a frame, so it looked as if nothing had happened: on 2026-09-15, 23 of 24
   taps in 21 seconds were refused that way. A tap during a page is now held and asked for the moment
