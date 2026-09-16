@@ -88,7 +88,7 @@ fi
 #    reboots or notices new music. Milliseconds with a stock cc, so there is no excuse to skip.
 step "C++ self-tests"
 selftest_fail=0
-for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange; do
+for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange mono; do
     src="cinder-home/tools/${t}_selftest.cpp"
     [ -f "$src" ] || continue
     if ! cc -O2 -o "/tmp/cinder_ph_$t" "$src" -lstdc++ >"$LOG" 2>&1; then

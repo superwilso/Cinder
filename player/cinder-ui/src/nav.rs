@@ -811,6 +811,9 @@ pub struct App {
     bt_enhanced_supported: bool,
     /// USB-DAC mode engaged (input from a USB host → 3.5mm + BT/LDAC). Transient (not persisted).
     usb_dac_on: bool,
+    /// libcinder_mono.so is loaded in Sony's SoundServiceFw, so mono reaches the jack and Bluetooth
+    /// too (the shell reports it from the library's own marker file).
+    mono_shim: bool,
     /// The host's live stream format, as the engine last reported it: (rate Hz, bit depth,
     /// channels). `None` means nothing is streaming, or nobody has told us yet.
     ///
@@ -1266,6 +1269,7 @@ impl Default for App {
             bt_enhanced: true,
             bt_enhanced_supported: true,
             usb_dac_on: false,
+            mono_shim: false,
             usb_dac_fmt: None,
             bt_codec_negotiated: 0,
             bt_fine: 0, // OFF: it rides on the EQ, so it is a thing you opt into
@@ -6411,13 +6415,13 @@ impl App {
                     balance_drag: matches!(self.scrub, Scrub::Balance),
                     bt_route: self.bt_route,
                     mono: self.mono,
-                    // IS MONO ACTUALLY REACHING WHAT IS PLAYING? Only on the one path Cinder owns
-                    // the PCM for — USB-DAC in, LDAC out, where the bridge does the downmix itself.
-                    // Ordinary playback goes through Sony's PlayerService to a codec with no
-                    // channel-sum control and a DSP surface with no mono call, and Bluetooth
-                    // transmit never passes either. `analysis/RE_mono_audio.md` is the evidence;
-                    // the row says which of the two it is in rather than implying it is global.
-                    mono_live: self.usb_dac_on,
+                    // IS MONO ACTUALLY REACHING WHAT IS PLAYING? Without the mono library, only on
+                    // the one path Cinder owns the PCM for — USB-DAC in, LDAC out, where the bridge
+                    // does the downmix itself: ordinary playback goes through Sony's SoundServiceFw
+                    // to a codec with no channel-sum control, and Bluetooth transmit never passes
+                    // Cinder either. With libcinder_mono.so loaded in SoundServiceFw it reaches
+                    // both. `analysis/RE_mono_audio.md` is the evidence; the row says which.
+                    mono_live: self.usb_dac_on || self.mono_shim,
                     // Both are set on OTHER screens and both change what this one's footer means:
                     // Source Direct (Sound ▸ Advanced) bypasses the whole chain, and Tone Control
                     // replaces the 10-band EQ rather than stacking with it.
@@ -7622,6 +7626,12 @@ impl App {
     }
     pub fn set_mono(&mut self, on: bool) {
         self.mono = on;
+    }
+    /// Whether the mono library is running inside SoundServiceFw. Returns true if that changed.
+    pub fn set_mono_shim(&mut self, on: bool) -> bool {
+        let changed = self.mono_shim != on;
+        self.mono_shim = on;
+        changed
     }
 
     /// Which VPT room is selected, 0..=3 — handed straight to Sony's `SetVptMode`. Its own value

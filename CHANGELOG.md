@@ -40,6 +40,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   device-unverified.* The paired-device rows kept saying "connected" until the list was read again,
   so each tap meant as "connect" sent another hang-up (11 in a row on 2026-09-16). The rows now
   follow the live connection.
+- **After Disconnect, the screen still said connected until the next tap.** *Harness-tested;
+  device-unverified.* The hang-up lands about a second after the request, so the check made
+  straight after it still found the headphones, and with a device connected the next check was
+  30 seconds away. The radio's own disconnect notice re-ran the check but skipped the part that
+  asks which device is connected. Now the notice asks, and after a Disconnect tap Cinder checks
+  every half second until the link is gone. The same delay made a real drop (headphones switched
+  off) take up to 30 seconds to pause playback.
 
 ## [0.3.7] — 2026-09-15
 
