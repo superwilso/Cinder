@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.8] — 2026-09-17
+
 ### Added
 
 - **Mono now reaches the headphone jack and Bluetooth, on players with Wampy.** *Device-verified
@@ -1782,7 +1784,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/superwilso/Cinder/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/superwilso/Cinder/compare/4e1f76a...v0.3.7
 [0.3.6]: https://github.com/superwilso/Cinder/compare/v0.3.5...4e1f76a
 [0.3.5]: https://github.com/superwilso/Cinder/compare/v0.3.4...v0.3.5
