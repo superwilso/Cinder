@@ -5,7 +5,9 @@ EQ**, whose complete Walkman implementation ships inside `libSoundServiceFw.so` 
 ("Clear Bass 6-band EQ"). The stock A50 UI never showed it — it shows the 10-band EQ and Tone
 Control — but the service runs it, and `EffectCtrlDmp` exposes it. Device reading: band 0 accepts
 +10 under the Custom 1 preset and the six-band reports `isproc is 1` next to Cinder's 10-band EQ.
-**Still unheard** — the listening check is the one open item before it becomes a Cinder setting.
+**Measured 2026-09-17: it does not process when set this way** — no change at the jack under either
+selector, while a ten-band change on the same rig measures +7.9 dB (§4). The data path is found; what
+engages it is not.
 
 The first pass of this note (earlier the same day) said Clear Bass was not portable. That was about
 the ZX100's copy, which runs on a DSP nothing can disassemble; it was right about the ZX100 and
@@ -102,13 +104,38 @@ Sony's older "genesys" platform on a Renesas EMMA Mobile EV0 (`/devel/usr/local/
   (2 rate families × 6 tables × 5 × 16 = 960 bytes). `au_param_t {clear_stereo, bass_gain,
   trbl_gain, bass_cf, trbl_cf}` is the codec's tone control. Headphone compensation, not the EQ.
 
-## 4. What is left
+## 4. Measured at the jack (2026-09-17) — no effect
 
-1. **Listen.** Music playing: `cinder-probe --clearbass 10 20` (selector untouched, so Cinder's
-   10-band stays in the path), then `--clearbass 10 20 1`. Expected: deep bass up, mid-bass
-   slightly down. If nothing is audible under selector 2, the this+0x178 field is the selector.
-2. Then a Cinder setting: a Clear Bass row (−10..+10) on the Sound screen, driven through
+**Rig.** The player's 3.5 mm output into the PC's microphone input, recorded with Windows FFmpeg
+(`-f dshow`). Signal: a 29 s pink-noise FLAC played by Cinder on repeat-one (29 s so the scrobbler
+never logs it). The probe switched Custom 1 band 0 between the level and 0 every 5 s for 50 s
+(`cinder-probe --clearbass <level> 50 <selector> 5`); the recording was folded against a 10 s square
+wave and the third-octave spectra of the "on" and "off" halves compared.
+
+| Run | 40 Hz | 50 Hz | 63 Hz | Fit r |
+|---|---|---|---|---|
+| Clear Bass +10, selector 1 (six-band) | +0.6 | +0.3 | +0.2 | +0.06 |
+| Clear Bass +10, selector 2 (Cinder's ten-band) | +0.8 | +0.3 | −0.1 | +0.07 |
+| Clear Bass −10, selector 1 | +0.2 | +0.5 | +0.4 | — |
+| **Control:** ten-band band 1 (63 Hz) +10 dB, `--eq10alt 1 20 50 5` | +4.8 | +6.9 | **+7.9** | **+0.57** |
+| Clear Bass +10, selector 1, held 70 s across two loop restarts | within ±1 dB throughout | | | |
+
+The rig sees a ten-band change clearly, so the null is real: **setting Custom 1's band 0 through
+EffectCtrlDmp does not engage Clear Bass**, live or at the next stream start. The writes do arrive —
+the service logs `effect param eq6band,band=0,value=10`, `selectusingeq,type=1` and
+`Eq6band::UpdateProcCond … isproc is 1` — each followed by `no desired value, skip`.
+
+Two earlier runs against music suggested +8 dB at 40-50 Hz on selector 1; a repeat showed +1.5 dB.
+Music is too uneven for this; use the noise file.
+
+## 5. What is left
+
+1. **Why the six-band filter does not engage.** Read `Eq6band::UpdateProcCond` and the path from
+   `ExecEffectParam("eq6band,band=…")` to `CB_6bandEQ_*` in `libSoundServiceFw.so`: what "desired
+   value" it waits for, and whether `CB_6bandEQ_eq` is reached at all (a breakpoint-free check: the
+   `--dseemeter`-style analyzer tap, or the ALC state in `CB_6bandEQ_*`'s instance). Re-measure with
+   the same rig.
+2. Only then a Cinder setting: a Clear Bass row (−10..+10) on the Sound screen, driven through
    Custom 1's band 0 with the other five bands flat, re-asserted like the rest of the chain.
-   Sony's own implementation, limiter included — no port, no shim.
 3. Map the preset names to rows (the stock QML never drew the six-band; Media Go / Music Center
    or an A40 UI would).

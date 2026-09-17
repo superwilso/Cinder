@@ -8782,8 +8782,13 @@ void carry_out(int act) {
                         []() { cinder_power_set_battery_care(cinder_get_battery_care()); });
             break;
         case CINDER_ACT_SOUND_CHANGED:
-            // apply the Sound screen's effect toggles to the DSP, guarded.
+            // apply the Sound screen's effect toggles to the DSP, guarded — and the EQ with them.
+            // The A/B control switches a whole setup (effects + balance + EQ) through this single
+            // action, because the shell only ever receives one action per input. apply_eq_fn writes
+            // only the bands that differ from what was last sent, so on an ordinary effect toggle it
+            // costs a compare and no IPC.
             run_guarded("carry_out: apply sound effects", 6, apply_sound_fn);
+            run_guarded("carry_out: apply EQ with the sound setup", 6, apply_eq_fn);
             break;
         case CINDER_ACT_CLOCK_SET:
             run_guarded("carry_out: set clock", 8, apply_clock);

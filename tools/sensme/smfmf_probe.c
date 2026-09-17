@@ -5,7 +5,8 @@
  * the .exe.
  *
  *   i686-w64-mingw32-gcc -O2 -o smfmf_probe.exe smfmf_probe.c -loleaut32 -lole32 -luuid -lm
- *   smfmf_probe.exe [audio.raw]     raw = s16le, 44.1 kHz, stereo; no argument = 90 s synthetic
+ *   smfmf_probe.exe [audio.raw [id=value ...]]   raw = s16le, 44.1 kHz, stereo; no argument = 90 s
+ *                                                synthetic; id=value overrides an engine parameter
  *
  * Prints the engine's parameters and every result ID; byte-array results are written to
  * result_<id>.bin in the current directory. Interface IDs and vtable slots are from the DLL's own
@@ -106,6 +107,21 @@ int main(int argc, char** argv)
     hr = ma->v->EnumParameterIDs(ma, &e); printf("EnumParameterIDs hr=0x%lx\n", hr);
     if (SUCCEEDED(hr)) enum_ids("param", e, ma, NULL);
     SHORT lo=0, hi=0; ma->v->GetPriorityRange(ma, &lo, &hi); printf("priority range %d..%d\n", lo, hi);
+
+    /* Optional parameter overrides after the audio path: id=int, e.g. 4=1 (VT_I4; booleans as 0/1) */
+    for (int a = 2; a < argc; a++) {
+        int pid, pval;
+        if (sscanf(argv[a], "%d=%d", &pid, &pval) != 2) continue;
+        VARIANT cur; VariantInit(&cur);
+        VARTYPE vt = SUCCEEDED(ma->v->GetParameter(ma, pid, &cur)) ? cur.vt : VT_I4;
+        VARIANT v; VariantInit(&v);
+        if (vt == VT_BOOL) { v.vt = VT_BOOL; v.boolVal = pval ? VARIANT_TRUE : VARIANT_FALSE; }
+        else if (vt == VT_I2) { v.vt = VT_I2; v.iVal = (SHORT)pval; }
+        else { v.vt = VT_I4; v.lVal = pval; }
+        hr = ma->v->SetParameter(ma, pid, v);
+        VariantClear(&cur); VariantInit(&cur); ma->v->GetParameter(ma, pid, &cur);
+        printf("SetParameter(%d, %d) hr=0x%lx", pid, pval, hr); show(" now", &cur, NULL);
+    }
 
     /* PCM: a raw s16le 44.1 kHz stereo file if given, else 90 s of synthetic "music" */
     ULONG rate = 44100; ULONG frames; short* pcm;
