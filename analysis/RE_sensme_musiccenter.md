@@ -187,12 +187,68 @@ NeDB files under `%APPDATA%\Sony\Music Center\db` — 4,267 tracks after a seven
 copy of one FLAC and one MP3, then compare `fringe\audio\<id>\smfmf.bin` with this probe's result 89
 and dump the `SMFM` block / `USR_SMFMF` GEOB.
 
-## 9. What is left, in order
+## 9. Device proof — PASS (2026-09-17)
 
-1. **One Music Center-tagged file** (§8): the megabyte question, and the exact payload for FLAC and MP3.
-2. **One device proof.** Put result 89 into an `SMFM` block on a *copy* of one FLAC, copy it on, let
-   the stock scanner run, and read MTPDB akeys 50-60 and 121. Three Flint-tagged copies were made for
-   this on 2026-09-17 (Taxman, For No One, Chicken Grease). Mind `reference_mtpdb_rescan_hazard`:
+Three FLAC copies tagged by Flint (`flint tag-copy`: result 89 in an `SMFM` APPLICATION block, nothing
+else changed) were copied to `/contents/MUSIC` over USB and scanned by the stock scanner under Cinder.
+MTPDB afterwards (`artifacts/mtpdb_m0/`; backup before in `artifacts/mtpdb_pre_m0/`):
+
+| Track | GBPM | 52 TEMPO | 53 MOOD | 54 TYPE | 55 STYLE | 56 TIME | 50 WMCHANNELINFO | 60 SABI | result 88 |
+|---|---|---|---|---|---|---|---|---|---|
+| Taxman | 131.70 | 131 | 89 | 26 | 64 | 24 | 515 = bits 0,1,9 | 75,763 | 75,763 |
+| Chicken Grease | 91.07 | 91 | 41 | 82 | 52 | 65 | 4101 = bits 0,2,12 | 2,429 | 2,429 |
+| For No One | 81.15 | 81 | 50 | 22 | 27 | 77 | 1297 = bits 0,4,8,10 | 196 | 196 |
+
+* **The engine's result alone is a complete SMFMF tag.** No wrapper, no other chunk.
+* **TEMPO** is `GBPM` truncated. **SABI** (akey 60) is exactly engine result 88, in milliseconds.
+* **WMCHANNELINFO** (akey 50) is the channel bitmask from `0x540dc`: bit 0 is always set (the
+  function starts from 1), the rest are `1 << (table[id] + 1)`. Which bit is which channel is still
+  to be read from the table.
+* 57 `SMFMF12TONEV1` is written as 0; 51, 58, 59 and 121 are not written for these files.
+
+## 10. The MP3 container, and the channel table (2026-09-17)
+
+**MP3.** `OmgPcMan.dll` does not build the GEOB frame field by field; it carries five ready-made
+templates, each a little-endian length and then the frame body up to the object data:
+
+| Length | Text encoding | MIME | Filename | Description |
+|---|---|---|---|---|
+| 0x29 | 2 (UTF-16BE) | `Application/SMFMF` | empty | `USR_SMFMF` |
+| 0x29 | 1 (UTF-16, BOM FE FF) | `Application/SMFMF` | empty | `USR_SMFMF` |
+| 0x2b | 2 | `Application/SMFMF` | empty | `USR_SMFMF` |
+| 0x2d | 1 (BOM FF FE) | `Application/SMFMF` | `FF FE 00 00` | `FF FE` + `USR_SMFMF` |
+| **0x1e** | **0 (Latin-1)** | `Application/SMFMF` | empty | `USR_SMFMF` |
+
+The MIME type is Latin-1 in every template (ID3v2 requires it). The player's own copy of the string
+is `application/smfmf` in lower case. Flint writes the encoding-0 template, byte for byte, then result 89.
+
+**MP3 device proof — PASS (2026-09-17)**, §9's method, one ID3v2.3 and one ID3v2.4 file
+(`artifacts/mtpdb_m0_mp3/`):
+
+| Track | Tag | GBPM | 52 | 53 | 54 | 55 | 56 | 50 WMCHANNELINFO | 60 SABI |
+|---|---|---|---|---|---|---|---|---|---|
+| Thunderstruck | v2.3 | 134.35 | 134 | 69 | 45 | 82 | 48 | 69 = bits 0,2,6 | 141,351 |
+| Penny Lover | v2.4 | 108.00 | 108 | 61 | 73 | 43 | 74 | 521 = bits 0,3,9 | 112,607 |
+
+Same rules as FLAC: TEMPO is `GBPM` truncated, SABI is result 88, 57 is written as 0.
+
+**Channel table.** `0x540dc`'s table sits at Ghidra `0x1b673c`: 13 entries of three int32s,
+`(id, x, id)` for id 0..12, with `x` = 2, 4, 0, 3, 1 for ids 0-4 and `x = id` after. The bit is
+`id + 1`, so `WMCHANNELINFO` bit 0 is always set and bits 1-13 are channel ids 0-12. In §9's three
+tracks each has exactly one bit among ids 0-4 and one or two above. `HgrmMediaPlayerApp`'s channel
+thumbnails appear in its image in the order active, emotional, lounge, dance, extreme, upbeat, relax,
+mellow, morning, daytime, evening, night, midnight, shuffle all — if that is the id order, Taxman is
+*active + morning*, Chicken Grease *emotional + night*, For No One *dance + mellow + daytime*,
+Thunderstruck *emotional + upbeat*, Penny Lover *lounge + morning*. All five keep the pattern of one id
+in 0-4 and one or two in 5-12. **Unverified**; the stock SensMe screen settles it.
+
+## 11. What is left, in order
+
+1. **One Music Center-tagged file** (§8): the megabyte question and the MP3 payload. No longer needed
+   for FLAC or MP3 (both proven without it). Music Center only commits SMFMF when a Gracenote
+   recognition result is adopted.
+2. ~~One device proof~~ — **PASS** for FLAC (§9) and MP3 (§10). Mind `reference_mtpdb_rescan_hazard`:
    never reboot during a rescan, and back up `MTPDB.dat` first.
-3. The channel-id table and the akeys for bitmask and sabi (§6).
-4. The plan built on this: `docs/PLAN_sensme_sync.md`.
+3. The channel-id table: which `WMCHANNELINFO` bit is which of the 14 channels (§6, §9).
+4. The same files on **stock** firmware: SensMe channels should list them.
+5. The plan built on this: `docs/PLAN_sensme_sync.md`.

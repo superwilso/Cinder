@@ -44,7 +44,7 @@ All from [`analysis/RE_sensme_musiccenter.md`](../analysis/RE_sensme_musiccenter
 | Music Center 2.7.3 is installed on the owner's PC; it caches each result as `fringe\audio\<id>\smfmf.bin` | **[V]** §8 |
 | The owner's device library has **no** SensMe rows today (6,722 objects, akeys 50–59/121 empty) | **[V]** MTPDB pulled 2026-09-17 |
 | `/db` on the player is writable by Cinder (uid 100), 85 MB free | **[V]** 2026-09-17 |
-| The device turns our tag into channels | **[U]** — milestone M0 |
+| The device turns our tag into channels | **[V] PASS 2026-09-17** — three Flint-tagged FLACs scanned under Cinder: TEMPO/MOOD/TYPE/STYLE/TIME, the channel bitmask (akey 50) and SABI (akey 60) all written (RE note §9) |
 
 **The bloat problem has a clean answer.** Wampy's author saw Music Center grow each file by almost
 a megabyte, possibly corrupting ID3 tags on the way. The data the player needs is ~6 KB. Writing
@@ -136,7 +136,7 @@ on the device whose size matches neither the source nor the manifest is treated 
 
 ## 4. The device side
 
-### M0 — proof, before any tool is built
+### M0 — proof, before any tool is built — **PASS 2026-09-17**: FLAC (RE note §9), MP3 v2.3 + v2.4 (§10)
 
 1. Back up `/db/MTPDB.dat` (and read `reference_mtpdb_rescan_hazard`: **never reboot during a rescan**).
 2. On the PC: copy one FLAC, add an `SMFM` block holding result 89.
@@ -218,18 +218,59 @@ tool is an exe. It is not needed for SensMe, so it comes after M2.
 
 ---
 
+## 5a. Lossless check: finding fake FLACs (owner request, 2026-09-17)
+
+A "fake FLAC" is lossy audio (usually MP3 or AAC) decoded and saved as FLAC, or a lossless file
+dressed up as more than it is. Flint already decodes every track once for SensMe, so the check
+rides on the same scan and is cached under the same content key.
+
+What it looks for, strongest evidence first:
+
+| Finding | How | Verdict |
+|---|---|---|
+| **Lossy lowpass** | Long-term averaged spectrum (Hann, 8192-point FFT, whole track); find the frequency where the level falls through a floor set from the 2-8 kHz band, and how steep the fall is. A brick wall at 16, 17, 19 or 20 kHz is an encoder's lowpass (LAME: 128 k ≈ 16-17 kHz, 192 k ≈ 19 kHz, 320 k ≈ 20 kHz). | wall below 19.5 kHz → **likely lossy**; 19.5-21 kHz → **suspect** |
+| **Gated high band** | Per-frame energy above the cutoff candidate: lossy encoders switch the top band on and off frame by frame (MP3 `sfb21`), so the band flickers; a mastering filter does not. | strengthens either verdict |
+| **Upsampled** | 88.2/96/176.4/192 kHz file whose content stops at 22.05 or 24 kHz. | **upsampled** from 44.1/48 kHz |
+| **Padded bit depth** | 24-bit file whose low 8 bits are zero (or constant) in every sample. Exact, from the decode. | **16-bit in a 24-bit file** |
+
+What it does not do: prove a file is genuine. A clean result means no sign of the usual fakes. Old
+recordings and some masters roll off early on their own, so a gentle slope is never flagged; only a
+wall is. A lossy source that was upsampled first, or dithered, can pass.
+
+Output: `flint check <library>` prints a verdict per flagged file and writes nothing next to the
+music; results go in the cache index. Hi-res files need their own native decode (the SensMe decode is
+resampled to 44.1 kHz/16-bit, which hides upsampling and padding); 44.1 kHz/16-bit files can share it.
+
+**Built and calibrated 2026-09-17** (`crates/flint-core/src/lossless.rs`, `flint check`). What the
+measurements changed from the design above:
+
+* The floor above a lossy wall is not deep — 12-25 dB under the music, not 60 — because it is the
+  file's own dither or quantisation noise. The test is *shape*, not depth: the floor is flat, and the
+  drop into it takes 100-200 Hz. Music fading into its own dither takes kilohertz, which is what
+  separated the false positives (a first pass called 23 of the owner's 102 FLACs lossy; the knee test
+  brought that to 3 lossy and 10 suspect).
+* Gating works, but quiet treble alone gates a third of frames, so it only promotes a wall at or
+  below 20.4 kHz, and only from 35% of loud frames.
+* FFmpeg's resampler leaves images up to ~26 kHz rather than a clean wall, so upsampling is caught by
+  a second rule: at 88.2 kHz and up, the 28 kHz-and-over region sitting 45 dB under the 16-20 kHz
+  level means nothing real is up there.
+* Against transcodes of four albums: MP3 128k 4/4, MP3 320k 4/4, Opus 160k 4/4, Vorbis q6 1/4, LAME
+  V0 and FFmpeg AAC 256k 0/4 (they keep sound to nearly 22 kHz — undetectable this way), upsampled
+  and padded 4/4 each, and none of the four originals flagged. 102 real FLACs take 11 s.
+
 ## 6. Order
 
 | # | Work | Size | Needs |
 |---|---|---|---|
-| 1 | Music Center tags one FLAC and one MP3 copy; compare with result 89 | 15 min | **owner, at the PC** |
-| 2 | **M0** device proof (§4) | 1 session | owner OK for a scanner run |
-| 3 | `sensme-helper` from the probe: stdin PCM → stdout result, batch mode | half a session | — |
-| 4 | Rewrite skeleton + cache + manifest + FLAC injection, still copy-compatible with today's sync | 2–3 sessions | language decision |
+| 1 | ~~Music Center tags one FLAC and one MP3 copy~~ — **not needed**: Music Center only commits SMFMF when a Gracenote match is adopted; M0 proved the raw result works, and the MP3 frame came from `OmgPcMan.dll`'s templates (RE note §10) | — | done 2026-09-17 |
+| 2 | **M0** device proof (§4) — **FLAC and MP3 PASS 2026-09-17**; stock SensMe screen check under way (channel names) | — | — |
+| 3 | `sensme-helper` — **done** (Flint, Rust, i686); output byte-identical to the probe | — | — |
+| 4 | Rewrite skeleton + cache + manifest + FLAC injection — **done 2026-09-17**: skeleton, FLAC + MP3 injection, content-keyed cache, parallel `flint scan`, per-volume manifest, the two-volume planner (`sync.rs`) and the transfer itself (`apply.rs`, `flint sync [--apply]`), 45 tests. Left from Sony-sync: likes/scrobbles, album exclusions, the TUI | 1 session left | — |
 | 5 | **M1 + M2** in Cinder | 2 sessions | M0 |
-| 6 | MP3/M4A tags, Music Center cache import, parallel helpers | 1 session | item 1 |
-| 7 | Release pipeline, rename, licence, README | 1 session | name |
-| 8 | Front door; option C | later | — |
+| 6 | M4A tags (MP3 and parallel helpers done) | half a session | — |
+| 7 | Release pipeline (licence, README, name **Flint** and a private GitHub repo done) | half a session | — |
+| 8 | ~~**Lossless check** (§5a)~~ — **done 2026-09-17**: `flint check`, calibrated against transcodes | — | — |
+| 9 | Front door; option C | later | — |
 
 ---
 
