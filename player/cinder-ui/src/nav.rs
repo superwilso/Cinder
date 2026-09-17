@@ -7238,8 +7238,13 @@ impl App {
         self.set_setup(next);
         self.toast = format!("Setup {}", if idx == 0 { "A" } else { "B" });
         self.toast_frames = TOAST_FRAMES;
-        // EqChanged carries the bands; SoundChanged re-applies the effect flags AND the balance.
-        vec![Action::EqChanged(self.eq_bands), Action::SoundChanged]
+        // ONE action, and it has to be SoundChanged. The FFI hands the shell a single code per tap
+        // or press — the first shell-visible action — so the old `[EqChanged, SoundChanged]` only
+        // ever reached the shell as EqChanged: switching setups moved the EQ and left DSEE, VPT,
+        // DC Phase, Vinyl, the Normalizer, ClearAudio+ and the balance exactly where they were
+        // (reported 2026-09-17: "A/B doesn't actually change between two presets"). The shell's
+        // SoundChanged now re-applies the EQ as well, so this one action carries the whole setup.
+        vec![Action::SoundChanged]
     }
 
     /// Push the wall clock (UTC epoch seconds). The shell calls this from its ~1 Hz housekeeping.
@@ -8784,7 +8789,9 @@ mod tests {
         assert_eq!(a.setup_idx(), 0, "A should be live to begin with");
         let acts = a.tap(bx + bw / 2, by + bh / 2);
         assert_eq!(a.setup_idx(), 1, "tapping B did not select setup B");
-        assert!(acts.iter().any(|x| matches!(x, Action::SoundChanged)), "B did not re-apply the chain");
+        // Exactly SoundChanged: the shell receives only the first shell-visible action, so a second
+        // action here would be silently dropped (the 2026-09-17 A/B defect).
+        assert_eq!(acts, vec![Action::SoundChanged], "B must reach the shell as one SoundChanged");
         assert!(a.tap(bx + bw / 2, by + bh / 2).is_empty(), "tapping B twice acted twice");
         let (ax, ay2, aw, ah2) = sound::ab_rect(0);
         let acts = a.tap(ax + aw / 2, ay2 + ah2 / 2);

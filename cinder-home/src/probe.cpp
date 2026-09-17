@@ -5242,7 +5242,48 @@ static int eq6custom_probe() {
     _exit(0);
 }
 
-// --clearbass <level> [secs] [selector] : HOLD Sony's own Clear Bass so it can be heard.
+// --eq6reset [preset] : put the six-band EQ back to a known state — both Custom slots (9, 10) flat,
+// then select `preset` (default 0). For recovering from a --clearbass or --eq6custom run that was
+// cut off before its restore: both write Custom 1, and EffectCtrlDmp keeps what they wrote.
+static int eq6reset_probe(int preset) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[224];
+    for (int p = 9; p <= 10; p++) {
+        cinder_effects_set_eq6_preset(p);
+        std::snprintf(m, sizeof m, "eq6reset: preset %d was %d,%d,%d,%d,%d,%d", p,
+                      cinder_effects_get_eq6_band(0), cinder_effects_get_eq6_band(1),
+                      cinder_effects_get_eq6_band(2), cinder_effects_get_eq6_band(3),
+                      cinder_effects_get_eq6_band(4), cinder_effects_get_eq6_band(5));
+        clog_(m);
+        for (int b = 0; b < 6; b++) cinder_effects_set_eq6_band(b, 0);
+    }
+    cinder_effects_set_eq6_preset(preset);
+    std::snprintf(m, sizeof m, "eq6reset: now preset=%d Eq6On=%d selector=%d bands %d,%d,%d,%d,%d,%d",
+                  cinder_effects_get_eq6_preset(), cinder_effects_is_eq6_on(),
+                  cinder_effects_get_select_using_eq(),
+                  cinder_effects_get_eq6_band(0), cinder_effects_get_eq6_band(1),
+                  cinder_effects_get_eq6_band(2), cinder_effects_get_eq6_band(3),
+                  cinder_effects_get_eq6_band(4), cinder_effects_get_eq6_band(5));
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// Set by SIGINT/SIGHUP/SIGTERM during a --clearbass hold, so an interrupted run still restores.
+static volatile sig_atomic_t g_clearbass_stop = 0;
+static void clearbass_on_signal(int) { g_clearbass_stop = 1; }
+
+// --clearbass <level> [secs] [selector] [period] : HOLD Sony's own Clear Bass so it can be heard.
 //
 // Clear Bass is not missing from this firmware; it is band 0 of the six-band EQ. libSoundServiceFw
 // exports the whole Walkman implementation as CB_6bandEQ_* (analysis/RE_clear_bass.md §4):
@@ -5254,8 +5295,22 @@ static int eq6custom_probe() {
 // to this process's EffectCtrlDmp client. `selector` is SetSelectUsingEq (1 = six-band, 2 = the
 // ten-band Cinder drives); pass 2 to hear whether Clear Bass still processes next to Cinder's EQ —
 // Eq6band::UpdateProcCond also wants a field == 1 that may be exactly that selector. Everything is
-// put back on the way out, selector last.
-static int clearbass_probe(int level, int hold_s, int selector) {
+// put back on the way out, selector last — also when the run is interrupted (SIGINT/HUP/TERM), which
+// matters: EffectCtrlDmp keeps what Custom 1 was given, so a cut-off run leaves Clear Bass on.
+//
+// With a period, band 0 alternates between `level` and what Custom 1 held, every `period` seconds
+// for `secs`, logging a monotonic timestamp at each switch — for measuring the jack against
+// whatever Cinder is already playing. It does NOT play anything itself. An earlier version played a
+// file as an extra PlayerService client: SoundService never opened a PCM for it (no audio at the
+// jack), each run leaked a session, and the fifth run died inside SetTrackSequence and POWERED THE
+// PLAYER OFF (2026-09-17, bootreason=power_key, no WDT/KE). Do not bring that back.
+static long long clearbass_now_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static int clearbass_probe(int level, int hold_s, int selector, int period_s) {
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
     wd_arm(15);
@@ -5277,27 +5332,95 @@ static int clearbass_probe(int level, int hold_s, int selector) {
         return 2;
     }
 
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof sa);
+    sa.sa_handler = clearbass_on_signal;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGHUP, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+
     cinder_effects_set_eq6(1);
     cinder_effects_set_eq6_preset(9);
     const int keep = cinder_effects_get_eq6_band(0);
     cinder_effects_set_eq6_band(0, level);
     if (selector >= 0) cinder_effects_set_select_using_eq(selector);
     std::snprintf(m, sizeof m,
-                  "clearbass: band0 %d -> reads %d (%.1f dB), preset %d, Eq6On %d, selector %d — "
+                  "clearbass: t=%lld band0 %d -> reads %d (%.1f dB), preset %d, Eq6On %d, selector %d — "
                   "HOLDING %ds, listen now",
-                  level, cinder_effects_get_eq6_band(0), cinder_effects_get_eq6_band_db(0),
-                  cinder_effects_get_eq6_preset(), cinder_effects_is_eq6_on(),
-                  cinder_effects_get_select_using_eq(), hold_s);
+                  clearbass_now_ms(), level, cinder_effects_get_eq6_band(0),
+                  cinder_effects_get_eq6_band_db(0), cinder_effects_get_eq6_preset(),
+                  cinder_effects_is_eq6_on(), cinder_effects_get_select_using_eq(), hold_s);
     clog_(m);
-    for (int i = 0; i < hold_s; i++) sleep(1);
+    bool on = true;
+    for (int i = 1; i <= hold_s && !g_clearbass_stop; i++) {
+        sleep(1);
+        if (period_s > 0 && i % period_s == 0 && i < hold_s) {
+            on = !on;
+            cinder_effects_set_eq6_band(0, on ? level : keep);
+            std::snprintf(m, sizeof m, "clearbass: t=%lld band0 %s (%d)", clearbass_now_ms(),
+                          on ? "ON" : "off", cinder_effects_get_eq6_band(0));
+            clog_(m);
+        }
+    }
 
     cinder_effects_set_eq6_band(0, keep);
     cinder_effects_set_eq6_preset(pre0);
     cinder_effects_set_eq6(on0);
     cinder_effects_set_select_using_eq(sel0);
-    std::snprintf(m, sizeof m, "clearbass: restored selector=%d Eq6On=%d preset=%d (Custom 1 band0 back to %d)",
-                  cinder_effects_get_select_using_eq(), cinder_effects_is_eq6_on(),
+    std::snprintf(m, sizeof m, "clearbass: t=%lld restored selector=%d Eq6On=%d preset=%d (Custom 1 band0 back to %d)",
+                  clearbass_now_ms(), cinder_effects_get_select_using_eq(), cinder_effects_is_eq6_on(),
                   cinder_effects_get_eq6_preset(), keep);
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);
+}
+
+// --eq10alt <band> <gain> <secs> <period> : the POSITIVE CONTROL for --clearbass's period mode.
+// Alternates one band of the ten-band EQ Cinder drives (gain in the service's half-dB units, ±20 =
+// ±10 dB) between `gain` and what it held, on the same logged timeline. If a jack recording sees this
+// and not Clear Bass, the recording chain is not the reason Clear Bass reads as silent. Restores the
+// band on the way out, including when interrupted.
+static int eq10alt_probe(int band, int gain, int hold_s, int period_s) {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[200];
+    const int keep = cinder_effects_get_eq_band(band);
+    std::snprintf(m, sizeof m, "eq10alt: entry selector=%d band%d=%d", cinder_effects_get_select_using_eq(),
+                  band, keep);
+    clog_(m);
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof sa);
+    sa.sa_handler = clearbass_on_signal;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGHUP, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+
+    bool on = true;
+    cinder_effects_set_eq_band(band, gain);
+    std::snprintf(m, sizeof m, "eq10alt: t=%lld band%d ON (%d)", clearbass_now_ms(), band,
+                  cinder_effects_get_eq_band(band));
+    clog_(m);
+    for (int i = 1; i <= hold_s && !g_clearbass_stop; i++) {
+        sleep(1);
+        if (period_s > 0 && i % period_s == 0 && i < hold_s) {
+            on = !on;
+            cinder_effects_set_eq_band(band, on ? gain : keep);
+            std::snprintf(m, sizeof m, "eq10alt: t=%lld band%d %s (%d)", clearbass_now_ms(), band,
+                          on ? "ON" : "off", cinder_effects_get_eq_band(band));
+            clog_(m);
+        }
+    }
+    cinder_effects_set_eq_band(band, keep);
+    std::snprintf(m, sizeof m, "eq10alt: restored band%d=%d", band, cinder_effects_get_eq_band(band));
     clog_(m);
     g_pump_run = false;
     std::fflush(nullptr);
@@ -7908,9 +8031,15 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::strcmp(argv[1], "--eq6custom") == 0) {
         return eq6custom_probe();
     }
+    if (argc > 5 && std::strcmp(argv[1], "--eq10alt") == 0) {
+        return eq10alt_probe(std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]), std::atoi(argv[5]));
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--eq6reset") == 0) {
+        return eq6reset_probe(argc > 2 ? std::atoi(argv[2]) : 0);
+    }
     if (argc > 2 && std::strcmp(argv[1], "--clearbass") == 0) {
         return clearbass_probe(std::atoi(argv[2]), argc > 3 ? std::atoi(argv[3]) : 20,
-                               argc > 4 ? std::atoi(argv[4]) : -1);
+                               argc > 4 ? std::atoi(argv[4]) : -1, argc > 5 ? std::atoi(argv[5]) : 0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--inpath") == 0) {
         return inpath_probe(argc > 2 ? std::atoi(argv[2]) : 2);
