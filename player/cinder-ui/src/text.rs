@@ -114,12 +114,26 @@ pub enum Weight {
     ExtraBold,
 }
 
-/// Glyph cache key: which font (family<<3 | weight), the char, and the size quantised to 0.25px.
-/// (Sizes used are a small fixed set, so the cache stays small + bounded.)
+/// Glyph cache key: which font (family<<3 | weight), the char, and the EXACT size.
+///
+/// The size used to be quantised to 0.25 px, on the reasoning that the sizes in use are a small
+/// fixed set. They are — until the UI scale multiplies them (80/100/120/140%), after which two
+/// roles a quarter of a pixel apart land in one bucket and **share whichever rasterisation
+/// happened first in this process**. That makes a glyph's pixels depend on which screen was drawn
+/// before it: rendering the SensMe previews ahead of the UI-scale sweep moved 48 pixels of one "F"
+/// on `uiscale_140_library`, `uiscale_140_upnext` and `uiscale_120_upnext` — screens the change had
+/// nothing to do with (found 2026-09-18 by the golden gate, which is the only reason it was ever
+/// visible).
+///
+/// Keying on the exact size costs at most one more entry per distinct (font, char, size) actually
+/// drawn, which is what the cache was always bounded by, and makes the render a pure function of
+/// the screen again. `f32` has no `Eq`/`Hash`, so the bits are the key — sizes come from the same
+/// arithmetic every frame, so equal sizes have equal bits.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphKey {
     font: u8,
     ch: char,
+    /// The size's exact bits (`f32::to_bits`) — see above for why this is not a bucket.
     size_q: u32,
 }
 
@@ -437,7 +451,7 @@ impl FontSet {
     /// rasterise once and insert; hits are a hashmap lookup (no allocation/raster work).
     fn glyph(&self, fam: Family, w: Weight, ch: char, size: f32) -> (Metrics, std::sync::Arc<Vec<u8>>) {
         let (font_id, font) = self.resolve(fam, w, ch);
-        let key = GlyphKey { font: font_id, ch, size_q: (size * 4.0) as u32 };
+        let key = GlyphKey { font: font_id, ch, size_q: size.to_bits() };
         if let Some(hit) = self.glyph_cache.borrow().get(&key) {
             return (hit.0, hit.1.clone());
         }

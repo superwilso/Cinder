@@ -681,6 +681,55 @@ static void s_low_battery_warns(void) {
     check_eq(cinder_harness_count(kPowerOff), 0, "…and does not power off above the critical level");
 }
 
+// ── a sagging gauge must not switch the player off ───────────────────────────────────────────
+// This board has no fuel gauge: `capacity` is derived from terminal voltage (r = 0.96 against
+// `voltage_now` over the 123-sample log in artifacts/session), so it falls tens of points the moment
+// the amp, the screen and the radio draw current, and comes back when they stop. Reported by the
+// owner 2026-09-18: 22%, then 58% seconds later, then 61%. The level the app reports is slew-limited
+// to one point per poll for exactly this reason — and `battery_guard` reads that level, so a dip
+// cannot reach the power-off path on its own.
+static void s_battery_dip_does_not_power_off(void) {
+    healthy_device();
+    cinder_harness_fs_write("/sys/class/power_supply/battery/capacity", "40\n");
+    cinder_harness_fs_write("/sys/class/power_supply/battery/status", "Not charging\n");
+    cinder_harness_fs_write("/sys/class/power_supply/usb/online", "0\n");
+    // A sag deep enough to be "critical", held for three polls, then gone — which is what a loud
+    // passage on a nearly-empty-looking gauge looks like from sysfs.
+    cinder_harness_fs_write_at(15000, "/sys/class/power_supply/battery/capacity", "2\n");
+    cinder_harness_fs_write_at(45000, "/sys/class/power_supply/battery/capacity", "40\n");
+    cinder_harness_set_budget_ms(90000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count(kPowerOff), 0,
+             "a transient dip to 2% never reaches the power-off path");
+    // …and the number on screen barely moves: one point per poll, not 38 in one step.
+    const int n = cinder_harness_count("cinder_set_battery");
+    check(n > 0, "the gauge still runs");
+    long long lowest = 100;
+    for (int i = 0; i < n; i++) {
+        const long long v = cinder_harness_arg("cinder_set_battery", i);
+        if (v < lowest) lowest = v;
+    }
+    std::printf("  .... lowest level reported during the dip: %lld%%\n", lowest);
+    check_range(lowest, 33, 40, "the reported level slews instead of following the sag");
+}
+
+// …and the protection still works: a battery that is really flat reads low every time it is asked,
+// so the slew limit converges on it and the player goes down cleanly. (The three scenarios above
+// pin the immediate case, where the first reading of the session IS the flat one and seeds the
+// level directly; this one pins the arriving-there case.)
+static void s_battery_really_flat_still_powers_off(void) {
+    healthy_device();
+    cinder_harness_fs_write("/sys/class/power_supply/battery/capacity", "6\n");
+    cinder_harness_fs_write("/sys/class/power_supply/battery/status", "Not charging\n");
+    cinder_harness_fs_write("/sys/class/power_supply/usb/online", "0\n");
+    cinder_harness_fs_write_at(15000, "/sys/class/power_supply/battery/capacity", "1\n");
+    cinder_harness_set_budget_ms(90000);
+    cinder_harness_run();
+    const long long at = cinder_harness_first_ms(kPowerOff);
+    std::printf("  .... power-off at %lldms\n", at);
+    check_range(at, 15000, 80000, "a sustained flat battery still powers off, within a minute");
+}
+
 // ── the DSP reconcile must not depend on having found a settings file ────────────────────────
 // The DSP is not ours and does not boot empty: it holds whatever the stock player last left in it.
 // This used to run only `if (g_settings_loaded)`, so on a boot with no readable
@@ -1175,6 +1224,8 @@ static const Scenario kScenarios[] = {
     {"lowbatt-discharging", s_low_battery_discharging, "critical battery reported as \"Discharging\": power off"},
     {"lowbatt-charger",   s_low_battery_on_charger,  "critical battery on a charger: stay up"},
     {"lowbatt-warn",      s_low_battery_warns,       "low battery on battery: warn, do not power off"},
+    {"batt-dip",          s_battery_dip_does_not_power_off, "a sagging voltage gauge does not switch the player off"},
+    {"batt-flat",         s_battery_really_flat_still_powers_off, "…and a really flat battery still does"},
     {"scrobble-opens",    s_scrobble_opens,          "the built-in scrobbler opens when it is alone"},
     {"scrobble-yields",   s_scrobble_yields,         "…and stands down while unknown321/scrobbler runs"},
     {"search-off",        s_search_off_by_default,   "library search stays off without the installer's flag"},

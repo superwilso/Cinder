@@ -430,6 +430,23 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             ("folders_dir", &|c: &mut Canvas| {
                 cinder_ui::folders::render(c, &theme, &fonts, &lib, Some(1), 0, false)
             }),
+            // SensMe: the channel list, and one channel open. Both, because the two levels have
+            // different geometry — the channel page gives its first 80 px to the PLAY | SHUFFLE
+            // band — and the golden gate is the only thing that watches that.
+            ("sensme_channels", &|c: &mut Canvas| {
+                cinder_ui::sensme::render(c, &theme, &fonts, &lib, None, 0, false)
+            }),
+            ("sensme_channel", &|c: &mut Canvas| {
+                cinder_ui::sensme::render(c, &theme, &fonts, &lib, Some(0), 0, false)
+            }),
+            // …and the state every library starts in: nothing analysed, which is a screen that has
+            // to explain itself rather than be blank.
+            ("sensme_empty", &|c: &mut Canvas| {
+                let mut l = lib.clone();
+                l.channels.clear();
+                l.sensme_tracks = 0;
+                cinder_ui::sensme::render(c, &theme, &fonts, &l, None, 0, false)
+            }),
             ("track_info", &|c: &mut Canvas| {
                 let rows: Vec<(String, String)> = vec![
                     ("Title".into(), "Atlas Hands".into()),
@@ -833,6 +850,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 year: 2000 + (i as i32 % 20),
                 genre_id: (i as i64 % 3) + 1,
                 is_hires: i % 6 == 0,
+                // Bit 0 is Sony's always-set one; the rest spread this synthetic library over six
+                // channels so the SensMe list has something long enough to window and scroll.
+                sensme: 1 | (1 << (i % 6 + 1)),
             });
         }
         let mut album_groups = Vec::new();

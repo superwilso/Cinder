@@ -1143,6 +1143,12 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     // was DB row order. The Artists tab draws the cover by id and the gradient by name, so 78 rows
     // on the test library showed one album's artwork labelled with another album's colours.
     let mut artist_albums: BTreeMap<String, (BTreeMap<String, i64>, u32)> = BTreeMap::new();
+    // SENSME, one query for the whole library. Empty on a library nobody has analysed, which is
+    // every library until a PC tool (Flint, or Sony's Music Center) writes the tags — the map is
+    // what the PLAYER'S scanner made of whichever tag it found, so both tools land here identically.
+    let t_phase = std::time::Instant::now();
+    let sensme = db.sensme();
+    let ms_sensme = t_phase.elapsed().as_millis();
     let mut songs = Vec::with_capacity(tracks.len());
     // ALBUM ARTIST is what browsing groups by — it is the default, and the track artist is only a
     // fallback for files that carry no album artist at all. Grouping by the track artist shatters
@@ -1160,7 +1166,10 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         if let Some(aid) = t.album_id {
             album_artist.entry(aid).or_insert_with(|| group_artist(t));
         }
-        songs.push(song_row(t));
+        songs.push(cinder_ui::model::SongRow {
+            sensme: sensme.get(&t.object_id).map_or(0, |s| s.channels),
+            ..song_row(t)
+        });
         let e = artist_albums.entry(group_artist(t)).or_default();
         if !t.album.is_empty() {
             // Keyed by name (that is what the album COUNT has always meant here). The id is
@@ -1377,7 +1386,7 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     let mut playlists: Vec<cinder_ui::model::PlaylistRow> = playlists;
     auto_playlist_covers(&mut playlists);
 
-    cinder_ui::Library {
+    let mut lib = cinder_ui::Library {
         songs,
         album_groups,
         artists,
@@ -1395,7 +1404,19 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         ranks: Default::default(),
         folders,
         folder_roots,
-    }
+        channels: Vec::new(),
+        sensme_tracks: 0,
+    };
+    // The channel table is a reverse-engineering finding and lives with the akeys that produced it
+    // (`cinder_db::SENSME_CHANNELS`); cinder-ui is DB-free and is handed it. `build_channels` is
+    // the only implementation, shared with the host preview's sample library.
+    lib.build_channels(&cinder_db::SENSME_CHANNELS);
+    eprintln!(
+        "cinder-ffi: sensme: {} analysed tracks in {} channels ({ms_sensme} ms)",
+        lib.sensme_tracks,
+        lib.channels.len()
+    );
+    lib
 }
 
 /// Build the FOLDER browse tree from the tracks' absolute paths.
@@ -1518,12 +1539,12 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 33] = [
+const SCREEN_NAMES: [&str; 34] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
     "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet", "Lyrics",
-    "Search",
+    "Search", "SensMe",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1538,7 +1559,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::GenreFilter => 19, S::TrackInfo => 20, S::Folders => 21, S::ClockSet => 22,
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
-        S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32,
+        S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32, S::SensMe => 33,
     }
 }
 
@@ -2141,6 +2162,10 @@ fn song_row_of(t: &cinder_db::Track) -> cinder_ui::model::SongRow {
         year: 0,
         genre_id: t.genre_id.unwrap_or(0),
         is_hires: t.is_hires,
+        // Filled by `build_library` from the SensMe map, which is keyed by object id — this
+        // builder only sees the track row. Every copy that is not in `Library::songs` (an album's
+        // track list, a playlist's) leaves it 0, and nothing but `build_channels` reads it.
+        sensme: 0,
     }
 }
 
@@ -2487,6 +2512,37 @@ fn any_playlist_tracks(r: &Render, id: i64) -> Option<Vec<cinder_db::Track>> {
     } else {
         playlist_tracks(r.db.as_ref(), id)
     }
+}
+
+/// The tracks of one SensMe channel, in library order — or every analysed track for
+/// [`cinder_ui::sensme::ALL`].
+///
+/// Resolved from the LIBRARY, not from the database: the channel membership is already in the song
+/// rows (`Library::channels`, built once at library open from `Db::sensme`), so this is a lookup
+/// rather than a second query, and the list can never disagree with the one on screen. The object
+/// ids are then resolved to real tracks in ONE batch, the way a playlist's are.
+fn sensme_tracks(
+    db: Option<&cinder_db::Db>,
+    lib: &cinder_ui::Library,
+    chan: u8,
+) -> Option<Vec<cinder_db::Track>> {
+    let db = db?;
+    let idx: Vec<u32> = if chan == cinder_ui::sensme::ALL {
+        lib.sensme_all()
+    } else {
+        lib.channels.iter().find(|c| c.id == chan)?.tracks.clone()
+    };
+    let ids: Vec<i64> = idx
+        .iter()
+        .filter_map(|&i| lib.songs.get(i as usize))
+        .map(|s| s.object_id)
+        .collect();
+    let resolved = db.tracks_by_object_ids(&ids).ok()?;
+    // Driven by the ids, so the order on screen is the order that plays; a member whose file has
+    // gone is skipped rather than failing the whole channel.
+    let tracks: Vec<cinder_db::Track> =
+        ids.iter().filter_map(|id| resolved.get(id).cloned()).collect();
+    (!tracks.is_empty()).then_some(tracks)
 }
 
 /// Give every playlist without a chosen cover the art of its first member track.
@@ -2913,6 +2969,38 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     eprintln!(
                         "cinder-ffi: PlayPlaylistAt({playlist_id}, {index}): empty or unknown — ignored"
                     );
+                    return None;
+                }
+            }
+        }
+        Action::PlaySensMe { chan, from, shuffle } => {
+            // THE CHANNEL IS THE CONTEXT, exactly as a playlist is: an object id only knows its
+            // album, so playing a member through `PlayIndex` would play that track's album and
+            // drop the channel after one song.
+            match sensme_tracks(r.db.as_ref(), r.app.library(), *chan) {
+                Some(seq) => {
+                    let start = (*from as usize).min(seq.len().saturating_sub(1));
+                    if *shuffle {
+                        // Asking for a shuffled play turns the transport's shuffle ON and records
+                        // the order it replaced, so the toggle is not a one-way door — the rule
+                        // every other shuffle entry point here follows.
+                        let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
+                        let mut seq = seq;
+                        Rng::new().shuffle(&mut seq);
+                        r.np.shuffle = true;
+                        set_pending(r, seq, 0);
+                        r.app.note_pre_shuffle(pre);
+                    } else {
+                        let (seq, start, pre) = apply_shuffle(r.np.shuffle, seq, start);
+                        set_pending(r, seq, start);
+                        if let Some(pre) = pre {
+                            r.app.note_pre_shuffle(pre);
+                        }
+                    }
+                    8
+                }
+                None => {
+                    eprintln!("cinder-ffi: PlaySensMe(chan {chan}): nothing playable in it");
                     return None;
                 }
             }
@@ -3865,6 +3953,20 @@ pub extern "C" fn cinder_set_bt_on(on: libc::c_int) {
 pub extern "C" fn cinder_set_search_enabled(on: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_search_enabled(on != 0);
+        r.dirty = true;
+    }
+}
+
+/// SensMe channels are an opt-in component. The shell calls this at startup when the installer
+/// left `/data/cinder/sensme_on`; without it the Menu has no SensMe row.
+///
+/// It gates the ROW, not the reading: the channel data is built at every library open whether or
+/// not this was called, because it costs one query and because a library that turns out to be
+/// analysed should be one install option away, not one rescan away.
+#[no_mangle]
+pub extern "C" fn cinder_set_sensme_enabled(on: libc::c_int) {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_sensme_enabled(on != 0);
         r.dirty = true;
     }
 }
@@ -6730,7 +6832,7 @@ mod tests {
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
-            S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search,
+            S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
@@ -6872,6 +6974,16 @@ mod tests {
             INSERT INTO object_body (object_id,object_type,parent_id,reference_id,child_index) VALUES (61,3,60,3,0);
             INSERT INTO object_body (object_id,object_type,parent_id,reference_id,child_index) VALUES (62,3,60,1,1);
             INSERT INTO object_ext_int VALUES (1,7,272000);
+            -- SensMe, as the stock scanner writes it once a PC tool has tagged the files: track 1
+            -- in channels 0 and 8, track 3 in channel 0. Track 2 was never analysed.
+            INSERT INTO schema VALUES (1,50,119,'WMCHANNELINFO');
+            INSERT INTO schema VALUES (1,52,2,'SENSMETEMPO');
+            INSERT INTO schema VALUES (1,60,119,'SABI');
+            INSERT INTO object_ext_int VALUES (1,50,515);
+            INSERT INTO object_ext_int VALUES (1,52,131);
+            INSERT INTO object_ext_int VALUES (1,60,75763);
+            INSERT INTO object_ext_int VALUES (3,50,3);
+            INSERT INTO object_ext_int VALUES (3,52,91);
             "#,
             )
             .unwrap();
@@ -6955,6 +7067,52 @@ mod tests {
         let bfl_artist = lib.artists.iter().find(|a| a.name == "Benjamin Francis Leftwich").unwrap();
         assert_eq!(bfl_artist.tracks, 2);
         assert_eq!(bfl_artist.albums, 1);
+    }
+
+    /// SensMe reaches the browsable library: the bitmasks land on the song rows, the channels are
+    /// built from them, empty channels are dropped, and an unanalysed track is in none of them.
+    #[test]
+    fn build_library_reads_sensme_channels() {
+        let lib = build_library(&fixture_db());
+        assert_eq!(lib.sensme_tracks, 2, "two of the three tracks were analysed");
+        let names: Vec<&str> = lib.channels.iter().map(|c| c.name).collect();
+        assert_eq!(names, vec!["Active", "Morning"], "only the channels with members");
+        let active = &lib.channels[0];
+        assert_eq!(active.id, 0);
+        let titles: Vec<&str> =
+            active.tracks.iter().map(|&i| lib.songs[i as usize].title.as_str()).collect();
+        assert_eq!(titles, vec!["Atlas Hands", "Harvest Moon"]);
+        assert_eq!(lib.channels[1].tracks.len(), 1, "Morning has only the first track");
+        let box_of_stones = lib.songs.iter().find(|s| s.title == "Box of Stones").unwrap();
+        assert_eq!(box_of_stones.sensme, 0, "never analysed, so in no channel");
+    }
+
+    /// A channel resolves to real tracks in the order the screen shows them, and "everything
+    /// analysed" is every analysed track once — not the channels concatenated, which would play a
+    /// track in two channels twice.
+    #[test]
+    fn a_sensme_channel_resolves_to_its_tracks_in_order() {
+        let db = fixture_db();
+        let lib = build_library(&db);
+        let uris = |chan: u8| {
+            sensme_tracks(Some(&db), &lib, chan)
+                .map(|s| s.into_iter().map(|t| t.filename).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            uris(0),
+            Some(vec!["/music/atlas.flac".to_string(), "/music/harvest.flac".to_string()]),
+        );
+        assert_eq!(uris(8), Some(vec!["/music/atlas.flac".to_string()]));
+        assert_eq!(
+            uris(cinder_ui::sensme::ALL),
+            Some(vec!["/music/atlas.flac".to_string(), "/music/harvest.flac".to_string()]),
+            "the track in two channels appears once",
+        );
+        // A channel nothing is in, and one that does not exist, play nothing rather than
+        // everything — the failure that turns "this channel is empty" into "shuffle the library".
+        assert_eq!(uris(5), None);
+        assert_eq!(uris(200), None);
+        assert!(sensme_tracks(None, &lib, 0).is_none(), "no database, no sequence");
     }
 
     /// Playlists reach the browsable library, and the orphan type-3 row (object 7, no parent)

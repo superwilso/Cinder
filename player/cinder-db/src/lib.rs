@@ -73,6 +73,114 @@ pub struct Art {
     pub height: i64,
 }
 
+// ── SensMe ──────────────────────────────────────────────────────────────────────────────────────
+// Sony's own analysis, read back out of the store the stock scanner filled. NONE of this is
+// computed here: a PC tool writes an SMFMF tag into the file (Sony's Music Center, or Flint), the
+// player's own scanner parses it and writes these rows. So the reader is deliberately indifferent
+// to WHICH tool tagged the file — see `Db::sensme`.
+
+/// One track's SensMe analysis, as the stock scanner stored it.
+///
+/// Every field is a row in `object_ext_int`, keyed by an `akey` this module resolves by NAME (see
+/// [`SensMeAkeys`]). Absent rows stay at their `Default` — a library where nothing was analysed
+/// therefore reads as a map of nothing rather than as an error.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SensMe {
+    /// `WMCHANNELINFO`: the channel membership bitmask the scanner computed from the tag's chunks.
+    /// **Bit 0 is always set** (Sony's own loop starts its shift from 1), and bits 1..=13 are
+    /// channel ids 0..=12 — so [`SensMe::in_channel`] is the only thing that should read it.
+    pub channels: u16,
+    /// `SENSMETEMPO` — BPM, the tag's `GBPM` float truncated (131.70 → 131). 0 = not analysed.
+    pub tempo: i16,
+    /// The four remaining axes, each 0..=127 as the scanner computes them: `SENSMEMOOD`,
+    /// `SENSMETYPE`, `SENSMESTYLE`, `SENSMETIME`. Kept because they cost nothing to read with the
+    /// bitmask and they are what a mood map would need; only `tempo` is shown today.
+    pub mood: i16,
+    pub kind: i16,
+    pub style: i16,
+    pub time: i16,
+    /// `SABI` — where the chorus starts, in milliseconds. Sony's own SensMe player starts a
+    /// channel there rather than at 0:00. Cinder reads it and does NOT yet seek to it; see
+    /// `docs/PLAN_sensme_sync.md` M2.
+    pub sabi_ms: i32,
+}
+
+/// The 13 channels a track can be a member of, in channel-id order, plus the count.
+///
+/// **The ORDER is inferred, not verified** (`analysis/RE_sensme_musiccenter.md` §10): the id →
+/// name table in `libMediaStoreService.so` holds ids, not names, and these are the channel
+/// thumbnails of Sony's own player read in the order they appear in its image atlas. The three
+/// tracks in §9 are consistent with it (each lands in exactly one of ids 0–4 and one or two of
+/// 5–12, which is the shape Sony's channels have) but consistency is not proof. One glance at the
+/// stock SensMe screen for a track whose bitmask is known settles it — `DEVICE_CHECKLIST.md` 14.2.
+///
+/// If it turns out to be wrong, THIS ARRAY is the only thing that changes: nothing else in Cinder
+/// knows a channel's name.
+pub const SENSME_CHANNELS: [&str; 13] = [
+    "Active",    // id 0
+    "Emotional", // id 1
+    "Lounge",    // id 2
+    "Dance",     // id 3
+    "Extreme",   // id 4
+    "Upbeat",    // id 5
+    "Relax",     // id 6
+    "Mellow",    // id 7
+    "Morning",   // id 8
+    "Daytime",   // id 9
+    "Evening",   // id 10
+    "Night",     // id 11
+    "Midnight",  // id 12
+];
+
+impl SensMe {
+    /// Was this track analysed at all? A row set with no bitmask and no tempo is a track the
+    /// scanner never had a tag for.
+    pub fn analysed(&self) -> bool {
+        self.channels != 0 || self.tempo != 0
+    }
+
+    /// Is this track in channel `id` (0..=12)? The bit is `id + 1`; bit 0 is Sony's always-set one
+    /// and is not a channel.
+    pub fn in_channel(&self, id: u8) -> bool {
+        id < SENSME_CHANNELS.len() as u8 && self.channels & (1 << (id + 1)) != 0
+    }
+
+    /// The channel ids this track belongs to, ascending.
+    pub fn channel_ids(&self) -> Vec<u8> {
+        (0..SENSME_CHANNELS.len() as u8).filter(|&id| self.in_channel(id)).collect()
+    }
+}
+
+/// Which `akey` each SensMe property has in THIS store.
+///
+/// Resolved from the `schema` table by property NAME, the way `duration_akey` is, because an akey
+/// is a per-firmware number and nothing stops Sony renumbering it. The numbers below are what the
+/// A50's 1.02 store uses (`analysis/RE_sensme_musiccenter.md` §6/§9) and are used only when the
+/// schema does not name the property AND does not give that number to something else — so a store
+/// that renumbers is read correctly, and one that reuses 52 for a different property is not
+/// misread as tempo.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SensMeAkeys {
+    channels: Option<i64>,
+    channel_id: Option<i64>,
+    tempo: Option<i64>,
+    mood: Option<i64>,
+    kind: Option<i64>,
+    style: Option<i64>,
+    time: Option<i64>,
+    sabi: Option<i64>,
+}
+
+impl SensMeAkeys {
+    /// Anything to read at all?
+    fn any(&self) -> bool {
+        [self.channels, self.channel_id, self.tempo, self.mood, self.kind, self.style, self.time,
+         self.sabi]
+            .iter()
+            .any(Option::is_some)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Sort {
     Title,
@@ -850,6 +958,132 @@ impl Db {
             Err(_) => std::collections::HashMap::new(),
         }
     }
+
+    /// Resolve one SensMe property's `akey`: by NAME if the store's `schema` names it, else by the
+    /// number the A50's 1.02 store uses — but only when nothing ELSE claims that number.
+    ///
+    /// The last clause is the point. Falling back to a bare number would read whatever property
+    /// happens to live at 52 in some other firmware and call it a tempo; refusing when the schema
+    /// gives that akey a name we do not recognise means an unfamiliar store shows NO SensMe data
+    /// rather than wrong SensMe data.
+    fn sensme_akey(conn: &Connection, names: &[&str], fallback: i64) -> Option<i64> {
+        for name in names {
+            if let Ok(akey) = conn.query_row(
+                "SELECT akey FROM schema WHERE prop_name = ?1 LIMIT 1",
+                [name],
+                |r| r.get::<_, i64>(0),
+            ) {
+                return Some(akey);
+            }
+        }
+        match conn.query_row(
+            "SELECT prop_name FROM schema WHERE akey = ?1 LIMIT 1",
+            [fallback],
+            |r| r.get::<_, Option<String>>(0),
+        ) {
+            // The number is spoken for, by something that is not this property.
+            Ok(Some(other)) if !names.iter().any(|n| n.eq_ignore_ascii_case(&other)) => None,
+            // Named as expected, unnamed, no such row, or no `schema` table at all: take the number.
+            _ => Some(fallback),
+        }
+    }
+
+    /// Every track's SensMe analysis, by `object_id` — the channel bitmask, the five axes and the
+    /// sabi (chorus) position. Tracks with nothing analysed are simply absent from the map.
+    ///
+    /// **This is the join between Cinder and BOTH PC tools.** Sony's Music Center and Flint write
+    /// different amounts into the file — Music Center's `USR_SMFMF` has been reported to add almost
+    /// a megabyte, Flint writes the engine's ~6 KB result and nothing else — but neither of them
+    /// writes anything Cinder reads. What Cinder reads is what the player's OWN scanner computed
+    /// from whichever tag it found, and that is the same set of rows either way
+    /// (`analysis/RE_sensme_musiccenter.md` §6, §9, §10). So there is no "Flint mode" and no
+    /// "Music Center mode" here, and there must never be one: a difference between the two would
+    /// mean Cinder had started trusting the tag rather than the scanner.
+    ///
+    /// The one asymmetry worth handling is a store that has `SENSMECHANNELID` (one channel per
+    /// track, akey 51) but no `WMCHANNELINFO` bitmask: Music Center's tags populate more akeys than
+    /// Flint's, and a firmware that fills only the id would otherwise show every channel empty.
+    /// That case is folded into the bitmask below rather than given a second code path.
+    pub fn sensme(&self) -> std::collections::HashMap<i64, SensMe> {
+        use std::collections::HashMap;
+        let c = &self.conn;
+        // Sony's own property names, from MTPDB's `schema` table (RE §6). The akey numbers are the
+        // A50 1.02 store's.
+        let a = SensMeAkeys {
+            channels: Self::sensme_akey(c, &["WMCHANNELINFO"], 50),
+            channel_id: Self::sensme_akey(c, &["SENSMECHANNELID"], 51),
+            tempo: Self::sensme_akey(c, &["SENSMETEMPO"], 52),
+            mood: Self::sensme_akey(c, &["SENSMEMOOD"], 53),
+            kind: Self::sensme_akey(c, &["SENSMETYPE"], 54),
+            style: Self::sensme_akey(c, &["SENSMESTYLE"], 55),
+            time: Self::sensme_akey(c, &["SENSMETIME"], 56),
+            sabi: Self::sensme_akey(c, &["SABI"], 60),
+        };
+        if !a.any() {
+            eprintln!("[cinder-db] sensme: this store names none of the SensMe properties");
+            return HashMap::new();
+        }
+        let wanted: Vec<String> = [a.channels, a.channel_id, a.tempo, a.mood, a.kind, a.style,
+                                   a.time, a.sabi]
+            .iter()
+            .flatten()
+            .map(|k| k.to_string())
+            .collect();
+        // The akeys are integers resolved from the DB, so they are inlined (no param-count games
+        // for a list whose length varies), exactly as `query_tracks` inlines the DURATION akey.
+        let sql = format!(
+            "SELECT object_id, akey, value FROM object_ext_int WHERE akey IN ({})",
+            wanted.join(",")
+        );
+        let mut st = match c.prepare(&sql) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[cinder-db] sensme: {e} — no SensMe data");
+                return HashMap::new();
+            }
+        };
+        let mut out: HashMap<i64, SensMe> = HashMap::new();
+        let mut rows = match st.query([]) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[cinder-db] sensme: {e} — no SensMe data");
+                return HashMap::new();
+            }
+        };
+        // Row by row and leniently, like the track query: one odd value costs that value, never
+        // the whole feature.
+        while let Ok(Some(r)) = rows.next() {
+            let (Ok(id), Ok(akey), Ok(v)) = (r.get::<_, i64>(0), r.get::<_, i64>(1), opt_int_at(r, 2))
+            else {
+                continue;
+            };
+            let Some(v) = v else { continue };
+            let e = out.entry(id).or_default();
+            let clamp16 = |v: i64| v.clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+            match Some(akey) {
+                k if k == a.channels => e.channels = v.clamp(0, u16::MAX as i64) as u16,
+                k if k == a.channel_id => {
+                    // One channel id instead of a bitmask: set its bit, and Sony's always-on bit 0
+                    // with it, so `analysed()` and `in_channel` behave as they do for a bitmask.
+                    if (0..SENSME_CHANNELS.len() as i64).contains(&v) {
+                        e.channels |= 1 | (1 << (v + 1)) as u16;
+                    }
+                }
+                k if k == a.tempo => e.tempo = clamp16(v),
+                k if k == a.mood => e.mood = clamp16(v),
+                k if k == a.kind => e.kind = clamp16(v),
+                k if k == a.style => e.style = clamp16(v),
+                k if k == a.time => e.time = clamp16(v),
+                k if k == a.sabi => e.sabi_ms = v.clamp(0, i32::MAX as i64) as i32,
+                _ => {}
+            }
+        }
+        // A row set that says nothing (every value 0) is not an analysed track. The scanner writes
+        // `SMFMF12TONEV1` as 0 for our tags, so "has a row" is not the test — "says something" is.
+        out.retain(|_, s| s.analysed());
+        eprintln!("[cinder-db] sensme: {} analysed tracks", out.len());
+        out
+    }
 }
 
 #[cfg(test)]
@@ -944,6 +1178,39 @@ mod tests {
             INSERT INTO object_body (object_id,object_type,parent_id,reference_id,child_index) VALUES (53,3,999,2,0);
             INSERT INTO object_ext_int VALUES (1,7,272000);
             INSERT INTO object_ext_int VALUES (3,7,303000);
+            -- SENSME, exactly as the stock scanner writes it after a PC tool tagged the file
+            -- (RE_sensme_musiccenter.md §9/§10). Track 1 carries a Flint-shaped row set: the
+            -- bitmask, the five axes, the sabi, and SMFMF12TONEV1 written as 0. Track 3 carries a
+            -- Music Center-shaped one: the same properties PLUS the ones its bigger tag fills in.
+            -- Track 2 was never analysed and must not appear in the map at all.
+            INSERT INTO schema VALUES (1,50,119,'WMCHANNELINFO');
+            INSERT INTO schema VALUES (1,51,73,'SENSMECHANNELID');
+            INSERT INTO schema VALUES (1,52,2,'SENSMETEMPO');
+            INSERT INTO schema VALUES (1,53,2,'SENSMEMOOD');
+            INSERT INTO schema VALUES (1,54,2,'SENSMETYPE');
+            INSERT INTO schema VALUES (1,55,2,'SENSMESTYLE');
+            INSERT INTO schema VALUES (1,56,2,'SENSMETIME');
+            INSERT INTO schema VALUES (1,57,2,'SMFMF12TONEV1');
+            INSERT INTO schema VALUES (1,60,119,'SABI');
+            -- track 1: channels 515 = bits 0,1,9 -> ids 0 and 8 (Active + Morning)
+            INSERT INTO object_ext_int VALUES (1,50,515);
+            INSERT INTO object_ext_int VALUES (1,52,131);
+            INSERT INTO object_ext_int VALUES (1,53,89);
+            INSERT INTO object_ext_int VALUES (1,54,26);
+            INSERT INTO object_ext_int VALUES (1,55,64);
+            INSERT INTO object_ext_int VALUES (1,56,24);
+            INSERT INTO object_ext_int VALUES (1,57,0);
+            INSERT INTO object_ext_int VALUES (1,60,75763);
+            -- track 3: channels 4101 = bits 0,2,12 -> ids 1 and 11 (Emotional + Night)
+            INSERT INTO object_ext_int VALUES (3,50,4101);
+            INSERT INTO object_ext_int VALUES (3,51,1);
+            INSERT INTO object_ext_int VALUES (3,52,91);
+            INSERT INTO object_ext_int VALUES (3,53,41);
+            INSERT INTO object_ext_int VALUES (3,54,82);
+            INSERT INTO object_ext_int VALUES (3,55,52);
+            INSERT INTO object_ext_int VALUES (3,56,65);
+            INSERT INTO object_ext_int VALUES (3,57,0);
+            INSERT INTO object_ext_int VALUES (3,60,2429);
             "#,
         ).unwrap();
         Db::wrap(conn)
@@ -1008,6 +1275,148 @@ mod tests {
     #[test]
     fn playlist_tracks_of_unknown_playlist_is_empty() {
         assert!(db().playlist_tracks(999).unwrap().is_empty());
+    }
+
+    // ── SensMe ─────────────────────────────────────────────────────────────────────────────────
+
+    /// A store with only the rows named, on one track, plus whatever `schema` lines are given.
+    fn sensme_db(schema: &str, rows: &str) -> Db {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE schema (prop_type INTEGER, akey INTEGER, data_type INTEGER, prop_name TEXT, PRIMARY KEY(prop_type,akey));
+             CREATE TABLE object_ext_int (object_id INTEGER, akey INTEGER, value INTEGER DEFAULT 0, PRIMARY KEY(object_id,akey));
+             CREATE TABLE object_body (object_id INTEGER PRIMARY KEY, object_type INTEGER, parent_id INTEGER, media_type INTEGER, filename TEXT, title TEXT);
+             {schema}{rows}"
+        ))
+        .unwrap();
+        Db::wrap(conn)
+    }
+
+    #[test]
+    fn sensme_reads_the_bitmask_axes_and_sabi() {
+        let s = db().sensme();
+        let t = s.get(&1).expect("track 1 was analysed");
+        assert_eq!(t.tempo, 131);
+        assert_eq!((t.mood, t.kind, t.style, t.time), (89, 26, 64, 24));
+        assert_eq!(t.sabi_ms, 75_763);
+        // 515 = bits 0,1,9. Bit 0 is Sony's always-set one; the channels are ids 0 and 8.
+        assert_eq!(t.channel_ids(), vec![0, 8]);
+        assert!(t.in_channel(0) && t.in_channel(8) && !t.in_channel(1));
+        assert_eq!(SENSME_CHANNELS[0], "Active");
+        assert_eq!(SENSME_CHANNELS[8], "Morning");
+    }
+
+    /// A track the scanner never had a tag for has no rows, and must not turn up as an analysed
+    /// track with every field 0 — that would put it in no channel but still count as "analysed".
+    #[test]
+    fn sensme_skips_a_track_that_was_never_analysed() {
+        assert!(!db().sensme().contains_key(&2));
+    }
+
+    /// **The interop claim, as a test.** Cinder reads what the PLAYER'S scanner computed, not what
+    /// the PC tool wrote, so a file tagged by Sony's Music Center and one tagged by Flint reach it
+    /// through the same rows. Music Center's bigger tag fills in more of them (SENSMECHANNELID, the
+    /// 12-tone and beatizer flags, and akey 121); none of that may change the answer.
+    #[test]
+    fn sensme_is_identical_for_music_center_and_flint_tags() {
+        let schema = "INSERT INTO schema VALUES (1,50,119,'WMCHANNELINFO');
+                      INSERT INTO schema VALUES (1,51,73,'SENSMECHANNELID');
+                      INSERT INTO schema VALUES (1,52,2,'SENSMETEMPO');
+                      INSERT INTO schema VALUES (1,53,2,'SENSMEMOOD');
+                      INSERT INTO schema VALUES (1,54,2,'SENSMETYPE');
+                      INSERT INTO schema VALUES (1,55,2,'SENSMESTYLE');
+                      INSERT INTO schema VALUES (1,56,2,'SENSMETIME');
+                      INSERT INTO schema VALUES (1,57,2,'SMFMF12TONEV1');
+                      INSERT INTO schema VALUES (1,58,2,'SMFMF12TONEV2');
+                      INSERT INTO schema VALUES (1,59,2,'SMFMFBEATIZER');
+                      INSERT INTO schema VALUES (1,60,119,'SABI');";
+        let flint = "INSERT INTO object_ext_int VALUES (7,50,1297);
+                     INSERT INTO object_ext_int VALUES (7,52,81);
+                     INSERT INTO object_ext_int VALUES (7,53,50);
+                     INSERT INTO object_ext_int VALUES (7,54,22);
+                     INSERT INTO object_ext_int VALUES (7,55,27);
+                     INSERT INTO object_ext_int VALUES (7,56,77);
+                     INSERT INTO object_ext_int VALUES (7,57,0);
+                     INSERT INTO object_ext_int VALUES (7,60,196);";
+        let music_center = format!(
+            "{flint}
+             INSERT INTO object_ext_int VALUES (7,51,3);
+             INSERT INTO object_ext_int VALUES (7,58,1);
+             INSERT INTO object_ext_int VALUES (7,59,1);
+             INSERT INTO object_ext_int VALUES (7,121,2);"
+        );
+        let a = sensme_db(schema, flint);
+        let b = sensme_db(schema, &music_center);
+        assert_eq!(a.sensme().get(&7), b.sensme().get(&7));
+        // 1297 = bits 0,4,8,10 -> ids 3, 7 and 9.
+        assert_eq!(a.sensme()[&7].channel_ids(), vec![3, 7, 9]);
+    }
+
+    /// An akey is a per-firmware number. When the store's own `schema` names the property, that
+    /// name wins over the number this code was written against.
+    #[test]
+    fn sensme_akeys_come_from_the_schema_not_the_numbers() {
+        let d = sensme_db(
+            "INSERT INTO schema VALUES (1,80,119,'WMCHANNELINFO');
+             INSERT INTO schema VALUES (1,81,2,'SENSMETEMPO');",
+            "INSERT INTO object_ext_int VALUES (5,80,5);
+             INSERT INTO object_ext_int VALUES (5,81,120);
+             -- 52 is what the A50 calls tempo; here it is something else entirely and must be left
+             -- alone, because the schema gave tempo a different akey.
+             INSERT INTO object_ext_int VALUES (5,52,999);",
+        );
+        let t = d.sensme()[&5];
+        assert_eq!(t.tempo, 120);
+        assert_eq!(t.channel_ids(), vec![1]); // 5 = bits 0,2
+    }
+
+    /// …and when the schema gives OUR number to a property we do not recognise, the fallback is
+    /// refused. Showing no SensMe data is correct; showing another property's value as a tempo is
+    /// not.
+    #[test]
+    fn sensme_refuses_a_number_that_belongs_to_something_else() {
+        let d = sensme_db(
+            "INSERT INTO schema VALUES (1,50,119,'WMCHANNELINFO');
+             INSERT INTO schema VALUES (1,52,2,'SAMPLERATE');",
+            "INSERT INTO object_ext_int VALUES (6,50,3);
+             INSERT INTO object_ext_int VALUES (6,52,44100);",
+        );
+        let t = d.sensme()[&6];
+        assert_eq!(t.tempo, 0, "44100 Hz is not a tempo");
+        assert_eq!(t.channel_ids(), vec![0]);
+    }
+
+    /// A store that fills in only the single channel id (Music Center's tags populate akey 51;
+    /// Flint's do not) still lands the track in that channel.
+    #[test]
+    fn sensme_channel_id_alone_still_gives_a_channel() {
+        let d = sensme_db(
+            "INSERT INTO schema VALUES (1,51,73,'SENSMECHANNELID');
+             INSERT INTO schema VALUES (1,52,2,'SENSMETEMPO');",
+            "INSERT INTO object_ext_int VALUES (4,51,6);
+             INSERT INTO object_ext_int VALUES (4,52,100);",
+        );
+        let t = d.sensme()[&4];
+        assert_eq!(t.channel_ids(), vec![6]);
+        assert!(t.analysed());
+    }
+
+    /// A tag whose only row is the 12-tone flag the scanner writes as 0 is not an analysed track.
+    #[test]
+    fn sensme_ignores_a_row_set_that_says_nothing() {
+        let d = sensme_db(
+            "INSERT INTO schema VALUES (1,57,2,'SMFMF12TONEV1');",
+            "INSERT INTO object_ext_int VALUES (9,57,0);",
+        );
+        assert!(d.sensme().is_empty());
+    }
+
+    /// No SensMe properties and no such akeys: an empty map and no error — the state of every
+    /// library nobody has analysed.
+    #[test]
+    fn sensme_is_empty_when_nothing_was_ever_analysed() {
+        let d = sensme_db("INSERT INTO schema VALUES (1,7,2,'DURATION');", "");
+        assert!(d.sensme().is_empty());
     }
 
     #[test]

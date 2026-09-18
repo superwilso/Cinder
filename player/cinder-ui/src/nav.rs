@@ -98,6 +98,11 @@ pub enum Screen {
     /// Library tab: the tab strip is a flat set of four peers, and a folder view is a STACK you
     /// descend, so it needs Back to mean "up one level" rather than "leave the library".
     Folders,
+    /// SensMe channels — browsing the library by Sony's own analysis of it. Two levels (the
+    /// channel list, then one channel's tracks) on one screen, like `Folders`, with `sensme_channel`
+    /// holding which is open. An OPT-IN component: the Menu row only exists when the installer left
+    /// `/data/cinder/sensme_on`. See `sensme.rs`.
+    SensMe,
     /// Track information — Sony's "Detailed Information". Pushed by tapping the title/artist/codec
     /// block on Now Playing, which is where the eye already is when the question comes up.
     TrackInfo,
@@ -263,6 +268,13 @@ pub enum Action {
     FmScan,
     /// Send the radio out over Bluetooth instead of the jack. The cable stays in as the aerial.
     FmBtOut(bool),
+    /// Play a SensMe channel: `chan` is Sony's channel id (0..=12), or `sensme::ALL` for every
+    /// analysed track; `from` is which member to start at; `shuffle` asks for it shuffled.
+    ///
+    /// One variant rather than the playlist surface's three, because a channel is not a database
+    /// object: the shell resolves the membership out of the library it already holds, so "which
+    /// channel, from where, in what order" is the whole message.
+    PlaySensMe { chan: u8, from: u32, shuffle: bool },
     /// Shuffle one playlist by DB id. Same channel as `PlayPlaylist`, but shuffled — the page's
     /// band needs it and `ShuffleScope::Playlist` picks a RANDOM playlist, which is a different
     /// thing entirely.
@@ -400,12 +412,16 @@ pub enum Action {
 // on a device with 304 albums, "88.6 MHz" for a tuner that isn't wired, "Custom A1" regardless of
 // the selected EQ preset, and "WH-1000XM5 · LDAC" naming a pair of headphones that were never
 // connected. A subtitle that states something false is worse than no subtitle.
-const MENU: [(Screen, &str, &str, &str); 12] = [
+const MENU: [(Screen, &str, &str, &str); 13] = [
     (Screen::NowPlaying, "note", "Now Playing", ""),   // live: current track · elapsed
     (Screen::Library, "library", "Library", ""),      // live: album/track counts
     // Folder browse — the file tree as it is on the volume. Not a fifth Library tab: the strip is
     // four flat peers and this is a stack you descend, where Back has to mean "up one level".
     (Screen::Folders, "library", "Folders", ""),      // live: folder/track counts
+    // SensMe channels. Only drawn when the component is installed (see `App::menu_visible`), which
+    // is why this row is in the table rather than appended somewhere by hand: the table stays the
+    // one place a Menu destination is declared.
+    (Screen::SensMe, "note", "SensMe", ""),           // live: channels/analysed counts
     (Screen::UpNext, "queue", "Up Next", ""),         // live: queue length
     // The tuner IS wired now (2026-08-18). The subtitle names the one thing that stops it
     // working, because an empty jack and a broken radio sound identical.
@@ -453,6 +469,7 @@ pub(crate) struct MenuSubtitles {
     pub now_playing: String,
     pub library: String,
     pub folders: String,
+    pub sensme: String,
     pub queue: String,
     pub eq: String,
     pub sound: String,
@@ -1153,6 +1170,16 @@ pub struct App {
     /// One saved scroll offset per level already descended, so coming back up puts the folder you
     /// went into back under your finger instead of at the top of a hundred-row list.
     folder_scroll_saved: Vec<i32>,
+    /// Which SensMe channel is open (an index into `lib.channels`), or `None` for the channel list.
+    /// One level rather than the folder tree's stack: channels do not nest.
+    sensme_channel: Option<usize>,
+    sensme_scroll_px: i32,
+    /// The channel LIST's scroll, kept while a channel is open so Back puts the channel you went
+    /// into back under your finger — the folder tree's `folder_scroll_saved`, for one level.
+    sensme_scroll_saved: i32,
+    /// Is the opt-in `sensme` component installed? Set by the shell at startup from
+    /// `/data/cinder/sensme_on`; without it the Menu has no SensMe row.
+    sensme_enabled: bool,
     track_info: Vec<(String, String)>,
     track_info_scroll_px: i32,
     /// Measured content height of the track-info list, refreshed on every paint of that screen.
@@ -1410,6 +1437,10 @@ impl Default for App {
             folder_stack: Vec::new(),
             folder_scroll_px: 0,
             folder_scroll_saved: Vec::new(),
+            sensme_channel: None,
+            sensme_scroll_px: 0,
+            sensme_scroll_saved: 0,
+            sensme_enabled: false,
             track_info: Vec::new(),
             track_info_scroll_px: 0,
             track_info_h: 0,
@@ -1457,6 +1488,13 @@ impl App {
             }
             Screen::Folders => {
                 self.open_folders();
+                return;
+            }
+            Screen::SensMe => {
+                // The component gates the MENU ROW, not the screen; a test that asks for the
+                // screen gets it, with the row that leads there present too.
+                self.sensme_enabled = true;
+                self.open_sensme();
                 return;
             }
             Screen::TrackInfo => {
@@ -1705,6 +1743,7 @@ impl App {
                 | Screen::UpNext
                 | Screen::GenreFilter
                 | Screen::Folders
+                | Screen::SensMe
                 | Screen::TrackInfo
                 | Screen::Lyrics
                 | Screen::Search
@@ -1734,7 +1773,8 @@ impl App {
     /// Activate a Menu row: navigate to its destination, or open the Shelf overlay for the Shelf
     /// sentinel. Shared by the Menu tap + Select handlers so they can't drift apart.
     fn activate_menu(&mut self, row: usize) {
-        match MENU[row].0 {
+        let Some(target) = self.menu_visible().get(row).map(|m| m.0) else { return };
+        match target {
             Screen::NowPlaying => self.go(Screen::NowPlaying),
             Screen::Onboarding => {
                 self.onboarding_page = 0; // re-open the intro from the start
@@ -1743,6 +1783,9 @@ impl App {
             // Not a bare push: entering the tree has to reset the descent stack and skip the
             // single-root level, which is what open_folders is for.
             Screen::Folders => self.open_folders(),
+            // Same reason as Folders: entering has to reset which level is open, or the screen
+            // comes back on the channel you were last in with the list's scroll under it.
+            Screen::SensMe => self.open_sensme(),
             target => self.push(target),
         }
     }
@@ -2315,6 +2358,14 @@ impl App {
         // Back inside the folder tree means UP ONE LEVEL, not "leave the library". Only at the
         // top of the tree does it pop the screen — which is the whole reason folder browse is its
         // own screen rather than a fifth Library tab.
+        // Back inside a SensMe channel means "back to the channel list", not "leave SensMe" —
+        // the same two-level rule the folder tree has below.
+        if self.current() == Screen::SensMe && self.sensme_channel.is_some() {
+            self.sensme_channel = None;
+            self.sensme_scroll_px = self.sensme_scroll_saved;
+            self.fling_v = 0.0;
+            return;
+        }
         if self.current() == Screen::Folders && !self.folder_stack.is_empty() {
             // …EXCEPT BACK OUT OF THE LEVEL `open_folders` SKIPPED ON THE WAY IN. With one storage
             // volume the root list is a single row you would always have to tap through, so
@@ -2357,6 +2408,88 @@ impl App {
             self.folder_stack.push(self.lib.folder_roots[0]);
         }
         self.push(Screen::Folders);
+    }
+
+    /// The Menu rows actually drawn, in order.
+    ///
+    /// SensMe is in `MENU` but only appears when its component is installed: a row that opens a
+    /// screen explaining a feature you chose not to install is clutter, not discovery. Everything
+    /// that indexes the Menu — the cursor, the tap, the render — goes through this, so a hidden row
+    /// cannot leave the cursor pointing one place and the picture another.
+    fn menu_visible(&self) -> Vec<&'static (Screen, &'static str, &'static str, &'static str)> {
+        MENU.iter().filter(|m| m.0 != Screen::SensMe || self.sensme_enabled).collect()
+    }
+
+    /// How many Menu rows are drawn (see [`App::menu_visible`]).
+    fn menu_len(&self) -> usize {
+        MENU.len() - usize::from(!self.sensme_enabled)
+    }
+
+    /// The shell says whether the opt-in `sensme` component is installed.
+    pub fn set_sensme_enabled(&mut self, on: bool) {
+        self.sensme_enabled = on;
+        // The cursor is an index into the VISIBLE rows, and this changes how many there are.
+        self.menu_idx = self.menu_idx.min(self.menu_len().saturating_sub(1));
+    }
+
+    /// Open the channel list from the top.
+    pub fn open_sensme(&mut self) {
+        self.sensme_channel = None;
+        self.sensme_scroll_px = 0;
+        self.sensme_scroll_saved = 0;
+        self.fling_v = 0.0;
+        self.push(Screen::SensMe);
+    }
+
+    /// Open one channel, remembering where the list was so Back can restore it.
+    fn sensme_enter(&mut self, i: usize) {
+        if i >= self.lib.channels.len() {
+            return;
+        }
+        self.sensme_scroll_saved = self.sensme_scroll_px;
+        self.sensme_channel = Some(i);
+        self.sensme_scroll_px = 0;
+        self.fling_v = 0.0;
+    }
+
+    /// Tap on the SensMe screen: a row, or the open channel's PLAY | SHUFFLE band.
+    fn tap_sensme(&mut self, x: i32, y: i32) -> Vec<Action> {
+        // The band belongs to the open channel only, and it is drawn ABOVE the list, so it is
+        // asked first — `row_at` already refuses everything above `list_top`.
+        if let Some(i) = self.sensme_channel {
+            let chan = self.lib.channels.get(i).map(|c| c.id);
+            if let Some(chan) = chan {
+                if crate::sensme::hit_play_band(x, y) {
+                    return self.sensme_play(chan, 0, false);
+                }
+                if crate::sensme::hit_shuffle_band(x, y) {
+                    return self.sensme_play(chan, 0, true);
+                }
+            }
+        }
+        match crate::sensme::row_at(&self.lib, self.sensme_channel, y, self.sensme_scroll_px) {
+            Some(crate::sensme::Row::Channel(i)) => {
+                self.sensme_enter(i);
+                vec![]
+            }
+            // Every analysed track, shuffled — Sony's fourteenth tile.
+            Some(crate::sensme::Row::All) => self.sensme_play(crate::sensme::ALL, 0, true),
+            Some(crate::sensme::Row::Track(i)) => {
+                let chan = self.sensme_channel.and_then(|c| self.lib.channels.get(c)).map(|c| c.id);
+                match chan {
+                    Some(chan) => self.sensme_play(chan, i as u32, false),
+                    None => vec![],
+                }
+            }
+            None => vec![],
+        }
+    }
+
+    /// Play a channel. The CHANNEL is the context — the same reason `PlayPlaylistAt` exists: an
+    /// object id only knows its album, so playing a channel member through `PlayIndex` would play
+    /// that track's album and leave the channel behind after one song.
+    fn sensme_play(&mut self, chan: u8, from: u32, shuffle: bool) -> Vec<Action> {
+        self.start_play_action(Action::PlaySensMe { chan, from, shuffle })
     }
 
     /// Descend into `i`, remembering where we were so Back can restore it.
@@ -2408,6 +2541,14 @@ impl App {
                 String::from("Empty")
             } else {
                 format!("{} albums · {} tracks", self.lib.album_count(), self.lib.songs.len())
+            },
+            // How much analysis the library actually carries. "Not analysed" rather than "Empty":
+            // an empty SensMe list is not a small library, it is an untagged one, and the screen
+            // behind the row says what tags it.
+            sensme: match (self.lib.channels.len(), self.lib.sensme_tracks) {
+                (0, _) => String::from("Not analysed"),
+                (1, n) => format!("1 channel · {n} tracks"),
+                (c, n) => format!("{c} channels · {n} tracks"),
             },
             // Counts the DIRECTORIES, which is the thing this row leads to — the track total is
             // already on the Library row above it and repeating it would say nothing new.
@@ -2856,7 +2997,7 @@ impl App {
 
         match self.current() {
             Screen::Menu => {
-                if let Some(row) = crate::menu::row_at(y, MENU.len()) {
+                if let Some(row) = crate::menu::row_at(y, self.menu_len()) {
                     self.menu_idx = row;
                     self.activate_menu(row);
                 }
@@ -2916,6 +3057,7 @@ impl App {
                 }
             }
             Screen::Folders => self.tap_folders(y),
+            Screen::SensMe => self.tap_sensme(x, y),
             Screen::Library => self.tap_library(x, y),
             Screen::Album => {
                 // track rows via the render-mirroring hit test (rows start 312 @56 —
@@ -4285,6 +4427,10 @@ impl App {
                 let max = crate::folders::max_scroll_px(&self.lib, self.folder_cur());
                 self.folder_scroll_px = (self.folder_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::SensMe => {
+                let max = crate::sensme::max_scroll_px(&self.lib, self.sensme_channel);
+                self.sensme_scroll_px = (self.sensme_scroll_px + dy_px).clamp(0, max);
+            }
             // The user queue drew from row 0 and stopped at the bottom of the panel, so anything
             // past ~10 tracks was unreachable — and unreorderable with it.
             Screen::UpNext => {
@@ -4309,7 +4455,8 @@ impl App {
             return; // the modal sheet owns the gesture — see scroll_px
         }
         if matches!(self.current(),
-                    Screen::Library | Screen::Album | Screen::Artist | Screen::Playlist | Screen::UpNext) {
+                    Screen::Library | Screen::Album | Screen::Artist | Screen::Playlist
+                    | Screen::UpNext | Screen::SensMe) {
             self.fling_v = velocity_px_s.clamp(-8000.0, 8000.0);
         }
     }
@@ -4823,6 +4970,14 @@ impl App {
                 crate::folders::TOP,
                 lb,
             )),
+            // The channel page's list starts under the band, so the strip is measured against
+            // `list_top`, not the header. Scaling a drag against the wrong window is exactly the
+            // defect the 2026-09-06 audit found on both playlist pickers.
+            Screen::SensMe => Some((
+                crate::sensme::max_scroll_px(&self.lib, self.sensme_channel),
+                crate::sensme::list_top(self.sensme_channel),
+                lb,
+            )),
             _ => None,
         }
     }
@@ -4864,6 +5019,7 @@ impl App {
             Screen::TrackInfo => self.track_info_scroll_px,
             Screen::Lyrics => self.lyrics_scroll_px,
             Screen::Folders => self.folder_scroll_px,
+            Screen::SensMe => self.sensme_scroll_px,
             Screen::PlaylistPick => self.pick_scroll_px,
             Screen::TrackPick => self.track_pick_scroll_px,
             Screen::Search => self.search_scroll_px,
@@ -5476,6 +5632,7 @@ impl App {
                 | Screen::Playlist
                 | Screen::UpNext
                 | Screen::Folders
+                | Screen::SensMe
         )
     }
 
@@ -5540,6 +5697,12 @@ impl App {
         self.lib_scroll_px = 0;
         self.fling_v = 0.0;
         self.album_expanded = None;
+        // The open SensMe channel is an INDEX into the library that just went away. Left set, a
+        // reload (a rescan finishing, a card going in) would leave the channel page open on a
+        // channel that no longer exists — empty, titled "SensMe", with no sign of what happened.
+        self.sensme_channel = None;
+        self.sensme_scroll_px = 0;
+        self.sensme_scroll_saved = 0;
     }
 
     /// Keep the library cursor's row fully inside the pixel-scrolled window (button nav).
@@ -5785,7 +5948,7 @@ impl App {
                     vec![]
                 }
                 Button::Down => {
-                    if self.menu_idx + 1 < MENU.len() {
+                    if self.menu_idx + 1 < self.menu_len() {
                         self.menu_idx += 1;
                     }
                     vec![]
@@ -6213,13 +6376,14 @@ impl App {
                 } else {
                     format!("{} · {}", np.title, np.elapsed)
                 };
-                let (np_value, lib_value, fold_value, queue_value, eq_value, sound_value,
-                     bt_value, usb_value) = (
-                    &subs.now_playing, &subs.library, &subs.folders, &subs.queue, &subs.eq,
-                    &subs.sound, &subs.bluetooth, &subs.usb_dac,
+                let (np_value, lib_value, fold_value, sensme_value, queue_value, eq_value,
+                     sound_value, bt_value, usb_value) = (
+                    &subs.now_playing, &subs.library, &subs.folders, &subs.sensme, &subs.queue,
+                    &subs.eq, &subs.sound, &subs.bluetooth, &subs.usb_dac,
                 );
-                let items: Vec<MenuItem> = MENU
-                    .iter()
+                let items: Vec<MenuItem> = self
+                    .menu_visible()
+                    .into_iter()
                     .enumerate()
                     .map(|(i, (screen, icon, label, value))| MenuItem {
                         icon,
@@ -6228,6 +6392,7 @@ impl App {
                             Screen::NowPlaying => &np_value,
                             Screen::Library => &lib_value,
                             Screen::Folders => &fold_value,
+                            Screen::SensMe => &sensme_value,
                             Screen::UpNext => &queue_value,
                             Screen::Eq => &eq_value,
                             Screen::Sound => &sound_value,
@@ -6302,6 +6467,10 @@ impl App {
             ),
             Screen::Folders => crate::folders::render(
                 c, &theme, fonts, &self.lib, self.folder_cur(), self.folder_scroll_px,
+                self.sbar_active(),
+            ),
+            Screen::SensMe => crate::sensme::render(
+                c, &theme, fonts, &self.lib, self.sensme_channel, self.sensme_scroll_px,
                 self.sbar_active(),
             ),
             Screen::TrackInfo => {
@@ -8186,6 +8355,7 @@ mod tests {
             Screen::NowPlaying, // no subtitle by design (the title is the screen)
             Screen::Library,
             Screen::Folders,
+            Screen::SensMe, // live: how many channels, and how many tracks were analysed
             Screen::UpNext,
             // Screen::Fm left this list on 2026-08-18: the tuner is wired, so the row now carries
             // a real static subtitle ("Needs wired headphones as the aerial") instead of the empty
@@ -9167,7 +9337,8 @@ mod tests {
     fn the_scrollbar_covers_the_whole_list_on_every_screen_that_has_one() {
         let screens = [
             Screen::Library, Screen::UpNext, Screen::GenreFilter, Screen::Folders,
-            Screen::TrackInfo, Screen::Lyrics, Screen::PlaylistPick, Screen::TrackPick,
+            Screen::SensMe, Screen::TrackInfo, Screen::Lyrics, Screen::PlaylistPick,
+            Screen::TrackPick,
         ];
         let x = crate::canvas::W as i32 - 4;
         for screen in screens {
@@ -10342,7 +10513,7 @@ mod tests {
         // to `shows_np_bar` is the defect.
         let reserves = [
             Screen::Library, Screen::Album, Screen::Artist, Screen::Playlist,
-            Screen::UpNext, Screen::Folders,
+            Screen::UpNext, Screen::Folders, Screen::SensMe,
         ];
         for s in reserves {
             assert!(
@@ -10378,7 +10549,8 @@ mod tests {
             Screen::Advanced, Screen::Tone, Screen::Bluetooth, Screen::BtCodec, Screen::Pairing,
             Screen::Settings, Screen::Device, Screen::Fm, Screen::UsbDac, Screen::Receiver,
             Screen::VizSet, Screen::ClockSet, Screen::GenreFilter, Screen::Folders,
-            Screen::TrackInfo, Screen::Lyrics, Screen::Search, Screen::PlaylistPick, Screen::TrackPick,
+            Screen::SensMe, Screen::TrackInfo, Screen::Lyrics, Screen::Search,
+            Screen::PlaylistPick, Screen::TrackPick,
         ];
         for s in with_header {
             let mut a = unlocked();
@@ -10447,6 +10619,169 @@ mod tests {
         assert_eq!(a.current(), Screen::NowPlaying);
     }
 
+    // ── SensMe channels ────────────────────────────────────────────────────────────────────────
+
+    /// A library with two channels over three songs, plus one unanalysed song.
+    fn sensme_lib() -> Library {
+        let song = |t: &str, id: i64, bits: u16| crate::model::SongRow {
+            title: t.into(), artist: "Someone".into(), dur: "3:00".into(),
+            object_id: id, sensme: bits, ..Default::default()
+        };
+        let mut lib = Library {
+            songs: vec![
+                song("one", 101, 1 | 1 << 1),          // channel 0
+                song("two", 102, 1 | 1 << 9),          // channel 8
+                song("three", 103, 1 | 1 << 1 | 1 << 9), // both
+                song("untagged", 104, 0),
+            ],
+            ..Default::default()
+        };
+        lib.build_channels(&["Active", "Emotional", "Lounge", "Dance", "Extreme", "Upbeat",
+                             "Relax", "Mellow", "Morning"]);
+        lib
+    }
+
+    fn at_sensme() -> App {
+        let mut a = unlocked();
+        a.set_library(sensme_lib());
+        a.set_sensme_enabled(true);
+        a.open_sensme();
+        a
+    }
+
+    /// The channels are built from the per-track bitmasks, empty ones are dropped, and a track in
+    /// two channels is counted once in "analysed".
+    #[test]
+    fn sensme_channels_are_built_from_the_bitmasks() {
+        let lib = sensme_lib();
+        assert_eq!(lib.channels.len(), 2, "only the two channels with members");
+        assert_eq!((lib.channels[0].id, lib.channels[0].name), (0, "Active"));
+        assert_eq!(lib.channels[0].tracks, vec![0, 2]);
+        assert_eq!((lib.channels[1].id, lib.channels[1].name), (8, "Morning"));
+        assert_eq!(lib.channels[1].tracks, vec![1, 2]);
+        assert_eq!(lib.sensme_tracks, 3, "the track in two channels is one analysed track");
+        assert_eq!(lib.sensme_all(), vec![0, 1, 2]);
+    }
+
+    /// The Menu row is the component's switch. Without it installed the row is not drawn at all —
+    /// and the rows below it must not shift under the cursor, which is why everything indexes
+    /// `menu_visible` rather than `MENU`.
+    #[test]
+    fn the_sensme_menu_row_appears_only_when_the_component_is_installed() {
+        let mut a = unlocked();
+        assert!(!a.menu_visible().iter().any(|m| m.0 == Screen::SensMe));
+        assert_eq!(a.menu_len(), MENU.len() - 1);
+        a.set_sensme_enabled(true);
+        assert!(a.menu_visible().iter().any(|m| m.0 == Screen::SensMe));
+        assert_eq!(a.menu_len(), MENU.len());
+        // …and it opens the screen, from the Menu, the way every other row does.
+        a.press(Button::Up);
+        let idx = a.menu_visible().iter().position(|m| m.0 == Screen::SensMe).unwrap();
+        for _ in 0..idx {
+            a.press(Button::Down);
+        }
+        a.press(Button::Select);
+        assert_eq!(a.current(), Screen::SensMe);
+        assert_eq!(a.sensme_channel, None, "it opens on the channel LIST");
+    }
+
+    /// Tapping a channel opens it; Back comes out to the list, not out of SensMe, and puts the
+    /// list back where it was.
+    #[test]
+    fn a_channel_opens_and_back_returns_to_the_list() {
+        let mut a = at_sensme();
+        a.sensme_scroll_px = 0;
+        let row = |r: usize| crate::sensme::row_top(r, a.sensme_channel, 0) + crate::sensme::ROW_H / 2;
+        // Row 0 is "shuffle all", so the first channel is row 1.
+        assert_eq!(a.tap(240, row(1)), vec![]);
+        assert_eq!(a.sensme_channel, Some(0));
+        assert_eq!(a.current(), Screen::SensMe);
+        a.press(Button::Back);
+        assert_eq!(a.sensme_channel, None, "Back is up one level, not out of the screen");
+        assert_eq!(a.current(), Screen::SensMe);
+        a.press(Button::Back);
+        assert_ne!(a.current(), Screen::SensMe, "and from the list, Back leaves");
+    }
+
+    /// A track inside a channel plays THE CHANNEL from that row. `PlayIndex` would resolve the
+    /// track to its album and lose the channel after one song — the defect `PlayPlaylistAt` was
+    /// added for, and the reason this action carries the context.
+    #[test]
+    fn a_track_in_a_channel_plays_the_channel_from_there() {
+        let mut a = at_sensme();
+        a.sensme_enter(1); // Morning: tracks 1 and 2
+        let y = crate::sensme::row_top(1, a.sensme_channel, 0) + crate::sensme::ROW_H / 2;
+        assert_eq!(
+            a.tap(240, y),
+            vec![Action::PlaySensMe { chan: 8, from: 1, shuffle: false }],
+        );
+        assert!(!a.tap(240, y).iter().any(|x| matches!(x, Action::PlayIndex(_))));
+    }
+
+    /// The band's two halves are two verbs on one channel.
+    #[test]
+    fn the_channel_band_plays_and_shuffles_that_channel() {
+        let mut a = at_sensme();
+        a.sensme_enter(0); // Active, channel id 0
+        let (px, py, pw, ph) = crate::sensme::play_band();
+        let (sx, _, sw, _) = crate::sensme::shuffle_band();
+        assert_eq!(
+            a.tap(px + pw / 2, py + ph / 2),
+            vec![Action::PlaySensMe { chan: 0, from: 0, shuffle: false }],
+        );
+        assert_eq!(
+            a.tap(sx + sw / 2, py + ph / 2),
+            vec![Action::PlaySensMe { chan: 0, from: 0, shuffle: true }],
+        );
+    }
+
+    /// "Shuffle all analysed" is every analysed track, not one channel.
+    #[test]
+    fn shuffle_all_analysed_is_its_own_row() {
+        let mut a = at_sensme();
+        let y = crate::sensme::row_top(0, None, 0) + crate::sensme::ROW_H / 2;
+        assert_eq!(
+            a.tap(240, y),
+            vec![Action::PlaySensMe { chan: crate::sensme::ALL, from: 0, shuffle: true }],
+        );
+    }
+
+    /// An untagged library: the row says so, the screen has no rows, and a tap on it does nothing
+    /// rather than playing something arbitrary.
+    #[test]
+    fn a_library_with_no_analysis_says_so_and_plays_nothing() {
+        let mut a = unlocked();
+        a.set_library(Library::default());
+        a.set_sensme_enabled(true);
+        assert_eq!(a.menu_subtitles().sensme, "Not analysed");
+        a.open_sensme();
+        assert!(crate::sensme::rows(&a.lib, None).is_empty());
+        assert_eq!(a.tap(240, crate::sensme::TOP + 20), vec![]);
+        assert_eq!(a.tap(240, crate::sensme::TOP + 200), vec![]);
+    }
+
+    /// The subtitle counts what is there. Two channels over three analysed tracks, with a fourth
+    /// track untagged.
+    #[test]
+    fn the_sensme_menu_subtitle_counts_channels_and_analysed_tracks() {
+        let mut a = unlocked();
+        a.set_library(sensme_lib());
+        assert_eq!(a.menu_subtitles().sensme, "2 channels · 3 tracks");
+    }
+
+    /// A library reload while a channel is open closes it: the open channel is an INDEX into the
+    /// library that was just replaced.
+    #[test]
+    fn reloading_the_library_closes_the_open_channel() {
+        let mut a = at_sensme();
+        a.sensme_enter(1);
+        a.sensme_scroll_px = 120;
+        assert_eq!(a.sensme_channel, Some(1));
+        a.set_library(sensme_lib());
+        assert_eq!(a.sensme_channel, None);
+        assert_eq!(a.sensme_scroll_px, 0);
+    }
+
     #[test]
     fn menu_cursor_clamps() {
         let mut a = unlocked();
@@ -10458,7 +10793,9 @@ mod tests {
         for _ in 0..50 {
             a.press(Button::Down);
         }
-        assert_eq!(a.menu_index(), MENU.len() - 1); // never past end
+        // The VISIBLE rows, not `MENU`: SensMe is in the table but only drawn when its component
+        // is installed, and the cursor indexes what is drawn.
+        assert_eq!(a.menu_index(), a.menu_len() - 1); // never past end
     }
 
     #[test]
@@ -11287,7 +11624,11 @@ mod tests {
     fn open_from_menu(want: Screen) -> App {
         let mut a = unlocked();
         a.press(Button::Up); // Menu
-        let idx = MENU.iter().position(|m| m.0 == want).expect("no menu row for {want:?}");
+        let idx = a
+            .menu_visible()
+            .iter()
+            .position(|m| m.0 == want)
+            .expect("no menu row for {want:?}");
         for _ in 0..idx {
             a.press(Button::Down);
         }
