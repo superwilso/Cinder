@@ -43,6 +43,7 @@ pub mod pairing;
 pub mod receiver;
 pub mod fm;
 pub mod folders;
+pub mod sensme;
 pub mod track_info;
 pub mod lyrics;
 pub mod clockset;
