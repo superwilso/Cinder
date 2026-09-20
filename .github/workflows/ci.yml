@@ -205,6 +205,13 @@ jobs:
       - name: Launcher recovery matrix
         run: bash cinder-home/tools/test_launcher.sh
 
+      # The /data mount + cable-pass write from the issue #14 fix: the install payload's
+      # boot-critical state write, proven in a user+mount namespace (the stub mount does real
+      # bind mounts, so "wrote to the ramdisk" and "wrote to the partition" are genuinely
+      # different outcomes). Needs `unshare -rm`; skips cleanly where namespaces are unavailable.
+      - name: Cable pass write (issue #14 fix)
+        run: bash cinder-home/tools/test_cable_pass.sh
+
   # ── the dependency tree, which nothing looked at ───────────────────────────────────────────────
   # ~130 crates reach the binary that runs as the device's Home app, and until now no gate checked
   # any of them against the RustSec advisory database. The installer has ZERO dependencies by

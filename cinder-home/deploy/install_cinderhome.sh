@@ -115,15 +115,42 @@ echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
 
+# ── the state partition: mounted by US, not by the updater ───────────────────────────────────
+# The NWZ updater boots from a small ramdisk and provides only /contents (exec_file.sh remounts
+# it rw); everything else a payload needs, it mounts itself — which is why /system is mounted
+# above. /data is the same deal: at normal boot it is `usrdata /emmc@usrdata /data ext4` (see
+# WHERE THE STATE LIVES, in the launcher below), but nothing here ever mounted it. Until 0.3.8
+# every /data write in this script therefore landed on the updater's RAMDISK — or failed — and
+# evaporated at reboot, with 2>/dev/null hiding it (issue #14): the post-install cable pass
+# never reached the launcher, the first boot after an install still had the cable in (the
+# installer says DO NOT UNPLUG), rung 0's cable escape sent it to Sony's player, and a good
+# install looked exactly like a failed one that "reverted". With /data actually mounted, the
+# cable pass, the bad-boot flag clears, search/scrobble flags and the mono counter all survive
+# the reboot they are written for.
+[ -d /data ] || "$BB" mkdir -p /data 2>/dev/null
+mount -t ext4 -o rw /emmc@usrdata /data 2>/dev/null
+mount -o remount,rw /emmc@usrdata /data 2>/dev/null
+DATA_MOUNTED=0
+"$BB" grep -q " /data " /proc/mounts 2>/dev/null && DATA_MOUNTED=1
+if [ "$DATA_MOUNTED" = 1 ]; then
+    echo "state: /data (/emmc@usrdata) mounted"
+else
+    # Fails toward stock: every /data write below degrades to a no-op, exactly as it did before
+    # this mount existed — but said out loud in the log instead of being silently swallowed.
+    echo "WARN: /emmc@usrdata could not be mounted at /data — the cable pass and the flag"
+    echo "      clears will not survive the reboot; a boot with the USB cable in will show the"
+    echo "      stock player. Unplug the cable and restart the player to reach Cinder."
+fi
+
 # the staged binary must be present (user copies 'cinder-home' to the storage root first)
 if [ ! -f "$SRC" ]; then
     echo "ERROR: $SRC not found — copy the 'cinder-home' binary to the storage root"
     echo "       (tools/flash.sh --push cinder-home/cinder-home) before flashing. ABORT (no changes)."
-    sync; umount /system 2>/dev/null; exit 0
+    sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
 fi
 if [ ! -f "$APPCFG" ]; then
     echo "ERROR: $APPCFG not found — wrong device/layout. ABORT (no changes)."
-    sync; umount /system 2>/dev/null; exit 0
+    sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
 fi
 
 # ensure the install dir exists (Wampy provides it; create if missing)
@@ -134,7 +161,7 @@ fi
 "$BB" cat "$SRC" > "$BIN/cinder-home.tmp" 2>/dev/null
 if [ ! -s "$BIN/cinder-home.tmp" ]; then
     echo "ERROR: failed to stage $BIN/cinder-home (copy failed/zero bytes). ABORT (no .appcfg change)."
-    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
 fi
 # size sanity: the binary is ~2.6 MB. Measure with busybox (the ambient wc returned 0 and
 # false-aborted the first flash). Compare against the SOURCE size too. Only abort on a
@@ -147,11 +174,11 @@ case "$srcsz" in ''|*[!0-9]*) srcsz=-1;; esac
 echo "staged size: $sz bytes (source $srcsz bytes)"
 if [ "$sz" -ge 0 ] && [ "$sz" -lt 1000000 ]; then
     echo "ERROR: staged binary only $sz bytes (expected ~2.6MB) — partial copy. ABORT (no .appcfg change)."
-    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
 fi
 if [ "$sz" -ge 0 ] && [ "$srcsz" -ge 0 ] && [ "$sz" != "$srcsz" ]; then
     echo "ERROR: staged $sz != source $srcsz bytes — truncated copy. ABORT (no .appcfg change)."
-    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
 fi
 [ "$sz" -lt 0 ] && echo "WARN: size unmeasurable even via busybox; file is non-empty (-s passed) — proceeding; bad-boot counter is the net."
 "$BB" chmod 0755 "$BIN/cinder-home.tmp"
@@ -500,7 +527,7 @@ if [ ! -f "$APPCFG.real" ]; then
     "$BB" cat "$APPCFG" > "$APPCFG.real" && "$BB" chmod 0644 "$APPCFG.real"
     if [ ! -s "$APPCFG.real" ]; then
         echo "ERROR: failed to back up $APPCFG -> .appcfg.real. ABORT (no .appcfg change)."
-        sync; umount /system 2>/dev/null; exit 0
+        sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
     fi
     echo "backed up $APPCFG -> .appcfg.real"
 fi
@@ -983,7 +1010,7 @@ LAUNCH_EOF
 # verify the launcher wrote fully (must contain its final exec line) before activating it
 if ! "$BB" grep -q 'exec "\$HOME_BIN"' "$LAUNCH.tmp" 2>/dev/null; then
     echo "ERROR: launcher write was truncated. ABORT (no .appcfg change; stock intact)."
-    "$BB" rm -f "$LAUNCH.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$LAUNCH.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
 fi
 "$BB" chmod 0755 "$LAUNCH.tmp"
 "$BB" mv -f "$LAUNCH.tmp" "$LAUNCH"
@@ -1003,7 +1030,7 @@ APPCFG_EOF
 if ! "$BB" grep -q '^command: /system/vendor/unknown321/bin/cinderhome-launch.sh$' "$APPCFG.tmp" \
    || ! "$BB" grep -q '^type: Home$' "$APPCFG.tmp"; then
     echo "ERROR: new .appcfg failed verification — NOT activating (stock .appcfg untouched)."
-    "$BB" rm -f "$APPCFG.tmp" 2>/dev/null; sync; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$APPCFG.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
 fi
 "$BB" chmod 0644 "$APPCFG.tmp"
 "$BB" mv -f "$APPCFG.tmp" "$APPCFG"
@@ -1024,7 +1051,7 @@ if [ "$ok" != 1 ]; then
         "$BB" cat "$APPCFG.real" > "$APPCFG.tmp" && "$BB" mv -f "$APPCFG.tmp" "$APPCFG"
         echo "   restored stock .appcfg."
     fi
-    sync; umount /system 2>/dev/null
+    sync; umount /data 2>/dev/null; umount /system 2>/dev/null
     echo "== install ABORTED safely; device will boot the stock UI. =="
     exit 0
 fi
@@ -1037,9 +1064,20 @@ fi
 # unplug, so the boot after this one has a cable in, and without the pass it lands on Sony's player
 # and the install looks as if it failed. Written only past the sanity gate, so an aborted install
 # never leaves one; the launcher spends it on the next boot. 0644 for the same umask reason as
-# search_on below.
-echo 1 > /data/cinder/cable_pass_once 2>/dev/null && "$BB" chmod 644 /data/cinder/cable_pass_once 2>/dev/null \
-    && echo "cable pass: the next boot starts Cinder with the cable in"
+# search_on below. VERIFIED BY READ-BACK and gated on the /data mount at the top: until 0.3.8 an
+# unverified `echo >` here could "succeed" onto the updater's ramdisk, print the OK line, and
+# still never reach the launcher — a write that is not read back is a write that did not
+# happen (issue #14).
+if [ "$DATA_MOUNTED" = 1 ] \
+   && echo 1 > /data/cinder/cable_pass_once 2>/dev/null \
+   && [ "$("$BB" cat /data/cinder/cable_pass_once 2>/dev/null)" = "1" ]; then
+    "$BB" chmod 644 /data/cinder/cable_pass_once 2>/dev/null
+    echo "cable pass: the next boot starts Cinder with the cable in"
+else
+    echo "WARN: the cable pass could not be written — the first start after this install will"
+    echo "      show the stock player while the cable is in. Unplug the cable, hold POWER to"
+    echo "      switch the player off, and switch it on without the cable to start Cinder."
+fi
 # Library search: an opt-in component with no files, so the choice itself is what gets installed.
 # A flag in /data/cinder — machine-written state, off the MSC volume a PC can edit — that
 # cinder-home reads at startup. Written or removed on EVERY install, so an Update that turns it
@@ -1075,7 +1113,7 @@ fi
 echo "cleared prior disable flags (fresh install = enabled)"
 echo "left staged binary at $SRC (safe to delete once cinder-home is confirmed)"
 sync
-umount /system 2>/dev/null
+umount /data 2>/dev/null; umount /system 2>/dev/null
 echo "== done. reboot to normal; appmgr launches cinder-home as the Home app. =="
 echo "   SAFETY: a failed/hung launch AUTO-REVERTS to stock after 4 boots (no wbrt)."
 echo "   Escapes, in order of how little they depend on:"
