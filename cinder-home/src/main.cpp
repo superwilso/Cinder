@@ -57,6 +57,7 @@
 #include "bt_switch.h" // radio-vs-switch reconcile (host-tested)
 #include "db_sig.h"   // has the library database moved? (host-tested)
 #include "jack_edge.h"
+#include "batt_slew.h" // how far the voltage-derived gauge may move per reading (host-tested)
 #include "cinder_analyzer.h"
 #include "cinder_power.h"
 #include "cinder_storage.h"
@@ -10022,30 +10023,36 @@ int read_battery() {
 // second case, on top of whatever sag the first had already produced — and 36 points of it arrived
 // in the time it takes to push a plug in, which no battery does.
 //
-// So the level is SLEW-LIMITED: at most one point per poll (~10 s) toward whatever sysfs says.
-// That is 6 points a minute, roughly thirty times faster than this device can really discharge, so
-// nothing true is ever hidden — while a sag that moves the raw reading 36 points in ten seconds
-// moves what the user sees by one. It is not a cosmetic filter: `battery_guard` below switches the
-// player OFF at 3%, and before this a single sagged sample could do that in the middle of a track.
+// So the level is SLEW-LIMITED: at most one point per ~10 s of REAL TIME toward whatever sysfs
+// says. That is 6 points a minute, roughly thirty times faster than this device can really
+// discharge, so nothing true is ever hidden — while a sag that moves the raw reading 36 points in
+// ten seconds moves what the user sees by one. It is not a cosmetic filter: `battery_guard` below
+// switches the player OFF at 3%, and before this a single sagged sample could do that in the middle
+// of a track.
 //
 // The RAW value is still what the log and the Device screen's voltage line carry, so the sag stays
 // visible to anyone looking for it.
+// The step rule itself is in src/batt_slew.h, with the reasoning: one point per POLL INTERVAL OF
+// REAL TIME upward, so a charge that happened while the screen was off is not walked back at 6
+// points a minute, and a plain one point per reading downward, so the sagged first sample after a
+// resume can never hand `battery_guard` a reason to switch the player off mid-track.
 static const int BATT_MAX_STEP = 1;
+static const long BATT_POLL_MS = 10000;   // the gauge's own interval; one step is one poll of this
 static int g_batt_level = -1;      // the slew-limited level; -1 until the first reading seeds it
 static int g_batt_raw   = -1;      // what sysfs last said, for the log
 
-// Take one reading and move the reported level at most one point toward it. Returns the level to
-// report. Called from the ~10 s gauge ONLY: everything else reads `g_batt_level`, or the rate would
-// depend on which screen happened to be open.
-static int battery_sample() {
+// Take one reading and move the reported level toward it. `elapsed_ms` is the real time since the
+// last call, which sets how far it may move UP. Returns the level to report. Called from the ~10 s
+// gauge ONLY: everything else reads `g_batt_level`, or the rate would depend on which screen
+// happened to be open.
+static int battery_sample(long elapsed_ms) {
     const int raw = read_battery();
     g_batt_raw = raw;
     if (g_batt_level < 0) {
         g_batt_level = raw;        // first reading of the session: nothing to smooth against
         return g_batt_level;
     }
-    if (raw > g_batt_level)      g_batt_level += (raw - g_batt_level > BATT_MAX_STEP) ? BATT_MAX_STEP : raw - g_batt_level;
-    else if (raw < g_batt_level) g_batt_level -= (g_batt_level - raw > BATT_MAX_STEP) ? BATT_MAX_STEP : g_batt_level - raw;
+    g_batt_level = cinder_batt_step(g_batt_level, raw, elapsed_ms, BATT_POLL_MS, BATT_MAX_STEP);
     return g_batt_level;
 }
 
@@ -11676,9 +11683,12 @@ void* render_driver(void*) {
         // above (an iteration count means something different at 60 Hz and at 10 Hz). Reading it is
         // two small sysfs reads, so 10 s is already conservative.
         static long last_batt_ms = 0;
-        if (house_now - last_batt_ms >= 10000) {
+        if (house_now - last_batt_ms >= BATT_POLL_MS) {
+            // The gap, not the interval: after a screen-off suspend this is minutes or hours, and
+            // it is what lets the level catch up with a charge that happened while nothing polled.
+            const long batt_gap_ms = last_batt_ms > 0 ? house_now - last_batt_ms : BATT_POLL_MS;
             last_batt_ms = house_now;
-            const int pct = battery_sample();
+            const int pct = battery_sample(batt_gap_ms);
             // A wide gap between the raw reading and the reported level is the load sag above. Log
             // it WITH the voltage, once per crossing rather than per poll: it is the measurement a
             // device session needs to calibrate how far this cell actually sags, and it costs one

@@ -66,11 +66,15 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   source disabled, so the level comes from Sony's charger driver, which has only terminal voltage to
   work from (the repo's own 123-sample log has it tracking voltage at r = 0.96, about 4.65 mV per
   point). Load sags the cell; a charger raises it the instant the cable lands; neither moves the
-  charge. The level is now slew-limited to one point per reading — still about thirty times faster
-  than this player can really discharge — and the status bar, the Device screen and the automatic
+  charge. The level is now slew-limited to one point per ten seconds of real time — still about
+  thirty times faster than this player can really discharge — and the status bar, the Device screen and the automatic
   power-off all read that one number, so a sagged sample can no longer take the player down in the
   middle of a track. A wide gap between the raw reading and the reported level is logged once, with
-  the voltage and whether a charger is attached.
+  the voltage and whether a charger is attached. The limit is on TIME, not on readings, so an hour
+  spent charging with the screen off is caught up at the first reading after the wake rather than
+  crawling back at six points a minute — but only upward: coming down it is still one point per
+  reading, because the first sample after a resume is taken at the moment the cell sags hardest and
+  the automatic power-off reads this number.
 - **With nothing plugged in, Settings ▸ Device reported `FAULT 2`.** *Host-tested;
   device-unverified.* The charger chip has no input then and puts a code in its fault field; the
   player is fine. The row says `ON BATTERY` now. A fault seen while a charger IS attached still

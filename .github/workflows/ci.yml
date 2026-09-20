@@ -120,14 +120,14 @@ jobs:
       - name: C/C++ syntax check
         run: tools/host_syntax_check.sh
 
-      # The six pure-logic rules that decide whether the device pauses, reconnects, reboots or
-      # notices new music. They live in build.sh, which needs the cross toolchain and which only
+      # The eleven pure-logic rules that decide whether the device pauses, reconnects, reboots,
+      # notices new music or believes its own battery gauge. They live in build.sh, which needs the cross toolchain and which only
       # tools/release.sh ever calls — so until now they ran when somebody remembered. They compile
       # with plain cc in milliseconds and have no business being opt-in.
       - name: C++ self-tests
         run: |
           fail=0
-          for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange mono; do
+          for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange mono battslew; do
             src="cinder-home/tools/${t}_selftest.cpp"
             if [ ! -f "$src" ]; then echo "::error::missing self-test $src"; fail=1; continue; fi
             if ! cc -O2 -o "/tmp/$t" "$src" -lstdc++; then
