@@ -99,6 +99,7 @@ WANT_GPUNODE="$(comp_bool CINDER_GPUNODE 0)"
 WANT_FM="$(comp_bool CINDER_FM 1)"
 WANT_BATTERY="$(comp_bool CINDER_BATTERY 1)"
 WANT_SEARCH="$(comp_bool CINDER_SEARCH 0)"
+WANT_SENSME="$(comp_bool CINDER_SENSME 0)"
 WANT_SCROBBLE="$(comp_bool CINDER_SCROBBLE 1)"
 WANT_MONO="$(comp_bool CINDER_MONO 1)"
 WANT_VOLTABLE="$(comp_voltable)"
@@ -109,7 +110,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE"
+echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE"
 
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
@@ -1051,6 +1052,15 @@ if [ "$WANT_SEARCH" = 1 ]; then
 else
     "$BB" rm -f /data/cinder/search_on 2>/dev/null
     echo "library search: off"
+fi
+# SensMe channels: the same shape as search — an opt-in component with no files, so the choice
+# itself is what gets installed. 0644 for the same umask reason.
+if [ "$WANT_SENSME" = 1 ]; then
+    echo 1 > /data/cinder/sensme_on 2>/dev/null && "$BB" chmod 644 /data/cinder/sensme_on 2>/dev/null \
+        && echo "sensme channels: on"
+else
+    "$BB" rm -f /data/cinder/sensme_on 2>/dev/null
+    echo "sensme channels: off"
 fi
 # Scrobble log: ON by default, so the flag records the OFF choice. Same rules as search_on. Nothing
 # to do for unknown321/scrobbler here: cinder-home stands down by itself while that one runs.

@@ -1213,6 +1213,15 @@ void deferred_up() {
             cinder_set_search_enabled(1);
             clog_("deferred_up: library search enabled (/data/cinder/search_on)");
         }
+        // SENSME CHANNELS, the same shape: an opt-in component with no binary of its own. The
+        // channel data is read from Sony's store at every library open whether or not this flag is
+        // there (it is one query); the flag decides whether the Menu offers the screen. No flag =
+        // off, the default, because a library nobody has analysed on a PC has nothing to show.
+        if (FILE* sf = std::fopen("/data/cinder/sensme_on", "r")) {
+            std::fclose(sf);
+            cinder_set_sensme_enabled(1);
+            clog_("deferred_up: sensme channels enabled (/data/cinder/sensme_on)");
+        }
         // ESCAPE HATCH, BECAUSE THIS DEVICE CAN HAVE TWO SCROBBLERS. `unknown321/scrobbler`
         // installs as a BOOT SERVICE (`/init.scrobbler.rc`, imported by `/init.rc`) and writes
         // `/data/mnt/internal/.scrobbler.log` — which is the same file as
@@ -9989,6 +9998,62 @@ int read_battery() {
     return 100;
 }
 
+// THE LEVEL THIS DEVICE REPORTS IS A VOLTAGE READING, AND IT MOVES WITH THE LOAD.
+//
+// There is no fuel gauge on this platform (`analysis/RE_battery.md`): no coulomb counter, no
+// `current_now`, no `charge_full`. The kernel has every MediaTek state-of-charge source disabled
+// (`CONFIG_MTK_SMART_BATTERY`, `SOC_BY_{HW,SW,EXT_HW,AUXADC}_FG` all unset) and the capacity comes
+// from Sony's own `bq24262_wmport` charger driver, which has nothing but terminal voltage to work
+// from. The 123-sample log in `artifacts/session/battery_track.tsv` shows what that means:
+// `capacity` tracks `voltage_now` with **r = 0.96**, at about **4.65 mV per percentage point** near
+// the top of the charge — and the mid-range of this chemistry is flatter still, so a point there is
+// worth two or three millivolts.
+//
+// Two things move terminal voltage without the charge moving at all, and on a voltage-derived gauge
+// both are worth tens of percentage points:
+//
+//   * LOAD. A cell driving the amp, the screen and a Bluetooth radio sags by tens of millivolts the
+//     moment the load arrives, and recovers when it goes.
+//   * THE CHARGER. Plug one in and the terminal voltage is the charger's regulation voltage minus
+//     the drop across the cell's own resistance — immediately, before any charge has gone in. The
+//     gauge reads that as a fuller battery the instant the cable lands.
+//
+// Reported 2026-09-18 by the owner: 22%, then 58% seconds after PLUGGING IN, then 61%. That is the
+// second case, on top of whatever sag the first had already produced — and 36 points of it arrived
+// in the time it takes to push a plug in, which no battery does.
+//
+// So the level is SLEW-LIMITED: at most one point per poll (~10 s) toward whatever sysfs says.
+// That is 6 points a minute, roughly thirty times faster than this device can really discharge, so
+// nothing true is ever hidden — while a sag that moves the raw reading 36 points in ten seconds
+// moves what the user sees by one. It is not a cosmetic filter: `battery_guard` below switches the
+// player OFF at 3%, and before this a single sagged sample could do that in the middle of a track.
+//
+// The RAW value is still what the log and the Device screen's voltage line carry, so the sag stays
+// visible to anyone looking for it.
+static const int BATT_MAX_STEP = 1;
+static int g_batt_level = -1;      // the slew-limited level; -1 until the first reading seeds it
+static int g_batt_raw   = -1;      // what sysfs last said, for the log
+
+// Take one reading and move the reported level at most one point toward it. Returns the level to
+// report. Called from the ~10 s gauge ONLY: everything else reads `g_batt_level`, or the rate would
+// depend on which screen happened to be open.
+static int battery_sample() {
+    const int raw = read_battery();
+    g_batt_raw = raw;
+    if (g_batt_level < 0) {
+        g_batt_level = raw;        // first reading of the session: nothing to smooth against
+        return g_batt_level;
+    }
+    if (raw > g_batt_level)      g_batt_level += (raw - g_batt_level > BATT_MAX_STEP) ? BATT_MAX_STEP : raw - g_batt_level;
+    else if (raw < g_batt_level) g_batt_level -= (g_batt_level - raw > BATT_MAX_STEP) ? BATT_MAX_STEP : g_batt_level - raw;
+    return g_batt_level;
+}
+
+// The level as last reported. Used by every caller that is not the gauge itself.
+static int battery_level() {
+    return g_batt_level < 0 ? read_battery() : g_batt_level;
+}
+
 // ── BATTERY DETAIL (Settings ▸ Battery) ───────────────────────────────────────────────────────
 //
 // Everything this device will actually say about its own cell. Cinder showed exactly one battery
@@ -10056,6 +10121,10 @@ static void read_charger(int* state, int* fault, char* raw, size_t rawsz) {
     ::pclose(p);
 }
 
+// Is anything feeding the cell? Defined further down, beside the battery guard that is its other
+// caller; declared here because `push_battery_detail` needs it to tell "no input" from a fault.
+static bool battery_charging();
+
 // Gather and push the full readout. `with_charger` gates the fork; when false the charger fields
 // go through as "unknown", which the screen renders as a dash rather than as a wrong reading.
 static void push_battery_detail(int pct, bool with_charger) {
@@ -10068,6 +10137,30 @@ static void push_battery_detail(int pct, bool with_charger) {
     int cstate = -1, cfault = -1;
     char raw[64] = {0};
     if (with_charger) read_charger(&cstate, &cfault, raw, sizeof raw);
+    // NOTHING PLUGGED IN IS NOT A FAULT. With no VBUS the bq24262 puts a non-zero code in the
+    // STATUS register's fault field, and the screen rendered it as `FAULT 2` on a healthy player
+    // (reported 2026-09-18, with the cable out). The code is not decoded and will not be guessed
+    // at — there is no datasheet for this part here — but the charger-detect nodes are unambiguous
+    // and are the same ones battery_guard trusts to decide whether to switch the device off.
+    //
+    // Set here rather than in the UI because this is the only place that holds both readings, and
+    // it applies even when the charger helper was not run: "on battery" is worth saying on its own.
+    // The raw registers still go through untouched, so the code remains on the footer, and the
+    // first time one appears it is logged — a fault field that changes on battery is worth having
+    // in the log even though it is not worth a word on the screen.
+    if (!battery_charging()) {
+        static int logged_fault = -1;
+        if (cfault > 0 && cfault != logged_fault) {
+            logged_fault = cfault;
+            char m[128];
+            std::snprintf(m, sizeof m,
+                          "battery: charger reports fault code %d with no input attached "
+                          "(shown as ON BATTERY; raw %s)", cfault, raw[0] ? raw : "unread");
+            clog_(m);
+        }
+        cstate = 4;   // cinder_ui::device::CHG_NO_INPUT
+        cfault = 0;
+    }
     cinder_set_battery_detail(pct, status, health, mv, cstate, cfault, raw);
 }
 
@@ -10472,7 +10565,7 @@ void poll_now_playing() {
         if (n > 0 && std::strcmp(uri, last) != 0) {
             std::strncpy(last, uri, sizeof last - 1);
             last[sizeof last - 1] = 0;
-            cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, read_battery());
+            cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, battery_level());
         }
     }
     // The service is the authority on position, and eventually on whether it is really playing —
@@ -11585,7 +11678,32 @@ void* render_driver(void*) {
         static long last_batt_ms = 0;
         if (house_now - last_batt_ms >= 10000) {
             last_batt_ms = house_now;
-            const int pct = read_battery();
+            const int pct = battery_sample();
+            // A wide gap between the raw reading and the reported level is the load sag above. Log
+            // it WITH the voltage, once per crossing rather than per poll: it is the measurement a
+            // device session needs to calibrate how far this cell actually sags, and it costs one
+            // line an hour in normal use.
+            static bool diverged = false;
+            const int gap = g_batt_raw > pct ? g_batt_raw - pct : pct - g_batt_raw;
+            if (gap >= 5 && !diverged) {
+                diverged = true;
+                char vb[32];
+                const int uv = read_sysfs_int("/sys/class/power_supply/battery/voltage_now");
+                std::snprintf(vb, sizeof vb, "%d", uv);
+                // Say which way it went and whether a charger is attached, because those two
+                // together name the cause: up with a cable is the charger's own voltage, down
+                // without one is load sag, and anything else is worth a second look.
+                char m[200];
+                std::snprintf(m, sizeof m,
+                              "battery: sysfs says %d%%, reporting %d%% (voltage_now %s uV, "
+                              "charger %s) — %s on a voltage-derived gauge",
+                              g_batt_raw, pct, uv == BATT_UNKNOWN ? "?" : vb,
+                              battery_charging() ? "in" : "out",
+                              g_batt_raw > pct ? "a jump" : "load sag");
+                clog_(m);
+            } else if (gap < 2) {
+                diverged = false;
+            }
             cinder_set_battery(pct);
             // Warn low, shut down before the hardware browns out mid-write. Not guarded: it is pure
             // sysfs reads plus, at the very end, the same power path the Settings row uses.
@@ -11604,7 +11722,11 @@ void* render_driver(void*) {
         static long last_battdetail_ms = 0;
         if (cinder_device_wants_detail() && house_now - last_battdetail_ms >= 2000) {
             last_battdetail_ms = house_now;
-            push_battery_detail(read_battery(), true);
+            // The REPORTED level, not a fresh raw read: the Device screen and the status bar must
+            // not be able to say two different numbers, which is exactly the class of defect this
+            // project keeps finding (two screens, one feature, opposite claims). The raw reading is
+            // still visible there as the voltage it came from.
+            push_battery_detail(battery_level(), true);
             push_device_temps();
             push_device_cpu();
             push_device_storage();
