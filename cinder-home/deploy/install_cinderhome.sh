@@ -127,11 +127,32 @@ mount -o remount,rw /emmc@android /system 2>/dev/null
 # install looked exactly like a failed one that "reverted". With /data actually mounted, the
 # cable pass, the bad-boot flag clears, search/scrobble flags and the mono counter all survive
 # the reboot they are written for.
+#
+# Two things the read-back below cannot see, because a write to an UNMOUNTED /data reads back
+# "1" perfectly well — which is exactly how this went unnoticed until 0.3.8:
+#   * the updater's /dev need not carry Sony's /emmc@* aliases, so the mount is retried against
+#     the raw partition (usrdata = mmcblk0p28 — see RECOVERY.md's partition table);
+#   * /proc need not be mounted in the updater, so the mounts table is not trusted on its own.
+#     A sentinel dropped on the RAMDISK settles it instead: a real mount hides the file, a
+#     failed one leaves it in plain sight. /proc is the fallback for when the sentinel itself
+#     cannot be written (a read-only ramdisk), not the other way round.
 [ -d /data ] || "$BB" mkdir -p /data 2>/dev/null
+SENTINEL=0
+"$BB" touch /data/.cinder_premount 2>/dev/null && [ -e /data/.cinder_premount ] && SENTINEL=1
+data_is_mounted() {
+    if [ "$SENTINEL" = 1 ]; then
+        [ -e /data/.cinder_premount ] && return 1
+        return 0
+    fi
+    "$BB" grep -q " /data " /proc/mounts 2>/dev/null
+}
 mount -t ext4 -o rw /emmc@usrdata /data 2>/dev/null
 mount -o remount,rw /emmc@usrdata /data 2>/dev/null
+data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 /data 2>/dev/null
 DATA_MOUNTED=0
-"$BB" grep -q " /data " /proc/mounts 2>/dev/null && DATA_MOUNTED=1
+data_is_mounted && DATA_MOUNTED=1
+# a failed mount leaves the sentinel on the ramdisk; a good one hides it (gone at reboot anyway)
+[ "$DATA_MOUNTED" = 1 ] || "$BB" rm -f /data/.cinder_premount 2>/dev/null
 if [ "$DATA_MOUNTED" = 1 ]; then
     echo "state: /data (/emmc@usrdata) mounted"
 else

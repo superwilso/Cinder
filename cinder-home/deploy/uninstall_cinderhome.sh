@@ -29,12 +29,26 @@ mount -o remount,rw /emmc@android /system 2>/dev/null
 # only the /contents twin did (which is what actually kept a failed uninstall non-bricking,
 # because the launcher honours both). With the mount, the authoritative /data flag and the
 # state cleanup further down work as written (issue #14, same root cause as the install).
+# The raw-partition retry and the ramdisk sentinel are the install payload's, for the reasons
+# written out there: the /emmc@* aliases and /proc are both optional in the updater, and a write
+# to an unmounted /data reads back exactly like a good one.
 [ -d /data ] || "$BB" mkdir -p /data 2>/dev/null
+SENTINEL=0
+"$BB" touch /data/.cinder_premount 2>/dev/null && [ -e /data/.cinder_premount ] && SENTINEL=1
+data_is_mounted() {
+    if [ "$SENTINEL" = 1 ]; then
+        [ -e /data/.cinder_premount ] && return 1
+        return 0
+    fi
+    "$BB" grep -q " /data " /proc/mounts 2>/dev/null
+}
 mount -t ext4 -o rw /emmc@usrdata /data 2>/dev/null
 mount -o remount,rw /emmc@usrdata /data 2>/dev/null
-if "$BB" grep -q " /data " /proc/mounts 2>/dev/null; then
+data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 /data 2>/dev/null
+if data_is_mounted; then
     echo "state: /data (/emmc@usrdata) mounted"
 else
+    "$BB" rm -f /data/.cinder_premount 2>/dev/null
     echo "WARN: /emmc@usrdata could not be mounted at /data — the off flag is set on /contents only"
 fi
 

@@ -5,6 +5,8 @@
 #      and the file lands on the PARTITION, not the mountpoint's old (ramdisk) dir
 #   3. the pass write WARNs — and does not lie — when /data is not mountable
 #   4. the pass write WARNs when the write "succeeds" but reads back wrong
+#   5. the ramdisk sentinel decides it when /proc is not mounted in the updater
+#   6. the raw-partition retry (mmcblk0p28) covers a /dev with no /emmc@* aliases
 #
 # Runs the block under test inside `unshare -rm` (user+mount namespace) so the
 # stub mount can do REAL bind mounts: the "partition" and the mountpoint are
@@ -22,35 +24,40 @@ check() { if [ "$2" = "$3" ]; then printf '  ok    %-52s -> %s\n' "$1" "$2"; PAS
   else printf '  FAIL  %-52s -> %s (want %s)\n' "$1" "$2" "$3"; FAIL=$((FAIL+1)); fi; }
 
 # ── the inner scenario runner (runs INSIDE the namespace) ───────────────────────────────────
-# usage: scenario.sh <sandbox> <mount_succeeds:1|0> <sabotage_readback:1|0>
+# usage: scenario.sh <sandbox> <mountable:alias|p28|none> <sabotage_readback:1|0> <proc:1|0>
 cat > "$SP/scenario.sh" <<'SCENARIO'
 #!/bin/bash
 set -u
-R="$1"; MOUNT_OK="$2"; SABOTAGE="$3"
+R="$1"; MOUNTABLE="$2"; SABOTAGE="$3"; PROC_OK="${4:-1}"
 mkdir -p "$R/proc" "$R/ram_data" "$R/realpart/cinder" "$R/bin"
-printf 'rootfs / rootfs rw 0 0\n/emmc@contents %s/contents vfat rw 0 0\n' "$R" > "$R/proc/mounts"
+# PROC_OK=0 is the updater that mounts no /proc: every read of the mounts table fails, and
+# only the sentinel can tell a real mount from a ramdisk write.
+[ "$PROC_OK" = 1 ] \
+  && printf 'rootfs / rootfs rw 0 0\n/emmc@contents %s/contents vfat rw 0 0\n' "$R" > "$R/proc/mounts"
 
 # the "mount" binary for the sandbox: bind the "partition" over the mountpoint on
 # success and append the mounts line the real /proc/mounts would then show. Uses the
 # system mount's absolute path so it cannot resolve to itself once $R/bin is on PATH.
 REAL_MOUNT="$(command -v mount)"
+# which spelling of the partition this sandbox answers to: the /emmc@usrdata alias, the raw
+# node the retry uses, or neither. A bind that has already happened is left alone, so a second
+# call cannot stack a mount the way the real one would.
+case "$MOUNTABLE" in alias) WORKS="/emmc@usrdata";; p28) WORKS="/dev/block/mmcblk0p28";; *) WORKS="__none__";; esac
 cat > "$R/bin/mount" <<EOF
 #!/bin/sh
 last=""
 for a in "\$@"; do last="\$a"; done
 case " \$* " in
-  *"/emmc@usrdata"*)
-EOF
-if [ "$MOUNT_OK" = 1 ]; then
-  printf "    '%s' --bind '%s/realpart' \"\$last\" 2>/dev/null && echo \"/emmc@usrdata \$last ext4 rw 0 0\" >> '%s/proc/mounts'\n" \
-    "$REAL_MOUNT" "$R" "$R" >> "$R/bin/mount"
-fi
-cat >> "$R/bin/mount" <<'EOF'
+  *"$WORKS"*)
+    [ -e "\$last/.mounted" ] && exit 0
+    '$REAL_MOUNT' --bind '$R/realpart' "\$last" 2>/dev/null \
+      && echo "$WORKS \$last ext4 rw 0 0" >> '$R/proc/mounts' 2>/dev/null
     ;;
 esac
 exit 0
 EOF
 chmod +x "$R/bin/mount"
+touch "$R/realpart/.mounted"
 
 # host tools stand in for busybox ($BB in the real script is the busybox BINARY,
 # and every call is "$BB" <applet> — so the sandbox needs a dispatcher, not a dir)
@@ -62,6 +69,8 @@ case "$cmd" in
   cat)  exec /usr/bin/cat "$@";;
   mkdir) exec /usr/bin/mkdir "$@";;
   chmod) exec /usr/bin/chmod "$@";;
+  touch) exec /usr/bin/touch "$@";;
+  rm)   exec /usr/bin/rm "$@";;
   *) exit 1;;
 esac
 EOF
@@ -73,10 +82,21 @@ PATH="$R/bin:$PATH"
 
 # ── the block under test: verbatim semantics from install_cinderhome.sh ──
 [ -d "$data_dir" ] || "$BB" mkdir -p "$data_dir" 2>/dev/null
+SENTINEL=0
+"$BB" touch "$data_dir/.cinder_premount" 2>/dev/null && [ -e "$data_dir/.cinder_premount" ] && SENTINEL=1
+data_is_mounted() {
+    if [ "$SENTINEL" = 1 ]; then
+        [ -e "$data_dir/.cinder_premount" ] && return 1
+        return 0
+    fi
+    "$BB" grep -q " $data_dir " "$mounts_file" 2>/dev/null
+}
 mount -t ext4 -o rw /emmc@usrdata "$data_dir" 2>/dev/null
 mount -o remount,rw /emmc@usrdata "$data_dir" 2>/dev/null
+data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 "$data_dir" 2>/dev/null
 DATA_MOUNTED=0
-"$BB" grep -q " $data_dir " "$mounts_file" 2>/dev/null && DATA_MOUNTED=1
+data_is_mounted && DATA_MOUNTED=1
+[ "$DATA_MOUNTED" = 1 ] || "$BB" rm -f "$data_dir/.cinder_premount" 2>/dev/null
 [ "$DATA_MOUNTED" = 1 ] && echo "state: /data (/emmc@usrdata) mounted" \
                         || echo "WARN: /emmc@usrdata could not be mounted at /data"
 
@@ -110,27 +130,45 @@ if ! unshare -rm true 2>/dev/null; then
   exit 0
 fi
 
-run() {  # $1 = mountable 1|0, $2 = sabotage 1|0
+run() {  # $1 = mountable alias|p28|none, $2 = sabotage 1|0, $3 = /proc mounted 1|0
   local R; R="$(mktemp -d "$SP/run.XXXXXX")"
-  unshare -rm bash "$SP/scenario.sh" "$R" "$1" "$2"
+  unshare -rm bash "$SP/scenario.sh" "$R" "$1" "$2" "${3:-1}"
 }
 
 echo "── 1. /data mountable (the fixed case) ──"
-o="$(run 1 0)"
+o="$(run alias 0)"
 check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "1"
 check "mount line logged"     "$(echo "$o" | sed -n '1p')"                  "state: /data (/emmc@usrdata) mounted"
 check "pass write succeeds"   "$(echo "$o" | sed -n '2p')"                  "cable pass: the next boot starts Cinder with the cable in"
 check "pass on the partition" "$(echo "$o" | sed -n 's/^on_partition=//p')" "yes"
 
 echo "── 2. /data NOT mountable (the pre-fix case, now loud) ──"
-o="$(run 0 0)"
+o="$(run none 0)"
 check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "0"
 check "mount WARN logged"     "$(echo "$o" | sed -n '1p')"                  "WARN: /emmc@usrdata could not be mounted at /data"
 check "pass write refused"    "$(echo "$o" | sed -n '2p')"                  "WARN: the cable pass could not be written"
 check "nothing on partition"  "$(echo "$o" | sed -n 's/^on_partition=//p')" "no"
 
 echo "── 3. write 'succeeds' but read-back fails (the pre-fix lie) ──"
-o="$(run 1 1)"
+o="$(run alias 1)"
+check "pass write refused"    "$(echo "$o" | sed -n '2p')"                  "WARN: the cable pass could not be written"
+check "nothing on partition"  "$(echo "$o" | sed -n 's/^on_partition=//p')" "no"
+
+echo "── 4. mounted, but the updater has no /proc (the sentinel decides) ──"
+o="$(run alias 0 0)"
+check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "1"
+check "pass write succeeds"   "$(echo "$o" | sed -n '2p')"                  "cable pass: the next boot starts Cinder with the cable in"
+check "pass on the partition" "$(echo "$o" | sed -n 's/^on_partition=//p')" "yes"
+
+echo "── 5. no /emmc@* aliases — the raw-partition retry carries it ──"
+o="$(run p28 0)"
+check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "1"
+check "pass write succeeds"   "$(echo "$o" | sed -n '2p')"                  "cable pass: the next boot starts Cinder with the cable in"
+check "pass on the partition" "$(echo "$o" | sed -n 's/^on_partition=//p')" "yes"
+
+echo "── 6. nothing mountable AND no /proc (the sentinel says no, loudly) ──"
+o="$(run none 0 0)"
+check "DATA_MOUNTED"          "$(echo "$o" | sed -n 's/^DATA_MOUNTED=//p')" "0"
 check "pass write refused"    "$(echo "$o" | sed -n '2p')"                  "WARN: the cable pass could not be written"
 check "nothing on partition"  "$(echo "$o" | sed -n 's/^on_partition=//p')" "no"
 

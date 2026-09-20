@@ -203,6 +203,18 @@ if cc -O2 -o "$HERE/.framebudget_selftest" "$HERE/tools/framebudget_selftest.cpp
     rm -f "$HERE/.framebudget_selftest"
 else echo "(skip: no host cc)"; fi
 
+echo "── self-test: battery gauge slew (host) ──"
+# The rule in src/batt_slew.h, checked against the SAME header main.cpp uses. This platform has no
+# fuel gauge, so the level is voltage-derived and a charger moves it 36 points the instant the cable
+# lands. The limit is one point per POLL INTERVAL OF REAL TIME upward, so a screen-off charge is not
+# walked back at 6 points a minute, and one point per reading downward, so the sagged first sample
+# after a resume can never hand battery_guard a reason to switch the player off mid-track.
+if cc -O2 -o "$HERE/.battslew_selftest" "$HERE/tools/battslew_selftest.cpp" -lstdc++ 2>/dev/null; then
+    if "$HERE/.battslew_selftest" >/dev/null 2>&1; then echo "OK: battery gauge slew"; \
+    else "$HERE/.battslew_selftest"; echo "FAIL: battery slew self-test"; exit 1; fi
+    rm -f "$HERE/.battslew_selftest"
+else echo "(skip: no host cc)"; fi
+
 echo "── self-test: headphone-unplug edge (host) ──"
 # The rule in src/jack_edge.h, checked against the SAME header main.cpp uses: only the
 # plugged->unplugged transition pauses, the first observation of a boot never acts, and plugging IN
