@@ -221,6 +221,9 @@ fn bench_derived_state() {
                     art: an.clone(), object_id: aid * 100 + i, album_id: aid,
                     disc: 1, track: i as i32, added: aid, year: 2019, genre_id: (i % 3) + 1,
                     is_hires: i % 7 == 0,
+                    // Bit 0 is Sony's always-set one; the rest spread the bench library over five
+                    // channels, so a SensMe list drawn against it is realistically long.
+                    sensme: 1 | (1 << (i % 5 + 1)),
                 })
                 .collect();
             songs.extend(track_list.iter().cloned());

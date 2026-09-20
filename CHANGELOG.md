@@ -16,6 +16,46 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **SensMe channels.** *Host-tested; device-unverified — `docs/DEVICE_CHECKLIST.md` 14.1–14.3.* Browse
+  the library by Sony's own analysis of it and play a channel like a station: the channel list leads
+  with "Shuffle all analysed", each channel opens onto its tracks behind a PLAY | SHUFFLE band, and a
+  tap on a track plays **the channel** from there rather than that track's album.
+  **Cinder does not do the analysis and cannot** — it comes from a tag inside each music file,
+  written on a PC by Sony's Music Center or by [Flint](https://github.com/superwilso/flint), and the
+  player's own scanner turns that tag into the rows Cinder reads. **Either tool works and Cinder
+  cannot tell them apart**, which is deliberate: it reads what the scanner computed, never the tag.
+  With nothing analysed the screen says so and names both tools instead of drawing an empty list.
+- **One new install option**: `sensme` (off by default while it is new). It installs nothing and
+  needs no privileges — the installer leaves `/data/cinder/sensme_on`, which the player reads at
+  startup to decide whether the Menu offers the screen. The channel data is read at every library
+  open either way.
+
+### Fixed
+
+- **The battery percentage jumped by tens of points, and could switch the player off.** *Host- and
+  harness-tested; device-unverified.* Reported 2026-09-18: 22%, then 58% seconds after the charger
+  went in, then 61%. This device has no fuel gauge — the kernel has every MediaTek state-of-charge
+  source disabled, so the level comes from Sony's charger driver, which has only terminal voltage to
+  work from (the repo's own 123-sample log has it tracking voltage at r = 0.96, about 4.65 mV per
+  point). Load sags the cell; a charger raises it the instant the cable lands; neither moves the
+  charge. The level is now slew-limited to one point per reading — still about thirty times faster
+  than this player can really discharge — and the status bar, the Device screen and the automatic
+  power-off all read that one number, so a sagged sample can no longer take the player down in the
+  middle of a track. A wide gap between the raw reading and the reported level is logged once, with
+  the voltage and whether a charger is attached.
+- **With nothing plugged in, Settings ▸ Device reported `FAULT 2`.** *Host-tested;
+  device-unverified.* The charger chip has no input then and puts a code in its fault field; the
+  player is fine. The row says `ON BATTERY` now. A fault seen while a charger IS attached still
+  shows, the raw registers are still on the footer untouched, and a code seen on battery is written
+  to the log once rather than shown as a fault.
+- **At UI scale 140% some text was drawn at the wrong size**, and a character's pixels depended on
+  which screen had been drawn before it. *Host-tested.* The glyph cache bucketed sizes to a quarter
+  of a pixel, so two text roles that close together shared whichever rasterisation happened first.
+  Found by the golden-pixel gate while adding an unrelated screen.
+
+
 ## [0.3.8] — 2026-09-17
 
 ### Added

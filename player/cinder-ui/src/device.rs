@@ -84,7 +84,8 @@ pub struct DeviceView<'a> {
     pub millivolts: i32,
     /// Sony's Itawari charge limit. The one control on this screen.
     pub care: bool,
-    /// bq24262 STATUS bits 6:4 — 0 ready, 1 charging, 2 done, 3 fault. -1 if the helper is absent.
+    /// bq24262 STATUS bits 6:4 — 0 ready, 1 charging, 2 done, 3 fault — or [`CHG_NO_INPUT`] when
+    /// nothing is plugged in. -1 if the helper is absent and the charger was not asked.
     pub chg_state: i32,
     /// bq24262 STATUS bits 2:0 — fault code, 0 = none. -1 if unknown.
     pub chg_fault: i32,
@@ -300,9 +301,28 @@ pub fn uptime_label(s: i32) -> String {
     }
 }
 
+/// Not one of the bq24262's own STATUS values: the shell's own reading that no external power is
+/// attached, which it takes from the charger-detect nodes rather than from the charger IC.
+///
+/// **This is here because "no input" is not a fault, and the part says it is.** With the cable out
+/// the bq24262 has no VBUS and reports a non-zero code in the fault field; Cinder rendered that as
+/// `FAULT 2` on a perfectly healthy player, which is how the owner saw it on 2026-09-18. The code is
+/// not decoded and cannot be — this project has no bq24262 datasheet (`analysis/RE_battery.md`) —
+/// so nothing here guesses what it means. What IS known is that `usb/online` and `dc/online` are
+/// both 0, and a charger with nothing plugged into it is idle, not broken.
+///
+/// The raw registers stay on the footer either way, so the code is still there to be read.
+pub const CHG_NO_INPUT: i32 = 4;
+
 /// The charger's own account of itself. Only STATUS is decoded — see the module header. A fault is
 /// named as a code, not as a guess at what the code means.
 pub fn charger_label(state: i32, fault: i32) -> String {
+    // ON BATTERY OUTRANKS THE FAULT FIELD, and only this state does: with no input the field
+    // describes the missing input. Every other state still lets a fault code through, because a
+    // fault while charging is exactly what this row exists to show.
+    if state == CHG_NO_INPUT {
+        return "ON BATTERY".into();
+    }
     if fault > 0 {
         return format!("FAULT {}", fault);
     }
@@ -481,6 +501,18 @@ mod tests {
         assert_eq!(uptime_label(711), "11m");
         assert_eq!(uptime_label(15120), "4h 12m");
         assert_eq!(uptime_label(273600), "3d 4h");
+    }
+
+    /// Reported 2026-09-18: with nothing plugged in the screen read `FAULT 2`. The bq24262 has no
+    /// VBUS then and puts a code in the fault field; the player is fine. "No input" is a state, not
+    /// a fault — and it must not swallow a fault seen while a charger IS attached.
+    #[test]
+    fn nothing_plugged_in_is_a_state_not_a_fault() {
+        assert_eq!(charger_label(CHG_NO_INPUT, 2), "ON BATTERY");
+        assert_eq!(charger_label(CHG_NO_INPUT, 0), "ON BATTERY");
+        // …and with a charger attached the fault field is still shown.
+        assert_eq!(charger_label(1, 2), "FAULT 2");
+        assert_eq!(charger_label(0, 0), "READY");
     }
 
     #[test]

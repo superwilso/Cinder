@@ -26,6 +26,14 @@ pub struct SongRow {
     /// reference device, so a per-row string would be thousands of heap allocations to say one of
     /// 95 things. 0 = not resolved (host/sample data). Names come from `Library::genres`.
     pub genre_id: i64,
+    /// SensMe channel membership, as the stock scanner computed it from the file's analysis tag
+    /// (`cinder_db::SensMe::channels`). A BITMASK, not a list: a track is in one to three channels
+    /// and 3,400 of these are two bytes each here against a `Vec` allocation each there. 0 = the
+    /// track was never analysed, which is every track until a PC tool tags the library.
+    ///
+    /// Only `Library::channels` reads it — it is kept on the row so a rebuilt channel list cannot
+    /// disagree with the tracks it was built from.
+    pub sensme: u16,
     /// Hi-Res Audio, from the DB's own flag — the same one the Now Playing badge reads. A filter
     /// axis rather than a decoration: Sony has "Hi-Res only" and on the reference library it is
     /// the difference between 3,463 tracks and 1.
@@ -56,6 +64,24 @@ pub struct GenreRow {
     /// on the reference device — 482 of 3,463 tracks point at a genre row whose value is "".
     pub name: String,
     pub tracks: u32,
+}
+
+/// One SensMe channel, with its members.
+///
+/// `tracks` are INDICES into `Library::songs`, not copies of the rows. A track sits in one to three
+/// channels, so copying would put two or three full `SongRow`s — four heap strings each — in the
+/// library for every analysed track; the same reasoning that keeps `genre_id` an id rather than a
+/// name. Every reader resolves through `lib.songs[i]`, and an index that does not resolve is
+/// skipped rather than panicking, because the library is rebuilt whenever the store changes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChannelRow {
+    /// Sony's channel id, 0..=12 (`cinder_db::SENSME_CHANNELS`).
+    pub id: u8,
+    /// The channel's display name. `&'static str` because the names are a fixed table in
+    /// `cinder-db`, not something the library carries per row.
+    pub name: &'static str,
+    /// Member tracks, as indices into `Library::songs`, in that list's order.
+    pub tracks: Vec<u32>,
 }
 
 /// One directory in the FOLDER browse tree.
@@ -264,6 +290,14 @@ pub struct Library {
     /// Precomputed alphabetical ranks (see [`SortRanks`]). Rebuilt by `prepare_order`; checked by
     /// `ranks()` before use, so a stale or missing table falls back to sorting with `collate`.
     pub ranks: SortRanks,
+    /// The SensMe channels that have at least one member, in channel-id order. Empty when nothing
+    /// in the library carries an analysis tag — which is the normal state until someone runs Flint
+    /// or Sony's Music Center over their files, and is what the SensMe screen's empty state is for.
+    pub channels: Vec<ChannelRow>,
+    /// How many tracks carry any SensMe analysis at all. Counted once at library build: it is what
+    /// "Shuffle all analysed" plays, and a track can be in three channels, so summing the channels
+    /// would over-count it.
+    pub sensme_tracks: u32,
     /// The FOLDER tree, flattened. Built once at library build; `folder_roots` are the entries
     /// with no parent (one per storage volume that holds music).
     pub folders: Vec<FolderRow>,
@@ -375,6 +409,10 @@ impl Library {
                 genre_id: (i % 2) as i64 + 1,
                 // A couple of Hi-Res rows so the host preview's Hi-Res filter is exercisable.
                 is_hires: i % 5 == 0,
+                // Sample SensMe membership, so the host preview draws a populated channel list.
+                // Bit 0 is Sony's always-set one; the rest put each song in one of the four sample
+                // channels below, and every third song in a second one.
+                sensme: 1 | (1 << (i % 4 + 1)) | if i % 3 == 0 { 1 << 4 } else { 0 },
             })
             .collect();
         let album_groups = data::ALBUM_GROUPS
@@ -486,8 +524,54 @@ impl Library {
             hires_tracks,
             folders,
             folder_roots: vec![0],
+            channels: Vec::new(),
+            sensme_tracks: 0,
         };
         lib.prepare_order();
+        lib.build_channels(&SAMPLE_CHANNELS);
         lib
     }
+
+    /// Build [`Library::channels`] and [`Library::sensme_tracks`] from the per-song bitmasks.
+    ///
+    /// `names` is the channel table, handed in rather than known here: cinder-ui is DB-free by
+    /// design, and the table is a reverse-engineering finding that lives with the akeys in
+    /// `cinder_db::SENSME_CHANNELS`. One implementation for the shell and for [`Library::sample`],
+    /// so the host preview cannot drift from the device.
+    ///
+    /// Empty channels are DROPPED. Sony's player has thirteen and a library will populate a
+    /// handful; a list of thirteen rows where nine open onto nothing is a worse screen than a list
+    /// of four that all play something.
+    pub fn build_channels(&mut self, names: &[&'static str]) {
+        self.channels.clear();
+        self.sensme_tracks = self.songs.iter().filter(|s| s.sensme != 0).count() as u32;
+        for (id, name) in names.iter().enumerate() {
+            let bit = 1u16 << (id + 1);
+            let tracks: Vec<u32> = self
+                .songs
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.sensme & bit != 0)
+                .map(|(i, _)| i as u32)
+                .collect();
+            if !tracks.is_empty() {
+                self.channels.push(ChannelRow { id: id as u8, name, tracks });
+            }
+        }
+    }
+
+    /// Every analysed track, in library order — what "Shuffle all analysed" plays. A track in three
+    /// channels appears ONCE, which is why this cannot be the channels concatenated.
+    pub fn sensme_all(&self) -> Vec<u32> {
+        self.songs
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.sensme != 0)
+            .map(|(i, _)| i as u32)
+            .collect()
+    }
 }
+
+/// Channel names for the HOST PREVIEW's fake library only. The real table — thirteen names, in
+/// Sony's channel-id order — is `cinder_db::SENSME_CHANNELS`, and the shell passes that one.
+const SAMPLE_CHANNELS: [&str; 4] = ["Active", "Emotional", "Lounge", "Dance"];
