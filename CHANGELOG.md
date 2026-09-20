@@ -36,9 +36,13 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
-- **An install or update through the installer looked like it had failed and reverted.** *Sandbox-
-  tested (new `test_cable_pass.sh`) and `.UPG`-round-trip-verified; device-unverified — gated on a
-  hardware session, and the reporter of #14 has a recovery that needs no new build (below).* The
+- **An install or update through the installer looked like it had failed and reverted.** *Device-verified
+  2026-09-20 on an NW-A55, twice, with the `.UPG` this release publishes: the installer logged
+  `state: /data (/emmc@usrdata) mounted`, and on the second flash — cable never unplugged, the
+  kernel recording VBUS at 8.96 s — the launcher found the pass on the real partition and Cinder
+  came up with the cable in, which is exactly the boot that used to land on Sony's player. Also
+  sandbox-tested (new `test_cable_pass.sh`) and `.UPG`-round-trip-verified. The reporter of #14 has
+  a recovery that needs no new build (below).* The
   update itself succeeded every time; what failed was the promise that came back with it. The
   installer tells the user not to unplug the player, so the first boot after an update always has
   the cable in — and that boot hit rung 0, the cable escape, and opened Sony's player. v0.3.7's
