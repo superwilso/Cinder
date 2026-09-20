@@ -713,6 +713,37 @@ static void s_battery_dip_does_not_power_off(void) {
     check_range(lowest, 33, 40, "the reported level slews instead of following the sag");
 }
 
+// THE CASE THE OWNER ACTUALLY REPORTED: 22%, then 58% seconds after the cable went in. Plugging a
+// charger in raises terminal voltage immediately — the charger's regulation voltage less the drop
+// across the cell's own resistance — so a voltage-derived gauge reads a fuller battery before any
+// charge has gone in. The level must walk there, not jump.
+static void s_battery_jump_on_charger_is_slewed(void) {
+    healthy_device();
+    cinder_harness_fs_write("/sys/class/power_supply/battery/capacity", "22\n");
+    cinder_harness_fs_write("/sys/class/power_supply/battery/status", "Not charging\n");
+    cinder_harness_fs_write("/sys/class/power_supply/usb/online", "0\n");
+    // The cable lands at 20 s and the reading jumps 36 points with it.
+    cinder_harness_fs_write_at(20000, "/sys/class/power_supply/usb/online", "1\n");
+    cinder_harness_fs_write_at(20000, "/sys/class/power_supply/battery/status", "Charging\n");
+    cinder_harness_fs_write_at(20000, "/sys/class/power_supply/battery/capacity", "58\n");
+    cinder_harness_set_budget_ms(60000);
+    cinder_harness_run();
+    const int n = cinder_harness_count("cinder_set_battery");
+    check(n > 2, "the gauge ran");
+    long long biggest = 0;
+    for (int i = 1; i < n; i++) {
+        const long long a = cinder_harness_arg("cinder_set_battery", i - 1);
+        const long long b = cinder_harness_arg("cinder_set_battery", i);
+        const long long step = b > a ? b - a : a - b;
+        if (step > biggest) biggest = step;
+    }
+    std::printf("  .... biggest single step: %lld points\n", biggest);
+    check_eq(biggest, 1, "no step is bigger than one point, however far the reading jumps");
+    // And it is walking the right way: the last reading is above where it started.
+    check(cinder_harness_arg("cinder_set_battery", n - 1) > 22,
+          "the level climbs toward the new reading instead of ignoring it");
+}
+
 // …and the protection still works: a battery that is really flat reads low every time it is asked,
 // so the slew limit converges on it and the player goes down cleanly. (The three scenarios above
 // pin the immediate case, where the first reading of the session IS the flat one and seeds the
@@ -1225,6 +1256,7 @@ static const Scenario kScenarios[] = {
     {"lowbatt-charger",   s_low_battery_on_charger,  "critical battery on a charger: stay up"},
     {"lowbatt-warn",      s_low_battery_warns,       "low battery on battery: warn, do not power off"},
     {"batt-dip",          s_battery_dip_does_not_power_off, "a sagging voltage gauge does not switch the player off"},
+    {"batt-plug",         s_battery_jump_on_charger_is_slewed, "…and a jump when the charger lands is walked, not taken"},
     {"batt-flat",         s_battery_really_flat_still_powers_off, "…and a really flat battery still does"},
     {"scrobble-opens",    s_scrobble_opens,          "the built-in scrobbler opens when it is alone"},
     {"scrobble-yields",   s_scrobble_yields,         "…and stands down while unknown321/scrobbler runs"},

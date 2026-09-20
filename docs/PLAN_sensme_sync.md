@@ -266,8 +266,9 @@ measurements changed from the design above:
 | 2 | **M0** device proof (§4) — **FLAC and MP3 PASS 2026-09-17**; stock SensMe screen check under way (channel names) | — | — |
 | 3 | `sensme-helper` — **done** (Flint, Rust, i686); output byte-identical to the probe | — | — |
 | 4 | Rewrite skeleton + cache + manifest + FLAC injection — **done 2026-09-17**: skeleton, FLAC + MP3 injection, content-keyed cache, parallel `flint scan`, per-volume manifest, the two-volume planner (`sync.rs`) and the transfer itself (`apply.rs`, `flint sync [--apply]`), 45 tests. Left from Sony-sync: likes/scrobbles, album exclusions, the TUI | 1 session left | — |
-| 5 | **M1 + M2** in Cinder | 2 sessions | M0 |
+| 5 | ~~**M1 + M2** in Cinder~~ — **done 2026-09-18** (`dde1ec0`): `cinder-db` resolves the akeys by name from the store's own `schema` and reads the bitmask, the five axes and the sabi; the library builds the channels; a two-level SensMe screen browses and plays them; `sensme` is an opt-in install component. The sabi is read and NOT yet seeked to, deliberately — see `docs/AUDIT_2026-09-18.md` C5. **Device-unverified**: `DEVICE_CHECKLIST.md` 14.1–14.3 | — | done |
 | 6 | M4A tags (MP3 and parallel helpers done) | half a session | — |
+| 6a | Music Center interop — **done 2026-09-18** (Flint `22cbbe5`): a tag already in a file is taken as it stands, `flint import` reads Music Center's own per-track cache, and both are compacted to the chunks the player reads. Plus `docs/MUSIC_CENTER.md`, the feature-by-feature comparison | — | done |
 | 7 | Release pipeline (licence, README, name **Flint** and a private GitHub repo done) | half a session | — |
 | 8 | ~~**Lossless check** (§5a)~~ — **done 2026-09-17**: `flint check`, calibrated against transcodes | — | — |
 | 9 | Front door; option C | later | — |

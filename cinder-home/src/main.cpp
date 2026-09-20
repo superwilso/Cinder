@@ -10009,10 +10009,18 @@ int read_battery() {
 // the top of the charge — and the mid-range of this chemistry is flatter still, so a point there is
 // worth two or three millivolts.
 //
-// A cell driving the amp, the screen and a Bluetooth radio sags by tens of millivolts the moment the
-// load arrives and recovers when it goes. On a voltage-derived gauge that is not a small error: it
-// is tens of percentage points. Reported 2026-09-18 by the owner — 22%, then 58% seconds later,
-// then 61%.
+// Two things move terminal voltage without the charge moving at all, and on a voltage-derived gauge
+// both are worth tens of percentage points:
+//
+//   * LOAD. A cell driving the amp, the screen and a Bluetooth radio sags by tens of millivolts the
+//     moment the load arrives, and recovers when it goes.
+//   * THE CHARGER. Plug one in and the terminal voltage is the charger's regulation voltage minus
+//     the drop across the cell's own resistance — immediately, before any charge has gone in. The
+//     gauge reads that as a fuller battery the instant the cable lands.
+//
+// Reported 2026-09-18 by the owner: 22%, then 58% seconds after PLUGGING IN, then 61%. That is the
+// second case, on top of whatever sag the first had already produced — and 36 points of it arrived
+// in the time it takes to push a plug in, which no battery does.
 //
 // So the level is SLEW-LIMITED: at most one point per poll (~10 s) toward whatever sysfs says.
 // That is 6 points a minute, roughly thirty times faster than this device can really discharge, so
@@ -10113,6 +10121,10 @@ static void read_charger(int* state, int* fault, char* raw, size_t rawsz) {
     ::pclose(p);
 }
 
+// Is anything feeding the cell? Defined further down, beside the battery guard that is its other
+// caller; declared here because `push_battery_detail` needs it to tell "no input" from a fault.
+static bool battery_charging();
+
 // Gather and push the full readout. `with_charger` gates the fork; when false the charger fields
 // go through as "unknown", which the screen renders as a dash rather than as a wrong reading.
 static void push_battery_detail(int pct, bool with_charger) {
@@ -10125,6 +10137,30 @@ static void push_battery_detail(int pct, bool with_charger) {
     int cstate = -1, cfault = -1;
     char raw[64] = {0};
     if (with_charger) read_charger(&cstate, &cfault, raw, sizeof raw);
+    // NOTHING PLUGGED IN IS NOT A FAULT. With no VBUS the bq24262 puts a non-zero code in the
+    // STATUS register's fault field, and the screen rendered it as `FAULT 2` on a healthy player
+    // (reported 2026-09-18, with the cable out). The code is not decoded and will not be guessed
+    // at — there is no datasheet for this part here — but the charger-detect nodes are unambiguous
+    // and are the same ones battery_guard trusts to decide whether to switch the device off.
+    //
+    // Set here rather than in the UI because this is the only place that holds both readings, and
+    // it applies even when the charger helper was not run: "on battery" is worth saying on its own.
+    // The raw registers still go through untouched, so the code remains on the footer, and the
+    // first time one appears it is logged — a fault field that changes on battery is worth having
+    // in the log even though it is not worth a word on the screen.
+    if (!battery_charging()) {
+        static int logged_fault = -1;
+        if (cfault > 0 && cfault != logged_fault) {
+            logged_fault = cfault;
+            char m[128];
+            std::snprintf(m, sizeof m,
+                          "battery: charger reports fault code %d with no input attached "
+                          "(shown as ON BATTERY; raw %s)", cfault, raw[0] ? raw : "unread");
+            clog_(m);
+        }
+        cstate = 4;   // cinder_ui::device::CHG_NO_INPUT
+        cfault = 0;
+    }
     cinder_set_battery_detail(pct, status, health, mv, cstate, cfault, raw);
 }
 
@@ -11654,11 +11690,16 @@ void* render_driver(void*) {
                 char vb[32];
                 const int uv = read_sysfs_int("/sys/class/power_supply/battery/voltage_now");
                 std::snprintf(vb, sizeof vb, "%d", uv);
-                char m[160];
+                // Say which way it went and whether a charger is attached, because those two
+                // together name the cause: up with a cable is the charger's own voltage, down
+                // without one is load sag, and anything else is worth a second look.
+                char m[200];
                 std::snprintf(m, sizeof m,
-                              "battery: sysfs says %d%%, reporting %d%% (voltage_now %s uV) — "
-                              "load sag on a voltage-derived gauge",
-                              g_batt_raw, pct, uv == BATT_UNKNOWN ? "?" : vb);
+                              "battery: sysfs says %d%%, reporting %d%% (voltage_now %s uV, "
+                              "charger %s) — %s on a voltage-derived gauge",
+                              g_batt_raw, pct, uv == BATT_UNKNOWN ? "?" : vb,
+                              battery_charging() ? "in" : "out",
+                              g_batt_raw > pct ? "a jump" : "load sag");
                 clog_(m);
             } else if (gap < 2) {
                 diverged = false;
