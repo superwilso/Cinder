@@ -34,6 +34,32 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Fixed
 
+- **An install or update through the installer looked like it had failed and reverted.** *Sandbox-
+  tested (new `test_cable_pass.sh`) and `.UPG`-round-trip-verified; device-unverified — gated on a
+  hardware session, and the reporter of #14 has a recovery that needs no new build (below).* The
+  update itself succeeded every time; what failed was the promise that came back with it. The
+  installer tells the user not to unplug the player, so the first boot after an update always has
+  the cable in — and that boot hit rung 0, the cable escape, and opened Sony's player. v0.3.7's
+  answer was a one-shot pass on `/data`: the installer's payload writes it, the launcher spends it,
+  the player comes back on Cinder with the cable still in. But the payload writes it from inside
+  Sony's UPDATER, which boots from a small ramdisk and mounts only `/contents` — the payload itself
+  mounts `/system`, and nothing ever mounted `/data`. Every `/data` write in the install script
+  therefore landed on the ramdisk, or failed, and evaporated at reboot behind a `2>/dev/null`:
+  the pass never reached the launcher (#14, an NW-A55 on 0.3.4 → 0.3.8 whose player "refused to
+  boot into Cinder" after four installs that all worked). The payload now mounts
+  `/emmc@usrdata` at `/data` the same way it mounts `/emmc@android` at `/system`; the pass is
+  verified by read-back before the log says it was left; and if the mount fails the install log
+  says so and names the recovery instead of printing a line that was never true. The same mount
+  makes the bad-boot flag clears, the search, sensme and scrobble flags, and the mono safe-mode
+  counter survive the reboot they were written for; the uninstall payload mounts `/data` too, so its
+  `/data/cinder/off` escape flag and its state cleanup actually land. For anyone already sitting
+  on a "failed" 0.3.8 update: the install is on the player — unplug the USB cable, hold POWER to
+  switch off, and switch on without the cable. Neither the mount nor the check trusts one source:
+  the updater's `/dev` need not carry Sony's `/emmc@*` aliases, so the mount is retried against
+  the raw partition, and `/proc` need not be mounted there either, so a sentinel file dropped on
+  the ramdisk first decides whether anything really mounted over it — a write to an unmounted
+  `/data` reads back `1` exactly like a good one, which is how this survived four installs.
+
 - **The battery percentage jumped by tens of points, and could switch the player off.** *Host- and
   harness-tested; device-unverified.* Reported 2026-09-18: 22%, then 58% seconds after the charger
   went in, then 61%. This device has no fuel gauge — the kernel has every MediaTek state-of-charge
@@ -54,7 +80,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   which screen had been drawn before it. *Host-tested.* The glyph cache bucketed sizes to a quarter
   of a pixel, so two text roles that close together shared whichever rasterisation happened first.
   Found by the golden-pixel gate while adding an unrelated screen.
-
 
 ## [0.3.8] — 2026-09-17
 

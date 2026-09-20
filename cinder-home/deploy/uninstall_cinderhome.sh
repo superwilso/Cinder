@@ -23,6 +23,21 @@ SIG=$BIN/cinder-signature.sh
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
 
+# /data, mounted by us for the same reason as in install_cinderhome.sh (see its "state
+# partition" block): the NWZ updater's ramdisk does not provide it, and the `off` flag below
+# must reach the NEXT boot's launcher, not the ramdisk. Until 0.3.8 this write never landed —
+# only the /contents twin did (which is what actually kept a failed uninstall non-bricking,
+# because the launcher honours both). With the mount, the authoritative /data flag and the
+# state cleanup further down work as written (issue #14, same root cause as the install).
+[ -d /data ] || "$BB" mkdir -p /data 2>/dev/null
+mount -t ext4 -o rw /emmc@usrdata /data 2>/dev/null
+mount -o remount,rw /emmc@usrdata /data 2>/dev/null
+if "$BB" grep -q " /data " /proc/mounts 2>/dev/null; then
+    echo "state: /data (/emmc@usrdata) mounted"
+else
+    echo "WARN: /emmc@usrdata could not be mounted at /data — the off flag is set on /contents only"
+fi
+
 # Restore the stock .appcfg ATOMICALLY + verified. NEVER leave a truncated .appcfg (soft-brick).
 restored=0
 if [ -f "$APPCFG.real" ]; then
@@ -45,7 +60,7 @@ fi
 # Set it in BOTH places: /data/cinder/off is the one the launcher treats as authoritative,
 # /contents/cinderhome_off is the USB-MSC-visible copy (and what pre-2026-07-26 launchers read).
 "$BB" mkdir -p /data/cinder 2>/dev/null
-touch /data/cinder/off 2>/dev/null
+touch /data/cinder/off 2>/dev/null && echo "off flag: /data/cinder/off"
 touch /contents/cinderhome_off 2>/dev/null; sync
 
 # Only remove the launcher + binary once stock is verifiably restored. Otherwise KEEP them, so the
@@ -107,6 +122,7 @@ else
     echo "kept launcher/binary (restore incomplete); cinderhome_off set -> launcher runs stock."
 fi
 sync
+umount /data 2>/dev/null
 umount /system 2>/dev/null
 echo "== done. reboot to normal -> stock Qt UI. =="
 echo "   Your music, playlists and settings on the data partition were not touched."
