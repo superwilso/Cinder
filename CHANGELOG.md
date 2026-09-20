@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.9] — 2026-09-20
+
 ### Added
 
 - **SensMe channels.** *Host-tested; device-unverified — `docs/DEVICE_CHECKLIST.md` 14.1–14.3.* Browse
@@ -1853,7 +1855,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/superwilso/Cinder/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/superwilso/Cinder/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/superwilso/Cinder/compare/4e1f76a...v0.3.7
 [0.3.6]: https://github.com/superwilso/Cinder/compare/v0.3.5...4e1f76a
