@@ -242,6 +242,29 @@ mellow, morning, daytime, evening, night, midnight, shuffle all — if that is t
 Thunderstruck *emotional + upbeat*, Penny Lover *lounge + morning*. All five keep the pattern of one id
 in 0-4 and one or two in 5-12. **Unverified**; the stock SensMe screen settles it.
 
+**Which column feeds the bit — settled (2026-09-20).** The table is PIC-addressed, so Ghidra
+records no xref to it; scanning `.text` for literal-pool words that resolve to `0x1b673c` finds
+exactly two call sites, and both were decompiled. `FUN_000540dc` (the chunk-array path, pool
+`0x541d0` + anchor `0x54124`) and `FUN_000541d8` (the read-func path, pool `0x542cc` + anchor
+`0x54220`) each do
+
+```c
+mask |= 1 << (*(int *)(table + v * 0xc) + 1);   /* v = the channel the SMU engine returned, 0..12 */
+```
+
+— **column 0 only**, and column 0 is the identity. So `WMCHANNELINFO` bit `n` is engine channel
+`n - 1`, the rule already used, now from the code rather than from the sample. The middle column's
+permutation (2, 4, 0, 3, 1 over ids 0-4, identity above) is read by nothing in
+`libMediaStoreService.so`. That is the useful negative result: the store's numbering *is* the
+engine's numbering, so the only thing an id → name list can still be wrong about is which order
+Sony's thirteen names are in — and the permutation is evidence that a second ordering of exactly
+the first five exists somewhere (the player app, most likely). Checklist 14.2 remains the test.
+
+**Lead, unconfirmed.** `FUN_00055ea8` classifies a track by nearest neighbour over 48 prototypes of
+sixteen doubles each (stride `0x80`, the block that begins at `0x1b67dc`, right after the channel
+table), returning 1..48 in its out-parameter. Which SensMe property that number becomes is not
+established; it is not the channel bitmask, which comes from the two functions above.
+
 ## 11. What is left, in order
 
 1. **One Music Center-tagged file** (§8): the megabyte question and the MP3 payload. No longer needed
