@@ -2,7 +2,7 @@
 # Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
-tag v0.3.9
+tag v0.3.10-rc1
 36ce4d2bcd0c2788eb38d8bca9283d13f48b90e7690919dae89257f36447d1d4  cinder-home/dist/stable/cinder-home
 6aeae8facfcedb276ffbeaf19c61a9c3a781117cb1b1f1b5fc3c102a832fba75  cinder-home/dist/stable/cinder-probe
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
@@ -15,5 +15,5 @@ f7682696f4f1c200c5ceb9ae04b82aac7ca5a7515ba3ff76db8f92cf61624898  cinder-home/di
 763b0c422a3eb185b7a58466881d6fde0c6233994f73767178edbca3dd2bbb22  cinder-home/dist/stable/cinder-signature.sh
 bbb375f10de212ac9963b57e3df0661e841481133661a4960f4d07f75758284a  cinder-home/dist/stable/libcinder_mono.so
 458a402e8e1a5b5c37721e5a33298ecbb76173552f1ff2daa4708e1eb7735e05  cinder-home/dist/stable/cinder_components.conf
-5b2554f32f265dbb1edf66d135bc1ad4d7de95b7770123688fac049d612a46c6  cinder-home/dist/stable/cinder_home_install.upg
+9c29e782ba62797f5c99a268464ac96ecc26a2a99ddca2640ef56d9d42671dd2  cinder-home/dist/stable/cinder_home_install.upg
 44064d1d124e61959180d604866b725a24d79b8a991df97604c4ed5ccc402719  cinder-home/dist/stable/cinder_home_uninstall.upg
