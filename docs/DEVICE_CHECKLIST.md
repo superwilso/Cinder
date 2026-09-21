@@ -397,3 +397,83 @@ whether the capture opened first time, what the Bluetooth screen named.
 
 If you have the player and five minutes, re-run 11.10 with `adb shell 'tail -f /contents/cinderhome.log'`
 running and paste the excerpt into `cinder-home/STATUS.md`. That upgrades the row and costs nothing.
+
+
+## 17 — After the 2026-09-21 Walkman One boot loop
+
+**What happened.** Cinder was installed onto a player running Walkman One 3.02 by running
+`install_cinderhome.sh` directly as root over adb (the Sony updater refused the package — see
+below). The install itself was clean: `.appcfg` repointed, all nine binaries placed with their
+setuid bits, `.appcfg.real` backed up, launcher written. On reboot **the player boot-looped, and
+the loop survived a cable-in boot** — rung 0 of the escape ladder, which needs no filesystem.
+Recovered with wbrt.
+
+**A loop that outlives rung 0 is happening before or beneath the launcher.** The first hypothesis — that
+`cinder-home` is built against stock 1.02 libraries and fails appmgr's handshake on 3.02 — **was
+tested off-device the same evening and is dead**: all 13 Sony libraries Cinder links against export
+identical symbols, and `libeaselcore`/`libeaselcui`/`libpstcore`/`libappmgrservice` are
+byte-identical between the two firmwares. **The cause is currently unknown**; see
+[`VISION_four_builds.md`](VISION_four_builds.md) §2. 17.1 is now the step that matters.
+
+**Two separate findings from the same attempt, worth keeping:**
+
+* The Sony updater **did** run and rejected the package explicitly. `nvp zr 26 4` (NVP node 26,
+  *FWUP result*) read `45 55 50 47` = `EUPG` = `E_UPGFILE`, which the recovery ramdisk's
+  `install_update_script/icx_start_update.sh` sets when **`fwpchk -f … -c` (md5 & signature)
+  fails**. So a correctly `nw-wm1a`-sealed package is still refused, consistent with the
+  long-carried note that Walkman One mutates `fwpchk`'s key. **Sealing the package for the right
+  model is necessary and not sufficient on Walkman One.**
+* The updater can be triggered without `flash.sh`/`scsitool` and without root on the host:
+  `nvpflag fup 0x70555766` over adb, then reboot. It is self-clearing (`nvpflag fup -1` on every
+  failure path), so a rejected package cannot loop the updater.
+
+> **Rule added by this session.** `install_cinderhome.sh` is written to run **inside the Sony
+> updater**, where nothing else holds `/system` or `/data`. Running it on a live system works but
+> its `data_is_mounted()` sentinel false-negatives (the sentinel is designed for the updater's
+> ramdisk and survives on a real, already-mounted `/data`), so `DATA_MOUNTED=0` and **the cable
+> pass is silently not written**. That has to be written by hand afterwards, or the first boot
+> lands on stock. If direct-install becomes a supported path, that check needs a live-system branch.
+
+> **State after recovery, 2026-09-21.** wbrt restored the player to **stock firmware, not Walkman
+> One**, with USB-MSC up and **no adb** (stock ships adb off; `/system/vendor/sony/bin/AdbEnabler`
+> exists but needs a shell to run, which is the chicken-and-egg). Two consequences:
+>
+> * **17.4 and 17.6–17.7 do not apply until Walkman One is reinstalled** — there is no
+>   `/sbin/boot_complete.sh`, no `/contents/CFW/settings.txt` and no `clv` tint on stock. (When W1
+>   *is* reinstalled, adb comes back for free by adding a line `ADB=1` to `CFW/settings.txt` over
+>   MSC — that block runs outside the `TMD5` guard, so it works even in the "tuning not applied"
+>   state. On stock there is no such hook.)
+> * **This is not a setback for builds ① and ②.** Stock is Cinder's known-good target; it is where
+>   the stock-like UI skin gets built and where everything except the firmware axis can proceed.
+>   **17.3 is now the priority, and it needs no device at all.**
+>
+> Getting adb back on stock means flashing something that enables it — the dev-channel Cinder
+> package self-enables adb — which needs either `tools/flash.sh` (root on the host) or the
+> end-user installer. Owner's call; nothing below is blocked on it except 17.1–17.2.
+
+### Phase A — no boot risk at all (read-only, stock firmware running)
+
+| # | Item | Do | PASS |
+|---|---|---|---|
+| 17.1 | **Get the evidence off the player before anything overwrites it** | `adb pull /contents/cinderhome.log`, `adb pull /contents/cinder_home_install.log`, and `adb shell ls -la /data/cinder/` | Either the launcher wrote breadcrumbs (→ the loop is **above** the launcher, and the log names the rung) or it wrote nothing (→ the loop is **beneath** it, i.e. appmgr) |
+| 17.2 | **Does `cinder-home` start on 3.02 at all?** — the decisive, loop-proof test | With the **stock app still Home**, run the binary from a shell: `adb shell 'LD_LIBRARY_PATH=/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib /path/to/cinder-home'`. It cannot take Foreground and will exit — that is expected | A **link error, missing symbol or SIGSEGV appears immediately**. That is the answer. This cannot loop the device because nothing repoints `.appcfg` |
+| 17.3 | ~~**Which Sony libraries differ between 1.02 and 3.02?**~~ **DONE 2026-09-21, off-device: 0 symbol differences across all 13 Cinder-linked libs; easel/appmgr byte-identical. 65 of the full set identical, 18 differ — of those Cinder links, only `libEffectCtrlDmp.so` and `libMediaStoreServiceClient.so`, both same-exports/different-code** | Off-device: symbol-diff Walkman One's `/system/vendor/sony/lib` against the catalogued 1.02 set in the Sony-files repo (`firmware/nw-a50/1.02/system/symbols/`) | A list of changed/removed exports. If `easel`/appmgr-facing symbols moved, 17.2's failure is explained and the fix is a per-firmware build |
+| 17.4 | **Confirm the wbrt restore put Walkman One back intact** | `adb shell 'nvpstr kas; nvpstr fpi; nvpflag -x mid; cat /opt2/sig; tail -30 /contents/CFW/boot_log.txt'` | `kas` nw-wm1a, `fpi` NW-WM1Z, `/opt2/sig` `wm1z`, and a fresh boot entry. **Note whether it still says "tuning was not applied"** — it did before the loop, so that is pre-existing, not damage |
+| 17.5 | **NVRAM state, for the external-tuning question** | `adb shell 'md5sum /dev/block/mmcblk0p3'`, compare with `/opt2/stock/nv_bk` | Equal ⇒ no tuning applied. Records the baseline before any tuning work, and is exactly the test Walkman One's own boot script uses |
+
+### Phase B — cheap, still no install
+
+| # | Item | Do | PASS |
+|---|---|---|---|
+| 17.6 | **Clear Bass with the stock UI as reference** (was 16.5) | Cable **out**. Set Clear Bass in Walkman One's Sound Settings, then compare the service log and effect state against what `cinder-probe --clearbass` writes | The difference names what `Eq6band::UpdateProcCond` waits for. Do **not** run `cinder-probe` playback paths while the stock app owns the player |
+| 17.7 | **Read `clv`** | `adb shell 'nvpflag -x clv'` against `COL` in `/contents/CFW/settings.txt` | They agree. Confirms Cinder can honour the icon tint for free |
+
+### Phase C — only after 17.1–17.3 have an answer
+
+| # | Item | PASS |
+|---|---|---|
+| 17.8 | A `cinder-home` that **starts** under 3.02 (however it is achieved) | 17.2 runs clean |
+| 17.9 | Re-attempt the install, **cable pass written by hand**, wbrt backup current | Cinder paints |
+
+**Do not re-attempt an install on Walkman One before 17.2 answers.** The failure mode is a boot
+loop below the escape ladder, and the only way out of it is the one that was just used.
