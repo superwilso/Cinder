@@ -15,12 +15,34 @@ CH="$HERE/.."                                  # cinder-home/
 REPO="$CH/.."
 UPGTOOL="$REPO/artifacts/upgtool"
 EXECFILE="$REPO/artifacts/repos/rockbox/utils/nwztools/scripts/exec_file.sh"
-MODEL=nw-a50
+# WHICH KEY THE PACKAGE IS SEALED WITH. A .UPG is encrypted with the model's KAS, and Sony's
+# updater silently refuses one it cannot decrypt: it boots, fails, and reboots, leaving no log and
+# no change — which looks exactly like "the installer did nothing".
+#
+# That is not hypothetical. A player running Walkman One has had its NVP rewritten: on the A55 here
+# on 2026-09-21, `nvpstr kas` returned e8d171a5…26c — the **nw-wm1a** KAS — so every nw-a50 package
+# was rejected without a word. Pack a second one for that key and it installs normally.
+#
+#   pack_upg.sh dev                  the A50 package (default)
+#   pack_upg.sh dev nw-wm1a          for a player whose KAS says WM1A (Walkman One)
+#
+# Read a player's own key with `nvpstr kas` over adb, or `upgtool -m ?` to see which model it is.
+MODEL="${2:-nw-a50}"
 # Channel: stable (default) | dev. Artifacts go to dist/<channel>/ so the two builds never clobber.
 # The install/uninstall .UPGs are channel-agnostic (they push whatever binary is at /contents/
 # cinder-home); only the staged binary differs (dev = "CINDER DEV" marker + self-enables adb).
 CHANNEL="${1:-stable}"
-case "$CHANNEL" in stable|dev) ;; *) echo "usage: pack_upg.sh [stable|dev]"; exit 1 ;; esac
+case "$CHANNEL" in stable|dev) ;; *) echo "usage: pack_upg.sh [stable|dev] [model]"; exit 1 ;; esac
+# -n is upgtool's no-colour flag (without it the names arrive wrapped in escape codes), and the
+# list goes to STDERR, so it has to be folded in. The list is captured FIRST rather than piped
+# straight into grep: `upgtool -m ?` has nothing to do and exits non-zero, and under `pipefail`
+# that fails the whole pipeline even when grep matched — which refused every model, including the
+# default one.
+MODEL_LIST="$("$UPGTOOL" -n -m '?' 2>&1 || true)"
+case "$MODEL_LIST" in
+    *"  $MODEL: kas="*) ;;
+    *) echo "ERR: upgtool does not know a model called '$MODEL' (upgtool -n -m '?' lists them)"; exit 1 ;;
+esac
 DIST="$CH/dist/$CHANNEL"; mkdir -p "$DIST"
 echo "[pack_upg] channel: $CHANNEL -> $DIST"
 
@@ -50,8 +72,10 @@ pack() {  # pack <payload.sh> <out.upg>
 }
 
 echo "[pack_upg] building install/uninstall .UPG ($MODEL)…"
-pack "$CH/deploy/install_cinderhome.sh"   "$DIST/cinder_home_install.upg"
-pack "$CH/deploy/uninstall_cinderhome.sh" "$DIST/cinder_home_uninstall.upg"
+SUFFIX=""
+[ "$MODEL" = nw-a50 ] || SUFFIX=".$MODEL"
+pack "$CH/deploy/install_cinderhome.sh"   "$DIST/cinder_home_install$SUFFIX.upg"
+pack "$CH/deploy/uninstall_cinderhome.sh" "$DIST/cinder_home_uninstall$SUFFIX.upg"
 
 # The CHANNEL binaries are staged by `build.sh <channel>` into this same dist/<channel>/ dir, so we
 # do NOT copy from cinder-home/cinder-home here (that's whatever was built LAST — would mismatch the
