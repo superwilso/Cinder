@@ -401,6 +401,50 @@ running and paste the excerpt into `cinder-home/STATUS.md`. That upgrades the ro
 
 ## 17 — After the 2026-09-21 Walkman One boot loop
 
+> ## RESOLVED — 2026-09-21, later the same day. Cinder runs on Walkman One 3.02.
+>
+> `ps` on a W1 boot: `system 830 495 /system/vendor/unknown321/bin/cinder-home`. The full easel
+> handshake completes (`ToInitialize → ToPostInitialize → ToActivate → OnForeground`),
+> `/data/cinder/bootcount` reads `0` — cinder-home's own "painted and proved healthy" signal — the
+> cable pass is spent, and 77 KB of `cinderhome.log` has no errors in it.
+>
+> **The cause was ours, not Walkman One's.** `install_cinderhome.sh` created `/data/cinder` with
+> `mkdir -p` as root under `umask 077` → **`0700 root:root`**. The launcher and cinder-home run as
+> **uid 100**, which on this player *is* the user `system` (`/etc/passwd`: `system:…:100:100:`),
+> because appmgr's service line `hagoromo2` is `user system` and the Home app inherits it. Deleting a
+> file needs write permission on the **directory**, so the launcher could not spend
+> `cable_pass_once` — `CABLE_PASS_SPENT` stayed `0` and **the rung-0 cable escape fired on every
+> boot**, `exec`ing Sony's player. It could not write `bootcount` or its breadcrumb either, and
+> `/contents` is not mounted that early, so the other breadcrumb path failed too.
+>
+> **Why that read as a boot loop, and then as "the launcher never ran".** The resulting state — Sony's
+> app up, no `bootcount`, no breadcrumb, an unspent cable pass — is indistinguishable from *appmgr
+> never exec'd the launcher*. That conclusion was drawn twice before the permission bits settled it.
+> **A launcher that ran and took an escape looks exactly like one that never ran, unless it can write
+> somewhere.** A probe script that logs only to `/data/cinder` or `/contents` proves nothing at boot;
+> use `/var/log` (init makes it `0777`) or `/tmp`.
+>
+> **Two hypotheses tested and killed** — record them so they are not retried: the ABI theory (dead, see
+> below), and `.appcfg.real` sitting inside appmgr's `readdir_r` scan directory
+> `/system/vendor/sony/bin` declaring the same `name:`. The backup was moved to
+> `/system/vendor/unknown321/` and the boot retried: **no change**. appmgr does honour an absolute
+> `command:`.
+>
+> **Correction to the rule recorded at the bottom of this section.** On this session's live install
+> `data_is_mounted()` did **not** false-negative — the log read `state: /data (/emmc@usrdata) mounted`
+> and the cable pass was written normally. What *did* bite is the installer's tail: `umount /data`
+> succeeded on the live system, leaving `/data` unmounted on a running player until
+> `/system/bin/mount_partition usrdata` put it back. That is the live-system hazard to fix, not the
+> sentinel.
+>
+> **What made the diagnosis possible**, and what to keep using: `ADB=1` in
+> `/contents/CFW/settings.txt` (persists adb across W1 boots), `icx_syslog` started by hand
+> (`setprop ctl.start icx_syslog` — W1 never starts it), and
+> [`cinder-home/deploy/cinder-guard.sh`](../cinder-home/deploy/cinder-guard.sh), which sits below
+> appmgr and made each attempt survivable. Mechanism and measurements:
+> [`analysis/RE_walkmanone_extract.md`](../analysis/RE_walkmanone_extract.md), third session.
+
+
 **What happened.** Cinder was installed onto a player running Walkman One 3.02 by running
 `install_cinderhome.sh` directly as root over adb (the Sony updater refused the package — see
 below). The install itself was clean: `.appcfg` repointed, all nine binaries placed with their

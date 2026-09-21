@@ -570,3 +570,185 @@ silently ignored.
 
 Framebuffer capture is free and needs no tool: `/dev/graphics/fb0`, 480×800, 32bpp **BGRA**,
 1,536,000 bytes for the visible buffer (`virtual_size` reports 480×2400 — three buffers).
+
+---
+
+## MEASURED ON THE LIVE WALKMAN ONE PLAYER — 2026-09-21 (third session): the boot script, and Cinder running on top
+
+This session answered the two questions the earlier ones left open: **what runs Walkman One**, and
+**why Cinder would not start under it**. Both turned out to be smaller than the theories about them.
+
+### Walkman One is a 1452-line shell script
+
+`/sbin/boot_complete.sh` — 43,869 bytes, header `# Walkman One / Settings Processor and Boot Script
+v3 / for A50/40/30 / 2021-09-22 / MrWalkman`. It is not a daemon, not a patched binary: it is one
+`sh` script that init runs once per boot. Everything the mod does to a running player, it does from
+there.
+
+It lives on the **ramdisk**, so it cannot be edited persistently without repacking the boot image.
+
+### The boot order, which is the part that matters
+
+From W1's `init.rc`, `on boot`:
+
+```
+exec /bin/sh /sbin/boot_complete.sh     <- BLOCKS init until it returns
+start adbd
+start sshd
+...
+exec /bin/sh /system/bin/bootswitcher.sh
+  -> setprop sys.sony.bootmode 1
+     -> on property:sys.sony.bootmode=1: class_start hagoromo
+        -> hagoromo2 = hagodaemon appmgrservice   (user system)
+           -> appmgr execs the Home app
+```
+
+Three consequences worth keeping:
+
+1. **`adbd` starts BEFORE the Home app.** A Home-app boot loop therefore still leaves an adb window
+   on every cycle — which is the opposite of what we assumed during the 2026-09-21 loop.
+2. **`/system/bin/bootswitcher.sh` is the last hook upstream of appmgr**, and unlike `/sbin` it is on
+   persistent `/system`. That makes it the only place to put a safety net that is strictly *below*
+   the thing it rescues. See "The boot guard" below.
+3. `boot_complete.sh` blocks init, so **a hang in it is a worse brick than anything it prevents**.
+
+### What it re-applies on every boot
+
+`/system` is mounted **rw** (stock mounts it `ro`) and remounted **ro** at the end of the script.
+In between, the payload under `/system/etc/.mod/` is copied into place:
+
+| `.mod` source | destination | what it is |
+|---|---|---|
+| `adler/$MODE/libaudiohal-adleralsa.so` | `/system/vendor/sony/lib/` | the "sound signature" |
+| `anls/$MODE/*` | `/system/vendor/sony/etc/audioanalyzer_params/` | analyser tuning |
+| `gain/gain_n` or `gain_l/*` | `/usr/share/audio_dac/` | `GMD`, "Gain mode" |
+| `lang/$SIG/{nt,nr,pv1,pv2,np_*}/*` | `/system/vendor/sony/translations/` | `rm` first, then copy |
+| `conf_a`, `conf_b`, `conf_c` | NVP | the three model config images |
+| `tunings/*`, `stockrevert/*` | `/contents/CFW/` | copied out for the user |
+
+`$MODE` and `$SIG` come from the settings file, so the signature is a **whole-file swap from a
+per-mode variant set**, re-done every boot — not a patch applied once at install time.
+
+### State lives in /opt2
+
+W1 mounts `option2` separately (`mount ext4 /emmc@option2 /opt2 rw`) and drops it from the
+`mount_partition` list; it is remounted `ro` at the end of the script.
+
+* `boot_count` — incremented **only when the script reaches its end**, so it is a clean
+  "did the firmware finish booting" counter, and a reliable loop detector.
+* `sig` — the signature name in force (`wm1z` here).
+* `stock/conf_bk` — **15,728,640 bytes, exactly the NVP partition**.
+* `stock/nv_bk` — **5,242,880 bytes, exactly NVRAM**.
+
+So W1 keeps a full backup of both the NVP and NVRAM it overwrites. That is the supported way back,
+and it is on the device rather than in the installer.
+
+### The settings file, including a key Wampy does not know
+
+`/contents/CFW/settings.txt`, parsed with `awk -F "=" '/^KEY/ {print $2}'`. Keys: `SIG` `REG` `REM`
+`PMV` `PMD` `GMD` `DIM` `COL` — and **`ADB`**, which `w1.cpp` logs as "unexpected key" and which
+older generated settings files omit entirely:
+
+```
+ADB=1   -> setprop persist.sys.sony.icx.adb 1
+ADB=2   -> setprop persist.sys.sony.icx.adb 0
+ADB=0 or absent -> leave the device as it is
+```
+
+That is the supported way to keep adb across W1 boots, and it is what makes developing against
+Walkman One practical at all.
+
+The script's own log is `/contents/CFW/boot_log.txt`. On this player it reports the WM1Z signature
+selected (`SIG=3`) but **the WM1Z external tuning NOT applied** — `Normal (no tuning) mode
+initialized` — so a player can be "on" a signature without the tuning being in force.
+
+### Other init.rc deltas vs stock 1.02
+
+* `icx_syslog` is **never started** — the service definition survives, the `start` does not. This is
+  why appmgr's side of a failure is invisible on W1. `setprop ctl.start icx_syslog` brings it back.
+* `load_sony_driver` is removed as a service; its `insmod`s moved into `boot_complete.sh`.
+* `/system` mounted `rw`, `option2` mounted separately, scheduler and block-queue tuning added.
+* **`init.hagoromo.rc` is byte-for-byte the stock one.** The Home-app launch path is unchanged.
+
+### FM radio: the chip is present and answering
+
+W1 identifies as NW-WM1Z, a model with no tuner, so the stock FM UI never loads. The hardware is
+untouched:
+
+```
+insmod /system/lib/modules/radio-si4708icx.ko    # rc 0, creates /dev/radio0
+regmon Si4708icx:*
+DEVICEID -> 0x00001242    # Silicon Labs Si4708 — matches Wampy's reference dump exactly
+CHIPID   -> 0x00001000    # powerdown (a powered-up part reads 0x1093)
+POWERCFG -> 0x00002000    # ENABLE clear
+```
+
+`libTunerPlayerService.so` is present (79,916 bytes, md5 `2e3123c7482197e43b625f30c8810daf`) and
+`hagoromo28` starts `TunerPlayerService`, so the service is running; whether it is the mock shipped
+to chipless models still needs a diff against stock 1.02's copy. The ALSA control the audio path
+needs is there too: `numid=26 'analog input device'`, items `off`, `tuner`, …
+
+Wampy's `MAKING_OF_FM.md` documents the rest and the two traps: the player sets power state to `mem`
+on a power press (hold a **wakeup source**), and a service flips `analog input device` back to `off`
+on a timer — which must be **polled**, because that mixer is driven by `ioctl`, not filesystem
+events, so `amixer sevents`/`monitor.c` see nothing. The UI gap Wampy works around by drawing its
+own FM screen is a screen **Cinder can simply own**; `cinder-fm` already exists in the tree.
+
+### Cinder runs on Walkman One — and the blocker was ours
+
+**`ps` on a W1 boot: `system 830 495 /system/vendor/unknown321/bin/cinder-home`.** The full easel
+handshake completes (`ToInitialize → ToPostInitialize → ToActivate → OnForeground`),
+`/data/cinder/bootcount` reads `0` (cinder-home's own "painted and proved healthy" signal), the
+cable pass is spent, and the log is clean.
+
+**The cause had nothing to do with Walkman One.** `install_cinderhome.sh` created its state
+directory with `mkdir -p /data/cinder` as root under **umask 077**, leaving it **`0700 root:root`**.
+The launcher and cinder-home run as **uid 100** — which on this device *is* the user `system`
+(`/etc/passwd`: `system:…:100:100:`), because appmgr's service line `hagoromo2` is `user system` and
+the Home app inherits it. So the launcher could not:
+
+* `rm` `cable_pass_once` — **deleting a file needs write permission on the directory** — so
+  `CABLE_PASS_SPENT` stayed `0`, and with a cable always connected **the rung-0 cable escape fired on
+  every boot**, `exec`ing Sony's player;
+* create `bootcount`, or write its breadcrumb to `/data/cinder/cinderhome.log`.
+
+`/contents` is not mounted that early, so the second breadcrumb path failed too.
+
+**The trap worth remembering:** the resulting state — Sony's app running, no `bootcount`, no
+breadcrumb, an unspent cable pass — is *indistinguishable from "appmgr never exec'd the launcher"*.
+That wrong conclusion was drawn twice. **A launcher that ran and took an escape looks exactly like
+one that never ran, unless it can write somewhere.** A probe script that logs only to
+`/data/cinder` or `/contents` proves nothing at boot; use `/var/log` (init makes it `0777`) or
+`/tmp`.
+
+Fix: `chown 100:100` + `chmod 0755` on the directory **and** on `cable_pass_once`. Note that
+`chmod 755` alone — the fix already applied to `$VT_DIR` higher up in the same installer — is not
+enough here, because this directory must be *written*, not merely read.
+
+### Two hypotheses tested and killed, so they are not retried
+
+* **ABI.** All 13 Sony libraries Cinder links export identical symbols on 3.02 and 1.02;
+  `libeaselcore`, `libeaselcui`, `libpstcore` and `libappmgrservice` are byte-identical.
+* **`.appcfg.real` inside appmgr's scan directory.** appmgr `readdir_r()`s a hardcoded
+  `/system/vendor/sony/bin` for `.appcfg` files and `execvp()`s the `command:` it finds; the
+  installer's backup sits in that same directory declaring the same `name:`. Plausible, so the
+  backup was moved to `/system/vendor/unknown321/` and the boot retried — **no change**. appmgr
+  does honour an absolute `command:`.
+
+### The boot guard
+
+`/system/bin/cinder-guard.sh`, called from a six-line hook in `/system/bin/bootswitcher.sh` placed
+immediately before `setprop sys.sony.bootmode`. Shipped as
+[`cinder-home/deploy/cinder-guard.sh`](../cinder-home/deploy/cinder-guard.sh); see that file's header
+for the rationale and the install steps.
+
+It exists because the launcher's own bad-boot counter can only advance **if appmgr execs the
+launcher** — so it cannot rescue a failure that happens earlier, and in a loop below it the player
+has to be recovered with wbrt. The guard counts unproven boots in `/db/cinder-guard/count` and, at
+3, restores `.appcfg.real` over `.appcfg` so Sony's app comes back on its own. It depends on init,
+`/db` and `/data` only.
+
+It was installed before the Cinder install on this session and behaved correctly on every boot,
+including logging the diagnostic that framed the investigation. It is **not** wired into the
+installer: it has only a handful of boots behind it, and a script that init blocks on is not
+something to enable for everyone on that evidence.
