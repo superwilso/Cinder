@@ -16,6 +16,19 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **The install package can be sealed for a player that is not an NW-A50.** *Device-verified that
+  the old behaviour was silent (2026-09-21); the new package is built and round-trip-checked, and has
+  not yet been installed on hardware.* A `.UPG` is encrypted with the model's KAS key, and Sony's
+  updater refuses one it cannot decrypt without saying so — it boots, fails, reboots, and writes
+  nothing. A player running Walkman One has had its model identity rewritten, so an NW-A55 under it
+  answers `nvpstr kas` with the **NW-WM1A** key and every NW-A50 package is dropped on the floor. That
+  is now a reported diagnosis rather than a mystery: `pack_upg.sh <channel> <model>` takes a model,
+  checks it against the list `upgtool` actually knows before packing anything, and writes a
+  suffixed file (`cinder_home_install.nw-wm1a.upg`) so the stock package is never overwritten.
+  Releases are unchanged — they carry the NW-A50 package only.
+
 ## [0.3.10] — 2026-09-21
 
 ### Fixed

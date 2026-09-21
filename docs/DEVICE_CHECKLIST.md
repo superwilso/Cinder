@@ -335,6 +335,31 @@ carries all twelve fixes.
 | 15.5 | **What the play state does when a queue simply runs out** — the one thing repeat-all's end detection is built on, and it has never been watched (`cinder-home/ROADMAP.md`) | Repeat-all OFF. Play the last track of a short queue to its end, with `adb shell tail -f /contents/cinderhome.log` running | Record what `cinder_audio_is_playing()` and the position out-parameters do at the boundary: whether the player stops, holds the last frame, or reports the track again | Nothing in the log: raise the playback-poll logging for one session rather than guessing — this item exists to be observed, not to pass |
 
 
+## Open from 2026-09-21 — installing on a model-swapped player (Walkman One)
+
+An NW-A55 running Walkman One reports the **NW-WM1A** KAS (`nvpstr kas` →
+`e8d171a5…26c`) and `mid: 128G`, so every NW-A50-sealed `.UPG` is refused by Sony's updater without
+a word — measured 2026-09-21, full write-up in
+[`analysis/RE_walkmanone_extract.md`](../analysis/RE_walkmanone_extract.md). A WM1A-sealed package now
+builds (`cinder-home/tools/pack_upg.sh dev nw-wm1a`) and round-trips off-device. Nothing below has
+touched hardware.
+
+**This needs a flash**, and the player already runs a modified firmware — take a wbrt backup before
+16.2 and do not run it on a player you cannot restore.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 16.1 | **The key really is what decides it** | On any player: `adb shell nvpstr kas`, then `artifacts/upgtool -n -m '?'` and find the matching model | The player's KAS matches exactly one model in `upgtool`'s list, and it is the model the working package is sealed with | Two models share a KAS (`nw-wm1z`/`dmp-z1` do) — then the KAS names a *family*, and the note above must say so |
+| 16.2 | **A WM1A-sealed package installs on a Walkman One player** | Stage the binaries, then flash `cinder-home/dist/dev/cinder_home_install.nw-wm1a.upg`. Cable in through the reboot | `/contents/cinder_home_install.log` **and** `/contents/cinderhome.log` both exist afterwards, `/system/vendor/unknown321/bin` is populated, and the player boots Cinder | Still stock and still no `cinderhome.log`: the key is not the only gate — capture `.appcfg`, the uptime, and whether the updater screen appeared at all |
+| 16.3 | **Cinder on top of Walkman One actually works**, not just installs | After 16.2: play a track, check the volume curve line in `cinderhome.log`, and toggle the sound signature | Audio plays and the log names the curve it loaded; W1's own DAC tables are already resident, so a mismatch shows up as a curve load failure, not silence | Note which component failed — W1 ships a different `/system/usr/share/audio_dac/` set, so `voltable` and `signature` are the two expected to disagree |
+
+### Not in scope of the above
+
+The installer does **not** read the player's key and cannot warn about a mismatch; it reports success
+because the staging half did succeed. Doing it over MSC means reading NVP off the raw device rather
+than over adb. Logged here so the gap is not rediscovered as a bug.
+
+
 ## Recording results
 
 Append findings to [`DEVICE_TESTS.md`](DEVICE_TESTS.md) in the style of its "RESULTS 2026-08-17"
