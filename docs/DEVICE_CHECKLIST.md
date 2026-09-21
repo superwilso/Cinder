@@ -317,6 +317,24 @@ only time on battery, or none at all.
 | 14.5 | **A transient dip cannot power the player off** — the harness pins it (`batt-dip`), the device never has | During 14.4, watch the reported level and keep playing | The player stays on, and the level never steps more than one point per 10 s | It powers off with real charge left: `grep -a "power:" /contents/cinderhome.log`, and note what the raw value was doing at the time |
 | 14.6 | **The Battery row stops calling an unplugged charger a fault** — reported 2026-09-18: `FAULT 2` with nothing plugged in (audit B3a) | Settings ▸ Device with the cable out, then with it in | Out: `ON BATTERY`, and the raw register footer unchanged. In: `CHARGING` (or `READY`/`CHARGE DONE`), and a real fault code still shows as `FAULT n`. The log carries `charger reports fault code N with no input attached` once | Still `FAULT n` with the cable out: the charger-detect nodes disagreed with the cable — read `usb/online` and `dc/online` |
 
+## Open from 2026-09-21 — shuffle and the queue, from the 09-06 audit
+
+[`AUDIT_2026-09-06_queue_playback.md`](AUDIT_2026-09-06_queue_playback.md) found and fixed twelve
+defects, and its own verification table ends "**nothing here is device-verified**". Three of the
+twelve (its §3, §8, §9) are arguments about a `Render` the host cannot construct — read and
+reasoned, never measured. This section is that list turned into things to do, so the work stops
+living only inside an audit nobody re-reads. None of it needs a flash: any build from v0.3.9 on
+carries all twelve fixes.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 15.1 | **Shuffle on a paused player stays silent** (audit §3) — the fix is FFI-side and the host has no `Render` to prove it with | Boot. Do NOT press ▶. Tap the shuffle icon on Now Playing | Nothing is audible, and `cinderhome.log` carries neither `queue: apply now` nor `play_tracks` | Music starts: the not-playing branch is flushing the queue again — `cinder_shuffle_set` in `lib.rs`, and note whether a resume position existed |
+| 15.2 | **Repeat-all restarts a queue-edited album at track 1** (audit §6) | Repeat-all on. Play an album, swipe-queue one track from the middle, let it run to the end | The lap starts at **track 1**, and the log says `repeat-all: queue ended — restarting it from the first track` exactly once | It restarts mid-album: the sequence was truncated by the edit, so the lap is re-issuing what was left rather than the album |
+| 15.3 | **Repeat-all does not fire on a pause near a track end** (audit §7) | Repeat-all on, mid-album. Pause about a second before a track ends; wait ten seconds | Nothing happens — no lap, no skip. The log has no `repeat-all` line | A lap fires: the end-of-queue test is reading a pause as an ended track (`g_playing` is intent, not state) |
+| 15.4 | **A queue edit made before the first ▶ survives** (audit §9) | Boot. Before pressing ▶ at all, swipe-queue a song. Then press ▶ | It plays after the resumed track, and Up Next shows it throughout | It is lost: the edit was owed against a sequence that did not exist yet, and the resume replaced it |
+| 15.5 | **What the play state does when a queue simply runs out** — the one thing repeat-all's end detection is built on, and it has never been watched (`cinder-home/ROADMAP.md`) | Repeat-all OFF. Play the last track of a short queue to its end, with `adb shell tail -f /contents/cinderhome.log` running | Record what `cinder_audio_is_playing()` and the position out-parameters do at the boundary: whether the player stops, holds the last frame, or reports the track again | Nothing in the log: raise the playback-poll logging for one session rather than guessing — this item exists to be observed, not to pass |
+
+
 ## Recording results
 
 Append findings to [`DEVICE_TESTS.md`](DEVICE_TESTS.md) in the style of its "RESULTS 2026-08-17"

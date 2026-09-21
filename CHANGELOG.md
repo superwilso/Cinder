@@ -16,6 +16,23 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.10] — 2026-09-21
+
+### Fixed
+
+- **A player that started Sony's app instead of Cinder said nothing about why.** *Sandbox-tested
+  (three new `test_launcher.sh` scenarios); device-unverified.* Every rung of the escape ladder hands
+  over to Sony's player by `exec`, and all of them run **before** the launcher has chosen a log file —
+  so the one thing a person in that situation could send was an install log full of successes and an
+  empty drive (#16: a clean install, `/data` mounted, the cable pass written, and no `cinderhome.log`
+  at all). On the stable channel there is no adb either, so there was nothing to ask them for. Each
+  hand-over now writes one line first, to `/contents/cinderhome.log` **and** `/data/cinder/cinderhome.log`,
+  naming the rung: a cable at boot, POWER pressed during boot, `/contents` not mounted, the one-shot
+  boot-to-stock, either off flag, a missing binary, a state directory that cannot be written, or the
+  bad-boot latch with its count. The line cannot cost an escape: it is a simple command in a subshell
+  with its output discarded, never a redirection on `exec` — which is the shape that caused the
+  2026-07-26 brick.
+
 ## [0.3.9] — 2026-09-20
 
 ### Added
@@ -1859,7 +1876,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.10-rc1...HEAD
+[0.3.10]: https://github.com/superwilso/Cinder/compare/v0.3.9...v0.3.10-rc1
 [0.3.9]: https://github.com/superwilso/Cinder/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/superwilso/Cinder/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/superwilso/Cinder/compare/4e1f76a...v0.3.7
