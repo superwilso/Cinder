@@ -617,6 +617,24 @@ export LD_LIBRARY_PATH="/system/vendor/sony/lib:/system/vendor/unknown321/lib:/s
 
 run_stock() { exec "$REAL" "$@"; }
 
+# WHY EVERY ESCAPE BELOW SAYS SO FIRST (issue #16, 2026-09-21). Every rung of the ladder leaves by
+# exec'ing Sony's app, and all of them run BEFORE the log is chosen further down — so a player that
+# landed on stock left NO evidence of which rung took it there. The reporter of #16 had a perfect
+# install log and an empty drive: no `cinderhome.log` at all, and no way to tell "the cable sent me
+# to stock" from "the app never started". On the stable channel there is no adb either, so there was
+# nothing anyone could ask them for.
+#
+# One line, appended to both filesystems, before each hand-over. It cannot break an escape: it is a
+# simple command inside a subshell with its output discarded, never a redirection on `exec` (the
+# 2026-07-26 shape), and a failure to write is ignored. /contents first because that is the one the
+# user can read over USB-MSC; /data because that is the one that is always mounted.
+breadcrumb() {
+    for _b in /contents/cinderhome.log /data/cinder/cinderhome.log; do
+        ( echo "cinderhome-launch: $* -> stock" >> "$_b" ) 2>/dev/null
+    done
+    true
+}
+
 # ── USB CABLE ESCAPE (re-added 2026-07-26) ────────────────────────────────────────────────────
 # Plug the cable in and boot -> stock. This is the ONLY escape that needs no filesystem, no shell
 # and no working counter, so it is checked FIRST, before anything that could itself fail. It is
@@ -664,7 +682,10 @@ if [ "$CABLE_PASS_SPENT" = 0 ] \
    && [ ! -f /data/cinder/cable_escape_off ] && [ ! -f /contents/cinderhome_cable_off ] \
    && usb_connected; then
     sleep 3
-    usb_connected && run_stock "$@"
+    if usb_connected; then
+        breadcrumb "a USB cable was connected at boot (rung 0; /data/cinder/cable_escape_off opts out)"
+        run_stock "$@"
+    fi
 fi
 
 # ── POWER-KEY ESCAPE (added 2026-09-11) ───────────────────────────────────────────────────────
@@ -720,7 +741,10 @@ pwrkey_pressed_during_boot() {
     set +f
     return $_hit
 }
-pwrkey_pressed_during_boot && run_stock "$@"
+if pwrkey_pressed_during_boot; then
+    breadcrumb "POWER was pressed during boot (rung 1)"
+    run_stock "$@"
+fi
 
 # /contents present? Cinder's DB, settings, art cache and log all live there, and a missing
 # /contents is the signature of a corrupt vfat — exactly the state that bricked the device on
@@ -729,7 +753,10 @@ pwrkey_pressed_during_boot && run_stock "$@"
 # before appmgr runs us (init.rc `on fs` -> mount_partition, then prepare_contentroot.sh), so
 # this cannot false-trip on a mount race.
 contents_up() { grep -q " /contents " /proc/mounts 2>/dev/null; }
-contents_up || run_stock "$@"
+if ! contents_up; then
+    breadcrumb "/contents is not mounted"
+    run_stock "$@"
+fi
 
 # MSC ESCAPE — clear the latch without a shell: drop /contents/cinderhome_clear over USB-MSC.
 # Consumed here (deleted) so it fires exactly once.
@@ -756,13 +783,14 @@ if [ -f "$ONCE" ] || [ -f "$MSC_ONCE" ]; then
     rm -f "$ONCE" 2>/dev/null
     rm -f "$MSC_ONCE" 2>/dev/null
     sync
+    breadcrumb "boot to stock, once (asked for in Settings)"
     run_stock "$@"
 fi
 
 # explicit disable / missing binary -> stock, no counting
-[ -f "$OFF" ] && run_stock "$@"
-[ -f "$MSC_OFF" ] && run_stock "$@"
-[ ! -x "$HOME_BIN" ] && run_stock "$@"
+[ -f "$OFF" ] && { breadcrumb "$OFF is set (uninstalled, or a bad-boot revert)"; run_stock "$@"; }
+[ -f "$MSC_OFF" ] && { breadcrumb "$MSC_OFF is on the drive"; run_stock "$@"; }
+[ ! -x "$HOME_BIN" ] && { breadcrumb "$HOME_BIN is missing or not executable"; run_stock "$@"; }
 
 # THE COUNTER MUST BE PERSISTABLE OR WE DO NOT RUN. This is the rule whose absence caused the
 # brick: if the counter can't be written, a hung build accumulates nothing and loops forever with
@@ -770,6 +798,7 @@ fi
 # a `[ -w ]` test, because a full or read-only fs passes -w and still fails the write.
 mkdir -p "$STATE" 2>/dev/null
 if ! echo probe > "$STATE/.wtest" 2>/dev/null || [ "$(cat "$STATE/.wtest" 2>/dev/null)" != "probe" ]; then
+    breadcrumb "$STATE cannot be written, so the bad-boot counter has no safety net"
     run_stock "$@"
 fi
 rm -f "$STATE/.wtest" 2>/dev/null
@@ -784,6 +813,7 @@ if [ "$n" -ge "$MAXBAD" ]; then
     # mirror the latch onto /contents so it is VISIBLE over USB-MSC — the user can see why they
     # are on stock, and `cinderhome_clear` next to it is the documented way back.
     touch /contents/cinderhome_DISABLED_badboot 2>/dev/null; sync
+    breadcrumb "$n boots without a healthy start (the latch; drop /contents/cinderhome_clear to retry)"
     run_stock "$@"
 fi
 

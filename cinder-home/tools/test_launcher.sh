@@ -123,6 +123,19 @@ scenario "pass with no cable is spent all the same"  cinder ': > $R/data/cinder/
 check "  the pass is spent" "$(pass_state "$LAST_R")" spent
 scenario "a pass on /contents grants nothing"        stock  "$CABLE"'; : > $R/contents/cable_pass_once'
 scenario "a pass that cannot be deleted -> stock"    stock  "$CABLE"'; mkdir -p $R/data/cinder/cable_pass_once/x'
+
+# EVERY ESCAPE SAYS SO (issue #16, 2026-09-21). Each rung hands over to Sony's app BEFORE the log is
+# chosen, so until now a player that went to stock left nothing behind — the reporter had a clean
+# install log, no cinderhome.log at all, and no adb on the stable channel to ask for more. These
+# check the breadcrumb is written, on BOTH filesystems, for the rungs a user actually meets.
+crumb() { grep -c "$2" "$1/contents/cinderhome.log" 2>/dev/null || echo 0; }
+scenario "cable escape leaves a breadcrumb"          stock  "$CABLE"
+check "  /contents says why"  "$(crumb "$LAST_R" 'USB cable was connected at boot')" 1
+check "  /data says why too"  "$(grep -c 'USB cable was connected at boot' "$LAST_R/data/cinder/cinderhome.log")" 1
+scenario "the off flag says why"                     stock  ': > $R/data/cinder/off'
+check "  and names the flag"  "$(crumb "$LAST_R" 'is set (uninstalled, or a bad-boot revert)')" 1
+scenario "a missing app says why"                    stock  'rm -f $R/cinder'
+check "  and names the binary" "$(crumb "$LAST_R" 'is missing or not executable')" 1
 scenario "POWER in the logo beats the pass"          stock  "$CABLE"'; : > $R/data/cinder/cable_pass_once; { echo "$BOOT"; KPD 3.576327 1; } > $R/proc/klog'
 scenario "/contents NOT mounted (the brick)"      stock  'printf "rootfs / rootfs rw 0 0\n" > $R/proc/mounts'
 # THE SAFETY NET CANNOT BE ARMED. Two ways of saying it, because one of them lies when the test
