@@ -349,9 +349,20 @@ touched hardware.
 
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|
-| 16.1 | **The key really is what decides it** | On any player: `adb shell nvpstr kas`, then `artifacts/upgtool -n -m '?'` and find the matching model | The player's KAS matches exactly one model in `upgtool`'s list, and it is the model the working package is sealed with | Two models share a KAS (`nw-wm1z`/`dmp-z1` do) — then the KAS names a *family*, and the note above must say so |
+| 16.1 | ~~**The key really is what decides it**~~ **SETTLED 2026-09-21 (second session)** | — | The KAS names the key, not a family: on Walkman One `kas` = `nw-wm1a` while `fpi` = `NW-WM1Z`. **Both are rewritten, to different models**, and `fpi` is what Sony's own packages check. **All three of W1's NVP images (`conf_a/b/c`) carry the same KAS**, so one `nw-wm1a` package covers every Walkman One A50 install | — |
 | 16.2 | **A WM1A-sealed package installs on a Walkman One player** | Stage the binaries, then flash `cinder-home/dist/dev/cinder_home_install.nw-wm1a.upg`. Cable in through the reboot | `/contents/cinder_home_install.log` **and** `/contents/cinderhome.log` both exist afterwards, `/system/vendor/unknown321/bin` is populated, and the player boots Cinder | Still stock and still no `cinderhome.log`: the key is not the only gate — capture `.appcfg`, the uptime, and whether the updater screen appeared at all |
+| 16.4 | **Walkman One's settings processor still runs with Cinder as the Home app** | After 16.2: `adb shell tail -40 /contents/CFW/boot_log.txt` | A new boot entry appears, the eight settings are read, and the mode/gain/DAC lines say "initialized" — **not** "The [WM1Z] tuning was not applied" | If the log does not advance at all, `/sbin/boot_complete.sh` is not running and every audio claim in `docs/PLAN_walkman_one_parity.md` §3 is void. If it advances but falls back to "Normal (no tuning)", the `TMD5`/NVRAM guard tripped — something wrote `mmcblk0p3` |
+| 16.5 | **Clear Bass, with the stock UI as the working reference** | Cable OUT. Set Clear Bass from Walkman One's own Sound Settings, then compare the service log and effect state against what `cinder-probe --clearbass` writes | The difference names what `Eq6band::UpdateProcCond` is waiting for — the `no desired value, skip` branch | Falls back to recreating the curve on Cinder's ten-band, which already measures +7.9 dB (`analysis/RE_clear_bass.md` §4, `docs/PLAN_walkman_one_parity.md` §4) |
 | 16.3 | **Cinder on top of Walkman One actually works**, not just installs | After 16.2: play a track, check the volume curve line in `cinderhome.log`, and toggle the sound signature | Audio plays and the log names the curve it loaded; W1's own DAC tables are already resident, so a mismatch shows up as a curve load failure, not silence | Note which component failed — W1 ships a different `/system/usr/share/audio_dac/` set, so `voltable` and `signature` are the two expected to disagree |
+
+> **Update 2026-09-21 (second session).** The package is now **staged and verified on the player**:
+> `/contents/NW_WM_FW.UPG` is byte-identical to `cinder-home/dist/dev/cinder_home_install.nw-wm1a.upg`
+> (md5 `b6674bff…`), the staged `cinder-home` matches `dist/dev/cinder-home`, and the launcher ships
+> inside the payload rather than beside it. `/contents/cinderhome.log` and
+> `/system/vendor/unknown321/bin` are both still absent, so nothing has run. **16.2 is prepared and
+> unrun.** Walkman One keeps `/opt2/stock/conf_bk` (the player's original NVP) and `nv_bk` (its
+> original NVRAM) — that restores *identity*, not partitions, and is not a substitute for a wbrt
+> backup.
 
 ### Not in scope of the above
 

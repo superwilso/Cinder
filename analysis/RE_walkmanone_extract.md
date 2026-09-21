@@ -401,3 +401,172 @@ hardware** — nobody has watched it install.
 2. **This failure mode is not specific to Walkman One.** *Any* model-swapped or mutated player drops
    a stock-keyed package without a word, and the symptom is always "installing Cinder does nothing".
    It is a strong first hypothesis for that report.
+
+---
+
+## MEASURED ON THE LIVE WALKMAN ONE PLAYER — 2026-09-21 (second session): the whole mechanism
+
+The morning's session settled *why an install fails* (the key). This one settles **what Walkman One
+actually is on a running player** — and it is smaller and far more reproducible than the
+firmware-image diff suggested.
+
+Player: NW-A55, Walkman One installed 2026-04-21, `ro.sony.version` 3.02,
+`ro.sony.swid` 01.20.E.1.02.00, `ro.product.device` `BBDMP2_linux`. Everything below is read-only
+adb on that player; nothing was written.
+
+### 1. The model swap is a flashed NVP image, and W1 ships three of them
+
+`/etc/.mod/conf_a`, `conf_b`, `conf_c` are **15,728,640 bytes each — exactly the size of
+`mmcblk0p22` (`/emmc@nvp`)**. They are whole NVP partition images. `/opt2/stock/` holds the
+player's own pre-install pair:
+
+| file | size | is |
+|---|---|---|
+| `/opt2/stock/conf_bk` | 15,728,640 | **the player's original NVP** (`mmcblk0p22`) |
+| `/opt2/stock/nv_bk` | 5,242,880 | **the player's original NVRAM** (`mmcblk0p3`) |
+
+Identity strings carved out of each:
+
+| image | models present | `mid` | KAS |
+|---|---|---|---|
+| `conf_bk` (your stock A55) | `NW-A50S` | `64G` | `dd49de9d…` = **nw-a50** |
+| `conf_a` | `NW-A50S`, `NW-WM1Z` | `128G` | `e8d171a5…` = **nw-wm1a** |
+| `conf_b` | `NW-A50S`, `NW-WM1Z`, **`DMP-Z1`** | `128G` | `e8d171a5…` = **nw-wm1a** |
+| `conf_c` | `NW-A50S`, `NW-WM1Z` | `128G` | `e8d171a5…` = **nw-wm1a** |
+
+**All three Walkman One images carry the same KAS.** That is the practically important line in this
+whole note: the packaging key does not depend on which sound signature the owner chose, so **one
+`nw-wm1a`-sealed package covers every Walkman One A50 installation**, not just this player's.
+
+`conf_a` is the image in use here — it differs from the live NVP by **3,480 bytes**, where `conf_b`
+and `conf_c` differ by ~29 KB. `/opt2/sig` holds the plain string `wm1z`.
+
+### 2. Which NVP fields were rewritten, by name
+
+`nvp stat zone` prints the kernel's own **named** zone table (93 nodes) to the kernel log — it is
+captured in the Sony-files repo as `device/nw-a55/fw-3.02-walkmanone/nvp/zone_map.txt`. The fields
+that matter here, read with `nvpstr`:
+
+```
+kas e8d171a5…26c   key and signature      -> nw-wm1a   (stock A55: dd49de9d… = nw-a50)
+mid 128G           model id               -> not an A50 (stock: 64G)
+fpi NW-WM1Z        firmware update Product Identification
+ufn NW_WM_FW       update file name
+ser 5018758        serial number          (unchanged, matches the adb serial)
+pcd 17060730       product code           (unchanged — the real 2017 build date)
+```
+
+**`kas` and `fpi` are different fields and W1 rewrites both, to different models.** That resolves
+checklist item 16.1: the KAS does not name a family here; it names the key the updater decrypts
+with, while `fpi` names the product Sony's *own* update packages check against. Setting `fpi` to
+`NW-WM1Z` is precisely what lets a WM1Z-targeted package install on an A55 — the tuning packages'
+`SWUpdate.xml` lists `NW-WM1Z` and `NW-WM1A` and nothing else.
+
+The zone table also names three fields this project has wanted for months and never had a name for:
+`rflcountry`, `rflsku`, and **`europe vol regulation flag`** (Area 2, zone 7, 4 bytes). The EU
+volume cap is an NVP zone with a name.
+
+### 3. The settings file is the whole feature list
+
+W1 generates `/contents/CFW/settings.txt` on first boot and a settings processor reads it at every
+boot, logging to `/contents/CFW/boot_log.txt`. Eight settings, and that is all of Walkman One:
+
+| key | meaning | values |
+|---|---|---|
+| `SIG` | sound signature | 0 Neutral, 1 Warm (Midnight v2), 2 Bright (Dawn v2.1), 3 WM1Z |
+| `REG` | region / destination | J, U, U2, U3, CA, CEV, CE7, CEW, CEW2, CN, KR, E, MX, E2, MX3, TW |
+| `REM` | show the RMT-NWS20 Bluetooth-remote option under any region | 0 / 1 |
+| `PMV` | Plus-mode version | 1 / 2 |
+| `PMD` | boot into Plus mode by default (Hold-UP inverts it) | 0 / 1 |
+| `GMD` | gain mode | 0 normal, 1 lower |
+| `DIM` | DAC initialisation mode | 0 / 1 |
+| `COL` | Home-screen icon colour | 0 `#DDDDDD`, 1 `#FFD2B0`, 2 `#FF6757`, 3 `#B1CFE5`, 4 `#AED1B3` |
+
+This player: `SIG=3 REG=MX3 REM=0 PMV=2 PMD=0 GMD=0 DIM=0 COL=0`.
+
+`REG` is a real destination write, not a property — the boot log reports "Settings region is
+[MX3], device region is [MX3]", i.e. it compares against the device and rewrites when they differ.
+That is the same `shp`/destination surface `load_sony_driver` feeds to `dacdat limiter_*`.
+
+### 4. The external tunings are installed here — and that changes what "unreachable" means
+
+`boot_log.txt` records `The WM1Z external tuning installation was successful!` and later boots
+confirm `The [WM1Z] external tuning is installed.`
+
+Re-tested against the player's *actual* key, because §"Layer 3" above predates knowing it:
+
+```
+upgtool -m nw-wm1a -e   WM1Z.UPG / Bright.UPG / Neutral.UPG   -> Signature Mismatch
+upgtool -m nw-wm1z -e   … -> Signature Mismatch
+upgtool -m nw-a50  -e   … -> Signature Mismatch
+```
+
+So **Layer 3's negative result stands for the packages**: they cannot be opened host-side, and the
+nw-wm1a key does not open them either. (`<Product>` in their manifests reads *"Walkman One — WM1Z
+External Tuning"*, so these are MrWalkman's repackaging, not Sony originals.)
+
+**What is new is that the installed result is on the player and is small.** `conf_a` → live NVP is
+3,480 bytes, and several of those runs are the NVP's own slot rotation rather than content: the
+95-byte and 628-byte records at `0x020000`/`0x0200d8` reappear verbatim at `0x054000`/`0x0540d8`
+with the two images swapped. Setting the rotated pairs aside leaves roughly **1 KB of genuinely new
+record content**, in two zones, plus the per-device data any player would differ by.
+
+**This is a bound, not an identification.** That ~1 KB still mixes the tuning with this player's own
+serial/Bluetooth/calibration data, and nothing here proves the tuning lives in NVP at all. The
+experiment that settles it costs one more player-state: dump NVP, change `SIG`, let the processor
+re-apply, dump again — the delta between two tunings on the *same* player cancels all the
+per-device data. Until that is run, treat "the tuning is a small NVP delta" as the leading
+hypothesis and not a finding.
+
+### 5. The UI is stock's, to the byte
+
+Both player binaries are `HgrmMediaPlayerApp`, **the same 9,055,736 bytes**, different md5
+(stock `609961954aed…`, W1 `deb923000c89…`) — an in-place patch, not a rebuild.
+
+Carving every embedded PNG out of both (796 each):
+
+> **741 images share an md5. Exactly one differs:** a 480×800 full-screen image — the **Power Off
+> screen**, whose WALKMAN logo is white in stock and **orange** in Walkman One.
+
+Carving the embedded QML source out of both (239 blobs each): **12 differ, and every one of them is
+a size**.
+
+| blob | stock | W1 |
+|---|---|---|
+| status-bar block (`sound_quality_info`) | `height: 80`, topMargin 12, sub-topMargin 4, inner 26 | `height: 70`, topMargin 5, 3, inner 15 |
+| list rows | 88, 84, 72, 72, 56 | 78, 89, 40, 40, 40 |
+| small elements | 28, 28, 22×18 | 12, 20, 15×12 |
+| menu | `menuBottomSpace: 106` | `menuBottomSpace: 90` |
+
+The patch keeps every blob's **byte length** identical — `menuBottomSpace: 106` → `90` loses a
+character, and the next line gains a leading space to pay for it. That is the signature of a binary
+patcher editing strings in place, and it is why the file size matches stock exactly.
+
+**So Walkman One's UI is Sony's UI, tightened.** It adds no screen, removes no screen, and changes
+no icon. Anything that reproduces the stock A50 look reproduces the Walkman One look, plus a
+recoloured power-off logo, twelve metric tweaks, and a runtime icon tint (`COL`).
+
+### 6. Cinder's install on this player is staged and correct
+
+At the time of writing, `/contents/NW_WM_FW.UPG` is md5 `b6674bffac79f52a141e558892d4b0b6`, which is
+**byte-identical to `cinder-home/dist/dev/cinder_home_install.nw-wm1a.upg`**, and the staged
+`/contents/cinder-home` matches `dist/dev/cinder-home` (`4e4b6d67…`). `cinderhome-launch.sh` is not
+staged and does not need to be — `install_cinderhome.sh` writes it into
+`/system/vendor/unknown321/bin/` from a heredoc inside the payload.
+
+`/contents/cinderhome.log` and `/system/vendor/unknown321/bin` are both still absent, so **the
+package has not yet been run**. Checklist 16.2 is prepared, not done.
+
+### 7. One operational note for anyone repeating this
+
+With the USB cable connected, the stock/W1 player parks on the **USB Mass Storage** screen and that
+screen is modal: taps on the bottom icon row do nothing, there is no back gesture out of it, and MSC
+re-arms itself after a short idle (`Auto Activate USB Mass Storage`). A UI tour therefore cannot be
+driven over adb with the cable in. Touch injection itself works fine — the panel is
+`himax-hx8526-icx` on `/dev/input/event1`, **protocol A**, raw range 960×1600 (2× the 480×800
+screen), and a contact needs `ABS_MT_TOUCH_MAJOR`/`WIDTH_MAJOR`/`POSITION_X`/`POSITION_Y` followed
+by `SYN_MT_REPORT` then `SYN_REPORT`. A tap built only from `ABS_MT_POSITION_*` + `BTN_TOUCH` is
+silently ignored.
+
+Framebuffer capture is free and needs no tool: `/dev/graphics/fb0`, 480×800, 32bpp **BGRA**,
+1,536,000 bytes for the visible buffer (`virtual_size` reports 480×2400 — three buffers).
