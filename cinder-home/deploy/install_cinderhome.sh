@@ -1110,6 +1110,16 @@ fi
 # fresh install = enabled: clear any prior disable/bad-boot flags, on BOTH the current /data
 # location and the legacy /contents one (an upgrade from a pre-2026-07-26 build leaves those).
 "$BB" mkdir -p /data/cinder 2>/dev/null
+# OWNED BY 100:100, not root. Same umask-077 trap as $VT_DIR above, but one step worse: the
+# launcher does not merely READ this directory, it WRITES it — it removes cable_pass_once and
+# creates bootcount — and removing a file needs write permission on the DIRECTORY, which a
+# root-owned 0755 does not give uid 100. `mkdir -p` as root with umask 077 leaves 0700 root:root,
+# so on the device (Walkman One 3.02, 2026-09-21) the launcher could not spend the cable pass:
+# CABLE_PASS_SPENT stayed 0, the cable escape fired on EVERY boot, and the player came up on
+# Sony's app with no bootcount and no breadcrumb — indistinguishable from "Cinder never started".
+# uid 100 is `system`, which is what appmgr (hagoromo2, `user system`) execs the Home app as.
+"$BB" chown 100:100 /data/cinder 2>/dev/null
+"$BB" chmod 0755 /data/cinder 2>/dev/null
 "$BB" rm -f /data/cinder/off /data/cinder/bootcount /data/cinder/DISABLED_badboot /data/cinder/once_stock 2>/dev/null
 # The post-install cable pass ($CABLE_PASS in the launcher above). The installer tells people not to
 # unplug, so the boot after this one has a cable in, and without the pass it lands on Sony's player
@@ -1122,6 +1132,7 @@ fi
 if [ "$DATA_MOUNTED" = 1 ] \
    && echo 1 > /data/cinder/cable_pass_once 2>/dev/null \
    && [ "$("$BB" cat /data/cinder/cable_pass_once 2>/dev/null)" = "1" ]; then
+    "$BB" chown 100:100 /data/cinder/cable_pass_once 2>/dev/null
     "$BB" chmod 644 /data/cinder/cable_pass_once 2>/dev/null
     echo "cable pass: the next boot starts Cinder with the cable in"
 else
