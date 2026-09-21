@@ -141,12 +141,18 @@ artefact that does not exist.
   from Linux for months; it has not yet been sent from Windows. If it fails it fails safely — the
   files are staged and verified first, and the installer tells you which step did not happen.
 - **The Windows installer is unsigned**, and now asks for administrator — see [Install](#install).
-- **Untested on top of Walkman One.** Walkman One makes the player identify as a different model,
-  and Cinder's install package is packed for the stock NW-A50 model. Nobody has tried the
-  combination yet; the likeliest failure is the player's updater refusing the package — Walkman One
-  also changes the updater's decryption key, so that stock packages are refused
-  ([unknown321's notes](https://github.com/unknown321/wampy/blob/master/MAKING_OF.md#walkman-one-compatibility-again)).
-  Make a wbrt backup first either way, and please open an issue saying what happened. More in
+- **On Walkman One the installer finishes, the player reboots, and nothing changes.** *Device-verified
+  2026-09-21 — and the reason is now known.* Walkman One makes the player identify as a different
+  model, and that identity includes the key its updater decrypts firmware packages with: an NW-A55
+  running Walkman One reports the **NW-WM1A** key (`nvpstr kas` on the player), not the NW-A50 key
+  Cinder's package is sealed with. Sony's updater refuses a package it cannot decrypt **silently** —
+  it boots, fails, reboots, and leaves no log and no change behind, which looks exactly like the
+  installer having done nothing. The install log is full of successes, because everything up to the
+  handover did succeed
+  ([unknown321 saw the same thing](https://github.com/unknown321/wampy/blob/master/MAKING_OF.md#walkman-one-compatibility-again)).
+  `cinder-home/tools/pack_upg.sh dev nw-wm1a` builds a package sealed with the NW-WM1A key instead;
+  it is not yet proven to install, and releases ship the NW-A50 package only. Make a wbrt backup
+  first either way, and please open an issue saying what happened. More in
   [Coming from Walkman One](#coming-from-walkman-one).
 
 ## Install
@@ -376,7 +382,13 @@ repository:
   so the installer uses a copy you put on the player's drive, or the one Wampy already installed,
   and only if it is byte-for-byte Sony's — see
   [The volume curve tables](install.md#the-volume-curve-tables). The external tunings, no.
-- **Can I put Cinder on top of Walkman One?** Untested — see [Known limitations](#known-limitations).
+- **Can I put Cinder on top of Walkman One?** Not with the released package. Walkman One changes
+  which key the player's updater accepts, so the package in a Cinder release is rejected without a
+  word — the installer reports success and the player comes back unchanged. That was measured on a
+  Walkman One player on 2026-09-21; see [Known limitations](#known-limitations) for what the player
+  looked like afterwards and what a correctly-keyed package would take. If you want to help, run
+  `nvpstr kas` on your player and put the answer in an issue: it says which key your firmware
+  expects, and one line of it is the whole diagnosis.
 - **What about my region's volume limit?** If your player was sold where Sony restricts volume,
   Cinder leaves the restriction in place unless you choose a different volume curve, which replaces
   it — turn the volume down before the first boot. Cinder's first reading of those tables was

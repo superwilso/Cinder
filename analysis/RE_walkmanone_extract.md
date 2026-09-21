@@ -337,3 +337,67 @@ model in `auto` — `BBDMP2_linux / BBDMP3_linux / BBDMP5_linux`.
 **Still NOT RUN, deliberately.** Loading a different output-volume table changes what every volume
 step does to your ears, and `VOL_LIMIT 0` removes the EU cap. That is a session with headphones OFF
 and a way back (`dacdat ovt ov_1291.tbl` restores stock), not a background push.
+
+---
+
+## MEASURED ON A LIVE WALKMAN ONE PLAYER — 2026-09-21: the updater key
+
+This was the one layer that had never been touched with hardware: **can Cinder install on top of
+Walkman One?** It cannot, and the reason is one field.
+
+**The model swap rewrites NVP, and the KAS goes with it.** An NW-A55 running Walkman One answers:
+
+```
+# nvpstr kas
+e8d171a5d92f35eed9658c03fb9f86a169591659851fd7c49525f587a70b526c
+# nvpstr mid
+128G
+```
+
+That KAS is `upgtool`'s **`nw-wm1a`** entry, not the NW-A50's `dd49de9d…`. `mid` (model id) says
+`128G`, which is not an A50 either. So the player is not pretending to be another model at the
+property level only — the *firmware identity NVP holds*, which is what the updater reads, has been
+replaced. The earlier note that W1 "changes `fwpchk` key/IV by one byte so stock UPGs refuse" is the
+same fact seen from the other side.
+
+**What that does to an install, exactly.** A `.UPG` is encrypted with the model's KAS. Sony's updater
+refuses one it cannot decrypt, and it does so **silently**: no error screen, no log, no partial write.
+The player boots the updater, fails, and reboots into the firmware it already had. Every observable
+afterwards says "the installer did nothing":
+
+| checked after the attempt | result |
+|---|---|
+| `/contents/cinder_home_install.log` | present, all steps succeeded — the staging half is not the half that failed |
+| `/contents/cinderhome.log` | **absent** — the payload never ran, so there was nothing to log |
+| `/system/vendor/unknown321/bin` | **absent** — nothing was installed |
+| `.appcfg` | still `command: HgrmMediaPlayerApp`, dated 2019-07-31 (Sony's build stamp) |
+| running Home app | `HgrmMediaPlayerApp` — stock |
+| uptime | 1:51 — so the reboot *did* happen; the updater ran and gave up |
+
+The host side is a red herring worth naming: `do_fw_upgrade` printed `An error occured during
+request / Trying alternative firmware upgrade command... / ok upgrade command sent.` That is the
+normal `0x80` → `0` fallback in the upgrade command, it happens on a stock A50 too, and the package
+was accepted for transfer. The rejection is one layer further in, inside the updater.
+
+**The fix, and its status.** `cinder-home/tools/pack_upg.sh <channel> <model>` now takes a model,
+validates it against the list `upgtool -n -m '?'` prints, and writes a suffixed artefact so the
+stock package is never clobbered:
+
+```
+cinder_home_install.upg          sealed nw-a50    (releases ship this one)
+cinder_home_install.nw-wm1a.upg  sealed nw-wm1a   (a Walkman One player)
+```
+
+Verified off-device: the WM1A package extracts with the WM1A key and yields the real payload
+(`#!/bin/sh` / `install_cinderhome.sh`), and yields nothing with the A50 key. **Not yet verified on
+hardware** — nobody has watched it install.
+
+**Two things this suggests for the installer**, neither built:
+
+1. **Read the key before flashing.** The player's own KAS is readable, so an installer that knows the
+   model can say "this player expects `nw-wm1a`; the package here is `nw-a50`" instead of succeeding
+   into silence. Over MSC that means reading NVP off the raw device rather than over adb, which is
+   the part that needs work.
+2. **This failure mode is not specific to Walkman One.** *Any* model-swapped or mutated player drops
+   a stock-keyed package without a word, and the symptom is always "installing Cinder does nothing".
+   It is a strong first hypothesis for that report.
