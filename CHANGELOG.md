@@ -16,6 +16,52 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.11] — 2026-09-21
+
+### Fixed
+
+- **Cinder started Sony's player instead of itself on every boot with a cable connected — and left
+  no trace of why.** *Device-verified on Walkman One 3.02, 2026-09-21: cinder-home now runs as the
+  Home app there.* The installer created its state directory with `mkdir -p /data/cinder` as root
+  under `umask 077`, so it came out **`0700 root:root`**. The launcher and cinder-home run as **uid
+  100** — which on this player *is* the user `system`, because appmgr's service line (`hagoromo2`) is
+  `user system` and the Home app inherits it. Deleting a file needs write permission on the
+  *directory*, so the launcher could not spend `cable_pass_once`: `CABLE_PASS_SPENT` stayed `0` and
+  the rung-0 cable escape fired every boot. It could not write `bootcount` or its breadcrumb either,
+  and `/contents` is not mounted that early, so the second breadcrumb path failed too.
+  The directory and the cable-pass file are now `chown 100:100` as well as `chmod`ed — `chmod 755`
+  alone, the fix already applied to the volume-table directory higher up in the same installer, is
+  not enough for a directory that must be *written* rather than read.
+
+  The state it produced — Sony's app running, no `bootcount`, no breadcrumb, an unspent cable pass —
+  is indistinguishable from *"appmgr never exec'd the launcher"*, and that wrong conclusion was drawn
+  twice before the permission bits settled it. **A launcher that ran and took an escape looks exactly
+  like one that never ran, unless it can write somewhere.** A probe that logs only to `/data/cinder`
+  or `/contents` proves nothing at boot; `/var/log` (init makes it `0777`) or `/tmp` do.
+
+### Added
+
+- **`cinder-home/deploy/cinder-guard.sh` — a boot-time backstop that sits below appmgr.**
+  *Device-installed and exercised across the 2026-09-21 Walkman One session; simulation-tested for
+  both its revert and its reset path.* The launcher's bad-boot counter can only advance if appmgr
+  execs the launcher, so it cannot rescue a failure that happens earlier — and a loop below it needs
+  wbrt. The guard is called from a six-line hook in `/system/bin/bootswitcher.sh`, the last point
+  upstream of `setprop sys.sony.bootmode` (which is what starts class `hagoromo`, and therefore
+  appmgr). It counts unproven boots in `/db/cinder-guard/count` and at 3 restores `.appcfg.real`
+  over `.appcfg`, so Sony's player returns on its own. It depends on init, `/db` and `/data` only.
+  **Not wired into the installer** — init blocks on the script that calls it, and a handful of boots
+  is not enough evidence to enable that for everyone. Install steps are in the file's header.
+
+- **What Walkman One actually does, written down.**
+  [`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md) gains the decode of
+  `/sbin/boot_complete.sh` — the 1452-line shell script that *is* the mod: the `/system/etc/.mod`
+  payload it re-applies on every boot, the `/opt2` state (including full NVP and NVRAM stock
+  backups), the settings keys, and the undocumented **`ADB=1`** key that keeps adb alive across W1
+  boots. Also the boot order that matters for anything replacing the Home app — `boot_complete.sh`
+  blocks init, `adbd` starts **before** the Home app, and `bootswitcher.sh` is the only persistent
+  hook upstream of appmgr — and measurements showing the **FM chip is physically present and
+  answering on Walkman One** (`DEVICEID 0x1242`), which removes the radio in software identity only.
+
 ### Changed
 
 - **The install package can be sealed for a player that is not an NW-A50.** *Device-verified that
@@ -1889,7 +1935,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.10-rc1...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.11-rc1...HEAD
+[0.3.11]: https://github.com/superwilso/Cinder/compare/v0.3.10-rc1...v0.3.11-rc1
 [0.3.10]: https://github.com/superwilso/Cinder/compare/v0.3.9...v0.3.10-rc1
 [0.3.9]: https://github.com/superwilso/Cinder/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/superwilso/Cinder/compare/v0.3.7...v0.3.8

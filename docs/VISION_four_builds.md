@@ -36,6 +36,24 @@ work with a fast feedback loop and no device risk.
 
 ## 2. What tonight established
 
+> **SUPERSEDED, same day — and the answer is good news. Cinder runs on Walkman One 3.02.**
+> `ps`: `system 830 495 /system/vendor/unknown321/bin/cinder-home`, full easel handshake,
+> `bootcount` 0, clean log.
+>
+> **It was never a Walkman One problem.** `install_cinderhome.sh` created `/data/cinder` as root
+> under `umask 077` → `0700 root:root`, and the launcher runs as uid 100 (`system`). It therefore
+> could not delete `cable_pass_once` — that needs write permission on the *directory* — so the
+> rung-0 cable escape fired on **every** boot and handed over to Sony's player. With no ability to
+> write `bootcount` or a breadcrumb either, the result was indistinguishable from a crash, and then
+> from "the launcher never ran". Fixed in the installer; see `CHANGELOG.md` and
+> [`analysis/RE_walkmanone_extract.md`](../analysis/RE_walkmanone_extract.md) (third session).
+>
+> **What this unblocks:** builds ③ and ④ no longer depend on an unsolved mystery. §6's
+> preconditions should be re-read with that in mind — the firmware axis is open.
+>
+> The rest of this section is kept as written, because the ABI work it records is still valid and
+> still worth not repeating.
+
 Cinder was installed onto this Walkman One player and **the player boot-looped.** Recovery is by
 wbrt, in progress at the time of writing.
 
