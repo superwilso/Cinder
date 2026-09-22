@@ -2123,19 +2123,31 @@ impl Rng {
 /// Returns the reordered sequence, the new start index, and — when it actually shuffled — the
 /// object_ids in their ORIGINAL order, which the caller hands to `App::note_pre_shuffle` so that
 /// turning shuffle back off restores this album's real running order.
-fn apply_shuffle(
-    on: bool,
-    mut seq: Vec<cinder_db::Track>,
-    start: usize,
-) -> (Vec<cinder_db::Track>, usize, Option<Vec<i64>>) {
-    if !on || seq.len() < 2 || start >= seq.len() {
-        return (seq, start, None);
+/// STARTING SOMETHING IN ORDER TURNS SHUFFLE OFF. The mirror of the Shuffle bands, which turn it
+/// on (see `Action::Shuffle`).
+///
+/// `np.shuffle` is sticky and persisted (`cinder_settings.conf`, read back at `"shuffle" =>` in
+/// `load_settings`), and every ordered-play path used to ask it for permission —
+/// `apply_shuffle(r.np.shuffle, …)`. So ONE press of a Shuffle band left every album tapped
+/// afterwards shuffled, for the rest of that boot and every boot after it, with nothing on screen
+/// to explain it: the album simply did not start on the track that was tapped.
+///
+/// Tapping an album IS the instruction to play it in order, and an instruction the transport
+/// silently reinterprets is a bug, not a preference. Between this and the bands the rule is now
+/// symmetric and says itself: the action you pressed decides, and the one you pressed last wins.
+///
+/// Nothing needs un-shuffling here — the sequence being built has not been permuted yet, and
+/// `set_play_context` drops `pre_shuffle` for the new context anyway. This only has to make the
+/// indicator tell the truth and stop the NEXT sequence being permuted behind the user's back.
+fn play_in_order(r: &mut Render) {
+    if !r.np.shuffle {
+        return;
     }
-    let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
-    let chosen = seq.remove(start);
-    Rng::new().shuffle(&mut seq);
-    seq.insert(0, chosen);
-    (seq, 0, Some(pre))
+    r.np.shuffle = false;
+    // Written NOW rather than at the next settings change: `cinder_tap` calls `save_settings`
+    // BEFORE it carries the action, so without this the new value would survive only until the
+    // next power-off — which is the same stickiness this function exists to fix.
+    save_settings(r);
 }
 
 /// One DB track as the owned UI row. Shared by the library build and by every play action, so a
@@ -2785,11 +2797,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             let ctx = r.db.as_ref().and_then(|db| db.album_context(*object_id).ok().flatten());
             match ctx {
                 Some((tracks, idx)) if !tracks.is_empty() => {
-                    let (seq, start, pre) = apply_shuffle(r.np.shuffle, tracks, idx);
-                    set_pending(r, seq, start);
-                    if let Some(pre) = pre {
-                        r.app.note_pre_shuffle(pre);
-                    }
+                    // Tapping a track plays its ALBUM, from that track, in album order.
+                    // See `play_in_order`.
+                    play_in_order(r);
+                    set_pending(r, tracks, idx);
                     8
                 }
                 _ => {
@@ -2859,11 +2870,12 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // pending-play channel as the queue and the playlist variants — the only difference is
             // where the sequence comes from.
             //
-            // NO apply_shuffle. Every other play path here pre-shuffles because it is starting a
-            // NEW sequence and `r.np.shuffle` says the user wants it random. This one is not
-            // starting anything new: the context was shuffled when it was built, the user is
-            // looking at that order on screen, and re-shuffling it here would scramble the list
-            // out from under the row they just tapped — the bug in a second form.
+            // AND IT DOES NOT TOUCH `np.shuffle` EITHER WAY. The ordered-play paths call
+            // `play_in_order` because tapping an album is an instruction about how to play it;
+            // this one is not starting anything, it is moving within a sequence that already
+            // exists. Turning shuffle off here would claim the user had asked to un-shuffle the
+            // list they are looking at, and re-shuffling it would scramble that list out from
+            // under the row they just tapped.
             let ids: Vec<i64> = r.app.context().iter().map(|s| s.object_id).collect();
             // ONE pass, resolving and locating the tapped row together. Resolution can DROP rows —
             // a file deleted since the context was built — and every drop before the tapped row
@@ -2937,11 +2949,10 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // needs no new code or FFI symbol for playlists.
             match any_playlist_tracks(r, *playlist_id) {
                 Some(seq) => {
-                    let (seq, start, pre) = apply_shuffle(r.np.shuffle, seq, 0);
-                    set_pending(r, seq, start);
-                    if let Some(pre) = pre {
-                        r.app.note_pre_shuffle(pre);
-                    }
+                    // The PLAY band. The SHUFFLE band beside it is `Action::ShufflePlaylist` and
+                    // turns shuffle on; this one is its mirror. See `play_in_order`.
+                    play_in_order(r);
+                    set_pending(r, seq, 0);
                     8
                 }
                 None => {
@@ -2958,11 +2969,9 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             match any_playlist_tracks(r, *playlist_id) {
                 Some(seq) => {
                     let start = (*index as usize).min(seq.len().saturating_sub(1));
-                    let (seq, start, pre) = apply_shuffle(r.np.shuffle, seq, start);
+                    // Tapping a member plays the playlist from there, in playlist order.
+                    play_in_order(r);
                     set_pending(r, seq, start);
-                    if let Some(pre) = pre {
-                        r.app.note_pre_shuffle(pre);
-                    }
                     8
                 }
                 None => {
@@ -2991,11 +3000,9 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                         set_pending(r, seq, 0);
                         r.app.note_pre_shuffle(pre);
                     } else {
-                        let (seq, start, pre) = apply_shuffle(r.np.shuffle, seq, start);
+                        // Asked for in CHANNEL order, so the same rule as an album applies.
+                        play_in_order(r);
                         set_pending(r, seq, start);
-                        if let Some(pre) = pre {
-                            r.app.note_pre_shuffle(pre);
-                        }
                     }
                     8
                 }
@@ -3046,8 +3053,8 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                     r.np.shuffle = true;
                     set_pending(r, seq, 0);
                     // AND RECORD THE ORDER IT REPLACED, so the toggle can be turned back off.
-                    // Every other shuffle entry point does this (`PlayIndex`, `PlayPlaylist*`,
-                    // `ShufflePlaylist`, `ShuffleArtist`); the four Library bands did not, which
+                    // Every other shuffle entry point does this (`ShufflePlaylist`,
+                    // `ShuffleArtist`, `PlaySensMe{shuffle:true}`); the four Library bands did not, which
                     // left shuffle a one-way door on the path most likely to be taken — press
                     // "Shuffle all songs", then press the shuffle icon to turn it off, and the
                     // icon went dark while the sequence stayed permuted for the rest of the
@@ -7249,46 +7256,6 @@ mod tests {
         }
     }
 
-    /// The toggle has to reach the queue. It used to light an icon and change nothing: with shuffle
-    /// showing ON, tapping a track played its album in strict order.
-    #[test]
-    fn the_shuffle_toggle_actually_reorders_the_queue() {
-        let seq: Vec<cinder_db::Track> = (0..40)
-            .map(|i| cinder_db::Track {
-                filename: format!("/contents/{i:02}.flac"),
-                object_id: i,
-                ..Default::default()
-            })
-            .collect();
-        let uris = uris_of(seq.clone());
-
-        // Off: byte-for-byte untouched, and the start index is preserved.
-        let (off, start, pre) = apply_shuffle(false, seq.clone(), 7);
-        assert!(pre.is_none(), "nothing was shuffled, so there is no order to restore");
-        assert_eq!(uris_of(off), uris);
-        assert_eq!(start, 7);
-
-        // On: the TAPPED track leads (the tap is more specific than the toggle) and playback
-        // starts at 0, because the queue was reordered to put it there.
-        let (on, start, pre) = apply_shuffle(true, seq.clone(), 7);
-        // The pre-shuffle order comes back so shuffle-off can restore it.
-        let pre = pre.expect("a real shuffle must report the order it replaced");
-        assert_eq!(pre.len(), seq.len());
-        assert_eq!(start, 0);
-        let on = uris_of(on);
-        assert_eq!(on[0], uris[7], "the track you tapped must still be the one that plays");
-
-        // Same multiset — a shuffle must not drop, duplicate or invent a track.
-        let mut a = uris.clone();
-        let mut b = on.clone();
-        a.sort();
-        b.sort();
-        assert_eq!(a, b, "shuffle changed which tracks are in the queue");
-
-        // And it is actually shuffled. With 39 tracks behind the leader, the odds of the original
-        // order surviving by chance are 1/39! — if this fires, the shuffle did not run.
-        assert_ne!(on, uris, "queue came back in its original order");
-    }
 
     /// The play order handed to PlayerService: the audible track leads, then the user's picks,
     /// then the context tail — and NO TWO ADJACENT ENTRIES ARE THE SAME FILE.
@@ -7396,19 +7363,6 @@ mod tests {
         );
     }
 
-    /// Degenerate inputs must not panic — a panic here aborts the process, and on this device an
-    /// abort is a reboot.
-    #[test]
-    fn shuffling_degenerate_queues_is_safe() {
-        let trk = |n: &str| cinder_db::Track { filename: n.into(), ..Default::default() };
-        assert_eq!(apply_shuffle(true, Vec::new(), 0), (Vec::new(), 0, None));
-        let one = vec![trk("/a.flac")];
-        assert_eq!(apply_shuffle(true, one.clone(), 0), (one.clone(), 0, None));
-        // A start index past the end (a stale index against a shorter queue) is left alone rather
-        // than indexing out of bounds.
-        let two = vec![trk("/a.flac"), trk("/b.flac")];
-        assert_eq!(apply_shuffle(true, two.clone(), 9), (two, 9, None));
-    }
 
     /// No DB → no action (rather than an empty queue).
     #[test]

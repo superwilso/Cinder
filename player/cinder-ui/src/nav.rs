@@ -2887,6 +2887,10 @@ impl App {
                     self.pending_play.take().map(|act| vec![act]).unwrap_or_default()
                 }
                 crate::confirm::Hit::Confirm => match ask {
+                    crate::confirm::Ask::ClearQueue => {
+                        self.notify("Queue cleared");
+                        self.queue_clear()
+                    }
                     crate::confirm::Ask::Restart => vec![Action::Restart],
                     crate::confirm::Ask::PowerOff => vec![Action::PowerOff],
                     crate::confirm::Ask::ResetSettings => self.reset_settings(),
@@ -3124,8 +3128,9 @@ impl App {
                 use crate::up_next::Slot;
                 // CLEAR belongs to the user queue and is only drawn when there is one.
                 if !self.queue.is_empty() && crate::up_next::hit_clear_chip(x, y) {
-                    self.notify("Queue cleared");
-                    return self.queue_clear();
+                    // ASK. See `confirm::Ask::ClearQueue` for why this is not a bare tap.
+                    self.confirm = Some(crate::confirm::Ask::ClearQueue);
+                    return vec![];
                 }
                 if crate::up_next::hit_shuffle_chip(x, y) {
                     return self.queue_shuffle();
@@ -3675,12 +3680,19 @@ impl App {
         // The accent band sits above the list on every tab, so test it before the rows (it is the
         // largest target on the screen; it used to be drawn but hit-tested nowhere).
         if library::hit_shuffle_band_at(x, y, band) {
-            return vec![Action::Shuffle(match self.lib_tab {
+            // THROUGH THE FUNNEL. A Shuffle band starts a new sequence, which means
+            // `set_play_context` will clear the user's hand-built picks — so it has to ask first,
+            // exactly as every Play path does. These four bands used to return the action
+            // DIRECTLY and skip `start_play_action`, so the largest target on the screen was also
+            // the only one that destroyed the queue without a word. On the Playlists tab the
+            // effect was visible side by side: the PLAY band asked and the SHUFFLE band beside it
+            // did not.
+            return self.start_play_action(Action::Shuffle(match self.lib_tab {
                 Tab::Songs => ShuffleScope::AllSongs,
                 Tab::Albums => ShuffleScope::ByAlbum,
                 Tab::Artists => ShuffleScope::ByArtist,
                 Tab::Playlists => ShuffleScope::Playlist,
-            })];
+            }));
         }
         // Albums is a sortable accordion — its own hit test (expand/collapse, drill-in, play track).
         if matches!(self.lib_tab, Tab::Albums) {
@@ -3720,7 +3732,7 @@ impl App {
                     return vec![];
                 }
                 if x >= 404 {
-                    return vec![Action::ShuffleArtist(row)];
+                    return self.start_play_action(Action::ShuffleArtist(row));
                 }
                 self.open_artist(row);
                 vec![]
@@ -3792,7 +3804,7 @@ impl App {
     /// A tap on the artist page: an album row drills in, a track row plays.
     fn tap_artist(&mut self, x: i32, y: i32) -> Vec<Action> {
         if library::hit_artist_shuffle_band(x, y) {
-            return vec![Action::ShuffleArtist(self.artist_view)];
+            return self.start_play_action(Action::ShuffleArtist(self.artist_view));
         }
         // Resolve the hit and copy the result out — `page` borrows `self.lib`, and everything
         // below this line mutates `self`.
@@ -4000,7 +4012,7 @@ impl App {
             return self.start_play_action(Action::PlayPlaylist(id));
         }
         if library::hit_playlist_shuffle_band(x, y) {
-            return vec![Action::ShufflePlaylist(id)];
+            return self.start_play_action(Action::ShufflePlaylist(id));
         }
         if user {
             // THE COVER, which is a button on a user playlist. Each tap moves to the next album
@@ -5328,8 +5340,10 @@ impl App {
     ///
     /// NON-DESTRUCTIVE. This used to `drain(..n)`: tapping the third queued row silently threw
     /// away the two above it. That read as "skip forward inside the queue", but it was the only
-    /// action on this screen that destroyed the user's own picks with no confirmation and no undo
-    /// — while the CLEAR chip beside it, which destroys strictly less, has both. Moving the row to
+    /// action on this screen that destroyed the user's own picks with no confirmation and no undo.
+    /// (This comment used to add "while the CLEAR chip beside it has both" — the chip had neither,
+    /// so the claim was true about the design and false about the code. The chip now asks; see
+    /// `confirm::Ask::ClearQueue`.) Moving the row to
     /// the front instead honours the tap ("play this one now") and costs nothing: the picks that
     /// were above it simply follow it, in their existing order.
     ///
@@ -9444,16 +9458,39 @@ mod tests {
     }
 
     /// Emptying the queue cannot be undone, so it is an explicit labelled chip rather than a
-    /// gesture — and the chip must not also play the row it sits over.
+    /// gesture, it ASKS before it acts, and it must not also play the row it sits over.
     #[test]
-    fn the_clear_chip_empties_the_queue() {
+    fn the_clear_chip_asks_then_empties_the_queue() {
+        use crate::confirm::{hit, Ask, Hit};
         let mut a = queued(5);
         let (cx, cy, cw, ch) = crate::up_next::CLEAR_CHIP;
-        assert_eq!(a.tap(cx + cw / 2, cy + ch / 2), vec![Action::QueueChanged]);
+        let (tx, ty) = (cx + cw / 2, cy + ch / 2);
+
+        // The tap raises the card and changes nothing yet.
+        assert_eq!(a.tap(tx, ty), vec![]);
+        assert!(a.modal_open(), "CLEAR must ask first");
+        assert_eq!(a.queue().len(), 5, "nothing may be destroyed before the answer");
+
+        // Backing out leaves the queue alone.
+        let cancel = (0..crate::H as i32)
+            .find(|y| hit(Ask::ClearQueue, 240, *y) == Hit::Cancel)
+            .expect("the card can be dismissed");
+        a.tap(240, cancel);
+        assert!(!a.modal_open());
+        assert_eq!(a.queue().len(), 5, "Cancel must keep the picks");
+
+        // Confirming does the work.
+        assert_eq!(a.tap(tx, ty), vec![]);
+        let ok = (0..crate::H as i32)
+            .find(|y| hit(Ask::ClearQueue, 240, *y) == Hit::Confirm)
+            .expect("the card has a confirming button");
+        assert_eq!(a.tap(240, ok), vec![Action::QueueChanged]);
         assert!(a.queue().is_empty());
         assert_eq!(a.current(), Screen::UpNext);
-        // And on an empty queue it is inert rather than emitting a no-op change.
-        assert!(a.tap(cx + cw / 2, cy + ch / 2).is_empty());
+
+        // And on an empty queue the chip is inert — it does not even ask.
+        assert!(a.tap(tx, ty).is_empty());
+        assert!(!a.modal_open());
     }
 
     /// Playing an album sets the CONTEXT; it does not queue anything. This test used to assert the
@@ -10906,6 +10943,57 @@ mod tests {
             a.lib_tab = tab;
             assert_eq!(a.tap(cx, cy), vec![Action::Shuffle(want)], "tab {tab:?}");
         }
+    }
+
+    /// EVERY Shuffle band asks before it destroys the user's picks.
+    ///
+    /// The four bands used to return their action directly instead of going through
+    /// `start_play_action`, so they reached `set_play_context` — and its `queue.clear()` — with no
+    /// prompt. The shuffle bands are the largest targets in the app, which made them the easiest
+    /// way to lose a hand-built queue and the only play path that did it silently. On the
+    /// Playlists tab the two behaviours sat side by side: the PLAY band asked, the SHUFFLE band
+    /// beside it did not.
+    ///
+    /// Note what `shuffle_band_is_tappable_on_every_tab` above does NOT catch: with an EMPTY queue
+    /// the funnel is transparent and returns `vec![act]` unchanged, so that test passes either
+    /// way. The queue has to be non-empty for the difference to exist at all.
+    #[test]
+    fn every_shuffle_band_asks_before_it_clears_the_queue() {
+        use crate::confirm::{hit, Ask, Hit};
+        let (bx, by, bw, bh) = library::library_shuffle_band();
+        let (cx, cy) = (bx + bw / 2, by + bh / 2);
+
+        // The Library band, on each of its four tabs.
+        for tab in [Tab::Songs, Tab::Albums, Tab::Artists, Tab::Playlists] {
+            let mut a = unlocked();
+            a.push(Screen::Library);
+            a.lib_tab = tab;
+            a.queue_push_for_test();
+            assert_eq!(a.tap(cx, cy), vec![], "tab {tab:?}: the band must not play yet");
+            assert!(a.modal_open(), "tab {tab:?}: it must ask about the queue first");
+        }
+
+        // The artist PAGE band. Located the way the screen locates it, by asking the hit test.
+        let ay = (0..crate::H as i32)
+            .find(|y| library::hit_artist_shuffle_band(240, *y))
+            .expect("the artist page draws a shuffle band");
+        let mut a = unlocked();
+        a.push(Screen::Artist);
+        a.queue_push_for_test();
+        assert_eq!(a.tap(240, ay), vec![], "artist page: must not play yet");
+        assert!(a.modal_open(), "artist page: it must ask about the queue first");
+
+        // And answering KEEP still starts the shuffle — the prompt delays the action, it never
+        // swallows it.
+        let keep = (0..crate::H as i32)
+            .find(|y| hit(Ask::QueueOnPlay, 240, *y) == Hit::KeepQueue)
+            .expect("the card offers a keep-queue row");
+        let acts = a.tap(240, keep);
+        assert!(
+            acts.iter().any(|t| matches!(t, Action::ShuffleArtist(_))),
+            "keeping the queue must still shuffle — {acts:?}"
+        );
+        assert_eq!(a.queue().len(), 1, "and the pick must survive it");
     }
 
     /// The band must not swallow taps meant for the list, and the list must not start inside it —
