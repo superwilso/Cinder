@@ -16,6 +16,36 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Fixed
+
+- **The installer unmounted `/data` on a running player.** *Sandbox-tested — 10 new cases in
+  `cinder-home/tools/test_install_mounts.sh`; device-unverified.* `install_cinderhome.sh` is written
+  for the Sony updater, where `/system` and `/data` are its own to mount and to take away again. Run
+  on a live system it is a guest, and its tail's blind `umount /data` **succeeded** (observed
+  2026-09-21), leaving a running player with no `/data` until `/system/bin/mount_partition usrdata`
+  put it back. It can succeed even though the script also "mounted" `/data`, because mounting the
+  same filesystem on the same point again stacks a second mount that shadows the first. The script
+  now records what was already mounted before it touched anything and undoes only its own work —
+  and restores `/system` to `ro` if that is how it found it, rather than leaving a live player's
+  `/system` writable. All ten blind unmount sites go through one `cleanup_mounts`.
+
+  The same stacking explains a second symptom: `data_is_mounted()` could report **not** mounted on a
+  live system, because its sentinel is written to the real `/data` and is then visible or hidden
+  depending on whether our own mount shadowed it. That is why one live install silently skipped the
+  cable pass and the next did not. `/proc` is now believed when it says `/data` was already there.
+
+### Added
+
+- **A `Sony` palette — the stock NW-A50 look.** *Validated by the palette checker and rendered
+  across all 246 previews; device-unverified.* Pure black, white primary text, grey secondaries,
+  Sony's `#333333` dividers and its own muted gold `#c0a565` as the accent — the colours taken from
+  the carved QML in `cinder-sony-analysis`' `UI_DESIGN_SPEC.md` §4, not matched by eye. Because
+  Walkman One is the same design tightened, with no colour change outside its logo art, this
+  reproduces the Walkman One look as well. Colour only: stock's *layout* (88 px rows, the 152 px
+  hairline) is a skin, not a palette. This is the first piece of builds ② and ④ in
+  [`docs/VISION_four_builds.md`](docs/VISION_four_builds.md).
+
+
 ## [0.3.11] — 2026-09-21
 
 ### Fixed

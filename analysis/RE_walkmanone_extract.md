@@ -683,10 +683,49 @@ CHIPID   -> 0x00001000    # powerdown (a powered-up part reads 0x1093)
 POWERCFG -> 0x00002000    # ENABLE clear
 ```
 
-`libTunerPlayerService.so` is present (79,916 bytes, md5 `2e3123c7482197e43b625f30c8810daf`) and
-`hagoromo28` starts `TunerPlayerService`, so the service is running; whether it is the mock shipped
-to chipless models still needs a diff against stock 1.02's copy. The ALSA control the audio path
-needs is there too: `numid=26 'analog input device'`, items `off`, `tuner`, …
+`hagoromo28` starts `TunerPlayerService`, so the service is running. The ALSA control the audio
+path needs is there too: `numid=26 'analog input device'`, items `off`, `tuner`, …
+
+**Walkman One ships the MOCK — confirmed by symbol diff, 2026-09-22.** Both libraries were pulled
+out of their system images with `debugfs -R dump /vendor/sony/lib/libTunerPlayerService.so`
+(`artifacts/unpacked/stock/6.bin` and `artifacts/unpacked/walkmanone/7.bin`):
+
+| | size | md5 | dynamic symbols |
+|---|---|---|---|
+| stock 1.02 | 96,308 | `23a96625f894d265d355c1d84f216bad` | 346 |
+| Walkman One 3.02 | 79,916 | `2e3123c7482197e43b625f30c8810daf` | 288 |
+
+W1's copy is **missing 58 symbols and adds none**, and the missing set is exactly the hardware
+layer: `hgrm::components::tuner::` `Open` `Close` `SetFrequency` `GetFrequency` `GetSignalLevel`
+`GetStereoState` `SetStereoMode` `SetSenseMode` `SetSenseThreshold` `SetGain` `SetDeemphasis`
+`SetMuteMode` `SetRdsMode` `GetRdsMode` `SetRadioDataSystem` `IsExistDevice` `GetDeviceCapability`
+and the whole `WaitEvent`/`EnableWaitEvent`/`DisableWaitEvent`/`CancelWaitEvent` family, plus
+`pst::services::tunerplayer::TunerPlayerImpl::{Initialize,InitDevice,InitSetting}` and the
+`pst::services::configuration::` helpers they use. Stock's copy also has `ioctl`, `__open_2` and
+`close` undefined — it really does drive `/dev/radio0`; the mock has no need of them.
+
+**So Sony's own FM path is dead on Walkman One.** The md5 of W1's copy matches the one read off the
+live player, so the running device is the mock.
+
+**But Cinder may not need that library at all.** `cinder-audio/src/tuner_shim.cpp` already drives
+the chip directly through `/proc/regmon/Si4708icx` — it tunes by writing `CHANNEL|TUNE` and waiting
+on `STATUS_RSSI.STC`, seeks with `POWERCFG.{SEEK,SEEKUP,SKMODE}`, and already names
+`POWERCFG.ENABLE`/`DMUTE`. Only three vtable calls in `cinder_tuner_start()` still touch
+`TunerPlayerService` (`Open`, `SetFrequency`, `Play`), and one of those is already implemented twice.
+The audio half is `AudioInPlayerService` — a *different* service, which W1's `hagoromo28` starts
+normally — plus the plain ALSA mixer control. See [`../docs/SPEC_cinder_one.md`](../docs/SPEC_cinder_one.md)
+§4 for the proposed `regmon`-only bring-up and the order to test it in.
+
+**The swap would link.** Stock's version needs two `DT_NEEDED` entries the mock does not —
+`libConfigurationService.so` and `librt.so.1` (plus `libpthread.so.0`). W1 carries
+`libConfigurationService.so` at the same 194,608 bytes, and **all 9 `configuration` symbols stock's
+tuner library imports are exported by W1's copy**. Checked wider: of the **44 Sony-namespace
+undefined symbols** in stock's library, **every one resolves** against W1's own
+`libpstcore` / `libcxxrt` / `libConfigurationService`. Nothing is missing.
+
+So the remaining work for FM on W1 is: drop stock 1.02's `libTunerPlayerService.so` in, load
+`radio-si4708icx.ko` (proven above), and own the UI — with the two power traps below. **Needs the
+device to confirm**; the link analysis is static.
 
 Wampy's `MAKING_OF_FM.md` documents the rest and the two traps: the player sets power state to `mem`
 on a power press (hold a **wakeup source**), and a service flips `analog input device` back to `off`

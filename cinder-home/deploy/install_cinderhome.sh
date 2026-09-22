@@ -112,6 +112,50 @@ else
 fi
 echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE"
 
+# ── what was ALREADY mounted before we touched anything ──────────────────────────────────────
+# This script is written for the updater, where /system and /data are ours to mount and ours to
+# take away again. Run on a LIVE system it is a guest: both are already mounted, and unmounting
+# them pulls the floor out from under a RUNNING player. Observed 2026-09-21 — a live install's
+# tail `umount /data` SUCCEEDED and left the player with no /data at all until
+# `/system/bin/mount_partition usrdata` put it back. (It can succeed even though the script also
+# "mounted" /data: mounting the same filesystem on the same point again STACKS a second mount that
+# shadows the first, so one umount pops a layer and a second install pops the real one.)
+#
+# So: record the state we found, and at the end undo only what we did. /proc is the right test
+# here even though the updater need not have it — when /proc is missing the greps fail, both flags
+# stay 0, and we get exactly the updater behaviour this script has always had. Failing that way
+# round is the safe one: unmounting a ramdisk mount costs nothing, unmounting a live player's
+# /data costs the player.
+SYSTEM_PREMOUNTED=0
+SYSTEM_PREMOUNT_RO=0
+DATA_PREMOUNTED=0
+if "$BB" grep -q " /system " /proc/mounts 2>/dev/null; then
+    SYSTEM_PREMOUNTED=1
+    # Sony mounts /system ro at normal boot; Walkman One mounts it rw and puts it back to ro at the
+    # end of its own boot script. Either way, leaving a live player's /system writable is not ours
+    # to decide, so remember which it was and restore it.
+    case ",$("$BB" awk '$2 == "/system" { print $4; exit }' /proc/mounts 2>/dev/null)," in
+        *,ro,*) SYSTEM_PREMOUNT_RO=1 ;;
+    esac
+fi
+"$BB" grep -q " /data " /proc/mounts 2>/dev/null && DATA_PREMOUNTED=1
+
+# Undo our own mounts, and nothing else. Every early-exit path below calls this instead of
+# unmounting blind.
+cleanup_mounts() {
+    if [ "$DATA_PREMOUNTED" = 1 ]; then
+        :   # someone else's mount — a running system's, most likely. Leave it alone.
+    else
+        umount /data 2>/dev/null
+    fi
+    if [ "$SYSTEM_PREMOUNTED" = 1 ]; then
+        [ "$SYSTEM_PREMOUNT_RO" = 1 ] && mount -o remount,ro /system 2>/dev/null
+    else
+        umount /system 2>/dev/null
+    fi
+    true
+}
+
 mount -t ext4 -o rw /emmc@android /system 2>/dev/null
 mount -o remount,rw /emmc@android /system 2>/dev/null
 
@@ -150,7 +194,17 @@ mount -t ext4 -o rw /emmc@usrdata /data 2>/dev/null
 mount -o remount,rw /emmc@usrdata /data 2>/dev/null
 data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 /data 2>/dev/null
 DATA_MOUNTED=0
-data_is_mounted && DATA_MOUNTED=1
+# If /proc said /data was mounted before we started, that IS the answer and the sentinel cannot
+# improve on it. The sentinel test is built for the updater, where /data starts unmounted; on a
+# live system `touch /data/.cinder_premount` succeeds on the REAL /data, so SENTINEL=1, and whether
+# the file is then visible depends on whether our own mount happened to stack over and shadow it.
+# That is why the same script reported "not mounted" in one live session (→ the cable pass was
+# silently not written, and the first boot landed on Sony's player) and "mounted" in the next.
+if [ "$DATA_PREMOUNTED" = 1 ]; then
+    DATA_MOUNTED=1
+else
+    data_is_mounted && DATA_MOUNTED=1
+fi
 # a failed mount leaves the sentinel on the ramdisk; a good one hides it (gone at reboot anyway)
 [ "$DATA_MOUNTED" = 1 ] || "$BB" rm -f /data/.cinder_premount 2>/dev/null
 if [ "$DATA_MOUNTED" = 1 ]; then
@@ -167,11 +221,11 @@ fi
 if [ ! -f "$SRC" ]; then
     echo "ERROR: $SRC not found — copy the 'cinder-home' binary to the storage root"
     echo "       (tools/flash.sh --push cinder-home/cinder-home) before flashing. ABORT (no changes)."
-    sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
+    sync; cleanup_mounts; exit 0
 fi
 if [ ! -f "$APPCFG" ]; then
     echo "ERROR: $APPCFG not found — wrong device/layout. ABORT (no changes)."
-    sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
+    sync; cleanup_mounts; exit 0
 fi
 
 # ensure the install dir exists (Wampy provides it; create if missing)
@@ -182,7 +236,7 @@ fi
 "$BB" cat "$SRC" > "$BIN/cinder-home.tmp" 2>/dev/null
 if [ ! -s "$BIN/cinder-home.tmp" ]; then
     echo "ERROR: failed to stage $BIN/cinder-home (copy failed/zero bytes). ABORT (no .appcfg change)."
-    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; cleanup_mounts; exit 0
 fi
 # size sanity: the binary is ~2.6 MB. Measure with busybox (the ambient wc returned 0 and
 # false-aborted the first flash). Compare against the SOURCE size too. Only abort on a
@@ -195,11 +249,11 @@ case "$srcsz" in ''|*[!0-9]*) srcsz=-1;; esac
 echo "staged size: $sz bytes (source $srcsz bytes)"
 if [ "$sz" -ge 0 ] && [ "$sz" -lt 1000000 ]; then
     echo "ERROR: staged binary only $sz bytes (expected ~2.6MB) — partial copy. ABORT (no .appcfg change)."
-    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; cleanup_mounts; exit 0
 fi
 if [ "$sz" -ge 0 ] && [ "$srcsz" -ge 0 ] && [ "$sz" != "$srcsz" ]; then
     echo "ERROR: staged $sz != source $srcsz bytes — truncated copy. ABORT (no .appcfg change)."
-    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$BIN/cinder-home.tmp" 2>/dev/null; sync; cleanup_mounts; exit 0
 fi
 [ "$sz" -lt 0 ] && echo "WARN: size unmeasurable even via busybox; file is non-empty (-s passed) — proceeding; bad-boot counter is the net."
 "$BB" chmod 0755 "$BIN/cinder-home.tmp"
@@ -548,7 +602,7 @@ if [ ! -f "$APPCFG.real" ]; then
     "$BB" cat "$APPCFG" > "$APPCFG.real" && "$BB" chmod 0644 "$APPCFG.real"
     if [ ! -s "$APPCFG.real" ]; then
         echo "ERROR: failed to back up $APPCFG -> .appcfg.real. ABORT (no .appcfg change)."
-        sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
+        sync; cleanup_mounts; exit 0
     fi
     echo "backed up $APPCFG -> .appcfg.real"
 fi
@@ -1061,7 +1115,7 @@ LAUNCH_EOF
 # verify the launcher wrote fully (must contain its final exec line) before activating it
 if ! "$BB" grep -q 'exec "\$HOME_BIN"' "$LAUNCH.tmp" 2>/dev/null; then
     echo "ERROR: launcher write was truncated. ABORT (no .appcfg change; stock intact)."
-    "$BB" rm -f "$LAUNCH.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$LAUNCH.tmp" 2>/dev/null; sync; cleanup_mounts; exit 0
 fi
 "$BB" chmod 0755 "$LAUNCH.tmp"
 "$BB" mv -f "$LAUNCH.tmp" "$LAUNCH"
@@ -1081,7 +1135,7 @@ APPCFG_EOF
 if ! "$BB" grep -q '^command: /system/vendor/unknown321/bin/cinderhome-launch.sh$' "$APPCFG.tmp" \
    || ! "$BB" grep -q '^type: Home$' "$APPCFG.tmp"; then
     echo "ERROR: new .appcfg failed verification — NOT activating (stock .appcfg untouched)."
-    "$BB" rm -f "$APPCFG.tmp" 2>/dev/null; sync; umount /data 2>/dev/null; umount /system 2>/dev/null; exit 0
+    "$BB" rm -f "$APPCFG.tmp" 2>/dev/null; sync; cleanup_mounts; exit 0
 fi
 "$BB" chmod 0644 "$APPCFG.tmp"
 "$BB" mv -f "$APPCFG.tmp" "$APPCFG"
@@ -1102,7 +1156,7 @@ if [ "$ok" != 1 ]; then
         "$BB" cat "$APPCFG.real" > "$APPCFG.tmp" && "$BB" mv -f "$APPCFG.tmp" "$APPCFG"
         echo "   restored stock .appcfg."
     fi
-    sync; umount /data 2>/dev/null; umount /system 2>/dev/null
+    sync; cleanup_mounts
     echo "== install ABORTED safely; device will boot the stock UI. =="
     exit 0
 fi
@@ -1175,7 +1229,7 @@ fi
 echo "cleared prior disable flags (fresh install = enabled)"
 echo "left staged binary at $SRC (safe to delete once cinder-home is confirmed)"
 sync
-umount /data 2>/dev/null; umount /system 2>/dev/null
+cleanup_mounts
 echo "== done. reboot to normal; appmgr launches cinder-home as the Home app. =="
 echo "   SAFETY: a failed/hung launch AUTO-REVERTS to stock after 4 boots (no wbrt)."
 echo "   Escapes, in order of how little they depend on:"
