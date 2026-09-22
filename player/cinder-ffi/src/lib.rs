@@ -4750,6 +4750,23 @@ pub extern "C" fn cinder_set_device_storage(mem_total_kb: libc::c_int, mem_avail
     }
 }
 
+/// Which firmware Cinder is installed ON TOP OF, for the Device screen's `Base` row.
+///
+/// Two markers, and they are the same two `install_cinderhome.sh` uses, deliberately: the install
+/// log and the screen must never disagree about what this player is. `/sbin/boot_complete.sh` IS
+/// Walkman One — the 1452-line script that re-applies `/system/etc/.mod` on every boot — and
+/// `/opt2` is the state it keeps (`analysis/RE_walkmanone_extract.md`). Neither exists on stock.
+///
+/// Read once: it cannot change without a reinstall, and this is called on every Device refresh.
+fn base_firmware() -> &'static str {
+    static BASE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        let w1 = std::path::Path::new("/sbin/boot_complete.sh").is_file()
+            && std::path::Path::new("/opt2").is_dir();
+        if w1 { "WALKMAN ONE" } else { "SONY STOCK" }
+    })
+}
+
 /// Seconds since boot and the kernel release string.
 ///
 /// # Safety
@@ -4759,6 +4776,7 @@ pub unsafe extern "C" fn cinder_set_device_system(uptime_s: libc::c_int, kernel:
     let kernel = cstr(kernel);
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_device_system(uptime_s, &kernel);
+        r.app.set_device_base_fw(base_firmware());
         mark_device_dirty(r);
     }
 }

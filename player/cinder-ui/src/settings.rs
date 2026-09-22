@@ -94,12 +94,26 @@ fn swatch_x(i: usize) -> i32 {
     SW_RIGHT - total + i as i32 * (SW + SW_GAP)
 }
 
+/// The released version, in ONE place. `tools/release.sh` rewrites this line when it bumps the
+/// tag, the same way it rewrites `installer/Cargo.toml` — so what the player shows on its own
+/// screen and what the release is called cannot drift apart. It is a macro rather than a `const`
+/// because `concat!` takes literals only.
+#[macro_export]
+macro_rules! cinder_version { () => { "0.3.11" } }
+
+/// The version on its own, for anything that wants it without the channel decoration.
+pub const CINDER_VERSION: &str = cinder_version!();
+
 /// Firmware/build label shown on the Settings "Firmware" row. The `dev` feature (development
 /// channel, built from the same tree) makes the two builds visually distinguishable on-device.
+///
+/// It carries the VERSION as of 0.3.12. Until then the stable label read "CINDER 1.0 · RUST" —
+/// a number that was never released and never changed, so a player could not say which build was
+/// on it, and neither could a bug report.
 #[cfg(feature = "dev")]
-pub const FIRMWARE_LABEL: &str = "CINDER DEV · RUST";
+pub const FIRMWARE_LABEL: &str = concat!("CINDER ", cinder_version!(), " · DEV");
 #[cfg(not(feature = "dev"))]
-pub const FIRMWARE_LABEL: &str = "CINDER 1.0 · RUST";
+pub const FIRMWARE_LABEL: &str = concat!("CINDER ", cinder_version!());
 
 /// Current settings values to display.
 pub struct SettingsView<'a> {

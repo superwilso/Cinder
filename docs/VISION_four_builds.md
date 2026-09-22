@@ -121,7 +121,7 @@ And one of the *losses* turns out to be recoverable without the model swap too:
 
 | W1 loss | what it would take to get back | needs the model swap undone? |
 |---|---|---|
-| **FM Radio** | drop stock 1.02's `libTunerPlayerService.so` (96,308 B) in place of W1's mock, `insmod radio-si4708icx.ko`, and own the UI | **No.** All 44 Sony-namespace symbols stock's copy imports resolve against W1's own libraries, and its extra `DT_NEEDED` `libConfigurationService.so` is present on W1 at the same size. The tuner chip is physically there and responding. Static analysis — **needs the device to confirm** |
+| **FM Radio** | **Neither, as it turns out.** Cinder's own `regmon` register layer drives the chip directly; the driver is already loaded on W1. Only the UI is ours to own | **No — and PROVEN ON HARDWARE 2026-09-22.** With W1's mock library in place and no Sony tuner service at any point: the chip powers up from `POWERCFG`, tunes across all 206 channels, gives a graded RSSI (floor 11–14, carriers to 27) and locks a **stereo carrier at 100.0 MHz**, and its hardware seek walks the band. `SPEC_cinder_one.md` §4 has the table. Outstanding: only the audio leg to the jack |
 
 > **So "our own Walkman One" is not a smaller Walkman One. It is a strictly larger one:** every
 > audio gain, and none of the feature losses, because there is no reason for us to swap the model

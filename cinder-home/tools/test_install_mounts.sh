@@ -38,6 +38,7 @@ REAL_MOUNT="$(command -v mount)"; REAL_UMOUNT="$(command -v umount)"
 # (which a bind sandbox cannot actually honour), and keeps $R/proc/mounts in step.
 cat > "$R/bin/mount" <<EOF
 #!/bin/sh
+echo "\$*" >> '$R/mountcalls'
 last=""; for a in "\$@"; do last="\$a"; done
 case " \$* " in
   *remount,ro*) echo "remount-ro \$last" >> '$R/remounts'; exit 0 ;;
@@ -120,9 +121,13 @@ data_is_mounted() {
     fi
     "$BB" grep -q " $data_dir " "$mounts_file" 2>/dev/null
 }
-mount -t ext4 -o rw /emmc@usrdata "$data_dir" 2>/dev/null
-mount -o remount,rw /emmc@usrdata "$data_dir" 2>/dev/null
-data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 "$data_dir" 2>/dev/null
+if [ "$DATA_PREMOUNTED" = 1 ]; then
+    :   # already mounted by the running system — its options are not ours to change
+else
+    mount -t ext4 -o rw /emmc@usrdata "$data_dir" 2>/dev/null
+    mount -o remount,rw /emmc@usrdata "$data_dir" 2>/dev/null
+    data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 "$data_dir" 2>/dev/null
+fi
 DATA_MOUNTED=0
 if [ "$DATA_PREMOUNTED" = 1 ]; then
     DATA_MOUNTED=1
@@ -139,6 +144,9 @@ cleanup_mounts
 [ -e "$data_dir/.is_the_partition" ] && echo "data_still_mounted=yes" || echo "data_still_mounted=no"
 [ -e "$sys_dir/.is_the_partition" ] && echo "system_still_mounted=yes" || echo "system_still_mounted=no"
 grep -q "remount-ro $sys_dir" "$R/remounts" 2>/dev/null && echo "system_ro_restored=yes" || echo "system_ro_restored=no"
+# A live player's /data carries nodev,noexec,noatime. Any mount or remount of it by this script
+# replaces those with the kernel's defaults, so on a live system there must be NEITHER.
+grep -q "$data_dir" "$R/mountcalls" 2>/dev/null && echo "data_touched=yes" || echo "data_touched=no"
 SCENARIO
 chmod +x "$SP/scenario.sh"
 
@@ -158,6 +166,7 @@ check "DATA_MOUNTED (no false-neg)" "$(field "$o" DATA_MOUNTED)"       "1"
 check "/data NOT unmounted"         "$(field "$o" data_still_mounted)" "yes"
 check "/system NOT unmounted"       "$(field "$o" system_still_mounted)" "yes"
 check "/system put back to ro"      "$(field "$o" system_ro_restored)" "yes"
+check "/data mount options untouched" "$(field "$o" data_touched)"     "no"
 
 echo "── 2. UPDATER: we mounted them, so we take them away again ──"
 o="$(run 0)"
@@ -166,6 +175,7 @@ check "DATA_MOUNTED via sentinel"   "$(field "$o" DATA_MOUNTED)"       "1"
 check "/data unmounted by cleanup"  "$(field "$o" data_still_mounted)" "no"
 check "/system unmounted by cleanup" "$(field "$o" system_still_mounted)" "no"
 check "no stray ro remount"         "$(field "$o" system_ro_restored)" "no"
+check "updater DOES mount /data"    "$(field "$o" data_touched)"       "yes"
 
 echo
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
