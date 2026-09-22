@@ -464,9 +464,15 @@ byte-identical between the two firmwares. **The cause is currently unknown**; se
 * The Sony updater **did** run and rejected the package explicitly. `nvp zr 26 4` (NVP node 26,
   *FWUP result*) read `45 55 50 47` = `EUPG` = `E_UPGFILE`, which the recovery ramdisk's
   `install_update_script/icx_start_update.sh` sets when **`fwpchk -f … -c` (md5 & signature)
-  fails**. So a correctly `nw-wm1a`-sealed package is still refused, consistent with the
-  long-carried note that Walkman One mutates `fwpchk`'s key. **Sealing the package for the right
-  model is necessary and not sufficient on Walkman One.**
+  fails**.
+
+  > **CORRECTED 2026-09-22.** This bullet used to read "a correctly `nw-wm1a`-sealed package is
+  > still refused… necessary and not sufficient". **That was not measured.** The package refused
+  > on 09-21 was the **`nw-a50`** one — `pack_upg.sh` only learned to take a model later the same
+  > day, and `CHANGELOG.md` records the nw-wm1a package as "built and round-trip-checked, and has
+  > not yet been installed on hardware". Whether ANY `.UPG` installs on Walkman One is therefore
+  > **open**, not closed, and 18.1 below is the test that settles it. The `fwpchk`-key note stays
+  > a hypothesis, not a finding.
 * The updater can be triggered without `flash.sh`/`scsitool` and without root on the host:
   `nvpflag fup 0x70555766` over adb, then reboot. It is self-clearing (`nvpflag fup -1` on every
   failure path), so a rejected package cannot loop the updater.
@@ -521,3 +527,22 @@ byte-identical between the two firmwares. **The cause is currently unknown**; se
 
 **Do not re-attempt an install on Walkman One before 17.2 answers.** The failure mode is a boot
 loop below the escape ladder, and the only way out of it is the one that was just used.
+
+---
+
+## Open from 2026-09-22 — can a Walkman One user install a RELEASE?
+
+Cinder **runs** on Walkman One: proven twice now, and 2026-09-22 added an install onto a live W1
+3.02 player over adb that came up clean with the cable in (`cable escape stood down — the pass is
+spent`), plus FM through the register path, the firmware line in the install log, and the `Base`
+row on Settings ▸ Device. **None of that is the path a stranger uses.** Everything below is about
+the release artifacts, not the app.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 18.1 | **Does an `nw-wm1a`-sealed `.UPG` install on Walkman One at all?** The one open question that decides the shape of everything else here. See the correction above — this has never been measured | `bash cinder-home/tools/pack_upg.sh dev nw-wm1a`, stage `cinder_home_install.nw-wm1a.upg` on the drive, `nvpflag fup 0x70555766` over adb, reboot. Read the result back with `nvp zr 26 4` | The updater runs and Cinder is installed. `nvp zr 26 4` is NOT `45 55 50 47` (`EUPG`) | `EUPG` again = W1's `fwpchk` really does mutate the key, and **W1 needs a non-`.UPG` install route** (a documented adb/script path). That is a release-notes decision, not a bug |
+| 18.2 | **The release packs a Walkman One package** | `tools/release.sh` calls `pack_upg.sh stable` with no model, so `dist/stable/` carries `nw-a50` only. Add the `nw-wm1a` pack (and the uninstall) once 18.1 says a package is worth shipping | Both packages in `dist/stable/`, both round-trip-checked | Gated on 18.1: if no `.UPG` installs on W1, shipping a second one is worse than useless — it looks like support that does not exist |
+| 18.3 | **The end-user installer knows which player it is talking to** | `installer/src/` has no model or KAS awareness: one package, one vendor SCSI command. A W1 player silently drops it | The installer reads the player's KAS (or model) and picks the package, or says plainly that this player needs the W1 route | Silence is the whole problem here — the 09-21 session was spent on a failure that wrote nothing anywhere |
+| 18.4 | **Uninstall on Walkman One** — `cinder_home_uninstall.upg` has never run there | After 18.1, uninstall and confirm W1's own player returns | W1 boots its own Home app; `.appcfg.real` restored | A player that cannot be uninstalled is not shippable to strangers |
+| 18.5 | **The stable channel on W1** — everything proven so far is `dev`, which self-enables adb. Stable has no adb, and on W1 that means no diagnosis at all unless `ADB=1` is set in `/contents/CFW/settings.txt` | Install stable on W1; boot; break nothing | Cinder paints, and the install log names the firmware | The install log is the only channel left: it is why `firmware:` was added to it on 09-22 |
+| 18.6 | **`cinder-guard.sh` is still not wired into any installer** — and it is W1-specific (it hooks `bootswitcher.sh`, the only persistent point upstream of appmgr). It is the sole backstop below the launcher's own counter | Decide: ship it for W1 installs, or leave it a manual step documented in the W1 route | A W1 install either installs the guard or says why it does not | Init blocks on the script that calls it, which is why it was not wired in on 09-21. That trade needs a decision, not a default |
