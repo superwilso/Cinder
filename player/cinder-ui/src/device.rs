@@ -123,6 +123,14 @@ pub struct DeviceView<'a> {
     pub kernel: &'a str,
     /// Cinder's own build label — the same string the Settings Firmware row shows.
     pub firmware: &'a str,
+    /// The firmware Cinder is installed ON TOP OF: Sony's stock, or Walkman One. Empty when the
+    /// shell has not pushed it (the host harness, or a build predating the reading).
+    ///
+    /// This is not decoration. Cinder now runs on both bases and they differ in ways that have
+    /// each cost a debugging session — W1 ships a stub tuner service, mounts /system rw, rewrites
+    /// the model identity so Sony-sealed packages are refused, and drops adb unless told not to.
+    /// A bug report that does not say which base it came from starts by guessing.
+    pub base_fw: &'a str,
 }
 
 /// One entry in the single layout list. `Section` is a header; `Row` is a readout, and `toggle`
@@ -170,6 +178,7 @@ pub fn items(v: &DeviceView) -> Vec<Item> {
         row("Uptime", uptime_label(v.uptime_s)),
         row("Kernel", text_or_dash(v.kernel, false)),
         row("Firmware", text_or_dash(v.firmware, false)),
+        row("Base", text_or_dash(v.base_fw, false)),
     ]
 }
 
@@ -446,6 +455,7 @@ mod tests {
             mem_total_kb: 467512, mem_avail_kb: 159772,
             music_total_mb: 56320, music_free_mb: 1024, data_free_mb: 13,
             uptime_s: 711, kernel: "3.10.26", firmware: "CINDER DEV · RUST",
+            base_fw: "WALKMAN ONE",
         }
     }
 
@@ -588,7 +598,7 @@ mod tests {
             chg_state: -1, chg_fault: -1,
             temp_cpu: UNKNOWN, temp_pmic: UNKNOWN, temp_abb: UNKNOWN,
             cpu_khz: UNKNOWN, cpu_max_khz: UNKNOWN, governor: "",
-            uptime_s: UNKNOWN, kernel: "", firmware: "",
+            uptime_s: UNKNOWN, kernel: "", firmware: "", base_fw: "",
             ..DeviceView::default()
         };
         for it in items(&v) {

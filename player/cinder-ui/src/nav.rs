@@ -915,6 +915,7 @@ pub struct App {
     dev_data_free_mb: i32,
     dev_uptime_s: i32,
     dev_kernel: String,
+    dev_base_fw: String,
     device_scroll_px: i32,
     /// A rescan has been asked for and the library has not come back yet. Purely a label state.
     ///
@@ -1343,6 +1344,7 @@ impl Default for App {
             dev_data_free_mb: crate::device::UNKNOWN,
             dev_uptime_s: crate::device::UNKNOWN,
             dev_kernel: String::new(),
+            dev_base_fw: String::new(),
             device_scroll_px: 0,
             rescanning: false,
             snd_dsee: false,
@@ -7726,6 +7728,7 @@ impl App {
             uptime_s: self.dev_uptime_s,
             kernel: &self.dev_kernel,
             firmware: crate::settings::FIRMWARE_LABEL,
+            base_fw: &self.dev_base_fw,
         }
     }
 
@@ -7785,6 +7788,14 @@ impl App {
     }
 
     /// Seconds since boot and the kernel release.
+    /// Which firmware Cinder is installed on top of, as the shell detected it ("SONY STOCK",
+    /// "WALKMAN ONE"). Pushed once — it cannot change without a reinstall.
+    pub fn set_device_base_fw(&mut self, base: &str) {
+        if self.dev_base_fw != base {
+            self.dev_base_fw = base.to_string();
+        }
+    }
+
     pub fn set_device_system(&mut self, uptime_s: i32, kernel: &str) {
         self.dev_uptime_s = uptime_s;
         self.dev_kernel.clear();

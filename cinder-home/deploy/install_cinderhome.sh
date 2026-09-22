@@ -112,6 +112,48 @@ else
 fi
 echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE"
 
+# ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
+# Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
+# W1 3.02, 2026-09-21/22). They behave differently in ways that have each already cost a session,
+# and until now the install log could not tell them apart — a W1 install read exactly like a stock
+# one, so every symptom was diagnosed against the wrong base.
+#
+# Markers, in order of how little they can lie. `/sbin/boot_complete.sh` IS Walkman One: a 1452-line
+# script that re-applies `/system/etc/.mod` on every boot (analysis/RE_walkmanone_extract.md), and
+# `/opt2` is the state it keeps (including the stock NVP and NVRAM backups it restores from).
+FIRMWARE=stock
+if [ -f /sbin/boot_complete.sh ] && [ -d /opt2 ]; then
+    FIRMWARE=walkmanone
+fi
+echo "firmware: $FIRMWARE"
+if [ "$FIRMWARE" = walkmanone ]; then
+    echo "firmware: Walkman One detected (/sbin/boot_complete.sh + /opt2)"
+    # Three things a W1 player's install log should carry, because each one has been mistaken for
+    # a Cinder fault before:
+    #   1. A .UPG for this player must be sealed nw-wm1a, not nw-a50. W1 rewrites the model
+    #      identity, so `nvpstr kas` answers with the NW-WM1A key and Sony's updater drops an
+    #      nw-a50 package SILENTLY (`nvp zr 26 4` = EUPG). tools/pack_upg.sh dev nw-wm1a builds it.
+    #      This direct install is unaffected — it never goes through the updater.
+    echo "firmware: packages for this player must be sealed nw-wm1a (pack_upg.sh <channel> nw-wm1a)"
+    #   2. adb does not survive a W1 boot unless W1 is told to keep it, and without adb the next
+    #      failure is undiagnosable. The key is read outside W1's TMD5 guard, so it works even in
+    #      the "no tuning applied" state.
+    if [ -f /contents/CFW/settings.txt ] \
+       && "$BB" grep -q '^ADB=1' /contents/CFW/settings.txt 2>/dev/null; then
+        echo "firmware: ADB=1 is set in /contents/CFW/settings.txt — adb survives reboots"
+    else
+        echo "firmware: NOTE add a line ADB=1 to /contents/CFW/settings.txt to keep adb across boots"
+    fi
+    #   3. W1 ships a MOCK libTunerPlayerService.so (79,916 B vs stock's 96,308 B) because the
+    #      WM1Z identity it adopts has no tuner. The chip is still physically there and answering,
+    #      and Cinder drives it through /proc/regmon/Si4708icx rather than that library — measured
+    #      2026-09-22: tune, a graded RSSI meter and hardware seek all work, stereo lock at 100.0
+    #      MHz. So FM is supported here; it is Sony's own FM UI that is missing, not the hardware.
+    if [ "$WANT_FM" = 1 ]; then
+        echo "firmware: FM on Walkman One uses Cinder's own register path (W1's tuner service is a stub)"
+    fi
+fi
+
 # ── what was ALREADY mounted before we touched anything ──────────────────────────────────────
 # This script is written for the updater, where /system and /data are ours to mount and ours to
 # take away again. Run on a LIVE system it is a guest: both are already mounted, and unmounting
@@ -149,7 +191,20 @@ cleanup_mounts() {
         umount /data 2>/dev/null
     fi
     if [ "$SYSTEM_PREMOUNTED" = 1 ]; then
-        [ "$SYSTEM_PREMOUNT_RO" = 1 ] && mount -o remount,ro /system 2>/dev/null
+        if [ "$SYSTEM_PREMOUNT_RO" = 1 ]; then
+            # EXPECTED TO FAIL ON A LIVE INSTALL, and it must say so rather than swallow it.
+            # Replacing the running Home app's own binary unlinks the inode it still has mapped
+            # (`/system/.../cinder-home (deleted)` in its /proc/PID/maps), which is an ext4 orphan,
+            # and remount,ro is EBUSY until that reference goes — measured 2026-09-22, with BOTH
+            # `mount -o remount,ro /system` and the device+mountpoint form. The next boot mounts
+            # /system ro on its own, so this is a note, not a fault.
+            if mount -o remount,ro /emmc@android /system 2>/dev/null; then
+                echo "mounts: /system restored to ro"
+            else
+                echo "mounts: /system left rw — remount,ro is busy (the old binary is still mapped"
+                echo "        by the running Home app). The next boot mounts it ro again."
+            fi
+        fi
     else
         umount /system 2>/dev/null
     fi
@@ -190,9 +245,18 @@ data_is_mounted() {
     fi
     "$BB" grep -q " /data " /proc/mounts 2>/dev/null
 }
-mount -t ext4 -o rw /emmc@usrdata /data 2>/dev/null
-mount -o remount,rw /emmc@usrdata /data 2>/dev/null
-data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 /data 2>/dev/null
+# A live player mounts /data itself, with options this script has no business changing:
+# `rw,nodev,noexec,noatime,discard` at normal boot. A blind `mount -o remount,rw` here replaced
+# those with the kernel's defaults (measured 2026-09-22: `rw,relatime,discard` — nodev and noexec
+# both GONE) and nothing put them back until the next reboot. So when /proc already says /data is
+# there, mount nothing: it is mounted, and it is not ours.
+if [ "$DATA_PREMOUNTED" = 1 ]; then
+    echo "state: /data was already mounted — leaving its mount options alone"
+else
+    mount -t ext4 -o rw /emmc@usrdata /data 2>/dev/null
+    mount -o remount,rw /emmc@usrdata /data 2>/dev/null
+    data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 /data 2>/dev/null
+fi
 DATA_MOUNTED=0
 # If /proc said /data was mounted before we started, that IS the answer and the sentinel cannot
 # improve on it. The sentinel test is built for the updater, where /data starts unmounted; on a

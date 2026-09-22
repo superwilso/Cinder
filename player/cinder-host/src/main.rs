@@ -652,6 +652,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 music_total_mb: 56320, music_free_mb: 1024, data_free_mb: 13,
                 uptime_s: 15120, kernel: "3.10.26",
                 firmware: cinder_ui::settings::FIRMWARE_LABEL,
+                base_fw: "SONY STOCK",
             };
             cinder_ui::device::render(&mut c, &theme, &fonts, &v, 0);
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "", 99);
@@ -671,6 +672,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 music_total_mb: 56320, music_free_mb: 1024, data_free_mb: 13,
                 uptime_s: 15120, kernel: "3.10.26",
                 firmware: cinder_ui::settings::FIRMWARE_LABEL,
+                base_fw: "SONY STOCK",
             };
             let max = cinder_ui::device::max_scroll_px(&v);
             cinder_ui::device::render(&mut c, &theme, &fonts, &v, max);
@@ -690,6 +692,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 data_free_mb: cinder_ui::device::UNKNOWN,
                 uptime_s: 273600, kernel: "",
                 firmware: cinder_ui::settings::FIRMWARE_LABEL,
+                base_fw: "SONY STOCK",
             };
             cinder_ui::device::render(&mut c, &theme, &fonts, &v, 0);
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "20:56", "FLAC 24/96", 46);

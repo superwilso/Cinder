@@ -161,15 +161,38 @@ untested is the wrong trade; this wants a device session where each step is chec
 
 ### Needs the device
 
-Everything in §4 is static analysis plus one register dump. Nothing has been played through it.
-In order, cheapest first:
+**Step 1 PASSED on hardware, 2026-09-22** — on this Walkman One 3.02 player, with W1's **mock**
+`libTunerPlayerService.so` (79,916 B) in place and no Sony tuner service involved at any point.
+Registers only, through `/proc/regmon/Si4708icx`, from a shell:
 
-1. Does `POWERCFG ← ENABLE|DMUTE` + `CHANNEL|TUNE` via `regmon` produce a carrier on Walkman One
-   with no Sony tuner service at all? (Read `STATUS_RSSI` back — no audio needed to answer it.)
-2. Does `AudioIn A_Play` + `analog input device = tuner` then carry that to the jack?
-3. Only if 1 or 2 fails: swap stock 1.02's `libTunerPlayerService.so` in and retry. Linkage is
-   proven; loading is not.
-4. The two power traps — the `mem` transition on a power press, and the timer that flips the mixer
+| What the mock library cannot do | regmon replacement | measured |
+|---|---|---|
+| `T_Open` | `POWERCFG ← ENABLE\|DMUTE` (`0x4001`) | reads back `0x4001`; the chip sits at `0x2000` (ENABLE=0) until asked |
+| `T_SetFrequency` | `CHANNEL\|TUNE`, poll `STATUS_RSSI.STC` | STC set at **all 206 channels** 87.5–108.0, `READCHAN` echoed each one exactly |
+| `GetSignalLevel` — a constant | `STATUS_RSSI[7:0]` | graded: floor 11–14, carriers 18–27, **stereo pilot locked at 100.0 MHz** |
+| `StartAutoTuning` — a 48-byte stub | `POWERCFG` SEEK/SEEKUP/SKMODE | eight consecutive stations from 87.5 up; `SEEKTH=18` from `SYSCONFIG2` |
+
+`SYSCONFIG2 = 0x126F` on W1 — BAND=01 (76–108), SPACE=10 (50 kHz), VOL=0xF — i.e. the plan the
+shim already reads rather than assumes. `POWERCFG` was restored to its original `0x2000` afterwards.
+
+**So the three middle steps of `cinder_tuner_start()` need no library on Walkman One.** Two traps
+worth recording for whoever writes the fallback:
+
+* **Check the aerial before believing any of it.** The first sweep read RSSI `0` at every one of 41
+  frequencies with STC setting normally — `/sys/class/switch/cxd3778gf_antenna/state` was `0`. This
+  is the third time that has fooled a measurement in this project.
+* **A `CHANNEL` write without the `TUNE` bit does not move the chip.** Parking the chip before a
+  seek that way left it where the previous sweep ended (108.0), and the first seek up wrapped to
+  76.0 with `SFBL=1` — read as "hardware seek is broken on W1" for one run.
+
+Still open, in order:
+
+1. Does `AudioIn A_Play` + `analog input device = tuner` carry that carrier to the jack? **This is
+   the step with the reboot hazard** (`Play("tuner")` rebooted the device once) — not to be run
+   unattended.
+2. Only if 1 fails: swap stock 1.02's `libTunerPlayerService.so` in and retry. Linkage is proven;
+   loading is not. Step 1's result makes this much less likely to be needed.
+3. The two power traps — the `mem` transition on a power press, and the timer that flips the mixer
    back to `off`.
 
 ---
@@ -222,11 +245,22 @@ transformations applied to files the user already has**, not a payload we carry.
 
 ## 8. Needs the device
 
-1. Swap stock's `libTunerPlayerService.so` onto W1 and confirm `TunerPlayerService` starts with the
-   real implementation (linkage is proven statically; loading is not).
+0. ~~Prove the register route drives the tuner on W1 with no Sony service~~ **DONE 2026-09-22 — PASS.**
+   Tune, a graded signal meter and hardware seek all work through `regmon` against W1's mock
+   library; a stereo carrier was locked at 100.0 MHz. §4's "Needs the device" has the numbers.
+   Also measured the same evening: `radio_si4708icx` is **already loaded** on W1 (`lsmod`), so the
+   `insmod` step §4 assumed is not needed either.
+1. ~~Swap stock's `libTunerPlayerService.so` onto W1~~ — **probably unnecessary now.** Keep it as the
+   fallback if the audio leg fails; linkage is proven statically, loading is not.
 2. Confirm tuner audio reaches the jack with `analog input device = tuner` — and that this does not
-   repeat the reboot seen when `Play("tuner")` was called directly.
+   repeat the reboot seen when `Play("tuner")` was called directly. **The next FM step, and the
+   first one carrying real risk.**
 3. Measure the wakeup-source and 1 Hz poll workarounds.
-4. Confirm the NC tables and DNC module are intact on a non-W1 install (the §5 claim is a file-level
+4. **Partly answered 2026-09-22:** on this W1 player `cxd3778gf_dnc_core.ko` is **present** in
+   `/system/lib/modules/` (not loaded — absent from `lsmod`), while `ncgain*`/`ambgain*` return
+   nothing across `/system`, `/opt2`, `/usr`, `/etc` and `/db`. So W1 removes the *tables*, not the
+   module: a W1-derived install needs the tables from the user's own stock package plus an `insmod`,
+   and nothing Cinder would have to redistribute. Still to confirm the NC tables are intact on a
+   non-W1 install (the §5 claim is a file-level
    diff, not a listening test).
 5. Anything in Tier 2 or Tier 3 — untouched so far, deliberately.

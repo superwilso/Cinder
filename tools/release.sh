@@ -77,6 +77,23 @@ else
     ok "installer version $HAVE matches $TAG"
 fi
 
+# ── 1b. the version the PLAYER shows must match the tag too ─────────────────────────────────
+# The Settings "Firmware" row is the only place a person can read which build is on their player,
+# and until 0.3.12 it said "CINDER 1.0 · RUST" on every stable release ever cut. One macro in
+# cinder-ui is the source; bump it here or the screen starts lying again the first time it drifts.
+UI_VER_FILE=player/cinder-ui/src/settings.rs
+UI_HAVE="$(sed -n 's/^macro_rules! cinder_version { () => { "\(.*\)" } }$/\1/p' "$UI_VER_FILE")"
+if [ -z "$UI_HAVE" ]; then
+    die "$UI_VER_FILE has no cinder_version! macro line to bump — did its shape change?"
+fi
+if [ "$UI_HAVE" != "$VER" ]; then
+    [ -z "$DRY" ] && sed -i "s/^macro_rules! cinder_version { () => { \"$UI_HAVE\" } }$/macro_rules! cinder_version { () => { \"$VER\" } }/" "$UI_VER_FILE"
+    act "player version $UI_HAVE → $VER ($UI_VER_FILE)${DRY:+  [would]}"
+    CHANGED+=("player version")
+else
+    ok "player version $UI_HAVE matches $TAG"
+fi
+
 # ── 2. roll the changelog's [Unreleased] section into this version ──────────────────────────
 # The release body links CHANGELOG.md for "the curated entry for this version", so shipping a tag
 # whose notes are still filed under [Unreleased] means the link lands on nothing. Rolling it is

@@ -137,11 +137,11 @@ efdce2c9ec2ef5bd usbdac_night
 950663098198cf80 viz_size_0_off
 2864fac45dfb0e69 viz_size_1_veil
 2513c2d1b1efb6b5 viz_size_2_full
-b01e5caaf099a7fa confirm_restart
-61de0b6bb868689c confirm_poweroff
+2b5740b8491380b1 confirm_restart
+ab14b6818bb79b5b confirm_poweroff
 d48d881accbefdc9 settings_scrolled
 b1c6037a0bb75403 device
-a217e5344a9e434d device_scrolled
+4f0ec442b2e6e356 device_scrolled
 4ad380282293f523 device_degraded
 2864fac45dfb0e69 np_page_0
 a66c9cc1931a6351 np_page_1
@@ -215,7 +215,7 @@ d36542ab388ef585 uiscale_80_sound
 6ad8538b1e2a31f5 uiscale_80_nowplaying
 22d37119c2d2b5b3 uiscale_80_upnext
 fb6ebbd88f827cf8 uiscale_80_eq
-0e418ca856122710 uiscale_80_settings_bottom
+234040dce078df1f uiscale_80_settings_bottom
 96d931c6aeb6c94b uiscale_100_library
 6958507a41fa4abb uiscale_100_settings
 0eab57c3c45f81cc uiscale_100_bluetooth
@@ -223,7 +223,7 @@ fb6ebbd88f827cf8 uiscale_80_eq
 950663098198cf80 uiscale_100_nowplaying
 21984b2bcae0cbd5 uiscale_100_upnext
 f92e7f91efbc19c9 uiscale_100_eq
-3537cb2a4c274d6d uiscale_100_settings_bottom
+e3ca73fe7b7cfdd5 uiscale_100_settings_bottom
 61550122867921e8 uiscale_120_library
 a567b1a60417450e uiscale_120_settings
 815a5e28e00648bd uiscale_120_bluetooth
@@ -231,7 +231,7 @@ a567b1a60417450e uiscale_120_settings
 14a04bb6d1b88759 uiscale_120_nowplaying
 2772b69cdb76ea25 uiscale_120_upnext
 5c044f42b1e885c0 uiscale_120_eq
-70c45ba13fedcb58 uiscale_120_settings_bottom
+8fd48f3d87be4f97 uiscale_120_settings_bottom
 593e4ac0498f6bf0 uiscale_140_library
 6cf22e8f8ec45403 uiscale_140_settings
 d97db347a317e2c6 uiscale_140_bluetooth
@@ -239,7 +239,7 @@ d97db347a317e2c6 uiscale_140_bluetooth
 63c1326ef445007c uiscale_140_nowplaying
 ce566ca1b81de2a9 uiscale_140_upnext
 aee79fa1b2fc1277 uiscale_140_eq
-17a5c36be539e388 uiscale_140_settings_bottom
+a9e1c534d97fe665 uiscale_140_settings_bottom
 ba7c469cfb249e17 viz_0_bars
 bedfb1a963d8aefd viz_1_ribbon
 f8f5722bdb4ea82a viz_2_line
