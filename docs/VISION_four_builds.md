@@ -103,7 +103,7 @@ is a harder loss: W1 also physically drops the NC tables (`ncgain_*`, `ambgain*`
 | loss | why | proven? |
 |---|---|---|
 | Noise cancelling, Ambient Sound | W1 drops the NC/ambient tables and the DNC kernel module | **Proven** — file-level diff of the two system images |
-| FM Radio | The WM1Z identity has no FM hardware, so the feature is gated off | Inferred from the mechanism + owner's report |
+| FM Radio | The WM1Z identity has no FM hardware, so W1 ships the **mock** `libTunerPlayerService.so` and Sony's app has no UI to show | **Proven** — symbol diff 2026-09-22: 58 tuner symbols missing, none added; and the **chip itself answers on W1** (`DEVICEID 0x1242`). Recoverable: see below |
 | VPT, ClearAudio+, Language Study, Line-out | Model-gated UI on the new identity | Inferred, same |
 
 Now put that beside what Walkman One's audio gains actually **are** — all measured, all in
@@ -116,6 +116,12 @@ Now put that beside what Walkman One's audio gains actually **are** — all meas
 | Full DAC reprogramming | `dacdat auto BBDMP2_linux …` | **No** — the *stock* `dacdat` binary already accepts `BBDMP2_linux`, and is byte-identical to W1's |
 | Region / volume limiter | NVP `rflcountry`/`rflsku` + `dacdat limiter_*` | **No** — an NVP field write, independent of `fpi` |
 | **External tunings** (Bright / Neutral&Warm / WM1Z) | **`dd` a blob onto NVRAM `p3` and uboot `p7`** | **No — and this is new** (§4) |
+
+And one of the *losses* turns out to be recoverable without the model swap too:
+
+| W1 loss | what it would take to get back | needs the model swap undone? |
+|---|---|---|
+| **FM Radio** | drop stock 1.02's `libTunerPlayerService.so` (96,308 B) in place of W1's mock, `insmod radio-si4708icx.ko`, and own the UI | **No.** All 44 Sony-namespace symbols stock's copy imports resolve against W1's own libraries, and its extra `DT_NEEDED` `libConfigurationService.so` is present on W1 at the same size. The tuner chip is physically there and responding. Static analysis — **needs the device to confirm** |
 
 > **So "our own Walkman One" is not a smaller Walkman One. It is a strictly larger one:** every
 > audio gain, and none of the feature losses, because there is no reason for us to swap the model
@@ -241,6 +247,16 @@ question or hazard · ⚫ not reachable.
 
 ## 6. What has to be true before ③ and ④ are possible
 
+> **ANSWERED 2026-09-21/22 — this section is kept for the record, but the gate is open.**
+> Cinder runs as the Home app on Walkman One 3.02: full easel handshake, `bootcount` 0, clean log.
+> Taking the questions below in turn: **(1)** it never looped for the reason assumed — the installer
+> left `/data/cinder` `0700 root:root` while the launcher runs as uid 100, so the launcher could not
+> spend the cable pass and the rung-0 cable escape fired on every boot; **(2)** yes, `cinder-home`
+> starts on 3.02, and `cinder-probe` completes all four stages there; **(4)** yes, appmgr is
+> satisfied on 3.02; **(5)** no per-firmware build is needed — the same binary runs on both.
+> Only the residual half of (3) is still open: *why* `libEffectCtrlDmp` and
+> `libMediaStoreServiceClient` differ in code when their exports match.
+
 In order. Each one is cheap relative to the one after it.
 
 | # | Question | How it gets answered |
@@ -261,9 +277,13 @@ experiments are all off-device or shell-only.
 1. **Which of the four builds are actually wanted**, and in what order? My recommendation: **② first**
    (stock-like UI on stock firmware — all upside, no firmware risk, and it makes ④ almost free
    later), then ①/② share everything, then ③/④ once §6 is answered.
-2. **Cinder One — yes or no?** Building our own firmware layer is a real expansion of scope. The
-   payoff is "W1's audio with none of W1's losses". The cost is that writing NVRAM and uboot enters
-   the project.
+2. **Cinder One — yes or no?** Now specified in [`SPEC_cinder_one.md`](SPEC_cinder_one.md), and it
+   is **smaller than this line implied**. Because we never swap the model identity, almost all of
+   Walkman One's machinery — the per-boot script, the translations, the NVP config images — is
+   unnecessary; what is left is install-time work plus helpers Cinder largely already has, split
+   into four risk tiers. Only Tier 3 (the external tunings) writes NVRAM and uboot, and the spec
+   recommends leaving that out of the installer entirely. **FM is now proven recoverable** without
+   undoing the model swap.
 3. **Do you want the external tunings at all**, given `3.bin` writes the bootloader? A defensible
    middle: support *reading and reporting* which tuning is applied, support the HAL/gain/dacdat
    half, and leave the uboot write out.

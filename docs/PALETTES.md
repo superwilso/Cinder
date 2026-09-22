@@ -110,3 +110,4 @@ ignored.
 | [`cinder.palette`](../player/cinder-ui/palettes/cinder.palette) | Cinder's own colours — the template. It will not load under that name; rename the copy. |
 | [`slate.palette`](../player/cinder-ui/palettes/slate.palette) | Cool blue-greys. Keeps the accent picker. |
 | [`paper.palette`](../player/cinder-ui/palettes/paper.palette) | Dark ink on off-white by day, with its own burnt-orange accent; Cinder's night after dark. |
+| [`sony.palette`](../player/cinder-ui/palettes/sony.palette) | The stock NW-A50 look: pure black, white text, grey secondaries, and Sony's own muted gold as the accent. Colours taken from the carved QML, not matched by eye. Reproduces the Walkman One look too, which is the same design with no colour change. |
