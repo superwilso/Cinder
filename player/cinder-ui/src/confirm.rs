@@ -39,13 +39,25 @@ pub enum Ask {
     /// idiom is already spent on the × beside each TRACK, and using it for the whole list too
     /// would make "remove one" and "delete all of it" the same gesture in the same screen.
     DeletePlaylist,
+    /// The CLEAR chip on Up Next, which empties the USER queue.
+    ///
+    /// It used to fire on the tap. That made it the one control in the app that destroyed
+    /// hand-built work with no confirmation and no undo — and it sits in the header bar, two rows
+    /// above a scrolling list, which is exactly where a mis-aimed thumb lands. `queue_play_at`
+    /// was made non-destructive on the argument that the CLEAR chip beside it "has both"
+    /// confirmation and undo; it had neither, so the argument was true about the design and false
+    /// about the code. This is the half that was missing.
+    ///
+    /// Not shared with the PREVIOUSLY PLAYED heading's own CLEAR: one destroys what you asked to
+    /// hear next and the other what you already heard, and a history can be rebuilt by listening.
+    ClearQueue,
 }
 
 /// Every question the modal can ask. Exists so the overflow audit can render all of them without
 /// a list that silently stops being complete when a new one is added.
 pub const ALL: &[Ask] = &[
     Ask::Restart, Ask::PowerOff, Ask::PowerMenu, Ask::QueueOnPlay, Ask::ResetSettings,
-    Ask::DeletePlaylist,
+    Ask::DeletePlaylist, Ask::ClearQueue,
 ];
 
 impl Ask {
@@ -78,6 +90,11 @@ impl Ask {
                 "Delete this playlist?",
                 "The playlist is deleted. The music in it stays on the device.",
                 "Delete",
+            ),
+            Ask::ClearQueue => (
+                "Clear the queue?",
+                "Everything you queued by hand is removed. The album or playlist you are listening to keeps playing.",
+                "Clear",
             ),
         }
     }
