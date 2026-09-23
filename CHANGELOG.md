@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.12] — 2026-09-23
+
 ### Fixed
 
 - **The installer unmounted `/data` on a running player.** *Sandbox-tested — 10 new cases in
@@ -1990,7 +1992,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.11-rc1...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.12...HEAD
+[0.3.12]: https://github.com/superwilso/Cinder/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/superwilso/Cinder/compare/v0.3.10-rc1...v0.3.11-rc1
 [0.3.10]: https://github.com/superwilso/Cinder/compare/v0.3.9...v0.3.10-rc1
 [0.3.9]: https://github.com/superwilso/Cinder/compare/v0.3.8...v0.3.9
