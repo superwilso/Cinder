@@ -64,7 +64,7 @@ whether it has run on hardware (*device-verified*) or not yet. Feature by featur
 |---|---|
 | NW-A55 / A56 / A57 (NW-A50 series) | **The target.** Developed on one 64 GB unit; the other models are expected to work but have not been tried. A [device report](../../issues/new/choose) either way helps. |
 | NW-A50 series running Walkman One | See Known issues above. |
-| A40 / A30 series, ZX300, WM1A/Z, DMP-Z1 | **Not supported.** Use [Wampy](https://github.com/unknown321/wampy), which covers the whole MT8590 family. |
+| A40 / A30 series, ZX300, WM1A/Z, DMP-Z1 | **Not supported.** Use [Wampy](https://github.com/unknown321/wampy), for now, which covers the whole MT8590 family. If you have the device and are willing to test, get in contact through github.|
 
 ## Install
 

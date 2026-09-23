@@ -99,7 +99,7 @@ fn swatch_x(i: usize) -> i32 {
 /// screen and what the release is called cannot drift apart. It is a macro rather than a `const`
 /// because `concat!` takes literals only.
 #[macro_export]
-macro_rules! cinder_version { () => { "0.3.11" } }
+macro_rules! cinder_version { () => { "0.3.12" } }
 
 /// The version on its own, for anything that wants it without the channel decoration.
 pub const CINDER_VERSION: &str = cinder_version!();
