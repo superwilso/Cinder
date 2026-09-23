@@ -45,6 +45,9 @@ fn show(comps: &[Comp], target: &Path, action: Action) {
 pub fn run(mut comps: Vec<Comp>, target: PathBuf, action: Action, assume_yes: bool, dry: bool) -> i32 {
     let state = device::read_installed(&target, &stage::payload_names());
     println!("\n  {}", state.summary());
+    if let Some(a) = state.advisory() {
+        println!("  NOTE: {a}");
+    }
     if !state.leftovers.is_empty() {
         println!("  ({} staged file(s) from a previous install are still in the root — --clean removes them)",
                  state.leftovers.len());

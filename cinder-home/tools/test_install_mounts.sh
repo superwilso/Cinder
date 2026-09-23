@@ -25,13 +25,16 @@ check() { if [ "$2" = "$3" ]; then printf '  ok    %-52s -> %s\n' "$1" "$2"; PAS
 
 cat > "$SP/scenario.sh" <<'SCENARIO'
 #!/bin/bash
-# usage: scenario.sh <sandbox> <live:1|0>
+# usage: scenario.sh <sandbox> <live:1|0> [stray:1|0]
 # live=1 models a running player: /data and /system are ALREADY mounted (and /system is ro)
 # before the installer starts. live=0 models the updater: neither is mounted and /proc is absent.
 set -u
-R="$1"; LIVE="$2"
+R="$1"; LIVE="$2"; STRAY="${3:-0}"
 mkdir -p "$R/proc" "$R/data" "$R/system" "$R/realdata" "$R/realsystem" "$R/bin"
 touch "$R/realdata/.is_the_partition" "$R/realsystem/.is_the_partition"
+# stray=1: a 0-byte sentinel left ON THE PARTITION by an older build's live install (found on the
+# A55, 2026-09-23). The next updater install used to read it as "our marker is visible".
+[ "$STRAY" = 1 ] && touch "$R/realdata/.cinder_premount"
 REAL_MOUNT="$(command -v mount)"; REAL_UMOUNT="$(command -v umount)"
 
 # Stub mount/umount. Binds for real so a mount is genuinely observable, records remount,ro calls
@@ -113,10 +116,14 @@ mount -t ext4 -o rw /emmc@android "$sys_dir" 2>/dev/null
 mount -o remount,rw /emmc@android "$sys_dir" 2>/dev/null
 
 SENTINEL=0
-"$BB" touch "$data_dir/.cinder_premount" 2>/dev/null && [ -e "$data_dir/.cinder_premount" ] && SENTINEL=1
+SENTINEL_TOKEN="cinder-premount $$"
+if [ "$DATA_PREMOUNTED" != 1 ]; then
+    echo "$SENTINEL_TOKEN" > "$data_dir/.cinder_premount" 2>/dev/null \
+        && [ "$("$BB" cat "$data_dir/.cinder_premount" 2>/dev/null)" = "$SENTINEL_TOKEN" ] && SENTINEL=1
+fi
 data_is_mounted() {
     if [ "$SENTINEL" = 1 ]; then
-        [ -e "$data_dir/.cinder_premount" ] && return 1
+        [ "$("$BB" cat "$data_dir/.cinder_premount" 2>/dev/null)" = "$SENTINEL_TOKEN" ] && return 1
         return 0
     fi
     "$BB" grep -q " $data_dir " "$mounts_file" 2>/dev/null
@@ -134,11 +141,14 @@ if [ "$DATA_PREMOUNTED" = 1 ]; then
 else
     data_is_mounted && DATA_MOUNTED=1
 fi
+"$BB" rm -f "$data_dir/.cinder_premount" 2>/dev/null
 # ── end block under test ─────────────────────────────────────────────────────────────────────
 
 echo "DATA_MOUNTED=$DATA_MOUNTED"
 echo "DATA_PREMOUNTED=$DATA_PREMOUNTED"
 echo "SYSTEM_PREMOUNT_RO=$SYSTEM_PREMOUNT_RO"
+# Nothing may be left on the partition, whether we mounted it or found it mounted.
+[ -e "$R/realdata/.cinder_premount" ] && echo "sentinel_on_partition=yes" || echo "sentinel_on_partition=no"
 cleanup_mounts
 # Did /data survive cleanup? The partition marker is only reachable through a live bind.
 [ -e "$data_dir/.is_the_partition" ] && echo "data_still_mounted=yes" || echo "data_still_mounted=no"
@@ -156,7 +166,7 @@ if ! unshare -rm true 2>/dev/null; then
   exit 0
 fi
 
-run() { local R; R="$(mktemp -d "$SP/run.XXXXXX")"; unshare -rm bash "$SP/scenario.sh" "$R" "$1"; }
+run() { local R; R="$(mktemp -d "$SP/run.XXXXXX")"; unshare -rm bash "$SP/scenario.sh" "$R" "$1" "${2:-0}"; }
 field() { echo "$1" | sed -n "s/^$2=//p"; }
 
 echo "── 1. LIVE system: we are a guest, and must leave the mounts as we found them ──"
@@ -167,6 +177,7 @@ check "/data NOT unmounted"         "$(field "$o" data_still_mounted)" "yes"
 check "/system NOT unmounted"       "$(field "$o" system_still_mounted)" "yes"
 check "/system put back to ro"      "$(field "$o" system_ro_restored)" "yes"
 check "/data mount options untouched" "$(field "$o" data_touched)"     "no"
+check "no sentinel left on /data"   "$(field "$o" sentinel_on_partition)" "no"
 
 echo "── 2. UPDATER: we mounted them, so we take them away again ──"
 o="$(run 0)"
@@ -176,6 +187,17 @@ check "/data unmounted by cleanup"  "$(field "$o" data_still_mounted)" "no"
 check "/system unmounted by cleanup" "$(field "$o" system_still_mounted)" "no"
 check "no stray ro remount"         "$(field "$o" system_ro_restored)" "no"
 check "updater DOES mount /data"    "$(field "$o" data_touched)"       "yes"
+check "no sentinel left on /data"   "$(field "$o" sentinel_on_partition)" "no"
+
+echo "── 3. UPDATER after an older LIVE install left a 0-byte sentinel on the partition ──"
+o="$(run 0 1)"
+check "stray is not our marker"     "$(field "$o" DATA_MOUNTED)"       "1"
+check "stray cleaned up"            "$(field "$o" sentinel_on_partition)" "no"
+
+echo "── 4. LIVE system with the same stray ──"
+o="$(run 1 1)"
+check "DATA_MOUNTED"                "$(field "$o" DATA_MOUNTED)"       "1"
+check "stray cleaned up"            "$(field "$o" sentinel_on_partition)" "no"
 
 echo
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"

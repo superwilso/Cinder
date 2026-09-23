@@ -7787,7 +7787,6 @@ impl App {
         self.dev_data_free_mb = data_free_mb;
     }
 
-    /// Seconds since boot and the kernel release.
     /// Which firmware Cinder is installed on top of, as the shell detected it ("SONY STOCK",
     /// "WALKMAN ONE"). Pushed once — it cannot change without a reinstall.
     pub fn set_device_base_fw(&mut self, base: &str) {
@@ -7796,6 +7795,7 @@ impl App {
         }
     }
 
+    /// Seconds since boot and the kernel release.
     pub fn set_device_system(&mut self, uptime_s: i32, kernel: &str) {
         self.dev_uptime_s = uptime_s;
         self.dev_kernel.clear();

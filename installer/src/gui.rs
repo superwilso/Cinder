@@ -1025,13 +1025,13 @@ impl App {
                     self.b_clean =
                         self.mk("BUTTON", &format!("Clean up {n} staged files"), WS_TABSTOP, ID_CLEAN, f);
                 }
-                self.hint = self.mk(
-                    "STATIC",
-                    "The player must be connected by USB in mass-storage mode. Nothing is written until you confirm.",
-                    SS_NOPREFIX,
-                    ID_HINT,
-                    f,
-                );
+                // What the drive says about this player outranks the generic hint: Walkman One
+                // (the install cannot take), or why the last start landed on Sony's player.
+                let hint = self.state.advisory().unwrap_or_else(|| {
+                    "The player must be connected by USB in mass-storage mode. Nothing is written until you confirm."
+                        .to_string()
+                });
+                self.hint = self.mk("STATIC", &hint, SS_NOPREFIX, ID_HINT, f);
             }
             Page::Options => {
                 let title = if self.action == Action::Update {
@@ -1143,6 +1143,9 @@ impl App {
             );
             s.push_str(&format!("Player:  {target}\r\n"));
             s.push_str(&format!("Status:  {}\r\n\r\n", self.state.summary()));
+            if let Some(a) = self.state.advisory() {
+                s.push_str(&format!("{a}\r\n\r\n"));
+            }
             if !self.state.present() {
                 s.push_str(
                     "This player does not look like it has Cinder on it. Running the uninstall \
@@ -1425,7 +1428,9 @@ impl App {
                 // The footer sits above the bottom row, but never on top of the Uninstall card:
                 // at the old minimum window size it was drawn across it, which put grey body text
                 // over a button's own label and made both unreadable.
-                let hint_top = (bottom - row * 2 - self.s(8)).max(cards_end + self.s(4));
+                // three lines when there is an advisory to say — the Walkman One one wraps
+                let hint_rows = if self.state.advisory().is_some() { 3 } else { 2 };
+                let hint_top = (bottom - row * hint_rows - self.s(8)).max(cards_end + self.s(4));
                 mv(self.hint, pad, hint_top, wd - pad * 2, (bottom - hint_top - self.s(4)).max(row));
             }
             Page::Options => {

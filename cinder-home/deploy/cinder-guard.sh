@@ -97,6 +97,11 @@ fi
 _log "LIMIT REACHED — reverting .appcfg to stock"
 mount -o remount,rw /system 2>/dev/null
 cat "$REAL" > "$APPCFG.guardtmp" 2>/dev/null
+# init runs this under umask 077 (see /db/cinder-guard: 0700/0600), so the temp file is born 0600
+# root:root — and appmgrservice runs as uid 100. Moved into place as-is, the revert would leave an
+# .appcfg appmgr cannot READ: no Home app at all, the outcome this block exists to prevent. Stock
+# is 0755; give it that back before the move.
+chmod 0755 "$APPCFG.guardtmp" 2>/dev/null
 if [ -s "$APPCFG.guardtmp" ] && grep -q '^command:' "$APPCFG.guardtmp" 2>/dev/null; then
     mv "$APPCFG.guardtmp" "$APPCFG" 2>/dev/null
     echo 0 > $COUNT 2>/dev/null

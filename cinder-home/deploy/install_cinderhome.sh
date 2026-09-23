@@ -235,12 +235,25 @@ mount -o remount,rw /emmc@android /system 2>/dev/null
 #     A sentinel dropped on the RAMDISK settles it instead: a real mount hides the file, a
 #     failed one leaves it in plain sight. /proc is the fallback for when the sentinel itself
 #     cannot be written (a read-only ramdisk), not the other way round.
+#
+# THE SENTINEL CARRIES THIS RUN'S TOKEN, AND IS ONLY DROPPED WHEN /data IS NOT ALREADY MOUNTED.
+# It used to be an empty `touch`, dropped unconditionally. On a live system that `touch` lands on
+# the REAL /data, nothing removed it (the cleanup below only ran on a failed mount), and the next
+# UPDATER install then found "the sentinel" in plain sight after a good mount, decided /data was
+# not mounted, and skipped the cable pass — issue #14's symptom, reintroduced by its own fix. A
+# 0-byte stray from exactly that was on the A55 on 2026-09-23 (/data/.cinder_premount, from the
+# 2026-09-22 20:33 live install). Matching the token means an old stray can never be mistaken for
+# this run's marker, and the unconditional removal below clears any that exist.
 [ -d /data ] || "$BB" mkdir -p /data 2>/dev/null
 SENTINEL=0
-"$BB" touch /data/.cinder_premount 2>/dev/null && [ -e /data/.cinder_premount ] && SENTINEL=1
+SENTINEL_TOKEN="cinder-premount $$"
+if [ "$DATA_PREMOUNTED" != 1 ]; then
+    echo "$SENTINEL_TOKEN" > /data/.cinder_premount 2>/dev/null \
+        && [ "$("$BB" cat /data/.cinder_premount 2>/dev/null)" = "$SENTINEL_TOKEN" ] && SENTINEL=1
+fi
 data_is_mounted() {
     if [ "$SENTINEL" = 1 ]; then
-        [ -e /data/.cinder_premount ] && return 1
+        [ "$("$BB" cat /data/.cinder_premount 2>/dev/null)" = "$SENTINEL_TOKEN" ] && return 1
         return 0
     fi
     "$BB" grep -q " /data " /proc/mounts 2>/dev/null
@@ -269,8 +282,9 @@ if [ "$DATA_PREMOUNTED" = 1 ]; then
 else
     data_is_mounted && DATA_MOUNTED=1
 fi
-# a failed mount leaves the sentinel on the ramdisk; a good one hides it (gone at reboot anyway)
-[ "$DATA_MOUNTED" = 1 ] || "$BB" rm -f /data/.cinder_premount 2>/dev/null
+# ALWAYS remove it. A failed mount leaves our sentinel on the ramdisk; a good one hides it (gone at
+# reboot anyway), and then this removes only a stray left on the real partition by an older build.
+"$BB" rm -f /data/.cinder_premount 2>/dev/null
 if [ "$DATA_MOUNTED" = 1 ]; then
     echo "state: /data (/emmc@usrdata) mounted"
 else
@@ -1217,7 +1231,10 @@ ok=1
 if [ "$ok" != 1 ]; then
     echo "!! SANITY FAILED — reverting .appcfg to stock so the device boots normally."
     if [ -s "$APPCFG.real" ]; then
-        "$BB" cat "$APPCFG.real" > "$APPCFG.tmp" && "$BB" mv -f "$APPCFG.tmp" "$APPCFG"
+        # chmod before the move: under this script's umask 077 the temp file is 0600 root:root,
+        # and appmgr (uid 100) must READ the .appcfg — an unreadable one launches no Home app.
+        "$BB" cat "$APPCFG.real" > "$APPCFG.tmp" && "$BB" chmod 0755 "$APPCFG.tmp" \
+            && "$BB" mv -f "$APPCFG.tmp" "$APPCFG"
         echo "   restored stock .appcfg."
     fi
     sync; cleanup_mounts
