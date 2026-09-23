@@ -1,496 +1,174 @@
 # Cinder
 
 [![ci](https://github.com/superwilso/Cinder/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/superwilso/Cinder/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/superwilso/Cinder?sort=semver)](https://github.com/superwilso/Cinder/releases/latest)
+[![release](https://img.shields.io/github/v/release/superwilso/Cinder?sort=semver&include_prereleases)](https://github.com/superwilso/Cinder/releases)
 [![downloads](https://img.shields.io/github/downloads/superwilso/Cinder/total)](https://github.com/superwilso/Cinder/releases)
 [![license](https://img.shields.io/github/license/superwilso/Cinder)](LICENSE)
-[![device](https://img.shields.io/badge/device-NW--A55%20%2F%20A50%20series-blue)](docs/baseline_v1.4.md)
 
-**A replacement music player for the Sony NW-A55 Walkman** (and its NW-A50-series siblings).
-This is a personal project that I made for myself if people want to tweak it and adapt it to their personal use, please do so but I can't confirm any features or time for this project. If you have issues please raise them in the issues section but I can't promise that issues will be patched. Please use https://github.com/unknown321/wbrt before you install Cinder and if you have the time and skill please contribute with pull requests. I have deliberately not included any way to sponsor or pay for this project. Not least because I want it to be free, but because I don't want the obligation for support that comes with it, as said before I made this for me. The single best way to support is to test, feedback and patch. 
+**A replacement music player for the Sony NW-A55 Walkman and the rest of the NW-A50 series.**
+It swaps Sony's music app for a faster one. Sony's audio services, effects and DAC path underneath
+stay as they are. You install it from a PC over USB, and the same installer puts Sony's app back.
 
-Currently Cinder is still in testing and development despite what github may say.
-
-You install it from your computer over the USB cable, in one program, in about a minute. The player
-then starts up into Cinder instead of Sony's music app. Same device, same headphone jack, same
-sound — a different, faster program in front of it. If you don't like it, the same installer puts
-Sony's app back.
+> This is a personal project that I made for myself. If people want to tweak it and adapt it to
+> their own use, please do, but I can't promise features or time for it. Raise issues in the issues
+> section, but I can't promise they will be patched. **Back up with
+> [wbrt](https://github.com/unknown321/wbrt) before you install**, and if you have the time and
+> skill, please contribute pull requests. I have deliberately not included any way to sponsor or pay
+> for this project. I want it to be free, and I don't want the obligation for support that comes
+> with payment; as I said, I made this for me. The best way to support it is to test, give feedback
+> and patch. **Cinder is still in testing and development, whatever GitHub's labels say.**
 
 <p align="center">
-  <img src="docs/screenshots/now-playing.png" width="220" alt="Cinder now-playing screen">
-  <img src="docs/screenshots/up-next.png" width="220" alt="Cinder Up Next queue">
-  <img src="docs/screenshots/library-albums.png" width="220" alt="Cinder album library">
+  <img src="docs/screenshots/now-playing.png" width="220" alt="Now playing">
+  <img src="docs/screenshots/up-next.png" width="220" alt="Up Next queue">
+  <img src="docs/screenshots/library-albums.png" width="220" alt="Album library">
 </p>
 
-<p align="center"><sub><a href="#screenshots">More screenshots ↓</a></sub></p>
+## What you get
 
-## Overveiw
-
-| | |
-|---|---|
-| **What you get** | The short list is below, and the [screenshots](#screenshots) are further down. |
-| **How to install it** | [Install](#install) — one download, no drivers, no WSL, nothing to build. |
-| **How to undo it** | The installer's own **Uninstall** button. If the player ever won't start: [`RECOVERY.md`](RECOVERY.md). |
-| **Whether it works yet** | [Status](#status), and every [`CHANGELOG.md`](CHANGELOG.md) entry says whether it has been run on real hardware. |
-
-### What you get
-
-- **A player that keeps up with you.** Sony's app is a Qt application on a 2016 board and it feels
-  like one. Cinder is 4.4 MB of native code with no framework under it.
-- **A play queue, and an Up Next list.** Stock has neither: on Sony's player there is no way to say
-  "play this after the current track". Cinder has both, and you can reorder the queue by dragging.
-- **USB-DAC in and LDAC out at the same time.** Use the Walkman as your computer's sound card *and*
-  send that audio on to Bluetooth headphones at LDAC bitrates. Sony's app blocks that combination
-  with a dialog box; the hardware never minded.
-- **Every Sony sound feature, unchanged.** DSEE HX, VPT, DC Phase Linearizer, Vinyl Processor, the
-  10-band EQ and tone control are Sony's own code, still running underneath. Cinder drives them; it
-  does not replace them or add a layer of its own.
-- **A scrobbler built in**, writing the standard `.scrobbler.log` — no add-on, no daemon.
-- **FM radio with a real signal meter and a scan that takes a second**, because Cinder reads the
-  tuner chip's registers directly. Sony's own service reports a constant signal strength.
-- **Your own colours.** A palette is a text file you drop on the player's storage.
-
-### What it does not touch
-
-Your music, your playlists and your liked songs stay where they are — Cinder reads the same library
-the stock player does.
-
-It is **not a firmware replacement**, even though it is installed through the player's own
-firmware-update mechanism: the kernel, Sony's audio services and the DSP are Sony's and are left
-alone. What changes is which program starts. Nothing resamples your audio and nothing adds a
-software mixer — playback takes the same low-power hardware path to the headphone jack that Sony's
-player uses, which is also why battery life is not sacrificed for the UI.
-
-Sony's app stays on the device, one file swap away. That is what makes uninstalling a button rather
-than a rescue operation.
-
-### A few words this README can't avoid
-
-| | |
-|---|---|
-| **USB-DAC** | The player acting as a computer's external sound card, over the USB cable. |
-| **LDAC** | Sony's high-bitrate Bluetooth audio codec, up to 990 kbit/s. |
-| **DSEE HX** | Sony's upscaler for lossy files — it tries to restore what MP3/AAC threw away. |
-| **The Home app** | The one program this device starts into and never leaves. Replacing it is what Cinder is. |
-| **`.UPG`** | Sony's firmware package format. Installing Cinder hands the player one of these. |
-| **setuid helper** | A tiny program allowed to do one privileged thing (reboot, mount the drive, set the clock) because the player's UI itself runs unprivileged. |
-
-## Why
-
-Stock firmware on this device is heavy, slow to boot, and blocks combinations the hardware is
-perfectly capable of — most notably running **USB-DAC input and Bluetooth LDAC output at the
-same time**, which stock refuses via a UI dialog, not a hardware limit. Cinder replaces only the
-UI layer. It doesn't reimplement the audio stack: the Hagoromo services (`SoundServiceFw`,
-`PlayerService`, `BtTransmitterService`, `EffectCtrlDmp`, …) are separate processes Cinder drives
-over their existing binder IPC, which is what keeps EQ, DSEE HX, VPT, Vinyl and every other Sony
-effect working exactly as before.
-
-Full rationale and the living goals list: [`VISION.md`](VISION.md).
-
-## Supported devices
-
-Cinder is **custom firmware for the Sony NW-A50 series** — it replaces the player UI, not the
-audio stack. What it has actually been built and run on:
-
-| Model | State |
-|---|---|
-| **The development unit** — an NW-A50-series player with 64 GB of storage (the NW-A57's capacity; the NW-A55 is 16 GB) | **Developed and tested on — one unit.** Each [`CHANGELOG.md`](CHANGELOG.md) entry says whether it has run on this hardware (*device-verified*) or not yet (*device-unverified*). |
-| **NW-A55 / NW-A56 / NW-A57** | The same `nw-a50` firmware family and MT8590 board, so expected to work — but **not tried model by model**. If you run it on one, a [device report](../../issues/new/choose) either way is genuinely useful. |
-| NW-A45 / A46 / A47 (A40 series) | **Not supported.** Same SoC family, different model firmware; Cinder has never been built or tested for it. |
-| NW-A35 / A36 / A37 (A30 series) | **Not supported**, same reason. |
-| ZX300, WM1A / WM1Z, DMP-Z1 | **Not supported.** For these, use [Wampy](https://github.com/unknown321/wampy), which covers the whole MT8590 family. |
-
-If you are on a device Cinder does not target, the projects under [Related
-projects](#related-projects) do cover it — that list is there to send you to the right one rather
-than to keep you here.
+- **A fast player.** About 4.6 MB of native code with no UI framework, instead of Sony's Qt app.
+- **A real queue.** Up Next with "play next", drag to reorder, and playlists made on the player.
+- **USB-DAC in and LDAC out at the same time.** Use the Walkman as a PC's sound card and pass the
+  audio on to Bluetooth headphones. Sony's app blocks this with a dialog; the hardware can do it.
+- **Every Sony sound feature**: DSEE HX, VPT, DC Phase Linearizer, Vinyl Processor, the 10-band EQ
+  and tone control. These are Sony's own services, driven by Cinder, not reimplemented.
+- **Built-in extras**: a `.scrobbler.log` scrobbler, lyrics (`.lrc` or embedded tags), library
+  search, SensMe™ channels, FM radio with a real signal meter, and colour palettes you can drop on
+  the drive.
+- **Your library as it is.** Cinder reads the same database as Sony's player, so music, playlists
+  and liked songs stay put.
 
 ## Status
 
-This is a real reverse-engineering project against closed firmware, built and tested on actual
-hardware — one player, the developer's. Feature by feature: [`cinder-home/STATUS.md`](cinder-home/STATUS.md);
-what still needs a device session: [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md). Every
-[`CHANGELOG.md`](CHANGELOG.md) entry says whether it has run on hardware.
+It works as a daily player on the developer's own unit. Each [`CHANGELOG.md`](CHANGELOG.md) entry says
+whether it has run on hardware (*device-verified*) or not yet. Feature by feature:
+[`cinder-home/STATUS.md`](cinder-home/STATUS.md).
 
-In daily use: playback through Sony's full effects chain, the library, the queue and Up Next,
-playlists, Bluetooth pairing and playback (LDAC, aptX HD, aptX and SBC), FM radio, a built-in
-scrobbler log, and an escape ladder back to the stock player.
+**Known issues**
 
-**The headline works.** USB-DAC input out over LDAC ran end to end on the development unit on
-2026-09-12 — the whole path, from a PC over the cable to headphones on LDAC. That run is recorded
-as *owner-reported*: it worked, and no log was captured, so
-[`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) says exactly that rather than claiming an
-artefact that does not exist.
+- **v0.3.9 does not start after a fresh install.** The player keeps showing Sony's app
+  ([#16](../../issues/16)). This is fixed in **0.3.11-rc1 and later**, so use the newest release
+  from the [releases page](../../releases), including pre-releases, until the next stable one.
+- **Walkman One (Mr Walkman):** the release package is rejected. Walkman One changes the key the
+  player's updater accepts, so the updater drops the package silently and the player restarts
+  unchanged. From the next release, the installer warns when it sees Walkman One's `CFW` folder.
+  Cinder itself does run on Walkman One 3.02 (device-verified 2026-09-21), but getting it there
+  needs a differently sealed package that has not been tested yet. Details: [Coming from Walkman One](#coming-from-walkman-one).
+- **Not built yet:** Bluetooth receiver mode (the Walkman as a speaker) and FM recording.
+- **Lyrics, search and SensMe channels are new** and not yet confirmed on a player's screen.
+- **One test unit.** Other NW-A50-series models share its firmware but have not been tried.
 
-### Known limitations
+## Supported players
 
-- **One test unit.** Other NW-A50-series models share its firmware and are expected to work; none
-  has been tried.
-- **Not implemented yet:** Bluetooth receiver mode (the Walkman as a Bluetooth speaker) and FM
-  recording.
-- **Lyrics and library search are new and untested on a player.** Lyrics come from a `.lrc` file
-  next to the song or from the song's own tags (FLAC, MP3 `USLT`, M4A); binary synced ID3 `SYLT`
-  frames and Ogg/DSF tags are not read. Library search is an install option, off by default, and
-  finds songs, not albums or artists.
-- **Boot time and battery life are unmeasured against stock.** Cinder draws its first frame 13.2 s
-  after the kernel starts; stock has not been timed on the same unit, and there is no battery-drain
-  figure yet. "Faster and longer-lasting" is the goal, not a measurement — when there are numbers
-  they will be here.
-- **The Windows install path is new and has never been run on Windows.** From 0.3.1 the installer
-  sends the player's upgrade command itself instead of launching Sony's updater
-  ([details](#what-actually-writes-the-firmware)). It compiles and the same command has been sent
-  from Linux for months; it has not yet been sent from Windows. If it fails it fails safely — the
-  files are staged and verified first, and the installer tells you which step did not happen.
-- **The Windows installer is unsigned**, and now asks for administrator — see [Install](#install).
-- **On Walkman One the installer finishes, the player reboots, and nothing changes.** *Device-verified
-  2026-09-21 — and the reason is now known.* Walkman One makes the player identify as a different
-  model, and that identity includes the key its updater decrypts firmware packages with: an NW-A55
-  running Walkman One reports the **NW-WM1A** key (`nvpstr kas` on the player), not the NW-A50 key
-  Cinder's package is sealed with. Sony's updater refuses a package it cannot decrypt **silently** —
-  it boots, fails, reboots, and leaves no log and no change behind, which looks exactly like the
-  installer having done nothing. The install log is full of successes, because everything up to the
-  handover did succeed
-  ([unknown321 saw the same thing](https://github.com/unknown321/wampy/blob/master/MAKING_OF.md#walkman-one-compatibility-again)).
-  `cinder-home/tools/pack_upg.sh dev nw-wm1a` builds a package sealed with the NW-WM1A key instead;
-  it is not yet proven to install, and releases ship the NW-A50 package only. Make a wbrt backup
-  first either way, and please open an issue saying what happened. More in
-  [Coming from Walkman One](#coming-from-walkman-one).
+| Model | State |
+|---|---|
+| NW-A55 / A56 / A57 (NW-A50 series) | **The target.** Developed on one 64 GB unit; the other models are expected to work but have not been tried. A [device report](../../issues/new/choose) either way helps. |
+| NW-A50 series running Walkman One | See Known issues above. |
+| A40 / A30 series, ZX300, WM1A/Z, DMP-Z1 | **Not supported.** Use [Wampy](https://github.com/unknown321/wampy), which covers the whole MT8590 family. |
 
 ## Install
 
-Download **`cinder-installer-windows-x64.exe`** from the [latest
-release](../../releases/latest), connect the Walkman by USB in mass-storage mode, and run it.
+1. **Back up the player with [wbrt](https://github.com/unknown321/wbrt).** This device has no other
+   recovery path.
+2. Download the installer from the [releases page](../../releases):
+   - **Windows:** `cinder-installer-windows-x64.exe`. Accept the administrator prompt, because the
+     last step needs raw access to the drive.
+   - **Linux:** `cinder-installer-linux-x64`, run with `sudo`.
+   - **macOS** can stage the files but cannot send the final command. Use Windows or Linux.
+3. Connect the Walkman in USB mass-storage mode and run the installer. Choose **Install**, pick the
+   optional parts, and confirm. The player reboots into its own updater, applies the package, and
+   starts into Cinder. **Leave the cable in until it does.**
 
-| You are on | Download | What it does |
-|---|---|---|
-| **Windows** | `cinder-installer-windows-x64.exe` | The whole job. Double-click for the window. **Say yes to the administrator prompt** — the last step needs raw access to the player's drive, and Windows gives that to nothing less. |
-| **Linux** | `cinder-installer-linux-x64` | The whole job, from the terminal — **run it with `sudo`**. The last step is a raw SCSI passthrough, which is why it needs root. |
-| **macOS** | `cinder-installer-linux-x64` is not for you | It can stage the files but cannot finish; see below. Use a Linux or Windows machine. |
-| Recovering a device | `cinder-home-uninstall.upg` | Flash by hand when the player will not boot far enough for anything else. [`RECOVERY.md`](RECOVERY.md). |
+The installer has **Install**, **Update** (keeps your previous choices) and **Uninstall** (puts
+Sony's app back; music and settings are untouched). It reads the player's own logs, so it says
+what is really installed. From the next release, it also says why the last start went to Sony's
+player, if it did. The `.exe` is unsigned: check it against the `SHA256SUMS` attached to each
+release.
 
-The installer carries everything it needs. There is **no separate download, no WSL, no usbipd, no
-driver setup, and no network connection required** — the device binaries, both firmware packages and
-the component catalogue are all inside the one file. Nothing of Sony's is: until 0.3.1 the Windows
-build embedded Sony's own updater, and it now sends the one command that needed itself.
+Full walkthrough, every option explained, and the developer build: [`install.md`](install.md).
+Removing it: [`UNINSTALL.md`](UNINSTALL.md).
 
-The `.exe` is **unsigned**, so Windows SmartScreen will warn that its publisher is unknown. That is
-what any unsigned binary gets and is not evidence either way — check the download against the
-`SHA256SUMS` attached to the release; the release notes give the one-line command for Windows and
-Linux.
+## If something goes wrong
 
-### The three things it does
+The player has an **escape ladder**. Each step depends on less than the one before it.
 
-<p align="center">
-  <img src="docs/screenshots/installer-home.png" width="440" alt="The installer's home page: the player it found, what is installed on it, and Install, Update and Uninstall">
-</p>
-<p align="center">
-  <img src="docs/screenshots/installer-options.png" width="330" alt="Choosing the optional components, with the selected one described below the list">
-  <img src="docs/screenshots/installer-confirm.png" width="330" alt="The confirmation page: every choice, what is copied, and what the player does next">
-</p>
+- **Boot with the USB cable connected** and you get Sony's player. This needs no filesystem. The
+  one exception is the first boot after an install, which ignores the cable once.
+- **Put a file named `cinderhome_off` on the drive** and you get Sony's player until it is removed.
+  A file named `cinderhome_clear` clears a latched failure and tries Cinder again.
+- **A build that fails to start** reverts to Sony's player on its own after four boots.
 
-*The real window, rendered by `tools/render_installer_screenshots.sh` for a stand-in player.*
+Read [`RECOVERY.md`](RECOVERY.md) **before** you need it. Cinder's log is `cinderhome.log` in the
+root of the drive, and it is the first thing to attach to an issue.
 
-**Install** asks which optional parts you want, then stages them. **Update** reads the choices
-already on the player out of its own `cinder_components.conf` and keeps them, so a new build never
-silently resets your settings. **Uninstall** restores Sony's launch config from the backup the
-install made and removes Cinder's binaries — your music, playlists and settings are untouched.
+## Coming from Walkman One
 
-The window reads the player's state from the device's own install log before offering anything, so
-it says what is actually on the player rather than guessing: whether Cinder is there, which
-version put it there, and whether the last attempt succeeded, was reverted by the device's sanity
-gate, or never finished.
+- **Sound:** Walkman One's "plus modes" are a 3-byte change to Sony's audio library. Cinder
+  reproduces them from your own stock files with no flashing: the `signature` install option. Its
+  external tunings are other models' firmware, which Cinder cannot reproduce. Measured at the jack,
+  neither changes the signal
+  ([unknown321's measurements](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md#there-is-more)).
+- **Volume curve:** the NW-WM1A curve is available as an install option if you supply Sony's table
+  file ([how](install.md#the-volume-curve-tables)).
+- **Installing over Walkman One:** not with a release package yet (see Known issues). If you want
+  to help, run `nvpstr kas` on your player and post the answer in an issue.
+- **Reverting to stock first** works: Cinder installs on stock 1.02. If you reverted and Cinder
+  still does not start, you are almost certainly on v0.3.9 ([#16](../../issues/16)). Use a newer
+  release.
 
-Everything is available from the command line too — `--install`, `--update`, `--uninstall`,
-`--clean`, `--check`, `-y` — and running the same binary from a terminal gives the text interface
-instead of the window, which is what works over RDP, in a VM and from a script.
+Cinder's own teardown of Walkman One: [`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md).
 
-### Choosing components
+## Contributing and building
 
-You can leave parts of Cinder out, and the picker explains each one — but only the parts that are
-genuinely a matter of taste. **There are six choices:** the FM register helper (a real signal meter
-and a one-second band scan), the charger-detail reader on the battery screen, an experimental GPU
-path that is off by default and measures slower than the software one, library search (new, and
-off by default), the wired volume curve, and the sound signature below.
-
-Until 0.3.1 the same picker also offered to leave out the power menu, USB file transfer and the
-clock, each with help text admitting the feature was gone without it. Those were not choices, and
-they are part of every install now. The four helpers behind them are 60 KB together.
-
-The `signature` option patches **three bytes** of Sony's audio HAL to pick which DAC path the
-output stream uses and what CPU clock floor is held while playing. Those three bytes are Walkman
-One's plus modes: Cinder reproduces both byte-for-byte from your own stock library with **no
-firmware flash**, and adds three combinations Walkman One doesn't ship, splitting its two effects
-apart so each can be judged separately. Walkman One's other "sound signatures", the external
-tunings, are not reproducible — each is another model's firmware. Measured at the jack, neither
-kind changes the signal ([more](#coming-from-walkman-one)). Derivation:
-[`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md).
-
-### What actually writes the firmware
-
-Not the installer. It only copies files to the player's storage and then sends the one command
-that makes the player reboot into **its own updater**, which finds `NW_WM_FW.UPG` and applies it.
-The installer sends that 12-byte vendor SCSI command itself on both platforms — through SCSI
-pass-through on Windows (which needs administrator, because Windows grants raw volume access only
-to an elevated process) and through `SG_IO` on Linux (which needs `sudo`). Until 0.3.1 the Windows
-build shipped Sony's own `SoftwareUpdateTool.exe` to send it; no part of Sony's software is in the
-download any more.
-
-> **There is no update option in the player's own menus.** This generation has no such entry — the
-> upgrade is always triggered by the host over USB. Earlier versions of this README and of the
-> installer told you to find **Settings ▸ Device Settings ▸ Update** on the device. That menu does
-> not exist, and the Linux binary refused to start at all, so neither path installed anything. Both
-> were fixed in v0.1.9.
-
-**On macOS the installer stages but cannot finish.** The upgrade command is a vendor SCSI
-passthrough, and macOS only exposes those through an IOKit `SCSITaskUserClient`, which the kernel
-will not grant for a disk it has already mounted — the exact state a staged Walkman is in. Finish
-from a Linux or Windows machine.
-
-Full walkthrough, every component explained, and the developer build:
-**[`install.md`](install.md)**. Removing Cinder: **[`UNINSTALL.md`](UNINSTALL.md)**. If a boot ever
-goes wrong: **[`RECOVERY.md`](RECOVERY.md)** — read it before you need it.
-
-## Repo layout
+Issues and pull requests are welcome, from reverse engineering to UI work to testing.
+**The most useful contribution is a device report:** run one item from
+[`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) and file the result, pass or fail.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the local checks, the safety rules for boot-path code, and
+how releases are cut. The docs index is [`docs/README.md`](docs/README.md).
 
 | Path | What it is |
 |---|---|
-| `cinder-home/` | The C++ easel app — lifecycle, watchdogs, Sony-IPC glue, the LDAC bridge, `cinder-probe` (a no-boot-risk diagnostic binary) |
-| `player/cinder-ui/` | The Rust UI — pure render + navigation state machine, no I/O |
-| `player/cinder-ffi/` | The Rust↔C++ boundary: render tick, input, scrobbler, SQLite |
-| `player/cinder-host/`, `player/cinder-sim/` | Host-side dev tools — render every screen to PNG, or drive the real navigator in a window, without a device |
-| `installer/` | The end-user installer — install, update, uninstall; a Win32 GUI and a text interface over one core. Dependency-free Rust, embeds the device binaries, both `.UPG` packages and the component catalogue, ships as a single `.exe` |
-| `ldac-bridge/` | Standalone LDAC transmit research binary (superseded by the bridge now built into `cinder-home`, kept for the RE trail) |
-| `analysis/` | Reverse-engineering findings — per-subsystem `RE_findings.md`, the extracted UI asset catalogue, IPC vtable maps |
-| `docs/`, `phases/` | The host-side firmware-analysis pipeline (`make phase1`…`phase7`) and its output docs |
-| `design/` | UI design references and handoff notes |
+| `cinder-home/` | The C++ Home app: lifecycle, watchdogs, the glue to Sony's services, the LDAC bridge, the installer payload |
+| `player/` | The Rust UI (`cinder-ui`), its C boundary (`cinder-ffi`), the library reader, and host tools that render every screen to PNG without a device |
+| `installer/` | The end-user installer: Windows GUI and text interface, dependency-free Rust |
+| `analysis/`, `docs/` | Reverse-engineering notes, audits and plans |
 
-`CLAUDE.md` is the full environment setup + host pipeline + device procedure writeup — it
-doubles as onboarding for a human contributor even though it was written for an AI pair.
-
-## Building
-
-```bash
-cinder-home/build.sh dev      # or: stable — two channels from one tree
-```
-
-Needs a glibc-2.23 + libc++-3.9.0 cross toolchain matching the device's own runtime; `build.sh`
-checks for both and exits with what's missing. Full environment setup (WSL2, cross-compilers,
-the firmware-analysis pipeline): [`CLAUDE.md`](CLAUDE.md) Parts A–D.
-
-To iterate on the UI without a device at all:
-
-```bash
-cd player && cargo build --release -p cinder-host   # renders every screen to PNG
-# or drive it live:
-cargo build --release -p cinder-sim --bin device     # 480x800 window, real navigator + input
-```
-
-To build the end-user installer (embeds whatever is in `cinder-home/dist/<channel>/`):
-
-```bash
-cd installer
-CINDER_CHANNEL=stable cargo build --release                                  # native
-CINDER_CHANNEL=stable cargo build --release --target x86_64-pc-windows-gnu   # .exe, from Linux
-```
-
-Releases are cut by `.github/workflows/release.yml` on a `v*` tag. It builds only the installer —
-the ARM binaries under `cinder-home/dist/` are committed, so **build and commit `dist/` before
-tagging**. See [`install.md`](install.md) for the whole pipeline and how to add a component.
-
-## Cutting a release
-
-Releases are automated, but with one hand-built step that cannot be automated away: the ARM
-binaries. Building `cinder-home` needs a glibc-2.23 + libc++-3.9.0 cross toolchain matched to the
-player's own runtime, so they are built by a maintainer and **committed** under
-`cinder-home/dist/`. Only the installer is built in CI.
-
-That split has exactly one dangerous failure mode — tagging a commit whose `dist/` is stale, which
-ships an installer full of last week's binaries with a green tick and no warning. `tools/release.sh`
-exists to make that impossible:
-
-```sh
-tools/release.sh v1.2.3 --dry-run   # verify everything, touch nothing
-tools/release.sh v1.2.3             # verify, tag, push
-```
-
-It refuses to tag unless the tree is clean, `installer/Cargo.toml`'s version matches the tag, every
-embedded payload file exists, **a fresh `build.sh stable` reproduces the committed `dist/` byte for
-byte**, and the installer's own tests pass. It never commits anything — staging stays yours.
-
-Pushing the tag is what triggers `.github/workflows/release.yml`, which builds the Windows and
-Linux installers, attaches them plus the two `.upg` files and `SHA256SUMS` to a **published** (not
-draft) GitHub release, and marks it pre-release if the tag has a suffix like `-rc1`.
-
-Every other push runs `.github/workflows/ci.yml`, which builds and tests the player and the
-installer on both platforms and checks the committed payload is complete and actually ARM — so a
-tag is a formality rather than the first time anything gets compiled for Windows.
-
-## Flashing and recovery
-
-**Read [`RECOVERY.md`](RECOVERY.md) before flashing anything.** This device has no public
-DFU/EDL recovery path — a bad flash means a full `wbrt` eMMC restore. The project's safety model
-(bad-boot counter, crash supervisor, an escape ladder ordered so each rung depends on strictly
-less than the one it rescues) exists because of a real brick during development, documented
-there. `cinder-home/STATUS.md` STEP 1 is the zero-risk way to test a build before ever flashing
-it as the Home app.
-
-## Documentation
-
-[`docs/README.md`](docs/README.md) is the index — it says which document answers which question,
-and which ones are history rather than current state.
-
-The four that are always current:
-
-| | |
-|---|---|
-| [`RECOVERY.md`](RECOVERY.md) | **Read before flashing.** No public DFU or EDL path exists for this device. |
-| [`cinder-home/STATUS.md`](cinder-home/STATUS.md) | The feature matrix — current state, kept current rather than aspirational. |
-| [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) | The run sheet for anything that needs the player in your hand. |
-| [`CHANGELOG.md`](CHANGELOG.md) | What changed in each release, and whether it was verified on hardware. |
+To work on the UI with no device: `cd player && cargo run --release -p cinder-host` renders every
+screen to `player/out/`. The device build needs a matched cross toolchain; see
+[`install.md`](install.md) and [`CLAUDE.md`](CLAUDE.md) Parts A–D.
 
 ## Related projects
 
-Cinder exists because these did the groundwork, and each of them is the right answer to a question
-Cinder is the wrong answer to:
-
 | | |
 |---|---|
-| [**Wampy**](https://github.com/unknown321/wampy) (unknown321) | A skinnable replacement UI across the whole MT8590 Walkman family — A30/A40/A50, ZX300, WM1A/Z, DMP-Z1. Broader device support than Cinder by a long way, and its `MAKING_OF` write-ups are the map this platform was first charted with. |
-| [**wbrt**](https://github.com/unknown321/wbrt) (unknown321) | Full eMMC backup and restore over the MediaTek VCOM port. **The brick insurance for every project on this list** — including this one. |
-| [**Walkman One**](https://www.mrwalkman.com/) (MrWalkman) | Modified stock firmware: Sony's own player with the region and feature locks removed. If you want stock-but-unlocked rather than a different player, this is it. |
-| [**Rockbox `nwztools`**](https://github.com/Rockbox/rockbox/tree/master/utils/nwztools) | The `.UPG` pack/unpack tooling, per-model KAS keys and the NVP slot map that make any of this reachable. |
-| [**scrobbler**](https://github.com/unknown321/scrobbler) (unknown321) | Last.fm scrobbling on-device; Cinder writes the same `.scrobbler.log` format. If it is installed, Cinder's own scrobbler stands down so plays are not counted twice. |
-
-### Coming from Walkman One
-
-The same questions come up in every thread. The best answers are mostly unknown321's, in the Wampy
-repository:
-
-- **What does Walkman One actually change?**
-  [Making of sound settings](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md)
-  takes it apart file by file. The plus modes are an audio library that picks a different output
-  path and CPU floor; the gain setting is another model's volume table; the external tunings are
-  another model's nvram and bootloader, not a hand-made tuning. Cinder's own teardown reached the
-  same place: [`analysis/RE_walkmanone_extract.md`](analysis/RE_walkmanone_extract.md).
-- **Does it change the sound?** The same document ends with line-output measurements across all 19
-  regions and every Walkman One mode
-  ([*There is more!*](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md#there-is-more)).
-  Three settings changed the signal: regions CEW2 and KR3, which load Sony's quieter volume table,
-  and gain mode 1. The plus modes, the sound signatures and DAC mode measured the same as stock.
-- **Can Cinder do the same without flashing?** The plus modes, yes — the
-  [`signature` component](install.md#the-sound-signature). The NW-WM1A's volume curve, yes, from the release
-  after v0.3.4 and once you bring the table: it is not part of the NW-A50's firmware and Cinder cannot include Sony's files,
-  so the installer uses a copy you put on the player's drive, or the one Wampy already installed,
-  and only if it is byte-for-byte Sony's — see
-  [The volume curve tables](install.md#the-volume-curve-tables). The external tunings, no.
-- **Can I put Cinder on top of Walkman One?** Not with the released package. Walkman One changes
-  which key the player's updater accepts, so the package in a Cinder release is rejected without a
-  word — the installer reports success and the player comes back unchanged. That was measured on a
-  Walkman One player on 2026-09-21; see [Known limitations](#known-limitations) for what the player
-  looked like afterwards and what a correctly-keyed package would take. If you want to help, run
-  `nvpstr kas` on your player and put the answer in an issue: it says which key your firmware
-  expects, and one line of it is the whole diagnosis.
-- **What about my region's volume limit?** If your player was sold where Sony restricts volume,
-  Cinder leaves the restriction in place unless you choose a different volume curve, which replaces
-  it — turn the volume down before the first boot. Cinder's first reading of those tables was
-  wrong; the [corrected analysis](analysis/RE_volume_tables.md) says how.
-- **SensMe channels?** Not yet. The data comes from Sony's PC software, which analyses each song
-  and stores the result in a tag; the player's scanner copies it into the library database, where
-  Cinder could read it. No library Cinder has been tested with contains any — if yours does, please
-  open an issue. The format itself is undocumented; unknown321's
-  [notes on SensMe](https://github.com/unknown321/wampy/blob/master/MAKING_OF.md#sensme-channels)
-  cover what is known.
-
-## Contributing
-
-Issues and PRs welcome — this covers everything from firmware RE to UI work to just testing on
-your own device. Start with [`CONTRIBUTING.md`](CONTRIBUTING.md), which has the local check
-commands and the safety rules for anything that runs as root or touches the boot path.
-
-**The single most useful contribution is a device report.** A large part of this project is
-code-complete and unverified on hardware; if you own an A50-series player, running one line from
-[`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) and filing the result — pass *or* fail —
-moves things that no amount of desk work can.
-
-`analysis/` is the research trail; if you're picking up an open question there, that's the place
-to start. [`docs/AUDIT_2026-09-01.md`](docs/AUDIT_2026-09-01.md) Part D is the current list of open
-decisions.
-
-By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
-
----
+| [Wampy](https://github.com/unknown321/wampy) | Skinnable replacement UI for the whole MT8590 Walkman family. Its `MAKING_OF` write-ups mapped this platform first. |
+| [wbrt](https://github.com/unknown321/wbrt) | Full eMMC backup and restore. The brick insurance for every project here. |
+| [Walkman One](https://www.mrwalkman.com/) | Sony's own player with the region and feature locks removed. |
+| [Rockbox `nwztools`](https://github.com/Rockbox/rockbox/tree/master/utils/nwztools) | `.UPG` packing, per-model keys and the NVP map that make any of this possible. |
+| [scrobbler](https://github.com/unknown321/scrobbler) | On-device Last.fm scrobbling. If it is installed, Cinder's own scrobbler stands down. |
+| [Flint](https://github.com/superwilso/flint) / [Sony-sync](https://github.com/superwilso/Sony-sync) | The developer's PC sync tools. Flint writes SensMe data, likes and scrobbles. |
 
 ## Screenshots
 
-Every shot is a real render of the shipping UI at the device's native 480×800, produced by the
-`cinder-host` preview harness (`cargo run -p cinder-host`) rather than a mockup. Cover art is
-generated placeholder gradients — the harness has no library of its own, and using real album art
-here would be someone else's copyright.
+These are real renders of the shipping UI at the player's 480×800, made by `cinder-host`. The cover
+art is generated.
 
-### Playing
-
-| Now playing | Up Next | Reordering | Volume |
+| Up Next, reordering | Album | Track info | Sound |
 |---|---|---|---|
-| <img src="docs/screenshots/now-playing.png" width="190" alt="Now playing"> | <img src="docs/screenshots/up-next.png" width="190" alt="Up Next"> | <img src="docs/screenshots/up-next-reorder.png" width="190" alt="Dragging a row to reorder"> | <img src="docs/screenshots/volume.png" width="190" alt="Volume overlay"> |
+| <img src="docs/screenshots/up-next-reorder.png" width="190" alt="Reordering Up Next"> | <img src="docs/screenshots/album.png" width="190" alt="Album"> | <img src="docs/screenshots/track-info.png" width="190" alt="Track info"> | <img src="docs/screenshots/sound.png" width="190" alt="Sony sound effects"> |
 
-The queue is one list: history, the playing track, your hand-picked queue, and the rest of the
-album it came from. Any row below the playing one can be dragged by its handle — including the
-`NEXT FROM` section, so you can rearrange the album you're already listening to without
-interrupting it.
-
-### Library
-
-| Albums | Songs | Artists | Playlists |
+| Bluetooth | USB-DAC | FM radio | Night theme |
 |---|---|---|---|
-| <img src="docs/screenshots/library-albums.png" width="190" alt="Album list"> | <img src="docs/screenshots/library-songs.png" width="190" alt="Song list"> | <img src="docs/screenshots/library-artists.png" width="190" alt="Artist list"> | <img src="docs/screenshots/library-playlists.png" width="190" alt="Playlists"> |
-
-| Album | Artist | Folders | Track info |
-|---|---|---|---|
-| <img src="docs/screenshots/album.png" width="190" alt="Album track list"> | <img src="docs/screenshots/artist.png" width="190" alt="Artist page"> | <img src="docs/screenshots/folders.png" width="190" alt="Folder browser"> | <img src="docs/screenshots/track-info.png" width="190" alt="Track information"> |
-
-### Sound
-
-| Equalizer | Sony DSP | Bluetooth | USB-DAC |
-|---|---|---|---|
-| <img src="docs/screenshots/equalizer.png" width="190" alt="10-band equalizer"> | <img src="docs/screenshots/sound.png" width="190" alt="Sound effects"> | <img src="docs/screenshots/bluetooth.png" width="190" alt="Bluetooth and LDAC"> | <img src="docs/screenshots/usb-dac.png" width="190" alt="USB-DAC mode"> |
-
-`Sound` drives Sony's own effect services, so DSEE HX, VPT, DC Phase Linearizer, Vinyl Processor
-and the rest behave exactly as they do on stock — the footer prints the resulting signal path.
-
-### The rest
-
-| Settings | Shelf | Lock screen | FM radio |
-|---|---|---|---|
-| <img src="docs/screenshots/settings.png" width="190" alt="Settings"> | <img src="docs/screenshots/shelf.png" width="190" alt="Shelf shortcuts"> | <img src="docs/screenshots/lock.png" width="190" alt="Lock screen"> | <img src="docs/screenshots/fm-radio.png" width="190" alt="FM radio"> |
-
-### Visualisers and themes
-
-| Bars | Ribbon | Night — playing | Night — library |
-|---|---|---|---|
-| <img src="docs/screenshots/visualiser-bars.png" width="190" alt="Bar visualiser"> | <img src="docs/screenshots/visualiser-ribbon.png" width="190" alt="Ribbon visualiser"> | <img src="docs/screenshots/now-playing-night.png" width="190" alt="Now playing, night theme"> | <img src="docs/screenshots/library-albums-night.png" width="190" alt="Library, night theme"> |
-
-Eight visualisers, six accent colours, and a **night theme that is genuinely dim** — it is meant
-for a dark room at low brightness, which is why it looks nearly black next to the day theme rather
-than merely dark-grey.
+| <img src="docs/screenshots/bluetooth.png" width="190" alt="Bluetooth and LDAC"> | <img src="docs/screenshots/usb-dac.png" width="190" alt="USB-DAC"> | <img src="docs/screenshots/fm-radio.png" width="190" alt="FM radio"> | <img src="docs/screenshots/now-playing-night.png" width="190" alt="Night theme"> |
 
 ## License
 
-Cinder's own code (`cinder-home/`, `player/`, `ldac-bridge/`, `tools/`) is MIT — see
-[`LICENSE`](LICENSE).
+Cinder's own code is MIT ([`LICENSE`](LICENSE)). The bundled fonts are SIL OFL 1.1 (see the
+`*-OFL.txt` beside each). The repository holds no Sony code or artwork: the reverse-engineering
+notes describe interfaces, and the material they were worked out from is kept out of the tree.
+Rockbox's `nwztools` (GPL) is used as an external tool, not vendored.
 
-**Third-party / not ours:** nothing, as of 0.3.1. The Windows installer used to embed
-**Sony's own firmware updater** (`installer/sony-updater/`: `SoftwareUpdateTool.exe`, Sony's
-`WmFwUpdater.dll` and Microsoft's Visual C++ 2010 runtime) to perform the USB handoff; the
-installer now sends that one vendor SCSI command itself on Windows as it already did on Linux, and
-the bundle is gone from the tree and from every release. The tree holds no Sony code
-or artwork: the reverse-engineering notes describe interfaces — symbol names, vtable slots, call
-sequences — and the images, QML and decompiled listings they were worked out from are kept out of
-the repository. Bundled fonts (`player/cinder-ui/assets/fonts/`) are SIL Open Font License 1.1 —
-see the `*-OFL.txt` next to each family. `analysis/`'s pipeline references the Rockbox project
-(`nwztools`, GPL) for `.UPG` packing/unpacking and per-model firmware keys; that tooling is used
-as an external build dependency, not vendored into this repo.
+Not affiliated with or endorsed by Sony. "Walkman" and "SensMe" are Sony's marks.
 
-This project is not affiliated with or endorsed by Sony. "Walkman" and related marks belong to
-Sony Corporation.
-
-As a disclaimer, a large amount of the reverse engineering work, documentation and rust and C++ code were writen by claude.
-All work was supervised and checked by a human.
+As a disclaimer, a large amount of the reverse engineering work, documentation, and Rust and C++
+code was written by Claude. All work was supervised and checked by a human.

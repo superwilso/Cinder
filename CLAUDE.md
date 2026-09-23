@@ -11,18 +11,18 @@
 > caught again for *this* banner four days after it was written ([`docs/AUDIT_2026-09-18.md`](docs/AUDIT_2026-09-18.md)
 > §A1: the numbers below had already drifted). **If you change a gate's count, change it here.**
 >
-> **Where the project actually is, 2026-09-20 (v0.3.8 + this branch):**
+> **Where the project actually is, 2026-09-23 (v0.3.11-rc1 + this branch):**
 >
 > | | |
 > |---|---|
-> | Releases shipped | **v0.3.0 → v0.3.8**, with a one-click Windows/Linux installer |
-> | Offline gates | **599 Rust tests** (player) + 50 (installer), **48 harness scenarios**, 24 C/C++ files syntax-clean, **246 golden pixel hashes** — all green, all re-run 2026-09-20 |
+> | Releases shipped | **v0.3.0 → v0.3.9** stable, **0.3.10-rc1 / 0.3.11-rc1** pre-releases — v0.3.9 cannot start after a fresh install (#16), so the next stable is overdue |
+> | Offline gates | **598 Rust tests** (player) + 53 (installer), **48 harness scenarios**, 24 C/C++ files syntax-clean, **246 golden pixel hashes** — all green, all re-run 2026-09-23 ([`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) Part A) |
 > | The headline feature | **USB-DAC → LDAC ran end to end** (2026-09-12, owner-reported, no log captured) |
 > | Landed since 2026-09-14 | Mono on the jack and Bluetooth, **SensMe channels** (reads tags written by Sony's Music Center *or* by [Flint](https://github.com/superwilso/flint), opt-in install component `sensme`), a battery gauge that no longer chases the load, and a charger row that stops calling an unplugged cable a fault |
 > | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **11.9, the Windows installer**, and the new **14.1–14.6** (SensMe end to end, the channel-name table, the Music-Center/Flint interop claim, and the battery gauge in the wild) |
 >
 > **The live documents, in order of what you probably want:**
-> - **What to do next:** [`docs/AUDIT_2026-09-18.md`](docs/AUDIT_2026-09-18.md) Part D — the most recent audit's ordered list. The skins design system is still [`docs/PLAN_2026-09-14.md`](docs/PLAN_2026-09-14.md).
+> - **What to do next:** [`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) Part D — the most recent audit's ordered list; community bugs and requests in [`docs/PLAN_community_2026-09-23.md`](docs/PLAN_community_2026-09-23.md). The skins design system is still [`docs/PLAN_2026-09-14.md`](docs/PLAN_2026-09-14.md).
 > - **Feature state (works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
 > - **Device run sheet:** [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — safety rules first.
 > - **Structural weaknesses:** [`docs/SHORTCOMINGS.md`](docs/SHORTCOMINGS.md) — cited by section ID (note: §A1's coverage table is superseded by `PLAN_2026-09-14.md` §A1).

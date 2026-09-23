@@ -34,8 +34,33 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   depending on whether our own mount shadowed it. That is why one live install silently skipped the
   cable pass and the next did not. `/proc` is now believed when it says `/data` was already there.
 
+- **The boot guard's rescue would have installed an `.appcfg` the Home-app launcher cannot read.**
+  *Mechanism measured on the A55 (2026-09-23); the revert itself not re-run.* `cinder-guard.sh`
+  runs under init's umask 077: its own `/db/cinder-guard` files are `0700`/`0600`. So the stock
+  `.appcfg` it restores came out `0600 root:root`, and appmgrservice runs as uid 100. The temp file
+  is now `chmod 0755` (stock's mode) before the move. The install payload's sanity-gate revert and
+  the uninstall restore had the same missing chmod, and both now set it too. Whether the Sony
+  updater's umask makes those two bite has never been measured; the chmod is right either way.
+  [`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) B1–B2.
+- **A live install left a file on `/data` that made the next update skip the cable pass.**
+  *Sandbox-tested (6 new cases in `test_install_mounts.sh`; 3 fail against the old logic). The
+  stray was found on the A55.* The `/data` mount check dropped an empty sentinel file
+  unconditionally. On a running player that file landed on the real partition, and nothing removed
+  it. The next `.UPG` install saw it after a good mount, decided `/data` was not mounted, and
+  skipped the cable pass, so the first boot showed Sony's player: issue #14's symptom again. The
+  sentinel now carries this run's token, is only dropped when `/data` is not already mounted, and is
+  always removed. `test_install_mounts.sh` also runs in CI now; it never did.
+
 ### Added
 
+- **The installer says why a player is not running Cinder.** *Host-tested (3 new tests; fixture
+  lines copied from a real `cinderhome.log`).* It reads two more things off the drive and shows
+  them under the status, in the console and on the uninstall page:
+  - Walkman One's `CFW` folder. On a player still running Walkman One, the updater drops the release
+    package without a word. This is a warning, not a refusal, because the folder survives a revert
+    to stock.
+  - The launcher's last `-> stock` breadcrumb, when it is newer than the last start. This is the
+    answer #16 had no way to give.
 - **A `Sony` palette — the stock NW-A50 look.** *Validated by the palette checker and rendered
   across all 246 previews; device-unverified.* Pure black, white primary text, grey secondaries,
   Sony's `#333333` dividers and its own muted gold `#c0a565` as the accent — the colours taken from
