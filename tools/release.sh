@@ -52,7 +52,18 @@ joined() { local out="" x; for x in "$@"; do out="${out:+$out, }$x"; done; print
 
 VER="${TAG#v}"; VER="${VER%%-*}"
 
-git rev-parse "$TAG" >/dev/null 2>&1 && die "$TAG already exists — pick a new version"
+# A tag that exists only on THIS machine is a push that did not go through — the pre-push hook
+# refused it (v0.3.12's first attempt: stale golden hashes), and the tag was left behind at a commit
+# that is not the release any more. It was never published, so it is re-made at the release commit
+# in step 8. A tag the remote has is a release people may already have downloaded: never move it.
+STALE_TAG=""
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+    REMOTE_TAG="$(git ls-remote --tags origin "refs/tags/$TAG")" \
+        || die "$TAG exists here, and origin could not be asked whether it was pushed — check the network, or if you know it never was: git tag -d $TAG"
+    [ -n "$REMOTE_TAG" ] && die "$TAG is already on origin — pick a new version"
+    STALE_TAG=1
+    note "$TAG exists only on this machine (a push that did not go through) — it is re-made at the release commit"
+fi
 
 # What this run changed, so the summary at the end can name it. A release that needed nothing
 # changed is the second run, and that is the one that tags.
@@ -365,9 +376,14 @@ fi
 ok "working tree clean — everything for $TAG is committed"
 
 # ── 8. tag and push ────────────────────────────────────────────────────────────────────────
+if [ -n "$STALE_TAG" ]; then
+    git tag -d "$TAG" >/dev/null
+    note "removed the unpushed $TAG left by an earlier run"
+fi
 git tag -a "$TAG" -m "Cinder $TAG"
 ok "tagged $TAG"
-git push origin "$TAG"
+git push origin "$TAG" \
+    || die "the push was refused, so $TAG exists only here — fix what it says, commit, and run tools/release.sh $TAG again (the tag is re-made)"
 ok "pushed $TAG"
 
 REPO="$(git remote get-url origin | sed -e 's#.*github.com[:/]##' -e 's#\.git$##')"
