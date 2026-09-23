@@ -125,7 +125,36 @@ Conventional-ish subjects (`fix:`, `feat:`, `docs:`) and a body that says **why*
 the only place some of this reasoning survives.
 
 `main` does not currently require PRs — this is one person moving fast. If you are not that person,
-open one.
+open one: **fork the repository, push your branch to your fork, and open a pull request** against
+`superwilso/Cinder`. Outside contributors cannot push branches here directly — that is GitHub's
+model, not a sign the change is unwelcome. A draft PR with a rough diff is better than a fix that
+stays on one machine.
+
+## Cutting a release
+
+The ARM binaries cannot be built in CI: `cinder-home` needs a glibc-2.23 + libc++-3.9.0 cross
+toolchain matched to the player's runtime. So a maintainer builds them and **commits** them under
+`cinder-home/dist/`, and CI builds only the installer. The one dangerous failure is tagging a
+commit whose `dist/` is stale, which ships last week's binaries with a green tick.
+`tools/release.sh` exists to make that impossible:
+
+```sh
+tools/release.sh v1.2.3 --dry-run   # verify everything, touch nothing
+tools/release.sh v1.2.3             # verify, tag, push
+```
+
+It refuses to tag unless all of these hold:
+
+* the tree is clean;
+* the installer's version and the player's `cinder_version!()` match the tag;
+* every embedded payload file exists;
+* a fresh `build.sh stable` reproduces the committed `dist/` byte for byte;
+* the installer's tests pass.
+
+It also repacks the `.UPG`s from the current install scripts. It never commits anything: staging
+stays yours. Pushing the tag triggers `.github/workflows/release.yml`, which builds the Windows and
+Linux installers and attaches them, the two `.upg` files and `SHA256SUMS` to a published release.
+A tag with a suffix such as `-rc1` becomes a pre-release.
 
 ## What not to do
 
