@@ -212,6 +212,13 @@ jobs:
       - name: Cable pass write (issue #14 fix)
         run: bash cinder-home/tools/test_cable_pass.sh
 
+      # The install payload's mount lifecycle: a live player's /data and /system must be left as
+      # they were found, the updater's must be taken away again, and the /data sentinel must never
+      # outlive the run — a stray one on the partition made the NEXT updater install skip the cable
+      # pass. Written 2026-09-21 and not wired in until the 2026-09-23 audit found it unrun.
+      - name: Install mount lifecycle
+        run: bash cinder-home/tools/test_install_mounts.sh
+
   # ── the dependency tree, which nothing looked at ───────────────────────────────────────────────
   # ~130 crates reach the binary that runs as the device's Home app, and until now no gate checked
   # any of them against the RustSec advisory database. The installer has ZERO dependencies by

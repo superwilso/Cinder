@@ -32,12 +32,17 @@ mount -o remount,rw /emmc@android /system 2>/dev/null
 # The raw-partition retry and the ramdisk sentinel are the install payload's, for the reasons
 # written out there: the /emmc@* aliases and /proc are both optional in the updater, and a write
 # to an unmounted /data reads back exactly like a good one.
+# The sentinel carries this run's token so that a 0-byte stray an older live install left on the
+# real partition cannot read as "our marker is still visible, so /data did not mount" (see the
+# install payload's note), and it is removed unconditionally for the same reason.
 [ -d /data ] || "$BB" mkdir -p /data 2>/dev/null
 SENTINEL=0
-"$BB" touch /data/.cinder_premount 2>/dev/null && [ -e /data/.cinder_premount ] && SENTINEL=1
+SENTINEL_TOKEN="cinder-premount $$"
+echo "$SENTINEL_TOKEN" > /data/.cinder_premount 2>/dev/null \
+    && [ "$("$BB" cat /data/.cinder_premount 2>/dev/null)" = "$SENTINEL_TOKEN" ] && SENTINEL=1
 data_is_mounted() {
     if [ "$SENTINEL" = 1 ]; then
-        [ -e /data/.cinder_premount ] && return 1
+        [ "$("$BB" cat /data/.cinder_premount 2>/dev/null)" = "$SENTINEL_TOKEN" ] && return 1
         return 0
     fi
     "$BB" grep -q " /data " /proc/mounts 2>/dev/null
@@ -48,15 +53,18 @@ data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 /data 2>/dev/null
 if data_is_mounted; then
     echo "state: /data (/emmc@usrdata) mounted"
 else
-    "$BB" rm -f /data/.cinder_premount 2>/dev/null
     echo "WARN: /emmc@usrdata could not be mounted at /data — the off flag is set on /contents only"
 fi
+"$BB" rm -f /data/.cinder_premount 2>/dev/null
 
 # Restore the stock .appcfg ATOMICALLY + verified. NEVER leave a truncated .appcfg (soft-brick).
 restored=0
 if [ -f "$APPCFG.real" ]; then
     "$BB" cat "$APPCFG.real" > "$APPCFG.tmp" 2>/dev/null
     if [ -s "$APPCFG.tmp" ] && "$BB" grep -q '^type: Home' "$APPCFG.tmp"; then
+        # Stock is 0755. Under this script's umask 077 the temp file is 0600 root:root, and appmgr
+        # (uid 100) must READ the .appcfg — moved in as-is, the "restored" stock app never launches.
+        "$BB" chmod 0755 "$APPCFG.tmp"
         "$BB" mv -f "$APPCFG.tmp" "$APPCFG"
         "$BB" rm -f "$APPCFG.real" 2>/dev/null
         restored=1

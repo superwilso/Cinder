@@ -11,6 +11,55 @@ use std::path::{Path, PathBuf};
 /// Written by `install_cinderhome.sh` and `uninstall_cinderhome.sh` on the device.
 pub const LOG_NAME: &str = "cinder_home_install.log";
 pub const CONF_NAME: &str = "cinder_components.conf";
+/// cinder-home's own log, which the launcher also writes one line to before every hand-over to
+/// Sony's player (0.3.10 on).
+pub const HOME_LOG: &str = "cinderhome.log";
+
+/// Walkman One keeps its settings and its per-boot log in `CFW/` at the top of the drive
+/// (`settings.txt`, `boot_log.txt` — `analysis/RE_walkmanone_extract.md`). Nothing else writes there.
+pub const W1_DIR: &str = "CFW";
+
+/// Shown whenever the drive carries Walkman One's folder.
+///
+/// WHY THIS IS A WARNING AND NOT A REFUSAL. A player running Walkman One reports another model's
+/// KAS key (an NW-A55 under W1 answers with the NW-WM1A one), and Sony's updater drops a package
+/// sealed for a different key WITHOUT A WORD: it boots, fails, and restarts into Walkman One. That
+/// is the whole of the report "it boots into the updater for a second, but reboots back into Mr.
+/// Walkman" (r/walkman, 2026-09-21). But the folder is user data on the drive and survives a
+/// revert to stock, so its presence cannot tell "running W1" from "ran it once" — only the person
+/// holding the player can.
+pub const W1_WARNING: &str = "Walkman One files (CFW folder) are on this player. If it is still \
+running Walkman One, this package will not install: the player restarts from its updater without \
+installing and without a message. Revert to stock firmware first. If you already have, carry on.";
+
+/// Does the drive carry Walkman One's folder? See [`W1_WARNING`] for what this can and cannot say.
+pub fn walkman_one_marks(root: &Path) -> bool {
+    let cfw = root.join(W1_DIR);
+    cfw.join("settings.txt").is_file() || cfw.join("boot_log.txt").is_file()
+}
+
+/// Why the LAST boot handed over to Sony's player, if it did.
+///
+/// The launcher writes `cinderhome-launch: <reason> -> stock` before every escape, and cinder-home
+/// writes `main: start` when it comes up. A breadcrumb AFTER the last start is the most recent
+/// boot's story; one before it was followed by a boot that did start Cinder, so it is history.
+///
+/// This is the answer issue #16 had no way to give: an install log full of successes, a player on
+/// Sony's UI, and nothing to say which rung sent it there.
+pub fn last_boot_to_stock(text: &str) -> Option<String> {
+    let mut reason = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.contains("main: start") {
+            reason = None;
+        } else if let Some(rest) = line.strip_prefix("cinderhome-launch: ") {
+            if let Some(r) = rest.strip_suffix(" -> stock") {
+                reason = Some(r.trim().to_string());
+            }
+        }
+    }
+    reason
+}
 
 /// A Walkman's storage root has these at the top level. `DevIcon.fil` alone is a strong enough
 /// signal; the MUSIC+PC_Application pair covers units where the icon file was deleted.
@@ -98,12 +147,27 @@ pub struct Installed {
     /// script says these are "safe to delete once cinder-home is confirmed" and nothing ever does,
     /// so they accumulate.
     pub leftovers: Vec<String>,
+    /// Walkman One's folder is on the drive. See [`W1_WARNING`].
+    pub walkman_one: bool,
+    /// The reason the launcher gave for the last boot landing on Sony's player, if it did.
+    pub last_boot_stock: Option<String>,
 }
 
 impl Installed {
     /// Is there a reason to offer Update and Uninstall rather than just Install?
     pub fn present(&self) -> bool {
         matches!(self.last, Some(LastRun::Installed) | Some(LastRun::Unfinished))
+    }
+
+    /// The one line worth saying under the status, most urgent first: Walkman One (the install
+    /// cannot work), then why the last boot went to Sony's player.
+    pub fn advisory(&self) -> Option<String> {
+        if self.walkman_one {
+            return Some(W1_WARNING.to_string());
+        }
+        self.last_boot_stock
+            .as_ref()
+            .map(|r| format!("The last start went to Sony's player because: {r}."))
     }
 
     /// One line for the top of the window.
@@ -150,8 +214,15 @@ pub fn read_installed(root: &Path, payload_names: &[&str]) -> Installed {
             st.leftovers.push((*name).to_string());
         }
     }
+    st.walkman_one = walkman_one_marks(root);
+    // Lossy: the log carries the odd non-UTF-8 byte (a tag string, a raw register dump), and one
+    // of those must not cost the whole reading.
+    if let Ok(bytes) = fs::read(root.join(HOME_LOG)) {
+        st.last_boot_stock = last_boot_to_stock(&String::from_utf8_lossy(&bytes));
+    }
     st
 }
+
 
 /// Reduce the log to the outcome of its LAST session.
 ///
@@ -202,6 +273,50 @@ mod tests {
         assert!(!looks_like_walkman(&tmp), "MUSIC alone is not enough");
         let _ = fs::create_dir_all(tmp.join("PC_Application"));
         assert!(looks_like_walkman(&tmp));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// The two lines copied from a real device log (NW-A55, 2026-09-23) — not written by hand, per
+    /// the rule that a parser fixture must come from a real boot.
+    const START: &str = "[cinder-home]    0.000 main: start";
+    const CABLE: &str = "cinderhome-launch: a USB cable was connected at boot (rung 0; /data/cinder/cable_escape_off opts out) -> stock";
+
+    #[test]
+    fn a_breadcrumb_after_the_last_start_is_the_last_boot() {
+        let log = format!("cinderhome-launch: volume curve: stock — keeping the table the boot script loaded\n{START}\nlater lines\n{CABLE}\n");
+        assert_eq!(
+            last_boot_to_stock(&log).as_deref(),
+            Some("a USB cable was connected at boot (rung 0; /data/cinder/cable_escape_off opts out)")
+        );
+        // A launcher line that is NOT an escape is not a reason.
+        assert_eq!(last_boot_to_stock("cinderhome-launch: volume curve: stock — keeping the table the boot script loaded\n"), None);
+    }
+
+    #[test]
+    fn a_breadcrumb_followed_by_a_start_is_history() {
+        let log = format!("{CABLE}\n{START}\n");
+        assert_eq!(last_boot_to_stock(&log), None);
+        assert_eq!(last_boot_to_stock(""), None);
+    }
+
+    #[test]
+    fn walkman_one_is_read_from_its_folder_and_outranks_the_boot_reason() {
+        let tmp = std::env::temp_dir().join(format!("cinder-inst-w1-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let _ = fs::create_dir_all(tmp.join("MUSIC"));
+        let _ = fs::create_dir_all(tmp.join("PC_Application"));
+        fs::write(tmp.join(HOME_LOG), format!("{START}\n{CABLE}\n")).unwrap();
+        let st = read_installed(&tmp, &[]);
+        assert!(!st.walkman_one, "no CFW folder, no warning");
+        assert!(st.advisory().unwrap().contains("USB cable"));
+
+        // An empty CFW folder is not Walkman One's; its settings file is.
+        let _ = fs::create_dir_all(tmp.join(W1_DIR));
+        assert!(!read_installed(&tmp, &[]).walkman_one);
+        fs::write(tmp.join(W1_DIR).join("settings.txt"), "ADB=1\n").unwrap();
+        let st = read_installed(&tmp, &[]);
+        assert!(st.walkman_one);
+        assert_eq!(st.advisory().as_deref(), Some(W1_WARNING), "W1 outranks the boot reason");
         let _ = fs::remove_dir_all(&tmp);
     }
 

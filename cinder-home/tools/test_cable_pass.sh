@@ -83,10 +83,12 @@ PATH="$R/bin:$PATH"
 # ── the block under test: verbatim semantics from install_cinderhome.sh ──
 [ -d "$data_dir" ] || "$BB" mkdir -p "$data_dir" 2>/dev/null
 SENTINEL=0
-"$BB" touch "$data_dir/.cinder_premount" 2>/dev/null && [ -e "$data_dir/.cinder_premount" ] && SENTINEL=1
+SENTINEL_TOKEN="cinder-premount $$"
+echo "$SENTINEL_TOKEN" > "$data_dir/.cinder_premount" 2>/dev/null \
+    && [ "$("$BB" cat "$data_dir/.cinder_premount" 2>/dev/null)" = "$SENTINEL_TOKEN" ] && SENTINEL=1
 data_is_mounted() {
     if [ "$SENTINEL" = 1 ]; then
-        [ -e "$data_dir/.cinder_premount" ] && return 1
+        [ "$("$BB" cat "$data_dir/.cinder_premount" 2>/dev/null)" = "$SENTINEL_TOKEN" ] && return 1
         return 0
     fi
     "$BB" grep -q " $data_dir " "$mounts_file" 2>/dev/null
@@ -96,7 +98,7 @@ mount -o remount,rw /emmc@usrdata "$data_dir" 2>/dev/null
 data_is_mounted || mount -t ext4 -o rw /dev/block/mmcblk0p28 "$data_dir" 2>/dev/null
 DATA_MOUNTED=0
 data_is_mounted && DATA_MOUNTED=1
-[ "$DATA_MOUNTED" = 1 ] || "$BB" rm -f "$data_dir/.cinder_premount" 2>/dev/null
+"$BB" rm -f "$data_dir/.cinder_premount" 2>/dev/null
 [ "$DATA_MOUNTED" = 1 ] && echo "state: /data (/emmc@usrdata) mounted" \
                         || echo "WARN: /emmc@usrdata could not be mounted at /data"
 
