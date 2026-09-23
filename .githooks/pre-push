@@ -59,11 +59,24 @@ run() {  # run <label> <dir> <command...>
     step "$label"
     if ( cd "$dir" && "$@" ) >"$LOG" 2>&1; then
         pass
-    else
-        fail "$label"
-        printf '%s\n' "--- $label ---" >&2
-        tail -40 "$LOG" >&2
+        return
     fi
+    # A COMPILER PANIC IS NOT A FINDING. rustc/clippy occasionally ICE on stale incremental state
+    # (seen 2026-09-23: clippy 0.1.95 panicked in a late lint pass over cinder_ui, and the same
+    # command passed on the next run). Refusing the push over a toolchain bug teaches everyone to
+    # use --no-verify, so clear the incremental cache once and retry; a real error fails again.
+    if grep -q 'the compiler unexpectedly panicked' "$LOG" && [ -d "$dir/target/debug/incremental" ]; then
+        printf '%scompiler panic — clearing %s/target/debug/incremental and retrying%s… ' \
+            "$C_Y" "$dir" "$C_0"
+        rm -rf "$dir/target/debug/incremental"
+        if ( cd "$dir" && "$@" ) >"$LOG" 2>&1; then
+            pass
+            return
+        fi
+    fi
+    fail "$label"
+    printf '%s\n' "--- $label ---" >&2
+    tail -40 "$LOG" >&2
 }
 
 printf '%spre-push%s: checking what CI checks (skip with --no-verify)\n' "$C_B" "$C_0"
@@ -88,7 +101,8 @@ fi
 #    reboots or notices new music. Milliseconds with a stock cc, so there is no excuse to skip.
 step "C++ self-tests"
 selftest_fail=0
-for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange mono; do
+# The same eleven CI runs (.github/workflows/ci.yml, "C++ self-tests") — keep the two lists equal.
+for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange mono battslew; do
     src="cinder-home/tools/${t}_selftest.cpp"
     [ -f "$src" ] || continue
     if ! cc -O2 -o "/tmp/cinder_ph_$t" "$src" -lstdc++ >"$LOG" 2>&1; then
