@@ -220,6 +220,31 @@ else
     note "installer screenshots: re-rendered when preparing, on a machine with Windows interop"
 fi
 
+# ── 3d. the golden preview hashes must follow the version bump ──────────────────────────────
+# The Settings "Firmware" row prints the version, so step 1b repaints every preview that shows it —
+# seven in 0.3.12: both Settings confirm dialogs, device_scrolled and uiscale_*_settings_bottom. The
+# pre-push hook compares every preview against golden.txt, so a prepare that bumped the version
+# without re-blessing made a release commit the push then refused (v0.3.12's first attempt). The
+# tree was blessed before the bump, so what moves here is the version row; the list is printed so
+# the diff review can see it is only that.
+GOLDEN=player/cinder-host/golden.txt
+if [ -n "$DRY" ]; then
+    if [ "$UI_HAVE" != "$VER" ]; then
+        act "golden previews: preparing would re-bless the ones that show the version"
+        CHANGED+=("golden previews")
+    fi
+else
+    (cd player && cargo run -q -p cinder-host -- --bless) >/tmp/cinder-release-golden.log 2>&1 \
+        || { tail -5 /tmp/cinder-release-golden.log; die "could not render the previews — see /tmp/cinder-release-golden.log"; }
+    MOVED="$(git diff -U0 -- "$GOLDEN" | sed -n 's/^+[0-9a-f]\{16\} //p')"
+    if [ -n "$MOVED" ]; then
+        act "golden previews re-blessed: $(joined $MOVED)"
+        CHANGED+=("golden previews")
+    else
+        ok "golden previews match the current UI"
+    fi
+fi
+
 # ── 4. every file the installer embeds must exist ───────────────────────────────────────────
 # build.rs fails loudly on a missing payload, but failing HERE names the file and costs no CI run.
 # One list, used by both the existence check and the manifest below — they drifted apart as two
