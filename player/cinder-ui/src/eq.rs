@@ -131,7 +131,12 @@ fn disc(c: &mut Canvas, cx: i32, cy: i32, d: u32, col: embedded_graphics::pixelc
         .ok();
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: &str, sel: usize) {
+/// `off` = why the 10-band EQ is NOT in the signal path right now (Tone Control replaces it;
+/// ClearAudio+ and Source Direct bypass it), or None when it is. The bands stay editable — you can
+/// set them up for later — but the footer says they are not being heard, instead of letting a drag
+/// that changes nothing look broken.
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: &str, sel: usize,
+              off: Option<&str>) {
     c.fill(t.bg);
     crate::chrome::header(c, t, f, "Equalizer", None);
     // header-right pill: CUSTOM <preset>
@@ -201,7 +206,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bands: &[i8; 10], preset: 
     // NOT "Save Sound Preset": there is no save step. Every band change is written to the settings
     // file as it happens, so a Save button would be a control that appears to do something and
     // does not — and the accent colour made it look like the primary action on the screen.
-    right(c, f, 458.0, fcy + 4.0, "Saved automatically",
-        &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0));
+    match off {
+        Some(why) => right(c, f, 458.0, fcy + 4.0, why,
+                           &sty(Family::Sans, Weight::SemiBold, 14.0, t.acc, 0.0)),
+        None => right(c, f, 458.0, fcy + 4.0, "Saved automatically",
+                      &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0)),
+    };
     let _ = W;
 }

@@ -80,8 +80,10 @@ void capture_keys(FILE* f, int secs) {
         }
         closedir(d);
     }
-    time_t end = time(nullptr) + secs;
-    while (time(nullptr) < end) {
+    // MONOTONIC: a capture window is a duration, and the wall clock can step under it.
+    auto mono_s = []() { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (long)ts.tv_sec; };
+    const long end = mono_s() + secs;
+    while (mono_s() < end) {
         for (int i = 0; i < nfd; ++i) {
             ev evs[16];
             ssize_t n = read(fds[i], evs, sizeof evs);

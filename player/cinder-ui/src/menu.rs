@@ -1,7 +1,7 @@
 //! Menu (the hub) — ported from cinder-proto-screens3.jsx `CMenu`.
-//! Twelve rows: icon + label (17/600) + live value (mono) + chevron, each on a
-//! `ROW_H` row with hairline separators. The list does NOT scroll, so `ROW_H` is sized to fit
-//! every row on the 800px panel — see the constant.
+//! Twelve or thirteen rows: icon + label (17/600) + live value (mono) + chevron, each on a
+//! `row_h` row with hairline separators. The list does NOT scroll, so the pitch is sized to fit
+//! every row on the 800px panel — see [`row_h`].
 
 use crate::canvas::{Canvas, W};
 use crate::icons;
@@ -48,17 +48,33 @@ fn draw_icon(c: &mut Canvas, name: &str, cx: f32, cy: f32, s: f32, col: Rgb888) 
 
 /// Row pitch and list top — SINGLE SOURCE for both the render below and `nav`'s hit test.
 /// 58, not the prototype's 63: the twelfth row (Folders) pushed 11x63 past the panel, and this
-/// list does not scroll. 91 + 12x58 = 787, six px clear of the 800px bottom. Everything that
-/// positions or hit-tests a menu row derives from this constant, so the two moved together.
+/// list does not scroll. Everything that positions or hit-tests a menu row derives from
+/// [`row_h`], so the two move together.
 pub const ROW_H: i32 = 58;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
+/// The lowest y a row may reach: a few px clear of the panel's bottom edge.
+const BOTTOM: i32 = crate::H as i32 - 7;
+
+/// The pitch for `rows` rows: [`ROW_H`] when they fit, otherwise whatever does fit.
+///
+/// The list does not scroll, and `ROW_H` was sized for twelve rows (91 + 12 × 58 = 787). The
+/// SensMe row made thirteen when that component is installed, and the thirteenth — Help &
+/// Controls, the one row that explains the rest — was drawn below the glass and could never be
+/// tapped (found on the owner's player, 2026-09-23). Thirteen rows get 54 px, still well above the
+/// 44 px floor for a thumb target.
+pub fn row_h(rows: usize) -> i32 {
+    if rows == 0 {
+        return ROW_H;
+    }
+    ROW_H.min((BOTTOM - TOP) / rows as i32)
+}
 
 /// Which menu row is under `y`, given how many rows there are.
 pub fn row_at(y: i32, rows: usize) -> Option<usize> {
     if y < TOP {
         return None;
     }
-    let r = ((y - TOP) / ROW_H) as usize;
+    let r = ((y - TOP) / row_h(rows)) as usize;
     (r < rows).then_some(r)
 }
 
@@ -66,7 +82,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, items: &[MenuItem]) {
     c.fill(t.bg);
     let y0 = crate::chrome::header(c, t, f, "Menu", Some("NW-A55"));
 
-    let rh = ROW_H;
+    let rh = row_h(items.len());
     debug_assert_eq!(y0, TOP, "menu list top drifted from the hit test");
     fill_rect(c, 0, y0, W as i32, 1, t.line); // top border
     for (i, m) in items.iter().enumerate() {
@@ -88,5 +104,24 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, items: &[MenuItem]) {
         text::draw(c, f, 438.0 - vw, cy + 5.0, &value, &vs);
         icons::chevron(c, 456.0, cy, 14.0, t.faint);
         fill_rect(c, 0, yt + rh, W as i32, 1, t.line); // bottom border
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    /// Every row the Menu can show is ON the glass — the last row's bottom is above the panel edge
+    /// and its middle is a row the hit test answers.
+    #[test]
+    fn every_menu_row_fits_on_the_panel() {
+        for rows in 1..=14 {
+            let rh = row_h(rows);
+            let last_bottom = TOP + rows as i32 * rh;
+            assert!(last_bottom <= crate::H as i32, "{rows} rows run to {last_bottom}");
+            assert_eq!(row_at(TOP + (rows as i32 - 1) * rh + rh / 2, rows), Some(rows - 1));
+            assert!(rh >= 44, "{rows} rows squeeze the pitch to {rh}");
+        }
+        assert_eq!(row_h(12), ROW_H, "twelve rows keep the designed pitch");
     }
 }

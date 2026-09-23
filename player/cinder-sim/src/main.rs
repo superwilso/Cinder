@@ -92,7 +92,6 @@ fn menu_items(app: &App) -> Vec<MenuItem<'static>> {
         MenuItem { icon: "sound", label: "Sound Settings", value: "DSEE HX · VPT · Vinyl", active: false },
         MenuItem { icon: "bt", label: "Bluetooth", value: "WH-1000XM5 · LDAC", active: false },
         MenuItem { icon: "usb", label: "USB-DAC", value: "Off", active: false },
-        MenuItem { icon: "rx", label: "BT Receiver", value: "Off", active: false },
         MenuItem { icon: "settings", label: "Settings", value: "System · Storage · About", active: false },
     ]
 }
@@ -369,9 +368,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                 album: "Now Playing",
                 tracks: &tracks,
                 current: cur,
-                queue: &[],
                 history,
-                pick: None,
                 lib: &app.lib,
                 scroll_px: 0,
                 drag: None,
@@ -385,7 +382,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             let page = library::artist_page(&app.lib, name);
             library::artist_view(c, theme, fonts, &app.lib, &page, 0, 0, None, false)
         }
-        Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0, 0),
+        Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0, 0, None),
         Screen::Sound => sound::render(c, theme, fonts, &Sound {
             balance: cinder_ui::sound::BALANCE_CENTRE, balance_drag: false, bt_route: false,
             dsee: app.dsee, vinyl: app.vinyl, vpt: VPTS[app.vpt], dcphase: DCS[app.dc],

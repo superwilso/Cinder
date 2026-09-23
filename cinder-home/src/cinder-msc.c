@@ -164,7 +164,10 @@ static void remount_exfat_sd(void)
 {
     for (int attempt = 0; attempt < 2 && !is_mounted("/contents_ext"); ++attempt) {
         if (attempt) usleep(1000000);
-        time_t t0 = time(NULL);
+        /* MONOTONIC: this is a duration, and the wall clock can step (a date set by hand, the
+         * 2038 wrap). */
+        struct timespec ts0, ts1;
+        clock_gettime(CLOCK_MONOTONIC, &ts0);
         int rc = system("LD_LIBRARY_PATH=/system/lib:/system/usr/local/lib:/usr/lib:/usr/local/lib "
                         "PATH=/bin:/usr/bin:/sbin:/xbin:/system/bin:/system/usr/bin:/system/sbin "
                         "/system/bin/mount.exfat " SDCARD " /contents_ext "
@@ -173,9 +176,11 @@ static void remount_exfat_sd(void)
             fprintf(stderr, "cinder-msc: exFAT SD card remounted at /contents_ext\n");
             return;
         }
+        clock_gettime(CLOCK_MONOTONIC, &ts1);
+        long took = (long)(ts1.tv_sec - ts0.tv_sec);
         fprintf(stderr, "cinder-msc: exFAT SD card did not remount (mount.exfat rc=%d, %lds)\n",
-                rc, (long)(time(NULL) - t0));
-        if (time(NULL) - t0 > 5) return;
+                rc, took);
+        if (took > 5) return;
     }
 }
 
