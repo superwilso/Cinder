@@ -16,6 +16,56 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Changed
+
+- **Up Next is one list.** *Device-verified 2026-09-23 on the A55 (Walkman One 3.02).* The user
+  queue and the album/playlist "context" were two lists, and a queued track always played before
+  the rest of the album — so "play this album, then that one" could not be said. Now everything
+  after the playing track is one list in play order. Swipe **left** on any song or album = *Play
+  next* (straight after the playing track); swipe **right** = *Add to Up Next* (at the very end, so
+  an album queued while another plays starts when that one finishes — verified by skipping across
+  the boundary). Every upcoming row can be dragged anywhere, swiped away, or tapped to jump to it;
+  CLEAR (with a confirmation) empties everything after the playing track. Starting something new
+  when you have added tracks by hand asks *Play now, replace Up Next* / *Play now, then Up Next*.
+  A resume file written by an older build is read and its queued tracks are put back in place.
+- **The list you tap in is the list that plays.** A song tapped in the **Songs** tab now plays the
+  Songs list in its current sort and filter, a file tapped in **Folders** plays the folder, and a
+  track on an **artist page** plays that artist's tracks. All three used to play the tapped track's
+  album instead (the Folders code even said it played the folder). *Host-tested.*
+- **Swipe-to-queue works in Search, Folders and SensMe** as it does in every other track list.
+- **The intro / Help & Controls teaches navigation.** Seven pages: Welcome, *Getting around* (the
+  status strip's clock / Menu / Shelf zones, going back, Now Playing's bottom bar), Buttons,
+  *Playing & Up Next*, Gestures, What's inside, Done.
+- **Sound says what is bypassed.** With ClearAudio+ on, DSEE HX, Vinyl, VPT and DC Phase are dimmed
+  with "Off while ClearAudio+ is on", the signal path reads `SOURCE → CLEARAUDIO+ → …`, and the
+  Equalizer screen and its Menu row say the EQ is not being heard (also for Tone Control and Source
+  Direct). A change to a bypassed row is saved and a toast says so. *Device-verified.*
+
+### Fixed
+
+- **Shuffle after starting an album part-way through dropped the tracks before the start point.**
+  *Device-verified.* Shuffle now keeps the playing track playing and deals **every** other track in
+  the list behind it; turning shuffle off restores the album's order and carries on from the
+  playing track. A track in the list twice keeps both copies in their own places.
+- **Help & Controls could not be reached with SensMe installed.** The Menu does not scroll and was
+  sized for twelve rows; SensMe made thirteen and the last one was drawn below the screen. Rows now
+  size to fit, and the *BT Receiver* row — a screen that says it is not available yet — moved to
+  Bluetooth ▸ Receiver mode only. *Device-verified.*
+- **Albums whose cover is a `Cover.jpg` in the folder showed no art.** Sony's scanner reads only
+  embedded art; Cinder now falls back to `cover` / `folder` / `front` / the only image in the
+  folder, and caches it for the Library. *Device-verified: 7/7 such albums on the reference library.*
+- **An unknown release year printed as "0 · 10 tracks".**
+- **Tapping a row inside a list longer than 512 tracks could start the wrong song** (the list was
+  cut from the front). The window now always contains the tapped track.
+- **The Menu called ClearAudio+ "Clear Phase"**, a different effect.
+- **The Sound screen's hint said "OPTION = SWAP"** for a button this player does not have.
+- **Up Next's header caption ran into the title at a large UI scale.** *Device-verified.*
+- **Clock steps could stop a healthy boot being marked healthy.** The "alive 8 s after first
+  paint" check measured with the wall clock; a date set by hand or the 2038 wrap (to 1901) made it
+  never pass, and two such boots latch the device into stock. Now monotonic, with a harness
+  scenario (`clock-steps-back`) that fails on the old code. The DB snapshot's freshness check and
+  two helper timeouts no longer depend on the wall clock either.
+
 ## [0.3.12] — 2026-09-23
 
 ### Fixed

@@ -29,6 +29,7 @@
 #include <dirent.h>
 #include <ctime>
 #include <time.h>   // clock_gettime/CLOCK_MONOTONIC (drag velocity timing)
+#include <utime.h>  // utime: the DB snapshot carries the live store's mtime
 #include <setjmp.h>
 #include <pthread.h>
 #include <sys/stat.h>      // stat() — the dev request-file consumer (take_req)
@@ -538,9 +539,14 @@ int g_deferred_rc = -1;        // result slot for non-capturing guarded init cal
 // worker writes, after g_deferred_rc, so a reader that sees it clear sees a valid rc.
 volatile bool g_lib_pending = false;
 bool g_lib_thread_started = false;
-time_t g_healthy_since = 0;    // when deferred init completed (for the proven-healthy reset)
+long g_healthy_since = 0;      // when deferred init completed, CLOCK_MONOTONIC ms (see now_ms)
 bool g_counter_reset = false;  // have we cleared the launcher bad-boot counter this boot?
-time_t g_first_paint_at = 0;   // when the FIRST frame hit the panel (the bad-boot health signal)
+// When the FIRST frame hit the panel (the bad-boot health signal), in CLOCK_MONOTONIC ms.
+// MONOTONIC, NOT time(): the health check is "still alive 8 s later", and a wall-clock difference
+// is not a duration. The clock can step backwards under us — cinder-clock setting the date, or the
+// 32-bit time_t wrap in January 2038 sending it to 1901 — and then `now - first_paint` never
+// reaches 8, the bad-boot counter is never cleared, and two such boots latch the device into stock.
+long g_first_paint_at = 0;
 int g_screenshot_sync = 0;     // countdown: sync /contents a few ticks after a screenshot is taken
 
 // ── watchdog summary ────────────────────────────────────────────────────────────────────
@@ -943,13 +949,18 @@ static bool db_mtime(const char* p, time_t* out, off_t* size) {
 static void db_snapshot_keep() {
     time_t live_t = 0, good_t = 0; off_t live_sz = 0, good_sz = 0;
     if (!db_mtime(DB_LIVE, &live_t, &live_sz) || live_sz <= 0) return;
-    if (db_mtime(DB_GOOD, &good_t, &good_sz) && good_t >= live_t && good_sz == live_sz) return;
+    // EQUAL, not `>=`. The snapshot is stamped with the live store's own mtime below, so "same
+    // mtime, same size" means "the same store". `>=` compared a copy time against a write time, and
+    // a clock that steps backwards (a date set by hand, the 2038 wrap) makes a new store look OLDER
+    // than a stale snapshot — which then never refreshes.
+    if (db_mtime(DB_GOOD, &good_t, &good_sz) && good_t == live_t && good_sz == live_sz) return;
     if (!db_copy(DB_LIVE, DB_GOOD_TMP, false)) {
         clog_("db-guard: could not write the snapshot (is /db full?) — no copy kept this boot");
         return;
     }
     // Rename LAST, so the visible snapshot is never a half-written one.
     if (::rename(DB_GOOD_TMP, DB_GOOD) != 0) { ::unlink(DB_GOOD_TMP); return; }
+    { struct utimbuf ut; ut.actime = live_t; ut.modtime = live_t; ::utime(DB_GOOD, &ut); }
     ::sync();
     char m[128];
     std::snprintf(m, sizeof m, "db-guard: snapshot kept (%ld KB)", (long)(live_sz / 1024));
@@ -1530,7 +1541,7 @@ void deferred_up() {
     // Same frame the old `if (g_deferred_done)` gate would have flipped, so a healthy boot starts
     // input and the full loop at exactly the moment it always did.
     g_bringup_settled = true;
-    g_healthy_since = std::time(nullptr);
+    g_healthy_since = now_ms();
     clog_("deferred_up: DONE");
 }
 
@@ -1558,7 +1569,7 @@ void deferred_up() {
 // touches it. The path MUST stay in step with $BOOTCOUNT in deploy/install_cinderhome.sh.
 void mark_healthy_maybe() {
     if (g_counter_reset || g_first_paint_at == 0) return;
-    if (std::time(nullptr) - g_first_paint_at >= 8) {
+    if (now_ms() - g_first_paint_at >= 8000) {
         FILE* f = std::fopen("/data/cinder/bootcount", "w");
         if (!f) {
             // KEEP RETRYING, BUT STOP TALKING ABOUT IT. This is reached from the ~1 Hz
@@ -11074,7 +11085,8 @@ void* render_driver(void*) {
         // one extra 16 ms loop iteration after boot.
         if (!first_painted && cinder_frames_presented() > 0) {
             first_painted = true;
-            g_first_paint_at = std::time(nullptr);   // starts the bad-boot "proven good" clock
+            // Starts the bad-boot "proven good" clock. `| 1` keeps it off the 0 that means "not yet".
+            g_first_paint_at = now_ms() | 1;
             clog_("render_driver: first frame painted (our own loop)");
             // Detached: deferred_up() blocks THIS thread, so the counter reset needs its own timer.
             { pthread_t t; if (pthread_create(&t, nullptr, healthy_timer, nullptr) == 0) pthread_detach(t); }

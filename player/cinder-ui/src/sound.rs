@@ -264,7 +264,10 @@ pub(crate) fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, lab
     }
     let lc = if sel { t.acc } else { t.ink };
     text::draw(c, f, 22.0, (cy - 3) as f32, label, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
-    text::draw(c, f, 22.0, (cy + 15) as f32, desc, &sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0));
+    // Fitted to the space LEFT of the row's control (the toggles start at 418, the pills a little
+    // earlier): at 140% UI scale the longer subtitles ran underneath the switch.
+    let ds = sty(Family::Sans, Weight::Regular, 13.0, t.dim, 0.0);
+    text::draw(c, f, 22.0, (cy + 15) as f32, &crate::widgets::fit(f, desc, &ds, 380.0), &ds);
     hline(c, y + rh, t.line);
     cy
 }
@@ -431,15 +434,12 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
     // Both setups are real chains — B is not "bypassed", it is the other one — so the path reads
     // the same way for either and just names which is live.
     let ab = if setup == 1 { "B" } else { "A" };
+    // SHORT, deliberately. `fit` truncates from the end, and the end is the verb: on the device at
+    // the owner's UI scale the old "…EQ AND MANUAL DSP BYPASSED" came out as "…DSP BYPAS…".
     let warn = if s.source_direct {
-        // Kept SHORTER than the ClearAudio+ line below, deliberately. The first draft named where
-        // the control lives — "(SOUND ▸ ADVANCED)" — and `fit` truncated the line at "EVERY EFFECT
-        // BY…", cutting the one word that carries the meaning. A warning that loses its verb is
-        // worse than a terse one, and the "Advanced ›" row directly above the footer already lists
-        // Source Direct first among what it contains.
-        Some("! SOURCE DIRECT ON — EVERY EFFECT BYPASSED")
+        Some("! SOURCE DIRECT: ALL BYPASSED")
     } else if s.clearaudio {
-        Some("! CLEARAUDIO+ ACTIVE — EQ AND MANUAL DSP BYPASSED")
+        Some("! CLEARAUDIO+: EQ + FX BYPASSED")
     } else {
         None
     };
@@ -447,6 +447,11 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
         // Nothing between the source and the amp. Say exactly that, rather than drawing a chain and
         // adding a footnote underneath that contradicts the line above it.
         return (format!("SIGNAL PATH ({ab}): SOURCE → {out}"), warn);
+    }
+    // ClearAudio+ REPLACES the tone stage and the manual effects — the warning below says so, and
+    // a chain drawn above it naming the EQ and DSEE HX said the opposite in the same breath.
+    if s.clearaudio {
+        return (format!("SIGNAL PATH ({ab}): SOURCE → CLEARAUDIO+ → {out}"), warn);
     }
     // Which tone system is really in the chain. Sony picks ONE of the two, so naming the wrong one
     // is the same lie as naming both.
@@ -461,14 +466,28 @@ pub fn signal_path(s: &Sound, setup: usize) -> (String, Option<&'static str>) {
     (format!("SIGNAL PATH ({ab}): SOURCE → {tone_stage} → {mid} → {out}"), warn)
 }
 
+/// Why rows are out of the path, as the subtitle that replaces theirs: `(manual effects, every
+/// effect)`. The manual effects are what ClearAudio+ replaces; everything is what Source Direct
+/// does. Precedence as `signal_path`: Source Direct is the outer bypass.
+pub fn bypass_reasons(s: &Sound) -> (Option<&'static str>, Option<&'static str>) {
+    if s.source_direct {
+        let r = Some("Off while Source Direct is on (Advanced)");
+        (r, r)
+    } else if s.clearaudio {
+        (Some("Off while ClearAudio+ is on"), None)
+    } else {
+        (None, None)
+    }
+}
+
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, setup: usize) {
     c.fill(t.bg);
     // No subtitle here — the A/B compare control occupies the header's right side.
     let y0 = crate::chrome::header(c, t, f, "Sound", None);
 
-    // A/B compare control (top-right of the header): two segments, the active one in accent. B =
-    // whole effect chain bypassed ("direct"), so you can instantly hear the DSP on vs off. Toggled
-    // with the Option button (hinted below the segments).
+    // A/B compare control (top-right of the header): two segments, the active one in accent — two
+    // whole setups to compare by ear. Tapped; this player has no Option button, so the hint that
+    // used to read "OPTION = SWAP" named a key nobody could press.
     {
         let segs = [("A", setup == 0), ("B", setup == 1)];
         for (i, (label, on)) in segs.iter().enumerate() {
@@ -485,24 +504,32 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
         // first row.
         let hint = sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14);
         let (x0, _, _, _) = ab_rect(0);
-        right(c, f, (x0 - 12) as f32, (AB_TOP + AB_H / 2 + 4) as f32, "OPTION = SWAP", &hint);
+        right(c, f, (x0 - 12) as f32, (AB_TOP + AB_H / 2 + 4) as f32, "COMPARE", &hint);
     }
 
     let rh = ROW_H;
     debug_assert_eq!(y0, TOP, "sound list top drifted from the hit test");
     hline(c, y0, t.line);
-    let cy = row(c, t, f, y0, sel == 0, "DSEE HX", "Upscale compressed audio to near hi-res");
-    toggle(c, t, 418, cy - 11, 40, 22, 14, s.dsee);
-    let cy = row(c, t, f, y0 + rh, sel == 1, "Vinyl Processor", "Tonearm resonance + surface noise character");
-    toggle(c, t, 418, cy - 11, 40, 22, 14, s.vinyl);
-    let cy = row(c, t, f, y0 + rh * 2, sel == 2, "VPT Surround", "Studio / Club / Concert Hall acoustics");
-    value_pill(c, f, t, 458, cy, s.vpt);
-    let cy = row(c, t, f, y0 + rh * 3, sel == 3, "DC Phase Linearizer", "Analog-amp low-frequency phase response");
-    value_pill(c, f, t, 458, cy, s.dcphase);
-    let cy = row(c, t, f, y0 + rh * 4, sel == 4, "Dynamic Normalizer", "Even out volume between tracks");
-    toggle(c, t, 418, cy - 11, 40, 22, 14, s.normalizer);
-    let cy = row(c, t, f, y0 + rh * 5, sel == 5, "ClearAudio+", "Sony one-touch tuning — overrides EQ + DSP");
-    toggle(c, t, 418, cy - 11, 40, 22, 14, s.clearaudio);
+    // WHAT IS BYPASSED IS DRAWN AS BYPASSED. With ClearAudio+ on, DSEE HX / Vinyl / VPT / DC Phase
+    // still showed their switches lit while the footer said they were out of the path — two
+    // answers to one question on one screen. They stay tappable (you can set them up for when the
+    // override is off), but they are dimmed and their subtitle says why. Source Direct, the outer
+    // bypass, dims every effect row including ClearAudio+ itself.
+    let (fx_over, all_over) = bypass_reasons(s);
+    let dim = t.scaled(45);
+    let th = |o: Option<&str>| if o.is_some() { &dim } else { t };
+    let cy = row(c, th(fx_over), f, y0, sel == 0, "DSEE HX", fx_over.unwrap_or("Upscale compressed audio to near hi-res"));
+    toggle(c, th(fx_over), 418, cy - 11, 40, 22, 14, s.dsee);
+    let cy = row(c, th(fx_over), f, y0 + rh, sel == 1, "Vinyl Processor", fx_over.unwrap_or("Tonearm resonance + surface noise character"));
+    toggle(c, th(fx_over), 418, cy - 11, 40, 22, 14, s.vinyl);
+    let cy = row(c, th(fx_over), f, y0 + rh * 2, sel == 2, "VPT Surround", fx_over.unwrap_or("Studio / Club / Concert Hall acoustics"));
+    value_pill(c, f, th(fx_over), 458, cy, s.vpt);
+    let cy = row(c, th(fx_over), f, y0 + rh * 3, sel == 3, "DC Phase Linearizer", fx_over.unwrap_or("Analog-amp low-frequency phase response"));
+    value_pill(c, f, th(fx_over), 458, cy, s.dcphase);
+    let cy = row(c, th(all_over), f, y0 + rh * 4, sel == 4, "Dynamic Normalizer", all_over.unwrap_or("Even out volume between tracks"));
+    toggle(c, th(all_over), 418, cy - 11, 40, 22, 14, s.normalizer);
+    let cy = row(c, th(all_over), f, y0 + rh * 5, sel == 5, "ClearAudio+", all_over.unwrap_or("Sony one-touch tuning — replaces EQ + effects"));
+    toggle(c, th(all_over), 418, cy - 11, 40, 22, 14, s.clearaudio);
     balance_row(c, t, f, s, sel == ROW_BALANCE);
 
     // "Advanced ›" — the route to the rest of Sony's effects.
@@ -637,9 +664,22 @@ mod tests {
         assert!(signal_path(&both, 0).1.unwrap().contains("SOURCE DIRECT"));
         let ca = Sound { clearaudio: true, ..loud() };
         assert!(signal_path(&ca, 0).1.unwrap().contains("CLEARAUDIO+"));
-        // ClearAudio+ overrides the EQ and manual DSP but is not the outer bypass, so the chain is
-        // still drawn — the warning is what says it is not reaching the amp untouched.
-        assert!(signal_path(&ca, 0).0.contains("EQ (Rock)"));
+        // ClearAudio+ REPLACES the EQ and the manual effects, so the path names it and not them.
+        // (It used to draw the full chain and warn underneath that the chain was bypassed — two
+        // answers on one screen.)
+        let p = signal_path(&ca, 0).0;
+        assert_eq!(p, "SIGNAL PATH (A): SOURCE → CLEARAUDIO+ → AMP → 3.5MM");
+        assert!(signal_path(&ca, 0).1.unwrap().ends_with("BYPASSED"));
+    }
+
+    /// The rows ClearAudio+ replaces are the ones the path drops; Source Direct takes every effect.
+    #[test]
+    fn bypassed_rows_say_what_bypasses_them() {
+        assert_eq!(bypass_reasons(&loud()), (None, None));
+        let (fx, all) = bypass_reasons(&Sound { clearaudio: true, ..loud() });
+        assert!(fx.unwrap().contains("ClearAudio+") && all.is_none());
+        let (fx, all) = bypass_reasons(&Sound { source_direct: true, clearaudio: true, ..loud() });
+        assert!(fx.unwrap().contains("Source Direct") && all.unwrap().contains("Source Direct"));
     }
 
     /// With no effects at all the middle reads DIRECT — not empty, and not a dangling arrow.

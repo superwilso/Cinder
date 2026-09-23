@@ -1,5 +1,24 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-09-23 — Up Next is one list; playback, sound and help follow one set of rules
+>
+> **Write-up: [`../docs/AUDIT_2026-09-23.md`](../docs/AUDIT_2026-09-23.md) Part E.** Device-verified on
+> the A55 under Walkman One 3.02 unless marked.
+>
+> - **Up Next is one list** in play order. Play next = straight after the playing track; Add to Up
+>   Next = the very end, so a second album queued during the first plays after it (verified by
+>   skipping across the boundary). Every upcoming row moves, swipes away or is tapped to jump.
+> - **Shuffle keeps every track**: the playing one stays, all others are dealt behind it (it used to
+>   drop the tracks before a mid-album start). Shuffle off restores the album order. *Verified.*
+> - **The list you tap in is the list that plays** — Songs tab (sort + filter), Folders, artist page.
+>   *Host-tested only.*
+> - **Folder covers** (`Cover.jpg` beside the music) now show: 7/7 such albums decoded and cached.
+> - **Sound / EQ / Menu say what is bypassed** by ClearAudio+, Tone Control and Source Direct.
+> - **Help & Controls** was unreachable with SensMe installed (13th Menu row below the glass); fixed,
+>   and the intro now teaches navigation (7 pages).
+> - **Wall-clock steps no longer affect boot health** (monotonic check; harness `clock-steps-back`).
+>   The device clock itself is still 32-bit — see the 2038 plan in the write-up.
+
 > ## 2026-09-12 — the headline path is reported working, and the installer stopped shipping Sony's updater
 >
 > **USB-DAC → LDAC ran end to end** on the unit (`docs/DEVICE_CHECKLIST.md` 11.10). Goal #3 — USB

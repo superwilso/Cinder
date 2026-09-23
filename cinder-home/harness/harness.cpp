@@ -507,7 +507,10 @@ int clock_gettime(clockid_t clk, struct timespec* ts) {
     { Lock l; ms = g_now_ms; }
     // Wall clock gets an epoch so date maths in the app sees a plausible year, monotonic starts
     // at zero like a freshly booted device.
-    long long base = (clk == CLOCK_REALTIME) ? 1756000000LL : 0;
+    // `wall_offset_s` lets a scenario step the WALL clock (a date set by hand, the 2038 wrap) while
+    // the monotonic one runs on, which is exactly the split the device has.
+    long long base = (clk == CLOCK_REALTIME)
+        ? 1756000000LL + cinder_harness_state_get("wall_offset_s", 0) : 0;
     ts->tv_sec  = base + ms / 1000;
     ts->tv_nsec = (ms % 1000) * 1000000;
     return 0;
@@ -515,7 +518,7 @@ int clock_gettime(clockid_t clk, struct timespec* ts) {
 
 time_t time(time_t* t) {
     long long ms; { Lock l; ms = g_now_ms; }
-    time_t v = (time_t)(1756000000LL + ms / 1000);
+    time_t v = (time_t)(1756000000LL + cinder_harness_state_get("wall_offset_s", 0) + ms / 1000);
     if (t) *t = v;
     return v;
 }

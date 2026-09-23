@@ -126,16 +126,18 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         progress: 0.39,
     };
 
+    // The Menu as the device draws it with SensMe installed: twelve rows, in `nav::MENU` order.
     let menu_items = [
         MenuItem { icon: "note", label: "Now Playing", value: "Atlas Hands · 1:47", active: true },
         MenuItem { icon: "library", label: "Library", value: "6 albums · 8 tracks", active: false },
-        MenuItem { icon: "queue", label: "Up Next", value: "8 tracks · 41:24", active: false },
-        MenuItem { icon: "radio", label: "FM Radio", value: "", active: false },
+        MenuItem { icon: "library", label: "Folders", value: "6 folders", active: false },
+        MenuItem { icon: "note", label: "SensMe", value: "12 channels · 8 tracks", active: false },
+        MenuItem { icon: "queue", label: "Up Next", value: "8 tracks left", active: false },
+        MenuItem { icon: "radio", label: "FM Radio", value: "Needs wired headphones as the aerial", active: false },
         MenuItem { icon: "eq", label: "Equalizer", value: "A1", active: false },
-        MenuItem { icon: "sound", label: "Sound Settings", value: "Off", active: false },
+        MenuItem { icon: "sound", label: "Sound Settings", value: "DSEE HX · VPT", active: false },
         MenuItem { icon: "bt", label: "Bluetooth", value: "LDAC", active: false },
         MenuItem { icon: "usb", label: "USB-DAC", value: "Off", active: false },
-        MenuItem { icon: "rx", label: "BT Receiver", value: "Off", active: false },
         MenuItem { icon: "settings", label: "Settings", value: "System · Storage · About", active: false },
         MenuItem { icon: "note", label: "Help & Controls", value: "Button map · features", active: false },
     ];
@@ -166,8 +168,19 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         println!("preview: using real device thumbnails");
     }
     let lib = lib;
-    // A stand-in USER queue for the Up Next previews (the real one is built by swiping rows in).
-    let queue: Vec<cinder_ui::model::SongRow> = lib.songs.iter().take(9).cloned().collect();
+    // The Up Next previews: an album playing, and the same album with nine more tracks queued
+    // after it (the real list is built by swiping rows in).
+    let (album_name, album_tracks): (String, Vec<cinder_ui::model::SongRow>) = lib
+        .album_groups
+        .first()
+        .and_then(|g| g.albums.iter().find(|a| !a.track_list.is_empty()))
+        .map(|a| (a.name.clone(), a.track_list.clone()))
+        .unwrap_or_default();
+    let queued: Vec<cinder_ui::model::SongRow> = album_tracks
+        .iter()
+        .cloned()
+        .chain(lib.songs.iter().take(9).cloned())
+        .collect();
 
     for (name, theme) in [("day", th(false, amber)), ("night", th(true, amber))] {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
@@ -183,10 +196,12 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // stale the moment a page was inserted: "onboard_2_features" was rendering the new
             // Gestures page under the old name, so the preview said the sweep was fine.
             ("onboard_0_welcome", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 0)),
-            ("onboard_1_controls", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 1)),
-            ("onboard_2_gestures", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 2)),
-            ("onboard_3_features", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 3)),
-            ("onboard_4_done", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 4)),
+            ("onboard_1_getting_around", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 1)),
+            ("onboard_2_buttons", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 2)),
+            ("onboard_3_playing", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 3)),
+            ("onboard_4_gestures", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 4)),
+            ("onboard_5_features", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 5)),
+            ("onboard_6_done", &|c: &mut Canvas| cinder_ui::onboarding::render(c, &theme, &fonts, 6)),
             ("shelf", &|c: &mut Canvas| {
                 now_playing::render(c, &theme, &fonts, &np);
                 shelf::render(c, &theme, &fonts, "Now Playing · Atlas Hands", "1:47 / 4:32",
@@ -198,43 +213,40 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
-            // The unified queue: history above the playing track, then the user's own queue,
-            // then the rest of the album. The history is its OWN list now, so the preview passes
-            // one explicitly rather than relying on `current` to imply it.
+            // Up Next: history above the playing track, then the rest of the album. The history
+            // is its OWN list, so the preview passes one explicitly.
             ("up_next", &|c: &mut Canvas| {
-                let al = lib.album_groups.first()
-                    .and_then(|g| g.albums.iter().find(|a| !a.track_list.is_empty()));
-                let (album, tracks) = match al {
-                    Some(a) => (a.name.as_str(), &a.track_list[..]),
-                    None => ("", &[][..]),
-                };
-                // With a user queue too, so the preview shows all four sections and both chips.
+                let tracks = &album_tracks[..];
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
-                    album, tracks,
+                    album: &album_name, tracks,
                     current: (!tracks.is_empty()).then(|| 2.min(tracks.len() - 1)),
-                    queue: &queue[..2.min(queue.len())],
                     history: &tracks[..2.min(tracks.len())],
-                    pick: None, lib: &lib, scroll_px: 0,
+                    lib: &lib, scroll_px: 0,
                     drag: None, swipe: None, sbar_active: false,
                 });
             }),
-            // The USER queue, at rest and mid-reorder. The second one is the gesture the device
-            // can't be screenshotted through: the row is lifted under a finger that isn't there.
+            // The same list after queueing more after the album: ONE list, headed NEXT UP, in the
+            // order it will play. Scrolled so the join between the two is on screen.
             ("up_next_queue", &|c: &mut Canvas| {
+                let cur = album_tracks.len().saturating_sub(2);
+                let l = up_next::layout(0, queued.len(), (!queued.is_empty()).then_some(cur));
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
-                    album: "", tracks: &[], current: None,
-                    queue: &queue, history: &[], pick: None, lib: &lib, scroll_px: 0,
+                    album: "", tracks: &queued, current: (!queued.is_empty()).then_some(cur),
+                    history: &[], lib: &lib, scroll_px: l.follow_scroll(),
                     drag: None, swipe: None, sbar_active: false,
                 });
             }),
+            // Mid-reorder: the gesture the device can't be screenshotted through — the row is
+            // lifted under a finger that isn't there.
             ("up_next_reorder", &|c: &mut Canvas| {
-                let l = up_next::layout(0, 0, None, queue.len(), false);
+                let cur = (!queued.is_empty()).then_some(0);
+                let l = up_next::layout(0, queued.len(), cur);
                 let from = 1usize;
                 let grab_off = up_next::RH / 2;
-                // The queue no longer starts at the top of the list, so the row's screen y comes
-                // from the layout — the same rule nav's reorder_begin follows.
+                // The row's screen y comes from the layout — the same rule nav's reorder_begin
+                // follows.
                 let row_top = cinder_ui::chrome::HEADER_BOTTOM
-                    + l.top_of(up_next::Slot::Queued(from)).unwrap_or(0);
+                    + l.movable_top(from).unwrap_or(0);
                 let start_y = row_top + grab_off;
                 let y = start_y + 2 * up_next::RH + 14;   // dragged down past two rows
                 let d = up_next::RowDrag {
@@ -245,8 +257,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     grab_off,
                 };
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
-                    album: "", tracks: &[], current: None,
-                    queue: &queue, history: &[], pick: None, lib: &lib, scroll_px: 0,
+                    album: "", tracks: &queued, current: cur,
+                    history: &[], lib: &lib, scroll_px: 0,
                     drag: Some(d), swipe: None, sbar_active: false,
                 });
             }),
@@ -316,12 +328,13 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                                                         lib.songs.len(), false);
             }),
             ("up_next_remove", &|c: &mut Canvas| {
-                let l = up_next::layout(0, 0, None, queue.len(), false);
+                let cur = (!queued.is_empty()).then_some(0);
+                let l = up_next::layout(0, queued.len(), cur);
                 let row_y = cinder_ui::chrome::HEADER_BOTTOM
-                    + l.top_of(up_next::Slot::Queued(2)).unwrap_or(0) + up_next::RH / 2;
+                    + l.top_of(up_next::Slot::Upcoming(3)).unwrap_or(0) + up_next::RH / 2;
                 up_next::render_view(c, &theme, &fonts, &up_next::QueueView {
-                    album: "", tracks: &[], current: None,
-                    queue: &queue, history: &[], pick: None, lib: &lib, scroll_px: 0,
+                    album: "", tracks: &queued, current: cur,
+                    history: &[], lib: &lib, scroll_px: 0,
                     drag: None,
                     swipe: Some(cinder_ui::library::SwipeRow { y: row_y, dx: 110 }),
                     sbar_active: false,
@@ -378,7 +391,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 library::artist_view(c, &theme, &fonts, &lib, &page, 0, 0, None, false);
                 cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
             }),
-            ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4)),
+            ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4, None)),
+            ("eq_off", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4, Some("Off: Tone Control is on"))),
             ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, 0)),
             ("sound_setup_b", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, 1)),
             // The balance slider off-centre and mid-drag: the two states the static preview above

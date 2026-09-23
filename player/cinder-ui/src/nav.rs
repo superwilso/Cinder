@@ -161,14 +161,14 @@ pub enum ShuffleScope {
 /// Side effects the shell carries out (via cinder-audio / system services). The UI emits
 /// these instead of acting on audio itself.
 /// Where a newly queued track goes. PlayerService has no insert operation, so this only decides
-/// where it lands in OUR queue — the sequence it plays from is rebuilt at a track boundary (see
+/// where it lands in OUR list — the sequence it plays from is rebuilt at a track boundary (see
 /// `Action::QueueChanged`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum QueueAt {
     /// Straight after the current track. Swipe LEFT on a row.
     Next,
-    /// At the end of whatever is already queued. Swipe RIGHT — the original gesture, kept so the
-    /// habit still works and still means the same thing.
+    /// At the very end of Up Next, after everything already in it — so an album queued while
+    /// another plays starts when that one finishes. Swipe RIGHT.
     Later,
 }
 
@@ -365,9 +365,6 @@ pub enum Action {
     /// the duration in ms and suppresses position updates mid-drag); this variant is what the
     /// host sim sees, so both surfaces share ONE claim site — `App::scrub_begin`.
     Seek(u16),
-    /// Play the USER queue (swipe-to-queue) starting at index `n`. The shell resolves the whole
-    /// queue to a track sequence, so the transport then steps through what Up Next is showing.
-    PlayQueueAt(usize),
     /// Play the CURRENT PLAY CONTEXT starting at index `n` — the sequence Up Next is displaying,
     /// in the order it is displaying it.
     ///
@@ -384,6 +381,14 @@ pub enum Action {
     /// is rebuilt or reshuffled. That is also why it must not go through `apply_shuffle` — the
     /// order on screen is already the order to play.
     PlayContextAt(usize),
+    /// Play the LIST THE USER TAPPED IN — the Songs tab in its current sort and filter, a folder,
+    /// an artist's tracks — from row `n`. The ids travel in `App::play_list` (an `Action` is
+    /// `Copy`); the shell takes them with `App::take_play_list`.
+    ///
+    /// These three used to emit `PlayIndex`, which resolves the tapped track's ALBUM: tap a song in
+    /// a folder or in "Recently added" and you got its album, not the list on the screen. The rule
+    /// everywhere else in the app is that the list you are looking at is the list you get.
+    PlayListAt(usize),
     /// The UI text scale changed (Settings ▸ UI scale). Internal + persisted; no device call.
     UiScaleChanged,
     BrightnessChanged(u8),    // panel brightness level 1..5; shell maps it onto the backlight node
@@ -412,7 +417,7 @@ pub enum Action {
 // on a device with 304 albums, "88.6 MHz" for a tuner that isn't wired, "Custom A1" regardless of
 // the selected EQ preset, and "WH-1000XM5 · LDAC" naming a pair of headphones that were never
 // connected. A subtitle that states something false is worse than no subtitle.
-const MENU: [(Screen, &str, &str, &str); 13] = [
+const MENU: [(Screen, &str, &str, &str); 12] = [
     (Screen::NowPlaying, "note", "Now Playing", ""),   // live: current track · elapsed
     (Screen::Library, "library", "Library", ""),      // live: album/track counts
     // Folder browse — the file tree as it is on the volume. Not a fifth Library tab: the strip is
@@ -430,7 +435,10 @@ const MENU: [(Screen, &str, &str, &str); 13] = [
     (Screen::Sound, "sound", "Sound Settings", ""),   // live: which effects are on
     (Screen::Bluetooth, "bt", "Bluetooth", ""),       // live: configured transmit codec
     (Screen::UsbDac, "usb", "USB-DAC", ""),           // live: On/Off
-    (Screen::Receiver, "rx", "BT Receiver", "Off"),   // not wired, and Off is the truth
+    // NOT "BT Receiver". Its screen says "not available yet — nothing on this screen is switched
+    // on", and a top-level row to a feature that does nothing was also the thirteenth row that
+    // pushed Help & Controls off the bottom of the glass. It stays reachable where it belongs,
+    // from Bluetooth ▸ Receiver mode, until it works.
     (Screen::Settings, "settings", "Settings", "System · Storage · About"),
     (Screen::Onboarding, "note", "Help & Controls", "Button map · features"),
 ];
@@ -720,14 +728,15 @@ pub struct App {
     /// grab-handle gesture). `None` between drags.
     queue_scroll_px: i32,
     row_drag: Option<crate::up_next::RowDrag>,
-    /// The sequence that is PLAYING — the album, playlist or shuffle scope resolved when the user
-    /// started it — and where inside it the current track sits. Kept SEPARATE from `queue`, which
-    /// is the user's own picks: playing an album does not "queue" it, it sets the context, and a
-    /// swipe-queued song belongs in front of whatever the context would have played next.
+    /// THE PLAY SEQUENCE — everything Up Next shows below PREVIOUSLY PLAYED, in the order it will
+    /// play — and where inside it the current track sits.
     ///
-    /// Until 2026-08-11 these were one list. `set_pending` dropped the whole resolved album into
-    /// `queue`, so Up Next drew the album twice (once as NEXT IN QUEUE, once as NEXT FROM ALBUM)
-    /// and a queued track had nothing to jump ahead of — it just landed in the same flat list.
+    /// ONE list since 2026-09-23. From 2026-08-11 it was split in two: this "context" (the album,
+    /// playlist or shuffle scope the user started) and a separate user queue whose picks always
+    /// played before the context resumed. That made the one thing people most want from a queue
+    /// impossible — "play this album, then that one" put the second album in FRONT of the rest of
+    /// the first. Now a track or album is added straight after the playing track (Play next) or at
+    /// the very end (Add to queue), and the list plays top to bottom.
     context: Vec<SongRow>,
     context_idx: usize,
     /// The context's object_ids in the order they were in BEFORE the first shuffle permuted them,
@@ -739,9 +748,18 @@ pub struct App {
     pre_shuffle: Option<Vec<i64>>,
     /// Seed for `queue_shuffle`; advanced on every use so repeated shuffles differ.
     shuffle_seed: u64,
-    /// Set by the "keep queue" answer: the next sequence handed to `set_play_context` is APPENDED
-    /// rather than replacing what is there. Consumed on use.
+    /// Set by the "keep Up Next" answer: `set_play_context` keeps what was still to come and plays
+    /// it AFTER the new sequence, rather than dropping it. Consumed on use.
     queue_keep: bool,
+    /// The user has ADDED to the list by hand (Play next / Add to queue) since it was started.
+    /// That is what makes replacing it worth a question — an album the user merely started is not
+    /// work they would lose. Reordering and removing do not set it: they edit what is there rather
+    /// than build something new.
+    hand_added: bool,
+    /// Whether the transport's shuffle is on, as last drawn. The shell owns the flag; the UI only
+    /// needs it so the MIX chip can turn shuffle ON rather than scramble the list behind an icon
+    /// that still says "in order".
+    shuffle_on: bool,
     /// Scrollbar drag: the scroll offset and the finger y the grab started at, so travel is applied
     /// against a fixed anchor rather than accumulated per event.
     sbar: Option<(i32, i32)>,
@@ -1054,6 +1072,8 @@ pub struct App {
     /// funnel, and a funnel that forgets which context you started from is the same defect as
     /// having no context at all (see `Action::PlayPlaylistAt`).
     pending_play: Option<Action>,
+    /// The ids behind a pending `Action::PlayListAt`, in play order. See that action.
+    play_list: Vec<i64>,
     /// How many tracks are liked — drives the Library's "Liked songs" row. The set itself lives in
     /// cinder-ffi (it owns persistence); nav only needs the count to render.
     liked_count: usize,
@@ -1093,17 +1113,6 @@ pub struct App {
     /// Shelf bottom-sheet overlay: whether it's showing, and the three pin slots (jump-back places).
     shelf_open: bool,
     pins: [Option<ShelfPin>; crate::shelf::SLOTS],
-    /// User play-queue (Spotify-style right-swipe on a song row adds to it). Shown on Up Next in
-    /// front of the album-derived list. Display + intent today: making PlayerService actually play
-    /// this order lands with PlayController::SetTrackSequence (RE pending).
-    queue: Vec<SongRow>,
-    /// The user pick that is PLAYING. A pick is taken out of `queue` the moment it starts (that
-    /// is what stops it replaying on the next re-issue), which left nothing anywhere holding it:
-    /// Up Next asked `context`/`context_idx` what was playing, and those still name the context
-    /// row the pick INTERRUPTED — so for the whole of a swipe-queued song the screen said NOW
-    /// PLAYING over the previous track. Persisted with the rest of the playback state, because a
-    /// reboot mid-pick otherwise came back on the wrong song too.
-    playing_pick: Option<SongRow>,
     /// PLAY HISTORY — what has actually been played, oldest first. Up Next's PREVIOUSLY PLAYED.
     ///
     /// It used to be `context[..context_idx]`, which is not a history but a way of spelling
@@ -1153,9 +1162,9 @@ pub struct App {
     /// a redraw. Everything else Up Next needs now comes straight off `context`/`queue`, so no hit
     /// test depends on a frame having been drawn first.
     up_next_cur: Option<usize>,
-    /// The same memo for the playing PICK: the context index does not move while one plays, so
-    /// `up_next_cur` alone cannot see the row change under it.
-    up_next_pick: Option<i64>,
+    /// The same memo for the playing track's object id: an edit to the list (a shuffle, a row
+    /// dropped in front of it) can change which track sits at an index without the index moving.
+    up_next_id: Option<i64>,
     /// Auto power-off, in minutes (0 = off). Persisted. The shell reads it and owns the timer.
     auto_off_idx: usize,
     auto_off_min: u32,
@@ -1267,6 +1276,8 @@ impl Default for App {
             pre_shuffle: None,
             shuffle_seed: 0x9E3779B97F4A7C15,
             queue_keep: false,
+            hand_added: false,
+            shuffle_on: false,
             sbar: None,
             fling_v: 0.0,
             volume: 15,
@@ -1398,6 +1409,7 @@ impl Default for App {
             track_pick_order: Vec::new(),
             playlist_remove_arm: None,
             pending_play: None,
+            play_list: Vec::new(),
             liked_count: 0,
             settings_scroll_px: 0,
             // 30 s by default. This was OFF, deliberately, because "a failed wake looks like a dead
@@ -1419,8 +1431,6 @@ impl Default for App {
             lib: Library::sample(),
             shelf_open: false,
             pins: std::array::from_fn(|_| None),
-            queue: Vec::new(),
-            playing_pick: None,
             history: Vec::new(),
             mono: false,
             toast: String::new(),
@@ -1431,7 +1441,7 @@ impl Default for App {
             scrub_permille: 0,
             lib_tab_zones: std::cell::RefCell::new(Vec::new()),
             up_next_cur: None,
-            up_next_pick: None,
+            up_next_id: None,
             queue_follow: true,
             auto_off_idx: 0,
             auto_off_min: 0,   // OFF by default — see AUTO_OFF_PRESETS
@@ -1612,7 +1622,7 @@ impl App {
         let keep = (
             std::mem::take(&mut self.context),
             self.context_idx,
-            std::mem::take(&mut self.queue),
+            self.hand_added,
             self.pre_shuffle.take(),
             std::mem::take(&mut self.pins),
             self.locked,
@@ -1624,7 +1634,7 @@ impl App {
             palette_skipped,
             context: keep.0,
             context_idx: keep.1,
-            queue: keep.2,
+            hand_added: keep.2,
             pre_shuffle: keep.3,
             pins: keep.4,
             locked: keep.5,
@@ -1672,9 +1682,9 @@ impl App {
 
     /// Every "play this library track" goes through here.
     ///
-    /// With an empty user queue it is just `PlayIndex`. With tracks queued it is a question first:
-    /// playing something new either discards the queue you built by hand or leaves it to play
-    /// afterwards, and silently picking either one is wrong. Apple asks the same thing.
+    /// Usually it is just `PlayIndex`. When the user has added to Up Next by hand and some of it is
+    /// still to come, it is a question first: playing something new either replaces that list or
+    /// plays it afterwards, and silently picking either one is wrong. Apple asks the same thing.
     ///
     /// A funnel rather than a check at each call site: `PlayIndex` is emitted from seven places
     /// (song rows, album rows, search, playlists, shuffle, the shelf), and a prompt that only some
@@ -1687,16 +1697,37 @@ impl App {
     /// The same funnel for a play action that already knows its context (a playlist member, say).
     /// `start_play` is the object-id shorthand for it.
     fn start_play_action(&mut self, act: Action) -> Vec<Action> {
-        // Only HAND-BUILT picks are worth interrupting for — and since the queue/context split,
-        // that is exactly what `queue` holds. It used to also contain the whole playing sequence,
-        // which is why a separate `queue_user_adds` counter had to exist to tell the two apart;
-        // with the lists separated, the queue being non-empty IS the question.
-        if self.queue.is_empty() {
+        // Only a HAND-BUILT list is worth interrupting for: an album the user merely started is
+        // not work they would lose by starting another.
+        if !self.hand_added || self.upcoming_len() == 0 {
             return vec![act];
         }
         self.pending_play = Some(act);
         self.confirm = Some(crate::confirm::Ask::QueueOnPlay);
         vec![]
+    }
+
+    /// Play `ids` — the list on screen, in the order it is drawn — from row `n`, through the same
+    /// funnel as every other play (so a hand-built Up Next still gets its question).
+    fn start_play_list(&mut self, ids: Vec<i64>, n: usize) -> Vec<Action> {
+        if n >= ids.len() {
+            return vec![];
+        }
+        self.play_list = ids;
+        self.start_play_action(Action::PlayListAt(n))
+    }
+
+    /// The ids behind the last `Action::PlayListAt`, taken so they cannot be played twice.
+    pub fn take_play_list(&mut self) -> Vec<i64> {
+        std::mem::take(&mut self.play_list)
+    }
+
+    /// The Songs tab as drawn — current sort, current filter — as object ids.
+    fn songs_list_ids(&self) -> Vec<i64> {
+        library::song_order(&self.lib, self.lib_sort)
+            .into_iter()
+            .filter_map(|i| self.lib.songs.get(i).map(|s| s.object_id))
+            .collect()
     }
 
     /// Test helper: drive the play funnel (`start_play`) directly, without a hit test.
@@ -1705,11 +1736,14 @@ impl App {
         self.start_play(id)
     }
 
-    /// Test helper: put one track in the user queue.
+    /// Test helper: add one track to Up Next by hand — which is what the replace prompt is about.
+    /// Starts a one-track list first if nothing is playing, so the pick is still to come.
     #[cfg(test)]
     fn queue_push_for_test(&mut self) {
-        self.queue.push(crate::model::SongRow::default());
-        // A hand-queued track — which is what the replace prompt is about.
+        if self.context.is_empty() {
+            self.set_play_context(vec![SongRow { title: "NOW".into(), object_id: -1, ..Default::default() }], 0);
+        }
+        let _ = self.enqueue_at(crate::model::SongRow::default(), 0, QueueAt::Later);
     }
 
     /// Is a modal dialog currently up? The shell uses this to decide whether the screen-blank
@@ -2099,13 +2133,13 @@ impl App {
     // resolves the ids against the library it has just opened, so a file deleted between boots
     // simply drops out of the restored sequence instead of resurrecting a dead path.
 
-    /// Serialise the playback context, the user queue and the un-shuffle order as id lists.
+    /// Serialise the play sequence and the un-shuffle order as id lists.
     pub fn playback_encode(&self) -> String {
         use std::fmt::Write as _;
         // Written once a second to be compared against the last body, so it reserves rather than
         // growing: the whole-library context is 3.6k ids and re-growing that string every tick is
         // the one avoidable cost on this path.
-        let cap = (self.context.len() * 2 + self.queue.len() + self.history.len()) * 7 + 32;
+        let cap = (self.context.len() * 2 + self.history.len()) * 7 + 32;
         let mut s = String::with_capacity(cap);
         let push_ids = |s: &mut String, it: &mut dyn Iterator<Item = i64>| {
             for (i, id) in it.enumerate() {
@@ -2117,15 +2151,9 @@ impl App {
         };
         s.push_str("ctx=");
         push_ids(&mut s, &mut self.context.iter().map(|r| r.object_id));
-        let _ = write!(s, "\nidx={}\nq=", self.context_idx);
-        push_ids(&mut s, &mut self.queue.iter().map(|r| r.object_id));
-        s.push('\n');
-        // The PLAYING pick, which is in neither list: it has left the queue and was never in the
-        // context. Without it a reboot in the middle of a swipe-queued song came back on the
-        // context row underneath — the previous track — and played that instead.
-        if let Some(p) = &self.playing_pick {
-            let _ = write!(s, "pick={}\n", p.object_id);
-        }
+        // No `q=` or `pick=` lines any more: the queue is part of the sequence. `playback_restore`
+        // still reads them, so a file written before the merge comes back with its picks in place.
+        let _ = write!(s, "\nidx={}\n", self.context_idx);
         if let Some(pre) = &self.pre_shuffle {
             s.push_str("pre=");
             push_ids(&mut s, &mut pre.iter().copied());
@@ -2162,17 +2190,35 @@ impl App {
     /// and shuffle-off then found no order to restore and silently did nothing. The un-shuffled
     /// order exists only out in the shell, so it has to be handed in.
     ///
-    /// Ignored unless it describes THIS context, the same guard `playback_restore` uses.
-    pub fn note_pre_shuffle(&mut self, ids: Vec<i64>) {
-        if ids.len() == self.context.len() {
-            self.pre_shuffle = Some(ids);
+    /// `ids` describes the sequence the shell just started. When "keep Up Next" appended the old
+    /// list after it, the context is LONGER than that, and the kept rows are recorded in the order
+    /// they already have. Ignored if it is longer than the context, which means it describes
+    /// something else.
+    pub fn note_pre_shuffle(&mut self, mut ids: Vec<i64>) {
+        let n = ids.len();
+        if n > self.context.len() {
+            return;
         }
+        // It must be an ORDER OF those rows — the same ids, each as often — or it describes some
+        // other list, and unshuffling by it would scramble this one.
+        let mut have: Vec<i64> = self.context[..n].iter().map(|t| t.object_id).collect();
+        let mut want = ids.clone();
+        have.sort_unstable();
+        want.sort_unstable();
+        if have != want {
+            return;
+        }
+        ids.extend(self.context[n..].iter().map(|t| t.object_id));
+        self.pre_shuffle = Some(ids);
     }
 
     /// Put a decoded context back. Rows come from the shell, which resolves the persisted ids
     /// against the library. Deliberately NOT `set_play_context`: that one is the "the user just
-    /// started something" path and clears the queue, re-arms the follow and drops the un-shuffle
-    /// order — all of which is exactly what a restore must preserve.
+    /// started something" path and drops the un-shuffle order and the hand-added flag — both of
+    /// which a restore must preserve.
+    ///
+    /// `queue` and `pick` are only non-empty for a file written before the queue merged into the
+    /// sequence; see the splice below.
     pub fn playback_restore(
         &mut self,
         ctx: Vec<SongRow>,
@@ -2181,20 +2227,35 @@ impl App {
         pre: Option<Vec<i64>>,
         pick: Option<SongRow>,
     ) {
+        let mut ctx = ctx;
+        let mut idx = idx.min(ctx.len().saturating_sub(1));
+        // A FILE WRITTEN BEFORE THE MERGE (2026-09-23) keeps the user's picks apart: the one that
+        // was playing (`pick`, in neither list) and the ones still queued (`queue`), both of which
+        // played before the rest of the context. Put them where they would have played — straight
+        // after the context row they interrupted — so the first boot on the new build resumes on
+        // the same song with the same things coming next.
+        let spliced = pick.is_some() || !queue.is_empty();
+        if spliced {
+            let at = if ctx.is_empty() { 0 } else { idx + 1 };
+            let had_pick = pick.is_some();
+            ctx.splice(at..at, pick.into_iter().chain(queue));
+            // A playing pick is what was audible, so it becomes the current row.
+            if had_pick {
+                idx = at;
+            }
+        }
         self.context_idx = idx.min(ctx.len().saturating_sub(1));
         self.context = ctx;
-        self.queue = queue;
-        self.playing_pick = pick;
-        // Keep an un-shuffle order only while it still describes THIS context. A track deleted
-        // between boots shortens one list and not the other, and `unshuffle_context` ranks by
-        // position in the saved order — so a stale one would silently drop every track it no
-        // longer mentions the first time shuffle went off.
+        self.hand_added = spliced;
+        // Keep an un-shuffle order only while it still describes THIS sequence. A track deleted
+        // between boots shortens one list and not the other, and a stale order would put tracks
+        // back in the wrong places the first time shuffle went off.
         self.pre_shuffle = pre.filter(|p| p.len() == self.context.len());
         self.queue_scroll_px = 0;
         self.row_drag = None;
         self.queue_follow = true;
         self.up_next_cur = None;
-        self.up_next_pick = None;
+        self.up_next_id = None;
     }
 
     /// Restore the play history from the resume file. Separate from `playback_restore` rather than
@@ -2214,7 +2275,7 @@ impl App {
     /// True when there is a sequence worth persisting (or, after a restore, worth handing to
     /// PlayerService on the first press of ▶).
     pub fn has_playback_state(&self) -> bool {
-        !self.context.is_empty() || !self.queue.is_empty()
+        !self.context.is_empty()
     }
 
     // ── Track information ───────────────────────────────────────────────────────────────────
@@ -2298,6 +2359,39 @@ impl App {
 
     fn search_songs(&self) -> Vec<&crate::model::SongRow> {
         self.search_order.iter().filter_map(|i| self.lib.songs.get(*i)).collect()
+    }
+
+    /// The track row under `y` on the three plain track lists that have no page of their own —
+    /// Search results, a folder's files, a SensMe channel's tracks. None on a folder or channel
+    /// row, the search band, or empty space.
+    fn list_song_at(&self, y: i32) -> Option<SongRow> {
+        match self.current() {
+            Screen::Search => {
+                if crate::playlist_pick::hit_search(y) {
+                    return None;
+                }
+                let r = crate::playlist_pick::hit_track_row(self.search_order.len(), self.search_scroll_px, y)?;
+                self.search_songs().get(r).map(|s| (*s).clone())
+            }
+            Screen::Folders => match crate::folders::row_at(&self.lib, self.folder_cur(), y, self.folder_scroll_px) {
+                Some(crate::folders::Row::Track(i)) => self
+                    .folder_cur()
+                    .and_then(|d| self.lib.folders.get(d))
+                    .and_then(|d| d.tracks.get(i))
+                    .cloned(),
+                _ => None,
+            },
+            Screen::SensMe => match crate::sensme::row_at(&self.lib, self.sensme_channel, y, self.sensme_scroll_px) {
+                Some(crate::sensme::Row::Track(i)) => self
+                    .sensme_channel
+                    .and_then(|c| self.lib.channels.get(c))
+                    .and_then(|ch| ch.tracks.get(i))
+                    .and_then(|&si| self.lib.songs.get(si as usize))
+                    .cloned(),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     fn search_max_scroll(&self) -> i32 {
@@ -2508,15 +2602,18 @@ impl App {
     /// Play the current directory's tracks, starting at `i`. The CONTEXT is the folder — which is
     /// the point of browsing this way: what follows should be the rest of the folder, in the order
     /// the files are in, not whatever the last album left behind.
+    ///
+    /// It used to emit `PlayIndex`, which resolves the tapped track's ALBUM — so the comment above
+    /// was true about the design and false about the code.
     fn folder_play(&mut self, i: usize) -> Vec<Action> {
-        let Some(rows) = self.folder_cur().and_then(|d| self.lib.folders.get(d)).map(|d| d.tracks.clone())
+        let Some(ids) = self
+            .folder_cur()
+            .and_then(|d| self.lib.folders.get(d))
+            .map(|d| d.tracks.iter().map(|t| t.object_id).collect::<Vec<i64>>())
         else {
             return vec![];
         };
-        let Some(id) = rows.get(i).map(|t| t.object_id) else { return vec![] };
-        // start_play raises the "you have a queue" prompt where one is needed; the shell resolves
-        // the object_id into a sequence exactly as it does for a library tap.
-        self.start_play(id)
+        self.start_play_list(ids, i)
     }
 
     fn tap_folders(&mut self, y: i32) -> Vec<Action> {
@@ -2559,34 +2656,47 @@ impl App {
                 1 => String::from("1 folder"),
                 n => format!("{n} folders"),
             },
-            // The row opens UP NEXT, which shows the whole sequence — so with an album playing
-            // and nothing hand-queued it used to read "Queue empty" over a screen listing twelve
-            // tracks. Report the picks when there are any (they are the thing the user built and
-            // the only thing CLEAR can empty), and otherwise what is actually still to come.
-            queue: match (self.queue.len(), self.context.len().saturating_sub(self.context_idx + 1)) {
-                (0, 0) => String::from("Queue empty"),
-                (0, 1) => String::from("1 track left"),
-                (0, n) => format!("{n} tracks left"),
-                (1, _) => String::from("1 queued"),
-                (q, _) => format!("{q} queued"),
+            // The row opens UP NEXT, so it says what is still to come — the same count the
+            // screen's own header shows.
+            queue: match self.upcoming_len() {
+                0 => String::from("Queue empty"),
+                1 => String::from("1 track left"),
+                n => format!("{n} tracks left"),
             },
-            eq: data::EQ_PRESETS[self.eq_preset].0.to_string(),
+            // The preset, and whether it is being heard — the EQ screen's footer says the same.
+            eq: match self.eq_off_reason() {
+                Some(_) => format!("{} · bypassed", data::EQ_PRESETS[self.eq_preset].0),
+                None => data::EQ_PRESETS[self.eq_preset].0.to_string(),
+            },
             bluetooth: crate::bluetooth::CODECS[self.bt_codec as usize].0.to_string(),
             usb_dac: String::from(if self.usb_dac_on { "On" } else { "Off" }),
             // Name the effects actually engaged; "Off" when the chain is clean.
-            sound: {
-                let on: Vec<&str> = [
-                    ("DSEE HX", self.snd_dsee),
-                    ("Vinyl", self.snd_vinyl),
-                    ("VPT", self.snd_vpt),
-                    ("DC Phase", self.snd_dc),
-                    ("Normaliser", self.snd_norm),
-                    ("Clear Phase", self.snd_clear),
-                ]
-                .iter()
-                .filter(|(_, en)| *en)
-                .map(|(n, _)| *n)
-                .collect();
+            // What is actually shaping the sound, in the order the Sound screen's footer resolves
+            // it: an override first, because it is what you would have to turn off. `snd_clear` is
+            // ClearAudio+ — it was listed here as "Clear Phase", which is a different effect on
+            // the Advanced screen.
+            sound: if self.adv_source_direct {
+                String::from("Source Direct")
+            } else {
+                let on: Vec<&str> = if self.snd_clear {
+                    let mut v = vec!["ClearAudio+"];
+                    if self.snd_norm {
+                        v.push("Normaliser");
+                    }
+                    v
+                } else {
+                    [
+                        ("DSEE HX", self.snd_dsee),
+                        ("Vinyl", self.snd_vinyl),
+                        ("VPT", self.snd_vpt),
+                        ("DC Phase", self.snd_dc),
+                        ("Normaliser", self.snd_norm),
+                    ]
+                    .iter()
+                    .filter(|(_, en)| *en)
+                    .map(|(n, _)| *n)
+                    .collect()
+                };
                 if on.is_empty() { String::from("Off") } else { on.join(" · ") }
             },
         }
@@ -2737,6 +2847,20 @@ impl App {
         }
     }
 
+    /// Why the 10-band EQ is not being heard, or None when it is. Outer bypass first, the order
+    /// the Sound screen's footer uses, so the two screens give the same answer.
+    fn eq_off_reason(&self) -> Option<&'static str> {
+        if self.adv_source_direct {
+            Some("Off: Source Direct is on")
+        } else if self.snd_clear {
+            Some("Off: ClearAudio+ is on")
+        } else if self.adv_tone {
+            Some("Off: Tone Control is on")
+        } else {
+            None
+        }
+    }
+
     // Toggle the focused Sound effect row (shared by the Select button and a tap).
     fn sound_toggle_row(&mut self) -> Vec<Action> {
         match self.sound_sel {
@@ -2784,6 +2908,20 @@ impl App {
                 return vec![];
             }
             _ => {}
+        }
+        // A change to a row that is out of the path is saved but not heard — say so, or the tap
+        // looks like it did nothing. Same wording as the row's own dimmed subtitle.
+        let bypassed = match self.sound_sel {
+            0..=3 if self.adv_source_direct || self.snd_clear => true,
+            4 | 5 if self.adv_source_direct => true,
+            _ => false,
+        };
+        if bypassed {
+            self.notify(if self.adv_source_direct {
+                "Saved — off while Source Direct is on"
+            } else {
+                "Saved — off while ClearAudio+ is on"
+            });
         }
         vec![Action::SoundChanged]
     }
@@ -2874,23 +3012,20 @@ impl App {
                 // "the thing the card is named after".
                 crate::confirm::Hit::Restart => vec![Action::Restart],
                 crate::confirm::Hit::PowerOff => vec![Action::PowerOff],
+                // "Replace Up Next": the new sequence replaces the list, which is what starting
+                // something does anyway. No `QueueChanged` first — the play action rebuilds the
+                // whole sequence, and an edit owed against the old one would only be a stale flush.
                 crate::confirm::Hit::ClearQueue => {
-                    let had = !self.queue.is_empty();
-                    self.queue.clear();
-                    let mut acts = Vec::new();
-                    if had { acts.push(Action::QueueChanged); }
-                    if let Some(act) = self.pending_play.take() { acts.push(act); }
-                    acts
+                    self.pending_play.take().map(|act| vec![act]).unwrap_or_default()
                 }
                 crate::confirm::Hit::KeepQueue => {
-                    // Honour it for real: the new sequence is APPENDED after the picks instead of
-                    // replacing them, so "keep" keeps them where the user can still see them.
+                    // Honour it for real: what was still to come plays AFTER the new sequence.
                     self.queue_keep = true;
                     self.pending_play.take().map(|act| vec![act]).unwrap_or_default()
                 }
                 crate::confirm::Hit::Confirm => match ask {
                     crate::confirm::Ask::ClearQueue => {
-                        self.notify("Queue cleared");
+                        self.notify("Up Next cleared");
                         self.queue_clear()
                     }
                     crate::confirm::Ask::Restart => vec![Action::Restart],
@@ -3128,13 +3263,19 @@ impl App {
             Screen::Search => self.tap_search(y),
             Screen::UpNext => {
                 use crate::up_next::Slot;
-                // CLEAR belongs to the user queue and is only drawn when there is one.
-                if !self.queue.is_empty() && crate::up_next::hit_clear_chip(x, y) {
+                // CLEAR empties what is still to come and is only drawn when something is.
+                if self.upcoming_len() > 0 && crate::up_next::hit_clear_chip(x, y) {
                     // ASK. See `confirm::Ask::ClearQueue` for why this is not a bare tap.
                     self.confirm = Some(crate::confirm::Ask::ClearQueue);
                     return vec![];
                 }
-                if crate::up_next::hit_shuffle_chip(x, y) {
+                // MIX. With shuffle OFF it turns shuffle on — the same as the transport's shuffle
+                // button, so the icon on Now Playing tells the truth about the order. With shuffle
+                // already on it deals the list again.
+                if self.context.len() >= 3 && crate::up_next::hit_shuffle_chip(x, y) {
+                    if !self.shuffle_on {
+                        return vec![Action::ShuffleToggle];
+                    }
                     return self.queue_shuffle();
                 }
                 // CLEAR on the PREVIOUSLY PLAYED heading. Tested before the slot dispatch below,
@@ -3152,37 +3293,36 @@ impl App {
                 if crate::up_next::queue_grip_hit(x)
                     && matches!(
                         self.up_next_layout().at(y, self.queue_scroll_px),
-                        Some(Slot::History(_)) | Some(Slot::Queued(_)) | Some(Slot::Upcoming(_))
+                        Some(Slot::History(_)) | Some(Slot::Upcoming(_))
                     )
                 {
                     return vec![];
                 }
                 match self.up_next_layout().at(y, self.queue_scroll_px) {
-                    // Play the QUEUE from here, not the tapped track's album — `start_play` hands
-                    // PlayerService the track's album context, which would make Up Next show one
-                    // list while the transport stepped through another.
-                    Some(Slot::Queued(i)) => vec![Action::PlayQueueAt(i)],
                     // The playing row is not a destination; it is where you already are.
-                    Some(Slot::Current(_)) | Some(Slot::CurrentPick) => {
+                    Some(Slot::Current(_)) => {
                         self.go(Screen::NowPlaying);
                         vec![]
                     }
-                    // An upcoming row is an index into the CURRENT CONTEXT, so it jumps within it.
+                    // An upcoming row is an index into the SEQUENCE, so it jumps within it.
                     //
                     // `PlayContextAt`, not `PlayIndex`: the row is an index into the sequence on
                     // screen, and `PlayIndex` would resolve the tapped track's ALBUM instead —
                     // which after "Shuffle all songs" replaced a shuffled library with one album.
                     // The list you are looking at is the list you get.
+                    //
+                    // NOT through `start_play_action`: a jump WITHIN the list replaces nothing, so
+                    // there is nothing to ask about.
                     Some(Slot::Upcoming(i)) if i < self.context.len() => {
                         // Playing something new re-arms the follow, so the list snaps to the new
                         // track instead of staying where the finger left it.
                         self.queue_follow = true;
-                        self.start_play_action(Action::PlayContextAt(i))
+                        vec![Action::PlayContextAt(i)]
                     }
-                    // A HISTORY row is not a context index any more — it can have come from a
-                    // different album, a different shuffle, or from a pick that was never in the
-                    // context at all. So it is resolved by IDENTITY, and only falls back to
-                    // "play this song" when it is genuinely no longer part of what is playing:
+                    // A HISTORY row is not a sequence index — it can have come from a different
+                    // album or a different shuffle. So it is resolved by IDENTITY, and only falls
+                    // back to "play this song" when it is genuinely no longer part of what is
+                    // playing:
                     //
                     //   * still in the context, behind the playing row → `PlayContextAt`, which
                     //     keeps the shuffled sequence exactly as it is on screen. This is the
@@ -3195,7 +3335,7 @@ impl App {
                         let id = row.object_id;
                         self.queue_follow = true;
                         match self.context.iter().position(|t| t.object_id == id) {
-                            Some(j) => self.start_play_action(Action::PlayContextAt(j)),
+                            Some(j) => vec![Action::PlayContextAt(j)],
                             None => self.start_play_action(Action::PlayIndex(id)),
                         }
                     }
@@ -3707,13 +3847,12 @@ impl App {
         };
         match self.lib_tab {
             // `row` is the RANK in the drawn (sorted) order — resolve through the same order.
-            Tab::Songs => library::song_at(&self.lib, self.lib_sort, row)
-                .map(|s| s.object_id)
-                .map(|id| {
-                    self.lib_idx = row;
-                    self.start_play(id)
-                })
-                .unwrap_or_default(),
+            // The Songs list plays AS THE SONGS LIST, from the tapped row, in the order drawn.
+            Tab::Songs => {
+                self.lib_idx = row;
+                let ids = self.songs_list_ids();
+                self.start_play_list(ids, row)
+            }
             // A playlist row opens that playlist's page, the same way an artist row opens theirs.
             // The button on the right of the row plays the whole list from the top in saved order
             // without the detour — the shortcut the row itself used to be.
@@ -3803,6 +3942,13 @@ impl App {
         self.lib.artists.get(self.artist_view).map(|a| library::artist_page(&self.lib, &a.name))
     }
 
+    /// The open artist page's tracks, in page order, as object ids.
+    fn artist_list_ids(&self) -> Vec<i64> {
+        self.artist_page()
+            .map(|p| p.tracks.iter().map(|t| t.song.object_id).collect())
+            .unwrap_or_default()
+    }
+
     /// A tap on the artist page: an album row drills in, a track row plays.
     fn tap_artist(&mut self, x: i32, y: i32) -> Vec<Action> {
         if library::hit_artist_shuffle_band(x, y) {
@@ -3825,9 +3971,11 @@ impl App {
                 self.push(Screen::Album);
                 vec![]
             }
-            Some((library::ArtistHit::Track(i), Some(id))) => {
+            // The artist's tracks play as the artist's list, from the tapped one.
+            Some((library::ArtistHit::Track(i), Some(_))) => {
                 self.artist_track_idx = i;
-                self.start_play(id)
+                let ids = self.artist_list_ids();
+                self.start_play_list(ids, i)
             }
             _ => vec![],
         }
@@ -3914,16 +4062,12 @@ impl App {
         }
     }
 
-    /// The object id of the track actually PLAYING — a user pick if one is in flight, otherwise
-    /// the context row at `context_idx`.
+    /// The object id of the track actually PLAYING: the sequence row at `context_idx`.
     ///
     /// Not `current_song_object_id()`: that one resolves the highlighted LIBRARY row, which is
     /// whatever list the user last scrolled and has nothing to do with what is coming out of the
     /// headphones.
     fn playing_object_id(&self) -> Option<i64> {
-        if let Some(p) = &self.playing_pick {
-            return Some(p.object_id);
-        }
         self.context.get(self.context_idx).map(|s| s.object_id)
     }
 
@@ -4704,12 +4848,12 @@ impl App {
                 .is_some(),
             Screen::Artist => self.artist_track_at(y).is_some() || self.artist_album_at(y).is_some(),
             Screen::Playlist => self.playlist_track_at(y).is_some(),
-            // The queue's own rows swipe too, but to REMOVE rather than to queue again.
-            // Only the USER-QUEUE rows swipe, and they swipe to REMOVE. The album rows around
-            // them are the album's own order — there is nothing to remove them from.
+            Screen::Search | Screen::Folders | Screen::SensMe => self.list_song_at(y).is_some(),
+            // Up Next's own rows swipe too, but to REMOVE rather than to queue again — every row
+            // still to come. The played ones are a record and the playing one is playing.
             Screen::UpNext => matches!(
                 self.up_next_layout().at(y, self.queue_scroll_px),
-                Some(crate::up_next::Slot::Queued(_))
+                Some(crate::up_next::Slot::Upcoming(_))
             ),
             _ => false,
         };
@@ -4761,10 +4905,7 @@ impl App {
             return false;
         }
         // Up Next is the only screen with reorderable rows on it. What is reorderable THERE is
-        // decided by the slot under the finger, below — it used to also demand a non-empty queue,
-        // which was right while the user's picks were the only rows that moved and is wrong now
-        // that NEXT FROM moves too: an album playing with nothing hand-queued is exactly the case
-        // where rearranging what is coming up is most useful.
+        // decided by the slot under the finger, below.
         if self.current() != Screen::UpNext {
             return false;
         }
@@ -4773,18 +4914,18 @@ impl App {
         }
         let _ = x;
         let lay = self.up_next_layout();
-        // ONE index space over all three sections — see `up_next`'s MOVABLE SPAN note. Every row
-        // except the playing one can be picked up, and can land anywhere from the front of the
-        // queue to the end of the sequence.
+        // ONE index space over both sections — see `up_next`'s MOVABLE SPAN note. Every row
+        // except the playing one can be picked up, and can land anywhere from straight after the
+        // playing track to the end of the sequence.
         //
         // EXCEPT the playing row, which is not a position in a list, it is the present. And a row
         // can never land IN the history (`Layout::drop_first`), only come out of it. Because
         // nothing at or before `context_idx` can move, the index cannot be disturbed by a drag,
         // which is what makes this safe to do to a live sequence.
         //
-        // The HANDLE is offered here iff the renderer drew one — `up_next::album_row` for the
-        // history and upcoming rows, `queue_row` for the picks. A strip that lifts a row where
-        // nothing indicates it is a trap, so the two must stay in step.
+        // The HANDLE is offered here iff the renderer drew one (`up_next::track_row` with
+        // `grippy`). A strip that lifts a row where nothing indicates it is a trap, so the two
+        // must stay in step.
         let slot = lay.at(y, self.queue_scroll_px);
         let Some(from) = slot.and_then(|s| lay.movable_index(s)) else {
             return false;
@@ -4817,87 +4958,65 @@ impl App {
         self.row_drag = Some(d);
     }
 
-    /// Drop the row. Returns `QueueChanged` when the order actually moved — for either list, since
-    /// both change what PlayerService should be playing next and both are re-issued the same way.
+    /// Drop the row. Returns `QueueChanged` when the order actually moved, since that changes what
+    /// PlayerService should be playing next.
     pub fn reorder_release(&mut self) -> Vec<Action> {
         let Some(d) = self.row_drag.take() else { return vec![] };
         self.movable_move(d.from, d.to)
     }
 
-    /// Move one row of the MOVABLE SPAN to any other position in it — the storage half of the
-    /// unified drag (`up_next`'s MOVABLE SPAN note has the why).
+    /// Move one row of the MOVABLE SPAN to any other position in it — the storage half of the drag
+    /// (`up_next`'s MOVABLE SPAN note has the why).
     ///
-    /// The span is `history ++ queue ++ context[context_idx + 1 ..]`, so a move is one of nine
-    /// things, and most of them change which list the row lives in:
+    /// The span is `history ++ context[context_idx + 1 ..]`:
     ///
     /// | from | to | what it means |
     /// |---|---|---|
-    /// | queue | queue | reorder your picks |
-    /// | context | context | reorder what is left of the album |
-    /// | context | queue | pull a later track forward — queueing it |
-    /// | queue | context | let a pick fall back into sequence — un-queueing it |
-    /// | history | queue | play something again, next — the reason history is draggable at all |
-    /// | history | context | play it again, later in the sequence |
+    /// | upcoming | upcoming | reorder what is coming |
+    /// | history | upcoming | play something again — the reason history is draggable at all |
     /// | *anything* | history | **impossible, by construction** — see below |
     ///
     /// **HISTORY IS A SOURCE, NEVER A DESTINATION.** `up_next::Layout::drop_first` is the floor on
-    /// every `to`, so a row can come out of the history but nothing can be put into it. The list
-    /// is a record of what was played; dropping a track that has not played into it would be
-    /// writing something into that record which is not true. A history row that IS dragged out
-    /// leaves the history — it is not "previously played" any more, it is coming up, and it will
-    /// be recorded again when it plays again.
+    /// every `to`. The list is a record of what was played; dropping a track that has not played
+    /// into it would be writing something into that record which is not true. A history row that
+    /// IS dragged out leaves the history — it is coming up now, and it will be recorded again when
+    /// it plays again.
     ///
     /// **Remove-then-insert, exactly as `up_next::drag_order` previewed it.** `to` is an index in
     /// the span *after* `from` has been taken out, which is what makes the row land where the gap
     /// opened rather than one place past it.
     ///
-    /// **A boundary belongs to the list ABOVE it** (`to <= h + q`, not `<`). Dropping a row on the
-    /// NEXT FROM heading means "before the album resumes", and that is the queue's whole
-    /// definition; it also makes "drag an album track up to the heading" a way to queue it.
-    ///
     /// Nothing it touches is at or before `context_idx`, so the playing track keeps its position
-    /// and what is playing is never disturbed — true from every source, which is what makes this
-    /// safe to do to a live sequence. `pre_shuffle` is deliberately left alone: it records the
-    /// order to go back to when shuffle is switched OFF, and a hand reorder made while shuffled is
-    /// an edit to the shuffled order, not to the original one.
+    /// and what is playing is never disturbed. `pre_shuffle` is left alone for a reorder: it
+    /// records the order to go back to when shuffle is switched OFF, and a hand reorder made while
+    /// shuffled is an edit to the shuffled order, not to the original one. A row pulled out of the
+    /// history is NEW to the sequence, though, so it is recorded there as coming next.
     fn movable_move(&mut self, from: usize, to: usize) -> Vec<Action> {
         let first = self.context_idx + 1;
         let hlen = self.history.len();
-        let qlen = self.queue.len();
         let ulen = self.context.len().saturating_sub(first);
-        let len = hlen + qlen + ulen;
-        if from >= len || to >= len {
+        let len = hlen + ulen;
+        if from >= len || to >= len || self.context.is_empty() {
             return vec![];
         }
-        // The section lengths AFTER the lift — whichever boundary the row came from above has
-        // moved down by one.
+        // The history length AFTER the lift, and the floor it sets: never into the history,
+        // whatever was asked for. Applied BEFORE the no-op test, or a clamped move would read as
+        // "nothing moved" and be dropped.
         let h = hlen - usize::from(from < hlen);
-        let q = qlen - usize::from((hlen..hlen + qlen).contains(&from));
-        // THE FLOOR, applied BEFORE the no-op test below rather than after. Never into the
-        // history, whatever was asked for — a drop aimed there becomes the front of the queue,
-        // which is the nearest thing to what the gesture meant and is what the parted list showed
-        // under the finger. Testing `from == to` first would have called a clamped move a no-op
-        // and silently dropped it.
         let to = to.max(h);
         if from == to {
             return vec![]; // remove at i, insert at i — the list is unchanged
         }
-        // Lift it out. Which vector it came from is decided by the ORIGINAL boundaries.
         let row = if from < hlen {
-            self.history.remove(from)
-        } else if from < hlen + qlen {
-            self.queue.remove(from - hlen)
+            let row = self.history.remove(from);
+            self.pre_shuffle_insert_next(&[row.object_id]);
+            row
         } else {
-            self.context.remove(first + from - hlen - qlen)
+            self.context.remove(first + from - hlen)
         };
-        if to <= h + q {
-            self.queue.insert(to - h, row);
-        } else {
-            // `to - h - q` is the offset into what is left of the context, and `first` is where
-            // that starts. Clamped because a caller is not required to have read the table above.
-            let at = (first + to - h - q).min(self.context.len());
-            self.context.insert(at, row);
-        }
+        // Clamped because a caller is not required to have read the table above.
+        let at = (first + to - h).min(self.context.len());
+        self.context.insert(at, row);
         vec![Action::QueueChanged]
     }
 
@@ -4914,8 +5033,6 @@ impl App {
             self.history.len(),
             self.context.len(),
             (!self.context.is_empty()).then_some(self.context_idx),
-            self.queue.len(),
-            self.playing_pick.is_some(),
         )
     }
 
@@ -5150,17 +5267,19 @@ impl App {
             // On the queue itself, either direction removes the row — there is nothing to queue.
             Screen::UpNext => {
                 match self.up_next_layout().at(y, self.queue_scroll_px) {
-                    Some(crate::up_next::Slot::Queued(i)) if i < self.queue.len() => {
-                        let gone = self.queue.remove(i);
-                        self.notify(&format!("Removed — {}", gone.title));
-                        // The list just got shorter, so the scroll may now be past its end.
-                        self.queue_scroll_px =
-                            self.queue_scroll_px.min(self.up_next_layout().max_scroll_px());
-                        vec![Action::QueueChanged]
-                    }
+                    Some(crate::up_next::Slot::Upcoming(i)) => self.remove_upcoming(i),
                     _ => vec![],
                 }
             }
+            // Search results, folder files and SensMe channel tracks queue like every other track
+            // list: the same two gestures on every row of music in the app.
+            Screen::Search | Screen::Folders | Screen::SensMe => match self.list_song_at(y) {
+                Some(s) => {
+                    let at = if dir < 0 { QueueAt::Next } else { QueueAt::Later };
+                    self.enqueue_at(s, y, at)
+                }
+                None => vec![],
+            },
             // The playlist page's rows queue exactly like every other track list.
             Screen::Playlist => match self.playlist_track_at(y) {
                 Some(s) => {
@@ -5225,54 +5344,113 @@ impl App {
         }
     }
 
-    /// Add an album's tracks to the user queue, at the front or the back.
+    /// Add an album's tracks to Up Next: straight after the playing track, or at the very end.
     fn enqueue_album_at(&mut self, album: &AlbumRow, y: i32, at: QueueAt) -> Vec<Action> {
         if album.track_list.is_empty() {
             return vec![];
         }
         self.toast = match at {
             QueueAt::Next => format!("Playing next — {}", album.name),
-            QueueAt::Later => format!("Queued album — {}", album.name),
+            QueueAt::Later => format!("Album added to Up Next — {}", album.name),
         };
         self.toast_frames = TOAST_FRAMES;
         self.queue_anim_y = y;
         self.queue_anim_frames = QUEUE_ANIM_FRAMES;
-        match at {
-            QueueAt::Next => {
-                for (i, tr) in album.track_list.iter().cloned().enumerate() {
-                    self.queue.insert(i, tr);
-                }
-            }
-            QueueAt::Later => {
-                self.queue.extend(album.track_list.iter().cloned());
-            }
-        }
-        vec![Action::QueueChanged]
+        self.insert_rows(album.track_list.clone(), at)
     }
 
-    /// Add a track to the user queue, at the front or the back.
+    /// Add a track to Up Next: straight after the playing track, or at the very end.
     ///
     /// The toast names WHICH it was, because the two gestures are mirror images and the only way to
     /// know a left-swipe registered as "next" rather than "later" is to be told.
     fn enqueue_at(&mut self, s: SongRow, y: i32, at: QueueAt) -> Vec<Action> {
         self.toast = match at {
             QueueAt::Next => format!("Playing next — {}", s.title),
-            QueueAt::Later => format!("Added to queue — {}", s.title),
+            QueueAt::Later => format!("Added to Up Next — {}", s.title),
         };
         self.toast_frames = TOAST_FRAMES;
         self.queue_anim_y = y;
         self.queue_anim_frames = QUEUE_ANIM_FRAMES;
+        self.insert_rows(vec![s], at)
+    }
+
+    /// Put rows into the sequence. `Next` = straight after the playing track, ahead of everything
+    /// else still to come; `Later` = after the last track in the list, so an album queued while
+    /// another plays starts when that one FINISHES — the thing the old two-list queue could not do.
+    fn insert_rows(&mut self, rows: Vec<SongRow>, at: QueueAt) -> Vec<Action> {
+        if rows.is_empty() {
+            return vec![];
+        }
+        self.hand_added = true;
+        if self.context.is_empty() {
+            // Nothing has played yet: the list starts here. It does not start PLAYING — adding to
+            // a queue is not a transport control — but the next ▶ plays it (cinder-ffi arms that
+            // on `QueueChanged` when nothing has been played).
+            self.context = rows;
+            self.context_idx = 0;
+            self.pre_shuffle = None;
+            self.queue_follow = true;
+            return vec![Action::QueueChanged];
+        }
+        let ids: Vec<i64> = rows.iter().map(|r| r.object_id).collect();
         match at {
-            QueueAt::Next => self.queue.insert(0, s),
-            QueueAt::Later => self.queue.push(s),
+            QueueAt::Next => {
+                self.pre_shuffle_insert_next(&ids);
+                let pos = (self.context_idx + 1).min(self.context.len());
+                self.context.splice(pos..pos, rows);
+            }
+            QueueAt::Later => {
+                self.context.extend(rows);
+                if let Some(pre) = self.pre_shuffle.as_mut() {
+                    pre.extend(ids);
+                }
+            }
         }
         vec![Action::QueueChanged]
     }
 
-    /// Move a queued track. Used by reordering; clamps rather than panicking on a stale index,
-    /// because the queue can change under a gesture that started before it did.
+    /// Record rows added straight after the playing track in the un-shuffle order too, at the
+    /// same place relative to it — otherwise turning shuffle off would put them at the end.
+    fn pre_shuffle_insert_next(&mut self, ids: &[i64]) {
+        let playing = self.context.get(self.context_idx).map(|t| t.object_id);
+        if let Some(pre) = self.pre_shuffle.as_mut() {
+            let at = playing
+                .and_then(|id| pre.iter().position(|p| *p == id))
+                .map_or(pre.len(), |i| i + 1);
+            pre.splice(at..at, ids.iter().copied());
+        }
+    }
+
+    /// How many tracks are still to come after the playing one.
+    pub fn upcoming_len(&self) -> usize {
+        if self.context.is_empty() {
+            0
+        } else {
+            self.context.len() - (self.context_idx + 1).min(self.context.len())
+        }
+    }
+
+    /// Take one upcoming row out of the list — the swipe on an Up Next row. `i` is a SEQUENCE
+    /// index and must be after the playing track: the playing row is not removable, and the rows
+    /// before it are not on screen.
+    fn remove_upcoming(&mut self, i: usize) -> Vec<Action> {
+        if i <= self.context_idx || i >= self.context.len() {
+            return vec![];
+        }
+        let gone = self.context.remove(i);
+        if let Some(pre) = self.pre_shuffle.as_mut() {
+            if let Some(j) = pre.iter().position(|p| *p == gone.object_id) {
+                pre.remove(j);
+            }
+        }
+        self.notify(&format!("Removed — {}", gone.title));
+        // The list just got shorter, so the scroll may now be past its end.
+        self.queue_scroll_px = self.queue_scroll_px.min(self.up_next_layout().max_scroll_px());
+        vec![Action::QueueChanged]
+    }
+
     /// Push the track that is playing RIGHT NOW onto the history, because `incoming` is about to
-    /// replace it. Call before any list moves — see `track_started`.
+    /// replace it. Call before the index moves — see `track_started`.
     ///
     /// The two guards are the whole policy: a track does not follow itself (repeat-one, or the
     /// shell re-reporting the same URI), and the list is capped at [`HISTORY_MAX`] from the front.
@@ -5293,10 +5471,9 @@ impl App {
         }
     }
 
-    /// The row actually playing — a user pick if one is in flight, else the context row. The
-    /// `SongRow` twin of `playing_object_id`.
+    /// The row actually playing. The `SongRow` twin of `playing_object_id`.
     fn playing_row(&self) -> Option<&SongRow> {
-        self.playing_pick.as_ref().or_else(|| self.context.get(self.context_idx))
+        self.context.get(self.context_idx)
     }
 
     /// Up Next's PREVIOUSLY PLAYED, oldest first.
@@ -5305,7 +5482,7 @@ impl App {
     }
 
     /// Empty the history. The CLEAR on the PREVIOUSLY PLAYED header, and the only thing that does
-    /// this — see [`App::history`] for why it is not shared with the queue's CLEAR chip.
+    /// this — see [`App::history`] for why it is not shared with the list's CLEAR chip.
     pub fn history_clear(&mut self) -> Vec<Action> {
         if self.history.is_empty() {
             return vec![];
@@ -5319,107 +5496,70 @@ impl App {
         vec![]
     }
 
-    pub fn queue_move(&mut self, from: usize, to: usize) -> Vec<Action> {
-        if from >= self.queue.len() || to >= self.queue.len() || from == to {
-            return vec![];
-        }
-        let row = self.queue.remove(from);
-        self.queue.insert(to, row);
-        vec![Action::QueueChanged]
-    }
-
-    /// Remove one row from the user queue — used by the shell when a queued track STARTS, so a
-    /// pick is consumed rather than replayed on the next re-issue.
-    pub fn queue_remove(&mut self, i: usize) {
-        if i < self.queue.len() {
-            self.queue.remove(i);
-            self.queue_scroll_px = self.queue_scroll_px.min(self.up_next_layout().max_scroll_px());
-        }
-    }
-
-    /// Play queue row `n` NEXT, keeping every other pick. The rest of the queue, and the context
-    /// underneath it, are untouched.
-    ///
-    /// NON-DESTRUCTIVE. This used to `drain(..n)`: tapping the third queued row silently threw
-    /// away the two above it. That read as "skip forward inside the queue", but it was the only
-    /// action on this screen that destroyed the user's own picks with no confirmation and no undo.
-    /// (This comment used to add "while the CLEAR chip beside it has both" — the chip had neither,
-    /// so the claim was true about the design and false about the code. The chip now asks; see
-    /// `confirm::Ask::ClearQueue`.) Moving the row to
-    /// the front instead honours the tap ("play this one now") and costs nothing: the picks that
-    /// were above it simply follow it, in their existing order.
-    ///
-    /// The row STAYS IN THE QUEUE until it actually starts. That is what `App::track_started`
-    /// consumes, and it is why this rotates rather than removing: taking it out here would leave
-    /// nothing for the start to consume, so `playing_pick` would never be set and Up Next would
-    /// lose its NOW PLAYING row.
-    ///
-    /// Tapping a queue row used to go through `set_play_context`, which is the "the user started
-    /// something new" path: it made the queue the CONTEXT and then cleared the queue. Everything
-    /// still played in the right order, so it looked correct — but the user's hand-built picks had
-    /// silently stopped being picks. NEXT IN QUEUE and its CLEAR chip vanished, and the next album
-    /// tapped anywhere in the app replaced them without the "you have a queue" prompt, because
-    /// there was no longer a queue to ask about.
-    ///
-    /// Returns true when there is something to play from `n`.
-    pub fn queue_play_at(&mut self, n: usize) -> bool {
-        if n >= self.queue.len() {
-            return false;
-        }
-        let row = self.queue.remove(n);
-        self.queue.insert(0, row);
-        self.queue_scroll_px = 0;
-        self.row_drag = None;
-        self.queue_follow = true;
-        true
-    }
-
-    /// Drop everything queued. The "clear it?" answer when you play something unrelated.
+    /// Drop everything still to come — the CLEAR chip's confirmed answer. The playing track
+    /// finishes and playback stops there, unless something is added in the meantime.
     pub fn queue_clear(&mut self) -> Vec<Action> {
-        if self.queue.is_empty() {
+        if self.upcoming_len() == 0 {
             return vec![];
         }
-        self.queue.clear();
-        self.queue_scroll_px = 0;
+        self.context.truncate(self.context_idx + 1);
+        // One track left has no order to go back to.
+        self.pre_shuffle = None;
+        self.hand_added = false;
+        self.queue_scroll_px = self.queue_scroll_px.min(self.up_next_layout().max_scroll_px());
         self.row_drag = None;
         vec![Action::QueueChanged]
     }
 
-    /// Set the PLAYBACK CONTEXT — the sequence that is now playing, and which track of it started.
+    /// Set the PLAY SEQUENCE — what is now playing, and which track of it started.
     ///
     /// Called by the shell every time it resolves a play action: a track tap, an album, a playlist,
-    /// any Shuffle band. This is not the queue. The queue is what the user asked for by hand, and
-    /// it plays FIRST; the context is what follows once those run out.
+    /// any Shuffle band. It REPLACES the list, unless the "keep Up Next" answer asked for what was
+    /// still to come to be kept — then that plays after the new sequence.
     pub fn set_play_context(&mut self, rows: Vec<SongRow>, start: usize) {
+        let kept = if self.queue_keep && !self.context.is_empty() {
+            let from = (self.context_idx + 1).min(self.context.len());
+            self.context.split_off(from)
+        } else {
+            Vec::new()
+        };
+        self.queue_keep = false;
+        // The kept rows are still the user's own list, so the next replace still asks.
+        self.hand_added = !kept.is_empty();
         self.context_idx = start.min(rows.len().saturating_sub(1));
         self.context = rows;
-        // A new sequence has nothing to un-shuffle back to. Holding the old one would let a later
-        // shuffle-off reorder THIS context into some previous album's order and drop every track
-        // the two do not share.
+        self.context.extend(kept);
+        // A new sequence has nothing to un-shuffle back to. Holding the old order would let a
+        // later shuffle-off reorder THIS sequence into some previous album's order.
         self.pre_shuffle = None;
-        // "Keep queue" keeps the USER's picks. It used to append the new sequence after them,
-        // which only made sense while the two were one list; now the context is its own thing and
-        // keeping the picks is simply not clearing them.
-        if !self.queue_keep {
-            self.queue.clear();
-        }
-        self.queue_keep = false;
-        // A new sequence is playing from its own first track, so no pick is.
-        self.playing_pick = None;
         self.queue_scroll_px = 0;
         self.row_drag = None;
         // RE-ARM THE FOLLOW. Every play that does not start from the Up Next screen itself arrives
         // here — a library tap, an album, a playlist, a Shuffle band. Without this, a user who had
         // scrolled Up Next once (which hands the list to them, deliberately) would find it stuck at
-        // the top for the rest of the session while a completely different album played, which is
-        // exactly the behaviour this screen was reworked to fix.
+        // the top for the rest of the session while a completely different album played.
         self.queue_follow = true;
         self.up_next_cur = None;
-        self.up_next_pick = None;
+        self.up_next_id = None;
     }
 
-    /// The playing sequence and our position in it. The shell reads these to build what it hands
-    /// PlayerService: `[current] + queue + context[idx+1..]`.
+    /// What `set_play_context` would forget that a jump WITHIN the list must keep: the un-shuffle
+    /// order and whether the list was built by hand. The shell reads it before re-issuing the same
+    /// list from another row (`Action::PlayContextAt`) and hands it back afterwards.
+    pub fn list_state(&self) -> (Option<Vec<i64>>, bool) {
+        (self.pre_shuffle.clone(), self.hand_added)
+    }
+
+    /// Put `list_state` back. The un-shuffle order is kept only if it still describes the list —
+    /// a row whose file has gone drops out of the re-issued list, and a stale order would put the
+    /// rest back in the wrong places.
+    pub fn restore_list_state(&mut self, (pre, hand): (Option<Vec<i64>>, bool)) {
+        self.pre_shuffle = pre.filter(|p| p.len() == self.context.len());
+        self.hand_added = hand;
+    }
+
+    /// The play sequence and our position in it. The shell reads these to build what it hands
+    /// PlayerService: `context[idx..]`.
     pub fn context(&self) -> &[SongRow] {
         &self.context
     }
@@ -5427,12 +5567,17 @@ impl App {
         self.context_idx
     }
 
-    /// The shell reports which context track just started, by object_id. Returns true if that
-    /// moved us — the caller repaints on true. An id that is not in the context (the user queue
-    /// took over, or playback came from somewhere else entirely) leaves the index alone rather
-    /// than guessing.
+    /// Point the index at a track by id, without recording anything. Returns true if that moved
+    /// it. Searches BACKWARDS from the playing row first — its one caller outside the tests is ◁,
+    /// and a track in the list twice should land on the copy just behind the playing one — then
+    /// the whole list. An id that is not in the list leaves the index alone rather than guessing.
     pub fn set_context_playing(&mut self, object_id: i64) -> bool {
-        match self.context.iter().position(|t| t.object_id == object_id) {
+        let idx = self.context_idx.min(self.context.len());
+        let pos = self.context[..idx]
+            .iter()
+            .rposition(|t| t.object_id == object_id)
+            .or_else(|| self.context.iter().position(|t| t.object_id == object_id));
+        match pos {
             Some(i) if i != self.context_idx => {
                 self.context_idx = i;
                 true
@@ -5441,155 +5586,158 @@ impl App {
         }
     }
 
-    /// A track has STARTED. Reconcile both lists, and return true if the user queue changed (the
-    /// shell then re-issues the sequence at this boundary, which is the one moment it is free).
-    ///
-    /// This is one rule in one place because the two halves used to be two statements in the shell,
-    /// in the wrong order, and that was a real bug: `set_context_playing` ran FIRST and searched the
-    /// whole context for the started track. So swipe-queueing track 8 of the album you were already
-    /// playing at track 2 jumped `context_idx` 1 → 7, and the next sequence became
-    /// `[track 8] + context[8..]` — **tracks 3 to 7 silently vanished.** The user asked to hear one
-    /// song sooner and lost five.
-    pub fn track_started(&mut self, object_id: i64) -> bool {
-        // RECORD WHAT IS BEING REPLACED, before either list moves. The outgoing row is the one
-        // that just finished (or was skipped past), and after the reconciliation below nothing
-        // here still names it — `playing_pick` is cleared and `context_idx` has moved on.
-        self.history_push(object_id);
-        // A user pick that has now started is no longer queued. Dropping it here is what stops it
-        // replaying on the next re-issue, and why the queue shrinks as it is consumed.
-        if let Some(i) = self.queue.iter().position(|q| q.object_id == object_id) {
-            // Hold on to it: it is what is PLAYING now, and once it leaves the queue nothing else
-            // in this struct describes it. Up Next reads this for its NOW PLAYING row.
-            self.playing_pick = Some(self.queue[i].clone());
-            self.queue_remove(i);
-            // A PICK MUST NOT MOVE THE CONTEXT. "Play this next, then carry on where I was" is the
-            // whole promise of the queue, and the context index is what "where I was" means.
-            //
-            // The one exception is a pick that was ALSO the very next context track — queue track 3
-            // while track 2 plays and the two coincide. There the context genuinely has advanced
-            // past it, and leaving the index behind would play it a second time out of the
-            // remainder. Strictly `idx + 1`, never a search: a search is what caused the bug above.
-            let next = self.context_idx + 1;
-            if self.context.get(next).map(|t| t.object_id) == Some(object_id) {
-                self.context_idx = next;
+    /// ◁ is about to replay `row` and then the playing track. Make the list say so: step back onto
+    /// it if it is in the list, or put it in front of the playing track if it is not (it came from
+    /// an album that has since been replaced). Otherwise Up Next would name the wrong song as
+    /// playing for the whole of the replay.
+    pub fn rewind_to(&mut self, row: SongRow) {
+        if self.context.is_empty() {
+            return;
+        }
+        if !self.set_context_playing(row.object_id)
+            && self.context.get(self.context_idx).map(|t| t.object_id) != Some(row.object_id)
+        {
+            let at = self.context_idx.min(self.context.len());
+            if let Some(pre) = self.pre_shuffle.as_mut() {
+                let playing = self.context.get(at).map(|t| t.object_id);
+                let j = playing.and_then(|id| pre.iter().position(|p| *p == id)).unwrap_or(pre.len());
+                pre.insert(j, row.object_id);
             }
+            self.context.insert(at, row);
+        }
+    }
+
+    /// A track has STARTED; move the index onto it and record the one it replaced.
+    ///
+    /// `stale` = a list edit has not reached PlayerService yet, so the service chose this track
+    /// from the sequence it held BEFORE the edit. Returns true when that happened and the list has
+    /// been put right: the index is on the track the LIST says comes next, and the caller must hand
+    /// PlayerService `context[idx..]` from position 0. The track that started is not lost — it is
+    /// still in the list, after the rows that were put in front of it.
+    ///
+    /// The rules, in order:
+    ///   * the playing track again (repeat-one, a re-report) — nothing moves;
+    ///   * the next row — ordinary progression, one step, never a search;
+    ///   * `stale` and not a step backwards — PlayerService is behind the list (a Play next that
+    ///     has not been issued, a removed row); take the list's next row instead. Reported
+    ///     2026-09-11 against the old queue as "it plays the next in the album, then the queue";
+    ///   * anything else is a deliberate jump (◁, an Up Next tap) — search forward from here
+    ///     first, then from the top, so a track in the list twice lands on the NEXT copy.
+    pub fn track_started(&mut self, object_id: i64, stale: bool) -> bool {
+        let idx = self.context_idx;
+        let at = |a: &Self, i: usize| a.context.get(i).map(|t| t.object_id);
+        if at(self, idx) == Some(object_id) {
+            return false;
+        }
+        let next = idx + 1;
+        if at(self, next) == Some(object_id) {
+            self.history_push(object_id);
+            self.context_idx = next;
+            return false;
+        }
+        let behind = self.context.iter().take(idx).any(|t| t.object_id == object_id);
+        if stale && next < self.context.len() && !behind {
+            let incoming = self.context[next].object_id;
+            self.history_push(incoming);
+            self.context_idx = next;
             return true;
         }
-        // Not a pick, so this is the context moving: ordinary progression, or a deliberate jump —
-        // an Up Next row tap, or ◁ stepping backwards. A jump can land anywhere, including BEHIND
-        // the current index, so this one does have to search.
-        //
-        // The pick is over the moment anything else starts, whether or not the search below finds
-        // the new track in the context: a URI PlayerService reports that is neither a pick nor a
-        // context row (a resume, a track that left the library) still means the pick has ended.
-        self.playing_pick = None;
-        self.set_context_playing(object_id);
+        let pos = self
+            .context
+            .iter()
+            .skip(next)
+            .position(|t| t.object_id == object_id)
+            .map(|p| p + next)
+            .or_else(|| self.context.iter().position(|t| t.object_id == object_id));
+        self.history_push(object_id);
+        if let Some(p) = pos {
+            self.context_idx = p;
+        }
         false
     }
 
-    /// Put the context track that just started back BEHIND the user's picks. Returns true if it did.
+    /// SHUFFLE: the playing track stays playing and moves to the top; EVERY other track in the
+    /// list is dealt in a random order behind it.
     ///
-    /// For the boundary where PlayerService chose the next track itself, from a sequence that never
-    /// contained the picks (a queue edit over Bluetooth waits for a boundary — see cinder-ffi). By
-    /// then `track_started` has advanced the context onto that track, so the rebuilt sequence was
-    /// `[that track] + picks` and the queued song played one track late.
+    /// Every other track, not just the ones after the playing one. Until 2026-09-23 this shuffled
+    /// only `context[idx+1..]`, so starting an album at track 7 and pressing shuffle played a
+    /// random order of tracks 8-12 and never tracks 1-6 — "it cuts out half of the songs". Stock
+    /// and every other player shuffle the whole album. Turning shuffle off (`unshuffle_context`)
+    /// puts the original order back and continues from the playing track.
     ///
-    /// Stepping back exactly one puts it at the head of the remainder, so the rebuild is
-    /// `picks + [that track] + rest`. Only one step, and only when that track is the current one —
-    /// anything else is not this case, and a guess is how tracks get dropped.
-    pub fn defer_context_track(&mut self, object_id: i64) -> bool {
-        if self.queue.is_empty() || self.context_idx == 0 {
-            return false;
-        }
-        if self.context.get(self.context_idx).map(|t| t.object_id) != Some(object_id) {
-            return false;
-        }
-        self.context_idx -= 1;
-        true
-    }
-
-    /// Shuffle what is still to come, leaving the current track and the user's own picks alone.
-    ///
-    /// Only the REMAINDER moves: shuffling the tracks already played would rewrite history for no
-    /// reason, and shuffling the user queue would undo an order they chose by hand. Returns the
-    /// action that re-issues the sequence, or nothing when there is too little left to shuffle.
+    /// Returns the action that re-issues the sequence, or nothing when there is too little to
+    /// shuffle.
     pub fn queue_shuffle(&mut self) -> Vec<Action> {
-        let first = self.context_idx + 1;
-        if self.context.len().saturating_sub(first) < 2 {
-            self.notify("Nothing left to shuffle");
+        if self.context.len() < 3 {
+            self.notify("Nothing to shuffle");
             return vec![];
         }
         // REMEMBER THE ORDER BEFORE THE FIRST SHUFFLE TOUCHES IT, so shuffle-off has something to
         // restore. Recorded here rather than at the toggle because this is the only place that
-        // permutes the context, and the MIX chip reaches it too.
+        // permutes the sequence, and the MIX chip reaches it too.
         if self.pre_shuffle.is_none() {
             self.pre_shuffle = Some(self.context.iter().map(|t| t.object_id).collect());
         }
+        let cur = self.context_idx.min(self.context.len() - 1);
+        let playing = self.context.remove(cur);
+        self.context.insert(0, playing);
+        self.context_idx = 0;
         // A small xorshift seeded from the shuffle count: self-contained (cinder-ui has no rng and
         // should not gain a dependency for one button) and reproducible in tests.
         //
         // The starting seed is a CONSTANT here so the tests below are reproducible, and the shell
-        // replaces it once at start-up with a clock-derived one (`App::seed_shuffle`). Without
-        // that it was a constant on the device too: the Nth press of MIX in a session always
-        // produced the Nth permutation of the same LCG, so pressing it once on the same album
-        // after two different boots gave the identical "random" order both times.
+        // replaces it once at start-up with a clock-derived one (`App::seed_shuffle`).
         self.shuffle_seed = self.shuffle_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
         let mut x = self.shuffle_seed | 1;
-        let tail = &mut self.context[first..];
+        let tail = &mut self.context[1..];
         for i in (1..tail.len()).rev() {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
             tail.swap(i, (x % (i as u64 + 1)) as usize);
         }
-        self.notify("Shuffled what's next");
+        self.notify("Shuffled");
         vec![Action::QueueChanged]
     }
 
-    /// Put the context back in the order it had before the first shuffle. Returns the action that
-    /// re-issues the sequence, or nothing when there was no shuffle to undo.
-    ///
-    /// Shuffle used to be a ONE-WAY DOOR: the toggle shuffled the remainder when it went on and did
-    /// nothing whatever when it went off, so the only way back to album order was to re-tap the
-    /// album. Stock restores the sequence, and so does every other player.
+    /// Put the sequence back in the order it had before the first shuffle. Returns the action that
+    /// re-issues it, or nothing when there was no shuffle to undo.
     ///
     /// The CURRENT TRACK KEEPS PLAYING and the index follows it to wherever it sits in the restored
     /// order — turning shuffle off means "play the rest of this in order from here", not "start the
     /// album again".
+    ///
+    /// A track can be in the list twice (an album queued while it plays), so ranks are handed out
+    /// per OCCURRENCE: the first copy of an id takes its first recorded position, the second copy
+    /// the second. Ranking by id alone gave both copies one rank and stacked them side by side.
+    /// Rows the recorded order does not mention keep their relative order at the end.
     pub fn unshuffle_context(&mut self) -> Vec<Action> {
         let Some(order) = self.pre_shuffle.take() else { return vec![] };
         if self.context.len() < 2 {
             return vec![];
         }
-        // Rank by original position. Anything absent from the recorded order (it cannot happen
-        // today — the context is replaced wholesale, never edited — but a future queue edit would
-        // do it) sorts to the end rather than being dropped or panicking.
-        let rank: std::collections::HashMap<i64, usize> =
-            order.iter().enumerate().map(|(i, id)| (*id, i)).collect();
-        let playing = self.context.get(self.context_idx).map(|t| t.object_id);
-        let end = self.context.len();
-        self.context.sort_by_key(|t| *rank.get(&t.object_id).unwrap_or(&end));
-        // Follow the track that is audible right now. Falling back to the old index would be worse
-        // than useless: after a reorder it points at an unrelated song, and Up Next would draw the
-        // wrong half of the list as history.
-        if let Some(id) = playing {
-            if let Some(i) = self.context.iter().position(|t| t.object_id == id) {
-                self.context_idx = i;
-            }
+        let mut slots: std::collections::HashMap<i64, std::collections::VecDeque<usize>> =
+            std::collections::HashMap::new();
+        for (i, id) in order.iter().enumerate() {
+            slots.entry(*id).or_default().push_back(i);
         }
+        let end = order.len();
+        let playing = self.context_idx;
+        let mut ranked: Vec<(usize, usize, SongRow)> = std::mem::take(&mut self.context)
+            .into_iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let r = slots.get_mut(&t.object_id).and_then(|q| q.pop_front()).unwrap_or(end + i);
+                (r, i, t)
+            })
+            .collect();
+        ranked.sort_by_key(|(r, _, _)| *r);
+        // Follow the ROW that is audible — not the old index, which after a reorder points at an
+        // unrelated song, and not the first copy of its id, which may be a different occurrence.
+        self.context_idx = ranked.iter().position(|(_, i, _)| *i == playing).unwrap_or(0);
+        self.context = ranked.into_iter().map(|(_, _, t)| t).collect();
         self.notify("Playing in order");
         vec![Action::QueueChanged]
-    }
-
-    /// The user queue (Up Next shows it in front of the album-derived list).
-    pub fn queue(&self) -> &[SongRow] {
-        &self.queue
-    }
-
-    /// The pick that is playing, if one is. The shell needs it to lead the sequence it hands
-    /// PlayerService — `[playing pick] + queue + context[idx+1..]` — and to persist it.
-    pub fn playing_pick(&self) -> Option<&SongRow> {
-        self.playing_pick.as_ref()
     }
 
     fn go(&mut self, s: Screen) {
@@ -6035,9 +6183,8 @@ impl App {
                     }
                     // lib_idx is a RANK in the drawn (sorted) order — resolve through it.
                     Tab::Songs => {
-                        let id = library::song_at(&self.lib, self.lib_sort, self.lib_idx)
-                            .map(|s| s.object_id);
-                        id.map(|i| self.start_play(i)).unwrap_or_default()
+                        let ids = self.songs_list_ids();
+                        self.start_play_list(ids, self.lib_idx)
                     }
                     // A playlist row has no single track under the cursor — selecting it plays
                     // the whole list from the top, in saved order.
@@ -6137,10 +6284,8 @@ impl App {
                         vec![]
                     }
                     Button::Select => {
-                        let id = self
-                            .artist_page()
-                            .and_then(|p| p.tracks.get(self.artist_track_idx).map(|t| t.song.object_id));
-                        id.map(|i| self.start_play(i)).unwrap_or_default()
+                        let ids = self.artist_list_ids();
+                        self.start_play_list(ids, self.artist_track_idx)
                     }
                     Button::Back | Button::Left => {
                         self.pop();
@@ -6336,6 +6481,8 @@ impl App {
     /// settings screens currently use the design sample data (real data wires in later).
     pub fn render(&mut self, c: &mut Canvas, fonts: &FontSet, np: &NowPlaying) {
         self.reconcile_playing(np.playing);
+        // The shell owns the shuffle flag; the MIX chip only needs to know which way it points.
+        self.shuffle_on = np.shuffle;
         // NIGHT SPENDS THE BRIGHTNESS ROW ON THE PALETTE, NOT THE BACKLIGHT. In night the shell
         // pins the backlight to raw 1 — the dimmest lit state this panel has — so the row would
         // otherwise do nothing at all in the theme you reach for in the dark. Scaling the palette
@@ -6542,41 +6689,37 @@ impl App {
                 // context (its length, the current index, the queue length). Compute the scroll,
                 // finish writing, and only then take the shared borrow the view wants.
                 let cur = (!self.context.is_empty()).then_some(self.context_idx);
-                // A playing pick owns the NOW PLAYING row (see `playing_pick`), so it is part of
-                // what the auto-follow has to watch: without it the list stayed parked on the
-                // context row while the pick played, and then did not move when the pick ended.
-                let pick_id = self.playing_pick.as_ref().map(|p| p.object_id);
+                let cur_id = self.playing_object_id();
                 // AUTO-FOLLOW. `render` is the only place that knows what is playing, so the snap
                 // lives here: whenever the current track moves (or we have just arrived on the
                 // screen) and the user has not taken the list over by scrolling it, park NOW
-                // PLAYING a third of the way down.
-                let track_changed = self.up_next_cur != cur || self.up_next_pick != pick_id;
+                // PLAYING a third of the way down. The id is watched as well as the index because
+                // a shuffle can change the track at an index without moving the index.
+                let track_changed = self.up_next_cur != cur || self.up_next_id != cur_id;
                 self.up_next_cur = cur;
-                self.up_next_pick = pick_id;
-                let _ = np;   // the context, not the now-playing strings, drives this screen now
+                self.up_next_id = cur_id;
                 if self.queue_follow && track_changed {
                     // O(1) arithmetic rather than `up_next_layout()`, which materialises one slot
                     // per track to be asked for a single row's top.
-                    self.queue_scroll_px = crate::up_next::metrics(
-                        self.history.len(), self.context.len(), cur, self.queue.len(),
-                        pick_id.is_some(),
-                    )
-                    .follow_scroll();
+                    self.queue_scroll_px =
+                        crate::up_next::metrics(self.history.len(), self.context.len(), cur)
+                            .follow_scroll();
                     self.fling_v = 0.0;
                 }
-                // The album caption is one short string; the rows themselves are borrowed.
-                let album = self
-                    .context
-                    .get(self.context_idx)
-                    .map(|t| t.art.clone())
-                    .unwrap_or_default();
+                // The NEXT heading names the playing album while everything still to come is from
+                // it, and says NEXT UP once anything else is in the list. Stops at the first row
+                // from elsewhere, so a shuffled library costs one comparison, not 3,600.
+                let album = match self.context.get(self.context_idx) {
+                    Some(t) if self.context[self.context_idx + 1..].iter().all(|r| r.art == t.art) => {
+                        t.art.clone()
+                    }
+                    _ => String::new(),
+                };
                 let view = crate::up_next::QueueView {
                     album: &album,
                     tracks: &self.context,
                     current: cur,
-                    queue: &self.queue,
                     history: &self.history,
-                    pick: self.playing_pick.as_ref(),
                     lib: &self.lib,
                     scroll_px: self.queue_scroll_px,
                     drag: self.row_drag,
@@ -6587,6 +6730,7 @@ impl App {
             }
             Screen::Eq => crate::eq::render(
                 c, &theme, fonts, &self.eq_bands, data::EQ_PRESETS[self.eq_preset].0, self.eq_sel,
+                self.eq_off_reason(),
             ),
             Screen::Sound => {
                 let snd = Sound {
@@ -8428,9 +8572,8 @@ mod tests {
         let subs = app.menu_subtitles();
         assert_eq!(subs.library, "Empty");
         assert_eq!(subs.queue, "Queue empty");
-        // The row opens UP NEXT, so it must describe what that screen will show. Nothing playing
-        // and nothing queued is the only "Queue empty" there is — an album playing with no picks
-        // used to read the same, over a screen listing the rest of the album.
+        // The row opens UP NEXT, so it must describe what that screen will show: how much is
+        // still to come.
         let ctx: Vec<SongRow> = (0..4)
             .map(|i| SongRow { title: format!("A{i}"), object_id: 10 + i, ..Default::default() })
             .collect();
@@ -8440,13 +8583,11 @@ mod tests {
         assert_eq!(app.menu_subtitles().queue, "1 track left");
         app.set_context_playing(13);
         assert_eq!(app.menu_subtitles().queue, "Queue empty", "the last track has nothing after it");
-        // A hand-built pick outranks the remainder: it is what CLEAR empties and what the replace
-        // prompt is about.
-        app.queue.push(SongRow { title: "P".into(), object_id: 99, ..Default::default() });
-        assert_eq!(app.menu_subtitles().queue, "1 queued");
-        app.queue.push(SongRow { title: "P2".into(), object_id: 98, ..Default::default() });
-        assert_eq!(app.menu_subtitles().queue, "2 queued");
-        app.queue.clear();
+        // Queueing adds to what is still to come — one list, one count.
+        let _ = app.enqueue_at(SongRow { title: "P".into(), object_id: 99, ..Default::default() }, 0, QueueAt::Later);
+        assert_eq!(app.menu_subtitles().queue, "1 track left");
+        let _ = app.enqueue_at(SongRow { title: "P2".into(), object_id: 98, ..Default::default() }, 0, QueueAt::Next);
+        assert_eq!(app.menu_subtitles().queue, "2 tracks left");
         assert_eq!(subs.usb_dac, "Off");
         assert_eq!(subs.sound, "Off", "no effect is engaged on a fresh App");
         // EQ preset and BT codec name whatever is SELECTED — real values from the real tables,
@@ -8465,6 +8606,19 @@ mod tests {
         app.snd_dsee = true;
         app.snd_vpt = true;
         assert_eq!(app.menu_subtitles().sound, "DSEE HX · VPT");
+        // ClearAudio+ replaces the manual effects, so it is named INSTEAD of them — by its own
+        // name (it used to be printed as "Clear Phase", a different effect).
+        app.snd_clear = true;
+        assert_eq!(app.menu_subtitles().sound, "ClearAudio+");
+        assert!(app.menu_subtitles().eq.ends_with("· bypassed"), "the EQ row says it is not heard");
+        app.snd_norm = true;
+        assert_eq!(app.menu_subtitles().sound, "ClearAudio+ · Normaliser");
+        // Source Direct bypasses everything, so it is the whole answer.
+        app.adv_source_direct = true;
+        assert_eq!(app.menu_subtitles().sound, "Source Direct");
+        app.adv_source_direct = false;
+        app.snd_clear = false;
+        app.snd_norm = false;
         app.snd_dsee = false;
         app.snd_vpt = false;
         assert_eq!(app.menu_subtitles().sound, "Off");
@@ -9146,81 +9300,93 @@ mod tests {
     /// without the toast naming which one happened.
     #[test]
     fn swiping_a_row_queues_next_or_later() {
-        let mut a = unlocked();
+        let mut a = with_playing(unlocked(), 3);
         a.stack = vec![Screen::Library];
         a.lib_tab = Tab::Songs;
         let y = crate::library::list_top(Tab::Songs) + 10;
 
         let acts = a.swipe(1, 240, y); // right = later
         assert_eq!(acts, vec![Action::QueueChanged]);
-        assert_eq!(a.queue().len(), 1);
-        assert!(a.toast.starts_with("Added to queue"), "toast was {:?}", a.toast);
-        let later = a.queue()[0].title.clone();
+        assert_eq!(upq(&a).len(), 3);
+        assert!(a.toast.starts_with("Added to Up Next"), "toast was {:?}", a.toast);
+        let later = upq(&a)[2].title.clone();
 
         let acts = a.swipe(-1, 240, y + crate::library::row_h(Tab::Songs)); // left = next, a different row
         assert_eq!(acts, vec![Action::QueueChanged]);
-        assert_eq!(a.queue().len(), 2);
+        assert_eq!(upq(&a).len(), 4);
         assert!(a.toast.starts_with("Playing next"), "toast was {:?}", a.toast);
-        // "Next" must land in FRONT of what was already queued — that is the whole distinction.
-        assert_eq!(a.queue()[1].title, later, "Play Next did not jump the queue");
+        // "Next" lands straight after the playing track, in FRONT of everything already coming;
+        // "later" lands at the very end.
+        assert_ne!(upq(&a)[0].title, "A1", "Play Next did not go to the front");
+        assert_eq!(upq(&a)[3].title, later, "Add to queue did not stay at the end");
     }
 
     /// Reordering and clearing both report a change, and neither may panic on a stale index — the
-    /// queue can be edited while a gesture that started earlier is still in flight.
+    /// list can be edited while a gesture that started earlier is still in flight.
     #[test]
     fn queue_reorder_and_clear_are_safe() {
-        let mut a = unlocked();
-        a.stack = vec![Screen::Library];
-        a.lib_tab = Tab::Songs;
-        let y = crate::library::list_top(Tab::Songs) + 10;
-        for i in 0..3 {
-            a.swipe(1, 240, y + i * crate::library::row_h(Tab::Songs));
-        }
-        assert_eq!(a.queue().len(), 3);
-        let first = a.queue()[0].title.clone();
-        assert_eq!(a.queue_move(0, 2), vec![Action::QueueChanged]);
-        assert_eq!(a.queue()[2].title, first, "the moved row did not land at its target");
+        let mut a = queued(3);
+        let first = upq(&a)[0].title.clone();
+        assert_eq!(a.movable_move(0, 2), vec![Action::QueueChanged]);
+        assert_eq!(upq(&a)[2].title, first, "the moved row did not land at its target");
         // Out-of-range and no-op moves change nothing and emit nothing.
-        assert!(a.queue_move(9, 0).is_empty());
-        assert!(a.queue_move(0, 9).is_empty());
-        assert!(a.queue_move(1, 1).is_empty());
-        assert_eq!(a.queue().len(), 3);
+        assert!(a.movable_move(9, 0).is_empty());
+        assert!(a.movable_move(0, 9).is_empty());
+        assert!(a.movable_move(1, 1).is_empty());
+        assert_eq!(upq(&a).len(), 3);
         assert_eq!(a.queue_clear(), vec![Action::QueueChanged]);
-        assert!(a.queue().is_empty());
-        assert!(a.queue_clear().is_empty(), "clearing an empty queue is not a change");
+        assert!(upq(&a).is_empty());
+        assert_eq!(a.context().len(), 1, "the playing track stays");
+        assert!(a.queue_clear().is_empty(), "clearing an empty list is not a change");
     }
 
-    /// Build an app sitting on Up Next with `n` distinctly-titled tracks in the USER queue. Built
-    /// directly rather than by swiping rows in, so the length isn't capped by the sample library
-    /// (the edge-scroll test needs more tracks than fit on the panel). Swipe-to-queue itself is
-    /// covered by `swiping_a_row_queues_next_or_later`.
+    /// Build an app sitting on Up Next with a track playing ("NOW") and `n` distinctly-titled
+    /// tracks after it. Built directly rather than by swiping rows in, so the length isn't capped
+    /// by the sample library (the edge-scroll test needs more tracks than fit on the panel).
     fn queued(n: usize) -> App {
         let mut a = unlocked();
         let src = a.lib.songs.first().cloned().expect("sample library has songs");
-        for i in 0..n {
+        let mut rows = Vec::new();
+        for i in 0..=n {
             let mut s = src.clone();
-            s.title = format!("Q{i}");
+            s.title = if i == 0 { "NOW".into() } else { format!("Q{}", i - 1) };
             s.object_id = 9000 + i as i64;
-            a.queue.push(s);
+            rows.push(s);
         }
+        a.set_play_context(rows, 0);
         a.push(Screen::UpNext);
         a
     }
-    /// Screen y of the middle of queue row `i` at the current scroll.
-    /// Screen-y of the centre of user-queue row `i`. Reads the LAYOUT rather than assuming the
-    /// queue starts at the top of the list — it no longer does: history, the playing track and a
-    /// section heading can all sit above it.
+
+    /// Everything still to come, in play order.
+    fn upq(a: &App) -> &[SongRow] {
+        a.context.get(a.context_idx + 1..).unwrap_or(&[])
+    }
+
+    /// `a` with `n` rows "A0".."A{n-1}" playing from the first.
+    fn with_playing(mut a: App, n: usize) -> App {
+        let rows = (0..n)
+            .map(|i| SongRow { title: format!("A{i}"), object_id: 7000 + i as i64, ..Default::default() })
+            .collect();
+        a.set_play_context(rows, 0);
+        a
+    }
+    /// Screen-y of the centre of upcoming row `i` (0 = the next track). Reads the LAYOUT rather
+    /// than assuming where the list starts: history, the playing track and a section heading can
+    /// all sit above it.
     fn qrow_y(a: &App, i: usize) -> i32 {
-        let top = a.up_next_layout().top_of(crate::up_next::Slot::Queued(i)).unwrap();
+        let top = a
+            .up_next_layout()
+            .top_of(crate::up_next::Slot::Upcoming(a.context_idx + 1 + i))
+            .unwrap();
         crate::chrome::HEADER_BOTTOM + top + crate::up_next::RH / 2 - a.queue_scroll_px
     }
 
-    /// The whole point: drag a queue row by its handle and it lands where you dropped it. Before
-    /// this, `queue_move` existed and nothing could reach it.
+    /// The whole point: drag a row by its handle and it lands where you dropped it.
     #[test]
     fn dragging_a_queue_row_by_its_handle_reorders_it() {
         let mut a = queued(4);
-        let titles: Vec<String> = a.queue().iter().map(|s| s.title.clone()).collect();
+        let titles: Vec<String> = upq(&a).iter().map(|s| s.title.clone()).collect();
         let grab = crate::up_next::GRIP_X0 + 20;
         assert!(a.reorder_begin(grab, qrow_y(&a, 0)), "the handle must pick the row up");
         assert_eq!(a.reorder_state().map(|d| (d.from, d.to)), Some((0, 0)));
@@ -9229,8 +9395,9 @@ mod tests {
         assert_eq!(a.reorder_state().map(|d| d.to), Some(2));
         assert_eq!(a.reorder_release(), vec![Action::QueueChanged]);
         assert!(a.reorder_state().is_none(), "the drag must end at release");
-        assert_eq!(a.queue()[2].title, titles[0], "the dragged row did not land at its target");
-        assert_eq!(a.queue()[0].title, titles[1], "the rows below did not close up");
+        assert_eq!(upq(&a)[2].title, titles[0], "the dragged row did not land at its target");
+        assert_eq!(upq(&a)[0].title, titles[1], "the rows below did not close up");
+        assert_eq!(a.context()[a.context_idx()].title, "NOW", "the playing track never moves");
     }
 
     /// A drag that ends where it started is not a change — it must not spend a queue flush (which
@@ -9257,13 +9424,12 @@ mod tests {
         assert!(a.reorder_begin(crate::up_next::GRIP_X0 + 20, qrow_y(&a, 0)));
     }
 
-    /// The album view of Up Next is the album's own track order, not ours to rewrite — and there is
-    /// nothing to reorder on any other screen either.
+    /// Nothing to reorder with nothing playing, and nothing to reorder on any other screen.
     #[test]
     fn reorder_only_applies_to_the_user_queue() {
         let mut a = unlocked();
         a.push(Screen::UpNext);
-        assert!(!a.reorder_begin(crate::up_next::GRIP_X0 + 20, 200), "empty user queue");
+        assert!(!a.reorder_begin(crate::up_next::GRIP_X0 + 20, 200), "empty list");
         let mut a = queued(3);
         a.go(Screen::Library);
         assert!(!a.reorder_begin(crate::up_next::GRIP_X0 + 20, 200), "wrong screen");
@@ -9276,11 +9442,9 @@ mod tests {
         let mut a = queued(3);
         assert!(a.tap(crate::up_next::GRIP_X0 + 20, qrow_y(&a, 1)).is_empty());
         assert_eq!(a.current(), Screen::UpNext, "and it must not navigate either");
-        assert!(!a.modal_open(), "nor may it raise the replace-the-queue prompt");
-        // The row body still plays — and plays the QUEUE from that row, not the tapped track's
-        // album. Playing the album is what made Up Next a display-only list: the screen showed one
-        // sequence while the transport stepped through another.
-        assert_eq!(a.tap(60, qrow_y(&a, 1)), vec![Action::PlayQueueAt(1)]);
+        assert!(!a.modal_open(), "nor may it raise the replace prompt");
+        // The row body still plays — the LIST from that row, not the tapped track's album.
+        assert_eq!(a.tap(60, qrow_y(&a, 1)), vec![Action::PlayContextAt(2)]);
     }
 
     /// Holding the row at the bottom edge scrolls the list under it, so a track can be moved
@@ -9439,7 +9603,7 @@ mod tests {
     #[test]
     fn the_scrollbar_declines_when_there_is_nothing_to_scroll() {
         let mut a = unlocked();
-        a.push(Screen::UpNext); // empty user queue -> no px scroll on this screen
+        a.push(Screen::UpNext); // nothing playing -> no px scroll on this screen
         assert!(!a.sbar_begin(crate::canvas::W as i32 - 4, 300));
         assert!(!a.sbar_active());
     }
@@ -9454,8 +9618,8 @@ mod tests {
         assert!(!library::sbar_hit_x(crate::up_next::GRIP_X1 - 1));
     }
 
-    /// Swiping a queue row removes it — either direction, because "queue this" makes no sense for
-    /// a track that is already queued.
+    /// Swiping an upcoming row removes it — either direction, because "queue this" makes no sense
+    /// for a track that is already in the list.
     #[test]
     fn swiping_a_queue_row_removes_it() {
         for dir in [-1, 1] {
@@ -9463,12 +9627,24 @@ mod tests {
             let y = qrow_y(&a, 1);
             assert!(a.swipe_track(dir * 80, y), "the row must take the gesture");
             assert_eq!(a.swipe(dir, 240, y), vec![Action::QueueChanged]);
-            assert_eq!(a.queue().len(), 3);
-            assert!(a.queue().iter().all(|s| s.title != "Q1"), "wrong row removed (dir {dir})");
+            assert_eq!(upq(&a).len(), 3);
+            assert!(upq(&a).iter().all(|s| s.title != "Q1"), "wrong row removed (dir {dir})");
+            assert_eq!(a.context()[a.context_idx()].title, "NOW", "the playing row stays");
         }
     }
 
-    /// Emptying the queue cannot be undone, so it is an explicit labelled chip rather than a
+    /// The playing row does not swipe away — it is playing.
+    #[test]
+    fn the_playing_row_cannot_be_swiped_out() {
+        let mut a = queued(3);
+        let top = a.up_next_layout().current_top.unwrap();
+        let y = crate::chrome::HEADER_BOTTOM + top + crate::up_next::RH / 2 - a.queue_scroll_px;
+        assert!(!a.swipe_track(80, y));
+        assert!(a.swipe(1, 240, y).is_empty());
+        assert_eq!(upq(&a).len(), 3);
+    }
+
+    /// Emptying Up Next cannot be undone, so it is an explicit labelled chip rather than a
     /// gesture, it ASKS before it acts, and it must not also play the row it sits over.
     #[test]
     fn the_clear_chip_asks_then_empties_the_queue() {
@@ -9480,33 +9656,33 @@ mod tests {
         // The tap raises the card and changes nothing yet.
         assert_eq!(a.tap(tx, ty), vec![]);
         assert!(a.modal_open(), "CLEAR must ask first");
-        assert_eq!(a.queue().len(), 5, "nothing may be destroyed before the answer");
+        assert_eq!(upq(&a).len(), 5, "nothing may be destroyed before the answer");
 
-        // Backing out leaves the queue alone.
+        // Backing out leaves the list alone.
         let cancel = (0..crate::H as i32)
             .find(|y| hit(Ask::ClearQueue, 240, *y) == Hit::Cancel)
             .expect("the card can be dismissed");
         a.tap(240, cancel);
         assert!(!a.modal_open());
-        assert_eq!(a.queue().len(), 5, "Cancel must keep the picks");
+        assert_eq!(upq(&a).len(), 5, "Cancel must keep the list");
 
-        // Confirming does the work.
+        // Confirming does the work — everything after the playing track goes; it stays.
         assert_eq!(a.tap(tx, ty), vec![]);
         let ok = (0..crate::H as i32)
             .find(|y| hit(Ask::ClearQueue, 240, *y) == Hit::Confirm)
             .expect("the card has a confirming button");
         assert_eq!(a.tap(240, ok), vec![Action::QueueChanged]);
-        assert!(a.queue().is_empty());
+        assert!(upq(&a).is_empty());
+        assert_eq!(a.context()[a.context_idx()].title, "NOW");
         assert_eq!(a.current(), Screen::UpNext);
 
-        // And on an empty queue the chip is inert — it does not even ask.
+        // And with nothing left to come the chip is inert — it does not even ask.
         assert!(a.tap(tx, ty).is_empty());
         assert!(!a.modal_open());
     }
 
-    /// Playing an album sets the CONTEXT; it does not queue anything. This test used to assert the
-    /// opposite (`playback_fills_the_queue`) because the two were one list — which is why Up Next
-    /// drew the album twice and a swipe-queued song had nothing to jump ahead of.
+    /// Playing an album REPLACES the list, and does not arm the replace prompt — nothing in it was
+    /// added by hand.
     #[test]
     fn playback_sets_the_context_not_the_queue() {
         let mut a = unlocked();
@@ -9515,8 +9691,7 @@ mod tests {
             .collect();
         a.set_play_context(rows.clone(), 1);
         assert_eq!(a.context().len(), 3);
-        assert_eq!(a.context_idx(), 1, "the track that started leads the context");
-        assert!(a.queue().is_empty(), "playing an album queues nothing");
+        assert_eq!(a.context_idx(), 1, "the track that started leads the list");
 
         // A second sequence REPLACES the first: it is what is playing, not an accumulation.
         a.set_play_context(rows.clone(), 0);
@@ -9532,10 +9707,8 @@ mod tests {
         assert_eq!(a.context_idx(), 2);
     }
 
-    /// A reboot used to throw the whole sequence away. Encode → decode has to bring back the
-    /// context, where we were in it, the user's own picks and the un-shuffle order — and it has
-    /// to keep them SEPARATE, which is the invariant `set_play_context` would break (it clears
-    /// the queue, and a restore must not).
+    /// A reboot used to throw the whole sequence away. Encode → decode has to bring back the list,
+    /// where we were in it, and the un-shuffle order.
     #[test]
     fn playback_state_survives_an_encode_decode_round_trip() {
         let mut a = unlocked();
@@ -9547,21 +9720,45 @@ mod tests {
         a.enqueue_at(SongRow { title: "P1".into(), object_id: 901, ..Default::default() }, 0, QueueAt::Later);
 
         let body = a.playback_encode();
-        assert!(body.contains("ctx=100,101,102,103,104,105"), "{body}");
+        assert!(body.contains("ctx=100,101,102,103,104,105,900,901"), "{body}");
         assert!(body.contains("idx=2"), "{body}");
-        assert!(body.contains("q=900,901"), "{body}");
+        assert!(!body.contains("q="), "the queue is part of the list now: {body}");
         assert!(!body.contains("pre="), "nothing has been shuffled yet: {body}");
 
         // The shell resolves the ids back to rows against the library; here, straight back.
         let mut b = unlocked();
-        b.playback_restore(rows.clone(), 2, vec![
-            SongRow { title: "P0".into(), object_id: 900, ..Default::default() },
-            SongRow { title: "P1".into(), object_id: 901, ..Default::default() },
-        ], None, None);
+        b.playback_restore(a.context().to_vec(), 2, vec![], None, None);
         assert_eq!(b.playback_encode(), body, "a round trip is not allowed to change anything");
         assert_eq!(b.context_idx(), 2);
-        assert_eq!(b.queue().len(), 2, "the user's picks are NOT swallowed by the context");
         assert!(b.has_playback_state());
+    }
+
+    /// A file written BEFORE the merge keeps the picks apart (`q=`, and the playing one in
+    /// `pick=`). The first boot on the new build puts them where they would have played — straight
+    /// after the row they interrupted — and resumes on the pick that was playing.
+    #[test]
+    fn an_old_format_queue_is_spliced_into_the_list_on_restore() {
+        let row = |t: &str, id: i64| SongRow { title: t.into(), object_id: id, ..Default::default() };
+        let ctx: Vec<SongRow> = (0..4).map(|i| row(&format!("T{i}"), 10 + i)).collect();
+        let mut a = unlocked();
+        a.playback_restore(ctx.clone(), 1, vec![row("Q0", 90), row("Q1", 91)], None, Some(row("P", 80)));
+        let ids: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(ids, vec![10, 11, 80, 90, 91, 12, 13]);
+        assert_eq!(a.context_idx(), 2, "resumes on the pick that was playing");
+        assert!(a.hand_added, "the picks were built by hand, so a replace still asks");
+
+        // No pick, just queued picks: they follow the current row, which stays current.
+        let mut b = unlocked();
+        b.playback_restore(ctx.clone(), 1, vec![row("Q0", 90)], None, None);
+        let ids: Vec<i64> = b.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(ids, vec![10, 11, 90, 12, 13]);
+        assert_eq!(b.context_idx(), 1);
+
+        // Nothing but picks: the list is the picks, from the top.
+        let mut c = unlocked();
+        c.playback_restore(vec![], 0, vec![row("Q0", 90), row("Q1", 91)], None, None);
+        assert_eq!(c.context().len(), 2);
+        assert_eq!(c.context_idx(), 0);
     }
 
     /// The index is stored as a number but means "this track". If a file left the library between
@@ -9611,107 +9808,112 @@ mod tests {
         a
     }
 
-    /// Q1, the regression. Queue a track FROM THE ALBUM ALREADY PLAYING and the context index must
-    /// not chase it. Before this, `set_context_playing` searched the whole context, found the pick
-    /// at index 5 and jumped there — so the sequence rebuilt as `[T5] + context[6..]` and tracks
-    /// T2, T3 and T4 were silently dropped from the rest of the album.
+    /// Q1, the old regression, in the one-list model. Play Next a track FROM THE ALBUM ALREADY
+    /// PLAYING and the index must step onto the inserted copy, not search the album and jump to
+    /// the original — which dropped every track in between.
     #[test]
     fn a_pick_taken_from_the_playing_album_does_not_skip_the_tracks_between() {
         let mut a = ctx6(1); // T1 playing
-        let pick = a.context()[5].clone(); // T5, which is ALSO five rows further down the context
-        a.queue.push(pick);
+        let pick = a.context()[5].clone(); // T5
+        a.enqueue_at(pick, 0, QueueAt::Next);
 
-        assert!(a.track_started(15), "T5 was a user pick, so the queue changed");
-        assert!(a.queue().is_empty(), "the pick is consumed when it starts");
-        assert_eq!(a.context_idx(), 1, "the context has NOT moved — T1 is still where we were");
-
-        // And the remainder still contains everything that had not played.
+        assert!(!a.track_started(15, false), "ordinary progression onto the inserted copy");
+        assert_eq!(a.context_idx(), 2);
         let rest: Vec<i64> =
             a.context()[a.context_idx() + 1..].iter().map(|t| t.object_id).collect();
-        assert_eq!(rest, vec![12, 13, 14, 15], "T2..T5 all survive the pick");
+        assert_eq!(rest, vec![12, 13, 14, 15], "T2..T5 all survive, the album's own T5 included");
     }
 
-    /// The one case where a pick DOES advance the context: it was also the very next track, so the
-    /// context has genuinely moved past it. Leaving the index behind would replay it out of the
-    /// remainder.
+    /// A track in the list twice: a jump lands on the NEXT copy after the playing row, not the
+    /// first copy in the list.
     #[test]
     fn a_pick_that_was_also_the_next_track_advances_the_context_by_one() {
-        let mut a = ctx6(1); // T1 playing, so T2 is next either way
-        let pick = a.context()[2].clone();
-        a.queue.push(pick);
-
-        assert!(a.track_started(12));
-        assert!(a.queue().is_empty());
-        assert_eq!(a.context_idx(), 2, "advanced by exactly one");
-        let rest: Vec<i64> =
-            a.context()[a.context_idx() + 1..].iter().map(|t| t.object_id).collect();
-        assert_eq!(rest, vec![13, 14, 15], "T2 is not left in the remainder to play twice");
+        let mut a = ctx6(4); // T4 playing
+        let again = a.context()[2].clone(); // T2, already played
+        a.enqueue_at(again, 0, QueueAt::Later); // …queued again at the end
+        assert!(!a.track_started(12, false));
+        assert_eq!(a.context_idx(), 6, "the queued copy, not the one behind");
     }
 
-    /// Ordinary progression and deliberate jumps both still follow the context. The jump case is
+    /// Ordinary progression and deliberate jumps both follow the list. The jump case is
     /// load-bearing: ◁ steps BACKWARDS, so the search cannot be replaced with "advance by one".
     #[test]
     fn a_track_that_is_not_a_pick_follows_the_context_either_way() {
         let mut a = ctx6(1);
-        assert!(!a.track_started(12), "no pick was consumed");
+        assert!(!a.track_started(12, false));
         assert_eq!(a.context_idx(), 2, "ordinary progression");
 
-        assert!(!a.track_started(14)); // Up Next row tap, forward
+        assert!(!a.track_started(14, false)); // Up Next row tap, forward
         assert_eq!(a.context_idx(), 4);
 
-        assert!(!a.track_started(11)); // ◁ rewind, backwards
+        assert!(!a.track_started(11, false)); // ◁ rewind, backwards
         assert_eq!(a.context_idx(), 1, "a jump behind the index still lands");
 
-        // A track that is in neither list leaves the index alone rather than guessing.
-        assert!(!a.track_started(9999));
+        // A track that is not in the list leaves the index alone rather than guessing.
+        assert!(!a.track_started(9999, false));
+        assert_eq!(a.context_idx(), 1);
+        // And the same track again (repeat-one, a re-report) moves nothing.
+        assert!(!a.track_started(11, true));
         assert_eq!(a.context_idx(), 1);
     }
 
-    /// A pick that is NOT in the context at all (queued from a different album) is consumed and
-    /// changes nothing else — the ordinary swipe-to-queue case, kept honest alongside the fix.
+    /// An album queued with Add to queue plays AFTER the album that is playing — the request this
+    /// list was merged for. Play next puts a track in front of the rest.
     #[test]
-    fn a_pick_from_outside_the_context_leaves_it_untouched() {
+    fn an_album_queued_later_plays_after_the_one_playing() {
         let mut a = ctx6(1);
-        a.queue.push(SongRow { title: "Elsewhere".into(), object_id: 777, ..Default::default() });
+        let second = AlbumRow {
+            name: "Second".into(),
+            track_list: (0..3)
+                .map(|i| SongRow { title: format!("S{i}"), object_id: 50 + i, ..Default::default() })
+                .collect(),
+            ..Default::default()
+        };
+        assert_eq!(a.enqueue_album_at(&second, 0, QueueAt::Later), vec![Action::QueueChanged]);
+        let order: Vec<i64> = a.context()[a.context_idx() + 1..].iter().map(|t| t.object_id).collect();
+        assert_eq!(order, vec![12, 13, 14, 15, 50, 51, 52], "the rest of the first album, then the second");
+        assert!(a.toast.contains("Second"), "{}", a.toast);
 
-        assert!(a.track_started(777));
-        assert!(a.queue().is_empty());
-        assert_eq!(a.context_idx(), 1);
-        assert_eq!(a.context().len(), 6, "the context is not rewritten by a pick");
+        a.enqueue_at(SongRow { title: "N".into(), object_id: 77, ..Default::default() }, 0, QueueAt::Next);
+        assert_eq!(a.context()[a.context_idx() + 1].object_id, 77, "Play next goes to the front");
+        // The list plays top to bottom: the next track to start is the next row.
+        for want in [77, 12, 13, 14, 15, 50, 51, 52] {
+            let cur = a.context()[a.context_idx()].object_id;
+            let _ = cur;
+            assert!(!a.track_started(want, false));
+            assert_eq!(a.context()[a.context_idx()].object_id, want);
+        }
     }
 
-    /// The 2026-09-11 queue report, on the navigator's side. Over Bluetooth PlayerService stepped
-    /// from T1 onto T2 using a sequence that never held the pick. Deferring T2 puts it back at the
-    /// head of the remainder, so the rebuild is `pick + T2 + rest`: nothing skipped, nothing twice.
+    /// The 2026-09-11 queue report, on the navigator's side. Over Bluetooth an edit waits for the
+    /// boundary, so PlayerService stepped from T1 onto T2 from a sequence that never held the Play
+    /// next. `track_started` with `stale` steps the LIST onto its own next row instead and says so,
+    /// and T2 is still in the list behind it: nothing skipped, nothing twice.
     #[test]
     fn a_context_track_the_service_stepped_onto_goes_back_behind_the_picks() {
         let mut a = ctx6(1); // T1 playing
-        a.queue.push(SongRow { title: "Queued".into(), object_id: 777, ..Default::default() });
+        a.enqueue_at(SongRow { title: "Queued".into(), object_id: 777, ..Default::default() }, 0, QueueAt::Next);
 
-        assert!(!a.track_started(12), "T2 is the context moving, not a pick");
-        assert_eq!(a.context_idx(), 2);
-        assert!(a.defer_context_track(12));
-        assert_eq!(a.context_idx(), 1, "back exactly one step");
-
+        assert!(a.track_started(12, true), "the service went ahead of the edit");
+        assert_eq!(a.context()[a.context_idx()].object_id, 777, "the list's next row plays");
         let rest: Vec<i64> =
             a.context()[a.context_idx() + 1..].iter().map(|t| t.object_id).collect();
-        assert_eq!(rest, vec![12, 13, 14, 15], "T2 leads what is left, behind the queue");
-        assert_eq!(a.queue().len(), 1, "the pick is untouched until it actually starts");
+        assert_eq!(rest, vec![12, 13, 14, 15], "T2 leads what is left");
+        // History got the track that was playing, not the one that started early.
+        assert_eq!(a.history().last().map(|h| h.object_id), Some(11));
     }
 
-    /// Everything that is not exactly that case is left alone — a guess here drops tracks.
+    /// `stale` does not override a deliberate step BACKWARDS, and there is nothing to put first at
+    /// the end of the list.
     #[test]
     fn deferring_refuses_anything_but_the_current_track_with_a_queue_behind_it() {
-        let mut a = ctx6(2);
-        assert!(!a.defer_context_track(12), "nothing queued: nothing to go behind");
-        a.queue.push(SongRow { object_id: 777, ..Default::default() });
-        assert!(!a.defer_context_track(13), "not the track that is current");
-        assert_eq!(a.context_idx(), 2, "and a refusal moves nothing");
+        let mut a = ctx6(3);
+        assert!(!a.track_started(11, true), "◁ went back on purpose");
+        assert_eq!(a.context_idx(), 1);
 
-        let mut b = ctx6(0);
-        b.queue.push(SongRow { object_id: 777, ..Default::default() });
-        assert!(!b.defer_context_track(10), "index 0 has nowhere to step back to");
-        assert_eq!(b.context_idx(), 0);
+        let mut b = ctx6(5);
+        assert!(!b.track_started(10, true), "the last row has no next row to prefer");
+        assert_eq!(b.context_idx(), 0, "…so it is an ordinary jump");
     }
 
     /// A Songs list long enough to scroll far past the band's slide.
@@ -9849,36 +10051,91 @@ mod tests {
     }
 
     /// Q2, the regression. Shuffle used to be a one-way door — ON permuted the remainder, OFF did
-    /// nothing at all, and the context stayed shuffled for the rest of the session.
+    /// nothing at all, and the list stayed shuffled for the rest of the session.
     #[test]
     fn turning_shuffle_off_puts_the_context_back_in_order() {
         let mut a = ctx6(1);
         let before: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
 
-        assert!(!a.queue_shuffle().is_empty(), "there are four tracks ahead to shuffle");
+        assert!(!a.queue_shuffle().is_empty(), "there are five other tracks to shuffle");
         let shuffled: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
-        assert_ne!(shuffled, before, "the remainder actually moved");
-        assert_eq!(&shuffled[..2], &before[..2], "the past and the playing track never move");
+        assert_ne!(shuffled, before, "the list actually moved");
+        assert_eq!(a.context()[a.context_idx()].object_id, 11, "the playing track keeps playing");
 
         assert_eq!(a.unshuffle_context(), vec![Action::QueueChanged]);
         let after: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
-        assert_eq!(after, before, "restored to the order it was played in");
+        assert_eq!(after, before, "restored to the album's order");
         assert_eq!(a.context_idx(), 1, "and the same track is still the current one");
 
         // Nothing left to undo, so a second off is inert rather than emitting a pointless re-issue.
         assert!(a.unshuffle_context().is_empty());
     }
 
+    /// THE 2026-09-23 REPORT: start an album part-way through, press shuffle, and it "cuts out half
+    /// of the songs". Shuffle took only the tracks AFTER the playing one, so the tracks before the
+    /// start point never played. Every track of the album has to be in the shuffled list.
+    #[test]
+    fn shuffle_after_starting_mid_album_keeps_every_track() {
+        let mut a = unlocked();
+        let album: Vec<SongRow> = (0..12)
+            .map(|i| SongRow { title: format!("A{i}"), object_id: 10 + i, ..Default::default() })
+            .collect();
+        a.set_play_context(album.clone(), 6); // started at track 7
+        a.queue_shuffle();
+        assert_eq!(a.context_idx(), 0, "the playing track leads the shuffled list");
+        assert_eq!(a.context()[0].object_id, 16, "…and it is still the track that was playing");
+        let mut coming: Vec<i64> = a.context()[1..].iter().map(|t| t.object_id).collect();
+        coming.sort_unstable();
+        let mut want: Vec<i64> = album.iter().map(|t| t.object_id).filter(|id| *id != 16).collect();
+        want.sort_unstable();
+        assert_eq!(coming, want, "all eleven other tracks are still to come — none cut out");
+        assert_eq!(a.upcoming_len(), 11);
+
+        // Off again: the album's own order, carrying on from the track that is playing.
+        a.unshuffle_context();
+        assert_eq!(a.context().len(), 12);
+        assert_eq!(a.context()[a.context_idx()].object_id, 16);
+        assert_eq!(a.context_idx(), 6);
+    }
+
+    /// A track in the list twice (an album queued while it plays) survives a shuffle round trip as
+    /// two separate rows in their own places — ranking by id alone stacked the copies together.
+    #[test]
+    fn unshuffle_keeps_both_copies_of_a_track_in_their_own_places() {
+        let mut a = ctx6(0);
+        let again = a.context()[2].clone();
+        a.enqueue_at(again, 0, QueueAt::Later);
+        let before: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        a.queue_shuffle();
+        a.unshuffle_context();
+        let after: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(after, before);
+    }
+
+    /// Rows added while shuffled land where they were put when shuffle goes off: Play next stays
+    /// straight after the playing track, Add to queue stays at the end.
+    #[test]
+    fn rows_added_while_shuffled_keep_their_place_when_shuffle_goes_off() {
+        let mut a = ctx6(2);
+        a.queue_shuffle();
+        a.enqueue_at(SongRow { title: "N".into(), object_id: 70, ..Default::default() }, 0, QueueAt::Next);
+        a.enqueue_at(SongRow { title: "L".into(), object_id: 80, ..Default::default() }, 0, QueueAt::Later);
+        a.unshuffle_context();
+        let after: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(after, vec![10, 11, 12, 70, 13, 14, 15, 80]);
+        assert_eq!(a.context()[a.context_idx()].object_id, 12);
+    }
+
     /// The restored index follows the AUDIBLE track, not the old slot number. After a shuffle the
     /// playing song is rarely where it started, and reusing the index would make Up Next draw the
-    /// wrong half of the list as history.
+    /// wrong part of the list as coming next.
     #[test]
     fn unshuffle_follows_the_track_that_is_playing_not_the_index() {
         let mut a = ctx6(0);
         let original: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
         a.queue_shuffle();
-        // Walk forward into the shuffled remainder so the current track is somewhere unpredictable.
-        a.track_started(a.context()[3].object_id);
+        // Walk forward into the shuffled list so the current track is somewhere unpredictable.
+        a.track_started(a.context()[3].object_id, false);
         let playing = a.context()[a.context_idx()].object_id;
 
         a.unshuffle_context();
@@ -9916,14 +10173,22 @@ mod tests {
         );
     }
 
-    /// The guard: an order that does not describe this context is refused rather than half-applied.
+    /// The guard: an order that does not describe this list is refused rather than half-applied.
     #[test]
     fn a_pre_shuffle_order_of_the_wrong_length_is_refused() {
         let mut a = ctx6(0);
         let n = a.context().len();
         a.note_pre_shuffle(vec![1, 2, 3]);
-        assert!(a.unshuffle_context().is_empty(), "a mismatched order was accepted");
-        assert_eq!(a.context().len(), n, "and the context was left alone");
+        assert!(a.unshuffle_context().is_empty(), "an order of other tracks was accepted");
+        a.note_pre_shuffle((0..9).collect());
+        assert!(a.unshuffle_context().is_empty(), "a longer order was accepted");
+        assert_eq!(a.context().len(), n, "and the list was left alone");
+        // A PREFIX that is an order of the list's first rows is fine: "keep Up Next" appends the
+        // old list after the new sequence, and the kept rows keep the order they have.
+        a.note_pre_shuffle(vec![11, 10]);
+        assert_eq!(a.unshuffle_context(), vec![Action::QueueChanged]);
+        let ids: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(ids, vec![11, 10, 12, 13, 14, 15]);
     }
 
     /// Playing something new drops the undo. Restoring THIS context into a previous album's order
@@ -9941,8 +10206,8 @@ mod tests {
         assert_eq!(ids, vec![90, 91, 92], "and the new context is untouched");
     }
 
-    /// The order handed to the player: current track, then the USER'S picks, then the rest of the
-    /// context. The middle term is the entire point of a queue.
+    /// Up Next is ONE list below NOW PLAYING — no separate queue section — in the order the shell
+    /// builds the sequence from.
     #[test]
     fn a_queued_song_plays_before_the_rest_of_the_album() {
         let mut a = unlocked();
@@ -9950,24 +10215,21 @@ mod tests {
             .map(|i| SongRow { title: format!("A{i}"), object_id: 10 + i, ..Default::default() })
             .collect();
         a.set_play_context(album, 1);                       // A1 playing
-        a.queue.push(SongRow { title: "PICK".into(), object_id: 99, ..Default::default() });
-        // A0 played before A1 did. Stated rather than implied by `context_idx`, which is the whole
-        // difference between a history and a slice of the album.
+        a.enqueue_at(SongRow { title: "PICK".into(), object_id: 99, ..Default::default() }, 0, QueueAt::Next);
         a.history_restore(vec![SongRow { object_id: 10, ..Default::default() }]);
-        // What Up Next draws, in order, is what the shell then builds the sequence from.
         let l = a.up_next_layout();
         let order: Vec<crate::up_next::Slot> = l.slots.iter().map(|(s, _)| *s).collect();
         use crate::up_next::{Section, Slot};
         assert_eq!(order, vec![
             Slot::Head(Section::History), Slot::History(0),
             Slot::Head(Section::Now),     Slot::Current(1),
-            Slot::Head(Section::Queue),   Slot::Queued(0),
-            Slot::Head(Section::Album),   Slot::Upcoming(2), Slot::Upcoming(3),
-        ], "the pick sits between the playing track and the rest of the album");
+            Slot::Head(Section::Next),    Slot::Upcoming(2), Slot::Upcoming(3), Slot::Upcoming(4),
+        ]);
+        assert_eq!(a.context()[2].object_id, 99, "Play next sits straight after the playing track");
     }
 
-    /// MIX shuffles what is still to come and nothing else: the played tracks keep their order
-    /// (rewriting history helps nobody) and the user's own picks keep theirs (they chose it).
+    /// MIX with shuffle already on deals the list again: a permutation of the same rows, the
+    /// playing one first.
     #[test]
     fn queue_shuffle_only_moves_what_is_still_to_come() {
         let mut a = unlocked();
@@ -9975,30 +10237,29 @@ mod tests {
             .map(|i| SongRow { title: format!("A{i}"), object_id: 10 + i, ..Default::default() })
             .collect();
         a.set_play_context(album.clone(), 2);
-        a.queue.push(SongRow { title: "PICK".into(), object_id: 99, ..Default::default() });
         let acts = a.queue_shuffle();
         assert_eq!(acts, vec![Action::QueueChanged], "the sequence must be re-issued");
-        // History + current untouched.
-        for i in 0..=2 {
-            assert_eq!(a.context()[i].object_id, album[i].object_id, "row {i} moved");
-        }
-        // The tail is a permutation of what it was, not a truncation or a duplication.
-        let mut before: Vec<i64> = album[3..].iter().map(|t| t.object_id).collect();
-        let mut after: Vec<i64> = a.context()[3..].iter().map(|t| t.object_id).collect();
+        assert_eq!(a.context()[0].object_id, 12);
+        let mut before: Vec<i64> = album.iter().map(|t| t.object_id).collect();
+        let mut after: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_ne!(after[1..], before[..], "12 tracks should not shuffle back into their order");
         before.sort_unstable();
         after.sort_unstable();
-        assert_eq!(before, after);
-        assert_ne!(
-            a.context()[3..].iter().map(|t| t.object_id).collect::<Vec<_>>(),
-            album[3..].iter().map(|t| t.object_id).collect::<Vec<_>>(),
-            "12 tracks should not shuffle back into their original order"
-        );
-        // The user's picks are theirs.
-        assert_eq!(a.queue().len(), 1);
-        assert_eq!(a.queue()[0].object_id, 99);
-        // Nothing left to shuffle => no action, no crash.
-        a.set_play_context(vec![SongRow::default()], 0);
+        assert_eq!(before, after, "a permutation, not a truncation or a duplication");
+        // Nothing to shuffle => no action, no crash.
+        a.set_play_context(vec![SongRow::default(), SongRow::default()], 0);
         assert!(a.queue_shuffle().is_empty());
+    }
+
+    /// MIX turns shuffle ON when it is off — the same as the transport button, so the icon on Now
+    /// Playing tells the truth — and deals again when it is already on.
+    #[test]
+    fn the_mix_chip_turns_shuffle_on_before_it_reshuffles() {
+        let mut a = queued(5);
+        let (sx, sy, sw, sh) = crate::up_next::SHUFFLE_CHIP;
+        assert_eq!(a.tap(sx + sw / 2, sy + sh / 2), vec![Action::ShuffleToggle]);
+        a.shuffle_on = true;
+        assert_eq!(a.tap(sx + sw / 2, sy + sh / 2), vec![Action::QueueChanged]);
     }
 
     /// The context index follows playback, so Up Next's history/up-next split stays true.
@@ -10018,8 +10279,8 @@ mod tests {
         assert_eq!(a.context_idx(), 2);
     }
 
-    /// "Keep queue" has to keep it: starting something else clears the user's picks unless they
-    /// said not to.
+    /// "Play now, then Up Next" has to keep it: the new sequence plays, and what was still to come
+    /// follows it.
     #[test]
     fn keeping_the_queue_appends_the_new_sequence() {
         use crate::confirm::{hit, Ask, Hit};
@@ -10028,7 +10289,7 @@ mod tests {
                 .find(|y| hit(Ask::QueueOnPlay, 240, *y) == want)
                 .expect("row has no tappable pixel")
         };
-        let mut a = unlocked();
+        let mut a = with_playing(unlocked(), 2);
         a.queue_push_for_test(); // one hand-swiped pick
         assert!(a.start_play(77).is_empty(), "hand-built picks still prompt");
         assert_eq!(a.tap(240, pick(Hit::KeepQueue)), vec![Action::PlayIndex(77)]);
@@ -10037,15 +10298,16 @@ mod tests {
             .map(|i| SongRow { title: format!("S{i}"), object_id: 10 + i, ..Default::default() })
             .collect();
         a.set_play_context(rows, 0);
-        assert_eq!(a.queue().len(), 1, "the pick must survive");
-        assert_eq!(a.context().len(), 2, "and the new sequence is the context");
-        // The flag is one-shot: the next play clears the picks.
+        let ids: Vec<i64> = a.context().iter().map(|t| t.object_id).collect();
+        assert_eq!(ids, vec![10, 11, 7001, 0], "the new sequence, then what was still to come");
+        assert!(a.hand_added, "the kept rows are still hand-built, so the next replace asks too");
+        // The flag is one-shot: the next play replaces the list.
         a.set_play_context(vec![SongRow::default()], 0);
-        assert!(a.queue().is_empty());
+        assert_eq!(a.context().len(), 1);
+        assert!(!a.hand_added);
     }
 
-    /// The user queue used to draw from row 0 and stop at the panel edge, so past ~10 tracks it was
-    /// both unreachable and unreorderable.
+    /// A long list scrolls, and the hit test follows the scroll.
     #[test]
     fn the_user_queue_scrolls() {
         let mut a = queued(40);
@@ -10053,14 +10315,12 @@ mod tests {
         assert!(max > 0);
         a.scroll_px(10_000);
         assert_eq!(a.queue_scroll_px, max, "must scroll, and clamp to the end");
-        // And the hit test follows the scroll rather than always answering row 0. Row 0's screen
-        // position at scroll 0 must now resolve to a LATER row (or off the list) once scrolled.
         let y_unscrolled = crate::chrome::HEADER_BOTTOM
-            + a.up_next_layout().top_of(crate::up_next::Slot::Queued(0)).unwrap()
+            + a.up_next_layout().top_of(crate::up_next::Slot::Upcoming(1)).unwrap()
             + crate::up_next::RH / 2;
         assert_ne!(
             a.up_next_layout().at(y_unscrolled, a.queue_scroll_px),
-            Some(crate::up_next::Slot::Queued(0))
+            Some(crate::up_next::Slot::Upcoming(1))
         );
     }
 
@@ -10862,9 +11122,11 @@ mod tests {
         assert_eq!(a.lib_index(), 0); // cursor reset on tab change
         a.press(Button::Down);
         assert!(a.lib_index() <= 1);
-        // Select on a Songs row asks the shell to play that track (by object id)
+        // Select on a Songs row plays the SONGS LIST from that row, in the order drawn.
+        let row = a.lib_index();
         let acts = a.press(Button::Select);
-        assert!(matches!(acts.as_slice(), [Action::PlayIndex(_)]));
+        assert_eq!(acts, vec![Action::PlayListAt(row)]);
+        assert_eq!(a.take_play_list(), a.songs_list_ids());
     }
 
     /// Tapping a preset pill selects THAT preset. Regression: the pills are drawn per-pill but
@@ -11004,7 +11266,7 @@ mod tests {
             acts.iter().any(|t| matches!(t, Action::ShuffleArtist(_))),
             "keeping the queue must still shuffle — {acts:?}"
         );
-        assert_eq!(a.queue().len(), 1, "and the pick must survive it");
+        assert_eq!(upq(&a).len(), 1, "and the pick must survive it");
     }
 
     /// The band must not swallow taps meant for the list, and the list must not start inside it —
@@ -11621,8 +11883,9 @@ mod tests {
         let ty = library::playlist_content_top(a.playlist_row().unwrap())
             + library::PLAYLIST_TRACK_RH / 2;
         assert_eq!(a.swipe(1, 240, ty), vec![Action::QueueChanged]);
-        assert_eq!(a.queue().len(), 1);
-        assert_eq!(a.queue()[0].title, "P0");
+        // Nothing was playing, so the queued track starts the list.
+        assert_eq!(a.context().len(), 1);
+        assert_eq!(a.context()[0].title, "P0");
         // Three rows do not overflow the panel, so there is nothing to scroll — and the scrollbar
         // must decline rather than eat the contact.
         assert_eq!(library::playlist_max_scroll_px(a.playlist_row().unwrap()), 0);
@@ -12330,7 +12593,7 @@ mod tests {
 
     #[test]
     fn right_swipe_on_song_row_queues_it() {
-        let mut a = unlocked();
+        let mut a = with_playing(unlocked(), 1);
         a.stack = vec![Screen::Library];
         a.lib_tab = Tab::Songs;
         // Rightward swipe starting on the first Songs row. The y is DERIVED from list_top rather
@@ -12338,22 +12601,22 @@ mod tests {
         // hardcoded 220 silently started landing on a different row.
         let row_y = library::list_top(Tab::Songs) + library::row_h(Tab::Songs) / 2;
         assert_eq!(a.swipe(1, 240, row_y), vec![Action::QueueChanged]);
-        assert_eq!(a.queue().len(), 1);
+        assert_eq!(upq(&a).len(), 1);
         let expected = library::song_at(&a.lib, a.lib_sort, 0).unwrap().title.clone();
-        assert_eq!(a.queue()[0].title, expected);
+        assert_eq!(upq(&a)[0].title, expected);
         // Feedback started: toast + row chip animation, and tick() reports animation frames.
-        assert!(a.toast.starts_with("Added to queue"));
+        assert!(a.toast.starts_with("Added to Up Next"));
         assert_eq!(a.queue_anim_frames, QUEUE_ANIM_FRAMES);
         assert_eq!(a.queue_anim_y, row_y);
         assert!(a.tick());
-        // A LEFTWARD swipe now queues too — as PLAY NEXT, in front of what is already there.
+        // A LEFTWARD swipe now queues too — as PLAY NEXT, straight after the playing track.
         // It used to do nothing at all; the gesture was free and is now the mirror of the right.
         assert_eq!(a.swipe(-1, 240, row_y), vec![Action::QueueChanged]);
-        assert_eq!(a.queue().len(), 2);
+        assert_eq!(upq(&a).len(), 2);
         assert!(a.toast.starts_with("Playing next"), "toast was {:?}", a.toast);
         // A rightward swipe on chrome (above the rows) queues nothing.
         assert!(a.swipe(1, 240, 100).is_empty());
-        assert_eq!(a.queue().len(), 2);
+        assert_eq!(upq(&a).len(), 2);
     }
 
     /// Swipe-to-queue also works on an expanded album's inline track rows. Those rows are
@@ -12361,7 +12624,7 @@ mod tests {
     /// on one tab and did nothing on another.
     #[test]
     fn right_swipe_on_an_expanded_album_track_queues_it() {
-        let mut a = unlocked();
+        let mut a = with_playing(unlocked(), 1);
         a.stack = vec![Screen::Library];
         a.lib_tab = Tab::Albums;
         // Expand the first album in display order.
@@ -12374,13 +12637,13 @@ mod tests {
             .expect("expanded album should expose a track row");
         // Queuing now reports the change so the shell can schedule a boundary flush.
         assert_eq!(a.swipe(1, 240, y), vec![Action::QueueChanged]);
-        assert_eq!(a.queue().len(), 1);
-        assert_eq!(a.queue()[0].object_id, want.object_id);
+        assert_eq!(upq(&a).len(), 1);
+        assert_eq!(upq(&a)[0].object_id, want.object_id);
         // Collapsed, that same y is no longer a track row.
         a.album_expanded = None;
         assert!(a.albums_track_at(y).is_none());
         assert!(a.swipe(1, 240, 20).is_empty(), "a non-row swipe must queue nothing");
-        assert_eq!(a.queue().len(), 1);
+        assert_eq!(upq(&a).len(), 1);
     }
 
     /// Tapping a row plays that track. The layout is what `tap` resolves against, so a test drives
@@ -12478,11 +12741,10 @@ mod tests {
         assert!(a.tap(240, y).is_empty(), "a row past the context plays nothing");
     }
 
-    /// The Apple Music order, and the fact that empty sections vanish entirely.
     #[test]
     fn up_next_layout_is_history_then_now_then_queue_then_album() {
         use crate::up_next::{layout, Section, Slot};
-        let l = layout(1, 4, Some(1), 2, false);
+        let l = layout(1, 4, Some(1));
         let kinds: Vec<Slot> = l.slots.iter().map(|(s, _)| *s).collect();
         assert_eq!(
             kinds,
@@ -12491,28 +12753,19 @@ mod tests {
                 Slot::History(0),
                 Slot::Head(Section::Now),
                 Slot::Current(1),
-                Slot::Head(Section::Queue),
-                Slot::Queued(0),
-                Slot::Queued(1),
-                Slot::Head(Section::Album),
+                Slot::Head(Section::Next),
                 Slot::Upcoming(2),
                 Slot::Upcoming(3),
             ]
         );
         // Nothing played yet => no history section at all, header included.
-        let l = layout(0, 2, Some(0), 0, false);
+        let l = layout(0, 2, Some(0));
         assert_eq!(
             l.slots.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
-            vec![Slot::Head(Section::Now), Slot::Current(0), Slot::Head(Section::Album), Slot::Upcoming(1)]
-        );
-        // Nothing playing, but a user queue => just the queue.
-        let l = layout(0, 0, None, 1, false);
-        assert_eq!(
-            l.slots.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
-            vec![Slot::Head(Section::Queue), Slot::Queued(0)]
+            vec![Slot::Head(Section::Now), Slot::Current(0), Slot::Head(Section::Next), Slot::Upcoming(1)]
         );
         // Nothing at all => the empty state, and no scroll.
-        let l = layout(0, 0, None, 0, false);
+        let l = layout(0, 0, None);
         assert!(l.slots.is_empty());
         assert_eq!(l.max_scroll_px(), 0);
     }
@@ -12616,16 +12869,14 @@ mod tests {
         );
     }
 
-    /// The playing row parks a third of the way down, not pinned to the top — so the tracks you
-    /// just heard stay visible above it.
     #[test]
     fn up_next_follow_parks_the_current_row_a_third_down() {
-        let l = crate::up_next::layout(20, 40, Some(20), 0, false);
+        let l = crate::up_next::layout(20, 40, Some(20));
         let view = crate::up_next::queue_view_h();
         let top = l.current_top.unwrap();
         assert_eq!(l.follow_scroll(), (top - view / 3).clamp(0, l.max_scroll_px()));
         // Early tracks cannot scroll above the start.
-        assert_eq!(crate::up_next::layout(0, 40, Some(0), 0, false).follow_scroll(), 0);
+        assert_eq!(crate::up_next::layout(0, 40, Some(0)).follow_scroll(), 0);
     }
 
     /// An empty queue keeps the old behaviour: a tap just leaves.
@@ -12680,7 +12931,7 @@ mod tests {
     #[test]
     fn both_album_page_swipes_tell_the_shell_the_queue_changed() {
         let open_album = || {
-            let mut a = unlocked();
+            let mut a = with_playing(unlocked(), 1);
             a.stack = vec![Screen::Library];
             a.lib_tab = Tab::Albums;
             a.album_view = 0;
@@ -12693,91 +12944,102 @@ mod tests {
         let want = later.lib.albums_flat()[0].track_list[0].object_id;
         assert_eq!(later.swipe(1, 240, row0), vec![Action::QueueChanged],
                    "right-swipe queued the track but never told the shell");
-        assert_eq!(later.queue().len(), 1);
-        assert_eq!(later.queue()[0].object_id, want);
+        assert_eq!(upq(&later).len(), 1);
+        assert_eq!(upq(&later)[0].object_id, want);
 
         let mut next = open_album();
         assert_eq!(next.swipe(-1, 240, row0), vec![Action::QueueChanged]);
-        assert_eq!(next.queue().len(), 1);
-        assert_eq!(next.queue()[0].object_id, want);
+        assert_eq!(upq(&next).len(), 1);
+        assert_eq!(upq(&next)[0].object_id, want);
 
         // And a swipe on the header, where there is no track, still queues nothing and says so.
         let mut miss = open_album();
         let (_, by, _, _) = library::album_play_band();
         assert!(miss.swipe(1, 240, by - 20).is_empty());
-        assert!(miss.queue().is_empty());
+        assert!(upq(&miss).is_empty());
     }
 
-    /// Tapping a queue row plays it next and KEEPS every other pick. The context underneath, and
-    /// the order of the picks that were above it, are left exactly as they were.
-    ///
-    /// It used to `drain(..n)` — tapping the third row threw away the two above it, the only
-    /// action on this screen that destroyed the user's own picks with no confirmation and no undo.
-    ///
-    /// It used to run through `set_play_context`, which made the queue the CONTEXT and then
-    /// cleared the queue. The music played in the right order, so nothing looked wrong; what had
-    /// happened is that the user's hand-built picks silently stopped being picks. NEXT IN QUEUE
-    /// and its CLEAR chip vanished, and the next album tapped anywhere in the app replaced them
-    /// with no "you have a queue" prompt — there was no queue left to ask about.
+    /// Tapping a row in Up Next jumps WITHIN the list — it never asks "replace Up Next?", because
+    /// nothing is replaced — and a list built by hand stays one, so starting something else from
+    /// the library still asks.
     #[test]
     fn tapping_a_queue_row_keeps_the_queue_a_queue() {
-        let mut a = unlocked();
-        let album: Vec<SongRow> = (0..4)
-            .map(|i| SongRow { title: format!("A{i}"), object_id: 10 + i, ..Default::default() })
-            .collect();
-        a.set_play_context(album, 1);
-        for i in 0..3 {
-            a.queue.push(SongRow { title: format!("P{i}"), object_id: 90 + i, ..Default::default() });
-        }
-        assert!(a.queue_play_at(1), "the middle pick is playable");
-        // P1 is now first in line, and NOTHING was thrown away: P0 follows it, then P2.
-        // It stays IN the queue — `track_started` is what consumes a pick, and it has not run.
-        assert_eq!(a.queue().iter().map(|q| q.object_id).collect::<Vec<_>>(), vec![91, 90, 92]);
-        // The context did not move and was not replaced.
-        assert_eq!(a.context_idx(), 1);
-        assert_eq!(a.context().len(), 4);
-        // …so the replace prompt still has something to protect.
-        assert_eq!(a.tap_for_test_play(10), Vec::<Action>::new(), "a queue means a prompt first");
+        let mut a = queued(3);
+        a.queue_push_for_test();
+        assert!(a.hand_added);
+        assert_eq!(a.tap(60, qrow_y(&a, 1)), vec![Action::PlayContextAt(2)]);
+        assert!(!a.modal_open(), "a jump within the list is not a replace");
+        // The list's hand-built state survives the jump (the shell hands it back after re-issuing
+        // the same list — see `list_state`).
+        let kept = a.list_state();
+        a.set_play_context(a.context().to_vec(), 2);
+        a.restore_list_state(kept);
+        assert!(a.hand_added);
+        assert_eq!(a.tap_for_test_play(10), Vec::<Action>::new(), "a replace still asks first");
         assert!(a.modal_open());
-
-        // Out of range is refused rather than clamped: a stale index from a gesture that started
-        // before the queue shortened must not play some unrelated row.
-        let mut b = unlocked();
-        assert!(!b.queue_play_at(0), "an empty queue has no row 0");
-        b.queue.push(SongRow::default());
-        assert!(!b.queue_play_at(1));
-        assert_eq!(b.queue().len(), 1);
     }
 
-    /// A HOLD lifts a queue row from anywhere on it; the grab handle still lifts one immediately.
-    ///
-    /// Reordering used to be reachable only from the handle column, because a vertical drag on this
-    /// screen is ambiguous — reorder, or scroll? — and start-point ownership is the only way to
-    /// settle that at the instant the finger moves. A hold settles it differently and from any x:
-    /// the shell only offers this once the contact has stayed still past the hold interval, and a
-    /// finger that has not moved is not scrolling.
+    /// A file tapped in a folder plays THE FOLDER from that file — not the file's album, which is
+    /// what `PlayIndex` resolves to and what this used to emit.
+    #[test]
+    fn a_folder_track_plays_the_folder_from_there() {
+        let mut a = unlocked();
+        let tracks: Vec<SongRow> = (0..4)
+            .map(|i| SongRow { title: format!("F{i}"), object_id: 40 + i, ..Default::default() })
+            .collect();
+        a.lib.folders = vec![crate::model::FolderRow {
+            path: "/contents/Music/Mix".into(),
+            name: "Mix".into(),
+            tracks,
+            ..Default::default()
+        }];
+        a.folder_stack = vec![0];
+        assert_eq!(a.folder_play(2), vec![Action::PlayListAt(2)]);
+        assert_eq!(a.take_play_list(), vec![40, 41, 42, 43]);
+        assert!(a.folder_play(9).is_empty(), "a row that is not there plays nothing");
+    }
+
+    /// A folder's files swipe to Up Next like every other track row: left = Play next, right =
+    /// Add to Up Next. The folder rows above them do not.
+    #[test]
+    fn a_folder_track_swipes_to_up_next() {
+        let mut a = with_playing(unlocked(), 2);
+        let tracks: Vec<SongRow> = (0..3)
+            .map(|i| SongRow { title: format!("F{i}"), object_id: 40 + i, ..Default::default() })
+            .collect();
+        a.lib.folders = vec![crate::model::FolderRow { name: "Mix".into(), tracks, ..Default::default() }];
+        a.push(Screen::Folders);
+        a.folder_stack = vec![0];
+        let y = crate::folders::row_top(1, 0) + 10;
+        assert!(a.swipe_track(80, y));
+        assert_eq!(a.swipe(1, 240, y), vec![Action::QueueChanged]);
+        assert_eq!(upq(&a).last().map(|t| t.object_id), Some(41), "right = the end of Up Next");
+        assert_eq!(a.swipe(-1, 240, y), vec![Action::QueueChanged]);
+        assert_eq!(upq(&a).first().map(|t| t.object_id), Some(41), "left = next");
+    }
+
+    /// The Songs tab plays the Songs LIST, in the sort that is showing, from the tapped row.
+    #[test]
+    fn a_songs_row_plays_the_songs_list_in_the_order_drawn() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Songs;
+        let y = library::list_top(Tab::Songs) + library::row_h(Tab::Songs) + library::row_h(Tab::Songs) / 2;
+        assert_eq!(a.tap(200, y), vec![Action::PlayListAt(1)]);
+        let list = a.take_play_list();
+        let drawn: Vec<i64> = library::song_order(&a.lib, a.lib_sort)
+            .into_iter()
+            .map(|i| a.lib.songs[i].object_id)
+            .collect();
+        assert_eq!(list, drawn);
+    }
+
     #[test]
     fn a_hold_lifts_a_queue_row_from_anywhere_the_handle_only_from_its_column() {
-        let seed = || {
-            let mut a = unlocked();
-            a.go(Screen::UpNext);
-            for i in 0..3 {
-                a.queue.push(SongRow {
-                    title: format!("P{i}"),
-                    object_id: 90 + i,
-                    ..Default::default()
-                });
-            }
-            a
-        };
-        // A y that lands on the first user-queue row, whatever the layout puts above it.
+        let seed = || queued(3);
+        // A y that lands on the first upcoming row, whatever the layout puts above it.
         let mut probe = seed();
-        let row_y = crate::chrome::HEADER_BOTTOM
-            + probe
-                .up_next_layout()
-                .top_of(crate::up_next::Slot::Queued(0))
-                .expect("the queue has a first row")
-            + 4;
+        let row_y = qrow_y(&probe, 0) - crate::up_next::RH / 2 + 4;
         let off_handle = crate::up_next::GRIP_X0 - 40;
         let on_handle = crate::up_next::GRIP_X0 + 4;
 
@@ -12790,13 +13052,13 @@ mod tests {
         let mut b = seed();
         assert!(b.reorder_begin(on_handle, row_y), "the handle is still immediate");
 
-        // Neither entry point works with nothing queued, or off the Up Next screen.
+        // Neither entry point works with nothing playing, or off the Up Next screen.
         let mut c = unlocked();
         c.go(Screen::UpNext);
-        assert!(!c.reorder_begin_hold(off_handle, row_y), "an empty queue has no rows to lift");
+        assert!(!c.reorder_begin_hold(off_handle, row_y), "an empty list has no rows to lift");
         let mut d = seed();
         d.go(Screen::NowPlaying);
-        assert!(!d.reorder_begin_hold(off_handle, row_y), "only the Up Next queue reorders");
+        assert!(!d.reorder_begin_hold(off_handle, row_y), "only Up Next reorders");
     }
 
     /// NEXT FROM reorders too, and only the rows that have not played yet.
@@ -12890,11 +13152,7 @@ mod tests {
         assert!(h.reorder_begin_hold(20, hy), "a played row can be pulled back into the queue");
     }
 
-    /// THE WALL IS GONE. A row can be dragged out of NEXT IN QUEUE into NEXT FROM and back, and
-    /// the storage follows the picture: crossing the boundary queues or un-queues the track.
-    ///
-    /// Requested 2026-09-15. Before this, a drag was confined to the section it started in, so the
-    /// one list on screen could only be rearranged in two halves.
+    /// Any upcoming row moves anywhere in what is to come; the playing row never moves.
     #[test]
     fn a_row_can_be_dragged_between_the_queue_and_the_album() {
         use crate::up_next::Slot;
@@ -12906,61 +13164,37 @@ mod tests {
                 .collect();
             a.set_play_context(album, 1); // A1 playing; A2..A4 upcoming
             for id in [90, 91] {
-                a.queue.push(SongRow { title: format!("P{id}"), object_id: id, ..Default::default() });
+                a.enqueue_at(SongRow { title: format!("P{id}"), object_id: id, ..Default::default() }, 0, QueueAt::Later);
             }
             a
         };
         let ctx = |a: &App| a.context().iter().map(|s| s.object_id).collect::<Vec<_>>();
-        let q = |a: &App| a.queue().iter().map(|s| s.object_id).collect::<Vec<_>>();
 
-        // The span is queue-then-upcoming, so it is [90, 91, A2, A3, A4].
+        // The span is the upcoming rows in play order: [A2, A3, A4, 90, 91].
         let lay = seed().up_next_layout();
         assert_eq!(lay.movable_len(), 5);
-        assert_eq!(lay.movable_slot(0), Some(Slot::Queued(0)));
-        assert_eq!(lay.movable_slot(1), Some(Slot::Queued(1)));
-        assert_eq!(lay.movable_slot(2), Some(Slot::Upcoming(2)));
+        assert_eq!(lay.movable_slot(0), Some(Slot::Upcoming(2)));
+        assert_eq!(lay.movable_slot(4), Some(Slot::Upcoming(6)));
 
-        // QUEUE → ALBUM. Drag pick 90 (span 0) to the end of the span: it leaves the queue and
-        // lands at the end of the context.
+        // A queued track dragged to the front plays next.
         let mut a = seed();
-        assert_eq!(a.movable_move(0, 4), vec![Action::QueueChanged]);
-        assert_eq!(q(&a), vec![91], "the pick is no longer queued");
-        assert_eq!(ctx(&a), vec![10, 11, 12, 13, 14, 90], "…it is in the sequence, at the end");
+        assert_eq!(a.movable_move(4, 0), vec![Action::QueueChanged]);
+        assert_eq!(ctx(&a), vec![10, 11, 91, 12, 13, 14, 90]);
         assert_eq!(a.context_idx(), 1, "the playing track never moves");
 
-        // ALBUM → QUEUE. Drag A3 (span 3) to the front: it becomes the first pick.
+        // An album track dragged to the end plays last.
         let mut b = seed();
-        assert_eq!(b.movable_move(3, 0), vec![Action::QueueChanged]);
-        assert_eq!(q(&b), vec![13, 90, 91], "the album track is a pick now, and plays first");
-        assert_eq!(ctx(&b), vec![10, 11, 12, 14], "…and has left the sequence, exactly once");
-        assert_eq!(b.context_idx(), 1);
+        assert_eq!(b.movable_move(0, 4), vec![Action::QueueChanged]);
+        assert_eq!(ctx(&b), vec![10, 11, 13, 14, 90, 91, 12]);
 
-        // THE BOUNDARY BELONGS TO THE QUEUE: dropping an album row on the NEXT FROM heading (span
-        // index == the queue's length) queues it rather than leaving it where it was.
-        let mut c = seed();
-        assert_eq!(c.movable_move(2, 2), Vec::<Action>::new(), "a move to its own slot is a no-op");
-        assert_eq!(c.movable_move(3, 2), vec![Action::QueueChanged]);
-        assert_eq!(q(&c), vec![90, 91, 13], "dropped at the boundary => the last pick");
-        assert_eq!(ctx(&c), vec![10, 11, 12, 14]);
-
-        // Reorders WITHIN each half still behave exactly as they did.
-        let mut d = seed();
-        assert_eq!(d.movable_move(0, 1), vec![Action::QueueChanged]);
-        assert_eq!(q(&d), vec![91, 90]);
-        assert_eq!(ctx(&d), vec![10, 11, 12, 13, 14], "the context is untouched");
-
-        // Out-of-range indices are refused rather than panicking or silently moving something.
+        // A move to its own slot is a no-op, and out-of-range indices are refused.
         let mut e = seed();
+        assert_eq!(e.movable_move(2, 2), Vec::<Action>::new());
         assert_eq!(e.movable_move(0, 5), Vec::<Action>::new());
         assert_eq!(e.movable_move(9, 0), Vec::<Action>::new());
-        assert_eq!(q(&e), vec![90, 91]);
-        assert_eq!(ctx(&e), vec![10, 11, 12, 13, 14]);
+        assert_eq!(ctx(&e), vec![10, 11, 12, 13, 14, 90, 91]);
     }
 
-    /// HISTORY IS A SOURCE, NEVER A DESTINATION — the asymmetry the whole span rests on.
-    ///
-    /// Asked for in exactly those terms on 2026-09-15: anything can be dragged anywhere "apart
-    /// from a queued or next song to history".
     #[test]
     fn a_played_track_can_be_pulled_back_but_nothing_can_be_pushed_into_the_past() {
         let song = |id: i64| SongRow { object_id: id, ..Default::default() };
@@ -12969,68 +13203,50 @@ mod tests {
             a.go(Screen::UpNext);
             a.set_play_context((0..5).map(|i| song(10 + i)).collect(), 1); // A1 playing
             a.history_restore(vec![song(700), song(701)]);
-            a.queue.push(song(90));
             a
         };
         let hist = |a: &App| a.history().iter().map(|h| h.object_id).collect::<Vec<_>>();
-        let q = |a: &App| a.queue().iter().map(|s| s.object_id).collect::<Vec<_>>();
         let ctx = |a: &App| a.context().iter().map(|s| s.object_id).collect::<Vec<_>>();
 
-        // The span is history ++ queue ++ upcoming = [700, 701, 90, A2, A3, A4].
+        // The span is history ++ upcoming = [700, 701, A2, A3, A4].
         let l = seed().up_next_layout();
-        assert_eq!(l.movable_len(), 6);
+        assert_eq!(l.movable_len(), 5);
         assert_eq!(l.drop_first(), 2, "the first two indices are history and cannot be landed on");
         assert_eq!(l.movable_slot(0), Some(crate::up_next::Slot::History(0)));
-        assert_eq!(l.movable_slot(2), Some(crate::up_next::Slot::Queued(0)));
+        assert_eq!(l.movable_slot(2), Some(crate::up_next::Slot::Upcoming(2)));
 
-        // HISTORY → THE FRONT OF THE QUEUE. Dragging a played row up lands it at the first
-        // droppable slot — index 1, because lifting it out of the history made the history one
-        // shorter. It plays next, and it is no longer "previously played": it is coming up.
+        // HISTORY → PLAY NEXT. Dragging a played row up lands it at the first droppable slot —
+        // index 1, because lifting it out of the history made the history one shorter.
         let mut a = seed();
         assert_eq!(a.movable_move(0, 1), vec![Action::QueueChanged]);
         assert_eq!(hist(&a), vec![701], "it left the history");
-        assert_eq!(q(&a), vec![700, 90], "…and is the next thing that plays");
+        assert_eq!(ctx(&a), vec![10, 11, 700, 12, 13, 14], "…and is the next thing that plays");
         assert_eq!(a.context_idx(), 1, "the playing track never moves");
 
-        // …and dropping it ON the queue row instead puts it after that row, which is what a
-        // downward drag means everywhere else in this list.
-        let mut a2 = seed();
-        assert_eq!(a2.movable_move(0, 2), vec![Action::QueueChanged]);
-        assert_eq!(q(&a2), vec![90, 700]);
-
-        // HISTORY → THE SEQUENCE, further down. Span index 5 is the last slot, so it lands after
-        // the final upcoming track.
+        // HISTORY → the end. Span index 4 is the last slot.
         let mut b = seed();
-        assert_eq!(b.movable_move(1, 5), vec![Action::QueueChanged]);
+        assert_eq!(b.movable_move(1, 4), vec![Action::QueueChanged]);
         assert_eq!(hist(&b), vec![700]);
-        assert_eq!(q(&b), vec![90], "it did not go into the queue");
         assert_eq!(ctx(&b), vec![10, 11, 12, 13, 14, 701], "it is the last thing that plays");
 
-        // NOTHING GOES INTO THE HISTORY. Every source, aimed at every history index, lands on the
-        // first droppable slot instead — and the history is left exactly as it was.
-        for from in 2..6 {
+        // NOTHING GOES INTO THE HISTORY. Every upcoming row, aimed at every history index, lands
+        // at the front of what is coming instead — and the history is left exactly as it was.
+        for from in 2..5 {
             for to in 0..2 {
                 let mut c = seed();
                 let before = hist(&c);
                 c.movable_move(from, to);
                 assert_eq!(hist(&c), before, "{from}->{to} wrote into the history");
-                // It went to the front of the queue, which is what aiming above the queue means.
-                // The span is [700, 701, 90, A2, A3, A4], so index 2 is the pick and 3.. are the
-                // upcoming tracks — read off the seed rather than re-derived, since an arithmetic
-                // restatement of the layout is one more thing that can be wrong.
-                let want = [700, 701, 90, 12, 13, 14][from];
-                assert_eq!(c.queue().first().map(|s| s.object_id), Some(want),
-                           "{from}->{to} did not land at the front of the queue");
+                let want = [700, 701, 12, 13, 14][from];
+                assert_eq!(c.context()[2].object_id, want, "{from}->{to} did not land next");
             }
         }
 
-        // A played row aimed back INTO the history clamps to the first droppable slot, exactly as
-        // the parted list showed it while the finger was down — it does not silently do nothing.
-        // (`movable_slot_for` is what the finger actually drives, and it applies the same floor.)
+        // A played row aimed back INTO the history clamps to the first droppable slot.
         let mut d = seed();
         assert_eq!(d.movable_move(0, 0), vec![Action::QueueChanged]);
         assert_eq!(hist(&d), vec![701]);
-        assert_eq!(q(&d), vec![700, 90]);
+        assert_eq!(ctx(&d), vec![10, 11, 700, 12, 13, 14]);
         // The one genuine no-op: a row put back in the slot it came from.
         let mut e = seed();
         assert_eq!(e.movable_move(3, 3), Vec::<Action>::new());
@@ -13038,18 +13254,15 @@ mod tests {
         assert_eq!(ctx(&e), vec![10, 11, 12, 13, 14]);
     }
 
-    /// Every move through the span must leave exactly the same set of tracks, in exactly the order
-    /// `up_next::drag_order` previewed. The preview and the storage disagreeing is the one bug
-    /// class a cross-section drag can have that a user notices immediately.
+    /// The storage move lands every row exactly where the drag preview showed it, for every
+    /// from/to pair over history + upcoming.
     #[test]
     fn the_storage_move_matches_the_order_the_drag_previewed() {
-        for (hlen, qlen, ulen) in
-            [(0usize, 2usize, 3usize), (2, 0, 4), (1, 3, 0), (2, 1, 1), (3, 4, 4), (0, 0, 3)]
-        {
-            for from in 0..hlen + qlen + ulen {
-                for to in 0..hlen + qlen + ulen {
+        for (hlen, ulen) in [(0usize, 3usize), (2, 4), (1, 0), (2, 1), (3, 6), (0, 1)] {
+            for from in 0..hlen + ulen {
+                for to in 0..hlen + ulen {
                     let mut a = unlocked();
-                    // Context: one playing row, then `ulen` upcoming ones.
+                    // One playing row, then `ulen` upcoming ones.
                     let ctx: Vec<SongRow> = (0..=ulen)
                         .map(|i| SongRow { object_id: 100 + i as i64, ..Default::default() })
                         .collect();
@@ -13059,12 +13272,8 @@ mod tests {
                             .map(|i| SongRow { object_id: 700 + i as i64, ..Default::default() })
                             .collect(),
                     );
-                    for i in 0..qlen {
-                        a.queue.push(SongRow { object_id: 900 + i as i64, ..Default::default() });
-                    }
                     let span = |a: &App| -> Vec<i64> {
                         a.history().iter().map(|r| r.object_id)
-                            .chain(a.queue().iter().map(|r| r.object_id))
                             .chain(a.context()[1..].iter().map(|r| r.object_id))
                             .collect()
                     };
@@ -13081,8 +13290,7 @@ mod tests {
 
                     a.movable_move(from, to);
                     let after = span(&a);
-                    assert_eq!(after, want,
-                               "span disagrees for h={hlen} q={qlen} u={ulen} {from}->{to}");
+                    assert_eq!(after, want, "span disagrees for h={hlen} u={ulen} {from}->{to}");
                     // Nothing was duplicated or lost, and the playing row is still the playing row.
                     assert_eq!(after.len(), before.len());
                     assert_eq!(a.context_idx(), 0);
@@ -13209,13 +13417,8 @@ mod tests {
         assert_eq!(a.pins[0].as_ref().unwrap().screen, Screen::Album);
     }
 
-    /// A user pick that is PLAYING owns the NOW PLAYING row.
-    ///
-    /// A pick leaves the queue the moment it starts — that is what stops it replaying — and the
-    /// context index deliberately does NOT move for it, because "play this next, then carry on
-    /// where I was" is the whole promise. Between those two rules nothing held the pick, so Up
-    /// Next asked the context what was playing and got the track the pick INTERRUPTED: for the
-    /// whole of a swipe-queued song the screen named the previous one.
+    /// A Play next track that starts IS the NOW PLAYING row — it is a row of the list like any
+    /// other, so there is no second "playing pick" state to fall out of step with the list.
     #[test]
     fn a_playing_pick_is_the_now_playing_row_not_the_track_it_interrupted() {
         use crate::up_next::{Section, Slot};
@@ -13224,41 +13427,23 @@ mod tests {
             .map(|i| SongRow { title: format!("A{i}"), object_id: 10 + i, ..Default::default() })
             .collect();
         a.set_play_context(album, 1);                       // A1 playing
-        a.queue.push(SongRow { title: "PICK".into(), object_id: 99, ..Default::default() });
-        a.queue.push(SongRow { title: "PICK2".into(), object_id: 98, ..Default::default() });
+        a.enqueue_at(SongRow { title: "PICK2".into(), object_id: 98, ..Default::default() }, 0, QueueAt::Next);
+        a.enqueue_at(SongRow { title: "PICK".into(), object_id: 99, ..Default::default() }, 0, QueueAt::Next);
 
         // A1 ends, the first pick starts.
-        assert!(a.track_started(99), "a consumed pick is a queue change");
-        assert_eq!(a.queue().len(), 1, "the pick that started is no longer queued");
-        assert_eq!(a.context_idx(), 1, "a pick must not move the context");
-        assert_eq!(a.playing_pick().map(|p| p.object_id), Some(99));
-
-        // A1 has been played, so it is history; the pick holds NOW PLAYING; the album resumes
-        // below the remaining queue.
-        //
-        // ONE history row, not two. The old derived history was `context_idx + pick`, so it
-        // counted A0 as played — and A0 never played: this context started at A1. A real history
-        // holds what was actually heard.
+        assert!(!a.track_started(99, false));
+        assert_eq!(a.context()[a.context_idx()].object_id, 99);
+        // A1 has been played, so it is history. ONE row: this list started at A1, and A0 never
+        // played.
         assert_eq!(a.history().iter().map(|h| h.object_id).collect::<Vec<_>>(), vec![11]);
         let order: Vec<Slot> = a.up_next_layout().slots.iter().map(|(s, _)| *s).collect();
         assert_eq!(order, vec![
             Slot::Head(Section::History), Slot::History(0),
-            Slot::Head(Section::Now),     Slot::CurrentPick,
-            Slot::Head(Section::Queue),   Slot::Queued(0),
-            Slot::Head(Section::Album),   Slot::Upcoming(2), Slot::Upcoming(3),
-        ], "the pick must be the NOW PLAYING row");
-
-        // The context taking over again ends the pick, whatever it lands on.
-        assert!(!a.track_started(12));
-        assert!(a.playing_pick().is_none());
-        assert_eq!(a.context_idx(), 2);
-
-        // …including a track that is in neither list (a resume, or a file that left the library).
-        a.queue.push(SongRow { title: "PICK3".into(), object_id: 97, ..Default::default() });
-        assert!(a.track_started(97));
-        assert!(a.playing_pick().is_some());
-        assert!(!a.track_started(4242));
-        assert!(a.playing_pick().is_none(), "a stranger still ends the pick");
+            Slot::Head(Section::Now),     Slot::Current(2),
+            Slot::Head(Section::Next),    Slot::Upcoming(3), Slot::Upcoming(4), Slot::Upcoming(5),
+        ]);
+        let next: Vec<i64> = upq(&a).iter().map(|t| t.object_id).collect();
+        assert_eq!(next, vec![98, 12, 13], "the other pick, then the rest of the album");
     }
 
     /// THE RETENTION POLICY, which is the part of a history people actually notice. Every clause
@@ -13273,7 +13458,7 @@ mod tests {
         let mut a = unlocked();
         a.set_play_context((0..4).map(|i| song(10 + i)).collect(), 0);
         for id in [11, 12, 13] {
-            a.track_started(id);
+            a.track_started(id, false);
         }
         assert_eq!(ids(&a), vec![10, 11, 12], "the outgoing track is what lands in the history");
 
@@ -13281,16 +13466,15 @@ mod tests {
         //    history was a slice of the context, so starting a different album erased it.
         a.set_play_context(vec![song(50), song(51)], 0);
         assert_eq!(ids(&a), vec![10, 11, 12], "a new album does not erase what came before it");
-        a.track_started(51);
+        a.track_started(51, false);
         assert_eq!(ids(&a), vec![10, 11, 12, 50], "…and the new album records into the same list");
 
-        // 3. A PICK IS RECORDED TOO, which the derived history could never do: a pick is not in
-        //    the context, so there was nowhere for it to be.
+        // 3. A QUEUED TRACK IS RECORDED TOO.
         let mut b = unlocked();
         b.set_play_context(vec![song(10), song(11)], 0);
-        b.queue.push(song(99));
-        b.track_started(99);                 // the pick starts; 10 was playing
-        b.track_started(11);                 // the context takes over; the PICK was playing
+        b.enqueue_at(song(99), 0, QueueAt::Next);
+        b.track_started(99, false);          // the pick starts; 10 was playing
+        b.track_started(11, false);          // the album takes over; the PICK was playing
         assert_eq!(ids(&b), vec![10, 99], "a swipe-queued song is something you played");
 
         // 4. CONSECUTIVE REPEATS COLLAPSE. Repeat-one is a supported mode, and without this an
@@ -13298,12 +13482,12 @@ mod tests {
         let mut c = unlocked();
         c.set_play_context(vec![song(10), song(11)], 0);
         for _ in 0..8 {
-            c.track_started(10);             // the same track restarting
+            c.track_started(10, false);      // the same track restarting
         }
         assert!(ids(&c).is_empty(), "a track does not follow itself into the history");
-        c.track_started(11);
-        c.track_started(10);
-        c.track_started(11);
+        c.track_started(11, false);
+        c.track_started(10, false);
+        c.track_started(11, false);
         assert_eq!(ids(&c), vec![10, 11, 10], "…but alternating tracks are separate listens");
 
         // 5. IT IS CAPPED, and the OLDEST go. A device left playing for a week must not grow an
@@ -13311,7 +13495,7 @@ mod tests {
         let mut d = unlocked();
         d.set_play_context((0..(HISTORY_MAX as i64 + 40)).map(song).collect(), 0);
         for id in 1..(HISTORY_MAX as i64 + 40) {
-            d.track_started(id);
+            d.track_started(id, false);
         }
         assert_eq!(d.history().len(), HISTORY_MAX, "the cap holds");
         assert_eq!(d.history().first().map(|h| h.object_id), Some(39), "the oldest are the ones lost");
@@ -13321,17 +13505,17 @@ mod tests {
         //    destroys what you asked to hear NEXT. Two buttons because they are two things.
         let mut e = unlocked();
         e.set_play_context(vec![song(10), song(11)], 0);
-        e.queue.push(song(99));
-        e.track_started(11);
+        e.enqueue_at(song(99), 0, QueueAt::Later);
+        e.track_started(11, false);
         assert_eq!(ids(&e), vec![10]);
         assert_eq!(e.queue_clear(), vec![Action::QueueChanged]);
         assert_eq!(ids(&e), vec![10], "clearing the queue leaves the history alone");
         // …and the reverse: clearing the history leaves the picks alone, and asks the shell for
         // nothing, because nothing about the transport has changed.
-        e.queue.push(song(98));
+        e.enqueue_at(song(98), 0, QueueAt::Later);
         assert_eq!(e.history_clear(), Vec::<Action>::new());
         assert!(e.history().is_empty());
-        assert_eq!(e.queue().len(), 1, "clearing the history leaves the queue alone");
+        assert_eq!(upq(&e).len(), 1, "clearing the history leaves Up Next alone");
         assert_eq!(e.history_clear(), Vec::<Action>::new(), "clearing an empty history is a no-op");
 
         // 7. A RESTORE IS TRIMMED TOO, so a hand-edited resume file cannot seed an unbounded list.
@@ -13371,34 +13555,25 @@ mod tests {
         assert!(a.history().is_empty(), "the heading's CLEAR empties the history");
     }
 
-    /// …and the playing pick survives a power cycle. It is in neither saved list, so without its
-    /// own field the resume came back on the context row underneath it — the previous song.
+    /// A reboot mid-pick comes back on the pick: it is the list's current row, and the list and
+    /// its index are what is saved.
     #[test]
     fn a_playing_pick_survives_a_reboot() {
         let mut a = unlocked();
         let album: Vec<SongRow> = (0..3)
             .map(|i| SongRow { title: format!("A{i}"), object_id: 10 + i, ..Default::default() })
             .collect();
-        a.set_play_context(album.clone(), 0);
-        a.queue.push(SongRow { title: "PICK".into(), object_id: 99, ..Default::default() });
-        a.track_started(99);
+        a.set_play_context(album, 0);
+        a.enqueue_at(SongRow { title: "PICK".into(), object_id: 99, ..Default::default() }, 0, QueueAt::Next);
+        a.track_started(99, false);
         let body = a.playback_encode();
-        assert!(body.contains("pick=99"), "the playing pick is not persisted: {body}");
-        // Starting the pick pushed the track it interrupted into the history, and that is saved
-        // too — a "previously played" that emptied on every reboot would answer a different
-        // question from the one it asks.
+        assert!(body.contains("ctx=10,99,11,12") && body.contains("idx=1"), "{body}");
         assert!(body.contains("hist=10"), "the history is not persisted: {body}");
 
-        // What the shell does with that file: resolve the ids, hand them back.
         let mut b = unlocked();
-        b.playback_restore(
-            album, 0, vec![],
-            None,
-            Some(SongRow { title: "PICK".into(), object_id: 99, ..Default::default() }),
-        );
+        b.playback_restore(a.context().to_vec(), 1, vec![], None, None);
         b.history_restore(vec![SongRow { object_id: 10, ..Default::default() }]);
-        assert_eq!(b.playing_pick().map(|p| p.object_id), Some(99));
-        assert_eq!(b.history().len(), 1);
+        assert_eq!(b.context()[b.context_idx()].object_id, 99);
         assert_eq!(b.playback_encode(), body, "a restore must round-trip");
     }
 
@@ -13434,7 +13609,7 @@ mod tests {
 
     #[test]
     fn album_row_swipe_queues_album() {
-        let mut a = unlocked();
+        let mut a = with_playing(unlocked(), 1);
         a.stack = vec![Screen::Library];
         a.lib_tab = Tab::Albums;
         let album = a.lib.albums_flat()[0].clone();
@@ -13442,7 +13617,7 @@ mod tests {
             .find(|&y| a.albums_album_at(y).map(|al| al.name) == Some(album.name.clone()))
             .expect("albums list should contain the first album row");
         assert_eq!(a.swipe(1, 240, y), vec![Action::QueueChanged]);
-        assert_eq!(a.queue().len(), album.track_list.len());
+        assert_eq!(upq(&a).len(), album.track_list.len());
     }
 
     #[test]
@@ -13704,9 +13879,9 @@ mod tests {
 
         // Everything else: untouched.
         assert_eq!(a.lib.songs.len(), songs, "a preference reset is not a library wipe");
-        assert_eq!(a.context().len(), 4, "the music keeps playing");
+        assert_eq!(a.context().len(), 5, "the music keeps playing, the hand-queued track included");
         assert_eq!(a.context_idx(), 2);
-        assert_eq!(a.queue().len(), 1, "the hand-built queue is the user's, not a setting");
+        assert!(a.hand_added, "the hand-built list is the user's, not a setting");
         assert!(a.playing);
         assert!(a.locked, "the Hold switch is hardware truth, not a preference");
         assert!(a.onboarding_seen(), "a settings reset is not a factory reset");
@@ -13754,22 +13929,23 @@ mod tests {
                 .expect("row has no tappable pixel")
         };
 
-        // CLEAR: queue emptied, and the shell is told both things that changed.
+        // REPLACE: the play action replaces the list — no separate QueueChanged, which would only
+        // be a stale flush against a list about to be replaced.
         let mut a = unlocked();
         a.queue_push_for_test();
         assert!(a.start_play(77).is_empty(), "the tap must not play until answered");
         assert!(a.modal_open());
         let acts = a.tap(240, pick(Hit::ClearQueue));
-        assert_eq!(acts, vec![Action::QueueChanged, Action::PlayIndex(77)]);
-        assert!(a.queue().is_empty());
+        assert_eq!(acts, vec![Action::PlayIndex(77)]);
 
-        // KEEP: plays, queue untouched, and no spurious QueueChanged.
+        // KEEP: plays, list untouched until the new sequence arrives, and no QueueChanged.
         let mut a = unlocked();
         a.queue_push_for_test();
-        let before = a.queue().len();
+        let before = upq(&a).len();
         assert!(a.start_play(77).is_empty());
         assert_eq!(a.tap(240, pick(Hit::KeepQueue)), vec![Action::PlayIndex(77)]);
-        assert_eq!(a.queue().len(), before, "keeping must not touch the queue");
+        assert_eq!(upq(&a).len(), before, "keeping must not touch the list");
+        assert!(a.queue_keep, "and the new sequence will keep it");
 
         // CANCEL: nothing plays, nothing changes, and the pending song is dropped so it cannot
         // leak into the NEXT prompt.
@@ -13778,7 +13954,7 @@ mod tests {
         assert!(a.start_play(77).is_empty());
         assert!(a.tap(5, 5).is_empty());
         assert!(!a.modal_open());
-        assert_eq!(a.queue().len(), 1);
+        assert_eq!(upq(&a).len(), 1);
         assert!(a.pending_play.is_none(), "a cancelled song must not survive the dialog");
     }
 
@@ -13839,13 +14015,17 @@ mod tests {
                 .expect("the artist has tracks");
             (library::artist_content_top() + vy + 4, p.tracks[0].song.object_id)
         };
-        assert_eq!(a.tap(200, first_track_y), vec![Action::PlayIndex(want)]);
+        // The ARTIST's list plays, from the tapped track — not that track's album.
+        assert_eq!(a.tap(200, first_track_y), vec![Action::PlayListAt(0)]);
+        let list = a.take_play_list();
+        assert_eq!(list.first(), Some(&want));
+        assert_eq!(list, a.artist_list_ids());
         // Right-swiping the same row queues it instead (empty queue → no prompt involved).
-        let mut a = library_on(Tab::Artists);
+        let mut a = with_playing(library_on(Tab::Artists), 1);
         a.tap(200, artist_row_y(0));
-        assert!(a.queue().is_empty());
+        assert!(upq(&a).is_empty());
         a.swipe(1, 200, first_track_y);
-        assert_eq!(a.queue().len(), 1, "a swipe on an artist-page track must queue it");
+        assert_eq!(upq(&a).len(), 1, "a swipe on an artist-page track must queue it");
     }
 
     #[test]

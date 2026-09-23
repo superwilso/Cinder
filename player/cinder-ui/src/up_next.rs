@@ -1,7 +1,7 @@
-//! Up Next — the play queue. Now data-driven: it shows the **current album** (the album the
-//! now-playing track belongs to, resolved from the library), highlighting the playing row and the
-//! tracks that follow. Windowed like the library lists so long albums scroll. When nothing is
-//! playing / the track isn't in the library, a clean empty state is shown (no fake data).
+//! Up Next — ONE list: what has played, what is playing, and everything that will play after it,
+//! in the order it will play. Adding a track or an album puts it in that list (straight after the
+//! playing track, or at the very end); nothing else decides the order. Windowed like the library
+//! lists so a whole-library shuffle scrolls. When nothing is playing a clean empty state is shown.
 
 use crate::canvas::W;
 use crate::model::SongRow;
@@ -25,11 +25,11 @@ const LIST_TOP: i32 = crate::chrome::HEADER_BOTTOM;
 pub const GRIP_X0: i32 = 424;
 pub const GRIP_X1: i32 = W as i32 - crate::library::SBAR_GRAB_W;
 
-/// The "clear the queue" chip in the header: `(x, y, w, h)`. An explicit, labelled control rather
-/// than a gesture, because emptying the queue is the one action here that cannot be undone.
+/// The "clear Up Next" chip in the header: `(x, y, w, h)`. An explicit, labelled control rather
+/// than a gesture, because emptying the list is the one action here that cannot be undone.
 pub const CLEAR_CHIP: (i32, i32, i32, i32) = (388, 48, 70, 28);
-/// The SHUFFLE chip, immediately left of it. Shuffles what is still to come — not the whole
-/// sequence, and not the user's own picks (see `App::queue_shuffle`).
+/// The SHUFFLE chip, immediately left of it. Shuffles every track in the list except the one
+/// playing (see `App::queue_shuffle`).
 pub const SHUFFLE_CHIP: (i32, i32, i32, i32) = (302, 48, 78, 28);
 
 fn in_rect(r: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
@@ -65,24 +65,18 @@ pub fn hit_history_clear(l: &Layout, x: i32, y: i32, scroll_px: i32) -> bool {
 
 // ── THE MOVABLE SPAN ────────────────────────────────────────────────────────────────────────────
 //
-// Everything below NOW PLAYING, in the order it will actually play: the user's queued picks first,
-// then the rest of the play context. ONE index space over the two of them.
+// Every row except the playing one, in the order it is drawn: the played tracks, then everything
+// still to come. ONE index space over the two of them.
 //
-// This reverses a rule this file used to state twice: "a drag NEVER crosses between them … moving a
-// row from one to the other is queueing or un-queueing it, which is a different operation with a
-// different meaning, not a reorder." That is true about the STORAGE — the two rows live in
-// different vectors, and the release below really does move a `SongRow` between them — but it was
-// never true about what the screen shows. The rows are drawn as one column, in play order, and a
-// list you can see as one list but only rearrange in two halves is a list with an invisible wall
-// down it. Requested 2026-09-15: everything in the queue movable anywhere.
+// Up Next used to hold two lists below NOW PLAYING — NEXT IN QUEUE (the user's own picks) and NEXT
+// FROM <ALBUM> (the rest of what was started) — and a pick always played before the album resumed.
+// So "play this album, then that one" could not be said: queueing the second album put it in front
+// of the rest of the first. Merged 2026-09-23 at the owner's request into ONE list in play order.
+// Adding a track or album puts it straight after the playing track or at the very end, and a drag
+// can move any upcoming row anywhere in it.
 //
-// What makes it safe is unchanged from when only the album half moved: the span starts strictly
-// AFTER the playing row, so `context_idx` can never be disturbed by a drag, whichever direction the
-// row travels. `pre_shuffle` is likewise left alone — see `movable_move`.
-//
-// Position in the span IS position in what plays next, so the visual order and the play order agree
-// by construction. Dragging an album track up past the queue boundary makes it play sooner, which
-// is what the picture already promised; the storage move is the consequence, not the point.
+// What makes a drag safe is unchanged: the span starts strictly AFTER the playing row, so
+// `context_idx` can never be disturbed by one, whichever direction the row travels.
 
 /// A row being dragged to a new position in the movable span.
 ///
@@ -112,23 +106,22 @@ impl RowDrag {
     }
 }
 
-/// Height of the user queue's scrolling window.
+/// Height of Up Next's scrolling window.
 pub fn queue_view_h() -> i32 {
     LIST_BOTTOM - LIST_TOP
 }
 
 /// Is this x on the grab handle? Says nothing about the ROW: the caller pairs this with the slot
-/// under the finger, because the same column is inert on a played row and on the playing one.
+/// under the finger, because the same column is inert on the playing row.
 pub fn queue_grip_hit(x: i32) -> bool {
     (GRIP_X0..GRIP_X1).contains(&x)
 }
 
 /// The movable span in the order it is currently DRAWN: `from` lifted out and re-inserted at `to`.
 ///
-/// One order over BOTH sections, so a row lifted out of the queue parts the album rows below it and
-/// vice versa. The span's slots stay where they are; it is the CONTENT that flows through them,
-/// which is what makes a cross-section drag look like one list reflowing rather than two lists
-/// arguing. On release `App::movable_move` performs the storage move the preview promised.
+/// The span's slots stay where they are; it is the CONTENT that flows through them, which is what
+/// makes a drag look like one list reflowing. On release `App::movable_move` performs the storage
+/// move the preview promised.
 fn drag_order(len: usize, drag: Option<RowDrag>) -> Vec<usize> {
     let mut order: Vec<usize> = (0..len).collect();
     if let Some(d) = drag {
@@ -140,27 +133,15 @@ fn drag_order(len: usize, drag: Option<RowDrag>) -> Vec<usize> {
     order
 }
 
-// ── The unified queue layout ────────────────────────────────────────────────────────────────────
-// Up Next used to be TWO mutually exclusive screens: the current album auto-scrolled to the playing
-// track, OR — the moment you swipe-queued a single song — the user queue on its own, with no
-// now-playing row anywhere on it. Queueing one track therefore hid what was playing, and the queue
-// itself never followed playback.
-//
-// One list now, in Apple Music's order:
+// ── The layout ──────────────────────────────────────────────────────────────────────────────────
 //
 //     PREVIOUSLY PLAYED     what you have actually played, newest last (see `App::history`)
 //     NOW PLAYING           the current track
-//     NEXT IN QUEUE         the user's own swipe-queued picks (reorderable, removable)
-//     NEXT FROM <ALBUM>     the rest of the album
-//
-// PREVIOUSLY PLAYED used to be `context[..current]` — the album tracks before the playing one. That
-// is not a history, it is a spelling of "earlier in this album": start a different album and
-// everything you played before it vanished, and it could never hold a swipe-queued pick at all,
-// because a pick is not in the context. It is a real accumulated list now, kept by the shell.
+//     NEXT FROM <ALBUM>     everything after it, in play order — "NEXT UP" once the list holds
+//                           more than the playing album
 //
 // Sections with nothing in them are omitted, headers and all. Everything below is driven from
-// `layout()`, so the renderer, the tap, the reorder drag and the swipe all read the same geometry
-// — the rule this file already followed for the album window and lost for the user queue.
+// `layout()`, so the renderer, the tap, the reorder drag and the swipe all read the same geometry.
 
 /// Height of a section heading row.
 pub const HDR_H: i32 = 34;
@@ -169,27 +150,20 @@ pub const HDR_H: i32 = 34;
 pub enum Section {
     History,
     Now,
-    Queue,
-    Album,
+    /// Everything after the playing track.
+    Next,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Slot {
     /// A section heading. Never tappable.
     Head(Section),
-    /// A track that has already played — index into the HISTORY list, not into the album. Oldest
-    /// first, so the row nearest NOW PLAYING is the one that played most recently.
+    /// A track that has already played — index into the HISTORY list, not into the sequence.
+    /// Oldest first, so the row nearest NOW PLAYING is the one that played most recently.
     History(usize),
-    /// The playing track — index into the album's track list.
+    /// The playing track — index into the sequence.
     Current(usize),
-    /// The playing track is a USER PICK, not a context row. It has already been taken out of the
-    /// queue (that is what stops it replaying), so it is not `Queued(_)` either — without this
-    /// slot the screen had nowhere to put it and drew the context row the pick INTERRUPTED as
-    /// NOW PLAYING, i.e. named the previous song for the whole of the pick.
-    CurrentPick,
-    /// A user-queued track — index into the USER QUEUE. The only kind that reorders or removes.
-    Queued(usize),
-    /// An album track after the playing one — index into the album's track list.
+    /// A track after the playing one — index into the sequence.
     Upcoming(usize),
 }
 
@@ -214,19 +188,13 @@ pub struct Layout {
     /// Content-space top of the NOW PLAYING row, if there is one. This is what the auto-follow
     /// scrolls to.
     pub current_top: Option<i32>,
-    /// Content-space top of the first user-queue row. Stored rather than searched for: the draw
-    /// loop needs it once a frame to work out how many queue rows are above the window, and a
-    /// linear find over a sequence that can be the whole library is not the way to answer an
-    /// arithmetic question.
-    /// Content-space top of the first HISTORY row, if there is a history section. Needed for the
-    /// same reason the other two are: the span's pixel arithmetic is per-section, because section
-    /// headings sit between them and belong to no row.
+    /// Content-space top of the first HISTORY row, if there is a history section. Stored rather
+    /// than searched for: the span's pixel arithmetic is per-section, because section headings sit
+    /// between them and belong to no row.
     history_top_px: Option<i32>,
-    queue_top_px: Option<i32>,
-    /// The same two numbers for NEXT FROM: content-space top of its first row, and the CONTEXT
-    /// index that row holds. The section does not start at context index 0 — it starts one past
-    /// the playing track — so the offset is what converts between a drag's relative index and the
-    /// absolute one `Slot::Upcoming` carries.
+    /// The same two numbers for the upcoming rows: content-space top of the first one, and the
+    /// SEQUENCE index it holds. The section starts one past the playing track, so the offset is
+    /// what converts between a drag's relative index and the absolute one `Slot::Upcoming` carries.
     upcoming_top_px: Option<i32>,
     upcoming_first: usize,
 }
@@ -238,37 +206,27 @@ pub struct Layout {
 /// entire library — 3,600-odd slots. The render path's auto-follow needs exactly two numbers out of
 /// it, so it asks for those instead of building the whole thing to read the top of one row.
 ///
-/// `metrics()` and `layout()` MUST agree; `metrics_matches_layout` sweeps them against each other,
-/// because two sources of one truth is the bug class this screen was rewritten to remove.
+/// `metrics()` and `layout()` MUST agree; `metrics_matches_layout` sweeps them against each other.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Metrics {
     pub current_top: Option<i32>,
     pub content_h: i32,
 }
 
-/// `pick` = a user-queued track is the one actually playing. It takes the NOW PLAYING row and the
-/// context resumes below the queue.
-///
-/// `hist` is the length of the shell's play history — an independent list now, not a slice of the
-/// context, so it is passed in rather than derived from `current`.
-pub fn metrics(hist: usize, album_len: usize, current: Option<usize>, queued: usize, pick: bool) -> Metrics {
+/// `hist` is the length of the shell's play history — an independent list, so it is passed in
+/// rather than derived from `current`. `len`/`current` describe the sequence.
+pub fn metrics(hist: usize, len: usize, current: Option<usize>) -> Metrics {
     let mut y = 0i32;
     let mut current_top = None;
-    let history = hist;
-    if history > 0 {
-        y += HDR_H + history as i32 * RH; // history header + the played rows
+    if hist > 0 {
+        y += HDR_H + hist as i32 * RH; // history header + the played rows
     }
-    if current.is_some() || pick {
+    if let Some(cur) = current {
         y += HDR_H; // NOW PLAYING header
         current_top = Some(y);
         y += RH;
-    }
-    if queued > 0 {
-        y += HDR_H + queued as i32 * RH;
-    }
-    if let Some(cur) = current {
-        if cur + 1 < album_len {
-            y += HDR_H + (album_len - cur - 1) as i32 * RH;
+        if cur + 1 < len {
+            y += HDR_H + (len - cur - 1) as i32 * RH;
         }
     }
     Metrics { current_top, content_h: y }
@@ -287,51 +245,35 @@ impl Metrics {
     }
 }
 
-/// Build the slot list. `album_len`/`current` describe the album the playing track belongs to
-/// (`current == None` when nothing is playing or the track isn't in the library); `queued` is the
-/// user queue's length; `hist` the play history's.
-pub fn layout(hist: usize, album_len: usize, current: Option<usize>, queued: usize, pick: bool) -> Layout {
+/// Build the slot list. `len`/`current` describe the sequence (`current == None` when nothing is
+/// playing); `hist` is the play history's length.
+pub fn layout(hist: usize, len: usize, current: Option<usize>) -> Layout {
     let mut l = Layout::default();
     // RESERVE UP FRONT. Every track is a slot, and after a "Shuffle all songs" that is the whole
     // library — growing from empty meant a dozen reallocations and memcpys of a list that ends up
-    // ~29 KB, once per painted frame. Measured: this is most of what an Up Next frame costs beyond
-    // the ~14 rows it actually draws. Four spare for the section headings.
-    l.slots = Vec::with_capacity(hist + album_len + queued + 5);
+    // ~29 KB, once per painted frame. Three spare for the section headings.
+    l.slots = Vec::with_capacity(hist + len + 3);
     let mut y = 0;
     let push = |l: &mut Layout, s: Slot, y: &mut i32| {
         l.slots.push((s, *y));
         *y += s.h();
     };
-    let history = hist;
-    if history > 0 {
+    if hist > 0 {
         push(&mut l, Slot::Head(Section::History), &mut y);
         l.history_top_px = Some(y);
-        for i in 0..history {
+        for i in 0..hist {
             push(&mut l, Slot::History(i), &mut y);
         }
     }
-    if current.is_some() || pick {
+    if let Some(cur) = current {
         push(&mut l, Slot::Head(Section::Now), &mut y);
         l.current_top = Some(y);
-        match (pick, current) {
-            (true, _) => push(&mut l, Slot::CurrentPick, &mut y),
-            (false, Some(cur)) => push(&mut l, Slot::Current(cur), &mut y),
-            (false, None) => unreachable!("guarded by current.is_some() || pick"),
-        }
-    }
-    if queued > 0 {
-        push(&mut l, Slot::Head(Section::Queue), &mut y);
-        l.queue_top_px = Some(y);
-        for i in 0..queued {
-            push(&mut l, Slot::Queued(i), &mut y);
-        }
-    }
-    if let Some(cur) = current {
-        if cur + 1 < album_len {
-            push(&mut l, Slot::Head(Section::Album), &mut y);
+        push(&mut l, Slot::Current(cur), &mut y);
+        if cur + 1 < len {
+            push(&mut l, Slot::Head(Section::Next), &mut y);
             l.upcoming_top_px = Some(y);
             l.upcoming_first = cur + 1;
-            for i in cur + 1..album_len {
+            for i in cur + 1..len {
                 push(&mut l, Slot::Upcoming(i), &mut y);
             }
         }
@@ -349,8 +291,7 @@ impl Layout {
         let cy = y - LIST_TOP + scroll_px.max(0);
         // BINARY SEARCH, not a scan. `slots` is built in ascending `top` order and after a
         // "Shuffle all songs" it holds one entry per track — 3,463 on the reference device. This
-        // runs on every tap, on every frame of a reorder drag, and on every swipe classification,
-        // so a linear find here is a scan of the whole library under a moving finger.
+        // runs on every tap, on every frame of a reorder drag, and on every swipe classification.
         //
         // `partition_point` gives the first slot starting AFTER cy; the candidate is the one
         // before it, and it only matches if cy is inside that slot's own height (the gap between
@@ -375,17 +316,9 @@ impl Layout {
             None => 0,
         }
     }
-    /// How many user-queue rows the span starts with.
-    pub fn queued_len(&self) -> usize {
-        self.slots.iter().filter(|(s, _)| matches!(s, Slot::Queued(_))).count()
-    }
-    /// Content-space top of the first user-queue row, if the queue section exists.
-    pub fn queue_top(&self) -> Option<i32> {
-        self.queue_top_px
-    }
 
-    /// How many rows NEXT FROM holds, its content-space top, and the context index of its first
-    /// row.
+    /// How many upcoming rows there are, their content-space top, and the sequence index of the
+    /// first one.
     pub fn upcoming_len(&self) -> usize {
         self.slots.iter().filter(|(s, _)| matches!(s, Slot::Upcoming(_))).count()
     }
@@ -404,37 +337,28 @@ impl Layout {
         self.history_top_px
     }
 
-    /// Length of the movable span: every played track, then every queued pick, then every upcoming
-    /// context row. Every row on the screen except the playing one, in the order they are drawn.
+    /// Length of the movable span: every played track, then every upcoming one. Every row on the
+    /// screen except the playing one, in the order they are drawn.
     pub fn movable_len(&self) -> usize {
-        self.history_len() + self.queued_len() + self.upcoming_len()
+        self.history_len() + self.upcoming_len()
     }
 
     /// THE FIRST INDEX A ROW MAY BE DROPPED ON — one past the end of the history.
     ///
-    /// The span is asymmetric on purpose, and it is the one rule here that is not symmetric:
-    /// **history is a source but never a destination.** You can reach back into what you have
-    /// played and pull a track into what is coming, which is the thing people actually want from
-    /// a history; you cannot push a track that has not played yet into the list of tracks that
-    /// have, because that list is a record of what happened and dropping a row into it would be
-    /// writing something into the record that is not true.
-    ///
-    /// Requested 2026-09-15, in exactly those terms: anything can go anywhere "apart from a queued
-    /// or next song to history".
+    /// **History is a source but never a destination.** You can reach back into what you have
+    /// played and pull a track into what is coming; you cannot push a track that has not played
+    /// yet into the record of what has. Requested 2026-09-15 in exactly those terms.
     pub fn drop_first(&self) -> usize {
         self.history_len()
     }
 
-    /// What movable index `i` refers to, as a slot. The span is the three sections concatenated,
-    /// so this is the ONE place that knows where the boundaries are.
+    /// What movable index `i` refers to, as a slot. The ONE place that knows where the boundary is.
     pub fn movable_slot(&self, i: usize) -> Option<Slot> {
-        let (h, q) = (self.history_len(), self.queued_len());
+        let h = self.history_len();
         if i < h {
             Some(Slot::History(i))
-        } else if i < h + q {
-            Some(Slot::Queued(i - h))
-        } else if i < h + q + self.upcoming_len() {
-            Some(Slot::Upcoming(self.upcoming_first + (i - h - q)))
+        } else if i < h + self.upcoming_len() {
+            Some(Slot::Upcoming(self.upcoming_first + (i - h)))
         } else {
             None
         }
@@ -442,13 +366,12 @@ impl Layout {
 
     /// The movable index of a slot, or None if it is not a movable row.
     pub fn movable_index(&self, slot: Slot) -> Option<usize> {
-        let (h, q) = (self.history_len(), self.queued_len());
+        let h = self.history_len();
         match slot {
             Slot::History(i) if i < h => Some(i),
-            Slot::Queued(i) if i < q => Some(h + i),
             Slot::Upcoming(i) => {
                 let rel = i.checked_sub(self.upcoming_first)?;
-                (rel < self.upcoming_len()).then(|| h + q + rel)
+                (rel < self.upcoming_len()).then(|| h + rel)
             }
             _ => None,
         }
@@ -456,26 +379,17 @@ impl Layout {
 
     /// Which movable index a floating row would be DROPPED on, from its top edge in screen coords.
     ///
-    /// NOT a single division. The span is contiguous in INDEX but not in PIXELS: a section heading
-    /// sits between each pair of sections, so a lifted row crossing a boundary travels `HDR_H` px
-    /// that belong to no row at all, and the NOW PLAYING row is a whole `RH` of the same. Dividing
-    /// the span by `RH` from one origin would report an index too high for everything past the
-    /// first boundary — the row under the finger and the row that moves would stop being the same
-    /// row, which is the specific failure this screen's geometry rules exist to prevent. So each
-    /// section is measured from its own top.
+    /// NOT a single division. The span is contiguous in INDEX but not in PIXELS: the NOW PLAYING
+    /// heading, row and the NEXT heading sit between the two sections, so each section is measured
+    /// from its own top. Anything in or above the history pins to the first droppable position —
+    /// "play this next" — which is what the parted list shows while the finger is still down.
     ///
-    /// The result is never inside the history: dragging up into it pins to the front of the queue
-    /// instead, which is the nearest thing to what the gesture asked for and is what the parted
-    /// list shows while the finger is still down.
-    ///
-    /// `from` is where the row was lifted from, and it matters for one reason: a row lifted OUT of
-    /// the history leaves it one shorter, so the first droppable position is one lower too.
-    /// Without that, a played track could never be dropped at the very front of the queue — the
-    /// floor would sit one past it — which is the single most likely thing to want from a history
-    /// you can drag out of.
+    /// `from` matters for one reason: a row lifted OUT of the history leaves it one shorter, so the
+    /// first droppable position is one lower too — otherwise a played track could never be dropped
+    /// straight after the playing one.
     pub fn movable_slot_for(&self, from: usize, float_top: i32, scroll_px: i32) -> usize {
-        let (hlen, qlen, ulen) = (self.history_len(), self.queued_len(), self.upcoming_len());
-        let len = hlen + qlen + ulen;
+        let (hlen, ulen) = (self.history_len(), self.upcoming_len());
+        let len = hlen + ulen;
         if len == 0 {
             return 0;
         }
@@ -483,29 +397,13 @@ impl Layout {
         let clamp = |i: i32| (i.max(floor as i32) as usize).min(len - 1);
         // Content-space centre of the floating row.
         let cy = float_top - LIST_TOP + scroll_px + RH / 2;
-        // Anywhere in or above the history pins to the front of the queue — see `drop_first`.
-        if let (Some(ht), true) = (self.history_top(), hlen > 0) {
-            if cy < ht + hlen as i32 * RH {
-                return clamp(0);
-            }
+        match (self.upcoming_top(), ulen > 0) {
+            (Some(ut), true) if cy >= ut => clamp(hlen as i32 + (cy - ut).div_euclid(RH)),
+            // Over the history, NOW PLAYING or the NEXT heading: the front of what is coming,
+            // which is the floor — one lower for a row that came out of the history.
+            (Some(_), true) => clamp(0),
+            _ => clamp(len as i32 - 1),
         }
-        if let (Some(qt), true) = (self.queue_top(), qlen > 0) {
-            if cy < qt {
-                return clamp(hlen as i32); // over NOW PLAYING / the queue heading
-            }
-            if cy < qt + qlen as i32 * RH {
-                return clamp(hlen as i32 + (cy - qt).div_euclid(RH));
-            }
-        }
-        if let (Some(ut), true) = (self.upcoming_top(), ulen > 0) {
-            if cy < ut {
-                // On the NEXT FROM heading (or the NOW PLAYING row when there is no queue) — the
-                // boundary, which belongs to the queue.
-                return clamp((hlen + qlen) as i32);
-            }
-            return clamp((hlen + qlen) as i32 + (cy - ut).div_euclid(RH));
-        }
-        clamp(len as i32 - 1)
     }
 
     /// Content-space top of movable index `i` as it is DRAWN — used to place the lifted row and to
@@ -515,14 +413,13 @@ impl Layout {
     }
 }
 
-// ── The unified renderer ────────────────────────────────────────────────────────────────────────
+// ── The renderer ────────────────────────────────────────────────────────────────────────────────
 
 fn section_label(sec: Section, album: &str) -> String {
     match sec {
         Section::History => "PREVIOUSLY PLAYED".into(),
         Section::Now => "NOW PLAYING".into(),
-        Section::Queue => "NEXT IN QUEUE".into(),
-        Section::Album => {
+        Section::Next => {
             if album.is_empty() {
                 "NEXT UP".into()
             } else {
@@ -532,21 +429,18 @@ fn section_label(sec: Section, album: &str) -> String {
     }
 }
 
-/// Everything the unified screen needs to draw itself. Grouped into a struct because the row
-/// renderer wants most of it and a nine-argument function is how the two halves drift apart.
+/// Everything the screen needs to draw itself. Grouped into a struct because the row renderer
+/// wants most of it and a nine-argument function is how the two halves drift apart.
 pub struct QueueView<'a> {
+    /// Names the NEXT heading: the playing album while everything still to come is from it, empty
+    /// ("NEXT UP") once the list holds anything else.
     pub album: &'a str,
-    /// The album the playing track belongs to, in play order. Empty when nothing is playing.
+    /// The whole sequence, in play order. Empty when nothing is playing.
     pub tracks: &'a [SongRow],
     /// Index of the playing track within `tracks`.
     pub current: Option<usize>,
-    /// The user's own swipe-queued picks.
-    pub queue: &'a [SongRow],
     /// What has already played, oldest first — the shell's real history, not a slice of `tracks`.
     pub history: &'a [SongRow],
-    /// The pick that is PLAYING right now, if the transport is on one. It has already left
-    /// `queue` (a pick is consumed when it starts), so this is the only handle on it.
-    pub pick: Option<&'a SongRow>,
     pub lib: &'a crate::model::Library,
     pub scroll_px: i32,
     pub drag: Option<RowDrag>,
@@ -554,27 +448,36 @@ pub struct QueueView<'a> {
     pub sbar_active: bool,
 }
 
+/// The header caption: how much is still to come, or what a drag does.
+pub fn caption(left: usize, dragging: bool) -> String {
+    match (dragging, left) {
+        (true, _) => String::from("DRAG TO REORDER"),
+        (false, 1) => String::from("1 TRACK LEFT"),
+        (false, n) => format!("{n} TRACKS LEFT"),
+    }
+}
+
 /// Draw the whole Up Next screen. Returns the layout it drew, so `nav` can hit-test against
 /// exactly what is on the glass rather than rebuilding it and hoping the two agree.
 pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Layout {
     c.fill(t.bg);
-    let l = layout(v.history.len(), v.tracks.len(), v.current, v.queue.len(), v.pick.is_some());
+    let l = layout(v.history.len(), v.tracks.len(), v.current);
 
     if l.slots.is_empty() {
         let _ = crate::chrome::header(c, t, f, "Up Next", None);
-        text::draw(c, f, 22.0, 360.0, "Nothing queued.",
+        text::draw(c, f, 22.0, 360.0, "Up Next is empty.",
                    &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
-        text::draw(c, f, 22.0, 386.0, "Play a track and its album appears here.",
+        text::draw(c, f, 22.0, 386.0, "Play or queue a track and it appears here.",
                    &sty(Family::Sans, Weight::Regular, 16.0, t.dim, 0.0));
         return l;
     }
 
     let y0 = crate::chrome::header(c, t, f, "Up Next", None);
-    // CLEAR belongs to the user queue, so it only appears when there is one to clear. SHUFFLE
-    // belongs to the CONTEXT — there is something to shuffle whenever tracks remain after the
-    // current one, queue or no queue.
-    let can_clear = !v.queue.is_empty();
-    let can_shuffle = v.current.map_or(false, |c| c + 1 < v.tracks.len());
+    // CLEAR empties what is still to come, so it only appears when something is. SHUFFLE needs
+    // two tracks besides the playing one — one other track has only one order.
+    let left = l.upcoming_len();
+    let can_clear = left > 0;
+    let can_shuffle = v.current.is_some() && v.tracks.len() >= 3;
     if can_clear {
         chip(c, t, f, CLEAR_CHIP, "CLEAR");
     }
@@ -585,60 +488,48 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
         crate::widgets::center(c, f, (sx + 46) as f32, (sy + sh / 2 + 4) as f32, "MIX",
                                &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14));
     }
-    // The caption goes left of whichever chip is furthest left, so it can never run under one.
+    // The caption goes between the title and whichever chip is furthest left, so it can never run
+    // under either. At a large UI scale the long form does not fit — measured on the device at the
+    // owner's scale, "7 TRACKS LEFT" ran into the title — so it falls back to "7 LEFT", and to
+    // nothing rather than an overlap.
     let cap_right = if can_shuffle { SHUFFLE_CHIP.0 } else if can_clear { CLEAR_CHIP.0 } else { 458 };
-    let cap = if v.drag.is_some() {
-        String::from("DRAG TO REORDER")
-    } else if can_clear {
-        format!("{} QUEUED", v.queue.len())
-    } else {
-        format!("{} TRACKS", v.tracks.len())
-    };
-    if !v.tracks.is_empty() || can_clear {
-        right(c, f, (cap_right - 12) as f32, 65.0, &cap,
-              &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
+    if v.current.is_some() {
+        let cs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
+        let room = (cap_right - 12) as f32 - (crate::chrome::header_title_end(f, "Up Next") + 12.0);
+        let long = caption(left, v.drag.is_some());
+        let short = if v.drag.is_some() { String::from("DRAG") } else { format!("{left} LEFT") };
+        if let Some(cap) = [long, short].into_iter().find(|s| text::measure(f, s, &cs) <= room) {
+            right(c, f, (cap_right - 12) as f32, 65.0, &cap, &cs);
+        }
     }
 
     let scroll = v.scroll_px.clamp(0, l.max_scroll_px());
     // ONE order over the whole movable span, so a lifted row parts the rows below it whichever
     // section they belong to. The slots stay put; the CONTENT flows through them.
     let hlen = v.history.len();
-    let qlen = v.queue.len();
     let ufirst = l.upcoming_first();
     let morder = drag_order(l.movable_len(), v.drag);
     // One place that turns a span index into the row it names, so the draw loop, the float and the
-    // well cannot disagree about what index 7 is.
+    // well cannot disagree about what index 7 is. `true` = a played row.
     let span_row = |i: usize| -> Option<(&SongRow, bool)> {
         if i < hlen {
             v.history.get(i).map(|r| (r, true))
-        } else if i < hlen + qlen {
-            v.queue.get(i - hlen).map(|r| (r, false))
         } else {
-            v.tracks.get(ufirst + i - hlen - qlen).map(|r| (r, false))
+            v.tracks.get(ufirst + i - hlen).map(|r| (r, false))
         }
     };
 
-    // START AT THE FIRST VISIBLE SLOT. This loop used to begin at slot 0 and `continue` past
-    // everything above the window — which is O(the whole sequence) to draw the ~14 rows on screen,
-    // and after a "Shuffle all songs" that is 3,600 iterations a frame. `slots` is built in
-    // ascending `top` order, so the first visible one is a binary search.
-    //
-    // A slot is above the window when `top + h <= scroll` — the same test the old `continue` made,
-    // rearranged so it does not mention `y0`.
+    // START AT THE FIRST VISIBLE SLOT: `slots` is in ascending `top` order, so it is a binary
+    // search rather than a walk past everything above the window (3,600 slots after a "Shuffle
+    // all songs"). A slot is above the window when `top + h <= scroll`.
     let first = l.slots.partition_point(|(s, top)| top + s.h() <= scroll);
-    // `qseen` counts the QUEUE rows that were skipped, because `qorder` is indexed by drawn
-    // position. The old loop accumulated it while walking past them; skipping the walk means
-    // computing it, which is the same arithmetic the binary search just replaced.
-    // …and the same arithmetic for the span: queue rows scrolled off, plus upcoming rows scrolled
-    // off. Summed rather than tracked separately because `morder` is indexed by span position.
+    // How many MOVABLE rows are scrolled off the top, because `morder` is indexed by drawn
+    // position — the same arithmetic the binary search replaced, per section.
     let mut mseen = match l.history_top() {
         Some(ht) => (((scroll - ht).max(0) / RH) as usize).min(hlen),
         None => 0,
-    } + match l.queue_top() {
-        Some(qt) => (((scroll - qt).max(0) / RH) as usize).min(qlen),
-        None => 0,
     } + match l.upcoming_top() {
-        Some(ut) => (((scroll - ut).max(0) / RH) as usize).min(l.upcoming_len()),
+        Some(ut) => (((scroll - ut).max(0) / RH) as usize).min(left),
         None => 0,
     };
 
@@ -672,38 +563,29 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                 if let Some(song) = v.tracks.get(i) {
                     fill_rect(c, 0, y, W as i32, RH, t.panel);
                     fill_rect(c, 0, y, 4, RH, t.acc);
-                    album_row(c, t, f, song, v.lib, y, i + 1, false, true, false);
+                    track_row(c, t, f, song, v.lib, y, 0, false, true, false);
                 }
             }
-            Slot::CurrentPick => {
-                if let Some(song) = v.pick {
-                    fill_rect(c, 0, y, W as i32, RH, t.panel);
-                    fill_rect(c, 0, y, 4, RH, t.acc);
-                    // No track NUMBER: a pick has no position in the album under it, and printing
-                    // the context row's number here is what made the old screen unreadable.
-                    album_row(c, t, f, song, v.lib, y, 0, false, true, false);
-                }
-            }
-            // ALL THREE movable kinds are drawn by one arm, because under a drag the content in
-            // a queue slot can be an album track or a played one and vice versa — that reflow IS
-            // the preview of where the row will land. What each row is drawn AS follows the
-            // CONTENT, never the slot it is sitting in.
-            Slot::History(_) | Slot::Queued(_) | Slot::Upcoming(_) => {
+            // Both movable kinds are drawn by one arm, because under a drag the content in an
+            // upcoming slot can be a played track and vice versa — that reflow IS the preview of
+            // where the row will land. What a row is drawn AS follows the CONTENT; its NUMBER
+            // follows the SLOT, so the positions read 01, 02, 03 while the rows flow through them.
+            Slot::History(_) | Slot::Upcoming(_) => {
                 let mi = morder.get(mseen).copied().unwrap_or(0);
                 mseen += 1;
                 if v.drag.map(|d| d.from) == Some(mi) {
                     fill_rect(c, 0, y, W as i32, RH, t.panel); // the well the row came out of
                 } else if let Some((song, past)) = span_row(mi) {
-                    if past {
-                        // History is dimmed — it is what is behind you, and Apple Music reads the
-                        // same way. Still tappable (that is how you go back a track) and now
-                        // GRIPPY: a played track can be dragged back into what is coming.
-                        //
-                        // NO track number. A history row can have come from any album, or from a
-                        // swipe-queued pick with no album position at all, so a number here would
-                        // be the one thing on the row that was not about the row.
-                        album_row(c, t, f, song, v.lib, y, 0, true, false, true);
-                    } else if mi < hlen + qlen {
+                    let n = match *slot {
+                        Slot::Upcoming(i) => i - ufirst + 1,
+                        _ => 0,
+                    };
+                    if past && n == 0 {
+                        // History is dimmed — it is what is behind you. Still tappable (that is how
+                        // you go back a track) and GRIPPY: a played track can be dragged back into
+                        // what is coming. No number: its position is in the past.
+                        track_row(c, t, f, song, v.lib, y, 0, true, false, true);
+                    } else {
                         let sw = v
                             .swipe
                             .filter(|s| (y..y + RH).contains(&s.y) && s.dx != 0)
@@ -712,13 +594,10 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
                             crate::library::swipe_reveal(c, t, f, y, RH, dx,
                                                          crate::library::SwipeIntent::Remove);
                         }
-                        queue_row(c, t, f, song, v.lib, y, mi - hlen + 1);
+                        track_row(c, t, f, song, v.lib, y, n, false, false, true);
                         if sw.is_some() {
                             c.clear_offset_x();
                         }
-                    } else {
-                        let n = ufirst + mi - hlen - qlen + 1;
-                        album_row(c, t, f, song, v.lib, y, n, false, false, true);
                     }
                 }
             }
@@ -730,28 +609,17 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
     c.clear_clip();
 
     // The lifted row, last so it sits over everything and clipped so an over-drag can't smear
-    // across the header.
+    // across the header. Drawn at the position it would LAND on, and never dimmed: a row lifted
+    // out of the history is on its way back into what is coming.
     if let Some(d) = v.drag {
-        if let Some((song, past)) = span_row(d.from) {
+        if let Some((song, _)) = span_row(d.from) {
             let ft = d.float_top().clamp(y0 - RH / 2, LIST_BOTTOM - RH / 2);
             c.set_clip_y(y0, LIST_BOTTOM);
             fill_rect(c, 0, ft, W as i32, RH, t.row_sel);
             fill_rect(c, 0, ft, 4, RH, t.acc);
             hline(c, ft, t.line);
             hline(c, ft + RH, t.line);
-            // Both lifted rows carry a grip, whichever list they came from: it is the thing that
-            // says "this row is in your hand". The row functions draw it faint; the accent
-            // overdraw below is what marks it as lifted.
-            // Drawn as what it IS, at the position it would LAND on — the two halves of the
-            // answer the drag is being asked for. A row lifted out of the history is NOT drawn
-            // dimmed: it is on its way back into what is coming, and that is the whole point of
-            // having picked it up.
-            if past || d.from < hlen + qlen {
-                queue_row(c, t, f, song, v.lib, ft, d.to.saturating_sub(hlen) + 1);
-            } else {
-                let n = ufirst + d.from - hlen - qlen + 1;
-                album_row(c, t, f, song, v.lib, ft, n, false, false, true);
-            }
+            track_row(c, t, f, song, v.lib, ft, d.to.saturating_sub(hlen) + 1, false, false, true);
             grip(c, t, ft, true);
             c.clear_clip();
         }
@@ -771,18 +639,15 @@ fn chip(c: &mut Canvas, t: &Theme, f: &FontSet, r: (i32, i32, i32, i32), label: 
                            &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14));
 }
 
-/// An album-side row (history, current or upcoming). `past` dims it; `now` marks it playing.
+/// One row of the list: a played track, the playing one, or one still to come. `past` dims it;
+/// `now` marks it playing; `n` is its position among the upcoming rows (0 = no number).
 ///
-/// `grippy` draws the reorder handle and gives up the width it needs. Only the UPCOMING rows ask
-/// for it: they are the ones that move. A handle on a played row or on the playing one would be a
-/// control that does nothing, which is worse than no control at all.
-fn album_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow,
+/// `grippy` draws the reorder handle and gives up the width it needs. Every row that moves asks for
+/// it; the playing row does not, because a handle there would be a control that does nothing.
+fn track_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow,
              lib: &crate::model::Library, y: i32, n: usize, past: bool, now: bool, grippy: bool) {
     let cy = (y + RH / 2) as f32;
     let idx_col = if now { t.acc } else { t.faint };
-    // `n == 0` means "this row has no track number" — a history row (any album, or a pick with no
-    // album position at all) or the playing pick. Printing "00" there was the old screen's way of
-    // naming a position that does not exist.
     let idx = if now { Some("\u{25b6}".to_string()) } else if n > 0 { Some(format!("{n:02}")) } else { None };
     if let Some(idx) = idx {
         text::draw(c, f, 22.0, cy + 4.0, &idx, &sty(Family::Mono, Weight::Regular, 12.0, idx_col, 0.0));
@@ -792,9 +657,7 @@ fn album_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow,
     crate::library::thumb(c, t, lib, song.album_id, &song.art, 46, y + (RH - 48) / 2, 48, dim);
     let title_col = if now { t.acc } else if past { t.dim } else { t.ink };
     let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, title_col, 0.0);
-    // The text budget and the duration column both shift in when the handle is there, by exactly
-    // the amounts `queue_row` uses — the handle sits in the same column on both lists, so the
-    // clearance it needs is the same number, not a second one that has to be kept in step.
+    // The text budget and the duration column both shift in when the handle is there.
     let (tw, aw, dx) = if grippy { (262.0, 276.0, 410.0) } else { (306.0, 320.0, 458.0) };
     text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, tw), &tst);
     let ast = sty(Family::Sans, Weight::Regular, 15.0, if past { t.faint } else { t.dim }, 0.0);
@@ -804,25 +667,6 @@ fn album_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow,
     if grippy {
         grip(c, t, y, false);
     }
-}
-
-/// One user-queue row's content at screen-`y`. `n` is the position label (1-based).
-fn queue_row(c: &mut Canvas, t: &Theme, f: &FontSet, song: &SongRow, lib: &crate::model::Library,
-             y: i32, n: usize) {
-    let cy = (y + RH / 2) as f32;
-    text::draw(c, f, 22.0, cy + 4.0, &format!("{n:02}"),
-        &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
-    // Real cover here too — the user queue had the same gradient-only problem as the album
-    // window above it.
-    crate::library::thumb(c, t, lib, song.album_id, &song.art,
-                          46, y + (RH - 48) / 2, 48, if t.night { 0.30 } else { 1.0 });
-    let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0);
-    text::draw(c, f, 100.0, cy - 2.0, &crate::widgets::fit(f, &song.title, &tst, 262.0), &tst);
-    let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
-    text::draw(c, f, 100.0, cy + 16.0, &crate::widgets::fit(f, &song.artist, &ast, 276.0), &ast);
-    // Duration moved in from 458 to clear the grab handle.
-    right(c, f, 410.0, cy + 4.0, &song.dur, &sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.0));
-    grip(c, t, y, false);
 }
 
 /// The reorder grab handle: three stacked bars, the universal "drag me" mark. Accent while the row
@@ -841,28 +685,21 @@ mod tests {
     use super::*;
 
     /// The binary search must answer exactly what the linear scan it replaced answered — for every
-    /// pixel of a layout that has history, a current row, a queue and an album tail, including the
-    /// gaps between sections where the answer is None.
+    /// pixel of a layout that has history, a current row and an upcoming tail, including the gaps
+    /// between sections where the answer is None.
     #[test]
     fn at_matches_a_linear_scan_everywhere() {
-        for (hist, album_len, cur, queued, pick) in [
-            (100usize, 200usize, Some(100usize), 4usize, false),
-            (0, 5, Some(0), 0, false),
-            (39, 40, Some(39), 3, false),
-            (0, 0, None, 6, false),
-            // The same sweep with a user pick on the NOW PLAYING row, which moves every section
-            // below it down by one.
-            (101, 200, Some(100), 4, true),
-            (1, 5, Some(0), 0, true),
-            (40, 40, Some(39), 3, true),
-            (0, 0, None, 6, true),
-            // …and a history that owes nothing to the context at all, which is the whole point of
-            // it being its own list: played tracks with no album on screen, and an album on screen
-            // with nothing played before it.
-            (12, 0, None, 0, false),
-            (0, 8, Some(4), 2, false),
+        for (hist, len, cur) in [
+            (100usize, 200usize, Some(100usize)),
+            (0, 5, Some(0)),
+            (39, 40, Some(39)),
+            (0, 0, None),
+            // A history that owes nothing to the sequence: played tracks with nothing playing, and
+            // a sequence with nothing played before it.
+            (12, 0, None),
+            (0, 8, Some(4)),
         ] {
-            let l = layout(hist, album_len, cur, queued, pick);
+            let l = layout(hist, len, cur);
             for scroll in [0, 37, 500, l.max_scroll_px()] {
                 for y in LIST_TOP - 2..LIST_BOTTOM + 2 {
                     let want = if !(LIST_TOP..LIST_BOTTOM).contains(&y) {
@@ -871,8 +708,7 @@ mod tests {
                         let cy = y - LIST_TOP + scroll.max(0);
                         l.slots.iter().find(|(s, top)| cy >= *top && cy < *top + s.h()).map(|(s, _)| *s)
                     };
-                    assert_eq!(l.at(y, scroll), want,
-                               "y={y} scroll={scroll} hist={hist} album={album_len} cur={cur:?}                                 queued={queued} pick={pick}");
+                    assert_eq!(l.at(y, scroll), want, "y={y} scroll={scroll} hist={hist} len={len} cur={cur:?}");
                 }
             }
         }
@@ -881,92 +717,83 @@ mod tests {
     #[test]
     fn metrics_matches_layout() {
         for hist in [0usize, 1, 7] {
-        for album_len in [0usize, 1, 2, 5, 40] {
-            for queued in [0usize, 1, 3, 12] {
-                // `None`, plus every valid current index, plus one past the end.
+            for len in [0usize, 1, 2, 5, 40] {
+                // `None`, plus every valid current index.
                 let currents: Vec<Option<usize>> =
-                    std::iter::once(None).chain((0..=album_len).map(Some)).collect();
+                    std::iter::once(None).chain((0..len).map(Some)).collect();
                 for cur in currents {
-                    // layout() only draws a current row when the index is inside the album.
-                    let cur = cur.filter(|c| *c < album_len);
-                    // …and both shapes: with a user pick on the NOW PLAYING row and without.
-                    for pick in [false, true] {
-                        let l = layout(hist, album_len, cur, queued, pick);
-                        let m = metrics(hist, album_len, cur, queued, pick);
-                        assert_eq!(
-                            m.content_h, l.content_h,
-                            "content_h disagrees at hist={hist} album={album_len} cur={cur:?}                              queued={queued} pick={pick}"
-                        );
-                        assert_eq!(
-                            m.current_top, l.current_top,
-                            "current_top disagrees at hist={hist} album={album_len} cur={cur:?}                              queued={queued} pick={pick}"
-                        );
-                        assert_eq!(m.follow_scroll(), l.follow_scroll());
-                        assert_eq!(m.max_scroll_px(), l.max_scroll_px());
-                        // Whatever the shape, the slot list is in ascending top order and its
-                        // heights add up to content_h — the two invariants the binary searches
-                        // in `at`, the draw loop and `mseen` all rest on.
-                        let mut y = 0;
-                        for (slot, top) in &l.slots {
-                            assert_eq!(*top, y, "slots are not contiguous at {slot:?}");
-                            y += slot.h();
-                        }
-                        assert_eq!(y, l.content_h);
-                        // The movable span and the slot list must agree in both directions: every
-                        // index names a slot, every movable slot names that index back, and
-                        // nothing outside the span claims one.
-                        assert_eq!(l.movable_len(), hist + queued + l.upcoming_len());
-                        assert_eq!(l.drop_first(), hist, "history is never a destination");
-                        for i in 0..l.movable_len() {
-                            let slot = l.movable_slot(i).expect("index inside the span has a slot");
-                            assert_eq!(l.movable_index(slot), Some(i), "round trip failed at {i}");
-                            assert!(l.top_of(slot).is_some(), "{slot:?} is not drawn");
-                        }
-                        assert_eq!(l.movable_slot(l.movable_len()), None);
-                        for (slot, _) in &l.slots {
-                            let movable =
-                                matches!(slot, Slot::History(_) | Slot::Queued(_) | Slot::Upcoming(_));
-                            assert_eq!(l.movable_index(*slot).is_some(), movable,
-                                       "{slot:?} disagrees about being movable");
-                        }
+                    let l = layout(hist, len, cur);
+                    let m = metrics(hist, len, cur);
+                    assert_eq!(m.content_h, l.content_h, "content_h at hist={hist} len={len} cur={cur:?}");
+                    assert_eq!(m.current_top, l.current_top, "current_top at hist={hist} len={len} cur={cur:?}");
+                    assert_eq!(m.follow_scroll(), l.follow_scroll());
+                    assert_eq!(m.max_scroll_px(), l.max_scroll_px());
+                    // The slot list is in ascending top order and its heights add up to content_h —
+                    // the two invariants the binary searches in `at`, the draw loop and `mseen` rest on.
+                    let mut y = 0;
+                    for (slot, top) in &l.slots {
+                        assert_eq!(*top, y, "slots are not contiguous at {slot:?}");
+                        y += slot.h();
+                    }
+                    assert_eq!(y, l.content_h);
+                    // The movable span and the slot list agree in both directions.
+                    let upcoming = cur.map_or(0, |c| len - c - 1);
+                    assert_eq!(l.movable_len(), hist + upcoming);
+                    assert_eq!(l.drop_first(), hist, "history is never a destination");
+                    for i in 0..l.movable_len() {
+                        let slot = l.movable_slot(i).expect("index inside the span has a slot");
+                        assert_eq!(l.movable_index(slot), Some(i), "round trip failed at {i}");
+                        assert!(l.top_of(slot).is_some(), "{slot:?} is not drawn");
+                    }
+                    assert_eq!(l.movable_slot(l.movable_len()), None);
+                    for (slot, _) in &l.slots {
+                        let movable = matches!(slot, Slot::History(_) | Slot::Upcoming(_));
+                        assert_eq!(l.movable_index(*slot).is_some(), movable, "{slot:?} disagrees about being movable");
                     }
                 }
             }
         }
-        }
     }
 
-    /// Every pixel of the movable span resolves to the row DRAWN there — the rule the whole
-    /// cross-section drag rests on.
-    ///
-    /// The trap this exists for: the span is contiguous in INDEX but not in PIXELS. The NEXT FROM
-    /// heading sits inside it, so `HDR_H` px belong to no row at all, and measuring the whole span
-    /// with one division from the queue's top reports an index one too high for every album row.
-    /// The row under the finger and the row that moves would stop being the same row.
+    /// ONE list below NOW PLAYING: no separate queue section, whatever is in the sequence.
+    #[test]
+    fn everything_after_the_playing_track_is_one_section() {
+        let l = layout(2, 6, Some(1));
+        let heads: Vec<Section> = l
+            .slots
+            .iter()
+            .filter_map(|(s, _)| match s {
+                Slot::Head(h) => Some(*h),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heads, vec![Section::History, Section::Now, Section::Next]);
+        let up: Vec<Slot> = l.slots.iter().map(|(s, _)| *s).filter(|s| matches!(s, Slot::Upcoming(_))).collect();
+        assert_eq!(up, (2..6).map(Slot::Upcoming).collect::<Vec<_>>());
+        // The last track playing: no NEXT section at all.
+        let l = layout(0, 6, Some(5));
+        assert!(!l.slots.iter().any(|(s, _)| *s == Slot::Head(Section::Next)));
+    }
+
+    /// Every pixel of the movable span resolves to the row DRAWN there — the rule the whole drag
+    /// rests on. The trap: NOW PLAYING and the NEXT heading sit between the two sections, so one
+    /// division from one origin would report the wrong index past the boundary.
     #[test]
     fn a_float_over_a_row_lands_on_that_row_across_the_section_boundary() {
-        for (hist, album_len, cur, queued) in
-            [(3usize, 20usize, Some(4usize), 3usize), (0, 9, Some(0), 1), (5, 6, Some(2), 0)]
-        {
-            let l = layout(hist, album_len, cur, queued, false);
+        for (hist, len, cur) in [(3usize, 20usize, Some(4usize)), (0, 9, Some(0)), (5, 6, Some(2))] {
+            let l = layout(hist, len, cur);
             for i in 0..l.movable_len() {
                 let slot = l.movable_slot(i).unwrap();
                 let top = l.top_of(slot).unwrap();
-                // Place the float exactly on the row, at scroll 0, and ask where it would land.
                 let float_top = LIST_TOP + top;
-                // A DROPPABLE row lands on itself. A history row is not droppable, so a float over
-                // it resolves to the first index that is — and lifting a row OUT of the history
-                // moves that floor down one, which is what lets a played track reach the front of
-                // the queue.
+                // A droppable row lands on itself; a history row resolves to the first droppable
+                // index, which is one lower when the row came out of the history.
                 let floor = l.drop_first() - usize::from(i < l.drop_first());
                 let want = i.max(floor);
                 assert_eq!(l.movable_slot_for(i, float_top, 0), want,
-                           "float over {slot:?} resolved elsewhere (hist={hist} album={album_len} \
-                            cur={cur:?} queued={queued})");
+                           "float over {slot:?} resolved elsewhere (hist={hist} len={len} cur={cur:?})");
             }
-            // Above the list pins to the first droppable slot — "play this next" — rather than
-            // refusing the drop or dropping it into the history. A row from BELOW the history
-            // stops at `drop_first`; one lifted out of the history can reach one place higher.
+            // Above the list pins to the first droppable slot — "play this next".
             assert_eq!(l.movable_slot_for(l.movable_len(), LIST_TOP - 400, 0), l.drop_first());
             if l.drop_first() > 0 {
                 assert_eq!(l.movable_slot_for(0, LIST_TOP - 400, 0), l.drop_first() - 1);
@@ -974,12 +801,11 @@ mod tests {
         }
     }
 
-    /// The draw loop now binary-searches its way to the first visible slot instead of walking the
-    /// whole sequence. It must land on exactly the slot the old linear scan would have: the first
-    /// whose BOTTOM is still below the top of the window.
+    /// The draw loop binary-searches its way to the first visible slot; it must land on exactly
+    /// the slot a linear scan would have.
     #[test]
     fn the_first_visible_slot_is_found_by_search_not_by_walking() {
-        let l = layout(100, 200, Some(100), 4, false);
+        let l = layout(100, 200, Some(100));
         let max = l.max_scroll_px();
         for scroll in [0, 1, RH - 1, RH, RH + 1, HDR_H, 500, 1234, max / 2, max] {
             let want = l.slots.iter().position(|(s, top)| top + s.h() > scroll).unwrap_or(l.slots.len());
@@ -989,48 +815,36 @@ mod tests {
     }
 
     /// `mseen` is the number of MOVABLE rows scrolled off the top, and `morder` is indexed by it —
-    /// so an off-by-one here draws the wrong track in every row below the fold. The draw loop
-    /// computes it as two pieces of arithmetic instead of counting rows on the way past; the two
-    /// must agree at every scroll offset, for both sections at once.
+    /// an off-by-one here draws the wrong track in every row below the fold.
     #[test]
     fn the_skipped_movable_row_count_is_computed_not_counted() {
-        for (hist, queued) in [(0usize, 1usize), (4, 3), (9, 12), (0, 0), (6, 0)] {
-            let l = layout(hist, 60, Some(30), queued, false);
+        for hist in [0usize, 4, 9] {
+            let l = layout(hist, 60, Some(30));
             let max = l.max_scroll_px();
             for scroll in 0..=max {
                 let counted = l
                     .slots
                     .iter()
-                    .filter(|(s, top)| {
-                        matches!(s, Slot::Queued(_) | Slot::Upcoming(_)) && top + s.h() <= scroll
-                    })
+                    .filter(|(s, top)| matches!(s, Slot::History(_) | Slot::Upcoming(_)) && top + s.h() <= scroll)
                     .count();
                 // Exactly the expression the draw loop uses.
-                let computed = match l.queue_top() {
-                    Some(qt) => (((scroll - qt).max(0) / RH) as usize).min(queued),
+                let computed = match l.history_top() {
+                    Some(ht) => (((scroll - ht).max(0) / RH) as usize).min(hist),
                     None => 0,
                 } + match l.upcoming_top() {
                     Some(ut) => (((scroll - ut).max(0) / RH) as usize).min(l.upcoming_len()),
                     None => 0,
                 };
-                assert_eq!(computed, counted, "hist={hist} queued={queued} scroll={scroll}");
+                assert_eq!(computed, counted, "hist={hist} scroll={scroll}");
             }
         }
     }
 
-    /// No queue section means no queue rows to skip, whatever the scroll.
+    /// The history is its OWN list: it does not have to be a prefix of the sequence, and it can
+    /// exist with nothing playing at all.
     #[test]
-    fn no_queue_section_skips_nothing() {
-        let l = layout(0, 60, Some(30), 0, false);
-        assert_eq!(l.queue_top(), None);
-    }
-
-    /// The history is its OWN list: it does not have to be a prefix of the album, and it can exist
-    /// with no album on screen at all. Both were impossible before, and both are the point.
-    #[test]
-    fn the_history_section_is_independent_of_the_context() {
-        // Played tracks, nothing playing, nothing queued: a history section and nothing else.
-        let l = layout(4, 0, None, 0, false);
+    fn the_history_section_is_independent_of_the_sequence() {
+        let l = layout(4, 0, None);
         assert_eq!(
             l.slots.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
             vec![
@@ -1038,9 +852,16 @@ mod tests {
                 Slot::History(0), Slot::History(1), Slot::History(2), Slot::History(3),
             ],
         );
-        // …and an album playing with nothing played before it draws no history section at all,
+        // …and a sequence playing with nothing played before it draws no history section at all,
         // even though `current` is well past 0.
-        let l = layout(0, 8, Some(4), 0, false);
+        let l = layout(0, 8, Some(4));
         assert!(!l.slots.iter().any(|(s, _)| matches!(s, Slot::History(_) | Slot::Head(Section::History))));
+    }
+
+    #[test]
+    fn the_caption_counts_what_is_left() {
+        assert_eq!(caption(1, false), "1 TRACK LEFT");
+        assert_eq!(caption(12, false), "12 TRACKS LEFT");
+        assert_eq!(caption(12, true), "DRAG TO REORDER");
     }
 }

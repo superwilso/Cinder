@@ -344,6 +344,18 @@ pub fn np_bar(
 /// hit tests measure from it, so the two can't drift apart.
 pub const HEADER_BOTTOM: i32 = 91;
 
+const TITLE_X: f32 = 50.0;
+
+fn title_style(col: Rgb888) -> crate::text::TextStyle {
+    sty(Family::Sans, Weight::Bold, 30.0, col, -0.01)
+}
+
+/// Where [`header`]'s title ends, in px — for a screen that draws its own furniture to the right
+/// of it (Up Next's caption and chips). Measured, not assumed: the title grows with the UI scale.
+pub fn header_title_end(f: &FontSet, title: &str) -> f32 {
+    TITLE_X + text::measure(f, title, &title_style(Rgb888::new(0, 0, 0)))
+}
+
 pub fn header(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, right: Option<&str>) -> i32 {
     header_caption_from(c, t, f, title, right, 0.0)
 }
@@ -359,8 +371,8 @@ pub fn header_caption_from(
     min_x: f32,
 ) -> i32 {
     icons::back(c, 30.0, 62.0, 20.0, t.dim);
-    let ts = sty(Family::Sans, Weight::Bold, 30.0, t.ink, -0.01);
-    let title_end = text::draw(c, f, 50.0, 70.0, title, &ts);
+    let ts = title_style(t.ink);
+    let title_end = text::draw(c, f, TITLE_X, 70.0, title, &ts);
     if let Some(r) = right {
         let rs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
         // Clamp the caption to the space right of the title (never let it overlap the title).

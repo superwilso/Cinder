@@ -1223,6 +1223,24 @@ static void s_repeat_all_off(void) {
     check_eq(cinder_harness_count("cinder_audio_play_tracks"), 0, "and nothing starts playing");
 }
 
+// ── the wall clock steps BACKWARDS after the first frame ─────────────────────────────────────
+// A date set by hand, or the 32-bit time_t wrap on 2038-01-19 that lands the device in 1901. The
+// bad-boot health check is "still alive 8 s after first paint", and it used to measure that with
+// time(): after a backward step `now - first_paint` is hugely negative, never reaches 8, the counter
+// is never cleared — and two such boots latch the device into stock. A duration is a monotonic
+// question.
+static void s_clock_steps_back(void) {
+    healthy_device();
+    cinder_harness_fs_write("/data/cinder/bootcount", "1");
+    cinder_harness_state_set_at(3000, "wall_offset_s", -4294967296LL);   // 2^32 s back: the wrap
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+    check(cinder_harness_first_ms("cinder_render_tick") < 3000, "the step lands after the first frame");
+    char buf[8] = {0};
+    cinder_harness_fs_read("/data/cinder/bootcount", buf, sizeof buf);
+    check(buf[0] == '0', "the bad-boot counter is still cleared after the clock went back");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     { "blank-idle",  s_idle_blank_darkens_the_panel,
@@ -1275,6 +1293,7 @@ static const Scenario kScenarios[] = {
     {"repeat-all",        s_repeat_all,              "a queue that runs out loops Cinder's context, once"},
     {"repeat-all-mid",    s_repeat_all_midtrack,     "…and a pause near the end of a middle track does not"},
     {"repeat-all-off",    s_repeat_all_off,          "…and with repeat off the end of a queue is the end"},
+    {"clock-steps-back",  s_clock_steps_back,        "a wall clock stepping back (2038) still marks the boot good"},
     {nullptr, nullptr, nullptr},
 };
 

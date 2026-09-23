@@ -27,9 +27,9 @@ pub enum Ask {
     /// a separate widget so that the modal stays one thing: one place that dims the screen, one
     /// place the navigator consumes taps, one hit test to keep honest.
     PowerMenu,
-    /// Play was pressed on a song while the user queue still has tracks in it. Apple asks the same
-    /// question, and it is a genuine either/or rather than a confirmation: the queue you built by
-    /// hand is not something to silently discard, nor something to silently keep.
+    /// Play was pressed on a song while Up Next holds tracks the user added by hand that have not
+    /// played yet. Apple asks the same question, and it is a genuine either/or rather than a
+    /// confirmation: a list you built is not something to silently discard, nor to silently keep.
     QueueOnPlay,
     /// "Reset settings" from the Settings screen. A yes/no card rather than the two-tap arm used
     /// by Boot to stock: this one cannot be undone by rebooting, and the body has to say what the
@@ -39,14 +39,11 @@ pub enum Ask {
     /// idiom is already spent on the × beside each TRACK, and using it for the whole list too
     /// would make "remove one" and "delete all of it" the same gesture in the same screen.
     DeletePlaylist,
-    /// The CLEAR chip on Up Next, which empties the USER queue.
+    /// The CLEAR chip on Up Next, which empties everything after the playing track.
     ///
     /// It used to fire on the tap. That made it the one control in the app that destroyed
     /// hand-built work with no confirmation and no undo — and it sits in the header bar, two rows
-    /// above a scrolling list, which is exactly where a mis-aimed thumb lands. `queue_play_at`
-    /// was made non-destructive on the argument that the CLEAR chip beside it "has both"
-    /// confirmation and undo; it had neither, so the argument was true about the design and false
-    /// about the code. This is the half that was missing.
+    /// above a scrolling list, which is exactly where a mis-aimed thumb lands.
     ///
     /// Not shared with the PREVIOUSLY PLAYED heading's own CLEAR: one destroys what you asked to
     /// hear next and the other what you already heard, and a history can be rebuilt by listening.
@@ -92,8 +89,8 @@ impl Ask {
                 "Delete",
             ),
             Ask::ClearQueue => (
-                "Clear the queue?",
-                "Everything you queued by hand is removed. The album or playlist you are listening to keeps playing.",
+                "Clear Up Next?",
+                "Every track after the one playing is removed. The song playing now finishes, then playback stops.",
                 "Clear",
             ),
         }
@@ -118,11 +115,11 @@ impl Ask {
                 ("Restart", Hit::Restart),
                 ("Cancel", Hit::Cancel),
             ],
-            // "Play now" first because it is what the tap already asked for; keeping the queue is
+            // "Play now" first because it is what the tap already asked for; keeping the list is
             // the considered choice and sits below it.
             Ask::QueueOnPlay => &[
-                ("Clear queue and play", Hit::ClearQueue),
-                ("Play now, keep queue", Hit::KeepQueue),
+                ("Play now, replace Up Next", Hit::ClearQueue),
+                ("Play now, then Up Next", Hit::KeepQueue),
                 ("Cancel", Hit::Cancel),
             ],
             _ => &[],

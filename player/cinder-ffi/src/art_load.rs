@@ -30,6 +30,12 @@ const MAX_DIM: usize = 4096;
 /// cinderhome.log on device; called once per track change, so this is cheap) — it pinpoints
 /// which shape the real DB row has and where the pipeline stops if a cover doesn't render.
 pub fn load(db: &cinder_db::Db, object_id: i64) -> Option<Image> {
+    // The database's cover first; failing that, an image file in the track's folder.
+    load_db(db, object_id).or_else(|| folder_cover(db, object_id))
+}
+
+/// The cover the stock scanner recorded for this track, if any. See `load`.
+fn load_db(db: &cinder_db::Db, object_id: i64) -> Option<Image> {
     let art = match db.art_for_object(object_id) {
         Ok(Some(a)) => a,
         Ok(None) => {
@@ -76,6 +82,52 @@ pub fn load(db: &cinder_db::Db, object_id: i64) -> Option<Image> {
         return decode(&bytes);
     }
     None
+}
+
+/// The cover as an IMAGE FILE beside the music — `Cover.jpg`, `folder.jpg` and the like.
+///
+/// Sony's scanner reads only art embedded in the files, so an album that keeps its cover as a
+/// separate file has no `images` row and drew a gradient everywhere (7 albums on the reference
+/// library, 2026-09-23, every one with a `Cover.jpg` next to it). Stock shows nothing for them
+/// either; this is a Cinder improvement, not parity.
+pub fn folder_cover(db: &cinder_db::Db, object_id: i64) -> Option<Image> {
+    let track = db.track_by_object_id(object_id).ok()??;
+    let dir = std::path::Path::new(&track.filename).parent()?;
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .collect();
+    let pick = pick_folder_image(&names)?;
+    let path = dir.join(pick);
+    let img = read_file_range(path.to_str()?, 0, 0).and_then(|b| decode(&b));
+    eprintln!(
+        "[cinder-ffi] art: obj={object_id} folder image {:?} {}",
+        path,
+        if img.is_some() { "decoded" } else { "did not decode" }
+    );
+    img
+}
+
+/// Which file in a folder is its cover. The names people and rippers use for the front cover
+/// first (case-insensitive, any image extension); failing those, the ONLY image in the folder —
+/// a folder of scans (back, disc, booklet) with no front among them is not guessed at.
+pub fn pick_folder_image(names: &[String]) -> Option<&String> {
+    const EXT: [&str; 3] = [".jpg", ".jpeg", ".png"];
+    let stem_of = |n: &str| -> Option<String> {
+        let l = n.to_ascii_lowercase();
+        EXT.iter().find(|e| l.ends_with(*e)).map(|e| l[..l.len() - e.len()].to_string())
+    };
+    let images: Vec<(&String, String)> =
+        names.iter().filter_map(|n| stem_of(n).map(|s| (n, s))).collect();
+    for want in ["cover", "folder", "front", "album", "albumart", "albumartsmall"] {
+        if let Some((n, _)) = images.iter().find(|(_, s)| s == want) {
+            return Some(n);
+        }
+    }
+    match images.as_slice() {
+        [(only, _)] => Some(only),
+        _ => None,
+    }
 }
 
 /// Read `len` bytes at `off` (len 0 = whole file), size-capped.
@@ -272,6 +324,20 @@ fn decode_bmp(b: &[u8]) -> Option<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_folder_cover_is_the_front_not_any_image() {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let pick = |xs: &[&str]| pick_folder_image(&v(xs)).cloned();
+        assert_eq!(pick(&["01 - a.flac", "Cover.jpg"]), Some("Cover.jpg".into()));
+        assert_eq!(pick(&["back.jpg", "FOLDER.PNG", "01.flac"]), Some("FOLDER.PNG".into()));
+        assert_eq!(pick(&["front.jpeg", "cover.jpg"]), Some("cover.jpg".into()), "cover outranks front");
+        assert_eq!(pick(&["Anymore (Deluxe).jpg", "01.flac"]), Some("Anymore (Deluxe).jpg".into()),
+                   "the only image in the folder");
+        assert_eq!(pick(&["back.jpg", "disc.jpg"]), None, "scans with no front are not guessed at");
+        assert_eq!(pick(&["01.flac", "notes.txt"]), None);
+        assert_eq!(pick(&["cover.jpg.bak"]), None);
+    }
 
     /// Encode a 2x2 PNG with the given colour type and bit depth, so the decoder's handling of the
     /// awkward sample formats can be checked rather than assumed.

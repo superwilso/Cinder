@@ -468,6 +468,22 @@ impl Db {
         rows.collect()
     }
 
+    /// Albums the stock scanner found NO cover for — `othumb_id` NULL on every track — with the
+    /// lowest track object id of each. Sony's scanner only reads art EMBEDDED in the files; an
+    /// album whose art is a `Cover.jpg` beside the music (common for downloads: 7 albums on the
+    /// reference library, 2026-09-23) gets nothing, and Cinder drew a gradient for it. The caller
+    /// looks in the track's folder for an image instead (`art_load::folder_cover`).
+    pub fn albums_without_cover(&self) -> Result<Vec<(i64, i64)>> {
+        let mut st = self.conn.prepare(&format!(
+            "SELECT ob.album_id, MIN(ob.object_id) FROM object_body ob \
+             WHERE {TRACK_WHERE} AND ob.album_id IS NOT NULL \
+             GROUP BY ob.album_id HAVING SUM(ob.othumb_id IS NOT NULL) = 0 \
+             ORDER BY ob.album_id"
+        ))?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
     pub fn artists(&self) -> Result<Vec<Artist>> {
         let mut st = self
             .conn
