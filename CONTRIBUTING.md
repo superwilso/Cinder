@@ -40,7 +40,13 @@ that broke on arrival, a truncated buffer in the fault path, and a struct field 
 device path so `cinder-host` and `cinder-sim` would not compile at all. The gap was never
 capability; it was that nothing ran between "it works on my device" and "it is on main".
 `.githooks/pre-push` closes that: player tests, clippy (`correctness` + `suspicious`), the
-installer tests, the C/C++ syntax check and the C++ self-tests, in about 45 seconds.
+installer tests, the C/C++ syntax check and the C++ self-tests, in about 50 seconds.
+
+**It runs those checks on a tag push only.** An ordinary branch push leaves them to CI, which runs
+all of them and more. Clippy 0.1.95 panicked on every push made from VS Code, so the hook was
+blocking pushes over a compiler bug. A tag push still runs the full check, because `release.yml`
+tests only the installer. For a release, the hook is the only player gate before the installers
+are built. To run the full check on a branch push, use `CINDER_PREPUSH=full git push`.
 
 Hooks are not cloned, which is why it lives in `.githooks/` and needs the line above. It runs the
 DEBUG build rather than CI's `--release`, because the failures it exists for are compile-or-lint

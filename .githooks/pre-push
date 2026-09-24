@@ -22,7 +22,17 @@
 #   * it does not run the Windows installer build.
 #
 # So a green hook means "CI probably passes", not "the device build works". Run build.sh before a
-# release; this is for the everyday push.
+# release.
+#
+# WHEN IT RUNS (2026-09-24). An ordinary branch push no longer runs the checks here: ci.yml runs
+# all of them and more on every push, and clippy 0.1.95 panicked on every push made from VS Code
+# (never from a terminal), even after clearing the incremental cache, so the hook was blocking
+# pushes over a compiler bug. A TAG push still runs them, because release.yml tests only the
+# installer — for a release, this is the only player gate before the installers are built.
+#
+#   git push                      # branch: dist/stable warning only; CI does the checking
+#   git push origin v1.2.3        # tag: the full check (tools/release.sh does this)
+#   CINDER_PREPUSH=full git push  # the full check on any push
 #
 # TO SKIP, when you know better and mean it:
 #   git push --no-verify          # skip every hook
@@ -40,6 +50,13 @@ fi
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 0
+
+# git feeds one line per ref: <local ref> <local sha> <remote ref> <remote sha>.
+FULL=0
+[ "${CINDER_PREPUSH:-}" = "full" ] && FULL=1
+while read -r _lref _lsha rref _rsha; do
+    case "$rref" in refs/tags/*) FULL=1 ;; esac
+done
 
 if [ -t 1 ]; then C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[36m'; C_0=$'\e[0m'
 else C_R=; C_G=; C_Y=; C_B=; C_0=; fi
@@ -79,6 +96,8 @@ run() {  # run <label> <dir> <command...>
     tail -40 "$LOG" >&2
 }
 
+# The checks themselves — CI runs every one of these too (ci.yml).
+full_check() {
 printf '%spre-push%s: checking what CI checks (skip with --no-verify)\n' "$C_B" "$C_0"
 
 # 1. The player workspace — where all three breakages landed.
@@ -116,6 +135,16 @@ for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange
     rm -f "/tmp/cinder_ph_$t"
 done
 if [ "$selftest_fail" = "0" ]; then pass; else fail "C++ self-tests"; fi
+}
+
+if [ "$FULL" = "1" ]; then
+    full_check
+else
+    printf '%spre-push%s: checks run in CI — %s\n' "$C_B" "$C_0" \
+        "$(git remote get-url origin 2>/dev/null | sed -e 's#.*github.com[:/]##' -e 's#\.git$##' \
+           -e 's#^#https://github.com/#' -e 's#$#/actions#')"
+    printf '          (CINDER_PREPUSH=full git push runs them here first)\n'
+fi
 
 # ── repository weight: dist/stable on a non-release push ───────────────────────────────────────
 # NOT a failure — shipping the binaries is the point of dist/stable, and a release must carry them.
@@ -141,5 +170,5 @@ if [ -n "$FAILED" ]; then
     exit 1
 fi
 
-printf '%spre-push: all green%s — CI should agree.\n' "$C_G" "$C_0"
+[ "$FULL" = "1" ] && printf '%spre-push: all green%s — CI should agree.\n' "$C_G" "$C_0"
 exit 0
