@@ -906,6 +906,9 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("bt_fine={}\n", r.app.bt_fine_span()));
     body.push_str(&format!("volume_limit={}\n", r.app.volume_limit() as u8));
     body.push_str(&format!("ignore_the={}\n", r.app.ignore_the() as u8));
+    // The pull-down panel (Settings ▸ Pull-down panel), OFF unless switched on.
+    body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
+    body.push_str(&format!("sensme_follow_time={}\n", r.app.sensme_follow() as u8));
     // Settings ▸ Display ▸ Volume: `full` or `minimal`, as a word — the handoff names the key and
     // its values, and a word survives a future third style where an index would shift.
     body.push_str(&format!("volume_hud={}\n", r.app.volume_hud()));
@@ -919,6 +922,7 @@ fn settings_body(r: &Render) -> String {
     // The palette by id — the CHOICE, not what happens to be drawn. If the folder could not be read
     // this boot, Cinder is on screen, but the palette the user picked is still the one to keep.
     body.push_str(&format!("palette={}\n", r.app.palette_id()));
+    body.push_str(&format!("palette_sort={}\n", r.app.palette_sort()));
     body.push_str(&format!(
         "viz_scale={}\nviz_range={}\nviz_response={}\nviz_interp={}\nviz_peaks={}\nviz_window={}\nviz_rate={}\n",
         r.app.viz_scale_idx(),
@@ -990,10 +994,18 @@ fn scan_palettes(r: &mut Render) {
         }
     };
     let mut files = Vec::new();
+    // When each file arrived, for the picker's "Added" sort: modification time, which is what a
+    // copy over USB sets. Keyed by the same lowercased stem `load_files` uses as the id.
+    let mut added: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for ent in entries.flatten() {
         let name = ent.file_name().to_string_lossy().into_owned();
-        if cinder_ui::palette::palette_stem(&name).is_none() {
+        let Some(stem) = cinder_ui::palette::palette_stem(&name) else {
             continue;
+        };
+        if let Some(t) = ent.metadata().ok().and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        {
+            added.insert(stem.to_ascii_lowercase(), t.as_secs());
         }
         let body = match ent.metadata() {
             Ok(m) if m.len() > cinder_ui::palette::MAX_BYTES => {
@@ -1003,7 +1015,10 @@ fn scan_palettes(r: &mut Render) {
         };
         files.push((name, body));
     }
-    let (list, skipped) = cinder_ui::palette::load_files(files);
+    let (mut list, skipped) = cinder_ui::palette::load_files(files);
+    for p in &mut list {
+        p.added = added.get(&p.id).copied().unwrap_or(0);
+    }
     let loaded: Vec<String> = list.iter().map(|p| p.id.clone()).collect();
     if r.app.set_palettes(list, skipped.clone()) {
         eprintln!("cinder-ffi: palettes: [{}] from {}", loaded.join(", "), dir.display());
@@ -1551,12 +1566,12 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 35] = [
+const SCREEN_NAMES: [&str; 37] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
     "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet", "Lyrics",
-    "Search", "SensMe", "Display",
+    "Search", "SensMe", "Display", "Palette", "Help",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1572,7 +1587,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
         S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32, S::SensMe => 33,
-        S::Display => 34,
+        S::Display => 34, S::Palette => 35, S::Help => 36,
     }
 }
 
@@ -1805,7 +1820,7 @@ pub extern "C" fn cinder_render_tick() {
         // Markers only exist while they are switched on AND there are bars to mark: `hold_peaks`
         // empties the buffer when the setting is off, so this needs no second look at the config.
         viz_peaks: if animate && !r.viz_peaks.is_empty() { Some(&r.viz_peaks) } else { None },
-        scrubbing: r.scrub_ms.is_some(),
+        scrubbing: r.scrub_ms.is_some(), lyrics: false,
     };
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
     // the list/menu screens from their own state.
@@ -1917,7 +1932,7 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
             progress: np.progress, art: &np.art, art_full: None, art_thumb: None,
             liked: np.liked, playing: np.playing, shuffle: np.shuffle, repeat: np.repeat,
             viz_seed: 2.0, viz_kind: 0, viz_size: 0, page: 0, viz_levels: None, viz_peaks: None,
-            scrubbing: false,
+            scrubbing: false, lyrics: false,
         };
         r.canvas.clear_clip();
         let t0 = std::time::Instant::now();
@@ -3266,6 +3281,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::SoundChanged => 14,
         Action::BalanceChanged => 38,
         Action::MonoChanged => 46,
+        Action::BtDebugLog => 47,
         Action::ClockSet => 39,
         Action::SoundBypass(_) => 15,
         Action::ShuffleToggle => {
@@ -3944,6 +3960,22 @@ pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
     }
 }
 
+/// Is THIS DEVICE ▸ Debug log switched on? (1/0). Read after CINDER_ACT_BT_DEBUG_LOG.
+#[no_mangle]
+pub extern "C" fn cinder_get_bt_debug_log() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_debug_log() as libc::c_int)
+}
+
+/// The shell stopped the HCI capture at its size limit and saved it: the switch goes off and the
+/// user is told.
+#[no_mangle]
+pub extern "C" fn cinder_bt_debug_log_stopped() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.bt_debug_log_stopped();
+        r.dirty = true;
+    }
+}
+
 /// Is the Bluetooth switch on? (1/0). The shell reads this after a CINDER_ACT_BT_TOGGLE action to
 /// decide whether to power the radio up (and reconnect the last device) or down.
 #[no_mangle]
@@ -4132,6 +4164,27 @@ pub extern "C" fn cinder_set_volume(level: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_volume(level as u8);
     }
+}
+
+/// Does a vertical drag that STARTED at `(x, y)` belong to the pull-down panel? Asked once per
+/// contact, on the start point, before the list is given the drag. 0 unless the panel is switched
+/// on in Settings and the drag began in the status bar — so with it off (the default) the contact
+/// scrolls exactly as before.
+#[no_mangle]
+pub extern "C" fn cinder_quick_pull_begin(x: libc::c_int, y: libc::c_int) -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.quick_pull_begin(x as i32, y as i32) as libc::c_int)
+}
+
+/// The pull travelled far enough: open the panel. 1 if it opened.
+#[no_mangle]
+pub extern "C" fn cinder_quick_pull_open() -> libc::c_int {
+    let mut guard = cell().lock().unwrap();
+    let Some(r) = guard.as_mut() else { return 0 };
+    let opened = r.app.quick_pull_open();
+    if opened {
+        r.dirty = true;
+    }
+    opened as libc::c_int
 }
 
 /// Bottom-edge swipe up: open the Shelf. Returns 1 if the UI took the gesture, 0 if it declined
@@ -5060,6 +5113,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // By id. A palette that is not loaded (yet) keeps the choice and draws Cinder
                     // until the folder is read — see App::set_palette_wanted.
                     "palette" => r.app.set_palette_wanted(v),
+                    "palette_sort" => r.app.set_palette_sort(v),
                     "viz_kind" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_viz_kind(n);
@@ -5091,6 +5145,8 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // Settings ▸ Ignore "The" in artists. Read before the library arrives, and
                     // `set_library` applies it to whatever library comes next.
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
+                    "quick_settings" => r.app.set_quick_enabled(v == "1"),
+                    "sensme_follow_time" => r.app.set_sensme_follow(v == "1"),
                     "volume_hud" => r.app.set_volume_hud(v),
                     "home_screen" => r.app.set_home_screen(v),
                     "home_last" => r.app.set_home_last(v),
@@ -6865,7 +6921,7 @@ mod tests {
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
-            S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe, S::Display,
+            S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe, S::Display, S::Palette, S::Help,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
@@ -6873,6 +6929,15 @@ mod tests {
             let i = screen_ord(sc) as usize;
             assert!(i < SCREEN_NAMES.len(), "{sc:?} maps past the end of the name table");
             assert!(seen.insert(i), "{sc:?} shares an ordinal with another screen");
+        }
+    }
+
+    /// The SensMe grid names the time-of-day channel from a table in cinder-ui, which cannot see
+    /// cinder-db's. Hold the two together here, where both are in reach.
+    #[test]
+    fn the_time_of_day_names_match_the_channel_table() {
+        for (id, name) in cinder_ui::model::SENSME_TIME_NAMES {
+            assert_eq!(cinder_db::SENSME_CHANNELS[id as usize], name, "channel {id}");
         }
     }
 

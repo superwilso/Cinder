@@ -72,6 +72,10 @@ pub enum Screen {
     /// visualiser (design handoff 5k). The top five Settings rows moved here so the weekly
     /// preferences stop sharing a column with Restart and Reset. See `display.rs`.
     Display,
+    /// Settings ▸ Display ▸ Palette — the palette picker (handoff 5j): every palette in the folder
+    /// with its colours, the files that were refused and why, sortable by name or date added. See
+    /// `palette_list.rs`.
+    Palette,
     /// Settings ▸ Device — the hardware's vital signs: battery (level, voltage, health, charger
     /// state) plus die temperatures, CPU clock and governor, memory, storage and uptime. Its own
     /// screen because the Settings row could show exactly one fact, and because everything here is
@@ -82,6 +86,10 @@ pub enum Screen {
     UsbDac,
     Receiver,
     Onboarding,
+    /// Menu ▸ Help & controls: one scrolling list of what to do and how (design handoff 5i). The
+    /// paged `Onboarding` intro runs once on the first start; this is the reference kept after it,
+    /// and its last row replays the intro. See `help.rs`.
+    Help,
     /// USB mass-storage mode: MODAL "connected to PC" screen while the storage volume is handed
     /// to the host. Only Back (or the shell detecting cable-unplug) leaves it.
     UsbStorage,
@@ -363,6 +371,9 @@ pub enum Action {
     /// "Use Enhanced Mode" toggled: shell reads `bt_enhanced()` and calls
     /// `BtTransmitterServiceClient::SetControlAbsoluteVolume` (slot 31).
     BtEnhancedChanged,
+    /// THIS DEVICE ▸ Debug log switched: the shell reads `bt_debug_log()` and turns the HCI capture
+    /// on, or off and copies it to the drive.
+    BtDebugLog,
     UsbDacToggle(bool),       // engage/disengage USB-DAC input routed to 3.5mm + BT/LDAC (the headline feature)
     /// SEEK within the current track, as permille (0..1000) of its duration. Emitted by the Now
     /// Playing progress rail. On device the shell drives the rail through cinder-ffi (which knows
@@ -448,7 +459,7 @@ const MENU: [(Screen, &str, &str); 10] = [
     // NOT "BT Receiver": it stays reachable where it belongs, from Bluetooth ▸ Receiver mode,
     // until it works.
     (Screen::Settings, "Settings", "Display · playback · system"),
-    (Screen::Onboarding, "Help & controls", "Buttons, swipes, the way back"),
+    (Screen::Help, "Help & controls", "Buttons, swipes, the way back"),
 ];
 
 /// `App::home_screen` values, in `menu::HOMES` order.
@@ -757,7 +768,11 @@ pub struct App {
     /// Why files in the folder were not loaded, one line each. The shell logs them; the Palette
     /// row says how many, once.
     palette_skipped: Vec<String>,
-    palette_skipped_told: bool,
+    /// Palette picker sort: index into `palette_list::SORTS` (0 name, 1 date added).
+    palette_sort: usize,
+    palette_scroll_px: i32,
+    /// Help & controls' scroll offset; reset each time it is opened from the Menu.
+    help_scroll_px: i32,
     /// Settings was opened since the folder was last read. The shell rescans on its next frame, so
     /// a palette copied over USB shows up without a reboot.
     palettes_stale: bool,
@@ -869,6 +884,8 @@ pub struct App {
     /// pinned to `None` for as long as there was no safe way to make that call — it takes TWO
     /// out-params by reference and passing one crashed the service client twice.
     bt_connected: Option<String>,
+    /// THIS DEVICE ▸ Debug log is recording. Not persisted — see `bluetooth::Bt::debug_log`.
+    bt_debug_log: bool,
     /// Has the shell reported the link state at all yet? Until it has, the Bluetooth screen says
     /// so rather than claiming "No device connected" — which before the first poll is a guess.
     bt_link_known: bool,
@@ -1205,6 +1222,10 @@ pub struct App {
     lib: Library,
     /// Shelf bottom-sheet overlay: whether it's showing, and the three pin slots (jump-back places).
     shelf_open: bool,
+    /// The pull-down panel (`quick.rs`) is switched on in Settings. OFF by default: see `quick.rs`.
+    quick_enabled: bool,
+    /// The pull-down panel is showing. Its own flag, not the Shelf's: the two never share state.
+    quick_open: bool,
     pins: [Option<ShelfPin>; crate::shelf::SLOTS],
     /// PLAY HISTORY — what has actually been played, oldest first. Up Next's PREVIOUSLY PLAYED.
     ///
@@ -1283,6 +1304,11 @@ pub struct App {
     /// Is the opt-in `sensme` component installed? Set by the shell at startup from
     /// `/data/cinder/sensme_on`; without it the Menu has no SensMe row.
     sensme_enabled: bool,
+    /// SensMe ▸ "Follow the time of day": the grid's button plays the channel for the hour.
+    sensme_follow: bool,
+    /// The hour on the status-bar clock at the last render, for the time-of-day channel. `None`
+    /// until a clock has been drawn (the host and tests have no shell).
+    clock_hour: Option<u8>,
     track_info: Vec<(String, String)>,
     track_info_scroll_px: i32,
     /// Measured content height of the track-info list, refreshed on every paint of that screen.
@@ -1339,7 +1365,9 @@ impl Default for App {
             palette_active: None,
             palette_wanted: String::from(crate::palette::BUILTIN_ID),
             palette_skipped: Vec::new(),
-            palette_skipped_told: false,
+            palette_sort: 0,
+            palette_scroll_px: 0,
+            help_scroll_px: 0,
             palettes_stale: false,
             locked: true,
             playing: true,
@@ -1380,6 +1408,7 @@ impl Default for App {
             bt_volume: 15,
             bt_route: false,
             bt_connected: None,
+            bt_debug_log: false,
             bt_link_known: false,
             bt_paired: Vec::new(),
             bt_found: Vec::new(),
@@ -1528,6 +1557,8 @@ impl Default for App {
             onboarding_seen: false,
             lib: Library::sample(),
             shelf_open: false,
+            quick_enabled: false,
+            quick_open: false,
             pins: std::array::from_fn(|_| None),
             history: Vec::new(),
             mono: false,
@@ -1551,6 +1582,8 @@ impl Default for App {
             sensme_scroll_px: 0,
             sensme_scroll_saved: 0,
             sensme_enabled: false,
+            sensme_follow: false,
+            clock_hour: None,
             track_info: Vec::new(),
             track_info_scroll_px: 0,
             track_info_h: 0,
@@ -1634,6 +1667,12 @@ impl App {
                 // Results rather than the empty prompt: the rows are what can overflow.
                 self.search_query = "a".into();
                 self.search_rebuild();
+            }
+            Screen::TrackPick => {
+                // Rows, through the real open path: pushed bare, the picker had none, so its row
+                // text was never audited.
+                self.open_track_pick();
+                return;
             }
             _ => {}
         }
@@ -1910,9 +1949,9 @@ impl App {
         let Some(target) = self.menu_visible().get(row).map(|m| m.0) else { return };
         match target {
             Screen::NowPlaying => self.go(Screen::NowPlaying),
-            Screen::Onboarding => {
-                self.onboarding_page = 0; // re-open the intro from the start
-                self.push(Screen::Onboarding);
+            Screen::Help => {
+                self.help_scroll_px = 0;
+                self.push(Screen::Help);
             }
             // Not a bare push: entering the tree has to reset the descent stack and skip the
             // single-root level, which is what open_folders is for.
@@ -1942,7 +1981,7 @@ impl App {
     /// re-open what it might have been trying to dismiss). Returns whether it took the gesture, so
     /// the shell can fall back to a scroll if it did not.
     pub fn shelf_swipe_open(&mut self) -> bool {
-        if self.locked || self.shelf_open || self.current() == Screen::Onboarding {
+        if self.locked || self.shelf_open || self.quick_open || self.current() == Screen::Onboarding {
             return false;
         }
         self.open_shelf();
@@ -1952,6 +1991,86 @@ impl App {
     /// Whether the Shelf overlay is showing (the shell can use this, e.g. to keep painting).
     pub fn shelf_is_open(&self) -> bool {
         self.shelf_open
+    }
+
+    /// An overlay owns the gestures: the Shelf or the pull-down panel. The guards that used to
+    /// read `shelf_open` alone read this, so the panel is as modal as the Shelf is.
+    fn overlay_open(&self) -> bool {
+        self.shelf_open || self.quick_open
+    }
+
+    /// Is the pull-down panel switched on (Settings ▸ Pull-down panel)?
+    pub fn quick_enabled(&self) -> bool {
+        self.quick_enabled
+    }
+
+    pub fn set_quick_enabled(&mut self, on: bool) {
+        self.quick_enabled = on;
+        if !on {
+            self.quick_open = false;
+        }
+    }
+
+    pub fn quick_is_open(&self) -> bool {
+        self.quick_open
+    }
+
+    /// Does a vertical drag that STARTED at `(x, y)` belong to the pull-down panel? Asked by the
+    /// shell once per contact, on the start point, before the list gets the drag.
+    ///
+    /// No unless the panel is switched on, the drag began in the status bar, and nothing modal is
+    /// up. With the panel off the answer is always no, so the contact scrolls exactly as it did
+    /// before the panel existed.
+    pub fn quick_pull_begin(&self, _x: i32, y: i32) -> bool {
+        self.quick_enabled
+            && (0..crate::chrome::STATUS_H).contains(&y)
+            && self.quick_allowed()
+    }
+
+    /// The pull travelled far enough: open the panel. False if something modal came up meanwhile.
+    pub fn quick_pull_open(&mut self) -> bool {
+        if !self.quick_enabled || !self.quick_allowed() {
+            return false;
+        }
+        self.quick_open = true;
+        true
+    }
+
+    fn quick_allowed(&self) -> bool {
+        !self.locked
+            && !self.overlay_open()
+            && self.confirm.is_none()
+            && !matches!(self.current(), Screen::Onboarding | Screen::UsbStorage | Screen::Lock)
+    }
+
+    /// A tap while the panel is open. Every control is an action that already exists.
+    fn quick_tap(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::quick::{QuickHit, SLEEP_PRESETS};
+        match crate::quick::hit(x, y) {
+            QuickHit::Brightness(level) => {
+                self.brightness = level;
+                self.brightness_restore = level;
+                vec![Action::BrightnessChanged(level)]
+            }
+            QuickHit::Bluetooth => {
+                self.bt_on = !self.bt_on;
+                vec![Action::BtToggle(self.bt_on)]
+            }
+            QuickHit::Night => {
+                self.night = !self.night;
+                vec![Action::ThemeChanged(self.night)]
+            }
+            QuickHit::Sleep(i) => {
+                self.sleep_idx = i.min(SLEEP_PRESETS.len() - 1);
+                self.sleep_min = SLEEP_PRESETS[self.sleep_idx];
+                vec![Action::SleepTimer(self.sleep_min)]
+            }
+            QuickHit::Sheet => vec![],
+            QuickHit::Outside => {
+                self.quick_open = false;
+                vec![]
+            }
+        }
     }
 
     /// A short title/subtitle for the current place — used by the Shelf's "this place" row and when
@@ -2421,6 +2540,11 @@ impl App {
         moved && self.current() == Screen::Lyrics
     }
 
+    /// The playing song has lyrics worth a screen: what draws Now Playing's Lyrics chip.
+    pub fn has_lyrics(&self) -> bool {
+        self.lyrics.as_ref().is_some_and(|l| !l.lines.is_empty())
+    }
+
     fn open_lyrics(&mut self) {
         self.lyrics_follow = true;
         self.lyrics_scroll_px = 0;
@@ -2545,7 +2669,7 @@ impl App {
             }
             // Arriving at Settings or Display re-reads the palette folder, so a palette copied over
             // USB is there to pick without a reboot. The shell does the reading; this only asks.
-            if matches!(s, Screen::Settings | Screen::Display) {
+            if matches!(s, Screen::Settings | Screen::Display | Screen::Palette) {
                 self.palettes_stale = true;
             }
             self.stack.push(s);
@@ -2623,6 +2747,14 @@ impl App {
     }
 
     /// The shell says whether the opt-in `sensme` component is installed.
+    pub fn sensme_follow(&self) -> bool {
+        self.sensme_follow
+    }
+
+    pub fn set_sensme_follow(&mut self, on: bool) {
+        self.sensme_follow = on;
+    }
+
     pub fn set_sensme_enabled(&mut self, on: bool) {
         self.sensme_enabled = on;
         // The cursor is an index into the VISIBLE rows, and this changes how many there are.
@@ -2664,13 +2796,37 @@ impl App {
                 }
             }
         }
+        // The channel GRID (handoff 5d): a tile opens its channel; the foot's switch and button.
+        if self.sensme_channel.is_none() {
+            if self.lib.channels.is_empty() {
+                return vec![]; // the explained empty screen: nothing is drawn to tap
+            }
+            if let Some(i) = crate::sensme::tile_at(self.lib.channels.len(), x, y, self.sensme_scroll_px) {
+                self.sensme_enter(i);
+                return vec![];
+            }
+            if crate::sensme::follow_hit(y) {
+                self.sensme_follow = !self.sensme_follow;
+                return vec![];
+            }
+            if crate::sensme::button_hit(x, y) {
+                let foot = crate::sensme::Foot { follow: self.sensme_follow, hour: self.clock_hour };
+                return match crate::sensme::foot_channel(&self.lib, foot).and_then(|i| self.lib.channels.get(i)) {
+                    Some(ch) => {
+                        let id = ch.id;
+                        self.sensme_play(id, 0, false)
+                    }
+                    // Every analysed track, shuffled — Sony's fourteenth tile.
+                    None => self.sensme_play(crate::sensme::ALL, 0, true),
+                };
+            }
+            return vec![];
+        }
         match crate::sensme::row_at(&self.lib, self.sensme_channel, y, self.sensme_scroll_px) {
             Some(crate::sensme::Row::Channel(i)) => {
                 self.sensme_enter(i);
                 vec![]
             }
-            // Every analysed track, shuffled — Sony's fourteenth tile.
-            Some(crate::sensme::Row::All) => self.sensme_play(crate::sensme::ALL, 0, true),
             Some(crate::sensme::Row::Track(i)) => {
                 let chan = self.sensme_channel.and_then(|c| self.lib.channels.get(c)).map(|c| c.id);
                 match chan {
@@ -2799,9 +2955,11 @@ impl App {
     fn display_activate(&mut self) -> Vec<Action> {
         match self.display_sel {
             crate::display::ROW_PALETTE => {
-                // Render-only, like the accent: the shell's save path writes the choice, and the
-                // folder is re-read whenever this page opens (see `palettes_stale`).
-                self.cycle_palette();
+                // The picker (handoff 5j). It used to cycle one palette per tap, which made the
+                // fifth file four unwanted colour schemes away and reported a refused file only in
+                // the log. The folder is re-read on the way in (see `palettes_stale`).
+                self.palette_scroll_px = 0;
+                self.push(Screen::Palette);
                 vec![]
             }
             crate::display::ROW_ACCENT => {
@@ -2874,8 +3032,13 @@ impl App {
                 self.set_ignore_the(!self.ignore_the);
                 vec![]
             }
+            crate::settings::ROW_QUICK => {
+                self.set_quick_enabled(!self.quick_enabled);
+                vec![]
+            }
             crate::settings::ROW_SLEEP => {
-                const PRESETS: [u32; 5] = [0, 15, 30, 45, 60];
+                // One list for this row and the pull-down panel's chips.
+                const PRESETS: [u32; 5] = crate::quick::SLEEP_PRESETS;
                 self.sleep_idx = (self.sleep_idx + 1) % PRESETS.len();
                 self.sleep_min = PRESETS[self.sleep_idx];
                 vec![Action::SleepTimer(self.sleep_min)]
@@ -3164,6 +3327,10 @@ impl App {
         if self.locked {
             return vec![];
         }
+        // The pull-down panel owns all taps while it is open, like the Shelf below.
+        if self.quick_open {
+            return self.quick_tap(x, y);
+        }
         // Shelf bottom-sheet overlay owns all taps while it's open.
         if self.shelf_open {
             return self.shelf_tap(x, y);
@@ -3271,6 +3438,12 @@ impl App {
             }
             Screen::NowPlaying => {
                 let hit = |cx: i32, cy: i32, r: i32| (x - cx).pow(2) + (y - cy).pow(2) <= r * r;
+                // Lyrics chip: first, because its band under the status bar otherwise opens the
+                // Menu (below), and at night its lower edge touches the metadata block.
+                if crate::now_playing::hit_lyrics(x, y, self.has_lyrics()) {
+                    self.open_lyrics();
+                    return vec![];
+                }
                 // Like: tested before the transport row (it sits above it, and its target is
                 // square rather than circular, so the two can't overlap).
                 if crate::now_playing::hit_heart(x, y) {
@@ -3518,6 +3691,27 @@ impl App {
                 if let Some(row) = crate::settings::row_at(y, self.settings_scroll_px) {
                     self.settings_sel = row;
                     return self.settings_activate();
+                }
+                vec![]
+            }
+            Screen::Help => {
+                // The last row replays the first-run intro. Every other row is a fact.
+                if crate::help::item_at(x, y, self.help_scroll_px, self.quick_enabled).is_some() {
+                    self.onboarding_page = 0;
+                    self.push(Screen::Onboarding);
+                }
+                vec![]
+            }
+            Screen::Palette => {
+                use crate::palette_list::{item_at, Item};
+                let order = self.palette_order();
+                match item_at(x, y, self.palette_scroll_px, order.len(), self.palette_skipped.len()) {
+                    Some(Item::Sort(i)) => self.palette_sort = i,
+                    // Stay on the page: the whole screen repaints in the new colours at once, which
+                    // is the comparison you came here to make.
+                    Some(Item::Entry(i)) => self.pick_palette(order[i]),
+                    // A refused file or the ADD row says what to do; there is nothing to tap into.
+                    Some(Item::Skipped(_)) | Some(Item::Add) | None => {}
                 }
                 vec![]
             }
@@ -3775,6 +3969,13 @@ impl App {
                     BtHit::Advanced => {
                         self.push(Screen::BtCodec);
                         vec![]
+                    }
+                    BtHit::DebugLog => {
+                        // No toast here: whether the capture reached the drive is the shell's to
+                        // say (`cinder_toast`), and it can fail — the stack's file may not be
+                        // readable to this app.
+                        self.bt_debug_log = !self.bt_debug_log;
+                        vec![Action::BtDebugLog]
                     }
                     // Codec-page rows: this screen's hit map cannot produce them.
                     BtHit::FineVolume | BtHit::None => vec![],
@@ -4655,7 +4856,7 @@ impl App {
         // The Shelf is a MODAL bottom sheet: it owns the gesture. Without this guard a drag that
         // started on the sheet scrolled (and flung) the list behind it, which read as the Shelf
         // "not working" — the sheet sat still while the screen moved underneath it.
-        if self.shelf_open || self.locked {
+        if self.overlay_open() || self.locked {
             return;
         }
         match self.current() {
@@ -4683,6 +4884,14 @@ impl App {
                 if let Some(max) = self.playlist_row().map(library::playlist_max_scroll_px) {
                     self.playlist_scroll_px = (self.playlist_scroll_px + dy_px).clamp(0, max);
                 }
+            }
+            Screen::Help => {
+                let max = crate::help::max_scroll(self.quick_enabled);
+                self.help_scroll_px = (self.help_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::Palette => {
+                let max = crate::palette_list::max_scroll(self.palettes.len() + 1, self.palette_skipped.len());
+                self.palette_scroll_px = (self.palette_scroll_px + dy_px).clamp(0, max);
             }
             Screen::Settings => {
                 let max = crate::settings::max_scroll_px();
@@ -4750,7 +4959,7 @@ impl App {
     /// Momentum fling: the release velocity (px/s, same sign convention as `scroll_px`). The
     /// per-frame `tick()` integrates and decays it, keeping frames dirty until it stops.
     pub fn fling(&mut self, velocity_px_s: f32) {
-        if self.shelf_open || self.locked {
+        if self.overlay_open() || self.locked {
             return; // the modal sheet owns the gesture — see scroll_px
         }
         if matches!(self.current(),
@@ -4771,7 +4980,7 @@ impl App {
     /// A finger went down at (x, y). True if it grabbed a scrubbable control.
     pub fn scrub_begin(&mut self, x: i32, y: i32) -> bool {
         self.scrub = Scrub::None;
-        if self.locked || self.shelf_open {
+        if self.locked || self.overlay_open() {
             return false;
         }
         match self.current() {
@@ -4965,7 +5174,7 @@ impl App {
     /// This is feedback only — it changes no state but the offset. The queueing still happens on
     /// release, in `swipe`, so a gesture dragged back to zero costs nothing.
     pub fn swipe_track(&mut self, dx: i32, y: i32) -> bool {
-        if self.locked || self.shelf_open || self.confirm.is_some() {
+        if self.locked || self.overlay_open() || self.confirm.is_some() {
             return false;
         }
         // Only where a track sits under the finger: the same rows `swipe` can queue. Artist and
@@ -5040,7 +5249,7 @@ impl App {
     }
 
     fn reorder_begin_inner(&mut self, x: i32, y: i32, require_grip: bool) -> bool {
-        if self.locked || self.shelf_open || self.confirm.is_some() {
+        if self.locked || self.overlay_open() || self.confirm.is_some() {
             return false;
         }
         // Up Next is the only screen with reorderable rows on it. What is reorderable THERE is
@@ -5246,7 +5455,7 @@ impl App {
             Screen::SensMe => Some((
                 crate::sensme::max_scroll_px(&self.lib, self.sensme_channel),
                 crate::sensme::list_top(self.sensme_channel),
-                lb,
+                if self.sensme_channel.is_none() { crate::sensme::GRID_BOTTOM } else { lb },
             )),
             _ => None,
         }
@@ -5258,7 +5467,7 @@ impl App {
     /// The strip is shared with the A–Z rail and split by GESTURE, not geometry: this is only
     /// consulted for a drag, and `tap` still routes the same x to a letter jump.
     pub fn sbar_begin(&mut self, x: i32, y: i32) -> bool {
-        if self.locked || self.shelf_open || self.confirm.is_some() {
+        if self.locked || self.overlay_open() || self.confirm.is_some() {
             return false;
         }
         if !library::sbar_hit_x(x) {
@@ -5326,7 +5535,7 @@ impl App {
     }
 
     pub fn swipe(&mut self, dir: i32, _x: i32, y: i32) -> Vec<Action> {
-        if self.locked || self.shelf_open {
+        if self.locked || self.overlay_open() {
             return vec![];
         }
         match self.current() {
@@ -6137,10 +6346,12 @@ impl App {
 
         // Shelf overlay open: Back (incl. the left-edge swipe) closes it; Play/Vol still work as
         // global music controls; other navigation is suppressed until it's dismissed.
-        if self.shelf_open {
+        // The pull-down panel gets the same rules, and Back closes it.
+        if self.shelf_open || self.quick_open {
             return match b {
                 Button::Back => {
                     self.shelf_open = false;
+                    self.quick_open = false;
                     vec![]
                 }
                 Button::Power => vec![Action::Sleep],
@@ -6661,6 +6872,11 @@ impl App {
                 t
             }
         };
+        // The hour on the clock the status bar is about to draw ("14:32"), for SensMe's
+        // time-of-day channel. Kept when a frame has no clock rather than forgotten.
+        if let Some(h) = np.clock.split(':').next().and_then(|h| h.trim().parse::<u8>().ok()).filter(|h| *h < 24) {
+            self.clock_hour = Some(h);
+        }
         match self.current() {
             Screen::Lock => {
                 let lk = crate::lock::Lock {
@@ -6686,6 +6902,7 @@ impl App {
                     viz_kind: self.viz_kind,
                     viz_size: if live { self.viz_size } else { 0 },
                     page: self.np_page,
+                    lyrics: self.has_lyrics(),
                     ..*np
                 };
                 crate::now_playing::render(c, &theme, fonts, &np2);
@@ -6789,6 +7006,7 @@ impl App {
                 ),
             },
             Screen::Onboarding => crate::onboarding::render(c, &theme, fonts, self.onboarding_page),
+            Screen::Help => crate::help::render(c, &theme, fonts, self.help_scroll_px, self.quick_enabled),
             Screen::UsbStorage => crate::usb_storage::render(c, &theme, fonts),
             Screen::GenreFilter => crate::library::genre_render(
                 c, &theme, fonts, &self.lib, self.genre_scroll_px, self.sbar_active(),
@@ -6800,6 +7018,7 @@ impl App {
             Screen::SensMe => crate::sensme::render(
                 c, &theme, fonts, &self.lib, self.sensme_channel, self.sensme_scroll_px,
                 self.sbar_active(),
+                crate::sensme::Foot { follow: self.sensme_follow, hour: self.clock_hour },
             ),
             Screen::TrackInfo => {
                 self.track_info_h = crate::track_info::content_h(fonts, &theme, &self.track_info);
@@ -7031,6 +7250,7 @@ impl App {
                     connecting: self.bt_connecting.is_some(),
                     busy_phase: self.bt_busy_phase,
                     paired: &self.bt_paired,
+                    debug_log: self.bt_debug_log,
                 };
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
@@ -7054,6 +7274,7 @@ impl App {
                     connecting: self.bt_connecting.is_some(),
                     busy_phase: self.bt_busy_phase,
                     paired: &self.bt_paired,
+                    debug_log: self.bt_debug_log,
                 };
                 crate::bluetooth::render_codec(c, &theme, fonts, &bt)
             }
@@ -7092,6 +7313,7 @@ impl App {
                 let view = crate::settings::SettingsView {
                     volume_limit: self.volume_limit,
                     ignore_the: self.ignore_the,
+                    quick: self.quick_enabled,
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
                     device: &self.device_summary(),
@@ -7122,6 +7344,33 @@ impl App {
                     viz: &viz_lbl,
                 };
                 crate::display::render(c, &theme, fonts, self.display_sel, &view)
+            }
+            Screen::Palette => {
+                let entries: Vec<crate::palette_list::Entry> = self
+                    .palette_order()
+                    .into_iter()
+                    .map(|slot| {
+                        let (name, sub, tokens) = match slot {
+                            None => (crate::palette::BUILTIN_NAME.to_string(), "Built in".to_string(),
+                                     crate::theme::CINDER),
+                            Some(i) => {
+                                let p = &self.palettes[i];
+                                (p.name.clone(), format!("{}.palette", p.id), p.tokens)
+                            }
+                        };
+                        let th = tokens.theme(self.night, self.accent);
+                        crate::palette_list::Entry {
+                            name,
+                            sub,
+                            cells: [th.bg, th.line, th.dim, th.ink, th.acc],
+                            active: slot == self.palette_active,
+                        }
+                    })
+                    .collect();
+                let skipped: Vec<crate::palette_list::Skipped> =
+                    self.palette_skipped.iter().map(|m| crate::palette_list::skipped_from(m)).collect();
+                crate::palette_list::render(c, &theme, fonts, self.palette_sort, &entries, &skipped,
+                                            self.palette_scroll_px)
             }
             Screen::ClockSet => {
                 crate::clockset::render(c, &theme, fonts, &self.clock_fields, self.clock_sel)
@@ -7266,6 +7515,18 @@ impl App {
                 self.pins[i].as_ref().map(|p| crate::shelf::Pin { title: &p.title, sub: &p.sub })
             });
             crate::shelf::render(c, &theme, fonts, &title, &sub, &pins);
+        }
+        // The pull-down panel hangs from the bottom of the status strip (drawn above), so the clock
+        // and battery stay in view over it, and dims the rest of the screen.
+        if self.quick_open {
+            let dev = self.bt_connected.as_deref();
+            crate::quick::render(c, &theme, fonts, &crate::quick::QuickView {
+                brightness: self.brightness,
+                bt_on: self.bt_on,
+                bt_device: dev,
+                night: self.night,
+                sleep_idx: self.sleep_idx,
+            });
         }
         // TRANSIENTS LAST — above the Shelf sheet too. Drawn before it, the sheet (which fills
         // y 406..800 opaquely) painted straight over both: the pin/clear confirmation was
@@ -8008,7 +8269,7 @@ impl App {
         self.onboarding_seen = true;
         self.locked = false;
         if self.stack.len() > 1 {
-            self.pop(); // opened from the Menu → back to Menu
+            self.pop(); // replayed from Help & controls → back to it
         } else {
             self.go(Screen::NowPlaying); // first-run → start listening
             self.apply_home(); // …on the home screen, which is Library unless chosen otherwise
@@ -8369,9 +8630,6 @@ impl App {
         let same_ids = list.len() == self.palettes.len()
             && list.iter().zip(&self.palettes).all(|(a, b)| a.id == b.id);
         let skipped_changed = skipped != self.palette_skipped;
-        if skipped_changed {
-            self.palette_skipped_told = false;
-        }
         self.palettes = list;
         self.palette_skipped = skipped;
         self.resolve_palette();
@@ -8399,39 +8657,39 @@ impl App {
         std::mem::take(&mut self.palettes_stale)
     }
 
-    /// Settings ▸ Palette: the next palette, wrapping back to Cinder after the last one.
-    fn cycle_palette(&mut self) {
-        let skipped = self.palette_skipped.len();
-        let skipped_msg = format!(
-            "{skipped} palette file{} skipped — see cinderhome.log",
-            if skipped == 1 { "" } else { "s" }
-        );
-        if self.palettes.is_empty() {
-            // Nothing to cycle to. Say why rather than doing nothing: an inert row is exactly what
-            // the dead-UI audits removed from this screen.
-            if skipped > 0 {
-                self.palette_skipped_told = true;
-                self.notify(&skipped_msg);
-            } else {
-                self.notify("No palettes in cinder_palettes");
-            }
-            return;
-        }
-        let next = match self.palette_active {
-            None => Some(0),
-            Some(i) if i + 1 < self.palettes.len() => Some(i + 1),
-            Some(_) => None,
+    /// The picker's order: the built-in palette first (`None`), then the folder's, by name or by
+    /// date added (newest first), per `palette_sort`.
+    fn palette_order(&self) -> Vec<Option<usize>> {
+        let mut idx: Vec<usize> = (0..self.palettes.len()).collect();
+        let by_name = |a: &usize, b: &usize| {
+            let (pa, pb) = (&self.palettes[*a], &self.palettes[*b]);
+            pa.name.to_lowercase().cmp(&pb.name.to_lowercase()).then_with(|| pa.id.cmp(&pb.id))
         };
-        self.palette_wanted = match next {
+        if self.palette_sort == 1 {
+            idx.sort_by(|a, b| self.palettes[*b].added.cmp(&self.palettes[*a].added).then_with(|| by_name(a, b)));
+        } else {
+            idx.sort_by(by_name);
+        }
+        std::iter::once(None).chain(idx.into_iter().map(Some)).collect()
+    }
+
+    /// Pick a palette by its place in `palette_order`.
+    fn pick_palette(&mut self, slot: Option<usize>) {
+        self.palette_wanted = match slot {
             Some(i) => self.palettes[i].id.clone(),
             None => crate::palette::BUILTIN_ID.to_string(),
         };
         self.resolve_palette();
-        if skipped > 0 && !self.palette_skipped_told {
-            self.palette_skipped_told = true;
-            self.notify(&skipped_msg);
-        }
     }
+
+    pub fn palette_sort(&self) -> &'static str {
+        crate::palette_list::SORT_WORDS[self.palette_sort.min(1)]
+    }
+
+    pub fn set_palette_sort(&mut self, word: &str) {
+        self.palette_sort = crate::palette_list::SORT_WORDS.iter().position(|w| *w == word.trim()).unwrap_or(0);
+    }
+
     pub fn bt_codec(&self) -> u8 {
         self.bt_codec
     }
@@ -8474,6 +8732,16 @@ impl App {
     /// Same reasoning as [`Self::set_usb_dac`]: the switch is intent, `GetBtStatus` is fact. The
     /// shell reconciles at startup so the switch cannot claim the radio is on when it is off (or
     /// wedged). Raises no action — the radio is already in this state.
+    /// Is the Bluetooth debug log (the HCI capture) switched on?
+    pub fn bt_debug_log(&self) -> bool {
+        self.bt_debug_log
+    }
+
+    /// The shell stopped the capture itself, at its size limit. It toasts what became of the file.
+    pub fn bt_debug_log_stopped(&mut self) {
+        self.bt_debug_log = false;
+    }
+
     pub fn set_bt_on(&mut self, on: bool) {
         self.bt_on = on;
         if !on {
@@ -8683,6 +8951,8 @@ fn screen_title(s: Screen) -> &'static str {
         // The two places that are not Menu rows (see `MENU`), named as the Menu used to name them.
         Screen::NowPlaying => "Now Playing",
         Screen::UpNext => "Up Next",
+        Screen::Display => "Display",
+        Screen::Palette => "Palette",
         s => MENU.iter().find(|m| m.0 == s).map(|m| m.1).unwrap_or("Cinder"),
     }
 }
@@ -11009,6 +11279,109 @@ mod tests {
         assert_eq!(a.current(), Screen::NowPlaying);
     }
 
+    /// Bluetooth ▸ THIS DEVICE ▸ Debug log: one action per switch, off at every boot, and the
+    /// shell can switch it off itself at its size limit.
+    #[test]
+    fn the_bluetooth_debug_log_is_a_switch_that_starts_off() {
+        let mut a = App::unlocked();
+        assert!(!a.bt_debug_log(), "never on at boot");
+        a.set_bt_on(true);
+        a.push(Screen::Bluetooth);
+        let y = crate::bluetooth::debug_row_y();
+        assert_eq!(a.tap(240, y), vec![Action::BtDebugLog]);
+        assert!(a.bt_debug_log());
+        assert_eq!(a.tap(240, y), vec![Action::BtDebugLog]);
+        assert!(!a.bt_debug_log());
+        a.tap(240, y);
+        a.bt_debug_log_stopped();
+        assert!(!a.bt_debug_log(), "the shell's size limit turns the switch off");
+    }
+
+    // ── The pull-down panel (quick.rs, community request B1) ─────────────────────────────────
+    // OFF path first: with the setting off nothing may change — no claim on any contact.
+
+    /// With the panel switched off (the default) a drag from the status bar is not claimed, so the
+    /// shell hands it to the list exactly as before, and nothing opens.
+    #[test]
+    fn the_pull_down_panel_is_off_by_default_and_claims_nothing() {
+        let mut a = App::unlocked();
+        assert!(!a.quick_enabled(), "off unless switched on");
+        for y in [0, 10, 30, crate::chrome::STATUS_H - 1] {
+            assert!(!a.quick_pull_begin(240, y), "y={y} claimed with the panel off");
+        }
+        assert!(!a.quick_pull_open());
+        assert!(!a.quick_is_open());
+        // The list still scrolls: the guard that stops a scroll under an overlay is not tripped.
+        a.go(Screen::Settings);
+        a.scroll_px(120);
+        assert!(a.settings_scroll_px > 0, "a drag still scrolls Settings with the panel off");
+    }
+
+    /// Switched on: a pull from the status bar opens it, a drag anywhere else is still the list's,
+    /// and while it is open the list underneath stays put.
+    #[test]
+    fn the_pull_down_panel_opens_from_the_status_bar_only() {
+        let mut a = App::unlocked();
+        a.go(Screen::Settings);
+        a.settings_sel = crate::settings::ROW_QUICK;
+        a.settings_activate();
+        assert!(a.quick_enabled(), "the Settings row switches it on");
+        assert!(a.quick_pull_begin(240, 20));
+        assert!(!a.quick_pull_begin(240, crate::chrome::STATUS_H), "below the status bar is the list's");
+        assert!(!a.quick_pull_begin(240, 400));
+        assert!(a.quick_pull_open());
+        assert!(a.quick_is_open());
+        let before = a.settings_scroll_px;
+        a.scroll_px(200);
+        assert_eq!(a.settings_scroll_px, before, "the panel owns the gesture, like the Shelf");
+        assert!(!a.shelf_swipe_open(), "the Shelf does not open over the panel");
+        assert!(!a.quick_pull_begin(240, 20), "a second pull does not reopen an open panel");
+    }
+
+    /// Every control is an action that already exists, one per tap.
+    #[test]
+    fn the_pull_down_panel_controls_are_existing_actions() {
+        use crate::quick;
+        let mut a = App::unlocked();
+        a.set_quick_enabled(true);
+        assert!(a.quick_pull_open());
+        let chip = |i: usize, n: usize| { let (x, w) = crate::kit::chip_span(i, n); x + w / 2 };
+        let bright_y = quick::TOP + crate::kit::SECTION_H + crate::kit::CHIP_H / 2;
+        assert_eq!(a.tap(chip(1, 5), bright_y), vec![Action::BrightnessChanged(2)]);
+        assert_eq!(a.brightness(), 2);
+        let bt = a.bt_on;
+        assert_eq!(a.tap(240, quick::ROW_BT + 30), vec![Action::BtToggle(!bt)]);
+        let night = a.night;
+        assert_eq!(a.tap(240, quick::ROW_NIGHT + 30), vec![Action::ThemeChanged(!night)]);
+        let sleep_y = quick::BOTTOM - 26 - crate::kit::CHIP_H / 2;
+        assert_eq!(a.tap(chip(2, 5), sleep_y), vec![Action::SleepTimer(30)]);
+        assert!(a.quick_is_open(), "controls leave the panel open");
+        assert_eq!(a.tap(240, quick::BOTTOM + 100), Vec::<Action>::new());
+        assert!(!a.quick_is_open(), "a tap on the screen behind closes it");
+    }
+
+    /// Back closes it, the transport keys still work over it, and it never opens over the lock,
+    /// the Shelf or a confirmation.
+    #[test]
+    fn the_pull_down_panel_is_modal_like_the_shelf() {
+        let mut a = App::unlocked();
+        a.set_quick_enabled(true);
+        a.quick_pull_open();
+        assert_eq!(a.press(Button::Next), vec![Action::Next]);
+        assert!(a.quick_is_open());
+        a.press(Button::Back);
+        assert!(!a.quick_is_open());
+
+        a.open_shelf();
+        assert!(!a.quick_pull_begin(240, 20) && !a.quick_pull_open(), "not over the Shelf");
+        a.shelf_open = false;
+        a.locked = true;
+        assert!(!a.quick_pull_begin(240, 20), "not on the lock screen");
+        a.locked = false;
+        a.set_quick_enabled(false);
+        assert!(!a.quick_pull_begin(240, 20), "switching it off takes the gesture away again");
+    }
+
     #[test]
     fn status_bar_bookmark_opens_shelf() {
         let mut a = unlocked(); // Now Playing
@@ -11263,9 +11636,9 @@ mod tests {
     fn a_channel_opens_and_back_returns_to_the_list() {
         let mut a = at_sensme();
         a.sensme_scroll_px = 0;
-        let row = |r: usize| crate::sensme::row_top(r, a.sensme_channel, 0) + crate::sensme::ROW_H / 2;
-        // Row 0 is "shuffle all", so the first channel is row 1.
-        assert_eq!(a.tap(240, row(1)), vec![]);
+        // The list is a grid (handoff 5d): the first tile is the first channel.
+        let (x, y, w, h) = crate::sensme::tile_rect(0, 0);
+        assert_eq!(a.tap(x + w / 2, y + h / 2), vec![]);
         assert_eq!(a.sensme_channel, Some(0));
         assert_eq!(a.current(), Screen::SensMe);
         a.press(Button::Back);
@@ -11307,15 +11680,46 @@ mod tests {
         );
     }
 
-    /// "Shuffle all analysed" is every analysed track, not one channel.
+    /// The grid's button shuffles every analysed track — until "Follow the time of day" is on, when
+    /// it plays the channel for the hour on the clock.
     #[test]
-    fn shuffle_all_analysed_is_its_own_row() {
-        let mut a = at_sensme();
-        let y = crate::sensme::row_top(0, None, 0) + crate::sensme::ROW_H / 2;
+    fn the_grid_button_shuffles_all_or_follows_the_clock() {
+        let mut a = at_sensme(); // channels: Active (0), Morning (8)
+        let button = crate::sensme::BUTTON_Y + crate::kit::BUTTON_H / 2;
         assert_eq!(
-            a.tap(240, y),
+            a.tap(240, button),
             vec![Action::PlaySensMe { chan: crate::sensme::ALL, from: 0, shuffle: true }],
         );
+        a.tap(240, crate::sensme::FOLLOW_Y + crate::kit::ROW_H / 2);
+        assert!(a.sensme_follow(), "the switch row turns following on");
+        a.clock_hour = Some(8);
+        assert_eq!(a.tap(240, button), vec![Action::PlaySensMe { chan: 8, from: 0, shuffle: false }],
+                   "08:00 plays Morning");
+        a.clock_hour = Some(21);
+        assert_eq!(
+            a.tap(240, button),
+            vec![Action::PlaySensMe { chan: crate::sensme::ALL, from: 0, shuffle: true }],
+            "Night has no tracks here, so it falls back to everything",
+        );
+    }
+
+    /// The clock the status bar draws is where the hour comes from.
+    #[test]
+    fn the_hour_comes_from_the_status_bar_clock() {
+        let mut a = App::unlocked();
+        let mut c = Canvas::new();
+        let fonts = crate::text::FontSet::load();
+        let np = NowPlaying {
+            title: "t", artist: "a", codec: "", badge: "", clock: "21:07", battery: 50, elapsed: "",
+            remaining: "", progress: 0.0, art: "x", art_full: None, art_thumb: None, liked: false,
+            playing: false, shuffle: false, repeat: 0, viz_seed: 0.0, viz_kind: 0, viz_size: 0,
+            viz_levels: None, viz_peaks: None, page: 0, scrubbing: false, lyrics: false,
+        };
+        a.render(&mut c, &fonts, &np);
+        assert_eq!(a.clock_hour, Some(21));
+        let np = NowPlaying { clock: "", ..np };
+        a.render(&mut c, &fonts, &np);
+        assert_eq!(a.clock_hour, Some(21), "a frame without a clock keeps the last hour");
     }
 
     /// An untagged library: the row says so, the screen has no rows, and a tap on it does nothing
@@ -11905,6 +12309,37 @@ mod tests {
         assert!(!a.set_lyrics_position(9_000), "no lyrics, nothing to repaint");
     }
 
+    /// Now Playing's Lyrics chip is one tap to the words — and with no lyrics there is no chip, so
+    /// the same tap does what it always did (the band under the status bar opens the Menu).
+    #[test]
+    fn the_lyrics_chip_opens_the_words_only_when_there_are_some() {
+        use crate::lyrics::{Line, Lyrics};
+        use crate::now_playing as np;
+        let (x, y) = (np::LYRICS_X0 + 20, np::LYRICS_Y0 + np::LYRICS_H / 2);
+
+        let mut a = App::unlocked();
+        assert_eq!(a.current(), Screen::NowPlaying);
+        a.tap(x, y);
+        assert_eq!(a.current(), Screen::Menu, "no lyrics: no chip, the band is the Menu's");
+
+        let mut a = App::unlocked();
+        a.set_lyrics(Some(Lyrics { lines: vec![] }));
+        a.tap(x, y);
+        assert_eq!(a.current(), Screen::Menu, "an empty file is no lyrics");
+
+        let mut a = App::unlocked();
+        a.set_lyrics(Some(Lyrics { lines: vec![Line { at_ms: None, text: "words".into() }] }));
+        a.tap(x, y);
+        assert_eq!(a.current(), Screen::Lyrics);
+        a.pop();
+        assert_eq!(a.current(), Screen::NowPlaying, "Back returns to Now Playing");
+
+        // The chip's target clears the heart, the transport and the paging swipe's taps.
+        assert!(!np::hit_lyrics(np::HEART_CX, np::HEART_CY, true));
+        assert!(!np::hit_lyrics(240, 300, true));
+        assert!(np::LYRICS_Y0 + np::LYRICS_H <= crate::chrome::STATUS_H + 44);
+    }
+
     /// Library search is opt-in: no button without the component. With it, the header button opens
     /// search with the keyboard up, typing filters as you go, an empty query finds nothing, and a
     /// result plays.
@@ -12363,15 +12798,21 @@ mod tests {
     #[test]
     fn bluetooth_codec_and_quality_select() {
         let mut a = enter_bt_codec();
-        // default codec = LDAC (0): the quality chips are visible. Pick 660 (chip index 2).
+        // default codec = LDAC (0): the LDAC rows are visible. Pick 660 (quality index 2).
         assert_eq!(a.bt_codec, 0);
-        assert_eq!(a.tap(260, crate::bluetooth::quality_row_y()), vec![Action::BtCodecChanged]);
+        assert_eq!(a.tap(240, crate::bluetooth::quality_row_y(2)), vec![Action::BtCodecChanged]);
         assert_eq!(a.bt_ldac_quality, 2);
-        // select SBC (codec row 3) → device-wide codec changes; LDAC chips hide
-        assert_eq!(a.tap(200, crate::bluetooth::codec_row_y(3)), vec![Action::BtCodecChanged]);
+        // Auto is drawn last but keeps its persisted index, 0.
+        assert_eq!(a.tap(240, crate::bluetooth::quality_row_y(0)), vec![Action::BtCodecChanged]);
+        assert_eq!(a.bt_ldac_quality, 0);
+        assert_eq!(a.tap(240, crate::bluetooth::quality_row_y(2)), vec![Action::BtCodecChanged]);
+        // select SBC (codec chip 3) → device-wide codec changes; the LDAC rows hide
+        let (x, y) = crate::bluetooth::codec_chip(3);
+        assert_eq!(a.tap(x, y), vec![Action::BtCodecChanged]);
         assert_eq!(a.bt_codec, 3);
-        // with SBC active there are no LDAC quality chips, so that band is now inert
-        assert!(a.tap(260, crate::bluetooth::quality_row_y()).is_empty());
+        // with SBC active there are no LDAC rows: a tap where one was never picks a quality
+        a.tap(240, crate::bluetooth::quality_row_y(1));
+        assert_eq!(a.bt_ldac_quality, 2, "a hidden LDAC row answered");
     }
 
     /// Sony's "Use Enhanced Mode" (firmware message 230077) is the AVRCP absolute-volume switch.
@@ -12413,7 +12854,7 @@ mod tests {
     #[test]
     fn bluetooth_enhanced_mode_toggles_and_is_inert_while_off() {
         let mut a = enter_bt_codec();
-        let ey = crate::bluetooth::enhanced_row_y();
+        let ey = crate::bluetooth::enhanced_row_y(true);
         assert!(a.bt_enhanced(), "enhanced mode defaults on");
         assert_eq!(a.tap(240, ey), vec![Action::BtEnhancedChanged]);
         assert!(!a.bt_enhanced());
@@ -14453,7 +14894,7 @@ mod tests {
             page: 0,
             viz_levels: None,
             viz_peaks: None,
-            scrubbing: false,
+            scrubbing: false, lyrics: false,
         };
         let mut c = Canvas::new();
         let fonts = FontSet::load();
@@ -14989,21 +15430,85 @@ mod palette_tests {
         a.display_sel = row;
     }
 
-    /// Select on the Palette row walks the folder in order and comes back round to Cinder.
+    /// Content-to-screen y of the picker's `i`th palette row, at scroll 0.
+    fn palette_row_y(i: usize) -> i32 {
+        crate::chrome::HEADER_BOTTOM + 2 * crate::kit::SECTION_H + crate::kit::CHIP_H + 8
+            + i as i32 * crate::kit::ROW_H + crate::kit::ROW_H / 2
+    }
+
+    /// Display ▸ Palette opens the picker; a tap on a row applies that palette at once and stays
+    /// Help & controls (5i) is one list opened from the Menu at the top. Its rows are facts and do
+    /// nothing; the last one replays the first-run intro, and finishing the intro comes back here.
     #[test]
-    fn the_palette_row_cycles_through_the_folder_and_back_to_cinder() {
+    fn help_is_a_list_whose_last_row_replays_the_intro() {
+        let open_from_menu = |want: Screen| {
+            let mut a = App::unlocked();
+            a.press(Button::Up); // Menu
+            let idx = a.menu_visible().iter().position(|m| m.0 == want).expect("a Menu row");
+            a.activate_menu(idx);
+            a
+        };
+        let mut a = open_from_menu(Screen::Help);
+        assert_eq!(a.current(), Screen::Help);
+        a.scroll_px(10_000);
+        let max = crate::help::max_scroll(false);
+        assert_eq!(a.help_scroll_px, max, "the scroll stops at the end of the list");
+        // Opening it again starts at the top.
+        a.press(Button::Back);
+        let mut a = open_from_menu(Screen::Help);
+        assert_eq!(a.help_scroll_px, 0);
+        assert!(a.tap(240, crate::chrome::HEADER_BOTTOM + 60).is_empty());
+        assert_eq!(a.current(), Screen::Help, "a fact row is not a target");
+        a.scroll_px(10_000);
+        a.tap(240, crate::canvas::H as i32 - 30);
+        assert_eq!(a.current(), Screen::Onboarding, "the last row replays the intro");
+        assert_eq!(a.onboarding_page, 0);
+        for _ in 0..crate::onboarding::PAGES + 1 {
+            a.swipe(-1, 240, 400);
+        }
+        assert_eq!(a.current(), Screen::Help, "finishing the replay comes back to Help");
+    }
+
+    /// on the page, and Cinder is always the first row.
+    #[test]
+    fn the_palette_row_opens_the_picker_and_a_tap_picks() {
         let mut a = App::unlocked();
-        a.set_palettes(vec![paper(), slate()], Vec::new());
+        a.set_palettes(vec![slate(), paper()], Vec::new());
         on_settings_row(&mut a, ROW_PALETTE);
-        assert_eq!((a.palette_id(), a.palette_name()), ("cinder", "Cinder"));
         a.display_activate();
-        assert_eq!((a.palette_id(), a.palette_name()), ("paper", "Paper"));
+        assert_eq!(a.current(), Screen::Palette);
+        assert!(a.take_palettes_stale(), "the folder is read again on the way in");
+        assert_eq!((a.palette_id(), a.palette_name()), ("cinder", "Cinder"));
+        a.tap(240, palette_row_y(1));
+        assert_eq!((a.palette_id(), a.palette_name()), ("paper", "Paper"), "sorted by name: Paper before Slate");
         assert_eq!(a.palette, paper().tokens);
-        a.display_activate();
-        assert_eq!((a.palette_id(), a.palette_name()), ("slate", "Slate"));
-        a.display_activate();
-        assert_eq!((a.palette_id(), a.palette_name()), ("cinder", "Cinder"));
+        assert_eq!(a.current(), Screen::Palette, "picking stays on the page");
+        a.tap(240, palette_row_y(2));
+        assert_eq!(a.palette_id(), "slate");
+        a.tap(240, palette_row_y(0));
+        assert_eq!(a.palette_id(), "cinder");
         assert_eq!(a.palette, CINDER);
+    }
+
+    /// Added puts the newest file first; Cinder stays on top either way.
+    #[test]
+    fn the_picker_sorts_by_name_or_by_date_added() {
+        let mut a = App::unlocked();
+        let (mut p, mut s2) = (paper(), slate());
+        p.added = 100;
+        s2.added = 200;
+        a.set_palettes(vec![p, s2], Vec::new());
+        a.push(Screen::Palette);
+        let (x, w) = crate::kit::chip_span(1, 2);
+        a.tap(x + w / 2, crate::chrome::HEADER_BOTTOM + crate::kit::SECTION_H + crate::kit::CHIP_H / 2);
+        assert_eq!(a.palette_sort(), "added");
+        a.tap(240, palette_row_y(1));
+        assert_eq!(a.palette_id(), "slate", "newest first");
+        a.set_palette_sort("name");
+        a.tap(240, palette_row_y(1));
+        assert_eq!(a.palette_id(), "paper");
+        a.set_palette_sort("nonsense");
+        assert_eq!(a.palette_sort(), "name", "an unknown word is the default");
     }
 
     /// The settings file is read at boot, before /contents can be relied on, so the folder can
@@ -15056,28 +15561,29 @@ mod palette_tests {
         assert!(a.take_palettes_stale(), "arriving on Display — where the palette is picked — is too");
     }
 
+    /// An empty folder is a picker with Cinder in it and the ADD row saying where files go.
     #[test]
-    fn an_empty_folder_says_where_palettes_go() {
+    fn an_empty_folder_leaves_cinder_and_says_where_palettes_go() {
         let mut a = App::unlocked();
         on_settings_row(&mut a, ROW_PALETTE);
         a.display_activate();
-        assert_eq!(a.palette_id(), "cinder");
-        assert_eq!(a.toast, "No palettes in cinder_palettes");
+        assert_eq!(a.palette_order(), vec![None]);
+        let add = crate::palette_list::item_at(240, palette_row_y(1) + crate::kit::SECTION_H, 0, 1, 0);
+        assert_eq!(add, Some(crate::palette_list::Item::Add));
+        a.tap(240, palette_row_y(1) + crate::kit::SECTION_H);
+        assert_eq!(a.palette_id(), "cinder", "the ADD row explains; it picks nothing");
     }
 
+    /// A refused file is listed on the picker with the first thing wrong with it.
     #[test]
-    fn skipped_files_are_mentioned_once() {
+    fn skipped_files_are_listed_with_their_first_problem() {
         let mut a = App::unlocked();
-        let why = vec!["bad.palette: day.ink on day.bg: contrast 1.00, needs at least 4.50".to_string()];
+        let why = vec!["bad.palette: day.ink on day.bg: contrast 1.00, needs at least 4.50; line 9: unknown key".to_string()];
         assert!(a.set_palettes(vec![slate()], why.clone()), "a new set is news");
         assert!(!a.set_palettes(vec![slate()], why), "the same set is not");
-        on_settings_row(&mut a, ROW_PALETTE);
-        a.display_activate();
-        assert_eq!(a.palette_id(), "slate");
-        assert_eq!(a.toast, "1 palette file skipped — see cinderhome.log");
-        a.toast.clear();
-        a.display_activate();
-        assert!(a.toast.is_empty(), "told once, not on every tap");
+        let s = crate::palette_list::skipped_from(&a.palette_skipped[0]);
+        assert_eq!(s.file, "bad.palette");
+        assert_eq!(s.why, "day.ink on day.bg: contrast 1.00, needs at least 4.50");
     }
 
     #[test]
@@ -15100,7 +15606,7 @@ mod palette_tests {
             title: "", artist: "", codec: "", badge: "", clock: "12:00", battery: 50, elapsed: "",
             remaining: "", progress: 0.0, art: "", art_full: None, art_thumb: None, liked: false,
             playing: false, shuffle: false, repeat: 0, viz_seed: 0.0, viz_kind: 0, viz_size: 0,
-            page: 0, viz_levels: None, viz_peaks: None, scrubbing: false,
+            page: 0, viz_levels: None, viz_peaks: None, scrubbing: false, lyrics: false,
         };
         // The background is the colour most of the frame is painted in.
         let dominant = |a: &mut App| {

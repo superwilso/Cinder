@@ -27,7 +27,8 @@ reasons logged, the choice kept across restarts ([`DEVICE_TESTS.md`](DEVICE_TEST
    preview screens into `player/out/palette_mine/`.
 4. Connect the player over USB, make a folder called **`cinder_palettes`** in the root of its storage
    (next to `cinder_settings.conf`), copy the file in, and unplug.
-5. **Settings ▸ Palette** — each tap steps to the next palette, then back round to Cinder.
+5. **Settings ▸ Display ▸ Palette** — every palette in the folder, each with its colours beside its
+   name. Tap one to use it; *Name* / *Added* sorts the list. Cinder is always first.
 
 The folder is read at boot and again whenever Settings opens, so there is no reboot to wait for. The
 choice is saved like any other setting; Settings ▸ Reset settings goes back to Cinder.
@@ -69,12 +70,13 @@ suits any dark palette.
 A light palette has to bring its own. Cinder's accents were tuned against near-black, and the light
 ones all but vanish on a light background, so the player refuses a light palette that leaves the
 accent to the picker and says why. With all six keys set, the palette's accent is used in both
-modes, the Accent row reads **SET BY PALETTE**, and a tap on it says the same.
+modes, the Accent row reads **Set by the palette**, and a tap on it says the same.
 
 ## What the player refuses
 
 A palette that would be hard to read is **not loaded**. The reason goes to `cinderhome.log` in the
-root of the player's storage, and Settings ▸ Palette says how many files were skipped. This player
+root of the player's storage, and Settings ▸ Display ▸ Palette lists each skipped file under
+SKIPPED with the first thing wrong with it. This player
 has one screen and no other way in — a palette with unreadable text would leave nothing to read your
 way back out with — so these rules are not a style guide. They sit a margin under what Cinder itself
 measures and turn away only the unreadable.

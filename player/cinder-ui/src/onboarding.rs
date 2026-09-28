@@ -1,6 +1,7 @@
 //! First-run onboarding + re-viewable Help/Controls. A short paged intro shown ONCE on first boot
 //! (Welcome → Getting around → Buttons → Playing & Up Next → Gestures → Features → Done),
-//! persisted so it doesn't reappear; also openable any time from the Menu ("Help & Controls").
+//! persisted so it doesn't reappear; replayed from the last row of Menu ▸ Help & controls
+//! (`help.rs`), which is the reference list kept after it.
 //! Touch-navigated (the NW-A55 has no d-pad): tap the right side = next / finish, tap the left
 //! side = back a page, left-edge swipe = skip.
 //!

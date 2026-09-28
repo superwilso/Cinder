@@ -51,6 +51,44 @@ pub struct Canvas {
     /// 919px of content on an 800px panel.
     oob_x: u32,
     oob_y: u32,
+    /// The text-collision audit, OFF (`None`) except in tests that ask for it with
+    /// [`Canvas::track_text`]. See [`TextInk`].
+    text_ink: Option<Box<TextInk>>,
+}
+
+/// Which text run put solid ink on each pixel, so a test can see two runs landing on each other.
+///
+/// The off-panel count (`oob_x`) only sees text that leaves the PANEL. Text that stays on the panel
+/// but runs into its neighbour — an artist name into the codec beside it, a row value into the
+/// row's title — is just as unreadable and was invisible to every gate. With this on, `text::draw`
+/// tags each call as a run and records the pixels it inks; a pixel inked by one run and then by a
+/// different one is a collision. Any non-text write clears the pixel's owner, because a fill or an
+/// icon drawn over text hides it, and the text drawn on top of THAT is not colliding with anything
+/// the user can see.
+///
+/// Only solid coverage counts (see [`TEXT_INK_ALPHA`]): two runs whose anti-aliased fringes touch
+/// are adjacent, not overlapping.
+#[derive(Default)]
+pub struct TextInk {
+    owner: Vec<u16>,
+    runs: Vec<String>,
+    cur: u16,
+    hits: std::collections::BTreeMap<(u16, u16), u32>,
+    /// Ink of each run that something drawn LATER covered: a fill, an icon, a swatch.
+    hidden: std::collections::BTreeMap<u16, u32>,
+}
+
+/// Coverage at or above which a glyph pixel counts as ink for the collision audit.
+pub const TEXT_INK_ALPHA: u8 = 160;
+
+static AUDIT_NEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Make every `Canvas` created from now on start with the text-collision audit on. For harnesses
+/// that create their canvases deep inside code they do not own (`cinder-host --audit`); a test with
+/// its own canvas calls [`Canvas::track_text`] instead. Off by default, and nothing on the device
+/// turns it on.
+pub fn audit_new_canvases(on: bool) {
+    AUDIT_NEW.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 impl Default for Canvas {
@@ -70,6 +108,9 @@ impl Canvas {
             off_x: 0,
             oob_x: 0,
             oob_y: 0,
+            text_ink: AUDIT_NEW
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .then(|| Box::new(TextInk { owner: vec![0; W * H], ..TextInk::default() })),
         }
     }
 
@@ -107,6 +148,82 @@ impl Canvas {
 
     pub fn fill(&mut self, c: Rgb888) {
         self.buf.fill(to_u32(c));
+        if let Some(ink) = self.text_ink.as_deref_mut() {
+            ink.owner.fill(0);
+        }
+    }
+
+    /// Turn on the text-collision audit ([`TextInk`]), clearing anything it had recorded.
+    pub fn track_text(&mut self) {
+        self.text_ink = Some(Box::new(TextInk { owner: vec![0; W * H], ..TextInk::default() }));
+    }
+
+    /// Is the collision audit on? `text::draw` asks once per call, so the per-pixel cost at
+    /// runtime is nothing.
+    #[inline]
+    pub fn tracking_text(&self) -> bool {
+        self.text_ink.is_some()
+    }
+
+    /// Start a new text run for the audit. `label` names it in a collision report.
+    ///
+    /// Text drawn under a swipe offset is not tracked: the row is following the finger, and what it
+    /// slides under or into on the way is the gesture, not the layout (the same exemption the
+    /// off-panel count gives it).
+    pub fn text_run(&mut self, label: &str) {
+        let moving = self.off_x != 0;
+        if let Some(ink) = self.text_ink.as_deref_mut() {
+            if moving {
+                ink.cur = 0;
+                return;
+            }
+            ink.runs.push(label.to_string());
+            ink.cur = ink.runs.len().min(u16::MAX as usize) as u16;
+        }
+    }
+
+    /// A modal sheet or overlay is about to be drawn over the screen. The text under it is covered
+    /// on purpose, so the audit forgets who owns those pixels instead of reporting them hidden.
+    pub fn begin_layer(&mut self) {
+        if let Some(ink) = self.text_ink.as_deref_mut() {
+            ink.owner.fill(0);
+        }
+    }
+
+    /// Every pair of text runs that inked the same pixels since `track_text`, with the count.
+    pub fn text_collisions(&self) -> Vec<(String, String, u32)> {
+        let Some(ink) = self.text_ink.as_deref() else { return Vec::new() };
+        let name = |i: u16| ink.runs.get(i as usize - 1).cloned().unwrap_or_default();
+        ink.hits.iter().map(|(&(a, b), &n)| (name(a), name(b), n)).collect()
+    }
+
+    /// Every text run whose ink something drawn later covered, with how many pixels.
+    pub fn text_hidden(&self) -> Vec<(String, u32)> {
+        let Some(ink) = self.text_ink.as_deref() else { return Vec::new() };
+        let name = |i: u16| ink.runs.get(i as usize - 1).cloned().unwrap_or_default();
+        ink.hidden.iter().map(|(&r, &n)| (name(r), n)).collect()
+    }
+
+    /// Clear the owner of pixel `idx`: something that is not text was drawn over it.
+    #[inline]
+    fn unink(&mut self, idx: usize) {
+        if let Some(ink) = self.text_ink.as_deref_mut() {
+            let prev = std::mem::take(&mut ink.owner[idx]);
+            if prev != 0 {
+                *ink.hidden.entry(prev).or_insert(0) += 1;
+            }
+        }
+    }
+
+    fn unink_span(&mut self, a: usize, b: usize) {
+        if let Some(ink) = self.text_ink.as_deref_mut() {
+            for o in &mut ink.owner[a..b] {
+                let prev = std::mem::take(o);
+                if prev != 0 {
+                    *ink.hidden.entry(prev).or_insert(0) += 1;
+                }
+            }
+        }
     }
 
     /// Pixels asked for past the LEFT or RIGHT margin since `reset_oob` — always a layout defect.
@@ -139,9 +256,13 @@ impl Canvas {
 
     /// Record one rejected pixel, by axis. Horizontal wins when both are out: a pixel that is off
     /// to the right AND below is reported as the horizontal defect, which is the actionable one.
+    ///
+    /// A row drawn under a swipe offset (`set_offset_x`) is exempt for the same reason as the
+    /// band: the whole row is following the finger, and the part that leaves the glass is the
+    /// gesture, not the layout.
     #[inline]
     fn note_oob(&mut self, x: i32, y: i32) {
-        if self.x_band_active() {
+        if self.x_band_active() || self.off_x != 0 {
             return;
         }
         if x < 0 || x >= W as i32 {
@@ -161,7 +282,9 @@ impl Canvas {
             && y >= self.clip_top
             && y < self.clip_bot
         {
-            self.buf[y as usize * W + x as usize] = v;
+            let idx = y as usize * W + x as usize;
+            self.buf[idx] = v;
+            self.unink(idx);
             return;
         }
         self.note_oob(x, y);
@@ -170,6 +293,31 @@ impl Canvas {
     /// Alpha-blend `c` over the existing pixel with coverage `a` (0..=255).
     #[inline]
     pub fn blend(&mut self, x: i32, y: i32, c: Rgb888, a: u8) {
+        if let Some(idx) = self.blend_px(x, y, c, a) {
+            self.unink(idx);
+        }
+    }
+
+    /// `blend` for a glyph pixel of the current text run: the same write, and with the audit on it
+    /// records who inked the pixel and whether another run had it already.
+    #[inline]
+    pub fn blend_text(&mut self, x: i32, y: i32, c: Rgb888, a: u8) {
+        let Some(idx) = self.blend_px(x, y, c, a) else { return };
+        if a < TEXT_INK_ALPHA {
+            return;
+        }
+        if let Some(ink) = self.text_ink.as_deref_mut().filter(|i| i.cur != 0) {
+            let prev = ink.owner[idx];
+            if prev != 0 && prev != ink.cur {
+                *ink.hits.entry((prev, ink.cur)).or_insert(0) += 1;
+            }
+            ink.owner[idx] = ink.cur;
+        }
+    }
+
+    /// The blend itself. Returns the pixel's index when it was written.
+    #[inline]
+    fn blend_px(&mut self, x: i32, y: i32, c: Rgb888, a: u8) -> Option<usize> {
         let x = x + self.off_x;
         if x < 0
             || x as usize >= W
@@ -183,7 +331,7 @@ impl Canvas {
             if a > 0 {
                 self.note_oob(x, y);
             }
-            return;
+            return None;
         }
         let idx = y as usize * W + x as usize;
         let dst = self.buf[idx];
@@ -195,6 +343,7 @@ impl Canvas {
         let g = div255(dg * ia + c.g() as u32 * a);
         let b = div255(db * ia + c.b() as u32 * a);
         self.buf[idx] = (r << 16) | (g << 8) | b;
+        Some(idx)
     }
 
     /// A writable, clipped run of ONE row: the destination slice, plus how many leading source
@@ -211,7 +360,7 @@ impl Canvas {
         }
         let x1 = x + len as i32;
         let over_x = (-x).max(0) + (x1 - W as i32).max(0);
-        if over_x > 0 && !self.x_band_active() {
+        if over_x > 0 && !self.x_band_active() && self.off_x == 0 {
             self.oob_x = self.oob_x.saturating_add(over_x as u32);
         }
         if y < 0 || y >= H as i32 {
@@ -234,6 +383,7 @@ impl Canvas {
             return None;
         }
         let row = y as usize * W;
+        self.unink_span(row + dx0, row + dx1);
         Some((skip, &mut self.buf[row + dx0..row + dx1]))
     }
 
@@ -299,6 +449,7 @@ impl DrawTarget for Canvas {
             for y in y0..y1 {
                 let row = y as usize * W;
                 self.buf[row + x0 as usize..row + x1 as usize].fill(v);
+                self.unink_span(row + x0 as usize, row + x1 as usize);
             }
         }
         Ok(())

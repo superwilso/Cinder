@@ -153,6 +153,7 @@ pub fn hit_prompt(x: i32, y: i32, kind: u8) -> PairHit {
 
 /// The modal panel. Drawn last, over whatever the screen already had.
 pub fn render_prompt(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Prompt) {
+    c.begin_layer(); // a sheet over the screen: what it covers is covered on purpose
     let (px, py, pw, ph) = PP;
     // Same scrim the Restart/Power-off modals use (confirm.rs): an alpha wash toward the background,
     // so the list behind stays legible as context but clearly isn't the thing to tap.
@@ -266,8 +267,11 @@ pub fn render(
     // thing this space can hold is the control that does work.
     fill_rect(c, 22, CARD_Y, 436, CARD_H, t.panel);
     stroke_rect(c, 22, CARD_Y, 436, CARD_H, t.line, 1);
+    // Both lines end 12 px short of the SCAN button, not at the card's edge: at 120% and up the
+    // hint ran under the button (found by the text audit in `tests/ui_overflow.rs`).
+    let text_end = (SCAN_BTN.0 - 12) as f32;
     crate::widgets::draw_fit(c, f, 40.0, (CARD_Y + 30) as f32, "Scan for new devices",
-               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0), 458.0);
+               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0), text_end);
     let sub = if scanning {
         format!("SEARCHING… {} FOUND", found.len())
     } else if found.is_empty() {
@@ -276,7 +280,7 @@ pub fn render(
         format!("{} FOUND · SCAN AGAIN TO REFRESH", found.len())
     };
     crate::widgets::draw_fit(c, f, 40.0, (CARD_Y + 52) as f32, &sub,
-               &sty(Family::Mono, Weight::Regular, 11.0, if scanning { t.acc } else { t.faint }, 0.08), 458.0);
+               &sty(Family::Mono, Weight::Regular, 11.0, if scanning { t.acc } else { t.faint }, 0.08), text_end);
     let (sx, sy, sw, sh) = SCAN_BTN;
     if scanning {
         fill_rect(c, sx, sy, sw, sh, t.acc);

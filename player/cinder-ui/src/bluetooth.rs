@@ -7,10 +7,8 @@
 use crate::icons;
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::widgets::{center, fill_rect, right, stroke_rect, sty};
+use crate::widgets::{center, fill_rect, stroke_rect, sty};
 use crate::Canvas;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Circle, PrimitiveStyle};
 
 /// Transmit codecs, in display order. Index = the persisted `bt_codec` value.
 pub const CODECS: [(&str, &str); 4] = [
@@ -93,6 +91,9 @@ pub struct Bt<'a> {
     /// headphones back on". Reconnecting to a known device is the commonest thing anyone does here,
     /// so it is now the body of the screen.
     pub paired: &'a [crate::pairing::PairedDevice],
+    /// The HCI capture is running (THIS DEVICE ▸ Debug log). Never persisted: every boot starts
+    /// with it off, because it is a growing file in RAM.
+    pub debug_log: bool,
 }
 
 // ---- layout (shared by render + hit) ----
@@ -111,22 +112,67 @@ pub const PAIRED_SHOWN: usize = 5;
 const THIS_DEVICE_Y: i32 = PAIRED_Y0 + PAIRED_SHOWN as i32 * PAIRED_RH + 6;
 const ADV_Y: i32 = THIS_DEVICE_Y + crate::kit::SECTION_H;
 const ADV_H: i32 = crate::kit::ROW_H;
+/// THIS DEVICE ▸ Debug log (`docs/PLAN_community_2026-09-23.md` B6): a switch that records the
+/// radio's HCI traffic, so a "won't connect" report can arrive with the evidence.
+const DEBUG_Y: i32 = ADV_Y + ADV_H;
+const DEBUG_H: i32 = crate::kit::ROW_H;
 /// The PAIRED DEVICES label, whose right half is "PAIR NEW" (handoff 2g: a list's own action lives
 /// in its section label, as CLEAR does on Up Next). It sits straight under the connected card.
 const PAIRED_LABEL_Y: i32 = CARD_Y + CARD_H;
 
-// ---- codec page (its own screen now) ----
-const CODEC_Y0: i32 = 150;
-const CODEC_RH: i32 = crate::scale::PICKER_ROW_H;
-const QUAL_Y: i32 = 420;
-const QUAL_H: i32 = 40;
-const ENH_Y: i32 = 556; // "Use Enhanced Mode" row (absolute volume)
-const ENH_H: i32 = 64;
-/// "Fine volume" — the source-side vernier, directly under Enhanced Mode because it is the row you
-/// reach for when Enhanced Mode has failed to give you the volume resolution you wanted. (It
-/// usually has: absolute volume is inert on this firmware, measured on two sinks.)
-const FINE_Y: i32 = ENH_Y + ENH_H;
-const FINE_H: i32 = 64;
+// ---- codec page: Bluetooth ▸ Sound quality (handoff 5l) ----
+
+/// The LDAC rows in the order the handoff draws them — best sound first, Auto last — as indices
+/// into [`QUALITIES`] (the persisted order, which Auto leads and which cannot move).
+const LDAC_ORDER: [usize; 4] = [1, 2, 3, 0];
+/// Sony's own names for the four LDAC modes, by [`QUALITIES`] index.
+const LDAC_NAMES: [&str; 4] = ["Best effort", "Sound quality priority", "Standard", "Connection priority"];
+
+/// One band of the Sound quality page.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Part {
+    Strip,
+    Label(&'static str),
+    /// The transmit codec chips.
+    Codecs,
+    /// LDAC row `k` in display order (see [`LDAC_ORDER`]).
+    Ldac(usize),
+    Enhanced,
+    /// "Fine volume" — the source-side vernier, directly under Enhanced Mode because it is the row
+    /// you reach for when Enhanced Mode has failed to give you the volume resolution you wanted.
+    /// (It usually has: absolute volume is inert on this firmware, measured on two sinks.)
+    Fine,
+}
+
+/// The page, top to bottom, as `(part, top, height)` in screen pixels. `render_codec` draws it and
+/// `hit_codec` reads it, so a band cannot be drawn in one place and answer taps in another. The
+/// LDAC section exists only while LDAC is the chosen codec.
+fn codec_parts(ldac: bool) -> Vec<(Part, i32, i32)> {
+    use crate::kit::{CHIP_H, ROW_H, SECTION_H, STRIP_H};
+    let mut out = Vec::new();
+    let mut y = crate::chrome::HEADER_BOTTOM;
+    let mut push = |p: Part, h: i32| {
+        out.push((p, y, h));
+        y += h;
+    };
+    push(Part::Strip, STRIP_H);
+    push(Part::Label("TRANSMIT CODEC"), SECTION_H);
+    push(Part::Codecs, CHIP_H + 8);
+    if ldac {
+        push(Part::Label("LDAC"), SECTION_H);
+        for k in 0..LDAC_ORDER.len() {
+            push(Part::Ldac(k), ROW_H);
+        }
+    }
+    push(Part::Label("VOLUME CONTROL"), SECTION_H);
+    push(Part::Enhanced, ROW_H);
+    push(Part::Fine, ROW_H);
+    out
+}
+
+fn codec_part_centre(ldac: bool, want: Part) -> i32 {
+    codec_parts(ldac).into_iter().find(|&(p, _, _)| p == want).map_or(0, |(_, top, h)| top + h / 2)
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum BtHit {
@@ -145,6 +191,8 @@ pub enum BtHit {
     PairedRow(usize),
     /// Open the codec / volume-control page.
     Advanced,
+    /// The Debug log switch.
+    DebugLog,
 }
 
 /// Geometry accessors, so tests and any future caller ask the layout where a control is rather
@@ -152,21 +200,28 @@ pub enum BtHit {
 pub fn advanced_row() -> (i32, i32, i32, i32) {
     (0, ADV_Y, crate::canvas::W as i32, ADV_H)
 }
-/// Vertical centre of codec row `i` on the codec page.
-pub fn codec_row_y(i: usize) -> i32 {
-    CODEC_Y0 + i as i32 * CODEC_RH + CODEC_RH / 2
+/// Vertical centre of the Debug log row.
+pub fn debug_row_y() -> i32 {
+    DEBUG_Y + DEBUG_H / 2
 }
-/// Vertical centre of the LDAC quality chip strip.
-pub fn quality_row_y() -> i32 {
-    QUAL_Y + QUAL_H / 2
+/// Centre of codec chip `i` on the Sound quality page.
+pub fn codec_chip(i: usize) -> (i32, i32) {
+    let (x, w) = crate::kit::chip_span(i, CODECS.len());
+    (x + w / 2, codec_parts(false)[2].1 + crate::kit::CHIP_H / 2)
 }
-/// Vertical centre of the Enhanced Mode row.
-pub fn enhanced_row_y() -> i32 {
-    ENH_Y + ENH_H / 2
+/// Vertical centre of the LDAC row for quality `q` (an index into [`QUALITIES`]). Only drawn, and
+/// only tappable, while LDAC is the chosen codec.
+pub fn quality_row_y(q: usize) -> i32 {
+    let k = LDAC_ORDER.iter().position(|&i| i == q).unwrap_or(0);
+    codec_part_centre(true, Part::Ldac(k))
+}
+/// Vertical centre of the Enhanced Mode row. It moves up when the LDAC section is hidden.
+pub fn enhanced_row_y(ldac: bool) -> i32 {
+    codec_part_centre(ldac, Part::Enhanced)
 }
 /// Vertical centre of the Fine volume row.
-pub fn fine_row_y() -> i32 {
-    FINE_Y + FINE_H / 2
+pub fn fine_row_y(ldac: bool) -> i32 {
+    codec_part_centre(ldac, Part::Fine)
 }
 
 /// Map a tap on the BLUETOOTH screen. The codec controls moved to their own page, so this now
@@ -207,51 +262,65 @@ pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
     if (ADV_Y..ADV_Y + ADV_H).contains(&y) {
         return BtHit::Advanced;
     }
+    if (DEBUG_Y..DEBUG_Y + DEBUG_H).contains(&y) {
+        return BtHit::DebugLog;
+    }
     if crate::kit::section_action_hit(PAIRED_LABEL_Y, x, y) {
         return BtHit::Pair;
     }
     BtHit::None
 }
 
-/// Map a tap on the CODEC page. `codec_is_ldac` gates the quality chips (only shown for LDAC).
+/// Map a tap on the Sound quality page. `codec_is_ldac` gates the LDAC rows (only shown for LDAC).
+/// The whole of a row is its target, the switch's row included: nothing else shares the band.
 pub fn hit_codec(x: i32, y: i32, on: bool, codec_is_ldac: bool) -> BtHit {
     if !on {
         return BtHit::None;
     }
-    if (CODEC_Y0..CODEC_Y0 + 4 * CODEC_RH).contains(&y) {
-        return BtHit::Codec(((y - CODEC_Y0) / CODEC_RH) as usize);
-    }
-    if codec_is_ldac && (QUAL_Y..QUAL_Y + QUAL_H).contains(&y) {
-        let i = ((x - 22).max(0) / 109).min(3) as usize;
-        return BtHit::Quality(i);
-    }
-    // The whole row is the target, not just the switch — it is a 34x18 graphic and this panel has
-    // no other tappable thing on that band.
-    if (ENH_Y..ENH_Y + ENH_H).contains(&y) {
-        return BtHit::Enhanced;
-    }
-    if (FINE_Y..FINE_Y + FINE_H).contains(&y) {
-        return BtHit::FineVolume;
+    for (p, top, h) in codec_parts(codec_is_ldac) {
+        if !(top..top + h).contains(&y) {
+            continue;
+        }
+        return match p {
+            Part::Codecs => crate::kit::chip_at(CODECS.len(), top, x, y).map_or(BtHit::None, BtHit::Codec),
+            Part::Ldac(k) => BtHit::Quality(LDAC_ORDER[k]),
+            Part::Enhanced => BtHit::Enhanced,
+            Part::Fine => BtHit::FineVolume,
+            Part::Strip | Part::Label(_) => BtHit::None,
+        };
     }
     BtHit::None
 }
 
-// A small radio indicator: filled accent disc when selected, hollow ring otherwise.
-fn radio(c: &mut Canvas, cx: i32, cy: i32, on: bool, t: &Theme) {
-    if on {
-        Circle::with_center(Point::new(cx, cy), 16)
-            .into_styled(PrimitiveStyle::with_fill(t.acc))
-            .draw(c)
-            .ok();
-        Circle::with_center(Point::new(cx, cy), 6)
-            .into_styled(PrimitiveStyle::with_fill(t.acc_ink))
-            .draw(c)
-            .ok();
-    } else {
-        Circle::with_center(Point::new(cx, cy), 16)
-            .into_styled(PrimitiveStyle::with_stroke(t.line, 1))
-            .draw(c)
-            .ok();
+/// The Sound quality strip: what the link is actually doing. A2DP picks the codec while
+/// connecting and falls back without telling anyone, so when the live codec is not the one asked
+/// for, the strip says both — the one thing the codec chips below, which are only a request,
+/// cannot say.
+fn codec_strip(bt: &Bt) -> String {
+    let want = CODECS[(bt.codec_sel as usize).min(CODECS.len() - 1)].0;
+    if !bt.on {
+        return "BLUETOOTH IS OFF \u{b7} TURN IT ON TO CHANGE THESE".into();
+    }
+    let Some(name) = bt.connected else {
+        return "NOTHING CONNECTED \u{b7} THESE APPLY TO THE NEXT LINK".into();
+    };
+    let name = name.to_uppercase();
+    match bt.link_codec {
+        Some(raw) => {
+            let live = link_codec_label(raw);
+            // Only LDAC's enumerator is known (see `link_codec_name`), so a raw byte proves a
+            // fallback only from LDAC, or when it names a codec that is not the one asked for.
+            let fell_back = match link_codec_name(raw) {
+                Some(n) => n != want,
+                None => want == CODECS[LDAC as usize].0,
+            };
+            if fell_back {
+                format!("{name} \u{b7} {live} \u{b7} ASKED FOR {}", want.to_uppercase())
+            } else {
+                format!("{name} \u{b7} {live}")
+            }
+        }
+        None => format!("{name} \u{b7} CONNECTED"),
     }
 }
 
@@ -287,8 +356,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         //
         // So the number was not a placeholder waiting to be wired — it was unwireable. A confident
         // "60%" on a stranger's headphones is worse than no reading at all, so the slot is empty.
-        text::draw(c, f, 40.0, (CARD_Y + 52) as f32, name, &sty(Family::Sans, Weight::Bold, 24.0, t.ink, 0.0));
+        // Fitted to end 12 px short of Disconnect. A name is whatever the headphones advertise,
+        // and a long one ran straight through the button and off the card — 898 px of it clipped
+        // off the panel for a 42-character name (`tests/ui_overflow.rs`, hostile Bluetooth state).
         let (dx, dy, dw, dh) = DISC;
+        let nst = sty(Family::Sans, Weight::Bold, 24.0, t.ink, 0.0);
+        text::draw(c, f, 40.0, (CARD_Y + 52) as f32, &crate::widgets::fit(f, name, &nst, (dx - 12 - 40) as f32), &nst);
         stroke_rect(c, dx, dy, dw, dh, t.line, 1);
         center(c, f, (dx + dw / 2) as f32, (dy + dh / 2 + 4) as f32, "Disconnect", &sty(Family::Sans, Weight::SemiBold, 14.0, t.dim, 0.0));
     } else if bt.on && bt.connecting {
@@ -395,6 +468,9 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     };
     crate::kit::row(c, t, f, ADV_Y, ADV_H,
         &crate::kit::Row::new("Sound quality").sub(&detail).trail(crate::kit::Trail::Open(&value)));
+    let dsub = if bt.debug_log { "Recording · switch off to save it to the drive" } else { "Record the radio's traffic for a bug report" };
+    crate::kit::row(c, t, f, DEBUG_Y, DEBUG_H,
+        &crate::kit::Row::new("Debug log").sub(dsub).trail(crate::kit::Trail::Switch(bt.debug_log)));
 
     // Footer: an NFC hint on the left and the Receiver-mode link on the right, on ONE baseline.
     // Both were drawn at fixed x, so at 140% "…TO REAR PANEL" ran straight through "RECEIVER
@@ -408,99 +484,165 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     );
 }
 
-/// The codec / volume-control page, reached from "Sound quality" on the Bluetooth screen. These
+/// Bluetooth ▸ Sound quality (handoff 5l), reached from THIS DEVICE on the Bluetooth screen. These
 /// controls were the top half of that screen; they are configured once and then ignored, so they
 /// were the wrong thing to give the most reachable space to.
+///
+/// Drawn on the kit from [`codec_parts`]: a strip with what the link is doing, the codec as chips,
+/// LDAC's four modes as rows under Sony's own names, and VOLUME CONTROL. While the radio is off the
+/// page is inert, the rows are drawn in `faint` and nothing is marked chosen.
 pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
+    use crate::kit::{self, Row, Trail};
     c.fill(t.bg);
-    let _y0 = crate::chrome::header(c, t, f, "Sound quality", None);
-    // TRANSMIT CODEC — list with the active one selected (greyed while BT is off)
-    let body = if bt.on { t.ink } else { t.faint };
-    let subc = if bt.on { t.dim } else { t.faint };
-    text::draw(c, f, 22.0, (CODEC_Y0 - 20) as f32, "TRANSMIT CODEC", &sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.acc } else { t.faint }, 0.18));
-    for (i, (name, sub)) in CODECS.iter().enumerate() {
-        let y = CODEC_Y0 + i as i32 * CODEC_RH;
-        let cy = y + CODEC_RH / 2;
-        let active = bt.on && bt.codec_sel as usize == i;
-        radio(c, 38, cy, active, t);
-        let ncol = if active { t.acc } else { body };
-        text::draw(c, f, 64.0, (cy - 2) as f32, name, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, ncol, 0.0));
-        text::draw(c, f, 64.0, (cy + 15) as f32, sub, &sty(Family::Mono, Weight::Regular, 11.0, subc, 0.04));
-        // "LIVE" marks the codec the link actually negotiated, which is not necessarily the one
-        // selected: A2DP picks during connection setup and falls back without telling anyone. A
-        // selected row with no LIVE tag while something is connected means the request lost.
-        if bt.link_codec.and_then(link_codec_name) == Some(*name) {
-            crate::widgets::right(c, f, 458.0, (cy + 4) as f32, "LIVE",
-                                  &sty(Family::Mono, Weight::Bold, 11.0, t.acc, 0.18));
-        }
-        crate::widgets::hline(c, y + CODEC_RH, t.line);
-    }
-
-    // LDAC QUALITY chips — only when LDAC is the active codec
-    if bt.on && bt.codec_sel == LDAC {
-        text::draw(c, f, 22.0, (QUAL_Y - 10) as f32, "LDAC SOUND QUALITY", &sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18));
-        for (i, q) in QUALITIES.iter().enumerate() {
-            let x = 22 + i as i32 * 109;
-            let on = bt.ldac_quality as usize == i;
-            if on {
-                fill_rect(c, x, QUAL_Y, 103, QUAL_H, t.acc);
-            } else {
-                stroke_rect(c, x, QUAL_Y, 103, QUAL_H, t.line, 1);
+    crate::chrome::header(c, t, f, "Sound quality", None);
+    let ldac = bt.codec_sel == LDAC;
+    let mut bottom = 0;
+    for (p, top, h) in codec_parts(ldac) {
+        bottom = top + h;
+        match p {
+            Part::Strip => {
+                kit::strip(c, t, f, top, &codec_strip(bt));
             }
-            let col = if on { t.acc_ink } else { t.dim };
-            center(c, f, (x + 51) as f32, (QUAL_Y + QUAL_H / 2 + 4) as f32, q, &sty(Family::Sans, Weight::SemiBold, 15.0, col, 0.0));
+            Part::Label(l) => {
+                kit::section_label(c, t, f, top, l, None);
+            }
+            Part::Codecs => {
+                let names: Vec<&str> = CODECS.iter().map(|(n, _)| *n).collect();
+                let sel = bt.on.then_some((bt.codec_sel as usize).min(CODECS.len() - 1));
+                kit::chips(c, &shown(t, bt.on), f, top, &names, sel);
+            }
+            Part::Ldac(k) => {
+                let q = LDAC_ORDER[k];
+                let chosen = bt.on && bt.ldac_quality as usize == q;
+                let sub = if q == 0 { "Adapts the rate to the link" } else { "" };
+                let value = QUALITIES[q].to_uppercase();
+                let r = Row::new(LDAC_NAMES[q]).sub(sub).trail(Trail::Value(&value)).sel(chosen);
+                row_or_off(c, t, f, top, h, &r, bt.on);
+            }
+            Part::Enhanced => {
+                // Sony's own name for the AVRCP absolute-volume switch. With it on, a volume step
+                // sends the headphone the level to sit at (SetCurrentVolume); with it off, the
+                // player sends VOLUME_UP/VOLUME_DOWN key events instead and sinks like the CMF Buds
+                // answer each one with their own feedback beep. Sony gates SetCurrentVolume on this
+                // preference internally ("Not control absolute volume mode"), so the shell must set
+                // it — reading IsSupportedAbsoluteVolume alone is not enough.
+                let sub = if !bt.enhanced_supported {
+                    "Not supported by the connected device"
+                } else if bt.enhanced {
+                    "Sets the headphone's level \u{b7} no button beep"
+                } else {
+                    "Sends key presses \u{b7} on if volume won't change"
+                };
+                let r = Row::new("Use Enhanced Mode").sub(sub).trail(Trail::Switch(bt.on && bt.enhanced));
+                row_or_off(c, t, f, top, h, &r, bt.on);
+            }
+            Part::Fine => {
+                // A cycling value rather than a switch, because "how much finer" is the actual
+                // question — and the honest answer depends on the sink, whose step size can be
+                // measured in AVRCP units but not in dB. The trim rides on the EQ, so a curve
+                // already at the service's floor leaves nothing to trim with.
+                let sub = if bt.fine_volume == "OFF" {
+                    "One Bluetooth step per press (~2 dB)"
+                } else {
+                    "Splits each Bluetooth step, via the EQ"
+                };
+                let value = bt.fine_volume.to_uppercase();
+                let r = Row::new("Fine volume").sub(sub).trail(Trail::Value(&value));
+                row_or_off(c, t, f, top, h, &r, bt.on);
+            }
         }
-        // Centred text has no fixed edge to truncate against, so it overflows BOTH sides once the
-        // UI scale grows it — at 140% this caption ran off the panel at each end and read as
-        // "…s the bitrate to the link. Used everywhere, incl…". Fit it to the panel width first.
-        let cst = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.04);
-        let cap = crate::widgets::fit(f, "Auto adapts the bitrate to the link. Used everywhere, incl. USB-DAC.",
-                                      &cst, (crate::canvas::W as f32) - 44.0);
-        center(c, f, 240.0, (QUAL_Y + QUAL_H + 22) as f32, &cap, &cst);
+    }
+    // What the chips and rows apply to, once, under them: the codec and the LDAC rate are the
+    // device's, not the headphone's, and the USB-DAC → LDAC bridge sends with them too.
+    let st = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.04);
+    let note = crate::widgets::fit(f, "Used everywhere, USB-DAC to LDAC included.", &st,
+                                   (kit::RIGHT - kit::LEFT) as f32);
+    text::draw(c, f, kit::LEFT as f32, (bottom + 28) as f32, &note, &st);
+}
+
+/// The theme a Sound quality control is drawn in: as it is, or — while the radio is off — with its
+/// text in `faint`, so an inert page does not look like one that will answer.
+fn shown(t: &Theme, on: bool) -> Theme {
+    let mut s = *t;
+    if !on {
+        s.ink = t.faint;
+        s.dim = t.faint;
+    }
+    s
+}
+
+fn row_or_off(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &crate::kit::Row, on: bool) {
+    crate::kit::row(c, &shown(t, on), f, y, h, &r.sel(r.sel && on));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bt(on: bool, connected: Option<&str>, codec_sel: u8, link_codec: Option<u8>) -> Bt<'_> {
+        Bt {
+            on,
+            connected,
+            link_known: true,
+            codec_sel,
+            ldac_quality: 0,
+            enhanced: true,
+            enhanced_supported: true,
+            connecting: false,
+            busy_phase: 0.0,
+            link_codec,
+            fine_volume: "OFF",
+            paired: &[],
+            debug_log: false,
+        }
     }
 
-    // ENHANCED MODE — Sony's own name for the AVRCP absolute-volume switch. With it on, a volume
-    // step sends the headphone the level to sit at (SetCurrentVolume); with it off, the player
-    // sends VOLUME_UP/VOLUME_DOWN key events instead and sinks like the CMF Buds answer each one
-    // with their own feedback beep. Sony gates SetCurrentVolume on this preference internally
-    // ("Not control absolute volume mode"), so the shell must set it — reading
-    // IsSupportedAbsoluteVolume alone is not enough.
-    text::draw(c, f, 22.0, (ENH_Y - 12) as f32, "VOLUME CONTROL",
-               &sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.acc } else { t.faint }, 0.18));
-    crate::widgets::hline(c, ENH_Y, t.line);
-    let enh_on = bt.on && bt.enhanced;
-    let tcol = if bt.on { t.ink } else { t.faint };
-    let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol, 0.0);
-    let sst = sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.dim } else { t.faint }, 0.04);
-    // 22 → the switch's left edge (422) less a gap; both strings truncate rather than run under it.
-    let avail = (422 - 22 - 14) as f32;
-    text::draw(c, f, 22.0, (ENH_Y + 26) as f32,
-               &crate::widgets::fit(f, "Use Enhanced Mode", &tst, avail), &tst);
-    let sub = if !bt.enhanced_supported {
-        "Not supported by the connected device"
-    } else if bt.enhanced {
-        "Sets the headphone's level directly \u{b7} no button beep"
-    } else {
-        "Sends volume key presses \u{b7} turn on if volume won't change"
-    };
-    text::draw(c, f, 22.0, (ENH_Y + 46) as f32, &crate::widgets::fit(f, sub, &sst, avail), &sst);
-    crate::widgets::toggle(c, t, 422, ENH_Y + 20, 34, 18, 12, enh_on);
-    crate::widgets::hline(c, ENH_Y + ENH_H, t.line);
+    /// The hit test reads the layout the render draws: every band answers at its centre, with the
+    /// LDAC section and without it, and nothing answers while the radio is off.
+    #[test]
+    fn every_sound_quality_band_answers_where_it_is_drawn() {
+        for ldac in [true, false] {
+            for (p, top, h) in codec_parts(ldac) {
+                let got = hit_codec(240, top + h / 2, true, ldac);
+                let want = match p {
+                    Part::Ldac(k) => BtHit::Quality(LDAC_ORDER[k]),
+                    Part::Enhanced => BtHit::Enhanced,
+                    Part::Fine => BtHit::FineVolume,
+                    Part::Codecs => BtHit::Codec(2), // x 240: half the gap left of the third chip is its
+                    Part::Strip | Part::Label(_) => BtHit::None,
+                };
+                assert_eq!(got, want, "{p:?} (ldac {ldac})");
+                assert_eq!(hit_codec(240, top + h / 2, false, ldac), BtHit::None, "{p:?} answered with the radio off");
+            }
+            let (_, top, h) = *codec_parts(ldac).last().unwrap();
+            assert!(top + h < crate::canvas::H as i32 - 40, "the page runs off the glass (ldac {ldac})");
+        }
+        for i in 0..CODECS.len() {
+            let (x, y) = codec_chip(i);
+            assert_eq!(hit_codec(x, y, true, true), BtHit::Codec(i));
+        }
+        for q in 0..QUALITIES.len() {
+            assert_eq!(hit_codec(240, quality_row_y(q), true, true), BtHit::Quality(q));
+        }
+        assert_eq!(hit_codec(240, enhanced_row_y(false), true, false), BtHit::Enhanced);
+        assert_eq!(hit_codec(240, fine_row_y(true), true, true), BtHit::FineVolume);
+    }
 
-    // Fine volume. A cycling value rather than a toggle, because "how much finer" is the actual
-    // question — and the honest answer depends on the sink, whose step size we can measure in AVRCP
-    // units but not in dB. The row says what it costs as well as what it does: the trim rides on
-    // the EQ, so a curve already at the service's floor leaves nothing to trim with.
-    text::draw(c, f, 22.0, (FINE_Y + 26) as f32,
-               &crate::widgets::fit(f, "Fine volume", &tst, avail), &tst);
-    let fsub = if bt.fine_volume == "OFF" {
-        "One AVRCP step per press (~2 dB)"
-    } else {
-        "Half-dB steps between AVRCP steps, via the EQ"
-    };
-    text::draw(c, f, 22.0, (FINE_Y + 46) as f32, &crate::widgets::fit(f, fsub, &sst, avail), &sst);
-    right(c, f, 458.0, (FINE_Y + 32) as f32, bt.fine_volume,
-          &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04));
-    crate::widgets::hline(c, FINE_Y + FINE_H, t.line);
-
+    /// The strip names the live codec, and says so when it is not the one asked for — the silent
+    /// A2DP fallback this page exists to expose.
+    #[test]
+    fn the_strip_says_when_the_link_fell_back() {
+        const LDAC_RAW: u8 = 0x02;
+        const OTHER_RAW: u8 = 0x05;
+        assert_eq!(codec_strip(&bt(true, Some("WH-1000XM5"), LDAC, Some(LDAC_RAW))), "WH-1000XM5 · LDAC");
+        assert_eq!(
+            codec_strip(&bt(true, Some("WH-1000XM5"), LDAC, Some(OTHER_RAW))),
+            "WH-1000XM5 · CODEC 0x05 · ASKED FOR LDAC"
+        );
+        // An unknown byte while SBC was asked for may well BE SBC: no claim either way.
+        assert_eq!(codec_strip(&bt(true, Some("Buds"), 3, Some(OTHER_RAW))), "BUDS · CODEC 0x05");
+        assert_eq!(codec_strip(&bt(true, Some("Buds"), 3, None)), "BUDS · CONNECTED");
+        assert!(codec_strip(&bt(true, None, LDAC, None)).starts_with("NOTHING CONNECTED"));
+        assert!(codec_strip(&bt(false, Some("Buds"), LDAC, Some(LDAC_RAW))).starts_with("BLUETOOTH IS OFF"));
+    }
 }

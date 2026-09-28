@@ -36,7 +36,7 @@ fn np<'a>(page: u8, viz_size: u8, viz_kind: u8, levels: &'a [f32]) -> NowPlaying
         viz_levels: Some(levels),
         viz_peaks: None,
         page,
-        scrubbing: false,
+        scrubbing: false, lyrics: false,
     }
 }
 

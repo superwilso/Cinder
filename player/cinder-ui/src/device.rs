@@ -55,20 +55,30 @@
 //! the hit test walk it. This screen scrolls and has exactly one control on it, so a second copy of
 //! the vertical layout is precisely how a tap would land on a different row than the one under the
 //! finger — the class of bug the 07-26 input sweep found six times.
+//!
+//! THE REDESIGN (handoff 5e, 2026-09). Drawn on the kit: a strip with the status word, one big
+//! number and its bar, then plain rows. The mock's Battery screen has a health reading from a fuel
+//! gauge, a cell temperature, a charge current and "about 19 h left" — none of which this hardware
+//! reports (above), so none of them are drawn. What the mock does that IS right here: the CHARGER
+//! section shows only what the helper read, and without the helper it says so in one row instead
+//! of a column of dashes.
 
+use crate::kit::{self, Row, Trail};
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::widgets::{fill_rect, hline, right, stroke_rect, sty, toggle};
+use crate::widgets::{fill_rect, stroke_rect, sty};
 use crate::Canvas;
 
 /// Sentinel for "this reading is not available". A plain int rather than an Option so the whole
 /// view stays Copy and the C ABI can pass it straight through.
 pub const UNKNOWN: i32 = i32::MIN;
 
-/// Row pitch, section-header height, and where the list starts under the hero readout.
-pub const ROW_H: i32 = 54;
-pub const SECTION_H: i32 = 38;
-pub const TOP: i32 = 300;
+/// Row pitch, section-header height (the kit's), and where the list starts: under the header, the
+/// strip and the hero readout.
+pub const ROW_H: i32 = kit::ROW_H;
+pub const SECTION_H: i32 = kit::SECTION_H;
+const HERO_H: i32 = 118;
+pub const TOP: i32 = crate::chrome::HEADER_BOTTOM + kit::STRIP_H + HERO_H;
 
 /// Everything the screen draws. Pushed by the shell; the UI has no filesystem of its own.
 #[derive(Clone, Copy, Default)]
@@ -134,10 +144,12 @@ pub struct DeviceView<'a> {
 }
 
 /// One entry in the single layout list. `Section` is a header; `Row` is a readout, and `toggle`
-/// marks the one row that is also a control.
+/// marks the one row that is also a control. `Note` is an inert row that says why a section is
+/// empty — the charger without its helper.
 pub enum Item {
     Section(&'static str),
     Row { label: String, value: String, toggle: bool },
+    Note { title: &'static str, sub: &'static str },
 }
 
 fn row(label: &str, value: String) -> Item {
@@ -152,7 +164,15 @@ pub fn items(v: &DeviceView) -> Vec<Item> {
         Item::Row { label: "Battery care".into(), value: String::new(), toggle: true },
         row("Voltage", volts_label(v.millivolts)),
         row("Health", text_or_dash(v.health, true)),
-        row("Charger", charger_label(v.chg_state, v.chg_fault)),
+
+        Item::Section("CHARGER"),
+        // The charger IC is only read by the helper. Without it this row would be a dash that
+        // looks like a reading failed, when nothing was ever asked.
+        if helper(v) {
+            row("Charger", charger_label(v.chg_state, v.chg_fault))
+        } else {
+            Item::Note { title: "Needs the battery helper", sub: "Reinstall with the battery component on" }
+        },
 
         Item::Section("TEMPERATURE"),
         row("CPU", temp_label(v.temp_cpu)),
@@ -186,8 +206,14 @@ pub fn items(v: &DeviceView) -> Vec<Item> {
 fn item_h(it: &Item) -> i32 {
     match it {
         Item::Section(_) => SECTION_H,
-        Item::Row { .. } => ROW_H,
+        Item::Row { .. } | Item::Note { .. } => ROW_H,
     }
+}
+
+/// Did the charger helper answer? It pushes the raw registers whenever it ran; without it the
+/// charger state is -1 as well.
+fn helper(v: &DeviceView) -> bool {
+    !v.charger_raw.is_empty() || v.chg_state >= 0
 }
 
 /// Total drawn height, hero included. Drives `max_scroll_px`.
@@ -374,21 +400,25 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
     // sliding up must stop at the header rather than painting over it.
     c.set_clip_y(head_bottom, crate::canvas::H as i32);
 
-    // ── hero ──────────────────────────────────────────────────────────────────────────────────
+    // ── strip ─────────────────────────────────────────────────────────────────────────────────
     // The status word is printed VERBATIM, not mapped to friendlier wording: "Not charging" and
     // "Discharging" are different states — cable in but charge suspended, versus no cable — and
     // collapsing them hides the one that explains a battery that is not filling up.
     let charging = is_charging(v.status);
-    let hy = 190 - scroll;
-    text::draw(c, f, 22.0, hy as f32, &percent_label(v.percent),
-               &sty(Family::Sans, Weight::Bold, 76.0, t.ink, -0.02));
-    text::draw(c, f, 24.0, (hy + 32) as f32, &v.status.to_uppercase(),
-               &sty(Family::Mono, Weight::Regular, 13.0, if charging { t.acc } else { t.dim }, 0.12));
-    let bw = 436;
-    stroke_rect(c, 22, hy + 56, bw, 16, t.line, 1);
+    let strip_y = head_bottom - scroll;
+    let word = text_or_dash(v.status, true);
+    let line = if v.care { format!("{word} \u{b7} BATTERY CARE ON") } else { word };
+    kit::strip(c, t, f, strip_y, &line);
+
+    // ── hero: one big number and its bar ──────────────────────────────────────────────────────
+    let hy = strip_y + kit::STRIP_H;
+    text::draw(c, f, kit::LEFT as f32, (hy + 70) as f32, &percent_label(v.percent),
+               &sty(Family::Sans, Weight::Bold, 64.0, t.ink, -0.02));
+    let (bx, bw) = (kit::LEFT, kit::RIGHT - kit::LEFT);
+    stroke_rect(c, bx, hy + 84, bw, 14, t.ctrl(), 1);
     let fillw = (bw - 4) * (v.percent.min(100) as i32) / 100;
     if fillw > 0 {
-        fill_rect(c, 24, hy + 58, fillw, 12, if charging { t.acc } else { t.dim });
+        fill_rect(c, bx + 2, hy + 86, fillw, 10, if charging { t.acc } else { t.dim });
     }
 
     // ── the list ──────────────────────────────────────────────────────────────────────────────
@@ -396,20 +426,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
     for it in items(v) {
         match &it {
             Item::Section(name) => {
-                text::draw(c, f, 22.0, (y + 26) as f32, name,
-                           &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.16));
+                kit::section_label(c, t, f, y, name, None);
             }
             Item::Row { label, value, toggle: is_toggle } => {
-                let cy = y + ROW_H / 2;
-                text::draw(c, f, 22.0, (cy + 5) as f32, label,
-                           &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
-                if *is_toggle {
-                    toggle(c, t, 424, cy - 9, 34, 18, 12, v.care);
-                } else {
-                    right(c, f, 458.0, (cy + 4) as f32, value,
-                          &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04));
-                }
-                hline(c, y + ROW_H, t.line);
+                let trail = if *is_toggle { Trail::Switch(v.care) } else { Trail::Value(value) };
+                let sub = if *is_toggle { "Stops the charge near 4.09 V" } else { "" };
+                kit::row(c, t, f, y, ROW_H, &Row::new(label).sub(sub).trail(trail));
+            }
+            Item::Note { title, sub } => {
+                let mut quiet = *t;
+                quiet.ink = t.dim;
+                kit::row(c, &quiet, f, y, ROW_H, &Row::new(title).sub(sub));
             }
         }
         y += item_h(&it);
@@ -419,24 +446,22 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &DeviceView, scroll: i3
     // The honest small print, and it scrolls with the content rather than floating: this device has
     // no fuel gauge, so there is no current reading and no cycle count, and saying so is more useful
     // than leaving the reader to wonder why a battery section omits them.
-    let foot = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1);
-    const FOOT_W: f32 = 436.0;
-    y += 18;
-    text::draw(c, f, 22.0, y as f32,
-               &crate::widgets::fit(f, "NO FUEL GAUGE — NO CURRENT, NO CYCLE COUNT.", &foot, FOOT_W),
-               &foot);
-    y += 22;
-    let l2 = if v.charger_raw.is_empty() {
-        "CHARGER DETAIL NEEDS THE CINDER-BATTERY HELPER.".to_string()
-    } else {
-        format!("BQ24262 RAW {}", v.charger_raw)
-    };
-    text::draw(c, f, 22.0, y as f32, &crate::widgets::fit(f, &l2, &foot, FOOT_W), &foot);
+    let foot = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.1);
+    let foot_w = (kit::RIGHT - kit::LEFT) as f32;
+    let x = kit::LEFT as f32;
+    y += 26;
+    text::draw(c, f, x, y as f32,
+               &crate::widgets::fit(f, "NO FUEL GAUGE — NO CURRENT, NO CYCLE COUNT.", &foot, foot_w), &foot);
+    if !v.charger_raw.is_empty() {
+        y += 22;
+        let raw = format!("BQ24262 RAW {}", v.charger_raw);
+        text::draw(c, f, x, y as f32, &crate::widgets::fit(f, &raw, &foot, foot_w), &foot);
+    }
     if v.care {
         y += 22;
-        text::draw(c, f, 22.0, y as f32,
-                   &crate::widgets::fit(f, "CARE ON: TOPS OUT ~4.09 V, NOT 4.2 V. GAUGE SAYS 100%.",
-                                        &foot, FOOT_W), &foot);
+        text::draw(c, f, x, y as f32,
+                   &crate::widgets::fit(f, "CARE ON: 100% HERE IS ~4.09 V, NOT 4.2 V.", &foot, foot_w),
+                   &foot);
     }
     c.clear_clip();
 }

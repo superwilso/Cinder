@@ -46,6 +46,7 @@ pub const VOL_FRAMES: u8 = 96;
 
 /// Draw the volume HUD: a centered slab with a speaker icon, a level bar, and the step value.
 pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
+    c.begin_layer(); // drawn over the screen on purpose (see `Canvas::begin_layer`)
     volume_trimmed(c, t, f, level, 0, false)
 }
 
@@ -59,6 +60,7 @@ pub fn volume(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8) {
 /// the trim says, exactly, how far below it the source is sitting.
 pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_half_db: i8,
                       bt_route: bool) {
+    c.begin_layer(); // drawn over the screen on purpose (see `Canvas::begin_layer`)
     // A slim pill just under the status bar, NOT a card in the middle of the screen.
     //
     // It used to be a 320x96 slab centred on the panel, parked over the focal point of the album
@@ -137,6 +139,7 @@ pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_ha
 /// without covering the artwork. Same lifetime as the pill (`VOL_FRAMES`). The exact level and the
 /// Bluetooth trim stay on Full, which is why Full is the default.
 pub fn volume_minimal(c: &mut Canvas, t: &Theme, level: u8) {
+    c.begin_layer(); // drawn over the screen on purpose (see `Canvas::begin_layer`)
     const BAR_H: i32 = 3;
     let y = crate::chrome::STATUS_H;
     fill_rect(c, 0, y, W as i32, BAR_H, t.line);
@@ -147,6 +150,7 @@ pub fn volume_minimal(c: &mut Canvas, t: &Theme, level: u8) {
 /// Confirmation toast: a bottom-centered pill with a one-line message (e.g. after swipe-to-queue).
 /// Sized to the text; long titles are clipped by the pill edge rather than wrapped.
 pub fn toast(c: &mut Canvas, t: &Theme, f: &FontSet, msg: &str) {
+    c.begin_layer(); // drawn over the screen on purpose (see `Canvas::begin_layer`)
     let st = sty(Family::Sans, Weight::SemiBold, 16.0, t.ink, 0.0);
     let tw = text::measure(f, msg, &st).min((W - 64) as f32);
     let pw = (tw as i32 + 44).min(W as i32 - 20);
@@ -170,6 +174,7 @@ pub fn toast(c: &mut Canvas, t: &Theme, f: &FontSet, msg: &str) {
 /// 1.0 → 0.0 (frames left / total); the pill is fully off-screen by 0. No alpha compositing
 /// needed — the exit off the edge *is* the fade.
 pub fn queue_chip(c: &mut Canvas, t: &Theme, f: &FontSet, row_y: i32, progress: f32) {
+    c.begin_layer(); // drawn over the screen on purpose (see `Canvas::begin_layer`)
     let p = progress.clamp(0.0, 1.0);
     let pw = 128;
     let ph = 34;

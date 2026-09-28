@@ -204,6 +204,7 @@ pub fn hit(ask: Ask, x: i32, y: i32) -> Hit {
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, ask: Ask) {
+    c.begin_layer(); // a sheet over the screen: what it covers is covered on purpose
     if ask.is_menu() {
         render_menu(c, t, f, ask);
         return;

@@ -153,7 +153,7 @@ fn main() {
         viz_size: 1, page: 0,
         viz_levels: None,
         viz_peaks: None,
-        scrubbing: false,
+        scrubbing: false, lyrics: false,
     };
 
     let mut window = Window::new(

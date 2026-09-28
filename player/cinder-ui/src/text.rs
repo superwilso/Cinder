@@ -94,8 +94,9 @@ impl Drop for ScaleGuard {
     }
 }
 
+/// A type size at the current UI scale: what `draw` and `measure` actually use.
 #[inline]
-fn scaled(size: f32) -> f32 {
+pub fn scaled(size: f32) -> f32 {
     size * scale_pct() as f32 / 100.0
 }
 
@@ -517,6 +518,12 @@ pub fn draw(canvas: &mut Canvas, fonts: &FontSet, x: f32, baseline: f32, s: &str
     let size = scaled(st.size);
     let track = st.tracking * size;
     let mut pen = x;
+    // The collision audit (`Canvas::track_text`) is asked about ONCE per call, so with it off —
+    // always, at runtime — the glyph loop is the plain blend it always was.
+    let audit = canvas.tracking_text();
+    if audit {
+        canvas.text_run(s);
+    }
     for ch in s.chars() {
         let (m, bitmap) = fonts.glyph(st.fam, st.weight, ch, size); // cached rasterise
         let gx0 = (pen + m.xmin as f32).round() as i32;
@@ -526,7 +533,11 @@ pub fn draw(canvas: &mut Canvas, fonts: &FontSet, x: f32, baseline: f32, s: &str
             for gx in 0..m.width {
                 let a = bitmap[gy * m.width + gx];
                 if a > 0 {
-                    canvas.blend(gx0 + gx as i32, gy0 + gy as i32, st.color, a);
+                    if audit {
+                        canvas.blend_text(gx0 + gx as i32, gy0 + gy as i32, st.color, a);
+                    } else {
+                        canvas.blend(gx0 + gx as i32, gy0 + gy as i32, st.color, a);
+                    }
                 }
             }
         }

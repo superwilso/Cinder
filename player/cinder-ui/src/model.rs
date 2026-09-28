@@ -575,3 +575,9 @@ impl Library {
 /// Channel names for the HOST PREVIEW's fake library only. The real table — thirteen names, in
 /// Sony's channel-id order — is `cinder_db::SENSME_CHANNELS`, and the shell passes that one.
 const SAMPLE_CHANNELS: [&str; 4] = ["Active", "Emotional", "Lounge", "Dance"];
+
+/// The time-of-day channels' ids and names, for the SensMe grid's "Now: Evening" line. The names
+/// are `cinder_db::SENSME_CHANNELS`'s, which this crate cannot depend on; a test in `cinder-ffi`
+/// holds the two tables together.
+pub const SENSME_TIME_NAMES: [(u8, &str); 5] =
+    [(8, "Morning"), (9, "Daytime"), (10, "Evening"), (11, "Night"), (12, "Midnight")];
