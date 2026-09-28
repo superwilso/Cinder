@@ -16,12 +16,13 @@
 > | | |
 > |---|---|
 > | Releases shipped | **v0.3.0 → v0.3.9** stable, **0.3.10-rc1 / 0.3.11-rc1** pre-releases — v0.3.9 cannot start after a fresh install (#16), so the next stable is overdue |
-> | Offline gates | **612 Rust tests** (player) + 53 (installer), **49 harness scenarios**, 24 C/C++ files syntax-clean, **252 golden pixel hashes** — all green, all re-run 2026-09-23 ([`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) Parts A and E) |
+> | Offline gates | **627 Rust tests** (player) + 53 (installer), **49 harness scenarios**, 24 C/C++ files syntax-clean, **259 golden pixel hashes** — all green, player gates re-run 2026-09-28 for the redesign's first pass ([`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) Part A); the rest last re-run 2026-09-23 ([`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) Parts A and E) |
 > | The headline feature | **USB-DAC → LDAC ran end to end** (2026-09-12, owner-reported, no log captured) |
 > | Landed since 2026-09-14 | Mono on the jack and Bluetooth, **SensMe channels** (reads tags written by Sony's Music Center *or* by [Flint](https://github.com/superwilso/flint), opt-in install component `sensme`), a battery gauge that no longer chases the load, and a charger row that stops calling an unplugged cable a fault |
 > | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **11.9, the Windows installer**, and the new **14.1–14.6** (SensMe end to end, the channel-name table, the Music-Center/Flint interop claim, and the battery gauge in the wild) |
 >
 > **The live documents, in order of what you probably want:**
+> - **The redesign (2026-09-27 handoff):** [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) — every screen and every promised feature with a state and a phase; spec in [`docs/SPEC_redesign_2026-09.md`](docs/SPEC_redesign_2026-09.md); new screens draw with `player/cinder-ui/src/kit.rs`.
 > - **What to do next:** [`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) Part D — the most recent audit's ordered list; community bugs and requests in [`docs/PLAN_community_2026-09-23.md`](docs/PLAN_community_2026-09-23.md). The skins design system is still [`docs/PLAN_2026-09-14.md`](docs/PLAN_2026-09-14.md).
 > - **Feature state (works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
 > - **Device run sheet:** [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — safety rules first.

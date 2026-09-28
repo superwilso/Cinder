@@ -107,9 +107,13 @@ const PAIRED_RH: i32 = crate::scale::TRACK_ROW_H;
 /// without pushing either off; a longer pairing history is managed on the Devices screen, which is
 /// where forgetting lives anyway.
 pub const PAIRED_SHOWN: usize = 5;
-const ADV_Y: i32 = 548; // "Audio quality ›" — the codec page
-const ADV_H: i32 = 60;
-const PAIR_Y: i32 = 640;
+/// THIS DEVICE (handoff 2g): its section label, then "Sound quality ›" — the codec page.
+const THIS_DEVICE_Y: i32 = PAIRED_Y0 + PAIRED_SHOWN as i32 * PAIRED_RH + 6;
+const ADV_Y: i32 = THIS_DEVICE_Y + crate::kit::SECTION_H;
+const ADV_H: i32 = crate::kit::ROW_H;
+/// The PAIRED DEVICES label, whose right half is "PAIR NEW" (handoff 2g: a list's own action lives
+/// in its section label, as CLEAR does on Up Next). It sits straight under the connected card.
+const PAIRED_LABEL_Y: i32 = CARD_Y + CARD_H;
 
 // ---- codec page (its own screen now) ----
 const CODEC_Y0: i32 = 150;
@@ -203,7 +207,7 @@ pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
     if (ADV_Y..ADV_Y + ADV_H).contains(&y) {
         return BtHit::Advanced;
     }
-    if (PAIR_Y..PAIR_Y + 52).contains(&y) {
+    if crate::kit::section_action_hit(PAIRED_LABEL_Y, x, y) {
         return BtHit::Pair;
     }
     BtHit::None
@@ -254,13 +258,10 @@ fn radio(c: &mut Canvas, cx: i32, cy: i32, on: bool, t: &Theme) {
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     c.fill(t.bg);
     let _y0 = crate::chrome::header(c, t, f, "Bluetooth", None);
-    // header right: ON/OFF + toggle
-    let onoff = if bt.on { "ON" } else { "OFF" };
-    // Nudged down from y=56/65 so the graphic sits further from the status strip the user kept
-    // catching, and nearer the middle of its (much larger) touch target. Still inside the header
-    // band, so it stays level enough with the title to read as part of the header.
-    right(c, f, 416.0, 71.0, onoff, &sty(Family::Mono, Weight::Regular, 12.0, if bt.on { t.acc } else { t.faint }, 0.12));
-    crate::widgets::toggle(c, t, 424, 62, 34, 18, 12, bt.on);
+    // Header right slot: the kit's switch (handoff: a header's right slot is a caption, a switch,
+    // an icon or nothing). Sits low in the header band, away from the status strip the user kept
+    // catching, and near the middle of its much larger touch target (see `hit`).
+    crate::kit::switch(c, t, crate::kit::RIGHT - crate::kit::SWITCH_W, 58, bt.on);
 
     // connected card (or empty state)
     if bt.on && bt.connected.is_some() {
@@ -324,7 +325,6 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     // and until now it was the one thing you could not do from it: the list lived behind a button
     // labelled "Pair new device". The codec radio list that used to occupy this space is a
     // set-once preference and has moved to its own page.
-    let cap = if bt.on { t.acc } else { t.faint };
     // SAY SO WHEN THIS IS ONLY PART OF THE LIST. This is a summary — the complete surface, with
     // FORGET and a page turn, is Devices — but a list that quietly stops at five looks like the
     // whole truth, and for a while it WAS the whole truth in the sense that nothing else could
@@ -336,7 +336,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     } else {
         "PAIRED DEVICES".to_string()
     };
-    text::draw(c, f, 22.0, 198.0, &head, &sty(Family::Mono, Weight::Regular, 11.0, cap, 0.18));
+    crate::kit::section_label(c, t, f, PAIRED_LABEL_Y, &head, bt.on.then_some("PAIR NEW"));
     if !bt.on {
         // Nothing here is actionable with the radio off, and greyed rows invite taps that do
         // nothing. Say why the list is empty instead of showing a dead one.
@@ -370,15 +370,13 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         }
     }
 
-    // AUDIO QUALITY — the codec page, one row rather than a quarter of the screen.
-    //
-    // Codec and Enhanced Mode are set once and then never touched, so they were paying for prime
-    // screen space with the thing people actually came for. The row still SHOWS the current codec,
-    // because that is the part worth glancing at.
-    crate::widgets::hline(c, ADV_Y, t.line);
-    let acol = if bt.on { t.ink } else { t.faint };
-    text::draw(c, f, 22.0, (ADV_Y + 26) as f32, "Audio quality",
-               &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, acol, 0.0));
+    // THIS DEVICE — how this player sends to headphones: the codec page, one row rather than a
+    // quarter of the screen. Codec and Enhanced Mode are set once and then never touched, so they
+    // were paying for prime screen space with the thing people actually came for. The row still
+    // SHOWS what is in use, because that is the part worth glancing at. (Handoff 2g also draws a
+    // "Sound profile" row here — which A/B setup this output switches to — and that waits on
+    // per-output profiles, docs/PLAN_redesign_2026-09.md.)
+    crate::kit::section_label(c, t, f, THIS_DEVICE_Y, "THIS DEVICE", None);
     let live = bt.link_codec.map(link_codec_label);
     let want = CODECS[(bt.codec_sel as usize).min(CODECS.len() - 1)].0;
     let detail = match live {
@@ -388,17 +386,16 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
         Some(l) => l,
         None => want.to_string(),
     };
-    text::draw(c, f, 22.0, (ADV_Y + 46) as f32, &detail,
-               &sty(Family::Mono, Weight::Regular, 11.0, if bt.on { t.dim } else { t.faint }, 0.04));
-    crate::widgets::right(c, f, 458.0, (ADV_Y + 36) as f32, "\u{203a}",
-                          &sty(Family::Sans, Weight::Regular, 22.0, t.dim, 0.0));
-    crate::widgets::hline(c, ADV_Y + ADV_H, t.line);
+    // The value is the LDAC bitrate when LDAC is the request (the handoff's "990"), otherwise the
+    // codec itself.
+    let value = if bt.codec_sel == LDAC {
+        QUALITIES[(bt.ldac_quality as usize).min(QUALITIES.len() - 1)].to_uppercase()
+    } else {
+        want.to_uppercase()
+    };
+    crate::kit::row(c, t, f, ADV_Y, ADV_H,
+        &crate::kit::Row::new("Sound quality").sub(&detail).trail(crate::kit::Trail::Open(&value)));
 
-    // pair new device + NFC hint
-    fill_rect(c, 22, PAIR_Y, 436, 52, if bt.on { t.acc } else { t.line });
-    let plabel_col = if bt.on { t.acc_ink } else { t.faint };
-    icons::bt(c, 178.0, (PAIR_Y + 26) as f32, 17.0, plabel_col);
-    text::draw(c, f, 196.0, (PAIR_Y + 31) as f32, "Pair new device", &sty(Family::Sans, Weight::Bold, 17.0, plabel_col, 0.0));
     // Footer: an NFC hint on the left and the Receiver-mode link on the right, on ONE baseline.
     // Both were drawn at fixed x, so at 140% "…TO REAR PANEL" ran straight through "RECEIVER
     // MODE ›". The link keeps its width (it names a destination); the hint gives way.
@@ -411,12 +408,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     );
 }
 
-/// The codec / volume-control page, reached from "Audio quality" on the Bluetooth screen. These
+/// The codec / volume-control page, reached from "Sound quality" on the Bluetooth screen. These
 /// controls were the top half of that screen; they are configured once and then ignored, so they
 /// were the wrong thing to give the most reachable space to.
 pub fn render_codec(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     c.fill(t.bg);
-    let _y0 = crate::chrome::header(c, t, f, "Audio quality", None);
+    let _y0 = crate::chrome::header(c, t, f, "Sound quality", None);
     // TRANSMIT CODEC — list with the active one selected (greyed while BT is off)
     let body = if bt.on { t.ink } else { t.faint };
     let subc = if bt.on { t.dim } else { t.faint };

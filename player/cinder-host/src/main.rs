@@ -126,20 +126,19 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         progress: 0.39,
     };
 
-    // The Menu as the device draws it with SensMe installed: twelve rows, in `nav::MENU` order.
+    // The Menu as the device draws it with SensMe installed: ten rows, in `nav::MENU` order,
+    // Library tagged HOME (the default home screen).
     let menu_items = [
-        MenuItem { icon: "note", label: "Now Playing", value: "Atlas Hands · 1:47", active: true },
-        MenuItem { icon: "library", label: "Library", value: "6 albums · 8 tracks", active: false },
-        MenuItem { icon: "library", label: "Folders", value: "6 folders", active: false },
-        MenuItem { icon: "note", label: "SensMe", value: "12 channels · 8 tracks", active: false },
-        MenuItem { icon: "queue", label: "Up Next", value: "8 tracks left", active: false },
-        MenuItem { icon: "radio", label: "FM Radio", value: "Needs wired headphones as the aerial", active: false },
-        MenuItem { icon: "eq", label: "Equalizer", value: "A1", active: false },
-        MenuItem { icon: "sound", label: "Sound Settings", value: "DSEE HX · VPT", active: false },
-        MenuItem { icon: "bt", label: "Bluetooth", value: "LDAC", active: false },
-        MenuItem { icon: "usb", label: "USB-DAC", value: "Off", active: false },
-        MenuItem { icon: "settings", label: "Settings", value: "System · Storage · About", active: false },
-        MenuItem { icon: "note", label: "Help & Controls", value: "Button map · features", active: false },
+        MenuItem { label: "Library", sub: "6 albums · 8 tracks", home: true, active: false },
+        MenuItem { label: "Folders", sub: "6 folders", home: false, active: false },
+        MenuItem { label: "SensMe", sub: "12 channels · 8 tracks", home: false, active: false },
+        MenuItem { label: "FM radio", sub: "Needs wired headphones as the aerial", home: false, active: false },
+        MenuItem { label: "Equalizer", sub: "A1", home: false, active: false },
+        MenuItem { label: "Sound", sub: "DSEE HX · VPT", home: false, active: false },
+        MenuItem { label: "Bluetooth", sub: "LDAC", home: false, active: false },
+        MenuItem { label: "USB-DAC", sub: "Off", home: false, active: false },
+        MenuItem { label: "Settings", sub: "Display · playback · system", home: false, active: false },
+        MenuItem { label: "Help & controls", sub: "Buttons, swipes, the way back", home: false, active: false },
     ];
 
     let snd = Sound {
@@ -212,7 +211,8 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     }));
             }),
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
-            ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts, &menu_items)),
+            ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts,
+                "NOW › Atlas Hands · Benjamin Francis Leftwich · 1:47", &menu_items, 0)),
             // Up Next: history above the playing track, then the rest of the album. The history
             // is its OWN list, so the preview passes one explicitly.
             ("up_next", &|c: &mut Canvas| {
@@ -419,8 +419,12 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { ignore_the: false, volume_limit: false, night: theme.night, viz_name: "BARS · VEIL", usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
-                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: cinder_ui::Accent::Amber, palette: pal_name, accent_locked: pal_locked })),
+                &settings::SettingsView { ignore_the: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" })),
+            // Settings ▸ Display (handoff 5k): palette, accent, night, the volume readout, size.
+            ("display", &|c: &mut Canvas| cinder_ui::display::render(c, &theme, &fonts, 1,
+                &cinder_ui::display::DisplayView { palette: pal_name, accent_locked: pal_locked,
+                    accent: cinder_ui::Accent::Amber, night: theme.night, volume_hud: 1, viz: "BARS · VEIL" })),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
             // The shuffle band's caption has to follow the filter — shuffling a filtered list
             // shuffles what is on screen, so it must not still promise the whole library.
@@ -626,11 +630,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                             (cinder_ui::confirm::Ask::PowerOff, "poweroff")] {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
-                &settings::SettingsView { ignore_the: false, volume_limit: false, night: false, viz_name: "BARS · VEIL",
-                    usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { ignore_the: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
-                    accent: cinder_ui::Accent::Amber, palette: pal_name, accent_locked: pal_locked });
+                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
             save(&c, &format!("confirm_{name}"));
@@ -641,11 +643,9 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_BRIGHTNESS,
                 settings::max_scroll_px() / 2,
-                &settings::SettingsView { ignore_the: false, volume_limit: false, night: false, viz_name: "BARS · VEIL",
-                    usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { ignore_the: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01",
-                    accent: cinder_ui::Accent::Amber, palette: pal_name, accent_locked: pal_locked });
+                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, "settings_scrolled");
         }
@@ -816,13 +816,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         save(&c, &format!("accent_{lower}_now_playing"));
 
         let mut c = Canvas::new();
-        settings::render(&mut c, &theme, &fonts, settings::ROW_ACCENT, 0,
-            &settings::SettingsView { ignore_the: false, volume_limit: false, night: false, viz_name: "BARS · VEIL", usb_dac: false,
-                battery_care: true, device: "99% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5",
-                screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: a,
-                palette: pal_name, accent_locked: pal_locked });
+        cinder_ui::display::render(&mut c, &theme, &fonts, cinder_ui::display::ROW_ACCENT,
+            &cinder_ui::display::DisplayView { palette: pal_name, accent_locked: pal_locked, accent: a,
+                night: false, volume_hud: 0, viz: "BARS · VEIL" });
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
-        save(&c, &format!("accent_{lower}_settings"));
+        save(&c, &format!("accent_{lower}_display"));
     }
 
     // Navigator demo: drive the nav state machine through a press sequence and dump the
@@ -832,7 +830,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     let steps: &[(&str, Option<Button>)] = &[
         ("nav_0_now_playing", None),
         ("nav_1_menu", Some(Button::Up)),       // NowPlaying -> Menu
-        ("nav_2_menu_library", Some(Button::Down)), // highlight "Library"
+        ("nav_2_menu_library", None), // the cursor already rests on "Library", the first row
         ("nav_3_library", Some(Button::Select)),    // enter Library
         ("nav_4_library_artists", Some(Button::Right)), // Albums -> Artists (then Right again)
     ];
@@ -911,8 +909,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let big = Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() };
 
         let mut app = new_app();
-        app.press(Button::Up); // Menu
-        app.press(Button::Down); // -> Library row
+        app.press(Button::Up); // Menu — the cursor starts on Library, the first row
         app.press(Button::Select); // enter Library
         app.set_library(big);
         // Songs tab (default tab is Albums; Left → Songs), scroll down 30 rows
@@ -991,8 +988,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             .collect();
 
         let mut app = new_app();
-        app.press(Button::Up);
-        app.press(Button::Down);
+        app.press(Button::Up); // Menu — the cursor starts on Library
         app.press(Button::Select);
         app.set_library(Library { songs, album_groups, artists, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() });
         app.press(Button::Left); // -> Songs
@@ -1017,11 +1013,22 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         save(&c, "overlay_volume");
     }
 
+    // The Minimal volume readout (handoff 2e): the same presses, with Display ▸ Volume on Minimal.
+    {
+        let mut app = new_app();
+        app.set_volume_hud("minimal");
+        app.press(Button::VolUp);
+        app.press(Button::VolUp);
+        app.press(Button::VolUp);
+        let mut c = Canvas::new();
+        app.render(&mut c, &fonts, &np);
+        save(&c, "overlay_volume_minimal");
+    }
+
     // Album drill-in: Library → Albums → Select an album → its track list.
     {
         let mut app = new_app();
-        app.press(Button::Up); // Menu
-        app.press(Button::Down); // Library row
+        app.press(Button::Up); // Menu — the cursor starts on Library
         app.press(Button::Select); // enter Library (Albums tab default)
         app.press(Button::Down); // move to 2nd album
         app.press(Button::Select); // drill into the album
@@ -1089,6 +1096,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             for (name, screen) in [
                 ("library", Screen::Library),
                 ("settings", Screen::Settings),
+                ("display", Screen::Display),
                 ("bluetooth", Screen::Bluetooth),
                 ("sound", Screen::Sound),
                 ("nowplaying", Screen::NowPlaying),

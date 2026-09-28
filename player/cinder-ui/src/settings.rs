@@ -1,36 +1,24 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row. Rows:
-//! DISPLAY (Theme, Palette, Accent, UI scale, Visualiser, Volume limit, Sleep, Screen-off,
-//! Brightness, Ignore "The" in artists), SYSTEM (Auto power off, Storage, Database, Device, Date &
+//! DISPLAY (Display ›, Brightness, Screen-off timer), PLAYBACK (Volume limit, Sleep timer),
+//! LIBRARY (Ignore "The" in artists, Database), SYSTEM (Auto power off, Storage, Device, Date &
 //! time, USB mode, Boot to stock, Restart, Power off, Reset), ABOUT (Firmware, Model).
 //! Every row acts except Storage, Firmware and Model, which are information.
+//!
+//! Drawn with the redesign kit (`kit.rs`): 64 px rows, 34 px section labels. Theme, palette,
+//! accent, text size and the visualiser moved to Settings ▸ Display (`display.rs`, handoff 5k) —
+//! the things you change weekly no longer share a column with Restart and Reset.
 
-use crate::icons;
-use crate::text::{self, Family, FontSet, Weight};
-use crate::theme::{Accent, Theme};
-use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
+use crate::kit::{self, Row, Trail};
+use crate::text::FontSet;
+use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 22;
-/// Day / Night.
-pub const ROW_THEME: usize = 0;
-/// Palette — which colour scheme: Cinder's own, or one read from the player's `cinder_palettes`
-/// folder (see `palette.rs`). Select cycles; the value is the palette's name.
-pub const ROW_PALETTE: usize = 1;
-/// Accent colour — six swatches, tap one directly (Select cycles). Out of play while the palette
-/// brings an accent of its own.
-pub const ROW_ACCENT: usize = 2;
-/// UI text scale — a real slider (tap a stop, or drag it). See `ui_scale_idx_at`.
-pub const ROW_UI_SCALE: usize = 3;
-/// Visualiser — a CHEVRON into its own screen (`vizset`), not a control in place.
-///
-/// This was two rows, "Visualiser style" and "Cover visualiser", and they were the only two things
-/// about the analyser a user could change. Everything else — how magnitudes map to bar height, the
-/// dB window, how fast the bars chase the audio, whether peaks are marked, the analyzer's own
-/// averaging window and frame rate — was a constant in the source. Nine controls do not belong in
-/// a scrolling list of unrelated preferences, and they especially do not belong somewhere you
-/// cannot see what they do: the screen they moved to has a live preview at the top.
-pub const ROW_VIZ: usize = 4;
+pub const ROWS: usize = 18;
+/// Display ▸ — palette, accent, night, the volume readout, text size and the visualiser.
+pub const ROW_DISPLAY: usize = 0;
+pub const ROW_BRIGHTNESS: usize = 1;
+pub const ROW_SCREEN_OFF: usize = 2;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -40,59 +28,50 @@ pub const ROW_VIZ: usize = 4;
 /// directly; the flag would be a control that accepts a write and changes nothing, which is
 /// exactly what "High gain output" turned out to be (see sound.rs). So the shell reads Sony's
 /// number and clamps in its own `apply_volume`.
-pub const ROW_VOLUME_LIMIT: usize = 5;
-pub const ROW_SLEEP: usize = 6;
-pub const ROW_SCREEN_OFF: usize = 7;
-pub const ROW_BRIGHTNESS: usize = 8;
+pub const ROW_VOLUME_LIMIT: usize = 3;
+pub const ROW_SLEEP: usize = 4;
 /// Ignore "The" in artists — sort "The Beatles" among the B's in the Artists tab, the Albums tab's
 /// artist groups and Songs by artist (and file it under B on the rail). OFF by default: artists
 /// sort as written. Titles and album names keep their "The" either way. See `collate`.
-pub const ROW_IGNORE_THE: usize = 9;
+pub const ROW_IGNORE_THE: usize = 5;
+pub const ROW_DATABASE: usize = 6;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
 /// of behaviour that has to be asked for.
-pub const ROW_AUTO_OFF: usize = 10;
-pub const ROW_STORAGE: usize = 11;
-pub const ROW_DATABASE: usize = 12;
-pub const ROW_BATTERY: usize = 13;
+pub const ROW_AUTO_OFF: usize = 7;
+pub const ROW_STORAGE: usize = 8;
+pub const ROW_BATTERY: usize = 9;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 14;
-pub const ROW_USB_MODE: usize = 15; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 10;
+pub const ROW_USB_MODE: usize = 11; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 16;
+pub const ROW_BOOT_STOCK: usize = 12;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 17;
-pub const ROW_POWER_OFF: usize = 18;
+pub const ROW_RESTART: usize = 13;
+pub const ROW_POWER_OFF: usize = 14;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 19;
+pub const ROW_RESET: usize = 15;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 20;
-pub const ROW_MODEL: usize = 21;
+pub const ROW_FIRMWARE: usize = 16;
+pub const ROW_MODEL: usize = 17;
 
-const RH: i32 = 56;
-/// How many rows sit under each section eyebrow. DISPLAY | SYSTEM | ABOUT — the single source both
-/// `content_height` and `row_at` read, so a row added to one can't be missed by the other.
-const SECTIONS: [usize; 3] = [10, 10, 2];
+const RH: i32 = kit::ROW_H;
+/// Section labels and how many rows sit under each — the single source both `content_height` and
+/// `row_at` read, so a row added to one can't be missed by the other.
+const SECTIONS: [(&str, usize); 5] =
+    [("DISPLAY", 3), ("PLAYBACK", 2), ("LIBRARY", 2), ("SYSTEM", 9), ("ABOUT", 2)];
 
-/// Accent swatch geometry. Shared by the render AND `accent_hit` so a tap can never land on a
-/// different swatch than the one drawn under the finger (the class of bug the 07-26 input sweep
-/// found six times). Swatches are right-aligned to the same 458 edge every other value uses.
-const SW: i32 = 30; // swatch edge
-const SW_GAP: i32 = 6;
-const SW_RIGHT: i32 = 458;
-fn swatch_x(i: usize) -> i32 {
-    let total = Accent::COUNT as i32 * SW + (Accent::COUNT as i32 - 1) * SW_GAP;
-    SW_RIGHT - total + i as i32 * (SW + SW_GAP)
-}
+/// The Display row's second line: what is behind it (handoff 2c).
+pub const DISPLAY_SUB: &str = "Palette · accent · volume display";
 
 /// The released version, in ONE place. `tools/release.sh` rewrites this line when it bumps the
 /// tag, the same way it rewrites `installer/Cargo.toml` — so what the player shows on its own
@@ -117,11 +96,6 @@ pub const FIRMWARE_LABEL: &str = concat!("CINDER ", cinder_version!());
 
 /// Current settings values to display.
 pub struct SettingsView<'a> {
-    pub night: bool,
-    /// The Visualiser row's value: style and cover size in one line, since the row is now a
-    /// chevron into the screen that owns both.
-    pub viz_name: &'a str,
-    /// Visualiser size label: OFF / EDGE / FLOOR / VEIL / FULL.
     pub usb_dac: bool,
     pub battery_care: bool,
     /// One-line summary for the Device row, e.g. "99% · 34.4 °C". Formatted by `nav` with the same
@@ -145,12 +119,6 @@ pub struct SettingsView<'a> {
     /// Volume limit on/off. A toggle, not a value: the cap itself is Sony's and is read live by
     /// the shell, so there is no number here for the user to pick.
     pub volume_limit: bool,
-    /// The selected accent — which swatch gets the ring, and the name shown beside them.
-    pub accent: Accent,
-    /// The palette being drawn, by name, for the Palette row.
-    pub palette: &'a str,
-    /// The palette brings its own accent, so the Accent row says so instead of offering swatches.
-    pub accent_locked: bool,
     /// Ignore "The" at the start of artist names when sorting (`ROW_IGNORE_THE`).
     pub ignore_the: bool,
 }
@@ -158,16 +126,8 @@ pub struct SettingsView<'a> {
 /// Total height of the row content, from the top of the screen to the bottom of the last row.
 /// Exceeds the 800px panel, which is why this screen scrolls.
 pub fn content_height() -> i32 {
-    // header, then each section: eyebrow (24) + its rows, with a 14px gap before every eyebrow
-    // after the first.
-    let mut h = LIST_TOP;
-    for (i, n) in SECTIONS.iter().enumerate() {
-        if i > 0 {
-            h += 14;
-        }
-        h += 24 + *n as i32 * RH;
-    }
-    h
+    // Header, then each section: its label and its rows.
+    LIST_TOP + SECTIONS.iter().map(|(_, n)| kit::SECTION_H + *n as i32 * RH).sum::<i32>()
 }
 
 /// How far this screen can scroll. 0 would mean everything fits (it doesn't).
@@ -176,8 +136,8 @@ pub fn max_scroll_px() -> i32 {
 }
 
 /// Which selectable row is at touch-y `y`, given the current `scroll` offset? Mirrors `render`'s
-/// vertical layout exactly: header ends at 91, each section eyebrow consumes +14 (gap) then +24,
-/// and every row is `RH` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow).
+/// vertical layout exactly: header ends at 91, each section label is `kit::SECTION_H`, and every
+/// row is `RH` tall. Returns the row index (0..ROWS) or None (tapped a gap/eyebrow).
 pub fn row_at(y: i32, scroll: i32) -> Option<usize> {
     row_span(scroll).find(|(_, top)| y >= *top && y < *top + RH).map(|(r, _)| r)
 }
@@ -188,11 +148,8 @@ fn row_span(scroll: i32) -> impl Iterator<Item = (usize, i32)> {
     let mut out = Vec::with_capacity(ROWS);
     let mut yy = LIST_TOP - scroll;
     let mut r = 0;
-    for (i, n) in SECTIONS.iter().enumerate() {
-        if i > 0 {
-            yy += 14;
-        }
-        yy += 24; // section eyebrow
+    for (_, n) in SECTIONS.iter() {
+        yy += kit::SECTION_H;
         for _ in 0..*n {
             out.push((r, yy));
             r += 1;
@@ -211,90 +168,61 @@ pub fn row_top_px(r: usize) -> i32 {
     row_span(0).find(|(i, _)| *i == r).map(|(_, top)| top - 91).unwrap_or(0)
 }
 
-/// Which accent swatch is under `(x, y)`, if any. Returns an index into `Accent::ALL`.
-/// Checked BEFORE `row_at` by the navigator, so tapping a swatch picks that colour directly
-/// instead of advancing the cycle by one — six taps to reach the last accent is not a picker.
-pub fn accent_hit(x: i32, y: i32, scroll: i32) -> Option<usize> {
-    let (_, top) = row_span(scroll).find(|(r, _)| *r == ROW_ACCENT)?;
-    // Full row height vertically: the swatch is 30px inside a 56px row, and a near-miss above or
-    // below should still land on the colour the finger was clearly aiming at.
-    if y < top || y >= top + RH {
-        return None;
+/// The trailing value of row `r`.
+fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
+    match r {
+        ROW_DISPLAY => Trail::Open(""),
+        ROW_BRIGHTNESS => Trail::Value(v.brightness),
+        ROW_SCREEN_OFF => Trail::Value(v.screen_off),
+        // The volume limit is a value row rather than a switch because the interesting half is
+        // WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number the
+        // user did not choose, and the number is Sony's per-output AVLS threshold, read live.
+        ROW_VOLUME_LIMIT => Trail::Value(if v.volume_limit { "SAFE LEVEL" } else { "OFF" }),
+        ROW_SLEEP => Trail::Value(v.sleep),
+        ROW_IGNORE_THE => Trail::Value(if v.ignore_the { "ON" } else { "OFF" }),
+        // Database: CHEVRON, because tapping does something — it asks Sony's MediaStore to rescan
+        // the music tree. The value carries the library size, so the row also answers "did it work".
+        ROW_DATABASE => Trail::Open(v.database),
+        ROW_AUTO_OFF => Trail::Value(v.auto_off),
+        // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
+        ROW_STORAGE => Trail::Value(v.storage),
+        // Device: chevron into the hardware's vital signs. The value carries the two numbers people
+        // open it for, so the row usually answers the question without being opened at all.
+        ROW_BATTERY => Trail::Open(v.device),
+        // The value is the live clock, so the row doubles as the place you notice it is wrong.
+        ROW_CLOCK => Trail::Open(v.clock),
+        ROW_USB_MODE => Trail::Open(if v.usb_dac { "DAC" } else { "MASS STORAGE" }),
+        // The value doubles as the confirmation prompt (see nav: first tap arms, second goes).
+        ROW_BOOT_STOCK => Trail::Open(v.boot_stock),
+        ROW_RESTART | ROW_POWER_OFF => Trail::Open(""),
+        // Names the SCOPE, since "reset" on a music player could just as easily mean the library.
+        ROW_RESET => Trail::Open("PREFERENCES"),
+        ROW_FIRMWARE => Trail::Value(FIRMWARE_LABEL),
+        _ => Trail::Value("SONY NW-A55"),
     }
-    (0..Accent::COUNT).find(|i| {
-        let sx = swatch_x(*i);
-        // Half the gap on each side counts as the swatch, so there is no dead strip between them.
-        x >= sx - SW_GAP / 2 && x < sx + SW + SW_GAP / 2
-    })
 }
 
-fn eyebrow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, label: &str) -> i32 {
-    text::draw(c, f, 22.0, (y + 14) as f32, label, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
-    y + 24
-}
-
-// ── UI scale slider ─────────────────────────────────────────────────────────────────────────
-// A real slider (track + detents + knob), not a value that cycles on tap: tapping anywhere on the
-// track jumps to that stop, and dragging scrubs live (nav routes the gesture through
-// `App::scrub_*`). Left/Right on the buttons step one stop.
-// The track stops short of the right edge to reserve a gutter for the "NNN%" readout.
-const SLIDER_X0: i32 = 176;
-const SLIDER_W: i32 = 196;
-
-/// Map a tap/drag x on the UI-scale row to a `text::SCALE_STEPS` index. x is clamped, so grabbing
-/// past either end pins to the min/max stop rather than doing nothing.
-pub fn ui_scale_idx_at(x: i32) -> usize {
-    let n = text::SCALE_STEPS.len() as i32;
-    let dx = (x - SLIDER_X0).clamp(0, SLIDER_W);
-    // Round to the nearest stop so the knob lands under the finger.
-    ((dx * (n - 1) * 2 + SLIDER_W) / (SLIDER_W * 2)).clamp(0, n - 1) as usize
-}
-
-/// The UI-scale row. Returns the next y, like `srow`.
-fn slider_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str) -> i32 {
-    let cy = y + RH / 2;
-    if sel {
-        fill_rect(c, 0, y, crate::canvas::W as i32, RH, t.row_sel);
+fn title(r: usize) -> &'static str {
+    match r {
+        ROW_DISPLAY => "Display",
+        ROW_BRIGHTNESS => "Brightness",
+        ROW_SCREEN_OFF => "Screen-off timer",
+        ROW_VOLUME_LIMIT => "Volume limit",
+        ROW_SLEEP => "Sleep timer",
+        ROW_IGNORE_THE => "Ignore \"The\" in artists",
+        ROW_DATABASE => "Database",
+        ROW_AUTO_OFF => "Auto power off",
+        ROW_STORAGE => "Storage",
+        ROW_BATTERY => "Device",
+        ROW_CLOCK => "Date & time",
+        ROW_USB_MODE => "USB mode",
+        ROW_BOOT_STOCK => "Boot to stock",
+        ROW_RESTART => "Restart",
+        ROW_POWER_OFF => "Power off",
+        ROW_RESET => "Reset settings",
+        ROW_FIRMWARE => "Firmware",
+        _ => "Model",
     }
-    let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
-
-    let n = text::SCALE_STEPS.len() as i32;
-    let idx = text::scale_idx() as i32;
-    fill_rect(c, SLIDER_X0, cy - 1, SLIDER_W, 2, t.line);
-    for i in 0..n {
-        let x = SLIDER_X0 + i * SLIDER_W / (n - 1);
-        fill_rect(c, x - 1, cy - 4, 2, 8, if i <= idx { t.acc } else { t.line });
-    }
-    let kx = SLIDER_X0 + idx * SLIDER_W / (n - 1);
-    fill_rect(c, SLIDER_X0, cy - 1, kx - SLIDER_X0, 2, t.acc);
-    fill_rect(c, kx - 7, cy - 9, 14, 18, t.acc);
-    // The readout is drawn at a CONSTANT pixel size: it is the control that SETS the scale, so
-    // letting it grow with the scale both crowds the knob at 140% and makes this one row the
-    // widest thing on the screen. Compensating here keeps the slider's geometry identical at
-    // every stop — and `ui_scale_idx_at` is scale-independent to match.
-    let unscaled = 14.0 * 100.0 / text::scale_pct() as f32;
-    right(c, f, 458.0, (cy + 4) as f32, &format!("{}%", text::scale_pct()),
-          &sty(Family::Mono, Weight::Regular, unscaled, t.faint, 0.04));
-    hline(c, y + RH, t.line);
-    y + RH
-}
-
-/// A label/value row; highlights when selected. Returns the next y.
-fn srow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, value: &str, chevron: bool) -> i32 {
-    let cy = y + RH / 2;
-    if sel {
-        fill_rect(c, 0, y, crate::canvas::W as i32, RH, t.row_sel);
-    }
-    let lc = if sel { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, label, &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
-    let vx = if chevron { 438.0 } else { 458.0 };
-    right(c, f, vx, (cy + 4) as f32, value, &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04));
-    if chevron {
-        icons::chevron(c, 456.0, cy as f32, 14.0, t.faint);
-    }
-    hline(c, y + RH, t.line);
-    y + RH
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v: &SettingsView) {
@@ -308,142 +236,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     // above, so whatever is drawn after simply wins. The library lists have always clipped; this
     // screen gained pixel scrolling later and did not, which is why it was the one that showed it.
     // (The status bar is safe either way: the navigator draws it AFTER every screen.)
-    let y0 = y0 - scroll;
+    let mut y = y0 - scroll;
     c.set_clip_y(crate::chrome::HEADER_BOTTOM, crate::canvas::H as i32);
-
-    let mut y = eyebrow(c, t, f, y0, "DISPLAY");
-
-    // Row 0: Theme — Day/Night segmented control (highlighted when selected)
-    if sel == ROW_THEME {
-        fill_rect(c, 0, y, crate::canvas::W as i32, RH, t.row_sel);
-    }
-    hline(c, y, t.line);
-    let cy = y + RH / 2;
-    let lc = if sel == ROW_THEME { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, "Theme", &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
-    let segs = [("DAY", !v.night), ("NIGHT", v.night)];
-    let sh = 26;
-    let mut widths = [0i32; 2];
-    for (i, (label, _)) in segs.iter().enumerate() {
-        let st = sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1);
-        widths[i] = text::measure(f, label, &st) as i32 + 26;
-    }
-    let total = widths[0] + widths[1] + 8;
-    let mut sx = 458 - total;
-    for (i, (label, on)) in segs.iter().enumerate() {
-        let st = sty(Family::Mono, Weight::Regular, 12.0, if *on { t.acc_ink } else { t.dim }, 0.1);
-        if *on {
-            fill_rect(c, sx, cy - sh / 2, widths[i], sh, t.acc);
-        }
-        stroke_rect(c, sx, cy - sh / 2, widths[i], sh, if *on { t.acc } else { t.line }, 1);
-        text::draw(c, f, (sx + 13) as f32, (cy + 4) as f32, label, &st);
-        sx += widths[i] + 8;
-    }
-    hline(c, y + RH, t.line);
-    y += RH;
-
-    // Palette: a value that cycles, like the sleep timer. The list is short, and every step repaints
-    // the whole screen in the new colours — which is the preview.
-    y = srow(c, t, f, y, sel == ROW_PALETTE, "Palette", &v.palette.to_uppercase(), false);
-
-    // Accent — all six swatches at once, the selected one ringed. Showing every choice is
-    // the point: a "next colour" row makes you cycle blind through five wrong answers to see the
-    // sixth, and on a touch device there is room to just offer them. Tapping a swatch selects it.
-    if sel == ROW_ACCENT {
-        fill_rect(c, 0, y, crate::canvas::W as i32, RH, t.row_sel);
-    }
-    let cy = y + RH / 2;
-    let lc = if sel == ROW_ACCENT { t.acc } else { t.ink };
-    text::draw(c, f, 22.0, (cy + 5) as f32, "Accent", &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, lc, 0.0));
-    if v.accent_locked {
-        // The palette brings its own accent, so six swatches would be a picker that picks nothing.
-        // Say whose choice it is; a tap on the row says the same (see nav's settings_activate).
-        right(c, f, 458.0, (cy + 4) as f32, "SET BY PALETTE",
-              &sty(Family::Mono, Weight::Regular, 14.0, t.faint, 0.04));
-    } else {
-        for (i, a) in Accent::ALL.iter().enumerate() {
-            let sx = swatch_x(i);
-            let sy = cy - SW / 2;
-            // Through the theme's dim: a swatch is a raw palette entry, not a theme colour, so at
-            // night it would otherwise be the brightest thing on a deliberately dark screen.
-            fill_rect(c, sx, sy, SW, SW, t.scale_color(a.swatch(t.night)));
-            if *a == v.accent {
-                // The ring is drawn in ink, not in the accent: on BONE the swatch already *is*
-                // near-ink, so an accent-coloured ring would vanish on exactly one of the six.
-                stroke_rect(c, sx - 3, sy - 3, SW + 6, SW + 6, t.ink, 2);
-            }
+    let mut r = 0usize;
+    for (label, n) in SECTIONS {
+        y = kit::section_label(c, t, f, y, label, None);
+        for _ in 0..n {
+            let sub = if r == ROW_DISPLAY { DISPLAY_SUB } else { "" };
+            y = kit::row(c, t, f, y, RH, &Row::new(title(r)).sub(sub).trail(trail(r, v)).sel(sel == r));
+            r += 1;
         }
     }
-    hline(c, y + RH, t.line);
-    y += RH;
-
-    // Row 2: UI text scale. One global multiplier on every TextStyle size, applied by BOTH
-    // text::measure and text::draw — which is what keeps truncation, centring and right-alignment
-    // exact at any stop. Row heights and tap targets are deliberately NOT scaled, so no hit test
-    // can drift out of step with the render.
-    y = slider_row(c, t, f, y, sel == ROW_UI_SCALE, "UI scale");
-
-    // Row 3: the visualiser, as one chevron. The value carries the two facts the old pair of rows
-    // showed — which style, and how much of the cover it takes — so the row still answers the
-    // question without being opened.
-    y = srow(c, t, f, y, sel == ROW_VIZ, "Visualiser", v.viz_name, true);
-    // Row 4: the volume limit. A value row rather than a switch widget, because the interesting
-    // half is WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number
-    // the user did not choose, and the number is Sony's per-output AVLS threshold, read live.
-    y = srow(c, t, f, y, sel == ROW_VOLUME_LIMIT, "Volume limit",
-             if v.volume_limit { "SAFE LEVEL" } else { "OFF" }, false);
-    // Row 3: Sleep timer (live) — pauses playback after N min. Shows the live remaining when running.
-    y = srow(c, t, f, y, sel == ROW_SLEEP, "Sleep timer", v.sleep, false);
-    // Row 4: idle screen-off (live). Defaults to OFF, so the panel never blanks on its own unless
-    // the user picks a duration.
-    y = srow(c, t, f, y, sel == ROW_SCREEN_OFF, "Screen-off timer", v.screen_off, false);
-    // Row 5: brightness is live — tapping cycles 1..5 and the shell writes the backlight node.
-    y = srow(c, t, f, y, sel == ROW_BRIGHTNESS, "Brightness", v.brightness, false);
-    // How artist names sort. A value row like Volume limit: tapping flips it, and the Library
-    // re-sorts at once (nav's set_ignore_the).
-    y = srow(c, t, f, y, sel == ROW_IGNORE_THE, "Ignore \"The\" in artists",
-             if v.ignore_the { "ON" } else { "OFF" }, false);
-
-    y = eyebrow(c, t, f, y + 14, "SYSTEM");
-    // Auto power-off. Distinct from the Screen-off timer above it: that one blanks the panel and
-    // keeps playing, this one shuts the device down — and only when nothing is playing, so it can
-    // never cut a track off.
-    y = srow(c, t, f, y, sel == ROW_AUTO_OFF, "Auto power off", v.auto_off, false);
-    // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
-    y = srow(c, t, f, y, sel == ROW_STORAGE, "Storage", v.storage, false);
-    // Database: CHEVRON, because tapping now does something. The row used to be drawn without one
-    // and with a "—" value, deliberately: it had no arm in settings_activate, and a chevron would
-    // have promised a rebuild that never ran. It runs now — it asks Sony's MediaStore to rescan the
-    // music tree, which is the thing Cinder could never do and the reason new music stayed
-    // invisible and deleted music stayed listed. The value carries the library size, so the row
-    // also answers "did it work" without leaving the screen.
-    y = srow(c, t, f, y, sel == ROW_DATABASE, "Database", v.database, true);
-    // Device: chevron into the hardware's vital signs — battery, die temperatures, CPU clock,
-    // memory, storage, uptime. It used to be a toggle in place for Sony's "Itawari" charging and
-    // nothing else, which made the status-bar level the only hardware fact Cinder ever showed. The
-    // value carries the two numbers people open it for, so the row usually answers the question
-    // without being opened at all.
-    y = srow(c, t, f, y, sel == ROW_BATTERY, "Device", v.device, true);
-    // Chevron: it drills into the clock editor. The value is the live clock, so the row doubles as
-    // the place you notice the time is wrong.
-    y = srow(c, t, f, y, sel == ROW_CLOCK, "Date & time", v.clock, true);
-    y = srow(c, t, f, y, sel == ROW_USB_MODE, "USB mode", if v.usb_dac { "DAC" } else { "MASS STORAGE" }, true);
-    // Boot to stock: the only way back to Sony's player that needs no USB cable. Chevron, because
-    // it acts. The value doubles as the confirmation prompt (see nav: first tap arms, second goes).
-    y = srow(c, t, f, y, sel == ROW_BOOT_STOCK, "Boot to stock", v.boot_stock, true);
-
-    y = srow(c, t, f, y, sel == ROW_RESTART, "Restart", "", true);
-    y = srow(c, t, f, y, sel == ROW_POWER_OFF, "Power off", "", true);
-    // Chevron, because it acts — behind the confirmation modal. The value names the SCOPE, since
-    // "reset" on a music player could just as easily mean the library or the whole device.
-    y = srow(c, t, f, y, sel == ROW_RESET, "Reset settings", "PREFERENCES", true);
-
-    y = eyebrow(c, t, f, y + 14, "ABOUT");
-    // Named, not literal. These were `sel == 14` and `sel == 15` while ROW_POWER_OFF was 14 — so
-    // selecting Power off ALSO highlighted Firmware, and Model could never be highlighted at all.
-    // Two hardcoded indices that stopped matching the section table the moment a row was added.
-    y = srow(c, t, f, y, sel == ROW_FIRMWARE, "Firmware", FIRMWARE_LABEL, false);
-    let _ = srow(c, t, f, y, sel == ROW_MODEL, "Model", "SONY NW-A55", false);
     c.clear_clip();
 }
 
@@ -452,11 +255,9 @@ mod tests {
     use super::*;
     use crate::text::FontSet;
 
-    fn view<'a>(accent: Accent) -> SettingsView<'a> {
+    fn view<'a>() -> SettingsView<'a> {
         SettingsView {
             volume_limit: false,
-            night: false,
-            viz_name: "BARS · VEIL",
             usb_dac: false,
             battery_care: true,
             device: "78% · 34.4 °C",
@@ -466,9 +267,6 @@ mod tests {
             screen_off: "OFF",
             auto_off: "OFF",
             boot_stock: "SONY", clock: "17 Aug · 09:01",
-            accent,
-            palette: "Cinder",
-            accent_locked: false,
             ignore_the: false,
         }
     }
@@ -487,11 +285,11 @@ mod tests {
         let t = Theme::day();
         let f = FontSet::load();
         let mut base = Canvas::new();
-        render(&mut base, &t, &f, 0, 0, &view(Accent::Amber));
+        render(&mut base, &t, &f, 0, 0, &view());
 
         for scroll in [1, 17, 60, max_scroll_px() / 2, max_scroll_px()] {
             let mut c = Canvas::new();
-            render(&mut c, &t, &f, 0, scroll, &view(Accent::Amber));
+            render(&mut c, &t, &f, 0, scroll, &view());
             for y in 0..crate::chrome::HEADER_BOTTOM {
                 for x in 0..crate::canvas::W {
                     let i = y as usize * crate::canvas::W + x;
@@ -512,7 +310,7 @@ mod tests {
         let t = Theme::day();
         let f = FontSet::load();
         let mut c = Canvas::new();
-        render(&mut c, &t, &f, 0, max_scroll_px(), &view(Accent::Amber));
+        render(&mut c, &t, &f, 0, max_scroll_px(), &view());
         // A full-screen fill must reach row 0 again; if the clip leaked, the top band stays put.
         c.fill(t.acc);
         assert_eq!(c.buf[0], crate::canvas::to_u32(t.acc), "clip band leaked out of settings::render");
@@ -525,9 +323,9 @@ mod tests {
         let t = Theme::day();
         let f = FontSet::load();
         let mut a = Canvas::new();
-        render(&mut a, &t, &f, 0, 0, &view(Accent::Amber));
+        render(&mut a, &t, &f, 0, 0, &view());
         let mut b = Canvas::new();
-        render(&mut b, &t, &f, 0, max_scroll_px(), &view(Accent::Amber));
+        render(&mut b, &t, &f, 0, max_scroll_px(), &view());
         let band = (crate::chrome::HEADER_BOTTOM as usize)..(crate::canvas::H);
         let differing = band
             .flat_map(|y| (0..crate::canvas::W).map(move |x| y * crate::canvas::W + x))
@@ -546,7 +344,7 @@ mod volume_limit_tests {
     /// drops off the bottom of the screen or hands out a row index nothing renders.
     #[test]
     fn the_section_table_accounts_for_every_row() {
-        assert_eq!(SECTIONS.iter().sum::<usize>(), ROWS,
+        assert_eq!(SECTIONS.iter().map(|(_, n)| n).sum::<usize>(), ROWS,
                    "SECTIONS {SECTIONS:?} does not add up to ROWS {ROWS}");
     }
 
@@ -562,12 +360,12 @@ mod volume_limit_tests {
         }
     }
 
-    /// The volume limit sits in the first section, and its label says whose limit it is. "SAFE
-    /// LEVEL" rather than a number, because the cap is Sony's AVLS threshold for whatever output
-    /// is live — a number rendered here would be stale the moment the output changed.
+    /// Display is the first row — it is the door to the page the old first five rows moved to —
+    /// and the volume limit opens the PLAYBACK section.
     #[test]
-    fn the_volume_limit_row_is_in_the_first_section() {
-        assert!(ROW_VOLUME_LIMIT < SECTIONS[0], "the limit belongs with the player's own settings");
-        assert_eq!(ROW_VOLUME_LIMIT, ROW_VIZ + 1);
+    fn display_leads_and_the_volume_limit_opens_playback() {
+        assert_eq!(ROW_DISPLAY, 0);
+        assert_eq!(SECTIONS[1].0, "PLAYBACK");
+        assert_eq!(ROW_VOLUME_LIMIT, SECTIONS[0].1, "the first row of the second section");
     }
 }

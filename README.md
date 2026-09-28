@@ -161,6 +161,10 @@ art is generated.
 |---|---|---|---|
 | <img src="docs/screenshots/bluetooth.png" width="190" alt="Bluetooth and LDAC"> | <img src="docs/screenshots/usb-dac.png" width="190" alt="USB-DAC"> | <img src="docs/screenshots/fm-radio.png" width="190" alt="FM radio"> | <img src="docs/screenshots/now-playing-night.png" width="190" alt="Night theme"> |
 
+| Menu | Settings | Display |
+|---|---|---|
+| <img src="docs/screenshots/menu.png" width="190" alt="Menu, with the Start on picker"> | <img src="docs/screenshots/settings.png" width="190" alt="Settings"> | <img src="docs/screenshots/display.png" width="190" alt="Display settings"> |
+
 ## License
 
 Cinder's own code is MIT ([`LICENSE`](LICENSE)). The bundled fonts are SIL OFL 1.1 (see the

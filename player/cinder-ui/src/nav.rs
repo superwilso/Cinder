@@ -68,6 +68,10 @@ pub enum Screen {
     /// paired-device list can be its body.
     BtCodec,
     Settings,
+    /// Settings ▸ Display — palette, accent, night, the volume readout, text size and the
+    /// visualiser (design handoff 5k). The top five Settings rows moved here so the weekly
+    /// preferences stop sharing a column with Restart and Reset. See `display.rs`.
+    Display,
     /// Settings ▸ Device — the hardware's vital signs: battery (level, voltage, health, charger
     /// state) plus die temperatures, CPU clock and governor, memory, storage and uptime. Its own
     /// screen because the Settings row could show exactly one fact, and because everything here is
@@ -417,31 +421,43 @@ pub enum Action {
 // on a device with 304 albums, "88.6 MHz" for a tuner that isn't wired, "Custom A1" regardless of
 // the selected EQ preset, and "WH-1000XM5 · LDAC" naming a pair of headphones that were never
 // connected. A subtitle that states something false is worse than no subtitle.
-const MENU: [(Screen, &str, &str, &str); 12] = [
-    (Screen::NowPlaying, "note", "Now Playing", ""),   // live: current track · elapsed
-    (Screen::Library, "library", "Library", ""),      // live: album/track counts
+/// The Menu's destinations, in order: `(screen, title, static second line)`. An EMPTY second line
+/// means `App::menu_subtitles` fills it from live state (see the test that holds that contract).
+///
+/// The 2026-09 redesign (handoff 5a) took two rows out. Now Playing became the strip under the
+/// header — "what is playing" is state, not a place — and Up Next went with it, since the queue is
+/// one tap from Now Playing's toolbar. Equalizer, Folders and USB-DAC stay, although the mock drew
+/// them elsewhere: until Sound grows its Equalizer row (handoff 2a) and Library its Folders page,
+/// taking them off the Menu would leave them with no way in.
+const MENU: [(Screen, &str, &str); 10] = [
+    (Screen::Library, "Library", ""),                 // live: album/track counts
     // Folder browse — the file tree as it is on the volume. Not a fifth Library tab: the strip is
     // four flat peers and this is a stack you descend, where Back has to mean "up one level".
-    (Screen::Folders, "library", "Folders", ""),      // live: folder/track counts
+    (Screen::Folders, "Folders", ""),                 // live: folder count
     // SensMe channels. Only drawn when the component is installed (see `App::menu_visible`), which
     // is why this row is in the table rather than appended somewhere by hand: the table stays the
     // one place a Menu destination is declared.
-    (Screen::SensMe, "note", "SensMe", ""),           // live: channels/analysed counts
-    (Screen::UpNext, "queue", "Up Next", ""),         // live: queue length
-    // The tuner IS wired now (2026-08-18). The subtitle names the one thing that stops it
-    // working, because an empty jack and a broken radio sound identical.
-    (Screen::Fm, "radio", "FM Radio", "Needs wired headphones as the aerial"),
-    (Screen::Eq, "eq", "Equalizer", ""),              // live: selected preset
-    (Screen::Sound, "sound", "Sound Settings", ""),   // live: which effects are on
-    (Screen::Bluetooth, "bt", "Bluetooth", ""),       // live: configured transmit codec
-    (Screen::UsbDac, "usb", "USB-DAC", ""),           // live: On/Off
-    // NOT "BT Receiver". Its screen says "not available yet — nothing on this screen is switched
-    // on", and a top-level row to a feature that does nothing was also the thirteenth row that
-    // pushed Help & Controls off the bottom of the glass. It stays reachable where it belongs,
-    // from Bluetooth ▸ Receiver mode, until it works.
-    (Screen::Settings, "settings", "Settings", "System · Storage · About"),
-    (Screen::Onboarding, "note", "Help & Controls", "Button map · features"),
+    (Screen::SensMe, "SensMe", ""),                   // live: channels/analysed counts
+    // The subtitle names the one thing that stops it working, because an empty jack and a broken
+    // radio sound identical.
+    (Screen::Fm, "FM radio", "Needs wired headphones as the aerial"),
+    (Screen::Eq, "Equalizer", ""),                    // live: selected preset
+    (Screen::Sound, "Sound", ""),                     // live: which effects are on
+    (Screen::Bluetooth, "Bluetooth", ""),             // live: configured transmit codec
+    (Screen::UsbDac, "USB-DAC", ""),                  // live: On/Off
+    // NOT "BT Receiver": it stays reachable where it belongs, from Bluetooth ▸ Receiver mode,
+    // until it works.
+    (Screen::Settings, "Settings", "Display · playback · system"),
+    (Screen::Onboarding, "Help & controls", "Buttons, swipes, the way back"),
 ];
+
+/// `App::home_screen` values, in `menu::HOMES` order.
+pub const HOME_LIBRARY: u8 = 0;
+pub const HOME_NOW_PLAYING: u8 = 1;
+pub const HOME_MENU: u8 = 2;
+pub const HOME_LAST: u8 = 3;
+/// Their settings-file words, in the same order.
+const HOME_WORDS: [&str; 4] = ["library", "now_playing", "menu", "last"];
 
 /// Nominal frame period at 60 fps, in ms. The HUD/fling constants are expressed in these frames;
 /// `tick_dt` converts real elapsed time into them so the durations hold at any actual frame rate.
@@ -474,11 +490,9 @@ pub fn screen_off_label(secs: u32) -> String {
 /// The Menu's live row subtitles (see `App::menu_subtitles`). One field per Menu row whose caption
 /// describes current state rather than being fixed text.
 pub(crate) struct MenuSubtitles {
-    pub now_playing: String,
     pub library: String,
     pub folders: String,
     pub sensme: String,
-    pub queue: String,
     pub eq: String,
     pub sound: String,
     pub bluetooth: String,
@@ -538,6 +552,71 @@ fn pinnable(s: Screen) -> bool {
             | Screen::UsbDac
             | Screen::Receiver
     )
+}
+
+/// Serialise a place as a `|`-separated record — a Shelf pin, or the "Last screen" home. `|` and
+/// newlines are stripped from the labels so a track title can't corrupt the config.
+fn encode_pin(p: &ShelfPin) -> String {
+    let clean = |s: &str| s.replace(['|', '\n'], " ");
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        screen_token(p.screen),
+        tab_token(p.lib_tab),
+        p.lib_sort,
+        p.album_sort,
+        p.album_expanded.map(|e| e as i64).unwrap_or(-1),
+        p.lib_scroll_px,
+        p.album_view,
+        p.album_scroll_px,
+        p.artist_view,
+        p.playlist_view,
+        clean(&p.title),
+        clean(&p.sub),
+        p.album_id,
+        p.expanded_album_id,
+        clean(&p.artist_name),
+        p.playlist_id,
+    )
+}
+
+/// Read an `encode_pin` record. A malformed or short record is no place at all — a hand-edited
+/// config must never keep the player from booting.
+fn decode_pin(s: &str) -> Option<ShelfPin> {
+    let f: Vec<&str> = s.split('|').collect();
+    if f.len() < 12 {
+        return None;
+    }
+    // The SAME whitelist the pin gesture enforces. `shelf_tap` refuses to pin a screen that is
+    // not a "place", but this path did not re-check it, and the two are not equivalent:
+    // `screen_token`/`screen_from_token` cover screens `pinnable` excludes (Tone, BtCodec), the
+    // token table is an ON-DISK FORMAT that outlives any one build, and the settings file is
+    // plain text a user can edit. A record naming one of those would restore into a mode nobody
+    // asked for — exactly what `pinnable` exists to prevent. Enforced at both ends now, so the
+    // rule cannot be true on one side and not the other.
+    let screen = screen_from_token(f[0]).filter(|s| pinnable(*s))?;
+    let num = |s: &str| s.trim().parse::<i64>().unwrap_or(0);
+    let exp = num(f[4]);
+    Some(ShelfPin {
+        screen,
+        lib_tab: tab_from_token(f[1]),
+        lib_sort: (num(f[2]).max(0) as usize).min(library::SORTS.len() - 1),
+        album_sort: (num(f[3]).max(0) as usize).min(library::ALBUM_SORTS.len() - 1),
+        album_expanded: if exp < 0 { None } else { Some(exp as usize) },
+        lib_scroll_px: num(f[5]).max(0) as i32,
+        album_view: num(f[6]).max(0) as usize,
+        album_scroll_px: num(f[7]).max(0) as i32,
+        artist_view: num(f[8]).max(0) as usize,
+        playlist_view: num(f[9]).max(0) as usize,
+        title: f[10].to_string(),
+        sub: f[11].to_string(),
+        // Records written before identities existed stop at field 11. They decode to -1/""
+        // and fall back to their indices — the old behaviour, for the one boot it takes to
+        // re-save them.
+        album_id: f.get(12).map(|v| num(v)).unwrap_or(-1),
+        expanded_album_id: f.get(13).map(|v| num(v)).unwrap_or(-1),
+        artist_name: f.get(14).map(|v| v.to_string()).unwrap_or_default(),
+        playlist_id: f.get(15).map(|v| num(v)).unwrap_or(-1),
+    })
 }
 
 /// A short stable token for a Screen, for persisting Shelf pins across boots. Tokens are part of
@@ -904,6 +983,20 @@ pub struct App {
     np_page: u8,
     /// Settings screen cursor.
     settings_sel: usize,
+    /// Settings ▸ Display cursor.
+    display_sel: usize,
+    /// What the player opens on: an index into `menu::HOMES` (Library, Now Playing, Menu, Last
+    /// screen). Chosen on the Menu (handoff 5a). Persisted as `home_screen=<word>`.
+    home_screen: u8,
+    /// For "Last screen": the place to reopen, read from the settings file. Applied once by
+    /// `apply_home`, or when the first library arrives if that is later (the place may name an
+    /// album, which only resolves against a loaded library).
+    home_last: Option<ShelfPin>,
+    /// `apply_home` asked for `home_last` before a library was there to resolve it against.
+    home_pending: bool,
+    /// The volume readout: 0 = Full (the pill), 1 = Minimal (a 3 px bar under the status bar).
+    /// Index into `display::VOLUME_HUDS`. Persisted as `volume_hud=full|minimal`.
+    volume_hud: u8,
     /// Battery care (Sony "Itawari" charging, ~90% cap). Mirrors the device state; the shell reads
     /// the real value at boot via cinder_set_battery_care and applies toggles via the action.
     battery_care: bool,
@@ -1328,6 +1421,11 @@ impl Default for App {
             viz_sel: 0,
             np_page: 0,
             settings_sel: 0,
+            display_sel: 0,
+            home_screen: HOME_LIBRARY,
+            home_last: None,
+            home_pending: false,
+            volume_hud: 0,
             battery_care: false,
             batt_pct: 0,
             // Empty, not "Unknown": the screen prints these verbatim, and an invented word would
@@ -2054,26 +2152,7 @@ impl App {
     /// newlines are stripped from the labels so a track title can't corrupt the config.
     pub fn shelf_pin_encode(&self, i: usize) -> String {
         let Some(p) = self.pins.get(i).and_then(|p| p.as_ref()) else { return String::new() };
-        let clean = |s: &str| s.replace(['|', '\n'], " ");
-        format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-            screen_token(p.screen),
-            tab_token(p.lib_tab),
-            p.lib_sort,
-            p.album_sort,
-            p.album_expanded.map(|e| e as i64).unwrap_or(-1),
-            p.lib_scroll_px,
-            p.album_view,
-            p.album_scroll_px,
-            p.artist_view,
-            p.playlist_view,
-            clean(&p.title),
-            clean(&p.sub),
-            p.album_id,
-            p.expanded_album_id,
-            clean(&p.artist_name),
-            p.playlist_id,
-        )
+        encode_pin(p)
     }
 
     /// Restore slot `i` from `shelf_pin_encode` output. A malformed or short record CLEARS the
@@ -2082,45 +2161,67 @@ impl App {
         if i >= self.pins.len() {
             return;
         }
-        let f: Vec<&str> = s.split('|').collect();
-        if f.len() < 12 {
-            self.pins[i] = None;
+        self.pins[i] = decode_pin(s);
+    }
+
+    // ── Home screen ─────────────────────────────────────────────────────────────────────────
+    // What the player opens on (handoff 5a: "Start on", chosen on the Menu). Library is the
+    // default — the handoff's answer to "what should the device show when it wakes". The shell
+    // calls `apply_home` once, after the settings file is read.
+
+    /// The home screen as its settings-file word.
+    pub fn home_screen(&self) -> &'static str {
+        HOME_WORDS[(self.home_screen as usize).min(HOME_WORDS.len() - 1)]
+    }
+    /// Set the home screen from its settings-file word. Anything unknown is the default, Library.
+    pub fn set_home_screen(&mut self, v: &str) {
+        self.home_screen = HOME_WORDS.iter().position(|w| *w == v.trim()).unwrap_or(0) as u8;
+    }
+
+    /// For "Last screen": the place to reopen, encoded like a Shelf pin. The topmost PLACE on the
+    /// route (the same whitelist the Shelf uses), so opening Settings ▸ Display or a modal never
+    /// replaces it. Scroll offsets are left out on purpose: this string is part of the settings
+    /// file, and one that changed on every scrolled pixel would rewrite the file all the time.
+    /// Empty unless Last screen is the home, so nobody else pays for the extra line.
+    pub fn home_last_encode(&self) -> String {
+        if self.home_screen != HOME_LAST {
+            return String::new();
+        }
+        let Some(&screen) = self.stack.iter().rev().find(|s| pinnable(**s)) else {
+            return String::new();
+        };
+        let mut p = self.capture_pin();
+        p.screen = screen;
+        p.lib_scroll_px = 0;
+        p.album_scroll_px = 0;
+        encode_pin(&p)
+    }
+    /// Read the place `home_last_encode` wrote. A malformed record is simply no place.
+    pub fn set_home_last(&mut self, v: &str) {
+        self.home_last = decode_pin(v);
+    }
+
+    /// Open on the home screen. Called once by the shell after the settings file is read. Does
+    /// nothing unless the player is sitting on a fresh Now Playing — the intro, the lock screen or
+    /// anything the user already opened wins.
+    pub fn apply_home(&mut self) {
+        if self.stack != [Screen::NowPlaying] || self.locked {
             return;
         }
-        // The SAME whitelist the pin gesture enforces. `shelf_tap` refuses to pin a screen that is
-        // not a "place", but this path did not re-check it, and the two are not equivalent:
-        // `screen_token`/`screen_from_token` cover screens `pinnable` excludes (Tone, BtCodec), the
-        // token table is an ON-DISK FORMAT that outlives any one build, and the settings file is
-        // plain text a user can edit. A record naming one of those would restore into a mode nobody
-        // asked for — exactly what `pinnable` exists to prevent. Enforced at both ends now, so the
-        // rule cannot be true on one side and not the other.
-        let Some(screen) = screen_from_token(f[0]).filter(|s| pinnable(*s)) else {
-            self.pins[i] = None;
-            return;
-        };
-        let num = |s: &str| s.trim().parse::<i64>().unwrap_or(0);
-        let exp = num(f[4]);
-        self.pins[i] = Some(ShelfPin {
-            screen,
-            lib_tab: tab_from_token(f[1]),
-            lib_sort: (num(f[2]).max(0) as usize).min(library::SORTS.len() - 1),
-            album_sort: (num(f[3]).max(0) as usize).min(library::ALBUM_SORTS.len() - 1),
-            album_expanded: if exp < 0 { None } else { Some(exp as usize) },
-            lib_scroll_px: num(f[5]).max(0) as i32,
-            album_view: num(f[6]).max(0) as usize,
-            album_scroll_px: num(f[7]).max(0) as i32,
-            artist_view: num(f[8]).max(0) as usize,
-            playlist_view: num(f[9]).max(0) as usize,
-            title: f[10].to_string(),
-            sub: f[11].to_string(),
-            // Records written before identities existed stop at field 11. They decode to -1/""
-            // and fall back to their indices — the old behaviour, for the one boot it takes to
-            // re-save them.
-            album_id: f.get(12).map(|v| num(v)).unwrap_or(-1),
-            expanded_album_id: f.get(13).map(|v| num(v)).unwrap_or(-1),
-            artist_name: f.get(14).map(|v| v.to_string()).unwrap_or_default(),
-            playlist_id: f.get(15).map(|v| num(v)).unwrap_or(-1),
-        });
+        match self.home_screen {
+            HOME_NOW_PLAYING => {}
+            HOME_MENU => self.stack = vec![Screen::NowPlaying, Screen::Menu],
+            HOME_LAST if self.home_last.is_some() => {
+                if self.lib.is_empty() {
+                    // The place may name an album: wait for the library it is an index into.
+                    self.home_pending = true;
+                } else if let Some(p) = self.home_last.clone() {
+                    self.restore_pin(&p);
+                }
+            }
+            // Library, and Last screen with nothing saved yet.
+            _ => self.stack = vec![Screen::NowPlaying, Screen::Library],
+        }
     }
 
     // ── Playback persistence ────────────────────────────────────────────────────────────────
@@ -2442,9 +2543,9 @@ impl App {
                 self.queue_follow = true;
                 self.up_next_cur = None;   // forces the next render to treat this as a track change
             }
-            // Arriving at Settings re-reads the palette folder, so a palette copied over USB is
-            // there to pick without a reboot. The shell does the reading; this only asks.
-            if s == Screen::Settings {
+            // Arriving at Settings or Display re-reads the palette folder, so a palette copied over
+            // USB is there to pick without a reboot. The shell does the reading; this only asks.
+            if matches!(s, Screen::Settings | Screen::Display) {
                 self.palettes_stale = true;
             }
             self.stack.push(s);
@@ -2512,7 +2613,7 @@ impl App {
     /// screen explaining a feature you chose not to install is clutter, not discovery. Everything
     /// that indexes the Menu — the cursor, the tap, the render — goes through this, so a hidden row
     /// cannot leave the cursor pointing one place and the picture another.
-    fn menu_visible(&self) -> Vec<&'static (Screen, &'static str, &'static str, &'static str)> {
+    fn menu_visible(&self) -> Vec<&'static (Screen, &'static str, &'static str)> {
         MENU.iter().filter(|m| m.0 != Screen::SensMe || self.sensme_enabled).collect()
     }
 
@@ -2634,8 +2735,6 @@ impl App {
     /// not otherwise be caught by a test. Every field below reports state this App actually holds.
     pub(crate) fn menu_subtitles(&self) -> MenuSubtitles {
         MenuSubtitles {
-            // Filled by render, which is the only place with the live NowPlaying view-model.
-            now_playing: String::new(),
             library: if self.lib.is_empty() {
                 String::from("Empty")
             } else {
@@ -2655,13 +2754,6 @@ impl App {
                 0 => String::from("Empty"),
                 1 => String::from("1 folder"),
                 n => format!("{n} folders"),
-            },
-            // The row opens UP NEXT, so it says what is still to come — the same count the
-            // screen's own header shows.
-            queue: match self.upcoming_len() {
-                0 => String::from("Queue empty"),
-                1 => String::from("1 track left"),
-                n => format!("{n} tracks left"),
             },
             // The preset, and whether it is being heard — the EQ screen's footer says the same.
             eq: match self.eq_off_reason() {
@@ -2702,6 +2794,49 @@ impl App {
         }
     }
 
+    /// Act on the focused Settings ▸ Display row (the Select button, or a tap that is not on a
+    /// swatch, a chip or the slider — those are handled in `tap` from the finger's x).
+    fn display_activate(&mut self) -> Vec<Action> {
+        match self.display_sel {
+            crate::display::ROW_PALETTE => {
+                // Render-only, like the accent: the shell's save path writes the choice, and the
+                // folder is re-read whenever this page opens (see `palettes_stale`).
+                self.cycle_palette();
+                vec![]
+            }
+            crate::display::ROW_ACCENT => {
+                if self.palette_pins_accent() {
+                    // Cycling here would change a colour nothing is drawn in. Say why instead.
+                    self.notify("This palette sets its own accent");
+                } else {
+                    self.accent = self.accent.next();
+                }
+                vec![]
+            }
+            crate::display::ROW_NIGHT => {
+                self.night = !self.night;
+                vec![Action::ThemeChanged(self.night)]
+            }
+            crate::display::ROW_VOLUME => {
+                self.volume_hud = (self.volume_hud + 1) % crate::display::VOLUME_HUDS.len() as u8;
+                self.show_volume_hud_sample();
+                vec![]
+            }
+            // Select steps the text size one stop (a tap uses the finger's x instead).
+            crate::display::ROW_SIZE => self.step_ui_scale(1),
+            _ => {
+                self.viz_sel = 0;
+                self.push(Screen::VizSet);
+                vec![]
+            }
+        }
+    }
+
+    /// Show the volume readout for a moment, so choosing Full or Minimal shows what was chosen.
+    fn show_volume_hud_sample(&mut self) {
+        self.vol_overlay = crate::overlay::VOL_FRAMES;
+    }
+
     fn settings_activate(&mut self) -> Vec<Action> {
         // Touching any other row cancels a pending boot-to-stock confirmation, so the armed state
         // can never linger and turn a later, unrelated tap on that row into a restart.
@@ -2709,28 +2844,8 @@ impl App {
             self.boot_stock_armed = false;
         }
         match self.settings_sel {
-            // Select steps the UI scale one stop (a tap on the row uses the x position instead —
-            // see `tap`, which treats this row as a slider track).
-            crate::settings::ROW_UI_SCALE => self.step_ui_scale(1),
-            crate::settings::ROW_THEME => {
-                self.night = !self.night;
-                vec![Action::ThemeChanged(self.night)]
-            }
-            crate::settings::ROW_PALETTE => {
-                // Render-only, like the accent: the shell's save path writes the choice, and the
-                // folder is re-read whenever Settings opens (see `palettes_stale`).
-                self.cycle_palette();
-                vec![]
-            }
-            crate::settings::ROW_ACCENT => {
-                if self.palette_pins_accent() {
-                    // Cycling here would change a colour nothing is drawn in. Say why instead.
-                    self.notify("This palette sets its own accent");
-                } else {
-                    // Select (the physical button) cycles; a tap on a specific swatch is handled in
-                    // `tap` and picks that colour outright. Render-only, so nothing for the shell.
-                    self.accent = self.accent.next();
-                }
+            crate::settings::ROW_DISPLAY => {
+                self.push(Screen::Display);
                 vec![]
             }
             crate::settings::ROW_CLOCK => {
@@ -2741,11 +2856,6 @@ impl App {
                 }
                 self.clock_sel = 0;
                 self.push(Screen::ClockSet);
-                vec![]
-            }
-            crate::settings::ROW_VIZ => {
-                self.viz_sel = 0;
-                self.push(Screen::VizSet);
                 vec![]
             }
             crate::settings::ROW_VOLUME_LIMIT => {
@@ -3138,6 +3248,21 @@ impl App {
 
         match self.current() {
             Screen::Menu => {
+                if crate::menu::strip_hit(y) {
+                    // The strip names what is playing; tapping it goes there. Popping (rather than
+                    // pushing) when Now Playing is underneath keeps Back from bouncing between the
+                    // two.
+                    if self.stack.len() >= 2 && self.stack[self.stack.len() - 2] == Screen::NowPlaying {
+                        self.pop();
+                    } else {
+                        self.go(Screen::NowPlaying);
+                    }
+                    return vec![];
+                }
+                if let Some(i) = crate::menu::home_chip_at(x, y) {
+                    self.home_screen = i as u8;
+                    return vec![];
+                }
                 if let Some(row) = crate::menu::row_at(y, self.menu_len()) {
                     self.menu_idx = row;
                     self.activate_menu(row);
@@ -3390,29 +3515,45 @@ impl App {
                 vec![]
             }
             Screen::Settings => {
+                if let Some(row) = crate::settings::row_at(y, self.settings_scroll_px) {
+                    self.settings_sel = row;
+                    return self.settings_activate();
+                }
+                vec![]
+            }
+            Screen::Display => {
                 // A swatch tap picks that accent directly. Checked first because it lives inside
-                // the Accent row's band, and falling through to `settings_activate` would advance
-                // the cycle by one instead of honouring the colour under the finger.
-                // Not while the palette has its own accent: the swatches are not drawn then, and the
-                // row's tap falls through to `settings_activate`, which explains.
+                // the Accent row's band, and falling through to `display_activate` would advance
+                // the cycle by one instead of honouring the colour under the finger. Not while the
+                // palette has its own accent: the swatches are not drawn then, and the row's tap
+                // falls through to `display_activate`, which explains.
                 let swatch = (!self.palette_pins_accent())
-                    .then(|| crate::settings::accent_hit(x, y, self.settings_scroll_px))
+                    .then(|| crate::display::accent_hit(x, y))
                     .flatten();
                 if let Some(i) = swatch {
-                    self.settings_sel = crate::settings::ROW_ACCENT;
-                    self.boot_stock_armed = false; // same disarm rule as any other row touch
+                    self.display_sel = crate::display::ROW_ACCENT;
                     self.accent = Accent::from_index(i);
                     return vec![];
                 }
-                if let Some(row) = crate::settings::row_at(y, self.settings_scroll_px) {
-                    self.settings_sel = row;
-                    // The UI-scale row is a SLIDER TRACK: the tap's x picks the stop directly
-                    // (the SeekBar idiom) rather than cycling one step per tap.
-                    if row == crate::settings::ROW_UI_SCALE {
-                        crate::text::set_scale_idx(crate::settings::ui_scale_idx_at(x));
+                if let Some(i) = crate::display::volume_chip_at(x, y) {
+                    self.display_sel = crate::display::ROW_VOLUME;
+                    self.volume_hud = i as u8;
+                    self.show_volume_hud_sample();
+                    return vec![];
+                }
+                if let Some(row) = crate::display::row_at(y) {
+                    self.display_sel = row;
+                    // The Size row is a SLIDER TRACK: the tap's x picks the stop directly (the
+                    // SeekBar idiom) rather than cycling one step per tap.
+                    if row == crate::display::ROW_SIZE {
+                        crate::text::set_scale_idx(crate::display::size_idx_at(x));
                         return vec![Action::UiScaleChanged];
                     }
-                    return self.settings_activate();
+                    // The chips ARE the Volume row; a tap on its margin chooses nothing.
+                    if row == crate::display::ROW_VOLUME {
+                        return vec![];
+                    }
+                    return self.display_activate();
                 }
                 vec![]
             }
@@ -4645,13 +4786,11 @@ impl App {
                     false
                 }
             }
-            Screen::Settings => {
-                if crate::settings::row_at(y, self.settings_scroll_px)
-                    == Some(crate::settings::ROW_UI_SCALE)
-                {
+            Screen::Display => {
+                if crate::display::row_at(y) == Some(crate::display::ROW_SIZE) {
                     self.scrub = Scrub::UiScale;
-                    self.settings_sel = crate::settings::ROW_UI_SCALE;
-                    crate::text::set_scale_idx(crate::settings::ui_scale_idx_at(x));
+                    self.display_sel = crate::display::ROW_SIZE;
+                    crate::text::set_scale_idx(crate::display::size_idx_at(x));
                     true
                 } else {
                     false
@@ -4727,7 +4866,7 @@ impl App {
                 vec![]
             }
             Scrub::UiScale => {
-                crate::text::set_scale_idx(crate::settings::ui_scale_idx_at(x));
+                crate::text::set_scale_idx(crate::display::size_idx_at(x));
                 vec![]
             }
             // Live, unlike the rail: you have to hear a balance change to aim it. Emits nothing
@@ -5867,6 +6006,13 @@ impl App {
         self.sensme_channel = None;
         self.sensme_scroll_px = 0;
         self.sensme_scroll_saved = 0;
+        // "Last screen" was waiting for this: the place it names may be an album or a playlist,
+        // and those only resolve against a library. Still only if nothing has moved since boot.
+        if std::mem::take(&mut self.home_pending) && self.stack == [Screen::NowPlaying] {
+            if let Some(p) = self.home_last.clone() {
+                self.restore_pin(&p);
+            }
+        }
     }
 
     /// Keep the library cursor's row fully inside the pixel-scrolled window (button nav).
@@ -6305,11 +6451,29 @@ impl App {
                     }
                     vec![]
                 }
-                // On the UI-scale slider, Left/Right step the value (Select still steps up).
-                Button::Left if self.settings_sel == crate::settings::ROW_UI_SCALE => self.step_ui_scale(-1),
-                Button::Right if self.settings_sel == crate::settings::ROW_UI_SCALE => self.step_ui_scale(1),
                 // Select (or Left/Right) acts on the focused row.
                 Button::Select | Button::Right | Button::Left => self.settings_activate(),
+                Button::Back => {
+                    self.pop();
+                    vec![]
+                }
+                _ => vec![],
+            },
+            Screen::Display => match b {
+                Button::Up => {
+                    self.display_sel = self.display_sel.saturating_sub(1);
+                    vec![]
+                }
+                Button::Down => {
+                    if self.display_sel + 1 < crate::display::ROWS {
+                        self.display_sel += 1;
+                    }
+                    vec![]
+                }
+                // On the Size slider, Left/Right step the value (Select still steps up).
+                Button::Left if self.display_sel == crate::display::ROW_SIZE => self.step_ui_scale(-1),
+                Button::Right if self.display_sel == crate::display::ROW_SIZE => self.step_ui_scale(1),
+                Button::Select | Button::Right | Button::Left => self.display_activate(),
                 Button::Back => {
                     self.pop();
                     vec![]
@@ -6529,44 +6693,45 @@ impl App {
                 crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min);
             }
             Screen::Menu => {
-                let mut subs = self.menu_subtitles();
-                // The Now Playing row carries the running track, so the Menu answers "what's on?"
-                // without a trip to the player — the row was previously blank.
-                subs.now_playing = if np.title.is_empty() {
-                    String::from("Nothing playing")
-                } else if np.elapsed.is_empty() {
-                    np.title.to_string()
+                let subs = self.menu_subtitles();
+                // The strip answers "what's on?" without a trip to the player.
+                let strip = if np.title.is_empty() {
+                    String::from("NOTHING PLAYING")
                 } else {
-                    format!("{} · {}", np.title, np.elapsed)
+                    let mut line = format!("NOW › {}", np.title);
+                    // No elapsed time: the strip is one fitted line, and the tail is what gets cut —
+                    // a clock that reads "1:…" says less than no clock.
+                    if !np.artist.is_empty() {
+                        line.push_str(" · ");
+                        line.push_str(np.artist);
+                    }
+                    line
                 };
-                let (np_value, lib_value, fold_value, sensme_value, queue_value, eq_value,
-                     sound_value, bt_value, usb_value) = (
-                    &subs.now_playing, &subs.library, &subs.folders, &subs.sensme, &subs.queue,
-                    &subs.eq, &subs.sound, &subs.bluetooth, &subs.usb_dac,
-                );
+                let home_row = match self.home_screen {
+                    HOME_LIBRARY => Some(Screen::Library),
+                    _ => None,
+                };
                 let items: Vec<MenuItem> = self
                     .menu_visible()
                     .into_iter()
                     .enumerate()
-                    .map(|(i, (screen, icon, label, value))| MenuItem {
-                        icon,
+                    .map(|(i, (screen, label, value))| MenuItem {
                         label,
-                        value: match *screen {
-                            Screen::NowPlaying => &np_value,
-                            Screen::Library => &lib_value,
-                            Screen::Folders => &fold_value,
-                            Screen::SensMe => &sensme_value,
-                            Screen::UpNext => &queue_value,
-                            Screen::Eq => &eq_value,
-                            Screen::Sound => &sound_value,
-                            Screen::Bluetooth => &bt_value,
-                            Screen::UsbDac => &usb_value,
+                        sub: match *screen {
+                            Screen::Library => &subs.library,
+                            Screen::Folders => &subs.folders,
+                            Screen::SensMe => &subs.sensme,
+                            Screen::Eq => &subs.eq,
+                            Screen::Sound => &subs.sound,
+                            Screen::Bluetooth => &subs.bluetooth,
+                            Screen::UsbDac => &subs.usb_dac,
                             _ => value,
                         },
+                        home: home_row == Some(*screen),
                         active: i == self.menu_idx,
                     })
                     .collect();
-                crate::menu::render(c, &theme, fonts, &items);
+                crate::menu::render(c, &theme, fonts, &strip, &items, self.home_screen as usize);
             }
             Screen::Library => {
                 // Record the tab strip exactly as drawn, so `tap` hits the labels the user sees.
@@ -6924,17 +7089,9 @@ impl App {
                 let boot_stock_lbl = if self.boot_stock_armed { "TAP AGAIN" } else { "SONY" };
                 let clock_lbl = self.clock_label(np.clock);
                 let db_label = self.database_label();
-                // "BARS · VEIL" — the two facts the row used to spend two lines on.
-                let viz_lbl = format!(
-                    "{} · {}",
-                    crate::viz::name_upper(self.viz_kind),
-                    crate::viz::size_name(self.viz_size)
-                );
                 let view = crate::settings::SettingsView {
                     volume_limit: self.volume_limit,
                     ignore_the: self.ignore_the,
-                    night: self.night,
-                    viz_name: &viz_lbl,
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
                     device: &self.device_summary(),
@@ -6946,11 +7103,25 @@ impl App {
                     auto_off: &auto_off_lbl,
                     boot_stock: boot_stock_lbl,
                     clock: &clock_lbl,
-                    accent: self.accent,
-                    palette: self.palette_name(),
-                    accent_locked: self.palette_pins_accent(),
                 };
                 crate::settings::render(c, &theme, fonts, self.settings_sel, self.settings_scroll_px, &view)
+            }
+            Screen::Display => {
+                // "BARS · VEIL" — style and cover size, the two facts the Visualiser page owns.
+                let viz_lbl = format!(
+                    "{} · {}",
+                    crate::viz::name_upper(self.viz_kind),
+                    crate::viz::size_name(self.viz_size)
+                );
+                let view = crate::display::DisplayView {
+                    palette: self.palette_name(),
+                    accent_locked: self.palette_pins_accent(),
+                    accent: self.accent,
+                    night: self.night,
+                    volume_hud: self.volume_hud,
+                    viz: &viz_lbl,
+                };
+                crate::display::render(c, &theme, fonts, self.display_sel, &view)
             }
             Screen::ClockSet => {
                 crate::clockset::render(c, &theme, fonts, &self.clock_fields, self.clock_sel)
@@ -7101,9 +7272,13 @@ impl App {
         // invisible in the one place it fires, and the volume HUD — which still responds to Vol±
         // while the sheet is open — came up half-covered.
         if self.vol_overlay > 0 && self.current() != Screen::Lock {
-            crate::overlay::volume_trimmed(c, &theme, fonts, self.display_volume(),
-                                           if self.bt_route { self.bt_trim } else { 0 },
-                                           self.bt_route);
+            if self.volume_hud == 1 {
+                crate::overlay::volume_minimal(c, &theme, self.display_volume());
+            } else {
+                crate::overlay::volume_trimmed(c, &theme, fonts, self.display_volume(),
+                                               if self.bt_route { self.bt_trim } else { 0 },
+                                               self.bt_route);
+            }
         }
         if self.toast_frames > 0 && self.current() != Screen::Lock {
             crate::overlay::toast(c, &theme, fonts, &self.toast);
@@ -7321,6 +7496,15 @@ impl App {
 
     pub fn volume_limit(&self) -> bool {
         self.volume_limit
+    }
+
+    /// The volume readout style, as its settings-file word: `full` or `minimal`.
+    pub fn volume_hud(&self) -> &'static str {
+        if self.volume_hud == 1 { "minimal" } else { "full" }
+    }
+    /// Set the volume readout from its settings-file word. Anything else is Full, the default.
+    pub fn set_volume_hud(&mut self, v: &str) {
+        self.volume_hud = u8::from(v.trim() == "minimal");
     }
     pub fn set_volume_limit(&mut self, on: bool) {
         self.volume_limit = on;
@@ -7827,6 +8011,7 @@ impl App {
             self.pop(); // opened from the Menu → back to Menu
         } else {
             self.go(Screen::NowPlaying); // first-run → start listening
+            self.apply_home(); // …on the home screen, which is Library unless chosen otherwise
         }
     }
 
@@ -8494,7 +8679,12 @@ fn tab_name(t: Tab) -> &'static str {
 }
 /// Display title for a Screen, taken from the Menu table (falls back to the app name).
 fn screen_title(s: Screen) -> &'static str {
-    MENU.iter().find(|m| m.0 == s).map(|m| m.2).unwrap_or("Cinder")
+    match s {
+        // The two places that are not Menu rows (see `MENU`), named as the Menu used to name them.
+        Screen::NowPlaying => "Now Playing",
+        Screen::UpNext => "Up Next",
+        s => MENU.iter().find(|m| m.0 == s).map(|m| m.1).unwrap_or("Cinder"),
+    }
 }
 
 #[cfg(test)]
@@ -8516,16 +8706,16 @@ mod tests {
         // Compared as sorted debug names — Screen deliberately isn't Ord.
         let mut dynamic: Vec<String> = MENU
             .iter()
-            .filter(|(_, _, _, value)| value.is_empty())
-            .map(|(screen, _, _, _)| format!("{screen:?}"))
+            .filter(|(_, _, value)| value.is_empty())
+            .map(|(screen, _, _)| format!("{screen:?}"))
             .collect();
         dynamic.sort();
         let mut expected: Vec<String> = [
-            Screen::NowPlaying, // no subtitle by design (the title is the screen)
+            // Now Playing and Up Next left the table in the 2026-09 redesign: the strip says what
+            // is playing, and the queue is one tap from Now Playing's toolbar.
             Screen::Library,
             Screen::Folders,
             Screen::SensMe, // live: how many channels, and how many tracks were analysed
-            Screen::UpNext,
             // Screen::Fm left this list on 2026-08-18: the tuner is wired, so the row now carries
             // a real static subtitle ("Needs wired headphones as the aerial") instead of the empty
             // string it used while there was nothing behind it. Nothing fills it at render time.
@@ -8545,13 +8735,97 @@ mod tests {
     /// string we removed had one ("124 albums", "8 tracks · 41:24", "88.6 MHz", "WH-1000XM5").
     #[test]
     fn static_menu_subtitles_never_assert_countable_state() {
-        for (screen, _, label, value) in MENU.iter() {
+        for (screen, label, value) in MENU.iter() {
             assert!(
                 !value.chars().any(|c| c.is_ascii_digit()),
                 "static subtitle for {label} ({screen:?}) asserts a number: {value:?} — \
                  make it live (empty literal + a render arm) or drop the claim"
             );
         }
+    }
+
+    /// The strip under the Menu's header goes to Now Playing — back DOWN the route when Now Playing
+    /// is under the Menu, so Back never bounces between the two.
+    #[test]
+    fn the_menu_strip_opens_now_playing() {
+        let mut a = unlocked();
+        a.press(Button::Up); // Now Playing → Menu, the usual way in
+        assert_eq!(a.current(), Screen::Menu);
+        assert!(a.tap(240, crate::menu::STRIP_TOP + 10).is_empty());
+        assert_eq!(a.current(), Screen::NowPlaying);
+        assert_eq!(a.stack, vec![Screen::NowPlaying], "popped, not pushed");
+        // From a Menu opened over something else, it still lands on Now Playing.
+        a.go(Screen::Settings);
+        a.push(Screen::Menu);
+        a.tap(240, crate::menu::STRIP_TOP + 10);
+        assert_eq!(a.current(), Screen::NowPlaying);
+    }
+
+    /// START ON: the chips pick the home screen, the choice round-trips through its settings-file
+    /// word, and Library — the default — is tagged HOME on its row.
+    #[test]
+    fn the_start_on_chips_pick_the_home_screen() {
+        let mut a = unlocked();
+        assert_eq!(a.home_screen(), "library", "Library is the default");
+        a.press(Button::Up);
+        for (i, word) in ["library", "now_playing", "menu", "last"].iter().enumerate() {
+            let (x, w) = crate::kit::chip_span(i, crate::menu::HOMES.len());
+            assert!(a.tap(x + w / 2, crate::menu::CHIPS_TOP + 10).is_empty());
+            assert_eq!(a.home_screen(), *word);
+            assert_eq!(a.current(), Screen::Menu, "choosing a home does not navigate");
+        }
+        let mut b = unlocked();
+        b.set_home_screen("menu");
+        assert_eq!(b.home_screen(), "menu");
+        b.set_home_screen("nonsense");
+        assert_eq!(b.home_screen(), "library");
+    }
+
+    /// `apply_home` opens the player where it was asked to, with Now Playing underneath so Back
+    /// always has somewhere to go — and it never overrides a route that already moved.
+    #[test]
+    fn apply_home_opens_the_chosen_screen() {
+        for (word, want) in [("library", vec![Screen::NowPlaying, Screen::Library]),
+                             ("now_playing", vec![Screen::NowPlaying]),
+                             ("menu", vec![Screen::NowPlaying, Screen::Menu]),
+                             // Last screen with nothing saved yet falls back to Library.
+                             ("last", vec![Screen::NowPlaying, Screen::Library])] {
+            let mut a = unlocked();
+            a.set_home_screen(word);
+            a.apply_home();
+            assert_eq!(a.stack, want, "home {word}");
+        }
+        let mut a = unlocked();
+        a.push(Screen::Settings);
+        a.apply_home();
+        assert_eq!(a.current(), Screen::Settings, "a route that already moved is left alone");
+    }
+
+    /// "Last screen" writes the topmost PLACE (never Display, a modal or the Menu itself), and a
+    /// fresh App given that line reopens it.
+    #[test]
+    fn last_screen_reopens_the_last_place() {
+        let mut a = unlocked();
+        assert_eq!(a.home_last_encode(), "", "nothing is written unless Last screen is the home");
+        a.set_home_screen("last");
+        a.go(Screen::Settings);
+        a.push(Screen::Display);
+        let line = a.home_last_encode();
+        assert!(line.starts_with("settings|"), "Display is not a place; Settings under it is: {line}");
+        let mut b = unlocked();
+        b.set_home_screen("last");
+        b.set_home_last(&line);
+        b.apply_home();
+        assert_eq!(b.current(), Screen::Settings);
+        // An empty library defers the restore to the first library, where album ids resolve.
+        let mut c = unlocked();
+        c.set_library(Library::default());
+        c.set_home_screen("last");
+        c.set_home_last("lib|albums|0|0|-1|0|0|0|0|0|Library|x");
+        c.apply_home();
+        assert_eq!(c.current(), Screen::NowPlaying, "waits for the library");
+        c.set_library(Library::sample());
+        assert_eq!(c.current(), Screen::Library, "and opens it when the library arrives");
     }
 
     /// The live subtitles must report this App's real state. (These are the actual strings the Menu
@@ -8571,23 +8845,6 @@ mod tests {
         app.set_library(Library::default());
         let subs = app.menu_subtitles();
         assert_eq!(subs.library, "Empty");
-        assert_eq!(subs.queue, "Queue empty");
-        // The row opens UP NEXT, so it must describe what that screen will show: how much is
-        // still to come.
-        let ctx: Vec<SongRow> = (0..4)
-            .map(|i| SongRow { title: format!("A{i}"), object_id: 10 + i, ..Default::default() })
-            .collect();
-        app.set_play_context(ctx, 1);
-        assert_eq!(app.menu_subtitles().queue, "2 tracks left");
-        app.set_context_playing(12);
-        assert_eq!(app.menu_subtitles().queue, "1 track left");
-        app.set_context_playing(13);
-        assert_eq!(app.menu_subtitles().queue, "Queue empty", "the last track has nothing after it");
-        // Queueing adds to what is still to come — one list, one count.
-        let _ = app.enqueue_at(SongRow { title: "P".into(), object_id: 99, ..Default::default() }, 0, QueueAt::Later);
-        assert_eq!(app.menu_subtitles().queue, "1 track left");
-        let _ = app.enqueue_at(SongRow { title: "P2".into(), object_id: 98, ..Default::default() }, 0, QueueAt::Next);
-        assert_eq!(app.menu_subtitles().queue, "2 tracks left");
         assert_eq!(subs.usb_dac, "Off");
         assert_eq!(subs.sound, "Off", "no effect is engaged on a fresh App");
         // EQ preset and BT codec name whatever is SELECTED — real values from the real tables,
@@ -8870,7 +9127,7 @@ mod tests {
         let mut app = unlocked();
         app.settings_sel = crate::settings::ROW_BOOT_STOCK;
         assert_eq!(app.settings_activate(), vec![]); // armed
-        app.settings_sel = crate::settings::ROW_THEME;
+        app.settings_sel = crate::settings::ROW_IGNORE_THE;
         let _ = app.settings_activate(); // a different row cancels it
         app.settings_sel = crate::settings::ROW_BOOT_STOCK;
         assert_eq!(app.settings_activate(), vec![], "must re-arm, not fire");
@@ -9238,11 +9495,11 @@ mod tests {
         assert!(a.scrub_begin(sound::balance_x(20), ty));
         assert!(!a.scrub_is_rail(), "the balance drag claims to be the seek rail");
         a.scrub_end();
-        // The UI-scale slider, found by walking the Settings rows rather than by a magic y.
+        // The text-size slider, found by walking the Display rows rather than by a magic y.
         let mut a = unlocked();
-        a.stack = vec![Screen::Settings];
+        a.stack = vec![Screen::Display];
         for y in 0..crate::canvas::H as i32 {
-            if crate::settings::row_at(y, 0) == Some(crate::settings::ROW_UI_SCALE)
+            if crate::display::row_at(y) == Some(crate::display::ROW_SIZE)
                 && a.scrub_begin(240, y)
             {
                 assert!(!a.scrub_is_rail(), "the UI-scale drag claims to be the seek rail");
@@ -10350,40 +10607,33 @@ mod tests {
     }
 
     /// Tapping a swatch must select THAT accent, not advance the cycle by one. This is the whole
-    /// reason the swatches are hit-tested separately from the row.
+    /// reason the swatches are hit-tested separately from the row. (Settings ▸ Display since the
+    /// 2026-09 redesign; the page does not scroll.)
     #[test]
     fn tapping_an_accent_swatch_picks_that_colour() {
-        use crate::settings::{accent_hit, ROW_ACCENT};
+        use crate::display::{accent_hit, row_top, ROW_ACCENT};
         let mut a = unlocked();
-        a.go(Screen::Settings);
-        // Find a scroll offset where the Accent row is on screen, then the y of one of its swatches.
-        let scroll = (0..=crate::settings::max_scroll_px())
-            .find(|s| (0..crate::canvas::H as i32).any(|y| crate::settings::row_at(y, *s) == Some(ROW_ACCENT)))
-            .expect("the Accent row must be reachable at some scroll");
-        a.settings_scroll_px = scroll;
-        let y = (0..crate::canvas::H as i32)
-            .find(|y| crate::settings::row_at(*y, scroll) == Some(ROW_ACCENT))
-            .unwrap() + 28; // middle of the row
+        a.go(Screen::Display);
+        let y = row_top(ROW_ACCENT) + crate::kit::ROW_H / 2;
         for want in 0..Accent::COUNT {
             // Sweep x to find a pixel that really is inside swatch `want`, then tap exactly there.
             let x = (0..crate::canvas::W as i32)
-                .find(|x| accent_hit(*x, y, scroll) == Some(want))
+                .find(|x| accent_hit(*x, y) == Some(want))
                 .unwrap_or_else(|| panic!("swatch {want} has no tappable pixel"));
             let acts = a.tap(x, y);
             assert!(acts.is_empty(), "accent is render-only; it must not emit a shell action");
             assert_eq!(a.accent(), want as u8, "tapping swatch {want} selected something else");
-            assert_eq!(a.settings_sel, ROW_ACCENT, "the tap should focus the Accent row");
+            assert_eq!(a.display_sel, ROW_ACCENT, "the tap should focus the Accent row");
         }
     }
 
     /// The physical Select button still cycles the row — the swatches are the shortcut, not the
-    /// only way in (there is no d-pad on this device, but Select exists and Settings is keyboard-
-    /// navigable).
+    /// only way in.
     #[test]
     fn select_on_the_accent_row_cycles() {
         let mut a = unlocked();
-        a.go(Screen::Settings);
-        a.settings_sel = crate::settings::ROW_ACCENT;
+        a.go(Screen::Display);
+        a.display_sel = crate::display::ROW_ACCENT;
         for i in 0..Accent::COUNT {
             assert_eq!(a.accent() as usize, i);
             a.press(Button::Select);
@@ -10391,47 +10641,62 @@ mod tests {
         assert_eq!(a.accent(), 0, "the cycle must wrap back to the default");
     }
 
-    /// A tap on a swatch counts as touching a row other than Boot to stock, so it has to disarm a
-    /// pending restart confirmation — otherwise picking a colour could leave the device one stray
-    /// tap from rebooting.
+    /// Opening Display counts as leaving the Boot to stock row, so a pending restart confirmation
+    /// does not survive a trip to pick a colour — otherwise coming back could leave the device one
+    /// stray tap from rebooting.
     #[test]
-    fn picking_an_accent_disarms_boot_to_stock() {
-        use crate::settings::{accent_hit, ROW_ACCENT};
+    fn visiting_display_disarms_boot_to_stock() {
         let mut a = unlocked();
         a.go(Screen::Settings);
         a.settings_sel = crate::settings::ROW_BOOT_STOCK;
         assert!(a.settings_activate().is_empty(), "first tap only arms");
         assert!(a.boot_stock_armed);
-        let scroll = (0..=crate::settings::max_scroll_px())
-            .find(|s| (0..crate::canvas::H as i32).any(|y| crate::settings::row_at(y, *s) == Some(ROW_ACCENT)))
-            .unwrap();
-        a.settings_scroll_px = scroll;
-        let y = (0..crate::canvas::H as i32)
-            .find(|y| crate::settings::row_at(*y, scroll) == Some(ROW_ACCENT))
-            .unwrap() + 28;
-        let x = (0..crate::canvas::W as i32).find(|x| accent_hit(*x, y, scroll).is_some()).unwrap();
-        a.tap(x, y);
+        let y = crate::settings::LIST_TOP + crate::kit::SECTION_H + crate::kit::ROW_H / 2;
+        assert_eq!(crate::settings::row_at(y, 0), Some(crate::settings::ROW_DISPLAY));
+        a.settings_scroll_px = 0;
+        a.tap(240, y);
+        assert_eq!(a.current(), Screen::Display);
+        let sy = crate::display::row_top(crate::display::ROW_ACCENT) + 20;
+        let x = (0..crate::canvas::W as i32).find(|x| crate::display::accent_hit(*x, sy).is_some()).unwrap();
+        a.tap(x, sy);
+        a.press(Button::Back);
+        assert_eq!(a.current(), Screen::Settings);
         assert!(!a.boot_stock_armed, "picking a colour left the restart armed");
     }
 
     /// The swatch band must sit inside the Accent row and nowhere else — a swatch hit-test that
-    /// leaked into the neighbouring rows would swallow taps on Theme or Visualiser type.
+    /// leaked into the neighbouring rows would swallow taps on Palette or Night.
     #[test]
     fn accent_swatches_do_not_leak_into_other_rows() {
-        use crate::settings::{accent_hit, row_at, ROW_ACCENT};
-        for scroll in 0..=crate::settings::max_scroll_px() {
-            for y in 0..crate::canvas::H as i32 {
-                for x in (0..crate::canvas::W as i32).step_by(3) {
-                    if accent_hit(x, y, scroll).is_some() {
-                        assert_eq!(
-                            row_at(y, scroll),
-                            Some(ROW_ACCENT),
-                            "swatch hit at ({x},{y}) scroll {scroll} is outside the Accent row"
-                        );
-                    }
+        use crate::display::{accent_hit, row_at, ROW_ACCENT};
+        for y in 0..crate::canvas::H as i32 {
+            for x in (0..crate::canvas::W as i32).step_by(3) {
+                if accent_hit(x, y).is_some() {
+                    assert_eq!(row_at(y), Some(ROW_ACCENT), "swatch hit at ({x},{y}) is outside the Accent row");
                 }
             }
         }
+    }
+
+    /// Choosing Minimal on Display switches the volume readout, shows it at once so the choice is
+    /// visible, and round-trips through the settings-file word.
+    #[test]
+    fn the_volume_readout_is_chosen_on_display() {
+        let mut a = unlocked();
+        a.go(Screen::Display);
+        assert_eq!(a.volume_hud(), "full", "Full is the default");
+        let top = crate::display::row_top(crate::display::ROW_VOLUME);
+        let y = top + crate::kit::ROW_H / 2;
+        let x = (0..crate::canvas::W as i32).rev()
+            .find(|x| crate::display::volume_chip_at(*x, y) == Some(1)).unwrap();
+        assert!(a.tap(x, y).is_empty());
+        assert_eq!(a.volume_hud(), "minimal");
+        assert!(a.vol_overlay > 0, "the choice is shown, not just stored");
+        let mut b = unlocked();
+        b.set_volume_hud(a.volume_hud());
+        assert_eq!(b.volume_hud(), "minimal");
+        b.set_volume_hud("garbage");
+        assert_eq!(b.volume_hud(), "full", "anything unknown is the default");
     }
 
     /// Scrolling to the bottom must actually bring the last row fully on screen — a max_scroll that
@@ -10915,9 +11180,8 @@ mod tests {
         let mut a = unlocked();
         a.press(Button::Up); // NowPlaying -> Menu
         assert_eq!(a.current(), Screen::Menu);
-        // move to "Library" (index 1) and select
-        a.press(Button::Down);
-        assert_eq!(a.menu_index(), 1);
+        // "Library" is the first row (index 0) since Now Playing became the strip; select it.
+        assert_eq!(a.menu_index(), 0);
         a.press(Button::Select);
         assert_eq!(a.current(), Screen::Library);
         // Back returns to Menu, Back again to NowPlaying
@@ -11109,8 +11373,7 @@ mod tests {
     #[test]
     fn library_tabs_and_cursor() {
         let mut a = unlocked();
-        a.press(Button::Up); // Menu
-        a.press(Button::Down); // -> Library row
+        a.press(Button::Up); // Menu — the cursor starts on Library, the first row
         a.press(Button::Select); // enter Library
         assert_eq!(a.current(), Screen::Library);
         let start = a.lib_tab();
@@ -11937,16 +12200,18 @@ mod tests {
         let k0 = a.viz_kind();
         a.press(Button::Option);
         assert_eq!(a.viz_kind(), (k0 + 1) % crate::viz::COUNT);
-        // route to Settings — by MENU lookup, not a press count
+        // route to Settings — by MENU lookup, not a press count — then into Display.
         a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
-        // cursor down to the Visualiser row and cycle it. Walk to the constant rather than
-        // pressing a fixed number of times, so inserting a DISPLAY row above it can't silently
-        // retarget this test at whatever ends up in that slot.
-        while a.settings_sel < crate::settings::ROW_VIZ {
+        assert_eq!(a.settings_sel, crate::settings::ROW_DISPLAY);
+        a.press(Button::Select);
+        assert_eq!(a.current(), Screen::Display);
+        // cursor down to the Visualiser row. Walk to the constant rather than pressing a fixed
+        // number of times, so a row inserted above it can't silently retarget this test.
+        while a.display_sel < crate::display::ROW_VIZ {
             a.press(Button::Down);
         }
-        assert_eq!(a.settings_sel, crate::settings::ROW_VIZ);
+        assert_eq!(a.display_sel, crate::display::ROW_VIZ);
         // The row is a CHEVRON now: the style and cover-size cycles moved onto the Visualiser
         // screen, along with seven settings that never existed. Select opens it.
         a.press(Button::Select);
@@ -11971,6 +12236,8 @@ mod tests {
         }
         assert!(seen_off, "the cycle never offered OFF");
         assert_eq!(a.viz_size(), start, "the cycle did not return to where it started");
+        a.press(Button::Back);
+        assert_eq!(a.current(), Screen::Display);
         a.press(Button::Back);
         assert_eq!(a.current(), Screen::Settings);
         // cursor clamps at the last row
@@ -12248,8 +12515,14 @@ mod tests {
 
     #[test]
     fn settings_select_toggles_theme() {
+        // Night lives on Settings ▸ Display now: the first Settings row opens it.
         let mut a = open_from_menu(Screen::Settings);
         assert_eq!(a.current(), Screen::Settings);
+        a.press(Button::Select);
+        assert_eq!(a.current(), Screen::Display);
+        while a.display_sel < crate::display::ROW_NIGHT {
+            a.press(Button::Down);
+        }
         let was = a.night;
         let acts = a.press(Button::Select);
         assert_eq!(acts, vec![Action::ThemeChanged(!was)]);
@@ -14475,10 +14748,8 @@ mod tests {
     fn ui_scale_slider_scrubs_taps_and_steps() {
         let _scale = lock_scale();
         let mut a = unlocked();
-        a.go(Screen::Settings);
-        let row_y = crate::settings::LIST_TOP
-            + crate::settings::row_top_px(crate::settings::ROW_UI_SCALE)
-            + 10;
+        a.go(Screen::Display);
+        let row_y = crate::display::row_top(crate::display::ROW_SIZE) + 10;
         // A tap on the track jumps straight to that stop (SeekBar idiom, not tap-to-cycle).
         assert_eq!(a.tap(460, row_y), vec![Action::UiScaleChanged]);
         assert_eq!(crate::text::scale_pct(), *crate::text::SCALE_STEPS.last().unwrap());
@@ -14489,7 +14760,7 @@ mod tests {
         assert_eq!(crate::text::scale_pct(), crate::text::SCALE_STEPS[0]);
         assert_eq!(a.scrub_end(), vec![Action::UiScaleChanged]);
         // Buttons step one stop and clamp at both ends.
-        a.settings_sel = crate::settings::ROW_UI_SCALE;
+        a.display_sel = crate::display::ROW_SIZE;
         a.press(Button::Right);
         assert_eq!(crate::text::scale_pct(), crate::text::SCALE_STEPS[1]);
         for _ in 0..20 {
@@ -14701,7 +14972,7 @@ mod shelf_swipe_tests {
 #[cfg(test)]
 mod palette_tests {
     use super::*;
-    use crate::settings::{ROW_ACCENT, ROW_PALETTE};
+    use crate::display::{ROW_ACCENT, ROW_PALETTE};
 
     fn slate() -> Palette {
         Palette::parse("slate", include_str!("../palettes/slate.palette")).expect("slate loads")
@@ -14711,9 +14982,11 @@ mod palette_tests {
         Palette::parse("paper", include_str!("../palettes/paper.palette")).expect("paper loads")
     }
 
+    /// Put the cursor on a Settings ▸ Display row. `settings_activate` in these tests is the
+    /// Display page's `display_activate` — the palette and accent rows moved there.
     fn on_settings_row(a: &mut App, row: usize) {
-        a.go(Screen::Settings);
-        a.settings_sel = row;
+        a.go(Screen::Display);
+        a.display_sel = row;
     }
 
     /// Select on the Palette row walks the folder in order and comes back round to Cinder.
@@ -14723,12 +14996,12 @@ mod palette_tests {
         a.set_palettes(vec![paper(), slate()], Vec::new());
         on_settings_row(&mut a, ROW_PALETTE);
         assert_eq!((a.palette_id(), a.palette_name()), ("cinder", "Cinder"));
-        a.settings_activate();
+        a.display_activate();
         assert_eq!((a.palette_id(), a.palette_name()), ("paper", "Paper"));
         assert_eq!(a.palette, paper().tokens);
-        a.settings_activate();
+        a.display_activate();
         assert_eq!((a.palette_id(), a.palette_name()), ("slate", "Slate"));
-        a.settings_activate();
+        a.display_activate();
         assert_eq!((a.palette_id(), a.palette_name()), ("cinder", "Cinder"));
         assert_eq!(a.palette, CINDER);
     }
@@ -14756,16 +15029,14 @@ mod palette_tests {
         assert!(a.palette_pins_accent());
         on_settings_row(&mut a, ROW_ACCENT);
         let before = a.accent;
-        a.settings_activate();
+        a.display_activate();
         assert_eq!(a.accent, before, "Select must not cycle an accent that is not in use");
         assert_eq!(a.toast, "This palette sets its own accent");
         // A tap where the last swatch would be changes nothing either, and explains the same way.
         a.toast.clear();
-        let y = (0..crate::canvas::H as i32)
-            .find(|&y| crate::settings::row_at(y, 0) == Some(ROW_ACCENT))
-            .expect("the Accent row is on screen at scroll 0");
+        let y = crate::display::row_top(ROW_ACCENT) + crate::kit::ROW_H / 2;
         let x = (0..crate::canvas::W as i32)
-            .find(|&x| crate::settings::accent_hit(x, y, 0) == Some(Accent::COUNT - 1))
+            .find(|&x| crate::display::accent_hit(x, y) == Some(Accent::COUNT - 1))
             .expect("the last swatch has a hit zone");
         a.tap(x, y);
         assert_eq!(a.accent, before);
@@ -14781,13 +15052,15 @@ mod palette_tests {
         assert!(!a.take_palettes_stale(), "once per visit, not once per frame");
         a.push(Screen::Settings);
         assert!(!a.take_palettes_stale(), "already there, so nothing new to read");
+        a.push(Screen::Display);
+        assert!(a.take_palettes_stale(), "arriving on Display — where the palette is picked — is too");
     }
 
     #[test]
     fn an_empty_folder_says_where_palettes_go() {
         let mut a = App::unlocked();
         on_settings_row(&mut a, ROW_PALETTE);
-        a.settings_activate();
+        a.display_activate();
         assert_eq!(a.palette_id(), "cinder");
         assert_eq!(a.toast, "No palettes in cinder_palettes");
     }
@@ -14799,11 +15072,11 @@ mod palette_tests {
         assert!(a.set_palettes(vec![slate()], why.clone()), "a new set is news");
         assert!(!a.set_palettes(vec![slate()], why), "the same set is not");
         on_settings_row(&mut a, ROW_PALETTE);
-        a.settings_activate();
+        a.display_activate();
         assert_eq!(a.palette_id(), "slate");
         assert_eq!(a.toast, "1 palette file skipped — see cinderhome.log");
         a.toast.clear();
-        a.settings_activate();
+        a.display_activate();
         assert!(a.toast.is_empty(), "told once, not on every tap");
     }
 

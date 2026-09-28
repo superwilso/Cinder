@@ -906,6 +906,16 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("bt_fine={}\n", r.app.bt_fine_span()));
     body.push_str(&format!("volume_limit={}\n", r.app.volume_limit() as u8));
     body.push_str(&format!("ignore_the={}\n", r.app.ignore_the() as u8));
+    // Settings ▸ Display ▸ Volume: `full` or `minimal`, as a word — the handoff names the key and
+    // its values, and a word survives a future third style where an index would shift.
+    body.push_str(&format!("volume_hud={}\n", r.app.volume_hud()));
+    // What the player opens on (the Menu's START ON chips), and — only when that is "last" — the
+    // place to reopen, encoded like a Shelf pin.
+    body.push_str(&format!("home_screen={}\n", r.app.home_screen()));
+    let last = r.app.home_last_encode();
+    if !last.is_empty() {
+        body.push_str(&format!("home_last={last}\n"));
+    }
     // The palette by id — the CHOICE, not what happens to be drawn. If the folder could not be read
     // this boot, Cinder is on screen, but the palette the user picked is still the one to keep.
     body.push_str(&format!("palette={}\n", r.app.palette_id()));
@@ -1541,12 +1551,12 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 34] = [
+const SCREEN_NAMES: [&str; 35] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
     "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet", "Lyrics",
-    "Search", "SensMe",
+    "Search", "SensMe", "Display",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1562,6 +1572,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
         S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32, S::SensMe => 33,
+        S::Display => 34,
     }
 }
 
@@ -5080,6 +5091,9 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // Settings ▸ Ignore "The" in artists. Read before the library arrives, and
                     // `set_library` applies it to whatever library comes next.
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
+                    "volume_hud" => r.app.set_volume_hud(v),
+                    "home_screen" => r.app.set_home_screen(v),
+                    "home_last" => r.app.set_home_last(v),
                     "viz_scale" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_viz_scale(n);
@@ -5379,8 +5393,12 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
         r.settings_path = Some(p);
         r.last_saved_body = settings_body(r);
         // First run (intro not completed / no settings file yet) → show onboarding before anything.
+        // Otherwise open on the home screen (Library unless the Menu's START ON says otherwise).
         if !r.app.onboarding_seen() {
             r.app.start_onboarding();
+            r.dirty = true;
+        } else {
+            r.app.apply_home();
             r.dirty = true;
         }
     }
@@ -6847,7 +6865,7 @@ mod tests {
             S::Sound, S::Bluetooth, S::Settings, S::Fm, S::UsbDac, S::Receiver, S::Onboarding,
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
-            S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe,
+            S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe, S::Display,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();

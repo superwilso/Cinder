@@ -101,16 +101,14 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, on: bool, ldac: bool, code
             text::draw(c, f, (bx + 22) as f32, (by + 28 + i as i32 * 26) as f32, ln, &ls);
         }
 
-        // The thing Cinder does that stock refuses to: stock shows a "disconnect Bluetooth" overlay
-        // on entering DAC mode and tears the link down. Here the link stays up and the USB audio
-        // goes out over it.
+        // The link stays up and the USB audio goes out over it (stock tears Bluetooth down on
+        // entering DAC mode). The line that said so was a comparison with stock, and the handoff
+        // (2h) takes it out: the screen says what is happening, not what another player does.
         if ldac {
             let dev = bt_device.unwrap_or("Bluetooth");
             center(c, f, 240.0, 542.0,
                    &format!("Playing to {} — {} requested.", dev, codec),
                    &sty(Family::Sans, Weight::SemiBold, 15.0, t.acc, 0.0));
-            center(c, f, 240.0, 564.0, "Stock makes you disconnect Bluetooth first. This does not.",
-                   &sty(Family::Sans, Weight::Regular, 14.0, t.faint, 0.0));
         } else {
             center(c, f, 240.0, 542.0, "Connect Bluetooth headphones to send USB audio to them.",
                    &sty(Family::Sans, Weight::Regular, 15.0, t.faint, 0.0));
