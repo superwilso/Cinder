@@ -62,18 +62,21 @@ const ANY_SONG: [Line; 3] = [
     l("Play next", "SWIPE \u{2190}"),
     l("Add to Up Next", "SWIPE \u{2192}"),
 ];
-const UP_NEXT: [Line; 6] = [
+const UP_NEXT: [Line; 7] = [
     l("Jump to a song", "TAP"),
     l("Move a song", "DRAG \u{2261}"),
     l("Pick up a song", "HOLD"),
     l("Remove a song", "SWIPE"),
     l("Shuffle the list", "MIX"),
     l("Empty what is left", "CLEAR"),
+    l("Keep it as a playlist", "SAVE"),
 ];
-const NOW_PLAYING: [Line; 3] = [
+const NOW_PLAYING: [Line; 5] = [
     l("Cover \u{b7} spectrum \u{b7} level", "SWIPE THE ART"),
     l("Previous \u{b7} next track", "SWIPE BELOW IT"),
     l("Track info", "TAP THE TITLE"),
+    l("Repeat all \u{b7} album \u{b7} one", "TAP REPEAT"),
+    Line { lead: "", title: "Stop after this song", sub: "Settings or the pull-down panel", how: "SLEEP: SONG" },
 ];
 const ANYWHERE: [Line; 2] = [l("The Shelf", "SWIPE UP"), l("Scroll a list", "SWIPE \u{2195}")];
 /// Listed only while Settings ▸ Pull-down panel is on.

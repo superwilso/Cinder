@@ -465,6 +465,9 @@ struct Render {
     app: cinder_ui::nav::App,
     scrob: Option<scrobble::Scrobbler>,
     last_track: Option<cinder_db::Track>, // last resolved track (for scrobble metadata)
+    /// Repeat album: the lap for the playing song has been staged. Cleared at every track start,
+    /// so each lap stages once rather than on every tick of the last 2.5 s.
+    album_lap_staged: bool,
     /// Tracks that Cinder, rather than PlayerService, has already played. PlayerService loses
     /// its own previous-track state whenever a queue edit replaces its sequence.
     play_history: Vec<cinder_db::Track>,
@@ -749,6 +752,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         },
         scrob: None,
         last_track: None,
+        album_lap_staged: false,
         play_history: Vec::new(),
         rewind_from: None,
         play_pos_ms: 0,
@@ -2426,6 +2430,20 @@ fn arm_first_play(r: &mut Render) {
 /// rather than fixing a defect.
 ///
 /// Pure, so the rule is testable without a framebuffer, a database or a device.
+/// `np.repeat` for repeat album (see `Action::RepeatCycle`).
+const REPEAT_ALBUM: u8 = cinder_ui::now_playing::REPEAT_ALBUM;
+
+/// The repeat button's cycle: off → all → album → one → off (0 → 2 → 3 → 1 → 0), the order other
+/// players use with album slotted between the two it sits between in size. Anything unknown is off.
+fn next_repeat(was: u8) -> u8 {
+    match was {
+        0 => 2,
+        2 => REPEAT_ALBUM,
+        REPEAT_ALBUM => 1,
+        _ => 0,
+    }
+}
+
 fn play_order(lead: Option<&str>, rest: impl IntoIterator<Item = Option<String>>) -> Vec<String> {
     let mut uris: Vec<String> = Vec::new();
     if let Some(l) = lead {
@@ -3377,7 +3395,17 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             // position pins at the duration and `playing` goes 1 -> 0 with the URI unchanged. That
             // is a signal the shell can watch for and re-issue the queue on, which is all
             // repeat-all needs. 1 = repeat-one (OneTrackMode), 2 = repeat-all (shell-driven).
-            r.np.repeat = match r.np.repeat { 0 => 2, 2 => 1, _ => 0 };
+            //
+            // 3 = repeat ALBUM, between all and one: off → all → album → one → off. Not a Sony
+            // mode either — the tick stages `[current] + the album's run` shortly before the run's
+            // last song ends (see REPEAT ALBUM there). Leaving it re-derives the sequence, because
+            // a lap may be what PlayerService is holding: the rest of the list is not in it.
+            let was = r.np.repeat;
+            r.np.repeat = next_repeat(was);
+            if was == REPEAT_ALBUM {
+                r.queue_pending = true;
+            }
+            r.album_lap_staged = false;
             23
         }
         Action::BtEnhancedChanged => 35, // shell reads cinder_get_bt_enhanced + SetControlAbsoluteVolume
@@ -5024,6 +5052,45 @@ pub extern "C" fn cinder_clock_tick() {
                 }
             }
         }
+        // REPEAT ALBUM. PlayerService has no album loop, and the list it holds runs on past the album
+        // into whatever follows it in Up Next. So on the LAST song of the album's run, inside the
+        // same lead the queue rebuild uses, hand it `[current] + the run from its first song`:
+        // the current song carries on where it is (the shell restores the position into whatever
+        // the flush leads with) and the run follows it, so the lap is an ordinary track boundary.
+        // `track_started` then finds the run's first song behind `context_idx` and moves back to
+        // it. Every lap re-stages here, so the sequence never holds more than one lap.
+        //
+        // Not for a run of ONE song: `play_order` drops an adjacent duplicate (a URI that does not
+        // change has no boundary to report), so `[A, A]` would hand over `[A]` and simply stop.
+        // That is repeat one's job, and with shuffle on a run of one is the usual case.
+        //
+        // Also on Bluetooth, unlike the queue rebuild: there the trade is a brief A2DP disruption
+        // against the album not repeating at all, and the setting's whole promise is the second.
+        if r.np.repeat == REPEAT_ALBUM
+            && !r.album_lap_staged
+            && r.np.playing
+            && r.cur_duration_ms > 0
+            && r.play_pos_ms > 0
+            && r.cur_duration_ms.saturating_sub(r.play_pos_ms) <= QUEUE_REBUILD_LEAD_MS
+        {
+            if let (Some((start, end)), Some(current)) =
+                (r.app.album_run(), r.last_track.as_ref().map(|t| t.filename.clone()))
+            {
+                if r.app.context_idx() + 1 == end && end - start >= 2 {
+                    r.album_lap_staged = true;
+                    let index = uri_index(r);
+                    let rows = &r.app.context()[start..end];
+                    let uris = play_order(Some(&current), rows.iter().map(|row| index.get(&row.object_id).cloned()));
+                    if uris.len() > 1 {
+                        eprintln!("cinder-ffi: repeat album — lapping {} songs", uris.len() - 1);
+                        r.pending_play = uris;
+                        r.pending_play_start = 0;
+                        r.queue_flush = true;
+                        r.queue_pending = false;
+                    }
+                }
+            }
+        }
         // Rescan label deadline. The scan runs inside a Sony service with no completion channel we
         // subscribe to, so this is the backstop that stops "Rescanning…" outliving a scan which
         // found nothing to change (and therefore never triggered a library reload).
@@ -5050,6 +5117,25 @@ pub extern "C" fn cinder_clock_tick() {
                 r.dirty = true;
             }
         }
+    }
+}
+
+/// Is Sleep ▸ End of song armed (1/0)? The shell reads this every frame while playing and, when the
+/// song's extrapolated position reaches its end, pauses and calls `cinder_stop_after_done`.
+#[no_mangle]
+pub extern "C" fn cinder_get_stop_after() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.stop_after() as libc::c_int,
+        None => 0,
+    }
+}
+
+/// The shell paused at the end of the song: disarm, and put the sleep row back to Off.
+#[no_mangle]
+pub extern "C" fn cinder_stop_after_done() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.stop_after_done();
+        r.dirty = true;
     }
 }
 
@@ -5226,7 +5312,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // written by a build that cycled three states cannot restore a dead value.
                     // 0 = off, 1 = one, 2 = all. Was `v == "1"`, which silently collapsed a
                     // saved repeat-all back to off on the next boot.
-                    "repeat" => r.np.repeat = v.parse::<u8>().unwrap_or(0).min(2),
+                    "repeat" => r.np.repeat = v.parse::<u8>().unwrap_or(0).min(REPEAT_ALBUM),
                     "eq" => {
                         let mut arr = r.app.eq_bands();
                         for (i, part) in v.split(',').enumerate().take(10) {
@@ -6652,6 +6738,7 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 // it is still in the list, behind the row put in front of it.
                 let owed = r.queue_pending || r.queue_flush;
                 let preempt = r.app.track_started(t.object_id, owed);
+                r.album_lap_staged = false;
                 if preempt {
                     r.pending_play = context_uris(r, r.app.context_idx());
                     r.pending_play_start = 0;
@@ -6808,6 +6895,25 @@ pub extern "C" fn cinder_set_now_playing(
         r.np.playing = playing != 0;
         r.np.battery = battery.clamp(0, 100) as u8;
         r.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod repeat_tests {
+    use super::*;
+
+    /// Four states, each reached once per lap of the button, and a stale value from a file lands
+    /// on off.
+    #[test]
+    fn the_repeat_button_cycles_off_all_album_one() {
+        let mut seen = vec![0u8];
+        let mut r = 0u8;
+        for _ in 0..4 {
+            r = next_repeat(r);
+            seen.push(r);
+        }
+        assert_eq!(seen, vec![0, 2, REPEAT_ALBUM, 1, 0]);
+        assert_eq!(next_repeat(9), 0);
     }
 }
 

@@ -10743,9 +10743,25 @@ void poll_now_playing() {
         // track boundary. Refused after a recovery for the same reason as display_backlight.
         int n = g_ipc_dead ? -1 : cinder_audio_current_uri(uri, sizeof uri);
         if (n > 0 && std::strcmp(uri, last) != 0) {
+            const bool had_track = last[0] != 0;
             std::strncpy(last, uri, sizeof last - 1);
             last[sizeof last - 1] = 0;
             cinder_set_now_playing_uri(uri, 0.0f, g_playing ? 1 : 0, battery_level());
+            // STOP AFTER THIS SONG, the late case. stop_after_tick() pauses just BEFORE the end,
+            // from an extrapolated position; if that missed — a callback that stalled, a song
+            // shorter than its reported length — the next song has begun, and the best left is to
+            // pause it and put it back to 0:00. Not after a transport press (`force`, or inside the
+            // grace window): a song the user skipped to or picked is not the song that ended, and
+            // the setting then applies to it instead.
+            if (had_track && !force && np_now - g_transport_at > TRANSPORT_GRACE_MS && cinder_get_stop_after()) {
+                clog_("stop-after: the next song began before the pause landed — pausing it at 0:00");
+                set_transport(false);
+                run_guarded("stop-after: pause the next song", 8, []() {
+                    cinder_audio_seek_ms(0);   // seek first: it wraps itself in a pause/resume
+                    cinder_audio_pause();
+                });
+                cinder_stop_after_done();
+            }
         }
     }
     // The service is the authority on position, and eventually on whether it is really playing —
@@ -10813,6 +10829,48 @@ void poll_now_playing() {
     } else {
         repeat_all_fired = false;
     }
+}
+
+// ── STOP AFTER THIS SONG (Sleep ▸ End of song) ────────────────────────────────────────────────
+// PlayerService has no "stop at the end of this track" call, and the position arrives only ~1x/s
+// (onPlayTimeUpdated), so waiting for the boundary would let up to a second of the NEXT song out
+// before the pause landed. Instead the position is EXTRAPOLATED between callbacks — last value
+// plus the time since it changed, capped so a stalled callback cannot run the estimate away — and
+// the pause goes in STOP_AFTER_LEAD_MS before the end. Resuming then plays that sliver and carries
+// on into the next song, which is what "stop after this one" means.
+//
+// Runs every frame of the render loop (60 Hz lit, 10 Hz dark), not on the 1 Hz housekeeping tick:
+// at 1 Hz the pause could land anywhere in the last second. Costs one FFI read per frame while
+// armed, and nothing else. The late case — the next song began anyway — is caught in
+// poll_now_playing at the URI change.
+static const long STOP_AFTER_LEAD_MS = 150;
+
+static void stop_after_tick() {
+    static int  last_cur = -1;
+    static long cur_at = 0;
+    if (!cinder_get_stop_after()) {
+        last_cur = -1;
+        return;
+    }
+    int cur = -1, tot = -1;
+    if (cinder_audio_position(&cur, &tot) == 0 || tot <= 0 || cur < 0) return;
+    const long now = now_ms();
+    if (cur != last_cur) {
+        last_cur = cur;
+        cur_at = now;
+    }
+    // Paused (by the user, or the service): the song is not advancing, so neither is the estimate.
+    if (g_user_paused || cinder_audio_is_playing() == 0) {
+        cur_at = now;
+        return;
+    }
+    const long ahead = now - cur_at < 1500 ? now - cur_at : 1500;
+    if ((long)cur + ahead < (long)tot - STOP_AFTER_LEAD_MS) return;
+    clog_("stop-after: end of the song — pausing");
+    set_transport(false);
+    run_guarded("stop-after: pause", 6, []() { cinder_audio_pause(); });
+    cinder_stop_after_done();
+    last_cur = -1;
 }
 
 // Concrete app. The pure virtual destructor (slots 0,1) is satisfied by ~CinderApp.
@@ -11386,6 +11444,8 @@ void* render_driver(void*) {
         // work here that used to block the render thread outright, and slicing them is the whole
         // point. Costs nothing when idle (a single int test).
         fm_job_tick();
+        // Sleep ▸ End of song: per frame, because the pause has to land inside the last ~150 ms.
+        stop_after_tick();
 
         // (input_pump + volume_flush now run at the TOP of the loop, before the paint — see there)
         // ~1x/sec housekeeping, paced by the WALL CLOCK rather than an iteration count. It used to

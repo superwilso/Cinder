@@ -57,6 +57,20 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
 - **Lyrics in one tap.** When the playing song has lyrics, Now Playing shows a LYRICS chip in the
   top-left corner of the cover; it opens the Lyrics screen, which was two taps deep behind Track
   information. With no lyrics there is no chip. Asked for on the r/walkman thread.
+- **Save Up Next as a playlist.** Up Next ▸ *SAVE* on the NOW PLAYING heading names it on the
+  keyboard (the album's name is offered when the list is one album) and saves the playing song and
+  everything after it as one of Cinder's playlists. *Host-tested; device-verified 2026-09-28
+  (`docs/DEVICE_CHECKLIST.md` 20.1).*
+- **Stop after this song.** The sleep timer's last choice, *Song* (Settings ▸ Sleep timer, or the
+  pull-down panel), pauses when the playing song ends instead of after a number of minutes. Now
+  Playing's badge reads SLEEP AT SONG END while it is set. *Host-tested (three harness scenarios);
+  device-verified 2026-09-28 on the jack and over Bluetooth (checklist 20.2, 20.3).*
+- **Repeat album.** The repeat button now cycles off → all → **album** → one. Album repeats the
+  stretch of Up Next the playing song's album occupies, so a queued song after it waits until
+  repeat is turned off. Now Playing captions the icon ALBUM. With shuffle on an album's songs are
+  scattered, so there is usually no stretch to repeat and the list carries on — use *one* for a
+  single song. *Host-tested; device-verified 2026-09-28 on the jack and over Bluetooth, and turning
+  it off again (checklist 20.4, 20.5).*
 
 ### Changed
 

@@ -77,18 +77,20 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
 7. **USB-DAC (2h).** The sentence comparing it with stock is removed.
 
 **Gates, 2026-09-28:**
-* 653 host tests (up from 612);
+* 658 host tests (up from 612);
 * clippy's correctness and suspicious lints clean;
 * 49 harness scenarios;
-* 271 golden previews, each changed one checked by eye;
+* 273 golden previews, each changed one checked by eye;
 * **a text audit** (`cinder-host --audit`, and `tests/ui_overflow.rs` with a hostile library):
   no text leaves the glass, lands on other text, or sits under something drawn over it. It found
   six real defects in existing screens, all fixed (CHANGELOG, *Fixed*).
 
 **Device:** R1 and R2 both checked on the owner's A55 on 2026-09-28 — every row of
-[`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §19 passes (dev build `b2a428d1`).
+[`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §19 passes (dev build `b2a428d1`). R3's queue extras
+(save Up Next, stop after this song, repeat album) the same day — every row of §20 passes (dev
+build `3912e3b8`).
 
-### A2. Flint (0.2, unreleased)
+### A2. Flint (0.2, released 2026-09-28; the Unreleased window work after it below)
 
 1. **The window is seven tabs**, in the handoff's order: Sync · On the player · Check · SensMe ·
    Likes & plays · Palettes · Settings. Sync is the 0.1 window and still the only page with orange
@@ -113,6 +115,19 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
    new and changed ones. The only write off the Sync page, and outlined, not orange: the accent
    means music about to be written.
 
+After 0.2.0, in Flint's *Unreleased*:
+
+8. **Last.fm from the window.** Settings ▸ Last.fm takes the API key (with a button that opens
+   last.fm's key page) and signs in through the browser, so the window never sees a password.
+   Likes & plays gains Send N plays, Compare likes and Make N changes. `flint scrobble` and
+   `flint likes` now run the same `flint-core::lastfm_sync` code.
+9. **Jobs run side by side.** Each job holds only what it needs (the analysis cache, the player,
+   the check results, the palettes, the Last.fm account), so a long analysis no longer greys out
+   the window. Plan and Copy still wait for it, because the copies carry its results.
+10. **Check filters**, by verdict (click a count) and by text.
+11. **No console.** The window ships as its own Windows-subsystem program; the commands are
+    `flint-cli-windows-x64.exe`.
+
 ---
 
 ## Part B — Cinder, screen by screen
@@ -123,7 +138,7 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
 | 1a | Library: view bar (sort · filter · rows) | **R3** | Grow the FILTER strip into the bar. The sort and filter state already exist (`lib_sort`, `album_sort`, the genre filter) | Kit |
 | 1a | Swipe a row left = play next, right = add to Up Next, in every list | Existing | Landed before the handoff (CHANGELOG, Unreleased): the Library, Search, Folders, SensMe and every other track list | — |
 | 1a | Sideways swipe changes page; Back is the bar arrow only | **R3** | The left-edge swipe is Back today, and the help screens teach it. Changing it is a behaviour change, so it gets its own golden and harness pass | — |
-| 1a | Up Next | Existing | One editable list since the Unreleased change. What is left of [`SPEC_queue_v2.md`](SPEC_queue_v2.md) §1 — repeat album, stop after current, save Up Next as a playlist — is R3; shuffle by album and by artist is R4 | `album_artist` (R4) |
+| 1a | Up Next | Existing | One editable list since the Unreleased change. From [`SPEC_queue_v2.md`](SPEC_queue_v2.md) §4, **Done** (R3): save Up Next as a playlist (SAVE on the NOW PLAYING heading), stop after current (Sleep ▸ *Song*), repeat album (off → all → album → one; laps the album's run of the list). Shuffle by album and by artist is R4 | `album_artist` (R4) |
 | 1a | Search | Existing | Scopes (songs · albums · artists) | R3 |
 | 2a | Sound: signal-path strip | **Partial** | The strip is **Done** (R2): two fixed lines under the header, keeping the path's end when it is too long. Still to come: the mock's ENHANCE / SPACE / LEVEL grouping with values instead of pills, and the Profile row, which arrive with the profiles (R5) | R5 |
 | 2a / 2b | A / B sound profiles per output | **R5** | A profile is a named set of every DSP value. One is remembered per output (jack, Bluetooth, USB-DAC) and applied when the route changes | The effects parity work (E3) |
@@ -158,11 +173,11 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
 | 6a | Sync ▸ Conversion: format × card grid | **R6** | Convert-on-transfer (FLAC → FLAC 16/44 or AAC 256). This is new engine work in `flint-core`, not only a page |
 | 6a | Sync ▸ Copying: plan rows with a state each | **R6** | One bad file skips one track and shows one line. The engine already does the skip; the page shows it |
 | 3a | On the player | **Done** | Removing an album Flint put there (needs a confirm step) |
-| 3a | Check | **Done** | — |
+| 3a | Check | **Done** | — (a verdict and text filter since 0.2.0, *Unreleased*) |
 | 6a | SensMe: progress, 12 channel bars, NOT TAGGED by reason | **Partial** | The buttons and progress exist. The channel bars and reasons need the analysis job to report them. The MP3 path is part of the same work |
-| 3a | Likes & plays | **Done** | Reviewing plays before they are sent. Sending is still `flint scrobble` and `flint likes` |
+| 3a | Likes & plays | **Done** | Reviewing plays before they are sent (ticking rows out). Sending, comparing and syncing likes are buttons since 0.2.0 (*Unreleased*) |
 | 6a | Palettes: table, preview, Send | **Partial** | Done: a folder on the PC compared with `cinder_palettes/`, one row per palette with its swatch, state (BUILT IN · NEW · CHANGED · ON · ON THE PLAYER · REFUSED) and first reason; `palette.rs`'s readability rules ported to `flint-core/src/palette.rs`, the same floors and the same numbers; **Send N to the player** (new and changed only, never refused, lowercased, through a temporary name). Still to come: the Added column and Name/Added sort, the preview panel for the selected row, and ticking rows — Send takes every new and changed file today |
-| 6a | Settings | **Partial** | Theme, the folders, the cache and Last.fm exist. Still to come: clearing the conversion cache, what likes become, and the Always keep list. All three arrive with Conversion |
+| 6a | Settings | **Partial** | Theme, the folders, the cache, and the Last.fm key and browser sign-in exist. Still to come: clearing the conversion cache, what likes become, and the Always keep list. All three arrive with Conversion |
 
 ---
 
@@ -251,7 +266,7 @@ kit:
 |---|---|---|
 | **R1** | Part A | Done |
 | **R2** | **Done.** Screens on the kit that need no new data: ~~5j Palette picker~~, ~~5d SensMe grid~~, ~~5l Sound quality~~, ~~5e Battery~~, ~~5i Help~~, ~~the Sound strip (2a)~~. Then the three small community items: ~~B1~~, ~~B2~~, ~~B6~~ | — |
-| **R3** | The Library view bar, Search scopes, the sideways page swipe, and the queue extras that need no new data: repeat album, stop after current, save Up Next as a playlist | 1–2 weeks |
+| **R3** | The Library view bar, Search scopes, the sideways page swipe, and the queue extras that need no new data: ~~repeat album~~, ~~stop after current~~, ~~save Up Next as a playlist~~ (done and device-verified 2026-09-28, checklist §20) | 1–2 weeks left |
 | **R4** | Data the screens are waiting on, then the screens: ratings, a play count, `album_artist` (which also unlocks shuffle by album and by artist). Then saved views (5c), smart playlists (5g), playlist editing (5b), and Album and Artist (5h, 5m) | 2 weeks |
 | **R5** | Effects parity, then A/B profiles per output (2a/2b, and the Bluetooth Sound profile row) | 2 weeks, most of it effects parity |
 | **R6** | Flint 0.3: Setup, Conversion (convert-on-transfer), Copying, ~~Palettes send~~ (done in 0.2; the preview panel and ticking are left), SensMe reasons | 2 weeks |

@@ -426,6 +426,11 @@ void cinder_rescan_refused(void);
 /* Sleep timer: returns 1 ONCE when the user's sleep timer (set in Settings) has just expired — the
  * shell then pauses playback. Poll ~1x/sec from the pump. The countdown itself is internal. */
 int  cinder_sleep_should_pause(void);
+/* Sleep > End of song ("stop after current"): 1 while armed. The shell reads it every frame while
+ * playing, extrapolates the song's position between the ~1 Hz position callbacks, pauses just
+ * before the end, and calls cinder_stop_after_done() to disarm it (the sleep row returns to Off). */
+int  cinder_get_stop_after(void);
+void cinder_stop_after_done(void);
 /* Read the UI's desired battery-care value (1/0). Call after a CINDER_ACT_BATTERY_CARE_CHANGED
  * action, then apply it via the power shim. */
 int  cinder_get_battery_care(void);

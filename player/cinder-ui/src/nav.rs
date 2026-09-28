@@ -1218,6 +1218,9 @@ pub struct App {
     /// there is no way — not even across a reboot — to end up on a black panel with no way back.
     brightness_restore: u8,
     sleep_min: u32,
+    /// Sleep ▸ End of song: pause when the playing song ends ("stop after current"). Not
+    /// persisted, like the timer: a reboot is not the song ending.
+    stop_after: bool,
     /// First-run onboarding: which page is showing, and whether the intro has been completed (the
     /// latter is persisted, so it only appears once; the Menu can re-open it any time).
     onboarding_page: usize,
@@ -1558,6 +1561,7 @@ impl Default for App {
             brightness: 4,   // matches the shell's ~70% day default
             brightness_restore: 4,
             sleep_min: 0,
+            stop_after: false,
             onboarding_page: 0,
             onboarding_seen: false,
             lib: Library::sample(),
@@ -2066,11 +2070,7 @@ impl App {
                 self.night = !self.night;
                 vec![Action::ThemeChanged(self.night)]
             }
-            QuickHit::Sleep(i) => {
-                self.sleep_idx = i.min(SLEEP_PRESETS.len() - 1);
-                self.sleep_min = SLEEP_PRESETS[self.sleep_idx];
-                vec![Action::SleepTimer(self.sleep_min)]
-            }
+            QuickHit::Sleep(i) => self.set_sleep_choice(i.min(SLEEP_PRESETS.len() - 1)),
             QuickHit::Sheet => vec![],
             QuickHit::Outside => {
                 self.quick_open = false;
@@ -3044,10 +3044,7 @@ impl App {
             }
             crate::settings::ROW_SLEEP => {
                 // One list for this row and the pull-down panel's chips.
-                const PRESETS: [u32; 5] = crate::quick::SLEEP_PRESETS;
-                self.sleep_idx = (self.sleep_idx + 1) % PRESETS.len();
-                self.sleep_min = PRESETS[self.sleep_idx];
-                vec![Action::SleepTimer(self.sleep_min)]
+                self.set_sleep_choice((self.sleep_idx + 1) % crate::quick::SLEEP_PRESETS.len())
             }
             crate::settings::ROW_DATABASE => {
                 // The row had no arm at all, which is why it was drawn without a chevron: a chevron
@@ -6002,6 +5999,30 @@ impl App {
     ///     2026-09-11 against the old queue as "it plays the next in the album, then the queue";
     ///   * anything else is a deliberate jump (◁, an Up Next tap) — search forward from here
     ///     first, then from the top, so a track in the list twice lands on the NEXT copy.
+    /// Repeat album: the run of the list the playing song's album occupies, as `start..end`
+    /// (`end` exclusive) — the rows either side of `context_idx` from the same album. `None` with
+    /// nothing playing.
+    ///
+    /// A RUN, not "every row of that album": Up Next is one list, and an album queued twice, or
+    /// split by a song queued into the middle of it, is two places in it. The lap is the one you
+    /// are in. Same album = the same `album_id`, or the same album name (`art`) where the id is
+    /// unknown (0). With shuffle on the album's songs are scattered, so the run is usually the one
+    /// song — which is what the shell falls back to (it only laps a run of two or more).
+    pub fn album_run(&self) -> Option<(usize, usize)> {
+        let idx = self.context_idx;
+        let cur = self.context.get(idx)?;
+        let same = |row: &SongRow| {
+            if cur.album_id != 0 && row.album_id != 0 {
+                row.album_id == cur.album_id
+            } else {
+                !cur.art.is_empty() && row.art == cur.art
+            }
+        };
+        let start = self.context[..idx].iter().rposition(|r| !same(r)).map_or(0, |p| p + 1);
+        let end = self.context[idx + 1..].iter().position(|r| !same(r)).map_or(self.context.len(), |p| idx + 1 + p);
+        Some((start, end))
+    }
+
     pub fn track_started(&mut self, object_id: i64, stale: bool) -> bool {
         let idx = self.context_idx;
         let at = |a: &Self, i: usize| a.context.get(i).map(|t| t.object_id);
@@ -6938,7 +6959,7 @@ impl App {
                 };
                 crate::now_playing::render(c, &theme, fonts, &np2);
                 // sleep-timer countdown badge (nav owns the live remaining minutes)
-                crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min);
+                crate::now_playing::sleep_badge(c, &theme, fonts, self.sleep_min, self.stop_after);
             }
             Screen::Menu => {
                 let subs = self.menu_subtitles();
@@ -8271,16 +8292,41 @@ impl App {
     }
     pub fn set_sleep_min(&mut self, m: u32) {
         self.sleep_min = m;
-        if m == 0 {
+        if m == 0 && !self.stop_after {
             self.sleep_idx = 0; // expired/cancelled → back to "Off" in the cycle
         }
     }
     pub fn sleep_label(&self) -> String {
-        if self.sleep_min == 0 {
+        if self.stop_after {
+            "END OF SONG".to_string()
+        } else if self.sleep_min == 0 {
             "OFF".to_string()
         } else {
             format!("{} MIN", self.sleep_min)
         }
+    }
+
+    /// Pick sleep preset `idx` (an index into `quick::SLEEP_PRESETS`) — from the Settings row or
+    /// the pull-down panel, which share the list. "End of song" is not a countdown: it arms
+    /// `stop_after` and cancels any running timer (`SleepTimer(0)`); the shell pauses at the end
+    /// of the playing song and calls `stop_after_done`.
+    fn set_sleep_choice(&mut self, idx: usize) -> Vec<Action> {
+        use crate::quick::{SLEEP_END_OF_SONG, SLEEP_PRESETS};
+        self.sleep_idx = idx.min(SLEEP_PRESETS.len() - 1);
+        let preset = SLEEP_PRESETS[self.sleep_idx];
+        self.stop_after = preset == SLEEP_END_OF_SONG;
+        self.sleep_min = if self.stop_after { 0 } else { preset };
+        vec![Action::SleepTimer(self.sleep_min)]
+    }
+
+    /// Is "stop after this song" armed? Read by the shell every frame while it times the end.
+    pub fn stop_after(&self) -> bool {
+        self.stop_after
+    }
+    /// The song ended and playback paused: back to "Off", as an expired timer goes.
+    pub fn stop_after_done(&mut self) {
+        self.stop_after = false;
+        self.sleep_idx = 0;
     }
 
     /// First-run onboarding. The shell shows it on first boot (when not yet seen); it's persisted so
@@ -11386,7 +11432,10 @@ mod tests {
         let night = a.night;
         assert_eq!(a.tap(240, quick::ROW_NIGHT + 30), vec![Action::ThemeChanged(!night)]);
         let sleep_y = quick::BOTTOM - 26 - crate::kit::CHIP_H / 2;
-        assert_eq!(a.tap(chip(2, 5), sleep_y), vec![Action::SleepTimer(30)]);
+        assert_eq!(a.tap(chip(2, 6), sleep_y), vec![Action::SleepTimer(30)]);
+        // The sixth chip is "Song": stop after this one. It cancels any countdown.
+        assert_eq!(a.tap(chip(5, 6), sleep_y), vec![Action::SleepTimer(0)]);
+        assert!(a.stop_after());
         assert!(a.quick_is_open(), "controls leave the panel open");
         assert_eq!(a.tap(240, quick::BOTTOM + 100), Vec::<Action>::new());
         assert!(!a.quick_is_open(), "a tap on the screen behind closes it");
@@ -13233,6 +13282,34 @@ mod tests {
         assert_eq!(a.sleep_label(), "OFF");
     }
 
+    /// Sleep ▸ End of song ("stop after current", SPEC_queue_v2 §4): the last preset in the cycle
+    /// arms `stop_after` instead of a countdown, survives the FFI's "0 minutes left" push, and the
+    /// shell's `stop_after_done` puts the row back to Off.
+    #[test]
+    fn end_of_song_is_the_last_sleep_preset() {
+        let mut a = unlocked();
+        let last = crate::quick::SLEEP_PRESETS.len() - 1;
+        let mut acts = Vec::new();
+        for _ in 0..last {
+            acts = a.set_sleep_choice((a.sleep_idx + 1) % crate::quick::SLEEP_PRESETS.len());
+        }
+        assert_eq!(acts, vec![Action::SleepTimer(0)], "any running countdown is cancelled");
+        assert!(a.stop_after());
+        assert_eq!(a.sleep_label(), "END OF SONG");
+        a.set_sleep_min(0); // the FFI's countdown reporting nothing left must not disarm it
+        assert!(a.stop_after());
+        assert_eq!(a.sleep_idx, last);
+        a.stop_after_done();
+        assert!(!a.stop_after());
+        assert_eq!(a.sleep_label(), "OFF");
+        // …and the next press starts the cycle again at 15.
+        assert_eq!(a.set_sleep_choice((a.sleep_idx + 1) % crate::quick::SLEEP_PRESETS.len()), vec![Action::SleepTimer(15)]);
+        // Picking a length disarms it.
+        a.set_sleep_choice(last);
+        a.set_sleep_choice(1);
+        assert!(!a.stop_after());
+    }
+
     #[test]
     fn touch_tap_navigates() {
         let mut a = App::unlocked();
@@ -14273,6 +14350,26 @@ mod tests {
 
     /// The CLEAR that empties it lives on the PREVIOUSLY PLAYED heading — a header this screen
     /// otherwise treats as never tappable — so it must claim its own pixels and no others.
+    #[test]
+    fn repeat_album_laps_the_run_the_playing_song_is_in() {
+        let mut a = unlocked();
+        let row = |id: i64, album: i64, name: &str| SongRow { object_id: id, album_id: album, art: name.into(), ..Default::default() };
+        // Album 7 (three songs), then a queued song from album 9, then album 7 again.
+        let list = vec![row(1, 7, "Isles"), row(2, 7, "Isles"), row(3, 7, "Isles"), row(4, 9, "Untrue"), row(5, 7, "Isles")];
+        a.set_play_context(list.clone(), 1);
+        assert_eq!(a.album_run(), Some((0, 3)), "the run around the playing song, not every row of the album");
+        a.set_play_context(list.clone(), 4);
+        assert_eq!(a.album_run(), Some((4, 5)), "the album's second place in the list is its own run");
+        a.set_play_context(list, 3);
+        assert_eq!(a.album_run(), Some((3, 4)));
+        // No album id (host/sample data): the album name decides.
+        let named = vec![row(1, 0, "Isles"), row(2, 0, "Isles"), row(3, 0, "Other")];
+        a.set_play_context(named, 0);
+        assert_eq!(a.album_run(), Some((0, 2)));
+        a.set_play_context(Vec::new(), 0);
+        assert_eq!(a.album_run(), None, "nothing playing, nothing to lap");
+    }
+
     #[test]
     fn up_next_saves_as_a_playlist_from_the_now_playing_heading() {
         use crate::up_next::{Section, Slot};
