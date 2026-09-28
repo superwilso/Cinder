@@ -219,6 +219,30 @@ impl Store {
         Ok(true)
     }
 
+    /// Append many tracks and write the file ONCE — `(uri, label)` pairs, the same rules as `add`
+    /// (no duplicates, nothing past the cap). `add` rewrites the whole file per track, which for a
+    /// saved Up Next of a few hundred songs is a few hundred rewrites of a growing file on FAT.
+    /// Returns how many went in.
+    pub fn add_many(&mut self, id: i64, items: &[(String, String)]) -> std::io::Result<usize> {
+        let Some(index) = self.index_of(id) else { return Ok(0) };
+        let list = &mut self.lists[index];
+        let mut added = 0;
+        for (uri, label) in items {
+            if list.entries.len() >= MAX_TRACKS {
+                break;
+            }
+            if uri.trim().is_empty() || list.entries.iter().any(|e| &e.uri == uri) {
+                continue;
+            }
+            list.entries.push(Entry { uri: uri.clone(), label: label.clone() });
+            added += 1;
+        }
+        if added > 0 {
+            write_file(list)?;
+        }
+        Ok(added)
+    }
+
     pub fn remove_at(&mut self, id: i64, position: usize) -> std::io::Result<bool> {
         let Some(index) = self.index_of(id) else { return Ok(false) };
         if position >= self.lists[index].entries.len() {
@@ -518,6 +542,23 @@ mod tests {
         assert!(store.add(id, "/x/a.flac", "A").unwrap());
         assert!(!store.add(id, "/x/a.flac", "A").unwrap());
         assert_eq!(store.get(id).unwrap().entries.len(), 1);
+    }
+
+    /// Save Up Next's bulk add: the order kept, duplicates and blanks skipped, one file written that
+    /// reopens with every track.
+    #[test]
+    fn add_many_keeps_order_and_skips_duplicates() {
+        let dir = Dir::new("many");
+        let mut store = Store::open(&dir.0);
+        let id = store.create("Up Next").unwrap();
+        let items: Vec<(String, String)> = ["b", "a", "b", "", "c"]
+            .iter()
+            .map(|n| (if n.is_empty() { String::new() } else { format!("/x/{n}.flac") }, n.to_string()))
+            .collect();
+        assert_eq!(store.add_many(id, &items).unwrap(), 3);
+        assert_eq!(uris(&Store::open(&dir.0).lists[0]), vec!["/x/b.flac", "/x/a.flac", "/x/c.flac"]);
+        assert_eq!(store.add_many(id, &items).unwrap(), 0, "a second save of the same list adds nothing");
+        assert_eq!(store.add_many(-1, &items).unwrap(), 0, "an unknown playlist takes nothing");
     }
 
     #[test]

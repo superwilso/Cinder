@@ -85,8 +85,8 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
   no text leaves the glass, lands on other text, or sits under something drawn over it. It found
   six real defects in existing screens, all fixed (CHANGELOG, *Fixed*).
 
-**Device:** a dev build from this pass booted on the owner's A55 on 2026-09-28. Everything after
-it is host-tested only; [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §19 is the run sheet.
+**Device:** R1 and R2 both checked on the owner's A55 on 2026-09-28 — every row of
+[`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §19 passes (dev build `b2a428d1`).
 
 ### A2. Flint (0.2, unreleased)
 
@@ -204,12 +204,12 @@ shell is **on hold** (Part E4).
 
 | Request | Home |
 |---|---|
-| B1 Quick-settings pull-down | **Done** (R2): `quick.rs`, Settings ▸ Pull-down panel, default Off. Brightness, Bluetooth, night, sleep timer. Its own overlay and state; the Shelf is untouched. The BLE remote toggle is left out because Cinder has no remote support (E4). The shell gesture (`cinder_quick_pull_begin` / `_open`) is device-unverified |
+| B1 Quick-settings pull-down | **Done** (R2): `quick.rs`, Settings ▸ Pull-down panel, default Off. Brightness, Bluetooth, night, sleep timer. Its own overlay and state; the Shelf is untouched. The BLE remote toggle is left out because Cinder has no remote support (E4). The shell gesture (`cinder_quick_pull_begin` / `_open`) is device-verified (DEVICE_CHECKLIST 19.7–19.8) |
 | B2 One-tap lyrics on Now Playing | **Done** (R2). A LYRICS chip top-left of the cover, drawn only when the song has lyrics |
 | B3 Walkman One support | Device work (checklist 18.1 to 18.4). Outside the redesign, and first in line after a stable release |
 | B4 Other players (ZX300 and others) | Waits for antiheroriot's pull request |
 | B5 Clear Bass+ | Research |
-| B6 Bluetooth debug log switch | **Done** (R2): THIS DEVICE ▸ Debug log. `SetHciLogEnabled` (slot 26), copied to the drive on switch-off, stopped at 4 MB, never persisted. Device-unverified: the capture file's permissions may block the copy (DEVICE_CHECKLIST 19.12) |
+| B6 Bluetooth debug log switch | **Done** (R2): THIS DEVICE ▸ Debug log. `SetHciLogEnabled` (slot 26), copied to the drive on switch-off, stopped at 4 MB, never persisted. Device-verified: the copy reaches the drive (DEVICE_CHECKLIST 19.12) |
 | B7 Theme marketplace | [`PLAN_skins.md`](PLAN_skins.md). Palettes, the 5j picker and Flint's check-and-send page are done. A shared place to find palettes is the next step |
 
 ### E3. Walkman One parity ([`PLAN_walkman_one_parity.md`](PLAN_walkman_one_parity.md))

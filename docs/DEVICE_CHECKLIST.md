@@ -549,12 +549,14 @@ the release artifacts, not the app.
 
 ---
 
-## 19 — Open from 2026-09-28 — the redesign's first pass, and two community requests
+## 19 — 2026-09-28 — the redesign's first two passes, and three community requests
 
-Everything here is host-tested and in the golden previews (`docs/PLAN_redesign_2026-09.md` Part A).
-None of it has been looked at on the glass. No flash is needed: a dev build installed over adb and
-one reboot covers the lot. The first two rows change what the owner sees at every boot, so they
-come first.
+**ALL PASS — 19.1 to 19.16, on the owner's A55, 2026-09-28** (dev build `b2a428d1`, installed over
+adb, one reboot). Kept as the run sheet for the next time these screens change.
+
+Everything here is host-tested and in the golden previews (`docs/PLAN_redesign_2026-09.md` Parts A
+and B). No flash is needed: a dev build installed over adb and one reboot covers the lot. The first
+two rows change what the owner sees at every boot, so they come first.
 
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|

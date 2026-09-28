@@ -19,7 +19,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 The first pass of the 2026-09 redesign is in this release. The ledger for the rest, screen by
 screen, is [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md). The redesign's
 entries — all of *Added* and the first eight under *Changed* — and the text fixes at the top of
-*Fixed* are *host-tested and in the golden previews; device-unverified*.
+*Fixed* are host-tested, in the golden previews, and *device-verified 2026-09-28 on the owner's A55*
+(`docs/DEVICE_CHECKLIST.md` §19, every row).
 
 ### Added
 
@@ -37,8 +38,9 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
 - **A Bluetooth debug log.** Bluetooth ▸ THIS DEVICE ▸ *Debug log* records the radio's traffic
   (an HCI capture Wireshark opens) and, when switched off, saves it to the drive as
   `cinder-bt-log-<time>.btsnoop` to attach to a "won't connect" report. It is off at every boot and
-  stops itself at 4 MB. *Device-unverified: the stack may write the capture where this app cannot
-  read it; the toast then says so, and the file is still there for `adb pull`.*
+  stops itself at 4 MB. *Device-verified: the capture is saved to the drive.* If a firmware ever
+  writes it where this app cannot read it, the toast says so and the file is still there for
+  `adb pull`.
 - **SensMe channels as a grid.** Two columns of tiles, each with its track count and a bar for how
   big the channel is, and one button at the foot that shuffles everything analysed. Switch on
   *Follow the time of day* and the button plays the channel for the hour instead (Morning,
@@ -51,7 +53,7 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
   the status bar for brightness (five levels), Bluetooth on/off, night, and the sleep timer
   (off, 15, 30, 45, 60 minutes). Tap the screen below it, or press Back, to close it. With the
   setting off nothing changes: no gesture, and a drag from the top scrolls as before. The Shelf is
-  untouched. Asked for on the r/walkman thread. *The gesture itself is device-unverified.*
+  untouched. Asked for on the r/walkman thread.
 - **Lyrics in one tap.** When the playing song has lyrics, Now Playing shows a LYRICS chip in the
   top-left corner of the cover; it opens the Lyrics screen, which was two taps deep behind Track
   information. With no lyrics there is no chip. Asked for on the r/walkman thread.
@@ -119,7 +121,7 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
     **Balance** hint touched the MONO / CENTRE buttons;
   - a palette with a long wide-character name pushed its colour swatch onto the **Palette** title.
 
-  *Host-tested; device-unverified.*
+  *Host-tested; device-verified 2026-09-28.*
 
 - **Shuffle after starting an album part-way through dropped the tracks before the start point.**
   *Device-verified.* Shuffle now keeps the playing track playing and deals **every** other track in

@@ -3149,6 +3149,38 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             }
             return None;
         }
+        Action::PlaylistCreateFromQueue => {
+            let name = r.app.text_input().to_string();
+            let tracks: Vec<(String, String)> = match r.db.as_ref() {
+                Some(db) => r
+                    .app
+                    .queue_to_save()
+                    .into_iter()
+                    .filter_map(|id| db.track_by_object_id(id).ok().flatten())
+                    .map(|t| (t.filename.clone(), format!("{} - {}", t.artist, t.title)))
+                    .collect(),
+                None => Vec::new(),
+            };
+            match r.plists.create(&name) {
+                Ok(id) => {
+                    let n = match r.plists.add_many(id, &tracks) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            eprintln!("cinder-ffi: save Up Next: {e}");
+                            0
+                        }
+                    };
+                    refresh_playlists(r);
+                    // Stay on Up Next: the list you saved is the one on screen, and the toast says
+                    // where it went.
+                    let songs = if n == 1 { "1 song".to_string() } else { format!("{n} songs") };
+                    r.app.notify(&format!("Saved to Playlists \u{b7} {songs}"));
+                    eprintln!("cinder-ffi: Up Next saved as {name:?}: {n} of {} tracks", tracks.len());
+                }
+                Err(e) => eprintln!("cinder-ffi: save Up Next {name:?}: {e}"),
+            }
+            return None;
+        }
         Action::PlaylistRename(id) => {
             let name = r.app.text_input().to_string();
             if let Err(e) = r.plists.rename(*id, &name) {
