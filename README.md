@@ -35,6 +35,9 @@ stay as they are. You install it from a PC over USB, and the same installer puts
 - **Built-in extras**: a `.scrobbler.log` scrobbler, lyrics (`.lrc` or embedded tags), library
   search, SensMe™ channels, FM radio with a real signal meter, and colour palettes you can drop on
   the drive.
+- **Yours to arrange.** Choose whether the player opens on the Library, Now Playing, the Menu or
+  wherever you left it, and switch on an optional pull-down panel for brightness, Bluetooth, night
+  and the sleep timer.
 - **Your library as it is.** Cinder reads the same database as Sony's player, so music, playlists
   and liked songs stay put.
 
@@ -47,11 +50,10 @@ whether it has run on hardware (*device-verified*) or not yet. Feature by featur
 **Known issues**
 
 - **v0.3.9 does not start after a fresh install.** The player keeps showing Sony's app
-  ([#16](../../issues/16)). This is fixed in **0.3.11-rc1 and later**, so use the newest release
-  from the [releases page](../../releases), including pre-releases, until the next stable one.
+  ([#16](../../issues/16)). Fixed in **v0.3.12**, the current release: install it over the top.
 - **Walkman One (Mr Walkman):** the release package is rejected. Walkman One changes the key the
   player's updater accepts, so the updater drops the package silently and the player restarts
-  unchanged. From the next release, the installer warns when it sees Walkman One's `CFW` folder.
+  unchanged. Since v0.3.12 the installer warns when it sees Walkman One's `CFW` folder.
   Cinder itself does run on Walkman One 3.02 (device-verified 2026-09-21), but getting it there
   needs a differently sealed package that has not been tested yet. Details: [Coming from Walkman One](#coming-from-walkman-one).
 - **Not built yet:** Bluetooth receiver mode (the Walkman as a speaker) and FM recording.
@@ -164,6 +166,14 @@ art is generated.
 | Menu | Settings | Display |
 |---|---|---|
 | <img src="docs/screenshots/menu.png" width="190" alt="Menu, with the Start on picker"> | <img src="docs/screenshots/settings.png" width="190" alt="Settings"> | <img src="docs/screenshots/display.png" width="190" alt="Display settings"> |
+
+| SensMe channels | Palettes | Pull-down panel (optional) | Lyrics in one tap |
+|---|---|---|---|
+| <img src="docs/screenshots/sensme.png" width="190" alt="SensMe channel grid"> | <img src="docs/screenshots/palette.png" width="190" alt="Palette picker"> | <img src="docs/screenshots/pull-down.png" width="190" alt="Pull-down panel"> | <img src="docs/screenshots/now-playing-lyrics.png" width="190" alt="Now Playing with the Lyrics chip"> |
+
+| Bluetooth sound quality | Device and battery | Help & controls |
+|---|---|---|
+| <img src="docs/screenshots/sound-quality.png" width="190" alt="Bluetooth sound quality: codec, LDAC mode, volume control"> | <img src="docs/screenshots/device.png" width="190" alt="Device: battery, charger, temperatures"> | <img src="docs/screenshots/help.png" width="190" alt="Help and controls, with the way back to Sony"> |
 
 ## License
 

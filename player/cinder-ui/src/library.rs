@@ -1555,13 +1555,17 @@ pub fn album_view(
         f, &album.name, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01), (W as f32) - 150.0,
     );
     text::draw(c, f, 132.0, 110.0, &title, &sty(Family::Sans, Weight::ExtraBold, 24.0, t.ink, -0.01));
-    text::draw(c, f, 132.0, 134.0, &album.artist, &sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0));
+    // Fitted like the title above it. It was drawn raw, and a long artist credit (an orchestra and
+    // its conductor, a "feat." list) ran off the panel (`tests/ui_overflow.rs`, hostile library).
+    let ast = sty(Family::Sans, Weight::Regular, 15.0, t.dim, 0.0);
+    text::draw(c, f, 132.0, 134.0, &crate::widgets::fit(f, &album.artist, &ast, (W as f32) - 150.0), &ast);
     let meta = if album.year.is_empty() {
         format!("{} TRACKS", album.tracks)
     } else {
         format!("{} · {} TRACKS", album.year, album.tracks)
     };
-    text::draw(c, f, 132.0, 156.0, &meta, &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1));
+    let mst = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
+    text::draw(c, f, 132.0, 156.0, &crate::widgets::fit(f, &meta, &mst, (W as f32) - 150.0), &mst);
 
     shuffle_row(c, t, f, ALBUM_BAND_Y, "Play album", "IN ORDER · THEN SHUFFLE");
     let top = album_tracks_top();

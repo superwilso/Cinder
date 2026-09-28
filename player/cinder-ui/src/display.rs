@@ -137,14 +137,20 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &DisplayVie
 fn draw_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, r: usize, sel: bool, v: &DisplayView) -> i32 {
     match r {
         ROW_PALETTE => {
-            let name = v.palette.to_uppercase();
-            let next = kit::row(c, t, f, y, kit::ROW_H, &Row::new("Palette").trail(Trail::Open(&name)).sel(sel));
             // The palette's own colours beside its name: background, line, dim, ink, accent — the
             // five a palette file actually changes, as 10 x 18 cells.
-            let vst = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.1);
-            let vx = kit::RIGHT - 20 - text::measure(f, &name, &vst) as i32 - 14;
             let cells = [t.bg, t.line, t.dim, t.ink, t.acc];
-            let x0 = vx - cells.len() as i32 * 10;
+            let swatch_w = cells.len() as i32 * 10;
+            // The name is fitted HERE, once, with room left for the swatch, and the swatch is
+            // placed from that same string. Positioning it from the unfitted name put it under the
+            // title for a wide name (16 CJK characters at 140%), because the row shortens the
+            // value it is given but nobody told the swatch.
+            let vst = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.1);
+            let room = (kit::RIGHT - kit::LEFT) as f32 / 2.0 - (swatch_w + 14) as f32;
+            let name = crate::widgets::fit(f, &v.palette.to_uppercase(), &vst, room);
+            let next = kit::row(c, t, f, y, kit::ROW_H, &Row::new("Palette").trail(Trail::Open(&name)).sel(sel));
+            let vx = kit::RIGHT - 20 - text::measure(f, &name, &vst) as i32 - 14;
+            let x0 = vx - swatch_w;
             let cy = y + kit::ROW_H / 2;
             for (i, col) in cells.iter().enumerate() {
                 fill_rect(c, x0 + i as i32 * 10, cy - 9, 10, 18, *col);
@@ -161,7 +167,9 @@ fn draw_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, r: usize, sel: bool,
             let upper = v.accent.name();
             let mut name = upper[..1].to_string();
             name.push_str(&upper[1..].to_lowercase());
-            let next = kit::row(c, t, f, y, kit::ROW_H, &Row::new("Accent").sub(&name).sel(sel));
+            let swatches = kit::RIGHT - swatch_x(0);
+            let next = kit::row(c, t, f, y, kit::ROW_H,
+                                &Row::new("Accent").sub(&name).trail(Trail::Reserve(swatches)).sel(sel));
             let cy = y + kit::ROW_H / 2;
             for (i, a) in Accent::ALL.iter().enumerate() {
                 let sx = swatch_x(i);

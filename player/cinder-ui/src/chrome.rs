@@ -372,9 +372,20 @@ pub fn header_caption_from(
 ) -> i32 {
     icons::back(c, 30.0, 62.0, 20.0, t.dim);
     let ts = title_style(t.ink);
-    let title_end = text::draw(c, f, TITLE_X, 70.0, title, &ts);
+    let rs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
+    // The title is FITTED. Most titles are fixed words, but some are the user's own — a playlist's
+    // name on the track picker — and an unfitted one ran off the panel and left the caption a
+    // zero-width space to draw "…" into, on top of it (`tests/ui_overflow.rs`, hostile library).
+    // It keeps room for a caption of up to 140 px and never reaches past a control at `min_x`;
+    // the caption is then fitted into whatever the title left, as before.
+    let cap_room = right.map_or(0.0, |r| text::measure(f, r, &rs).min(140.0) + 16.0);
+    let mut title_right = 458.0 - cap_room;
+    if min_x > 0.0 {
+        title_right = title_right.min(min_x - 16.0);
+    }
+    let title = crate::widgets::fit(f, title, &ts, (title_right - TITLE_X).max(0.0));
+    let title_end = text::draw(c, f, TITLE_X, 70.0, &title, &ts);
     if let Some(r) = right {
-        let rs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
         // Clamp the caption to the space right of the title (never let it overlap the title).
         let avail = (458.0 - (title_end + 16.0).max(min_x)).max(0.0);
         let r = crate::widgets::fit(f, r, &rs, avail);

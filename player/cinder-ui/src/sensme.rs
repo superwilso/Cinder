@@ -11,6 +11,12 @@
 //! Two levels, one screen, exactly like `folders.rs`: the channel list, and one channel's tracks.
 //! `nav` holds which channel is open, and Back inside one returns to the list.
 //!
+//! THE CHANNEL LIST IS A GRID (design handoff 5d): two columns of 68 px tiles, each with its track
+//! count and a 4 px bar that says how big the channel is next to the biggest one, then a fixed foot
+//! with "Follow the time of day" and one primary button. The button shuffles every analysed track —
+//! or, with the switch on, plays the channel for the hour (Morning, Daytime, Evening, Night,
+//! Midnight). The grid is expressed once, in [`tile_rect`] / [`tile_at`].
+//!
 //! The layout is expressed ONCE, in [`list_top`]/[`row_top`]/[`row_at`], and both `render` and the
 //! hit test read it — the recurring defect in this file's neighbours is a render and a hit test
 //! that each compute the same geometry and then drift.
@@ -46,12 +52,76 @@ pub const ALL: u8 = u8::MAX;
 /// What a visual row is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Row {
-    /// Open `Library::channels[i]`.
+    /// Open `Library::channels[i]` (a tile of the grid).
     Channel(usize),
-    /// Shuffle every analysed track — the channel list's first row.
-    All,
     /// Play the open channel from its member `i`.
     Track(usize),
+}
+
+// ── The channel grid ─────────────────────────────────────────────────────────────────────────────
+
+pub const TILE_H: i32 = 68;
+const TILE_GAP: i32 = 8;
+const PITCH: i32 = TILE_H + TILE_GAP;
+const TILE_W: i32 = (crate::kit::RIGHT - crate::kit::LEFT - TILE_GAP) / 2;
+/// The grid, under its CHANNELS label, down to the fixed foot.
+pub const GRID_TOP: i32 = TOP + crate::kit::SECTION_H;
+/// The foot: the time-of-day switch row, then the primary button, then a margin.
+const FOOT_H: i32 = crate::kit::ROW_H + crate::kit::BUTTON_H + 12;
+pub const GRID_BOTTOM: i32 = LIST_BOTTOM - FOOT_H;
+pub const FOLLOW_Y: i32 = GRID_BOTTOM;
+pub const BUTTON_Y: i32 = GRID_BOTTOM + crate::kit::ROW_H;
+
+/// Tile `i`'s rectangle on screen at `scroll`: `(x, y, w, h)`.
+pub fn tile_rect(i: usize, scroll: i32) -> (i32, i32, i32, i32) {
+    let (col, row) = ((i % 2) as i32, (i / 2) as i32);
+    (crate::kit::LEFT + col * (TILE_W + TILE_GAP), GRID_TOP + row * PITCH - scroll, TILE_W, TILE_H)
+}
+
+/// Which of `n` tiles is under `(x, y)`. The gaps belong to no tile, and nothing outside the grid's
+/// band answers — a half-scrolled tile under the label or the foot is not there to tap.
+pub fn tile_at(n: usize, x: i32, y: i32, scroll: i32) -> Option<usize> {
+    if !(GRID_TOP..GRID_BOTTOM).contains(&y) {
+        return None;
+    }
+    (0..n).find(|&i| {
+        let (tx, ty, tw, th) = tile_rect(i, scroll);
+        (tx..tx + tw).contains(&x) && (ty..ty + th).contains(&y)
+    })
+}
+
+fn grid_h(n: usize) -> i32 {
+    if n == 0 {
+        0
+    } else {
+        n.div_ceil(2) as i32 * PITCH - TILE_GAP
+    }
+}
+
+/// Is `y` on the "Follow the time of day" row?
+pub fn follow_hit(y: i32) -> bool {
+    (FOLLOW_Y..FOLLOW_Y + crate::kit::ROW_H).contains(&y)
+}
+
+/// Is `(x, y)` on the primary button?
+pub fn button_hit(x: i32, y: i32) -> bool {
+    crate::kit::primary_button_hit(BUTTON_Y, x, y)
+}
+
+/// Sony's five time-of-day channels, by id (`cinder_db::SENSME_CHANNELS`): Morning 8, Daytime 9,
+/// Evening 10, Night 11, Midnight 12.
+///
+/// THE HOURS ARE CINDER'S, not Sony's: the stock player's own boundaries have not been read out of
+/// it. These follow the names — morning until 10, daytime until 16, evening until 19, night until
+/// 23, midnight after — and this function is the only place that knows them.
+pub fn time_channel_id(hour: u8) -> u8 {
+    match hour {
+        5..=9 => 8,
+        10..=15 => 9,
+        16..=18 => 10,
+        19..=22 => 11,
+        _ => 12,
+    }
 }
 
 /// The rows of the level currently open.
@@ -62,19 +132,8 @@ pub fn rows(lib: &Library, channel: Option<usize>) -> Vec<Row> {
             Some(ch) => (0..ch.tracks.len()).map(Row::Track).collect(),
             None => Vec::new(),
         },
-        // The list of channels. "Shuffle all" leads it, and only when there is more than one
-        // channel to shuffle across — with a single channel it would be the same button twice.
-        None => {
-            if lib.channels.is_empty() {
-                return Vec::new();
-            }
-            let mut out = Vec::with_capacity(lib.channels.len() + 1);
-            if lib.channels.len() > 1 {
-                out.push(Row::All);
-            }
-            out.extend((0..lib.channels.len()).map(Row::Channel));
-            out
-        }
+        // The grid of channels. "Shuffle all" is the foot's button now, not a row.
+        None => (0..lib.channels.len()).map(Row::Channel).collect(),
     }
 }
 
@@ -86,16 +145,24 @@ pub fn list_top(channel: Option<usize>) -> i32 {
             let (_, by, _, bh) = shuffle_band_rect(BAND_Y);
             by + bh + 8
         }
-        None => TOP,
+        None => GRID_TOP,
     }
 }
 
 pub fn content_h(lib: &Library, channel: Option<usize>) -> i32 {
-    rows(lib, channel).len() as i32 * ROW_H
+    match channel {
+        None => grid_h(lib.channels.len()),
+        Some(_) => rows(lib, channel).len() as i32 * ROW_H,
+    }
+}
+
+/// The bottom of the scrolling area: the list runs to the Now Playing bar, the grid to its foot.
+pub fn list_bottom(channel: Option<usize>) -> i32 {
+    if channel.is_none() { GRID_BOTTOM } else { LIST_BOTTOM }
 }
 
 pub fn max_scroll_px(lib: &Library, channel: Option<usize>) -> i32 {
-    (content_h(lib, channel) - (LIST_BOTTOM - list_top(channel))).max(0)
+    (content_h(lib, channel) - (list_bottom(channel) - list_top(channel))).max(0)
 }
 
 /// Screen-y of visual row `r` at `scroll`.
@@ -103,8 +170,10 @@ pub fn row_top(r: usize, channel: Option<usize>, scroll: i32) -> i32 {
     list_top(channel) + r as i32 * ROW_H - scroll
 }
 
-/// Which row is under `y`? `None` above or below the list, or past the last row.
+/// Which row is under `y`? `None` above or below the list, or past the last row. The channel list
+/// is a grid, which needs an x: ask [`tile_at`] for it.
 pub fn row_at(lib: &Library, channel: Option<usize>, y: i32, scroll: i32) -> Option<Row> {
+    channel?;
     let top = list_top(channel);
     if !(top..LIST_BOTTOM).contains(&y) {
         return None;
@@ -199,6 +268,25 @@ pub const EMPTY_BODY: [&str; 3] = [
     "Music Center. Tag your files, then rescan.",
 ];
 
+/// The grid's foot state, from `nav`.
+#[derive(Clone, Copy, Default)]
+pub struct Foot {
+    /// "Follow the time of day" is on.
+    pub follow: bool,
+    /// The hour on the status-bar clock, when there is one.
+    pub hour: Option<u8>,
+}
+
+/// The channel the foot's button would play, as an index into `lib.channels`: the time-of-day one
+/// when following and it has tracks, otherwise `None` (every analysed track, shuffled).
+pub fn foot_channel(lib: &Library, foot: Foot) -> Option<usize> {
+    if !foot.follow {
+        return None;
+    }
+    let id = time_channel_id(foot.hour?);
+    lib.channels.iter().position(|ch| ch.id == id)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     c: &mut Canvas,
@@ -208,6 +296,7 @@ pub fn render(
     channel: Option<usize>,
     scroll_px: i32,
     sbar_active: bool,
+    foot: Foot,
 ) {
     let top = list_top(channel);
     let scroll = scroll_px.clamp(0, max_scroll_px(lib, channel));
@@ -231,6 +320,12 @@ pub fn render(
         return;
     }
 
+    if channel.is_none() {
+        grid(c, t, f, lib, scroll, foot);
+        scrollbar(c, t, top, GRID_BOTTOM, scroll, content_h(lib, None), sbar_active);
+        return;
+    }
+
     c.set_clip_y(top, LIST_BOTTOM);
     // Only the visible window — a channel can hold the whole library.
     let first = (scroll / ROW_H).max(0) as usize;
@@ -241,16 +336,6 @@ pub fn render(
         }
         let cy = y + ROW_H / 2;
         match row {
-            Row::All => {
-                icons::shuffle(c, 34.0, cy as f32, 19.0, t.acc);
-                let ns = name_style(t, true);
-                text::draw(c, f, 62.0, (cy + 6) as f32, "Shuffle all analysed", &ns);
-                let cs = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.12);
-                let cl = count_label(lib.sensme_tracks as usize);
-                let w = text::measure(f, &cl, &cs);
-                text::draw(c, f, 440.0 - w, (cy + 5) as f32, &cl, &cs);
-                icons::chevron(c, 452.0, cy as f32, 9.0, t.faint);
-            }
             Row::Channel(i) => {
                 let Some(ch) = lib.channels.get(*i) else { continue };
                 // A gradient tile keyed by the channel's name, the way a coverless album row is
@@ -290,6 +375,68 @@ pub fn render(
     let _ = W;
 }
 
+/// The channel grid and its foot.
+fn grid(c: &mut Canvas, t: &Theme, f: &FontSet, lib: &Library, scroll: i32, foot: Foot) {
+    use crate::kit;
+    kit::section_label(c, t, f, TOP, "CHANNELS", None);
+    let biggest = lib.channels.iter().map(|ch| ch.tracks.len()).max().unwrap_or(1).max(1);
+    let now = foot_channel(lib, foot);
+    c.set_clip_y(GRID_TOP, GRID_BOTTOM);
+    for (i, ch) in lib.channels.iter().enumerate() {
+        let (x, y, w, h) = tile_rect(i, scroll);
+        if y + h < GRID_TOP || y >= GRID_BOTTOM {
+            continue;
+        }
+        fill_rect(c, x, y, w, h, t.panel);
+        crate::widgets::stroke_rect(c, x, y, w, h, if now == Some(i) { t.acc } else { t.line }, 1);
+        let ns = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0);
+        let cs = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.faint, 0.1);
+        // NOW marks the channel the button will play; it takes its width from the name.
+        let tag_w = if now == Some(i) {
+            let tst = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.14);
+            let tw = text::measure(f, "NOW", &tst);
+            text::draw(c, f, (x + w - 12) as f32 - tw, (y + 26) as f32, "NOW", &tst);
+            tw + 8.0
+        } else {
+            0.0
+        };
+        let name = crate::widgets::fit(f, ch.name, &ns, (w - 24) as f32 - tag_w);
+        text::draw(c, f, (x + 12) as f32, (y + 28) as f32, &name, &ns);
+        let cl = count_label(ch.tracks.len());
+        text::draw(c, f, (x + 12) as f32, (y + 50) as f32, &crate::widgets::fit(f, &cl, &cs, (w - 24) as f32), &cs);
+        // The count bar: how big this channel is next to the biggest one.
+        let bw = w - 24;
+        fill_rect(c, x + 12, y + h - 10, bw, 4, t.line);
+        let fill = (bw as usize * ch.tracks.len() / biggest) as i32;
+        fill_rect(c, x + 12, y + h - 10, fill.max(2), 4, t.acc);
+    }
+    c.clear_clip();
+
+    // The foot, ruled off from a half-scrolled tile above it.
+    hline(c, FOLLOW_Y, t.line);
+    let sub = match (foot.follow, foot.hour.map(time_channel_id)) {
+        (false, _) => "Play the channel for the hour".to_string(),
+        (true, None) => "Waiting for the clock".to_string(),
+        (true, Some(id)) => {
+            let name = crate::model::SENSME_TIME_NAMES
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map_or("", |(_, n)| n);
+            match now {
+                Some(_) => format!("Now: {name}"),
+                None => format!("Now: {name} — nothing in it yet"),
+            }
+        }
+    };
+    kit::row(c, t, f, FOLLOW_Y, kit::ROW_H,
+             &crate::kit::Row::new("Follow the time of day").sub(&sub).trail(crate::kit::Trail::Switch(foot.follow)));
+    let label = match now.and_then(|i| lib.channels.get(i)) {
+        Some(ch) => format!("Play {}", ch.name),
+        None => "Shuffle all analysed".to_string(),
+    };
+    kit::primary_button(c, t, f, BUTTON_Y, &label);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,37 +455,47 @@ mod tests {
         }
     }
 
-    /// Every row the renderer draws must be the row the hit test finds under it, at any scroll.
-    /// Both levels, because they have different list tops — the channel page gives its first 80 px
-    /// to the band, and a hit test that forgot would play the wrong track by one row per screen.
+    /// Every row the renderer draws must be the row the hit test finds under it, at any scroll —
+    /// the channel page's list (under its band), and the grid's tiles (under their label).
     #[test]
     fn the_hit_test_agrees_with_the_rows_at_every_scroll() {
         let l = lib();
-        for channel in [None, Some(0)] {
-            let all = rows(&l, channel);
-            assert!(!all.is_empty());
-            for (r, want) in all.iter().enumerate() {
-                for scroll in [0, 9, ROW_H, ROW_H * 2 - 1] {
-                    let y = row_top(r, channel, scroll) + ROW_H / 2;
-                    if (list_top(channel)..LIST_BOTTOM).contains(&y) {
-                        assert_eq!(row_at(&l, channel, y, scroll), Some(*want),
-                                   "row {r} at scroll {scroll}, channel {channel:?}");
-                    }
+        let channel = Some(0);
+        let all = rows(&l, channel);
+        for (r, want) in all.iter().enumerate() {
+            for scroll in [0, 9, ROW_H, ROW_H * 2 - 1] {
+                let y = row_top(r, channel, scroll) + ROW_H / 2;
+                if (list_top(channel)..LIST_BOTTOM).contains(&y) {
+                    assert_eq!(row_at(&l, channel, y, scroll), Some(*want), "row {r} at scroll {scroll}");
                 }
             }
-            // Past the last row is nothing, not the last row again.
-            let past = row_top(all.len(), channel, 0) + ROW_H / 2;
-            if past < LIST_BOTTOM {
-                assert_eq!(row_at(&l, channel, past, 0), None);
+        }
+        let past = row_top(all.len(), channel, 0) + ROW_H / 2;
+        if past < LIST_BOTTOM {
+            assert_eq!(row_at(&l, channel, past, 0), None);
+        }
+        // The grid: every tile answers at its centre, the gaps belong to nobody, and nothing
+        // under the foot answers even when a scrolled tile would be drawn there.
+        for n in [1usize, 2, 5, 13] {
+            for scroll in [0, 30] {
+                for i in 0..n {
+                    let (x, y, w, h) = tile_rect(i, scroll);
+                    let (cx, cy) = (x + w / 2, y + h / 2);
+                    let want = (GRID_TOP..GRID_BOTTOM).contains(&cy).then_some(i);
+                    assert_eq!(tile_at(n, cx, cy, scroll), want, "tile {i} of {n} at scroll {scroll}");
+                }
             }
         }
+        let (x0, _, w0, _) = tile_rect(0, 0);
+        assert_eq!(tile_at(2, x0 + w0 + 4, GRID_TOP + 30, 0), None, "the gap between columns");
+        assert_eq!(row_at(&l, None, GRID_TOP + 10, 0), None, "the grid needs an x: ask tile_at");
     }
 
-    /// The channel list leads with "shuffle all", and a channel opens onto its members only.
+    /// The grid is the channels; a channel opens onto its members only.
     #[test]
     fn the_two_levels_have_the_rows_they_should() {
         let l = lib();
-        assert_eq!(rows(&l, None), vec![Row::All, Row::Channel(0), Row::Channel(1)]);
+        assert_eq!(rows(&l, None), vec![Row::Channel(0), Row::Channel(1)]);
         assert_eq!(rows(&l, Some(0)), vec![Row::Track(0), Row::Track(1)]);
         assert_eq!(rows(&l, Some(1)), vec![Row::Track(0)]);
         // A channel index that no longer exists resolves to nothing rather than panicking.
@@ -350,13 +507,23 @@ mod tests {
         assert_eq!(subtitle(&l, None), "");
     }
 
-    /// With one channel there is nothing for "shuffle all" to shuffle ACROSS, so the row that would
-    /// duplicate the channel's own band is not drawn.
+    /// The foot's button plays the time-of-day channel only when following AND that channel has
+    /// tracks; otherwise it shuffles everything analysed. The hours map onto Sony's five.
     #[test]
-    fn one_channel_does_not_get_a_shuffle_all_row() {
-        let mut l = lib();
-        l.channels.truncate(1);
-        assert_eq!(rows(&l, None), vec![Row::Channel(0)]);
+    fn the_foot_follows_the_clock_when_asked() {
+        let l = lib(); // Active (id 0) and Morning (id 8)
+        assert_eq!(foot_channel(&l, Foot { follow: false, hour: Some(7) }), None, "not following");
+        assert_eq!(foot_channel(&l, Foot { follow: true, hour: Some(7) }), Some(1), "07:00 is Morning");
+        assert_eq!(foot_channel(&l, Foot { follow: true, hour: Some(21) }), None, "Night has nothing");
+        assert_eq!(foot_channel(&l, Foot { follow: true, hour: None }), None, "no clock yet");
+        let ids: Vec<u8> = (0..24).map(time_channel_id).collect();
+        assert!(ids.iter().all(|id| (8..=12).contains(id)));
+        assert_eq!((time_channel_id(4), time_channel_id(5), time_channel_id(12), time_channel_id(17),
+                    time_channel_id(20), time_channel_id(23)), (12, 8, 9, 10, 11, 12));
+        // The foot sits below the grid and above the Now Playing bar.
+        assert!(BUTTON_Y + crate::kit::BUTTON_H <= LIST_BOTTOM);
+        assert!(follow_hit(FOLLOW_Y + 10) && !follow_hit(GRID_BOTTOM - 1));
+        assert!(button_hit(240, BUTTON_Y + 20));
     }
 
     /// A library nobody has analysed has no rows, nothing to scroll, and an empty state that says

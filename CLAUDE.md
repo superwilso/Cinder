@@ -16,7 +16,7 @@
 > | | |
 > |---|---|
 > | Releases shipped | **v0.3.0 → v0.3.9** stable, **0.3.10-rc1 / 0.3.11-rc1** pre-releases — v0.3.9 cannot start after a fresh install (#16), so the next stable is overdue |
-> | Offline gates | **627 Rust tests** (player) + 53 (installer), **49 harness scenarios**, 24 C/C++ files syntax-clean, **259 golden pixel hashes** — all green, player gates re-run 2026-09-28 for the redesign's first pass ([`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) Part A); the rest last re-run 2026-09-23 ([`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) Parts A and E) |
+> | Offline gates | **653 Rust tests** (player) + 53 (installer), **49 harness scenarios**, 24 C/C++ files syntax-clean, **271 golden pixel hashes** plus a text audit over every preview (`cinder-host --audit`) — all green, player gates re-run 2026-09-28 for the redesign's first pass ([`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) Part A); the rest last re-run 2026-09-23 ([`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) Parts A and E) |
 > | The headline feature | **USB-DAC → LDAC ran end to end** (2026-09-12, owner-reported, no log captured) |
 > | Landed since 2026-09-14 | Mono on the jack and Bluetooth, **SensMe channels** (reads tags written by Sony's Music Center *or* by [Flint](https://github.com/superwilso/flint), opt-in install component `sensme`), a battery gauge that no longer chases the load, and a charger row that stops calling an unplugged cable a fault |
 > | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **11.9, the Windows installer**, and the new **14.1–14.6** (SensMe end to end, the channel-name table, the Music-Center/Flint interop claim, and the battery gauge in the wild) |

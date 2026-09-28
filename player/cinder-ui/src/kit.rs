@@ -99,6 +99,10 @@ pub enum Trail<'a> {
     Open(&'a str),
     /// A switch.
     Switch(bool),
+    /// `w` px at the right edge that the SCREEN draws into after the row (a swatch, a meter). The
+    /// row draws nothing there, and fits its title and subtitle short of it — so what the screen
+    /// adds can never cover the text.
+    Reserve(i32),
 }
 
 /// One list row of the kit.
@@ -177,6 +181,7 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
             switch(c, t, RIGHT - SWITCH_W, cy - SWITCH_H / 2, on);
             right_edge = (RIGHT - SWITCH_W - 14) as f32;
         }
+        Trail::Reserve(w) => right_edge = (RIGHT - w - 14) as f32,
     }
 
     let tst = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, if r.sel { t.acc } else { t.ink }, 0.0);

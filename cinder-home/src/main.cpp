@@ -1706,6 +1706,10 @@ static bool  g_hswipe_active = false;
 // `active` on fire while leaving `tested` set is what makes the rest of the drag inert.
 static bool  g_shelfswipe_active = false;
 static bool  g_shelfswipe_tested = false;
+// Top-edge pull DOWN = the quick-settings panel. Only claimed when the UI says the panel is switched
+// on (Settings, default OFF), so with it off these stay false and nothing about a contact changes.
+static bool  g_quickpull_active = false;
+static bool  g_quickpull_tested = false;
 // Up Next queue reorder. Vertical counterpart of g_hswipe_active: once a contact lands on a queue
 // row's grab handle it owns that contact for the rest of its life, so the list must not also
 // scroll under it.
@@ -3255,6 +3259,7 @@ static void screen_auto_off() {
     g_drag_active = false; g_drag_vel = 0.0f;
     g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+    g_quickpull_active = false; g_quickpull_tested = false;
                             g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
     panel_dark();
     apply_pump_interval();   // nothing on screen needs 50 Hz IPC latency
@@ -4823,6 +4828,7 @@ static void* bt_common() {
     if (!g_bt_common) g_bt_common = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
     return g_bt_common;
 }
+
 
 // A short, honest descriptor from the class-of-device word. Only the major class is trusted plus the
 // handful of audio minor classes that are unambiguous — a wrong-but-specific label ("Speaker" on a
@@ -7605,6 +7611,131 @@ static int  g_rescan_quiet       = 0;   // consecutive checks that saw no change
 static void media_rescan();             // defined with the MediaStore block, far below
 
 static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
+
+// ── Bluetooth debug log (community request B6, docs/PLAN_community_2026-09-23.md) ─────────────
+// Bluetooth ▸ THIS DEVICE ▸ Debug log turns on the MTK stack's HCI capture:
+// BtCommonServiceClient::SetHciLogEnabled(const bool&), client vtable slot 26. Measured with
+// `cinder-probe --btlink hci on` on 2026-08-19: /tmp/hci_sniffer_log_<YYYYMMDDhhmmss>.cfa appears at
+// once and grows with traffic, and despite the extension it is a plain btsnoop file (Wireshark
+// opens it as-is). Every "won't connect" report can then arrive with the evidence.
+//
+// /tmp is RAM, so the switch is never persisted (every boot starts with it off), the capture is
+// stopped at HCI_LOG_MAX, and whenever it stops it is copied to the drive root and the RAM copy
+// removed. DEVICE-UNVERIFIED from this app: mtkbt runs as root, and if its umask makes the file
+// 0600 this uid cannot read it — the copy then fails, says so in a toast and the log, and the
+// capture is still there for `adb pull`.
+static bool g_hci_log_on = false;
+static bool g_hci_want = false;
+static const long HCI_LOG_MAX = 4L * 1024 * 1024;
+
+static void hci_log_apply() {
+    enum { VIDX_SetHciLogEnabled = 26 };
+    void* c = bt_common();
+    if (!c) { clog_("bt-log: no BtCommonServiceClient — the debug log is unavailable"); return; }
+    typedef void (*fnb)(void*, const bool*);
+    bool on = g_hci_want;
+    ((fnb)bt_slot(c, VIDX_SetHciLogEnabled))(c, &on);
+}
+
+// The newest capture in /tmp ("" if none), and its size.
+static std::string hci_log_newest(long* size) {
+    std::string best;
+    time_t best_t = 0;
+    *size = 0;
+    DIR* d = opendir("/tmp");
+    if (!d) return best;
+    while (struct dirent* e = readdir(d)) {
+        const char* n = e->d_name;
+        size_t len = std::strlen(n);
+        if (std::strncmp(n, "hci_sniffer_log_", 16) != 0 || len < 20 || std::strcmp(n + len - 4, ".cfa") != 0)
+            continue;
+        std::string p = std::string("/tmp/") + n;
+        struct stat st;
+        if (stat(p.c_str(), &st) == 0 && (best.empty() || st.st_mtime >= best_t)) {
+            best = p;
+            best_t = st.st_mtime;
+            *size = (long)st.st_size;
+        }
+    }
+    closedir(d);
+    return best;
+}
+
+// Copy the newest capture to the drive root as cinder-bt-log-<stamp>.btsnoop, then remove it from
+// RAM. `why` prefixes the toast ("Log full (4 MB). ").
+static void hci_log_save(const char* why) {
+    char msg[200];
+    if (g_msc_active) {
+        std::snprintf(msg, sizeof msg, "%sBluetooth log kept in /tmp: the drive is with the PC", why);
+        clog_(msg); cinder_toast(msg);
+        return;
+    }
+    long size = 0;
+    std::string src = hci_log_newest(&size);
+    if (src.empty()) {
+        std::snprintf(msg, sizeof msg, "%sNo Bluetooth log was written", why);
+        clog_(msg); cinder_toast(msg);
+        return;
+    }
+    std::string base = src.substr(src.rfind('/') + 1);             // hci_sniffer_log_<stamp>.cfa
+    std::string stamp = base.substr(16, base.size() - 16 - 4);
+    std::string dst = "/contents/cinder-bt-log-" + stamp + ".btsnoop";
+    std::string tmp = dst + ".tmp";
+    FILE* in = std::fopen(src.c_str(), "rb");
+    if (!in) {
+        std::snprintf(msg, sizeof msg, "%sCould not read the Bluetooth log (%s); adb pull %s",
+                      why, std::strerror(errno), src.c_str());
+        clog_(msg); cinder_toast(msg);
+        return;
+    }
+    FILE* out = std::fopen(tmp.c_str(), "wb");
+    if (!out) {
+        std::snprintf(msg, sizeof msg, "%sCould not write the Bluetooth log (%s)", why, std::strerror(errno));
+        std::fclose(in);
+        clog_(msg); cinder_toast(msg);
+        return;
+    }
+    char buf[16384];
+    long copied = 0;
+    bool ok = true;
+    size_t n;
+    while (copied < 2 * HCI_LOG_MAX && (n = std::fread(buf, 1, sizeof buf, in)) > 0) {
+        if (std::fwrite(buf, 1, n, out) != n) { ok = false; break; }
+        copied += (long)n;
+    }
+    std::fclose(in);
+    ok = (std::fclose(out) == 0) && ok;
+    if (!ok || std::rename(tmp.c_str(), dst.c_str()) != 0) {
+        unlink(tmp.c_str());
+        std::snprintf(msg, sizeof msg, "%sCould not save the Bluetooth log to the drive", why);
+        clog_(msg); cinder_toast(msg);
+        return;
+    }
+    unlink(src.c_str());   // the RAM copy; harmless if this uid may not
+    std::snprintf(msg, sizeof msg, "%sBluetooth log saved: %s", why, dst.c_str() + 10);
+    clog_(msg); cinder_toast(msg);
+}
+
+// CINDER_ACT_BT_DEBUG_LOG. The IPC is guarded; the file copy is plain IO and is not.
+void apply_bt_debug_log() {
+    g_hci_want = cinder_get_bt_debug_log() != 0;
+    run_guarded("carry_out: Bluetooth debug log", 4, hci_log_apply);
+    g_hci_log_on = g_hci_want;
+    clog_(g_hci_want ? "bt-log: HCI capture ON (/tmp/hci_sniffer_log_*.cfa)" : "bt-log: HCI capture OFF");
+    if (!g_hci_want) hci_log_save("");
+}
+
+// 1 Hz: stop the capture at its size limit, so a forgotten switch cannot fill RAM.
+static void hci_log_tick() {
+    if (!g_hci_log_on) return;
+    long size = 0;
+    if (hci_log_newest(&size).empty() || size < HCI_LOG_MAX) return;
+    g_hci_want = false;
+    run_guarded("pump: Bluetooth debug log limit", 4, hci_log_apply);
+    g_hci_log_on = false;
+    cinder_bt_debug_log_stopped();
+    hci_log_save("Log full (4 MB). ");
+}
 static bool g_msc_seen_usb = false; // saw the cable while in MSC → unplug ends the session
 // UNPLUG IS DEBOUNCED TOO, and for the same reason the release below is.
 //
@@ -8956,6 +9087,9 @@ void carry_out(int act) {
             // generous — this runs on the render thread, and a long budget here buys a frozen UI.
             run_guarded("carry_out: Bluetooth toggle", 8, apply_bt_toggle);
             break;
+        case CINDER_ACT_BT_DEBUG_LOG:
+            apply_bt_debug_log();
+            break;
         case CINDER_ACT_BT_DISCONNECT:
             // One no-arg IPC call plus two status reads — nothing here polls, so 6 s is plenty.
             run_guarded("carry_out: Bluetooth disconnect", 6, apply_bt_disconnect);
@@ -9301,6 +9435,9 @@ static void touch_release() {
             // stopped dead inside the drain.
             g_seek_pending_ms = ms;
         }
+    } else if (g_touch_down && g_quickpull_active) {
+        // A pull that stopped short of QUICK_TRAVEL opens nothing — and must not fall through to the
+        // classifier below, which would read a short pull from the status bar as a TAP on it.
     } else if (g_touch_down && g_sbar_active) {
         // Scrollbar drag ends. Its own branch for the same reason the reorder has one: falling
         // through would re-read a short bar drag as a TAP on the A-Z rail and jump to a letter.
@@ -9344,6 +9481,7 @@ static void touch_release() {
     g_drag_active = false; g_drag_vel = 0.0f;
     g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+    g_quickpull_active = false; g_quickpull_tested = false;
                             g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
 }
 
@@ -9428,6 +9566,27 @@ static void touch_drag_motion() {
                         // which would jump the list by the distance already travelled.
                         g_shelfswipe_active = false;
                     }
+                }
+                return;
+            }
+            // TOP-EDGE PULL DOWN = the quick-settings panel. The mirror of the Shelf's bottom-edge
+            // swipe above, with one difference: the UI is asked at CLAIM time rather than at open
+            // time, because the panel is optional (Settings, default OFF) — and with it off the
+            // contact must never be claimed, so it scrolls exactly as it did before the panel
+            // existed. Decided on the START point, like every other owner here.
+            static const int QUICK_TRAVEL = 60;
+            if (!g_quickpull_tested) {
+                g_quickpull_tested = true;
+                if (dyt > 0)
+                    g_quickpull_active = cinder_quick_pull_begin(touch_ui_x(g_touch_start_x),
+                                                                 touch_ui_y(g_touch_start_y)) != 0;
+            }
+            if (g_quickpull_active) {
+                // Opened on TRAVEL, like the Shelf. Once opened the contact is spent; whatever the
+                // finger does next reaches a list that the open panel keeps still.
+                if (dyt >= QUICK_TRAVEL) {
+                    cinder_quick_pull_open();
+                    g_quickpull_active = false;
                 }
                 return;
             }
@@ -9605,7 +9764,7 @@ static void reorder_hold_tick() {
     // say which gate stopped it. Every other gesture on this screen claims a contact before this
     // one is offered, so naming the claimant is the whole diagnosis. One line per contact.
     if (g_reorder_active || g_drag_active || g_scrub_active || g_sbar_active ||
-        g_hswipe_active  || g_shelfswipe_active) {
+        g_hswipe_active  || g_shelfswipe_active || g_quickpull_active) {
         if (!g_reorder_hold_tested) {
             g_reorder_hold_tested = true;
             char m[128];
@@ -9765,6 +9924,7 @@ void input_pump() {
                         g_drag_active = false; g_drag_vel = 0.0f;
                         g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+    g_quickpull_active = false; g_quickpull_tested = false;
                             g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
                         // AND SWALLOW THE REST OF THIS CONTACT. Clearing the state above is not
                         // enough: the finger is still on the glass and the panel keeps streaming
@@ -9808,6 +9968,7 @@ void input_pump() {
                             g_touch_down = true; g_touch_start_x = val; g_touch_start_y = -1;
                             g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+    g_quickpull_active = false; g_quickpull_tested = false;
                             g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
                             cinder_touch_down();   // finger down stops an in-flight fling
                         } else if (g_touch_start_x < 0) g_touch_start_x = val;
@@ -9832,6 +9993,7 @@ void input_pump() {
                                 g_touch_down = true; g_touch_start_x = -1; g_touch_start_y = -1;
                                 g_scrub_active = false; g_scrub_tested = false; g_hswipe_active = false; g_reorder_active = false; g_sbar_active = false;
     g_shelfswipe_active = false; g_shelfswipe_tested = false;
+    g_quickpull_active = false; g_quickpull_tested = false;
                             g_touch_down_ms = now_ms(); g_reorder_hold_tested = false;
                                 cinder_touch_down();
                             }
@@ -11238,6 +11400,7 @@ void* render_driver(void*) {
             cinder_clock_tick();
             sd_watch_tick(house_now);   // self-paced to 5 s; see its note
             mono_shim_poll();           // one access() on tmpfs; logs and repaints only on a change
+            hci_log_tick();             // one stat() while the Bluetooth debug log runs; else nothing
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             run_guarded("pump: headphone unplug", 4, jack_watch_tick);
             // FM signal meter. Register reads only — no Sony service call, no ALSA — so it is far

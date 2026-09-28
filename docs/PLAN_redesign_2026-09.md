@@ -77,12 +77,16 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
 7. **USB-DAC (2h).** The sentence comparing it with stock is removed.
 
 **Gates, 2026-09-28:**
-* 627 host tests (up from 612);
+* 653 host tests (up from 612);
 * clippy's correctness and suspicious lints clean;
 * 49 harness scenarios;
-* 259 golden previews, each changed one checked by eye.
+* 271 golden previews, each changed one checked by eye;
+* **a text audit** (`cinder-host --audit`, and `tests/ui_overflow.rs` with a hostile library):
+  no text leaves the glass, lands on other text, or sits under something drawn over it. It found
+  six real defects in existing screens, all fixed (CHANGELOG, *Fixed*).
 
-**Device:** installed as a dev build on the owner's A55, not yet booted.
+**Device:** a dev build from this pass booted on the owner's A55 on 2026-09-28. Everything after
+it is host-tested only; [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §19 is the run sheet.
 
 ### A2. Flint (0.2, unreleased)
 
@@ -104,6 +108,10 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
    cache.
 6. **Fixed a 0.1.0 bug.** The outlined buttons (Analyse library, Import Music Center, Check FLACs,
    Choose…, Clear) were drawn and ignored every click.
+7. **Palettes checks and sends** (R6, pulled forward): a folder of `.palette` files on the PC is
+   checked with Cinder's own readability rules and compared with the player's; **Send** copies the
+   new and changed ones. The only write off the Sync page, and outlined, not orange: the accent
+   means music about to be written.
 
 ---
 
@@ -117,7 +125,7 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
 | 1a | Sideways swipe changes page; Back is the bar arrow only | **R3** | The left-edge swipe is Back today, and the help screens teach it. Changing it is a behaviour change, so it gets its own golden and harness pass | — |
 | 1a | Up Next | Existing | One editable list since the Unreleased change. What is left of [`SPEC_queue_v2.md`](SPEC_queue_v2.md) §1 — repeat album, stop after current, save Up Next as a playlist — is R3; shuffle by album and by artist is R4 | `album_artist` (R4) |
 | 1a | Search | Existing | Scopes (songs · albums · artists) | R3 |
-| 2a | Sound: signal-path strip | **Partial** | The signal path is drawn as a footer today; it moves to the strip under the header | Kit strip |
+| 2a | Sound: signal-path strip | **Partial** | The strip is **Done** (R2): two fixed lines under the header, keeping the path's end when it is too long. Still to come: the mock's ENHANCE / SPACE / LEVEL grouping with values instead of pills, and the Profile row, which arrive with the profiles (R5) | R5 |
 | 2a / 2b | A / B sound profiles per output | **R5** | A profile is a named set of every DSP value. One is remembered per output (jack, Bluetooth, USB-DAC) and applied when the route changes | The effects parity work (E3) |
 | 2c | Settings | **Done** | — | — |
 | 2d | Lock | Existing | No layout change, by the spec | — |
@@ -128,15 +136,15 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
 | 5a | Menu | **Done** | Folders, Equalizer and USB-DAC keep their rows until the Library view bar and Sound hold them (the mock omits them) | R3, R5 |
 | 5b | Playlist editing: ≡ to move, × to remove, UNDO, DONE | **R4** | Saved back as `.m3u8`, so Flint keeps the edit. Only Cinder's own playlists can be edited; Sony's live in its database ([`PLAYLISTS.md`](PLAYLISTS.md)) | — |
 | 5c | Saved view: rules, sort, show as, pin to the bar | **R4** | A view is a name plus the view bar's state. The rating rule needs ratings, and "last played" needs play history | Ratings, the view bar (R3) |
-| 5d | SensMe: 2-column grid of 12 channels, time-of-day switch | **Partial** | The channels exist as a list (`sensme.rs`, install option `sensme`). The grid, the count bars and Follow the time of day come in R2 | — |
-| 5e | Battery: big %, CHARGER only with the helper | **Partial** | Settings ▸ Device already shows these facts and already hides the charger without the helper. Restyling to the mock comes in R2 | — |
+| 5d | SensMe: 2-column grid of 12 channels, time-of-day switch | **Done** (R2) | `sensme.rs`: 68 px tiles with count bars, a NOW tile, *Follow the time of day* (`sensme_follow_time`), one primary button. The hour → channel split is Cinder's, not read from Sony | — |
+| 5e | Battery: big %, CHARGER only with the helper | **Done** (R2) | Settings ▸ Device on the kit: strip, big number and bar, plain rows; CHARGER says "Needs the battery helper" without it. What differs is in Part G | — |
 | 5g | Playlists: SMART above YOURS, EDITED tag | **R4** | **Drawn in the Library's Playlists tab, not in `shelf.rs`.** The Shelf stays exactly as it is (owner's rule) | Saved views, 5b |
 | 5h | Album: rating in the right slot, playing row highlighted | **Partial** | The playing row is highlighted today. The rating waits for ratings | Ratings (R4) |
 | 5m | Artist: albums newest first, then the 3 most played | **R4** | Needs a play count per track. Cinder writes plays to `.scrobbler.log` but keeps no count | Play history (R4) |
-| 5i | Help & controls | **Partial** | The screens exist (`onboarding.rs`). Rewriting to "values only, no explanations" comes in R2 | — |
-| 5j | Palette picker: list with swatches, SKIPPED section, ADD row | **R2** | Today the Palette row cycles through the palettes. The picker is a screen. Its SKIPPED rows show the first sentence of `problems()`, and its sort is `palette_sort = name|added` | — |
+| 5i | Help & controls | **Done** (R2) | `help.rs`, `Screen::Help`: one list — the way back to Sony, getting around, the swipes, Now Playing, buttons — and a row that replays the first-run intro | — |
+| 5j | Palette picker: list with swatches, SKIPPED section, ADD row | **Done** (R2) | `palette_list.rs`, `Screen::Palette`. Sort by name or date added (the file's mtime, read by the shell). Tapping picks and stays on the page | — |
 | 5k | Display | **Done** | Two things differ from the mock on purpose; see Part G | — |
-| 5l | Bluetooth ▸ Sound quality | **Existing** | LDAC 990/660/330/Auto and Fine volume are on the codec screen today. Moving them under the new row finishes it in R2 | — |
+| 5l | Bluetooth ▸ Sound quality | **Done** (R2) | On the kit: a strip naming the live codec (and the fallback, when there is one), codec chips, LDAC's four modes as rows, VOLUME CONTROL | — |
 
 ---
 
@@ -153,7 +161,7 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
 | 3a | Check | **Done** | — |
 | 6a | SensMe: progress, 12 channel bars, NOT TAGGED by reason | **Partial** | The buttons and progress exist. The channel bars and reasons need the analysis job to report them. The MP3 path is part of the same work |
 | 3a | Likes & plays | **Done** | Reviewing plays before they are sent. Sending is still `flint scrobble` and `flint likes` |
-| 6a | Palettes: table, preview, Send | **Partial** | The table exists. Still to come: the preview, running `palette.rs`'s readability rules on the PC, and Send N to the player |
+| 6a | Palettes: table, preview, Send | **Partial** | Done: a folder on the PC compared with `cinder_palettes/`, one row per palette with its swatch, state (BUILT IN · NEW · CHANGED · ON · ON THE PLAYER · REFUSED) and first reason; `palette.rs`'s readability rules ported to `flint-core/src/palette.rs`, the same floors and the same numbers; **Send N to the player** (new and changed only, never refused, lowercased, through a temporary name). Still to come: the Added column and Name/Added sort, the preview panel for the selected row, and ticking rows — Send takes every new and changed file today |
 | 6a | Settings | **Partial** | Theme, the folders, the cache and Last.fm exist. Still to come: clearing the conversion cache, what likes become, and the Always keep list. All three arrive with Conversion |
 
 ---
@@ -196,13 +204,13 @@ shell is **on hold** (Part E4).
 
 | Request | Home |
 |---|---|
-| B1 Quick-settings pull-down | **R2.** Opt-in, default Off. Its own overlay; the Shelf stays as it is. It uses the kit's switch and chips, so it looks like everything else |
-| B2 One-tap lyrics on Now Playing | **R2**, about half a day |
+| B1 Quick-settings pull-down | **Done** (R2): `quick.rs`, Settings ▸ Pull-down panel, default Off. Brightness, Bluetooth, night, sleep timer. Its own overlay and state; the Shelf is untouched. The BLE remote toggle is left out because Cinder has no remote support (E4). The shell gesture (`cinder_quick_pull_begin` / `_open`) is device-unverified |
+| B2 One-tap lyrics on Now Playing | **Done** (R2). A LYRICS chip top-left of the cover, drawn only when the song has lyrics |
 | B3 Walkman One support | Device work (checklist 18.1 to 18.4). Outside the redesign, and first in line after a stable release |
 | B4 Other players (ZX300 and others) | Waits for antiheroriot's pull request |
 | B5 Clear Bass+ | Research |
-| B6 Bluetooth debug log switch | **R2.** A row in the new THIS DEVICE section |
-| B7 Theme marketplace | [`PLAN_skins.md`](PLAN_skins.md). Palettes are done; the 5j picker and Flint's Palettes page are the next visible steps |
+| B6 Bluetooth debug log switch | **Done** (R2): THIS DEVICE ▸ Debug log. `SetHciLogEnabled` (slot 26), copied to the drive on switch-off, stopped at 4 MB, never persisted. Device-unverified: the capture file's permissions may block the copy (DEVICE_CHECKLIST 19.12) |
+| B7 Theme marketplace | [`PLAN_skins.md`](PLAN_skins.md). Palettes, the 5j picker and Flint's check-and-send page are done. A shared place to find palettes is the next step |
 
 ### E3. Walkman One parity ([`PLAN_walkman_one_parity.md`](PLAN_walkman_one_parity.md))
 
@@ -242,11 +250,11 @@ kit:
 | Phase | What | Rough size |
 |---|---|---|
 | **R1** | Part A | Done |
-| **R2** | Screens on the kit that need no new data: 5j Palette picker, 5l Sound quality, 5d SensMe grid, 5e Battery, 5i Help, the Sound strip (2a). Then the three small community items: B1, B2, B6 | 4–5 days |
+| **R2** | **Done.** Screens on the kit that need no new data: ~~5j Palette picker~~, ~~5d SensMe grid~~, ~~5l Sound quality~~, ~~5e Battery~~, ~~5i Help~~, ~~the Sound strip (2a)~~. Then the three small community items: ~~B1~~, ~~B2~~, ~~B6~~ | — |
 | **R3** | The Library view bar, Search scopes, the sideways page swipe, and the queue extras that need no new data: repeat album, stop after current, save Up Next as a playlist | 1–2 weeks |
 | **R4** | Data the screens are waiting on, then the screens: ratings, a play count, `album_artist` (which also unlocks shuffle by album and by artist). Then saved views (5c), smart playlists (5g), playlist editing (5b), and Album and Artist (5h, 5m) | 2 weeks |
 | **R5** | Effects parity, then A/B profiles per output (2a/2b, and the Bluetooth Sound profile row) | 2 weeks, most of it effects parity |
-| **R6** | Flint 0.3: Setup, Conversion (convert-on-transfer), Copying, Palettes send, SensMe reasons | 2 weeks |
+| **R6** | Flint 0.3: Setup, Conversion (convert-on-transfer), Copying, ~~Palettes send~~ (done in 0.2; the preview panel and ticking are left), SensMe reasons | 2 weeks |
 | **R7** | The installer's window | 1 week |
 
 Device work — Walkman One (B3), USB-DAC (goal 3) and Clear Bass — runs beside these, on the
@@ -264,6 +272,13 @@ owner's schedule, from [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md).
 | 5a Start on | Library · Now Playing · Menu · Last screen | Same, default **Library** | The brief: "Home: user-selectable, ship Library as the default." Before this pass the player opened on Now Playing |
 | 2g Sound profile | A row with value `B` | Not drawn yet | A row that does nothing is worse than no row. It arrives with R5 |
 | 5g Playlists | Mapped to `shelf.rs` | Will be the Library's Playlists tab | The Shelf is the owner's and stays as it is |
+| 5l Codec | No codec picker | Codec chips (LDAC · aptX HD · aptX · SBC) above the LDAC rows | The mock drops the codec choice; the player transmits four, and the choice has to live somewhere. Chips, so the page still fits without scrolling |
+| 5l Steps | A "Steps 127" row | Not drawn | It would be false: AVRCP's scale is 0–127, but this firmware moves 4 units a step (`bluetooth.rs`, `fine_volume`). Fine volume is the row that answers "how fine" |
+| 5l Strip | Name · codec · rate / depth | Name · codec, and "ASKED FOR …" on a fallback | The link reports no rate or bit depth. The fallback line is the thing the old LIVE tag did |
+| 5e Battery | Fuel-gauge health, cell temperature, charge current, time left | Not drawn; the screen stays Settings ▸ Device | This hardware has no fuel gauge (`device.rs`). The facts it does have — die temperatures, CPU, memory, storage — stay below the battery |
+| 5i Help | "Change page: SWIPE ← →", "Back: ‹" | "Back: ARROW · LEFT EDGE", no sideways-page row | The sideways page swipe is R3; today the left-edge swipe is Back. The list says what the player does now |
+| 5i Help | Three rungs of the way back | Four: Boot to stock added, and "not on the first start after an install" under the cable | Both are true (`RECOVERY.md`), and the exception is exactly when the cable rule surprises people |
+| 2a Strip | One line | Two fixed lines | The full chain is ~90 characters. Fixed height, so the rows below never move with the text size |
 
 ## New settings keys
 
@@ -272,4 +287,6 @@ owner's schedule, from [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md).
 | `volume_hud` | `full` · `minimal` | Done |
 | `home_screen` | `library` · `now_playing` · `menu` · `last` | Done |
 | `home_last` | a Shelf pin | Done; written only when `home_screen = last` |
-| `palette_sort` | `name` · `added` | R2, with 5j |
+| `palette_sort` | `name` · `added` | Done (5j) |
+| `quick_settings` | `0` · `1` | Done (B1); `0` by default |
+| `sensme_follow_time` | `0` · `1` | Done (5d); `0` by default |

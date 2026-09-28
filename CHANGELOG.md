@@ -18,8 +18,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 The first pass of the 2026-09 redesign is in this release. The ledger for the rest, screen by
 screen, is [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md). The redesign's
-entries — all of *Added* and the first four under *Changed* — are *host-tested and in the golden
-previews; device-unverified*.
+entries — all of *Added* and the first eight under *Changed* — and the text fixes at the top of
+*Fixed* are *host-tested and in the golden previews; device-unverified*.
 
 ### Added
 
@@ -34,6 +34,27 @@ previews; device-unverified*.
   screen instead of the pill. The default is still the pill.
 - **Bluetooth ▸ THIS DEVICE ▸ Sound quality** shows the LDAC rate (or the codec in use) and opens
   the codec settings.
+- **A Bluetooth debug log.** Bluetooth ▸ THIS DEVICE ▸ *Debug log* records the radio's traffic
+  (an HCI capture Wireshark opens) and, when switched off, saves it to the drive as
+  `cinder-bt-log-<time>.btsnoop` to attach to a "won't connect" report. It is off at every boot and
+  stops itself at 4 MB. *Device-unverified: the stack may write the capture where this app cannot
+  read it; the toast then says so, and the file is still there for `adb pull`.*
+- **SensMe channels as a grid.** Two columns of tiles, each with its track count and a bar for how
+  big the channel is, and one button at the foot that shuffles everything analysed. Switch on
+  *Follow the time of day* and the button plays the channel for the hour instead (Morning,
+  Daytime, Evening, Night, Midnight; the hour boundaries are Cinder's own guess at Sony's).
+- **A palette picker.** Settings ▸ Display ▸ Palette lists every palette in `cinder_palettes/`
+  with its colours beside its name; tap one to use it, and sort by name or by date added. A file
+  the player refuses is listed under SKIPPED with the first thing wrong with it, instead of only in
+  the log. The Palette row used to step through the palettes one tap at a time.
+- **An optional pull-down panel.** Settings ▸ *Pull-down panel* (off by default): swipe down from
+  the status bar for brightness (five levels), Bluetooth on/off, night, and the sleep timer
+  (off, 15, 30, 45, 60 minutes). Tap the screen below it, or press Back, to close it. With the
+  setting off nothing changes: no gesture, and a drag from the top scrolls as before. The Shelf is
+  untouched. Asked for on the r/walkman thread. *The gesture itself is device-unverified.*
+- **Lyrics in one tap.** When the playing song has lyrics, Now Playing shows a LYRICS chip in the
+  top-left corner of the cover; it opens the Lyrics screen, which was two taps deep behind Track
+  information. With no lyrics there is no chip. Asked for on the r/walkman thread.
 
 ### Changed
 
@@ -45,6 +66,23 @@ previews; device-unverified*.
 - **Bluetooth:** the on/off switch matches the rest of the app, and *Pair new* moved into the
   PAIRED DEVICES heading.
 - **USB-DAC** no longer compares itself with the stock player.
+- **Bluetooth ▸ Sound quality** is redrawn: a strip at the top says what the link is doing — the
+  headphone, the codec it negotiated, and *ASKED FOR LDAC* when the link fell back to something
+  else, which A2DP does without telling anyone. The codec is four chips; LDAC's modes are rows under
+  Sony's own names (Sound quality priority 990, Standard 660, Connection priority 330, Best effort
+  AUTO); Enhanced Mode and Fine volume sit under VOLUME CONTROL. With Bluetooth off the page is
+  drawn faint, as it is inert.
+- **Help & controls is one list.** Menu ▸ Help & controls used to reopen the seven-page intro; it
+  is now a single page of what to do and how, starting with **the way back to Sony's player**
+  (cable in, POWER at the Sony logo, four failed starts, Boot to stock), then getting around, the
+  swipes, Now Playing, and the buttons. Its last row replays the intro, which still runs once on
+  the first start.
+- **Settings ▸ Device** is redrawn in the same style: the status word in a strip, the charge as one
+  big number and bar, then plain rows. Without the battery helper the CHARGER section says so in
+  one row instead of a dash.
+- **Sound's signal path moved to the top**, into a strip under the header: it answers "what am I
+  hearing?", so it goes where you look first. It is two lines at every text size, and a long chain
+  keeps its end — the output — rather than being cut off before it.
 - **Up Next is one list.** *Device-verified 2026-09-23 on the A55 (Walkman One 3.02).* The user
   queue and the album/playlist "context" were two lists, and a queued track always played before
   the rest of the album — so "play this album, then that one" could not be said. Now everything
@@ -60,7 +98,7 @@ previews; device-unverified*.
   track on an **artist page** plays that artist's tracks. All three used to play the tapped track's
   album instead (the Folders code even said it played the folder). *Host-tested.*
 - **Swipe-to-queue works in Search, Folders and SensMe** as it does in every other track list.
-- **The intro / Help & Controls teaches navigation.** Seven pages: Welcome, *Getting around* (the
+- **The intro teaches navigation.** Seven pages: Welcome, *Getting around* (the
   status strip's clock / Menu / Shelf zones, going back, Now Playing's bottom bar), Buttons,
   *Playing & Up Next*, Gestures, What's inside, Done.
 - **Sound says what is bypassed.** With ClearAudio+ on, DSEE HX, Vinyl, VPT and DC Phase are dimmed
@@ -69,6 +107,19 @@ previews; device-unverified*.
   Direct). A change to a bypassed row is saved and a toast says so. *Device-verified.*
 
 ### Fixed
+
+- **Long names no longer run off the screen or under buttons.** A new audit renders every screen
+  with hostile names (90-character titles, Cyrillic and CJK credits, the longest palette name a
+  file may give) at every text size, and flags text that leaves the glass, lands on other text, or
+  is covered by something drawn over it. It found:
+  - a long Bluetooth headphone name ran through **Disconnect** and off the screen;
+  - a long artist credit on an **album page** ran off the right edge;
+  - a long playlist name as the **Add tracks** title ran off the screen and under its own count;
+  - at large text sizes, the **Scan for new devices** hint ran under the SCAN button and the
+    **Balance** hint touched the MONO / CENTRE buttons;
+  - a palette with a long wide-character name pushed its colour swatch onto the **Palette** title.
+
+  *Host-tested; device-unverified.*
 
 - **Shuffle after starting an album part-way through dropped the tracks before the start point.**
   *Device-verified.* Shuffle now keeps the playing track playing and deals **every** other track in

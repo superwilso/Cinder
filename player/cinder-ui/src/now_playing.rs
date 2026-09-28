@@ -140,6 +140,9 @@ pub struct NowPlaying<'a> {
     /// A drag-to-seek is in progress: `progress`/`elapsed`/`remaining` show the pending TARGET
     /// rather than the live position, and the rail grows a handle under the finger.
     pub scrubbing: bool,
+    /// The playing song has lyrics: draw the Lyrics chip ([`hit_lyrics`]). Injected by `nav`,
+    /// which owns the parsed lyrics; the shell passes `false`.
+    pub lyrics: bool,
 }
 
 /// The pages you swipe between on Now Playing. The visualiser used to be painted ON the cover,
@@ -194,6 +197,45 @@ pub fn sleep_badge(c: &mut Canvas, t: &Theme, f: &FontSet, min: u32) {
     let y = 44;
     fill_rect(c, x, y, w, h, t.acc);
     text::draw(c, f, (x + 11) as f32, (y + h / 2 + 4) as f32, &label, &st);
+}
+
+/// The Lyrics chip — one tap to the Lyrics screen, which is otherwise two taps deep (Track
+/// information ▸ Lyrics). Asked for on the r/walkman thread by someone who embeds lyrics in every
+/// file (`docs/PLAN_community_2026-09-23.md` B2).
+///
+/// Drawn ONLY when the playing song has lyrics, so a library without them sees exactly the screen
+/// it always did. It sits top-LEFT of the paging block because the sleep-timer badge owns the
+/// top-right corner. The pill is 24 px tall; the target is the full 44 px band under the status
+/// bar and wider than the pill, which is the minimum a finger needs. In that band a tap otherwise
+/// opens the Menu (see `nav::tap`), so the chip is tested first.
+pub const LYRICS_X0: i32 = 16;
+pub const LYRICS_Y0: i32 = crate::chrome::STATUS_H;
+/// The same height as the sleep badge opposite it, so the two corners read as one row — and at
+/// night the pill ends well clear of the thumbnail at y=80.
+pub const LYRICS_H: i32 = 24;
+const LYRICS_LABEL: &str = "LYRICS";
+/// The target's width: generous, and independent of how wide the text measured, so the UI scale
+/// cannot move it.
+pub const LYRICS_HIT_W: i32 = 120;
+
+fn lyrics_style(t: &Theme) -> TextStyle {
+    s(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.14)
+}
+
+/// Did a tap land on the Lyrics chip? `shown` = the chip is drawn (the song has lyrics).
+pub fn hit_lyrics(x: i32, y: i32, shown: bool) -> bool {
+    shown
+        && (0..LYRICS_HIT_W).contains(&x)
+        && (crate::chrome::STATUS_H..crate::chrome::STATUS_H + 44).contains(&y)
+}
+
+fn lyrics_chip(c: &mut Canvas, t: &Theme, f: &FontSet) {
+    let st = lyrics_style(t);
+    let label = crate::widgets::fit(f, LYRICS_LABEL, &st, (LYRICS_HIT_W - 24 - LYRICS_X0) as f32);
+    let w = text::measure(f, &label, &st) as i32 + 24;
+    fill_rect(c, LYRICS_X0, LYRICS_Y0, w, LYRICS_H, t.panel);
+    crate::widgets::stroke_rect(c, LYRICS_X0, LYRICS_Y0, w, LYRICS_H, t.ctrl(), 1);
+    text::draw(c, f, (LYRICS_X0 + 12) as f32, (LYRICS_Y0 + LYRICS_H / 2 + 5) as f32, &label, &st);
 }
 
 /// Page indicator: one dot per page, in the strip between the paging block and the title. Small
@@ -445,6 +487,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
         }
     }
 
+    if np.lyrics {
+        lyrics_chip(c, t, f);
+    }
+
     // ---------- like (heart) ----------
     // Wired at last: `liked` and icons::heart existed but nothing ever drew the glyph, so the
     // field was carried through four crates for an invisible feature. Sits on the title row, which
@@ -560,7 +606,7 @@ mod tests {
             viz_levels: Some(levels),
             viz_peaks: None,
             page,
-            scrubbing: false,
+            scrubbing: false, lyrics: false,
         }
     }
 

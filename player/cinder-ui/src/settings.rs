@@ -14,11 +14,16 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 18;
+pub const ROWS: usize = 19;
 /// Display ▸ — palette, accent, night, the volume readout, text size and the visualiser.
 pub const ROW_DISPLAY: usize = 0;
 pub const ROW_BRIGHTNESS: usize = 1;
 pub const ROW_SCREEN_OFF: usize = 2;
+/// The pull-down panel (`quick.rs`): a swipe down from the status bar opens brightness, Bluetooth,
+/// night and the sleep timer. Asked for on the r/walkman thread; OFF by default, because the owner
+/// uses the Shelf and a new gesture must never arrive unasked (`docs/PLAN_community_2026-09-23.md`
+/// B1). With it off there is no gesture and nothing else on any screen changes.
+pub const ROW_QUICK: usize = 3;
 /// Volume limit — a safe-listening cap on the 3.5 mm level.
 ///
 /// The CAP is Sony's, not ours: `VolumeService` reports an AVLS threshold per output device
@@ -28,50 +33,52 @@ pub const ROW_SCREEN_OFF: usize = 2;
 /// directly; the flag would be a control that accepts a write and changes nothing, which is
 /// exactly what "High gain output" turned out to be (see sound.rs). So the shell reads Sony's
 /// number and clamps in its own `apply_volume`.
-pub const ROW_VOLUME_LIMIT: usize = 3;
-pub const ROW_SLEEP: usize = 4;
+pub const ROW_VOLUME_LIMIT: usize = 4;
+pub const ROW_SLEEP: usize = 5;
 /// Ignore "The" in artists — sort "The Beatles" among the B's in the Artists tab, the Albums tab's
 /// artist groups and Songs by artist (and file it under B on the rail). OFF by default: artists
 /// sort as written. Titles and album names keep their "The" either way. See `collate`.
-pub const ROW_IGNORE_THE: usize = 5;
-pub const ROW_DATABASE: usize = 6;
+pub const ROW_IGNORE_THE: usize = 6;
+pub const ROW_DATABASE: usize = 7;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
 /// of behaviour that has to be asked for.
-pub const ROW_AUTO_OFF: usize = 7;
-pub const ROW_STORAGE: usize = 8;
-pub const ROW_BATTERY: usize = 9;
+pub const ROW_AUTO_OFF: usize = 8;
+pub const ROW_STORAGE: usize = 9;
+pub const ROW_BATTERY: usize = 10;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 10;
-pub const ROW_USB_MODE: usize = 11; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 11;
+pub const ROW_USB_MODE: usize = 12; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 12;
+pub const ROW_BOOT_STOCK: usize = 13;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 13;
-pub const ROW_POWER_OFF: usize = 14;
+pub const ROW_RESTART: usize = 14;
+pub const ROW_POWER_OFF: usize = 15;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 15;
+pub const ROW_RESET: usize = 16;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 16;
-pub const ROW_MODEL: usize = 17;
+pub const ROW_FIRMWARE: usize = 17;
+pub const ROW_MODEL: usize = 18;
 
 const RH: i32 = kit::ROW_H;
 /// Section labels and how many rows sit under each — the single source both `content_height` and
 /// `row_at` read, so a row added to one can't be missed by the other.
 const SECTIONS: [(&str, usize); 5] =
-    [("DISPLAY", 3), ("PLAYBACK", 2), ("LIBRARY", 2), ("SYSTEM", 9), ("ABOUT", 2)];
+    [("DISPLAY", 4), ("PLAYBACK", 2), ("LIBRARY", 2), ("SYSTEM", 9), ("ABOUT", 2)];
 
 /// The Display row's second line: what is behind it (handoff 2c).
 pub const DISPLAY_SUB: &str = "Palette · accent · volume display";
+/// The pull-down panel row's second line: where the gesture starts and what it opens.
+pub const QUICK_SUB: &str = "Swipe down from the top of the screen";
 
 /// The released version, in ONE place. `tools/release.sh` rewrites this line when it bumps the
 /// tag, the same way it rewrites `installer/Cargo.toml` — so what the player shows on its own
@@ -121,6 +128,8 @@ pub struct SettingsView<'a> {
     pub volume_limit: bool,
     /// Ignore "The" at the start of artist names when sorting (`ROW_IGNORE_THE`).
     pub ignore_the: bool,
+    /// The pull-down panel is switched on (`ROW_QUICK`).
+    pub quick: bool,
 }
 
 /// Total height of the row content, from the top of the screen to the bottom of the last row.
@@ -174,6 +183,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         ROW_DISPLAY => Trail::Open(""),
         ROW_BRIGHTNESS => Trail::Value(v.brightness),
         ROW_SCREEN_OFF => Trail::Value(v.screen_off),
+        ROW_QUICK => Trail::Switch(v.quick),
         // The volume limit is a value row rather than a switch because the interesting half is
         // WHOSE limit it is: "SAFE LEVEL" says a cap is in force without inventing a number the
         // user did not choose, and the number is Sony's per-output AVLS threshold, read live.
@@ -207,6 +217,7 @@ fn title(r: usize) -> &'static str {
         ROW_DISPLAY => "Display",
         ROW_BRIGHTNESS => "Brightness",
         ROW_SCREEN_OFF => "Screen-off timer",
+        ROW_QUICK => "Pull-down panel",
         ROW_VOLUME_LIMIT => "Volume limit",
         ROW_SLEEP => "Sleep timer",
         ROW_IGNORE_THE => "Ignore \"The\" in artists",
@@ -242,7 +253,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
     for (label, n) in SECTIONS {
         y = kit::section_label(c, t, f, y, label, None);
         for _ in 0..n {
-            let sub = if r == ROW_DISPLAY { DISPLAY_SUB } else { "" };
+            let sub = match r {
+                ROW_DISPLAY => DISPLAY_SUB,
+                ROW_QUICK => QUICK_SUB,
+                _ => "",
+            };
             y = kit::row(c, t, f, y, RH, &Row::new(title(r)).sub(sub).trail(trail(r, v)).sel(sel == r));
             r += 1;
         }
@@ -268,6 +283,7 @@ mod tests {
             auto_off: "OFF",
             boot_stock: "SONY", clock: "17 Aug · 09:01",
             ignore_the: false,
+            quick: false,
         }
     }
 

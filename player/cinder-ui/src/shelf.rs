@@ -104,6 +104,7 @@ pub fn slot_center_y(i: usize) -> i32 {
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, this_title: &str, this_sub: &str, pins: &[Option<Pin>; SLOTS]) {
+    c.begin_layer(); // a sheet over the screen: what it covers is covered on purpose
     // 1. dim the screen behind (≈55% black backdrop)
     for px in c.buf.iter_mut() {
         let r = ((*px >> 16) & 0xff) * 45 / 100;

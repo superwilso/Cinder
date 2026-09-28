@@ -35,6 +35,10 @@ MAP=(
     fm-radio:fm_day                        gestures:onboard_4_gestures_day
     visualiser-bars:np_spectrum_0_bars     visualiser-ribbon:np_spectrum_1_ribbon
     menu:menu_day                          display:display_day
+    sensme:sensme_grid_follow_day          palette:palette_picker_100
+    pull-down:quick_panel_day              now-playing-lyrics:now_playing_lyrics_day
+    sound-quality:bluetooth_codec_day      device:device
+    help:help_top
 )
 
 # A clean render, with the real-cover overrides unset: those read files outside the tree, and the

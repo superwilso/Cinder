@@ -114,7 +114,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         viz_size: 1, page: 0,
         viz_levels: None,
         viz_peaks: None,
-        scrubbing: false,
+        scrubbing: false, lyrics: false,
     };
     let lk = lock::Lock {
         clock: "14:32",
@@ -155,7 +155,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         source_direct: false,
         tone_control: false,
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02), paired: &preview_paired_list, fine_volume: "OFF" };
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02), paired: &preview_paired_list, fine_volume: "OFF", debug_log: false };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
@@ -185,6 +185,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
             ("now_playing", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts, &np)),
             ("now_playing_sleep", &|c: &mut Canvas| { now_playing::render(c, &theme, &fonts, &np); now_playing::sleep_badge(c, &theme, &fonts, 23); }),
+            // The Lyrics chip (community B2), beside the sleep badge so both corners are checked.
+            ("now_playing_lyrics", &|c: &mut Canvas| {
+                now_playing::render(c, &theme, &fonts, &now_playing::NowPlaying { lyrics: true, ..np });
+                now_playing::sleep_badge(c, &theme, &fonts, 23);
+            }),
             // Nothing loaded — the state the device actually boots into. Never rendered here
             // before, which is how an empty codec badge shipped as a bare stroked box.
             ("now_playing_idle", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts,
@@ -209,6 +214,14 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                         1 => Some(shelf::Pin { title: "Nick Drake · Pink Moon", sub: "Saved yesterday" }),
                         _ => None,
                     }));
+            }),
+            // The pull-down panel (Settings ▸ Pull-down panel), over the Library it was pulled from.
+            ("quick_panel", &|c: &mut Canvas| {
+                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &lib, None, false, 0, false);
+                cinder_ui::chrome::status_bar(c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
+                cinder_ui::quick::render(c, &theme, &fonts, &cinder_ui::quick::QuickView {
+                    brightness: 4, bt_on: true, bt_device: Some("WH-1000XM5"), night: false, sleep_idx: 2,
+                });
             }),
             ("lock", &|c: &mut Canvas| lock::render(c, &theme, &fonts, &lk)),
             ("menu", &|c: &mut Canvas| menu::render(c, &theme, &fonts,
@@ -419,7 +432,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { ignore_the: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" })),
             // Settings ▸ Display (handoff 5k): palette, accent, night, the volume readout, size.
             ("display", &|c: &mut Canvas| cinder_ui::display::render(c, &theme, &fonts, 1,
@@ -452,10 +465,24 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // different geometry — the channel page gives its first 80 px to the PLAY | SHUFFLE
             // band — and the golden gate is the only thing that watches that.
             ("sensme_channels", &|c: &mut Canvas| {
-                cinder_ui::sensme::render(c, &theme, &fonts, &lib, None, 0, false)
+                cinder_ui::sensme::render(c, &theme, &fonts, &lib, None, 0, false, Default::default())
+            }),
+            // The whole grid (handoff 5d): all thirteen channels populated, following the time of
+            // day at 19:00 (Night), so the NOW tile and the "Play Night" button are drawn.
+            ("sensme_grid_follow", &|c: &mut Canvas| {
+                const NAMES: [&str; 13] = ["Active", "Emotional", "Lounge", "Dance", "Extreme", "Upbeat",
+                    "Relax", "Mellow", "Morning", "Daytime", "Evening", "Night", "Midnight"];
+                let mut l = lib.clone();
+                l.channels = NAMES.iter().enumerate().map(|(id, name)| cinder_ui::model::ChannelRow {
+                    id: id as u8,
+                    name,
+                    tracks: (0..(40 + (id as u32 * 37) % 120)).collect(),
+                }).collect();
+                cinder_ui::sensme::render(c, &theme, &fonts, &l, None, 0, false,
+                    cinder_ui::sensme::Foot { follow: true, hour: Some(19) })
             }),
             ("sensme_channel", &|c: &mut Canvas| {
-                cinder_ui::sensme::render(c, &theme, &fonts, &lib, Some(0), 0, false)
+                cinder_ui::sensme::render(c, &theme, &fonts, &lib, Some(0), 0, false, Default::default())
             }),
             // …and the state every library starts in: nothing analysed, which is a screen that has
             // to explain itself rather than be blank.
@@ -463,7 +490,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let mut l = lib.clone();
                 l.channels.clear();
                 l.sensme_tracks = 0;
-                cinder_ui::sensme::render(c, &theme, &fonts, &l, None, 0, false)
+                cinder_ui::sensme::render(c, &theme, &fonts, &l, None, 0, false, Default::default())
             }),
             ("track_info", &|c: &mut Canvas| {
                 let rows: Vec<(String, String)> = vec![
@@ -520,6 +547,10 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("bluetooth", &|c: &mut Canvas| bluetooth::render(c, &theme, &fonts, &bt)),
             ("bluetooth_codec", &|c: &mut Canvas| bluetooth::render_codec(c, &theme, &fonts, &bt)),
+            // The radio off: the page is inert, so every row is faint and nothing is marked chosen.
+            ("bluetooth_codec_off", &|c: &mut Canvas| {
+                bluetooth::render_codec(c, &theme, &fonts, &bluetooth::Bt { on: false, ..bt })
+            }),
             // The in-flight state this screen had no representation for at all: before, a connect
             // begun from Devices left this card reading "No device connected" until the link
             // resolved, which is what a failure looks like.
@@ -527,7 +558,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let b = Bt { paired: &preview_paired_list, on: true, connected: None, link_known: true, codec_sel: 0,
                              ldac_quality: 0, enhanced: true, enhanced_supported: true,
                              connecting: true, busy_phase: 0.35, link_codec: None,
-                             fine_volume: "OFF" };
+                             fine_volume: "OFF", debug_log: false };
                 bluetooth::render(c, &theme, &fonts, &b)
             }),
             // Two real pairings from the device (the same two the 07-29 GetPairedDeviceInfo pass
@@ -630,7 +661,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                             (cinder_ui::confirm::Ask::PowerOff, "poweroff")] {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
-                &settings::SettingsView { ignore_the: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
@@ -643,7 +674,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_BRIGHTNESS,
                 settings::max_scroll_px() / 2,
-                &settings::SettingsView { ignore_the: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
@@ -1120,12 +1151,63 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         cinder_ui::text::set_scale_pct(100);
     }
 
+    // The palette picker (handoff 5j): the palettes that ship in cinder-ui/palettes, plus one file
+    // the player refuses, so the SKIPPED section is drawn too. At 100% and 140%.
+    {
+        use cinder_ui::nav::Screen;
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../cinder-ui/palettes");
+        let mut files: Vec<(String, Result<String, String>)> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        let body = std::fs::read_to_string(e.path()).map_err(|e| e.to_string());
+                        (name, body)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // cinder.palette is the reference copy of the built-in palette, which the player refuses
+        // by name; a real folder does not hold it.
+        files.retain(|(n, _)| n != "cinder.palette");
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files.push(("neon.palette".to_string(), Ok("name = Neon\nday.ink = #0e0d0c\n".to_string())));
+        let (list, skipped) = cinder_ui::palette::load_files(files);
+        for pct in [100u32, 140] {
+            cinder_ui::text::set_scale_pct(pct);
+            let mut app = new_app();
+            app.set_palettes(list.clone(), skipped.clone());
+            app.go_for_preview(Screen::Palette);
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, &format!("palette_picker_{pct}"));
+        }
+        cinder_ui::text::set_scale_pct(100);
+    }
+
     // Visualiser TYPES: render Now Playing with each viz kind (mid-animation) so they can be diffed.
     for k in 0..cinder_ui::viz::COUNT {
         let np_k = now_playing::NowPlaying { viz_seed: 1.7, viz_kind: k, ..np };
         let mut c = Canvas::new();
         now_playing::render(&mut c, &th(false, amber), &fonts, &np_k);
         save(&c, &format!("viz_{}_{}", k, cinder_ui::viz::name(k).to_lowercase()));
+    }
+
+    // Help & controls (handoff 5i): the top, with the way back to Sony, and the end of the list with
+    // the pull-down panel switched on, so its row and the replay row are both drawn.
+    {
+        use cinder_ui::nav::Screen;
+        for (name, end) in [("help_top", false), ("help_end", true)] {
+            let mut app = new_app();
+            app.set_quick_enabled(end);
+            app.go_for_preview(Screen::Help);
+            if end {
+                app.scroll_px(10_000);
+            }
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, name);
+        }
     }
 }
 
@@ -1212,8 +1294,43 @@ fn compare(want: &[(String, u64)], got: &[(String, u64)]) -> Vec<String> {
     out
 }
 
+/// Every preview checked for text the user cannot read: pixels past the left or right edge of the
+/// panel (`Canvas::oob_x`), text runs that land on other text (`Canvas::text_collisions`), and text
+/// that something drawn afterwards covers — a swatch, an icon, a button (`Canvas::text_hidden`).
+/// `tests/ui_overflow.rs` does the same over every screen in a bare state; this covers the states
+/// only the previews set up — a full library, paired devices, every UI scale, every palette.
+fn audit() -> Vec<String> {
+    cinder_ui::canvas::audit_new_canvases(true);
+    let mut bad = Vec::new();
+    render_all(
+        &mut |name, c| {
+            if c.oob_x() > 0 {
+                bad.push(format!("{name}: {} px past the left or right edge", c.oob_x()));
+            }
+            for (a, b, n) in c.text_collisions() {
+                bad.push(format!("{name}: {a:?} runs into {b:?} ({n} px)"));
+            }
+            for (a, n) in c.text_hidden() {
+                bad.push(format!("{name}: {a:?} is covered by something drawn over it ({n} px)"));
+            }
+        },
+        &Opts { golden: true, palette: None },
+    );
+    cinder_ui::canvas::audit_new_canvases(false);
+    bad
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
+        Some("--audit") => {
+            let bad = audit();
+            if bad.is_empty() {
+                println!("audit: no preview clips, overlaps or covers text");
+            } else {
+                eprintln!("audit: {} problem(s):\n  {}", bad.len(), bad.join("\n  "));
+                std::process::exit(1);
+            }
+        }
         None => {
             std::fs::create_dir_all("out").ok();
             render_all(&mut |name, c| save_png(c, name), &Opts { golden: false, palette: None });
@@ -1272,7 +1389,7 @@ fn main() {
             }
         }
         Some(other) => {
-            eprintln!("unknown argument {other:?}\nusage: cinder-host [--check | --bless | --palette FILE]");
+            eprintln!("unknown argument {other:?}\nusage: cinder-host [--check | --bless | --audit | --palette FILE]");
             std::process::exit(2);
         }
     }
@@ -1282,9 +1399,27 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// The glyph cache is process-wide and ORDER-sensitive (its key rounds the size, so whichever
+    /// size fills a key first is what later requests get). Two tests rendering every preview at
+    /// once interleave that order and move anti-aliased pixels, so they take turns.
+    static RENDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn render_turn() -> std::sync::MutexGuard<'static, ()> {
+        RENDER.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// No preview clips text off the panel or runs text into text. See [`audit`].
+    #[test]
+    fn every_preview_keeps_its_text_on_the_glass_and_apart() {
+        let _turn = render_turn();
+        let bad = audit();
+        assert!(bad.is_empty(), "\n{} problem(s):\n  {}\n", bad.len(), bad.join("\n  "));
+    }
+
     /// Every screen the preview harness can draw, pixel for pixel, against what was last blessed.
     #[test]
     fn every_preview_matches_its_golden_hash() {
+        let _turn = render_turn();
         let want = read_golden();
         assert!(!want.is_empty(), "golden.txt is missing or empty — run: cargo run -p cinder-host -- --bless");
         let diff = compare(&want, &hashes());

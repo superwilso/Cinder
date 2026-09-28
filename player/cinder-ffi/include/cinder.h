@@ -206,7 +206,14 @@ typedef enum {
      * it), Sony's DSP surface has no mono call, and Bluetooth transmit never passes either because
      * its PCM goes straight to BtTransmitterService over a socket. Writing the codec register that
      * might do it is ruled out standing by SECURITY.md rule 1. See analysis/RE_mono_audio.md. */
-    CINDER_ACT_MONO_CHANGED = 46
+    CINDER_ACT_MONO_CHANGED = 46,
+    /* Bluetooth ▸ THIS DEVICE ▸ Debug log switched (community request B6). Read
+     * cinder_get_bt_debug_log(): 1 = BtCommonServiceClient::SetHciLogEnabled(true), which makes the
+     * stack write /tmp/hci_sniffer_log_<stamp>.cfa (a plain btsnoop file); 0 = turn it off and copy
+     * the newest capture to the drive root as cinder-bt-log-<stamp>.btsnoop. Never persisted: every
+     * boot starts with it off. The shell also stops it at a size limit (/tmp is RAM) and then calls
+     * cinder_bt_debug_log_stopped(). */
+    CINDER_ACT_BT_DEBUG_LOG = 47
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -474,6 +481,15 @@ void cinder_set_volume(int level);
 /* Bottom-edge swipe UP opens the Shelf. Returns 1 if the UI took it, 0 if it declined (locked,
  * onboarding, or already open) — on 0 the shell should let the contact scroll as usual. */
 int  cinder_shelf_swipe(void);
+/* Top-edge pull DOWN opens the quick-settings panel — only when Settings ▸ Pull-down panel is on
+ * (default OFF). Ask cinder_quick_pull_begin once per vertical contact, with its START point, before
+ * the list drag: 0 = not ours, let the contact scroll as it always did. On 1 the contact is the
+ * panel's; call cinder_quick_pull_open once the finger has travelled far enough (1 = opened). */
+int  cinder_quick_pull_begin(int x, int y);
+int  cinder_quick_pull_open(void);
+/* Bluetooth debug log: is it switched on (1/0); and the shell stopped it at its size limit. */
+int  cinder_get_bt_debug_log(void);
+void cinder_bt_debug_log_stopped(void);
 /* Is the user's volume limit switched on? The CAP itself is Sony's (below); this is only the
  * on/off the Settings row owns. Persisted with the rest of the settings. */
 int  cinder_get_volume_limit(void);

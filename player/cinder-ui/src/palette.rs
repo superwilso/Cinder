@@ -3,7 +3,7 @@
 //! A palette is the six neutral colours for day and for night, plus — only if it needs one — an
 //! accent of its own. It is the first, data-only layer of a swappable UI (`docs/PLAN_skins.md`):
 //! anyone can write one in a text editor, copy it into `cinder_palettes/` on the player, and pick
-//! it under Settings ▸ Palette. It changes colours and nothing else. Layout is what skins are for.
+//! it under Settings ▸ Display ▸ Palette. It changes colours and nothing else. Layout is what skins are for.
 //!
 //! ```text
 //! # slate.palette — every key is optional and falls back to Cinder's own value
@@ -67,12 +67,16 @@ pub struct Palette {
     /// What Settings shows: the file's `name =`, or the id when it has none.
     pub name: String,
     pub tokens: Tokens,
+    /// When the file arrived, in Unix seconds, for the picker's "Added" sort. 0 = unknown (the
+    /// built-in palette, or a file whose time could not be read). Set by the shell, which has the
+    /// file's metadata; parsing never sees it.
+    pub added: u64,
 }
 
 impl Palette {
     /// Cinder's own palette, as a `Palette`.
     pub fn builtin() -> Palette {
-        Palette { id: BUILTIN_ID.to_string(), name: BUILTIN_NAME.to_string(), tokens: CINDER }
+        Palette { id: BUILTIN_ID.to_string(), name: BUILTIN_NAME.to_string(), tokens: CINDER, added: 0 }
     }
 
     /// Parse and check one palette file. `id` is the file name without its extension.
@@ -161,7 +165,7 @@ impl Palette {
         if !problems.is_empty() {
             return Err(problems);
         }
-        Ok(Palette { id: id.to_string(), name: name.unwrap_or_else(|| id.to_string()), tokens })
+        Ok(Palette { id: id.to_string(), name: name.unwrap_or_else(|| id.to_string()), tokens, added: 0 })
     }
 }
 

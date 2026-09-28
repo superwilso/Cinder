@@ -546,3 +546,31 @@ the release artifacts, not the app.
 | 18.4 | **Uninstall on Walkman One** — `cinder_home_uninstall.upg` has never run there | After 18.1, uninstall and confirm W1's own player returns | W1 boots its own Home app; `.appcfg.real` restored | A player that cannot be uninstalled is not shippable to strangers |
 | 18.5 | **The stable channel on W1** — everything proven so far is `dev`, which self-enables adb. Stable has no adb, and on W1 that means no diagnosis at all unless `ADB=1` is set in `/contents/CFW/settings.txt` | Install stable on W1; boot; break nothing | Cinder paints, and the install log names the firmware | The install log is the only channel left: it is why `firmware:` was added to it on 09-22 |
 | 18.6 | **`cinder-guard.sh` is still not wired into any installer** — and it is W1-specific (it hooks `bootswitcher.sh`, the only persistent point upstream of appmgr). It is the sole backstop below the launcher's own counter | Decide: ship it for W1 installs, or leave it a manual step documented in the W1 route | A W1 install either installs the guard or says why it does not | Init blocks on the script that calls it, which is why it was not wired in on 09-21. That trade needs a decision, not a default |
+
+---
+
+## 19 — Open from 2026-09-28 — the redesign's first pass, and two community requests
+
+Everything here is host-tested and in the golden previews (`docs/PLAN_redesign_2026-09.md` Part A).
+None of it has been looked at on the glass. No flash is needed: a dev build installed over adb and
+one reboot covers the lot. The first two rows change what the owner sees at every boot, so they
+come first.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 19.1 | **The player opens on the Library** (the new default home) | Reboot | The Library is on screen after boot; Back reaches Now Playing | A player that opens on a blank Library (scan not yet in) should still land there once the library arrives — `home_pending` |
+| 19.2 | **Menu ▸ START ON** | Pick each chip, reboot after *Now Playing* and after *Last screen* (leave it on an album first) | The player opens where chosen; *Last screen* reopens the album | `home_screen` / `home_last` in `cinder_settings.conf` say what was saved |
+| 19.3 | **Settings ▸ Display** | Palette, Accent swatches, Night, Volume chips, Size slider, Visualiser | Each does what it did on the old Settings rows | — |
+| 19.4 | **Minimal volume readout** | Display ▸ Volume: *Minimal*, press Vol± | A thin accent bar across the top, gone after the usual timeout | — |
+| 19.5 | **Bluetooth ▸ THIS DEVICE** | Connect LDAC headphones | *Sound quality* shows the LDAC rate and opens the codec screen; *PAIR NEW* in the section label opens pairing | — |
+| 19.6 | **Lyrics chip** | Play a song with an `.lrc` or embedded lyrics, then one without | LYRICS chip top-left on the first, none on the second; one tap opens the words | The chip is drawn from `has_lyrics()`; the words arrive with the track change |
+| 19.7 | **Pull-down panel OFF (the default)** | Drag down from the status bar on the Library and on Settings | The list scrolls exactly as before; nothing opens | Any claim with the setting off is a regression: `cinder_quick_pull_begin` must return 0 |
+| 19.8 | **Pull-down panel ON** | Settings ▸ Pull-down panel on. Drag down from the status bar about a finger's width | The panel opens; brightness, Bluetooth, night and sleep chips work; a tap below it or Back closes it; a drag started below the status bar still scrolls | A short pull (under 60 px) must open nothing and must not register as a status-bar tap (the Menu) |
+| 19.9 | **Long names** | A headphone name over 30 characters; an album with a long artist credit | Both fit (ellipsis) instead of running off the screen | The text audit (`cinder-host --audit`) is the host check for these |
+| 19.10 | **Palette picker** | Copy `slate.palette`, `paper.palette` and one broken file into `cinder_palettes/`; unplug; Display ▸ Palette | All listed with swatches; tap one and the screen repaints; *Added* puts the newest copy first; the broken file sits under SKIPPED with its reason | An *Added* order that looks random means the files' mtimes did not survive the copy — the sort falls back to name for equal times |
+| 19.11 | **SensMe grid** | Menu ▸ SensMe with a tagged library | Tiles with counts; a tile opens its channel; the button shuffles all; with *Follow the time of day* on, the tile for the hour says NOW and the button plays it | A NOW tile on the wrong channel for the hour is the boundary table in `sensme::time_channel_id` — Cinder's guess, not Sony's |
+| 19.12 | **Bluetooth debug log** | Bluetooth ▸ THIS DEVICE ▸ Debug log on; connect and disconnect headphones; switch it off | A toast names `cinder-bt-log-<time>.btsnoop` on the drive, and Wireshark opens it | "Could not read the Bluetooth log" = mtkbt wrote it 0600 root: `adb shell ls -l /tmp/hci_sniffer_log_*`. The fix is a setuid copy (like `cinder-clock`) or a chmod from the launcher — decide then |
+| 19.13 | **Sound quality** | Bluetooth ▸ THIS DEVICE ▸ Sound quality with LDAC headphones connected; tap SBC, then LDAC, then *Connection priority* | The strip reads `<NAME> · LDAC`; each tap applies as it did from the old page (the same `BtCodecChanged`); with SBC chosen the LDAC rows go and VOLUME CONTROL moves up | A strip saying `CODEC 0x.. · ASKED FOR LDAC` while LDAC plays means the raw byte changed meaning — check `link_codec_name` |
+| 19.14 | **Device screen** | Settings ▸ Device, on battery and then on the cable; scroll to the end | The strip shows the status word; the bar fills in the accent only while charging; CHARGER reads a state with the helper installed, or "Needs the battery helper" without it | — |
+| 19.15 | **Help & controls** | Menu ▸ Help & controls; scroll to the end; tap *Replay the introduction*; swipe through it | One list; the replay starts at Welcome and finishing it lands back on Help | The Menu used to open the intro directly; a Menu row that still does is an old build |
+| 19.16 | **Sound strip** | Sound with every effect on, at the largest text size | Two lines under the header; the second ends with the output (`3.5MM` or `BT·…`) | — |

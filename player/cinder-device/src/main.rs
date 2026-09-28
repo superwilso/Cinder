@@ -149,7 +149,7 @@ fn main() {
         viz_kind: 0,
         viz_size: 1, page: 0,
         viz_levels: None,
-        scrubbing: false,
+        scrubbing: false, lyrics: false,
     };
     now_playing::render(&mut canvas, &Theme::day(), &fonts, &np);
 

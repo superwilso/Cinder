@@ -1,6 +1,7 @@
 //! Sound Settings — ported from cinder-proto-screens3.jsx `CSound`. Sony DSP
 //! suite: DSEE HX, Vinyl, VPT, DC Phase Linearizer, Dynamic Normalizer,
-//! ClearAudio+. Footer renders the live signal path.
+//! ClearAudio+. A strip under the header shows the live signal path (design handoff 2a: it is the
+//! answer to "what am I hearing?", so it sits where you look first rather than in a footer).
 
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
@@ -22,9 +23,7 @@ pub const ROWS: usize = 8;
 pub const ROW_BALANCE: usize = 6;
 /// The "Advanced ›" row — pushes `Screen::Advanced`, where the rest of Sony's effect surface lives.
 ///
-/// It sits in space that was already empty: the balance row ends at 607 and the signal-path footer
-/// starts at 700, so this is a real row in a real gap rather than something squeezed in. A row
-/// rather than a header button because the header's right side is the A/B control and its left is
+/// It sits under the balance row, the last thing on the screen. A row rather than a header button because the header's right side is the A/B control and its left is
 /// the OPTION hint — and because a screenful of rows that quietly omits half the DSP is worse than
 /// one that says where the rest went.
 pub const ROW_ADVANCED: usize = 7;
@@ -47,9 +46,14 @@ pub fn balance_label(pos: usize) -> String {
     }
 }
 
+/// The signal-path strip under the header: two lines of caption on the panel tone. Fixed height —
+/// the path is fitted into it, never the other way round, so the rows below cannot move with the
+/// text scale or the number of effects switched on.
+pub const PATH_STRIP_H: i32 = 58;
+
 /// Row pitch and list top — SINGLE SOURCE for the render below and `nav`'s hit test.
 pub const ROW_H: i32 = 64;
-pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
+pub const TOP: i32 = crate::chrome::HEADER_BOTTOM + PATH_STRIP_H;
 
 /// The Balance row is taller than the rest: it carries a full-width drag slider, a Centre reset
 /// button and a readout, and a 64 px row would leave the track sharing an edge with ClearAudio+
@@ -106,12 +110,8 @@ pub fn hit_balance_reset(x: i32, y: i32) -> bool {
 
 /// The MONO button, immediately left of CENTRE and the same height.
 ///
-/// IN THE BALANCE ROW rather than a row of its own, and that is a layout fact as much as a design
-/// one: the six effect rows end at 475, the balance slider runs to 607, "Advanced ›" to 671 and the
-/// signal-path footer starts at 700. There is no 64 px row left on this screen, and moving the
-/// footer to make one would reflow the whole panel-overflow matrix to buy a control that belongs
-/// beside the balance slider anyway — mono and balance answer the same question, "what reaches
-/// which ear", and every phone groups them for that reason.
+/// IN THE BALANCE ROW rather than a row of its own: mono and balance answer the same question,
+/// "what reaches which ear", and every phone groups them for that reason.
 pub const BAL_MONO_W: i32 = 96;
 pub fn balance_mono_rect() -> (i32, i32, i32, i32) {
     let (rx, ry, _, rh) = balance_reset_rect();
@@ -272,26 +272,60 @@ pub(crate) fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, lab
     cy
 }
 
-/// Simple word-wrap draw for the mono signal-path caption.
-fn wrap(c: &mut Canvas, f: &FontSet, t: &Theme, x: f32, y0: f32, max_w: f32, text_s: &str) -> f32 {
-    let st = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.12);
+/// `text_s` word-wrapped to `max_w`.
+fn wrap_lines(f: &FontSet, text_s: &str, st: &text::TextStyle, max_w: f32) -> Vec<String> {
+    let mut out = Vec::new();
     let mut line = String::new();
-    let mut y = y0;
     for word in text_s.split(' ') {
         let trial = if line.is_empty() { word.to_string() } else { format!("{} {}", line, word) };
-        if text::measure(f, &trial, &st) > max_w && !line.is_empty() {
-            text::draw(c, f, x, y, &line, &st);
-            y += 15.0;
-            line = word.to_string();
+        if text::measure(f, &trial, st) > max_w && !line.is_empty() {
+            out.push(std::mem::replace(&mut line, word.to_string()));
         } else {
             line = trial;
         }
     }
     if !line.is_empty() {
-        text::draw(c, f, x, y, &line, &st);
-        y += 15.0;
+        out.push(line);
     }
-    y
+    out
+}
+
+/// The two lines the strip shows: the path, wrapped; or, when it needs more than two, its first
+/// line and then its END with an ellipsis in front. The end is the output — what the chain arrives
+/// at — and a path cut off before it answers nothing. A bypass warning takes the second line (the
+/// path is short then: a bypass leaves nothing in the middle).
+pub fn strip_lines(f: &FontSet, path: &str, warn: Option<&str>, st: &text::TextStyle, max_w: f32) -> (String, String) {
+    let fit = |s: &str| crate::widgets::fit(f, s, st, max_w);
+    if let Some(w) = warn {
+        return (fit(path), fit(w));
+    }
+    let lines = wrap_lines(f, path, st, max_w);
+    match lines.len() {
+        0 => (String::new(), String::new()),
+        1 => (lines[0].clone(), String::new()),
+        2 => (lines[0].clone(), lines[1].clone()),
+        _ => {
+            let mut rest: Vec<&str> = lines[1..].iter().flat_map(|l| l.split(' ')).collect();
+            let tail = |r: &[&str]| format!("\u{2026} {}", r.join(" "));
+            while rest.len() > 1 && text::measure(f, &tail(&rest), st) > max_w {
+                rest.remove(0);
+            }
+            (lines[0].clone(), fit(&tail(&rest)))
+        }
+    }
+}
+
+/// The signal-path strip at `y`.
+fn path_strip(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, path: &str, warn: Option<&str>) {
+    use crate::kit::{LEFT, RIGHT};
+    fill_rect(c, 0, y, crate::canvas::W as i32, PATH_STRIP_H, t.panel);
+    hline(c, y, t.line);
+    hline(c, y + PATH_STRIP_H - 1, t.line);
+    let st = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.dim, 0.06);
+    let (l1, l2) = strip_lines(f, path, warn, &st, (RIGHT - LEFT) as f32);
+    text::draw(c, f, LEFT as f32, (y + 24) as f32, &l1, &st);
+    let st2 = if warn.is_some() { sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.06) } else { st };
+    text::draw(c, f, LEFT as f32, (y + 44) as f32, &l2, &st2);
 }
 
 /// The Balance row: label, live readout, and a full-width drag slider with a centre detent.
@@ -329,8 +363,13 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
     // which truncated the ordinary "Drag the slider to shift the stereo image" to "…stereo i…".
     // Four pixels lower clears the buttons and gives the line the whole row width back; the slider
     // track is at y+86, so there is still 20 px under it.
+    //
+    // The baseline also moves down by however much the UI scale grew the text: a scaled line grows
+    // UPWARD from its baseline, and at 140% its ascenders reached back into the buttons' bottom
+    // edge (found by the text audit, `cinder-host --audit`). At 100% nothing moves.
     let sst = sty(Family::Sans, Weight::Regular, 13.0, if warn { t.acc } else { t.dim }, 0.0);
-    text::draw(c, f, 22.0, (y + 62) as f32,
+    let grow = (text::scaled(13.0) - 13.0).max(0.0).round();
+    text::draw(c, f, 22.0, (y + 62) as f32 + grow,
                &crate::widgets::fit(f, sub, &sst, (BAL_X1 - 22) as f32), &sst);
 
     // MONO. A latching button rather than a switch, because it sits in a row of buttons and a
@@ -507,9 +546,17 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
         right(c, f, (x0 - 12) as f32, (AB_TOP + AB_H / 2 + 4) as f32, "COMPARE", &hint);
     }
 
+    // ── the signal path ───────────────────────────────────────────────────────────────────────
+    // ITS ONE JOB IS TO BE TRUE. It is the only thing on the device that says what is actually
+    // carrying the audio, and as a footer it was once wrong in two ways at once: it ignored Source
+    // Direct entirely (no field, no warning, a full chain drawn over a total bypass), and it named
+    // an EQ preset even when Tone Control had replaced the 10-band in the path.
+    let (path, warn) = signal_path(s, setup);
+    path_strip(c, t, f, y0, &path, warn);
+    let y0 = y0 + PATH_STRIP_H;
+
     let rh = ROW_H;
     debug_assert_eq!(y0, TOP, "sound list top drifted from the hit test");
-    hline(c, y0, t.line);
     // WHAT IS BYPASSED IS DRAWN AS BYPASSED. With ClearAudio+ on, DSEE HX / Vinyl / VPT / DC Phase
     // still showed their switches lit while the footer said they were out of the path — two
     // answers to one question on one screen. They stay tappable (you can set them up for when the
@@ -540,28 +587,37 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
         let chev = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.dim, 0.0);
         right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
     }
-
-    // ── signal-path footer ──────────────────────────────────────────────────────────────────
-    // THE FOOTER'S ONE JOB IS TO BE TRUE. It is the only thing on the device that says what is
-    // actually carrying the audio, and it used to be wrong in two ways at once: it ignored Source
-    // Direct entirely (no field, no warning, a full chain drawn over a total bypass), and it named
-    // an EQ preset even when Tone Control had replaced the 10-band in the path.
-    let fy = 700;
-    hline(c, fy, t.line);
-    let (path, warn) = signal_path(s, setup);
-    let yend = wrap(c, f, t, 22.0, (fy + 22) as f32, 436.0, &path);
-    if let Some(w) = warn {
-        // Through `fit`, like the Advanced banner: at 140% UI scale an unfitted line of this length
-        // runs past the margin, which is exactly what tests/ui_overflow.rs exists to catch.
-        let st = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.1);
-        let w = crate::widgets::fit(f, w, &st, 436.0);
-        text::draw(c, f, 22.0, yend + 8.0, &w, &st);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The strip is two lines at every UI scale, and when the path needs more it keeps the END —
+    /// the output the chain arrives at — rather than cutting it off.
+    #[test]
+    fn the_path_strip_keeps_the_output_at_every_scale() {
+        let _g = crate::text::scale_guard();
+        let f = FontSet::load();
+        let t = Theme::day();
+        let st = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.dim, 0.06);
+        let w = (crate::kit::RIGHT - crate::kit::LEFT) as f32;
+        let (path, _) = signal_path(&loud(), 0);
+        for idx in 0..crate::text::SCALE_STEPS.len() {
+            crate::text::set_scale_idx(idx);
+            let (l1, l2) = strip_lines(&f, &path, None, &st, w);
+            let pct = crate::text::SCALE_STEPS[idx];
+            assert!(l1.starts_with("SIGNAL PATH (A)"), "{pct}%: {l1}");
+            assert!(l2.ends_with("3.5MM"), "{pct}%: the output fell off: {l2}");
+            for l in [&l1, &l2] {
+                assert!(crate::text::measure(&f, l, &st) <= w, "{pct}%: {l} is wider than the strip");
+            }
+        }
+        crate::text::set_scale_idx(crate::text::SCALE_STEPS.iter().position(|s| *s == 100).unwrap());
+        // A bypass puts its warning on the second line.
+        let (_, l2) = strip_lines(&f, "SIGNAL PATH (A): SOURCE → AMP → 3.5MM", Some("! SOURCE DIRECT: ALL BYPASSED"), &st, w);
+        assert_eq!(l2, "! SOURCE DIRECT: ALL BYPASSED");
+    }
 
     /// MONO and CENTRE sit side by side in the Balance row, so neither may reach the other — the
     /// class of near-miss this screen's geometry constants exist to prevent.
