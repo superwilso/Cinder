@@ -32,8 +32,9 @@ MAP=(
     sound:sound_day                        bluetooth:bluetooth_day
     usb-dac:usbdac_day                     settings:settings_day
     shelf:shelf_day                        lock:lock_day
-    fm-radio:fm_day                        gestures:onboard_2_gestures_day
+    fm-radio:fm_day                        gestures:onboard_4_gestures_day
     visualiser-bars:np_spectrum_0_bars     visualiser-ribbon:np_spectrum_1_ribbon
+    menu:menu_day                          display:display_day
 )
 
 # A clean render, with the real-cover overrides unset: those read files outside the tree, and the

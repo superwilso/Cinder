@@ -130,6 +130,20 @@ pub fn volume_trimmed(c: &mut Canvas, t: &Theme, f: &FontSet, level: u8, trim_ha
     }
 }
 
+/// The Minimal volume readout (design handoff 2e): a 3 px bar across the whole width, directly
+/// under the status bar — the track in `line`, the level in the accent. No icon, no number.
+///
+/// For people who find the pill too much: it says "that press did something, and about how far"
+/// without covering the artwork. Same lifetime as the pill (`VOL_FRAMES`). The exact level and the
+/// Bluetooth trim stay on Full, which is why Full is the default.
+pub fn volume_minimal(c: &mut Canvas, t: &Theme, level: u8) {
+    const BAR_H: i32 = 3;
+    let y = crate::chrome::STATUS_H;
+    fill_rect(c, 0, y, W as i32, BAR_H, t.line);
+    let filled = W as i32 * i32::from(level.min(VOL_MAX)) / i32::from(VOL_MAX);
+    fill_rect(c, 0, y, filled, BAR_H, t.acc);
+}
+
 /// Confirmation toast: a bottom-centered pill with a one-line message (e.g. after swipe-to-queue).
 /// Sized to the text; long titles are clipped by the pill edge rather than wrapped.
 pub fn toast(c: &mut Canvas, t: &Theme, f: &FontSet, msg: &str) {

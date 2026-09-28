@@ -1,72 +1,60 @@
-//! Menu (the hub) — ported from cinder-proto-screens3.jsx `CMenu`.
-//! Twelve or thirteen rows: icon + label (17/600) + live value (mono) + chevron, each on a
-//! `row_h` row with hairline separators. The list does NOT scroll, so the pitch is sized to fit
-//! every row on the 800px panel — see [`row_h`].
+//! Menu (the hub) — design handoff 5a.
+//!
+//! ```text
+//!   Menu
+//!   NOW › Nils Frahm · Says · 4:12 of 8:18        the strip: tap it for Now Playing
+//!   Library               3,184 songs … HOME ›    one kit row per destination, title + state
+//!   …
+//!   START ON
+//!   [Library] [Now Playing] [Menu] [Last screen]  what the player opens on
+//! ```
+//!
+//! The Now Playing row became the strip, because "what is playing" is a line of state and not a
+//! place to go, and the strip is the kit's place for a line of state. Up Next left with it: the
+//! queue is one tap from Now Playing's toolbar, where the thing it is the queue of is on screen.
+//! The home-screen picker lives here rather than three levels into Settings — the handoff's reason
+//! is that the Menu is where you are when you think "I wish it opened on…".
+//!
+//! The list does NOT scroll, so the pitch is sized to fit every row between the strip and the chips
+//! — see [`row_h`]. Everything that positions or hit-tests a Menu row derives from it.
 
-use crate::canvas::{Canvas, W};
-use crate::icons;
-use crate::text::{self, Family, FontSet, TextStyle, Weight};
+use crate::canvas::Canvas;
+use crate::kit::{self, Row, Trail};
+use crate::text::FontSet;
 use crate::theme::Theme;
-use embedded_graphics::pixelcolor::Rgb888;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 
 pub struct MenuItem<'a> {
-    pub icon: &'a str,
     pub label: &'a str,
-    pub value: &'a str,
+    /// The second line: live state for the row ("241 albums · 3,184 songs").
+    pub sub: &'a str,
+    /// The row is where the player opens (the HOME tag).
+    pub home: bool,
+    /// Cursor (button navigation).
     pub active: bool,
 }
 
-fn fill_rect(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col: Rgb888) {
-    Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32))
-        .into_styled(PrimitiveStyle::with_fill(col))
-        .draw(c)
-        .ok();
-}
+/// The home screens, in chip order. Index = `App::home_screen`.
+pub const HOMES: [&str; 4] = ["Library", "Now Playing", "Menu", "Last screen"];
 
-fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32) -> TextStyle {
-    TextStyle { fam, weight, size, color, tracking }
-}
+/// The strip's top edge (straight under the header) and the first row's.
+pub const STRIP_TOP: i32 = crate::chrome::HEADER_BOTTOM;
+pub const TOP: i32 = STRIP_TOP + kit::STRIP_H;
+/// Designed pitch: the kit's row.
+pub const ROW_H: i32 = kit::ROW_H;
+/// Space kept under the chips.
+const BOTTOM_PAD: i32 = 16;
+/// Top of the START ON label, and of the chips under it.
+pub const LABEL_TOP: i32 = crate::H as i32 - BOTTOM_PAD - kit::CHIP_H - kit::SECTION_H;
+pub const CHIPS_TOP: i32 = LABEL_TOP + kit::SECTION_H;
 
-fn draw_icon(c: &mut Canvas, name: &str, cx: f32, cy: f32, s: f32, col: Rgb888) {
-    match name {
-        "note" => icons::note(c, cx, cy, s, col),
-        "library" => icons::library(c, cx, cy, s, col),
-        "queue" => icons::queue(c, cx, cy, s, col),
-        "radio" => icons::radio(c, cx, cy, s, col),
-        "eq" => icons::eq(c, cx, cy, s, col),
-        "sound" => icons::sound(c, cx, cy, s, col),
-        "bt" => icons::bt(c, cx, cy, s, col),
-        "usb" => icons::usb(c, cx, cy, s, col),
-        "rx" => icons::rx(c, cx, cy, s, col),
-        "settings" => icons::settings(c, cx, cy, s, col),
-        "bookmark" => icons::bookmark(c, cx, cy, s, col),
-        _ => {}
-    }
-}
-
-/// Row pitch and list top — SINGLE SOURCE for both the render below and `nav`'s hit test.
-/// 58, not the prototype's 63: the twelfth row (Folders) pushed 11x63 past the panel, and this
-/// list does not scroll. Everything that positions or hit-tests a menu row derives from
-/// [`row_h`], so the two move together.
-pub const ROW_H: i32 = 58;
-pub const TOP: i32 = crate::chrome::HEADER_BOTTOM;
-/// The lowest y a row may reach: a few px clear of the panel's bottom edge.
-const BOTTOM: i32 = crate::H as i32 - 7;
-
-/// The pitch for `rows` rows: [`ROW_H`] when they fit, otherwise whatever does fit.
-///
-/// The list does not scroll, and `ROW_H` was sized for twelve rows (91 + 12 × 58 = 787). The
-/// SensMe row made thirteen when that component is installed, and the thirteenth — Help &
-/// Controls, the one row that explains the rest — was drawn below the glass and could never be
-/// tapped (found on the owner's player, 2026-09-23). Thirteen rows get 54 px, still well above the
-/// 44 px floor for a thumb target.
+/// The pitch for `rows` rows: [`ROW_H`] when they fit, otherwise whatever does fit between the
+/// strip and the START ON label. Never below 52: two lines of text need it (checked by a test for
+/// every count the Menu can have).
 pub fn row_h(rows: usize) -> i32 {
     if rows == 0 {
         return ROW_H;
     }
-    ROW_H.min((BOTTOM - TOP) / rows as i32)
+    ROW_H.min((LABEL_TOP - TOP) / rows as i32)
 }
 
 /// Which menu row is under `y`, given how many rows there are.
@@ -78,50 +66,58 @@ pub fn row_at(y: i32, rows: usize) -> Option<usize> {
     (r < rows).then_some(r)
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, items: &[MenuItem]) {
-    c.fill(t.bg);
-    let y0 = crate::chrome::header(c, t, f, "Menu", Some("NW-A55"));
+/// Is `y` on the Now Playing strip?
+pub fn strip_hit(y: i32) -> bool {
+    (STRIP_TOP..TOP).contains(&y)
+}
 
+/// Which START ON chip is under `(x, y)`.
+pub fn home_chip_at(x: i32, y: i32) -> Option<usize> {
+    kit::chip_at(HOMES.len(), CHIPS_TOP, x, y)
+}
+
+/// `strip` is the Now Playing line; `home` the chosen [`HOMES`] index.
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, strip: &str, items: &[MenuItem], home: usize) {
+    c.fill(t.bg);
+    let y0 = crate::chrome::header(c, t, f, "Menu", None);
+    debug_assert_eq!(y0, STRIP_TOP, "menu strip drifted from the hit test");
+    let y = kit::strip(c, t, f, y0, strip);
+    debug_assert_eq!(y, TOP);
     let rh = row_h(items.len());
-    debug_assert_eq!(y0, TOP, "menu list top drifted from the hit test");
-    fill_rect(c, 0, y0, W as i32, 1, t.line); // top border
     for (i, m) in items.iter().enumerate() {
-        let yt = y0 + i as i32 * rh;
-        let cy = (yt + rh / 2) as f32;
-        let icol = if m.active { t.acc } else { t.dim };
-        draw_icon(c, m.icon, 33.0, cy, 19.0, icol);
-        let label_end = text::draw(c, f, 56.0, cy + 6.0, m.label,
-                                   &sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink, 0.0));
-        // The value is right-aligned by measuring it, so an over-long one puts its start x NEGATIVE
-        // and it runs off the LEFT edge — under the icon, through the label, and off the panel.
-        // Nothing here scrolls sideways, so those pixels are simply gone. The Now Playing row's
-        // value is a live "Artist — Title", which is exactly the string with no length bound.
-        // Truncate to the gap between the label and the chevron. Caught by tests/ui_overflow.rs.
-        let vs = sty(Family::Mono, Weight::Regular, 13.0, t.faint, 0.04);
-        let avail = (438.0 - (label_end + 12.0)).max(0.0);
-        let value = crate::widgets::fit(f, m.value, &vs, avail);
-        let vw = text::measure(f, &value, &vs);
-        text::draw(c, f, 438.0 - vw, cy + 5.0, &value, &vs);
-        icons::chevron(c, 456.0, cy, 14.0, t.faint);
-        fill_rect(c, 0, yt + rh, W as i32, 1, t.line); // bottom border
+        let trail = if m.home { Trail::Tag("HOME") } else { Trail::Open("") };
+        let yt = TOP + i as i32 * rh;
+        kit::row(c, t, f, yt, rh, &Row::new(m.label).sub(m.sub).trail(trail).sel(m.active));
     }
+    kit::section_label(c, t, f, LABEL_TOP, "START ON", None);
+    kit::chips(c, t, f, CHIPS_TOP, &HOMES, Some(home.min(HOMES.len() - 1)));
 }
 
 #[cfg(test)]
 mod fit_tests {
     use super::*;
 
-    /// Every row the Menu can show is ON the glass — the last row's bottom is above the panel edge
-    /// and its middle is a row the hit test answers.
+    /// Every row the Menu can show is ON the glass, above the START ON block, and two lines of text
+    /// still fit the pitch.
     #[test]
-    fn every_menu_row_fits_on_the_panel() {
-        for rows in 1..=14 {
+    fn every_menu_row_fits_above_the_home_picker() {
+        for rows in 1..=11 {
             let rh = row_h(rows);
             let last_bottom = TOP + rows as i32 * rh;
-            assert!(last_bottom <= crate::H as i32, "{rows} rows run to {last_bottom}");
+            assert!(last_bottom <= LABEL_TOP, "{rows} rows run to {last_bottom}, into START ON");
             assert_eq!(row_at(TOP + (rows as i32 - 1) * rh + rh / 2, rows), Some(rows - 1));
-            assert!(rh >= 44, "{rows} rows squeeze the pitch to {rh}");
+            assert!(rh >= 52, "{rows} rows squeeze the pitch to {rh}");
         }
-        assert_eq!(row_h(12), ROW_H, "twelve rows keep the designed pitch");
+        assert_eq!(row_h(8), ROW_H, "the designed eight rows keep the kit's pitch");
+    }
+
+    /// The strip, the rows and the chips do not overlap as targets.
+    #[test]
+    fn the_strip_rows_and_chips_are_separate_targets() {
+        assert!(strip_hit(STRIP_TOP) && strip_hit(TOP - 1) && !strip_hit(TOP));
+        assert_eq!(row_at(TOP - 1, 10), None);
+        assert!(home_chip_at(240, CHIPS_TOP + 5).is_some());
+        assert_eq!(home_chip_at(240, LABEL_TOP + 5), None, "the label is not a chip");
+        assert!(CHIPS_TOP + kit::CHIP_H <= crate::H as i32);
     }
 }

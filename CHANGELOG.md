@@ -16,8 +16,35 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+The first pass of the 2026-09 redesign is in this release. The ledger for the rest, screen by
+screen, is [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md). The redesign's
+entries — all of *Added* and the first four under *Changed* — are *host-tested and in the golden
+previews; device-unverified*.
+
+### Added
+
+- **Choose where the player opens.** The Menu has a START ON row of chips: **Library**, Now
+  Playing, Menu, or **Last screen**, which reopens the list or album you were in. A HOME tag marks
+  the chosen row. **The default is now Library**; pick Now Playing to keep the old behaviour. Back
+  from the home screen still reaches Now Playing.
+- **Settings ▸ Display.** Palette, Accent, Night, the volume readout, Size and Visualiser, on one
+  screen. They were the top five rows of the long Settings list, where they sat beside Restart and
+  Reset.
+- **A minimal volume readout** (Display ▸ Volume: *Minimal*): a thin bar across the top of the
+  screen instead of the pill. The default is still the pill.
+- **Bluetooth ▸ THIS DEVICE ▸ Sound quality** shows the LDAC rate (or the codec in use) and opens
+  the codec settings.
+
 ### Changed
 
+- **The Menu shows what is playing** in a strip under its title; tap it for Now Playing. The
+  separate Now Playing and Up Next rows are gone (Up Next is on Now Playing's bottom bar). Every
+  row now has a second line saying what is behind it.
+- **Settings is grouped** into Display, Playback, Library, System and About, in the redesign's
+  row style.
+- **Bluetooth:** the on/off switch matches the rest of the app, and *Pair new* moved into the
+  PAIRED DEVICES heading.
+- **USB-DAC** no longer compares itself with the stock player.
 - **Up Next is one list.** *Device-verified 2026-09-23 on the A55 (Walkman One 3.02).* The user
   queue and the album/playlist "context" were two lists, and a queued track always played before
   the rest of the album — so "play this album, then that one" could not be said. Now everything

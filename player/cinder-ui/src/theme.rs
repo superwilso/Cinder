@@ -331,6 +331,23 @@ impl Theme {
         }
     }
 
+    /// The outline of an idle control: a switch that is off, a chip that is not chosen.
+    ///
+    /// The 2026-09 redesign draws these a step brighter than a hairline (`#3a352e` in its mocks)
+    /// so a control reads as a control and not as a divider. It is DERIVED, not a tenth stored
+    /// token: 40% of the way from `line` to `faint`, which lands on the mock's value for Cinder's
+    /// own palette and follows any user palette, accent and night level without a file format
+    /// change — a palette file can never produce a control that disappears into its lines.
+    pub fn ctrl(&self) -> Rgb888 {
+        use embedded_graphics::pixelcolor::RgbColor;
+        let mix = |a: u8, b: u8| (a as i32 + (b as i32 - a as i32) * 2 / 5) as u8;
+        Rgb888::new(
+            mix(self.line.r(), self.faint.r()),
+            mix(self.line.g(), self.faint.g()),
+            mix(self.line.b(), self.faint.b()),
+        )
+    }
+
     /// Apply the night dim to a colour the palette did not provide (album art average, an accent
     /// swatch, anything raw). No-op at full brightness.
     pub fn scale_color(&self, c: Rgb888) -> Rgb888 {

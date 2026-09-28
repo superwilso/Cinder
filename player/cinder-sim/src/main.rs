@@ -81,19 +81,25 @@ struct App {
     lib: cinder_ui::Library,
 }
 
+/// The sim's Menu: the device's rows (nav::MENU order, without SensMe), with placeholder state.
+const SIM_MENU: [(Screen, &str, &str); 8] = [
+    (Screen::Library, "Library", "6 albums · 8 tracks"),
+    (Screen::Fm, "FM radio", "Needs wired headphones as the aerial"),
+    (Screen::Eq, "Equalizer", "A1"),
+    (Screen::Sound, "Sound", "DSEE HX · VPT"),
+    (Screen::Bluetooth, "Bluetooth", "LDAC"),
+    (Screen::UsbDac, "USB-DAC", "Off"),
+    (Screen::Receiver, "BT receiver", "Off"),
+    (Screen::Settings, "Settings", "Display · playback · system"),
+];
+
 fn menu_items(app: &App) -> Vec<MenuItem<'static>> {
     let _ = app;
-    vec![
-        MenuItem { icon: "note", label: "Now Playing", value: "tap to open", active: true },
-        MenuItem { icon: "library", label: "Library", value: "124 albums · 1,842 tracks", active: false },
-        MenuItem { icon: "queue", label: "Up Next", value: "8 tracks · 41:24", active: false },
-        MenuItem { icon: "radio", label: "FM Radio", value: "88.6 MHz", active: false },
-        MenuItem { icon: "eq", label: "Equalizer", value: "Custom A1", active: false },
-        MenuItem { icon: "sound", label: "Sound Settings", value: "DSEE HX · VPT · Vinyl", active: false },
-        MenuItem { icon: "bt", label: "Bluetooth", value: "WH-1000XM5 · LDAC", active: false },
-        MenuItem { icon: "usb", label: "USB-DAC", value: "Off", active: false },
-        MenuItem { icon: "settings", label: "Settings", value: "System · Storage · About", active: false },
-    ]
+    SIM_MENU
+        .iter()
+        .enumerate()
+        .map(|(i, (_, label, sub))| MenuItem { label, sub, home: i == 0, active: false })
+        .collect()
 }
 
 fn hit(x: i32, y: i32, cx: i32, cy: i32, r: i32) -> bool {
@@ -144,21 +150,10 @@ fn handle_click(app: &mut App, x: i32, y: i32) {
     match app.screen {
         Screen::Lock => app.screen = Screen::NowPlaying,
         Screen::Menu => {
-            if y >= 91 {
-                let row = (y - 91) / 63;
-                app.screen = match row {
-                    0 => Screen::NowPlaying,
-                    1 => Screen::Library,
-                    2 => Screen::UpNext,
-                    3 => Screen::Fm,
-                    4 => Screen::Eq,
-                    5 => Screen::Sound,
-                    6 => Screen::Bluetooth,
-                    7 => Screen::UsbDac,
-                    8 => Screen::Receiver,
-                    9 => Screen::Settings,
-                    _ => Screen::Menu,
-                };
+            if menu::strip_hit(y) {
+                app.screen = Screen::NowPlaying;
+            } else if let Some(row) = menu::row_at(y, SIM_MENU.len()) {
+                app.screen = SIM_MENU[row].0;
             }
         }
         Screen::NowPlaying => {
@@ -348,7 +343,8 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             elapsed: "1:47", remaining: "-2:45", progress: 0.39, art: SONGS[i].art, art_full: None, art_thumb: None, liked: app.liked, playing: app.playing,
             shuffle: app.shuffle, repeat: app.repeat, viz_seed: 2.0, viz_kind: 0, viz_size: 1, page: 0, viz_levels: None, scrubbing: false,
         }),
-        Screen::Menu => menu::render(c, theme, fonts, &menu_items(app)),
+        Screen::Menu => menu::render(c, theme, fonts, &format!("NOW › {} · {}", SONGS[i].t, SONGS[i].a),
+                                     &menu_items(app), 0),
         Screen::UpNext => {
             let tracks: Vec<cinder_ui::model::SongRow> = SONGS
                 .iter()
@@ -394,7 +390,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             mono: false, mono_live: false,
         }, 0, 0),
         Screen::Settings => settings::render(c, theme, fonts, 0, 0,
-            &settings::SettingsView { ignore_the: false, volume_limit: false, night: app.night, viz_name: "BARS · VEIL", usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01", accent: app.accent, palette: "Cinder", accent_locked: false }),
+            &settings::SettingsView { ignore_the: false, volume_limit: false, usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" }),
         Screen::Bluetooth => bluetooth::render(c, theme, fonts, &Bt {
             on: app.bt_on,
             connected: app.bt_conn.map(|r| PAIRED[r].name),

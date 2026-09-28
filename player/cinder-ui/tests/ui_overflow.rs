@@ -124,6 +124,8 @@ const SCREENS: &[Screen] = &[
     // this matrix was built on. (Shelf is the fourth `Screen` variant missing from this list and
     // is deliberately absent: it is an overlay, covered by `overlays_and_modals_stay_on_the_panel`.)
     Screen::BtCodec, Screen::Device, Screen::VizSet,
+    // The 2026-09 redesign's Settings ▸ Display page (handoff 5k).
+    Screen::Display,
 ];
 
 /// The keyboard's word keys (SHIFT / SPACE / DONE / 123) are drawn centred with no `fit`, so a
