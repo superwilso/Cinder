@@ -996,11 +996,27 @@ static bool db_snapshot_restore() {
     return true;
 }
 
+// CONTENT fingerprint of the store the library was last built from (cinder_db_content_signature),
+// 0 = unknown. The housekeeping watcher compares against it before rebuilding: Sony's scanner
+// rewrites /db/MTPDB.dat's indexes on every Scan(), even one that finds nothing, so the file moving
+// is not the library changing. Measured 2026-09-28: 13 scans in a row left every row byte-identical
+// and differed from the pre-scan file in 21 bytes, all in the header and `sqlite_master`.
+static unsigned long long g_db_content = 0;
+
 // Every library open goes through here, so the safety net covers the boot path, the post-MSC
 // reload and the rescan campaign alike.
 int db_open_guarded(const char* path) {
+    // Fingerprint BEFORE the build, so a write landing mid-build leaves a mismatch the watcher
+    // catches, never a match over a stale library. Not on the boot open: it would add to the time
+    // before the library appears, and the watcher treats "unknown" as "rebuild", which is the old
+    // behaviour, once.
+    static bool first = true;
+    const unsigned long long content = first ? 0 : cinder_db_content_signature(path);
+    first = false;
     int rc = cinder_db_open(path);
+    bool restored = false;
     if (rc == -3 && db_snapshot_restore()) {
+        restored = true;
         rc = cinder_db_open(path);
         if (rc == 0) {
             cinder_toast("Library restored from backup");
@@ -1008,6 +1024,7 @@ int db_open_guarded(const char* path) {
         }
     }
     if (rc == 0) db_snapshot_keep();
+    g_db_content = (rc == 0 && !restored) ? content : 0;
     return rc;
 }
 
@@ -2889,6 +2906,29 @@ void power_action(bool restart) {
     }
 }
 
+// CPU settings only root can write, through the same setuid helper (src/cinder-power.c: `sched`,
+// `cap`, `uncap`; every value is hard-coded there). Measured on Walkman One 2026-09-28, docs/AUDIT_
+// 2026-09-28_power_sound_w1.md P6/P7. `/contents/cinder_no_cpu_tune` turns both off, checked on
+// every call — except `uncap`, so the file can never strand the clock at 1040. A helper that fails three times (missing, setuid bit lost) is not asked again this
+// session, and only those three failures are logged.
+bool cpu_tune(const char* verb) {
+    static int fails = 0;
+    if (fails >= 3) return false;
+    if (std::strcmp(verb, "uncap") != 0) {
+        if (FILE* f = std::fopen("/contents/cinder_no_cpu_tune", "r")) { std::fclose(f); return false; }
+    }
+    char cmd[96];
+    std::snprintf(cmd, sizeof cmd, "/system/vendor/unknown321/bin/cinder-power %s", verb);
+    const int rc = std::system(cmd);
+    if (rc == 0) return true;
+    ++fails;
+    char m[160];
+    std::snprintf(m, sizeof m, "cpu: cinder-power %s FAILED (rc=%d)%s", verb, rc,
+                  fails >= 3 ? " — not asking again this session" : "");
+    clog_(m);
+    return false;
+}
+
 // Settings > Date & time > SET CLOCK. Hands the epoch to the setuid helper, which is the only
 // thing on this device that can move either clock: settimeofday(2) and RTC_SET_TIME both want
 // CAP_SYS_TIME, and cinder-home runs as uid 100 (system) with an empty capability set.
@@ -3266,12 +3306,15 @@ static void screen_auto_off() {
     clog_("screen: idle timeout -> panel off (touch or Power wakes it)");
 }
 
+static void soc_suspend_leave_now(const char* why);   // defined with socsusp, below
+
 // Wake from an idle blank. No-op unless WE turned it off: a Power-button blank must stay off until
 // Power is pressed again (that is the pocket-safe case, and the Hold switch's job otherwise).
 static void screen_auto_wake() {
     if (!g_screen_auto_off) return;
     g_screen_auto_off = false;
     g_screen_on = true;
+    soc_suspend_leave_now("screen wake");   // first: the LCM needs late resume before it can light
     // Self-heal: the idle blank never sleeps the touch panel (it is what wakes us), but a Power
     // blank does now — and if the user Power-blanked, woke with Power, and the panel is dark again
     // by the idle timer, re-validating here costs one call and closes the only window where a
@@ -3286,6 +3329,9 @@ static void screen_auto_wake() {
 void screen_toggle() {
     g_screen_auto_off = false;   // an explicit Power press takes ownership of the panel state
     g_screen_on = !g_screen_on;
+    // Leave stage 1 FIRST, before the touch IPC: with the controller early-suspended that call took
+    // 270 ms on device (2026-09-28), all of it spent in front of a black screen.
+    if (g_screen_on) soc_suspend_leave_now("Power");
     touch_set_sleep(g_screen_on ? 0 : 1);   // stock behaviour: TS sleeps with the panel (battery)
     // Drop any in-flight contact: the sleeping controller never sends its lift, and a stale
     // "down" would make the next touch classify as a drag from the old start point.
@@ -3321,10 +3367,10 @@ void screen_toggle() {
 //   * ALWAYS write the exit. A resume that nobody acknowledges leaves the device cycling with a
 //     dark screen, which is exactly what looked like a brick.
 //
-// OFF BY DEFAULT. The idle threshold is read from /contents/cinder_suspend_s; absent, empty, 0 or
-// unparseable means disabled, so an existing install gains nothing until it is asked to. The file
-// rather than the settings UI because this is still new: it is trivially inspectable and trivially
-// removable from a PC, which a Rust-side setting is not.
+// STAGE 1 IS ON BY DEFAULT since 2026-09-28 (60 s of screen-off idle, and screen-off playback on
+// the jack); stage 2 is still opt-in. /contents/cinder_suspend_s overrides the threshold (0 = off)
+// and /contents/cinder_no_suspend stops everything — files rather than a settings row because they
+// stay reachable from a PC over USB-MSC when the app is the thing misbehaving. See threshold_s().
 // ── FRAMEBUFFER EARLY-SUSPEND HANDSHAKE ────────────────────────────────────────────────────────
 // Android's fb early-suspend handler asks userspace to stop drawing and WAITS one second for an
 // answer. Nothing here ever answered, so every single early suspend paid the full timeout:
@@ -3448,6 +3494,8 @@ void start() {
 
 } // namespace fbsync
 
+bool contents_mounted();   // defined with the USB-MSC block, far below
+
 namespace socsusp {
 
 const char kDisableFile[] = "/contents/cinder_no_suspend";
@@ -3524,48 +3572,79 @@ bool file_exists(const char* path) {
 }
 
 // Idle seconds before suspending, or 0 for disabled. Latched once decided: deliberately not
-// hot-reloadable, because a half-written config file should not be able to arm a suspend.
+// hot-reloadable, because a half-written config file should not be able to change it mid-boot.
+//
+// ON BY DEFAULT since 2026-09-28 (stage 1 only — stage 2 stays behind kRamFile). Absent file =
+// kDefaultThresholdS. A file holding 0 turns it off; a positive number is the threshold; anything
+// unparseable falls back to the default and says so. The escape hatch (kDisableFile) is still
+// checked every tick. What earned the default: stage 1 holds a wakelock, so it can never reach the
+// suspend-to-RAM path that cost the 2026-09-04 forced reboot; it ran clean off-cable on 09-04
+// (486 s idle, 18,509 deep-idle entries, USB back on replug) and 09-06 (205 s playing the jack),
+// and on Walkman One on 09-28. Off, the SoC had entered deep idle zero times in every boot sampled.
 //
 // BUT A FAILED READ IS NOT AN ANSWER. /contents is a vfat partition the USB mass-storage gadget
 // also binds as a LUN, and it does so DURING BOOT: `fsg_store_file file=/emmc@contents` at 10.1,
-// 11.1 and 12.7 s (dmesg, 2026-09-04) — cinder-home itself starts at 10.17 s. The first version
-// latched `cached = 0` on any read miss, so a boot that asked one tick too early disabled suspend
-// until the next reboot, with nothing written down anywhere. The same window is why that boot's
-// launcher log redirect fell back to the inherited fd and /contents/cinderhome.log stayed 0 bytes:
-// run_home's `can_append` probe missed for exactly the same reason.
+// 11.1 and 12.7 s (dmesg, 2026-09-04) — cinder-home itself starts at 10.17 s. A boot that looked
+// one tick too early would see "no file" on an unmounted mountpoint and ignore a user's explicit 0,
+// so nothing is decided until /contents is really mounted. Undecided costs one check a second and
+// fails in the safe direction (no suspend) — and the boot grace is longer than the window anyway.
 //
-// So latch only on an answer worth trusting — a good value, or a /contents we can actually read
-// that genuinely has no config file in it. Anything else stays undecided and asks again next
-// tick, which costs one access(2) a second and fails in the safe direction (no suspend).
-//
-// Either way the decision is LOGGED. The old version wrote a line when it enabled and stayed
-// silent when it disabled, so the failure that mattered was the one leaving no trace.
+// Either way the decision is LOGGED, because the failure that matters is the one leaving no trace.
+const int kDefaultThresholdS = 60;
+
 int threshold_s() {
     static int cached  = -1;
     static int retries = 0;
     if (cached >= 0) return cached;
 
-    char m[112];
-    const long v = read_node_long(kConfigFile);
-    if (v > 0 && v < 100000) {
-        cached = (int)v;
+    if (!contents_mounted()) { ++retries; return 0; }   // undecided: ask again next tick
+
+    char m[144];
+    if (!file_exists(kConfigFile)) {
+        cached = kDefaultThresholdS;
         std::snprintf(m, sizeof m,
-                      "suspend: enabled, idle threshold %d s (/contents/cinder_suspend_s, %d retries)",
-                      cached, retries);
+                      "suspend: enabled by default, idle threshold %d s (0 in /contents/cinder_suspend_s "
+                      "turns it off; %d retries)", cached, retries);
         clog_(m);
         return cached;
     }
-
-    // Undecided: the config file is unreadable and so is the directory that should hold it.
-    if (access("/contents", R_OK | X_OK) != 0) { ++retries; return 0; }
-
-    cached = 0;
-    std::snprintf(m, sizeof m, "suspend: disabled — no /contents/cinder_suspend_s (%d retries)", retries);
-    clog_(m);
+    const long v = read_node_long(kConfigFile);
+    if (v == 0) {
+        cached = 0;
+        clog_("suspend: disabled by /contents/cinder_suspend_s = 0");
+    } else if (v > 0 && v < 100000) {
+        cached = (int)v;
+        std::snprintf(m, sizeof m, "suspend: enabled, idle threshold %d s (/contents/cinder_suspend_s)", cached);
+        clog_(m);
+    } else {
+        cached = kDefaultThresholdS;
+        std::snprintf(m, sizeof m,
+                      "suspend: /contents/cinder_suspend_s is unreadable or out of range — using the "
+                      "default %d s", cached);
+        clog_(m);
+    }
     return cached;
 }
 
+// Stage 1 active: `mem` written, wakelock held. Namespace-level (not a static in the tick) so the
+// wake path can leave at once instead of waiting up to a second for the next tick.
+bool g_early = false;
+
 } // namespace socsusp
+
+// Leave stage 1 NOW, from the wake path. The tick would get there within a second, but the panel
+// cannot light until late resume has re-initialised the LCM (~0.3 s), so every tick of delay is
+// time the user spends pressing Power at a black screen. Same order as the tick's exit: lock first.
+static void soc_suspend_leave_now(const char* why) {
+    using namespace socsusp;
+    if (!g_early) return;
+    write_node(kWakeLock, kLockName);
+    write_node(kStateNode, "on");
+    g_early = false;
+    char m[96];
+    std::snprintf(m, sizeof m, "suspend: %s -> left early suspend", why);
+    clog_(m);
+}
 
 // Called once a second from the housekeeping block. Returns nothing; all state is internal.
 static void soc_suspend_tick(bool idle) {
@@ -3585,7 +3664,7 @@ static void soc_suspend_tick(bool idle) {
 
     static long last_rc   = -1;
     static int  idle_secs = 0;
-    static bool early     = false;    // stage 1 active: `mem` written, wakelock held
+    bool& early           = g_early;  // stage 1 active: `mem` written, wakelock held
     static bool ram_ok    = false;    // stage 2 permitted (config), read once
     static bool ram_read  = false;
 
@@ -3610,6 +3689,26 @@ static void soc_suspend_tick(bool idle) {
         return;
     }
 
+    // A CABLE PULLED DURING STAGE 1 IS NEVER SEEN BY THE USB PORT. Handler 9 of the chain,
+    // `bq24262_wmport_early_suspend`, parks the WM-PORT VBUS thread, so the unplug is never
+    // processed: no "Disconnect USB", no "PHY off", and the USB0 clock stays up — which alone blocks
+    // deep idle (`dpidle_block_mask[CG_PERI0]=0x400`). Measured on Walkman One 2026-09-28: 150 s
+    // off-cable in stage 1, `by_vtg` frozen as designed, `dpidle_cnt` 0 the whole time. The charger
+    // node still sees it, so leave the chain long enough for late resume to run the port's handler
+    // and come back. Late resume leaves the backlight at 0 (checked the same day), so the panel
+    // stays dark. The ordinary order — unplug, pocket, stage 1 a minute later — never hits this.
+    static long last_usb = -1;
+    const long usb = read_node_long("/sys/class/power_supply/usb/online");
+    if (early && last_usb == 1 && usb == 0) {
+        write_node(kWakeLock, kLockName);
+        write_node(kStateNode, "on");
+        early = false;
+        idle_secs = thr > 15 ? thr - 15 : 0;   // back in ~15 s, once the port has let go
+        clog_("suspend: cable pulled during early suspend -> out for ~15 s so the USB port can "
+              "power down (it holds deep idle off until it does)");
+    }
+    if (usb >= 0) last_usb = usb;
+
     // Busy, or too soon after start: undo stage 1 if we are in it and reset the clock.
     if (!idle || uptime_s < kBootGraceS) {
         if (early) {
@@ -3626,17 +3725,31 @@ static void soc_suspend_tick(bool idle) {
     if (idle_secs < thr) return;
 
     if (!early) {
+        // A node that refuses the write refuses it every time. Back off 1 min -> x3 -> 1 h, and
+        // log at the attempt, so a unit where this can never work costs a handful of lines an hour
+        // rather than one a second (the harness's autooff-idle scenario caught exactly that once
+        // this became the default).
+        static long fail_next_ms = 0;
+        static long fail_gap_ms  = 0;
+        if (fail_next_ms && nowms < fail_next_ms) return;
         // Stage 1. Wakelock FIRST — the order matters, because writing `mem` with no lock held
         // arms autosleep and the kernel can take the device to RAM before the next tick.
         write_node(kWakeLock, kLockName);
         if (write_node(kStateNode, "mem")) {
             early = true;
+            fail_next_ms = 0;
+            fail_gap_ms  = 0;
             char m[88];
             std::snprintf(m, sizeof m, "suspend: idle %d s -> early suspend (deep idle on, still awake)", idle_secs);
             clog_(m);
         } else {
             write_node(kWakeUnlock, kLockName);
-            clog_("suspend: /sys/power/state write failed, staying awake");
+            fail_gap_ms  = fail_gap_ms ? std::min(fail_gap_ms * 3, 3600000L) : 60000L;
+            fail_next_ms = nowms + fail_gap_ms;
+            char m[112];
+            std::snprintf(m, sizeof m, "suspend: /sys/power/state write failed, staying awake "
+                                       "(next try in %ld s)", fail_gap_ms / 1000);
+            clog_(m);
         }
         return;
     }
@@ -7583,6 +7696,7 @@ void apply_usb_dac() {
     // play_tracks; this only re-establishes the controller + listener.
     if (!on) {
         int ri = cinder_audio_init("cinder");
+        cinder_resume_rearm();   // ▶ hands the Up Next list back to the re-opened player
         char rm[96];
         std::snprintf(rm, sizeof rm, "usb-dac: reclaimed the player after DAC (init rc=%d)%s",
                       ri, ri == 0 ? "" : "  (local playback may need a restart)");
@@ -7603,12 +7717,26 @@ void apply_usb_dac() {
 // that runs it: the USB-MSC exit path (new music has just landed) and Settings ▸ Database. The
 // full rationale — why one Scan() is not a scan of the library — is on media_rescan() below.
 static const int  RESCAN_MAX_ROUNDS = 12;
+static const int  RESCAN_MAX_CHECKS = 36;   // 6 minutes of watching, whatever the store does
 static const long RESCAN_ROUND_MS   = 10000;
 static int  g_rescan_rounds_left = 0;   // follow-up scans still in budget
+static int  g_rescan_checks_left = 0;   // checks still in budget (a busy store must not pin it open)
 static long g_rescan_next_ms     = 0;   // earliest time for the next round
-static unsigned long long g_rescan_sig = 0;  // store signature when the last round was issued
+static unsigned long long g_rescan_sig  = 0;  // CONTENT signature when the last round was issued
+static unsigned long long g_rescan_stat = 0;  // file signature at the last check
 static int  g_rescan_quiet       = 0;   // consecutive checks that saw no change
 static void media_rescan();             // defined with the MediaStore block, far below
+
+// Arm the campaign right after a Scan() has been requested. Both signatures are taken now, before
+// the scanner has had time to write, so the scan's own first write reads as "busy", not "settled".
+static void rescan_campaign_arm() {
+    g_rescan_rounds_left = RESCAN_MAX_ROUNDS;
+    g_rescan_checks_left = RESCAN_MAX_CHECKS;
+    g_rescan_next_ms     = now_ms() + RESCAN_ROUND_MS;
+    g_rescan_sig         = cinder_db_content_signature(DB_LIVE);
+    g_rescan_stat        = cinder_db_signature("/db/MTPDB.dat", "/db/MTPDB.dat-wal", "/db/MTPDB.dat-journal");
+    g_rescan_quiet       = 0;
+}
 
 static bool g_msc_active = false;   // between enter and exit (gates /contents writers + watcher)
 
@@ -8171,6 +8299,7 @@ void exit_usb_msc() {
     // has a controller to talk to. Same shape as the FM handover's exit, and unconditional: it must
     // happen whether or not /contents came back, or a failed remount would also cost audio.
     cinder_audio_init("cinder");
+    cinder_resume_rearm();   // the service lost the sequence with the player; ▶ hands it back
     if (contents_mounted()) {
         clog_("usb-msc: exited (/contents remounted; log restored)");
         db_open_guarded(DB_LIVE);
@@ -8205,10 +8334,7 @@ void exit_usb_msc() {
         } else {
             clog_("usb-msc: the PC had the volume — asking MediaStore to re-scan for new music");
             run_guarded("usb-msc: rescan after transfer", 20, media_rescan);
-            g_rescan_rounds_left = RESCAN_MAX_ROUNDS;
-            g_rescan_next_ms     = now_ms() + RESCAN_ROUND_MS;
-            g_rescan_sig         = db_signature();
-            g_rescan_quiet       = 0;
+            rescan_campaign_arm();
         }
         report_storage();   // the card's line in Settings ▸ Storage follows whatever just happened
     } else {
@@ -8359,8 +8485,10 @@ static void fm_power_fn() {
         cinder_tuner_stop();
         g_fm_on = false;
         cinder_fm_report_playing(0);
-        // The player was released on the way in; re-init so the next ▶ has a controller to talk to.
+        // The player was released on the way in; re-init so the next ▶ has a controller to talk to,
+        // and a sequence to play when it does.
         cinder_audio_init("cinder");
+        cinder_resume_rearm();
     }
 }
 
@@ -9019,10 +9147,7 @@ void carry_out(int act) {
             run_guarded("carry_out: library rescan", 20, media_rescan);
             // ARM THE CAMPAIGN. One Scan() only ever gets part of the way (see the table over
             // RESCAN_MAX_ROUNDS), and the user pressing the row twice is not a scanning strategy.
-            g_rescan_rounds_left = RESCAN_MAX_ROUNDS;
-            g_rescan_next_ms     = now_ms() + RESCAN_ROUND_MS;
-            g_rescan_sig         = db_signature();
-            g_rescan_quiet       = 0;
+            rescan_campaign_arm();
             break;
         case CINDER_ACT_RESTART:  power_action(true);  break;
         case CINDER_ACT_POWER_OFF: power_action(false); break;
@@ -11515,7 +11640,7 @@ void* render_driver(void*) {
                 const bool audible = g_playing && cinder_audio_is_playing() != 0;
                 const bool idle = !g_screen_on && !audible;
 
-                // ── OPT-IN: LET STAGE 1 FIRE WHILE MUSIC PLAYS DOWN THE JACK ─────────────────
+                // ── LET STAGE 1 FIRE WHILE MUSIC PLAYS DOWN THE JACK ─────────────────────────
                 // `!audible` is more conservative than this project's own evidence requires.
                 // RE_early_suspend.md §"Audio is unaffected — tested, because it was the
                 // requirement" ran the whole early-suspend chain during playback and measured:
@@ -11562,22 +11687,38 @@ void* render_driver(void*) {
                 // while playing down the jack, and the music never stopped — confirming
                 // RE_early_suspend.md's on-cable finding on battery too.
                 //
-                // KEPT, OFF BY DEFAULT, for the one question it can still answer: the chain also
-                // runs mtkfb, emifreq, cpufreq and hotplug handlers, and whether THOSE are worth
-                // anything during playback has never been measured. That is a battery A/B, not a
-                // counter read. Nobody should enable this expecting deep idle.
-                static const bool suspend_while_playing =
-                    access("/contents/cinder_suspend_playing", F_OK) == 0;
+                // THE QUESTION IT WAS KEPT FOR IS ANSWERED, AND IT IS NOW THE DEFAULT (2026-09-28,
+                // Walkman One 3.02, on the cable, 60 s of each, same track):
+                //
+                //                          interrupts/s   ctxt/s   display kthreads   CPU clock
+                //   screen off, awake        383            549      135 wakeups/s      82% 598, 17% 1300 MHz
+                //   screen off, stage 1       90            318        0                100% 1040 MHz
+                //
+                // The panel being dark was never the display being off: with only the backlight
+                // down, the MTK display pipeline kept scanning out at 60 Hz (`mtk_disp` IRQs 184
+                // and 188, `rdma0_update_kt`, `disp_config_upd`) for the whole of every screen-off
+                // listen. Stage 1 powers the LCM and that pipeline down, and `mt_emifreq` drops the
+                // DRAM clock. The CPU pin looks like a cost and is not one: /proc/cpufreq/
+                // cpufreq_ptpod_freq_volt puts 598, 747.5 and 1040 MHz all at 1150 mV and 1300 at
+                // 1300 mV, so a fixed 1040 costs no more per cycle than 598 and saves the ~28% (V²)
+                // the governor was paying on its bursts to 1300. Audio: PCM RUNNING throughout,
+                // hw_ptr advanced 44,118 frames/s against 44,100, no xrun in logcat.
+                //
+                // Still JACK ONLY (the WCN reason above stands until an A2DP run is done), and
+                // opt-OUT with /contents/cinder_no_suspend_playing, checked every tick.
+                const bool suspend_while_playing =
+                    access("/contents/cinder_no_suspend_playing", F_OK) != 0;
                 const bool on_jack_now = cinder_get_bt_route() == 0;
                 const bool soc_idle =
                     suspend_while_playing ? (!g_screen_on && (!audible || on_jack_now)) : idle;
-                // Say so once, because this changes when the SoC suspends and the log is the only
-                // place that would ever explain a behaviour difference between two units.
-                static bool said_swp = false;
-                if (suspend_while_playing && !said_swp) {
-                    said_swp = true;
-                    clog_("suspend: stage 1 ALSO while playing on the jack "
-                          "(/contents/cinder_suspend_playing) — never on Bluetooth");
+                // Say so when it changes, because this changes when the SoC suspends and the log is
+                // the only place that would ever explain a behaviour difference between two units.
+                static int said_swp = -1;
+                if ((int)suspend_while_playing != said_swp) {
+                    said_swp = suspend_while_playing;
+                    clog_(suspend_while_playing
+                          ? "suspend: stage 1 also while playing on the jack (default) — never on Bluetooth"
+                          : "suspend: stage 1 NOT while playing (/contents/cinder_no_suspend_playing)");
                 }
 
                 // THE CODEC IS ONLY IN THE PATH FOR THE 3.5 mm JACK. On a Bluetooth link the audio
@@ -11629,6 +11770,29 @@ void* render_driver(void*) {
                 // does go down — the codec fix stands on its own and must not depend on this one
                 // being enabled.
                 soc_suspend_tick(soc_idle);   // `idle` unless the opt-in flag is set; see above
+                // CPU: kernel-default scheduler slices once per boot, and 1040 MHz max while the
+                // screen is dark on the jack — the clock stage 1 pins anyway, applied from the first
+                // dark second instead of the 60th. Not on Bluetooth: LDAC encode load at 1040 has
+                // not been measured. Uncapped within a tick of the screen lighting. See cpu_tune.
+                static bool sched_done = false;
+                if (!sched_done) {
+                    sched_done = true;
+                    if (cpu_tune("sched"))
+                        clog_("cpu: scheduler slices back to kernel defaults (6 / 0.75 / 1 ms)");
+                }
+                static int capped = 0;
+                const int want_cap = (!g_screen_on && on_jack_now) ? 1 : 0;
+                if (want_cap != capped) {
+                    capped = want_cap;
+                    if (cpu_tune(want_cap ? "cap" : "uncap")) {
+                        static int said = 0;
+                        if (said < 3) {
+                            ++said;
+                            clog_(want_cap ? "cpu: screen dark on the jack -> max 1040 MHz"
+                                           : "cpu: screen lit -> max clock restored");
+                        }
+                    }
+                }
             }
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");
@@ -12012,8 +12176,23 @@ void* render_driver(void*) {
             last_db_check_ms = house_now;
             const unsigned long long sig = db_signature();
             if (sig != 0 && g_db_sig != 0 && sig != g_db_sig) {
-                clog_("housekeeping: the library database changed -> reloading library and playlists");
-                db_open_guarded(DB_LIVE);
+                // The file moved. Did the library? A scan that found nothing still rewrites the
+                // indexes, and rebuilding for it cost ~850 ms plus a 4.6 MB snapshot to eMMC every
+                // time (see g_db_content). Unknown (0) on either side means rebuild, as before.
+                const unsigned long long content = cinder_db_content_signature(DB_LIVE);
+                if (content != 0 && content == g_db_content) {
+                    static int same = 0;
+                    if (++same <= 3 || same % 100 == 0) {
+                        char m[128];
+                        std::snprintf(m, sizeof m,
+                                      "housekeeping: the store was rewritten but no row changed — "
+                                      "library kept (%d so far)", same);
+                        clog_(m);
+                    }
+                } else {
+                    clog_("housekeeping: the library database changed -> reloading library and playlists");
+                    db_open_guarded(DB_LIVE);
+                }
             }
             if (sig != 0) g_db_sig = sig;
         }
@@ -12024,24 +12203,23 @@ void* render_driver(void*) {
         // FM job and the BT ladder are: this block already runs at a known rate on a thread that
         // owns the watchdog, and a scan is not urgent enough to be worth a second one.
         if (g_rescan_rounds_left > 0 && !g_msc_active && house_now >= g_rescan_next_ms) {
-            const unsigned long long sig = db_signature();
-            if (sig != 0 && sig == g_rescan_sig) {
-                // Nothing changed since the last round was issued. That is either a scan still
-                // running or one that found nothing, and the two are indistinguishable from out
-                // here — so wait one more round before believing it. Two quiet checks in a row is
-                // the store having settled.
-                if (++g_rescan_quiet >= 2) {
-                    g_rescan_rounds_left = 0;
-                    clog_("rescan: the library store has stopped changing — campaign finished");
-                }
-                g_rescan_next_ms = house_now + RESCAN_ROUND_MS;
-            } else {
-                // It grew. Keep going: the previous round found something, so there is every
-                // reason to think the next one will too.
+            // THREE answers, not two. The old test compared the FILE's signature, and Sony's
+            // scanner rewrites the file on every Scan() whether or not it found anything — so our
+            // own scan made the store look like it was still growing, which issued another scan,
+            // which moved the file again. Measured 2026-09-28 after a USB session that added no
+            // music: all 12 rounds, 13 library rebuilds, ~60 MB of snapshot writes, 3,355 tracks
+            // every time. Now:
+            //   content moved              -> the last scan found something: ask for another;
+            //   content still, file moved  -> a scan is still writing: wait, it is not settled;
+            //   neither moved              -> quiet; two quiet checks in a row and we are done.
+            // A store we cannot read (0) counts as busy, never as quiet.
+            const unsigned long long content = cinder_db_content_signature(DB_LIVE);
+            const unsigned long long stat    = db_signature();
+            g_rescan_next_ms = house_now + RESCAN_ROUND_MS;
+            if (content != 0 && content != g_rescan_sig) {
                 g_rescan_quiet = 0;
-                g_rescan_sig   = sig;
+                g_rescan_sig   = content;
                 --g_rescan_rounds_left;
-                g_rescan_next_ms = house_now + RESCAN_ROUND_MS;
                 char rm[128];
                 std::snprintf(rm, sizeof rm,
                               "rescan: the store is still growing — round %d of %d",
@@ -12052,6 +12230,17 @@ void* render_driver(void*) {
                     clog_("rescan: campaign budget spent — press Settings ▸ Database again if "
                           "albums are still missing");
                 }
+            } else if (content == 0 || stat != g_rescan_stat) {
+                g_rescan_quiet = 0;          // a scan is still writing (or the store is busy)
+            } else if (++g_rescan_quiet >= 2) {
+                g_rescan_rounds_left = 0;
+                clog_("rescan: the library store has stopped changing — campaign finished");
+            }
+            g_rescan_stat = stat;
+            if (g_rescan_rounds_left > 0 && --g_rescan_checks_left <= 0) {
+                g_rescan_rounds_left = 0;
+                clog_("rescan: the store never settled in 6 minutes — campaign stopped; "
+                      "Settings ▸ Database scans again on request");
             }
         }
         ++n;

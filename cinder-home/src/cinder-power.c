@@ -1,4 +1,5 @@
-/* cinder-power — tiny setuid-root helper: power the device off, or restart it.
+/* cinder-power — tiny setuid-root helper: power the device off or restart it, and the two
+ * root-only CPU settings Cinder wants (scheduler granularity, a screen-off clock cap).
  *
  * WHY THIS EXISTS, AND WHY IT DOES NOT GO THROUGH SONY.
  * The obvious route is PowerMgrServiceClient::Reboot() / SetStatus(PowerOff), and Cinder shipped
@@ -27,6 +28,7 @@
  */
 #include <sys/reboot.h>
 #include <sys/mount.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
 
@@ -34,16 +36,67 @@
  * music, settings and log; /data holds the launcher's state. Anything else is read-only or tmpfs. */
 static const char *const kFlush[] = { "/contents", "/contents_ext", "/data", 0 };
 
+/* THE CPU VERBS (2026-09-28, docs/AUDIT_2026-09-28_power_sound_w1.md P6/P7). Both write nodes that
+ * only root can: cinder-home runs as `system` with no capabilities.
+ *
+ *   sched  Kernel-default CFS granularity. Walkman One's init.rc sets sched_latency,
+ *          min_granularity and wakeup_granularity to 0.1 ms; the audio pipeline then took 23 and
+ *          46 involuntary preemptions a second and ~3% more CPU than at the defaults (A/B, same
+ *          track). The ALSA buffer is a full second, so finer slices buy nothing that reaches the
+ *          DAC. On stock these already are the values, so the write is a no-op there.
+ *   cap    scaling_max_freq = 1040 MHz. 598, 747.5 and 1040 MHz all run at 1150 mV; 1300 needs
+ *          1300 mV (cpufreq_ptpod_freq_volt), so the cap removes only the costly step. Stage-1 early
+ *          suspend pins exactly this clock anyway; the cap covers the minute before it starts.
+ *   uncap  scaling_max_freq = cpuinfo_max_freq, read back from the kernel, never a literal.
+ *
+ * Every value is hard-coded or read from the kernel: the caller chooses a verb, never a number. */
+static int put(const char *path, const char *val)
+{
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) return 0;
+    const size_t n = strlen(val);
+    const int ok = write(fd, val, n) == (ssize_t)n;
+    close(fd);
+    return ok;
+}
+
+#define CPUFREQ "/sys/devices/system/cpu/cpu0/cpufreq/"
+
+static int cpu_verb(const char *verb)
+{
+    if (strcmp(verb, "sched") == 0) {
+        int ok = put("/proc/sys/kernel/sched_latency_ns", "6000000");
+        ok &= put("/proc/sys/kernel/sched_min_granularity_ns", "750000");
+        ok &= put("/proc/sys/kernel/sched_wakeup_granularity_ns", "1000000");
+        return ok ? 0 : 4;
+    }
+    if (strcmp(verb, "cap") == 0)
+        return put(CPUFREQ "scaling_max_freq", "1040000") ? 0 : 4;
+    if (strcmp(verb, "uncap") == 0) {
+        char buf[16] = {0};
+        int fd = open(CPUFREQ "cpuinfo_max_freq", O_RDONLY);
+        if (fd < 0) return 4;
+        const ssize_t n = read(fd, buf, sizeof buf - 1);
+        close(fd);
+        if (n <= 0) return 4;
+        return put(CPUFREQ "scaling_max_freq", buf) ? 0 : 4;
+    }
+    return 2;
+}
+
 int main(int argc, char **argv)
 {
     int restart;
 
-    /* Exactly two accepted verbs. A setuid-root binary takes no paths, no flags and no numbers
-     * from its caller — if it is not one of these two, do nothing at all. */
+    /* A fixed set of verbs. A setuid-root binary takes no paths, no flags and no numbers from its
+     * caller — if it is not one of these, do nothing at all. */
     if (argc != 2) return 2;
     if      (strcmp(argv[1], "off")     == 0) restart = 0;
     else if (strcmp(argv[1], "restart") == 0) restart = 1;
-    else return 2;
+    else {
+        if (geteuid() != 0) return 3;
+        return cpu_verb(argv[1]);
+    }
 
     /* CHECK BEFORE TOUCHING ANYTHING. The realistic failure here is the setuid bit not surviving
      * install (a FAT stage, a chmod that did not take), and the remount below is only safe if the

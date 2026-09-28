@@ -59,6 +59,10 @@ int  cinder_resume_load(const char *seq_path, const char *pos_path);
  * cinder_play_position_ms() is where to seek, so hand it to play_pending_sequence with
  * restore_position; 0 = nothing pending, carry on with an ordinary play. One-shot. */
 int  cinder_resume_take_pending(void);
+/* After the shell closed and re-opened PlayerService's player (USB-MSC, USB-DAC, FM exit): arm the
+ * live Up Next + position as a pending resume, so the next play press hands them back. No-op when a
+ * resume is already pending or nothing has played. */
+void cinder_resume_rearm(void);
 /* Throw a pending resume away — the user started something themselves, so the sequence the last
  * boot left behind must not overwrite it. */
 void cinder_resume_cancel(void);
@@ -290,6 +294,11 @@ int  cinder_modal_open(void);
  *      those quite happily and only faults on the query). The shell answers -3 by restoring its
  *      known-good copy and calling again; see db_snapshot_* in cinder-home. */
 int  cinder_db_open(const char *path);
+/* Fingerprint of what the library is BUILT FROM in the store at `path` (every row of the track and
+ * lookup tables), or 0 = cannot tell (store busy or damaged — treat as unknown, never as "same").
+ * Sony's scanner touches /db/MTPDB.dat on every Scan(), even one that finds nothing, so the file's
+ * stat moving is not evidence the library changed; this is. Read-only; safe from any thread. */
+unsigned long long cinder_db_content_signature(const char *path);
 /* Set now-playing from the track URI PlayerService reports (PlayStatus.uri): resolves
  * title/artist/codec/duration from the DB and derives elapsed/remaining from progress (0..1).
  * 0 = resolved, -1 = not found (falls back to filename), -2 = renderer not initialised. */

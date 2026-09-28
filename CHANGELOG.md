@@ -121,6 +121,21 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
   with "Off while ClearAudio+ is on", the signal path reads `SOURCE → CLEARAUDIO+ → …`, and the
   Equalizer screen and its Menu row say the EQ is not being heard (also for Tone Control and Source
   Direct). A change to a bypassed row is saved and a toast says so. *Device-verified.*
+- **The screen-off state saves real power now.** With the screen off the display hardware kept
+  drawing 60 frames a second nobody could see; the player now powers it down (and lowers the memory
+  and CPU clocks to their low-voltage step) a minute after the screen goes dark — when idle, and
+  while playing through the headphone jack. Nothing changes in what you hear. Measured on a Walkman
+  One A55: interrupts 383 → 90 a second while playing, and when idle off the charger the chip now
+  reaches its deepest idle state ~36 times a second, which it never did by default. Not over Bluetooth
+  yet. To turn it off, put `0` in `cinder_suspend_s` on the drive (or `cinder_no_suspend_playing`
+  for playback only). *Device-verified 2026-09-28 (`docs/AUDIT_2026-09-28_power_sound_w1.md`).*
+- **The CPU no longer jumps to its top clock while the screen is dark**, and scheduler timing is back
+  to the Linux defaults. From the first second the screen goes dark on the headphone jack, the
+  top clock is 1040 MHz, the fastest speed that runs at the lowest voltage; it lifts again when the
+  screen lights. Walkman One's 0.1 ms scheduler slices cost the audio pipeline ~3% more CPU
+  for nothing you can hear, so they're reset at startup. Both go through the `cinder-power` helper.
+  To keep W1's values and the full clock, put a file named `cinder_no_cpu_tune` on the drive.
+  *Helper verified on device 2026-09-28; the app side is harness-tested and waits on a reboot.*
 
 ### Fixed
 
@@ -159,6 +174,16 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
   never pass, and two such boots latch the device into stock. Now monotonic, with a harness
   scenario (`clock-steps-back`) that fails on the old code. The DB snapshot's freshness check and
   two helper timeouts no longer depend on the wall clock either.
+- **Play works straight after USB mass storage.** Leaving mass storage (or USB-DAC, or FM) and
+  pressing the Play button did nothing until a song was tapped; it now resumes the same song where
+  it stopped. *Device-verified 2026-09-28.*
+- **No more library churn after connecting to a PC.** Every mass-storage session was followed by up
+  to two minutes of rebuilding the whole library over and over — 13 rebuilds and ~60 MB written to
+  flash in the case measured, with no new music. It now rebuilds only when the music actually
+  changed. *Device-verified 2026-09-28: one scan, no rebuilds, finished in 30 s.*
+- **Unplugging while the screen is off no longer blocks the deepest idle state** until the next
+  wake. *Device-verified 2026-09-28.*
+- **The screen lights faster on Power** after it has been off a while (~0.3 s sooner).
 
 ## [0.3.12] — 2026-09-23
 

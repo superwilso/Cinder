@@ -568,6 +568,140 @@ impl Db {
             .query_row("SELECT count(*) FROM object_body", [], |r| r.get::<_, i64>(0))
     }
 
+    /// What the library is BUILT FROM, as one number. See [`content_signature`].
+    pub fn content_signature(&self) -> Result<u64> {
+        content_signature_of(&self.conn)
+    }
+}
+
+/// Fingerprint of the store's CONTENT, opened read-only at `path` — not of the file it lives in.
+///
+/// WHY THE FILE'S STAT IS NOT ENOUGH. The shell watches `/db/MTPDB.dat`'s (mtime, size, inode) to
+/// notice a scan, and Sony's scanner touches the file on EVERY `Scan()`, including one that finds
+/// nothing. Measured on the owner's A55 2026-09-28 after a USB-MSC session that added no music: the
+/// rescan campaign read each of those touches as "the store is still growing" and ran all 12 rounds,
+/// each one a full library rebuild (~850 ms) plus a 4.6 MB known-good snapshot to eMMC — 13 rebuilds
+/// and ~60 MB of writes in two minutes, with 3,355 tracks every single time. Its own scans kept the
+/// file moving, so it could never settle.
+///
+/// So the shell asks this instead, once the stat has moved: did anything the library is built from
+/// actually change? Every row and column of `object_body` and of the small lookup tables is hashed,
+/// which catches a same-length retag that a count or a size sum would miss. `object_ext_int`
+/// (per-track analysis, the largest table) is folded by aggregate instead of row by row.
+///
+/// An error means "cannot tell" (the writer holds the file, or the store is damaged), never "no
+/// change" — the caller must treat it as unknown.
+pub fn content_signature(path: &str) -> Result<u64> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    content_signature_of(&conn)
+}
+
+/// FNV-1a, 64-bit. Only has to notice change, not resist anyone.
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Self {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+    fn bytes(&mut self, b: &[u8]) {
+        for &x in b {
+            self.0 ^= x as u64;
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    fn value(&mut self, v: rusqlite::types::ValueRef<'_>) {
+        use rusqlite::types::ValueRef as V;
+        // A type tag and, for variable-length values, the length first — so ("ab","c") and
+        // ("a","bc") cannot hash alike.
+        match v {
+            V::Null => self.bytes(&[0]),
+            V::Integer(i) => {
+                self.bytes(&[1]);
+                self.bytes(&i.to_le_bytes());
+            }
+            V::Real(f) => {
+                self.bytes(&[2]);
+                self.bytes(&f.to_bits().to_le_bytes());
+            }
+            V::Text(t) => {
+                self.bytes(&[3]);
+                self.bytes(&(t.len() as u64).to_le_bytes());
+                self.bytes(t);
+            }
+            V::Blob(b) => {
+                self.bytes(&[4]);
+                self.bytes(&(b.len() as u64).to_le_bytes());
+                self.bytes(b);
+            }
+        }
+    }
+}
+
+/// Hash every row of `table` in rowid order. `Ok(false)` if the table does not exist.
+fn fold_table(conn: &Connection, table: &str, h: &mut Fnv) -> Result<bool> {
+    let mut st = match conn.prepare(&format!("SELECT * FROM {table} ORDER BY rowid")) {
+        Ok(st) => st,
+        Err(_) => return Ok(false),
+    };
+    let n = st.column_count();
+    let mut rows = st.query([])?;
+    while let Some(r) = rows.next()? {
+        for i in 0..n {
+            h.value(r.get_ref(i)?);
+        }
+    }
+    Ok(true)
+}
+
+fn content_signature_of(conn: &Connection) -> Result<u64> {
+    let mut h = Fnv::new();
+    // The track table is the one that must be readable: without it there is no library to compare.
+    if !fold_table(conn, "object_body", &mut h)? {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    // The lookup tables the library joins against. Absent is folded in too, so a table appearing or
+    // disappearing is a change.
+    for t in ["albums", "artists", "albumartists", "genres", "releaseyears", "images"] {
+        h.bytes(t.as_bytes());
+        let present = fold_table(conn, t, &mut h)?;
+        h.bytes(&[present as u8]);
+    }
+    // Per-track analysis (duration, SensMe): one aggregate row. `total()` rather than `sum()`,
+    // which raises on integer overflow instead of answering.
+    h.bytes(b"object_ext_int");
+    let agg = conn.query_row(
+        "SELECT count(*), total(object_id), total(akey), total(value), coalesce(max(rowid), 0) \
+         FROM object_ext_int",
+        [],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, f64>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        },
+    );
+    match agg {
+        Ok((n, o, a, v, m)) => {
+            h.bytes(&n.to_le_bytes());
+            h.bytes(&o.to_bits().to_le_bytes());
+            h.bytes(&a.to_bits().to_le_bytes());
+            h.bytes(&v.to_bits().to_le_bytes());
+            h.bytes(&m.to_le_bytes());
+        }
+        Err(_) => h.bytes(&[0]),
+    }
+    // 0 is the C side's "cannot tell", so a real hash never returns it.
+    Ok(if h.0 == 0 { 1 } else { h.0 })
+}
+
+impl Db {
+
     /// Every track in (album, disc, track) order — one query to build all the per-album track
     /// lists (group consecutive `album_id` runs), instead of a query per album.
     pub fn tracks_album_order(&self) -> Result<Vec<Track>> {
@@ -1499,6 +1633,72 @@ mod tests {
             db.health().unwrap(),
             "health is a read; asking twice must not change the answer"
         );
+    }
+
+    /// The content signature is what stops a no-op scan from rebuilding the library: it must hold
+    /// still when nothing the library is built from moved, and move for every change that would
+    /// alter what the user sees.
+    #[test]
+    fn content_signature_holds_still_and_moves_on_real_changes() {
+        let db = db();
+        let base = db.content_signature().expect("fixture store must be readable");
+        assert_ne!(base, 0, "0 is the shell's 'cannot tell'");
+        assert_eq!(base, db.content_signature().unwrap(), "asking twice is not a change");
+
+        // A write to a table the library does not read is not a change.
+        db.conn.execute("UPDATE schema SET prop_name = prop_name", []).unwrap();
+        assert_eq!(base, db.content_signature().unwrap(), "a no-op write must not register");
+
+        // A retag that keeps the title's LENGTH — the case a count or a size sum cannot see.
+        let t: String = db
+            .conn
+            .query_row("SELECT title FROM object_body WHERE media_type != 0 LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let mut flipped = t.clone().into_bytes();
+        flipped[0] = if flipped[0] == b'X' { b'Y' } else { b'X' };
+        let flipped = String::from_utf8(flipped).unwrap();
+        db.conn
+            .execute("UPDATE object_body SET title = ?1 WHERE title = ?2", [&flipped, &t])
+            .unwrap();
+        let retag = db.content_signature().unwrap();
+        assert_ne!(base, retag, "a same-length retag must register");
+
+        // Per-track analysis arriving (SensMe, duration) is a change too.
+        db.conn.execute("UPDATE object_ext_int SET value = value + 1 WHERE rowid = (SELECT min(rowid) FROM object_ext_int)", []).unwrap();
+        let analysed = db.content_signature().unwrap();
+        assert_ne!(retag, analysed, "an object_ext_int change must register");
+
+        // A lookup-table rename (album title fixed by a rescan).
+        db.conn.execute("UPDATE albums SET value = value || '!' WHERE rowid = (SELECT min(rowid) FROM albums)", []).unwrap();
+        assert_ne!(analysed, db.content_signature().unwrap(), "an album rename must register");
+    }
+
+    /// Opening by path is read-only and gives the same answer as the method.
+    #[test]
+    fn content_signature_by_path_matches_and_needs_a_track_table() {
+        let dir = std::env::temp_dir().join(format!("cinder-db-sig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.db");
+        let _ = std::fs::remove_file(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE object_body (object_id INTEGER PRIMARY KEY, media_type INTEGER, title TEXT);
+             INSERT INTO object_body VALUES (1, 1, 'One'), (2, 1, 'Two');",
+        )
+        .unwrap();
+        let by_path = content_signature(path.to_str().unwrap()).expect("readable store");
+        assert_eq!(by_path, content_signature_of(&conn).unwrap());
+        conn.execute("INSERT INTO object_body VALUES (3, 1, 'Three')", []).unwrap();
+        assert_ne!(by_path, content_signature(path.to_str().unwrap()).unwrap(), "a new track registers");
+
+        let empty = dir.join("empty.db");
+        let _ = std::fs::remove_file(&empty);
+        Connection::open(&empty).unwrap().execute_batch("CREATE TABLE other (x);").unwrap();
+        assert!(
+            content_signature(empty.to_str().unwrap()).is_err(),
+            "no track table is 'cannot tell', never a signature"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
