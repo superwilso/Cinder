@@ -63,6 +63,13 @@ pub fn hit_history_clear(l: &Layout, x: i32, y: i32, scroll_px: i32) -> bool {
         && matches!(l.at(y, scroll_px), Some(Slot::Head(Section::History)))
 }
 
+/// SAVE on the NOW PLAYING heading: Up Next as a playlist. Same column as the history's CLEAR and
+/// the same reasoning — it belongs to what is playing and coming, so it sits on that section's
+/// heading rather than among the header's chips, which are already full at large text sizes.
+pub fn hit_now_save(l: &Layout, x: i32, y: i32, scroll_px: i32) -> bool {
+    (HIST_CLEAR_X0..HIST_CLEAR_X1).contains(&x) && matches!(l.at(y, scroll_px), Some(Slot::Head(Section::Now)))
+}
+
 // ── THE MOVABLE SPAN ────────────────────────────────────────────────────────────────────────────
 //
 // Every row except the playing one, in the order it is drawn: the played tracks, then everything
@@ -543,17 +550,23 @@ pub fn render_view(c: &mut Canvas, t: &Theme, f: &FontSet, v: &QueueView) -> Lay
             Slot::Head(sec) => {
                 let col = if sec == Section::Now { t.acc } else { t.faint };
                 let hs = sty(Family::Mono, Weight::Regular, 11.0, col, 0.18);
-                // The label's budget stops short of the CLEAR control on the one heading that has
-                // one, so a long album name can never run underneath it.
-                let budget = if sec == Section::History {
+                // The label's budget stops short of the control on the two headings that have one
+                // (CLEAR on history, SAVE on now playing), so a long album name can never run
+                // underneath it.
+                let budget = if matches!(sec, Section::History | Section::Now) {
                     (HIST_CLEAR_X0 - 32) as f32
                 } else {
                     (W as f32) - 44.0
                 };
                 let lbl = crate::widgets::fit(f, &section_label(sec, v.album), &hs, budget);
                 text::draw(c, f, 22.0, (y + HDR_H - 11) as f32, &lbl, &hs);
-                if sec == Section::History {
-                    right(c, f, HIST_CLEAR_X1 as f32, (y + HDR_H - 11) as f32, "CLEAR",
+                let action = match sec {
+                    Section::History => Some("CLEAR"),
+                    Section::Now => Some("SAVE"),
+                    Section::Next => None,
+                };
+                if let Some(a) = action {
+                    right(c, f, HIST_CLEAR_X1 as f32, (y + HDR_H - 11) as f32, a,
                           &sty(Family::Mono, Weight::Bold, 11.0, t.dim, 0.14));
                 }
                 hline(c, y + HDR_H - 1, t.line);

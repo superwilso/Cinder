@@ -154,6 +154,8 @@ pub enum KbPurpose {
     TrackSearch,
     /// Library search. Like `TrackSearch`, screen state only: applied on every key, no Action.
     LibrarySearch,
+    /// Save Up Next — the playing track and everything after it — as a new playlist.
+    SaveQueue,
 }
 
 /// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
@@ -297,6 +299,9 @@ pub enum Action {
     PlaylistCreate,
     /// Create it and add this track (object id) in one step.
     PlaylistCreateWith(i64),
+    /// Create it (named `App::text_input()`) holding Up Next: the playing track and everything
+    /// after it, in play order (`App::queue_to_save`).
+    PlaylistCreateFromQueue,
     /// Rename the playlist with this id to `App::text_input()`.
     PlaylistRename(i64),
     /// Delete it. Confirmed in the modal first — an m3u8 file is small but a curated list is not.
@@ -1688,6 +1693,7 @@ impl App {
     pub fn kb_title_for_test(&self) -> String {
         match self.kb_purpose {
             KbPurpose::Rename(_) => "Rename playlist".to_string(),
+            KbPurpose::SaveQueue => "Save Up Next".to_string(),
             KbPurpose::TrackSearch => {
                 if self.kb_text.trim().is_empty() {
                     "Find a song".to_string()
@@ -3585,6 +3591,11 @@ impl App {
                     self.notify("History cleared");
                     return self.history_clear();
                 }
+                // SAVE on the NOW PLAYING heading: Up Next as a playlist, named on the keyboard.
+                if crate::up_next::hit_now_save(&self.up_next_layout(), x, y, self.queue_scroll_px) {
+                    self.open_keyboard(KbPurpose::SaveQueue);
+                    return vec![];
+                }
                 // The grab-handle column belongs to the reorder drag. Swallowed rather than
                 // treated as a tap: playing a track because a reorder came out too short to
                 // classify is a nasty surprise.
@@ -4356,6 +4367,9 @@ impl App {
             // Editing a search starts from what is already typed.
             KbPurpose::TrackSearch => self.track_pick_query.clone(),
             KbPurpose::LibrarySearch => self.search_query.clone(),
+            // A name to accept rather than to type: the album when the list is one album, else
+            // "Up Next". Typing on this keyboard is the slow part.
+            KbPurpose::SaveQueue => self.queue_save_name(),
             // Renaming starts from the current name: the common edit is a word, not a retype.
             KbPurpose::Rename(id) => self
                 .lib
@@ -4635,6 +4649,23 @@ impl App {
             KbPurpose::NewPlaylist => vec![Action::PlaylistCreate],
             KbPurpose::NewPlaylistWith(object_id) => vec![Action::PlaylistCreateWith(object_id)],
             KbPurpose::Rename(id) => vec![Action::PlaylistRename(id)],
+            KbPurpose::SaveQueue => vec![Action::PlaylistCreateFromQueue],
+        }
+    }
+
+    /// What "Save Up Next" saves: the playing track and everything after it, in play order, as
+    /// object ids. What has already played is history, not part of what you asked to hear.
+    pub fn queue_to_save(&self) -> Vec<i64> {
+        self.context.get(self.context_idx..).unwrap_or(&[]).iter().map(|s| s.object_id).collect()
+    }
+
+    /// The name the Save keyboard opens with.
+    fn queue_save_name(&self) -> String {
+        let rest = self.context.get(self.context_idx..).unwrap_or(&[]);
+        match rest.first() {
+            // `art` is the album name (the NEXT heading's test, the same one).
+            Some(first) if !first.art.is_empty() && rest.iter().all(|s| s.art == first.art) => first.art.clone(),
+            _ => "Up Next".to_string(),
         }
     }
 
@@ -7428,6 +7459,7 @@ impl App {
                         },
                         "Title, artist or album",
                     ),
+                    KbPurpose::SaveQueue => ("Save Up Next".to_string(), "Playlist name"),
                     _ => ("New playlist".to_string(), "Playlist name"),
                 };
                 crate::keyboard::render(c, &theme, fonts, &title, &self.kb_text, placeholder,
@@ -14241,6 +14273,36 @@ mod tests {
 
     /// The CLEAR that empties it lives on the PREVIOUSLY PLAYED heading — a header this screen
     /// otherwise treats as never tappable — so it must claim its own pixels and no others.
+    #[test]
+    fn up_next_saves_as_a_playlist_from_the_now_playing_heading() {
+        use crate::up_next::{Section, Slot};
+        let mut a = unlocked();
+        a.go(Screen::UpNext);
+        let row = |i: i64, album: &str| SongRow { object_id: 10 + i, art: album.into(), ..Default::default() };
+        a.set_play_context(vec![row(0, "Isles"), row(1, "Isles"), row(2, "Isles"), row(3, "Isles")], 1);
+        a.queue_scroll_px = 0;
+        let l = a.up_next_layout();
+        let now_y = crate::chrome::HEADER_BOTTOM + l.top_of(Slot::Head(Section::Now)).unwrap() + 8;
+        let x = crate::up_next::HIST_CLEAR_X0 + 4;
+        assert!(crate::up_next::hit_now_save(&l, x, now_y, 0));
+        assert!(!crate::up_next::hit_now_save(&l, 40, now_y, 0), "the label is not the button");
+        let row_y = crate::chrome::HEADER_BOTTOM + l.top_of(Slot::Current(1)).unwrap() + 8;
+        assert!(!crate::up_next::hit_now_save(&l, x, row_y, 0), "the playing row keeps its own taps");
+
+        assert!(a.tap(x, now_y).is_empty());
+        assert_eq!(a.current(), Screen::Keyboard);
+        assert_eq!(a.text_input(), "Isles", "one album: its name is offered");
+        assert_eq!(a.kb_title_for_test(), "Save Up Next", "the keyboard says what it is for");
+        assert_eq!(kb_key(&mut a, crate::keyboard::Key::Done), vec![Action::PlaylistCreateFromQueue]);
+        assert_eq!(a.current(), Screen::UpNext, "Done goes back to Up Next");
+        assert_eq!(a.queue_to_save(), vec![11, 12, 13], "the playing track and what follows, not what played");
+
+        // A list from more than one album is offered as "Up Next".
+        a.set_play_context(vec![row(0, "Isles"), row(1, "Untrue")], 0);
+        a.open_keyboard(KbPurpose::SaveQueue);
+        assert_eq!(a.text_input(), "Up Next");
+    }
+
     #[test]
     fn the_history_clear_is_on_its_own_heading_and_nowhere_else() {
         use crate::up_next::Slot;
