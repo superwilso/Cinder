@@ -121,7 +121,8 @@ pub struct NowPlaying<'a> {
     /// nothing would have been the same lie the shuffle icon used to tell. It is real now: the
     /// queue boundary is detectable (position pins at duration, `playing` goes 1 -> 0, URI
     /// unchanged — DEVICE_TESTS.md 3f), so the shell re-issues the queue itself.
-    /// The glyph needs no new art: `> 0` accents it and `== 1` adds the "one" dot.
+    /// The glyph needs no new art: `> 0` accents it and `== 1` adds the "one" dot. 3 = repeat
+    /// ALBUM (the run of the list the playing album occupies; the shell laps it), captioned ALBUM.
     pub repeat: u8,
     pub viz_seed: f32, // visualiser animation phase (the shell advances it while playing)
     pub viz_kind: u8,  // which visualiser type (index into viz::from_index)
@@ -185,11 +186,17 @@ fn s(fam: Family, weight: Weight, size: f32, color: embedded_graphics::pixelcolo
 /// Small accent "SLEEP {n}M" badge, top-right under the status bar, shown while a sleep timer runs.
 /// Drawn by the navigator AFTER render() (it owns the live countdown) — kept here to share the
 /// screen's draw imports. `min` = 0 hides it.
-pub fn sleep_badge(c: &mut Canvas, t: &Theme, f: &FontSet, min: u32) {
-    if min == 0 {
+/// `NowPlaying::repeat` for repeat album. 0 off, 1 one, 2 all.
+pub const REPEAT_ALBUM: u8 = 3;
+
+pub fn sleep_badge(c: &mut Canvas, t: &Theme, f: &FontSet, min: u32, end_of_song: bool) {
+    let label = if end_of_song {
+        "SLEEP AT SONG END".to_string()
+    } else if min == 0 {
         return;
-    }
-    let label = format!("SLEEP {}M", min);
+    } else {
+        format!("SLEEP {}M", min)
+    };
     let st = s(Family::Mono, Weight::Bold, 12.0, t.acc_ink, 0.08);
     let w = text::measure(f, &label, &st) as i32 + 22;
     let h = 24;
@@ -533,6 +540,10 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
     if np.repeat == 1 {
         // the "one" dot inside the loop glyph
         fill_rect(c, 435, ty as i32 - 1, 3, 3, t.acc);
+    } else if np.repeat == REPEAT_ALBUM {
+        // Named under the glyph: an A inside a 24 px loop is too small to read at arm's length,
+        // and the transport row has 30 px of free space beneath it before the toolbar rule.
+        crate::widgets::center(c, f, 436.0, ty + 27.0, "ALBUM", &s(Family::Mono, Weight::Bold, 9.0, t.acc, 0.1));
     }
 
     // ---------- bottom toolbar (744..800): library · queue · bt · settings --------------------

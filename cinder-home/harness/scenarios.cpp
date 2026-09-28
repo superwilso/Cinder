@@ -1223,6 +1223,50 @@ static void s_repeat_all_off(void) {
     check_eq(cinder_harness_count("cinder_audio_play_tracks"), 0, "and nothing starts playing");
 }
 
+// ── stop after this song (Sleep ▸ End of song) ──────────────────────────────────────────────────
+// PlayerService has no "stop at the end of this track", and the position arrives ~1x/s, so
+// main.cpp's stop_after_tick() EXTRAPOLATES it between callbacks and pauses STOP_AFTER_LEAD_MS
+// before the end. Three things are asserted: it pauses once near the end and hands the setting
+// back (`cinder_stop_after_done`); a position that stops arriving mid-song cannot run the estimate
+// on to the end (the 1.5 s cap); and a song that is not playing is never paused by it.
+static void s_stop_after(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_stop_after", 1);
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_play_position(303900, 304000);           // 100 ms from the end, playing
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+
+    check(cinder_harness_count("cinder_stop_after_done") >= 1, "the end of the song disarms it");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 1, "and pauses exactly once");
+    check_eq(cinder_harness_count("cinder_audio_seek_ms"), 0, "…without touching the position");
+}
+
+static void s_stop_after_midsong(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_stop_after", 1);
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_play_position(100000, 304000);           // the callbacks stopped at 1:40
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_stop_after_done"), 0,
+             "a position that stopped arriving is extrapolated 1.5 s at most, not to the end");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 0, "so nothing is paused mid-song");
+}
+
+static void s_stop_after_paused(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_stop_after", 1);
+    cinder_harness_script("cinder_audio_is_playing", 0);    // already paused, near the end
+    cinder_harness_play_position(303900, 304000);
+    cinder_harness_set_budget_ms(20000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count("cinder_stop_after_done"), 0, "a paused song is not ending");
+    check_eq(cinder_harness_count("cinder_audio_pause"), 0, "and is not paused again");
+}
+
 // ── the wall clock steps BACKWARDS after the first frame ─────────────────────────────────────
 // A date set by hand, or the 32-bit time_t wrap on 2038-01-19 that lands the device in 1901. The
 // bad-boot health check is "still alive 8 s after first paint", and it used to measure that with
@@ -1293,6 +1337,9 @@ static const Scenario kScenarios[] = {
     {"repeat-all",        s_repeat_all,              "a queue that runs out loops Cinder's context, once"},
     {"repeat-all-mid",    s_repeat_all_midtrack,     "…and a pause near the end of a middle track does not"},
     {"repeat-all-off",    s_repeat_all_off,          "…and with repeat off the end of a queue is the end"},
+    {"stop-after",        s_stop_after,              "End of song pauses once, just before the end"},
+    {"stop-after-mid",    s_stop_after_midsong,      "…a stalled position never runs on to the end"},
+    {"stop-after-paused", s_stop_after_paused,       "…and a paused song is left alone"},
     {"clock-steps-back",  s_clock_steps_back,        "a wall clock stepping back (2038) still marks the boot good"},
     {nullptr, nullptr, nullptr},
 };

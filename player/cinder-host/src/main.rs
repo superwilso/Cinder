@@ -184,11 +184,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     for (name, theme) in [("day", th(false, amber)), ("night", th(true, amber))] {
         let render_set: &[(&str, &dyn Fn(&mut Canvas))] = &[
             ("now_playing", &|c: &mut Canvas| now_playing::render(c, &theme, &fonts, &np)),
-            ("now_playing_sleep", &|c: &mut Canvas| { now_playing::render(c, &theme, &fonts, &np); now_playing::sleep_badge(c, &theme, &fonts, 23); }),
+            ("now_playing_sleep", &|c: &mut Canvas| { now_playing::render(c, &theme, &fonts, &np); now_playing::sleep_badge(c, &theme, &fonts, 23, false); }),
             // The Lyrics chip (community B2), beside the sleep badge so both corners are checked.
             ("now_playing_lyrics", &|c: &mut Canvas| {
                 now_playing::render(c, &theme, &fonts, &now_playing::NowPlaying { lyrics: true, ..np });
-                now_playing::sleep_badge(c, &theme, &fonts, 23);
+                now_playing::sleep_badge(c, &theme, &fonts, 23, false);
             }),
             // Nothing loaded — the state the device actually boots into. Never rendered here
             // before, which is how an empty codec badge shipped as a bare stroked box.
@@ -1191,6 +1191,22 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let mut c = Canvas::new();
         now_playing::render(&mut c, &th(false, amber), &fonts, &np_k);
         save(&c, &format!("viz_{}_{}", k, cinder_ui::viz::name(k).to_lowercase()));
+    }
+
+    // Sleep ▸ End of song ("stop after current"): the badge says so instead of a countdown.
+    {
+        let mut c = Canvas::new();
+        let theme = th(false, amber);
+        now_playing::render(&mut c, &theme, &fonts, &np);
+        now_playing::sleep_badge(&mut c, &theme, &fonts, 0, true);
+        save(&c, "now_playing_sleep_song_end");
+    }
+    // Repeat album: the loop glyph with an A in it.
+    {
+        let mut c = Canvas::new();
+        now_playing::render(&mut c, &th(false, amber), &fonts,
+                            &now_playing::NowPlaying { repeat: now_playing::REPEAT_ALBUM, ..np });
+        save(&c, "now_playing_repeat_album");
     }
 
     // Help & controls (handoff 5i): the top, with the way back to Sony, and the end of the list with

@@ -33,9 +33,13 @@ use crate::text::FontSet;
 use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline};
 
-/// The sleep-timer presets, in minutes. The same five `nav` cycles through on the Settings row.
-pub const SLEEP_PRESETS: [u32; 5] = [0, 15, 30, 45, 60];
-const SLEEP_LABELS: [&str; 5] = ["Off", "15", "30", "45", "60"];
+/// The sleep-timer presets, in minutes. The same six `nav` cycles through on the Settings row. The
+/// last is not a length: [`SLEEP_END_OF_SONG`] pauses when the playing song ends ("stop after
+/// current", `docs/SPEC_queue_v2.md` §4), which the shell times from the song's own position.
+pub const SLEEP_PRESETS: [u32; 6] = [0, 15, 30, 45, 60, SLEEP_END_OF_SONG];
+/// The "End of song" preset. Never a countdown, so it cannot collide with a real length.
+pub const SLEEP_END_OF_SONG: u32 = u32::MAX;
+const SLEEP_LABELS: [&str; 6] = ["Off", "15", "30", "45", "60", "Song"];
 const LEVELS: [&str; 5] = ["1", "2", "3", "4", "5"];
 
 /// The sheet hangs from the bottom of the status bar, which stays visible above it.
@@ -140,6 +144,9 @@ mod tests {
         for i in 0..5 {
             let (x, w) = kit::chip_span(i, 5);
             assert_eq!(hit(x + w / 2, BRIGHT_CHIPS + kit::CHIP_H / 2), QuickHit::Brightness(i as u8 + 1));
+        }
+        for i in 0..SLEEP_PRESETS.len() {
+            let (x, w) = kit::chip_span(i, SLEEP_PRESETS.len());
             assert_eq!(hit(x + w / 2, SLEEP_CHIPS + kit::CHIP_H / 2), QuickHit::Sleep(i));
         }
         assert_eq!(hit(240, ROW_BT + 30), QuickHit::Bluetooth);

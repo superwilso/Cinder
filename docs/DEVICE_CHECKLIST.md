@@ -576,3 +576,22 @@ two rows change what the owner sees at every boot, so they come first.
 | 19.14 | **Device screen** | Settings ▸ Device, on battery and then on the cable; scroll to the end | The strip shows the status word; the bar fills in the accent only while charging; CHARGER reads a state with the helper installed, or "Needs the battery helper" without it | — |
 | 19.15 | **Help & controls** | Menu ▸ Help & controls; scroll to the end; tap *Replay the introduction*; swipe through it | One list; the replay starts at Welcome and finishing it lands back on Help | The Menu used to open the intro directly; a Menu row that still does is an old build |
 | 19.16 | **Sound strip** | Sound with every effect on, at the largest text size | Two lines under the header; the second ends with the output (`3.5MM` or `BT·…`) | — |
+
+---
+
+## 20 — 2026-09-28 — R3's queue extras
+
+**ALL PASS — 20.1 to 20.5, on the owner's A55, 2026-09-28** (dev build `3912e3b8`, installed over
+adb, one reboot). Kept as the run sheet for the next time the queue changes.
+
+Host-tested (unit tests, and three harness scenarios for stop-after). Needs a dev build and one
+reboot. Play something first.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 20.1 | **Save Up Next** | Play an album; Up Next ▸ SAVE (NOW PLAYING heading) ▸ DONE | Toast "Saved to Playlists · N songs"; Library ▸ Playlists has it with the playing song and everything after, in order; you stay on Up Next | A playlist with 0 songs = the library DB did not resolve the rows (`cinder-ffi: Up Next saved as …` in the log says how many) |
+| 20.2 | **Stop after this song** (jack) | Settings ▸ Sleep timer to END OF SONG (or the pull-down ▸ *Song*), mid-song | Now Playing shows SLEEP AT SONG END; the song plays to its end and pauses; ▶ plays the next song; the sleep row is back to OFF | A second of the NEXT song before the pause = the extrapolated pause missed and the fallback caught it (log: `stop-after: the next song began`). Note it — `STOP_AFTER_LEAD_MS` may need to grow |
+| 20.3 | **Stop after this song** (Bluetooth) | As 20.2 with headphones | The same | — |
+| 20.4 | **Repeat album** (jack, then BT) | Play an album from its 1st song, queue a song from another album after it (swipe right), tap repeat until ALBUM shows; skip to the album's last song | After it the album's FIRST song plays, not the queued one, and Up Next highlights it | Log `repeat album — lapping N songs` 2.5 s before the end. A click at the lap on BT is the known cost of the re-issue (the same as the queue rebuild) |
+| 20.5 | **Repeat album off again** | During 20.4, tap repeat to *one* then *off* before the album's last song ends | After the last song the queued song plays — the rest of the list came back | If the album laps anyway, the re-derive on leaving album (`queue_pending`) did not fire |
+
