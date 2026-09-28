@@ -5782,6 +5782,33 @@ pub extern "C" fn cinder_resume_cancel() {
     }
 }
 
+/// The shell closed PlayerService's player (USB mass storage, USB-DAC, FM) and has just re-opened
+/// it: the service no longer holds any sequence, but the Up Next list and the position are still
+/// here. Arm them as a pending resume, so the next ▶ hands the live list back at the saved offset —
+/// exactly what the first ▶ after a boot does. Without this that press reached a service with
+/// nothing loaded and did nothing (device, 2026-09-28: `ChangePlayState` in, no `GapPlayer_play`),
+/// until a song was tapped. A resume already pending from boot is left alone.
+#[no_mangle]
+pub extern "C" fn cinder_resume_rearm() {
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        if r.resume_pending.is_some() {
+            return;
+        }
+        let Some(current) = r.last_track.as_ref().map(|t| t.filename.clone()) else { return };
+        // SNAPSHOT NOW, not at the press. The USB-MSC exit reloads the library straight after
+        // this, and `cinder_db_open` drops `last_track` (so the cover is re-read) — a rebuild
+        // deferred to the press found no current track and gave up, and ▶ still did nothing
+        // (device, 2026-09-28, first cut of this fix). An edit made before the press still wins:
+        // `mark_queue_pending` sets `resume_stale`, and `take_pending` rebuilds when it can.
+        let uris = play_order_uris(r, Some(&current));
+        if uris.is_empty() {
+            return;
+        }
+        r.resume_pending = Some((uris, 0, r.play_pos_ms));
+        r.resume_stale = false;
+    }
+}
+
 /// Flush the resume files now — the shell calls this before a deliberate power-off or reboot, so
 /// the position is current rather than up to `RESUME_POS_EVERY` stale.
 #[no_mangle]
@@ -6040,6 +6067,18 @@ fn request_cover(r: &Render, object_id: i64) {
 }
 
 
+
+/// Fingerprint of the library store's CONTENT at `path` (see `cinder_db::content_signature`), or
+/// 0 for "cannot tell" — the writer holds it, or it is damaged. Opens its own read-only connection
+/// and touches no render state, so the shell can ask from any thread.
+#[no_mangle]
+pub extern "C" fn cinder_db_content_signature(path: *const c_char) -> u64 {
+    if path.is_null() {
+        return 0;
+    }
+    let p = unsafe { cstr(path) };
+    cinder_db::content_signature(&p).unwrap_or(0)
+}
 
 #[no_mangle]
 pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {

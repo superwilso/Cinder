@@ -821,6 +821,10 @@ static void s_msc_cycle(void) {
     long long off = cinder_harness_first_ms("system:/system/vendor/unknown321/bin/cinder-msc off");
     std::printf("  .... released at %lldms (cable pulled at 120000ms)\n", off);
     check_range(off, 120000, 126000, "took it back when the cable came out");
+    // ClosePlayer on the way in costs the service its sequence. The next play press must find one
+    // to hand back, or it does nothing until a song is tapped (device, 2026-09-28).
+    const int rearm = cinder_harness_count("cinder_resume_rearm");
+    check_eq(rearm, 1, "the Up Next list is re-armed for the next play press after the session");
 
     // The wedged-session guard. The ladder writes the LUN backing file eight times per run, so the
     // count of those writes is the count of ladders — one a second would be ~60 over the session.
@@ -1093,6 +1097,122 @@ static void s_library_changed(void) {
              "and it settles again rather than reloading for ever");
 }
 
+// ── a scan that finds nothing must not rebuild the library ───────────────────────────────────
+//
+// Sony's scanner rewrites /db/MTPDB.dat's indexes on every Scan(), so the file's stat moves even
+// when no row did (measured 2026-09-28: 13 scans, every row byte-identical, 21 header/sqlite_master
+// bytes different). Keyed on the stat alone, each of those was a full rebuild plus a 4.6 MB snapshot
+// write. The content signature is scripted constant here: the rows never change, only the file.
+// The FIRST touch after boot still rebuilds — the boot open does not fingerprint (it would delay the
+// library), so there is no baseline yet, and "unknown" means rebuild. Every touch after that is free.
+static void s_library_touched_not_changed(void) {
+    healthy_device();
+    cinder_harness_script("cinder_db_content_signature", 42);
+    cinder_harness_fs_write("/db/MTPDB.dat", "the library");
+    cinder_harness_fs_write_at(60000, "/db/MTPDB.dat", "the library, indexes rebuilt");
+    cinder_harness_fs_write_at(90000, "/db/MTPDB.dat", "the library, indexes rebuilt again");
+    cinder_harness_fs_write_at(120000, "/db/MTPDB.dat", "the library, indexes rebuilt a third time");
+    cinder_harness_set_budget_ms(180000);
+    cinder_harness_run();
+
+    check_eq(cinder_harness_count_between("cinder_db_open", 0, 5000), 1, "opened once at boot");
+    check_eq(cinder_harness_count_between("cinder_db_open", 60000, 85000), 1,
+             "the first touch after boot rebuilds once (no baseline yet)");
+    const int later = cinder_harness_count_between("cinder_db_open", 85000, 180000);
+    std::printf("  .... %d rebuild(s) for two later touches with unchanged rows\n", later);
+    check_eq(later, 0, "a rewritten store whose rows did not change is not rebuilt");
+}
+
+// ── early suspend (stage 1) is on by default, and 0 turns it off ─────────────────────────────
+// Screen dark from 30 s, nothing playing. Boot grace 180 s + the 60 s default threshold puts the
+// `mem` write at ~240 s. The wakelock must be taken first (a bare `mem` arms autosleep).
+static void suspend_fixture(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_fs_write("/sys/power/state", "");
+    cinder_harness_fs_write("/sys/power/wake_lock", "");
+    cinder_harness_fs_write("/sys/power/wake_unlock", "");
+    cinder_harness_set_budget_ms(300000);
+}
+
+static void s_suspend_by_default(void) {
+    suspend_fixture();
+    cinder_harness_run();
+    char st[16] = {0}, wl[16] = {0};
+    cinder_harness_fs_read("/sys/power/state", st, sizeof st);
+    cinder_harness_fs_read("/sys/power/wake_lock", wl, sizeof wl);
+    check(std::strncmp(st, "mem", 3) == 0, "with no config file, stage 1 wrote `mem` to /sys/power/state");
+    check(std::strncmp(wl, "cinder", 6) == 0, "…holding the `cinder` wakelock, so it cannot reach RAM");
+}
+
+// Stage 1 from ~240 s on the cable; the cable comes out at 280 s. The USB port's own handler is
+// parked by early suspend and never powers the PHY down, so the app must step out of the chain
+// (`on`) for ~15 s and then go back in (`mem`). Two budgets: one ends inside the window, one after.
+static void unplug_fixture(long long budget) {
+    suspend_fixture();
+    cinder_harness_fs_write("/sys/class/power_supply/usb/online", "1\n");
+    cinder_harness_fs_write_at(280000, "/sys/class/power_supply/usb/online", "0\n");
+    cinder_harness_set_budget_ms(budget);
+}
+
+static void s_suspend_unplug_steps_out(void) {
+    unplug_fixture(288000);
+    cinder_harness_run();
+    char st[16] = {0};
+    cinder_harness_fs_read("/sys/power/state", st, sizeof st);
+    check(std::strncmp(st, "on", 2) == 0, "a cable pulled during stage 1 steps the SoC out of it");
+}
+
+static void s_suspend_unplug_goes_back(void) {
+    unplug_fixture(330000);
+    cinder_harness_run();
+    char st[16] = {0};
+    cinder_harness_fs_read("/sys/power/state", st, sizeof st);
+    check(std::strncmp(st, "mem", 3) == 0, "…and goes back in once the port has let go");
+}
+
+static void s_suspend_off_by_file(void) {
+    suspend_fixture();
+    cinder_harness_fs_write("/contents/cinder_suspend_s", "0\n");
+    cinder_harness_run();
+    char st[16] = {0};
+    cinder_harness_fs_read("/sys/power/state", st, sizeof st);
+    check(std::strncmp(st, "mem", 3) != 0, "0 in /contents/cinder_suspend_s keeps the SoC out of early suspend");
+}
+
+// The CPU helper: kernel-default scheduler slices once, max 1040 MHz while the screen is dark on
+// the jack, restored when Power lights it. The opt-out file stops sched and cap outright.
+static const char* kSched = "system:/system/vendor/unknown321/bin/cinder-power sched";
+static const char* kCap   = "system:/system/vendor/unknown321/bin/cinder-power cap";
+static const char* kUncap = "system:/system/vendor/unknown321/bin/cinder-power uncap";
+
+static void s_cpu_cap_follows_screen(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_input", 10 /* CINDER_ACT_SLEEP: Power toggles the screen */);
+    cinder_harness_key_at(50000, 116, 1);
+    cinder_harness_key_at(50200, 116, 0);
+    cinder_harness_set_budget_ms(100000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count(kSched), 1, "scheduler slices set once per boot");
+    check_eq(cinder_harness_count_between(kCap, 0, 50000), 1, "screen went dark -> one cap");
+    check(cinder_harness_first_ms(kCap) > 29000, "…after the idle blank, not before");
+    check_eq(cinder_harness_count(kUncap), 1, "Power lit the screen -> one uncap");
+    check(cinder_harness_first_ms(kUncap) >= 50000, "…after the press, not before");
+    check(cinder_harness_count_between(kCap, 51000, 100000) == 1, "dark again after 30 s idle -> capped again");
+}
+
+static void s_cpu_tune_off_by_file(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_fs_write("/contents/cinder_no_cpu_tune", "");
+    cinder_harness_set_budget_ms(100000);
+    cinder_harness_run();
+    check_eq(cinder_harness_count(kSched), 0, "cinder_no_cpu_tune: scheduler left alone");
+    check_eq(cinder_harness_count(kCap), 0, "cinder_no_cpu_tune: clock never capped");
+}
+
 // ── blanking the panel must reach the SERVICE, not just the sysfs node ───────────────────────
 //
 // THE BUG. `set_backlight` has carried this comment since 2026-08-19: "measured with the node at 0,
@@ -1292,6 +1412,13 @@ static const Scenario kScenarios[] = {
     { "blank-order", s_blank_remembers_before_zeroing,
       "the service level is read before it is zeroed, so the restore has something to restore" },
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
+    {"library-touched",   s_library_touched_not_changed, "a scan that changes no row does not rebuild the library"},
+    {"suspend-default",   s_suspend_by_default,      "stage 1 early suspend runs by default, under a wakelock"},
+    {"suspend-off-file",  s_suspend_off_by_file,     "0 in cinder_suspend_s turns stage 1 off"},
+    {"cpu-cap",           s_cpu_cap_follows_screen,  "max 1040 MHz while dark, restored on Power; sched once"},
+    {"cpu-tune-off",      s_cpu_tune_off_by_file,    "cinder_no_cpu_tune stops sched and cap"},
+    {"suspend-unplug",    s_suspend_unplug_steps_out, "a cable pulled in stage 1 steps out so the USB port can power down"},
+    {"suspend-unplug-back", s_suspend_unplug_goes_back, "…and stage 1 resumes about 15 s later"},
     {"no-services",       s_no_services,             "no Sony service exists: degrade, never die"},
     {"bt-late-service",   s_bt_late_service,         "the BT service arrives after the app does"},
     {"bt-switch",         s_bt_switch_follows_radio, "the UI switch follows the radio, not itself"},
