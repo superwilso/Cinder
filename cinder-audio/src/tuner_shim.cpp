@@ -116,7 +116,7 @@ enum {  // STATUS_RSSI
 };
 enum {  // POWERCFG
     PC_DMUTE = 1 << 14, PC_SKMODE = 1 << 10, PC_SEEKUP = 1 << 9, PC_SEEK = 1 << 8,
-    PC_ENABLE = 1 << 0,
+    PC_DISABLE = 1 << 6, PC_ENABLE = 1 << 0,
 };
 enum { CH_TUNE = 1 << 15, CH_MASK = 0x03FF };
 
@@ -206,6 +206,44 @@ Plan plan_l() {
         default: p.space_khz =  50; break;
     }
     return p;
+}
+
+// ── Power: Walkman One's tuner service is a stub ────────────────────────────────────────────
+// On stock, TunerPlayerService's Open() powers the chip up and SetFrequency() tunes it. Walkman One
+// ships a MOCK libTunerPlayerService.so (79,916 B against stock's 96,308 B) whose calls return 0 and
+// do nothing, so on W1 the chip idles powered DOWN (POWERCFG 0x2000, ENABLE clear) for the whole
+// session: every tune waits out wait_stc_l's bound (~0.57 s a channel, a 2-minute scan), and every
+// RSSI reads 0 (reported 2026-09-29, "it worked in non W1"). Measured 2026-09-22 on W1 3.02:
+// POWERCFG <- 0x4001 (ENABLE|DMUTE, what stock's own Open leaves) powers it, and tuning, RSSI and
+// seek then all work through these registers.
+//
+// So: power the chip up ourselves when it is found down, and remember that we did — then Sony's
+// SetFrequency cannot be trusted to tune (it is the mock too), so we tune through the registers,
+// and on stop we power the chip down again rather than leave a radio running on a player that
+// believes it has none. On stock the chip is already up after Open(), so none of this runs.
+bool g_we_powered = false;
+
+// Caller holds g_lock. True when the chip is (now) powered.
+bool ensure_powered_l() {
+    int pc = rd_l(R_POWERCFG);
+    if (pc < 0) return false;
+    if (pc & PC_ENABLE) return true;
+    if (!wr_l(R_POWERCFG, (unsigned)(PC_DMUTE | PC_ENABLE))) return false;
+    usleep(110000);                                   // Si470x power-up time
+    int now = rd_l(R_POWERCFG);
+    std::fprintf(stderr, "[cinder-tuner] chip was powered down (POWERCFG 0x%04X) — powered it up: 0x%04X\n",
+                 pc, now < 0 ? 0 : now);
+    if (now < 0 || !(now & PC_ENABLE)) return false;
+    g_we_powered = true;
+    return true;
+}
+
+// Caller holds g_lock. Undo ensure_powered_l, and only that.
+void power_down_l() {
+    if (!g_we_powered) return;
+    wr_l(R_POWERCFG, (unsigned)(PC_DISABLE | PC_ENABLE));   // the Si470x power-down sequence
+    g_we_powered = false;
+    std::fprintf(stderr, "[cinder-tuner] chip powered down again\n");
 }
 
 // Wait for STC. It is normally set by the second read; the bound is a safety net, not a budget.
@@ -356,6 +394,14 @@ int cinder_tuner_start(int khz) {
                  khz, ain_rc, ain_st);
     // Re-assert the frequency once everything is up; Play() is not guaranteed to keep it.
     try { ((fn_cu)vslot(g_tuner, T_SetFrequency))(g_tuner, &f); } catch (...) {}
+    // Walkman One: the calls above were a stub's. Power and tune the chip ourselves (see
+    // ensure_powered_l). A no-op on stock, where Open() already powered it.
+    if (regmon::available()) {
+        pthread_mutex_lock(&regmon::g_lock);
+        if (regmon::ensure_powered_l() && regmon::g_we_powered)
+            regmon::tune_l(regmon::plan_l(), khz);
+        pthread_mutex_unlock(&regmon::g_lock);
+    }
     g_playing = true;
     return 0;
 }
@@ -368,6 +414,11 @@ int cinder_tuner_stop(void) {
     }
     route(false);
     g_playing = false;
+    if (regmon::available()) {
+        pthread_mutex_lock(&regmon::g_lock);
+        regmon::power_down_l();
+        pthread_mutex_unlock(&regmon::g_lock);
+    }
     return 0;
 }
 
@@ -447,10 +498,25 @@ int cinder_tuner_set_khz(int khz) {
     if (!g_tuner) return -1;
     unsigned f = (unsigned)khz;
     try { ((fn_cu)vslot(g_tuner, T_SetFrequency))(g_tuner, &f); } catch (...) { return -1; }
+    // Walkman One's SetFrequency is a stub: tune the chip we powered.
+    if (regmon::g_we_powered) {
+        pthread_mutex_lock(&regmon::g_lock);
+        regmon::tune_l(regmon::plan_l(), khz);
+        pthread_mutex_unlock(&regmon::g_lock);
+    }
     return 0;
 }
 
 int cinder_tuner_get_khz(void) {
+    // Where the chip really is, when we are the ones driving it (Walkman One's GetFrequency is a
+    // stub that answers 0).
+    if (regmon::g_we_powered) {
+        pthread_mutex_lock(&regmon::g_lock);
+        regmon::Plan p = regmon::plan_l();
+        int rc = regmon::rd_l(regmon::R_READCHAN);
+        pthread_mutex_unlock(&regmon::g_lock);
+        if (rc >= 0) return p.base_khz + (rc & regmon::CH_MASK) * p.space_khz;
+    }
     if (!g_tuner) return 0;
     unsigned f = 0;
     try { ((fn_pu)vslot(g_tuner, T_GetFrequency))(g_tuner, &f); } catch (...) { return 0; }
@@ -496,6 +562,7 @@ void cinder_tuner_set_progress_cb(cinder_tuner_progress_fn cb) { g_progress = cb
 static int seek_hw(int from_khz, int dir, cinder_tuner_step_fn on_step) {
     using namespace regmon;
     pthread_mutex_lock(&g_lock);
+    ensure_powered_l();
     Plan p = plan_l();
     int pc0 = rd_l(R_POWERCFG), s2 = rd_l(R_SYSCONFIG2), s3 = rd_l(R_SYSCONFIG3);
     if (pc0 < 0 || s2 < 0 || s3 < 0) { pthread_mutex_unlock(&g_lock); return 0; }
@@ -564,6 +631,7 @@ int cinder_tuner_seek_begin(int from_khz, int dir) {
     if (!available()) return 0;
     if (dir == 0) dir = 1;
     pthread_mutex_lock(&g_lock);
+    ensure_powered_l();
     g_seek.plan = plan_l();
     g_seek.pc0 = rd_l(R_POWERCFG);
     g_seek.s2  = rd_l(R_SYSCONFIG2);
@@ -687,6 +755,7 @@ static int scan_hw(int start_khz, int end_khz, int* out_khz, int max) {
     int nh = 0;
 
     pthread_mutex_lock(&g_lock);
+    ensure_powered_l();
     Plan p = plan_l();
     int pc0 = rd_l(R_POWERCFG);
     if (pc0 < 0) { pthread_mutex_unlock(&g_lock); return 0; }
@@ -776,6 +845,7 @@ struct ScanJob {
     int   f = 0, start = 0, end = 0, span = 1;
     struct Hit { int khz, rssi; } hits[256];
     int   nh = 0;
+    int   no_stc = 0;   // channels in a row the chip did not finish tuning
 } g_scan;
 }  // namespace
 
@@ -783,6 +853,7 @@ int cinder_tuner_scan_begin(int start_khz, int end_khz) {
     using namespace regmon;
     if (!available()) return 0;
     pthread_mutex_lock(&g_lock);
+    ensure_powered_l();
     g_scan.plan = plan_l();
     g_scan.pc0 = rd_l(R_POWERCFG);
     if (g_scan.pc0 >= 0)
@@ -793,6 +864,7 @@ int cinder_tuner_scan_begin(int start_khz, int end_khz) {
     g_scan.end = end_khz;
     g_scan.span = (end_khz - start_khz) / 100 + 1;
     g_scan.nh = 0;
+    g_scan.no_stc = 0;
     g_scan.active = true;
     return 1;
 }
@@ -813,6 +885,17 @@ int cinder_tuner_scan_step(void) {
         }
         pthread_mutex_unlock(&g_lock);
         if (s < 0) return -1;                       // the bus went away; let the caller finish
+        // A chip that never says "tuned" is not tuning (powered down, or not answering): each
+        // channel would cost wait_stc_l's whole bound, ~0.57 s, and the band two minutes, to learn
+        // nothing. Five in a row ends the sweep with what it has.
+        if (!(s & ST_STC)) {
+            if (++g_scan.no_stc >= 5) {
+                std::fprintf(stderr, "[cinder-tuner] scan: the chip is not completing tunes — stopped\n");
+                return -1;
+            }
+        } else {
+            g_scan.no_stc = 0;
+        }
         g_scan.hits[g_scan.nh].khz = g_scan.f;
         g_scan.hits[g_scan.nh].rssi = s & ST_RSSI;
         g_scan.nh++;
@@ -829,6 +912,7 @@ int cinder_tuner_scan_collect(int* out_khz, int max) {
     if (!g_scan.active) return 0;
     pthread_mutex_lock(&g_lock);
     if (g_scan.pc0 >= 0) wr_l(R_POWERCFG, (unsigned)g_scan.pc0);   // unmute, as we found it
+    if (!g_playing) power_down_l();   // powered only for the sweep (Walkman One, radio off)
     pthread_mutex_unlock(&g_lock);
     g_scan.active = false;
 
