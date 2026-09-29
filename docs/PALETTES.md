@@ -33,6 +33,18 @@ reasons logged, the choice kept across restarts ([`DEVICE_TESTS.md`](DEVICE_TEST
 The folder is read at boot and again whenever Settings opens, so there is no reboot to wait for. The
 choice is saved like any other setting; Settings ▸ Reset settings goes back to Cinder.
 
+## Share and download
+
+Shared palettes live in [superwilso/cinder-themes](https://github.com/superwilso/cinder-themes), with a
+gallery drawn from the files. CI checks every one with these same rules, so any palette there loads.
+
+- **Download:** Flint ▸ Palettes ▸ **Download shared** fetches every one not already in your folder.
+  Or take a file from the repository by hand.
+- **Make:** Flint ▸ Palettes ▸ **New palette** is an editor with a live preview. It shows the player's
+  verdict as you type.
+- **Share:** in that editor, **Share…** opens the repository's form with the file filled in. Or
+  open a "Share a palette" issue there and paste it.
+
 ## The keys
 
 Every key is optional. A key left out keeps Cinder's value.

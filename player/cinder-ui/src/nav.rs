@@ -1005,6 +1005,9 @@ pub struct App {
     /// Settings ▸ Ignore "The" in artists. Mirrored into `lib.ignore_the`, which every ordering
     /// function reads; the copy here is what survives a library reload.
     ignore_the: bool,
+    /// Each Library tab's layout (`library::LibView`), by `Tab as usize`. Copied into the library
+    /// like `ignore_the`, because the layout functions all read `&Library`.
+    lib_views: [library::LibView; 4],
     bt_fine: u8,
     bt_trim: i8,
     /// Now Playing visualiser type (cinder_ui::viz index) + animation on/off (UI settings).
@@ -1445,6 +1448,7 @@ impl Default for App {
             vol_overlay: 0,
             volume_limit: false,
             ignore_the: false,
+            lib_views: Default::default(),
             bt_volume: 15,
             bt_route: false,
             bt_connected: None,
@@ -1836,6 +1840,7 @@ impl App {
         };
         // The kept library is still sorted under the old preference; put it back in default order.
         self.set_ignore_the(false);
+        self.lib.views = self.lib_views;
         self.toast = "Settings reset".to_string();
         self.toast_frames = TOAST_FRAMES;
         vec![Action::SettingsReset]
@@ -4223,6 +4228,10 @@ impl App {
             self.open_search();
             return vec![];
         }
+        if library::hit_view_button(x, y, self.search_enabled) {
+            self.cycle_lib_view();
+            return vec![];
+        }
         // SORT/ORDER chip in the header's right slot (right of the back chevron's x<80 band).
         // Songs cycles the SORT chip; Albums cycles the ORDER chip. Both reset the list position.
         if (34..91).contains(&y) && x >= 300 {
@@ -4305,9 +4314,12 @@ impl App {
         }
         // The other tabs route through the render-mirroring hit test (library::hit_row): it knows
         // each tab's list top/row height and returns None for the shuffle band / gaps / off-list.
-        let Some(row) = library::hit_row_at(self.lib_tab, &self.lib, self.lib_scroll_px, y, self.lib_band()) else {
+        let Some(row) = library::hit_item_at(self.lib_tab, &self.lib, self.lib_scroll_px, x, y, self.lib_band()) else {
             return vec![];
         };
+        // A grid tile is one target: its cover and its name both open it. The play and shuffle
+        // shortcuts at the right of a row have no place on a tile.
+        let grid = library::view_of(&self.lib, self.lib_tab) == library::LibView::Grid;
         match self.lib_tab {
             // `row` is the RANK in the drawn (sorted) order — resolve through the same order.
             // The Songs list plays AS THE SONGS LIST, from the tapped row, in the order drawn.
@@ -4322,7 +4334,7 @@ impl App {
             Tab::Playlists => {
                 self.lib_idx = row;
                 let Some(p) = self.lib.playlists.get(row) else { return vec![] };
-                if x >= 404 {
+                if x >= 404 && !grid {
                     return vec![Action::PlayPlaylist(p.id)];
                 }
                 self.open_playlist(row);
@@ -4335,7 +4347,7 @@ impl App {
                 if row >= self.lib.artists.len() {
                     return vec![];
                 }
-                if x >= 404 {
+                if x >= 404 && !grid {
                     return self.start_play_action(Action::ShuffleArtist(row));
                 }
                 self.open_artist(row);
@@ -4936,6 +4948,11 @@ impl App {
     /// The album under `y` in the Albums accordion header row, for the swipe-to-queue gesture.
     fn albums_album_at(&self, y: i32) -> Option<AlbumRow> {
         use crate::library::AlbumsHit;
+        // A grid line holds four albums, and a swipe has no column: which one it queued would be
+        // decided by where x=240 happens to fall. The grid's tiles do not swipe.
+        if library::view_of(&self.lib, Tab::Albums) == library::LibView::Grid {
+            return None;
+        }
         match library::albums_hit_at(&self.lib, self.album_sort, self.album_expanded, self.lib_scroll_px, 240, y, self.lib_band()) {
             Some(AlbumsHit::AlbumToggle(flat) | AlbumsHit::AlbumOpen(flat)) => {
                 self.lib.albums_flat().get(flat).map(|a| (*a).clone())
@@ -4958,6 +4975,52 @@ impl App {
             });
         }
         tab_zone_at(&zones, x)
+    }
+
+    /// The header's view button: step the current tab to its next layout, keep the item that was at
+    /// the top of the screen at the top, and say which view it is now.
+    fn cycle_lib_view(&mut self) {
+        let tab = self.lib_tab;
+        let cur = library::view_of(&self.lib, tab);
+        let next = library::next_view(tab, cur);
+        // The first item on screen, by the layout being left — so the switch lands where you were,
+        // not at the top of a 3,000-song list.
+        let top_item = self.lib_top_item();
+        self.lib_views[tab as usize] = next;
+        self.lib.views = self.lib_views;
+        self.album_expanded = None;
+        self.lib_scroll_px = top_item
+            .map(|i| library::row_top_px(tab, &self.lib, i, self.album_sort, None))
+            .unwrap_or(0);
+        self.clamp_lib_scroll();
+        self.lib_band_hide = 0;
+        self.fling_v = 0.0;
+        self.notify(next.label());
+    }
+
+    /// Display rank of the first item whose line is at or below the top of the list.
+    fn lib_top_item(&self) -> Option<usize> {
+        let n = library::row_count(self.lib_tab, &self.lib);
+        (0..n).find(|&i| {
+            library::row_top_px(self.lib_tab, &self.lib, i, self.album_sort, self.album_expanded)
+                >= self.lib_scroll_px
+        })
+    }
+
+    /// Each tab's layout as the settings file stores it: four words, Songs to Playlists.
+    pub fn lib_views_str(&self) -> String {
+        self.lib_views.iter().map(|v| v.token()).collect::<Vec<_>>().join(",")
+    }
+
+    /// Read `lib_views_str`'s format. An unknown word leaves that tab as it was; a view the tab
+    /// does not offer is kept but drawn as the list (`library::view_of`).
+    pub fn set_lib_views_str(&mut self, s: &str) {
+        for (i, w) in s.split(',').take(4).enumerate() {
+            if let Some(v) = library::LibView::from_token(w) {
+                self.lib_views[i] = v;
+            }
+        }
+        self.lib.views = self.lib_views;
     }
 
     /// Advance the Albums ORDER chip and collapse any open accordion (its identity is still valid,
@@ -6283,6 +6346,29 @@ impl App {
         self.album_cover = img;
     }
 
+    /// Album ids the Library grid wants 96 px covers for, nearest the screen first. Empty unless
+    /// the Library is on screen in a grid. The shell polls this like `open_album_id`, loads what is
+    /// missing into the library with `put_grid_cover`, and drops the rest with `keep_grid_covers`.
+    pub fn grid_cover_wants(&self) -> Vec<i64> {
+        if self.current() != Screen::Library {
+            return Vec::new();
+        }
+        library::grid_cover_ids(self.lib_tab, &self.lib, self.album_sort, self.lib_scroll_px)
+    }
+
+    pub fn has_grid_cover(&self, album_id: i64) -> bool {
+        self.lib.covers.contains_key(&album_id)
+    }
+
+    pub fn put_grid_cover(&mut self, album_id: i64, img: crate::art::Image) {
+        self.lib.covers.insert(album_id, img);
+    }
+
+    /// Drop every grid cover not in `keep`.
+    pub fn keep_grid_covers(&mut self, keep: &[i64]) {
+        self.lib.covers.retain(|id, _| keep.contains(id));
+    }
+
     /// `album_id` of the album currently drilled into, if any. The shell polls this to know which
     /// cover to load out of its art cache — the UI never reads the cache itself.
     pub fn open_album_id(&self) -> Option<i64> {
@@ -6385,6 +6471,7 @@ impl App {
         // The shell builds every library in plain order; the artist lists are put in the user's
         // order here, so a reload can never quietly drop the Ignore "The" setting.
         lib.ignore_the = self.ignore_the;
+        lib.views = self.lib_views;
         lib.prepare_order();
         self.lib = lib;
         self.az_memo = None;   // a new library is a new set of letters
@@ -6410,8 +6497,8 @@ impl App {
     /// Keep the library cursor's row fully inside the pixel-scrolled window (button nav).
     fn lib_ensure_visible(&mut self) {
         let row_top = library::row_top_px(self.lib_tab, &self.lib, self.lib_idx, self.album_sort, self.album_expanded);
-        // Albums rows are ALBUM_ROW_H; the fixed tabs use their own row_h.
-        let rh = if matches!(self.lib_tab, Tab::Albums) { library::ALBUM_ROW_H } else { library::row_h(self.lib_tab) };
+        // One line of the tab in its current view (an album row, a compact row, a grid line).
+        let rh = library::cursor_h(self.lib_tab, &self.lib);
         let view = library::view_h(self.lib_tab);
         if row_top < self.lib_scroll_px {
             self.lib_scroll_px = row_top;
@@ -10754,6 +10841,61 @@ mod tests {
         }
         assert!(a.lib_max_scroll() > 1000, "the fixture must scroll well past the band");
         a
+    }
+
+    /// The header's view button steps the tab through its views, says which one it is now, keeps
+    /// the item at the top of the screen at the top, and survives the settings file.
+    #[test]
+    fn the_view_button_switches_the_layout_and_remembers_it() {
+        let mut a = long_songs();
+        let (x0, x1) = library::view_button_x(a.search_enabled);
+        let (vx, vy) = ((x0 + x1) / 2, 62);
+        // Scroll to the 20th song, then switch: the 20th song is still the first one on screen.
+        a.lib_scroll_px = 20 * library::row_h(Tab::Songs);
+        a.tap(vx, vy);
+        assert_eq!(library::view_of(&a.lib, Tab::Songs), library::LibView::Compact);
+        assert_eq!(a.toast, "Compact view");
+        assert_eq!(a.lib_scroll_px, 20 * library::COMPACT_ROW_H);
+        assert_eq!(a.lib_views_str(), "compact,list,list,list");
+        a.tap(vx, vy);
+        assert_eq!(library::view_of(&a.lib, Tab::Songs), library::LibView::List);
+
+        // Per tab, and read back from the settings file's words.
+        let mut b = unlocked();
+        b.set_lib_views_str("list,grid,compact,nonsense");
+        assert_eq!(b.lib_views_str(), "list,grid,compact,list");
+        // A new library (a rescan) keeps them.
+        let lib = b.lib.clone();
+        b.set_library(lib);
+        assert_eq!(library::view_of(&b.lib, Tab::Albums), library::LibView::Grid);
+        // Settings ▸ Reset puts every tab back in the list.
+        b.reset_settings();
+        assert_eq!(library::view_of(&b.lib, Tab::Albums), library::LibView::List);
+    }
+
+    /// In a grid a tile is one target: the right edge of a tile opens the artist, not the row
+    /// shortcut the list keeps there, and an album tile never slides for swipe-to-queue.
+    #[test]
+    fn a_grid_tile_opens_and_never_swipes() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::Library];
+        a.lib_tab = Tab::Artists;
+        a.set_lib_views_str("list,grid,grid,grid");
+        let y = library::list_top(Tab::Artists) + 50;
+        let x = library::grid_x(3) + library::GRID_TILE - 4; // right of 404: the list's shuffle button
+        assert!(x >= 404);
+        let acts = a.tap(x, y);
+        assert!(!acts.iter().any(|t| matches!(t, Action::ShuffleArtist(_))), "{acts:?}");
+        assert_eq!(a.current(), Screen::Artist);
+        assert_eq!(a.artist_view, 3);
+
+        let mut b = unlocked();
+        b.stack = vec![Screen::Library];
+        b.lib_tab = Tab::Albums;
+        b.set_lib_views_str("list,grid,list,list");
+        let y = library::list_top(Tab::Albums) + library::ALBUM_HDR_H + 50;
+        assert!(!b.swipe_track(80, y), "a grid line must not slide under the finger");
+        assert!(b.grid_cover_wants().iter().all(|id| *id > 0));
     }
 
     /// The Library's shuffle band slides up under the tab strip as the list scrolls down, tracking

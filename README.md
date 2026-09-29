@@ -35,7 +35,8 @@ underneath. Install it from a PC over USB; the same installer puts Sony's app ba
 - **Better battery.** With the screen off, Cinder powers the display hardware down and lets the chip
   reach its deepest idle state. Sony's audio path is untouched.
 - **Extras:** a `.scrobbler.log` scrobbler, lyrics (`.lrc` or embedded), library search, SensMe™
-  channels, FM radio with a signal meter, and colour palettes you drop on the drive.
+  channels, FM radio with a signal meter, and colour palettes you drop on the drive
+  ([share and download them](https://github.com/superwilso/cinder-themes)).
 - **Your layout.** Open on the Library, Now Playing, the Menu or wherever you left off. Optional
   pull-down panel for brightness, Bluetooth, night mode and the sleep timer.
 - **Your library as it is.** Cinder reads Sony's database, so music, playlists and liked songs stay.
@@ -53,7 +54,9 @@ it has run on hardware (*device-verified*). Per-feature state: [`cinder-home/STA
   updater accepts. The installer warns when it sees Walkman One's `CFW` folder. Cinder itself runs on
   Walkman One 3.02, but a package sealed for it hasn't been tested yet. See
   [Coming from Walkman One](#coming-from-walkman-one).
-- **Not built yet:** Bluetooth receiver mode (Walkman as a speaker) and FM recording.
+- **Bluetooth receiver mode (Walkman as a speaker) is experimental.** Playing from a Windows PC
+  works. iPhones won't connect, and some don't list the Walkman at all.
+- **Not built yet:** FM recording.
 - **One test unit.** Other NW-A50-series models share its firmware but haven't been tried.
 
 ## Supported players

@@ -633,6 +633,36 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 signal: 12, hw: true, stereo: true,
             })),
             ("usbdac", &|c: &mut Canvas| usbdac::render(c, &theme, &fonts, true, true, "LDAC", Some("WH-1000XM5"), "A1", true, Some((44100, 32, 2)), None)),
+            // Library views (the header's view button). Last in the set so the glyph cache order —
+            // and so every preview above — is unchanged by their arrival.
+            ("library_albums_grid", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Albums, library::LibView::Grid);
+                library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 0, None, &l, None, false, 0, false)
+            }),
+            ("library_albums_grid_az", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Albums, library::LibView::Grid);
+                library::render(c, &theme, &fonts, Tab::Albums, 99, 0, 0, 1, None, &l, None, false, 0, true)
+            }),
+            ("library_albums_compact", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Albums, library::LibView::Compact);
+                library::render(c, &theme, &fonts, Tab::Albums, 0, 0, 0, 1, None, &l, None, false, 0, false)
+            }),
+            ("library_songs_compact", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Songs, library::LibView::Compact);
+                library::render(c, &theme, &fonts, Tab::Songs, 0, 0, 0, 0, None, &l, None, false, 0, false)
+            }),
+            ("library_artists_grid", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Artists, library::LibView::Grid);
+                library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &l, None, false, 0, false)
+            }),
+            ("library_artists_compact", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Artists, library::LibView::Compact);
+                library::render(c, &theme, &fonts, Tab::Artists, 0, 0, 0, 0, None, &l, None, false, 0, false)
+            }),
+            ("library_playlists_grid", &|c: &mut Canvas| {
+                let l = with_view(&lib, Tab::Playlists, library::LibView::Grid);
+                library::render(c, &theme, &fonts, Tab::Playlists, 0, 0, 0, 0, None, &l, None, false, 0, false)
+            }),
         ];
         for (screen, draw) in render_set {
             let mut c = Canvas::new();
@@ -1504,4 +1534,11 @@ mod tests {
         assert!(d.iter().any(|l| l.starts_with("duplicate") && l.contains(" a")), "{d:?}");
         assert!(compare(&want[..2], &got[..2]).len() == 1, "only b differs there");
     }
+}
+
+/// `lib` with one tab switched to `view`, for the Library view previews.
+fn with_view(lib: &cinder_ui::Library, tab: library::Tab, view: library::LibView) -> cinder_ui::Library {
+    let mut l = lib.clone();
+    l.views[tab as usize] = view;
+    l
 }

@@ -235,6 +235,53 @@ fn dense_ranks(n: usize, cmp: impl Fn(usize, usize) -> std::cmp::Ordering) -> Ve
     out
 }
 
+/// How one Library tab lays its items out. Chosen per tab with the header's view button and kept in
+/// `cinder_settings.conf` (`lib_views`), so each tab opens the way it was left.
+///
+/// Not every tab offers every view — [`crate::library::views_for`] says which. A grid of songs
+/// would be one cover repeated down a whole album, and a playlist has no second line worth a dense
+/// row, so those two combinations do not exist rather than existing badly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum LibView {
+    /// Cover, title and a second line — the rows Cinder has always drawn.
+    #[default]
+    List,
+    /// Covers in a grid, four across, the name under each.
+    Grid,
+    /// Text only, one line per item: the most rows per screen, for scanning a big library.
+    Compact,
+}
+
+impl LibView {
+    /// The settings-file word. A word, not an index, so adding a fourth view later cannot shift
+    /// what an existing file means.
+    pub fn token(self) -> &'static str {
+        match self {
+            LibView::List => "list",
+            LibView::Grid => "grid",
+            LibView::Compact => "compact",
+        }
+    }
+
+    pub fn from_token(s: &str) -> Option<LibView> {
+        match s.trim() {
+            "list" => Some(LibView::List),
+            "grid" => Some(LibView::Grid),
+            "compact" => Some(LibView::Compact),
+            _ => None,
+        }
+    }
+
+    /// What the toast says when a tap switches to this view.
+    pub fn label(self) -> &'static str {
+        match self {
+            LibView::List => "List view",
+            LibView::Grid => "Grid view",
+            LibView::Compact => "Compact view",
+        }
+    }
+}
+
 /// The whole browsable library, as owned rows. Built once (from the DB on device, or the
 /// sample constants on host) and held by `nav::App`.
 #[derive(Clone, Default)]
@@ -298,6 +345,17 @@ pub struct Library {
     /// "Shuffle all analysed" plays, and a track can be in three channels, so summing the channels
     /// would over-count it.
     pub sensme_tracks: u32,
+    /// Each tab's layout, indexed by `library::Tab as usize` (Songs, Albums, Artists, Playlists).
+    /// On the library for the reason `filter_genre` is: the layout decides every row's height, and
+    /// the render, the hit test, the scroll range and the A-Z jump all already take `&Library`.
+    /// `App` owns the preference and copies it in, as it does `ignore_the`.
+    pub views: [LibView; 4],
+    /// 96x96 covers for the grid view, keyed by `album_id` like `thumbs`, but only for albums on or
+    /// near the screen. The shell fills it from its art cache as the grid scrolls and drops what
+    /// scrolled away ([`crate::library::GRID_COVERS_MAX`]), because every cover at this size would
+    /// cost 27 KB each, and a 3,000-album library would hold 80 MB of them for a view you may never
+    /// open. Empty on the host; a missing key draws the gradient, like `thumbs`.
+    pub covers: std::collections::HashMap<i64, crate::art::Image>,
     /// The FOLDER tree, flattened. Built once at library build; `folder_roots` are the entries
     /// with no parent (one per storage volume that holds music).
     pub folders: Vec<FolderRow>,
@@ -526,6 +584,8 @@ impl Library {
             folder_roots: vec![0],
             channels: Vec::new(),
             sensme_tracks: 0,
+            views: Default::default(),
+            covers: Default::default(),
         };
         lib.prepare_order();
         lib.build_channels(&SAMPLE_CHANNELS);
