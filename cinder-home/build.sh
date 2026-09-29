@@ -190,6 +190,17 @@ if cc -O2 -o "$HERE/.eqrange_selftest" "$HERE/tools/eqrange_selftest.cpp" -lstdc
     rm -f "$HERE/.eqrange_selftest"
 else echo "(skip: no host cc)"; fi
 
+echo "── self-test: codec EQ table builder (host) ──"
+# The arithmetic in src/codec_eq.h, checked against the SAME header cinder-voltable uses. The table
+# goes into the codec's own DSP, straight to someone's ears: a sign slip or a wrapped Q3.37 word is
+# an unstable filter, and that is a howl, not a wrong pixel. Every extreme setting must be stable, a
+# flat EQ must reproduce Sony's bytes, and a boost must never rise above 0 dB.
+if cc -O2 -o "$HERE/.codeceq_selftest" "$HERE/tools/codeceq_selftest.cpp" -lstdc++ -lm 2>/dev/null; then
+    if "$HERE/.codeceq_selftest" >/dev/null 2>&1; then echo "OK: codec EQ table builder"; \
+    else "$HERE/.codeceq_selftest"; echo "FAIL: codec EQ self-test"; exit 1; fi
+    rm -f "$HERE/.codeceq_selftest"
+else echo "(skip: no host cc)"; fi
+
 echo "── self-test: dark-screen frame budget (host) ──"
 # The rule in src/frame_budget.h, checked against the SAME header main.cpp uses. It decides how
 # long the render loop may sleep with the panel dark, and it is what "3.5 mm volume is not

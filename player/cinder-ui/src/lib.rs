@@ -40,6 +40,7 @@ pub mod eq;
 pub mod sound;
 pub mod advanced;
 pub mod tone;
+pub mod dac_eq;
 pub mod device;
 pub mod settings;
 pub mod display;

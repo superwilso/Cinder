@@ -43,13 +43,20 @@
  * same ceiling — but at a given number the WM1A curve is quieter through the mid range, so it is a
  * change to tell the user about, not to slip in.
  *
+ * `eq G1..G5` is the one form that takes more than a keyword: five whole numbers, half-dB steps in
+ * a fixed range, from which the helper computes a codec EQ table itself (src/codec_eq.h). Still no
+ * path and no bytes from the caller; the base is a Sony tone table found and checked as above.
+ *
  * Exit: 0 ok, 2 bad/absent argument, 3 not setuid root, 4 source unreadable/wrong, 5 write failed.
  */
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include "codec_eq.h"
 
 /* Exact sizes, measured on the device — the PCM and DSD tables are different shapes and both are
  * fixed. Checking the size is what stops this writing something that is not a volume table into a
@@ -119,24 +126,24 @@ static const struct { const char *key; const struct src *pcm, *dsd; } TABLES[] =
     { "eu",    &CEW_PCM,  &CEW_DSD },
 };
 
-/* Tone-control tables — the other half of what W1 calls a "sound signature", and the half nobody
- * had wired. Sony loads one of these at every boot alongside the volume table, into its own proc
- * node. Unlike the volume tables these have NO `_cew` variant, so tone is not region-restricted.
- * Kept as separate keys rather than folded into the entries above, so that applying a volume curve
- * does not silently also change tone. `tone-w1` and `tone-wm1a` are the same bytes; both names
- * stay so existing configs keep working. */
+/* Tone-control tables. Despite the name these are NOT Sony's Tone Control (that runs in software):
+ * each is the codec's own five-biquad EQ, one block per amp x headphone type (src/codec_eq.h). In
+ * every table Sony ships, the blocks for ordinary headphones are FLAT; the A50 and NW-WM1A tables
+ * differ only in the blocks for Sony's NW500N noise-cancelling headphones. So `tone-w1`/`tone-wm1a`
+ * change nothing with any other headphones — measured by decoding, 2026-09-29
+ * (analysis/RE_codec_tone_table.md). They stay for NW500N owners and so existing configs keep
+ * working. `eq` below is the key that puts something audible in the ordinary-headphone blocks. */
 static const struct { const char *key; const struct src *tone; } TONE_TABLES[] = {
     { "tone-stock", &TONE_A50 },
     { "tone-w1",    &TONE_WM1A },
     { "tone-wm1a",  &TONE_WM1A },
 };
 
-/* Copy one table file into one proc node, if it is the table `tail` names. Returns 0 on success. */
-static int copy_one(const char *src, const unsigned char *tail, const char *dst, off_t want)
+/* Read one table file, if it is the table `tail` names. Returns 0 on success, 4 otherwise. */
+static int read_one(const char *src, const unsigned char *tail, off_t want, unsigned char *buf)
 {
-    static char buf[PCM_BYTES];
     struct stat st;
-    int in, out;
+    int in;
     ssize_t n;
 
     in = open(src, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
@@ -150,8 +157,15 @@ static int copy_one(const char *src, const unsigned char *tail, const char *dst,
     close(in);
     if (n != (ssize_t)want || memcmp(buf + want - 8, tail, 8) != 0)
         return 4;
+    return 0;
+}
 
-    out = open(dst, O_WRONLY | O_CLOEXEC);
+/* Write a whole table into one proc node. Returns 0 on success, 5 otherwise. */
+static int write_node(const char *dst, const unsigned char *buf, off_t want)
+{
+    int out = open(dst, O_WRONLY | O_CLOEXEC);
+    ssize_t n;
+
     if (out < 0)
         return 5;
     n = write(out, buf, (size_t)want);
@@ -159,18 +173,67 @@ static int copy_one(const char *src, const unsigned char *tail, const char *dst,
     return (n == (ssize_t)want) ? 0 : 5;
 }
 
+/* Find the table `t` in the first place that has a matching copy. Returns 0, or 4 when no place
+ * has one. */
+static int find_one(const struct src *t, off_t want, unsigned char *buf)
+{
+    unsigned i;
+
+    for (i = 0; i < sizeof t->path / sizeof t->path[0] && t->path[i]; i++)
+        if (read_one(t->path[i], t->tail, want, buf) == 0)
+            return 0;
+    return 4;
+}
+
 /* Install the table `t` from the first place that has a matching copy. Returns 0 on success, 4
  * when no place has one, 5 when the write itself failed. */
 static int install_one(const struct src *t, const char *dst, off_t want)
 {
-    unsigned i;
+    static unsigned char buf[PCM_BYTES];
 
-    for (i = 0; i < sizeof t->path / sizeof t->path[0] && t->path[i]; i++) {
-        int rc = copy_one(t->path[i], t->tail, dst, want);
-        if (rc != 4)
-            return rc;
+    if (find_one(t, want, buf) != 0)
+        return 4;
+    return write_node(dst, buf, want);
+}
+
+/* One gain argument: a whole number of half-dB steps in the codec EQ's range, nothing else. */
+static int parse_gain(const char *s, int *out)
+{
+    char *end;
+    long v = strtol(s, &end, 10);
+
+    if (end == s || *end != '\0' || v < CODEC_EQ_GAIN_MIN || v > CODEC_EQ_GAIN_MAX)
+        return -1;
+    *out = (int)v;
+    return 0;
+}
+
+/* `eq G1 G2 G3 G4 G5`: the codec's own EQ (src/codec_eq.h). Built from whichever Sony tone table
+ * this player carries — the A50's, or the NW-WM1A's that Walkman One ships in its place; they
+ * differ only in the NW500N noise-cancelling blocks, which this keeps as found. The arguments are
+ * five bounded integers, never bytes or paths: the helper computes the table itself. */
+static int apply_eq(char **arg)
+{
+    static unsigned char buf[TONE_BYTES];
+    int g[CODEC_EQ_BANDS], i;
+
+    for (i = 0; i < CODEC_EQ_BANDS; i++)
+        if (parse_gain(arg[i], &g[i]) != 0) {
+            fprintf(stderr, "cinder-voltable: eq gain '%s' is not a whole number in %d..%d\n",
+                    arg[i], CODEC_EQ_GAIN_MIN, CODEC_EQ_GAIN_MAX);
+            return 2;
+        }
+    if (find_one(&TONE_A50, TONE_BYTES, buf) != 0 && find_one(&TONE_WM1A, TONE_BYTES, buf) != 0) {
+        fprintf(stderr, "cinder-voltable: eq failed (4): no Sony tone table found\n");
+        return 4;
     }
-    return 4;
+    codec_eq_table(buf, g, buf);
+    if (write_node(DST_TONE, buf, TONE_BYTES) != 0) {
+        fprintf(stderr, "cinder-voltable: eq failed (5)\n");
+        return 5;
+    }
+    fprintf(stderr, "cinder-voltable: eq %d %d %d %d %d applied\n", g[0], g[1], g[2], g[3], g[4]);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -183,9 +246,11 @@ int main(int argc, char **argv)
         fprintf(stderr, "cinder-voltable: not root (setuid bit lost?)\n");
         return 3;
     }
+    if (argc == 2 + CODEC_EQ_BANDS && strcmp(argv[1], "eq") == 0)
+        return apply_eq(argv + 2);
     if (argc != 2) {
         fprintf(stderr, "usage: cinder-voltable stock|w1|wm1a|eu"
-                        " | tone-stock|tone-w1|tone-wm1a\n");
+                        " | tone-stock|tone-w1|tone-wm1a | eq G1 G2 G3 G4 G5\n");
         return 2;
     }
     for (i = 0; i < sizeof TONE_TABLES / sizeof TONE_TABLES[0]; i++) {

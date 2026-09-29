@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.13] — 2026-09-29
+
 The first pass of the 2026-09 redesign is in this release. The ledger for the rest, screen by
 screen, is [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md). The redesign's
 entries — all of *Added* and the first eight under *Changed* — and the text fixes at the top of
@@ -24,6 +26,35 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
 
 ### Added
 
+- **Linear headphone amp (experimental, off by default).** Sound ▸ Advanced ▸ **Linear headphone
+  amp** drives the jack from the codec's conventional amplifier instead of Sony's S-Master class-D.
+  Into a line input it measured about 3 dB louder at the same volume, with half the distortion and
+  a flat response where S-Master tilts 0.6 dB toward the treble. Into headphones it is unmeasured,
+  and it may cost battery. Cinder re-checks it every second while it is on, because Sony's
+  headphone service may reset it when headphones are plugged in; while it is off, Cinder never
+  touches the control. *Verified on a Walkman One player 2026-09-29 that the setting survives the
+  codec sleeping. The UI and the shell are tested offline; the switch itself has not run on a
+  device yet.*
+- **Bluetooth Receiver (experimental).** Bluetooth ▸ **RECEIVER MODE ›** now opens a working
+  page: switch it on, pair from a phone or PC, and the Walkman plays what it sends through its own
+  DAC and headphone amp. It follows Sony's own sequence, read out of the stock player: it pauses
+  and releases your music, switches the player's function mode to Bluetooth receiver, waits for a
+  connection, becomes discoverable, and starts the sound when a device attaches. The pairing code
+  shows on the page. Leaving the page turns it all off and gives your music back, and your
+  Bluetooth headphones do not try to reconnect while it is on. That footer link used to be drawn
+  with an arrow and answered no tap. *Device-verified 2026-09-29 on a Walkman One player: a
+  Windows PC paired, connected and streamed at 48 kHz, and the owner heard it at the jack. An
+  iPhone refused to pair ("not supported"), which is not understood yet.*
+- **DAC EQ (experimental).** Sound ▸ Advanced ▸ **DAC EQ** is a five-band EQ that runs inside the
+  headphone chip, not on the processor: bass shelf at 100 Hz, peaks at 400 Hz, 1.5 kHz and 4 kHz,
+  treble shelf at 10 kHz, each from −12 to +6 dB. It costs no battery and works with the Equalizer
+  and Tone Control, after both. Wired headphones only. A boost never raises the level; it lowers
+  everything else instead, so nothing can clip. Source Direct holds it flat. The chip has always
+  had this EQ — Sony uses it only to correct its own noise-cancelling headphones, and loads it flat
+  for every other pair. Decode: [`analysis/RE_codec_tone_table.md`](analysis/RE_codec_tone_table.md).
+  *On a Walkman One player 2026-09-29 the helper's tables were accepted and read back exactly, and
+  a flat EQ reproduced the stock table byte for byte. Nobody has listened to it or measured it at
+  the jack yet.*
 - **Choose where the player opens.** The Menu has a START ON row of chips: **Library**, Now
   Playing, Menu, or **Last screen**, which reopens the list or album you were in. A HOME tag marks
   the chosen row. **The default is now Library**; pick Now Playing to keep the old behaviour. Back
@@ -148,6 +179,22 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
   *Verified on device 2026-09-28: helper, scheduler reset at boot, cap on screen-off. Uncap on wake is harness-tested.*
 
 ### Fixed
+
+- **A pairing request from a phone or PC can be answered.** The pairing code only ever drew on
+  the Devices screen, so a device pairing TO the Walkman waited on its PIN with nothing shown, and
+  gave up. The code now shows on the Receiver page, and from anywhere else Cinder opens Devices
+  and wakes the screen. *Device-verified 2026-09-29.*
+
+- **A 32-bit FLAC no longer stops all audio.** Playing one froze Sony's player service and Cinder
+  showed "AUDIO STOPPED — RESTART" until a reboot. The player's FLAC decoder is libFLAC 1.3.2,
+  which cannot read 32-bit frames: the file opens, then nothing decodes and the player hangs.
+  FLAC 1.4 and newer write 32-bit files when asked to, and the owner's library had one. Cinder now
+  leaves any FLAC wider than 24 bits out of what it sends to the player, and says so: tapping one
+  shows "Can't play a 32-bit FLAC", or "Skipped a 32-bit FLAC" when the rest of the album plays.
+  Convert such files to 24-bit to play them. Cause and evidence:
+  [`analysis/RE_32bit_flac.md`](analysis/RE_32bit_flac.md). *Cause confirmed on the device
+  2026-09-29 (the file's own frame headers); the skip is tested offline and has not run on a
+  device yet.*
 
 - **The WM1A volume curve now works on Walkman One.** Walkman One overwrites Sony's
   `ov_127x.tbl` with the A50's own curve on every boot. So choosing `wm1a` logged "applied" but
@@ -2179,7 +2226,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.12...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.13...HEAD
+[0.3.13]: https://github.com/superwilso/Cinder/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/superwilso/Cinder/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/superwilso/Cinder/compare/v0.3.10-rc1...v0.3.11-rc1
 [0.3.10]: https://github.com/superwilso/Cinder/compare/v0.3.9...v0.3.10-rc1

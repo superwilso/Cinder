@@ -595,3 +595,22 @@ reboot. Play something first.
 | 20.4 | **Repeat album** (jack, then BT) | Play an album from its 1st song, queue a song from another album after it (swipe right), tap repeat until ALBUM shows; skip to the album's last song | After it the album's FIRST song plays, not the queued one, and Up Next highlights it | Log `repeat album — lapping N songs` 2.5 s before the end. A click at the lap on BT is the known cost of the re-issue (the same as the queue rebuild) |
 | 20.5 | **Repeat album off again** | During 20.4, tap repeat to *one* then *off* before the album's last song ends | After the last song the queued song plays — the rest of the list came back | If the album laps anyway, the re-derive on leaving album (`queue_pending`) did not fire |
 
+
+---
+
+## 21 — 2026-09-29 — DAC EQ, 32-bit FLAC, linear amp
+
+Host-tested; the DAC EQ helper's tables were also written and read back on the W1 reference player
+(`analysis/RE_codec_tone_table.md` §4). Needs a dev build and one reboot, and wired headphones for
+21.1–21.3. Start with the volume low.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 21.1 | **DAC EQ is audible** | Wired headphones, music playing. Sound ▸ Advanced ▸ DAC EQ: drag BASS to −12, then TREBLE to −12 | Bass clearly thinner; then the top dulls too. Reset brings both back | Log `dac eq: … -> rc=0` but no change = the kernel did not reload the block (re-plug the headphones: that forces `adjust_tone_control`). `rc=4` = no Sony tone table on this player |
+| 21.2 | **Boost lowers, never clips** | TREBLE to +6 | Treble tilts up and the rest gets quieter; no distortion on loud tracks | Distortion = the pre-gain is not reaching the codec; check the log line's curve |
+| 21.3 | **Source Direct holds it flat** | With BASS at −12, Sound ▸ Advanced ▸ Source Direct on, then off | Full bass with Direct on; thin again with it off; the DAC EQ screen says "held flat" while Direct is on | A click at each change is worth noting (reload pop) — count them |
+| 21.4 | **32-bit FLAC skipped** | Tap "Anything" (Sprain) in its album | Toast "Skipped a 32-bit FLAC…"; the next song plays; no AUDIO STOPPED banner. Log: `FLAC wider than 24 bits — skipped` | AUDIO STOPPED = the file reached PlayerService: `cinder-ffi` should log how many undecodable paths it loaded at startup |
+| 21.5 | **32-bit FLAC alone** | Play the Sprain album on shuffle; then play the song on its own from search | Shuffle: no toast, the song never comes up. Alone: "Can't play a 32-bit FLAC…", nothing starts | — |
+| 21.7 | **BT Receiver** — **PASS 2026-09-29, owner-reported (Windows PC, 48 kHz, 33 s)** | Bluetooth ▸ RECEIVER MODE › ▸ on; pair from a phone/PC; confirm the code on the Walkman; play | Sound at the jack; the page says Playing from <name> | Logcat `BtPlayerService`: AVSNK 2 waiting / 4 connected / 5 streaming. Stuck at 4 = nothing sent yet; check the PC's output device |
+| 21.8 | **BT Receiver from an iPhone** | As 21.7 from iOS | Pairs | Failed 2026-09-29: "NW-A50series is not supported" before any code appeared |
+| 21.6 | **Linear headphone amp** | `docs/PLAN_sound_2026-09-29.md` §1 | As written there | As written there |

@@ -60,6 +60,9 @@ pub enum Screen {
     /// slider field, not a row: the Advanced list is toggles and pills, and a three-column tap
     /// target does not fit inside a 64 px row. See `tone.rs`.
     Tone,
+    /// Sound ▸ Advanced ▸ DAC EQ — five bands in the codec chip itself, applied by the setuid
+    /// `cinder-voltable eq` helper. Same slider-field idiom as `Tone`. See `dac_eq.rs`.
+    DacEq,
     Bluetooth,
     /// Paired-device picker (connect / disconnect / forget). Pushed from Bluetooth ▸ "Pair new
     /// device"; before 2026-07-30 `pairing.rs` rendered but had no route at all.
@@ -355,6 +358,14 @@ pub enum Action {
     /// and applies it to every PCM path CINDER owns — see `analysis/RE_mono_audio.md` for why that
     /// is the whole of what it can reach.
     MonoChanged,
+    /// Sound ▸ Advanced ▸ DAC EQ changed. Its own action, not SoundChanged: nothing in Sony's DSP
+    /// chain is involved. The shell reads `dac_eq()` (and Source Direct, which holds it flat) and
+    /// runs `cinder-voltable eq`, which rebuilds the codec's tone table. Sent per tap and once at
+    /// the end of a drag, never per motion event: each one is a helper run and a codec RAM reload.
+    DacEqChanged,
+    /// BT Receiver switched (or left, which switches it off). The shell reads `rx_on()` and runs
+    /// the whole enter / leave chain; idempotent, so a repeat is harmless.
+    RxChanged,
     /// Balance only. Deliberately NOT SoundChanged: that action re-applies the whole DSP chain
     /// (six EffectCtrlDmp round trips) plus a settings write, and the balance slider emits on every
     /// motion event. This one lands on a single cached amixer call.
@@ -647,6 +658,7 @@ fn screen_token(s: Screen) -> &'static str {
         Screen::UpNext => "queue",
         Screen::Eq => "eq",
         Screen::Tone => "tone",
+        Screen::DacEq => "daceq",
         Screen::Sound => "sound",
         Screen::Bluetooth => "bt",
         Screen::BtCodec => "btcodec",
@@ -743,6 +755,9 @@ enum Scrub {
     /// unrecoverable without an undo the screen does not have.
     EqBand(usize),
     ToneBand(usize),
+    /// Sound ▸ Advanced ▸ DAC EQ ▸ one band column. PREVIEW ONLY while the finger moves: applying
+    /// it runs a setuid helper and reloads codec RAM, so it is sent once, at release.
+    DacEqBand(usize),
     /// Sound ▸ L/R balance slider. Applies LIVE on every motion event rather than at release: the
     /// point of dragging a balance control is hearing the image move under your finger. The cost is
     /// bounded because the shell's `apply_balance` caches the last raw pair and skips the mixer
@@ -911,6 +926,14 @@ pub struct App {
     /// A pairing prompt the radio is waiting on, pushed by the shell from the listener. While this is
     /// `Some` the Devices screen is modal — see `pairing::hit_prompt`.
     bt_prompt: Option<crate::pairing::Prompt>,
+    /// BT Receiver: the user's switch, and what the shell last reported (phase 0 off, 1 waiting,
+    /// 2 attached, 3 audio arriving; the rest raw from BtPlayerService).
+    rx_on: bool,
+    rx_phase: u8,
+    rx_peer: String,
+    rx_codec: u32,
+    rx_freq: u32,
+    rx_bitrate: u32,
     /// Row whose FORGET is armed (two-tap), and the row with a connect in flight. FORGET is cleared
     /// whenever the list is replaced; the connect is found again by name (see `bt_paired_add`).
     bt_forget_armed: Option<usize>,
@@ -1090,6 +1113,9 @@ pub struct App {
     adv_source_direct: bool,
     adv_clear_phase: bool,
     adv_dsee_ai: bool,
+    /// Sound ▸ Advanced ▸ Linear headphone amp. Off by default; the shell re-asserts it each second
+    /// while on (main.cpp hp_amp_tick).
+    adv_hp_linear: bool,
     /// DSEE HX Custom on/off, and which mode — same split as VPT, same reason.
     adv_dsee_custom: bool,
     adv_dsee_mode: usize,
@@ -1123,6 +1149,12 @@ pub struct App {
     tone_bands: [i8; crate::tone::BANDS],
     /// Focused band on the Tone Control screen.
     tone_sel: usize,
+    /// DAC EQ band gains, RAW half-decibels, -24..=12 (-12..+6 dB) — the setuid helper's own
+    /// range, which it enforces by REFUSING anything outside it. Band order is the helper's
+    /// argument order: bass shelf, 400 Hz, 1.5 kHz, 4 kHz, treble shelf. See `dac_eq.rs`.
+    dac_eq: [i8; crate::dac_eq::BANDS],
+    /// Focused band on the DAC EQ screen.
+    dac_eq_sel: usize,
     /// Focused row on the Advanced screen.
     adv_sel: usize,
     snd_norm: bool,
@@ -1423,6 +1455,12 @@ impl Default for App {
             bt_paired_page: 0,
             bt_scanning: false,
             bt_prompt: None,
+            rx_on: false,
+            rx_phase: 0,
+            rx_peer: String::new(),
+            rx_codec: 0,
+            rx_freq: 0,
+            rx_bitrate: 0,
             bt_forget_armed: None,
             bt_connecting: None,
             bt_connecting_name: None,
@@ -1501,6 +1539,7 @@ impl Default for App {
             adv_source_direct: false,
             adv_clear_phase: false,
             adv_dsee_ai: false,
+            adv_hp_linear: false,
             adv_dsee_custom: false,
             adv_dsee_mode: 0,
             adv_vinyl_type: 0,
@@ -1518,6 +1557,8 @@ impl Default for App {
             fm_stereo: false,
             tone_bands: [0; crate::tone::BANDS],
             tone_sel: 0,
+            dac_eq: [0; crate::dac_eq::BANDS],
+            dac_eq_sel: 0,
             adv_sel: 0,
             snd_dc: false,
             snd_norm: false,
@@ -3230,12 +3271,19 @@ impl App {
                 self.adv_vinyl_type = (self.adv_vinyl_type + 1) % adv::VINYL_TYPES.len();
             }
             adv::ROW_TONE => self.adv_tone = !self.adv_tone,
+            adv::ROW_HP_AMP => self.adv_hp_linear = !self.adv_hp_linear,
             // A ROUTE, not a setting — same rule as the Sound screen's "Advanced ›" row: pushing a
             // screen changes nothing about the sound, and emitting SoundChanged here would
             // re-apply the whole chain on a navigation.
             adv::ROW_TONE_BANDS => {
                 self.tone_sel = 0;
                 self.push(Screen::Tone);
+                return vec![];
+            }
+            // A route too. The DAC EQ has its own action, so nothing here re-applies anything.
+            adv::ROW_DAC_EQ => {
+                self.dac_eq_sel = 0;
+                self.push(Screen::DacEq);
                 return vec![];
             }
             _ => {}
@@ -3256,6 +3304,22 @@ impl App {
             (*g - crate::tone::BAND_STEP).max(-crate::tone::BAND_MAX)
         };
         vec![Action::SoundChanged]
+    }
+
+    /// Nudge the focused DAC EQ band one step (1.0 dB). Emits only when the value moved, so a tap
+    /// past either end does not run the helper for nothing.
+    fn dac_eq_nudge(&mut self, dir: i32) -> Vec<Action> {
+        let g = &mut self.dac_eq[self.dac_eq_sel];
+        let want = if dir > 0 {
+            (*g + crate::dac_eq::BAND_STEP).min(crate::dac_eq::BAND_MAX)
+        } else {
+            (*g - crate::dac_eq::BAND_STEP).max(crate::dac_eq::BAND_MIN)
+        };
+        if want == *g {
+            return vec![];
+        }
+        *g = want;
+        vec![Action::DacEqChanged]
     }
 
     /// Left/Right on the Sound screen. On the slider row it nudges the balance a step; on every
@@ -3907,6 +3971,25 @@ impl App {
                 }
                 vec![]
             }
+            Screen::DacEq => {
+                // The Tone Control idiom through `dac_eq`'s own layout: tap a column to focus it,
+                // above the zero line raises, below lowers.
+                if (crate::dac_eq::FIELD_TOP..crate::dac_eq::FIELD_BOTTOM).contains(&y) {
+                    if let Some(band) = crate::dac_eq::band_at(x) {
+                        self.dac_eq_sel = band;
+                        return self.dac_eq_nudge(if y < crate::dac_eq::FIELD_ZERO { 1 } else { -1 });
+                    }
+                    return vec![];
+                }
+                if crate::dac_eq::reset_at(x, y) {
+                    if self.dac_eq == [0; crate::dac_eq::BANDS] {
+                        return vec![];
+                    }
+                    self.dac_eq = [0; crate::dac_eq::BANDS];
+                    return vec![Action::DacEqChanged];
+                }
+                vec![]
+            }
             Screen::Eq => {
                 // Every region below comes from `eq`'s own layout helpers — the same ones render
                 // draws with — so a pill/band/footer tap always lands on what's under the finger.
@@ -3967,6 +4050,13 @@ impl App {
                         self.push(Screen::Pairing);
                         vec![Action::BtPairedRefresh]
                     }
+                    BtHit::Receiver => {
+                        // Always arrives OFF: a switch left on by a page that was popped is not
+                        // what the shell is running any more.
+                        self.rx_on = false;
+                        self.push(Screen::Receiver);
+                        vec![]
+                    }
                     // Connect straight from this screen — the whole point of the redesign. Same
                     // two-way rule the Devices screen uses: the connected row hangs up.
                     BtHit::PairedRow(i) => match self.bt_paired.get(i) {
@@ -4013,6 +4103,29 @@ impl App {
                     }
                     _ => vec![],
                 }
+            }
+            Screen::Receiver => {
+                use crate::pairing::PairHit;
+                // The pairing code a PC or phone is waiting on is answered HERE — the receiver's
+                // whole point is being paired to from the other side.
+                if let Some(p) = self.bt_prompt.clone() {
+                    return match crate::pairing::hit_prompt(x, y, p.kind) {
+                        PairHit::PromptConfirm => {
+                            self.bt_prompt = None;
+                            vec![Action::BtPromptConfirm]
+                        }
+                        PairHit::PromptCancel => {
+                            self.bt_prompt = None;
+                            vec![Action::BtPromptCancel]
+                        }
+                        _ => vec![],
+                    };
+                }
+                if crate::receiver::switch_hit(x, y) && (self.bt_on || self.rx_on) {
+                    self.rx_on = !self.rx_on;
+                    return vec![Action::RxChanged];
+                }
+                vec![]
             }
             Screen::Pairing => {
                 use crate::pairing::PairHit;
@@ -5055,6 +5168,18 @@ impl App {
                 }
                 false
             }
+            // The knob follows the finger; nothing is applied until release (scrub_end).
+            Screen::DacEq => {
+                if (crate::dac_eq::FIELD_TOP..crate::dac_eq::FIELD_BOTTOM).contains(&y) {
+                    if let Some(band) = crate::dac_eq::band_at(x) {
+                        self.scrub = Scrub::DacEqBand(band);
+                        self.dac_eq_sel = band;
+                        self.dac_eq[band] = crate::dac_eq::value_at_y(y);
+                        return true;
+                    }
+                }
+                false
+            }
             Screen::Sound => {
                 if crate::sound::row_at(y) == Some(crate::sound::ROW_BALANCE)
                     && crate::sound::balance_grab(y)
@@ -5098,6 +5223,10 @@ impl App {
                 self.tone_bands[b] = want;
                 vec![Action::SoundChanged]
             }
+            Scrub::DacEqBand(b) => {
+                self.dac_eq[b] = crate::dac_eq::value_at_y(y);
+                vec![]
+            }
             Scrub::Progress => {
                 self.scrub_permille = rail_permille(x);
                 vec![]
@@ -5133,6 +5262,8 @@ impl App {
             // settings file, which is what these actions do on top of re-applying it.
             Scrub::EqBand(_) => vec![Action::EqChanged(self.eq_bands)],
             Scrub::ToneBand(_) => vec![Action::SoundChanged],
+            // The only point this one is applied: one helper run per drag, not one per step.
+            Scrub::DacEqBand(_) => vec![Action::DacEqChanged],
             Scrub::None => vec![],
         };
         self.scrub = Scrub::None;
@@ -6754,6 +6885,25 @@ impl App {
                 }
                 _ => vec![],
             },
+            Screen::DacEq => match b {
+                Button::Left => {
+                    self.dac_eq_sel = self.dac_eq_sel.saturating_sub(1);
+                    vec![]
+                }
+                Button::Right => {
+                    if self.dac_eq_sel + 1 < crate::dac_eq::BANDS {
+                        self.dac_eq_sel += 1;
+                    }
+                    vec![]
+                }
+                Button::Up => self.dac_eq_nudge(1),
+                Button::Down => self.dac_eq_nudge(-1),
+                Button::Back => {
+                    self.pop();
+                    vec![]
+                }
+                _ => vec![],
+            },
             Screen::Tone => match b {
                 Button::Left => {
                     self.tone_sel = self.tone_sel.saturating_sub(1);
@@ -7205,6 +7355,10 @@ impl App {
                 };
                 crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.setup_idx)
             }
+            Screen::DacEq => {
+                let d = crate::dac_eq::DacEq { bands: self.dac_eq, direct: self.adv_source_direct };
+                crate::dac_eq::render(c, &theme, fonts, &d, self.dac_eq_sel)
+            }
             Screen::Tone => {
                 let tc = crate::tone::Tone {
                     bands: self.tone_bands,
@@ -7239,6 +7393,8 @@ impl App {
                         [self.adv_vinyl_type.min(crate::advanced::VINYL_TYPES.len() - 1)],
                     vinyl_on: self.snd_vinyl,
                     tone_control: self.adv_tone,
+                    hp_linear: self.adv_hp_linear,
+                    dac_eq_on: self.dac_eq != [0; crate::dac_eq::BANDS],
                     // Which upstream control is hiding the rest, if any. Source Direct wins the
                     // naming when both are on: it is the outer bypass, so it is what you would
                     // have to turn off FIRST.
@@ -7453,7 +7609,21 @@ impl App {
                     self.negotiated_codec_name(),
                 )
             }
-            Screen::Receiver => crate::receiver::render(c, &theme, fonts),
+            Screen::Receiver => {
+                let rx = crate::receiver::Rx {
+                    on: self.rx_on,
+                    phase: if self.rx_on { self.rx_phase.max(1) } else { 0 },
+                    peer: &self.rx_peer,
+                    codec: self.rx_codec,
+                    freq: self.rx_freq,
+                    bitrate: self.rx_bitrate,
+                    radio: self.bt_on,
+                };
+                crate::receiver::render(c, &theme, fonts, &rx);
+                if let Some(p) = &self.bt_prompt {
+                    crate::pairing::render_prompt(c, &theme, fonts, p);
+                }
+            }
             Screen::Keyboard => {
                 // THE KEYBOARD HAS TO SAY WHAT IT IS FOR. This match had two arms and a catch-all,
                 // so the moment a third purpose existed the search opened a screen headed
@@ -8205,10 +8375,34 @@ impl App {
         } else {
             Some(crate::pairing::Prompt { kind, name: name.to_string(), code })
         };
+        // The prompt is drawn only on Devices. A request the user did not start there — a PC or
+        // phone pairing TO the Walkman — arrived while another screen was up, stayed invisible,
+        // and the other side sat on its PIN until it gave up (2026-09-29, four tries from a PC).
+        // The radio is blocked waiting for this answer, so go where it can be given.
+        if kind != 0 && self.current() != Screen::Pairing && self.current() != Screen::Receiver {
+            self.push(Screen::Pairing);
+        }
     }
 
     pub fn bt_prompt_kind(&self) -> u8 {
         self.bt_prompt.as_ref().map_or(0, |p| p.kind)
+    }
+
+    /// The BT Receiver switch, as the shell should apply it: on only while the Receiver page is
+    /// still in the stack. Leaving it — Back, an edge swipe, the Menu, a jump to Now Playing — has
+    /// many routes and none of them can emit an action, so the shell's once-a-second receiver tick
+    /// reads this and stops the mode when the page has gone.
+    pub fn rx_on(&self) -> bool {
+        self.rx_on && self.stack.contains(&Screen::Receiver)
+    }
+
+    /// What the shell read from BtPlayerService. `phase` 1 waiting, 2 attached, 3 audio arriving.
+    pub fn set_rx_status(&mut self, phase: u8, peer: &str, codec: u32, freq: u32, bitrate: u32) {
+        self.rx_phase = phase;
+        self.rx_peer = peer.to_string();
+        self.rx_codec = codec;
+        self.rx_freq = freq;
+        self.rx_bitrate = bitrate;
     }
 
     /// The shell polls the radio and pushes the answer here; the rocker follows it from the next
@@ -8513,7 +8707,8 @@ impl App {
     }
 
     /// The Advanced screen's booleans, packed: bit0 Source Direct, bit1 Clear Phase, bit2 DSEE AI,
-    /// bit3 DSEE HX Custom, bit4 Tone Control. Same shape as `sound_flags` and applied by the same
+    /// bit3 DSEE HX Custom, bit4 Tone Control, bit5 linear headphone amp (read by the shell's
+    /// hp_amp_tick, not by the effects chain). Same shape as `sound_flags` and applied by the same
     /// CINDER_ACT_SOUND_CHANGED path.
     ///
     /// These are deliberately NOT part of the A/B setup. A/B is for "does this EQ suit this album
@@ -8526,6 +8721,7 @@ impl App {
             | (self.adv_dsee_ai as u8) << 2
             | (self.adv_dsee_custom as u8) << 3
             | (self.adv_tone as u8) << 4
+            | (self.adv_hp_linear as u8) << 5
     }
     pub fn set_adv_flags(&mut self, f: u8) {
         self.adv_source_direct = f & 1 != 0;
@@ -8533,6 +8729,7 @@ impl App {
         self.adv_dsee_ai = f & (1 << 2) != 0;
         self.adv_dsee_custom = f & (1 << 3) != 0;
         self.adv_tone = f & (1 << 4) != 0;
+        self.adv_hp_linear = f & (1 << 5) != 0;
     }
 
     /// Tone Control band gains, RAW half-decibels. Clamped on the way in for the same reason the
@@ -8544,6 +8741,18 @@ impl App {
     pub fn set_tone_bands(&mut self, b: [i8; crate::tone::BANDS]) {
         for (dst, src) in self.tone_bands.iter_mut().zip(b.iter()) {
             *dst = (*src).clamp(-crate::tone::BAND_MAX, crate::tone::BAND_MAX);
+        }
+    }
+
+    /// DAC EQ band gains, RAW half-decibels, in the helper's argument order. Clamped on the way in:
+    /// the settings file is on a drive any PC can write, and the helper REFUSES an out-of-range
+    /// value outright, so an unchecked one would leave the whole EQ unapplied.
+    pub fn dac_eq(&self) -> [i8; crate::dac_eq::BANDS] {
+        self.dac_eq
+    }
+    pub fn set_dac_eq(&mut self, b: [i8; crate::dac_eq::BANDS]) {
+        for (dst, src) in self.dac_eq.iter_mut().zip(b.iter()) {
+            *dst = crate::dac_eq::clamp(*src);
         }
     }
 
@@ -9365,13 +9574,26 @@ mod tests {
     #[test]
     fn advanced_flags_round_trip() {
         let mut app = unlocked();
-        for f in [0u8, 0b1_0101, 0b1_1111] {
+        for f in [0u8, 0b1_0101, 0b1_1111, 0b10_0000, 0b11_1111] {
             app.set_adv_flags(f);
-            assert_eq!(app.adv_flags(), f, "flags {f:#07b}");
+            assert_eq!(app.adv_flags(), f, "flags {f:#08b}");
         }
         app.set_adv_flags(0b1_1111);
         assert!(app.adv_source_direct && app.adv_clear_phase && app.adv_dsee_ai
                 && app.adv_dsee_custom && app.adv_tone);
+        assert!(!app.adv_hp_linear, "bit 5 clear leaves the linear amp off");
+    }
+
+    /// The linear amp is opt-in: a fresh app has it off, and its row toggles exactly bit 5.
+    #[test]
+    fn linear_amp_is_off_by_default_and_owns_bit_5() {
+        let mut app = unlocked();
+        assert_eq!(app.adv_flags() & (1 << 5), 0, "linear amp on by default");
+        app.adv_sel = crate::advanced::ROW_HP_AMP;
+        app.advanced_toggle_row();
+        assert_eq!(app.adv_flags(), 1 << 5, "the row set something other than bit 5");
+        app.advanced_toggle_row();
+        assert_eq!(app.adv_flags(), 0);
     }
 
     /// Brightness cycles 1..5, then 0 (backlight off), then wraps.
@@ -11573,7 +11795,8 @@ mod tests {
         // two full-panel screens that draw their own world.
         let with_header = [
             Screen::Menu, Screen::Library, Screen::UpNext, Screen::Eq, Screen::Sound,
-            Screen::Advanced, Screen::Tone, Screen::Bluetooth, Screen::BtCodec, Screen::Pairing,
+            Screen::Advanced, Screen::Tone, Screen::DacEq, Screen::Bluetooth, Screen::BtCodec,
+            Screen::Pairing,
             Screen::Settings, Screen::Device, Screen::Fm, Screen::UsbDac, Screen::Receiver,
             Screen::VizSet, Screen::ClockSet, Screen::GenreFilter, Screen::Folders,
             Screen::SensMe, Screen::TrackInfo, Screen::Lyrics, Screen::Search,
@@ -15743,6 +15966,47 @@ mod palette_tests {
         let s = crate::palette_list::skipped_from(&a.palette_skipped[0]);
         assert_eq!(s.file, "bad.palette");
         assert_eq!(s.why, "day.ink on day.bg: contrast 1.00, needs at least 4.50");
+    }
+
+    /// The receiver runs only while its page is in the stack, and a code arriving there is
+    /// answered there.
+    #[test]
+    fn the_receiver_is_on_only_while_its_page_is_open() {
+        let mut a = App::unlocked();
+        a.bt_on = true;
+        a.push(Screen::Receiver);
+        let (x, y) = (240, crate::receiver::SWITCH_Y + 10);
+        assert_eq!(a.tap(x, y), vec![Action::RxChanged]);
+        assert!(a.rx_on());
+        a.set_bt_prompt(1, "ARTHURS-PC", 114363);
+        assert_eq!(a.current(), Screen::Receiver, "the code is shown on the receiver, not Devices");
+        a.set_bt_prompt(0, "", 0);
+        a.pop();
+        assert!(!a.rx_on(), "leaving the page is what turns it off");
+    }
+
+    #[test]
+    fn the_receiver_needs_the_radio_to_start() {
+        let mut a = App::unlocked();
+        a.bt_on = false;
+        a.push(Screen::Receiver);
+        assert_eq!(a.tap(240, crate::receiver::SWITCH_Y + 10), Vec::<Action>::new());
+        assert!(!a.rx_on());
+    }
+
+    /// A pairing request that arrives on another screen brings the user to where it can be
+    /// answered; clearing it does not move them.
+    #[test]
+    fn an_incoming_pairing_prompt_opens_devices() {
+        let mut a = App::unlocked();
+        assert_ne!(a.current(), Screen::Pairing);
+        a.set_bt_prompt(1, "ARTHURS-PC", 114363);
+        assert_eq!(a.current(), Screen::Pairing);
+        let depth = a.stack.len();
+        a.set_bt_prompt(1, "ARTHURS-PC", 54782);
+        assert_eq!(a.stack.len(), depth, "a second prompt does not stack another Devices");
+        a.set_bt_prompt(0, "", 0);
+        assert_eq!(a.current(), Screen::Pairing, "the answer leaves the user where they are");
     }
 
     #[test]

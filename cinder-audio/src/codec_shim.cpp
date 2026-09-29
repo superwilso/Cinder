@@ -32,6 +32,9 @@ const char kSeGainCtl[]  = "headphone smaster se gain mode";
 const char kLatencyCtl[] = "playback latency";
 const char kJackSeCtl[]  = "jack status se";
 const char kMasterVolCtl[] = "master volume";
+// Which amplifier drives the jack. Items: 0 normal (linear), 1 smaster-se (Sony's), 2 smaster-btl
+// (balanced, not wired on this model — never written).
+const char kHpAmpCtl[] = "headphone amp";
 
 // Fill in an element id that addresses a mixer control by name. numid stays 0 so the kernel
 // resolves by name rather than by number.
@@ -118,5 +121,10 @@ int cinder_codec_set_playback_latency(int low)  { return set_enum(kLatencyCtl, l
 int cinder_codec_get_jack_se(void)              { return get_enum(kJackSeCtl); }
 int cinder_codec_get_master_volume(void)        { return get_int(kMasterVolCtl); }
 int cinder_codec_set_master_volume(int v)       { return set_int(kMasterVolCtl, v); }
+int cinder_codec_get_hp_amp_linear(void) {
+    const int item = get_enum(kHpAmpCtl);
+    return item < 0 ? -1 : (item == 0 ? 1 : 0);
+}
+int cinder_codec_set_hp_amp_linear(int linear)  { return set_enum(kHpAmpCtl, linear != 0 ? 0 : 1); }
 
 } // extern "C"

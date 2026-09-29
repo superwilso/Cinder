@@ -1938,8 +1938,10 @@ struct ProbeRxListener {
     // a `const uint32&` this is the value; for the rest it is a pointer we make no claim about.
     void hit(const char* what, const void* a) {
         calls++;
-        if (a) std::fprintf(stderr, "[cinder-probe] btrx: <- On%s  arg0(as word)=%u\n", what, *(const unsigned*)a);
-        else   std::fprintf(stderr, "[cinder-probe] btrx: <- On%s\n", what);
+        // The raw argument WORD, never dereferenced: this listener's slot order is read from the
+        // exported names, not from a vtable, so a mis-slot must not become a wild read.
+        std::fprintf(stderr, "[cinder-probe] btrx: <- On%s  arg0=%p\n", what, a);
+        std::fflush(stderr);
     }
 };
 
@@ -2050,7 +2052,50 @@ static int nfctap_probe(int secs) {
     _exit(0);
 }
 
-static int btrx_probe(int secs) {
+// Defined with --funcmode below. --btrx fm needs them: A2dpSink is FuncMode 2.
+// FuncMode, read off libFuncMgrServiceFw.so (funcarch::GetName @0x7e00) — see --funcmode.
+enum { FM_MEDIAPLAY = 0, FM_USBDAC = 1, FM_A2DPSINK = 2, FM_FM = 3,
+       FM_DIRECTREC = 4, FM_DMR = 5, FM_DMS = 6, FM_INITIAL = 7, FM_INVALID = 9 };
+static bool funcmode_enter(int mode);
+static void funcmode_report(const char* when);
+static void funcmode_recompose_adb(void);
+
+// `fm` = also switch FuncMode to 2 (A2dpSink) for the run, the way Stock's Receiver mode must:
+// FuncMgr's EnterFuncMode is what calls PathMgrService::SetPath, the audio route, and nothing else
+// does (the USB-DAC lesson, reference: analysis/E_usbdac_ldac round l). The first --btrx never
+// switched it. Because EnterFuncMode also re-runs SetUsbFunction, which can bounce adb, the fm run
+// detaches first and arms a restore child — the --funcmode pattern.
+static int btrx_probe(int secs, bool fm) {
+    if (fm) {
+        pid_t self = fork();
+        if (self != 0) {
+            std::fprintf(stderr, "[cinder-probe] btrx: detached (pid %d) — FuncMode 2 (A2dpSink) for %ds; "
+                                 "follow the log file, not this shell.\n", (int)self, secs);
+            std::fflush(nullptr);
+            return 0;
+        }
+        signal(SIGHUP,  SIG_IGN);
+        signal(SIGINT,  SIG_IGN);
+        signal(SIGTERM, SIG_IGN);
+        setsid();
+        // /contents, not /tmp: the first run's log went with the reboot it was needed to explain.
+        std::freopen("/contents/cinder-btrx.log", "a", stderr);
+        // THE ESCAPE, forked BEFORE this process opens binder. The first run forked it after
+        // StartForApplication; when the probe then died, the child still held the probe's binder fd,
+        // so the framework kept a client with no mapping, and libpstcore's hang checker (thread
+        // "fr_hang") rebooted the player on the next missed call (last_kmsg, 2026-09-29).
+        pid_t kid = fork();
+        if (kid == 0) {
+            sleep((unsigned)(secs + 60));
+            pst::core::Framework& cfw = pst::core::Framework::GetReference();
+            cfw.StartForApplication(std::function<void()>(&pump_finish), true);
+            funcmode_enter(FM_MEDIAPLAY);
+            funcmode_recompose_adb();
+            _exit(0);
+        }
+        std::fprintf(stderr, "[cinder-probe] btrx: restore child pid=%d — MediaPlay in %ds\n",
+                     (int)kid, secs + 60);
+    }
     install_diagnostics();
     pst::core::Framework& fw = pst::core::Framework::GetReference();
     wd_arm(15);
@@ -2061,17 +2106,29 @@ static int btrx_probe(int secs) {
     pthread_create(&pt, nullptr, pump_thread, &fw);
     for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
 
+    if (fm) {
+        funcmode_report("before");
+        funcmode_enter(FM_A2DPSINK);
+        sleep(3);
+        funcmode_report("after EnterFuncMode(A2dpSink)");
+        funcmode_recompose_adb();
+    }
+
     void* rx  = _ZN3pst8services28BtPlayerServiceClientFactory14CreateInstanceEv();
     void* cmn = _ZN3pst8services28BtCommonServiceClientFactory14CreateInstanceEv();
     if (!rx) { clog_("btrx: no BtPlayerServiceClient"); _exit(1); }
     std::fprintf(stderr, "[cinder-probe] btrx: client=%p\n", rx);
 
-    enum { RX_GetAvSnkConnectionStatus = 5, RX_GetAvrcpConnectionStatus = 6,
-           RX_RequestDisconnection = 11, RX_RequestStartConnectWait = 13,
-           RX_RequestStopConnectWait = 14, RX_StartSound = 15, RX_StopSound = 16,
-           RX_GetPlayStatus = 19, RX_GetTrackCodec = 26, RX_GetTrackFreq = 27,
-           RX_GetTrackChannel = 28, RX_GetTrackScmst = 29, RX_GetBitrate = 30,
-           RX_AddListener = 31, RX_RemoveListener = 32 };
+    // Indices FROM THE VPTR (what vslot takes). The round-g table counted words from the vtable
+    // SYMBOL, which starts with offset-to-top and the RTTI pointer — every entry 2 too high. The
+    // first two --btrx runs therefore called GetConnectInformation(no args) for
+    // GetAvSnkConnectionStatus and crashed in TransactionParam::GetStr (2026-09-29).
+    enum { RX_GetAvSnkConnectionStatus = 3, RX_GetAvrcpConnectionStatus = 4,
+           RX_RequestDisconnection = 9, RX_RequestStartConnectWait = 11,
+           RX_RequestStopConnectWait = 12, RX_StartSound = 13, RX_StopSound = 14,
+           RX_GetPlayStatus = 17, RX_GetTrackCodec = 24, RX_GetTrackFreq = 25,
+           RX_GetTrackChannel = 26, RX_GetTrackScmst = 27, RX_GetBitrate = 28,
+           RX_AddListener = 29, RX_RemoveListener = 30 };
     enum { VIDX_GetBtStatus = 3, VIDX_SetRfOnOff = 4, VIDX_SetDiscoverableMode = 6 };
     typedef int  (*fn0)(void*);
     typedef void (*fnb)(void*, const bool*);
@@ -2124,6 +2181,7 @@ static int btrx_probe(int secs) {
     }
 
     std::fprintf(stderr, "[cinder-probe] btrx: waiting %ds — connect from a phone and PLAY something\n", secs);
+    int last_snk = snk0, last_play = -1;
     for (int i = 0; i < secs * 4; i++) {
         usleep(250000);
         if (i % 8 != 7) continue;                       // report ~2 s apart
@@ -2139,6 +2197,17 @@ static int btrx_probe(int secs) {
         // gets built. The service's own log prints codec/channel/frequency as 0x%02x.
         std::fprintf(stderr, "[cinder-probe] btrx: AvSnk=%d play=%d codec=0x%02x freq=0x%02x chan=0x%02x bitrate=%d\n",
                      snk, play, codec, freq, chan, rate);
+        // StartSound is the sink's "open the audio track" — Sony's app would call it once a phone
+        // is attached. Called each time the link or play status moves, logged, never assumed.
+        if (snk != last_snk || play != last_play) {
+            int rs = -1;
+            wd_arm(10);
+            try { rs = ((fn0)vslot(rx, RX_StartSound))(rx); } catch (...) { clog_("btrx: StartSound threw"); }
+            wd_disarm();
+            std::fprintf(stderr, "[cinder-probe] btrx: StartSound() rc=%d (link %d, play %d)\n", rs, snk, play);
+            last_snk = snk;
+            last_play = play;
+        }
     }
 
     // Put everything back. StopSound before StopConnectWait, and disconnect whatever attached, so
@@ -2155,6 +2224,12 @@ static int btrx_probe(int secs) {
     std::fprintf(stderr, "[cinder-probe] btrx: %d listener callback(s) total%s\n", listener.calls,
                  listener.calls ? "" : "  <== nothing arrived: either no phone connected, or the sink path is not live");
     clog_("btrx: restored (sound stopped, disconnected, connect-wait off, discoverable off)");
+    if (fm) {
+        funcmode_enter(FM_MEDIAPLAY);    // don't make the user wait out the restore child
+        sleep(2);
+        funcmode_report("restored");
+        funcmode_recompose_adb();
+    }
     g_pump_run = false;
     std::fflush(nullptr);
     _exit(0);
@@ -3294,8 +3369,7 @@ bool _ZN3pst8services8funcarch7funcmgr14FuncMgrService13EnterFuncModeERKNS1_8Fun
         void* self, const int* mode);
 }
 
-enum { FM_MEDIAPLAY = 0, FM_USBDAC = 1, FM_A2DPSINK = 2, FM_FM = 3,
-       FM_DIRECTREC = 4, FM_DMR = 5, FM_DMS = 6, FM_INITIAL = 7, FM_INVALID = 9 };
+// FuncMode enumerators: declared above --btrx, which uses them too.
 
 static const char* funcmode_name(int m) {
     static const char* n[] = { "MediaPlay", "UsbDac", "A2dpSink", "Fm",
@@ -8243,7 +8317,9 @@ int main(int argc, char** argv) {
         return disp_probe(argc > 2 ? std::atoi(argv[2]) : 20);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btrx") == 0) {
-        return btrx_probe(argc > 2 ? std::atoi(argv[2]) : 40);
+        // --btrx [secs] [fm]: `fm` also holds FuncMode 2 (A2dpSink) for the run.
+        return btrx_probe(argc > 2 ? std::atoi(argv[2]) : 40,
+                          argc > 3 && std::strcmp(argv[3], "fm") == 0);
     }
     if (argc > 1 && std::strcmp(argv[1], "--btscan") == 0) {
         // Seconds to scan (default 20). Powers the radio up if needed and restores it.

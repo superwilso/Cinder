@@ -193,6 +193,8 @@ pub enum BtHit {
     Advanced,
     /// The Debug log switch.
     DebugLog,
+    /// The "RECEIVER MODE ›" link in the footer.
+    Receiver,
 }
 
 /// Geometry accessors, so tests and any future caller ask the layout where a control is rather
@@ -224,6 +226,9 @@ pub fn fine_row_y(ldac: bool) -> i32 {
     codec_part_centre(ldac, Part::Fine)
 }
 
+/// Top of the footer band holding the "RECEIVER MODE ›" link (its baseline is 780).
+pub const FOOTER_LINK_TOP: i32 = 752;
+
 /// Map a tap on the BLUETOOTH screen. The codec controls moved to their own page, so this now
 /// answers only: the radio switch, the connected card, a paired device, and the two footer rows.
 pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
@@ -247,6 +252,12 @@ pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
     const TOGGLE_LEFT: i32 = 336;
     if (crate::chrome::STATUS_H..TOGGLE_BOTTOM).contains(&y) && x >= TOGGLE_LEFT {
         return BtHit::Toggle;
+    }
+    // The footer link, right half (the left half is the NFC hint). It was drawn with a chevron
+    // and answered nothing — "can't open the receiver screen", 2026-09-29. Reachable with the
+    // radio off too: the screen explains that it needs it.
+    if (FOOTER_LINK_TOP..crate::canvas::H as i32).contains(&y) && x >= crate::canvas::W as i32 / 2 {
+        return BtHit::Receiver;
     }
     if !on {
         return BtHit::None; // everything else is inert while BT is off
@@ -578,6 +589,16 @@ fn row_or_off(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &crate:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The footer's "RECEIVER MODE ›" opens the Receiver, radio on or off, and never steals a tap
+    /// from the Debug log row above it.
+    #[test]
+    fn the_receiver_link_answers_and_stays_below_the_rows() {
+        assert_eq!(hit(400, 780, true, 0), BtHit::Receiver);
+        assert_eq!(hit(400, 780, false, 0), BtHit::Receiver);
+        assert_ne!(hit(60, 780, true, 0), BtHit::Receiver, "the left half is the NFC hint");
+        assert!(DEBUG_Y + DEBUG_H <= FOOTER_LINK_TOP, "{} > {}", DEBUG_Y + DEBUG_H, FOOTER_LINK_TOP);
+    }
 
     fn bt(on: bool, connected: Option<&str>, codec_sel: u8, link_codec: Option<u8>) -> Bt<'_> {
         Bt {

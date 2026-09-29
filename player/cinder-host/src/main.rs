@@ -609,7 +609,22 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 pairing::render_prompt(c, &theme, &fonts,
                     &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "Pixel 8".into(), code: 428913 });
             }),
-            ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts)),
+            ("receiver", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, &receiver::Rx {
+                on: false, phase: 0, peer: "", codec: 0, freq: 0, bitrate: 0, radio: true,
+            })),
+            ("receiver_waiting", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, &receiver::Rx {
+                on: true, phase: 1, peer: "", codec: 0, freq: 0, bitrate: 0, radio: true,
+            })),
+            ("receiver_playing", &|c: &mut Canvas| receiver::render(c, &theme, &fonts, &receiver::Rx {
+                on: true, phase: 3, peer: "ARTHURS-PC", codec: 2, freq: 3, bitrate: 990, radio: true,
+            })),
+            ("receiver_code", &|c: &mut Canvas| {
+                receiver::render(c, &theme, &fonts, &receiver::Rx {
+                    on: true, phase: 1, peer: "", codec: 0, freq: 0, bitrate: 0, radio: true,
+                });
+                pairing::render_prompt(c, &theme, &fonts,
+                    &pairing::Prompt { kind: pairing::PROMPT_NUMERIC, name: "ARTHURS-PC".into(), code: 114363 });
+            }),
             ("fm", &|c: &mut Canvas| fm::render(c, &theme, &fonts, &fm::Fm {
                 khz: 97300, playing: true,
                 stations: [97300, 100000, 107800, 0, 0, 0], n_stations: 3,
@@ -1220,6 +1235,27 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             if end {
                 app.scroll_px(10_000);
             }
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, name);
+        }
+    }
+
+    // Sound ▸ Advanced with its ninth row, and the DAC EQ it leads to: a shaped curve, and the same
+    // curve held flat under Source Direct. LAST on purpose: a new preview can move anti-aliased
+    // pixels on screens rendered after it (the glyph cache is keyed to a quarter pixel).
+    {
+        use cinder_ui::nav::Screen;
+        let curve = [6, 0, -4, 2, 12];
+        for (name, screen, direct) in [
+            ("advanced", Screen::Advanced, false),
+            ("dac_eq", Screen::DacEq, false),
+            ("dac_eq_source_direct", Screen::DacEq, true),
+        ] {
+            let mut app = new_app();
+            app.set_dac_eq(curve);
+            app.set_adv_flags(direct as u8);
+            app.go_for_preview(screen);
             let mut c = Canvas::new();
             app.render(&mut c, &fonts, &np);
             save(&c, name);
