@@ -1019,6 +1019,7 @@ pub struct App {
     // The two the SHELL acts on rather than the renderer: they are arguments to Sony's analyzer
     // (SetCalcSamples / SetUpdateRate), so cinder-ffi only stores and reports them.
     viz_window: u8,     // vizcfg::window_ms_from_index — the detector's averaging window
+    viz_bands: u8,      // vizcfg::bands_from_index — how many columns the visualiser draws
     viz_rate: u8,       // vizcfg::rate_from_index — frames per second the service emits
     /// Cursor on the Visualiser screen. Not persisted — a cursor is where you were, not a setting.
     viz_sel: usize,
@@ -1494,6 +1495,7 @@ impl Default for App {
             viz_interp: 0,
             viz_peak_hold: false,
             viz_window: 0, // AUTO — leave the service's own window alone until asked otherwise
+            viz_bands: crate::vizcfg::BANDS_DEFAULT,
             viz_rate: 0,   // 20 Hz, what the shell asked for before this was a setting
             viz_sel: 0,
             np_page: 0,
@@ -7506,6 +7508,7 @@ impl App {
             Screen::VizSet => {
                 let (rate, window_ms) = self.viz_analyzer_params();
                 let rate_lbl = format!("{rate} HZ");
+                let bands_lbl = crate::vizcfg::bands_from_index(self.viz_bands).to_string();
                 let range_lbl = format!("{} DB", crate::vizcfg::range_from_index(self.viz_range) as i32);
                 let vs = crate::vizset::VizSet {
                     style: crate::viz::name_upper(self.viz_kind),
@@ -7517,6 +7520,8 @@ impl App {
                     peaks: self.viz_peak_hold,
                     window: crate::vizcfg::window_name(self.viz_window),
                     rate: &rate_lbl,
+                    bands: &bands_lbl,
+                    columns: crate::vizcfg::bands_from_index(self.viz_bands),
                     // The preview shows what Now Playing would show: the same levels, the same
                     // markers, the same style. `viz_levels` is None whenever the analyzer is not
                     // streaming, and the screen says so rather than passing synthetic motion off
@@ -9251,6 +9256,7 @@ impl App {
             peak_hold_ms: if self.viz_peak_hold { 700.0 } else { 0.0 },
             peak_fall_per_s: 0.9,
             interp: crate::vizcfg::Interp::from_index(self.viz_interp),
+            bands: crate::vizcfg::bands_from_index(self.viz_bands),
         }
     }
 
@@ -9284,6 +9290,9 @@ impl App {
             crate::vizset::ROW_RATE => {
                 self.viz_rate = (self.viz_rate + 1) % crate::vizcfg::RATE_COUNT
             }
+            crate::vizset::ROW_BANDS => {
+                self.viz_bands = (self.viz_bands + 1) % crate::vizcfg::BANDS_COUNT
+            }
             _ => {}
         }
         vec![]
@@ -9306,6 +9315,7 @@ impl App {
     pub fn viz_interp_idx(&self) -> u8 { self.viz_interp }
     pub fn viz_window_idx(&self) -> u8 { self.viz_window }
     pub fn viz_rate_idx(&self) -> u8 { self.viz_rate }
+    pub fn viz_bands_idx(&self) -> u8 { self.viz_bands }
     pub fn viz_peak_hold(&self) -> bool { self.viz_peak_hold }
     pub fn set_viz_scale(&mut self, i: u8) { self.viz_scale = i % crate::vizcfg::Scale::COUNT; }
     pub fn set_viz_range(&mut self, i: u8) { self.viz_range = i % crate::vizcfg::RANGE_COUNT; }
@@ -9313,6 +9323,7 @@ impl App {
     pub fn set_viz_interp(&mut self, i: u8) { self.viz_interp = i % crate::vizcfg::Interp::COUNT; }
     pub fn set_viz_window(&mut self, i: u8) { self.viz_window = i % crate::vizcfg::WINDOW_COUNT; }
     pub fn set_viz_rate(&mut self, i: u8) { self.viz_rate = i % crate::vizcfg::RATE_COUNT; }
+    pub fn set_viz_bands(&mut self, i: u8) { self.viz_bands = i % crate::vizcfg::BANDS_COUNT; }
     pub fn set_viz_peak_hold(&mut self, on: bool) { self.viz_peak_hold = on; }
     /// Legacy on/off setter — kept because a settings file written before sizes existed carries
     /// `viz_on=`, and an upgrade must not silently turn the visualiser off (or on).
@@ -13726,6 +13737,26 @@ mod tests {
         assert_eq!(a.lib_tab, Tab::Albums);
         a.tap(20, 60);
         assert_eq!(a.current(), Screen::Menu);
+    }
+
+    /// Settings ▸ Visualiser ▸ Bands: a tap on the row steps 36 → 48 → 64 → 12 → 24 → 36, the
+    /// signal settings carry it, and the settings file brings it back.
+    #[test]
+    fn the_bands_row_steps_through_the_counts_and_is_kept() {
+        let mut a = unlocked();
+        a.stack = vec![Screen::NowPlaying, Screen::VizSet];
+        assert_eq!(a.viz_cfg().bands, 36, "an upgrade draws what it always did");
+        let y = crate::vizset::TOP + crate::vizset::ROW_BANDS as i32 * crate::vizset::ROW_H + 20;
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            a.tap(240, y);
+            seen.push(a.viz_cfg().bands);
+        }
+        assert_eq!(seen, [48, 64, 12, 24, 36]);
+        a.tap(240, y);
+        let mut b = unlocked();
+        b.set_viz_bands(a.viz_bands_idx());
+        assert_eq!(b.viz_cfg().bands, 48);
     }
 
     /// A style is answered where it draws: every control, the seek rail and the page swipe follow
