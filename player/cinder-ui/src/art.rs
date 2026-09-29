@@ -375,6 +375,42 @@ pub fn block_cached(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, w: i32, h: i32,
     });
 }
 
+/// Draw `img` at `size` × `size`, scaled once and kept: a style's inset cover (400 px, say) comes
+/// from the shell's 480 px `art_full`, and resampling 230,400 pixels every frame while the
+/// visualiser animates is the cost the shell's pre-scaling exists to avoid.
+///
+/// ONE entry. A new track brings a new image, which replaces it. The key is the source's address,
+/// length and a few of its pixels, so a new cover that happens to land at the old address is still
+/// told apart. At 400 px the entry is 480 KB, held only while a style that insets the cover is on.
+pub fn draw_fitted(c: &mut Canvas, t: &Theme, x0: i32, y0: i32, img: &Image, size: usize, opacity: f32) {
+    if img.w == size && img.h == size {
+        draw_image(c, t, x0, y0, img, opacity);
+        return;
+    }
+    let probe = |i: usize| img.rgb.get(i * img.rgb.len() / 7).copied().unwrap_or(0) as u64;
+    let key = (
+        img.rgb.as_ptr() as usize,
+        img.rgb.len(),
+        size,
+        (0..7).fold(0u64, |a, i| a.wrapping_mul(257).wrapping_add(probe(i))),
+    );
+    FITTED.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().map(|(k, _)| *k) != Some(key) {
+            *slot = Some((key, img.scaled_to(size, size)));
+        }
+        if let Some((_, scaled)) = slot.as_ref() {
+            draw_image(c, t, x0, y0, scaled, opacity);
+        }
+    });
+}
+
+type FitKey = (usize, usize, usize, u64);
+
+thread_local! {
+    static FITTED: std::cell::RefCell<Option<(FitKey, Image)>> = const { std::cell::RefCell::new(None) };
+}
+
 /// (name hash, edge, opacity ×1000, background) — everything the baked pixels depend on.
 type GradKey = (u32, i32, u16, u32);
 

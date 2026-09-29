@@ -195,6 +195,7 @@ impl Tokens {
                 row_sel: d(ac.row_sel),
                 night: true,
                 dim_pct: 100,
+                style: crate::style::Style::Cinder,
             }
         } else {
             let n = &self.day;
@@ -210,6 +211,7 @@ impl Tokens {
                 row_sel: rgb(ac.row_sel),
                 night: false,
                 dim_pct: 100,
+                style: crate::style::Style::Cinder,
             }
         }
     }
@@ -235,6 +237,10 @@ pub struct Theme {
     /// the whole thing the step exists to avoid. Anything drawing a colour the palette did not
     /// supply must run it through `scale_color`, and `art::draw_image` applies it per pixel.
     pub dim_pct: u32,
+    /// The design style the screens are drawn in. Not a colour, but it rides on the theme for the
+    /// same reason `night` does: every render already receives the theme, so a style reaches every
+    /// screen without a new argument. Palettes never set it; `App` does, from Settings.
+    pub style: crate::style::Style,
 }
 
 /// Scale an `0xRRGGBB` toward black by `pct`/100, per channel. Const so the palettes stay
@@ -328,6 +334,7 @@ impl Theme {
             row_sel: s(self.row_sel),
             night: self.night,
             dim_pct: pct,
+            style: self.style,
         }
     }
 

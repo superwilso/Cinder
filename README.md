@@ -37,8 +37,9 @@ underneath. Install it from a PC over USB; the same installer puts Sony's app ba
 - **Extras:** a `.scrobbler.log` scrobbler, lyrics (`.lrc` or embedded), library search, SensMe™
   channels, FM radio with a signal meter, and colour palettes you drop on the drive
   ([share and download them](https://github.com/superwilso/cinder-themes)).
-- **Your layout.** Open on the Library, Now Playing, the Menu or wherever you left off. Optional
-  pull-down panel for brightness, Bluetooth, night mode and the sleep timer.
+- **Your layout.** Open on the Library, Now Playing, the Menu or wherever you left off. Three
+  Now Playing styles (Cinder, Nocturne, Terminal), and an optional pull-down panel for brightness,
+  Bluetooth, night mode and the sleep timer.
 - **Your library as it is.** Cinder reads Sony's database, so music, playlists and liked songs stay.
 
 ## Status
@@ -119,6 +120,8 @@ Teardown of Walkman One: [`analysis/RE_walkmanone_extract.md`](analysis/RE_walkm
 
 Issues and pull requests are welcome. **The most useful contribution is a device report:** run one
 item from [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) and post the result, pass or fail.
+Designing a palette, a screen or a whole style? Start with
+[`docs/DESIGN_GUIDE.md`](docs/DESIGN_GUIDE.md).
 [`CONTRIBUTING.md`](CONTRIBUTING.md) covers the local checks, the rules for boot-path code, and
 releases. Docs index: [`docs/README.md`](docs/README.md).
 
@@ -146,7 +149,7 @@ UI work needs no device: `cd player && cargo run --release -p cinder-host` rende
 
 ## Screenshots
 
-All 38 screens, from Now Playing to the Windows installer: [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md).
+All 40 screens, from Now Playing to the Windows installer: [`docs/SCREENSHOTS.md`](docs/SCREENSHOTS.md).
 
 ## License
 

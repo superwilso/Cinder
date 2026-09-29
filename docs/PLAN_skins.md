@@ -1,5 +1,9 @@
 # Swappable UIs — palettes, then skins
 
+> **2026-09-29: steps 2–4 continue as [`PLAN_design_styles.md`](PLAN_design_styles.md).** Now
+> Playing's pure layout and two new styles (Nocturne, Terminal) are built. The design rules are in
+> [`DESIGN_GUIDE.md`](DESIGN_GUIDE.md).
+
 *Written 2026-09-11. Steps 0 and 1 are done and host-tested; steps 2–4 are the plan.*
 
 > **⚠ Step 2's contract is REVISED — see [`PLAN_2026-09-14.md`](PLAN_2026-09-14.md) Part C.**

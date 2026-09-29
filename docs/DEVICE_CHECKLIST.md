@@ -630,3 +630,20 @@ thing only the device can say is whether 96 px covers load fast enough while the
 | 22.2 | **Grid covers** | Albums in grid; fling down a long library, then back up | Real covers within a frame or two of each line appearing; no stall on the fling | Gradients that never turn into covers = the 96 px files are missing from the art cache (`/data/cinder/art`, `*.t96`); a stall = too many loads per frame (`GRID_LOADS_PER_FRAME`, cinder-ffi) |
 | 22.3 | **Grid taps** | Tap a cover, then an album's name under its cover | Both open that album; on Artists the right-hand tile opens the artist, not shuffle | Wrong album = render and hit test disagree; screenshot it |
 | 22.4 | **Kept after a reboot** | Leave Albums in grid and Songs compact; reboot | Both come back that way (`lib_views=list,grid,…` in `cinder_settings.conf`) | — |
+
+## 23 — 2026-09-29 — Design styles (Now Playing)
+
+Host-tested: the style contract (every target ≥ 44 px, no overlaps, reachable at its middle), the
+overflow audit at every UI scale, taps, scrub and page swipe per style, and persistence. Golden
+previews `now_playing_nocturne_*`, `now_playing_terminal_*`. Needs a dev build and one reboot. Only
+the device can say whether the inset cover costs a visible frame on a track change, and whether
+the styles read at arm's length.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 23.1 | **Pick a style** | Settings ▸ Display ▸ STYLE · NOW PLAYING ▸ tap Nocturne, then Terminal, then Cinder, going back to Now Playing each time | Now Playing is redrawn in that style at once; Library and Settings stay as they were | A chip that picks the wrong style = the chip row and its hit test disagree at this text size |
+| 23.2 | **Every control, per style** | In Nocturne and in Terminal: play/pause, prev, next, shuffle, repeat (all four modes), heart, the title (Track information), each toolbar slot, the band under the status bar (Menu) | Each does what its label says, first time | Note the control and the style; a miss means the layout and the draw disagree |
+| 23.3 | **Seek and pages** | Drag along the rail; swipe left and right across the cover; swipe below it | The rail follows the finger and seeks on release; the cover swipe turns cover → spectrum → level; below it, a swipe skips | — |
+| 23.4 | **Track change cost** | Terminal or Nocturne, cover page; skip through ten tracks with real covers | The new cover appears with the new title, no stutter in the visualiser | A visible hitch = the one-time 480 → 396/400 px resample (`art::draw_fitted`) is too slow; note it |
+| 23.5 | **Night and 140%** | Night on; then Display ▸ Size at 140% | Cover dimmed; nothing runs off the panel; the times stay on screen | Screenshot it |
+| 23.6 | **Kept after a reboot** | Leave Nocturne picked; reboot | Nocturne again (`style=nocturne` in `cinder_settings.conf`) | — |

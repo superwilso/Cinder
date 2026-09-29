@@ -196,6 +196,46 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 &now_playing::NowPlaying { title: "", artist: "", codec: "", badge: "", elapsed: "",
                                            remaining: "", progress: 0.0, playing: false, liked: false,
                                            art: "", viz_size: 0, page: 0, ..np })),
+            // The design styles (`cinder_ui::style`): each one playing, with the Lyrics chip and the
+            // sleep badge in its corners, on the spectrum page, and with nothing loaded.
+            ("now_playing_nocturne", &|c: &mut Canvas| {
+                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Nocturne, ..theme };
+                now_playing::render(c, &t, &fonts, &np);
+            }),
+            ("now_playing_nocturne_lyrics", &|c: &mut Canvas| {
+                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Nocturne, ..theme };
+                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { lyrics: true, liked: true, repeat: 3, ..np });
+                now_playing::sleep_badge(c, &t, &fonts, 23, false);
+            }),
+            ("now_playing_nocturne_spectrum", &|c: &mut Canvas| {
+                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Nocturne, ..theme };
+                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { page: 1, ..np });
+            }),
+            ("now_playing_nocturne_idle", &|c: &mut Canvas| {
+                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Nocturne, ..theme };
+                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { title: "", artist: "", codec: "",
+                    badge: "", elapsed: "", remaining: "", progress: 0.0, playing: false, liked: false, art: "",
+                    viz_size: 0, page: 0, ..np });
+            }),
+            ("now_playing_terminal", &|c: &mut Canvas| {
+                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Terminal, ..theme };
+                now_playing::render(c, &t, &fonts, &np);
+            }),
+            ("now_playing_terminal_lyrics", &|c: &mut Canvas| {
+                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Terminal, ..theme };
+                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { lyrics: true, liked: true, shuffle: true, repeat: 1, ..np });
+                now_playing::sleep_badge(c, &t, &fonts, 23, false);
+            }),
+            ("now_playing_terminal_level", &|c: &mut Canvas| {
+                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Terminal, ..theme };
+                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { page: 2, ..np });
+            }),
+            ("now_playing_terminal_idle", &|c: &mut Canvas| {
+                let t = cinder_ui::Theme { style: cinder_ui::style::Style::Terminal, ..theme };
+                now_playing::render(c, &t, &fonts, &now_playing::NowPlaying { title: "", artist: "", codec: "",
+                    badge: "", elapsed: "", remaining: "", progress: 0.0, playing: false, liked: false, art: "",
+                    viz_size: 0, page: 0, ..np });
+            }),
             // One entry per page, and the NAMES track the pages. These were hand-numbered and went
             // stale the moment a page was inserted: "onboard_2_features" was rendering the new
             // Gestures page under the old name, so the preview said the sweep was fine.
@@ -437,7 +477,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // Settings ▸ Display (handoff 5k): palette, accent, night, the volume readout, size.
             ("display", &|c: &mut Canvas| cinder_ui::display::render(c, &theme, &fonts, 1,
                 &cinder_ui::display::DisplayView { palette: pal_name, accent_locked: pal_locked,
-                    accent: cinder_ui::Accent::Amber, night: theme.night, volume_hud: 1, viz: "BARS · VEIL" })),
+                    accent: cinder_ui::Accent::Amber, night: theme.night, volume_hud: 1, viz: "BARS · VEIL", style: cinder_ui::style::Style::Cinder })),
             // The genre FILTER, both halves: the picker, and what a filtered Songs list looks like.
             // The shuffle band's caption has to follow the filter — shuffling a filtered list
             // shuffles what is on screen, so it must not still promise the whole library.
@@ -894,7 +934,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         let mut c = Canvas::new();
         cinder_ui::display::render(&mut c, &theme, &fonts, cinder_ui::display::ROW_ACCENT,
             &cinder_ui::display::DisplayView { palette: pal_name, accent_locked: pal_locked, accent: a,
-                night: false, volume_hud: 0, viz: "BARS · VEIL" });
+                night: false, volume_hud: 0, viz: "BARS · VEIL", style: cinder_ui::style::Style::Cinder });
         cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
         save(&c, &format!("accent_{lower}_display"));
     }

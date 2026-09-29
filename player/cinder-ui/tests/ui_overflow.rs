@@ -410,6 +410,17 @@ fn ui_chrome_never_reaches_the_device_font_chain() {
             a.render(&mut c, &fonts, &np);
         }
     }
+    // Every design style's Now Playing: a style's own labels are chrome too.
+    for style in cinder_ui::style::Style::ALL {
+        let mut a = at(Screen::NowPlaying);
+        a.set_library(cinder_ui::model::Library::default());
+        a.set_style(style);
+        for night in [false, true] {
+            a.night = night;
+            let mut c = Canvas::new();
+            a.render(&mut c, &fonts, &np);
+        }
+    }
     // Every onboarding page, since that is where this bug lived and only page 0 is in SCREENS.
     let mut a = at(Screen::Onboarding);
     a.set_library(cinder_ui::model::Library::default());
@@ -646,4 +657,36 @@ fn the_unresolved_detector_actually_fires() {
         vec!['\u{2603}'],
         "the detector did not notice a glyph nothing can draw"
     );
+}
+
+/// Every design style's Now Playing, like every screen above: nothing past the margin, and no text
+/// into other text — plain and hostile strings, day and night, then every UI scale.
+#[test]
+fn every_style_stays_on_the_panel_with_its_text_apart() {
+    let fonts = FontSet::load();
+    let mut bad: Vec<String> = Vec::new();
+    for style in cinder_ui::style::Style::ALL {
+        for idx in 0..cinder_ui::text::SCALE_STEPS.len() {
+            let _g = scale_lock(idx);
+            let pct = cinder_ui::text::SCALE_STEPS[idx];
+            for (label, np) in [("plain", np_plain()), ("hostile", np_hostile())] {
+                for night in [false, true] {
+                    let mut a = at(Screen::NowPlaying);
+                    a.set_style(style);
+                    a.night = night;
+                    let what = format!("{style:?} @ {pct}% [{label}, night={night}]");
+                    let n = overflow_of(&mut a, &fonts, &np);
+                    if n > 0 {
+                        bad.push(format!("{what}: {n} px past the margin"));
+                    }
+                    for (x, y, px) in collisions_of(&mut a, &fonts, &np) {
+                        bad.push(format!("{what}: {x:?} × {y:?} ({px} px)"));
+                    }
+                }
+            }
+        }
+    }
+    let _restore = scale_lock(cinder_ui::text::SCALE_DEFAULT_IDX);
+    bad.dedup();
+    assert!(bad.is_empty(), "a style's Now Playing overflows ({}):\n  {}", bad.len(), bad.join("\n  "));
 }

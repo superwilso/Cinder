@@ -2,7 +2,7 @@
 
 A palette is a text file that recolours Cinder: the six neutral colours for day and for night, and —
 only if it needs one — an accent of its own. Layout, type and icons stay exactly as they are;
-changing those is what skins are for ([`PLAN_skins.md`](PLAN_skins.md)).
+changing those is what styles are for ([`DESIGN_GUIDE.md`](DESIGN_GUIDE.md) §2).
 
 The rules below are enforced by [`player/cinder-ui/src/palette.rs`](../player/cinder-ui/src/palette.rs),
 and its tests hold the example files to them.
@@ -38,8 +38,9 @@ choice is saved like any other setting; Settings ▸ Reset settings goes back to
 Shared palettes live in [superwilso/cinder-themes](https://github.com/superwilso/cinder-themes), with a
 gallery drawn from the files. CI checks every one with these same rules, so any palette there loads.
 
-- **Download:** Flint ▸ Palettes ▸ **Download shared** fetches every one not already in your folder.
-  Or take a file from the repository by hand.
+- **Download:** Flint ▸ Palettes ▸ **Shared palettes** lists every one, drawn by day and night,
+  with a search box. **Install** puts one in your folder and on the player. **Get all** fetches
+  every one not already in your folder. Or take a file from the repository by hand.
 - **Make:** Flint ▸ Palettes ▸ **New palette** is an editor with a live preview. It shows the player's
   verdict as you type.
 - **Share:** in that editor, **Share…** opens the repository's form with the file filled in. Or

@@ -731,11 +731,6 @@ fn tab_zone_at(zones: &[(Tab, f32, f32)], x: i32) -> Option<Tab> {
     None
 }
 
-/// Rail x → permille (0..1000). Shares `now_playing::rail_fraction` with the draw, so the preview
-/// position and the drawn handle can never disagree.
-fn rail_permille(x: i32) -> u16 {
-    (crate::now_playing::rail_fraction(x) * 1000.0).round() as u16
-}
 
 /// What the user's finger is currently dragging along a horizontal control.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1045,6 +1040,9 @@ pub struct App {
     /// The volume readout: 0 = Full (the pill), 1 = Minimal (a 3 px bar under the status bar).
     /// Index into `display::VOLUME_HUDS`. Persisted as `volume_hud=full|minimal`.
     volume_hud: u8,
+    /// Settings ▸ Display ▸ Style. Persisted as `style=cinder|nocturne|terminal`, and put on the
+    /// theme every frame so every render sees it.
+    style: crate::style::Style,
     /// Battery care (Sony "Itawari" charging, ~90% cap). Mirrors the device state; the shell reads
     /// the real value at boot via cinder_set_battery_care and applies toggles via the action.
     battery_care: bool,
@@ -1505,6 +1503,7 @@ impl Default for App {
             home_last: None,
             home_pending: false,
             volume_hud: 0,
+            style: crate::style::Style::Cinder,
             battery_care: false,
             batt_pct: 0,
             // Empty, not "Unknown": the screen prints these verbatim, and an invented word would
@@ -3034,6 +3033,10 @@ impl App {
             }
             // Select steps the text size one stop (a tap uses the finger's x instead).
             crate::display::ROW_SIZE => self.step_ui_scale(1),
+            crate::display::ROW_STYLE => {
+                self.style = crate::style::Style::from_index((self.style.index() + 1) % crate::style::Style::COUNT);
+                vec![]
+            }
             _ => {
                 self.viz_sel = 0;
                 self.push(Screen::VizSet);
@@ -3509,62 +3512,52 @@ impl App {
                 vec![]
             }
             Screen::NowPlaying => {
-                let hit = |cx: i32, cy: i32, r: i32| (x - cx).pow(2) + (y - cy).pow(2) <= r * r;
-                // Lyrics chip: first, because its band under the status bar otherwise opens the
-                // Menu (below), and at night its lower edge touches the metadata block.
-                if crate::now_playing::hit_lyrics(x, y, self.has_lyrics()) {
-                    self.open_lyrics();
-                    return vec![];
-                }
-                // Like: tested before the transport row (it sits above it, and its target is
-                // square rather than circular, so the two can't overlap).
-                if crate::now_playing::hit_heart(x, y) {
-                    return vec![Action::ToggleLiked];
-                }
-                // The metadata block IS the button for "tell me more about this file". Sony puts
-                // the same screen behind an options menu; Cinder has no options menu on Now
-                // Playing, and hanging it off the text the question is about needs no new
-                // furniture. Tested after the heart (which overlaps this band on the right) and
-                // before the transport row (which is well below it).
-                if crate::now_playing::hit_info(x, y, self.night) {
-                    self.track_info_scroll_px = 0;
-                    self.push(Screen::TrackInfo);
-                    return vec![];
-                }
-                if hit(240, 692, 44) {
-                    self.set_playing_optimistic(!self.playing);
-                    vec![Action::PlayPause]
-                } else if hit(130, 692, 34) {
-                    vec![Action::Prev]
-                } else if hit(350, 692, 34) {
-                    vec![Action::Next]
-                } else if hit(44, 692, 30) {
-                    // shuffle icon (transport row, far left)
-                    vec![Action::ShuffleToggle]
-                } else if hit(436, 692, 30) {
-                    // repeat icon (transport row, far right)
-                    vec![Action::RepeatCycle]
-                } else if let Some(slot) = crate::now_playing::hit_toolbar(x, y) {
-                    // bottom toolbar: library · queue · bt · settings.
-                    // Slots come from `now_playing::TOOLBAR_CX`, so the target is wherever the
-                    // icon was actually drawn.
-                    match slot {
-                        0 => self.push(Screen::Library),
-                        1 => self.push(Screen::UpNext),
-                        2 => self.push(Screen::Bluetooth),
-                        _ => self.push(Screen::Settings),
+                // One question, asked of the same layout the style draws from
+                // (`now_playing::layout`): no coordinate for this screen lives in `nav`. The
+                // layout's order carries the priorities that used to be this function's order —
+                // the Lyrics chip before the Menu band it sits in, the heart before the title
+                // block it overlaps, the title block before the transport.
+                use crate::now_playing::Hit;
+                let layout = crate::now_playing::layout(self.style, self.night, self.has_lyrics());
+                match layout.hit(x, y) {
+                    Some(Hit::Lyrics) => {
+                        self.open_lyrics();
+                        vec![]
                     }
-                    vec![]
-                } else if y < crate::chrome::HEADER_BOTTOM {
+                    Some(Hit::Like) => vec![Action::ToggleLiked],
+                    // The metadata block IS the button for "tell me more about this file". Sony
+                    // puts the same screen behind an options menu; Cinder has none on Now Playing,
+                    // and hanging it off the text the question is about needs no new furniture.
+                    Some(Hit::Info) => {
+                        self.track_info_scroll_px = 0;
+                        self.push(Screen::TrackInfo);
+                        vec![]
+                    }
+                    Some(Hit::PlayPause) => {
+                        self.set_playing_optimistic(!self.playing);
+                        vec![Action::PlayPause]
+                    }
+                    Some(Hit::Prev) => vec![Action::Prev],
+                    Some(Hit::Next) => vec![Action::Next],
+                    Some(Hit::Shuffle) => vec![Action::ShuffleToggle],
+                    Some(Hit::Repeat) => vec![Action::RepeatCycle],
+                    Some(Hit::Toolbar(slot)) => {
+                        match slot {
+                            0 => self.push(Screen::Library),
+                            1 => self.push(Screen::UpNext),
+                            2 => self.push(Screen::Bluetooth),
+                            _ => self.push(Screen::Settings),
+                        }
+                        vec![]
+                    }
                     // The band every OTHER screen gives to its back chevron. Now Playing is a root
-                    // and draws no chevron, so the band is free — and it goes to the Menu, which is
-                    // what the status strip above it already means. (Was a bare `91`; that is
-                    // `chrome::HEADER_BOTTOM`, and a literal copy of a named constant is how a
-                    // target drifts out from under the thing it belongs to.)
-                    self.push(Screen::Menu);
-                    vec![]
-                } else {
-                    vec![]
+                    // and draws no chevron, so the band goes to the Menu, which is what the status
+                    // strip above it already means.
+                    Some(Hit::Menu) => {
+                        self.push(Screen::Menu);
+                        vec![]
+                    }
+                    None => vec![],
                 }
             }
             Screen::Folders => self.tap_folders(y),
@@ -3806,6 +3799,11 @@ impl App {
                     self.accent = Accent::from_index(i);
                     return vec![];
                 }
+                if let Some(i) = crate::display::style_chip_at(x, y) {
+                    self.display_sel = crate::display::ROW_STYLE;
+                    self.style = crate::style::Style::from_index(i);
+                    return vec![];
+                }
                 if let Some(i) = crate::display::volume_chip_at(x, y) {
                     self.display_sel = crate::display::ROW_VOLUME;
                     self.volume_hud = i as u8;
@@ -3820,8 +3818,8 @@ impl App {
                         crate::text::set_scale_idx(crate::display::size_idx_at(x));
                         return vec![Action::UiScaleChanged];
                     }
-                    // The chips ARE the Volume row; a tap on its margin chooses nothing.
-                    if row == crate::display::ROW_VOLUME {
+                    // The chips ARE the Volume and Style rows; a tap on a margin chooses nothing.
+                    if row == crate::display::ROW_VOLUME || row == crate::display::ROW_STYLE {
                         return vec![];
                     }
                     return self.display_activate();
@@ -5181,6 +5179,17 @@ impl App {
     // must suppress incoming position updates mid-drag), but it must not own a second, drifting
     // copy of "is the finger on the rail".
 
+    /// Now Playing's layout as it stands: this style, this mode, this song.
+    fn np_layout(&self) -> crate::now_playing::Layout {
+        crate::now_playing::layout(self.style, self.night, self.has_lyrics())
+    }
+
+    /// Rail x → permille (0..1000), along the rail the style draws, so the preview position and the
+    /// drawn handle can never disagree.
+    fn rail_permille(&self, x: i32) -> u16 {
+        (self.np_layout().rail.fraction(x) * 1000.0).round() as u16
+    }
+
     /// A finger went down at (x, y). True if it grabbed a scrubbable control.
     pub fn scrub_begin(&mut self, x: i32, y: i32) -> bool {
         self.scrub = Scrub::None;
@@ -5189,11 +5198,9 @@ impl App {
         }
         match self.current() {
             Screen::NowPlaying => {
-                let band = (crate::now_playing::RAIL_GRAB_TOP..=crate::now_playing::RAIL_GRAB_BOT)
-                    .contains(&y);
-                if band && (0..=crate::canvas::W as i32).contains(&x) {
+                if self.np_layout().rail.grabs(x, y) {
                     self.scrub = Scrub::Progress;
-                    self.scrub_permille = rail_permille(x);
+                    self.scrub_permille = self.rail_permille(x);
                     true
                 } else {
                     false
@@ -5291,7 +5298,7 @@ impl App {
                 vec![]
             }
             Scrub::Progress => {
-                self.scrub_permille = rail_permille(x);
+                self.scrub_permille = self.rail_permille(x);
                 vec![]
             }
             Scrub::UiScale => {
@@ -5783,7 +5790,8 @@ impl App {
                 // arrives with no ABS_Y, and 0 is above the artwork (it is the status bar) — a bare
                 // `y < BOT` would silently turn every one of those degenerate swipes into a page
                 // turn instead of the track skip it has always been.
-                if (crate::now_playing::PAGE_TOP..crate::now_playing::PAGE_SWIPE_BOT).contains(&y) {
+                let l = self.np_layout();
+                if (l.page_top..l.page_bot).contains(&y) {
                     let pages = crate::now_playing::PAGES;
                     self.np_page = if dir < 0 {
                         (self.np_page + 1) % pages
@@ -7153,7 +7161,7 @@ impl App {
         // instead keeps it working, and it is the only remaining way to emit less light: below the
         // backlight floor there is only backlight OFF, which on this transmissive panel is black.
         let theme = {
-            let t = self.palette.theme(self.night, self.accent);
+            let t = Theme { style: self.style, ..self.palette.theme(self.night, self.accent) };
             if self.night {
                 let lvl = (self.brightness.clamp(1, 5) - 1) as usize;
                 t.scaled(Theme::NIGHT_LEVEL_PCT[lvl])
@@ -7637,6 +7645,7 @@ impl App {
                     night: self.night,
                     volume_hud: self.volume_hud,
                     viz: &viz_lbl,
+                    style: self.style,
                 };
                 crate::display::render(c, &theme, fonts, self.display_sel, &view)
             }
@@ -8074,6 +8083,26 @@ impl App {
         if self.volume_hud == 1 { "minimal" } else { "full" }
     }
     /// Set the volume readout from its settings-file word. Anything else is Full, the default.
+    /// `style=` in `cinder_settings.conf`.
+    pub fn style_token(&self) -> &'static str {
+        self.style.token()
+    }
+
+    /// An unknown word keeps the style as it was (see `Style::from_token`).
+    pub fn set_style_token(&mut self, v: &str) {
+        if let Some(s) = crate::style::Style::from_token(v) {
+            self.style = s;
+        }
+    }
+
+    pub fn style(&self) -> crate::style::Style {
+        self.style
+    }
+
+    pub fn set_style(&mut self, s: crate::style::Style) {
+        self.style = s;
+    }
+
     pub fn set_volume_hud(&mut self, v: &str) {
         self.volume_hud = u8::from(v.trim() == "minimal");
     }
@@ -13697,6 +13726,77 @@ mod tests {
         assert_eq!(a.lib_tab, Tab::Albums);
         a.tap(20, 60);
         assert_eq!(a.current(), Screen::Menu);
+    }
+
+    /// A style is answered where it draws: every control, the seek rail and the page swipe follow
+    /// its layout, and the literal-coordinate test above keeps holding for Cinder.
+    #[test]
+    fn each_style_answers_taps_where_it_draws_its_controls() {
+        use crate::now_playing::{layout, Hit};
+        use crate::style::Style;
+        for style in Style::ALL {
+            let l = layout(style, false, false);
+            let mid = |h: Hit| l.at(h).map(|s| s.centre()).unwrap_or_else(|| panic!("{style:?}: no {h:?}"));
+            let mut a = unlocked();
+            a.set_style(style);
+            for (h, want) in [
+                (Hit::PlayPause, Action::PlayPause),
+                (Hit::Prev, Action::Prev),
+                (Hit::Next, Action::Next),
+                (Hit::Shuffle, Action::ShuffleToggle),
+                (Hit::Repeat, Action::RepeatCycle),
+                (Hit::Like, Action::ToggleLiked),
+            ] {
+                let (x, y) = mid(h);
+                assert_eq!(a.tap(x, y), vec![want], "{style:?}: {h:?} at ({x}, {y})");
+            }
+            let (x, y) = mid(Hit::Info);
+            a.tap(x, y);
+            assert_eq!(a.current(), Screen::TrackInfo, "{style:?}: the title block");
+            for (slot, screen) in [(0, Screen::Library), (1, Screen::UpNext), (3, Screen::Settings)] {
+                let mut b = unlocked();
+                b.set_style(style);
+                let (x, y) = mid(Hit::Toolbar(slot));
+                b.tap(x, y);
+                assert_eq!(b.current(), screen, "{style:?}: toolbar slot {slot}");
+            }
+            // The rail: grabbed in its band, and the far end is the end of the song.
+            let mut b = unlocked();
+            b.set_style(style);
+            let r = l.rail;
+            assert!(b.scrub_begin(r.x0, (r.grab_top + r.grab_bot) / 2), "{style:?}: the rail");
+            b.scrub_move(r.x0 + r.w + 30, r.grab_top);
+            assert_eq!(b.scrub_end(), vec![Action::Seek(1000)], "{style:?}: past the end is the end");
+            // The page block turns the page; below it, a swipe skips.
+            let mut b = unlocked();
+            b.set_style(style);
+            assert!(b.swipe(-1, 240, (l.page_top + l.page_bot) / 2).is_empty(), "{style:?}: page swipe");
+            assert_eq!(b.np_page, 1);
+            assert_eq!(b.swipe(-1, 240, l.page_bot + 10), vec![Action::Next], "{style:?}: skip swipe");
+        }
+    }
+
+    /// Display ▸ Style: a chip picks the style, Select steps through them, and `style=` in the
+    /// settings file brings it back — while an unknown word keeps what was there.
+    #[test]
+    fn the_style_is_picked_on_display_and_survives_a_restart() {
+        use crate::style::Style;
+        let mut a = unlocked();
+        a.stack = vec![Screen::NowPlaying, Screen::Display];
+        let y = crate::display::row_top(crate::display::ROW_STYLE) + crate::kit::ROW_H / 2;
+        a.tap(420, y);
+        assert_eq!(a.style(), Style::Terminal);
+        a.display_sel = crate::display::ROW_STYLE;
+        a.display_activate();
+        assert_eq!(a.style(), Style::Cinder, "Select wraps round");
+        a.tap(240, y);
+        assert_eq!(a.style(), Style::Nocturne);
+        let saved = a.style_token();
+        let mut b = unlocked();
+        b.set_style_token(saved);
+        assert_eq!(b.style(), Style::Nocturne);
+        b.set_style_token("vaporwave");
+        assert_eq!(b.style(), Style::Nocturne, "a newer build's style is not a reset");
     }
 
     #[test]
