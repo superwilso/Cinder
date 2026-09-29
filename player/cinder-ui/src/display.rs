@@ -5,6 +5,7 @@
 //!   COLOUR   Palette ›   Accent (six swatches)   Night (switch)
 //!   VOLUME   Full | Minimal
 //!   TEXT     Size (slider)   Visualiser ›
+//!   STYLE    Cinder | Nocturne | Terminal   (how Now Playing is laid out: `style.rs`)
 //!
 //! These five rows were the top of the Settings list, where they shared one scrolling column with
 //! Restart and Reset. The handoff's point 4 is that settings you change weekly and settings you
@@ -32,13 +33,19 @@ pub const ROW_NIGHT: usize = 2;
 pub const ROW_VOLUME: usize = 3;
 pub const ROW_SIZE: usize = 4;
 pub const ROW_VIZ: usize = 5;
-pub const ROWS: usize = 6;
+/// The design styles (`style::Style`), as chips. Like Volume, the chips are the targets.
+pub const ROW_STYLE: usize = 6;
+pub const ROWS: usize = 7;
 
 /// The volume HUD styles, in chip order. Index = `App::volume_hud`.
 pub const VOLUME_HUDS: [&str; 2] = ["Full", "Minimal"];
 
 /// Section labels and the rows under each. The ONE statement of the layout.
-const SECTIONS: [(&str, usize); 3] = [("COLOUR", 3), ("VOLUME", 1), ("TEXT", 2)];
+///
+/// The Style label names what a style redraws so far, so nobody picks Terminal and wonders why the
+/// Library did not change. Part of the label, not its right-hand action: that slot is drawn in the
+/// accent, and the accent means "tap here".
+const SECTIONS: [(&str, usize); 4] = [("COLOUR", 3), ("VOLUME", 1), ("TEXT", 2), ("STYLE · NOW PLAYING", 1)];
 
 /// Screen-y of the top of row `r`.
 pub fn row_top(r: usize) -> i32 {
@@ -70,6 +77,15 @@ fn chips_top() -> i32 {
 /// Which volume HUD chip is under `(x, y)`.
 pub fn volume_chip_at(x: i32, y: i32) -> Option<usize> {
     kit::chip_at(VOLUME_HUDS.len(), chips_top(), x, y)
+}
+
+fn style_chips_top() -> i32 {
+    row_top(ROW_STYLE) + (kit::ROW_H - kit::CHIP_H) / 2
+}
+
+/// Which style chip is under `(x, y)`, as an index into `Style::ALL`.
+pub fn style_chip_at(x: i32, y: i32) -> Option<usize> {
+    kit::chip_at(crate::style::Style::COUNT, style_chips_top(), x, y)
 }
 
 // ── Accent swatches ────────────────────────────────────────────────────────────────────────────
@@ -118,6 +134,7 @@ pub struct DisplayView<'a> {
     pub volume_hud: u8,
     /// "BARS · VEIL".
     pub viz: &'a str,
+    pub style: crate::style::Style,
 }
 
 pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, v: &DisplayView) {
@@ -194,6 +211,15 @@ fn draw_row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, r: usize, sel: bool,
             y + kit::ROW_H
         }
         ROW_SIZE => size_row(c, t, f, y, sel),
+        ROW_STYLE => {
+            if sel {
+                fill_rect(c, 0, y, W as i32, kit::ROW_H, t.row_sel);
+            }
+            let names: Vec<&str> = crate::style::Style::ALL.iter().map(|s| s.name()).collect();
+            kit::chips(c, t, f, style_chips_top(), &names, Some(v.style.index()));
+            crate::widgets::hline(c, y + kit::ROW_H - 1, t.line);
+            y + kit::ROW_H
+        }
         _ => kit::row(c, t, f, y, kit::ROW_H, &Row::new("Visualiser").trail(Trail::Open(v.viz)).sel(sel)),
     }
 }
@@ -247,6 +273,17 @@ mod tests {
             assert_eq!(accent_hit(swatch_x(i) + SW / 2, cy), Some(i));
         }
         assert_eq!(accent_hit(40, cy), None, "the title is not a swatch");
+    }
+
+    /// The style chips sit inside their row, one per style, and each picks itself.
+    #[test]
+    fn the_style_chips_are_inside_their_row_and_pick_themselves() {
+        let top = row_top(ROW_STYLE);
+        assert!(style_chips_top() >= top && style_chips_top() + kit::CHIP_H <= top + kit::ROW_H);
+        let y = style_chips_top() + kit::CHIP_H / 2;
+        let picks: Vec<usize> = [60, 240, 420].iter().filter_map(|&x| style_chip_at(x, y)).collect();
+        assert_eq!(picks, [0, 1, 2]);
+        assert_eq!(style_chip_at(240, top - 5), None, "the section label is not a chip");
     }
 
     /// The chips sit inside the Volume row.

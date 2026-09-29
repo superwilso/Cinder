@@ -39,6 +39,7 @@ MAP=(
     pull-down:quick_panel_day              now-playing-lyrics:now_playing_lyrics_day
     sound-quality:bluetooth_codec_day      device:device
     help:help_top
+    style-nocturne:now_playing_nocturne_day style-terminal:now_playing_terminal_day
 )
 
 # A clean render, with the real-cover overrides unset: those read files outside the tree, and the

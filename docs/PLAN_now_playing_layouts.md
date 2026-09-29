@@ -1,7 +1,12 @@
 # Plan — custom Now Playing screens that people can make and share
 
-*Written 2026-09-29. Nothing here is built yet. One decision is the owner's (§1); the rest is the
-order of work once that is made.*
+*Written 2026-09-29. One decision is the owner's (§1); the rest is the order of work once that is
+made.*
+
+> **Step 1 (§3, §6) is built**, as part of [`PLAN_design_styles.md`](PLAN_design_styles.md): Now
+> Playing's layout is a pure function (`now_playing::layout`) that the draw and the tap both read,
+> and two compiled-in styles use it. A layout file would fill the same `Layout` and pass the same
+> contract. The §1 decision is still open.
 
 The request: a way for people to **make** their own Now Playing screen and **share** it, the way
 palettes are shared now. Palettes are text files that anyone can write, check on a PC, drop in a

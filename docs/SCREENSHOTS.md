@@ -13,6 +13,15 @@ Walkman. Cover art is generated. `tools/render_screenshots.sh` regenerates them.
 |---|---|---|---|
 | <img src="screenshots/visualiser-bars.png" width="190" alt="Spectrum visualiser, bars"> | <img src="screenshots/visualiser-ribbon.png" width="190" alt="Spectrum visualiser, ribbon"> | <img src="screenshots/track-info.png" width="190" alt="Track info"> | <img src="screenshots/lock.png" width="190" alt="Lock screen"> |
 
+## Styles
+
+**Settings ▸ Display ▸ Style** changes how Now Playing is laid out. The palette and accent still
+apply. See [`DESIGN_GUIDE.md`](DESIGN_GUIDE.md).
+
+| Cinder | Nocturne | Terminal |
+|---|---|---|
+| <img src="screenshots/now-playing.png" width="190" alt="Cinder style"> | <img src="screenshots/style-nocturne.png" width="190" alt="Nocturne style"> | <img src="screenshots/style-terminal.png" width="190" alt="Terminal style"> |
+
 ## Up Next
 
 | Up Next | The queue | Reordering |

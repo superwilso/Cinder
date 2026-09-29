@@ -28,11 +28,29 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   already stores, loaded only for the lines on or near the screen. The search button moved 4 px
   left so the ORDER caption is no longer clipped at the largest text size. *Host-tested and in
   the golden previews; not yet run on a device (`docs/DEVICE_CHECKLIST.md` §22).*
+- **Now Playing styles.** **Settings ▸ Display ▸ STYLE · NOW PLAYING** chooses how Now Playing
+  is laid out:
+  - **Cinder**, the screen as it was.
+  - **Nocturne**: an inset cover with room around it, a large light title, a thin rail and an
+    outlined play ring.
+  - **Terminal**: a framed cover, monospace capitals, a rail of cells and bracketed text buttons.
+
+  The palette, accent and night mode apply to every style. The choice is kept across restarts
+  (`style=` in `cinder_settings.conf`). Now Playing's layout is now one function that both the
+  drawing and the tap handling read, so a control is always tapped where it is drawn. As part of
+  that, Prev and Next now respond around their icons, at x 128 and 352 rather than 130 and 350.
+  *Host-tested and in the golden previews; not yet run on a device (`docs/DEVICE_CHECKLIST.md`
+  §23).*
+- **A design guide:** [`docs/DESIGN_GUIDE.md`](docs/DESIGN_GUIDE.md), for anyone designing for
+  Cinder. It covers the device, the three layers (palette, style, accent), the screen's bands,
+  colour tokens, type roles, touch targets, gestures, safe glyphs, what Now Playing must keep,
+  performance limits, and how to contribute a palette, a mockup or a style. The plan for extending
+  styles to the other screens is [`docs/PLAN_design_styles.md`](docs/PLAN_design_styles.md).
 - **Shared palettes.** Palettes can now be shared and downloaded through
   [superwilso/cinder-themes](https://github.com/superwilso/cinder-themes). Its CI checks each one
   with the player's own rules and draws a gallery from the files. Flint (unreleased) can make a
-  palette in an editor, share it through that repository's form, and download the shared ones.
-  `docs/PALETTES.md` ▸ *Share and download*. *Nothing on the player changed.*
+  palette in an editor, share it through that repository's form, and install shared ones from a
+  searchable list. `docs/PALETTES.md` ▸ *Share and download*. *Nothing on the player changed.*
 
 ### Changed
 

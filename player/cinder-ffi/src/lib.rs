@@ -935,6 +935,7 @@ fn settings_body(r: &Render) -> String {
     // Settings ▸ Display ▸ Volume: `full` or `minimal`, as a word — the handoff names the key and
     // its values, and a word survives a future third style where an index would shift.
     body.push_str(&format!("volume_hud={}\n", r.app.volume_hud()));
+    body.push_str(&format!("style={}\n", r.app.style_token()));
     // What the player opens on (the Menu's START ON chips), and — only when that is "last" — the
     // place to reopen, encoded like a Shelf pin.
     body.push_str(&format!("home_screen={}\n", r.app.home_screen()));
@@ -5435,6 +5436,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
                     "lib_views" => r.app.set_lib_views_str(v),
+                    "style" => r.app.set_style_token(v),
                     "sensme_follow_time" => r.app.set_sensme_follow(v == "1"),
                     "volume_hud" => r.app.set_volume_hud(v),
                     "home_screen" => r.app.set_home_screen(v),
