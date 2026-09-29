@@ -113,7 +113,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         ny += 22.0;
     }
     hline(c, 740, t.line);
-    crate::widgets::center(c, f, 240.0, 770.0, "EXPERIMENTAL · NOT YET HEARD AT THE JACK",
+    crate::widgets::center(c, f, 240.0, 770.0, "EXPERIMENTAL · WORKS FROM WINDOWS, NOT IPHONE",
                            &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1));
 }
 

@@ -914,6 +914,14 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 
 ### ◐ Partial (UI works; backend/hardware leg pending — device-gated)
 
+- **Library views — built and host-tested, not yet on the panel.** *(2026-09-29)* The Library
+  header's view button switches each tab between List, **Grid** (Albums, Artists, Playlists: 96 px
+  covers four across) and **Compact** (Songs, Albums, Artists: one text line per item), saved per
+  tab as `lib_views` in `cinder_settings.conf`. Geometry lives in `player/cinder-ui/src/library.rs`
+  (`line_h` / `per_line` / `grid_col`, one source for render and hit test); grid covers are loaded
+  by the shell (`load_grid_covers`, cinder-ffi) from the art cache's existing `.t96` files, six per
+  frame, only for lines within a screen of the view. What only the device can settle is whether that
+  keeps up with a fling — `docs/DEVICE_CHECKLIST.md` §22.
 - **Lyrics — built and host-tested, not yet seen on the panel.** *(2026-09-13)* A `.lrc` beside the
   song (`Song.lrc` for `Song.flac`, Sony's own convention), or lyrics embedded in its tags (FLAC
   Vorbis `LYRICS`/`UNSYNCEDLYRICS`, ID3v2 `USLT`, MP4 `©lyr`), adds a Lyrics row to Track

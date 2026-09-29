@@ -16,6 +16,29 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+### Added
+
+- **Library views.** A new button in the Library header, left of the ORDER caption (and left of
+  search when search is installed), switches the tab you are on between layouts: **Grid** — covers
+  four across with the name under each — for Albums, Artists and Playlists, and **Compact** — one
+  line per item, no covers, the most rows a screen holds — for Songs, Albums and Artists. A tap
+  steps to the next view and a toast names it; the item at the top of the screen stays at the top.
+  Each tab remembers its own view across restarts. In the grid a tap on a cover or its name opens
+  it, and the album accordion is a list-only feature. Grid covers are the 96 px ones the art cache
+  already stores, loaded only for the lines on or near the screen. The search button moved 4 px
+  left so the ORDER caption is no longer clipped at the largest text size. *Host-tested and in
+  the golden previews; not yet run on a device (`docs/DEVICE_CHECKLIST.md` §22).*
+- **Shared palettes.** Palettes can now be shared and downloaded through
+  [superwilso/cinder-themes](https://github.com/superwilso/cinder-themes). Its CI checks each one
+  with the player's own rules and draws a gallery from the files. Flint (unreleased) can make a
+  palette in an editor, share it through that repository's form, and download the shared ones.
+  `docs/PALETTES.md` ▸ *Share and download*. *Nothing on the player changed.*
+
+### Changed
+
+- The BT Receiver page's footer now says what is known: **EXPERIMENTAL · WORKS FROM WINDOWS, NOT
+  IPHONE**. It used to say *not yet heard at the jack*, which stopped being true on 2026-09-29.
+
 ## [0.3.13] — 2026-09-29
 
 The first pass of the 2026-09 redesign is in this release. The ledger for the rest, screen by

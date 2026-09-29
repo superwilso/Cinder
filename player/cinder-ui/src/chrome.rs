@@ -370,6 +370,22 @@ pub fn header_caption_from(
     right: Option<&str>,
     min_x: f32,
 ) -> i32 {
+    header_around(c, t, f, title, right, min_x, min_x)
+}
+
+/// [`header`] for a screen with a row of controls between the title and the caption: the title is
+/// fitted to end before `controls_x0`, and the caption kept right of `controls_x1`. The Library's
+/// view and search buttons.
+pub fn header_around(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    title: &str,
+    right: Option<&str>,
+    controls_x0: f32,
+    controls_x1: f32,
+) -> i32 {
+    let min_x = controls_x0;
     icons::back(c, 30.0, 62.0, 20.0, t.dim);
     let ts = title_style(t.ink);
     let rs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
@@ -387,7 +403,7 @@ pub fn header_caption_from(
     let title_end = text::draw(c, f, TITLE_X, 70.0, &title, &ts);
     if let Some(r) = right {
         // Clamp the caption to the space right of the title (never let it overlap the title).
-        let avail = (458.0 - (title_end + 16.0).max(min_x)).max(0.0);
+        let avail = (458.0 - (title_end + 16.0).max(controls_x1)).max(0.0);
         let r = crate::widgets::fit(f, r, &rs, avail);
         let rw = text::measure(f, &r, &rs);
         text::draw(c, f, 458.0 - rw, 65.0, &r, &rs);

@@ -141,6 +141,24 @@ pub fn library(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     vbox(c, cx, cy, s, col, w, 13.4, 13.4, 6.6, 6.6, false);
 }
 
+/// "List view": three rows, each a small cover and a line. Drawn beside [`library`]'s 2x2 grid,
+/// which is the grid view's icon, on the Library header's view button.
+pub fn list_view(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let w = stroke_w(s);
+    for y in [4.0, 10.5, 17.0] {
+        vbox(c, cx, cy, s, col, w, 3.5, y, 3.5, 3.5, true);
+        polyline(c, cx, cy, s, col, w, &[(10.0, y + 1.75), (20.5, y + 1.75)]);
+    }
+}
+
+/// "Compact view": five close lines and no covers.
+pub fn compact_view(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let w = stroke_w(s);
+    for y in [4.5, 8.25, 12.0, 15.75, 19.5] {
+        polyline(c, cx, cy, s, col, w, &[(3.5, y), (20.5, y)]);
+    }
+}
+
 pub fn bookmark(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     let w = stroke_w(s);
     polyline(

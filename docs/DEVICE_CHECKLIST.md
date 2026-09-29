@@ -614,3 +614,19 @@ Host-tested; the DAC EQ helper's tables were also written and read back on the W
 | 21.7 | **BT Receiver** — **PASS 2026-09-29, owner-reported (Windows PC, 48 kHz, 33 s)** | Bluetooth ▸ RECEIVER MODE › ▸ on; pair from a phone/PC; confirm the code on the Walkman; play | Sound at the jack; the page says Playing from <name> | Logcat `BtPlayerService`: AVSNK 2 waiting / 4 connected / 5 streaming. Stuck at 4 = nothing sent yet; check the PC's output device |
 | 21.8 | **BT Receiver from an iPhone** | As 21.7 from iOS | Pairs | Failed 2026-09-29: "NW-A50series is not supported" before any code appeared |
 | 21.6 | **Linear headphone amp** | `docs/PLAN_sound_2026-09-29.md` §1 | As written there | As written there |
+
+
+---
+
+## 22 — 2026-09-29 — Library views
+
+Host-tested (hit tests for every grid tile and compact row, the A-Z jump, persistence) and in the
+golden previews (`library_*_grid`, `library_*_compact`). Needs a dev build and one reboot. The one
+thing only the device can say is whether 96 px covers load fast enough while the grid scrolls.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 22.1 | **The view button** | Library ▸ the icon left of the ORDER caption (left of search when search is installed). Tap it on each tab | Albums and Artists: list → grid → compact → list. Songs: list ↔ compact. Playlists: list ↔ grid. A toast names each view; the first item on screen stays first | A tap that opens search or cycles ORDER instead = the zones overlap at this text size; note Settings ▸ Display ▸ Size |
+| 22.2 | **Grid covers** | Albums in grid; fling down a long library, then back up | Real covers within a frame or two of each line appearing; no stall on the fling | Gradients that never turn into covers = the 96 px files are missing from the art cache (`/data/cinder/art`, `*.t96`); a stall = too many loads per frame (`GRID_LOADS_PER_FRAME`, cinder-ffi) |
+| 22.3 | **Grid taps** | Tap a cover, then an album's name under its cover | Both open that album; on Artists the right-hand tile opens the artist, not shuffle | Wrong album = render and hit test disagree; screenshot it |
+| 22.4 | **Kept after a reboot** | Leave Albums in grid and Songs compact; reboot | Both come back that way (`lib_views=list,grid,…` in `cinder_settings.conf`) | — |

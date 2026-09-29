@@ -453,6 +453,11 @@ struct Np {
 struct Render {
     /// Which album's cover is currently handed to the UI, so the 96x96 is loaded on change only.
     album_cover_id: Option<i64>,
+    /// Library grid covers the art cache did not have. Not asked for again until the cache builder
+    /// delivers a new cover, so an album with no artwork cannot keep the frame loop awake.
+    grid_miss: std::collections::HashSet<i64>,
+    /// The grid still wants covers this frame did not get to (see `GRID_LOADS_PER_FRAME`).
+    grid_more: bool,
     present: Sink,
     /// The frame buffer, allocated ONCE and reused every frame. Re-allocating it per frame
     /// is 1.5 MB of churn that fragmented the heap until an allocation failed outright on
@@ -740,6 +745,8 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
     np.battery = 100;
     *cell().lock().unwrap() = Some(Render {
         album_cover_id: None,
+        grid_miss: Default::default(),
+        grid_more: false,
         present,
         canvas: Canvas::new(),
         fonts: FontSet::load(),
@@ -917,6 +924,8 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("ignore_the={}\n", r.app.ignore_the() as u8));
     // The pull-down panel (Settings ▸ Pull-down panel), OFF unless switched on.
     body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
+    // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
+    body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
     body.push_str(&format!("sensme_follow_time={}\n", r.app.sensme_follow() as u8));
     // Sound ▸ Advanced ▸ DAC EQ, RAW half-decibels in the helper's argument order.
     body.push_str(&format!(
@@ -1447,6 +1456,9 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         folder_roots,
         channels: Vec::new(),
         sensme_tracks: 0,
+        // The App's layouts, applied by `set_library` like `ignore_the`.
+        views: Default::default(),
+        covers: Default::default(),
     };
     // The channel table is a reverse-engineering finding and lives with the akeys that produced it
     // (`cinder_db::SENSME_CHANNELS`); cinder-ui is DB-free and is handed it. `build_channels` is
@@ -1731,6 +1743,37 @@ pub extern "C" fn cinder_set_ipc_dead(dead: libc::c_int) {
     cinder_ui::chrome::set_ipc_dead(dead != 0);
 }
 
+/// How many 96 px grid covers one frame may read off the art cache. Each is a 27 KB file; a screen
+/// of the grid is 12 to 16 of them, so a fresh screen fills in over two or three frames instead of
+/// stalling the first one.
+const GRID_LOADS_PER_FRAME: usize = 6;
+
+/// Keep `Library::covers` holding what the grid on screen wants, and nothing else: load the missing
+/// ones nearest the screen first, drop the ones that scrolled away (all of them when the Library is
+/// not a grid, which is what gives the memory back). Polled like the drill-in cover — the cache
+/// lives on this side, and the UI only says which ids it would draw.
+fn load_grid_covers(r: &mut Render) {
+    let wants = r.app.grid_cover_wants();
+    let mut loaded = 0;
+    for id in &wants {
+        if r.app.has_grid_cover(*id) || r.grid_miss.contains(id) {
+            continue;
+        }
+        if loaded == GRID_LOADS_PER_FRAME {
+            r.grid_more = true;
+            break;
+        }
+        loaded += 1;
+        match r.art_cache_keys.get(id).copied().and_then(|k| art_cache::load(k, art_cache::T96)) {
+            Some(img) => r.app.put_grid_cover(*id, img),
+            None => {
+                r.grid_miss.insert(*id);
+            }
+        }
+    }
+    r.app.keep_grid_covers(&wants);
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_render_tick() {
     let mut guard = cell().lock().unwrap();
@@ -1743,6 +1786,10 @@ pub extern "C" fn cinder_render_tick() {
     let dt_ms = now.saturating_duration_since(r.last_tick).as_millis() as u32;
     r.last_tick = now;
     if r.app.tick_dt(dt_ms) {
+        r.dirty = true;
+    }
+    // The Library grid is still filling in: keep painting until it has every cover it can get.
+    if std::mem::take(&mut r.grid_more) {
         r.dirty = true;
     }
     // Settings was just opened: read the palette folder again, so a palette copied over USB shows
@@ -1807,6 +1854,7 @@ pub extern "C" fn cinder_render_tick() {
                 .and_then(|k| art_cache::load(k, art_cache::T96)),
         );
     }
+    load_grid_covers(r);
     r.canvas.clear_clip();
     let np = NowPlaying {
         title: &r.np.title,
@@ -5386,6 +5434,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // `set_library` applies it to whatever library comes next.
                     "ignore_the" => r.app.set_ignore_the(v == "1"),
                     "quick_settings" => r.app.set_quick_enabled(v == "1"),
+                    "lib_views" => r.app.set_lib_views_str(v),
                     "sensme_follow_time" => r.app.set_sensme_follow(v == "1"),
                     "volume_hud" => r.app.set_volume_hud(v),
                     "home_screen" => r.app.set_home_screen(v),
@@ -6075,6 +6124,7 @@ fn start_art_cache(r: &mut Render, db_path: &str) {
                 if let Ok(mut g) = cell().lock() {
                     let Some(r) = g.as_mut() else { stop = true; break }; // renderer gone — stop
                     r.app.library_mut().thumbs.insert(album_id, t48);
+                    r.grid_miss.remove(&album_id);
                     // ONLY IF THE SCREEN CAN SHOW ARTWORK AT ALL. This was unconditional, and the
                     // comment said "may be on screen right now" — on a first boot that is ~340
                     // forced full-screen rasters and blits over the ~2.7 minutes the builder runs,
@@ -6392,6 +6442,8 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     // ours come from the .m3u8 folder beside the liked list.
     r.db_playlists = lib.playlists.clone();
     r.app.set_library(lib);
+    // Ids are this database's; a rebuilt one may give a missed id to an album with a cover.
+    r.grid_miss.clear();
     r.undecodable = db.undecodable_paths().into_iter().collect();
     if !r.undecodable.is_empty() {
         eprintln!(
