@@ -240,7 +240,8 @@ check "  ran once" "$(runs_of "$LAST_R")" 1
 # ── the wired volume curve (2026-09-13) ─────────────────────────────────────────────────────────
 # `wm1a` and `w1` need tables a stock NW-A50 does not have. The reference device failed to apply
 # its curve on every boot and the only record was a bare FAILED in logcat. The launcher now looks
-# for the table first and says which one is missing in cinderhome.log; `stock` runs nothing at all.
+# for the table first and says which one is missing in cinderhome.log. Since 2026-09-29 `stock`
+# applies the plain A50 table (no regional limit) and `region` runs nothing at all.
 # The helper stub records the argument it was run with, so "not run" is observable.
 VT_STUB='mkdir -p $R/audio_dac; printf "#!/bin/sh\necho \$1 > $R/voltable_ran\n" > $R/voltable; chmod +x $R/voltable'
 vt_ran() { cat "$1/voltable_ran" 2>/dev/null || echo not-run; }
@@ -255,9 +256,15 @@ check "  the log says applied" "$(grep -c 'volume curve: wm1a applied' "$LAST_R/
 scenario "volume curve wm1a, table in Cinder's dir" cinder "$VT_STUB"'; mkdir -p $R/cinder_dac; : > $R/cinder_dac/ov_127x.tbl; echo wm1a > $R/contents/cinder_voltable.conf'
 check "  the helper runs with wm1a" "$(vt_ran "$LAST_R")" wm1a
 check "  nothing is reported missing" "$(grep -c 'needs Sony' "$LAST_R/contents/cinderhome.log")" 0
-scenario "volume curve stock applies nothing"       cinder "$VT_STUB"'; echo stock > $R/contents/cinder_voltable.conf'
+scenario "volume curve stock lifts the region limit" cinder "$VT_STUB"'; echo stock > $R/contents/cinder_voltable.conf'
+check "  the helper runs with stock" "$(vt_ran "$LAST_R")" stock
+check "  the log says applied" "$(grep -c 'volume curve: stock applied' "$LAST_R/contents/cinderhome.log")" 1
+scenario "volume curve region applies nothing"     cinder "$VT_STUB"'; echo region > $R/contents/cinder_voltable.conf'
 check "  the helper is not run" "$(vt_ran "$LAST_R")" not-run
 check "  the log says the boot table stays" "$(grep -c 'keeping the table the boot script loaded' "$LAST_R/contents/cinderhome.log")" 1
+# /contents can be unreadable early in a boot. No conf must never mean "lift the limit".
+scenario "volume curve, no conf applies nothing"   cinder "$VT_STUB"'; rm -f $R/contents/cinder_voltable.conf'
+check "  the helper is not run" "$(vt_ran "$LAST_R")" not-run
 
 R="$(mktemp -d "$SP/static.XXXXXX")"; build_launcher "$R"
 # Code lines only — the comment above the rotation names the broken form on purpose.

@@ -164,6 +164,10 @@ the same headphones-off caution as any volume-table change.
 
 ### Layer 3 — the "external tuning" packages — NOT REACHABLE, and here is the proof
 
+> **Superseded 2026-09-29.** The packages open with W1's one-character-modified AES key
+> (`upgtool -w`). The "stream cipher" and "4000-byte blob" readings below were wrong. What they
+> contain (an NVRAM image and another model's bootloader): [`RE_walkmanone_installers.md`](RE_walkmanone_installers.md).
+
 Extracted from `/etc/.mod/tunings/` (`debugfs -R "rdump /etc/.mod/tunings …" 7.bin`). Each is a
 Windows installer wrapping a nested `NW_WM_FW.UPG`: Bright and Neutral/Warm are 196720 bytes,
 WM1Z is 192624. `SWUpdate.xml` targets **DMP-Z1** for Bright and **NW-WM1Z** for the other two
@@ -489,6 +493,10 @@ This player: `SIG=3 REG=MX3 REM=0 PMV=2 PMD=0 GMD=0 DIM=0 COL=0`.
 That is the same `shp`/destination surface `load_sony_driver` feeds to `dacdat limiter_*`.
 
 ### 4. The external tunings are installed here — and that changes what "unreachable" means
+
+> **Superseded 2026-09-29.** The packages open with W1's one-character-modified AES key
+> (`upgtool -w`). The "stream cipher" and "4000-byte blob" readings below were wrong. What they
+> contain (an NVRAM image and another model's bootloader): [`RE_walkmanone_installers.md`](RE_walkmanone_installers.md).
 
 `boot_log.txt` records `The WM1Z external tuning installation was successful!` and later boots
 confirm `The [WM1Z] external tuning is installed.`

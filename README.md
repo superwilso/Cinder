@@ -102,7 +102,8 @@ drive) to any issue.
   `signature` install option makes the same change to your own stock files, no flashing. Its
   external tunings are other models' firmware and can't be reproduced. Measured at the jack, neither
   changes the signal ([unknown321's measurements](https://github.com/unknown321/wampy/blob/master/MAKING_OF_VOLUME_TABLES.md#there-is-more)).
-- **Volume curve:** the NW-WM1A curve is an install option if you supply Sony's table file
+- **Volume curve:** Cinder removes Sony's regional volume limit by default; the `region` install
+  option keeps it. The NW-WM1A curve is an install option if you supply Sony's table file
   ([how](install.md#the-volume-curve-tables)).
 - **Installing over Walkman One:** not with a release package yet. To help, run `nvpstr kas` on your
   player and post the output in an issue.

@@ -74,6 +74,16 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
 
 ### Changed
 
+- **Sony's regional volume limit is off by default.** Players sold in regions where Sony restricts
+  headphone volume (EU `CEW2` and Korean `KR3` in Wampy's measurements) load a quieter table at
+  boot. Cinder now loads the A50's plain table over it on every boot, so on those players each
+  volume step is louder than on Sony's firmware; elsewhere nothing changes. The new `voltable`
+  value **`region`** keeps the limit. Choosing it in the installer always takes effect, even over
+  an existing setting. A missing or unreadable setting never lifts the limit, and Settings ▸ Volume
+  limit (Sony's safe-listening cap) is unaffected. Existing installs set to `stock` get the plain
+  table from their next boot. *Launcher tests 89/89 and installer tests 53/53 green. Verified on a
+  Walkman One player 2026-09-29: after a reboot the log reads `volume curve: stock applied (A50
+  curve, no regional limit)`.*
 - **The Menu shows what is playing** in a strip under its title; tap it for Now Playing. The
   separate Now Playing and Up Next rows are gone (Up Next is on Now Playing's bottom bar). Every
   row now has a second line saying what is behind it.
@@ -135,9 +145,17 @@ entries — all of *Added* and the first eight under *Changed* — and the text 
   screen lights. Walkman One's 0.1 ms scheduler slices cost the audio pipeline ~3% more CPU
   for nothing you can hear, so they're reset at startup. Both go through the `cinder-power` helper.
   To keep W1's values and the full clock, put a file named `cinder_no_cpu_tune` on the drive.
-  *Helper verified on device 2026-09-28; the app side is harness-tested and waits on a reboot.*
+  *Verified on device 2026-09-28: helper, scheduler reset at boot, cap on screen-off. Uncap on wake is harness-tested.*
 
 ### Fixed
+
+- **The WM1A volume curve now works on Walkman One.** Walkman One overwrites Sony's
+  `ov_127x.tbl` with the A50's own curve on every boot. So choosing `wm1a` logged "applied" but
+  loaded the stock curve, dead zones included. `cinder-voltable` now recognises each table by
+  its checksum rather than its file name, and also finds W1's untouched copies in
+  `/system/etc/.mod/gain/`. The DSD half of `w1` now loads on a stock player too.
+  *Verified on a Walkman One player 2026-09-29 with `cinder-probe --volcurve`: before, the amp
+  read 0x64 at both 40 and 60; after, it reads 4, 44, 84, 124, 164, 204, 228.*
 
 - **Long names no longer run off the screen or under buttons.** A new audit renders every screen
   with hostile names (90-character titles, Cyrillic and CJK credits, the longest palette name a

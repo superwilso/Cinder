@@ -20,7 +20,7 @@ device, so no claim here is in milliamps.*
 | P6 | Walkman One's scheduler tunables (`sched_latency/min_granularity/wakeup_granularity` = 0.1 ms) cost ~3% of the audio pipeline's CPU and ~8% of context switches. | **Fixed (follow-up):** `cinder-power sched` resets them at startup. |
 | P7 | The governor spends 17% of screen-off playback at 1300 MHz (1.30 V) for a ~13% load. | **Fixed (follow-up):** `cinder-power cap` from the first dark second; stage 1 pins the same step after 60 s. |
 | S1 | Playback is bit-perfect at native rate for CD audio, on the codec's **low-power** PCM. | Confirmed, nothing to do. |
-| S2 | The Walkman One **WM1Z tuning is not applied** on this player (W1's own boot log). | Cause found (Part C); applying it is the owner's flash. |
+| S2 | The Walkman One **WM1Z tuning is not applied** on this player (W1's own boot log). | Cause found (Part C). The 09-28 flash did nothing. With `PMD=1`, `GMD=0` and `DIM=0` the tuned path loads the same audio files anyway ([RE](../analysis/RE_walkmanone_installers.md)). |
 
 Nothing below changes sound. Every lever that could (the S-Master gain mode, W1's CPU floor, the
 signature HAL) is either unmeasurable here or already measured flat by others — see Part C.
@@ -198,5 +198,6 @@ loop while capped, `scaling_cur_freq` stayed at 1040000 and the 1300 MHz row of 
 did not move (5705 before and after). Unknown verbs and no argument give rc 2.
 **Harness:** `cpu-cap` (sched once; one cap after the idle blank; uncap after Power; capped
 again on the next blank) and `cpu-tune-off`; 59 scenarios green.
-**Waiting on a reboot:** the app side on the device (log lines `cpu: scheduler slices…` and
-`cpu: screen dark on the jack -> max 1040 MHz`).
+**Device, build 4 (2026-09-28 reboot):** `cpu: scheduler slices…` at 11.2 s, the three nodes read
+6000000 / 750000 / 1000000; `cpu: screen dark on the jack -> max 1040 MHz` at 19.3 s, and
+`scaling_max_freq` reads 1040000. Still to see: the uncap line on a screen wake.
