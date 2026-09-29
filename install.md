@@ -206,7 +206,7 @@ removes something the player cannot do without (`components.conf` explains the d
 | `cinder-msc` | USB mass storage, i.e. putting music on the player over USB. Both privileged steps are root-only. |
 | `cinder-umount` | Releases `/contents` during that handoff. |
 | `cinder-clock` | Setting the clock. Nothing in Sony's libraries exposes a clock setter, so the kernel is the only route and that needs `CAP_SYS_TIME`. |
-| `cinder-voltable` | Loads the chosen volume curve at boot. With `voltable` left at `stock` it is never run. |
+| `cinder-voltable` | Loads the chosen volume curve at every boot. With `voltable` set to `region` it is never run. |
 
 **The choices:**
 
@@ -218,7 +218,7 @@ removes something the player cannot do without (`components.conf` explains the d
 | `search` | **off** | The Library's search button. Installs nothing: a flag file in `/data/cinder`. New, so off for now. |
 | `scrobble` | on | The `.scrobbler.log` of what you listen to. Installs nothing: turning it off leaves a flag file in `/data/cinder` and keeps any log you have. **You do not need to turn it off if you use unknown321's scrobbler** (the one installed with Wampy): Cinder checks for it at every start and writes nothing while it runs, so each play is logged once. |
 | `mono` | on | Sound ▸ MONO then reaches only USB-DAC → LDAC. With it, mono reaches the headphone jack and Bluetooth too; the MONO switch itself still starts off. **Needs Wampy**: it goes in place of Wampy's `libsound_service_fw.so`, the one library Sony's boot already loads into the sound service, keeps Wampy's file as `libsound_service_fw.wampy.so` and loads it back, so Wampy keeps working. Without Wampy nothing is installed. Turning it off or uninstalling puts Wampy's file back; reinstalling Wampy replaces it, so install Cinder again afterwards. |
-| `voltable` | `stock` | See [The volume curve tables](#the-volume-curve-tables). |
+| `voltable` | `stock` | Nothing to lose: `stock` is your player's own curve without Sony's regional volume limit. Choose `region` to keep the limit. See [The volume curve tables](#the-volume-curve-tables). |
 | `signature` | `stock` | See below. |
 
 Eight setuid-root helpers exist, and a stable install carries seven of them (`cinder-gpunode` is
@@ -270,8 +270,20 @@ exact. Takes effect on the next reboot, because the HAL is loaded at play time.
 ### The volume curve tables
 
 The `voltable` choice picks the table that maps each volume step to the headphone amplifier's gain.
-`stock` is the one your player already uses. `wm1a` and `w1` are Sony's curves from other models,
-and **their files are not part of the NW-A50's firmware** — so for those two, you bring the table.
+
+| choice | what loads |
+|---|---|
+| `stock` (default) | The NW-A50's own curve, **without Sony's regional volume limit** |
+| `region` | Whatever your player's firmware picks for its region, limit included |
+| `wm1a`, `w1` | Curves from other Sony models, also without the limit. You bring the file (below) |
+
+**The regional limit.** Players sold where Sony restricts headphone volume (Wampy measured the EU
+`CEW2` and Korean `KR3` regions) load a quieter table at boot. Cinder replaces it on every boot
+unless you choose `region`, so on those players **the same volume number is louder than on Sony's
+firmware. Turn the volume down before the first boot.** Elsewhere `stock` is the table you already
+had. Settings ▸ Volume limit, Sony's safe-listening cap, is separate and still works.
+
+`wm1a` and `w1` **are not part of the NW-A50's firmware** — so for those two, you bring the table.
 
 > **Needs the release after v0.3.4.** The v0.3.4 installer does not look for your copy; with it,
 > `wm1a` and `w1` still leave the stock curve in place and say so in the log.
@@ -298,8 +310,10 @@ drive afterwards — the installer keeps its own copy in `/system`.
 **What is checked.** A file only counts if its SHA-256 is exactly Sony's (the table above); anything
 else is logged as `WARN: … is not Sony's ov_127x.tbl … — not installed` and the stock curve stays.
 The copy is re-checked after it lands in `/system`, and the setuid helper that loads it reads only
-fixed file names in two root-owned directories — never the drive. A malformed table fed to the
-amplifier is the risk this guards against.
+fixed paths in root-owned directories — never the drive — and checks each file's own checksum
+against the table it expects, so a file with the right name but the wrong contents is skipped. A
+malformed table fed to the amplifier is the risk this guards against. On Walkman One the helper
+finds W1's own copy of the WM1A table, so nothing needs copying there.
 
 **Why Cinder does not just include them.** The tables are Sony's copyrighted files. Cinder is MIT
 licensed, and it cannot put someone else's files under that licence or ship them inside its
@@ -308,9 +322,9 @@ Sony's UI assets and decompilations out of the tree (`docs/HISTORY_REWRITE.md`).
 from a firmware you own onto a player you own, for it to work with other software, is a different
 thing from redistributing it.
 
-> **Curves are not region caps.** The EU tables (`ov_*_cew`) give identical curves to the others.
-> A different curve changes how loud each step is, not the amplifier's maximum — but `wm1a` does
-> reach high output sooner, so start low.
+> **Every choice except `region` lifts the regional limit.** The EU tables (`ov_*_cew`) set the
+> analogue amplifier exactly like the others but lower two digital stages, which is why they measure
+> quieter at the jack. `wm1a` also reaches high output sooner on every player, so start low.
 
 ### Choosing components without the GUI
 

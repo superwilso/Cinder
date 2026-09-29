@@ -110,7 +110,7 @@ binaries; they patch files that are *not* part of the Cinder install and survive
 
 ```bash
 adb shell '/system/vendor/unknown321/bin/cinder-signature.sh stock'
-adb shell 'echo stock > /contents/cinder_voltable.conf'
+adb shell 'echo region > /contents/cinder_voltable.conf'
 ```
 
 Method 1 and method 4 handle this for you — the uninstall package reverts both.

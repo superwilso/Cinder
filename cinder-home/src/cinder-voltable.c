@@ -20,17 +20,24 @@
  * (`ov_1280.tbl`, Walkman One's, measured IDENTICAL to stock — the model swap does not change the
  * volume curve. It is offered here only so that can be re-checked without a reinstall.)
  *
+ * A FILE NAME DOES NOT SAY WHICH CURVE IT HOLDS. Walkman One copies its "gain mode" table over
+ * /system/usr/share/audio_dac/ov_127x.tbl on every boot, and in its default mode that is the A50's
+ * own curve renamed, so `wm1a` read by name loaded the stock curve on every Walkman One player.
+ * Each key therefore names the table by CONTENT — the 8-byte sum/xor every table ends with — and
+ * tries a fixed list of places, W1's untouched copies in /system/etc/.mod/gain included, taking the
+ * first whose trailer matches. analysis/RE_walkmanone_installers.md, 2026-09-29.
+ *
  * WHY A HELPER: the tables are applied by writing them into /proc/icx_audio_cxd3778gf_data/, which
  * is `-rw------- root root`. cinder-home and its launcher both run as uid 100. `load_sony_driver`
  * re-applies the stock table on EVERY boot, so this has to run every boot too — it is not an
  * install-time patch.
  *
  * SAFETY. The argument is a keyword from a fixed whitelist, never a path: the caller cannot name a
- * file, so it cannot ask this to write arbitrary bytes into a kernel node. Sources are looked up by
- * fixed name in two fixed directories, both on /system and writable only by root; the one Cinder
- * owns is filled only by the installer, after the hash check. Each source is opened O_NOFOLLOW,
- * verified to be a regular file of the exact size every one of these tables has, and copied whole.
- * Nothing about the destination comes from the caller.
+ * file, so it cannot ask this to write arbitrary bytes into a kernel node. Sources are fixed paths
+ * on /system, writable only by root; Cinder's own directory is filled only by the installer, after
+ * a SHA-256 check. Each source is opened O_NOFOLLOW, verified to be a regular file of the exact size
+ * every one of these tables has and to end with the trailer of the table the key names, and copied
+ * whole. Nothing about the destination comes from the caller.
  *
  * This changes what every volume step does. It does NOT raise the maximum — both curves reach the
  * same ceiling — but at a given number the WM1A curve is quieter through the mid range, so it is a
@@ -54,16 +61,48 @@
 #define DST_DSD "/proc/icx_audio_cxd3778gf_data/ovt_dsd"
 #define DST_TONE "/proc/icx_audio_cxd3778gf_data/tct"
 
-/* Where a table is looked for, in order: Sony's own directory, then Cinder's. Keep CINDER_DIR in
- * step with VT_DIR in install_cinderhome.sh and the launcher's check. */
+/* Where tables live. SONY_DIR is the firmware's own; CINDER_DIR is filled by the installer (keep it
+ * in step with VT_DIR in install_cinderhome.sh and the launcher's check); W1_N/W1_L are Walkman
+ * One's pristine gain-mode copies, which W1 never rewrites. */
 #define SONY_DIR "/system/usr/share/audio_dac/"
 #define CINDER_DIR "/system/vendor/unknown321/usr/share/cinder/audio_dac/"
-static const char *const DIRS[] = { SONY_DIR, CINDER_DIR };
+#define W1_N "/system/etc/.mod/gain/gain_n/"
+#define W1_L "/system/etc/.mod/gain/gain_l/"
 
-static const struct { const char *key, *pcm, *dsd; } TABLES[] = {
-    { "stock", "ov_1291.tbl", "ov_dsd_1291.tbl" },
-    { "w1",    "ov_1280.tbl", "ov_dsd_1280.tbl" },
-    { "wm1a",  "ov_127x.tbl", "ov_dsd_127x.tbl" },
+/* One table by content: its trailer, and the places a copy may sit, tried in order. The trailer is
+ * the table's own 8-byte sum/xor (Wampy's cxd3778gf_table.h); md5 given for cross-reference with
+ * Wampy's tunings/uniq.txt. Identical bytes under different names share one entry. */
+struct src { const unsigned char tail[8]; const char *path[5]; };
+
+/* A50 plain curve, md5 bb5ccae7. W1 ships it as gain_n's ov_127x (and in both _cew slots). */
+static const struct src A50_PCM = { { 0x5e,0x55,0x35,0x00,0x96,0xb4,0x3d,0xab },
+    { SONY_DIR "ov_1291.tbl", W1_N "ov_127x.tbl" } };
+/* A50 plain DSD, md5 05858758 — also the NW-WM1A's ov_dsd_1280. */
+static const struct src A50_DSD = { { 0x2a,0x06,0x04,0x00,0x2a,0x8a,0x00,0x00 },
+    { SONY_DIR "ov_dsd_1291.tbl", SONY_DIR "ov_dsd_1280.tbl", W1_N "ov_dsd_127x.tbl" } };
+/* A50 region (_cew) pair, md5 4ab93bdc / 741e6d91. W1 does not carry the PCM one. */
+static const struct src CEW_PCM = { { 0x85,0x4a,0x39,0x00,0x04,0x66,0xb7,0x3c },
+    { SONY_DIR "ov_1291_cew.tbl" } };
+static const struct src CEW_DSD = { { 0x84,0xa2,0x03,0x00,0x40,0x3e,0x00,0x00 },
+    { SONY_DIR "ov_dsd_1291_cew.tbl", SONY_DIR "ov_dsd_1280_cew.tbl" } };
+/* NW-WM1A curve, md5 39a60adc / 142c8a33. */
+static const struct src WM1A_PCM = { { 0xcc,0xd6,0x35,0x00,0xeb,0x50,0x88,0xdd },
+    { SONY_DIR "ov_127x.tbl", CINDER_DIR "ov_127x.tbl", W1_L "ov_127x.tbl" } };
+static const struct src WM1A_DSD = { { 0x76,0xbe,0x03,0x00,0xdc,0x0c,0x00,0x00 },
+    { SONY_DIR "ov_dsd_127x.tbl", CINDER_DIR "ov_dsd_127x.tbl", W1_L "ov_dsd_127x.tbl" } };
+/* Walkman One's ov_1280 (= NW-WM1A's), md5 5bf930c0. Its DSD partner is A50_DSD's bytes. */
+static const struct src W1_PCM = { { 0xca,0xa1,0x38,0x00,0x18,0x32,0xf2,0x30 },
+    { SONY_DIR "ov_1280.tbl", CINDER_DIR "ov_1280.tbl" } };
+/* Tone control. A50 tc_1291 md5 05bcde3d; NW-WM1A tc_127x = tc_1280 = ZX300 tc_1288, md5 f678cb93. */
+static const struct src TONE_A50 = { { 0x1b,0x91,0x01,0x00,0xa9,0x8f,0xf1,0x18 },
+    { SONY_DIR "tc_1291.tbl", CINDER_DIR "tc_1291.tbl" } };
+static const struct src TONE_WM1A = { { 0xf9,0x89,0x01,0x00,0xa9,0x8f,0xf1,0x18 },
+    { SONY_DIR "tc_127x.tbl", SONY_DIR "tc_1280.tbl", CINDER_DIR "tc_127x.tbl", CINDER_DIR "tc_1280.tbl" } };
+
+static const struct { const char *key; const struct src *pcm, *dsd; } TABLES[] = {
+    { "stock", &A50_PCM,  &A50_DSD },
+    { "w1",    &W1_PCM,   &A50_DSD },
+    { "wm1a",  &WM1A_PCM, &WM1A_DSD },
     /* The region pair. Every model's volume table ships twice, plain and `_cew`, and `dacdat auto`
      * picks between them from the NVP `shp` flag (this unit reads 0x00000006, swid letter E).
      * Layout (Wampy's src/dac/cxd3778gf_table.h): sound effect off/on x 27 output tables x 121
@@ -77,22 +116,23 @@ static const struct { const char *key, *pcm, *dsd; } TABLES[] = {
      *
      * Every other key here is a PLAIN table. On a unit that boots `_cew`, any of them removes the
      * region restriction. */
-    { "eu",    "ov_1291_cew.tbl", "ov_dsd_1291_cew.tbl" },
+    { "eu",    &CEW_PCM,  &CEW_DSD },
 };
 
 /* Tone-control tables — the other half of what W1 calls a "sound signature", and the half nobody
  * had wired. Sony loads one of these at every boot alongside the volume table, into its own proc
  * node. Unlike the volume tables these have NO `_cew` variant, so tone is not region-restricted.
  * Kept as separate keys rather than folded into the entries above, so that applying a volume curve
- * does not silently also change tone. */
-static const struct { const char *key, *tone; } TONE_TABLES[] = {
-    { "tone-stock", "tc_1291.tbl" },
-    { "tone-w1",    "tc_1280.tbl" },
-    { "tone-wm1a",  "tc_127x.tbl" },
+ * does not silently also change tone. `tone-w1` and `tone-wm1a` are the same bytes; both names
+ * stay so existing configs keep working. */
+static const struct { const char *key; const struct src *tone; } TONE_TABLES[] = {
+    { "tone-stock", &TONE_A50 },
+    { "tone-w1",    &TONE_WM1A },
+    { "tone-wm1a",  &TONE_WM1A },
 };
 
-/* Copy one table file into one proc node. Returns 0 on success. */
-static int copy_one(const char *src, const char *dst, off_t want)
+/* Copy one table file into one proc node, if it is the table `tail` names. Returns 0 on success. */
+static int copy_one(const char *src, const unsigned char *tail, const char *dst, off_t want)
 {
     static char buf[PCM_BYTES];
     struct stat st;
@@ -108,7 +148,7 @@ static int copy_one(const char *src, const char *dst, off_t want)
     }
     n = read(in, buf, (size_t)want);
     close(in);
-    if (n != (ssize_t)want)
+    if (n != (ssize_t)want || memcmp(buf + want - 8, tail, 8) != 0)
         return 4;
 
     out = open(dst, O_WRONLY | O_CLOEXEC);
@@ -119,17 +159,14 @@ static int copy_one(const char *src, const char *dst, off_t want)
     return (n == (ssize_t)want) ? 0 : 5;
 }
 
-/* Install the table called `name` from the first directory that has a valid copy. Returns 0 on
- * success, 4 when no directory has one, 5 when the write itself failed. */
-static int install_one(const char *name, const char *dst, off_t want)
+/* Install the table `t` from the first place that has a matching copy. Returns 0 on success, 4
+ * when no place has one, 5 when the write itself failed. */
+static int install_one(const struct src *t, const char *dst, off_t want)
 {
-    char src[160];
     unsigned i;
 
-    for (i = 0; i < sizeof DIRS / sizeof DIRS[0]; i++) {
-        if (snprintf(src, sizeof src, "%s%s", DIRS[i], name) >= (int)sizeof src)
-            return 4;
-        int rc = copy_one(src, dst, want);
+    for (i = 0; i < sizeof t->path / sizeof t->path[0] && t->path[i]; i++) {
+        int rc = copy_one(t->path[i], t->tail, dst, want);
         if (rc != 4)
             return rc;
     }

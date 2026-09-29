@@ -84,7 +84,7 @@ comp_bool() {  # comp_bool <VARNAME> <default> — only ever echoes 0 or 1
 }
 comp_voltable() {  # comp_voltable — only ever echoes a known table keyword
     v="$(comp_raw CINDER_VOLTABLE)"
-    case "$v" in stock|wm1a|w1) echo "$v" ;; *) echo stock ;; esac
+    case "$v" in stock|wm1a|w1|region) echo "$v" ;; *) echo stock ;; esac
 }
 comp_sig() {   # comp_sig — only ever echoes a known variant name
     v="$(comp_raw CINDER_SIGNATURE)"
@@ -492,8 +492,9 @@ else
     echo "WARN: $SRC_VOLTABLE not staged — the stock volume curve stays."
 fi
 # Only seed the conf if the user has not already got one: their on-device choice outranks the
-# installer's default on a re-flash.
-if [ ! -f /contents/cinder_voltable.conf ]; then
+# installer's default on a re-flash. One exception: choosing `region` (keep Sony's regional volume
+# limit) always takes effect, so an install asked to keep the limit never leaves it lifted.
+if [ ! -f /contents/cinder_voltable.conf ] || [ "$WANT_VOLTABLE" = region ]; then
     echo "$WANT_VOLTABLE" > /contents/cinder_voltable.conf 2>/dev/null
     echo "volume curve: $WANT_VOLTABLE (wrote /contents/cinder_voltable.conf)"
 else
@@ -1025,7 +1026,7 @@ RESPAWN_MAX_TOTAL=10      # absolute cap per boot, so a 31-s crash cycle cannot 
 # launcher (uid 100, like the app) cannot write.
 #
 # Best-effort and deliberately quiet on failure: a missing helper or an unreadable conf leaves the
-# stock curve, which is exactly what the device does without any of this. Nothing here may stop a
+# table the boot script loaded, which is exactly what the device does without any of this. Nothing here may stop a
 # boot — the audio path is already up by now either way.
 VOLTABLE_CONF=/contents/cinder_voltable.conf
 VOLTABLE_BIN=/system/vendor/unknown321/bin/cinder-voltable   # same dir as HOME_BIN above
@@ -1037,33 +1038,47 @@ vt_log() {
     [ -n "$LOGF" ] && ( echo "cinderhome-launch: $1" >> "$LOGF" ) 2>/dev/null
     true
 }
+# The conf is required, and an empty read does nothing: /contents can be unreadable for the first
+# ~10 s of a boot, and treating "could not read" as the default would lift the limit on a player
+# set to `region`. The installer always writes the conf, `stock` unless chosen otherwise.
 if [ -x "$VOLTABLE_BIN" ] && [ -f "$VOLTABLE_CONF" ]; then
     vt=$(cat "$VOLTABLE_CONF" 2>/dev/null | tr -d " \t\r\n")
     case "$vt" in
         stock)
-            # Apply NOTHING. Sony's boot script already loaded the table for this player's region:
-            # the plain file, or the quieter `_cew` one on players sold where volume is restricted
-            # (CEW2 and KR3 in Wampy's jack measurements). Re-applying the plain file here — which
-            # this did until 2026-09-13 — lifted that restriction on exactly those players, on a
-            # default install. analysis/RE_volume_tables.md, amended 2026-09-13.
-            vt_log "volume curve: stock — keeping the table the boot script loaded"
+            # The A50's own curve, PLAIN — Cinder's default since 2026-09-29, at the owner's
+            # request. Sony's boot script loads the quieter `_cew` table on players sold where
+            # volume is restricted (CEW2 and KR3 in Wampy's jack measurements); this replaces it on
+            # every boot, so those players lose the regional limit. On every other player it is the
+            # table the boot script already loaded. `region` below keeps the old behaviour.
+            # analysis/RE_volume_tables.md.
+            if "$VOLTABLE_BIN" stock >/dev/null 2>&1; then
+                vt_log "volume curve: stock applied (A50 curve, no regional limit)"
+            else
+                vt_log "volume curve: cinder-voltable stock FAILED — the boot script's table stays"
+            fi
+            ;;
+        region)
+            # Apply NOTHING: keep the table Sony's boot script chose for this player's region,
+            # restriction included.
+            vt_log "volume curve: region — keeping the table the boot script loaded"
             ;;
         wm1a|w1)
             # Both need a table a STOCK NW-A50 DOES NOT HAVE: only its own 1291 set ships. An
             # install puts the user's own copy in Cinder's directory once its SHA-256 matches Sony's
-            # (step 1f3b above), and cinder-voltable looks in both places. Look first, so the log
-            # says why instead of a bare FAILED — the helper's rc 4 means the same thing, silently.
+            # (step 1f3b above); Walkman One keeps the WM1A one in its gain_l directory. The helper
+            # checks each candidate's content, so a file with the right NAME is not enough — its
+            # rc 4 below means none of them held the right table. Look first, so the log says why.
             case "$vt" in wm1a) vt_tbl=ov_127x.tbl ;; *) vt_tbl=ov_1280.tbl ;; esac
-            if [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ] && [ ! -f "/system/vendor/unknown321/usr/share/cinder/audio_dac/$vt_tbl" ]; then
-                vt_log "volume curve: '$vt' needs Sony's $vt_tbl, which this player's firmware does not include and no install has supplied — stock curve stays (put it at the top of the drive and install again)"
+            if [ ! -f "/system/usr/share/audio_dac/$vt_tbl" ] && [ ! -f "/system/vendor/unknown321/usr/share/cinder/audio_dac/$vt_tbl" ] && [ ! -f "/system/etc/.mod/gain/gain_l/$vt_tbl" ]; then
+                vt_log "volume curve: '$vt' needs Sony's $vt_tbl, which this player's firmware does not include and no install has supplied — the boot script's table stays (put it at the top of the drive and install again)"
             elif "$VOLTABLE_BIN" "$vt" >/dev/null 2>&1; then
                 vt_log "volume curve: $vt applied"
             else
-                vt_log "volume curve: cinder-voltable $vt FAILED — stock curve stays"
+                vt_log "volume curve: cinder-voltable $vt FAILED — no copy of the $vt table found, the boot script's table stays"
             fi
             ;;
         "") : ;;
-        *)  vt_log "volume curve: unknown value '$vt' in $VOLTABLE_CONF — stock curve stays" ;;
+        *)  vt_log "volume curve: unknown value '$vt' in $VOLTABLE_CONF — the boot script's table stays" ;;
     esac
 fi
 
