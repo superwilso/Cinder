@@ -879,23 +879,28 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         // what the preview DRAWS rather than only what it says), and the no-signal state, which has
         // to admit the preview is synthetic rather than quietly animating.
         {
-            let peaks: Vec<f32> = levels.iter().map(|v| (v + 0.18).min(1.0)).collect();
+            // 64 real bands, as the PCM tap gives them: the same curve, sampled finer.
+            let levels64: Vec<f32> = (0..64).map(|i| levels[i * levels.len() / 64]).collect();
+            let peaks64: Vec<f32> = levels64.iter().map(|v| (v + 0.18).min(1.0)).collect();
             let shots: [(&str, cinder_ui::vizset::VizSet, usize); 3] = [
                 ("vizset_default", cinder_ui::vizset::VizSet {
                     style: "BARS", cover: "VEIL", scale: "DYNAMIC", range: "60 DB",
                     response: "NORMAL", curve: "SMOOTH", peaks: false, window: "AUTO", rate: "20 HZ",
+                    bands: "36", columns: 36,
                     levels: Some(&levels), peak_marks: None, seed: 2.0,
                     kind: cinder_ui::viz::VizKind::Bars,
                 }, cinder_ui::vizset::ROW_STYLE),
                 ("vizset_peaks_fixed", cinder_ui::vizset::VizSet {
                     style: "SEGMENTS", cover: "FULL", scale: "FIXED", range: "48 DB",
                     response: "FAST", curve: "LINEAR", peaks: true, window: "125 MS", rate: "45 HZ",
-                    levels: Some(&levels), peak_marks: Some(&peaks), seed: 2.0,
+                    bands: "64", columns: 64,
+                    levels: Some(&levels64), peak_marks: Some(&peaks64), seed: 2.0,
                     kind: cinder_ui::viz::VizKind::Segments,
                 }, cinder_ui::vizset::ROW_PEAKS),
                 ("vizset_no_signal", cinder_ui::vizset::VizSet {
                     style: "RIBBON", cover: "OFF", scale: "DYNAMIC", range: "72 DB",
                     response: "SMOOTH", curve: "SMOOTH", peaks: false, window: "60 MS", rate: "30 HZ",
+                    bands: "24", columns: 24,
                     levels: None, peak_marks: None, seed: 2.0,
                     kind: cinder_ui::viz::VizKind::Ribbon,
                 }, cinder_ui::vizset::ROW_RATE),
