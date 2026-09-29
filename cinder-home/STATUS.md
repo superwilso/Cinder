@@ -1422,8 +1422,9 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
   via `BtCommonServiceClient::SetRfOnOff` and reconnects the last device, and **Disconnect** hangs up
   without powering the radio down.)*
 - *(moved out 2026-08-18: the **FM Radio** screen is no longer stationary — see Partial below.)*
-- **BT Receiver** screen: static, and it says so on screen since 2026-09-06 (the inert header
-  toggle and the unreachable "on" layout are gone — `docs/AUDIT_2026-09-06_ui.md` §A6).
+- *(moved out 2026-09-29: **BT Receiver** works — a Windows PC paired and streamed to the jack,
+  owner-heard. Experimental on screen; iOS refuses to pair. `analysis/G_bt_nfc/RE_findings.md`,
+  "Receiver, 2026-09-29".)*
 - *(moved to Functional 2026-07-30: the **Devices** screen — `pairing.rs` is a real route with real
   paired devices, connect / disconnect / forget. Discovering an **unpaired** device is the one part
   still missing, and it is listed under Partial rather than here because the screen says so on

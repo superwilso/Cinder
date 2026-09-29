@@ -85,7 +85,7 @@ pub const QUICK_SUB: &str = "Swipe down from the top of the screen";
 /// screen and what the release is called cannot drift apart. It is a macro rather than a `const`
 /// because `concat!` takes literals only.
 #[macro_export]
-macro_rules! cinder_version { () => { "0.3.12" } }
+macro_rules! cinder_version { () => { "0.3.13" } }
 
 /// The version on its own, for anything that wants it without the channel decoration.
 pub const CINDER_VERSION: &str = cinder_version!();

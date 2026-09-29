@@ -1138,6 +1138,41 @@ impl Db {
         }
     }
 
+    /// Every FLAC the player's own decoder cannot play, as the path PlayerService is handed: the ones
+    /// Sony's scanner recorded as wider than 24 bits (`BITS_PER_SAMPLE`, akey 78 on the A50 1.02
+    /// store, resolved by name like the SensMe properties).
+    ///
+    /// WHY. PlayerService's FLAC demuxer ACCEPTS a 32-bit file — its open path allows 8, 16, 24 and
+    /// 32 — and hands it to the reference libFLAC 1.3.2 it links, which predates 32-bit FLAC: the
+    /// frame-header sample-size code that FLAC 1.4+ writes for 32-bit (7) is "reserved" to it, so
+    /// every frame is unparseable. The track opens, nothing decodes, PlayerService stalls, and the
+    /// next Cinder call into it times out — "AUDIO STOPPED — RESTART" for the rest of the boot.
+    /// Reported on the reference player 2026-09-29 with the one 32-bit file in its library.
+    /// `analysis/RE_32bit_flac.md`.
+    ///
+    /// FLAC only, by extension: the decoder limit is libFLAC's, and a wide WAV goes through a
+    /// different path that nobody has shown to fail.
+    pub fn undecodable_paths(&self) -> Vec<String> {
+        let Some(akey) = Self::sensme_akey(&self.conn, &["BITS_PER_SAMPLE"], 78) else {
+            return Vec::new();
+        };
+        let where_clause = format!(
+            "WHERE {TRACK_WHERE} AND ob.object_id IN \
+             (SELECT object_id FROM object_ext_int WHERE akey = {akey} AND value > 24)"
+        );
+        match self.query_tracks(&where_clause, "ob.object_id", []) {
+            Ok(tracks) => tracks
+                .into_iter()
+                .map(|t| t.filename)
+                .filter(|f| f.to_ascii_lowercase().ends_with(".flac"))
+                .collect(),
+            Err(e) => {
+                eprintln!("[cinder-db] bit depth: {e} — no track is held back");
+                Vec::new()
+            }
+        }
+    }
+
     /// Every track's SensMe analysis, by `object_id` — the channel bitmask, the five axes and the
     /// sabi (chorus) position. Tracks with nothing analysed are simply absent from the map.
     ///
@@ -1534,6 +1569,32 @@ mod tests {
         let t = d.sensme()[&6];
         assert_eq!(t.tempo, 0, "44100 Hz is not a tempo");
         assert_eq!(t.channel_ids(), vec![0]);
+    }
+
+    /// The 32-bit FLAC is found by its recorded bit depth and returned as the path PlayerService
+    /// would be handed; 16- and 24-bit ones are not, and neither is a wide non-FLAC.
+    #[test]
+    fn undecodable_paths_are_the_flacs_wider_than_24_bits() {
+        let d = db();
+        d.conn
+            .execute_batch(
+                "INSERT INTO schema VALUES (2,78,119,'BITS_PER_SAMPLE');
+                 INSERT INTO object_ext_int VALUES (1,78,32);
+                 INSERT INTO object_ext_int VALUES (2,78,24);
+                 INSERT INTO object_ext_int VALUES (3,78,16);",
+            )
+            .unwrap();
+        let p = d.undecodable_paths();
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].ends_with("/atlas.flac") && p[0].starts_with('/'), "a full path: {}", p[0]);
+        d.conn.execute_batch("UPDATE object_body SET filename='atlas.wav' WHERE object_id=1;").unwrap();
+        assert!(d.undecodable_paths().is_empty(), "a 32-bit WAV is not held back");
+    }
+
+    /// A store with no bit-depth rows at all holds nothing back.
+    #[test]
+    fn no_bit_depth_rows_hold_nothing_back() {
+        assert!(db().undecodable_paths().is_empty());
     }
 
     /// A store that fills in only the single channel id (Music Center's tags populate akey 51;

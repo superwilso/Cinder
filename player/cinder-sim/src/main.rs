@@ -421,7 +421,9 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
                 .collect();
             pairing::render(c, theme, fonts, &paired, &[], None, None, false, 0.0, 0)
         }
-        Screen::Receiver => receiver::render(c, theme, fonts),
+        Screen::Receiver => receiver::render(c, theme, fonts, &receiver::Rx {
+            on: false, phase: 0, peer: "", codec: 0, freq: 0, bitrate: 0, radio: true,
+        }),
         Screen::Fm => fm::render(c, theme, fonts, &fm::Fm {
             khz: 97300, playing: true,
             stations: [0; fm::PRESETS], n_stations: 0,

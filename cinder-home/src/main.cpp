@@ -595,6 +595,10 @@ extern long g_bt_toggle_at;  // defined with refresh_bt_route — when the user 
 // connectable so a headphone's power-on page is accepted. Defined next to bt_reconnect_tick.
 static void bt_service_retry(bool on, bool force);
 static void bt_connect_wait(bool on);
+// BT Receiver mode is running (the Walkman as an A2DP sink). Declared this early because the
+// headphone reconnect ladder must stand aside while it is: paging headphones from a radio that is
+// being a speaker for a phone is two roles fighting over one link. See apply_receiver.
+static bool g_rx_active = false;
 extern bool g_bt_radio_seen_up;  // ditto — last GetBtStatus said the radio was up (poll back-off)
 void apply_bt_codec();       // ditto — pushes the codec choice to the radio (not just the conf file)
 static void bt_apply_enhanced_mode(const char* why); // ditto — Sony's "Use Enhanced Mode" (absolute volume)
@@ -731,6 +735,7 @@ void fx_cache_drop();    // defined below: forget what the sound service was las
 void apply_eq_fn();      // defined below (carry_out helpers); re-applied from deferred_up on restore
 void fm_release_capture(); // defined below; hands hw:0,1 back before any DELIBERATE exit
 void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, before render_up)
+void apply_dac_eq();     // defined below, beside hp_amp_tick: the codec's own EQ via cinder-voltable
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
 namespace fbsync { void start(); }  // defined below (before socsusp); the fb early-suspend handshake
 extern bool g_np_poll_now;  // defined with the pump state: force the next now-playing poll (see below)
@@ -1458,6 +1463,9 @@ void deferred_up() {
     fx_cache_drop();   // boot: nothing is known about what the stock player left behind
     run_guarded("deferred_up: apply EQ", 6, apply_eq_fn);
     run_guarded("deferred_up: apply sound chain", 6, apply_sound_fn);
+    // The DAC EQ is a table the boot script reloads flat on every boot, so a saved EQ has to be
+    // put back every boot too. A flat one costs nothing: apply_dac_eq skips the helper for it.
+    run_watchdog_only("deferred_up: apply DAC EQ", 6, apply_dac_eq);
     if (g_settings_loaded) {
         // This one IS a restore: repeat-one is sticky inside the audio shim and applied to every
         // sequence it builds, so pushing the restored value once here is enough — nothing is
@@ -2927,6 +2935,96 @@ bool cpu_tune(const char* verb) {
                   fails >= 3 ? " — not asking again this session" : "");
     clog_(m);
     return false;
+}
+
+// Sound > Advanced > Linear headphone amp (adv flag bit 5), called once a second. The CXD3778GF's
+// linear amp instead of Sony's S-Master class-D: measured louder, cleaner and flatter into a line
+// input, NOT yet into headphones (analysis/RE_headphone_amp_modes.md), hence opt-in. The setting
+// survives codec standby but Sony's wired-headphone service sits on the same control next to its
+// jack-insert handling, so while it is on this re-asserts it whenever the control reads S-Master.
+// While it is off the control is never touched — except once on the switch-off itself, to put
+// S-Master back. cinder_codec.h has the register-level detail.
+// Sound ▸ Advanced ▸ DAC EQ: the codec's own five-biquad EQ (cinder-home/src/codec_eq.h,
+// analysis/RE_codec_tone_table.md). The table lives in a root-only proc node, so the setuid
+// cinder-voltable builds and writes it from five whole numbers. Held FLAT while Source Direct is
+// on: that row promises every effect is bypassed, and this is one.
+//
+// Only ever runs the helper when the EFFECTIVE curve changes. SoundChanged calls this too (it is
+// how a Source Direct flip reaches here, since the shell gets one action per input), so on an
+// ordinary effect toggle it costs a compare. At boot nothing is known yet, but a flat curve is what
+// Sony's boot script just loaded, so flat is skipped then as well.
+//
+// GUARD_FATAL (run_watchdog_only): system() owns a child and swaps signal dispositions, and the
+// FFI read holds a Rust mutex, so a hang here must not be unwound. No Sony service is involved.
+void apply_dac_eq() {
+    static signed char last[5];
+    static bool known = false;
+    static int missing_said = 0;
+    signed char b[5] = {0, 0, 0, 0, 0};
+    if (cinder_get_dac_eq(b) != 5) return;
+    if (cinder_get_adv_flags() & 1) std::memset(b, 0, sizeof b);   // Source Direct
+    const bool flat = !b[0] && !b[1] && !b[2] && !b[3] && !b[4];
+    if (known ? std::memcmp(b, last, sizeof b) == 0 : flat) {
+        if (!known) { std::memcpy(last, b, sizeof b); known = true; }
+        return;
+    }
+    static const char kHelper[] = "/system/vendor/unknown321/bin/cinder-voltable";
+    if (::access(kHelper, X_OK) != 0) {
+        if (missing_said++ == 0)
+            clog_("dac eq: cinder-voltable is not installed — the DAC EQ cannot be applied "
+                  "(install with the volume-curve component)");
+        return;
+    }
+    char cmd[160];
+    std::snprintf(cmd, sizeof cmd, "%s eq %d %d %d %d %d", kHelper, b[0], b[1], b[2], b[3], b[4]);
+    const int rc = std::system(cmd);
+    const int code = (rc == -1) ? -1 : ((rc >> 8) & 0xff);
+    const char* what;
+    switch (code) {
+        case 0:  what = "applied"; break;
+        case 2:  what = "REJECTED: a gain outside -24..12"; break;
+        case 3:  what = "REFUSED: helper is not setuid root"; break;
+        case 4:  what = "no Sony tone table found to build on"; break;
+        case 5:  what = "the write to the codec node failed"; break;
+        default: what = "unknown result"; break;
+    }
+    char m[200];
+    std::snprintf(m, sizeof m, "dac eq: %d %d %d %d %d (half-dB)%s -> rc=%d (%s)",
+                  b[0], b[1], b[2], b[3], b[4],
+                  (cinder_get_adv_flags() & 1) ? " [Source Direct: flat]" : "", code, what);
+    clog_(m);
+    // Remember it only once it landed, so a failed attempt is retried on the next change.
+    if (code == 0) { std::memcpy(last, b, sizeof b); known = true; }
+}
+
+void hp_amp_tick() {
+    static int last_want = 0;
+    static int fails = 0;
+    const int want = (cinder_get_adv_flags() >> 5) & 1;
+    if (!want) {
+        if (last_want && cinder_codec_set_hp_amp_linear(0) == 0)
+            clog_("hp amp: S-Master restored (Sony's default)");
+        last_want = 0;
+        return;
+    }
+    const int cur = cinder_codec_get_hp_amp_linear();
+    if (cur == 1) {
+        last_want = 1;
+        return;
+    }
+    if (cur == 0 && cinder_codec_set_hp_amp_linear(1) == 0) {
+        static int said = 0;
+        if (said < 5) {
+            ++said;
+            clog_(last_want ? "hp amp: something set S-Master back -> linear re-asserted"
+                            : "hp amp: linear amplifier on (experimental)");
+        }
+    } else if (fails < 3) {
+        ++fails;
+        clog_(cur < 0 ? "hp amp: `headphone amp` control unavailable"
+                      : "hp amp: switching to the linear amp FAILED");
+    }
+    last_want = 1;
 }
 
 // Settings > Date & time > SET CLOCK. Hands the epoch to the setuid helper, which is the only
@@ -4794,6 +4892,7 @@ static void bt_connect_when_free(const std::vector<unsigned char>& addr) {
 
 // Runs from the 1 Hz housekeeping. Cheap: the common paths are two boolean tests.
 static void bt_reconnect_tick() {
+    if (g_rx_active) return;   // the radio is a receiver right now; headphones wait
     if (!cinder_get_bt_on() || g_bt_user_disconnected) {
         // A deliberate hang-up (or a radio the user switched off) must not leave the player
         // connectable, or the headphones simply walk back in and the Disconnect button reads as
@@ -5405,6 +5504,9 @@ static void flush_bt_prompt() {
     pthread_mutex_unlock(&g_bt_prompt_mx);
     if (p.kind == BT_PROMPT_NONE) { cinder_bt_prompt_clear(); return; }
     cinder_bt_prompt_set(p.kind, p.name.c_str(), p.code);
+    // A pairing request from another device has a deadline on THAT device (Windows gives up after
+    // about 30 s). Light an idle-dark panel so the prompt can be seen; a Power blank stays dark.
+    screen_auto_wake();
 }
 
 // Pair with a device the scan turned up (Devices ▸ a SCAN row).
@@ -6226,7 +6328,7 @@ static bool usb_set_device_type(unsigned t) {
 // It early-outs when the requested mode already equals the current one, so calling it twice is
 // harmless. That also means SetUsbFunction from apply_usb_dac below is now redundant — kept only
 // because it is the proven-harmless half and costs one call.
-enum { FM_MEDIAPLAY = 0, FM_USBDAC = 1 };
+enum { FM_MEDIAPLAY = 0, FM_USBDAC = 1, FM_A2DPSINK = 2 };
 
 static bool usb_enter_func_mode(int mode) {
     typedef bool (*enterfn)(void*, const int*);
@@ -6256,7 +6358,8 @@ static bool usb_enter_func_mode(int mode) {
     // /proc/asound all moved). Logged for the record; nothing branches on it.
     char m[128];
     std::snprintf(m, sizeof m, "func-mode: EnterFuncMode(%d = %s) [returned %s — not meaningful]",
-                  mode, mode == FM_USBDAC ? "UsbDac" : "MediaPlay", ok ? "true" : "false");
+                  mode, mode == FM_USBDAC ? "UsbDac" : mode == FM_A2DPSINK ? "A2dpSink" : "MediaPlay",
+                  ok ? "true" : "false");
     clog_(m);
     return true;
 }
@@ -7704,6 +7807,216 @@ void apply_usb_dac() {
     }
 }
 
+// ── BT RECEIVER (the Walkman as an A2DP sink) ────────────────────────────────────────────────
+// Sony's own sequence, read out of HgrmMediaPlayerApp 2026-09-29 (BtReceiverState*, BtPlayerModel:
+// "EnterFuncMode(%d) return value", "RequestStartConnectWait failed!!", "StartSound failed!!",
+// OnNotifySetDiscoverableMode) and proven step by step with `cinder-probe --btrx 180 fm`:
+//
+//   1. release the Music track — RendererDmpMaster only enters A2dpSnk mode (+0x118 == 2) when the
+//      sink's track can take the renderer, the same single-track rule as USB-DAC (apply_usb_dac);
+//   2. EnterFuncMode(2 = A2dpSink) — read back 2 on the device;
+//   3. BtPlayerService::RequestStartConnectWait (rc 0) and BtCommon SetDiscoverableMode(true) —
+//      a Windows PC then found the Walkman and reached the numeric-comparison code;
+//   4. the code is answered by the existing prompt (apply_bt_prompt_reply); the Receiver page
+//      draws it, which Devices-only drawing never let anyone see;
+//   5. StartSound whenever the sink link or play state moves (Sony: "StartSound by
+//      VirtualPauseOff").
+//
+// Leaving undoes it in reverse and re-opens the music player as the USB-DAC exit does.
+//
+// NO LISTENER. The probe registers one; this does not. Everything the page shows is polled once a
+// second, so there is no callback slot to get wrong — and a listener that stops answering is what
+// libpstcore's hang checker reboots the player for (reference: the 2026-09-29 --btrx reboot).
+//
+// Indices are FROM THE VPTR. The first table in analysis/G_bt_nfc/RE_findings.md counted from the
+// vtable symbol and was 2 high everywhere; the probe crashed on it.
+enum { RXS_GetAvSnkConnectionStatus = 3, RXS_GetConnectInformation = 5,
+       RXS_RequestDisconnection = 9, RXS_RequestStartConnectWait = 11,
+       RXS_RequestStopConnectWait = 12, RXS_StartSound = 13, RXS_StopSound = 14,
+       RXS_GetPlayStatus = 17, RXS_GetTrackCodec = 24, RXS_GetTrackFreq = 25,
+       RXS_GetBitrate = 28 };
+enum { RX_VIDX_SetDiscoverableMode = 6 };   // BtCommonServiceClient
+
+static int g_rx_snk0 = -1, g_rx_last_snk = -1, g_rx_last_play = -2;
+static int g_rx_phase = 0;
+static unsigned g_rx_codec = 0, g_rx_freq = 0, g_rx_rate = 0;
+static std::string g_rx_peer;
+
+// dlopen, not DT_NEEDED: the libNfcService rule — a library the Home app has never exercised must
+// not be able to stop it from starting.
+static void* rx_client() {
+    static void* c = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        void* h = dlopen("libBtPlayerService.so", RTLD_NOW);
+        if (!h) { clog_("rx: libBtPlayerService.so unavailable"); return nullptr; }
+        typedef void* (*factory_fn)();
+        factory_fn f = (factory_fn)dlsym(h, "_ZN3pst8services28BtPlayerServiceClientFactory14CreateInstanceEv");
+        if (!f) { clog_("rx: BtPlayerServiceClientFactory missing"); return nullptr; }
+        c = f();
+        clog_(c ? "rx: BtPlayerService client ready" : "rx: BtPlayerService factory returned NULL");
+    }
+    return c;
+}
+
+static int rx_call0(int slot) {
+    void* c = rx_client();
+    if (!c) return -1;
+    typedef int (*fn0)(void*);
+    return ((fn0)bt_slot(c, slot))(c);
+}
+
+static void rx_discoverable(bool on) {
+    void* c = bt_common();
+    if (!c) return;
+    typedef void (*fnb)(void*, const bool*);
+    ((fnb)bt_slot(c, RX_VIDX_SetDiscoverableMode))(c, &on);
+}
+
+static void rx_release_player() {
+    set_transport(false);
+    bt_connect_wait(false);   // the transmitter side stops listening for headphones
+    cinder_audio_release_sequence();
+    int cp = cinder_audio_close_player();
+    char m[96];
+    std::snprintf(m, sizeof m, "rx: released the Music track (ClosePlayer rc=%d)", cp);
+    clog_(m);
+}
+
+static void rx_open_ipc() {
+    int wait = rx_call0(RXS_RequestStartConnectWait);
+    rx_discoverable(true);
+    g_rx_snk0 = rx_call0(RXS_GetAvSnkConnectionStatus);
+    g_rx_last_snk = g_rx_snk0;
+    g_rx_last_play = -2;
+    char m[128];
+    std::snprintf(m, sizeof m, "rx: RequestStartConnectWait rc=%d, discoverable on, sink status %d "
+                  "(the waiting value)", wait, g_rx_snk0);
+    clog_(m);
+}
+
+static void rx_close_ipc() {
+    int ss = rx_call0(RXS_StopSound);
+    int dc = rx_call0(RXS_RequestDisconnection);
+    int sw = rx_call0(RXS_RequestStopConnectWait);
+    rx_discoverable(false);
+    char m[128];
+    std::snprintf(m, sizeof m, "rx: StopSound rc=%d, RequestDisconnection rc=%d, "
+                  "RequestStopConnectWait rc=%d, discoverable off", ss, dc, sw);
+    clog_(m);
+}
+
+static void rx_reclaim_player() {
+    int ri = cinder_audio_init("cinder");
+    cinder_resume_rearm();   // ▶ hands the Up Next list back to the re-opened player
+    char m[96];
+    std::snprintf(m, sizeof m, "rx: reclaimed the music player (init rc=%d)%s", ri,
+                  ri == 0 ? "" : "  (local playback may need a restart)");
+    clog_(m);
+}
+
+// EnterFuncMode re-runs SetUsbFunction, which rewrites the gadget and on the probe runs took adb
+// down. Put the bus back the way this build keeps it.
+static void rx_usb_restore() {
+#ifdef CINDER_DEV
+    run_watchdog_only("rx: keep adb on the gadget (dev)", 10, []() {   // system()
+        std::system(
+            "echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null; "
+            "echo mass_storage,adb > /sys/class/android_usb/android0/functions 2>/dev/null; "
+            "echo 0B8D > /sys/class/android_usb/android0/idProduct 2>/dev/null; "
+            "echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null; "
+            "setprop ctl.start adbd 2>/dev/null");
+    });
+#else
+    run_watchdog_only("rx: usb-rescue", 10, []() {   // system()
+        std::system("/system/vendor/unknown321/bin/cinder-msc usb-rescue");
+    });
+#endif
+}
+
+static void rx_fm_sink()      { usb_enter_func_mode(FM_A2DPSINK); }
+static void rx_fm_mediaplay() { usb_enter_func_mode(FM_MEDIAPLAY); }
+
+// Enter or leave, to match cinder_get_rx_on(). Idempotent. Called directly (not under one guard):
+// each Sony step carries its own, as in apply_usb_dac, because the guard's jump buffer does not nest.
+void apply_receiver() {
+    const bool on = cinder_get_rx_on() != 0;
+    if (on == g_rx_active) return;
+    if (on) {
+        g_rx_active = true;   // FIRST: the reconnect ladder stands aside from here on
+        clog_("rx: entering receiver mode");
+        run_guarded("rx: release the music player", 10, rx_release_player);
+        run_guarded("rx: EnterFuncMode(A2dpSink)", 20, rx_fm_sink);
+        rx_usb_restore();
+        run_guarded("rx: connect-wait + discoverable", 10, rx_open_ipc);
+        g_rx_phase = 1;
+        cinder_set_rx_status(1, "", 0, 0, 0);
+    } else {
+        clog_("rx: leaving receiver mode");
+        run_guarded("rx: close the sink", 10, rx_close_ipc);
+        run_guarded("rx: EnterFuncMode(MediaPlay)", 20, rx_fm_mediaplay);
+        rx_usb_restore();
+        run_guarded("rx: reclaim the music player", 10, rx_reclaim_player);
+        g_rx_active = false;
+        g_rx_phase = 0;
+        g_rx_peer.clear();
+        cinder_set_rx_status(0, "", 0, 0, 0);
+    }
+}
+
+// One read of the sink, once a second while the mode runs. StartSound is re-issued whenever the
+// link or the play state moves — Sony's app does it on "VirtualPauseOff", and nothing decoded yet
+// says which transition is the one that matters, so every one gets it. It is idempotent on a
+// playing sink as far as two probe runs showed (rc logged each time).
+static void rx_poll_ipc() {
+    const int snk  = rx_call0(RXS_GetAvSnkConnectionStatus);
+    const int play = rx_call0(RXS_GetPlayStatus);
+    g_rx_codec = (unsigned)rx_call0(RXS_GetTrackCodec);
+    g_rx_freq  = (unsigned)rx_call0(RXS_GetTrackFreq);
+    g_rx_rate  = (unsigned)rx_call0(RXS_GetBitrate);
+    const bool attached = snk >= 0 && snk != g_rx_snk0;
+    if (snk != g_rx_last_snk || play != g_rx_last_play) {
+        if (attached && snk != g_rx_last_snk) {
+            // The peer's name, once per attach. Signature from the demangled symbol:
+            // GetConnectInformation(std::vector<uint8_t>&, std::string&) — libc++ containers, as
+            // every pst container is (reference_pst_containers).
+            void* c = rx_client();
+            if (c) {
+                std::vector<unsigned char> addr;
+                std::string name;
+                typedef int (*fnci)(void*, std::vector<unsigned char>*, std::string*);
+                ((fnci)bt_slot(c, RXS_GetConnectInformation))(c, &addr, &name);
+                g_rx_peer = name;
+            }
+        }
+        if (!attached) g_rx_peer.clear();
+        const int rs = rx_call0(RXS_StartSound);
+        char m[192];
+        std::snprintf(m, sizeof m, "rx: sink %d -> %d, play %d -> %d, peer '%s' — StartSound rc=%d "
+                      "(codec %u freq %u bitrate %u)", g_rx_last_snk, snk, g_rx_last_play, play,
+                      g_rx_peer.c_str(), rs, g_rx_codec, g_rx_freq, g_rx_rate);
+        clog_(m);
+        g_rx_last_snk = snk;
+        g_rx_last_play = play;
+    }
+    // AVSNK status, from Sony's own log on the device 2026-09-29 ("AVSNK status change to (n)"):
+    // 1 idle, 2 connect-wait, 4 connected, 5 streaming — a Windows PC played 33 s at 5.
+    g_rx_phase = snk == 5 ? 3 : (attached && snk != 1) ? 2 : 1;
+}
+
+// The 1 Hz tick: keeps the running mode in step with the page (leaving the page turns it off —
+// no action can say so), then refreshes what the page shows.
+static void rx_tick() {
+    if ((cinder_get_rx_on() != 0) != g_rx_active) {
+        apply_receiver();
+        return;
+    }
+    if (!g_rx_active) return;
+    run_guarded("rx: read the sink", 6, rx_poll_ipc);
+    cinder_set_rx_status(g_rx_phase, g_rx_peer.c_str(), g_rx_codec, g_rx_freq, g_rx_rate);
+}
+
 // ── USB mass storage (hand /contents to the PC) ──────────────────────────────────────────────
 // Stock init's `sys.sony.config=msc` runs `unmount_msc1` (= umount /contents) BEFORE pointing the
 // gadget LUN at the partition — and umount fails EBUSY if anything holds an fd there. OUR
@@ -8395,9 +8708,22 @@ static void play_pending_sequence(const char* label, bool restore_position) {
     static const char* ptrs[512];
     int start = cinder_pending_play_start();
     int kept = 0;
+    // A FLAC wider than 24 bits never reaches PlayerService. Its FLAC demuxer accepts one and the
+    // libFLAC 1.3.2 behind it cannot decode a single frame, so the track "plays" silence while
+    // PlayerService stalls, and the next call into it times out: AUDIO STOPPED — RESTART for the
+    // whole boot. Reported 2026-09-29 with the one 32-bit file on the reference player;
+    // analysis/RE_32bit_flac.md. Left out exactly like a truncated URI, so `start` stays aligned.
+    int wide = 0;
+    bool tapped_wide = false;
     for (int i = 0; i < n; ++i) {
         int len = cinder_pending_play_uri(i, bufs[kept], sizeof bufs[kept]);
-        if (len > 0 && len < (int)sizeof bufs[kept]) {
+        if (len > 0 && len < (int)sizeof bufs[kept] && cinder_uri_undecodable(bufs[kept])) {
+            if (wide++ < 3)
+                std::fprintf(stderr, "[cinder] %s: URI %d is a FLAC wider than 24 bits — skipped "
+                                     "(PlayerService cannot decode it): %s\n", label, i, bufs[kept]);
+            if (i == start) tapped_wide = true;
+            if (i < start) --start;
+        } else if (len > 0 && len < (int)sizeof bufs[kept]) {
             ptrs[kept] = bufs[kept];
             ++kept;
         } else {
@@ -8406,6 +8732,17 @@ static void play_pending_sequence(const char* label, bool restore_position) {
             if (i < start) --start;
         }
     }
+    if (wide > 0) {
+        char m[160];
+        std::snprintf(m, sizeof m, "%s: %d FLAC(s) wider than 24 bits left out of the sequence "
+                                   "(the player's decoder stops at 24)", label, wide);
+        clog_(m);
+    }
+    // Only when the song the user CHOSE is the one held back: a shuffle that quietly passes over
+    // one file should not raise a toast every time it is dealt.
+    if (tapped_wide)
+        cinder_toast(kept ? "Skipped a 32-bit FLAC: this player can't decode above 24-bit"
+                          : "Can't play a 32-bit FLAC: this player's decoder stops at 24-bit");
     if (kept == 0) return;
     if (start < 0 || start >= kept) start = 0;
     int resume_ms = restore_position ? cinder_play_position_ms() : 0;
@@ -9069,6 +9406,11 @@ void carry_out(int act) {
             // costs a compare and no IPC.
             run_guarded("carry_out: apply sound effects", 6, apply_sound_fn);
             run_guarded("carry_out: apply EQ with the sound setup", 6, apply_eq_fn);
+            // Source Direct holds the DAC EQ flat; a compare unless that is what just changed.
+            run_watchdog_only("carry_out: DAC EQ with the sound setup", 6, apply_dac_eq);
+            break;
+        case CINDER_ACT_DAC_EQ_CHANGED:
+            run_watchdog_only("carry_out: DAC EQ", 6, apply_dac_eq);
             break;
         case CINDER_ACT_CLOCK_SET:
             run_guarded("carry_out: set clock", 8, apply_clock);
@@ -9174,6 +9516,7 @@ void carry_out(int act) {
             clog_("carry_out: settings reset — re-applying the whole chain");
             run_guarded("reset: EQ", 6, apply_eq_fn);
             run_guarded("reset: sound effects + high gain + balance", 8, apply_sound_fn);
+            run_watchdog_only("reset: DAC EQ", 6, apply_dac_eq);
             run_guarded("reset: volume", 4, apply_volume);
             run_guarded("reset: backlight", 4, apply_brightness);
             run_guarded("reset: repeat-one", 4,
@@ -9197,6 +9540,10 @@ void carry_out(int act) {
                 bt_apply_enhanced_mode("user toggle");
                 if (bt_use_absolute_volume()) apply_bt_volume(true);
             });
+            break;
+        case CINDER_ACT_RX_CHANGED:
+            // Guards its own steps, like apply_usb_dac: the jump buffer does not nest.
+            apply_receiver();
             break;
         case CINDER_ACT_USBDAC_LDAC:
             // 18 s, not 6: this used to be one setprop via cinder-msc, but it now also builds a
@@ -11209,6 +11556,7 @@ void* render_driver(void*) {
             if (now_ms() - last_bt_reconnect_ms >= 1000) {
                 last_bt_reconnect_ms = now_ms();
                 run_guarded("loop: BT reconnect", 8, bt_reconnect_tick);
+                rx_tick();   // guards its own steps (apply_receiver runs system() too)
 
             }
             // THE OUTPUT ROUTE CAN CHANGE WITHOUT THE TOGGLE. Headphones get switched off, run flat,
@@ -11637,7 +11985,8 @@ void* render_driver(void*) {
                 // direction: cinder_audio_is_playing() is derived from the position having moved
                 // recently, so it only reads 0 once playback has genuinely stopped, and a one-tick
                 // flicker costs a single increment that the next tick resets.
-                const bool audible = g_playing && cinder_audio_is_playing() != 0;
+                const bool audible = (g_playing && cinder_audio_is_playing() != 0)
+                                     || g_rx_active;   // receiving: the jack is live, the player is not
                 const bool idle = !g_screen_on && !audible;
 
                 // ── LET STAGE 1 FIRE WHILE MUSIC PLAYS DOWN THE JACK ─────────────────────────
@@ -11793,6 +12142,7 @@ void* render_driver(void*) {
                         }
                     }
                 }
+                hp_amp_tick();
             }
             if (cinder_sleep_should_pause()) {
                 clog_("sleep timer expired -> pausing");
@@ -11828,7 +12178,8 @@ void* render_driver(void*) {
             //     when you come back to it.
             {
                 const int off_min = cinder_get_auto_off_min();
-                const bool audible = g_playing && cinder_audio_is_playing() != 0;
+                const bool audible = (g_playing && cinder_audio_is_playing() != 0)
+                                     || g_rx_active;   // receiving: the jack is live, the player is not
                 // A fifth guard, against ourselves: power_action only RETURNS when the helper
                 // failed, and this block runs at ~1 Hz — so a device whose setuid bit is gone used
                 // to fork the helper and write three log lines every second, for ever. Once the

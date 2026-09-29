@@ -575,6 +575,10 @@ struct Render {
     // cinder_pending_play_* after a CINDER_ACT_PLAY_INDEX action and hands it to PlayerService
     // (NodeTrackSequence). Replaced wholesale on every new PlayIndex.
     pending_play: Vec<String>,
+    /// FLACs PlayerService cannot decode (wider than 24 bits — `Db::undecodable_paths`), by the
+    /// same path `pending_play` carries. The shell asks `cinder_uri_undecodable` and leaves them out
+    /// of every sequence: handing one over stalls PlayerService and costs the boot its audio.
+    undecodable: std::collections::HashSet<String>,
     /// Row index carried by the last CINDER_ACT_BT_CONNECT_DEVICE / _BT_FORGET_DEVICE action. The
     /// shell drains it with `cinder_pending_bt_device()`; -1 there means "no request", so a stale
     /// index can never be mistaken for row 0.
@@ -790,6 +794,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         resume_stale: false,
         queue_flush: false,
         pending_play: Vec::new(),
+        undecodable: std::collections::HashSet::new(),
         pending_bt_device: None,
         duration_checked: false,
         last_tick: std::time::Instant::now(),
@@ -913,6 +918,11 @@ fn settings_body(r: &Render) -> String {
     // The pull-down panel (Settings ▸ Pull-down panel), OFF unless switched on.
     body.push_str(&format!("quick_settings={}\n", r.app.quick_enabled() as u8));
     body.push_str(&format!("sensme_follow_time={}\n", r.app.sensme_follow() as u8));
+    // Sound ▸ Advanced ▸ DAC EQ, RAW half-decibels in the helper's argument order.
+    body.push_str(&format!(
+        "dac_eq={}\n",
+        r.app.dac_eq().iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+    ));
     // Settings ▸ Display ▸ Volume: `full` or `minimal`, as a word — the handoff names the key and
     // its values, and a word survives a future third style where an index would shift.
     body.push_str(&format!("volume_hud={}\n", r.app.volume_hud()));
@@ -1570,12 +1580,12 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 37] = [
+const SCREEN_NAMES: [&str; 38] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
     "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet", "Lyrics",
-    "Search", "SensMe", "Display", "Palette", "Help",
+    "Search", "SensMe", "Display", "Palette", "Help", "DacEq",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1591,7 +1601,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
         S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32, S::SensMe => 33,
-        S::Display => 34, S::Palette => 35, S::Help => 36,
+        S::Display => 34, S::Palette => 35, S::Help => 36, S::DacEq => 37,
     }
 }
 
@@ -2301,7 +2311,60 @@ fn play_window(len: usize, start: usize) -> (usize, usize) {
     (lo, lo + MAX_PLAY_SEQUENCE)
 }
 
-fn set_pending(r: &mut Render, mut seq: Vec<cinder_db::Track>, start: usize) {
+/// Take the tracks PlayerService cannot decode out of a sequence, before anything sees it.
+/// Returns the start re-aimed at the same song, or — when that song was one of them — at the song
+/// that followed it (the first, past the end), as the shell's own backstop does; and whether the
+/// chosen song was taken out.
+///
+/// WHY HERE AND NOT ONLY IN THE SHELL. `play_pending_sequence` filters too, but by then
+/// `set_play_context` has already put the song in Up Next. Tapping one on its own replaced Up
+/// Next with a single song that never plays, while PlayerService went on holding the old album —
+/// the next ▶ resumed a list the screen no longer showed. Seen on the device 2026-09-29.
+fn drop_undecodable(
+    seq: Vec<cinder_db::Track>,
+    start: usize,
+    bad: &std::collections::HashSet<String>,
+) -> (Vec<cinder_db::Track>, usize, bool) {
+    if bad.is_empty() {
+        return (seq, start, false);
+    }
+    let mut kept = Vec::with_capacity(seq.len());
+    let (mut new_start, mut chosen_dropped) = (None, false);
+    for (i, t) in seq.into_iter().enumerate() {
+        if bad.contains(&t.filename) {
+            chosen_dropped |= i == start;
+            continue;
+        }
+        if i >= start && new_start.is_none() {
+            new_start = Some(kept.len());
+        }
+        kept.push(t);
+    }
+    (kept, new_start.unwrap_or(0), chosen_dropped)
+}
+
+fn set_pending(r: &mut Render, seq: Vec<cinder_db::Track>, start: usize) {
+    let before = seq.len();
+    let (mut seq, start, chosen_dropped) = drop_undecodable(seq, start, &r.undecodable);
+    if seq.len() < before {
+        eprintln!(
+            "cinder-ffi: {} FLAC(s) wider than 24 bits left out of the sequence and Up Next",
+            before - seq.len()
+        );
+    }
+    if seq.is_empty() {
+        // Nothing playable: leave Up Next and what is playing exactly as they were. Emptying the
+        // pending list is what stops the shell — it replays whatever is left here otherwise.
+        r.pending_play.clear();
+        r.pending_play_start = 0;
+        if chosen_dropped {
+            r.app.notify("Can't play a 32-bit FLAC: this player's decoder stops at 24-bit");
+        }
+        return;
+    }
+    if chosen_dropped {
+        r.app.notify("Skipped a 32-bit FLAC: this player can't decode above 24-bit");
+    }
     let (lo, hi) = play_window(seq.len(), start);
     if lo > 0 || hi < seq.len() {
         eprintln!(
@@ -3331,6 +3394,8 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::SoundChanged => 14,
         Action::BalanceChanged => 38,
         Action::MonoChanged => 46,
+        Action::DacEqChanged => 48,
+        Action::RxChanged => 49,
         Action::BtDebugLog => 47,
         Action::ClockSet => 39,
         Action::SoundBypass(_) => 15,
@@ -3668,6 +3733,18 @@ unsafe fn copy_str_into(s: &str, buf: *mut c_char, cap: libc::c_int) -> libc::c_
     std::ptr::copy_nonoverlapping(s.as_ptr(), buf as *mut u8, n);
     *buf.add(n) = 0;
     s.len() as libc::c_int
+}
+
+/// 1 if PlayerService cannot decode this URI and it must be left out of the sequence, else 0.
+/// Today that means a FLAC wider than 24 bits (see `Db::undecodable_paths`). A null or non-UTF-8
+/// URI answers 0: this only ever holds a track back, it never invents a reason to.
+#[no_mangle]
+pub extern "C" fn cinder_uri_undecodable(uri: *const c_char) -> libc::c_int {
+    if uri.is_null() {
+        return 0;
+    }
+    let Ok(u) = unsafe { std::ffi::CStr::from_ptr(uri) }.to_str() else { return 0 };
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.undecodable.contains(u) as libc::c_int)
 }
 
 /// The start index within the pending-play list (the track the user actually tapped).
@@ -4577,6 +4654,51 @@ pub extern "C" fn cinder_get_tone_bands(out: *mut libc::c_schar) -> libc::c_int 
     }
 }
 
+/// Copy the DAC EQ band gains (RAW half-decibels, -24..=12, helper argument order) into `out`,
+/// which must have room for `cinder_ui::dac_eq::BANDS` bytes. Returns how many were written, or 0
+/// if the renderer is not up. These are the STORED values: the shell holds the EQ flat while
+/// Source Direct (adv flag bit 0) is on.
+/// BT Receiver: 1 while the switch is on and its page is still in the stack (`App::rx_on`).
+#[no_mangle]
+pub extern "C" fn cinder_get_rx_on() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.rx_on() as libc::c_int)
+}
+
+/// BT Receiver status, from the shell's once-a-second read of BtPlayerService.
+#[no_mangle]
+pub extern "C" fn cinder_set_rx_status(
+    phase: libc::c_int,
+    peer: *const c_char,
+    codec: libc::c_uint,
+    freq: libc::c_uint,
+    bitrate: libc::c_uint,
+) {
+    let peer = if peer.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(peer) }.to_string_lossy().into_owned()
+    };
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        r.app.set_rx_status(phase.clamp(0, 3) as u8, &peer, codec, freq, bitrate);
+        r.dirty = true;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn cinder_get_dac_eq(out: *mut libc::c_schar) -> libc::c_int {
+    if out.is_null() {
+        return 0;
+    }
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => {
+            let b = r.app.dac_eq();
+            unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), out, b.len()) };
+            b.len() as libc::c_int
+        }
+        None => 0,
+    }
+}
+
 /// ── FM radio ────────────────────────────────────────────────────────────────────────────────
 #[no_mangle]
 pub extern "C" fn cinder_fm_khz() -> libc::c_int {
@@ -5457,6 +5579,16 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         }
                         r.app.set_tone_bands(b);
                     }
+                    // DAC EQ bands. Absent in older files = flat, which is exactly the table Sony
+                    // loads. set_dac_eq clamps: the helper REFUSES an out-of-range gain, so an
+                    // unchecked hand edit would leave the whole EQ unapplied.
+                    "dac_eq" => {
+                        let mut b = [0i8; cinder_ui::dac_eq::BANDS];
+                        for (i, part) in v.split(',').take(cinder_ui::dac_eq::BANDS).enumerate() {
+                            if let Ok(n) = part.trim().parse::<i8>() { b[i] = n; }
+                        }
+                        r.app.set_dac_eq(b);
+                    }
                     // The OTHER A/B setup and which of the two was live. Parsed into locals and
                     // applied once at the end, because the keys can arrive in any order and the
                     // live setup has to be banked before the spare can be installed beside it.
@@ -6260,6 +6392,15 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     // ours come from the .m3u8 folder beside the liked list.
     r.db_playlists = lib.playlists.clone();
     r.app.set_library(lib);
+    r.undecodable = db.undecodable_paths().into_iter().collect();
+    if !r.undecodable.is_empty() {
+        eprintln!(
+            "cinder-ffi: {} FLAC(s) wider than 24 bits will be skipped (the player's decoder stops \
+             at 24): {:?}",
+            r.undecodable.len(),
+            r.undecodable.iter().take(5).collect::<Vec<_>>()
+        );
+    }
     r.db = Some(db);
     r.plists = plists;
     // WAS 3,802 ms OF THE BOOT — 83% of the whole dead time, in this one call. See
@@ -7099,6 +7240,7 @@ mod tests {
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
             S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe, S::Display, S::Palette, S::Help,
+            S::DacEq,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
@@ -7550,6 +7692,32 @@ mod tests {
         assert_eq!(600 - lo, m / 4, "a quarter of the window before the tapped track");
         let (lo, hi) = play_window(3 * m, 3 * m - 1);
         assert_eq!((lo, hi), (2 * m, 3 * m), "the last track keeps the window inside the list");
+    }
+
+    /// A 32-bit FLAC never reaches Up Next, and the start stays on the song the user chose — or
+    /// the one after it when the chosen song is the one taken out.
+    #[test]
+    fn undecodable_tracks_leave_the_sequence_before_up_next_sees_it() {
+        let t = |f: &str| cinder_db::Track { filename: f.to_string(), ..Default::default() };
+        let names = |v: &[cinder_db::Track]| v.iter().map(|t| t.filename.clone()).collect::<Vec<_>>();
+        let seq = || vec![t("a"), t("wide"), t("c"), t("d")];
+        let bad: std::collections::HashSet<String> = ["wide".to_string()].into();
+
+        let (kept, start, dropped) = drop_undecodable(seq(), 2, &bad);
+        assert_eq!((names(&kept), start, dropped), (vec!["a".into(), "c".into(), "d".into()], 1, false),
+                   "a song after the removed one keeps pointing at itself");
+        let (kept, start, dropped) = drop_undecodable(seq(), 1, &bad);
+        assert_eq!((kept[start].filename.as_str(), dropped), ("c", true), "chosen and removed: the next song");
+        let (_, start, _) = drop_undecodable(seq(), 0, &bad);
+        assert_eq!(start, 0, "a song before the removed one is untouched");
+
+        let (kept, start, dropped) = drop_undecodable(vec![t("a"), t("wide")], 1, &bad);
+        assert_eq!((names(&kept), start, dropped), (vec!["a".to_string()], 0, true),
+                   "the last song removed wraps to the first, as the shell's backstop does");
+        let (kept, _, dropped) = drop_undecodable(vec![t("wide")], 0, &bad);
+        assert!(kept.is_empty() && dropped, "nothing playable is reported, not papered over");
+        let (kept, start, dropped) = drop_undecodable(seq(), 3, &Default::default());
+        assert_eq!((kept.len(), start, dropped), (4, 3, false), "an empty set changes nothing");
     }
 
     #[test]

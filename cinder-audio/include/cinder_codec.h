@@ -110,6 +110,25 @@ int cinder_codec_get_jack_se(void);
 int cinder_codec_get_master_volume(void);
 int cinder_codec_set_master_volume(int v);
 
+/* --- Which headphone amplifier drives the jack --------------------------------------------
+ *
+ * The CXD3778GF has two. `headphone amp` item 1 `smaster-se` is S-Master, the class-D stage Sony
+ * ships and never changes. Item 0 `normal` powers up the chip's conventional LINEAR amplifier
+ * (BLK_ON1 0x00 -> 0xF0) and shuts the class-D off (HPOUT2_CTRL1 0x0F -> 0x00). Item 2
+ * `smaster-btl` is the balanced stage, which this model does not have wired, and is never written.
+ *
+ * Measured 2026-09-08 into a PC line input (analysis/RE_headphone_amp_modes.md): linear is 2.85 dB
+ * louder at the same volume, about half the THD, and flat where S-Master tilts 0.6 dB toward the
+ * treble. NOT measured: behaviour into a real 16-32 ohm headphone load, and the battery cost.
+ * Measured 2026-09-29: the setting survives codec standby and wake. It does not survive a reboot,
+ * and Sony's wired-headphone service references the control next to its jack-insert handling, so
+ * a caller must re-assert it rather than set it once.
+ *
+ * 1 = linear, 0 = S-Master (either S-Master item), -1 = unavailable. */
+int cinder_codec_get_hp_amp_linear(void);
+/* Select the linear amp (linear != 0) or S-Master SE. Returns 0 = applied, -1 = failed. */
+int cinder_codec_set_hp_amp_linear(int linear);
+
 #ifdef __cplusplus
 }
 #endif

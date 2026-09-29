@@ -2,18 +2,18 @@
 # Written by tools/release.sh AFTER a byte-for-byte rebuild check; verified by
 # .github/workflows/release.yml before anything is published. Do not edit by hand —
 # a mismatch here is the runner telling you the payload is not what was verified.
-tag v0.3.12
-1bed2546bfbbc8dc244e9a78bb8eb4f087b0d4386ee5b8271311889fc74e6305  cinder-home/dist/stable/cinder-home
-47f3ea07054bf5f965fbfb488bb099143e5bc4741699ccfe33670c78010383c8  cinder-home/dist/stable/cinder-probe
+tag v0.3.13
+15a98ef519b7cf27cc5f8a91361dad47c905e7ce34ecbec369a7a82a2b9cee01  cinder-home/dist/stable/cinder-home
+f6951f2a5ea7c668924d4ba1cf45ea2b2ee27fc2231722aa0a8a261a9e5c21f3  cinder-home/dist/stable/cinder-probe
 7788d381d609eb80dcb4db6305106dbfad4f8f0d01738022bd5c65d6f8cff7ba  cinder-home/dist/stable/cinder-umount
-42dd6d1f20d7602bf66ef2ff67174623cfb037fdc9564158e46b21ed55d20b26  cinder-home/dist/stable/cinder-power
-20fc63ca7991999feef6b5599351502d0fd207802a6c85515050820162f0cb92  cinder-home/dist/stable/cinder-msc
+031c816981169c7c44448831632effa5ecba44dedf2e29ee6d129ffb8e383e00  cinder-home/dist/stable/cinder-power
+dd5c628802c62a2dc7e5a29929063eef408a868bd4fd1d53828260257fac0e5b  cinder-home/dist/stable/cinder-msc
 d2eeb22e165bd9dcf01b9862af6e17dbdd157817cbfac54fd14adf77516193fd  cinder-home/dist/stable/cinder-clock
 6774e9aace1185c5c9361a7c21d43f5b51b68d586f01ed204211c01b681d3d38  cinder-home/dist/stable/cinder-fm
-9d494618f308f54ac3b4afc4ce02ffe762a8a0ffcb30f9fb0a9447876f0fccf3  cinder-home/dist/stable/cinder-voltable
+595da675ad8c494a6e3ef18c22d0343ba04c03dc3daa4add2e3aa94fee1615ad  cinder-home/dist/stable/cinder-voltable
 f7682696f4f1c200c5ceb9ae04b82aac7ca5a7515ba3ff76db8f92cf61624898  cinder-home/dist/stable/cinder-battery
 763b0c422a3eb185b7a58466881d6fde0c6233994f73767178edbca3dd2bbb22  cinder-home/dist/stable/cinder-signature.sh
 bbb375f10de212ac9963b57e3df0661e841481133661a4960f4d07f75758284a  cinder-home/dist/stable/libcinder_mono.so
 458a402e8e1a5b5c37721e5a33298ecbb76173552f1ff2daa4708e1eb7735e05  cinder-home/dist/stable/cinder_components.conf
-917ef82645daffdaa8f8c54d1918e96dc063d62e83581dbee9762e0782ba3d16  cinder-home/dist/stable/cinder_home_install.upg
+ddbc2eda44ea2dc5ba484df5e15d67077d12a0a0f3616b16836824c45d8e221f  cinder-home/dist/stable/cinder_home_install.upg
 aeefcf053f1da6119469406987cbd22b6bf8cfd6e97ccf9f7632025f57cb7e0d  cinder-home/dist/stable/cinder_home_uninstall.upg

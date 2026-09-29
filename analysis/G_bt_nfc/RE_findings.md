@@ -1026,6 +1026,12 @@ as "BT-receive sink, Walkman as BT speaker".
 It is worth having: the amp is the expensive part of this device and a phone has nothing like it.
 Note `SetLDAC` on the **sink** side — this can RECEIVE LDAC, which few receivers do.
 
+> **CORRECTION 2026-09-29.** The slot numbers below count words from the vtable *symbol*, which
+> begins with offset-to-top and the RTTI pointer. A call through the object's vptr uses an index
+> **2 lower** (`GetAvSnkConnectionStatus` = 3, `StartSound` = 13, `AddListener` = 29,
+> `RemoveListener` = 30). Using the table as printed, `cinder-probe --btrx` called
+> `GetConnectInformation` with no arguments and crashed in `TransactionParam::GetStr`.
+
 **`BtPlayerServiceClient` vtable**, recovered from `_ZTVN3pst8services21BtPlayerServiceClientE` at
 `0x313dc`. `.data.rel.ro` is relocated at load, so the file words are all zero — the slot map comes
 from the `R_ARM_ABS32` relocation entries covering that range, not from the raw bytes. (Reading the
@@ -1554,3 +1560,71 @@ the headphones' state unconfirmed — that is an untested case, not a negative r
 machine: armed when the radio comes up and again on the first notice of a drop, torn down when a
 link exists, when the user disconnects on purpose, and when the radio goes off. The old exponential
 ladder (10 s → 300 s) stays as the backstop for after the service's count runs out.
+
+---
+
+## Receiver, 2026-09-29 — the Walkman as an A2DP sink, working end to end
+
+**Result.** A Windows PC paired with the Walkman, connected, and streamed at 48 kHz for 33 s; the
+owner heard it at the 3.5 mm jack. Walkman One player, dev build, Bluetooth ▸ RECEIVER MODE.
+
+### Sony's sequence (HgrmMediaPlayerApp)
+
+The stock app's receiver is a state machine — `BtReceiverStateStandby`, `…PairingWait`,
+`…StoppedAtNoPair`, `…ConnectionWait`, `…Connection`, `…Stopped` — over `dmpapp::BtPlayerModel`,
+whose log strings name the calls: `EnterFuncMode(%d) return value (%d)`,
+`RequestStartConnectWait failed!!`, `StartSound failed!!`, `StartSound by VirtualPauseOff`,
+`OnNotifySetDiscoverableMode`. Pairing goes through BtCommon's own prompts (`OnNotifyPasskey`,
+`SetPasskey(bool, QString)` in the view model). Cinder's `apply_receiver` (cinder-home/src/main.cpp):
+
+1. release the Music track (`ClosePlayer`) — RendererDmpMaster enters A2dpSnk mode (+0x118 == 2)
+   only if the sink's track can take the renderer, the USB-DAC rule;
+2. `FuncMgrService::EnterFuncMode(2 = A2dpSink)`;
+3. `BtPlayerServiceClient::RequestStartConnectWait` + `BtCommon::SetDiscoverableMode(true)`;
+4. the peer's numeric comparison arrives on the BtCommon listener Cinder already had, and is
+   answered with the existing `apply_bt_prompt_reply`;
+5. `StartSound` each time the sink status or play state moves.
+
+No BtPlayer listener: everything is polled at 1 Hz (below), so there is no callback slot to get
+wrong and no client for libpstcore's hang checker to time out on.
+
+### What the service reports
+
+`BtPlayerService.cc` logs to logcat (`adb shell logcat -d | grep BtPlayerService`):
+
+| AVSNK status | meaning (from the transitions) |
+|---|---|
+| 1 | idle (before connect-wait, and after leaving) |
+| 2 | connect-wait: discoverable, no peer |
+| 4 | a peer is connected, no audio |
+| 5 | streaming |
+
+`codec:0x03 channel:0x02 frequency:48000 scmst:0` for the Windows PC — `GetTrackFreq` returns Hz,
+`GetTrackCodec` the raw byte (0x03 not yet mapped; 0x02 is LDAC on the transmitter side).
+`GetBitrate` read 1 for the whole stream, so it is not kbps. `GetConnectInformation(vector<uint8_t>&,
+string&)` gives the peer name (`ARTHURS-PC`).
+
+Each stream start logs `Write Silent data[2]`, `AudioHalError[hw:0,0][BROKENPIPE]` and
+`AudioHalUnderRunError while first store buffer`; on the working run the stream carried on
+regardless. The sink renders to `hw:0,0`, the jack.
+
+### Pairing
+
+`OnNotifyPairingComplete`'s result byte was **1** for the pairing that worked and 0 for every
+abandoned one, which settles the polarity the round-2026-08-26 notes left open: 1 = OK. Cinder's
+"paired list never showed the new device" check is still wrong for sink pairings — the list it
+polls does not show a source that paired with the Walkman.
+
+The prompt used to draw only on the Devices screen, so a PC pairing to the Walkman sat on its code
+for four attempts before anyone saw that Cinder had received it
+(`bt-scan: NumericComparison 'ARTHURS-PC' a=3031300 b=114363`; `b` is the code).
+
+### Traps on the way
+
+- The client vtable table above (round g) is **2 high**: see the correction there. The first probe
+  runs called `GetConnectInformation` with no arguments and died in `TransactionParam::GetStr`.
+- A probe that forks a restore child AFTER `StartForApplication` and then dies leaves a binder
+  client with no mapping; libpstcore's `ServiceManager::HangChecker` (thread `fr_hang`) rebooted
+  the player over it. Fork before binder, or exec.
+- iOS refused to pair ("NW-A50series is not supported"). Not understood; the Windows run did not
+  need anything iOS might check for (class of device, SDP records), so that is where to look.

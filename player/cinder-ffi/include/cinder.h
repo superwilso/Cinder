@@ -217,7 +217,15 @@ typedef enum {
      * the newest capture to the drive root as cinder-bt-log-<stamp>.btsnoop. Never persisted: every
      * boot starts with it off. The shell also stops it at a size limit (/tmp is RAM) and then calls
      * cinder_bt_debug_log_stopped(). */
-    CINDER_ACT_BT_DEBUG_LOG = 47
+    CINDER_ACT_BT_DEBUG_LOG = 47,
+    /* Sound ▸ Advanced ▸ DAC EQ changed. Read cinder_get_dac_eq() and run the setuid
+     * `cinder-voltable eq G1..G5`, which rebuilds the codec's tone table with a five-band EQ in the
+     * ordinary-headphone blocks (cinder-home/src/codec_eq.h). While Source Direct is on (adv flag
+     * bit 0) apply a FLAT EQ instead. Sent per tap and once at the end of a drag. */
+    CINDER_ACT_DAC_EQ_CHANGED = 48,
+    /* BT Receiver switched. Read cinder_get_rx_on() and enter or leave receiver mode; idempotent.
+     * Leaving the page sends nothing — the shell's receiver tick sees cinder_get_rx_on() go 0. */
+    CINDER_ACT_RX_CHANGED = 49
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -238,6 +246,10 @@ void cinder_touch_down(void);
  * album context as file URIs in play order + the index to start at. The shell reads these and
  * hands PlayerService a NodeTrackSequence (cinder_audio_play_tracks). */
 int  cinder_pending_play_count(void);
+/* 1 if PlayerService cannot decode this URI (a FLAC wider than 24 bits: Sony's libFLAC 1.3.2
+ * predates 32-bit FLAC, so the track opens and never decodes, and the next call into PlayerService
+ * times out). Leave such a URI out of every sequence. 0 otherwise, including for NULL. */
+int  cinder_uri_undecodable(const char *uri);
 /* Copies URI `i` into `buf` and returns its FULL length (snprintf semantics): a return >= `cap`
  * means it was TRUNCATED and must not be used — a truncated path still looks valid and would queue
  * a file that doesn't exist. -1 = bad index/args. */
@@ -454,7 +466,7 @@ int  cinder_get_vpt_mode(void);
 /* Which DC Phase filter type, 0..=5 — for cinder_effects_set_dc_phase_type(). */
 int  cinder_get_dc_type(void);
 /* Sound > Advanced, packed: bit0 Source Direct, bit1 Clear Phase, bit2 DSEE AI,
- * bit3 DSEE HX Custom, bit4 Tone Control. */
+ * bit3 DSEE HX Custom, bit4 Tone Control, bit5 linear headphone amp. */
 int  cinder_get_adv_flags(void);
 /* DSEE HX Custom mode 0..=4, and Vinylizer character 0..=3. */
 int  cinder_get_dsee_mode(void);
@@ -463,6 +475,16 @@ int  cinder_get_vinyl_type(void);
  * Writes up to 3 bytes into `out` and returns how many. Past +-20 the sound service ZEROES the
  * band instead of clamping it, so never widen this range without re-measuring. */
 int  cinder_get_tone_bands(signed char *out);
+/* DAC EQ band gains, RAW half-decibels in -24..=12 (-12..+6 dB), five of them in the order
+ * `cinder-voltable eq` takes: bass shelf 100 Hz, 400 Hz, 1.5 kHz, 4 kHz, treble shelf 10 kHz. `out`
+ * needs room for 5. Returns the count written, or 0 before the renderer is up. Stored values: hold
+ * the EQ flat yourself while Source Direct is on. */
+int  cinder_get_dac_eq(signed char *out);
+/* BT Receiver: 1 while the switch is on AND its page is still open. */
+int  cinder_get_rx_on(void);
+/* BT Receiver status for the page: phase 1 waiting, 2 a device attached, 3 audio arriving; the rest
+ * raw from BtPlayerService. `peer` may be NULL. */
+void cinder_set_rx_status(int phase, const char *peer, unsigned codec, unsigned freq, unsigned bitrate);
 
 /* ── FM radio ────────────────────────────────────────────────────────────────────────────────
  * The UI holds the frequency the user is looking at; the shell holds the radio. These keep the

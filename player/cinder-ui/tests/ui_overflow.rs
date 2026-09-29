@@ -182,7 +182,7 @@ const SCREENS: &[Screen] = &[
     Screen::Receiver, Screen::Onboarding, Screen::UsbStorage, Screen::GenreFilter,
     Screen::Folders, Screen::SensMe, Screen::TrackInfo, Screen::Lyrics, Screen::Search,
     Screen::ClockSet,
-    Screen::Advanced, Screen::Tone,
+    Screen::Advanced, Screen::Tone, Screen::DacEq,
     Screen::Keyboard, Screen::PlaylistPick, Screen::TrackPick,
     // Added 2026-09-06 by the UI audit. These three were the whole of the gap: reachable,
     // content-bearing screens that no panel-overflow gate had ever rendered. `Canvas` clips
@@ -595,6 +595,17 @@ fn effect_enum_labels_fit_at_every_scale() {
             a.set_tone_bands([-cinder_ui::tone::BAND_MAX; cinder_ui::tone::BANDS]);
             let oob = overflow_of(&mut a, &fonts, &np);
             assert_eq!(oob, 0, "Tone Control overflows under ClearAudio+ at {pct}%: {oob} px");
+        }
+        // DAC EQ: the state line names Source Direct when it is on, and every band at both ends of
+        // its range puts the widest labels ("-12", "+6") above the knobs.
+        for f in [0u8, 0b0000_0001] {
+            for g in [cinder_ui::dac_eq::BAND_MIN, cinder_ui::dac_eq::BAND_MAX] {
+                let mut a = at(Screen::DacEq);
+                a.set_adv_flags(f);
+                a.set_dac_eq([g; cinder_ui::dac_eq::BANDS]);
+                let oob = overflow_of(&mut a, &fonts, &np);
+                assert_eq!(oob, 0, "DAC EQ overflows at {pct}% (flags {f:#07b}, gain {g}): {oob} px");
+            }
         }
         for ty in 0..cinder_ui::nav::DC_PHASE_TYPES.len() {
             let mut a = at(Screen::Sound);
