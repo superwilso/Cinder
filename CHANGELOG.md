@@ -41,15 +41,6 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   that, Prev and Next now respond around their icons, at x 128 and 352 rather than 130 and 350.
   *Host-tested and in the golden previews; not yet run on a device (`docs/DEVICE_CHECKLIST.md`
   §23).*
-- **The visualiser runs its own FFT.** For library playback the bars now come from the decoded
-  audio itself: Cinder reads the queue PlayerService fills for the sound service (a file in
-  `/dev/shm` it is allowed to read, with no change to Sony's files) and runs a 2048-point FFT. Sony's
-  AudioAnalyzerService, which is 12 filters and costs about 8% of a core while it runs, is no longer
-  started for library playback. It is still used for FM and USB-DAC, and for any format the tap does
-  not read yet. **Settings ▸ Display ▸ Visualiser ▸ Bands** chooses 12, 24, 36, 48 or 64 columns;
-  with the tap each is a real band. The default stays 36. The settings page's preview is 64 px
-  shorter to make room for the row. *Host-tested; not yet run on a device
-  (`docs/DEVICE_CHECKLIST.md` §24).*
 - **A design guide:** [`docs/DESIGN_GUIDE.md`](docs/DESIGN_GUIDE.md), for anyone designing for
   Cinder. It covers the device, the three layers (palette, style, accent), the screen's bands,
   colour tokens, type roles, touch targets, gestures, safe glyphs, what Now Playing must keep,
