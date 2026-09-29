@@ -459,7 +459,7 @@ fn spectrum_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, seed: 
     let (x, w) = (24, 432);
     let (y, h) = (154, 348); // stands at 502, clear of the page dots at 524
     if np.viz_levels.is_some() {
-        crate::viz::draw_with_peaks(c, x, y, w, h, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), seed, crate::viz::from_index(np.viz_kind),
+        crate::viz::draw_with_peaks(c, x, y, w, h, 36, 3, seed, crate::viz::from_index(np.viz_kind),
                                     t.acc, t.line, np.viz_levels, np.viz_peaks, 255, 255);
     } else {
         // No analyzer feeding us. Say so rather than drawing a still, empty graph that reads as a
@@ -479,7 +479,7 @@ fn spectrum_page_night(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, 
     let (x, w) = (24, 432);
     let (y, h) = (220, 260); // stands at 480, clear of the page dots
     if np.viz_levels.is_some() {
-        crate::viz::draw_with_peaks(c, x, y, w, h, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), seed, crate::viz::from_index(np.viz_kind),
+        crate::viz::draw_with_peaks(c, x, y, w, h, 36, 3, seed, crate::viz::from_index(np.viz_kind),
                                     t.acc, t.line, np.viz_levels, np.viz_peaks, 255, 255);
     } else {
         crate::widgets::center(c, f, 240.0, 340.0, "No audio signal",
@@ -620,7 +620,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
                 if let Some((vy, vh, at, ab)) =
                     crate::viz::size_box(crate::viz::size_from_index(np.viz_size), 436, true)
                 {
-                    crate::viz::draw_with_peaks(c, 24, vy, 432, vh, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), seed,
+                    crate::viz::draw_with_peaks(c, 24, vy, 432, vh, 36, 3, seed,
                                                 crate::viz::from_index(np.viz_kind), t.acc, t.line,
                                                 np.viz_levels, np.viz_peaks, at, ab);
                 }
@@ -647,7 +647,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
                 // only its top and the cover's composition below never shifts.
                 let vsize = crate::viz::size_from_index(np.viz_size);
                 if let Some((vy, vh, at, ab)) = crate::viz::size_box(vsize, 508, false) {
-                    crate::viz::draw_with_peaks(c, 24, vy, 432, vh, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), seed,
+                    crate::viz::draw_with_peaks(c, 24, vy, 432, vh, 36, 3, seed,
                                                 crate::viz::from_index(np.viz_kind), t.acc, t.line,
                                                 np.viz_levels, np.viz_peaks, at, ab);
                 }

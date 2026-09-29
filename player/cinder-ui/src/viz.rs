@@ -108,21 +108,6 @@ pub fn size_from_index(i: u8) -> VizSize {
     }
 }
 
-/// The gap between columns for a column count: 3 px up to 36 columns (what the visualiser has
-/// always drawn), narrower above so 64 columns still leave each one a few pixels wide.
-pub fn gap_for(columns: usize) -> i32 {
-    match columns {
-        0..=36 => 3,
-        37..=48 => 2,
-        _ => 1,
-    }
-}
-
-/// How many columns to draw for `levels`: one per level when there are any, else 36.
-pub fn columns_for(levels: Option<&[f32]>) -> usize {
-    levels.map_or(36, |l| if l.is_empty() { 36 } else { l.len().min(96) })
-}
-
 /// Label for the Settings row.
 pub fn size_name(i: u8) -> &'static str {
     match size_from_index(i) {

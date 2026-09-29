@@ -218,9 +218,9 @@ bc06d6b1b37a0a8a viz_kind_3_mirror
 bec448122a701527 viz_kind_5_dots
 38033a8c592e7a21 viz_kind_6_wave
 715ff5475ade0c8b viz_kind_7_pulse
-da540599d1568f76 vizset_default
-cdd1bd6747c6fb0e vizset_peaks_fixed
-086ba07b3add40c2 vizset_no_signal
+865e1350569175d3 vizset_default
+bd6e669fedc7cf66 vizset_peaks_fixed
+31e56f8f1d128172 vizset_no_signal
 8bd1129cf75c64df viz_below_ribbon
 b9a97b23b9198a50 viz_below_line
 e22dec69c4d7c5ff viz_below_pulse

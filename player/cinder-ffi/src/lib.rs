@@ -19,7 +19,6 @@ mod lyrics;
 mod playlists;
 mod present;
 mod scrobble;
-mod pcm_tap;
 mod spectrum;
 
 use cinder_ui::now_playing::NowPlaying;
@@ -565,16 +564,6 @@ struct Render {
     // is exactly as untrue as the synthetic animation it replaced, and would be visible on every
     // single screen wake. Frames older than VIZ_FRESH_MS decay to nothing and are then dropped.
     viz_at: std::time::Instant,
-    /// The visualiser's own PCM tap (`pcm_tap.rs`): PlayerService's decoded-audio queue.
-    tap: pcm_tap::Tap,
-    /// When the tap last produced a frame. While that is recent, Sony's analyzer is not wanted and
-    /// its frames are ignored; when it goes stale (FM, USB-DAC, a format the tap refuses), the
-    /// analyzer is asked for again.
-    tap_at: Option<std::time::Instant>,
-    /// `Scale::Dynamic`'s peak for the tap: in its own units, so it is not shared with the analyzer's.
-    tap_peak: f32,
-    /// The last tuning line in the log (one every `TAP_LOG_EVERY`).
-    tap_log_at: Option<std::time::Instant>,
     /// Up Next was edited and PlayerService has not been told yet. Flushed at a track
     /// boundary — see `Action::QueueChanged` for why it cannot be flushed immediately.
     queue_pending: bool,
@@ -782,10 +771,6 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         last_pos: std::time::Instant::now(),
         real_pos_ms: -1,
         real_pos_at: std::time::Instant::now(),
-        tap: pcm_tap::Tap::new(pcm_tap::SHM_DIR),
-        tap_at: None,
-        tap_peak: 0.0,
-        tap_log_at: None,
         fm_seek_dir: 1,
         fm_power: false,
         fm_bt: false,
@@ -963,7 +948,7 @@ fn settings_body(r: &Render) -> String {
     body.push_str(&format!("palette={}\n", r.app.palette_id()));
     body.push_str(&format!("palette_sort={}\n", r.app.palette_sort()));
     body.push_str(&format!(
-        "viz_scale={}\nviz_range={}\nviz_response={}\nviz_interp={}\nviz_peaks={}\nviz_window={}\nviz_rate={}\nviz_bands={}\n",
+        "viz_scale={}\nviz_range={}\nviz_response={}\nviz_interp={}\nviz_peaks={}\nviz_window={}\nviz_rate={}\n",
         r.app.viz_scale_idx(),
         r.app.viz_range_idx(),
         r.app.viz_response_idx(),
@@ -971,7 +956,6 @@ fn settings_body(r: &Render) -> String {
         r.app.viz_peak_hold() as u8,
         r.app.viz_window_idx(),
         r.app.viz_rate_idx(),
-        r.app.viz_bands_idx(),
     ));
     // FM: the dial position and the scanned station list. A scan is a DELIBERATE ten-second wait
     // that the user watches happen, so losing it on a reboot is the same defect as losing a shelf
@@ -1657,6 +1641,11 @@ fn install_panic_hook() {
 /// stream delivers one every ~50 ms; 250 ms is five missed frames, comfortably past jitter but
 /// short enough that a stopped stream is caught within a frame or two of the user noticing.
 const VIZ_FRESH_MS: u128 = 250;
+/// How many display columns the visualiser draws. The analyzer gives twelve bands whatever we do
+/// (see `cinder_analyzer.h`), so this is a DISPLAY resolution: the bands are interpolated across
+/// it. Kept as one constant because the number appeared in three call sites and a mismatch between
+/// them is a silent resample of a resample.
+const VIZ_BARS: usize = 36;
 
 /// Milliseconds since the previous spectrum frame, clamped to something a time constant can use.
 ///
@@ -1714,65 +1703,6 @@ fn viz_decay(r: &mut Render, dt_ms: u32) -> bool {
         return false;
     }
     viz_decay_levels(&mut r.viz_levels, dt_ms)
-}
-
-/// How far ahead of the reported position the audible sample is, in ms. 0 until the device run
-/// measures it (`DEVICE_CHECKLIST.md` §24); the tuning log line says what it would need to be.
-const TAP_LEAD_MS: i64 = 0;
-/// The tap counts as live for this long after its last frame. Longer than the analyzer's
-/// freshness, because the shell looks at `cinder_viz_wants_analyzer` only once a second: a shorter
-/// window would start and stop the analyzer on every hiccup.
-const TAP_FRESH_MS: u128 = 1500;
-const TAP_LOG_EVERY_S: u64 = 15;
-
-fn tap_fresh(r: &Render) -> bool {
-    r.tap_at.is_some_and(|t| t.elapsed().as_millis() <= TAP_FRESH_MS)
-}
-
-/// Where playback is now, in ms: the service's last report carried forward by the clock. The
-/// once-a-second `play_pos_ms` is too coarse to pick a 46 ms packet with.
-fn live_pos_ms(r: &Render) -> i64 {
-    if r.real_pos_ms >= 0 && r.np.playing {
-        let since = r.real_pos_at.elapsed().as_millis() as i64;
-        let pos = r.real_pos_ms + since;
-        if r.cur_duration_ms > 0 { pos.min(r.cur_duration_ms) } else { pos }
-    } else {
-        r.play_pos_ms
-    }
-}
-
-/// One visualiser frame from the decoded audio. False when the queue does not hold the playing
-/// moment in a form the tap reads, which leaves the frame to the analyzer.
-fn viz_tap(r: &mut Render) -> bool {
-    let pos_ms = live_pos_ms(r);
-    let Some(w) = r.tap.window((pos_ms + TAP_LEAD_MS) * 1000, spectrum::PCM_FFT) else {
-        return false;
-    };
-    let cfg = r.app.viz_cfg();
-    let dt = frame_dt_ms(r);
-    let prev = std::mem::take(&mut r.viz_levels);
-    let mut peak = r.tap_peak;
-    r.viz_levels = spectrum::from_pcm(&w.samples, w.rate, cfg.bands, &prev, &mut peak, &cfg, dt);
-    r.tap_peak = peak;
-    let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
-    spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
-    r.viz_peaks = peaks;
-    r.viz_held_ms = held;
-    let now = std::time::Instant::now();
-    r.viz_at = now;
-    r.tap_at = Some(now);
-    if r.tap_log_at.is_none_or(|t| t.elapsed().as_secs() >= TAP_LOG_EVERY_S) {
-        r.tap_log_at = Some(now);
-        eprintln!(
-            "cinder-ffi: pcm tap — pos {pos_ms} ms, slot {} holds {}..{} ms, {} Hz, {} bands",
-            w.slot,
-            w.first_us / 1000,
-            w.last_us / 1000,
-            w.rate,
-            cfg.bands
-        );
-    }
-    true
 }
 
 /// The decay itself, split out so it can be tested without building a whole `Render`. Steps every
@@ -1893,9 +1823,6 @@ pub extern "C" fn cinder_render_tick() {
             r.viz_phase += 0.18 * (since.min(250.0) / 50.0);
             r.last_viz = std::time::Instant::now();
             r.dirty = true;
-            // The visualiser's own FFT, at the same ~20 fps: a pread of one queue slot and a
-            // 2048-point transform. When it has nothing, the analyzer's frames draw instead.
-            viz_tap(r);
         }
     }
     // MARQUEE CLOCK. Advanced before the dirty gate so the phase a painted frame reads is the
@@ -4139,9 +4066,7 @@ pub extern "C" fn cinder_viz_analyzer_window_ms() -> libc::c_int {
 }
 
 /// Does the visualiser want the analyzer streaming right now? 1 when the user has it enabled, the
-/// Now Playing screen is showing, something is actually playing, and the PCM tap is not already
-/// drawing it (library playback). The analyzer is the fallback: FM, USB-DAC, any format the tap
-/// refuses.
+/// Now Playing screen is showing, and something is actually playing.
 ///
 /// The shell polls this and starts/stops Sony's AudioAnalyzerService to match, so the service only
 /// runs while its output is on screen. Combined with the shell's own screen-on check that means no
@@ -4151,7 +4076,7 @@ pub extern "C" fn cinder_viz_analyzer_window_ms() -> libc::c_int {
 pub extern "C" fn cinder_viz_wants_analyzer() -> libc::c_int {
     let guard = cell().lock().unwrap();
     let Some(r) = guard.as_ref() else { return 0 };
-    (r.app.wants_spectrum() && r.app.is_now_playing() && r.np.playing && !tap_fresh(r)) as libc::c_int
+    (r.app.wants_spectrum() && r.app.is_now_playing() && r.np.playing) as libc::c_int
 }
 
 #[no_mangle]
@@ -4975,7 +4900,7 @@ pub extern "C" fn cinder_set_pcm(samples: *const i16, n: libc::c_int) {
         let cfg = r.app.viz_cfg();
         let dt = frame_dt_ms(r);
         let prev = std::mem::take(&mut r.viz_levels);
-        r.viz_levels = spectrum::levels(pcm, cfg.bands, &prev, &cfg, dt);
+        r.viz_levels = spectrum::levels(pcm, VIZ_BARS, &prev, &cfg, dt);
         let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
         spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
         r.viz_peaks = peaks;
@@ -5003,16 +4928,11 @@ pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int)
     }
     let src = unsafe { std::slice::from_raw_parts(bands as *const i32, n as usize) };
     if let Some(r) = cell().lock().unwrap().as_mut() {
-        // The tap is drawing: the analyzer's last frames before the shell stops it must not be
-        // mixed in, or the bars would flick between two sources for a second.
-        if tap_fresh(r) {
-            return;
-        }
         let cfg = r.app.viz_cfg();
         let dt = frame_dt_ms(r);
         let prev = std::mem::take(&mut r.viz_levels);
         let mut peak = r.viz_peak;
-        r.viz_levels = spectrum::from_bands(src, cfg.bands, &prev, &mut peak, &cfg, dt);
+        r.viz_levels = spectrum::from_bands(src, VIZ_BARS, &prev, &mut peak, &cfg, dt);
         r.viz_peak = peak;
         let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
         spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
@@ -5550,11 +5470,6 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "viz_rate" => {
                         if let Ok(n) = v.parse::<u8>() {
                             r.app.set_viz_rate(n);
-                        }
-                    }
-                    "viz_bands" => {
-                        if let Ok(n) = v.parse::<u8>() {
-                            r.app.set_viz_bands(n);
                         }
                     }
                     "np_page" => {

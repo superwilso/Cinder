@@ -647,19 +647,3 @@ the styles read at arm's length.
 | 23.4 | **Track change cost** | Terminal or Nocturne, cover page; skip through ten tracks with real covers | The new cover appears with the new title, no stutter in the visualiser | A visible hitch = the one-time 480 → 396/400 px resample (`art::draw_fitted`) is too slow; note it |
 | 23.5 | **Night and 140%** | Night on; then Display ▸ Size at 140% | Cover dimmed; nothing runs off the panel; the times stay on screen | Screenshot it |
 | 23.6 | **Kept after a reboot** | Leave Nocturne picked; reboot | Nocturne again (`style=nocturne` in `cinder_settings.conf`) | — |
-
-## 24 — 2026-09-29 — The visualiser's own FFT (PCM tap)
-
-Host-tested: the slot header layout as read off the device, slot choice by timestamp, stereo to
-mono, a window running on into the next slot, format refusal, a missing queue file, band
-placement for 12–64 bands, and the Bands row. The layout was read on this player 2026-09-29
-(`docs/PLAN_pcm_visualiser.md`). Needs a dev build and one reboot. Only the device can say whether
-the bars are in time with what you hear.
-
-| # | Item | Do | PASS | If it fails |
-|---|---|---|---|---|
-| 24.1 | **The tap draws** | Play a library track, Now Playing, visualiser on. `adb shell 'grep "pcm tap" /contents/cinderhome.log \| tail -3'` | A line every 15 s: `pcm tap — pos N ms, slot k holds A..B ms` with A ≤ N < B | No line = the tap never covered the position: send the log lines around `viz: analyzer`; the lead (`TAP_LEAD_MS`) is off |
-| 24.2 | **In time** | A track with a hard kick drum; watch the lowest bars | Each kick lifts the left bars as you hear it, not before or after | Bars early or late: note by roughly how much; that is `TAP_LEAD_MS` |
-| 24.3 | **Bands** | Settings ▸ Display ▸ Visualiser ▸ Bands: step through 12, 24, 36, 48, 64, going back to Now Playing each time | That many columns, every one moving, none stuck at the bottom | A column that never moves = a band with no bin; note the count |
-| 24.4 | **Sony's analyzer is off** | While playing with the visualiser on: `adb shell 'cut -d" " -f14,15 /proc/$(pgrep -f "hagodaemon AudioAnalyzerService" \| tail -1)/stat; sleep 20; cut -d" " -f14,15 /proc/$(pgrep -f "hagodaemon AudioAnalyzerService" \| tail -1)/stat'` (or the owner's own before/after) | The analyzer's CPU ticks barely move (was 160 ticks in 20 s, 7.9% of a core) | Ticks still climbing = the shell is still starting it; the tap is not staying fresh |
-| 24.5 | **Fallback** | Play FM radio (or USB-DAC) with the visualiser on | The visualiser still moves (Sony's analyzer, interpolated) | Flat bars = the switch-over left nothing drawing |

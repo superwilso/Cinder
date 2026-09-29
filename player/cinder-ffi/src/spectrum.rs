@@ -1,10 +1,8 @@
 //! Spectrum extraction: turn what the audio source gives us into per-bar levels for the
 //! visualiser. Two entry points, because there are two sources —
 //!
-//!   * `from_pcm`: our own FFT over the decoded audio read from PlayerService's queue
-//!     (`pcm_tap.rs`) — any number of bands, for library playback;
-//!   * `from_bands`: Sony's AudioAnalyzerService band magnitudes (a bank of twelve IIR bandpasses,
-//!     no FFT) — the fallback for what the queue does not carry (FM, USB-DAC), and
+//!   * `from_bands`: Sony's AudioAnalyzerService band magnitudes (the ONLY real source on device;
+//!     a bank of IIR bandpasses, twelve of them, no FFT and no PCM anywhere in reach), and
 //!   * `levels`: our own radix-2 FFT over a PCM window, for the host preview harness and for any
 //!     future path that hands us samples directly.
 //!
@@ -109,76 +107,6 @@ pub fn levels(pcm: &[i16], bars: usize, prev: &[f32], cfg: &VizCfg, dt_ms: f32) 
         // path uses, so switching source does not change how loud the display looks.
         let v = to_frac(mag, 1.0, cfg.range_db);
         *slot = smooth_dt(v, prev, bars, b, cfg, dt_ms);
-    }
-    out
-}
-
-/// The lowest and highest frequencies the PCM bands span. 40 Hz: a 2048-point FFT at 44.1 kHz has
-/// 21.5 Hz bins, so below this a band is one bin of mostly window leakage. 16 kHz: above it most
-/// lossy sources have nothing, and a column that never moves reads as broken.
-pub const PCM_LO_HZ: f32 = 40.0;
-pub const PCM_HI_HZ: f32 = 16_000.0;
-/// The transform size for the PCM tap: 2048 points is 46 ms at 44.1 kHz, one of the queue's slots.
-pub const PCM_FFT: usize = 2048;
-
-/// `bars` levels (0..1) from mono samples at `rate`, for the PCM tap (`pcm_tap.rs`).
-///
-/// Unlike `levels` (bin-indexed, for the host harness), the bands here are placed in HERTZ, log
-/// spaced from `PCM_LO_HZ` to `PCM_HI_HZ`, and each band is the ENERGY of the bins inside it. Summed
-/// energy is what makes pink noise — the rough shape of music — read level across the display,
-/// instead of the treble always sitting low. A band narrower than a bin (the bottom of a 64-band
-/// display) takes the bin under its centre, so no column is ever permanently empty.
-///
-/// The scale is the analyzer path's: `Scale::Fixed` puts a full-scale sine at the top, `Dynamic`
-/// follows a slow-decaying peak (`peak`), and the same attack/decay applies.
-pub fn from_pcm(
-    samples: &[f32],
-    rate: u32,
-    bars: usize,
-    prev: &[f32],
-    peak: &mut f32,
-    cfg: &VizCfg,
-    dt_ms: f32,
-) -> Vec<f32> {
-    if samples.len() < 64 || bars == 0 || rate == 0 {
-        return Vec::new();
-    }
-    let n = pow2_floor(samples.len()).min(PCM_FFT);
-    let mut re = vec![0.0f32; n];
-    let mut im = vec![0.0f32; n];
-    for (i, slot) in re.iter_mut().enumerate() {
-        let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n - 1) as f32).cos();
-        *slot = samples[i] * w;
-    }
-    fft(&mut re, &mut im);
-    let half = n / 2;
-    // A full-scale sine through a Hann window peaks at n/4 in its bin; dividing by that puts it at 1.
-    let norm = 4.0 / n as f32;
-    let power: Vec<f32> = (0..half).map(|k| (re[k] * re[k] + im[k] * im[k]) * norm * norm).collect();
-    let hz_per_bin = rate as f32 / n as f32;
-    let hi_hz = PCM_HI_HZ.min(rate as f32 * 0.45);
-    let edge = |b: usize| PCM_LO_HZ * (hi_hz / PCM_LO_HZ).powf(b as f32 / bars as f32);
-    let mut mag = vec![0.0f32; bars];
-    for (b, m) in mag.iter_mut().enumerate() {
-        let (f0, f1) = (edge(b), edge(b + 1));
-        let k0 = (f0 / hz_per_bin).ceil() as usize;
-        let k1 = ((f1 / hz_per_bin).ceil() as usize).min(half);
-        *m = if k1 > k0 {
-            power[k0..k1].iter().sum::<f32>().sqrt()
-        } else {
-            let k = (((f0 * f1).sqrt() / hz_per_bin).round() as usize).clamp(1, half - 1);
-            power[k].sqrt()
-        };
-    }
-    let frame_max = mag.iter().fold(0.0f32, |a, &x| a.max(x));
-    *peak = frame_max.max(*peak * 0.95).max(1e-4);
-    let reference = match cfg.scale {
-        Scale::Dynamic => *peak,
-        Scale::Fixed => 1.0,
-    };
-    let mut out = vec![0.0f32; bars];
-    for (b, slot) in out.iter_mut().enumerate() {
-        *slot = smooth_dt(to_frac(mag[b], reference, cfg.range_db), prev, bars, b, cfg, dt_ms);
     }
     out
 }
@@ -506,43 +434,4 @@ mod tests {
         let mut peak = 0.0;
         assert!(from_bands(&[], 36, &[], &mut peak, &cfg(), DT).is_empty());
     }
-
-    fn sine(hz: f32, rate: u32, amp: f32) -> Vec<f32> {
-        (0..PCM_FFT).map(|i| amp * (2.0 * std::f32::consts::PI * hz * i as f32 / rate as f32).sin()).collect()
-    }
-
-    /// A sine lights the band it is in and leaves the far ones low, at every band count.
-    #[test]
-    fn a_pcm_sine_lands_in_its_band() {
-        let cfg = VizCfg { scale: Scale::Fixed, ..cfg() };
-        for bars in [12, 24, 36, 48, 64] {
-            for hz in [60.0, 440.0, 3000.0, 12000.0] {
-                let mut peak = 0.0;
-                let out = from_pcm(&sine(hz, 44100, 1.0), 44100, bars, &[], &mut peak, &cfg, DT);
-                assert_eq!(out.len(), bars);
-                let top = out.iter().enumerate().fold(0, |m, (i, &v)| if v > out[m] { i } else { m });
-                let hi = PCM_HI_HZ.min(44100.0 * 0.45);
-                let want = ((hz / PCM_LO_HZ).ln() / (hi / PCM_LO_HZ).ln() * bars as f32) as usize;
-                assert!(top.abs_diff(want) <= 1, "{bars} bars, {hz} Hz: loudest band {top}, expected {want}");
-                assert!(out[top] > 0.9, "{bars} bars, {hz} Hz: full scale reads {}", out[top]);
-                let far = if want > bars / 2 { 0 } else { bars - 1 };
-                assert!(out[far] < 0.5, "{bars} bars, {hz} Hz: band {far} reads {}", out[far]);
-            }
-        }
-    }
-
-    /// Silence is flat and a quiet sine is lower than a loud one on the fixed scale; nothing is NaN.
-    #[test]
-    fn pcm_silence_is_flat_and_level_follows_amplitude() {
-        let cfg = VizCfg { scale: Scale::Fixed, ..cfg() };
-        let mut peak = 0.0;
-        let quiet = from_pcm(&vec![0.0; PCM_FFT], 44100, 48, &[], &mut peak, &cfg, DT);
-        assert!(quiet.iter().all(|v| *v == 0.0 && v.is_finite()));
-        let loud = from_pcm(&sine(1000.0, 44100, 1.0), 44100, 48, &[], &mut peak, &cfg, DT);
-        let soft = from_pcm(&sine(1000.0, 44100, 0.01), 44100, 48, &[], &mut peak, &cfg, DT);
-        let max = |v: &[f32]| v.iter().fold(0.0f32, |a, &x| a.max(x));
-        assert!(max(&soft) < max(&loud) - 0.5, "-40 dB reads {} against {}", max(&soft), max(&loud));
-        assert!(from_pcm(&[0.5; 10], 44100, 36, &[], &mut peak, &cfg, DT).is_empty(), "too few samples");
-    }
-
 }
