@@ -13,7 +13,11 @@
 //! at the real frame rate, so a change to Response or Range is visible in the same glance that made
 //! it. It is the same `viz::draw` the Now Playing pages call — not a mock-up of one.
 //!
-//! WHAT IS NOT HERE, and why: a band-COUNT row. Sony's AudioAnalyzerService allocates its level
+//! BANDS (added 2026-09-29) is real for library playback: those columns come from our own FFT of
+//! the decoded audio (`cinder-ffi/src/pcm_tap.rs`). Everything below about the twelve-band ceiling
+//! still holds for what the analyzer draws — FM and USB-DAC — where the columns are interpolated.
+//!
+//! What was not here before, and why: a band-COUNT row. Sony's AudioAnalyzerService allocates its level
 //! detectors once, in its constructor, from a hardcoded twelve-entry list, and `SetPassband` only
 //! re-assigns the vector — a thirteenth band has nothing to run in. Twelve is the ceiling for any
 //! client, this one included, and a row offering 24 or 36 real bands would be offering a number the
@@ -36,7 +40,7 @@ use crate::theme::Theme;
 use crate::widgets::{fill_rect, hline, right, sty, toggle};
 use crate::Canvas;
 
-pub const ROWS: usize = 9;
+pub const ROWS: usize = 10;
 pub const ROW_STYLE: usize = 0;
 pub const ROW_COVER: usize = 1;
 pub const ROW_SCALE: usize = 2;
@@ -46,13 +50,14 @@ pub const ROW_CURVE: usize = 5;
 pub const ROW_PEAKS: usize = 6;
 pub const ROW_WINDOW: usize = 7;
 pub const ROW_RATE: usize = 8;
+pub const ROW_BANDS: usize = 9;
 
 /// Row pitch, the preview's height, and the list top — SINGLE SOURCE for the render below and for
-/// `nav`'s hit test. 91 (header) + 132 (preview) + 9 × 64 = 799, so the screen fits the panel
+/// `nav`'s hit test. 91 (header) + 68 (preview) + 10 × 64 = 799, so the screen fits the panel
 /// exactly and never scrolls: a scroll offset is the thing that has already drifted a hit test out
-/// of step with a render once in this codebase.
+/// of step with a render once in this codebase. (The preview gave up 64 px for the Bands row.)
 pub const ROW_H: i32 = 64;
-pub const PREVIEW_H: i32 = 132;
+pub const PREVIEW_H: i32 = 68;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM + PREVIEW_H;
 
 /// Which row is under `y`, or None above the list (the preview is not a control).
@@ -77,12 +82,16 @@ pub struct VizSet<'a> {
     pub peaks: bool,
     pub window: &'a str,
     pub rate: &'a str,
+    /// "36", or "36 · 12 REAL" while the analyzer is what is feeding the bars.
+    pub bands: &'a str,
     /// Live levels for the preview, exactly as Now Playing gets them. `None` when no analyzer is
     /// feeding us — the preview then draws the synthetic motion, and says so.
     pub levels: Option<&'a [f32]>,
     pub peak_marks: Option<&'a [f32]>,
     pub seed: f32,
     pub kind: crate::viz::VizKind,
+    /// How many columns to draw (the Bands setting).
+    pub columns: usize,
 }
 
 fn vrow(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, sel: bool, label: &str, value: &str) -> i32 {
@@ -111,7 +120,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
     let py = y0 + 8;
     fill_rect(c, px, py, pw, ph, t.row_sel);
     crate::viz::draw_with_peaks(
-        c, px + 4, py + 4, pw - 8, ph - 8, 36, 3, v.seed, v.kind, t.acc, t.line, v.levels,
+        c, px + 4, py + 4, pw - 8, ph - 8, v.columns as i32, crate::viz::gap_for(v.columns), v.seed, v.kind, t.acc, t.line, v.levels,
         v.peak_marks, 255, 255,
     );
     // One caption, and it earns its line: with no analyzer running the bars are synthetic, and a
@@ -143,7 +152,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
         y += ROW_H;
     }
     y = vrow(c, t, f, y, sel == ROW_WINDOW, "Time window", v.window);
-    let _ = vrow(c, t, f, y, sel == ROW_RATE, "Frame rate", v.rate);
+    y = vrow(c, t, f, y, sel == ROW_RATE, "Frame rate", v.rate);
+    let _ = vrow(c, t, f, y, sel == ROW_BANDS, "Bands", v.bands);
 }
 
 #[cfg(test)]

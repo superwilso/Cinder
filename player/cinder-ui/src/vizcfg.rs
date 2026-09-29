@@ -101,6 +101,10 @@ pub struct VizCfg {
     /// How fast a held peak falls once it lets go, in display-fractions per second.
     pub peak_fall_per_s: f32,
     pub interp: Interp,
+    /// How many columns the visualiser draws. With the PCM tap (library playback) each is a real
+    /// band of our own FFT; with Sony's analyzer (FM, USB-DAC) the twelve bands are interpolated
+    /// across them, as before.
+    pub bands: usize,
 }
 
 impl Default for VizCfg {
@@ -117,6 +121,7 @@ impl Default for VizCfg {
             peak_hold_ms: 0.0,
             peak_fall_per_s: 0.9,
             interp: Interp::Smooth,
+            bands: BANDS[BANDS_DEFAULT as usize],
         }
     }
 }
@@ -189,4 +194,15 @@ pub fn rate_from_index(i: u8) -> u8 {
         1 => 30,
         _ => 45,
     }
+}
+
+/// Band-count presets, in the order Settings ▸ Visualiser ▸ Bands cycles them.
+pub const BANDS: [usize; 5] = [12, 24, 36, 48, 64];
+/// 36: the column count the visualiser has always drawn, so an upgrade looks the same until the
+/// row is changed.
+pub const BANDS_DEFAULT: u8 = 2;
+pub const BANDS_COUNT: u8 = BANDS.len() as u8;
+
+pub fn bands_from_index(i: u8) -> usize {
+    BANDS[(i % BANDS_COUNT) as usize]
 }
