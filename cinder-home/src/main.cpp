@@ -8896,8 +8896,19 @@ void fm_release_capture() {
 // screen, and stopping the tuner from here would fight the FM screen's own power button.
 const char* const JACK_SWITCH = "/sys/class/switch/cxd3778gf_h2w/state";
 static int g_jack_last = -1;   // -1 = not yet observed
+const char* const ANTENNA_SWITCH = "/sys/class/switch/cxd3778gf_antenna/state";
+static int g_antenna_last = -1;
 
 void jack_watch_tick() {
+    // The FM screen's aerial note. It used to be told only when the radio was switched ON, and the
+    // UI starts from "no aerial" — so with the cable in and the radio off (the state you scan in),
+    // the screen said "NO AERIAL — PLUG IN WIRED HEADPHONES". Reported 2026-09-30. Reported to the
+    // UI on every change of the switch, and once at boot, from this same 1 Hz tick.
+    int ant = read_int_file(ANTENNA_SWITCH);
+    if (ant >= 0 && ant != g_antenna_last) {
+        g_antenna_last = ant;
+        cinder_fm_report_antenna(ant);
+    }
     int now = read_int_file(JACK_SWITCH);
     if (now < 0) return;                       // no such node on this unit: feature simply absent
     const int prev = g_jack_last;
