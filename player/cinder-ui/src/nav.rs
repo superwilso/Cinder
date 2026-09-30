@@ -366,6 +366,9 @@ pub enum Action {
     /// BT Receiver switched (or left, which switches it off). The shell reads `rx_on()` and runs
     /// the whole enter / leave chain; idempotent, so a repeat is harmless.
     RxChanged,
+    /// Receiver page ▸ Use Sony's receiver, confirmed: restart into the stock player with its own
+    /// Bluetooth receiver open. The shell writes stock's resume key, then boots to stock.
+    BootToSonyReceiver,
     /// Balance only. Deliberately NOT SoundChanged: that action re-applies the whole DSP chain
     /// (six EffectCtrlDmp round trips) plus a settings write, and the balance slider emits on every
     /// motion event. This one lands on a single cached amixer call.
@@ -3380,6 +3383,7 @@ impl App {
                     }
                     crate::confirm::Ask::Restart => vec![Action::Restart],
                     crate::confirm::Ask::PowerOff => vec![Action::PowerOff],
+                    crate::confirm::Ask::SonyReceiver => vec![Action::BootToSonyReceiver],
                     crate::confirm::Ask::ResetSettings => self.reset_settings(),
                     crate::confirm::Ask::DeletePlaylist => {
                         match self.playlist_row().map(|p| p.id) {
@@ -3449,7 +3453,11 @@ impl App {
         // tapping anywhere else on the bar opens the **Menu** — the rest of the strip stays one big
         // forgiving Menu target. Both zones come from `chrome::status_hit`, which is built from the
         // same constants that place the glyphs. Header back chevron → Back (below).
-        match crate::chrome::status_hit(x, y) {
+        // The Library's SORT/ORDER chip claims the strip's bottom edge above it — see
+        // `library::SORT_HIT_TOP`. Only there: `tap_library` handles it.
+        let sort_chip = self.current() == Screen::Library
+            && library::hit_sort_chip(self.lib_tab, x, y, self.search_enabled);
+        match crate::chrome::status_hit(x, y).filter(|_| !sort_chip) {
             Some(crate::chrome::StatusTap::Shelf) => {
                 self.open_shelf();
                 return vec![];
@@ -3485,7 +3493,7 @@ impl App {
         // roots, and `pop()` on a one-entry stack is a no-op, but drawing nothing and claiming the
         // target anyway is how an invisible control gets created.
         let has_header = !matches!(self.current(), Screen::NowPlaying | Screen::Lock);
-        if has_header && (crate::chrome::STATUS_H..crate::chrome::HEADER_BOTTOM).contains(&y) && x < 80 {
+        if has_header && crate::chrome::back_hit(x, y) {
             self.pop();
             return vec![];
         }
@@ -4130,6 +4138,9 @@ impl App {
                     self.rx_on = !self.rx_on;
                     return vec![Action::RxChanged];
                 }
+                if crate::receiver::sony_hit(x, y) {
+                    self.confirm = Some(crate::confirm::Ask::SonyReceiver);
+                }
                 vec![]
             }
             Screen::Pairing => {
@@ -4234,7 +4245,7 @@ impl App {
         }
         // SORT/ORDER chip in the header's right slot (right of the back chevron's x<80 band).
         // Songs cycles the SORT chip; Albums cycles the ORDER chip. Both reset the list position.
-        if (34..91).contains(&y) && x >= 300 {
+        if library::hit_sort_chip(self.lib_tab, x, y, self.search_enabled) {
             match self.lib_tab {
                 Tab::Songs => self.lib_sort = (self.lib_sort + 1) % library::SORTS.len(),
                 Tab::Albums => self.cycle_album_sort(),
@@ -4245,7 +4256,7 @@ impl App {
             self.fling_v = 0.0;
             return vec![];
         }
-        if (library::TAB_TOP..library::TAB_BOT).contains(&y) {
+        if (library::TAB_TOP..library::tab_hit_bottom(self.lib_band())).contains(&y) {
             // Resolve against the strip as it was LAST DRAWN. These used to be hardcoded x
             // thresholds that did not match the measured layout — at the default size "ALBUMS" is
             // drawn at x≈94..154, so tapping its left half selected SONGS, and the same drift ran
@@ -15278,6 +15289,20 @@ mod tests {
         }
     }
 
+    /// Receiver ▸ Use Sony's receiver restarts the device, so the row only ASKS; the confirm acts.
+    #[test]
+    fn sony_receiver_row_asks_before_restarting() {
+        use crate::confirm::{hit, Ask, Hit};
+        let mut a = unlocked();
+        a.push(Screen::Receiver);
+        assert!(a.tap(240, crate::receiver::SONY_Y + 10).is_empty(), "the row itself must not act");
+        assert!(a.modal_open());
+        let (x, y) = (0..crate::canvas::H as i32)
+            .find_map(|y| (hit(Ask::SonyReceiver, 360, y) == Hit::Confirm).then_some((360, y)))
+            .expect("no confirm pixel");
+        assert_eq!(a.tap(x, y), vec![Action::BootToSonyReceiver]);
+    }
+
     // ── Playing a song while a hand-built queue exists ────────────────────────────────────────
 
     /// With an empty queue, playing is immediate — the prompt must not appear for the common case.
@@ -15867,6 +15892,54 @@ mod tests {
             a.press(Button::Right);
         }
         assert_eq!(crate::text::scale_pct(), *crate::text::SCALE_STEPS.last().unwrap());
+    }
+
+    /// The 2026-09-30 report: Back and Sort were small, and aiming at Sort opened the Menu or the
+    /// Shelf. Back's target grows with the UI scale; the Sort chip owns the strip's bottom edge on
+    /// the two tabs that draw it, and nowhere else.
+    #[test]
+    fn scale_grows_back_and_sort_owns_the_strip_edge_above_it() {
+        let _scale = lock_scale();
+        use crate::chrome::{back_hit, StatusTap, status_hit};
+        assert!(back_hit(79, 60) && !back_hit(80, 60), "100% keeps the old x < 80");
+        crate::text::set_scale_pct(140);
+        assert!(back_hit(105, 60), "140% widens the back target");
+        crate::text::set_scale_pct(80);
+        assert!(back_hit(79, 60) && !back_hit(80, 60), "below 100% never shrinks it");
+        crate::text::set_scale_pct(100);
+
+        let mut a = unlocked();
+        a.go(Screen::Library);
+        a.lib_tab = Tab::Songs;
+        let y = library::SORT_HIT_TOP + 2;
+        assert_eq!(status_hit(344, y), Some(StatusTap::Menu), "the strip alone would take it");
+        let sort0 = a.lib_sort;
+        a.tap(344, y);
+        assert_eq!(a.current(), Screen::Library, "no Menu");
+        assert_ne!(a.lib_sort, sort0, "the tap cycled SORT");
+        a.tap(390, y);
+        assert_eq!(a.current(), Screen::Library, "no Shelf");
+        // A count caption is not a control: the strip keeps its full height there.
+        a.lib_tab = Tab::Artists;
+        a.tap(344, y);
+        assert_eq!(a.current(), Screen::Menu);
+    }
+
+    /// The tab strip draws 35 px; with the band in place its target runs down to the band.
+    #[test]
+    fn library_tabs_take_the_gap_above_the_band() {
+        let _scale = lock_scale();
+        let mut a = unlocked();
+        a.go(Screen::Library);
+        a.lib_tab = Tab::Songs;
+        let bottom = library::tab_hit_bottom(0);
+        assert!(bottom > library::TAB_BOT && bottom < library::library_shuffle_band().1);
+        let zones = library::tab_layout(&FontSet::load());
+        let x = zones.iter().find(|z| z.0 == Tab::Albums).map(|z| (z.1 + z.2 / 2.0) as i32).unwrap();
+        *a.lib_tab_zones.borrow_mut() = zones;
+        a.tap(x, bottom - 1);
+        assert_eq!(a.lib_tab, Tab::Albums);
+        assert_eq!(library::tab_hit_bottom(10), library::TAB_BOT, "slid band: the rows own the gap");
     }
 
     #[test]

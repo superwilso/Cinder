@@ -48,13 +48,15 @@ pub enum Ask {
     /// Not shared with the PREVIOUSLY PLAYED heading's own CLEAR: one destroys what you asked to
     /// hear next and the other what you already heard, and a history can be rebuilt by listening.
     ClearQueue,
+    /// Receiver page ▸ Use Sony's receiver. Restarts the device into the stock player, so it asks.
+    SonyReceiver,
 }
 
 /// Every question the modal can ask. Exists so the overflow audit can render all of them without
 /// a list that silently stops being complete when a new one is added.
 pub const ALL: &[Ask] = &[
     Ask::Restart, Ask::PowerOff, Ask::PowerMenu, Ask::QueueOnPlay, Ask::ResetSettings,
-    Ask::DeletePlaylist, Ask::ClearQueue,
+    Ask::DeletePlaylist, Ask::ClearQueue, Ask::SonyReceiver,
 ];
 
 impl Ask {
@@ -87,6 +89,11 @@ impl Ask {
                 "Delete this playlist?",
                 "The playlist is deleted. The music in it stays on the device.",
                 "Delete",
+            ),
+            Ask::SonyReceiver => (
+                "Use Sony's receiver?",
+                "The Walkman restarts into Sony's player with its receiver open. Restart again to come back to Cinder.",
+                "Restart",
             ),
             Ask::ClearQueue => (
                 "Clear Up Next?",

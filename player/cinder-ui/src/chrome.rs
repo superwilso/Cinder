@@ -346,6 +346,37 @@ pub const HEADER_BOTTOM: i32 = 91;
 
 const TITLE_X: f32 = 50.0;
 
+/// Width of the back chevron's hit zone at 100%: the whole header-left block, from just under the
+/// status strip to the header rule, `x < 80`. It grows with [`text::touch_scale`] so the target
+/// keeps pace with the glyph, capped where the widest header controls could begin.
+const BACK_HIT_W: f32 = 80.0;
+const BACK_HIT_W_MAX: i32 = 112;
+
+/// The back chevron's size at 100%; drawn at this × [`text::touch_scale`].
+const BACK_GLYPH: f32 = 20.0;
+
+/// Width of the back chevron's hit zone at the current UI scale.
+pub fn back_hit_w() -> i32 {
+    ((BACK_HIT_W * text::touch_scale()).round() as i32).min(BACK_HIT_W_MAX)
+}
+
+/// Is `(x, y)` on the back chevron's target? SINGLE SOURCE for the navigator's Back test, so the
+/// zone grows exactly as the glyph does.
+pub fn back_hit(x: i32, y: i32) -> bool {
+    (STATUS_H..HEADER_BOTTOM).contains(&y) && x < back_hit_w()
+}
+
+/// The header's right caption drawn as a CHIP: a boxed, tappable control rather than a faint
+/// label. Vertical centre shared with the header's icons (y 62). Height at 100%; scales with
+/// [`text::touch_scale`].
+const CHIP_CY: f32 = 62.0;
+const CHIP_H: f32 = 28.0;
+/// Horizontal padding inside the chip, each side.
+const CHIP_PAD: f32 = 10.0;
+/// The chip's right edge. The plain caption ends at 458; the chip's box ends there instead, so the
+/// right margin matches every other screen's.
+const CHIP_RIGHT: f32 = 458.0;
+
 fn title_style(col: Rgb888) -> crate::text::TextStyle {
     sty(Family::Sans, Weight::Bold, 30.0, col, -0.01)
 }
@@ -385,8 +416,38 @@ pub fn header_around(
     controls_x0: f32,
     controls_x1: f32,
 ) -> i32 {
+    header_impl(c, t, f, title, right, controls_x0, controls_x1, None)
+}
+
+/// [`header_around`] with the right caption drawn as a boxed CHIP — for a caption that is a
+/// control (the Library's SORT/ORDER), not a readout. The box never starts left of `controls_x1`,
+/// so a hit zone of "right of the header controls" always contains it.
+pub fn header_chip(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    title: &str,
+    chip: &str,
+    short: &str,
+    controls_x0: f32,
+    controls_x1: f32,
+) -> i32 {
+    header_impl(c, t, f, title, Some(chip), controls_x0, controls_x1, Some(short))
+}
+
+fn header_impl(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &FontSet,
+    title: &str,
+    right: Option<&str>,
+    controls_x0: f32,
+    controls_x1: f32,
+    chip_short: Option<&str>,
+) -> i32 {
+    let chip = chip_short.is_some();
     let min_x = controls_x0;
-    icons::back(c, 30.0, 62.0, 20.0, t.dim);
+    icons::back(c, 30.0, 62.0, BACK_GLYPH * text::touch_scale(), t.dim);
     let ts = title_style(t.ink);
     let rs = sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.1);
     // The title is FITTED. Most titles are fixed words, but some are the user's own — a playlist's
@@ -394,7 +455,9 @@ pub fn header_around(
     // zero-width space to draw "…" into, on top of it (`tests/ui_overflow.rs`, hostile library).
     // It keeps room for a caption of up to 140 px and never reaches past a control at `min_x`;
     // the caption is then fitted into whatever the title left, as before.
-    let cap_room = right.map_or(0.0, |r| text::measure(f, r, &rs).min(140.0) + 16.0);
+    let rs = if chip { sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1) } else { rs };
+    let pad = if chip { CHIP_PAD } else { 0.0 };
+    let cap_room = right.map_or(0.0, |r| text::measure(f, r, &rs).min(140.0) + 16.0 + 2.0 * pad);
     let mut title_right = 458.0 - cap_room;
     if min_x > 0.0 {
         title_right = title_right.min(min_x - 16.0);
@@ -403,12 +466,40 @@ pub fn header_around(
     let title_end = text::draw(c, f, TITLE_X, 70.0, &title, &ts);
     if let Some(r) = right {
         // Clamp the caption to the space right of the title (never let it overlap the title).
-        let avail = (458.0 - (title_end + 16.0).max(controls_x1)).max(0.0);
+        let avail = (458.0 - (title_end + 16.0).max(controls_x1) - 2.0 * pad).max(0.0);
+        // A chip that cannot show its whole label shows its VALUE ("ARTIST"), not a clipped
+        // prefix ("ORDER · ART…"): the value is what the user is checking, and it changes.
+        let r = match chip_short {
+            Some(short) if text::measure(f, r, &rs) > avail => short,
+            _ => r,
+        };
         let r = crate::widgets::fit(f, r, &rs, avail);
         let rw = text::measure(f, &r, &rs);
-        text::draw(c, f, 458.0 - rw, 65.0, &r, &rs);
+        if chip {
+            let (x, y, w, h) = chip_box(rw);
+            stroke_rect(c, x, y, w, h, t.ctrl());
+            // Baseline from the centre: a mono cap/digit is ~0.72 em tall.
+            let base = CHIP_CY + 0.36 * text::scaled(rs.size);
+            text::draw(c, f, CHIP_RIGHT - pad - rw, base.round(), &r, &rs);
+        } else {
+            text::draw(c, f, 458.0 - rw, 65.0, &r, &rs);
+        }
     }
     HEADER_BOTTOM
+}
+
+/// The chip's box `(x, y, w, h)` around a label `text_w` wide.
+fn chip_box(text_w: f32) -> (i32, i32, i32, i32) {
+    let h = CHIP_H * text::touch_scale();
+    let x = CHIP_RIGHT - text_w - 2.0 * CHIP_PAD;
+    (x.round() as i32, (CHIP_CY - h / 2.0).round() as i32, (CHIP_RIGHT - x).round() as i32, h.round() as i32)
+}
+
+fn stroke_rect(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col: Rgb888) {
+    Rectangle::new(Point::new(x, y), Size::new(w.max(0) as u32, h.max(0) as u32))
+        .into_styled(PrimitiveStyle::with_stroke(col, 1))
+        .draw(c)
+        .ok();
 }
 
 #[cfg(test)]
