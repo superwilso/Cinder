@@ -76,13 +76,14 @@ pub fn status_lines(rx: &Rx) -> Vec<String> {
         ],
         (true, _) => vec![
             format!("Playing{}", if rx.peer.is_empty() { String::new() } else { format!(" from {}", rx.peer) }),
-            // Raw codec byte (Sony's enum; 0x02 is LDAC on the transmitter side, 0x03 was what a
-            // Windows PC sent — not decoded yet). GetBitrate read 1 throughout a working stream, so
-            // it is not a kbps figure and is left off.
+            // Sony's codec enum, named where it is known (`bluetooth::link_codec_label`): 0x03 is
+            // AAC, which is what both a Windows PC and an iPhone chose. GetBitrate read 1 throughout
+            // a working stream, so it is not a kbps figure and is left off.
             if rx.freq >= 8000 {
-                format!("codec 0x{:02x} · {:.1} kHz", rx.codec, rx.freq as f32 / 1000.0)
+                format!("{} · {:.1} kHz", crate::bluetooth::link_codec_label(rx.codec as u8),
+                        rx.freq as f32 / 1000.0)
             } else {
-                format!("codec 0x{:02x}", rx.codec)
+                crate::bluetooth::link_codec_label(rx.codec as u8)
             },
         ],
     }
@@ -129,7 +130,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         ny += 22.0;
     }
     hline(c, 740, t.line);
-    crate::widgets::center(c, f, 240.0, 770.0, "EXPERIMENTAL · IPHONE: TRY SONY'S RECEIVER",
+    crate::widgets::center(c, f, 240.0, 770.0, "EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE",
                            &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1));
 }
 
@@ -147,7 +148,7 @@ mod tests {
         assert!(status_lines(&rx(true, 1))[1].contains("Pair or connect"));
         assert_eq!(status_lines(&rx(true, 2))[0], "Connected: ARTHURS-PC");
         assert!(status_lines(&rx(true, 3))[0].starts_with("Playing from ARTHURS-PC"));
-        assert_eq!(status_lines(&rx(true, 3))[1], "codec 0x03 · 48.0 kHz");
+        assert_eq!(status_lines(&rx(true, 3))[1], "AAC · 48.0 kHz");
     }
 
     #[test]

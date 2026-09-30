@@ -23,12 +23,19 @@ pub const CODECS: [(&str, &str); 4] = [
 ///
 /// Measured on device 2026-08-17 with a WH-1000XM4: the player requested LDAC, the peer advertised
 /// `ldac support:1` with both aptX flags clear, and the link reported 0x02 for the whole session.
+/// 0x03 = AAC, measured 2026-09-30 on the RECEIVER side: a Windows PC and an iPhone both reported
+/// 0x03 through BtPlayerService, and the HCI snoop of the same sessions shows each one's AVDTP
+/// SET_CONFIGURATION choosing AAC (object type MPEG-2 LC, 48 kHz / 44.1 kHz, 256 kbps VBR) from
+/// the sink's SBC / LDAC / AAC offer. Sink and source report through the same `btmw_av_codec_t`
+/// (libBtCompIf's two `NotifySoundStatus` signatures), so the value means AAC on both.
+///
 /// The other enumerators are NOT known yet, so anything else is shown as its raw byte rather than
 /// guessed at — a wrong codec label is worse than an honest hex value on a screen whose entire
 /// purpose is telling you what you are actually listening to.
 pub fn link_codec_name(raw: u8) -> Option<&'static str> {
     match raw {
         0x02 => Some("LDAC"),
+        0x03 => Some("AAC"),
         _ => None,
     }
 }
