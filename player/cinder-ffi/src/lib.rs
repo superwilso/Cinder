@@ -3518,6 +3518,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::MonoChanged => 46,
         Action::DacEqChanged => 48,
         Action::RxChanged => 49,
+        Action::BootToSonyReceiver => 50, // shell stores stock's resume function, then boots to stock
         Action::BtDebugLog => 47,
         Action::ClockSet => 39,
         Action::SoundBypass(_) => 15,

@@ -39,6 +39,16 @@ pub const SWITCH_Y: i32 = crate::chrome::HEADER_BOTTOM + 16;
 pub const SWITCH_H: i32 = 76;
 const STATUS_Y: i32 = SWITCH_Y + SWITCH_H + 28;
 
+/// "Use Sony's receiver": restart into the stock player with its receiver open. Below the status
+/// lines (at most three, ending by y≈290) and well clear of the notes rule at 580.
+pub const SONY_Y: i32 = 440;
+pub const SONY_H: i32 = kit::ROW_H;
+
+/// Did this tap land on the "Use Sony's receiver" row?
+pub fn sony_hit(_x: i32, y: i32) -> bool {
+    (SONY_Y..SONY_Y + SONY_H).contains(&y)
+}
+
 /// Did this tap land on the switch row?
 pub fn switch_hit(_x: i32, y: i32) -> bool {
     (SWITCH_Y..SWITCH_Y + SWITCH_H).contains(&y)
@@ -86,6 +96,12 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
     kit::row(c, t, f, SWITCH_Y, SWITCH_H,
              &Row::new("Receiver mode").sub(sub).trail(Trail::Switch(rx.on)));
 
+    // The fallback: Sony's own receiver, via a restart. Here and not in Settings because this is
+    // where someone finds out Cinder's does not pair with their phone.
+    hline(c, SONY_Y - 1, t.line);
+    kit::row(c, t, f, SONY_Y, SONY_H,
+             &Row::new("Use Sony's receiver").sub("Restarts into the Sony player").trail(Trail::Open("")));
+
     const AVAIL: f32 = 436.0;
     let mut y = STATUS_Y as f32;
     for (i, line) in status_lines(rx).iter().enumerate() {
@@ -113,7 +129,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, rx: &Rx) {
         ny += 22.0;
     }
     hline(c, 740, t.line);
-    crate::widgets::center(c, f, 240.0, 770.0, "EXPERIMENTAL · WORKS FROM WINDOWS, NOT IPHONE",
+    crate::widgets::center(c, f, 240.0, 770.0, "EXPERIMENTAL · IPHONE: TRY SONY'S RECEIVER",
                            &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.1));
 }
 
@@ -138,6 +154,14 @@ mod tests {
     fn a_radio_that_is_off_is_named_before_anything_else() {
         let r = Rx { radio: false, ..rx(false, 0) };
         assert!(status_lines(&r)[0].contains("Bluetooth is off"));
+    }
+
+    #[test]
+    fn the_sony_row_does_not_overlap_the_switch() {
+        assert!(sony_hit(240, SONY_Y + 1));
+        assert!(!switch_hit(240, SONY_Y + 1));
+        assert!(!sony_hit(240, SWITCH_Y + 1));
+        assert!(SONY_Y + SONY_H < 580, "clear of the notes");
     }
 
     #[test]

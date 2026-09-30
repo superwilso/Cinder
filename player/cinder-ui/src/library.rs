@@ -1347,6 +1347,18 @@ fn art_stack(c: &mut Canvas, t: &Theme, lib: &Library, x: i32, cy: i32, arts: &[
 pub const TAB_TOP: i32 = 91;
 pub const TAB_BOT: i32 = 126;
 
+/// Bottom of the tab strip's TARGET with the band block slid `hide` px. The strip draws 35 px,
+/// under the 44 px a thumb needs; while the shuffle band sits in place there are 15 empty px under
+/// the hairline, and the tabs take them (stopping 4 px short of the band). Once the band has slid
+/// away, rows scroll up under the strip and the gap is theirs, so the target shrinks back.
+pub fn tab_hit_bottom(hide: i32) -> i32 {
+    if hide == 0 {
+        library_shuffle_band().1 - 4
+    } else {
+        TAB_BOT
+    }
+}
+
 /// Where each tab label is DRAWN: (tab, x, width) in screen coords. Both `tabs()` (render) and
 /// `tab_at()` (hit test) read this, so the two can't disagree.
 ///
@@ -1566,6 +1578,27 @@ fn draw_empty_note(c: &mut Canvas, t: &Theme, f: &FontSet, top: i32, tab: Tab, l
 pub const SEARCH_X0: i32 = 240;
 pub const SEARCH_X1: i32 = 292;
 
+/// Does `tab` draw the SORT/ORDER chip? Songs and Albums; the other two show a count, which is a
+/// readout and not a control.
+pub fn has_sort_chip(tab: Tab) -> bool {
+    matches!(tab, Tab::Songs | Tab::Albums)
+}
+
+/// Top of the SORT/ORDER chip's target. ABOVE the status strip's bottom edge on purpose: the chip
+/// sits directly under the Menu and Shelf glyphs, and a finger aiming at it and landing a little
+/// high used to open one of them (reported 2026-09-30). The strip keeps everything above this —
+/// its glyphs are centred at y 22, so the Menu and Shelf targets still run 10 px past the bottom
+/// of what they draw — and on every other screen, and every other tab, it keeps its full height.
+pub const SORT_HIT_TOP: i32 = 32;
+
+/// Is `(x, y)` on the SORT/ORDER chip's target? Everything right of the header controls, from
+/// [`SORT_HIT_TOP`] to the header rule. `chrome::header_chip` never starts the box left of that x.
+/// Checked by the navigator BEFORE the status strip, because it claims the strip's bottom edge.
+pub fn hit_sort_chip(tab: Tab, x: i32, y: i32, search: bool) -> bool {
+    let x1 = if search { SEARCH_X1 } else { view_button_x(false).1 };
+    has_sort_chip(tab) && (SORT_HIT_TOP..crate::chrome::HEADER_BOTTOM).contains(&y) && x >= x1
+}
+
 pub fn hit_search(x: i32, y: i32) -> bool {
     (34..91).contains(&y) && (SEARCH_X0..SEARCH_X1).contains(&x)
 }
@@ -1590,9 +1623,14 @@ pub fn render(
     let hide = band_offset(tab, band_hide, scroll_px);
     c.fill(t.bg);
     // Songs shows a tappable SORT chip; Albums an ORDER chip; the others show their count.
+    let short = match tab {
+        Tab::Songs => SORTS[sort.min(SORTS.len() - 1)],
+        Tab::Albums => ALBUM_SORTS[album_sort.min(ALBUM_SORTS.len() - 1)],
+        _ => "",
+    };
     let rc = match tab {
-        Tab::Songs => format!("SORT \u{00b7} {}", SORTS[sort.min(SORTS.len() - 1)]),
-        Tab::Albums => format!("ORDER \u{00b7} {}", ALBUM_SORTS[album_sort.min(ALBUM_SORTS.len() - 1)]),
+        Tab::Songs => format!("SORT \u{00b7} {short}"),
+        Tab::Albums => format!("ORDER \u{00b7} {short}"),
         _ => count_caption(tab, lib),
     };
     // The view button, and the search button right of it when search is installed. The title ends
@@ -1601,7 +1639,11 @@ pub fn render(
     let x1 = if search { SEARCH_X1 } else { vx1 };
     // The title may come to 8 px short of the button's zone: its icon is centred in it, so that
     // still leaves a 20 px gap to the drawn glyph.
-    let y0 = crate::chrome::header_around(c, t, f, "Library", Some(&rc), (vx0 + 8) as f32, x1 as f32);
+    let y0 = if has_sort_chip(tab) {
+        crate::chrome::header_chip(c, t, f, "Library", &rc, short, (vx0 + 8) as f32, x1 as f32)
+    } else {
+        crate::chrome::header_around(c, t, f, "Library", Some(&rc), (vx0 + 8) as f32, x1 as f32)
+    };
     if search {
         crate::icons::search(c, ((SEARCH_X0 + SEARCH_X1) / 2) as f32, 62.0, 24.0, t.dim);
     }

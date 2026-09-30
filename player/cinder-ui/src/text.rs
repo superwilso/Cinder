@@ -94,6 +94,20 @@ impl Drop for ScaleGuard {
     }
 }
 
+/// The TOUCH multiplier for the current UI scale: the slider above 100% also grows the few header
+/// controls whose targets are not already rows — the back chevron and its hit zone, the Library's
+/// SORT/ORDER chip. Never below 1.0: 80% and 90% make the type denser, but a smaller target is not
+/// something anyone asks for on a panel with no d-pad.
+///
+/// Reported 2026-09-30 (r/walkman): the library tabs, Back and Sort were "pretty small", and the
+/// user "kept hitting the Menu or the Shelf buttons when trying to sort". Raising the text size
+/// helped the tabs — their zones follow the measured labels — and did nothing for the other two,
+/// because their geometry was fixed.
+#[inline]
+pub fn touch_scale() -> f32 {
+    scale_pct().max(100) as f32 / 100.0
+}
+
 /// A type size at the current UI scale: what `draw` and `measure` actually use.
 #[inline]
 pub fn scaled(size: f32) -> f32 {

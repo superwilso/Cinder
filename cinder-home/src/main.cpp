@@ -1108,6 +1108,8 @@ static void scrobble_open_ours(const char* who) {
 }
 
 // so a blocking Sony-IPC can't stall the device. Idempotent, one-shot.
+void sony_rx_restore_at_boot();   // defined with the receiver, below
+
 void deferred_up() {
     if (g_deferred_done) return;
     // First, and exactly once: this depends on nothing below it and costs one thread that
@@ -1429,6 +1431,9 @@ void deferred_up() {
                                   st, bt_radio_up(st) ? "ON" : "OFF");
                     clog_(m);
                 });
+    // Back from Sony's receiver (Receiver page ▸ Use Sony's receiver)? Put stock's stored function
+    // and the FuncMode back. A file test and nothing else unless that flag is there.
+    sony_rx_restore_at_boot();
     // Push the saved codec preference at the radio too. Same reasoning as the EQ re-apply below: a
     // preference that only lives in a file is a preference the hardware never hears about.
     run_guarded("deferred_up: apply saved BT codec", 6, apply_bt_codec);
@@ -2821,6 +2826,8 @@ void apply_brightness() {
 // Defined below, with the rest of the power handling. Needed here because "boot to stock" is a
 // RESTART — see the comment in boot_to_stock() for why it stopped being an _exit.
 void power_action(bool restart);
+
+void boot_to_sony_receiver();   // with the BT receiver, below
 
 void boot_to_stock() {
     bool armed = false;
@@ -7877,6 +7884,22 @@ static void rx_discoverable(bool on) {
 static void rx_release_player() {
     set_transport(false);
     bt_connect_wait(false);   // the transmitter side stops listening for headphones
+    // …and stops PAGING them. The reconnect ladder stands aside once g_rx_active is set, but a
+    // page it already put on the air runs to its 42 s timeout regardless. The HCI snoop of
+    // 2026-09-30 caught an entry made during one (Create Connection to the headphones in flight):
+    // the EIR never gained AudioSink, scan enable stayed 0x01 (discoverable, NOT connectable),
+    // RequestStartConnectWait returned 0 and the sink sat at 1. That is the likeliest reason an
+    // iPhone called the Walkman "not supported" — it found no sink to connect to. A clean entry
+    // advertised AudioSink with scan 0x03. Zero-arg, slot 9 — between the device-proven 8
+    // (RequestDisconnection) and 10 (RequestStartConnectWait); rc is logged, not trusted.
+    if (g_bt_xmit) {
+        enum { VIDX_RequestCancelConnection = 9 };
+        typedef int (*fn0)(void*);
+        int cc = ((fn0)bt_slot(g_bt_xmit, VIDX_RequestCancelConnection))(g_bt_xmit);
+        char c[80];
+        std::snprintf(c, sizeof c, "rx: RequestCancelConnection rc=%d (any headphone page)", cc);
+        clog_(c);
+    }
     cinder_audio_release_sequence();
     int cp = cinder_audio_close_player();
     char m[96];
@@ -7965,6 +7988,172 @@ void apply_receiver() {
     }
 }
 
+// ── SONY'S OWN RECEIVER (Receiver page ▸ "Use Sony's receiver", after its confirm) ─────────────
+// Cinder's receiver works from Windows and has not worked from an iPhone. Sony's does the same
+// steps (above), but it is Sony's code on Sony's timing, so this is the fallback: restart into the
+// stock player with its Bluetooth receiver already open.
+//
+// HOW STOCK KNOWS. Read out of HgrmMediaPlayerApp 2026-09-30 (analysis/G_bt_nfc/RE_findings.md,
+// "Receiver via stock"): FunctionMgrInitialState::Initialize asks the FunctionMgr for the stored
+// function and, unless it is kFuncNone (7), calls FuncControl::setFuncTree(id) — the path a
+// function switch takes. The FunctionMgr's store (@0x20118c, "current_function_(%d)") keeps it in
+// Sony's Configuration service:
+//
+//     Configuration::SetInt(GroupId 0x1390, KeyId 0x13af, FunctionId)      (5008, 5039)
+//
+// FunctionId is the app's own enum, from the name map it builds at 0x880d0: kFuncMusicPlay 0,
+// kFuncLanguageStudy 1, kFuncFmRadio 2, kFuncDirectRec 3, kFuncUsbMusic 4, kFuncDlnaDmp 5,
+// kFuncBtReceiver 6, kFuncNone 7. setFuncTree maps 6 onto FuncMode 2 (A2dpSink), the mode apply_receiver
+// enters.
+//
+// PUT BACK ON THE WAY HOME. Stock would otherwise open in its receiver on every later stock boot,
+// and it may leave FuncMode at A2dpSink for Cinder's next boot (the store also runs
+// SetBootFuncMode). So the old value is written to SONY_RX_FLAG before anything changes, and the
+// next Cinder boot restores it — and only a boot that finds the flag makes any of these calls, so
+// the ordinary boot path gains nothing.
+//
+// UNVERIFIED ON HARDWARE as of 2026-09-30: the device was away. The keys and the enum are read off
+// the binary, not guessed; the first run should be checked in cinderhome.log ("sony-rx:").
+static const char* const SONY_RX_FLAG = "/data/cinder/sony_rx_restore";
+static const int SONY_CFG_GROUP = 0x1390;       // 5008
+static const int SONY_CFG_FUNCTION = 0x13af;    // 5039
+static const int SONY_FUNC_BT_RECEIVER = 6;
+
+// Sony's Configuration client. NOT stateless like FuncMgrService: the ctor (@0x1203c in
+// libConfigurationService.so) stores the service client at +4, so it must run. 8 bytes (vptr +
+// client); 64 are reserved. Never destroyed — one per process, like the other long-lived clients.
+// They return a STATUS, not a bool: 0 is success. The app's own wrappers (@0x1d1a38 SetInt,
+// @0x1d19f0 GetInt) test `== 0`, and GetInt itself returns 4 when the binder call failed.
+typedef int (*cfg_getint_fn)(void*, int, int, int*);
+typedef int (*cfg_setint_fn)(void*, int, int, int);
+typedef int (*cfg_flush_fn)(void*);
+static void* g_cfg = nullptr;
+static cfg_getint_fn g_cfg_get = nullptr;
+static cfg_setint_fn g_cfg_set = nullptr;
+static cfg_flush_fn g_cfg_flush = nullptr;
+
+static bool sony_cfg_open() {
+    static bool tried = false;
+    if (tried) return g_cfg != nullptr;
+    tried = true;
+    void* h = dlopen("libConfigurationService.so", RTLD_NOW);
+    if (!h) { clog_("sony-rx: libConfigurationService.so unavailable"); return false; }
+    typedef void (*ctor_fn)(void*);
+    ctor_fn ctor = (ctor_fn)dlsym(h, "_ZN3pst8services13configuration13ConfigurationC1Ev");
+    g_cfg_get = (cfg_getint_fn)dlsym(h,
+        "_ZN3pst8services13configuration13Configuration6GetIntENS1_7GroupIdENS1_5KeyIdERi");
+    g_cfg_set = (cfg_setint_fn)dlsym(h,
+        "_ZN3pst8services13configuration13Configuration6SetIntENS1_7GroupIdENS1_5KeyIdEi");
+    g_cfg_flush = (cfg_flush_fn)dlsym(h, "_ZN3pst8services13configuration13Configuration5FlushEv");
+    if (!ctor || !g_cfg_get || !g_cfg_set || !g_cfg_flush) {
+        clog_("sony-rx: a Configuration symbol is missing");
+        return false;
+    }
+    static char obj[64];
+    ctor(obj);
+    g_cfg = obj;
+    return true;
+}
+
+static int g_sony_rx_old = -1;      // what the key held before we wrote it; -1 = unread
+static bool g_sony_rx_ok = false;
+
+// Guarded body (run_guarded takes a bare function pointer).
+static void sony_rx_write() {
+    g_sony_rx_ok = false;
+    if (!sony_cfg_open()) return;
+    int old = -1;
+    bool got = g_cfg_get(g_cfg, SONY_CFG_GROUP, SONY_CFG_FUNCTION, &old) == 0;
+    char m[128];
+    std::snprintf(m, sizeof m, "sony-rx: stored function was %d (GetInt %s)", old, got ? "ok" : "FAILED");
+    clog_(m);
+    // Nothing to put back without the old value, and a key we cannot read is not one to write.
+    if (!got || old < 0 || old > 7) return;
+    g_sony_rx_old = old;
+    // Flag FIRST, then the write: a crash between the two leaves a flag that restores the value the
+    // key already holds, which is harmless. The other order leaves a changed key with no way back.
+    FILE* f = std::fopen(SONY_RX_FLAG, "w");
+    if (!f) { clog_("sony-rx: could not write the restore flag — not changing anything"); return; }
+    std::fprintf(f, "%d\n", old);
+    std::fclose(f);
+    ::sync();
+    bool set = g_cfg_set(g_cfg, SONY_CFG_GROUP, SONY_CFG_FUNCTION, SONY_FUNC_BT_RECEIVER) == 0;
+    bool fl = g_cfg_flush(g_cfg) == 0;
+    int back = -1;
+    g_cfg_get(g_cfg, SONY_CFG_GROUP, SONY_CFG_FUNCTION, &back);
+    std::snprintf(m, sizeof m, "sony-rx: SetInt(%d) %s, Flush %s, reads back %d",
+                  SONY_FUNC_BT_RECEIVER, set ? "ok" : "FAILED", fl ? "ok" : "FAILED", back);
+    clog_(m);
+    g_sony_rx_ok = back == SONY_FUNC_BT_RECEIVER;
+}
+
+void boot_to_stock();
+
+// Receiver page ▸ Use Sony's receiver. Stays on Cinder, and says so, if the key did not take:
+// restarting into stock's music player is not what was asked for.
+//
+// Cinder's own receiver is NOT torn down first: the restart resets the radio and FuncMode anyway,
+// and EnterFuncMode(MediaPlay) would drop USB for ~100 s on the way out for nothing.
+void boot_to_sony_receiver() {
+    run_guarded("sony-rx: store BtReceiver as stock's function", 10, sony_rx_write);
+    if (!g_sony_rx_ok) {
+        clog_("sony-rx: the key did not take — staying on Cinder");
+        cinder_toast("Couldn't set up Sony's receiver");
+        return;
+    }
+    boot_to_stock();
+}
+
+static int g_sony_rx_restore_to = -1;
+
+static void sony_rx_restore_body() {
+    if (!sony_cfg_open()) return;
+    bool set = g_cfg_set(g_cfg, SONY_CFG_GROUP, SONY_CFG_FUNCTION, g_sony_rx_restore_to) == 0;
+    bool fl = g_cfg_flush(g_cfg) == 0;
+    char m[112];
+    std::snprintf(m, sizeof m, "sony-rx: restored stock's function to %d (SetInt %s, Flush %s)",
+                  g_sony_rx_restore_to, set ? "ok" : "FAILED", fl ? "ok" : "FAILED");
+    clog_(m);
+}
+
+static int g_sony_rx_boot_mode = -1;
+static void sony_rx_read_mode() {
+    typedef int (*getfn)(void*);
+    void* h = dlopen("libFuncMgrService.so", RTLD_NOW);
+    getfn get = h ? (getfn)dlsym(h,
+        "_ZN3pst8services8funcarch7funcmgr14FuncMgrService18GetCurrentFuncModeEv") : nullptr;
+    if (!get) { clog_("sony-rx: GetCurrentFuncMode unavailable"); return; }
+    char self[64];   // stateless wrapper — see usb_enter_func_mode
+    g_sony_rx_boot_mode = get(self);
+}
+
+// deferred_up: the first Cinder boot after a trip to Sony's receiver. One-shot — the flag is
+// renamed before any Sony call, so a call that hangs or kills us cannot make every boot retry it.
+void sony_rx_restore_at_boot() {
+    FILE* f = std::fopen(SONY_RX_FLAG, "r");
+    if (!f) return;
+    int old = -1;
+    if (std::fscanf(f, "%d", &old) != 1) old = -1;
+    std::fclose(f);
+    std::string spent = std::string(SONY_RX_FLAG) + ".spent";
+    std::rename(SONY_RX_FLAG, spent.c_str());
+    ::sync();
+    if (old >= 0 && old <= 7) {
+        g_sony_rx_restore_to = old;
+        run_guarded("sony-rx: restore stock's function", 10, sony_rx_restore_body);
+    }
+    // Sony's app may have left the boot FuncMode at A2dpSink. Music needs MediaPlay; 9 is the
+    // binder-failure value and means "unknown", not "wrong", so only a clear 2 is acted on.
+    run_guarded("sony-rx: read FuncMode", 6, sony_rx_read_mode);
+    char m[96];
+    std::snprintf(m, sizeof m, "sony-rx: FuncMode at boot = %d", g_sony_rx_boot_mode);
+    clog_(m);
+    if (g_sony_rx_boot_mode == FM_A2DPSINK) {
+        run_guarded("sony-rx: EnterFuncMode(MediaPlay)", 20, rx_fm_mediaplay);
+        rx_usb_restore();
+    }
+}
+
 // One read of the sink, once a second while the mode runs. StartSound is re-issued whenever the
 // link or the play state moves — Sony's app does it on "VirtualPauseOff", and nothing decoded yet
 // says which transition is the one that matters, so every one gets it. It is idempotent on a
@@ -8003,6 +8192,21 @@ static void rx_poll_ipc() {
     // AVSNK status, from Sony's own log on the device 2026-09-29 ("AVSNK status change to (n)"):
     // 1 idle, 2 connect-wait, 4 connected, 5 streaming — a Windows PC played 33 s at 5.
     g_rx_phase = snk == 5 ? 3 : (attached && snk != 1) ? 2 : 1;
+    // SELF-HEAL a connect-wait that never took. Idle (1) with idle as the baseline means nothing is
+    // waiting: the broken entry above (rc=0, sink 1), or one that lost to a late page. Re-issue
+    // every 5 s; rx_open_ipc re-reads the baseline, so a wait that takes becomes the new "waiting".
+    static long heal_at = 0;
+    const long now = now_ms();
+    if (snk == 1 && g_rx_snk0 == 1) {
+        if (heal_at == 0) heal_at = now + 5000;
+        else if (now >= heal_at) {
+            heal_at = now + 5000;
+            clog_("rx: sink is idle, not waiting — re-issuing connect-wait + discoverable");
+            rx_open_ipc();
+        }
+    } else {
+        heal_at = 0;
+    }
 }
 
 // The 1 Hz tick: keeps the running mode in step with the page (leaving the page turns it off —
@@ -9471,6 +9675,11 @@ void carry_out(int act) {
             // _exit(42) — which hands back to the launcher with no restart behind it, i.e. exactly
             // the dead-screen fault this path was just fixed for.
             boot_to_stock();
+            break;
+        case CINDER_ACT_BOOT_TO_SONY_RX:
+            // Not run_guarded, as above: on success it ends in boot_to_stock(). Its one Sony call
+            // (the Configuration write) carries its own guard inside.
+            boot_to_sony_receiver();
             break;
         case CINDER_ACT_SCREEN_OFF_CHANGED:
             // Nothing to apply now — the countdown lives in the pump and reads the value each tick.

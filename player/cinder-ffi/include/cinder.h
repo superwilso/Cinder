@@ -225,7 +225,11 @@ typedef enum {
     CINDER_ACT_DAC_EQ_CHANGED = 48,
     /* BT Receiver switched. Read cinder_get_rx_on() and enter or leave receiver mode; idempotent.
      * Leaving the page sends nothing — the shell's receiver tick sees cinder_get_rx_on() go 0. */
-    CINDER_ACT_RX_CHANGED = 49
+    CINDER_ACT_RX_CHANGED = 49,
+    /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
+     * resume function (Configuration 5008/5039), then boot to stock exactly as
+     * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */
+    CINDER_ACT_BOOT_TO_SONY_RX = 50
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a

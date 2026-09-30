@@ -1628,3 +1628,45 @@ for four attempts before anyone saw that Cinder had received it
   the player over it. Fork before binder, or exec.
 - iOS refused to pair ("NW-A50series is not supported"). Not understood; the Windows run did not
   need anything iOS might check for (class of device, SDP records), so that is where to look.
+
+## Receiver via stock, 2026-09-30 — what Sony does, and driving Sony's own receiver
+
+Offline, from the device's `HgrmMediaPlayerApp` (md5 deb923000c89b87c0253d1b866baa9b3, W1 device
+copy), Thumb-2 string/call xrefs with capstone. Addresses are that binary's.
+
+**Sony's receiver is not a different mechanism.** The six `BtReceiverState*` classes
+(Standby, StoppedAtNoPair, PairingWait, ConnectionWait, Connection, Stopped) only set UI text
+(`230015`, `230089`, `230092`… are string ids). Entering the function is `FuncControl::setFuncTree`
+(@0x203a28), which looks the FunctionId up in a `std::map<FunctionId, FuncMode>` (default 6) and
+calls `FuncMgrService::EnterFuncMode` if the mode differs from `GetCurrentFuncMode` — exactly what
+`apply_receiver` does. The BT calls (`RequestStartConnectWait`, `SetDiscoverableMode`,
+`StartSound`, `RequestLastDeviceConnection`, `RequestCancelConnection`) are all virtual calls on
+the BtPlayer/BtCommon clients in `BtPlayerModel`; nothing new is imported. `SetRfOnOffEx` takes
+the same `(const bool&)` as `SetRfOnOff` — there is no sink-specific radio mode.
+
+So the iOS difference is not a missing call. The HCI snoop the same day showed the likely cause:
+an entry made while Cinder's reconnect ladder was paging the headphones never advertised
+AudioSink and never became connectable (scan enable 0x01). Stock has no such ladder. Fixed in
+`rx_release_player` (cancel the page, slot 9) and `rx_poll_ipc` (re-issue connect-wait while the
+sink reads idle) — unverified, checklist 21.9.
+
+**Stock resumes its last function at boot.** `FunctionMgrInitialState::Initialize` (@0x201994)
+fetches the stored function; `7` (kFuncNone) logs "Resumeinfo nothing", anything else goes to
+`setFuncTree`. The store (@0x20118c, "current_function_(%d)") is Sony's Configuration service,
+then `SetBootFuncMode`:
+
+    Configuration::SetInt(GroupId 0x1390, KeyId 0x13af, FunctionId)   // 5008 / 5039
+    (Settings wrappers: SetInt @0x1d1a38, GetInt @0x1d19f0; status 0 = success)
+
+FunctionId, from the name map built at 0x880d0: MusicPlay 0, LanguageStudy 1, FmRadio 2,
+DirectRec 3, UsbMusic 4, DlnaDmp 5, **BtReceiver 6**, None 7.
+
+`Configuration` (libConfigurationService.so): 8-byte object, ctor @0x1203c stores
+`Framework::GetServiceClient("ConfigurationService")` at +4 — it must be constructed, unlike the
+stateless FuncMgrService wrapper. `GetInt`/`SetInt`/`Flush` return a status, 4 on binder error.
+
+Cinder uses this for Receiver ▸ "Use Sony's receiver": save the old value to
+`/data/cinder/sony_rx_restore`, `SetInt(…, 6)` + `Flush`, then the ordinary boot-to-stock. The next
+Cinder boot restores the value and, if `GetCurrentFuncMode` reads 2, runs `EnterFuncMode(MediaPlay)`.
+Unverified on hardware — checklist 21.10.
+
