@@ -189,11 +189,11 @@ c9eef0dcbf67af3f library_playlists_grid_night
 950663098198cf80 viz_size_0_off
 2864fac45dfb0e69 viz_size_1_veil
 2513c2d1b1efb6b5 viz_size_2_full
-8ef7183b6fca77f0 confirm_restart
-72a0479a4bf5dd36 confirm_poweroff
+3e933fcd685023b7 confirm_restart
+399ff34c15290d29 confirm_poweroff
 b9b67b0e2138a34a settings_scrolled
 5dd66b36c95c03b2 device
-8f6a0e0c912b800f device_scrolled
+96aed2c388d0b115 device_scrolled
 3f4281c899b9c2bd device_degraded
 2864fac45dfb0e69 np_page_0
 a66c9cc1931a6351 np_page_1
@@ -269,7 +269,7 @@ f82fb7315c811389 uiscale_80_sound
 6ad8538b1e2a31f5 uiscale_80_nowplaying
 5f2d6500c9317ece uiscale_80_upnext
 fb6ebbd88f827cf8 uiscale_80_eq
-aa664dbfab7dcdda uiscale_80_settings_bottom
+b39ab864d19dc4be uiscale_80_settings_bottom
 261aaf585328e2ee uiscale_100_library
 1f305221f4162641 uiscale_100_settings
 1e0a45a86de63f76 uiscale_100_display
@@ -278,7 +278,7 @@ a0e0d142761faeec uiscale_100_sound
 950663098198cf80 uiscale_100_nowplaying
 84170ed4a88ac87e uiscale_100_upnext
 f92e7f91efbc19c9 uiscale_100_eq
-b93c8bcd5de2118a uiscale_100_settings_bottom
+d1d0a096d2482150 uiscale_100_settings_bottom
 5ed4bc3ced48fb45 uiscale_120_library
 9b5d720699f47c81 uiscale_120_settings
 7eb411ba7852299c uiscale_120_display
@@ -287,7 +287,7 @@ e10f0382de3345c6 uiscale_120_sound
 14a04bb6d1b88759 uiscale_120_nowplaying
 8f13de9deb180944 uiscale_120_upnext
 fbdbc8bf87b426dc uiscale_120_eq
-75d7d206e12253ff uiscale_120_settings_bottom
+87a21e4c9bea6aca uiscale_120_settings_bottom
 baeb89bbc6a94e3e uiscale_140_library
 b5b9398132a2a9c0 uiscale_140_settings
 d51b7db02f1fa6e4 uiscale_140_display
@@ -296,7 +296,7 @@ e24d5dd23ea12fcf uiscale_140_sound
 63c1326ef445007c uiscale_140_nowplaying
 d6ca61eae8d850f4 uiscale_140_upnext
 38fd144940488143 uiscale_140_eq
-955d55ee0668d18b uiscale_140_settings_bottom
+4ef95c1933471061 uiscale_140_settings_bottom
 2f8e0d4639490d55 palette_picker_100
 a5d81f4123554e61 palette_picker_140
 ba7c469cfb249e17 viz_0_bars
