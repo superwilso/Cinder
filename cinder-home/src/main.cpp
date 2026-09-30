@@ -11963,11 +11963,23 @@ void* render_driver(void*) {
                         // is reached in ordinary use, not just in theory.
                         g_bt_pairing_addr.clear();
                         char fm[224];
-                        std::snprintf(fm, sizeof fm,
-                                      "bt-scan: paired list never showed the new device — the "
-                                      "pairing did NOT complete, and that came with result byte=%d. "
-                                      "Leaving the list alone rather than inventing a row.",
-                                      (int)g_bt_pairing_result);
+                        // RECEIVER MODE IS THE EXCEPTION. The peer there is a phone or PC pairing
+                        // TO us, and this list did not gain it even for pairings that then streamed
+                        // (2026-09-30: a Windows PC and an iPhone, both result byte 1, both played
+                        // AAC). So "not in the list" is no evidence of failure in that mode; the
+                        // sink status on the Receiver page is.
+                        if (g_rx_active)
+                            std::snprintf(fm, sizeof fm,
+                                          "bt-scan: receiver-mode pairing, result byte=%d — the "
+                                          "paired list does not show sink peers, so it proves "
+                                          "nothing either way; the rx: sink status does.",
+                                          (int)g_bt_pairing_result);
+                        else
+                            std::snprintf(fm, sizeof fm,
+                                          "bt-scan: paired list never showed the new device — the "
+                                          "pairing did NOT complete, and that came with result "
+                                          "byte=%d. Leaving the list alone rather than inventing a row.",
+                                          (int)g_bt_pairing_result);
                         clog_(fm);
                     }
                 });
