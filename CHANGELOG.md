@@ -16,6 +16,8 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+## [0.3.14] — 2026-09-30
+
 ### Added
 
 - **Library views.** A new button in the Library header, left of the ORDER caption (and left of
@@ -55,6 +57,14 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
   colour tokens, type roles, touch targets, gestures, safe glyphs, what Now Playing must keep,
   performance limits, and how to contribute a palette, a mockup or a style. The plan for extending
   styles to the other screens is [`docs/PLAN_design_styles.md`](docs/PLAN_design_styles.md).
+- **Bigger touch targets with the Size slider.** **Settings ▸ Display ▸ Size** used to scale only
+  the text. Above 100% it now also grows the back arrow and its target, and the Library's tabs take
+  the empty strip under them. Below 100% the targets stay full size. Reported on r/walkman: the
+  tabs, Back and Sort were easy to miss.
+- **Use Sony's receiver.** A row on the BT Receiver page restarts the Walkman into Sony's own
+  player with its Bluetooth receiver already open (it asks first). The next restart comes back to
+  Cinder and puts Sony's saved mode back. *Host-tested; not yet run on a device
+  (`docs/DEVICE_CHECKLIST.md` 21.10).*
 - **Shared palettes.** Palettes can now be shared and downloaded through
   [superwilso/cinder-themes](https://github.com/superwilso/cinder-themes). Its CI checks each one
   with the player's own rules and draws a gallery from the files. Flint (unreleased) can make a
@@ -63,8 +73,25 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ### Changed
 
-- The BT Receiver page's footer now says what is known: **EXPERIMENTAL · WORKS FROM WINDOWS, NOT
-  IPHONE**. It used to say *not yet heard at the jack*, which stopped being true on 2026-09-29.
+- **The Library's SORT/ORDER control is a button now**, with a box round it, instead of a faint
+  caption under the Menu and Shelf icons. Taps a little high on it used to open the Menu or the
+  Shelf; on the Songs and Albums tabs they now change the order. When the label does not fit at a
+  large text size, the button shows just the order ("ARTIST").
+- The BT Receiver page's footer now says **EXPERIMENTAL · TESTED WITH WINDOWS AND IPHONE**. It used
+  to say *not yet heard at the jack*, which stopped being true on 2026-09-29.
+- The codec on the BT Receiver page, and on the Bluetooth page for AAC headphones, is named: Sony's
+  code 0x03 is **AAC**. It used to show as *codec 0x03*.
+
+### Fixed
+
+- **BT Receiver works from an iPhone.** Switching the receiver on while Cinder was still trying to
+  reconnect Bluetooth headphones left the Walkman visible but not offering itself as a speaker, and
+  an iPhone called it *not supported*. Cinder now cancels that reconnect when the receiver starts,
+  and asks again every 5 seconds if the receiver is not waiting for a device. Tested 2026-09-30: an
+  iPhone and a Windows PC both paired and played (AAC).
+- **FM radio on Walkman One.** The tuner is powered up on a Walkman One install, and the FM screen
+  reads the aerial (the headphone cable) from the hardware switch instead of reporting *no aerial*
+  with the cable in. FM playback tested on a Walkman One player 2026-09-30.
 
 ## [0.3.13] — 2026-09-29
 
@@ -2276,7 +2303,8 @@ First tagged release.
 - The wired-headphone volume-change pop: 26 pops below volume 100 against 1 above, and it is not
   the shell or any mixer control ([`docs/`](docs/)).
 
-[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.13...HEAD
+[Unreleased]: https://github.com/superwilso/Cinder/compare/v0.3.14...HEAD
+[0.3.14]: https://github.com/superwilso/Cinder/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/superwilso/Cinder/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/superwilso/Cinder/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/superwilso/Cinder/compare/v0.3.10-rc1...v0.3.11-rc1
