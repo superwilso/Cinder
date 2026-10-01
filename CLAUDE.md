@@ -2,7 +2,7 @@
 
 > ## ⚠ READ THIS FIRST — the banner below it is a 2026-07-25 snapshot and is NINE WEEKS STALE
 >
-> **Updated 2026-09-20.** This file is loaded into every session automatically, which makes a stale
+> **Updated 2026-09-20; the state table refreshed 2026-10-01.** This file is loaded into every session automatically, which makes a stale
 > banner here more expensive than anywhere else in the repository — it is the first thing any new
 > reader, human or agent, believes. The 07-25 text below says the last code change was 2026-07-03,
 > that host tests are "39 UI + 8 DB", and that the whole critical path is blocked on one device
@@ -11,19 +11,20 @@
 > caught again for *this* banner four days after it was written ([`docs/AUDIT_2026-09-18.md`](docs/AUDIT_2026-09-18.md)
 > §A1: the numbers below had already drifted). **If you change a gate's count, change it here.**
 >
-> **Where the project actually is, 2026-09-23 (v0.3.11-rc1 + this branch):**
+> **Where the project actually is, 2026-10-01 (v0.3.14, the Latest release):**
 >
 > | | |
 > |---|---|
-> | Releases shipped | **v0.3.0 → v0.3.9** stable, **0.3.10-rc1 / 0.3.11-rc1** pre-releases — v0.3.9 cannot start after a fresh install (#16), so the next stable is overdue |
-> | Offline gates | **709 Rust tests** (player) + 53 (installer), **59 harness scenarios**, 24 C/C++ files syntax-clean, **312 golden pixel hashes** plus a text audit over every preview (`cinder-host --audit`) — all green; player tests, golden and audit re-run 2026-09-29 (library views, Now Playing styles, PCM tap), player gates before that 2026-09-28 for the redesign's first pass ([`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) Part A) and the W1 power audit ([`docs/AUDIT_2026-09-28_power_sound_w1.md`](docs/AUDIT_2026-09-28_power_sound_w1.md)); the rest last re-run 2026-09-23 ([`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) Parts A and E) |
-> | The headline feature | **USB-DAC → LDAC ran end to end** (2026-09-12, owner-reported, no log captured) |
-> | Landed since 2026-09-14 | Mono on the jack and Bluetooth, **SensMe channels** (reads tags written by Sony's Music Center *or* by [Flint](https://github.com/superwilso/flint), opt-in install component `sensme`), a battery gauge that no longer chases the load, and a charger row that stops calling an unplugged cable a fault |
-> | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **11.9, the Windows installer**, and the new **14.1–14.6** (SensMe end to end, the channel-name table, the Music-Center/Flint interop claim, and the battery gauge in the wild) |
+> | Releases shipped | **v0.3.0 → v0.3.14**; **v0.3.12, v0.3.13 and v0.3.14 are stable** (09-23, 09-29, 09-30), so the #16 "v0.3.9 cannot start after a fresh install" release is no longer the default download. Several 0.3.13/0.3.14 features shipped in stable while *host-tested only* — see [`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) C1 |
+> | Offline gates | **713 Rust tests** (player, 3 ignored) + 53 (installer), **59 harness scenarios**, 24 C/C++ files syntax-clean, 12 C++ self-tests, **312 golden pixel hashes** plus the text audit (`cinder-host --audit`), launcher matrix 88 (+1 that skips as root), cable pass 19, install mounts 18, shellcheck over 50 scripts, `cargo audit` clean (2 known unmaintained warnings) — all green, re-run 2026-10-01 ([`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) Part A) |
+> | The headline feature | **USB-DAC → LDAC works end to end** — device-verified 2026-08-11, a full 192 s session logged 2026-09-15 (`docs/DEVICE_CHECKLIST.md` 11.10). Still unlogged: the 3.5 mm leg with no Bluetooth link |
+> | Landed since 2026-09-23 | The redesign's first pass (Display settings, the kit, Help, the pull-down panel), Up Next as one list, save Up Next, repeat album, stop after this song, DAC EQ, linear amp, Bluetooth receiver (Windows and iPhone), Sony's receiver hand-off, Library grid/compact views, Now Playing styles, the PCM-tap visualiser, FM on Walkman One, screen-off power savings |
+> | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **11.9, the Windows installer** (re-opened 09-12, still open), **14.1–14.6** (SensMe), **21.10** (Sony's receiver), **§22–§24** (Library views, Now Playing styles, PCM tap) |
+> | Flint (the PC companion) | Two cross-repo defects found 2026-10-01: its sync roots at the drive and sweeps `MUSIC/` (open, an owner decision), and it sent `#TZ/UNKNOWN` scrobble times unconverted (fixed on Flint's branch). See the audit's Part F |
 >
 > **The live documents, in order of what you probably want:**
 > - **The redesign (2026-09-27 handoff):** [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) — every screen and every promised feature with a state and a phase; spec in [`docs/SPEC_redesign_2026-09.md`](docs/SPEC_redesign_2026-09.md); new screens draw with `player/cinder-ui/src/kit.rs`.
-> - **What to do next:** [`docs/AUDIT_2026-09-23.md`](docs/AUDIT_2026-09-23.md) Part D — the most recent audit's ordered list; community bugs and requests in [`docs/PLAN_community_2026-09-23.md`](docs/PLAN_community_2026-09-23.md). The skins design system is still [`docs/PLAN_2026-09-14.md`](docs/PLAN_2026-09-14.md).
+> - **What to do next:** [`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) Part H — the most recent audit's ordered list, covering Cinder *and* Flint; community bugs and requests in [`docs/PLAN_community_2026-09-23.md`](docs/PLAN_community_2026-09-23.md). The skins design system is still [`docs/PLAN_2026-09-14.md`](docs/PLAN_2026-09-14.md).
 > - **Feature state (works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
 > - **Device run sheet:** [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — safety rules first.
 > - **Structural weaknesses:** [`docs/SHORTCOMINGS.md`](docs/SHORTCOMINGS.md) — cited by section ID (note: §A1's coverage table is superseded by `PLAN_2026-09-14.md` §A1).

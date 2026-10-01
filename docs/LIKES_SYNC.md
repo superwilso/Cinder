@@ -2,6 +2,8 @@
 
 *Added 2026-08-20 alongside the PC-side `likesync` tool (repo: `Sony sync`).*
 
+*2026-10-01: the PC side is now [Flint](https://github.com/superwilso/flint) (`flint likes`, and the window's Likes & plays page), which replaced `likesync`. The contract below is unchanged. Flint's port of the key folding (`flint-core/src/likes.rs` `keys`) was compared table by table with `player/cinder-ffi/src/likes.rs` on that date and is identical — but nothing pins the two together yet ([`AUDIT_2026-10-01.md`](AUDIT_2026-10-01.md) F4).*
+
 Cinder has had liked songs since 2026-07-27 (`cinder_liked.conf` + the Now Playing heart + the
 Library's "Liked songs" row). What it did not have is a way for a like to arrive **from** the PC,
 which is what a sync needs — the device is the only participant that cannot reach the network, so
