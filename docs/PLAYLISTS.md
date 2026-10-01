@@ -33,7 +33,10 @@ Consequences, all deliberate:
 * **The PC can read and write them.** `.m3u8` is what `Sony sync` already handles, so a playlist
   made on the device opens in MusicBee, and one dropped into the folder shows up on the device.
 * **It is NOT the music root.** The PC-side sync sweeps away playlists it did not plan for at
-  `/contents/MUSIC` (`sync.py`, `MANAGED_PLAYLISTS`); this folder is out of its way.
+  the root of the volume it syncs — `/contents/MUSIC` for the old `sync.py`, and the drive root
+  (`/contents`) for [Flint](https://github.com/superwilso/flint), which also sweeps every audio
+  file it did not plan ([`AUDIT_2026-10-01.md`](AUDIT_2026-10-01.md) F1). This folder is out of
+  both their ways; a playlist saved loose at `/contents` is not.
 * **Ids are negative.** `playlists::id_for` hashes the file stem; MediaStore ids are positive, so
   the sign alone tells `Action::PlayPlaylist(id)` which side to resolve — no second channel, and
   `PlayPlaylist` / `ShufflePlaylist` work for both kinds unchanged.
