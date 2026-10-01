@@ -51,6 +51,9 @@ pub enum Screen {
     UpNext,
     Eq,
     Sound,
+    /// Menu ▸ Soundscapes — procedural rain, a beach, a stream, wind, a fire, a night and three
+    /// noises, over the music or on their own, each with its own level. See `soundscape.rs`.
+    Soundscape,
     /// Sound ▸ Advanced — the rest of Sony's effect surface (Source Direct, Clear Phase, DSEE AI,
     /// DSEE HX Custom, Vinyl character, Tone Control). Its own screen because the Sound list is
     /// full and making it scroll would put a scroll offset into the one screen whose render and
@@ -358,6 +361,10 @@ pub enum Action {
     /// and applies it to every PCM path CINDER owns — see `analysis/RE_mono_audio.md` for why that
     /// is the whole of what it can reach.
     MonoChanged,
+    /// Menu ▸ Soundscapes changed: on/off, the sound, or a level. The shell reads
+    /// `ambient()` and rewrites `/tmp/cinder_ambient` (and starts or stops its own player). Sent
+    /// per tap and per slider STEP, never per motion event; each one is a short tmpfs write.
+    AmbientChanged,
     /// Sound ▸ Advanced ▸ DAC EQ changed. Its own action, not SoundChanged: nothing in Sony's DSP
     /// chain is involved. The shell reads `dac_eq()` (and Source Direct, which holds it flat) and
     /// runs `cinder-voltable eq`, which rebuilds the codec's tone table. Sent per tap and once at
@@ -459,7 +466,7 @@ pub enum Action {
 /// one tap from Now Playing's toolbar. Equalizer, Folders and USB-DAC stay, although the mock drew
 /// them elsewhere: until Sound grows its Equalizer row (handoff 2a) and Library its Folders page,
 /// taking them off the Menu would leave them with no way in.
-const MENU: [(Screen, &str, &str); 10] = [
+const MENU: [(Screen, &str, &str); 11] = [
     (Screen::Library, "Library", ""),                 // live: album/track counts
     // Folder browse — the file tree as it is on the volume. Not a fifth Library tab: the strip is
     // four flat peers and this is a stack you descend, where Back has to mean "up one level".
@@ -473,6 +480,7 @@ const MENU: [(Screen, &str, &str); 10] = [
     (Screen::Fm, "FM radio", "Needs wired headphones as the aerial"),
     (Screen::Eq, "Equalizer", ""),                    // live: selected preset
     (Screen::Sound, "Sound", ""),                     // live: which effects are on
+    (Screen::Soundscape, "Soundscapes", ""),          // live: the sound, or Off
     (Screen::Bluetooth, "Bluetooth", ""),             // live: configured transmit codec
     (Screen::UsbDac, "USB-DAC", ""),                  // live: On/Off
     // NOT "BT Receiver": it stays reachable where it belongs, from Bluetooth ▸ Receiver mode,
@@ -527,6 +535,7 @@ pub(crate) struct MenuSubtitles {
     pub sound: String,
     pub bluetooth: String,
     pub usb_dac: String,
+    pub soundscape: String,
 }
 
 /// A pinned place on the Shelf: enough route context to jump straight back — and that means the
@@ -663,6 +672,7 @@ fn screen_token(s: Screen) -> &'static str {
         Screen::Tone => "tone",
         Screen::DacEq => "daceq",
         Screen::Sound => "sound",
+        Screen::Soundscape => "soundscape",
         Screen::Bluetooth => "bt",
         Screen::BtCodec => "btcodec",
         Screen::Settings => "settings",
@@ -683,6 +693,7 @@ fn screen_from_token(t: &str) -> Option<Screen> {
         "queue" => Screen::UpNext,
         "eq" => Screen::Eq,
         "sound" => Screen::Sound,
+        "soundscape" => Screen::Soundscape,
         "bt" => Screen::Bluetooth,
         "btcodec" => Screen::BtCodec,
         "settings" => Screen::Settings,
@@ -762,6 +773,9 @@ enum Scrub {
     /// write when it hasn't changed — a full sweep is 100 UI steps but only ~24 distinct
     /// attenuation values per side.
     Balance,
+    /// Soundscapes ▸ one of the two level sliders (0 = on its own, 1 = with music). Live, like the
+    /// balance: you set a background level by hearing it against the foreground.
+    AmbientLevel(usize),
 }
 
 pub struct App {
@@ -971,6 +985,15 @@ pub struct App {
     /// libcinder_mono.so is loaded in Sony's SoundServiceFw, so mono reaches the jack and Bluetooth
     /// too (the shell reports it from the library's own marker file).
     mono_shim: bool,
+    /// Menu ▸ Soundscapes. `ambient_sound` is kept while switched off, so the switch brings it back.
+    ambient_on: bool,
+    ambient_sound: u8,
+    /// The two levels, in percent: with nothing else playing, and over the music.
+    ambient_alone: u8,
+    ambient_music: u8,
+    /// Where the shell says the soundscape is going (the page's strip).
+    ambient_route: crate::soundscape::Route,
+    ambient_sel: usize,
     /// The host's live stream format, as the engine last reported it: (rate Hz, bit depth,
     /// channels). `None` means nothing is streaming, or nobody has told us yet.
     ///
@@ -1483,6 +1506,12 @@ impl Default for App {
             bt_enhanced_supported: true,
             usb_dac_on: false,
             mono_shim: false,
+            ambient_on: false,
+            ambient_sound: crate::soundscape::DEFAULT_SOUND,
+            ambient_alone: crate::soundscape::DEFAULT_ALONE,
+            ambient_music: crate::soundscape::DEFAULT_MUSIC,
+            ambient_route: crate::soundscape::Route::Off,
+            ambient_sel: 0,
             usb_dac_fmt: None,
             bt_codec_negotiated: 0,
             bt_fine: 0, // OFF: it rides on the EQ, so it is a thing you opt into
@@ -2974,6 +3003,13 @@ impl App {
             },
             bluetooth: crate::bluetooth::CODECS[self.bt_codec as usize].0.to_string(),
             usb_dac: String::from(if self.usb_dac_on { "On" } else { "Off" }),
+            // The sound, and which of the two levels is in force is not worth the width: the page
+            // says it. "Off" when switched off, even though a sound stays chosen.
+            soundscape: if self.ambient_on {
+                crate::soundscape::label(self.ambient_sound).to_string()
+            } else {
+                String::from("Off")
+            },
             // Name the effects actually engaged; "Off" when the chain is clean.
             // What is actually shaping the sound, in the order the Sound screen's footer resolves
             // it: an override first, because it is what you would have to turn off. `snd_clear` is
@@ -3965,6 +4001,7 @@ impl App {
                 }
                 vec![]
             }
+            Screen::Soundscape => self.soundscape_tap(x, y),
             Screen::Tone => {
                 // Same idiom as the Equalizer's band field, through `tone`'s own layout helpers:
                 // tap a column to focus it, above the zero line raises, below lowers.
@@ -5263,6 +5300,15 @@ impl App {
                 }
                 false
             }
+            Screen::Soundscape => match crate::soundscape::level_row_at(y) {
+                Some(row) if crate::soundscape::slider_grab(x) => {
+                    self.scrub = Scrub::AmbientLevel(row);
+                    self.ambient_sel = crate::soundscape::SEL_ALONE + row;
+                    self.set_ambient_level(row, crate::soundscape::level_at(x));
+                    true
+                }
+                _ => false,
+            },
             Screen::Sound => {
                 if crate::sound::row_at(y) == Some(crate::sound::ROW_BALANCE)
                     && crate::sound::balance_grab(y)
@@ -5329,6 +5375,13 @@ impl App {
                 self.snd_balance = want;
                 vec![Action::BalanceChanged]
             }
+            Scrub::AmbientLevel(row) => {
+                if self.set_ambient_level(row, crate::soundscape::level_at(x)) {
+                    vec![Action::AmbientChanged]
+                } else {
+                    vec![]
+                }
+            }
             Scrub::None => vec![],
         }
     }
@@ -5347,6 +5400,7 @@ impl App {
             Scrub::ToneBand(_) => vec![Action::SoundChanged],
             // The only point this one is applied: one helper run per drag, not one per step.
             Scrub::DacEqBand(_) => vec![Action::DacEqChanged],
+            Scrub::AmbientLevel(_) => vec![Action::AmbientChanged],
             Scrub::None => vec![],
         };
         self.scrub = Scrub::None;
@@ -6993,6 +7047,7 @@ impl App {
                 }
                 _ => vec![],
             },
+            Screen::Soundscape => self.soundscape_button(b),
             Screen::DacEq => match b {
                 Button::Left => {
                     self.dac_eq_sel = self.dac_eq_sel.saturating_sub(1);
@@ -7252,6 +7307,7 @@ impl App {
                             Screen::Sound => &subs.sound,
                             Screen::Bluetooth => &subs.bluetooth,
                             Screen::UsbDac => &subs.usb_dac,
+                            Screen::Soundscape => &subs.soundscape,
                             _ => value,
                         },
                         home: home_row == Some(*screen),
@@ -7466,6 +7522,10 @@ impl App {
             Screen::DacEq => {
                 let d = crate::dac_eq::DacEq { bands: self.dac_eq, direct: self.adv_source_direct };
                 crate::dac_eq::render(c, &theme, fonts, &d, self.dac_eq_sel)
+            }
+            Screen::Soundscape => {
+                let v = self.soundscape_view();
+                crate::soundscape::render(c, &theme, fonts, self.ambient_sel, &v)
             }
             Screen::Tone => {
                 let tc = crate::tone::Tone {
@@ -8821,6 +8881,128 @@ impl App {
         self.mono = on;
     }
     /// Whether the mono library is running inside SoundServiceFw. Returns true if that changed.
+    // ── Soundscapes ──────────────────────────────────────────────────────────────────────────────
+
+    /// What the shell needs: `(sound id or 0 when off, level on its own %, level with music %)`.
+    pub fn ambient(&self) -> (u8, u8, u8) {
+        (if self.ambient_on { self.ambient_sound } else { 0 }, self.ambient_alone, self.ambient_music)
+    }
+    pub fn ambient_on(&self) -> bool {
+        self.ambient_on
+    }
+    /// The chosen sound, on or off (the settings file keeps it either way).
+    pub fn ambient_sound(&self) -> u8 {
+        self.ambient_sound
+    }
+    pub fn set_ambient_on(&mut self, on: bool) {
+        self.ambient_on = on;
+    }
+    /// Unknown ids (a hand-edited file, a newer build's sound) fall back to the default.
+    pub fn set_ambient_sound(&mut self, id: u8) {
+        self.ambient_sound = if (1..=crate::soundscape::MAX_ID).contains(&id) { id } else { crate::soundscape::DEFAULT_SOUND };
+    }
+    pub fn set_ambient_levels(&mut self, alone: u8, music: u8) {
+        self.ambient_alone = alone.min(100);
+        self.ambient_music = music.min(100);
+    }
+    /// Set one level (0 = on its own, 1 = with music); true when it changed.
+    fn set_ambient_level(&mut self, row: usize, pct: u8) -> bool {
+        let slot = if row == 0 { &mut self.ambient_alone } else { &mut self.ambient_music };
+        let pct = pct.min(100);
+        let changed = *slot != pct;
+        *slot = pct;
+        changed
+    }
+    /// The shell reports where the sound is going. Returns true when that changed what is drawn.
+    pub fn set_ambient_route(&mut self, r: crate::soundscape::Route) -> bool {
+        let changed = self.ambient_route != r;
+        self.ambient_route = r;
+        changed && self.current() == Screen::Soundscape
+    }
+    pub fn ambient_route(&self) -> crate::soundscape::Route {
+        self.ambient_route
+    }
+
+    fn soundscape_view(&self) -> crate::soundscape::View {
+        crate::soundscape::View {
+            on: self.ambient_on,
+            sound: self.ambient_sound,
+            alone: self.ambient_alone,
+            music: self.ambient_music,
+            route: if self.ambient_on { self.ambient_route } else { crate::soundscape::Route::Off },
+            hook: self.mono_shim,
+        }
+    }
+
+    fn soundscape_tap(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::soundscape as ss;
+        if ss::switch_hit(y) {
+            self.ambient_sel = ss::SEL_SWITCH;
+            self.ambient_on = !self.ambient_on;
+            return vec![Action::AmbientChanged];
+        }
+        if let Some(i) = ss::chip_at(x, y) {
+            self.ambient_sel = ss::SEL_FIRST_CHIP + i;
+            let id = ss::SOUNDS[i].0;
+            // Tapping a sound plays it: a chip is not a preference you set and then go looking for
+            // the switch to hear. Tapping the one already playing leaves it playing.
+            if self.ambient_on && self.ambient_sound == id {
+                return vec![];
+            }
+            self.ambient_sound = id;
+            self.ambient_on = true;
+            return vec![Action::AmbientChanged];
+        }
+        if let Some(row) = ss::level_row_at(y) {
+            self.ambient_sel = ss::SEL_ALONE + row;
+            if ss::slider_grab(x) && self.set_ambient_level(row, ss::level_at(x)) {
+                return vec![Action::AmbientChanged];
+            }
+        }
+        vec![]
+    }
+
+    fn soundscape_button(&mut self, b: Button) -> Vec<Action> {
+        use crate::soundscape as ss;
+        match b {
+            Button::Up => {
+                self.ambient_sel = self.ambient_sel.saturating_sub(1);
+                vec![]
+            }
+            Button::Down => {
+                self.ambient_sel = (self.ambient_sel + 1).min(ss::SEL_COUNT - 1);
+                vec![]
+            }
+            Button::Left | Button::Right if self.ambient_sel >= ss::SEL_ALONE => {
+                let row = self.ambient_sel - ss::SEL_ALONE;
+                let now = if row == 0 { self.ambient_alone } else { self.ambient_music };
+                let want = if b == Button::Right {
+                    now.saturating_add(ss::LEVEL_STEP).min(100)
+                } else {
+                    now.saturating_sub(ss::LEVEL_STEP)
+                };
+                if self.set_ambient_level(row, want) { vec![Action::AmbientChanged] } else { vec![] }
+            }
+            Button::Select => {
+                if self.ambient_sel == ss::SEL_SWITCH {
+                    self.ambient_on = !self.ambient_on;
+                    return vec![Action::AmbientChanged];
+                }
+                if (ss::SEL_FIRST_CHIP..ss::SEL_ALONE).contains(&self.ambient_sel) {
+                    self.ambient_sound = ss::SOUNDS[self.ambient_sel - ss::SEL_FIRST_CHIP].0;
+                    self.ambient_on = true;
+                    return vec![Action::AmbientChanged];
+                }
+                vec![]
+            }
+            Button::Back => {
+                self.pop();
+                vec![]
+            }
+            _ => vec![],
+        }
+    }
+
     pub fn set_mono_shim(&mut self, on: bool) -> bool {
         let changed = self.mono_shim != on;
         self.mono_shim = on;
@@ -9416,6 +9598,7 @@ mod tests {
             // string it used while there was nothing behind it. Nothing fills it at render time.
             Screen::Eq,
             Screen::Sound,
+            Screen::Soundscape, // live: the sound, or Off
             Screen::Bluetooth,
             Screen::UsbDac,
         ]
@@ -9424,6 +9607,88 @@ mod tests {
         .collect();
         expected.sort();
         assert_eq!(dynamic, expected);
+    }
+
+    /// Soundscapes: a chip plays its sound (switching it on), the playing chip again does nothing,
+    /// the switch remembers the sound, and the shell is told on every change and only then.
+    #[test]
+    fn soundscape_chips_play_and_the_switch_remembers_the_sound() {
+        use crate::soundscape as ss;
+        let mut a = unlocked();
+        a.push_for_test(Screen::Soundscape);
+        assert_eq!(a.ambient(), (0, ss::DEFAULT_ALONE, ss::DEFAULT_MUSIC), "off on a fresh install");
+        let beach = ss::SOUNDS.iter().position(|s| s.0 == 6).unwrap();
+        let (x, y, w) = ss::chip_rect(beach);
+        assert_eq!(a.tap(x + w / 2, y + kit_mid()), vec![Action::AmbientChanged]);
+        assert_eq!(a.ambient().0, 6, "tapping Beach plays the beach");
+        assert_eq!(a.tap(x + w / 2, y + kit_mid()), vec![], "tapping it again changes nothing");
+        assert_eq!(a.tap(240, ss::ROW_SWITCH + 20), vec![Action::AmbientChanged]);
+        assert_eq!(a.ambient().0, 0, "the switch turns it off");
+        assert_eq!(a.ambient_sound(), 6, "…and keeps the sound");
+        assert_eq!(a.tap(240, ss::ROW_SWITCH + 20), vec![Action::AmbientChanged]);
+        assert_eq!(a.ambient().0, 6, "on again: the beach, not the default");
+        // The Menu row says what is playing.
+        assert_eq!(a.menu_subtitles().soundscape, "Beach");
+        a.set_ambient_on(false);
+        assert_eq!(a.menu_subtitles().soundscape, "Off");
+    }
+
+    fn kit_mid() -> i32 {
+        crate::kit::CHIP_H / 2
+    }
+
+    /// The level sliders: a tap on the track sets it, a drag reports each new step once, the
+    /// release reports once more (so the settings file gets the final value), and buttons step by
+    /// five. The title is not a slider.
+    #[test]
+    fn soundscape_levels_follow_the_finger_and_the_buttons() {
+        use crate::soundscape as ss;
+        let mut a = unlocked();
+        a.push_for_test(Screen::Soundscape);
+        assert_eq!(a.tap(40, ss::ROW_ALONE + 30), vec![], "the title is not the slider");
+        assert_eq!(a.tap(376, ss::ROW_ALONE + 30), vec![Action::AmbientChanged]);
+        assert_eq!(a.ambient().1, 100);
+        assert!(a.scrub_begin(176, ss::ROW_MUSIC + 30));
+        assert_eq!(a.ambient().2, 0);
+        assert_eq!(a.scrub_move(177, ss::ROW_MUSIC + 30), vec![], "the same step: nothing to say");
+        assert_eq!(a.scrub_move(276, ss::ROW_MUSIC + 30), vec![Action::AmbientChanged]);
+        assert_eq!(a.ambient().2, 50);
+        assert_eq!(a.scrub_end(), vec![Action::AmbientChanged]);
+        assert!(!a.scrub_is_rail(), "never a seek");
+        // buttons: down to the With music row, then right
+        for _ in 0..ss::SEL_MUSIC {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.press(Button::Right), vec![Action::AmbientChanged]);
+        assert_eq!(a.ambient().2, 55);
+        a.press(Button::Up);
+        for _ in 0..30 {
+            a.press(Button::Right);
+        }
+        assert_eq!(a.ambient().1, 100, "clamped at 100");
+        assert_eq!(a.press(Button::Right), vec![], "nothing to say at the top");
+    }
+
+    /// The Menu has a Soundscapes row and it opens the page.
+    #[test]
+    fn the_menu_opens_soundscapes() {
+        let mut a = unlocked();
+        a.push_for_test(Screen::Menu);
+        let row = a.menu_visible().iter().position(|m| m.0 == Screen::Soundscape).expect("a Menu row");
+        a.activate_menu(row);
+        assert_eq!(a.current(), Screen::Soundscape);
+    }
+
+    /// Settings from a hand-edited file cannot reach the shell as nonsense.
+    #[test]
+    fn soundscape_setters_refuse_what_the_shell_cannot_play() {
+        let mut a = unlocked();
+        a.set_ambient_sound(42);
+        assert_eq!(a.ambient_sound(), crate::soundscape::DEFAULT_SOUND);
+        a.set_ambient_sound(0);
+        assert_eq!(a.ambient_sound(), crate::soundscape::DEFAULT_SOUND, "0 is off, not a sound");
+        a.set_ambient_levels(250, 7);
+        assert_eq!((a.ambient().1, a.ambient().2), (100, 7));
     }
 
     /// No static Menu subtitle may assert a count or a device name. Digits are the tell: every mock
@@ -11988,6 +12253,7 @@ mod tests {
         // two full-panel screens that draw their own world.
         let with_header = [
             Screen::Menu, Screen::Library, Screen::UpNext, Screen::Eq, Screen::Sound,
+            Screen::Soundscape,
             Screen::Advanced, Screen::Tone, Screen::DacEq, Screen::Bluetooth, Screen::BtCodec,
             Screen::Pairing,
             Screen::Settings, Screen::Device, Screen::Fm, Screen::UsbDac, Screen::Receiver,

@@ -1336,6 +1336,30 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             save(&c, name);
         }
     }
+
+    // Menu ▸ Soundscapes: switched off; rain on its own through the headphones with no Wampy (the
+    // note says what over-music needs); and a beach over the music, at night, with the shim loaded.
+    {
+        use cinder_ui::nav::Screen;
+        use cinder_ui::soundscape::Route;
+        for (name, on, sound, route, hook, night) in [
+            ("soundscape_off", false, 4u8, Route::Off, false, false),
+            ("soundscape_rain_alone", true, 4, Route::AloneJack, false, false),
+            ("soundscape_beach_music_night", true, 6, Route::OverMusic, true, true),
+        ] {
+            let mut app = new_app();
+            app.night = night;
+            app.set_ambient_sound(sound);
+            app.set_ambient_on(on);
+            app.set_ambient_levels(60, 25);
+            app.set_mono_shim(hook);
+            app.go_for_preview(Screen::Soundscape);
+            app.set_ambient_route(route);
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, name);
+        }
+    }
 }
 
 // ── Golden pixel hashes ────────────────────────────────────────────────────────────────────────
