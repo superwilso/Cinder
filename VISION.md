@@ -27,7 +27,7 @@ User-authored, living list. Numbered as originally given; append, don't prune.
 |---|------|-------|
 | 1 | **Faster boot + better battery** — kill the heavy Qt app, lean native UI | ✅ Largely achieved. Cinder is a ~3 MB native binary with dirty-flag rendering vs Sony's Qt stack. GPU present path landed 2026-07-26 (vsync-paced, no triple memcpy). Not yet *measured* against stock — quantifying this is outstanding. |
 | 2 | **Improved UI/UX** — the Cinder design (warm amber on near-black) | ✅ All 14+ screens built and rendering. Type scale and touch-target pass done 2026-07-26 to better match Sony's larger, more legible sizing. Non-Latin tags (JP/CN/KR/Cyrillic/Greek/Thai) render properly since 2026-07-26 via a lazy fallback onto Sony's own on-device fonts — see [`analysis/RE_sony_fonts.md`](analysis/RE_sony_fonts.md). |
-| 3 | **USB-DAC in with LDAC *and* 3.5 mm out** — the headline | ◐ **The next major push.** All RE complete; `ldac-bridge` builds. Two on-device unknowns remain. See below. |
+| 3 | **USB-DAC in with LDAC *and* 3.5 mm out** — the headline | ✅ **Works end to end.** Device-verified 2026-08-11; a full 192 s session was logged 2026-09-15 (LDAC handshake accepted, UAC capture opened first time, no stall — `docs/DEVICE_CHECKLIST.md` 11.10). Still unlogged: the 3.5 mm leg with no Bluetooth link. *(Row corrected 2026-10-01; it said two unknowns remained, which the 11.10 log answers.)* |
 | 4 | **Night mode** — dark palette *and* dimmer backlight | ✅ Both. Day/Night palettes plus real backlight dimming (auto-detected node). |
 | 5 | **Battery-efficient scrobbler** — native, not the heavy add-on | ✅ Writes `/contents/.scrobbler.log`. |
 | 6 | **Queue and shelf** — both genuinely absent from stock | ✅ Shelf (pin/jump-back) and Up Next both wired; swipe-to-queue works. |
@@ -122,6 +122,8 @@ The feature the project was started for. Research is *done*:
 - Stock's block is **app policy only** — a UI overlay plus an explicit `RequestDisconnection()`.
   Cinder's fix is simply not to reproduce it.
 - There is **no audio mutex**: stock already runs USB capture and DAC playback concurrently.
+
+*2026-10-01: both unknowns below are answered — the 11.10 log shows the transmitter accepting the handshake and the capture opening without `-EBUSY`. Kept as the record of what was asked.*
 
 Two unknowns need hardware, both with a diagnostic table in `ldac-bridge/TEST.md`:
 1. Does `SetCurrentSource(true)` actually make the server open its socket?
