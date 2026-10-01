@@ -237,8 +237,8 @@ b3d715d20e39116c accent_azure_now_playing
 6e47e9c74d6ea2e2 accent_bone_now_playing
 91465b9c5d798cea accent_bone_display
 950663098198cf80 nav_0_now_playing
-f57ca9c7e8b47e88 nav_1_menu
-f57ca9c7e8b47e88 nav_2_menu_library
+7c43bd0473ff0353 nav_1_menu
+7c43bd0473ff0353 nav_2_menu_library
 261aaf585328e2ee nav_3_library
 8c4999c86752795f nav_4_library_artists
 698180a9623585ca scroll_library_songs
@@ -314,3 +314,6 @@ d6f4d2f16a0e327b help_top
 0f0dbb150436f333 advanced
 383850a2b950245c dac_eq
 6c5fa31b05376d34 dac_eq_source_direct
+9d65c6e53ccf67be soundscape_off
+bc9d2226dfb6c5fd soundscape_rain_alone
+b90d39e01acbb705 soundscape_beach_music_night

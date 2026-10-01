@@ -229,7 +229,12 @@ typedef enum {
     /* Receiver page ▸ Use Sony's receiver, CONFIRMED in the modal: store kFuncBtReceiver as stock's
      * resume function (Configuration 5008/5039), then boot to stock exactly as
      * CINDER_ACT_BOOT_TO_STOCK does. The next Cinder boot puts the key back. */
-    CINDER_ACT_BOOT_TO_SONY_RX = 50
+    CINDER_ACT_BOOT_TO_SONY_RX = 50,
+    /* Menu ▸ Soundscapes changed (on/off, the sound, a level). Read cinder_get_ambient(), rewrite
+     * /tmp/cinder_ambient with the level for the current play state (libcinder_mono.so mixes it
+     * over library music from there), and start or stop the shell's own soundscape player, which
+     * plays it when nothing else is. Sent per tap and per slider step. */
+    CINDER_ACT_AMBIENT_CHANGED = 51
 } cinder_action_t;
 
 /* Deliver a button press to the navigator. Theme changes are applied internally; returns a
@@ -666,6 +671,15 @@ int cinder_get_mono(void);
 /* libcinder_mono.so is loaded in SoundServiceFw (1/0): mono then reaches the jack and Bluetooth, and
  * the Balance row says so. The shell reads the library's marker file and calls this on a change. */
 void cinder_set_mono_shim(int on);
+/* Soundscapes: returns the sound (soundscape.h's SS_*, 0 = off) and writes the two levels as
+ * gains in thousandths, already through the UI's level curve: `*milli_alone` with nothing else
+ * playing, `*milli_music` over the music. Either pointer may be NULL. */
+int  cinder_get_ambient(int* milli_alone, int* milli_music);
+/* Where the soundscape is going right now, for the Soundscapes page's strip:
+ * 0 off, 1 over the music (the shim), 2 on its own through the jack, 3 on its own over Bluetooth,
+ * 4 over Cinder's own stream (USB-DAC -> LDAC, FM -> Bluetooth), 5 silent because music is playing
+ * and the shim is not loaded, 6 waiting for the output, 7 no output available. */
+void cinder_set_ambient_route(int code);
 
 /* Is USB-DAC mode engaged? (1/0). Read after a CINDER_ACT_USBDAC_LDAC action to start/stop the LDAC
  * bridge + switch the USB gadget to UAC, without disconnecting Bluetooth. */

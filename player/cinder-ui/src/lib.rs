@@ -40,6 +40,7 @@ pub mod vizcfg;
 pub mod vizset;
 pub mod eq;
 pub mod sound;
+pub mod soundscape;
 pub mod advanced;
 pub mod tone;
 pub mod dac_eq;

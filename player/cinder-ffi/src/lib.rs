@@ -942,6 +942,15 @@ fn settings_body(r: &Render) -> String {
     // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
     body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
     body.push_str(&format!("sensme_follow_time={}\n", r.app.sensme_follow() as u8));
+    // Menu ▸ Soundscapes: the sound is kept while switched off, so the switch brings it back.
+    let (_, alone, music) = r.app.ambient();
+    body.push_str(&format!(
+        "ambient={}\nambient_on={}\nambient_levels={},{}\n",
+        r.app.ambient_sound(),
+        r.app.ambient_on() as u8,
+        alone,
+        music
+    ));
     // Sound ▸ Advanced ▸ DAC EQ, RAW half-decibels in the helper's argument order.
     body.push_str(&format!(
         "dac_eq={}\n",
@@ -1609,12 +1618,12 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 38] = [
+const SCREEN_NAMES: [&str; 39] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
     "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet", "Lyrics",
-    "Search", "SensMe", "Display", "Palette", "Help", "DacEq",
+    "Search", "SensMe", "Display", "Palette", "Help", "DacEq", "Soundscape",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1630,7 +1639,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Advanced => 23, S::Tone => 24, S::BtCodec => 25,
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
         S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32, S::SensMe => 33,
-        S::Display => 34, S::Palette => 35, S::Help => 36, S::DacEq => 37,
+        S::Display => 34, S::Palette => 35, S::Help => 36, S::DacEq => 37, S::Soundscape => 38,
     }
 }
 
@@ -3516,6 +3525,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::SoundChanged => 14,
         Action::BalanceChanged => 38,
         Action::MonoChanged => 46,
+        Action::AmbientChanged => 51,
         Action::DacEqChanged => 48,
         Action::RxChanged => 49,
         Action::BootToSonyReceiver => 50, // shell stores stock's resume function, then boots to stock
@@ -4402,6 +4412,38 @@ pub extern "C" fn cinder_set_mono_shim(on: libc::c_int) {
     if let Ok(mut g) = cell().lock() {
         if let Some(r) = g.as_mut() {
             if r.app.set_mono_shim(on != 0) {
+                r.dirty = true;
+            }
+        }
+    }
+}
+
+/// Menu ▸ Soundscapes, for the shell: returns the sound id (`soundscape.h`'s SS_*, 0 = off) and
+/// writes both levels already through the level curve, as gains in thousandths. The shell picks one
+/// of the two from the play state; the curve lives here so the UI and the shell cannot disagree.
+#[no_mangle]
+pub extern "C" fn cinder_get_ambient(milli_alone: *mut libc::c_int, milli_music: *mut libc::c_int) -> libc::c_int {
+    let (sound, alone, music) = cell().lock().unwrap().as_ref().map_or((0, 0, 0), |r| r.app.ambient());
+    // SAFETY: the shell passes pointers to two live ints, or null for one it does not want.
+    unsafe {
+        if !milli_alone.is_null() {
+            *milli_alone = libc::c_int::from(cinder_ui::soundscape::gain_milli(alone));
+        }
+        if !milli_music.is_null() {
+            *milli_music = libc::c_int::from(cinder_ui::soundscape::gain_milli(music));
+        }
+    }
+    libc::c_int::from(sound)
+}
+
+/// Where the soundscape is going (`cinder_ui::soundscape::Route` codes), for the page's strip.
+/// Repaints only when it changes what is on screen.
+#[no_mangle]
+pub extern "C" fn cinder_set_ambient_route(code: libc::c_int) {
+    if let Ok(mut g) = cell().lock() {
+        if let Some(r) = g.as_mut() {
+            let route = cinder_ui::soundscape::Route::from_code(code.clamp(0, 255) as u8);
+            if r.app.set_ambient_route(route) {
                 r.dirty = true;
             }
         }
@@ -5398,6 +5440,14 @@ pub extern "C" fn cinder_sleep_should_pause() -> libc::c_int {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         if r.sleep_fire {
             r.sleep_fire = false;
+            // A sleep timer means silence: the soundscape stops with the music. Switched OFF, not
+            // paused — the next night starts from the switch, not from a timer that already ran.
+            // The shell re-reads cinder_get_ambient() after it pauses.
+            if r.app.ambient_on() {
+                r.app.set_ambient_on(false);
+                r.dirty = true;
+                save_settings(r);
+            }
             return 1;
         }
     }
@@ -5682,6 +5732,19 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // MONO (accessibility). Absent from files written by older builds, which is
                     // fine — it stays off, which is what it was before the key existed.
                     "mono" => r.app.set_mono(v == "1"),
+                    // Soundscapes. Absent from older files: off, rain, the default levels.
+                    "ambient" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_ambient_sound(n);
+                        }
+                    }
+                    "ambient_on" => r.app.set_ambient_on(v == "1"),
+                    "ambient_levels" => {
+                        let mut it = v.split(',').map(|x| x.trim().parse::<u8>());
+                        if let (Some(Ok(a)), Some(Ok(m))) = (it.next(), it.next()) {
+                            r.app.set_ambient_levels(a, m);
+                        }
+                    }
                     // Which VPT room. Absent from files written by older builds, which is fine —
                     // it just stays at 0 (Studio), and VPT's on/off still comes from `sound=`.
                     // set_vpt_mode clamps, so a hand-edited value cannot reach the device as an

@@ -1,9 +1,16 @@
-/* cinder-mono.c — libcinder_mono.so: system-wide mono, preloaded into Sony's SoundServiceFw.
+/* cinder-mono.c — libcinder_mono.so: system-wide mono and soundscapes, preloaded into Sony's
+ * SoundServiceFw.
  *
  * WHAT IT DOES. While /tmp/cinder_mono exists, every stereo buffer SoundServiceFw sends to the
  * 3.5 mm jack (snd_pcm_writei) or to the Bluetooth transmitter (write/send on the
  * `pst::services::bttransmitterservice` socket) goes out with left and right summed. The sums are
  * in mono_sum.h, host-tested by tools/mono_selftest.cpp; this file is only the interposition.
+ *
+ * SOUNDSCAPES ride the same two hooks. While /tmp/cinder_ambient names a sound and a level, the
+ * soundscape (soundscape.h, host-tested by tools/soundscape_selftest.cpp) is added to the same
+ * buffers, after the sum — so it plays over the music on the jack and over Bluetooth, after all of
+ * Sony's effects (the EQ does not colour it) and before the volume (the volume buttons move both).
+ * cinder-home writes that file and decides the level: one when music plays, another when it does not.
  *
  * HOW IT GETS THERE. LD_PRELOAD on the SoundServiceFw service (init.hagoromo.rc), next to Wampy's
  * libsound_service_fw.so when that is installed — `setenv LD_PRELOAD "<wampy> <this>"`. Wampy hooks
@@ -40,6 +47,7 @@
 #include <unistd.h>
 
 #include "mono_sum.h"
+#include "soundscape.h"
 
 /* The test (tools/test_mono_shim.sh) points these somewhere private; the device build never does. */
 #ifndef CINDER_MONO_DIR
@@ -48,6 +56,7 @@
 static const char kFlag[] = CINDER_MONO_DIR "/cinder_mono";
 static const char kAlive[] = CINDER_MONO_DIR "/cinder_mono_shim";
 static const char kLog[] = CINDER_MONO_DIR "/cinder_mono.log";
+static const char kAmbient[] = CINDER_MONO_DIR "/cinder_ambient";
 static const char kBtName[] = "pst::services::bttransmitterservice";
 
 /* ── how it is loaded, and how it gets out of the way ─────────────────────────────────────────
@@ -88,6 +97,10 @@ static long (*real_writei)(void*, const void*, unsigned long);
 static int (*real_set_format)(void*, void*, int);
 static int (*real_set_channels)(void*, void*, unsigned int);
 static int (*real_pcm_close)(void*);
+static int (*real_hw_params)(void*, void*);
+static int (*real_get_rate)(const void*, unsigned int*, int*);
+static int (*real_set_rate_near)(void*, void*, unsigned int*, int*);
+static int (*real_set_rate)(void*, void*, unsigned int, int);
 
 /* hagodaemon runs the constructor as ROOT and only then becomes `system` (uid 100, no
  * CAP_DAC_OVERRIDE), and root's umask here is 077 — so a file the constructor creates in /tmp is
@@ -140,6 +153,74 @@ static int mono_on(void)
         g_flag_on = on;
     }
     return g_flag_on;
+}
+
+/* ── the soundscape ──────────────────────────────────────────────────────────────────────────────
+ * One generator per route, each behind its own lock. The jack and Bluetooth are never fed by the
+ * same thread at once in practice; the locks are for "in practice", and they are TRY-locks — a hook
+ * that finds its generator busy sends the music without the soundscape for that one buffer rather
+ * than make an audio thread wait. */
+typedef struct { ss_state st; pthread_mutex_t lock; int said; } amb_route;
+static amb_route g_amb_jack = { .lock = PTHREAD_MUTEX_INITIALIZER };
+static amb_route g_amb_bt = { .lock = PTHREAD_MUTEX_INITIALIZER };
+static long g_amb_checked_ms = -1000000;
+static int g_amb_sound = 0, g_amb_milli = 0, g_amb_dirty = 0;
+
+static void amb_seed(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const uint32_t seed = (uint32_t)ts.tv_nsec ^ ((uint32_t)ts.tv_sec << 12) ^ ((uint32_t)getpid() << 20);
+    ss_init(&g_amb_jack.st, seed);
+    ss_init(&g_amb_bt.st, seed * 2654435761u + 1u);
+}
+
+/* Read the control file at most every 250 ms (the same rate as the mono flag): a short read of a
+ * tmpfs file. Returns 1 while either route has something to add. */
+static int amb_poll(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const long now = (long)ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+    if (now - g_amb_checked_ms >= 250) {
+        g_amb_checked_ms = now;
+        int sound = 0, milli = 0;
+        const int fd = (int)syscall(SYS_open, kAmbient, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd >= 0) {
+            char b[32];
+            const ssize_t n = (ssize_t)syscall(SYS_read, fd, b, sizeof b - 1);
+            (void)syscall(SYS_close, fd);
+            if (n > 0) { b[n] = '\0'; (void)ss_parse_control(b, (size_t)n, &sound, &milli); }
+        }
+        if (sound != g_amb_sound || milli != g_amb_milli) {
+            mlog("soundscape %d at %d/1000", sound, milli);
+            g_amb_sound = sound;
+            g_amb_milli = milli;
+            g_amb_dirty = 3;   /* both routes still to be told */
+        }
+    }
+    amb_route* r[2] = { &g_amb_jack, &g_amb_bt };
+    for (int i = 0; i < 2; i++) {
+        if (!(g_amb_dirty & (1 << i))) continue;
+        if (pthread_mutex_trylock(&r[i]->lock) != 0) continue;   /* the next poll tells it */
+        ss_set(&r[i]->st, g_amb_sound, (float)g_amb_milli / 1000.0f);
+        pthread_mutex_unlock(&r[i]->lock);
+        g_amb_dirty &= ~(1 << i);
+    }
+    return ss_active(&g_amb_jack.st) || ss_active(&g_amb_bt.st);
+}
+
+/* Add the soundscape to `frames` of PCM. 0 when nothing was added. */
+static int amb_mix(amb_route* r, uint8_t* p, size_t frames, int fmt, int ch, unsigned rate, const char* what)
+{
+    if (!ss_active(&r->st) || rate == 0) return 0;
+    if (pthread_mutex_trylock(&r->lock) != 0) return 0;
+    const int done = ss_mix(&r->st, p, frames, fmt, ch, rate);
+    const int first = done && !r->said;
+    if (done) r->said = 1;
+    pthread_mutex_unlock(&r->lock);
+    if (first) mlog("%s: soundscape mixed in (fmt %d, %d ch, %u Hz)", what, fmt, ch, rate);
+    return done;
 }
 
 /* ── scratch buffer, one per thread ──────────────────────────────────────────────────────────── */
@@ -212,6 +293,7 @@ __attribute__((constructor)) static void cinder_mono_init(void)
         return;
     }
     g_active = 1;
+    amb_seed();
     int a = open_shared(kAlive, O_WRONLY | O_CREAT | O_TRUNC);
     if (a >= 0) {
         char p[24];
@@ -233,7 +315,7 @@ static void load_proved_good(void)
 }
 
 /* ── the jack: libasound ─────────────────────────────────────────────────────────────────────── */
-typedef struct { void* pcm; int fmt; int ch; int said; } pcm_info;
+typedef struct { void* pcm; int fmt; int ch; unsigned rate; int said; } pcm_info;
 #define MAX_PCM 16
 static pcm_info g_pcm[MAX_PCM];
 static pthread_mutex_t g_pcm_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -279,6 +361,50 @@ int snd_pcm_hw_params_set_channels(void* pcm, void* params, unsigned int ch)
     return r;
 }
 
+/* The rate, for the soundscape (a sum does not need one). Read back from the hardware parameters
+ * once they are committed — whichever setter the HAL used, that is what the stream runs at — with
+ * the setters themselves as a fallback for a HAL whose commit does not come through here. */
+static void pcm_note_rate(void* pcm, unsigned rate)
+{
+    if (!g_active || rate == 0) return;
+    pthread_mutex_lock(&g_pcm_lock);
+    pcm_info* s = pcm_slot(pcm, 1);
+    if (s) s->rate = rate;
+    pthread_mutex_unlock(&g_pcm_lock);
+}
+
+int snd_pcm_hw_params(void* pcm, void* params)
+{
+    RESOLVE(real_hw_params, "snd_pcm_hw_params");
+    if (!real_hw_params) return -ENOSYS;
+    const int r = real_hw_params(pcm, params);
+    if (g_active && r == 0) {
+        RESOLVE(real_get_rate, "snd_pcm_hw_params_get_rate");
+        unsigned rate = 0;
+        int dir = 0;
+        if (real_get_rate && real_get_rate(params, &rate, &dir) == 0) pcm_note_rate(pcm, rate);
+    }
+    return r;
+}
+
+int snd_pcm_hw_params_set_rate_near(void* pcm, void* params, unsigned int* val, int* dir)
+{
+    RESOLVE(real_set_rate_near, "snd_pcm_hw_params_set_rate_near");
+    if (!real_set_rate_near) return -ENOSYS;
+    const int r = real_set_rate_near(pcm, params, val, dir);
+    if (r == 0 && val) pcm_note_rate(pcm, *val);
+    return r;
+}
+
+int snd_pcm_hw_params_set_rate(void* pcm, void* params, unsigned int val, int dir)
+{
+    RESOLVE(real_set_rate, "snd_pcm_hw_params_set_rate");
+    if (!real_set_rate) return -ENOSYS;
+    const int r = real_set_rate(pcm, params, val, dir);
+    if (r == 0) pcm_note_rate(pcm, val);
+    return r;
+}
+
 int snd_pcm_close(void* pcm)
 {
     RESOLVE(real_pcm_close, "snd_pcm_close");
@@ -296,13 +422,15 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     RESOLVE(real_writei, "snd_pcm_writei");
     if (!real_writei) return -ENOSYS;
     if (!g_active || !buf || frames == 0) return real_writei(pcm, buf, frames);
-    if (!mono_on()) {
+    const int mono = mono_on();
+    const int amb = amb_poll();
+    if (!mono && !amb) {
         const long r = real_writei(pcm, buf, frames);
         if (r > 0) load_proved_good();
         return r;
     }
 
-    pcm_info info = { NULL, 0, 0, 1 };
+    pcm_info info = { NULL, 0, 0, 0, 1 };
     int said = 1;
     pthread_mutex_lock(&g_pcm_lock);
     pcm_info* s = pcm_slot(pcm, 0);
@@ -311,17 +439,21 @@ long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
     if (!s) return real_writei(pcm, buf, frames);
 
     const int sb = cm_sample_bytes(info.fmt);
-    if (info.ch != 2 || sb == 0) {
-        if (!said) mlog("jack: pcm %p fmt %d ch %d — not summable, left alone", pcm, info.fmt, info.ch);
+    if ((info.ch != 2 && !(info.ch == 1 && !mono)) || sb == 0) {
+        if (!said) mlog("jack: pcm %p fmt %d ch %d — not ours to change, left alone", pcm, info.fmt, info.ch);
         return real_writei(pcm, buf, frames);
     }
-    const size_t bytes = (size_t)frames * 2u * (size_t)sb;
+    const size_t bytes = (size_t)frames * (size_t)info.ch * (size_t)sb;
     uint8_t* out = scratch(bytes);
     if (!out) return real_writei(pcm, buf, frames);
     memcpy(out, buf, bytes);
-    const int summed = cm_sum_buffer(out, frames, info.fmt, 2);
-    if (!said) mlog("jack: pcm %p fmt %d — %s", pcm, info.fmt, summed ? "summing" : "DSD over PCM, left alone");
-    const long r = real_writei(pcm, summed ? out : buf, frames);
+    /* DSD over PCM is never touched, by either: its markers are not samples. */
+    const int dop = info.ch == 2 && cm_looks_like_dop(out, frames, info.fmt);
+    const int summed = mono && info.ch == 2 && cm_sum_buffer(out, frames, info.fmt, 2);
+    const int mixed = amb && !dop && amb_mix(&g_amb_jack, out, frames, info.fmt, info.ch, info.rate, "jack");
+    if (!said && mono) mlog("jack: pcm %p fmt %d — %s", pcm, info.fmt, summed ? "summing" : "DSD over PCM, left alone");
+    if (!said && amb && !info.rate) mlog("jack: pcm %p — rate never seen, no soundscape on it", pcm);
+    const long r = real_writei(pcm, (summed || mixed) ? out : buf, frames);
     if (r > 0) load_proved_good();
     return r;
 }
@@ -398,13 +530,14 @@ static int bt_begin(int fd, cm_bt_stream* st, unsigned* gen, int* said)
 }
 
 /* Advance the real state by what the kernel took. */
-static void bt_commit(int fd, unsigned gen, const uint8_t* in, size_t n_avail, size_t n_done, int mono, int said_now)
+static void bt_commit(int fd, unsigned gen, const uint8_t* in, size_t n_avail, size_t n_done, int mono, int said_now,
+                      const uint8_t* produced)
 {
     pthread_mutex_lock(&g_bt_lock);
     for (int i = 0; i < MAX_BT; i++) {
         if (g_bt[i].gen != gen || g_bt[i].fd != fd) continue;
         const uint8_t before = g_bt[i].st.mode;
-        cm_bt_walk(&g_bt[i].st, in, n_avail, n_done, NULL, mono);
+        cm_bt_walk(&g_bt[i].st, in, n_avail, n_done, NULL, mono, NULL, produced);
         if (before != CM_BT_PCM && g_bt[i].st.mode == CM_BT_PCM)
             mlog("bt: fd %d handshake: %u ch, %u Hz — PCM from here", fd, g_bt[i].st.channels, g_bt[i].st.rate);
         if (g_bt[i].st.mode == CM_BT_GIVEUP && before != CM_BT_GIVEUP)
@@ -415,6 +548,12 @@ static void bt_commit(int fd, unsigned gen, const uint8_t* in, size_t n_avail, s
     pthread_mutex_unlock(&g_bt_lock);
 }
 
+static void bt_mix_frames(void* ctx, uint8_t* p, size_t n, uint32_t rate)
+{
+    (void)ctx;
+    (void)amb_mix(&g_amb_bt, p, n, CM_FMT_S16_LE, 2, rate, "bt");
+}
+
 /* The shared body of write/send/sendto: build the bytes to send, send them, commit. */
 static ssize_t bt_send(int fd, const void* buf, size_t n, ssize_t (*sendfn)(int, const void*, size_t, void*), void* ctx)
 {
@@ -423,16 +562,18 @@ static ssize_t bt_send(int fd, const void* buf, size_t n, ssize_t (*sendfn)(int,
     int said = 1;
     if (!buf || n == 0 || !bt_begin(fd, &st, &gen, &said)) return sendfn(fd, buf, n, ctx);
     const int mono = mono_on();
+    const int amb = amb_poll();
     const uint8_t* in = (const uint8_t*)buf;
     const void* to_send = buf;
     int said_now = 0;
-    if (mono && (st.mode == CM_BT_PCM || st.mode == CM_BT_FRAMES)) {
+    if ((mono || amb) && (st.mode == CM_BT_PCM || st.mode == CM_BT_FRAMES)) {
         uint8_t* out = scratch(n);
         if (out) {
             cm_bt_stream tmp = st;
-            cm_bt_walk(&tmp, in, n, n, out, mono);
+            const cm_mix mix = { bt_mix_frames, NULL };
+            cm_bt_walk(&tmp, in, n, n, out, mono, amb ? &mix : NULL, NULL);
             to_send = out;
-            if (!said && tmp.mode == CM_BT_PCM && tmp.channels == 2) {
+            if (!said && mono && tmp.mode == CM_BT_PCM && tmp.channels == 2) {
                 mlog("bt: fd %d — summing", fd);
                 said_now = 1;
             }
@@ -440,7 +581,7 @@ static ssize_t bt_send(int fd, const void* buf, size_t n, ssize_t (*sendfn)(int,
     }
     const ssize_t r = sendfn(fd, to_send, n, ctx);
     if (r > 0) {
-        bt_commit(fd, gen, in, n, (size_t)r, to_send != buf ? mono : 0, said_now);
+        bt_commit(fd, gen, in, n, (size_t)r, to_send != buf ? mono : 0, said_now, (const uint8_t*)to_send);
         if (st.mode == CM_BT_PCM) load_proved_good();
     }
     return r;
@@ -496,7 +637,8 @@ static void bt_observe_iov(int fd, const struct iovec* iov, int cnt, ssize_t don
     size_t left = (size_t)done;
     for (int i = 0; i < cnt && left; i++) {
         const size_t take = iov[i].iov_len < left ? iov[i].iov_len : left;
-        bt_commit(fd, gen, (const uint8_t*)iov[i].iov_base, iov[i].iov_len, take, 0, 0);
+        bt_commit(fd, gen, (const uint8_t*)iov[i].iov_base, iov[i].iov_len, take, 0, 0,
+                  (const uint8_t*)iov[i].iov_base);
         left -= take;
     }
 }
