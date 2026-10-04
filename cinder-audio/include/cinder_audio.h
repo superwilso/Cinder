@@ -20,6 +20,9 @@ extern "C" {
  * it from deferred_up): calling it earlier constructs an unstarted singleton and Pump segfaults.
  * `interval_ms` <= 0 keeps the 20 ms default. 0 = ok, -1 = thread spawn failed,
  * -2 = disabled via CINDER_NOPUMP=1. Idempotent. */
+/* Start the Framework without the easel lifecycle: helper processes only (`--stock-eq`), never
+ * the app. 0 = started (or already was), -1 = it did not come up. */
+int  cinder_audio_framework_start(void);
 int  cinder_audio_pump_start(int interval_ms);
 void cinder_audio_pump_stop(void);
 /* Change the pump period while running. The shell slows it down when the panel goes dark: nothing

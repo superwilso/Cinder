@@ -49,6 +49,25 @@ int main() {
           "radio down beats a stale peer name");
     check(!cinder_bt_link_steady(1, 0, 1), "…and is not steady either");
 
+    // ── RADIO UP, NOBODY THERE, NOBODY WAITING ──────────────────────────────────────────────
+    // listener_on, radio_up, have_name, quiet
+    check(cinder_bt_route_poll_quiet_ms(1, 1, 0, 1) == CINDER_BT_POLL_QUIET_MS,
+          "radio up, no peer, quiet, listener up: the poll stops being the mechanism");
+    check(cinder_bt_route_poll_quiet_ms(1, 1, 0, 0) == CINDER_BT_POLL_ACTIVE_MS,
+          "…but not while someone is waiting on a connect");
+    check(cinder_bt_route_poll_quiet_ms(0, 1, 0, 1) == CINDER_BT_POLL_ACTIVE_MS,
+          "quiet with NO listener: stays fast — the timer is the only detector");
+    check(cinder_bt_route_poll_quiet_ms(1, 1, 1, 1) == CINDER_BT_POLL_STEADY_MS,
+          "quiet does not change a connected link's backstop");
+    check(cinder_bt_route_poll_quiet_ms(0, 1, 1, 1) == CINDER_BT_POLL_ACTIVE_MS,
+          "…nor make a connected link with no listener slow");
+    check(cinder_bt_route_poll_quiet_ms(1, 0, 0, 1) == CINDER_BT_POLL_RADIO_DOWN_MS,
+          "radio down is radio down, quiet or not");
+    for (int l = 0; l < 2; l++) for (int r = 0; r < 2; r++) for (int n = 0; n < 2; n++)
+        check(cinder_bt_route_poll_quiet_ms(l, r, n, 0) == cinder_bt_route_poll_ms(l, r, n),
+              "not quiet: identical to the old rule");
+    check(CINDER_BT_POLL_QUIET_MS <= 60000, "the quiet backstop is still within a minute");
+
     // ── THE INTERVALS THEMSELVES ─────────────────────────────────────────────────────────────
     // A dropped link with no listener is noticed within one ACTIVE interval. Keep that human.
     check(CINDER_BT_POLL_ACTIVE_MS <= 3000, "the no-listener fallback notices a drop within 3 s");

@@ -85,6 +85,22 @@ previews, and **not yet run on a device**. The library items are in
   receiver, where only the analyzer's bands exist, the sample styles say "Needs library playback".
   *Device-unverified* — checklist §29.
 
+- **A smart playlist remembers what its Shuffle band deals.** The editor has a SHUFFLE row:
+  Settings (follow Settings ▸ Shuffle, as before), Songs, Albums or Artists. Saved as `shuffle=` in
+  `cinder_views.conf`. The transport's shuffle button still follows the setting.
+  *Host-tested; not yet run on a device (`docs/DEVICE_CHECKLIST.md` §30).*
+- **Mono, the linear amp and the DAC EQ can travel with a sound profile.** Sound profiles ▸ ALSO
+  PER PROFILE has a switch for each, all Off by default, so nothing changes until one is switched
+  on. Switching one on or off changes nothing that is heard at that moment. Saved as
+  `profile_follow=` and `bank_mono=` / `bank_amp=` / `bank_dac_eq=`.
+  *Host-tested; not yet run on a device (§30).*
+
+- **Stage 1 while playing over Bluetooth, as an opt-in experiment.** With
+  `/contents/cinder_suspend_bt` present, the screen-off power state that already runs during jack
+  playback also runs during Bluetooth playback. If the link goes away while it is held, it stops
+  for the rest of that boot and the log says so. *Never run with a link up: `DEVICE_CHECKLIST` 31.2
+  is that run. Without the file nothing changes.*
+
 ### Changed
 
 - **The artist page** lists albums newest first.
@@ -108,7 +124,35 @@ previews, and **not yet run on a device**. The library items are in
   renamed over the old one, so losing power mid-write leaves the old file or the new one rather
   than half of one.
 
+- **The Menu's Equalizer row is gone.** The equalizer opens from Sound ▸ Equalizer, which also
+  says when Tone Control is in the path instead.
+- **An artist's page opens with its SONGS list folded.** The header reads `SONGS · n` with SHOW ALL
+  beside it; tap it to open the list and again to fold it. Shuffle and the counts still cover every
+  track, and an artist with no albums always shows its songs. *Host-tested (§30).*
+
+- **Bluetooth on with nothing connected no longer polls every 3 seconds for ever.** With the panel
+  dark, nobody waiting on a connect and the reconnect ladder idle (it never started, or it gave up
+  after its twelve tries), the route poll drops to once a minute. Headphones that power on still
+  connect and are noticed at once: connect-wait stays armed and the link listener reports it. With
+  no listener the poll stays at 3 s. *Host-tested (`btpoll_selftest`); the saving is not measured.*
+
 ### Fixed
+
+- **Sony's equalizer works after the cable escape, a bad-boot revert or a crash hand-over.** Only
+  Settings ▸ Boot to stock handed the EQ selector back; every other road to Sony's player left its
+  equalizer stored and not in the path. The launcher now runs `cinder-home --stock-eq` once, in
+  the background, on its way to stock. It is spent before it runs, so it can never run on two
+  boots in a row, and Sony's app does not wait for it. *The helper itself was run on a Walkman One
+  player on 2026-10-04 (selector 2 → 1 as uid system, Cinder still running); the launcher path is
+  covered by 21 new launcher tests and has not been run on a device (§27.5).* **Not covered: a
+  full uninstall**, which removes the launcher: use Settings ▸ Boot to stock once before
+  uninstalling, or pick any preset in Sony's equalizer afterwards.
+- **Scope, Stereo field and Meters stayed empty.** They draw only from the decoded audio, and the
+  tap drew nothing unless a 46 ms packet covered the reported position exactly; on the player it
+  went a whole session without one. The nearest packet within 750 ms now stands in, and a miss is
+  logged (`pcm tap MISS`) with how far off the queue was. *The cause is read from the log (no
+  `pcm tap` line, Sony's analyzer started instead); the fix is host-tested and not yet run on a
+  device (§24.1, §29).*
 
 - **Sony's equalizer did nothing after Boot to stock.** Cinder switches the player's sound service
   to the 10-band equalizer, and the service remembers that across a restart. Sony's own player

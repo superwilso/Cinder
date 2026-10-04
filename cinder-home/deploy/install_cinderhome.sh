@@ -748,7 +748,30 @@ REAL=/system/vendor/sony/bin/HgrmMediaPlayerApp           # untouched stock Qt a
 HOME_BIN=/system/vendor/unknown321/bin/cinder-home
 export LD_LIBRARY_PATH="/system/vendor/sony/lib:/system/vendor/unknown321/lib:/system/lib:/usr/lib:/lib:$LD_LIBRARY_PATH"
 
-run_stock() { exec "$REAL" "$@"; }
+# HAND SONY'S EQ BACK ON THE WAY TO STOCK (2026-10-04, DEVICE_CHECKLIST 27.5). Cinder puts its
+# ten-band EQ in the path and the sound service keeps that choice; Sony's player draws the six-band
+# and never selects it, so its equalizer moved and nothing was heard. Settings > Boot to stock
+# fixes that itself. Every OTHER road to stock ends here, in a shell that cannot call a service.
+#
+# So: `cinder-home --stock-eq`, a helper that sets the selector and exits. It is an escape-path
+# dependency, and the ladder rule is that an escape depends on less than what it rescues. Hence:
+#   * ONE SHOT. $EQ_MARK is written when Cinder is started (run_home) and SPENT HERE BEFORE the
+#     helper runs. If the helper hangs, crashes, or takes the device down with it, the next boot
+#     finds no marker and goes to stock exactly as it did before this existed.
+#   * If the marker cannot be removed, nothing runs: fail toward the old behaviour.
+#   * In the BACKGROUND, output discarded or appended by a subshell. Sony's app is exec'd at once
+#     and never waits for it. The helper ends itself after 10 s (alarm, default action).
+#   * No marker (stock was never left, or Cinder already handed back) -> nothing runs at all.
+EQ_MARK=/data/cinder/eq_owned
+stock_eq_handback() {
+    [ -f "$EQ_MARK" ] || return 0
+    rm "$EQ_MARK" 2>/dev/null
+    [ -f "$EQ_MARK" ] && return 0
+    [ -x "$HOME_BIN" ] || return 0
+    ( "$HOME_BIN" --stock-eq >> /data/cinder/cinderhome.log 2>&1 & ) 2>/dev/null
+    true
+}
+run_stock() { stock_eq_handback; exec "$REAL" "$@"; }
 
 # WHY EVERY ESCAPE BELOW SAYS SO FIRST (issue #16, 2026-09-21). Every rung of the ladder leaves by
 # exec'ing Sony's app, and all of them run BEFORE the log is chosen further down — so a player that
@@ -1110,6 +1133,7 @@ fi
 # Kill switch: restores the pre-supervisor `exec`. The escape for the escape — a file drop over
 # USB-MSC needs strictly less than the supervisor it disables.
 if [ -f "$NO_RESPAWN" ] || [ -f "$MSC_NO_RESPAWN" ]; then
+    ( : > "$EQ_MARK" ) 2>/dev/null     # as run_home does: see stock_eq_handback
     [ -n "$LOGF" ] && exec "$HOME_BIN" "$@" >"$LOGF" 2>&1
     exec "$HOME_BIN" "$@"
 fi
@@ -1146,6 +1170,9 @@ fi
 # /data is ext4, mounted at 3.98 s, and the MSC gadget never touches it, so it is the location
 # that actually survives; /contents stays first only because the user can read it over USB.
 run_home() {
+    # Cinder is about to own the EQ selector: see stock_eq_handback. A failed write only means no
+    # hand-back later, which is how it was before.
+    ( : > "$EQ_MARK" ) 2>/dev/null
     if [ -n "$LOGF" ] && can_append "$LOGF"; then
         "$HOME_BIN" "$@" >>"$LOGF" 2>&1
     elif can_append /data/cinder/cinderhome.log; then

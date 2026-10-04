@@ -2097,7 +2097,10 @@ pub fn hit_artist_shuffle_band(x: i32, y: i32) -> bool {
     (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
 }
 
-pub const ARTIST_SEC_H: i32 = 36; // "ALBUMS · n" / "MOST PLAYED" / "SONGS · n" section header
+pub const ARTIST_SEC_H: i32 = 36; // "ALBUMS · n" / "MOST PLAYED" section header
+/// The "SONGS · n" header is a control since 2026-10-04 (it shows and hides the full list), so it
+/// gets a touch target rather than a caption's height.
+pub const ARTIST_SONGS_H: i32 = 48;
 /// How many most-played tracks the artist page lists (handoff 5m: "then the 3 most played").
 pub const ARTIST_TOP_N: usize = 3;
 pub const ARTIST_ALBUM_RH: i32 = crate::scale::GROUP_ROW_H;
@@ -2121,7 +2124,8 @@ pub enum ArtistRowKind {
 impl ArtistRowKind {
     fn h(self) -> i32 {
         match self {
-            ArtistRowKind::AlbumsSection | ArtistRowKind::TopSection | ArtistRowKind::SongsSection => ARTIST_SEC_H,
+            ArtistRowKind::AlbumsSection | ArtistRowKind::TopSection => ARTIST_SEC_H,
+            ArtistRowKind::SongsSection => ARTIST_SONGS_H,
             ArtistRowKind::Album(_) => ARTIST_ALBUM_RH,
             ArtistRowKind::Song(_) | ArtistRowKind::Top(_) => ARTIST_TRACK_RH,
         }
@@ -2153,6 +2157,10 @@ pub struct ArtistPage<'a> {
     /// `(content-space y, row)` in draw order. ONE list, shared by the renderer and the hit test.
     pub rows: Vec<(i32, ArtistRowKind)>,
     pub content_h: i32,
+    /// Whether the full SONGS list is drawn under its header. Closed when the page opens (owner's
+    /// call, 2026-10-04: an artist with 300 tracks was 300 rows under three albums), and always
+    /// open for an artist with no album rows, where the songs are the whole page.
+    pub songs_open: bool,
 }
 
 /// Resolve an artist's page out of the library, by name.
@@ -2163,7 +2171,7 @@ pub struct ArtistPage<'a> {
 /// dated one. Tracks are the albums' track lists in that order; if the artist has no albums at all
 /// (tracks with no album row behind them), it falls back to matching the Songs list on artist
 /// name, so a page is never empty when the tab said it has tracks.
-pub fn artist_page<'a>(lib: &'a Library, name: &'a str) -> ArtistPage<'a> {
+pub fn artist_page<'a>(lib: &'a Library, name: &'a str, songs_open: bool) -> ArtistPage<'a> {
     let mut albums: Vec<(usize, &crate::model::AlbumRow)> = Vec::new();
     let mut flat = 0usize;
     for g in &lib.album_groups {
@@ -2219,15 +2227,18 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str) -> ArtistPage<'a> {
             y += ARTIST_TRACK_RH;
         }
     }
+    let songs_open = songs_open || albums.is_empty();
     if !tracks.is_empty() {
         rows.push((y, ArtistRowKind::SongsSection));
-        y += ARTIST_SEC_H;
-        for i in 0..tracks.len() {
-            rows.push((y, ArtistRowKind::Song(i)));
-            y += ARTIST_TRACK_RH;
+        y += ARTIST_SONGS_H;
+        if songs_open {
+            for i in 0..tracks.len() {
+                rows.push((y, ArtistRowKind::Song(i)));
+                y += ARTIST_TRACK_RH;
+            }
         }
     }
-    ArtistPage { name, albums, tracks, top, rows, content_h: y + 8 }
+    ArtistPage { name, albums, tracks, top, rows, content_h: y + 8, songs_open }
 }
 
 /// Visible height of the artist page's scrolling content.
@@ -2247,6 +2258,8 @@ pub enum ArtistHit {
     Album(usize),
     /// Play this track (index into [`ArtistPage::tracks`]).
     Track(usize),
+    /// The "SONGS · n" header: show or hide the full list.
+    ToggleSongs,
 }
 
 /// Which artist-page row is under touch-`y`? Reads the SAME `page.rows` the renderer draws, so a
@@ -2260,6 +2273,8 @@ pub fn artist_hit(page: &ArtistPage, scroll_px: i32, y: i32) -> Option<ArtistHit
     page.rows.iter().find(|(vy, r)| (*vy..*vy + r.h()).contains(&cy)).and_then(|(_, r)| match *r {
         ArtistRowKind::Album(i) => page.albums.get(i).map(|(flat, _)| ArtistHit::Album(*flat)),
         ArtistRowKind::Song(i) | ArtistRowKind::Top(i) => Some(ArtistHit::Track(i)),
+        // Not a control where there is nothing to fold away (see `ArtistPage::songs_open`).
+        ArtistRowKind::SongsSection if !page.albums.is_empty() => Some(ArtistHit::ToggleSongs),
         _ => None,
     })
 }
@@ -2313,8 +2328,15 @@ pub fn artist_view(
                     &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
             }
             ArtistRowKind::SongsSection => {
-                text::draw(c, f, 22.0, (y + 24) as f32, &format!("SONGS · {}", page.tracks.len()),
-                    &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+                let cap = sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18);
+                text::draw(c, f, 22.0, (y + 30) as f32, &format!("SONGS · {}", page.tracks.len()), &cap);
+                if !page.albums.is_empty() {
+                    // Words, not a chevron glyph: the label says what a tap will do.
+                    let word = if page.songs_open { "HIDE" } else { "SHOW ALL" };
+                    let act = sty(Family::Mono, Weight::Regular, 11.0, t.acc, 0.18);
+                    let w = text::measure(f, word, &act);
+                    text::draw(c, f, W as f32 - 22.0 - w, (y + 30) as f32, word, &act);
+                }
             }
             ArtistRowKind::TopSection => {
                 text::draw(c, f, 22.0, (y + 24) as f32, "MOST PLAYED",
@@ -3362,7 +3384,7 @@ mod tests {
     #[test]
     fn artist_page_collects_that_artists_albums_and_tracks() {
         let l = artist_lib();
-        let p = artist_page(&l, "One");
+        let p = artist_page(&l, "One", true);
         // Both of One's albums, and NOT Two's — with the flat indices the Album screen takes.
         assert_eq!(p.albums.iter().map(|(f, a)| (*f, a.name.as_str())).collect::<Vec<_>>(),
             vec![(0, "A1"), (1, "A2")]);
@@ -3372,10 +3394,23 @@ mod tests {
         assert_eq!(p.tracks[4].album, "A2");
         // An artist with tracks but no album rows still gets a page (the Songs fallback) rather
         // than an empty one, which is what the Artists tab's track count promised.
-        let solo = artist_page(&l, "Solo");
+        let solo = artist_page(&l, "Solo", false);
         assert!(solo.albums.is_empty());
         assert_eq!(solo.tracks.len(), 1);
         assert_eq!(solo.tracks[0].song.object_id, 900);
+    }
+
+    /// An artist with no album rows has nothing but its songs: they are never folded away, and
+    /// their header is a caption there, not a control.
+    #[test]
+    fn an_artist_without_albums_always_shows_its_songs() {
+        let mut l = artist_lib();
+        l.album_groups.clear();
+        let name = l.songs.first().map(|s| s.artist.clone()).expect("the sample has songs");
+        let p = artist_page(&l, &name, false);
+        assert!(p.songs_open);
+        assert!(p.rows.iter().any(|(_, r)| matches!(r, ArtistRowKind::Song(_))));
+        assert_eq!(artist_hit(&p, 0, artist_content_top() + 4), None);
     }
 
     #[test]
@@ -3383,7 +3418,7 @@ mod tests {
         // Renders text; shares the crate-wide UI-scale lock. See text::scale_guard.
         let _scale = crate::text::scale_guard();
         let l = artist_lib();
-        let p = artist_page(&l, "One");
+        let p = artist_page(&l, "One", true);
         let top = artist_content_top();
         // Section headers are labels, not targets.
         assert_eq!(artist_hit(&p, 0, top + ARTIST_SEC_H / 2), None);

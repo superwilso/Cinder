@@ -59,6 +59,22 @@ static inline int cinder_bt_route_poll_ms(int listener_on, int radio_up, int hav
     return CINDER_BT_POLL_ACTIVE_MS;
 }
 
+/* RADIO UP, NOBODY THERE, NOBODY WAITING (2026-10-04). Bluetooth left on with the headphones in a
+ * drawer is the other long-lived state, and it polled at the ACTIVE rate for the life of the
+ * battery: the reconnect ladder stops paging after twelve tries, and the poll never stopped. Once
+ * the caller says the state is QUIET — the panel is dark, no connect is being attempted, no one
+ * tapped anything — the listener is the mechanism here exactly as it is for a connected link: a
+ * headphone that powers on raises OnNotifyAclStateChanged and the route is read on the next frame.
+ * The same safety rule applies: no listener, no backoff. */
+#define CINDER_BT_POLL_QUIET_MS      60000
+
+/* Route poll interval, given `quiet` as well. Never faster or different from
+ * cinder_bt_route_poll_ms except in the one state above. */
+static inline int cinder_bt_route_poll_quiet_ms(int listener_on, int radio_up, int have_name, int quiet) {
+    if (quiet && listener_on && radio_up && !have_name) return CINDER_BT_POLL_QUIET_MS;
+    return cinder_bt_route_poll_ms(listener_on, radio_up, have_name);
+}
+
 /* Interval for the negotiated-codec poll. Radio down is not special-cased: the call site only
  * reaches this while the route IS Bluetooth. */
 static inline int cinder_bt_codec_poll_ms(int listener_on, int radio_up, int have_name) {

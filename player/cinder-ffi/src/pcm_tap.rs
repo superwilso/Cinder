@@ -105,6 +105,46 @@ pub fn choose(slots: &[Option<Slot>], t_us: i64) -> Option<usize> {
     slots.iter().position(|s| s.is_some_and(|s| s.covers(t_us)))
 }
 
+/// How much audio the tap keeps, in µs. THE QUEUE IS AHEAD OF THE EAR: it holds what PlayerService
+/// has decoded and not yet handed on, and on the player that was 630 ms after the reported position
+/// (2026-10-04: `pos 17084 ms, slot 2 holds 17718..17764 ms`). By the time a moment is heard its
+/// packet has been overwritten, so the queue alone can never cover the position — which is why the
+/// first build drew for a split second and stopped. The tap therefore copies each packet as it
+/// appears and draws from its own copy. 1.5 s is the lead seen, twice over; at 44.1 kHz that is
+/// about 265 kB.
+pub const HIST_US: i64 = 1_500_000;
+
+/// How far a slot may be from the position and still be drawn. The queue holds about 190 ms (four
+/// 46 ms packets and one being refilled) and the position is the service's once-a-second report
+/// carried forward by the clock, so "no slot covers it" was the NORMAL case on the player, not
+/// the exception: 2026-10-04, a whole session with no tap frame and Scope, Stereo field and
+/// Meters empty. Within this distance the nearest packet is the music of this moment to the eye;
+/// beyond it (a seek, a pause, another track's leftovers) nothing is drawn.
+pub const NEAR_US: i64 = 750_000;
+
+/// How far `t_us` is outside a slot's span: 0 inside, else the gap in µs.
+fn gap_us(s: &Slot, t_us: i64) -> i64 {
+    if t_us < s.pts_us {
+        s.pts_us - t_us
+    } else {
+        (t_us - (s.pts_us + s.span_us()) + 1).max(0)
+    }
+}
+
+/// [`choose`], and when nothing covers `t_us`, the nearest slot within [`NEAR_US`]. Returns the
+/// slot and how far off it is (0 = it covers the position).
+pub fn choose_near(slots: &[Option<Slot>], t_us: i64) -> Option<(usize, i64)> {
+    if let Some(k) = choose(slots, t_us) {
+        return Some((k, 0));
+    }
+    slots
+        .iter()
+        .enumerate()
+        .filter_map(|(k, s)| s.map(|s| (k, gap_us(&s, t_us))))
+        .filter(|(_, g)| *g <= NEAR_US)
+        .min_by_key(|(_, g)| *g)
+}
+
 /// Up to `n` mono samples (-1..1) from `payload`, starting `offset` frames in: the channels are
 /// averaged. Fewer when the slot ends first. The tap reads [`stereo`] and averages that; this stays
 /// as the reference the tests hold it to.
@@ -176,11 +216,19 @@ pub struct Window {
     pub slot: usize,
     pub first_us: i64,
     pub last_us: i64,
+    /// How far the slot was from the position asked for, in µs: 0 when it covered it.
+    pub off_us: i64,
 }
 
 /// The open queue file, found again when it goes away.
 pub struct Tap {
     dir: PathBuf,
+    /// The packets seen lately, oldest first — see [`HIST_US`].
+    hist: std::collections::VecDeque<(Slot, Vec<u8>)>,
+    /// Each slot's timestamp when it was last copied, so a slot is copied once per refill.
+    seen: [i64; SLOTS],
+    /// When a refilled slot was last copied.
+    fresh_at: Option<std::time::Instant>,
     file: Option<(PathBuf, File)>,
     /// When the directory was last searched. A missing file (FM, USB-DAC, nothing ever played) is
     /// searched for at most once a second, not twenty times.
@@ -189,7 +237,7 @@ pub struct Tap {
 
 impl Tap {
     pub fn new(dir: impl Into<PathBuf>) -> Tap {
-        Tap { dir: dir.into(), file: None, searched: None }
+        Tap { dir: dir.into(), hist: Default::default(), seen: [-1; SLOTS], fresh_at: None, file: None, searched: None }
     }
 
     fn open(&mut self) -> Option<&File> {
@@ -209,48 +257,94 @@ impl Tap {
     /// that moment in a format this reads. The window starts at `t_us`; when the slot ends first, it
     /// carries on into the next slot if that one follows straight on.
     pub fn window(&mut self, t_us: i64, n: usize) -> Option<Window> {
-        let got = self.read(t_us, n);
-        if got.is_none() {
-            // A failed read may be a renamed file: look again (at most once a second).
+        if self.ingest().is_none() {
+            // The file could not be read: look for it again (at most once a second).
             self.file = None;
+            return None;
         }
-        got
+        // A file that has stopped changing may have been replaced by one with another name
+        // (PlayerService restarted; the old one stays readable through the open handle). Look
+        // again, without throwing away what was kept. A MISS is not a reason to: until 2026-10-04
+        // every miss closed the file, and the second it then took to reopen was a hole.
+        if self.fresh_at.is_some_and(|t| t.elapsed().as_millis() > 2000) {
+            self.file = None;
+            self.fresh_at = None;
+        }
+        self.pick(t_us, n)
     }
 
-    fn read(&mut self, t_us: i64, n: usize) -> Option<Window> {
-        let f = self.open()?;
-        let mut hdr = vec![0u8; HEADER_BYTES];
-        let mut slots = [None; SLOTS];
-        for (k, slot) in slots.iter_mut().enumerate() {
-            f.read_exact_at(&mut hdr, (k * SLOT_BYTES) as u64).ok()?;
-            *slot = Slot::parse(&hdr);
-        }
-        let k = choose(&slots, t_us)?;
-        let s = slots[k]?;
-        let offset = ((t_us - s.pts_us) * s.rate as i64 / 1_000_000).max(0) as usize;
-        let mut payload = vec![0u8; s.bytes];
-        f.read_exact_at(&mut payload, (k * SLOT_BYTES + HEADER_BYTES) as u64).ok()?;
-        let (mut left, mut right) = stereo(&s, &payload, offset, n);
-        let mut last = s.pts_us + s.span_us();
-        if left.len() < n {
-            // The next packet in time, if the queue has it and it follows without a gap.
-            let next = slots.iter().enumerate().find(|(_, o)| {
-                o.is_some_and(|o| o.rate == s.rate && o.channels == s.channels && (o.pts_us - last).abs() <= 1_000)
-            });
-            if let Some((j, Some(o))) = next {
-                let mut p2 = vec![0u8; o.bytes];
-                if f.read_exact_at(&mut p2, (j * SLOT_BYTES + HEADER_BYTES) as u64).is_ok() {
-                    let (l2, r2) = stereo(o, &p2, 0, n - left.len());
-                    left.extend(l2);
-                    right.extend(r2);
-                    last = o.pts_us + o.span_us();
+    /// Copy every slot that has been refilled since the last call into the history. `None` when
+    /// there is no queue file to read.
+    fn ingest(&mut self) -> Option<()> {
+        let mut fresh: Vec<(usize, Slot, Vec<u8>)> = Vec::new();
+        {
+            let seen = self.seen;
+            let f = self.open()?;
+            let mut hdr = vec![0u8; HEADER_BYTES];
+            for (k, was) in seen.iter().enumerate() {
+                f.read_exact_at(&mut hdr, (k * SLOT_BYTES) as u64).ok()?;
+                let Some(s) = Slot::parse(&hdr) else { continue };
+                if s.pts_us == *was {
+                    continue;
+                }
+                let mut payload = vec![0u8; s.bytes];
+                f.read_exact_at(&mut payload, (k * SLOT_BYTES + HEADER_BYTES) as u64).ok()?;
+                // A slot refilled while it was being copied is half one packet and half the next:
+                // leave it for the next call, when its header has settled.
+                f.read_exact_at(&mut hdr, (k * SLOT_BYTES) as u64).ok()?;
+                if Slot::parse(&hdr) == Some(s) {
+                    fresh.push((k, s, payload));
                 }
             }
         }
+        let Some(newest) = fresh.iter().map(|(_, s, _)| s.pts_us).max() else { return Some(()) };
+        self.fresh_at = Some(std::time::Instant::now());
+        for (k, s, payload) in fresh {
+            self.seen[k] = s.pts_us;
+            if !self.hist.iter().any(|(h, _)| h.pts_us == s.pts_us) {
+                let at = self.hist.partition_point(|(h, _)| h.pts_us < s.pts_us);
+                self.hist.insert(at, (s, payload));
+            }
+        }
+        // Keep what leads up to the newest packet. A seek or a new track lands its packets outside
+        // that span on one side or the other, and the old ones go.
+        self.hist.retain(|(h, _)| h.pts_us > newest - HIST_US && h.pts_us <= newest + HIST_US);
+        Some(())
+    }
+
+    fn pick(&self, t_us: i64, n: usize) -> Option<Window> {
+        let slots: Vec<Option<Slot>> = self.hist.iter().map(|(s, _)| Some(*s)).collect();
+        let (k, off_us) = choose_near(&slots, t_us)?;
+        let (s, payload) = &self.hist[k];
+        let s = *s;
+        // A packet that does not cover the position is read from its start.
+        let offset = if off_us == 0 { ((t_us - s.pts_us) * s.rate as i64 / 1_000_000).max(0) as usize } else { 0 };
+        let (mut left, mut right) = stereo(&s, payload, offset, n);
+        let mut last = s.pts_us + s.span_us();
+        // Carry on into the packets that follow without a gap, until the window is full.
+        for (o, p2) in self.hist.iter().skip(k + 1) {
+            if left.len() >= n || o.rate != s.rate || o.channels != s.channels || (o.pts_us - last).abs() > 1_000 {
+                break;
+            }
+            let (l2, r2) = stereo(o, p2, 0, n - left.len());
+            left.extend(l2);
+            right.extend(r2);
+            last = o.pts_us + o.span_us();
+        }
         let samples: Vec<f32> = left.iter().zip(&right).map(|(a, b)| (a + b) * 0.5).collect();
-        (!samples.is_empty()).then_some(Window { rate: s.rate, samples, left, right, slot: k, first_us: s.pts_us, last_us: last })
+        (!samples.is_empty()).then_some(Window { rate: s.rate, samples, left, right, slot: k, first_us: s.pts_us, last_us: last, off_us })
+    }
+
+    /// What the tap holds right now, as `(earliest start, latest end)` in µs — for the log line
+    /// that says why a frame was not drawn. `None` when there is no queue or nothing in it parses.
+    pub fn held(&mut self) -> Option<(i64, i64)> {
+        self.ingest()?;
+        let a = self.hist.front().map(|(s, _)| s.pts_us)?;
+        let b = self.hist.back().map(|(s, _)| s.pts_us + s.span_us())?;
+        Some((a, b))
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -272,6 +366,34 @@ mod tests {
     }
 
     /// A queue file of five slots, each 2048 stereo frames of a constant `L`/`R` pair.
+    /// THE QUEUE IS AHEAD OF THE EAR (the player, 2026-10-04: the reported position 630 ms behind
+    /// every slot). A moment the tap saw go by is still drawn once the queue has moved on, exactly;
+    /// a seek away drops what was kept.
+    #[test]
+    fn a_moment_the_queue_has_moved_past_is_drawn_from_the_taps_own_copy() {
+        let d = tmp("history");
+        let name = "MappedShmHolderTK_MUSIC_PID_478_PKT_131072_QUE_5_2_packet";
+        let step = 46_439u32;
+        let at = |first: u32| [first, first + step, first + 2 * step, first + 3 * step, first + 4 * step];
+        queue(&d, name, at(10_000_000), [(8192, 8192); 5]);
+        let mut tap = Tap::new(&d);
+        // What is heard now is 600 ms before anything in the queue: nothing exact to draw yet, so
+        // the nearest packet stands in and says how far off it is.
+        let w = tap.window(9_400_000, 2048).expect("the nearest packet");
+        assert_eq!(w.off_us, 600_000);
+        // The queue moves on by more than its own length; the ear reaches the first packet.
+        queue(&d, name, at(10_600_000), [(-8192, -8192); 5]);
+        let w = tap.window(10_000_100, 2048).expect("the copy the tap kept");
+        assert_eq!(w.off_us, 0, "drawn exactly, from history");
+        assert_eq!(w.samples[0], 0.25, "…and it is the OLD packet's audio");
+        assert_eq!(tap.held().map(|(a, _)| a), Some(10_000_000));
+        // A seek back to the start: the kept packets are from another place and go.
+        queue(&d, name, at(1_000_000), [(0, 0); 5]);
+        assert!(tap.window(10_000_100, 2048).is_none(), "the old place is gone after a seek");
+        assert_eq!(tap.held().map(|(a, _)| a), Some(1_000_000));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     fn queue(dir: &Path, name: &str, pts: [u32; 5], lr: [(i16, i16); 5]) -> PathBuf {
         let mut body = Vec::new();
         for k in 0..SLOTS {
@@ -332,6 +454,13 @@ mod tests {
         assert_eq!(choose(&slots, 1_185_757), Some(1));
         assert_eq!(choose(&slots, 999_999), None, "already played and overwritten");
         assert_eq!(choose(&slots, 2_000_000), None, "not decoded yet");
+        // The nearest slot stands in when nothing covers the position, inside NEAR_US only.
+        assert_eq!(choose_near(&slots, 1_050_000), Some((2, 0)), "a covering slot is not 'near'");
+        assert_eq!(choose_near(&slots, 999_999).map(|(k, _)| k), Some(0), "just behind the queue");
+        assert_eq!(choose_near(&slots, 999_999).map(|(_, g)| g), Some(1));
+        let far = slots.iter().flatten().map(|s| s.pts_us + s.span_us()).max().unwrap() + NEAR_US + 1;
+        assert_eq!(choose_near(&slots, far), None, "a seek away: nothing true to draw");
+        assert_eq!(choose_near(&slots, 1_000_000 - NEAR_US - 1), None);
     }
 
     #[test]
@@ -369,7 +498,9 @@ mod tests {
         // 1000 frames before slot 0 ends: 1000 of slot 0, then 1048 of slot 1.
         let t = 2_000_000 + (1048i64 * 1_000_000 / 44100) + 1;
         let w = tap.window(t, 2048).expect("a window");
-        assert_eq!((w.rate, w.slot, w.samples.len()), (44100, 0, 2048));
+        // `slot` is the packet's place in the tap's history, which is in time order: three older
+        // packets come before this one.
+        assert_eq!((w.rate, w.slot, w.samples.len(), w.off_us), (44100, 3, 2048, 0));
         assert_eq!(w.samples[0], 0.25);
         assert_eq!(w.samples[2047], -0.25, "the tail came from the next slot");
         assert!(tap.window(5_000_000, 2048).is_none(), "a moment the queue does not hold");

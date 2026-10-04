@@ -376,7 +376,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
         Screen::Library => library::render(c, theme, fonts, app.tab, app.track, 0, app.sort, 0, None, &app.lib, None, false, 0, false),
         Screen::Artist => {
             let name = app.lib.artists.first().map(|a| a.name.as_str()).unwrap_or("");
-            let page = library::artist_page(&app.lib, name);
+            let page = library::artist_page(&app.lib, name, true);
             library::artist_view(c, theme, fonts, &app.lib, &page, 0, 0, None, false)
         }
         Screen::Eq => eq::render(c, theme, fonts, &app.eq_bands, EQ_PRESETS[app.eq_preset].0, 0, None),

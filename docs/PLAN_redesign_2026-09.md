@@ -176,6 +176,9 @@ After 0.2.0, in Flint's *Unreleased*:
 | 3a | Sync ▸ Plan: capacity per card, tickable plan rows | **Partial** | The capacity bars and the plan exist. Ticking rows to leave them out is R6 |
 | 6a | Sync ▸ Conversion: format × card grid | **R6** | Convert-on-transfer (FLAC → FLAC 16/44 or AAC 256). This is new engine work in `flint-core`, not only a page |
 | 6a | Sync ▸ Copying: plan rows with a state each | **R6** | One bad file skips one track and shows one line. The engine already does the skip; the page shows it |
+| — | Track data from the player: `cinder_stats.tsv` (ratings, play counts) and `cinder_views.conf` (smart playlists) | **R6** (owner, 2026-10-04) | Flint reads both, keeps them across a sync and shows ratings and counts on the PC. Formats: [`TRACK_DATA.md`](TRACK_DATA.md) |
+| — | Seed play counts from scrobble history | **R6** (owner, 2026-10-04) | The player starts every count at zero and does not read `.scrobbler.log`. Flint builds the first `cinder_stats.tsv` from the history it has and sends it; the player takes it as it takes the likes file |
+| — | Clear `#CINDER-EDITED` after pulling a playlist the player changed | **R6** (owner, 2026-10-04) | The tag stays; Flint is what clears it |
 | 3a | On the player | **Done** | Removing an album Flint put there (needs a confirm step) |
 | 3a | Check | **Done** | — (a verdict and text filter since 0.2.0, *Unreleased*) |
 | 6a | SensMe: progress, 12 channel bars, NOT TAGGED by reason | **Partial** | The buttons and progress exist. The channel bars and reasons need the analysis job to report them. The MP3 path is part of the same work |

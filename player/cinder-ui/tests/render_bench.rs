@@ -172,9 +172,9 @@ fn bench_library_tabs() {
     // scroll tick, so its cost is a per-frame cost, not a one-off.
     let who = lib.artists[0].name.clone();
     time_it("artist_page resolve", n, || {
-        let _ = library::artist_page(&lib, &who).tracks.len();
+        let _ = library::artist_page(&lib, &who, true).tracks.len();
     });
-    let page = library::artist_page(&lib, &who);
+    let page = library::artist_page(&lib, &who, true);
     time_it("artist_view render", n, || {
         library::artist_view(&mut c, &t, &f, &lib, &page, 0, 0, None, false)
     });

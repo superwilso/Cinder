@@ -33,7 +33,11 @@ build_launcher() {   # $1 = sandbox root
 # ── crash-supervisor stubs ────────────────────────────────────────────────────────────────────
 # Each records its own invocation count in $R/runs so a scenario can assert how many times the
 # launcher actually started cinder-home — the whole point of the supervisor is invisible otherwise.
-stub_head() { printf '#!/bin/sh\necho CINDER\nn=$(cat "%s/runs" 2>/dev/null)\ncase "$n" in ""|*[!0-9]*) n=0;; esac\nn=$((n+1)); echo "$n" > "%s/runs"\n' "$1" "$1"; }
+# The first line is the `--stock-eq` helper (the launcher's EQ hand-back): counted on its own in
+# $R/eqruns, never as a run of the app. EQ_HANG=1 in the sandbox makes it hang, as a wedged sound
+# service would.
+EQ_STUB='[ "$1" = --stock-eq ] && { echo x >> "%s/eqruns"; [ -f "%s/eqhang" ] && sleep 20; exit 0; }\n'
+stub_head() { printf '#!/bin/sh\n'"$EQ_STUB"'echo CINDER\nn=$(cat "%s/runs" 2>/dev/null)\ncase "$n" in ""|*[!0-9]*) n=0;; esac\nn=$((n+1)); echo "$n" > "%s/runs"\n' "$1" "$1" "$1" "$1"; }
 # $1=R $2=exit code $3=seconds to run first
 stub_always()       { { stub_head "$1"; printf 'sleep %s\nexit %s\n' "$3" "$2"; } > "$1/cinder"; chmod +x "$1/cinder"; }
 # $1=R $2=exit code $3=how many of the first runs die that way (the rest run 3 s and exit 0)
@@ -53,7 +57,7 @@ scenario() {
   mkdir -p "$R/data/cinder" "$R/contents" "$R/proc" "$R/sys/class/android_usb/android0" \
            "$R/sys/class/power_supply/usb"
   printf '#!/bin/sh\necho STOCK\n'  > "$R/stock";  chmod +x "$R/stock"
-  printf '#!/bin/sh\necho CINDER\n' > "$R/cinder"; chmod +x "$R/cinder"
+  printf '#!/bin/sh\n'"$EQ_STUB"'echo CINDER\n' "$R" "$R" > "$R/cinder"; chmod +x "$R/cinder"
   printf 'rootfs / rootfs rw 0 0\n/emmc@contents %s/contents vfat rw 0 0\n' "$R" > "$R/proc/mounts"
   echo DISCONNECTED > "$R/sys/class/android_usb/android0/state"
   echo 0            > "$R/sys/class/power_supply/usb/online"
@@ -275,6 +279,35 @@ else
     printf '  ok    %-46s -> none\n' "launcher uses no 'mv -f' (toolbox rejects it)"
     PASS=$((PASS+1))
 fi
+
+# THE EQ HAND-BACK (2026-10-04). Cinder leaves its ten-band selected in Sony's sound service; the
+# launcher runs `cinder-home --stock-eq` once on the way to stock. It sits on the escape path, so
+# what matters most is what it must NOT do: run twice, run when Cinder never ran, or hold stock up.
+echo "EQ hand-back on the way to stock:"
+eq_runs() { sleep 0.3; [ -f "$1/eqruns" ] && wc -l < "$1/eqruns" || echo 0; }
+mark() { [ -f "$1/data/cinder/eq_owned" ] && echo set || echo clear; }
+scenario "a normal start marks the EQ as Cinder's"  cinder ':'
+check "  the marker is written"      "$(mark "$LAST_R")" set
+check "  the helper is not run"      "$(eq_runs "$LAST_R")" 0
+scenario "cable escape after Cinder ran"            stock  "$CABLE"'; : > $R/data/cinder/eq_owned'
+check "  the helper runs once"       "$(eq_runs "$LAST_R")" 1
+check "  the marker is spent"        "$(mark "$LAST_R")" clear
+check "  a second escape runs nothing" "$(sh "$LAST_R/launch.sh" 2>/dev/null | grep -c STOCK; eq_runs "$LAST_R")" "1
+1"
+scenario "cable escape, Cinder never ran"           stock  "$CABLE"
+check "  the helper is not run"      "$(eq_runs "$LAST_R")" 0
+scenario "bad-boot latch hands the EQ back"         stock  'echo 9 > $R/data/cinder/bootcount; : > $R/data/cinder/eq_owned'
+check "  the helper runs once"       "$(eq_runs "$LAST_R")" 1
+scenario "crash hand-over hands the EQ back"        stock  'stub_always $R 139 0'
+check "  the helper runs once"       "$(eq_runs "$LAST_R")" 1
+check "  and is not counted as a run of the app" "$(runs_of "$LAST_R")" 3
+scenario "a marker that cannot be spent runs nothing" stock "$CABLE"'; mkdir -p $R/data/cinder/eq_owned/x'
+check "  the helper is not run"      "$(eq_runs "$LAST_R")" 0
+scenario "a missing app runs nothing"               stock  "$CABLE"'; : > $R/data/cinder/eq_owned; rm -f $R/cinder'
+check "  stock still starts, marker spent" "$(mark "$LAST_R")" clear
+T0=$(date +%s)
+scenario "a helper that hangs does not hold stock"  stock  "$CABLE"'; : > $R/data/cinder/eq_owned; : > $R/eqhang'
+check "  stock started in under 5 s" "$([ $(( $(date +%s) - T0 )) -lt 5 ] && echo yes || echo no)" yes
 
 rm -rf "$SP"/lt.*
 echo

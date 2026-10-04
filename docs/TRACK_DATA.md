@@ -108,6 +108,7 @@ rating=4
 played=recent
 format=flac
 sort=plays
+shuffle=settings
 ```
 
 | Key | Values | Meaning |
@@ -117,6 +118,7 @@ sort=plays
 | `played` | `any` · `recent` · `not_lately` · `never` | `recent` = in the last 30 days. `not_lately` = played before, but not in the last 90 days. `never` = no counted play |
 | `format` | `any` · `flac` · `mp3` · `m4a` · `hires` | By file extension; `hires` is the database's Hi-Res flag |
 | `sort` | `title` · `plays` · `played` · `rating` · `added` | A to Z; most played first; most recently played first; highest rated first; newest in the library first |
+| `shuffle` | `settings`, `songs`, `albums`, `artists` | What this playlist's Shuffle band deals. `settings` (and a file without the key) follows Settings ▸ Shuffle |
 
 * The rules are **and**ed together.
 * A missing key, or a value that is not one of the words above, is that key's default (`0`, `any`,
