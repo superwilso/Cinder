@@ -3800,6 +3800,7 @@ const char kLockName[]    = "cinder";
 // a known state, and the failure mode of a spurious wake is one extra idle countdown rather than a
 // device stuck cycling with a dark screen.
 
+const int kRamDwellS  = 60;    // stage 1 this long, with ram_idle true throughout, before stage 2
 const int kBootGraceS = 180;   // never suspend in the first 3 minutes of an app start
 
 bool write_node(const char* path, const char* val) {
@@ -3910,8 +3911,29 @@ static void soc_suspend_leave_now(const char* why) {
     clog_(m);
 }
 
+// ── THE USB PORT AFTER A SUSPEND TO RAM ─────────────────────────────────────────────────────────
+// The controller resumes as an idle host and a cable plugged in afterwards reaches nobody (the
+// 2026-09-04 fault, seen again 2026-10-04). Once a cable is in after a resume, give the port five
+// seconds to come up by itself and then run `cinder-msc usb-resume`, which tries the driver's
+// cable switch, then the gadget, then init — and logs each step, because with USB down the log is
+// the only witness. Once per resume. system() on this thread for a few seconds, with the screen
+// dark and nothing playing; the port is useless until it runs.
+static bool g_usb_after_resume = false;
+static void usb_after_resume_tick() {
+    static int plugged_s = 0;
+    if (!g_usb_after_resume) { plugged_s = 0; return; }
+    if (socsusp::read_node_long("/sys/class/power_supply/usb/online") != 1) { plugged_s = 0; return; }
+    if (++plugged_s < 5) return;
+    g_usb_after_resume = false;
+    plugged_s = 0;
+    clog_("usb: a cable is in after a resume from RAM -> cinder-msc usb-resume");
+    run_watchdog_only("usb: resume", 20, []() {   // system()
+        (void)std::system("/system/vendor/unknown321/bin/cinder-msc usb-resume");
+    });
+}
+
 // Called once a second from the housekeeping block. Returns nothing; all state is internal.
-static void soc_suspend_tick(bool idle) {
+static void soc_suspend_tick(bool idle, bool ram_idle) {
     using namespace socsusp;
     // Boot grace measured from the first call, i.e. from when this app started running. That is
     // the number that matters: the guarantee is a window in which the device is reachable no
@@ -3929,8 +3951,6 @@ static void soc_suspend_tick(bool idle) {
     static long last_rc   = -1;
     static int  idle_secs = 0;
     bool& early           = g_early;  // stage 1 active: `mem` written, wakelock held
-    static bool ram_ok    = false;    // stage 2 permitted (config), read once
-    static bool ram_read  = false;
 
     // Detect a resume FIRST, before deciding anything else: the tick that observes a resume is the
     // one running in the awake window, and it may be the only one we get.
@@ -3950,6 +3970,7 @@ static void soc_suspend_tick(bool idle) {
         char m[88];
         std::snprintf(m, sizeof m, "suspend: resumed from RAM (r12=%#x) -> awake, countdown restarts", r12);
         clog_(m);
+        g_usb_after_resume = true;   // the port comes back as an idle host: see usb_after_resume_tick
         return;
     }
 
@@ -4018,11 +4039,26 @@ static void soc_suspend_tick(bool idle) {
         return;
     }
 
-    // Stage 2, opt-in only. Releasing the lock lets autosleep finish the job.
-    if (!ram_read) { ram_read = true; ram_ok = file_exists(kRamFile); }
-    if (!ram_ok) return;
-    if (idle_secs < thr * 2) return;        // a second, longer dwell before going all the way down
-    clog_("suspend: releasing wakelock -> suspend to RAM (USB will need a reboot to return)");
+    // ── STAGE 2, OPT-IN: SUSPEND TO RAM, AS SONY'S OWN FIRMWARE DOES WHEN IT IS IDLE ─────────────
+    // analysis/RE_sony_idle_baseline.md: stock's PowerService writes `mem` with no lock held once
+    // every audio source has agreed, and holds a lock whenever USB or the charger is in. Stage 1 is
+    // deep idle with user space still running (WMPortService, khubd_poll and friends wake the CPU
+    // about 35 times a second, measured off the cable 2026-10-04); suspended, nothing runs at all.
+    //
+    // `ram_idle` is Sony's interlock set, decided by the caller: nothing audible on ANY route (stage
+    // 1 may run under music, this must not — on Bluetooth no PCM is open, so no kernel audio lock
+    // would stop it), no Bluetooth peer and no connect pending, not receiving, not exporting the
+    // drive, and off both the cable and the charger. The cable test is belt and braces: the charger
+    // driver holds its own wakelock while VBUS is present, so the kernel would refuse anyway.
+    //
+    // A FULL MINUTE of stage 1 first. With the threshold at 5 s the old `2 x threshold` put a
+    // player to RAM ten seconds after the screen went dark, which is "Power, glance, Power" turned
+    // into a suspend/resume cycle. The file is read each time, so deleting it stops it.
+    static int ram_dwell = 0;
+    if (!ram_idle || !file_exists(kRamFile)) { ram_dwell = 0; return; }
+    if (++ram_dwell < kRamDwellS) return;
+    ram_dwell = 0;
+    clog_("suspend: idle and off the cable -> releasing the wakelock (suspend to RAM; Power wakes it)");
     write_node(kWakeUnlock, kLockName);
 }
 
@@ -12925,7 +12961,13 @@ void* render_driver(void*) {
                 // Ordered after the codec so the DAC is already in standby by the time the SoC
                 // does go down — the codec fix stands on its own and must not depend on this one
                 // being enabled.
-                soc_suspend_tick(soc_idle);   // `idle` unless the opt-in flag is set; see above
+                // Stage 2's own, stricter test — Sony's interlocks (see soc_suspend_tick).
+                const bool ram_idle = idle && cinder_get_bt_route() == 0 && !g_bt_user_pending
+                    && !g_rx_active && !g_msc_active
+                    && socsusp::read_node_long("/sys/class/power_supply/usb/online") == 0
+                    && socsusp::read_node_long("/sys/class/power_supply/dc/online") <= 0;
+                soc_suspend_tick(soc_idle, ram_idle);   // `idle` unless the opt-in flag is set; see above
+                usb_after_resume_tick();
                 // CPU: kernel-default scheduler slices once per boot, and 1040 MHz max while the
                 // screen is dark on the jack — the clock stage 1 pins anyway, applied from the first
                 // dark second instead of the 60th. Not on Bluetooth: LDAC encode load at 1040 has

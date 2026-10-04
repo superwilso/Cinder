@@ -101,10 +101,18 @@ previews, and **not yet run on a device**. The library items are in
   stayed up, nothing audible, interrupts 1285/s down to 931/s. If the link goes away while it is
   held, it stops for the rest of that boot and the log says so; `/contents/cinder_no_suspend_bt`
   turns it off. *One player, one pair of headphones.*
-- **Settings ▸ Bluetooth auto off**, off unless switched on. With it on, Bluetooth switches itself
+- **Settings ▸ Bluetooth auto off**, on by default. Bluetooth switches itself
   off after ten minutes with the screen off and nothing playing — no headphones connected, or
   connected and silent. It does not come back by itself. Never acts in USB-DAC mode or while
   receiving. *Host-tested (harness `bt-idle-off`); not yet run on a device (checklist 31.6).*
+- **Auto power off defaults to 30 minutes** (it was Off). A paused player with the screen dark
+  switches itself off after half an hour instead of running flat. A setting already saved on a
+  player is kept as it is; Off is still the first choice on the row.
+- **Suspend to RAM (still opt-in, `/contents/cinder_ram_suspend`) follows Sony's own rules.** It
+  now waits for a minute of the screen-off state with nothing audible on any output, no Bluetooth
+  device connected or connecting, not receiving, and off both the cable and the charger; before,
+  it could follow ten seconds after the screen went dark and did not check Bluetooth playback.
+  The file is read each time, so deleting it stops it. *Host-tested; device trial is checklist §33.*
 - **An idle screen blank locks after five minutes.** The screen-off timer leaves touch awake so a
   touch can wake the screen. Left dark for five minutes it now behaves as if Power had been
   pressed: touch sleeps and only Power wakes it, so a pocket cannot keep lighting the screen.

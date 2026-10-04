@@ -465,6 +465,105 @@ static int usb_rescue(void)
     return 0;
 }
 
+/* usb-resume: bring the USB port back after a suspend to RAM.
+ *
+ * MEASURED 2026-09-04 and again 2026-10-04 (the owner, Walkman One): the player suspends and wakes
+ * correctly, and afterwards a cable plugged in is not seen by the PC — the musb controller comes
+ * back from resume as an idle HOST (`a_idle`) instead of a peripheral. A restart fixed it; so did
+ * nothing else that was tried by hand, because with USB down there is no adb to try anything with.
+ *
+ * So this runs ON the player and writes down what it sees. Graded, and it stops at the first step
+ * that works, so the log says which one that was:
+ *   0. nothing, if the gadget already reports a host (CONNECTED / CONFIGURED);
+ *   1. musb's own role attribute, set to `peripheral`;
+ *   2. MediaTek's role override cleared (`0` to mt_usb/mode);
+ *   3. the gadget's `enable` 0 then 1 (what every mode switch does — the owner's mass-storage
+ *      toggle on 2026-10-04 did this and it was NOT enough, so it is not first);
+ *   4. usb_rescue(), init's adb block.
+ * Every node is read back and printed: this helper's output IS the experiment. */
+#define USB_STATE_NODE "/sys/class/android_usb/android0/state"
+
+static void read_line(const char *path, char *buf, size_t cap)
+{
+    buf[0] = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) { snprintf(buf, cap, "(unreadable)"); return; }
+    if (fgets(buf, (int)cap, f)) buf[strcspn(buf, "\r\n")] = 0;
+    fclose(f);
+}
+
+static int usb_has_host(void)
+{
+    char st[32];
+    read_line(USB_STATE_NODE, st, sizeof st);
+    return strcmp(st, "CONNECTED") == 0 || strcmp(st, "CONFIGURED") == 0;
+}
+
+static int wait_host(int tenths)
+{
+    for (int i = 0; i < tenths; i++) {
+        if (usb_has_host()) return 1;
+        usleep(100000);
+    }
+    return usb_has_host();
+}
+
+/* One recovery step: write `val` to `node`, wait up to four seconds for a host, and say what
+ * happened. Returns 1 if a host is there afterwards. */
+static int usb_resume_step(const char *what, const char *node, const char *val)
+{
+    char st[32];
+    int w = write_node(node, val);
+    int ok = wait_host(40);
+    read_line(USB_STATE_NODE, st, sizeof st);
+    fprintf(stderr, "cinder-msc: usb-resume: %s ('%s' > %s, write %d): state=%s%s\n",
+            what, val, node, w, st, ok ? " — BACK" : "");
+    return ok;
+}
+
+/* The nodes, read on the player 2026-10-04 (there is no `cmode` on this kernel):
+ *   MUSB_MODE  musb's own role attribute; reads b_peripheral when healthy; takes host/peripheral/otg
+ *   MTUSB_MODE MediaTek's override (mt_usb_store_mode): 0 undoes a forced role, 2 forces host */
+#define MUSB_MODE  "/sys/devices/platform/mt_usb/musb-hdrc.0/mode"
+#define MTUSB_MODE "/sys/devices/platform/mt_usb/mode"
+#define RESUME_DMESG "/contents/cinder_usb_resume_dmesg.txt"
+
+static int usb_resume(void)
+{
+    char st[32], v[64];
+    read_line(USB_STATE_NODE, st, sizeof st);
+    read_line("/sys/class/power_supply/usb/online", v, sizeof v);
+    fprintf(stderr, "cinder-msc: usb-resume: gadget state=%s, usb online=%s\n", st, v);
+    read_line(MUSB_MODE, v, sizeof v);
+    fprintf(stderr, "cinder-msc: usb-resume: musb role = %s\n", v);
+    if (usb_has_host()) {
+        fprintf(stderr, "cinder-msc: usb-resume: a host is there already — nothing to do\n");
+        return 0;
+    }
+    /* The kernel's account of the resume and the plug, kept where a PC can read it: the ring
+     * buffer does not survive the restart this fault has always ended in. */
+    (void)system("/system/bin/dmesg | /xbin/busybox tail -n 200 > " RESUME_DMESG " 2>/dev/null");
+
+    int ok = usb_resume_step("step 1, musb role", MUSB_MODE, "peripheral")
+          || usb_resume_step("step 2, MediaTek override cleared", MTUSB_MODE, "0");
+    if (!ok) {
+        write_node(ENABLE_NODE, "0");
+        usleep(500000);
+        ok = usb_resume_step("step 3, gadget re-enabled", ENABLE_NODE, "1");
+    }
+    if (!ok) {
+        usb_rescue();
+        ok = wait_host(40);
+        read_line(USB_STATE_NODE, st, sizeof st);
+        fprintf(stderr, "cinder-msc: usb-resume: step 4, init's adb block: state=%s%s\n",
+                st, ok ? " — BACK" : " — STILL DOWN (a restart is the way back)");
+    }
+    read_line(MUSB_MODE, v, sizeof v);
+    fprintf(stderr, "cinder-msc: usb-resume: musb role now = %s\n", v);
+    (void)system("/system/bin/dmesg | /xbin/busybox tail -n 80 >> " RESUME_DMESG " 2>/dev/null");
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2) return 2;
@@ -496,5 +595,6 @@ int main(int argc, char **argv)
     if (strcmp(argv[1], "dac-on")  == 0) return dac_on();
     if (strcmp(argv[1], "dac-off") == 0) return dac_off();
     if (strcmp(argv[1], "usb-rescue") == 0) return usb_rescue();
+    if (strcmp(argv[1], "usb-resume") == 0) return usb_resume();
     return 2;
 }

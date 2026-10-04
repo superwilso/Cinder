@@ -1296,6 +1296,39 @@ static void s_suspend_unplug_goes_back(void) {
     check(std::strncmp(st, "mem", 3) == 0, "…and goes back in once the port has let go");
 }
 
+// Stage 2 (suspend to RAM) is opt-in and has Sony's interlocks: the wakelock is released only
+// with the file present, off the cable, with nothing audible. Three runs, one difference each.
+static bool ram_unlocked(void) {
+    char wu[16] = {0};
+    cinder_harness_fs_read("/sys/power/wake_unlock", wu, sizeof wu);
+    return std::strncmp(wu, "cinder", 6) == 0;
+}
+static void s_ram_suspend_opt_in(void) {
+    suspend_fixture();
+    cinder_harness_fs_write("/contents/cinder_ram_suspend", "");
+    cinder_harness_run();
+    check(ram_unlocked(), "file present, idle, off the cable: the wakelock is released");
+}
+static void s_ram_suspend_default_off(void) {
+    suspend_fixture();
+    cinder_harness_run();
+    check(!ram_unlocked(), "no file: the wakelock is never released");
+}
+static void s_ram_suspend_not_on_cable(void) {
+    suspend_fixture();
+    cinder_harness_fs_write("/contents/cinder_ram_suspend", "");
+    cinder_harness_fs_write("/sys/class/power_supply/usb/online", "1\n");
+    cinder_harness_run();
+    check(!ram_unlocked(), "on the cable: the wakelock is kept");
+}
+static void s_ram_suspend_not_while_playing(void) {
+    suspend_fixture();
+    cinder_harness_fs_write("/contents/cinder_ram_suspend", "");
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_run();
+    check(!ram_unlocked(), "music playing: stage 1 may run, the wakelock is kept");
+}
+
 static void s_suspend_off_by_file(void) {
     suspend_fixture();
     cinder_harness_fs_write("/contents/cinder_suspend_s", "0\n");
@@ -1389,7 +1422,7 @@ static void s_idle_blank_locks_after_five_minutes(void) {
 }
 
 // Settings ▸ Bluetooth auto off: ten minutes dark and silent, and the radio goes off by the same
-// path a tap on the switch takes. Off unless chosen — the second half is the default doing nothing.
+// path a tap on the switch takes. The second half is the switch off: nothing happens.
 static void s_bt_idle_off(void) {
     healthy_device();
     cinder_harness_bt_set_radio(1);
@@ -1409,6 +1442,7 @@ static void s_bt_idle_off_default(void) {
     healthy_device();
     cinder_harness_bt_set_radio(1);
     cinder_harness_script("cinder_get_bt_on", 1);
+    cinder_harness_script("cinder_get_bt_idle_off", 0);
     cinder_harness_script("cinder_get_screen_off_s", 30);
     cinder_harness_set_budget_ms(900000);
     cinder_harness_run();
@@ -1585,7 +1619,7 @@ static const Scenario kScenarios[] = {
     { "blank-idle",  s_idle_blank_darkens_the_panel,
       "the idle blank reaches DisplayService, not just the sysfs node" },
     { "bt-idle-off", s_bt_idle_off, "Bluetooth auto off: the radio goes off after ten minutes dark and silent" },
-    { "bt-idle-off-default", s_bt_idle_off_default, "…and never by default" },
+    { "bt-idle-off-default", s_bt_idle_off_default, "…and never while the switch is off" },
     { "blank-lock",  s_idle_blank_locks_after_five_minutes,
       "an idle blank nobody wakes locks after five minutes (touch asleep, Power wakes it)" },
     { "blank-order", s_blank_remembers_before_zeroing,
@@ -1593,6 +1627,10 @@ static const Scenario kScenarios[] = {
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
     {"library-touched",   s_library_touched_not_changed, "a scan that changes no row does not rebuild the library"},
     {"suspend-default",   s_suspend_by_default,      "stage 1 early suspend runs by default, under a wakelock"},
+    {"ram-suspend",       s_ram_suspend_opt_in,      "stage 2: file present, idle, off the cable -> wakelock released"},
+    {"ram-suspend-off",   s_ram_suspend_default_off, "stage 2 never runs without the file"},
+    {"ram-suspend-cable", s_ram_suspend_not_on_cable, "stage 2 never runs on the cable"},
+    {"ram-suspend-playing", s_ram_suspend_not_while_playing, "stage 2 never runs while music plays"},
     {"suspend-off-file",  s_suspend_off_by_file,     "0 in cinder_suspend_s turns stage 1 off"},
     {"cpu-cap",           s_cpu_cap_follows_screen,  "max 1040 MHz while dark, restored on Power; sched once"},
     {"cpu-tune-off",      s_cpu_tune_off_by_file,    "cinder_no_cpu_tune stops sched and cap"},
