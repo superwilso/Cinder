@@ -58,7 +58,7 @@ fn np_hostile() -> NowPlaying<'static> {
         viz_size: 1,
         page: 0,
         viz_levels: None,
-        viz_peaks: None,
+        viz_peaks: None, viz_sig: None,
         scrubbing: false, lyrics: false,
     }
 }
@@ -198,6 +198,8 @@ const SCREENS: &[Screen] = &[
     Screen::Help,
     // The playlist editor (5b) and the saved-view editor (5c).
     Screen::PlaylistEdit, Screen::ViewEdit,
+    // Menu ▸ Soundscapes.
+    Screen::Soundscape,
 ];
 
 /// The keyboard's word keys (SHIFT / SPACE / DONE / 123) are drawn centred with no `fit`, so a

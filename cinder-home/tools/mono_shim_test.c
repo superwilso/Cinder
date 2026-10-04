@@ -42,6 +42,15 @@ static unsigned long g_last_frames;
 int snd_pcm_hw_params_set_format(void* pcm, void* params, int fmt) { (void)pcm; (void)params; (void)fmt; return 0; }
 int snd_pcm_hw_params_set_channels(void* pcm, void* params, unsigned int ch) { (void)pcm; (void)params; (void)ch; return 0; }
 int snd_pcm_close(void* pcm) { (void)pcm; return 0; }
+/* The rate a real hw_params commit would leave in the parameters: what the shim reads back. */
+int snd_pcm_hw_params(void* pcm, void* params) { (void)pcm; (void)params; return 0; }
+int snd_pcm_hw_params_get_rate(const void* params, unsigned int* val, int* dir)
+{
+    (void)params;
+    *val = 48000;
+    if (dir) *dir = 0;
+    return 0;
+}
 long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
 {
     (void)pcm;
@@ -56,6 +65,7 @@ const unsigned char* fake_last(void) { return g_last; }
 int snd_pcm_hw_params_set_format(void* pcm, void* params, int fmt);
 int snd_pcm_hw_params_set_channels(void* pcm, void* params, unsigned int ch);
 int snd_pcm_close(void* pcm);
+int snd_pcm_hw_params(void* pcm, void* params);
 long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames);
 const unsigned char* fake_last(void);
 
@@ -77,6 +87,20 @@ static void flag(const char* dir, int on)
     if (on) { int fd = open(p, O_WRONLY | O_CREAT, 0644); if (fd >= 0) close(fd); }
     else unlink(p);
     nap(300);   /* the shim re-reads the flag at most every 250 ms */
+}
+
+/* The soundscape control line cinder-home writes: "<sound> <milli>", or nothing at all. */
+static void ambient(const char* dir, const char* line)
+{
+    char p[512];
+    snprintf(p, sizeof p, "%s/cinder_ambient", dir);
+    if (line) {
+        int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) { if (write(fd, line, strlen(line)) < 0) { /* the check below will say */ } close(fd); }
+    } else {
+        unlink(p);
+    }
+    nap(300);   /* re-read at most every 250 ms, like the flag */
 }
 
 /* Send `n` bytes through the client and read the same number back off the server end. */
@@ -152,6 +176,24 @@ int main(int argc, char** argv)
     ok = roundtrip(cli, srv, pcm, sizeof pcm, got, 0) == 0;
     check(ok && memcmp(got, pcm, sizeof pcm) == 0, "bt: mono OFF: PCM arrives untouched");
 
+    /* Soundscapes ride the same socket: on, the PCM changes; off and faded, it is exact again. Each
+     * round is 100 frames, so 200 of them are well past the 0.35 s fade at 44.1 kHz. */
+    {
+        unsigned char zero[400];
+        memset(zero, 0, sizeof zero);
+        ambient(dir, "1 1000\n");                       /* white noise, full level */
+        int rt = 0;
+        for (int k = 0; k < 200; k++) rt |= roundtrip(cli, srv, zero, sizeof zero, got, 0);
+        int nonzero = 0;
+        for (int i = 0; i < 200; i++) nonzero += get16(got + i * 2) != 0;
+        if (expect_active) check(rt == 0 && nonzero > 150, "bt: a soundscape reaches the transmitter over silence");
+        else check(rt == 0 && nonzero == 0, "bt: in any other process no soundscape is added");
+        ambient(dir, "0 0\n");
+        for (int k = 0; k < 200; k++) rt |= roundtrip(cli, srv, pcm, sizeof pcm, got, 0);
+        check(rt == 0 && memcmp(got, pcm, sizeof pcm) == 0, "bt: soundscape off: PCM untouched once it has faded");
+        ambient(dir, NULL);
+    }
+
     /* An fd that never connected to the transmitter is never touched. */
     int pair[2];
     socketpair(AF_UNIX, SOCK_STREAM, 0, pair);
@@ -178,6 +220,27 @@ int main(int argc, char** argv)
     flag(dir, 0);
     snd_pcm_writei(pcmh, pcm, 100);
     check(memcmp(fake_last(), pcm, 400) == 0, "jack: mono OFF: untouched");
+
+    /* the soundscape on the jack: needs the rate, which comes from the hw_params commit */
+    {
+        unsigned char zero[400];
+        memset(zero, 0, sizeof zero);
+        snd_pcm_hw_params(pcmh, NULL);
+        ambient(dir, "4 800\n");                       /* rain, 80% */
+        for (int k = 0; k < 250; k++) snd_pcm_writei(pcmh, zero, 100);
+        int nonzero = 0;
+        for (int i = 0; i < 200; i++) nonzero += get16(fake_last() + i * 2) != 0;
+        if (expect_active) check(nonzero > 50, "jack: a soundscape reaches the codec over silence");
+        else check(nonzero == 0, "jack: in any other process no soundscape is added");
+        check(zero[0] == 0 && zero[399] == 0, "jack: the caller's buffer is still never written to");
+        ambient(dir, "0 0\n");
+        for (int k = 0; k < 250; k++) snd_pcm_writei(pcmh, pcm, 100);
+        check(memcmp(fake_last(), pcm, 400) == 0, "jack: soundscape off: untouched once it has faded");
+        ambient(dir, "garbage");
+        snd_pcm_writei(pcmh, pcm, 100);
+        check(memcmp(fake_last(), pcm, 400) == 0, "jack: a control file it cannot read is off");
+        ambient(dir, NULL);
+    }
     snd_pcm_close(pcmh);
 
     char alive[512];

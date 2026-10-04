@@ -40,7 +40,8 @@ static std::vector<uint8_t> stereo16(int frames, int16_t l0, int16_t r0) {
 // Push `stream` through the walk in writes of the given sizes, with a kernel that accepts at most
 // `accept` bytes per write (the producer retrying the rest), and return what reached the socket.
 static std::vector<uint8_t> pump(const std::vector<uint8_t>& stream, const std::vector<size_t>& writes,
-                                 size_t accept, int mono, cm_bt_stream* end_state = nullptr) {
+                                 size_t accept, int mono, cm_bt_stream* end_state = nullptr,
+                                 const cm_mix* mix = nullptr) {
     cm_bt_stream st;
     std::memset(&st, 0, sizeof st);
     std::vector<uint8_t> wire;
@@ -54,10 +55,10 @@ static std::vector<uint8_t> pump(const std::vector<uint8_t>& stream, const std::
             const size_t n = want - sent;
             std::vector<uint8_t> out(n);
             cm_bt_stream tmp = st;
-            cm_bt_walk(&tmp, in, n, n, out.data(), mono);
+            cm_bt_walk(&tmp, in, n, n, out.data(), mono, mix, nullptr);
             const size_t took = n < accept ? n : accept;
             wire.insert(wire.end(), out.begin(), out.begin() + (long)took);
-            cm_bt_walk(&st, in, n, took, nullptr, mono);
+            cm_bt_walk(&st, in, n, took, nullptr, mono, nullptr, out.data());
             sent += took;
         }
         pos += want;
@@ -186,11 +187,11 @@ int main() {
         std::vector<uint8_t> a = stereo16(3, 10, 20);
         s.insert(s.end(), a.begin(), a.end());
         cm_bt_stream st; std::memset(&st, 0, sizeof st);
-        cm_bt_walk(&st, s.data(), s.size(), hs.size() + 6, nullptr, 0);        // off, stops mid-frame
+        cm_bt_walk(&st, s.data(), s.size(), hs.size() + 6, nullptr, 0, nullptr, nullptr);        // off, stops mid-frame
         std::vector<uint8_t> rest(s.begin() + (long)(hs.size() + 6), s.end());
         std::vector<uint8_t> out(rest.size());
         cm_bt_stream tmp = st;
-        cm_bt_walk(&tmp, rest.data(), rest.size(), rest.size(), out.data(), 1);  // on
+        cm_bt_walk(&tmp, rest.data(), rest.size(), rest.size(), out.data(), 1, nullptr, nullptr);  // on
         check(get16(&out[2]) == 15 && get16(&out[4]) == 15, "switched on mid-stream: the next whole frame is (12+18)/2 in both");
         check(out[0] == rest[0] && out[1] == rest[1], "…and the half-sent frame finishes as it began");
     }
@@ -210,6 +211,59 @@ int main() {
         check(std::equal(seq.begin(), seq.begin() + (long)(t0.size() + t2.size() + hs.size()), w.begin()),
               "type-0 and type-2 frames before the handshake pass untouched");
         check(get16(&w[t0.size() + t2.size() + hs.size()]) == 0, "…and the PCM after them is summed ((100 + -100)/2)");
+    }
+
+    // ── the mix hook (soundscapes): PCM only, whole frames only, the handshake's rate ──────────────
+    {
+        struct Seen { uint32_t rate = 0; size_t frames = 0; };
+        static Seen seen;
+        cm_mix add100 = { [](void*, uint8_t* p, size_t n, uint32_t rate) {
+                              seen.rate = rate;
+                              seen.frames += n;
+                              for (size_t i = 0; i < n * 2; i++) {
+                                  const int v = get16(p + 2 * i) + 100;
+                                  p[2 * i] = (uint8_t)(v & 0xFF);
+                                  p[2 * i + 1] = (uint8_t)((v >> 8) & 0xFF);
+                              }
+                          }, nullptr };
+        const std::vector<uint8_t> hs2 = handshake(2, 48000);
+        std::vector<uint8_t> st2 = hs2;
+        const std::vector<uint8_t> pcm = stereo16(64, 1000, -1000);
+        st2.insert(st2.end(), pcm.begin(), pcm.end());
+        const std::vector<uint8_t> w = pump(st2, { st2.size() }, 1 << 20, 0, nullptr, &add100);
+        check(std::equal(hs2.begin(), hs2.end(), w.begin()), "mix: the handshake goes out byte for byte");
+        check(get16(&w[hs2.size()]) == 1100 && get16(&w[hs2.size() + 2]) == -900, "mix: the PCM after it carries the mix");
+        check(seen.rate == 48000 && seen.frames == 64, "mix: called with the handshake's rate, for every whole frame");
+        // Odd writes and partial accepts: the frames the hook skips (split ones) go out as they came,
+        // every other one carries the mix, and alignment never slips.
+        seen = Seen();
+        const std::vector<uint8_t> w2 = pump(st2, { 13, 6, 17, 28, 4, 9 }, 5, 0, nullptr, &add100);
+        int mixed = 0, plain = 0, wrong = 0;
+        for (size_t f = 0; f < 64; f++) {
+            const int l = get16(&w2[hs2.size() + f * 4]), r = get16(&w2[hs2.size() + f * 4 + 2]);
+            const int l0 = 1000 + (int)f, r0 = -1000 - (int)f;
+            if (l == l0 + 100 && r == r0 + 100) mixed++;
+            else if (l == l0 && r == r0) plain++;
+            else wrong++;
+        }
+        check(wrong == 0 && mixed > 0, "mix with odd writes and partial accepts: every frame whole-mixed or whole-plain");
+        // and with a kernel that takes ONE byte at a time, every frame is still one or the other
+        const std::vector<uint8_t> w1 = pump(st2, { st2.size() }, 1, 0, nullptr, &add100);
+        wrong = 0;
+        for (size_t f = 0; f < 64; f++) {
+            const int l = get16(&w1[hs2.size() + f * 4]), r = get16(&w1[hs2.size() + f * 4 + 2]);
+            const int l0 = 1000 + (int)f, r0 = -1000 - (int)f;
+            wrong += !((l == l0 + 100 && r == r0 + 100) || (l == l0 && r == r0));
+        }
+        check(wrong == 0, "mix, one byte accepted per write: no frame leaves torn");
+        // Mono and the mix together: summed first, then mixed.
+        const std::vector<uint8_t> w3 = pump(st2, { st2.size() }, 1 << 20, 1, nullptr, &add100);
+        check(get16(&w3[hs2.size()]) == 100 && get16(&w3[hs2.size() + 2]) == 100, "mono then mix: (1000 + -1000)/2 + 100");
+        // Never before the handshake, never on a stream the walk gave up on.
+        seen = Seen();
+        std::vector<uint8_t> bad; put32le(bad, 7); put32le(bad, 4); put16(bad, 1); put16(bad, 2);
+        check(pump(bad, { bad.size() }, 1 << 20, 0, nullptr, &add100) == bad && seen.frames == 0,
+              "mix: a stream the walk does not know is never touched");
     }
 
     std::printf(fails ? "\nmono_selftest: %d FAILED\n" : "\nmono_selftest: all passed\n", fails);

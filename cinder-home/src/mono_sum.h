@@ -152,7 +152,18 @@ typedef struct {
     uint32_t align;        /* bytes of the current 4-byte PCM frame already written */
     uint8_t  partial[4];   /* its ORIGINAL bytes */
     uint8_t  partial_raw;  /* 1: its first bytes went out unsummed, so the rest must too */
+    uint8_t  sent[4];      /* the frame exactly as its first bytes went out, when that is known */
+    uint8_t  sent_valid;   /* 1: the rest of the frame is the rest of `sent` */
 } cm_bt_stream;
+
+/* Something else to do to whole S16 stereo frames on their way out, after any sum — the soundscape
+ * (soundscape.h) rides here. Only ever called for bytes being PRODUCED (`out` set), only on whole
+ * frames inside one write and only once the handshake has gone by; a frame split across two writes
+ * goes out without it, which for a soundscape is one inaudible sample pair. */
+typedef struct {
+    void (*fn)(void* ctx, uint8_t* frames, size_t n, uint32_t rate);
+    void* ctx;
+} cm_mix;
 
 static inline uint32_t cm_le32(const uint8_t* p)
 {
@@ -164,9 +175,14 @@ static inline uint32_t cm_le32(const uint8_t* p)
  *
  * Called twice per write, with the same `mono`: once on a COPY of the state with `out` set, to
  * produce the bytes to send; then on the real state with `out` NULL and `n_do` = what the kernel
- * accepted, to advance it. The walk is deterministic, so both agree about the bytes they share. */
+ * accepted, to advance it. The walk is deterministic, so both agree about the bytes they share.
+ *
+ * `produced` (commit walk only, may be NULL) is the buffer the first walk produced. A mix is not
+ * deterministic the way a sum is — the soundscape has moved on by the next write — so when the
+ * kernel splits a frame, the commit keeps the bytes it actually went out with, and the rest of that
+ * frame is sent from them. Without it a frame would leave half mixed and half not. */
 static inline void cm_bt_walk(cm_bt_stream* st, const uint8_t* in, size_t n_avail, size_t n_do,
-                              uint8_t* out, int mono)
+                              uint8_t* out, int mono, const cm_mix* mix, const uint8_t* produced)
 {
     size_t i = 0;
     while (i < n_do) {
@@ -211,6 +227,7 @@ static inline void cm_bt_walk(cm_bt_stream* st, const uint8_t* in, size_t n_avai
             if (out) {
                 memcpy(out + i, in + i, frames * 4);
                 if (mono) for (size_t k = 0; k < frames; k++) cm_sum_frame(out + i + k * 4, CM_FMT_S16_LE);
+                if (mix && mix->fn) mix->fn(mix->ctx, out + i, frames, st->rate);
             }
             i += frames * 4;
             continue;
@@ -232,6 +249,11 @@ static inline void cm_bt_walk(cm_bt_stream* st, const uint8_t* in, size_t n_avai
                 if (out) out[i + k] = whole ? f[k] : in[i + k];
             }
             st->partial_raw = (uint8_t)!(whole && mono);   /* what the head actually went out as */
+            st->sent_valid = 0;
+            if (produced && whole) {                         /* commit: keep what was really sent */
+                memcpy(st->sent, produced + i, 4);
+                st->sent_valid = 1;
+            }
             st->align = (uint32_t)have;
             i = n_do;
             continue;
@@ -242,7 +264,9 @@ static inline void cm_bt_walk(cm_bt_stream* st, const uint8_t* in, size_t n_avai
             const size_t take = (n_do - i) < need ? (n_do - i) : need;
             for (size_t k = 0; k < take; k++) st->partial[st->align + k] = in[i + k];
             if (out) {
-                if (!st->partial_raw && mono) {
+                if (st->sent_valid) {
+                    memcpy(out + i, st->sent + st->align, take);
+                } else if (!st->partial_raw && mono) {
                     /* The earlier write saw this frame whole and sent its head summed; `partial`
                      * holds all four original bytes, so the tail is the same sum. */
                     uint8_t f[4];
@@ -254,7 +278,7 @@ static inline void cm_bt_walk(cm_bt_stream* st, const uint8_t* in, size_t n_avai
                 }
             }
             st->align = (uint32_t)((st->align + take) % 4);
-            if (st->align == 0) st->partial_raw = 0;
+            if (st->align == 0) st->partial_raw = st->sent_valid = 0;
             i += take;
         }
     }

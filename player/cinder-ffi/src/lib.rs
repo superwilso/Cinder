@@ -22,6 +22,7 @@ mod scrobble;
 mod stats;
 mod pcm_tap;
 mod spectrum;
+mod vizsig;
 
 use cinder_ui::now_playing::NowPlaying;
 use cinder_ui::{Canvas, FontSet, H, W};
@@ -568,6 +569,8 @@ struct Render {
     viz_at: std::time::Instant,
     /// The visualiser's own PCM tap (`pcm_tap.rs`): PlayerService's decoded-audio queue.
     tap: pcm_tap::Tap,
+    /// The sample styles' signal (scope, stereo field, meters) and the spectrogram history.
+    sig: vizsig::SigState,
     /// When the tap last produced a frame. While that is recent, Sony's analyzer is not wanted and
     /// its frames are ignored; when it goes stale (FM, USB-DAC, a format the tap refuses), the
     /// analyzer is asked for again.
@@ -796,6 +799,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         real_pos_ms: -1,
         real_pos_at: std::time::Instant::now(),
         tap: pcm_tap::Tap::new(pcm_tap::SHM_DIR),
+        sig: vizsig::SigState::default(),
         tap_at: None,
         tap_peak: 0.0,
         tap_log_at: None,
@@ -1147,6 +1151,15 @@ fn settings_body(r: &Render) -> String {
     // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
     body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
     body.push_str(&format!("sensme_follow_time={}\n", r.app.sensme_follow() as u8));
+    // Menu ▸ Soundscapes: the sound is kept while switched off, so the switch brings it back.
+    let (_, alone, music) = r.app.ambient();
+    body.push_str(&format!(
+        "ambient={}\nambient_on={}\nambient_levels={},{}\n",
+        r.app.ambient_sound(),
+        r.app.ambient_on() as u8,
+        alone,
+        music
+    ));
     // Settings ▸ Shuffle: what the shuffle button deals, as a word.
     body.push_str(&format!("shuffle_by={}\n", r.app.shuffle_by()));
     // Sound ▸ Advanced ▸ DAC EQ, RAW half-decibels in the helper's argument order.
@@ -1908,8 +1921,9 @@ const SCREEN_NAMES: [&str; 44] = [
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
     "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet", "Lyrics",
     "Search", "SensMe", "Display", "Palette", "Help", "DacEq", "PlaylistEdit", "ViewEdit",
-    // 40..=42 were left spare when R4 and R5 were built side by side; R5's screens start at 43.
-    "?", "?", "?",
+    // 40 is Soundscape (2026-10-04); 41 and 42 were left spare when R4 and R5 were built side by
+    // side; R5's screens start at 43.
+    "Soundscape", "?", "?",
     "Profiles",
 ];
 
@@ -1927,7 +1941,7 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
         S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32, S::SensMe => 33,
         S::Display => 34, S::Palette => 35, S::Help => 36, S::DacEq => 37,
-        S::PlaylistEdit => 38, S::ViewEdit => 39,
+        S::PlaylistEdit => 38, S::ViewEdit => 39, S::Soundscape => 40,
         S::Profiles => 43,
     }
 }
@@ -2052,6 +2066,8 @@ fn viz_tap(r: &mut Render) -> bool {
     let mut peak = r.tap_peak;
     r.viz_levels = spectrum::from_pcm(&w.samples, w.rate, cfg.bands, &prev, &mut peak, &cfg, dt);
     r.tap_peak = peak;
+    r.sig.update(&w.samples, &w.left, &w.right, dt);
+    r.sig.push_hist(&r.viz_levels);
     let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
     spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
     r.viz_peaks = peaks;
@@ -2228,6 +2244,7 @@ pub extern "C" fn cinder_render_tick() {
     }
     load_grid_covers(r);
     r.canvas.clear_clip();
+    let sig = r.sig.view();
     let np = NowPlaying {
         title: &r.np.title,
         artist: &r.np.artist,
@@ -2254,6 +2271,8 @@ pub extern "C" fn cinder_render_tick() {
         // Markers only exist while they are switched on AND there are bars to mark: `hold_peaks`
         // empties the buffer when the setting is off, so this needs no second look at the config.
         viz_peaks: if animate && !r.viz_peaks.is_empty() { Some(&r.viz_peaks) } else { None },
+        // The decoded audio for the sample styles; its parts are empty unless the tap is live.
+        viz_sig: if animate { Some(&sig) } else { None },
         scrubbing: r.scrub_ms.is_some(), lyrics: false,
     };
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
@@ -2365,7 +2384,7 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
             clock: &np.clock, battery: np.battery, elapsed: &np.elapsed, remaining: &np.remaining,
             progress: np.progress, art: &np.art, art_full: None, art_thumb: None,
             liked: np.liked, playing: np.playing, shuffle: np.shuffle, repeat: np.repeat,
-            viz_seed: 2.0, viz_kind: 0, viz_size: 0, page: 0, viz_levels: None, viz_peaks: None,
+            viz_seed: 2.0, viz_kind: 0, viz_size: 0, page: 0, viz_levels: None, viz_peaks: None, viz_sig: None,
             scrubbing: false, lyrics: false,
         };
         r.canvas.clear_clip();
@@ -3905,6 +3924,7 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::SoundChanged => 14,
         Action::BalanceChanged => 38,
         Action::MonoChanged => 46,
+        Action::AmbientChanged => 51,
         Action::DacEqChanged => 48,
         Action::RxChanged => 49,
         Action::BootToSonyReceiver => 50, // shell stores stock's resume function, then boots to stock
@@ -4833,6 +4853,38 @@ pub extern "C" fn cinder_set_mono_shim(on: libc::c_int) {
     }
 }
 
+/// Menu ▸ Soundscapes, for the shell: returns the sound id (`soundscape.h`'s SS_*, 0 = off) and
+/// writes both levels already through the level curve, as gains in thousandths. The shell picks one
+/// of the two from the play state; the curve lives here so the UI and the shell cannot disagree.
+#[no_mangle]
+pub extern "C" fn cinder_get_ambient(milli_alone: *mut libc::c_int, milli_music: *mut libc::c_int) -> libc::c_int {
+    let (sound, alone, music) = cell().lock().unwrap().as_ref().map_or((0, 0, 0), |r| r.app.ambient());
+    // SAFETY: the shell passes pointers to two live ints, or null for one it does not want.
+    unsafe {
+        if !milli_alone.is_null() {
+            *milli_alone = libc::c_int::from(cinder_ui::soundscape::gain_milli(alone));
+        }
+        if !milli_music.is_null() {
+            *milli_music = libc::c_int::from(cinder_ui::soundscape::gain_milli(music));
+        }
+    }
+    libc::c_int::from(sound)
+}
+
+/// Where the soundscape is going (`cinder_ui::soundscape::Route` codes), for the page's strip.
+/// Repaints only when it changes what is on screen.
+#[no_mangle]
+pub extern "C" fn cinder_set_ambient_route(code: libc::c_int) {
+    if let Ok(mut g) = cell().lock() {
+        if let Some(r) = g.as_mut() {
+            let route = cinder_ui::soundscape::Route::from_code(code.clamp(0, 255) as u8);
+            if r.app.set_ambient_route(route) {
+                r.dirty = true;
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_get_balance() -> libc::c_int {
     cell()
@@ -5406,6 +5458,7 @@ pub extern "C" fn cinder_set_pcm(samples: *const i16, n: libc::c_int) {
         let dt = frame_dt_ms(r);
         let prev = std::mem::take(&mut r.viz_levels);
         r.viz_levels = spectrum::levels(pcm, cfg.bands, &prev, &cfg, dt);
+        r.sig.push_hist(&r.viz_levels);
         let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
         spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
         r.viz_peaks = peaks;
@@ -5444,6 +5497,7 @@ pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int)
         let mut peak = r.viz_peak;
         r.viz_levels = spectrum::from_bands(src, cfg.bands, &prev, &mut peak, &cfg, dt);
         r.viz_peak = peak;
+        r.sig.push_hist(&r.viz_levels);
         let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
         spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
         r.viz_peaks = peaks;
@@ -5827,6 +5881,14 @@ pub extern "C" fn cinder_sleep_should_pause() -> libc::c_int {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         if r.sleep_fire {
             r.sleep_fire = false;
+            // A sleep timer means silence: the soundscape stops with the music. Switched OFF, not
+            // paused — the next night starts from the switch, not from a timer that already ran.
+            // The shell re-reads cinder_get_ambient() after it pauses.
+            if r.app.ambient_on() {
+                r.app.set_ambient_on(false);
+                r.dirty = true;
+                save_settings(r);
+            }
             return 1;
         }
     }
@@ -6122,6 +6184,19 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // MONO (accessibility). Absent from files written by older builds, which is
                     // fine — it stays off, which is what it was before the key existed.
                     "mono" => r.app.set_mono(v == "1"),
+                    // Soundscapes. Absent from older files: off, rain, the default levels.
+                    "ambient" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_ambient_sound(n);
+                        }
+                    }
+                    "ambient_on" => r.app.set_ambient_on(v == "1"),
+                    "ambient_levels" => {
+                        let mut it = v.split(',').map(|x| x.trim().parse::<u8>());
+                        if let (Some(Ok(a)), Some(Ok(m))) = (it.next(), it.next()) {
+                            r.app.set_ambient_levels(a, m);
+                        }
+                    }
                     // Which VPT room. Absent from files written by older builds, which is fine —
                     // it just stays at 0 (Studio), and VPT's on/off still comes from `sound=`.
                     // set_vpt_mode clamps, so a hand-edited value cannot reach the device as an
@@ -7798,10 +7873,10 @@ mod tests {
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
             S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe, S::Display, S::Palette, S::Help,
-            S::DacEq, S::PlaylistEdit, S::ViewEdit, S::Profiles,
+            S::DacEq, S::PlaylistEdit, S::ViewEdit, S::Soundscape, S::Profiles,
         ];
-        // Three ordinals (40..=42) are spare — see SCREEN_NAMES.
-        const RESERVED: usize = 3;
+        // Two ordinals (41, 42) are spare — see SCREEN_NAMES.
+        const RESERVED: usize = 2;
         assert_eq!(all.len() + RESERVED, SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
         for sc in all {
