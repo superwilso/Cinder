@@ -439,6 +439,14 @@ $CC -O2 -Wall -shared -fPIC "${T32[@]}" "${SYS223[@]}" -I"$HERE/src" -Wl,-soname
 gate_glibc "$HERE/libcinder_mono.so"
 echo "built: $HERE/libcinder_mono.so ($(stat -c %s "$HERE/libcinder_mono.so") bytes)"
 
+# cinder-hagowrap: the per-service preload for a player with no Wampy (src/cinder-hagowrap.c).
+# Static musl like the helpers, and held to -Werror: it stands in front of every Sony service.
+# BUILT AND TESTED HERE, NOT PACKAGED: it goes on by hand, with the boot guard's trial marker
+# (deploy/cinder-guard.sh), until the guard itself ships. Host cases: tools/test_hagowrap.sh.
+echo "[6j] build cinder-hagowrap (hagodaemon wrapper, static; not packaged)…"
+"$UMOUNT_CC" -static -Os -Wall -Wextra -Werror -o "$HERE/cinder-hagowrap" "$HERE/src/cinder-hagowrap.c"
+echo "built: $HERE/cinder-hagowrap ($(stat -c %s "$HERE/cinder-hagowrap") bytes)"
+
 mkdir -p "$DIST"
 cp -f "$OUT" "$DIST/cinder-home"
 cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"

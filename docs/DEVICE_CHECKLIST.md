@@ -879,3 +879,13 @@ player in hand:** if it does not wake, hold Power until it restarts. Keep `cable
 | 33.4 | **Never under music** | Play on the jack, screen off 3 minutes; the same over Bluetooth | Music never stops; no `releasing the wakelock` line | It stopped: delete the file, report the log |
 | 33.5 | **How often it wakes by itself** | Leave it suspended 30 minutes | `resume_count` rises by a handful at most | Dozens = something is waking it; `spm_r12` names the source |
 
+## 34 — 2026-10-04 — One definition of "audible" (radio and USB-DAC with the screen off)
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 34.1 | **FM with the screen off** | FM Radio on, a station playing, screen off, listen 2 minutes | The station keeps playing. No `codec: idle 30 s` line and no `suspend: idle … early suspend` line while it plays | Sound stops at 30 s = the codec was put in standby: report the log |
+| 34.2 | **USB-DAC with the screen off** | USB mode DAC, the PC playing, screen off 2 minutes; jack and then LDAC | Sound continues on both | As 34.1 |
+| 34.3 | **Sleep timer and the radio** | FM on, sleep timer 15 min (or the shortest), wait | The radio switches off; log `sleep timer expired -> radio off`; the FM screen shows it off | Station still playing = `fm_off_now` did not run |
+| 34.4 | **Auto power off and Bluetooth auto off under the radio** | Both on, FM playing, screen off, 35 minutes | Still playing; the player and Bluetooth still on | Either acted = the source was not counted |
+| 34.5 | **Bluetooth auto off** — **RUN 2026-10-04, PASS** | Bluetooth on, nothing playing, screen off 10 minutes | Log `bt: idle 10 min with the screen off -> radio off`, then `bt: toggle OFF` (seen at 632.9 s, ten minutes after the blank) | — |
+

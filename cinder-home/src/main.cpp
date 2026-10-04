@@ -9263,6 +9263,18 @@ static void fm_power_fn() {
     }
 }
 
+// Switch the radio off from the shell's side (the sleep timer). fm_power_fn follows the screen's
+// switch, which still says ON here, so this is its off branch on its own; the report puts the
+// screen's switch back in step.
+static void fm_off_now() {
+    if (!g_fm_on) return;
+    cinder_tuner_stop();
+    g_fm_on = false;
+    cinder_fm_report_playing(0);
+    cinder_audio_init("cinder");
+    cinder_resume_rearm();
+}
+
 // The signal meter. Three register reads through the shim, so it is cheap enough to ride the 1 Hz
 // housekeeping tick rather than needing a thread of its own. Only meaningful while the tuner is
 // powered — with the chip down the registers describe nothing, so the meter is cleared instead.
@@ -9720,6 +9732,38 @@ static volatile sig_atomic_t g_amb_bt_run = 0, g_amb_bt_alive = 0;  // the Bluet
 static volatile sig_atomic_t g_amb_bt_streamed = 0;                 // …got past the handshake
 static volatile sig_atomic_t g_amb_route = 0;   // what a running player reports (route codes, cinder.h)
 static bool g_amb_bt_source_held = false;       // SetCurrentSource(true) is ours to take back
+
+// ── WHAT IS AUDIBLE, ASKED IN ONE PLACE ─────────────────────────────────────────────────────────
+// Five things can be making sound, and every "is this player idle?" decision has to count all of
+// them: the codec's standby, stage 1 and stage 2, auto power-off, Bluetooth auto off. Until
+// 2026-10-04 each site carried its own copy of the test, and the copies knew about library music,
+// the Bluetooth receiver and a soundscape — NOT the FM radio and NOT USB-DAC. So with the screen off
+// a radio station or a PC's audio was "silence": the codec was sent to standby under it after 30 s
+// and the player could switch itself off mid-programme.
+//
+//   library   g_playing is intent; the service has to agree (see the codec-standby note)
+//   receiver  a phone or PC playing through the jack
+//   radio     the tuner is powered — an analogue path, no stream of ours is open
+//   usb-dac   the host has opened a stream since DAC mode was entered
+//   ambient   a soundscape on its own, jack or Bluetooth
+struct Audible {
+    bool library, receiver, radio, usb_dac, ambient;
+    bool any() const { return library || receiver || radio || usb_dac || ambient; }
+    // Sources stage 1 has never been run under. Library music and a soundscape have (jack and
+    // Bluetooth, 2026-09-28 and 10-04) and the receiver has ridden the same test since it shipped;
+    // the radio is an analogue path through the codec and USB-DAC has the gadget streaming, and
+    // neither has been through the early-suspend chain. They hold the SoC awake until one has.
+    bool unproven_in_stage1() const { return radio || usb_dac; }
+};
+static Audible audible_now() {
+    Audible a;
+    a.library  = g_playing && cinder_audio_is_playing() != 0;
+    a.receiver = g_rx_active;
+    a.radio    = g_fm_on;
+    a.usb_dac  = g_uac_playing;
+    a.ambient  = g_amb_alive || g_amb_bt_alive;
+    return a;
+}
 static long g_amb_hold_until = 0;               // a yield keeps the player off this long
 static long g_amb_bt_retry_at = 0;              // a failed Bluetooth start waits before the next
 static int g_amb_written_sound = -1, g_amb_written_milli = -1, g_amb_route_sent = -1;
@@ -12765,9 +12809,8 @@ void* render_driver(void*) {
                 // direction: cinder_audio_is_playing() is derived from the position having moved
                 // recently, so it only reads 0 once playback has genuinely stopped, and a one-tick
                 // flicker costs a single increment that the next tick resets.
-                const bool audible = (g_playing && cinder_audio_is_playing() != 0)
-                                     || g_rx_active    // receiving: the jack is live, the player is not
-                                     || g_amb_alive || g_amb_bt_alive;   // a soundscape on its own
+                const Audible src = audible_now();   // every source, one definition (see Audible)
+                const bool audible = src.any();
                 const bool idle = !g_screen_on && !audible;
 
                 // ── BLUETOOTH OFF WHEN IDLE (opt-in: Bluetooth ▸ Sound quality ▸ Turn off when idle) ──
@@ -12902,7 +12945,9 @@ void* render_driver(void*) {
                                   : "suspend: stage 1 NOT on Bluetooth (/contents/cinder_no_suspend_bt)");
                 }
                 const bool soc_idle =
-                    suspend_while_playing ? (!g_screen_on && (!audible || on_jack_now || bt_ok)) : idle;
+                    suspend_while_playing
+                        ? (!g_screen_on && !src.unproven_in_stage1() && (!audible || on_jack_now || bt_ok))
+                        : idle;
                 // Say so when it changes, because this changes when the SoC suspends and the log is
                 // the only place that would ever explain a behaviour difference between two units.
                 static int said_swp = -1;
@@ -12934,14 +12979,21 @@ void* render_driver(void*) {
                 // BT playback would put the SoC's idle path in a different state while the CPU is
                 // still feeding an A2DP stream, and that is a separate experiment with a separate
                 // failure mode. The codec is in the path or it is not; the SoC keeps its old rule.
+                // The radio and the receiver come IN through the codec, and USB-DAC to the jack goes
+                // out through it, so for those the Bluetooth route is no reason to power it down:
+                // only library music and a soundscape leave the codec out of the path on Bluetooth.
+                // (USB-DAC -> LDAC does too, but a PCM open wakes the codec and a standby written
+                // under a stream is the fault this fixes, so it errs toward leaving it on.)
                 const bool on_bt = cinder_get_bt_route() != 0;
-                const bool codec_idle = !g_screen_on && !(audible && !on_bt);
+                const bool codec_in_path = src.radio || src.receiver || src.usb_dac
+                                           || ((src.library || src.ambient) && !on_bt);
+                const bool codec_idle = !g_screen_on && !codec_in_path;
                 if (codec_idle) {
                     if (idle_secs < 100000) ++idle_secs;
                     if (!we_slept && idle_secs >= 30) {
                         if (cinder_codec_set_standby(1) == 0) {
                             we_slept = true;
-                            clog_(on_bt
+                            clog_(on_bt && audible
                                   ? "codec: playing over Bluetooth 30 s -> DAC/amp to standby (not in the path)"
                                   : "codec: idle 30 s -> DAC/amp to standby (a PCM open wakes it)");
                         }
@@ -12997,6 +13049,12 @@ void* render_driver(void*) {
                 clog_("sleep timer expired -> pausing");
                 set_transport(false);
                 run_guarded("pump: sleep-timer pause", 6, []() { cinder_audio_pause(); });
+                // The radio is sound too. The timer used to stop the album and leave a station
+                // playing all night; switch it off the way its own button does.
+                if (g_fm_on) {
+                    clog_("sleep timer expired -> radio off");
+                    run_guarded("pump: sleep-timer FM off", 8, fm_off_now);
+                }
                 ambient_tick();   // the timer switched the soundscape off too: let it fade now
             }
             // Idle screen-off. Only ever blanks the panel; playback and every background job keep
@@ -13049,9 +13107,7 @@ void* render_driver(void*) {
             //     when you come back to it.
             {
                 const int off_min = cinder_get_auto_off_min();
-                const bool audible = (g_playing && cinder_audio_is_playing() != 0)
-                                     || g_rx_active    // receiving: the jack is live, the player is not
-                                     || g_amb_alive || g_amb_bt_alive;   // a soundscape on its own
+                const bool audible = audible_now().any();   // radio and USB-DAC included
                 // A fifth guard, against ourselves: power_action only RETURNS when the helper
                 // failed, and this block runs at ~1 Hz — so a device whose setuid bit is gone used
                 // to fork the helper and write three log lines every second, for ever. Once the
