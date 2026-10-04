@@ -40,7 +40,7 @@ ZERO = {'void': None, 'float': '0.0f', 'double': '0.0'}
 # `cinder_audio_position(&cur, &tot)` left both at the caller's -1, so `tot > 0` was false and the
 # whole end-of-queue half of poll_now_playing — repeat-all, the transport glyph after a queue runs
 # out — was unreachable from any scenario. The fake serves a scriptable (position, duration) pair.
-HAND_WRITTEN = {'cinder_audio_position'}
+HAND_WRITTEN = {'cinder_audio_position', 'cinder_get_ambient'}
 
 def default_return(rt):
     rt = rt.strip()

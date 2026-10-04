@@ -9761,6 +9761,14 @@ void ambient_yield_for_music() {
 // Decide, on the render thread: what the shim is told, whether the soundscape player should run and
 // where, and what the page's strip says. Called once a second from housekeeping and on every
 // Soundscapes change.
+// Can the shell play to the jack at all? Asked ONCE: alsa_load() logs every failed dlopen, and this
+// tick runs every second — a player without libasound would write two log lines a second to flash.
+static bool amb_can_play_jack() {
+    static int ok = -1;
+    if (ok < 0) ok = alsa_load() && g_alsa.writei ? 1 : 0;
+    return ok == 1;
+}
+
 static void ambient_tick() {
     int ma = 0, mm = 0;
     const int sound = cinder_get_ambient(&ma, &mm);
@@ -9786,7 +9794,7 @@ static void ambient_tick() {
     if (want && !g_amb_alive && !g_amb_bt_alive) {
         if (want_bt) {
             if (now_ms() >= g_amb_bt_retry_at) amb_bt_start();
-        } else if (alsa_load() && g_alsa.writei) {
+        } else if (amb_can_play_jack()) {
             g_amb_run = 1;
             g_amb_route = 6;
             amb_spawn(amb_jack_thread);
@@ -9799,7 +9807,7 @@ static void ambient_tick() {
     else if (music) code = g_mono_shim_seen == 1 ? 1 : 5;
     else if (busy) code = 7;
     else if (g_amb_alive || g_amb_bt_alive) code = (int)g_amb_route;
-    else if (want && !(alsa_load() && g_alsa.writei) && !want_bt) code = 7;
+    else if (want && !want_bt && !amb_can_play_jack()) code = 7;
     else code = ma > 0 ? 6 : 0;
     if (code != g_amb_route_sent) {
         g_amb_route_sent = code;
