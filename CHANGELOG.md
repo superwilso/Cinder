@@ -167,6 +167,19 @@ previews, and **not yet run on a device**. The library items are in
 
 ### Fixed
 
+- **The FM radio and USB-DAC count as sound.** Every "is the player idle?" decision used its own
+  copy of the test, and the copies knew about library music, the Bluetooth receiver and a
+  soundscape, not the radio and not USB-DAC. With the screen off, a station or a PC's audio was
+  treated as silence: the codec was put in standby under it after 30 seconds, and auto power-off
+  and Bluetooth auto off could act mid-programme. There is now one definition (`Audible` in
+  `main.cpp`) and all of them use it. The radio and USB-DAC also keep the display's power state
+  (stage 1) off until someone has run it under them. *Host-tested; library music re-checked on
+  the player in stage 1. The radio and USB-DAC cases are not yet run on a device (checklist §34).*
+- **The sleep timer switches the radio off too.** It paused the album and left a station playing.
+- **The USB port after a suspend to RAM.** Once a cable is in after a resume, the player waits five
+  seconds and then tries to bring the port back itself, logging each step
+  (`cinder-msc usb-resume`). *Untested: the trial is checklist 33.2.*
+
 - **The shim could not find ALSA on a player without Wampy.** Its hooks reached the real functions
   with `RTLD_NEXT`, which only sees the global scope; Wampy's library happens to put libasound
   there, and without it every hook answered `-ENOSYS`, no PCM opened and the player restarted when

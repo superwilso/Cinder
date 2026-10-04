@@ -205,6 +205,12 @@ jobs:
       - name: Launcher recovery matrix
         run: bash cinder-home/tools/test_launcher.sh
 
+      # The hagodaemon wrapper stands in front of every Sony service on a player that has it. Built
+      # natively against a stand-in "real" binary: whatever it decides, the real one must run with
+      # the arguments it was given, and only SoundServiceFw may gain a preload.
+      - name: hagodaemon wrapper (pass-through and preload rules)
+        run: bash cinder-home/tools/test_hagowrap.sh
+
       # The /data mount + cable-pass write from the issue #14 fix: the install payload's
       # boot-critical state write, proven in a user+mount namespace (the stub mount does real
       # bind mounts, so "wrote to the ramdisk" and "wrote to the partition" are genuinely
