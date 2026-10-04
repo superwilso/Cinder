@@ -101,6 +101,10 @@ previews, and **not yet run on a device**. The library items are in
   stayed up, nothing audible, interrupts 1285/s down to 931/s. If the link goes away while it is
   held, it stops for the rest of that boot and the log says so; `/contents/cinder_no_suspend_bt`
   turns it off. *One player, one pair of headphones.*
+- **Settings ▸ Bluetooth auto off**, off unless switched on. With it on, Bluetooth switches itself
+  off after ten minutes with the screen off and nothing playing — no headphones connected, or
+  connected and silent. It does not come back by itself. Never acts in USB-DAC mode or while
+  receiving. *Host-tested (harness `bt-idle-off`); not yet run on a device (checklist 31.6).*
 - **An idle screen blank locks after five minutes.** The screen-off timer leaves touch awake so a
   touch can wake the screen. Left dark for five minutes it now behaves as if Power had been
   pressed: touch sleeps and only Power wakes it, so a pocket cannot keep lighting the screen.

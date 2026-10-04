@@ -534,6 +534,9 @@ int  cinder_quick_pull_begin(int x, int y);
 int  cinder_quick_pull_open(void);
 /* Bluetooth debug log: is it switched on (1/0); and the shell stopped it at its size limit. */
 int  cinder_get_bt_debug_log(void);
+/* Bluetooth > Sound quality > "Turn off when idle" (1/0), polled once a second: the shell switches
+ * the radio off after ten minutes with the screen off and nothing playing over Bluetooth. */
+int  cinder_get_bt_idle_off(void);
 void cinder_bt_debug_log_stopped(void);
 /* Is the user's volume limit switched on? The CAP itself is Sony's (below); this is only the
  * on/off the Settings row owns. Persisted with the rest of the settings. */
