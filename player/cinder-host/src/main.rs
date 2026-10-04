@@ -63,6 +63,28 @@ fn preview_thumb(var: &str, edge: usize) -> Option<cinder_ui::art::Image> {
 /// Render every preview, handing each finished frame to `out` under its name. One list, used by
 /// both the PNG writer and the golden check, so the check can never cover a different set of
 /// screens from the one people look at.
+/// The sample library with a smart playlist on top and one list marked as edited on the player —
+/// what `App::rebuild_smart` and the shell's playlist rows produce between them on the device.
+fn r4_playlists(lib: &Library) -> Library {
+    let mut l = lib.clone();
+    if let Some(first) = l.playlists.first_mut() {
+        first.user = true;
+        first.edited = true;
+    }
+    let members: Vec<cinder_ui::model::SongRow> = l.songs.iter().take(5).cloned().collect();
+    l.playlists.insert(0, cinder_ui::model::PlaylistRow {
+        id: cinder_ui::views::smart_id("Late favourites"),
+        name: "Late favourites".into(),
+        tracks: members.len() as u32,
+        art: "Late favourites".into(),
+        smart: true,
+        rules: "4+ stars \u{b7} Recent \u{b7} FLAC".into(),
+        track_list: members,
+        ..Default::default()
+    });
+    l
+}
+
 fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
     let mut save = |c: &Canvas, name: &str| out(name, c);
     let fonts = FontSet::load();
@@ -154,8 +176,13 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         bt_codec: Some("LDAC"),
         source_direct: false,
         tone_control: false,
+        // Bluetooth is live in these previews (the path ends in BT·LDAC), so the Profile row says so.
+        profile_map: [0, 0, 1],
+        output: cinder_ui::profile::Output::Bluetooth,
     };
-    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02), paired: &preview_paired_list, fine_volume: "OFF", debug_log: false };
+    // The Balance row and Advanced are below the fold since the ENHANCE / SPACE / LEVEL grouping.
+    let snd_end = sound::max_scroll();
+    let bt = Bt { on: true, connected: Some("WH-1000XM5"), link_known: true, codec_sel: 0, ldac_quality: 0, enhanced: true, enhanced_supported: true, connecting: false, busy_phase: 0.0, link_codec: Some(0x02), paired: &preview_paired_list, fine_volume: "OFF", debug_log: false, profile: "B" };
     let eq_bands: [i8; 10] = [2, 3, 1, 0, -1, 0, 2, 3, 2, 1];
     let mut lib = Library::sample();
     // Sample albums all carry album_id 0, so one pulled thumbnail stands in for every row —
@@ -325,11 +352,11 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // removal — the state that is easiest to get wrong and hardest to see in a test.
             ("sound_source_direct", &|c: &mut Canvas| {
                 let s = Sound { source_direct: true, ..snd };
-                sound::render(c, &theme, &fonts, &s, 0, 0);
+                sound::render(c, &theme, &fonts, &s, 0, 0, 0);
             }),
             ("sound_tone_control", &|c: &mut Canvas| {
                 let s = Sound { tone_control: true, ..snd };
-                sound::render(c, &theme, &fonts, &s, 0, 0);
+                sound::render(c, &theme, &fonts, &s, 0, 0, 0);
             }),
             ("playlist_page_own", &|c: &mut Canvas| {
                 if let Some(pl) = lib.playlists.first() {
@@ -444,10 +471,71 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 library::artist_view(c, &theme, &fonts, &lib, &page, 0, 0, None, false);
                 cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
             }),
+            // ── Redesign R4: ratings, plays, smart playlists, the two editors ──────────────────
+            // The album page with its rating in the header's right slot (handoff 5h).
+            ("album_rated", &|c: &mut Canvas| {
+                if let Some(al) = lib.albums_flat().first() {
+                    library::album_view(c, &theme, &fonts, al, 1, 0, None, None, false, Some(4));
+                }
+            }),
+            // The artist page once things have been rated and played: albums newest first with
+            // their ratings, then MOST PLAYED, then every song (handoff 5m).
+            ("artist_played", &|c: &mut Canvas| {
+                let mut l = lib.clone();
+                for (id, rating, plays) in [(0i64, 5u8, 14u32), (1, 4, 9), (2, 0, 3), (3, 3, 1)] {
+                    l.stats.insert(id, cinder_ui::model::TrackStat { rating, plays, last_played: 1_790_000_000 + id });
+                }
+                let name = l.artists.first().map(|a| a.name.clone()).unwrap_or_default();
+                let page = library::artist_page(&l, &name);
+                library::artist_view(c, &theme, &fonts, &l, &page, 0, 0, None, false);
+            }),
+            // The Playlists tab with a smart playlist above the others and an EDITED tag (5g).
+            ("library_playlists_smart", &|c: &mut Canvas| {
+                let l = r4_playlists(&lib);
+                library::render(c, &theme, &fonts, Tab::Playlists, 1, 0, 0, 0, None, &l, None, false, 0, false);
+            }),
+            ("playlist_page_smart", &|c: &mut Canvas| {
+                let l = r4_playlists(&lib);
+                library::playlist_view(c, &theme, &fonts, &l, &l.playlists[0], 0, 0, None, false, None);
+            }),
+            // The playlist editor (5b): at rest with something to undo, and mid-drag.
+            ("playlist_edit", &|c: &mut Canvas| {
+                cinder_ui::playlist_edit::render(c, &theme, &fonts, &cinder_ui::playlist_edit::EditView {
+                    name: "Late Night On The Bus", rows: lib.songs.iter().collect(), scroll_px: 0,
+                    drag: None, can_undo: true, sbar_active: false,
+                });
+            }),
+            ("playlist_edit_drag", &|c: &mut Canvas| {
+                use cinder_ui::playlist_edit as pe;
+                let n = lib.songs.len();
+                let (from, grab_off) = (1usize, pe::RH / 2);
+                let start_y = pe::row_top(from, 0) + grab_off;
+                let y = start_y + 2 * pe::RH + 10;
+                let d = up_next::RowDrag { from, to: pe::slot_for(n, y - grab_off, 0), start_y, y, grab_off };
+                pe::render(c, &theme, &fonts, &pe::EditView {
+                    name: "Late Night On The Bus", rows: lib.songs.iter().collect(), scroll_px: 0,
+                    drag: Some(d), can_undo: false, sbar_active: false,
+                });
+            }),
+            // The saved-view editor (5c): one that exists, and a new one with nothing set.
+            ("view_edit", &|c: &mut Canvas| {
+                let v = cinder_ui::views::SavedView {
+                    name: "Late favourites".into(), min_rating: 4,
+                    played: cinder_ui::views::Played::Recent, format: cinder_ui::views::FormatRule::Flac,
+                    sort: cinder_ui::views::ViewSort::Plays,
+                };
+                cinder_ui::view_edit::render(c, &theme, &fonts,
+                    &cinder_ui::view_edit::ViewEditView { draft: &v, matches: 38, existing: true });
+            }),
+            ("view_edit_new", &|c: &mut Canvas| {
+                let v = cinder_ui::views::SavedView::default();
+                cinder_ui::view_edit::render(c, &theme, &fonts,
+                    &cinder_ui::view_edit::ViewEditView { draft: &v, matches: lib.songs.len(), existing: false });
+            }),
             ("eq", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4, None)),
             ("eq_off", &|c: &mut Canvas| eq::render(c, &theme, &fonts, &eq_bands, "A1", 4, Some("Off: Tone Control is on"))),
-            ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, 0)),
-            ("sound_setup_b", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, 1)),
+            ("sound", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 0, 0, 0)),
+            ("sound_setup_b", &|c: &mut Canvas| sound::render(c, &theme, &fonts, &snd, 5, 1, 0)),
             // The balance slider off-centre and mid-drag: the two states the static preview above
             // never shows, and the ones where the knob can drift off its hit band.
             ("clockset", &|c: &mut Canvas| {
@@ -455,7 +543,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("sound_balance", &|c: &mut Canvas| {
                 let s = Sound { balance: 14, balance_drag: true, ..snd };
-                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
+                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0, snd_end)
             }),
             // MONO, in both the states it has — and this is the LONGEST subtitle on the screen,
             // which is exactly why it is rendered rather than reasoned about. The 2026-09-06 audit
@@ -465,14 +553,14 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 // Off the live path: the honest case for ordinary playback on this device, and the
                 // one whose subtitle has to fit. See analysis/RE_mono_audio.md.
                 let s = Sound { balance: 14, mono: true, mono_live: false, ..snd };
-                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
+                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0, snd_end)
             }),
             ("sound_mono_live", &|c: &mut Canvas| {
                 let s = Sound { mono: true, mono_live: true, ..snd };
-                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0)
+                sound::render(c, &theme, &fonts, &s, sound::ROW_BALANCE, 0, snd_end)
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
-                &settings::SettingsView { ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" })),
             // Settings ▸ Display (handoff 5k): palette, accent, night, the volume readout, size.
             ("display", &|c: &mut Canvas| cinder_ui::display::render(c, &theme, &fonts, 1,
@@ -534,6 +622,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("track_info", &|c: &mut Canvas| {
                 let rows: Vec<(String, String)> = vec![
+                    ("Rating".into(), "-".into()),
                     ("Title".into(), "Atlas Hands".into()),
                     ("Artist".into(), "Benjamin Francis Leftwich".into()),
                     ("Album".into(), "Last Smoke Before the Snowstorm".into()),
@@ -545,7 +634,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     ("Size".into(), "48.2 MB".into()),
                     ("File".into(), "/contents/Music/Benjamin Francis Leftwich/Last Smoke Before the Snowstorm/03 Atlas Hands.flac".into()),
                 ];
-                cinder_ui::track_info::render(c, &theme, &fonts, &rows, 0, false)
+                cinder_ui::track_info::render(c, &theme, &fonts, &rows, 0, false, 4)
             }),
             ("lyrics", &|c: &mut Canvas| {
                 use cinder_ui::lyrics::{Line, Lyrics};
@@ -598,7 +687,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 let b = Bt { paired: &preview_paired_list, on: true, connected: None, link_known: true, codec_sel: 0,
                              ldac_quality: 0, enhanced: true, enhanced_supported: true,
                              connecting: true, busy_phase: 0.35, link_codec: None,
-                             fine_volume: "OFF", debug_log: false };
+                             fine_volume: "OFF", debug_log: false, profile: "B" };
                 bluetooth::render(c, &theme, &fonts, &b)
             }),
             // Two real pairings from the device (the same two the 07-29 GetPairedDeviceInfo pass
@@ -746,7 +835,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                             (cinder_ui::confirm::Ask::PowerOff, "poweroff")] {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
-                &settings::SettingsView { ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
@@ -759,7 +848,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             let mut c = Canvas::new();
             settings::render(&mut c, &theme, &fonts, settings::ROW_BRIGHTNESS,
                 settings::max_scroll_px() / 2,
-                &settings::SettingsView { ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
+                &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
                     brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
@@ -989,6 +1078,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 // Bit 0 is Sony's always-set one; the rest spread this synthetic library over six
                 // channels so the SensMe list has something long enough to window and scroll.
                 sensme: 1 | (1 << (i % 6 + 1)),
+                ..Default::default()
             });
         }
         let mut album_groups = Vec::new();
@@ -1331,6 +1421,30 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             app.set_dac_eq(curve);
             app.set_adv_flags(direct as u8);
             app.go_for_preview(screen);
+            let mut c = Canvas::new();
+            app.render(&mut c, &fonts, &np);
+            save(&c, name);
+        }
+    }
+
+    // Sound profiles (R5), driven through the navigator so the previews are the states a user can
+    // reach: the Profiles screen on the jack, the same screen with Bluetooth live on B, and the
+    // Sound list scrolled to its end with that profile live. After everything else, for the same
+    // glyph-cache reason as the block above.
+    {
+        use cinder_ui::nav::Screen;
+        use cinder_ui::profile::{centre, Hit, Output};
+        for (name, screen, bt_live) in [
+            ("profiles", Screen::Profiles, false),
+            ("profiles_bt_live", Screen::Profiles, true),
+            ("sound_end_profile_b", Screen::Sound, true),
+        ] {
+            let mut app = new_app();
+            app.go_for_preview(Screen::Profiles);
+            app.tap(240, centre(Hit::Output(Output::Bluetooth))); // Bluetooth uses B
+            app.set_bt_route(bt_live);
+            app.go_for_preview(screen);
+            app.scroll_px(10_000);
             let mut c = Canvas::new();
             app.render(&mut c, &fonts, &np);
             save(&c, name);

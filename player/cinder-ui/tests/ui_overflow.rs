@@ -182,7 +182,7 @@ const SCREENS: &[Screen] = &[
     Screen::Receiver, Screen::Onboarding, Screen::UsbStorage, Screen::GenreFilter,
     Screen::Folders, Screen::SensMe, Screen::TrackInfo, Screen::Lyrics, Screen::Search,
     Screen::ClockSet,
-    Screen::Advanced, Screen::Tone, Screen::DacEq,
+    Screen::Advanced, Screen::Tone, Screen::DacEq, Screen::Profiles,
     Screen::Keyboard, Screen::PlaylistPick, Screen::TrackPick,
     // Added 2026-09-06 by the UI audit. These three were the whole of the gap: reachable,
     // content-bearing screens that no panel-overflow gate had ever rendered. `Canvas` clips
@@ -196,6 +196,8 @@ const SCREENS: &[Screen] = &[
     Screen::Palette,
     // Help & controls as one list (handoff 5i).
     Screen::Help,
+    // The playlist editor (5b) and the saved-view editor (5c).
+    Screen::PlaylistEdit, Screen::ViewEdit,
 ];
 
 /// The keyboard's word keys (SHIFT / SPACE / DONE / 123) are drawn centred with no `fit`, so a

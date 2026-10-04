@@ -50,13 +50,16 @@ pub enum Ask {
     ClearQueue,
     /// Receiver page ▸ Use Sony's receiver. Restarts the device into the stock player, so it asks.
     SonyReceiver,
+    /// Deleting a smart playlist (a saved view) from its editor. A card, like `DeletePlaylist`:
+    /// the rules took a minute to set up and there is no undo once the file is rewritten.
+    DeleteView,
 }
 
 /// Every question the modal can ask. Exists so the overflow audit can render all of them without
 /// a list that silently stops being complete when a new one is added.
 pub const ALL: &[Ask] = &[
     Ask::Restart, Ask::PowerOff, Ask::PowerMenu, Ask::QueueOnPlay, Ask::ResetSettings,
-    Ask::DeletePlaylist, Ask::ClearQueue, Ask::SonyReceiver,
+    Ask::DeletePlaylist, Ask::ClearQueue, Ask::SonyReceiver, Ask::DeleteView,
 ];
 
 impl Ask {
@@ -88,6 +91,11 @@ impl Ask {
             Ask::DeletePlaylist => (
                 "Delete this playlist?",
                 "The playlist is deleted. The music in it stays on the device.",
+                "Delete",
+            ),
+            Ask::DeleteView => (
+                "Delete this smart playlist?",
+                "Its rules are deleted. The music it listed stays on the device.",
                 "Delete",
             ),
             Ask::SonyReceiver => (

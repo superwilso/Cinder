@@ -117,6 +117,29 @@ int cinder_effects_load_user_preset(int no);
 /* Read-back used to grey out rows something upstream is overriding. */
 int cinder_effects_is_clearaudio_plus(void);
 
+/* ── whole-chain read-back (EffectCtrlDmp's Is…On / Get… getters) ────────────────────────────────
+ * Defined in effect_shim.cpp since 2026-08-17 and used by cinder-probe; declared here since R5
+ * (2026-09-30) because cinder-home now reads them too, to check a sound profile after applying it
+ * (main.cpp `fx_verify`). 1/0, or -1 if the effects client is not up.
+ *
+ * Signatures are from the library's dynamic symbol table (`nm -DC libEffectCtrlDmp.so`: no
+ * arguments, bool in r0). The probe has run every one of them on the device with a Framework pump;
+ * CALLING THEM FROM INSIDE cinder-home IS UNVERIFIED ON DEVICE (DEVICE_CHECKLIST 26.3) — without a
+ * dispatched reply they return a constant 0 that reads like a rejected write. */
+int cinder_effects_is_vpt_on(void);
+int cinder_effects_is_dsee_hx_on(void);
+int cinder_effects_is_dsee_ai_on(void);
+int cinder_effects_is_clearaudio_on(void);
+int cinder_effects_is_bt_effect_on(void);
+int cinder_effects_is_source_direct_on(void);
+int cinder_effects_is_normalizer_on(void);
+int cinder_effects_is_dc_phase_on(void);
+int cinder_effects_is_vinylizer_on(void);
+int cinder_effects_is_eq10_on(void);
+int cinder_effects_is_eq6_on(void);
+int cinder_effects_is_tone_on(void);
+int cinder_effects_is_clear_phase_hp_on(void);
+
 #ifdef __cplusplus
 }
 #endif

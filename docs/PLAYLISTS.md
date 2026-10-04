@@ -22,6 +22,7 @@ liked list at `/contents`, which is the volume Windows mounts.
 ```
 #EXTM3U
 #PLAYLIST:Late Night On The Bus      ← the display name, so it can hold anything a name can
+#CINDER-EDITED:1790000000            ← changed on the player (see "Edited on the player")
 #EXTIMG:/contents/Art/late-night.jpg ← the cover (optional) — see "Covers" below
 #EXTINF:-1,Wunderhorse - Teal        ← readable label; never used for matching
 /contents/MUSIC/Wunderhorse - Cub/06 - Wunderhorse - Teal.flac
@@ -44,6 +45,41 @@ Consequences, all deliberate:
 
 Code: `player/cinder-ffi/src/playlists.rs` (store), `user_playlist_rows` / `refresh_playlists`
 (merge into the UI's list), `add_track_to_playlist` (object id → path, via the DB).
+
+## Edited on the player
+
+*Added 2026-10-04.* Every time the player writes a playlist — a track added or removed, a new
+order, a rename, a cover — it stamps the file with `#CINDER-EDITED:<unix seconds>`. Any other m3u
+reader skips the line as a comment.
+
+* The Playlists tab shows an **EDITED** tag on a playlist that carries the stamp.
+* A PC tool that takes the playlist back (Flint) should write the file without the line. The tag
+  then goes, and comes back the next time the player changes the list.
+* A playlist copied on from a PC has no stamp until it is changed on the player.
+
+## Editing a playlist
+
+*Added 2026-10-04 (design handoff 5b).* **EDIT**, top right of one of your playlists, opens the
+editor:
+
+| | |
+|---|---|
+| **≡** | Drag a row by its handle to move it. A hold anywhere on the row lifts it too |
+| **×** | Removes the row at once |
+| **UNDO** | In the "N TRACKS" label. Takes back the last move or removal, one step at a time |
+| **DONE** | Writes the file, once |
+| Back | Leaves without saving |
+
+Nothing is written until DONE, and DONE with nothing changed writes nothing.
+
+**A track the library cannot find is never dropped by an edit.** The editor lists the members whose
+files are in the library right now. A member on an SD card that is out is not listed, so it cannot
+have been removed on purpose: it stays in the file, straight after the member it followed. The
+same mapping fixed the page's own ×, which until now removed by row number and could take out the
+wrong track when an unlisted member sat above it.
+
+Sony's playlists have no EDIT. A smart playlist's EDIT opens its rules instead
+([`TRACK_DATA.md`](TRACK_DATA.md)).
 
 ## Covers
 
@@ -114,6 +150,5 @@ fitting its key at all seven UI scales.
   device that is 3,945 rows behind a scrollbar. The keyboard now exists, so a filter is a small
   job, but it is not done.
 * **No "add this album/artist"** — the picker is per track.
-* **No reordering** inside a playlist. Removing and re-adding is the only way to change the order.
 * **`likesync` does not read this folder yet.** The files are ordinary `.m3u8`, so importing them
   into MusicBee is a copy; nothing automates it.
