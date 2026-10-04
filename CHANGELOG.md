@@ -95,11 +95,15 @@ previews, and **not yet run on a device**. The library items are in
   `profile_follow=` and `bank_mono=` / `bank_amp=` / `bank_dac_eq=`.
   *Host-tested; not yet run on a device (§30).*
 
-- **Stage 1 while playing over Bluetooth, as an opt-in experiment.** With
-  `/contents/cinder_suspend_bt` present, the screen-off power state that already runs during jack
-  playback also runs during Bluetooth playback. If the link goes away while it is held, it stops
-  for the rest of that boot and the log says so. *Never run with a link up: `DEVICE_CHECKLIST` 31.2
-  is that run. Without the file nothing changes.*
+- **The display powers down during Bluetooth playback too.** The screen-off power state that
+  already ran during jack playback now runs over Bluetooth by default. Run on Walkman One with
+  LDAC headphones on 2026-10-04: entered and left four times over about four minutes, the link
+  stayed up, nothing audible, interrupts 1285/s down to 931/s. If the link goes away while it is
+  held, it stops for the rest of that boot and the log says so; `/contents/cinder_no_suspend_bt`
+  turns it off. *One player, one pair of headphones.*
+- **An idle screen blank locks after five minutes.** The screen-off timer leaves touch awake so a
+  touch can wake the screen. Left dark for five minutes it now behaves as if Power had been
+  pressed: touch sleeps and only Power wakes it, so a pocket cannot keep lighting the screen.
 
 - **Mono and soundscapes over music on Walkman One, by hand for now.** `src/cinder-hagowrap.c`
   stands in for Sony's `hagodaemon` (kept as `hagodaemon.real`) and gives SoundServiceFw alone an
@@ -111,6 +115,11 @@ previews, and **not yet run on a device**. The library items are in
 
 ### Changed
 
+- **The display powers down 5 seconds after the screen goes off, not 60.** A dark panel is only
+  the backlight: the display clocks and its power domain stay up until then. Waking takes about a
+  quarter of a second longer once it has powered down (0.48 s against 0.23 s, measured), so only
+  a screen blanked in the last few seconds still wakes at once. Recorded off the headphone jack across
+  the change during a song: no gap. `/contents/cinder_suspend_s` still sets the number; `0` is off.
 - **The artist page** lists albums newest first.
 - **The NEW PLAYLIST row** on the Playlists tab is now two buttons, NEW PLAYLIST and SMART.
 - **The Sound screen is regrouped.** A Profile row, then **ENHANCE** (Equalizer, DSEE HX,

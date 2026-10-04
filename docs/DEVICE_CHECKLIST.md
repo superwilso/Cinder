@@ -833,7 +833,8 @@ the first 180 s of a boot, for the first 60 s of idle, or at all while playing o
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|
 | 31.1 | **The quiet poll** | Bluetooth on, nothing connected, screen dark for 6 minutes; `grep -c "BT route poll" ` is not logged, so instead: switch the headphones on | They connect and the UI shows them within a second or two of the link, as before. Log: `bt: link state changed (listener)` | Connects but the UI lags up to a minute = the listener did not fire for this link: report it; `btpoll` falls back to 3 s only when the listener is not registered |
-| 31.2 | **Stage 1 while playing over Bluetooth** (opt-in experiment) | Off the cable, headphones connected and playing. `touch /contents/cinder_suspend_bt` (USB-MSC or adb), reboot, play, screen off, listen for 5 minutes | The music does not stop or stutter. Log: `suspend: stage 1 ALSO while playing over Bluetooth`, then `suspend: idle 60 s -> early suspend` | Music stops or the link drops: the log says `the Bluetooth link went away during stage 1` and it stops trying for that boot. Delete the file. That is the answer: `wmt_dev_early_suspend` does not survive a link |
+| 31.2 | **Stage 1 while playing over Bluetooth** — **RUN 2026-10-04, PASS** on Walkman One with LDAC headphones, and the default since | Headphones connected and playing, screen off, listen for 5 minutes | The music does not stop or stutter. Log: `suspend: stage 1 also while playing over Bluetooth (default…)`, then `suspend: idle 5 s -> early suspend`. Measured: display domain off, 1285 -> 931 interrupts/s, link up through four entries and exits | Music stops or the link drops: the log says `the Bluetooth link went away during stage 1` and it stops for that boot. `touch /contents/cinder_no_suspend_bt` keeps it off. Still wanted: a second pair of headphones, and a long listen |
+| 31.5 | **Idle blank locks after five minutes** | Settings ▸ screen-off timer 30 s. Leave it. Touch the dark screen after 1 minute, then leave it 6 minutes and touch again | First touch wakes it. After 6 minutes touch does nothing and Power wakes it. Log: `screen: dark for 5 min after the idle timeout -> locked` | Touch still wakes it after 6 minutes = the lock did not run; Power does not wake it = report the log |
 | 31.3 | **What Bluetooth costs idle** | Bluetooth ON, nothing connected, screen dark, 6 minutes: `adb shell 'grep -E "SYS_CONN" /proc/clkmgr/subsys_test'` | Record `state(0)` or `state(1)` in stage 1. `state(1)` = the radio's domain stays powered for as long as Bluetooth is switched on, and an automatic radio-off after N minutes without a link would be worth building | — |
 | 31.4 | **Framebuffer blank** (not run: needs the owner) | Screen dark, before stage 1: `echo 4 > /sys/class/graphics/fb0/blank`, read `grep VENCPLL /proc/clkmgr/pll_test`, then `echo 0 > …/blank` | VENCPLL off while blanked and the panel comes back on the next wake = the display can be switched off the moment the screen goes dark, without stage 1, which would cover Bluetooth playback too | VENCPLL stays ON = this kernel's blank does nothing; stage 1 is the only switch |
 
@@ -844,6 +845,17 @@ is not involved. Measured that day: 28 services start through it, `/proc/<SoundS
 holds the `LD_PRELOAD` and no other service's does, `/tmp/cinder_mono.log` reads `loaded into
 SoundServiceFw`, `audio flowed — load count cleared`, and `mono ON` / `jack: … summing` when the
 flag is set. Framebuffer blank (31.4) was also run: it changes nothing on this kernel.
+
+**Measured the same day with the headphone jack recorded by a PC** (`ffmpeg -f dshow`, stereo,
+48 kHz), which settles 32.1 and 32.2 on the jack without ears:
+
+| | off | on |
+|---|---|---|
+| Mono (`/tmp/cinder_mono`): level of left minus right, above 200 Hz | −48.2 dB | **−91.8 dB** (the sum unchanged at −41) |
+| White noise over a song (`/tmp/cinder_ambient`): level above 14 kHz | −67.1 dB | −49.6 dB at 300/1000, −39.1 dB at 1000/1000, −68.1 dB off again |
+| Stage 1 entered mid-song (72 s recorded, noise bed at full) | — | no gap of 3 ms or more |
+
+32.3 (Bluetooth) is still nobody's measurement.
 
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|

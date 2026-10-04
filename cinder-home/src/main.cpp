@@ -3409,6 +3409,7 @@ void touch_set_sleep(int slp) {
 // And the escape ladder still holds: even if wake-on-touch fails entirely, the physical Power
 // button restores the screen. That escape depends on strictly less than the thing it rescues (a
 // key event vs. the whole touch stack).
+static const long kIdleLockMs = 5 * 60 * 1000L;   // an idle blank locks (touch asleep) after this
 static bool g_screen_auto_off = false;   // dark because of the idle timer (not the Power button)
 static bool g_held = false;              // Hold/lock switch engaged (mirrors cinder_set_hold)
 
@@ -3621,7 +3622,7 @@ void screen_toggle() {
 //   * ALWAYS write the exit. A resume that nobody acknowledges leaves the device cycling with a
 //     dark screen, which is exactly what looked like a brick.
 //
-// STAGE 1 IS ON BY DEFAULT since 2026-09-28 (60 s of screen-off idle, and screen-off playback on
+// STAGE 1 IS ON BY DEFAULT since 2026-09-28 (5 s of screen-off idle — 60 until 10-04, and screen-off playback on
 // the jack); stage 2 is still opt-in. /contents/cinder_suspend_s overrides the threshold (0 = off)
 // and /contents/cinder_no_suspend stops everything — files rather than a settings row because they
 // stay reachable from a PC over USB-MSC when the app is the thing misbehaving. See threshold_s().
@@ -3844,7 +3845,15 @@ bool file_exists(const char* path) {
 // fails in the safe direction (no suspend) — and the boot grace is longer than the window anyway.
 //
 // Either way the decision is LOGGED, because the failure that matters is the one leaving no trace.
-const int kDefaultThresholdS = 60;
+//
+// 5 s SINCE 2026-10-04 (was 60; the owner's choice the same day, after 15 was tried). Until stage 1
+// the panel is dark and nothing else is: VENCPLL, the display power domain and 13 display clocks
+// all stay up (/proc/clkmgr, same day), so every screen-off paid 60 s of a scanning display. What
+// the wait buys is a faster wake — Power to backlight is 0.23 s from a dark panel and 0.48 s from
+// stage 1 (log timestamps, Walkman One) — and 5 s keeps that only for a press straight after the
+// blank. Entering and leaving stage 1 mid-song is inaudible: recorded off the jack across both, no
+// gap of 3 ms or more.
+const int kDefaultThresholdS = 5;
 
 int threshold_s() {
     static int cached  = -1;
@@ -3957,7 +3966,7 @@ static void soc_suspend_tick(bool idle) {
         write_node(kWakeLock, kLockName);
         write_node(kStateNode, "on");
         early = false;
-        idle_secs = thr > 15 ? thr - 15 : 0;   // back in ~15 s, once the port has let go
+        idle_secs = thr - 15;   // back in ~15 s, once the port has let go (negative under a short threshold)
         clog_("suspend: cable pulled during early suspend -> out for ~15 s so the USB port can "
               "power down (it holds deep idle off until it does)");
     }
@@ -12806,7 +12815,13 @@ void* render_driver(void*) {
                 //     reason costs the experiment one boot, which is the cheap way to be wrong.
                 //   * *Never run with a link up; DEVICE_CHECKLIST 31.2 is that run.*
                 static bool bt_struck = false, bt_held = false;
-                const bool bt_flag = access("/contents/cinder_suspend_bt", F_OK) == 0;
+                // DEFAULT SINCE 2026-10-04, the same evening: the run was done on Walkman One with LDAC
+                // headphones — stage 1 entered and left four times over about four minutes of
+                // playback, the link stayed up, the owner heard nothing wrong, and interrupts fell
+                // 1285/s -> 931/s with the display domain off. One player and one pair of
+                // headphones, so the one-strike stop stays and /contents/cinder_no_suspend_bt turns
+                // it off. (/contents/cinder_suspend_bt, the old opt-in, is no longer read.)
+                const bool bt_flag = access("/contents/cinder_no_suspend_bt", F_OK) != 0;
                 if (!socsusp::g_early) {
                     bt_held = false;
                 } else if (audible && !on_jack_now) {
@@ -12814,14 +12829,15 @@ void* render_driver(void*) {
                 } else if (bt_held && on_jack_now && !bt_struck) {
                     bt_struck = true;
                     clog_("suspend: the Bluetooth link went away during stage 1 — no more stage 1 "
-                          "on Bluetooth this boot (/contents/cinder_suspend_bt)");
+                          "on Bluetooth this boot (/contents/cinder_no_suspend_bt keeps it off for good)");
                 }
                 const bool bt_ok = bt_flag && !bt_struck;
                 static int said_bt = -1;
                 if ((int)bt_flag != said_bt) {
                     said_bt = bt_flag;
-                    if (bt_flag) clog_("suspend: stage 1 ALSO while playing over Bluetooth "
-                                       "(/contents/cinder_suspend_bt — an experiment)");
+                    clog_(bt_flag ? "suspend: stage 1 also while playing over Bluetooth (default; one "
+                                    "dropped link stops it for the boot)"
+                                  : "suspend: stage 1 NOT on Bluetooth (/contents/cinder_no_suspend_bt)");
                 }
                 const bool soc_idle =
                     suspend_while_playing ? (!g_screen_on && (!audible || on_jack_now || bt_ok)) : idle;
@@ -12831,7 +12847,7 @@ void* render_driver(void*) {
                 if ((int)suspend_while_playing != said_swp) {
                     said_swp = suspend_while_playing;
                     clog_(suspend_while_playing
-                          ? "suspend: stage 1 also while playing on the jack (default) — never on Bluetooth"
+                          ? "suspend: stage 1 also while playing on the jack (default)"
                           : "suspend: stage 1 NOT while playing (/contents/cinder_no_suspend_playing)");
                 }
 
@@ -12926,6 +12942,27 @@ void* render_driver(void*) {
                 if (idle_s > 0 && g_screen_on && !g_msc_active && !cinder_modal_open() &&
                     now_ms() - g_last_input_ms >= (long)idle_s * 1000) {
                     screen_auto_off();
+                }
+                // ── AN IDLE BLANK BECOMES A POWER BLANK AFTER FIVE MINUTES (2026-10-04, owner) ──
+                // The idle blank leaves the touch controller scanning so a touch can wake it. That
+                // is right for a player on a desk and wrong for one in a pocket: anything brushing
+                // the glass lights the panel, leaves stage 1 and restarts the whole countdown, for
+                // as long as it keeps happening. So a blank nobody has woken in five minutes is
+                // treated exactly as if Power had been pressed: the controller sleeps, the buttons
+                // stop waking the panel, and only Power brings it back. One IPC, once per blank.
+                // The escape is the same as the Power blank's — a key event, which depends on less
+                // than the touch panel it rescues, and touch_set_sleep(0) runs on every wake.
+                static long auto_off_at = 0;
+                if (!g_screen_auto_off) {
+                    auto_off_at = 0;
+                } else if (!auto_off_at) {
+                    auto_off_at = now_ms();
+                } else if (now_ms() - auto_off_at >= kIdleLockMs) {
+                    g_screen_auto_off = false;
+                    auto_off_at = 0;
+                    touch_set_sleep(1);
+                    clog_("screen: dark for 5 min after the idle timeout -> locked (touch asleep; "
+                          "Power wakes it)");
                 }
             }
             // AUTO POWER-OFF. Sony has this (sid_4118) and Cinder did not, so a paused device with

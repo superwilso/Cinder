@@ -637,12 +637,20 @@ static void* g_fake_display_obj[2];
 // callee that never reads its arguments is safe to reach with any of those shapes.
 static void fake_display_noop(void*, const void*) {}
 
+// Slot 13, recorded since the idle blank began locking after five minutes: the argument is the
+// only observable there is of "the touch panel was put to sleep".
+static void fake_touch_valid(void*, const bool* valid) {
+    Lock l; ensure();
+    g_trace->push_back(Call{intern("display:SetTouchPanelValidate"),
+                            (long long)(valid && *valid ? 1 : 0), g_now_ms});
+}
+
 static void* fake_display_create(void) {
     for (unsigned i = 0; i < sizeof g_fake_display_vtbl / sizeof *g_fake_display_vtbl; ++i)
         g_fake_display_vtbl[i] = (void*)&fake_display_noop;
     g_fake_display_vtbl[11] = (void*)&fake_bl_set;   // VIDX_SetLCDBacklightBrightness
     g_fake_display_vtbl[12] = (void*)&fake_bl_get;   // VIDX_GetLCDBacklightBrightness
-    // 13 = SetTouchPanelValidate — left as the no-op, but it must not be NULL.
+    g_fake_display_vtbl[13] = (void*)&fake_touch_valid;   // VIDX_SetTouchPanelValidate
     g_fake_display_obj[0] = (void*)g_fake_display_vtbl;   // the vptr main.cpp reads
     return (void*)g_fake_display_obj;
 }

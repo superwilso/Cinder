@@ -1368,6 +1368,26 @@ static void s_idle_blank_darkens_the_panel(void) {
         check(buf[0] == '0', "and still writes the brightness node");
 }
 
+// An idle blank leaves touch awake so a touch can wake it; left alone for five minutes it becomes a
+// Power blank (touch asleep, only Power wakes it), so a pocket cannot keep lighting the panel.
+static void s_idle_blank_locks_after_five_minutes(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_set_budget_ms(600000);
+    cinder_harness_run();
+
+    const char* tv = "display:SetTouchPanelValidate";
+    int n = cinder_harness_count(tv);
+    check(n >= 1, "the touch panel is switched at all");
+    check_eq(cinder_harness_arg(tv, n - 1), 0, "and the last word is 'asleep'");
+    long long at = cinder_harness_last_ms(tv);
+    std::printf("  .... locked at %lldms (30 s blank + 5 min)\n", at);
+    check_range(at, 329000, 336000, "five minutes after the blank, not before");
+    check_eq(cinder_harness_count_between(tv, 31000, 328000), 0,
+             "touch stays awake for the five minutes in between");
+    check_eq(cinder_harness_display_backlight(), 0, "still dark");
+}
+
 // The restore has to put back what was there, and that is an ORDERING rule:
 // `display_backlight_remember()` caches the service's own level, and it only works while that
 // level is still non-zero. Blank first and it caches 0 — the device then "restores" to 0 and wakes
@@ -1534,6 +1554,8 @@ struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     { "blank-idle",  s_idle_blank_darkens_the_panel,
       "the idle blank reaches DisplayService, not just the sysfs node" },
+    { "blank-lock",  s_idle_blank_locks_after_five_minutes,
+      "an idle blank nobody wakes locks after five minutes (touch asleep, Power wakes it)" },
     { "blank-order", s_blank_remembers_before_zeroing,
       "the service level is read before it is zeroed, so the restore has something to restore" },
     {"boot",              s_boot,                    "the app boots and brings Bluetooth up with it"},
