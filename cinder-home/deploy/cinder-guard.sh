@@ -38,6 +38,52 @@ _log() {
     true
 }
 
+# ── THE hagodaemon WRAPPER'S TRIAL BOOT (2026-10-04) ───────────────────────────────────────────
+# src/cinder-hagowrap.c stands in front of every Sony service, so a wrapper that does not work is
+# a player with no services — and possibly no adb to fix it with. Whoever installs it writes
+# `0` to $TRIAL. The first boot after that is the trial: this notes it and lets it run. If nobody
+# removes $TRIAL (the installer does, over adb, once the services are seen running), the NEXT boot
+# puts Sony's binary back before a single service starts. So the worst case is one bad boot and a
+# held power button. Runs before the Cinder checks below: it does not depend on Cinder at all.
+HAGO=/system/vendor/sony/bin/hagodaemon
+TRIAL=$STATE/hago_trial
+if [ -f "$TRIAL" ]; then
+    T=`cat $TRIAL 2>/dev/null`
+    case "$T" in 0) T=0 ;; *) T=1 ;; esac          # anything unreadable counts as "already tried"
+    if [ "$T" = "0" ]; then
+        echo 1 > $TRIAL 2>/dev/null
+        sync
+        _log "hagodaemon wrapper: trial boot (remove $TRIAL to keep the wrapper)"
+    else
+        _log "hagodaemon wrapper: trial boot was never confirmed - putting Sony's binary back"
+        if [ -s "$HAGO.real" ]; then
+            mount -o remount,rw /system 2>/dev/null
+            cat "$HAGO.real" > "$HAGO.guardtmp" 2>/dev/null
+            chmod 0755 "$HAGO.guardtmp" 2>/dev/null
+            OKCOPY=0
+            if [ -s "$HAGO.guardtmp" ]; then
+                OKCOPY=1
+                # Byte for byte when there is a cmp to ask; non-empty is the floor otherwise.
+                if [ -x /xbin/busybox ] && ! /xbin/busybox cmp -s "$HAGO.real" "$HAGO.guardtmp"; then
+                    OKCOPY=0
+                fi
+            fi
+            if [ "$OKCOPY" = "1" ]; then
+                mv "$HAGO.guardtmp" "$HAGO" 2>/dev/null
+                _log "hagodaemon wrapper: reverted - Sony's hagodaemon is back in place"
+            else
+                rm "$HAGO.guardtmp" 2>/dev/null
+                _log "hagodaemon wrapper: REVERT ABORTED - could not copy $HAGO.real"
+            fi
+            sync
+            mount -o remount,ro /system 2>/dev/null
+        else
+            _log "hagodaemon wrapper: no $HAGO.real to put back - nothing changed"
+        fi
+        rm "$TRIAL" 2>/dev/null
+    fi
+fi
+
 # Nothing to guard: Cinder is not installed (no backup means the .appcfg was never repointed).
 if [ ! -s "$REAL" ]; then
     _log "cinder not installed (.appcfg.real absent) — nothing to guard"

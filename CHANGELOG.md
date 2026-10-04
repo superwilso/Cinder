@@ -101,6 +101,14 @@ previews, and **not yet run on a device**. The library items are in
   for the rest of that boot and the log says so. *Never run with a link up: `DEVICE_CHECKLIST` 31.2
   is that run. Without the file nothing changes.*
 
+- **Mono and soundscapes over music on Walkman One, by hand for now.** `src/cinder-hagowrap.c`
+  stands in for Sony's `hagodaemon` (kept as `hagodaemon.real`) and gives SoundServiceFw alone an
+  `LD_PRELOAD` of `libcinder_mono.so`; every other service is one plain exec. No boot image is
+  edited. `cinder-guard.sh` gained a one-boot trial: unless the trial marker is removed, the next
+  boot puts Sony's binary back before any service starts. *Run on the owner's Walkman One player
+  2026-10-04: 28 services up, shim in SoundServiceFw only, music playing, `mono ON … summing` on the
+  jack. Installed over adb; in no package yet. Bluetooth and soundscapes over music not yet heard.*
+
 ### Changed
 
 - **The artist page** lists albums newest first.
@@ -137,6 +145,17 @@ previews, and **not yet run on a device**. The library items are in
   no listener the poll stays at 3 s. *Host-tested (`btpoll_selftest`); the saving is not measured.*
 
 ### Fixed
+
+- **The shim could not find ALSA on a player without Wampy.** Its hooks reached the real functions
+  with `RTLD_NEXT`, which only sees the global scope; Wampy's library happens to put libasound
+  there, and without it every hook answered `-ENOSYS`, no PCM opened and the player restarted when
+  music started (Walkman One, 2026-10-04; the guard reverted the wrapper on the next boot). The
+  shim now asks libasound itself. `test_mono_shim.sh` loads ALSA privately as well, host and qemu;
+  the old shim fails that test the way the player did. *Device-verified on Walkman One.*
+- **Visualisers from the decoded audio drew for a split second and stopped.** Sony's queue is
+  0.6–1.0 s ahead of what is heard and holds 0.23 s, so the packet for "now" was always gone. The
+  tap keeps 1.5 s of its own and draws from that. *Device-verified: `pcm tap … (0 ms off)`.* The
+  Visualiser settings page now feeds its preview too.
 
 - **Sony's equalizer works after the cable escape, a bad-boot revert or a crash hand-over.** Only
   Settings ▸ Boot to stock handed the EQ selector back; every other road to Sony's player left its

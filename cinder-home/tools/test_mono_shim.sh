@@ -49,7 +49,8 @@ run_all() {  # run_all <label> <runner...>
 }
 
 # ── host ──
-DEFS=(-DCINDER_MONO_DIR="\"$S\"" -DCINDER_MONO_DATA="\"$S\"" -DCINDER_WAMPY_LIB="\"$S/libsound_service_fw\"")
+DEFS=(-DCINDER_MONO_DIR="\"$S\"" -DCINDER_MONO_DATA="\"$S\"" -DCINDER_WAMPY_LIB="\"$S/libsound_service_fw\""
+      -DCINDER_ASOUND_LIB='"libfakeasound.so"')
 cc -O2 -Wall -Wextra -shared -fPIC "${DEFS[@]}" -I"$HERE/src" \
    -o "$W/libcinder_mono.so" "$HERE/src/cinder-mono.c" -ldl -lpthread
 cc -O2 -Wall -shared -fPIC -DFAKE_WAMPY -o "$W/fakewampy.so" "$HERE/tools/mono_shim_test.c"
@@ -57,6 +58,12 @@ WAMPY="$W/fakewampy.so"
 cc -O2 -Wall -shared -fPIC -DFAKE_ASOUND -o "$W/libfakeasound.so" "$HERE/tools/mono_shim_test.c"
 cc -O2 -Wall -o "$W/mono_shim_test" "$HERE/tools/mono_shim_test.c" -L"$W" -lfakeasound -Wl,-rpath,"$W"
 run_all host env LD_PRELOAD="$W/libcinder_mono.so" "$W/mono_shim_test"
+# The player WITHOUT Wampy (Walkman One): ALSA is loaded privately by the code that uses it, so
+# RTLD_NEXT finds nothing behind the hooks. On 2026-10-04 that was -ENOSYS from every one of them
+# and a player that restarted the moment music started. Same checks, that load shape.
+cc -O2 -Wall -shared -fPIC -DAS_HAL -o "$W/libhal.so" "$HERE/tools/mono_shim_test.c" -L"$W" -lfakeasound -Wl,-rpath,"$W"
+cc -O2 -Wall -DHAL_LAUNCHER -o "$W/hal_launcher" "$HERE/tools/mono_shim_test.c" -ldl
+run_all "host (ALSA loaded privately)" env MONO_HAL="$W/libhal.so" LD_PRELOAD="$W/libcinder_mono.so" "$W/hal_launcher"
 
 # ── device glibc under qemu ──
 DEVSYS="${DEVSYS:-$HOME/toolchains/xenial-armhf-sysroot/sysroot}"
@@ -86,6 +93,13 @@ if [ -d "$DEVSYS/usr/include" ] && [ -f "$RAMLIB/libc.so.6" ] && [ -n "$QEMU" ] 
     echo "device: libcinder_mono.so needs $(arm-linux-gnueabihf-readelf -V "$SR/lib/libcinder_mono.so" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tr '\n' ' ')"
     # qemu -L only redirects paths that exist under the sysroot, so the state dir is a host path.
     run_all "device (qemu)" "$QEMU" -L "$SR" -E LD_LIBRARY_PATH=/lib -E LD_PRELOAD=/lib/libcinder_mono.so "$SR/mono_shim_test"
+    "$CC" -O2 -shared -fPIC "${SYS223[@]}" -DAS_HAL -Wl,-soname,libhal.so -o "$SR/lib/libhal.so" \
+          "$HERE/tools/mono_shim_test.c" -L"$SR/lib" -l:libfakeasound.so "${LINK[@]}"
+    "$CC" -O2 "${SYS223[@]}" -DHAL_LAUNCHER -nostdlib -o "$SR/hal_launcher" \
+          "$CRT/crt1.o" "$CRT/crti.o" "$HERE/tools/mono_shim_test.c" \
+          "${LINK[@]}" "$CRT/libc_nonshared.a" "$CRT/crtn.o" -Wl,--dynamic-linker=/lib/ld-linux-armhf.so.3
+    run_all "device (qemu, ALSA loaded privately)" "$QEMU" -L "$SR" -E LD_LIBRARY_PATH=/lib \
+            -E MONO_HAL=/lib/libhal.so -E LD_PRELOAD=/lib/libcinder_mono.so "$SR/hal_launcher"
 else
     echo "device (qemu): skipped — cross toolchain, device libs or qemu not present"
 fi

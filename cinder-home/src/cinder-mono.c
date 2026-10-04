@@ -239,6 +239,29 @@ static uint8_t* scratch(size_t n)
 
 #define RESOLVE(var, name) do { if (!(var)) (var) = dlsym(RTLD_NEXT, name); } while (0)
 
+/* ALSA's own functions, behind our hooks. RTLD_NEXT finds them only when libasound is in the
+ * GLOBAL scope — which it is next to Wampy (its library is preloaded and brings Sony's sound
+ * library, and with it libasound, in at start-up) and is NOT on a player without Wampy: there
+ * hagodaemon dlopens libSoundServiceFw privately, our hook is still called (a private library
+ * looks in the global scope first, and we are in it), and RTLD_NEXT then finds nothing after us.
+ * Walkman One, 2026-10-04: every hook answered -ENOSYS, Sony's HAL logged `hw_params_set_format
+ * [Function not implemented]`, no PCM ever opened and the framework's hang checker restarted the
+ * player. So: ask the library itself. RTLD_NOLOAD — it is loaded by the time anything calls a
+ * hook, and this must never be what loads it. A handle lookup searches that library and what it
+ * needs, never the global scope, so it cannot hand our own hook back. */
+#ifndef CINDER_ASOUND_LIB
+#define CINDER_ASOUND_LIB "libasound.so"
+#endif
+static void* alsa_sym(const char* name)
+{
+    void* p = dlsym(RTLD_NEXT, name);
+    if (p) return p;
+    static void* lib;
+    if (!lib) lib = dlopen(CINDER_ASOUND_LIB, RTLD_NOW | RTLD_NOLOAD);
+    return lib ? dlsym(lib, name) : NULL;
+}
+#define RESOLVE_ALSA(var, name) do { if (!(var)) (var) = alsa_sym(name); } while (0)
+
 __attribute__((constructor)) static void cinder_mono_init(void)
 {
     RESOLVE(real_write, "write");
@@ -335,7 +358,7 @@ static pcm_info* pcm_slot(void* pcm, int create)   /* lock held */
 
 int snd_pcm_hw_params_set_format(void* pcm, void* params, int fmt)
 {
-    RESOLVE(real_set_format, "snd_pcm_hw_params_set_format");
+    RESOLVE_ALSA(real_set_format, "snd_pcm_hw_params_set_format");
     if (!real_set_format) return -ENOSYS;
     const int r = real_set_format(pcm, params, fmt);
     if (g_active && r == 0) {
@@ -349,7 +372,7 @@ int snd_pcm_hw_params_set_format(void* pcm, void* params, int fmt)
 
 int snd_pcm_hw_params_set_channels(void* pcm, void* params, unsigned int ch)
 {
-    RESOLVE(real_set_channels, "snd_pcm_hw_params_set_channels");
+    RESOLVE_ALSA(real_set_channels, "snd_pcm_hw_params_set_channels");
     if (!real_set_channels) return -ENOSYS;
     const int r = real_set_channels(pcm, params, ch);
     if (g_active && r == 0) {
@@ -375,11 +398,11 @@ static void pcm_note_rate(void* pcm, unsigned rate)
 
 int snd_pcm_hw_params(void* pcm, void* params)
 {
-    RESOLVE(real_hw_params, "snd_pcm_hw_params");
+    RESOLVE_ALSA(real_hw_params, "snd_pcm_hw_params");
     if (!real_hw_params) return -ENOSYS;
     const int r = real_hw_params(pcm, params);
     if (g_active && r == 0) {
-        RESOLVE(real_get_rate, "snd_pcm_hw_params_get_rate");
+        RESOLVE_ALSA(real_get_rate, "snd_pcm_hw_params_get_rate");
         unsigned rate = 0;
         int dir = 0;
         if (real_get_rate && real_get_rate(params, &rate, &dir) == 0) pcm_note_rate(pcm, rate);
@@ -389,7 +412,7 @@ int snd_pcm_hw_params(void* pcm, void* params)
 
 int snd_pcm_hw_params_set_rate_near(void* pcm, void* params, unsigned int* val, int* dir)
 {
-    RESOLVE(real_set_rate_near, "snd_pcm_hw_params_set_rate_near");
+    RESOLVE_ALSA(real_set_rate_near, "snd_pcm_hw_params_set_rate_near");
     if (!real_set_rate_near) return -ENOSYS;
     const int r = real_set_rate_near(pcm, params, val, dir);
     if (r == 0 && val) pcm_note_rate(pcm, *val);
@@ -398,7 +421,7 @@ int snd_pcm_hw_params_set_rate_near(void* pcm, void* params, unsigned int* val, 
 
 int snd_pcm_hw_params_set_rate(void* pcm, void* params, unsigned int val, int dir)
 {
-    RESOLVE(real_set_rate, "snd_pcm_hw_params_set_rate");
+    RESOLVE_ALSA(real_set_rate, "snd_pcm_hw_params_set_rate");
     if (!real_set_rate) return -ENOSYS;
     const int r = real_set_rate(pcm, params, val, dir);
     if (r == 0) pcm_note_rate(pcm, val);
@@ -407,7 +430,7 @@ int snd_pcm_hw_params_set_rate(void* pcm, void* params, unsigned int val, int di
 
 int snd_pcm_close(void* pcm)
 {
-    RESOLVE(real_pcm_close, "snd_pcm_close");
+    RESOLVE_ALSA(real_pcm_close, "snd_pcm_close");
     if (g_active) {
         pthread_mutex_lock(&g_pcm_lock);
         pcm_info* s = pcm_slot(pcm, 0);
@@ -419,7 +442,7 @@ int snd_pcm_close(void* pcm)
 
 long snd_pcm_writei(void* pcm, const void* buf, unsigned long frames)
 {
-    RESOLVE(real_writei, "snd_pcm_writei");
+    RESOLVE_ALSA(real_writei, "snd_pcm_writei");
     if (!real_writei) return -ENOSYS;
     if (!g_active || !buf || frames == 0) return real_writei(pcm, buf, frames);
     const int mono = mono_on();
