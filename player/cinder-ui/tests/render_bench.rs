@@ -186,7 +186,7 @@ fn bench_library_tabs() {
     bare.thumbs.clear();
     if let Some(album) = bare.albums_flat().first().map(|a| (*a).clone()) {
         time_it("album_view (gradient cover)", n, || {
-            library::album_view(&mut c, &t, &f, &album, 0, 0, None, None, false)
+            library::album_view(&mut c, &t, &f, &album, 0, 0, None, None, false, None)
         });
     }
 }
@@ -224,6 +224,7 @@ fn bench_derived_state() {
                     // Bit 0 is Sony's always-set one; the rest spread the bench library over five
                     // channels, so a SensMe list drawn against it is realistically long.
                     sensme: 1 | (1 << (i % 5 + 1)),
+                    ..Default::default()
                 })
                 .collect();
             songs.extend(track_list.iter().cloned());

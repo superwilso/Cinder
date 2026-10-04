@@ -19,6 +19,7 @@ mod lyrics;
 mod playlists;
 mod present;
 mod scrobble;
+mod stats;
 mod pcm_tap;
 mod spectrum;
 
@@ -617,6 +618,18 @@ struct Render {
     /// Playlists the user made ON the device, as .m3u8 files (see `playlists.rs`). Separate from
     /// the Sony ones below because they are the only ones this app may write.
     plists: playlists::Store,
+    /// Ratings and play counts, by file path (`stats.rs`). The UI's copy, by object id, is
+    /// `Library::stats`; this is the one that is written to `/contents/cinder_stats.tsv`.
+    stats: stats::Store,
+    /// The play counter's own listen clock, fed beside the scrobbler's.
+    listen: stats::Listen,
+    /// When the stats were last changed, so a burst of edits is written once.
+    stats_changed: std::time::Instant,
+    /// Where the saved views live (`/contents/cinder_views.conf`); None until the library opens.
+    views_path: Option<String>,
+    /// The views file as this side last read or wrote it. A save happens when the UI's views
+    /// differ from this — the same compare `save_settings` makes.
+    views_saved: String,
     /// Sony's playlist rows, kept from the last library build so a playlist edit can rebuild the
     /// merged list without re-querying the database — one edit is a keypress away from the next,
     /// and the DB half of the list cannot have changed in between.
@@ -825,6 +838,11 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         liked: std::collections::BTreeSet::new(),
         liked_path: None,
         plists: playlists::Store::default(),
+        stats: stats::Store::default(),
+        listen: stats::Listen::default(),
+        stats_changed: std::time::Instant::now(),
+        views_path: None,
+        views_saved: String::new(),
         db_playlists: Vec::new(),
         pending_play_start: 0,
         art_full: None,
@@ -888,8 +906,194 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
         | (s.dc as u8) << 3
         | (s.norm as u8) << 4
         | (s.clear as u8) << 5;
-    format!("bank_eq={}\nbank_sound={}\nbank_balance={}\nbank_preset={}\n",
-            eq.join(","), flags, s.balance, s.eq_preset)
+    let tone: Vec<String> = s.tone_bands.iter().map(|b| b.to_string()).collect();
+    // The second line is R5's: a profile is every DSP value, so the spare carries the VPT room, the
+    // DC Phase filter and the whole of Sound ▸ Advanced too. `bank_adv` is `SoundSetup::adv_bits`
+    // — bits 0..=4 of the live `adv=` key, without the linear-amp bit, which no profile owns.
+    format!(
+        "bank_eq={}\nbank_sound={}\nbank_balance={}\nbank_preset={}\n\
+         bank_vpt_mode={}\nbank_dc_type={}\nbank_adv={}\nbank_dsee_mode={}\nbank_vinyl_type={}\nbank_tone={}\n",
+        eq.join(","), flags, s.balance, s.eq_preset,
+        s.vpt_mode, s.dc_type, s.adv_bits(), s.dsee_mode, s.vinyl_type, tone.join(","),
+    )
+}
+
+/// Which profile each output uses (R5), one line per output: `profile_jack=a`, `profile_bt=b`,
+/// `profile_usb=a`. Letters rather than indices, like `volume_hud` and `home_screen`: they are
+/// what the screen shows, and what someone editing the file by hand would expect to type.
+fn profiles_body(map: [usize; 3]) -> String {
+    cinder_ui::profile::Output::ALL
+        .iter()
+        .map(|o| format!("{}={}\n", o.key(), cinder_ui::profile::letter(map[o.idx()]).to_ascii_lowercase()))
+        .collect()
+}
+
+/// Write `body` to `path` so that a crash or a power cut leaves either the old file or the new
+/// one, never half of one: the body goes to a temporary file beside it, is flushed to the card,
+/// and is renamed over the original. `/contents` is vfat on flash and the player can lose power
+/// at any moment (the battery, the Hold-off reboot), and this file now holds both sound profiles —
+/// a truncated write used to cost a preference; it would now cost a tuning.
+/// The profile half of a settings file while it is being read: the spare profile (`bank_*`), which
+/// of the two was live (`setup`) and which one each output uses (`profile_*`). The live profile is
+/// NOT here — it is the ordinary `eq=` / `sound=` / `adv=` … keys, so a build from before the
+/// profiles existed reads the same file and finds what it expects.
+struct ProfileLoad {
+    bank: cinder_ui::nav::SoundSetup,
+    /// The file had a spare at all. One written before A/B existed does not.
+    bank_seen: bool,
+    /// The file carried the spare's Advanced values. One written before R5 does not.
+    bank_adv_seen: bool,
+    live_idx: usize,
+    profiles: [usize; 3],
+}
+
+impl Default for ProfileLoad {
+    fn default() -> Self {
+        ProfileLoad {
+            bank: cinder_ui::nav::SoundSetup::default(),
+            bank_seen: false,
+            bank_adv_seen: false,
+            live_idx: 0,
+            profiles: [0; 3],
+        }
+    }
+}
+
+impl ProfileLoad {
+    /// Take one `key=value` line. True if the key was one of ours (whether or not the value
+    /// parsed — a garbage value is ignored, never an error: a bad config must not stop a boot).
+    fn line(&mut self, k: &str, v: &str) -> bool {
+        let bank = &mut self.bank;
+        match k {
+            "setup" => {
+                if let Ok(n) = v.parse::<usize>() {
+                    self.live_idx = n & 1;
+                }
+            }
+            "bank_sound" => {
+                if let Ok(f) = v.parse::<u8>() {
+                    bank.dsee = f & 1 != 0;
+                    bank.vinyl = f & (1 << 1) != 0;
+                    bank.vpt = f & (1 << 2) != 0;
+                    bank.dc = f & (1 << 3) != 0;
+                    bank.norm = f & (1 << 4) != 0;
+                    bank.clear = f & (1 << 5) != 0;
+                    self.bank_seen = true;
+                }
+            }
+            "bank_balance" => {
+                if let Ok(n) = v.parse::<usize>() {
+                    bank.balance = n.min(cinder_ui::sound::BALANCE_MAX);
+                    self.bank_seen = true;
+                }
+            }
+            "bank_preset" => {
+                if let Ok(n) = v.parse::<usize>() {
+                    bank.eq_preset = n;
+                    self.bank_seen = true;
+                }
+            }
+            "bank_eq" => {
+                for (i, part) in v.split(',').take(10).enumerate() {
+                    // Same clamp, same reason as the live "eq" key — the spare is loaded from the
+                    // same PC-writable file and reaches the same DSP call, where an out-of-range
+                    // band is ZEROED rather than clamped.
+                    if let Ok(g) = part.trim().parse::<i8>() {
+                        bank.eq_bands[i] = g.clamp(-crate::EQ_BAND_MAX, crate::EQ_BAND_MAX);
+                    }
+                }
+                self.bank_seen = true;
+            }
+            // R5: the rest of the spare profile. The enum indices are clamped by `set_setup` when
+            // the spare becomes live; the tone bands are clamped here as well, because the spare is
+            // also what `setup_inactive` hands back to be written.
+            "bank_vpt_mode" => {
+                if let Ok(n) = v.parse::<usize>() {
+                    bank.vpt_mode = n;
+                }
+            }
+            "bank_dc_type" => {
+                if let Ok(n) = v.parse::<usize>() {
+                    bank.dc_type = n;
+                }
+            }
+            "bank_adv" => {
+                if let Ok(n) = v.parse::<u8>() {
+                    bank.set_adv_bits(n);
+                    self.bank_adv_seen = true;
+                }
+            }
+            "bank_dsee_mode" => {
+                if let Ok(n) = v.parse::<usize>() {
+                    bank.dsee_mode = n;
+                }
+            }
+            "bank_vinyl_type" => {
+                if let Ok(n) = v.parse::<usize>() {
+                    bank.vinyl_type = n;
+                }
+            }
+            "bank_tone" => {
+                for (i, part) in v.split(',').take(cinder_ui::tone::BANDS).enumerate() {
+                    if let Ok(n) = part.trim().parse::<i8>() {
+                        bank.tone_bands[i] = n.clamp(-cinder_ui::tone::BAND_MAX, cinder_ui::tone::BAND_MAX);
+                    }
+                }
+            }
+            // Which profile each output uses. An unreadable letter leaves that output on A.
+            "profile_jack" | "profile_bt" | "profile_usb" => {
+                if let (Some(o), Some(i)) = (
+                    cinder_ui::profile::Output::ALL.iter().find(|o| o.key() == k),
+                    cinder_ui::profile::parse_letter(v),
+                ) {
+                    self.profiles[o.idx()] = i;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Install what was read, once every line has been seen. The live profile is already in `app`
+    /// (from the ordinary keys); this banks the spare beside it and then lets the outputs decide
+    /// which of the two is live.
+    fn install(mut self, app: &mut cinder_ui::nav::App) {
+        // A file written before A/B existed has no spare: it stays at its default and A/B still
+        // works — it just starts out as "your setup" versus "a fresh one".
+        if self.bank_seen {
+            let live = app.setup();
+            // A file from before R5: Sound ▸ Advanced was ONE set of values shared by A and B.
+            // Give the spare the same ones, so the upgrade changes nothing that is heard — a spare
+            // starting from "everything off" would switch Source Direct or Tone Control off the
+            // first time B was picked.
+            if !self.bank_adv_seen {
+                self.bank.set_adv_bits(live.adv_bits());
+                self.bank.dsee_mode = live.dsee_mode;
+                self.bank.vinyl_type = live.vinyl_type;
+                self.bank.tone_bands = live.tone_bands;
+            }
+            app.restore_setups(live, self.bank, self.live_idx);
+        }
+        // Then the outputs: the live setup follows the output that is live at boot (the jack),
+        // whichever one the file was written under.
+        app.restore_profiles(self.profiles);
+    }
+}
+
+fn write_atomic(path: &str, body: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = format!("{path}.tmp");
+    let res = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(body.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
 }
 
 fn settings_body(r: &Render) -> String {
@@ -927,6 +1131,7 @@ fn settings_body(r: &Render) -> String {
         r.app.setup_idx(),
     );
     body.push_str(&setup_body(&r.app.setup_inactive()));
+    body.push_str(&profiles_body(r.app.profile_map()));
     // The visualiser's signal settings. One line each rather than a packed field, because these
     // are exactly the lines someone tuning the display over adb will want to edit by hand — and
     // every one is an INDEX into a table owned by `cinder_ui::vizcfg`, so an out-of-range value
@@ -942,6 +1147,8 @@ fn settings_body(r: &Render) -> String {
     // Library ▸ the header's view button: each tab's layout, Songs to Playlists, as words.
     body.push_str(&format!("lib_views={}\n", r.app.lib_views_str()));
     body.push_str(&format!("sensme_follow_time={}\n", r.app.sensme_follow() as u8));
+    // Settings ▸ Shuffle: what the shuffle button deals, as a word.
+    body.push_str(&format!("shuffle_by={}\n", r.app.shuffle_by()));
     // Sound ▸ Advanced ▸ DAC EQ, RAW half-decibels in the helper's argument order.
     body.push_str(&format!(
         "dac_eq={}\n",
@@ -1002,13 +1209,85 @@ fn save_settings(r: &mut Render) {
     if r.settings_path.is_none() {
         return;
     }
+    // The saved views ride the same save points: every tap, press and swipe ends here.
+    save_views(r);
     let body = settings_body(r);
     if body == r.last_saved_body {
         return;
     }
     if let Some(path) = r.settings_path.clone() {
-        let _ = std::fs::write(&path, &body);
+        let _ = write_atomic(&path, &body);
         r.last_saved_body = body;
+    }
+}
+
+/// Where the saved views live, beside the liked list and the playlists.
+const VIEWS_PATH: &str = "/contents/cinder_views.conf";
+
+/// Read the saved views into the navigator. Called when the library opens.
+///
+/// Skipped while the UI holds views this side has not written yet: those are newer than the file.
+/// Otherwise the file is the truth, so one copied on over USB is picked up on the next open, and a
+/// file that could not be read during the boot window is read on the next.
+fn load_views(r: &mut Render, path: &str) {
+    r.views_path = Some(path.to_string());
+    if r.app.views_body() != r.views_saved && !r.views_saved.is_empty() {
+        return;
+    }
+    let body = std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    r.app.set_views_body(&body);
+    // What the UI makes of the file, not the file's bytes: a hand-edited file with a stray line
+    // must not look like a pending change and be rewritten on the next tap.
+    r.views_saved = r.app.views_body();
+}
+
+/// Write the saved views if they changed: a temporary file, then a rename. Best-effort, like the
+/// settings — a volume that is with the PC keeps the change in memory and the next save retries.
+///
+/// A file that appeared or changed underneath (the boot window, a PC tool) is merged first: a view
+/// on disk that this side does not have by name is kept, so a save can add to the file but never
+/// silently drop what it had not read.
+fn save_views(r: &mut Render) {
+    let Some(path) = r.views_path.clone() else { return };
+    let body = r.app.views_body();
+    if body == r.views_saved {
+        return;
+    }
+    if let Ok(disk) = std::fs::read(&path) {
+        let disk = cinder_ui::views::parse(&String::from_utf8_lossy(&disk));
+        let saved = cinder_ui::views::parse(&r.views_saved);
+        let mut mine = cinder_ui::views::parse(&body);
+        // Only views this side never knew about: one it knew and no longer has was deleted here.
+        let unseen: Vec<_> = disk
+            .into_iter()
+            .filter(|d| {
+                let known = |vs: &[cinder_ui::views::SavedView]| vs.iter().any(|v| v.id() == d.id());
+                !known(&saved) && !known(&mine)
+            })
+            .collect();
+        if !unseen.is_empty() {
+            mine.extend(unseen);
+            r.app.set_views_body(&cinder_ui::views::serialize(&mine));
+        }
+    }
+    let body = r.app.views_body();
+    let tmp = format!("{path}.tmp");
+    if std::fs::write(&tmp, &body).and_then(|_| std::fs::rename(&tmp, &path)).is_ok() {
+        r.views_saved = body;
+    }
+}
+
+/// Write the stats file if it has changed and the change has settled for a few seconds, so five
+/// taps on the stars are one write. `now` forces it (before the volume is handed to a PC).
+fn flush_stats(r: &mut Render, now: bool) {
+    if !r.stats.is_dirty() || (!now && r.stats_changed.elapsed().as_secs() < 3) {
+        return;
+    }
+    if let Err(e) = r.stats.flush() {
+        // Not every second: push the next attempt out, or a volume that is away for an hour
+        // would be an hour of this line.
+        r.stats_changed = std::time::Instant::now();
+        eprintln!("cinder-ffi: stats not written ({e}) — kept in memory, will retry");
     }
 }
 
@@ -1147,7 +1426,14 @@ fn set_progress(np: &mut Np, pos_ms: i64, dur_ms: i64) {
 /// cached cover.
 const NO_ALBUM_ID: i64 = i64::MIN;
 
+#[cfg(test)]
 fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
+    build_library_with(db, None)
+}
+
+/// [`build_library`], with the stats store read against the tracks while their paths are in hand
+/// — the store is keyed by path and the UI by object id, and this is the one place both exist.
+fn build_library_with(db: &cinder_db::Db, stats: Option<&stats::Store>) -> cinder_ui::Library {
     use cinder_ui::model::{AlbumRow, ArtistGroup, ArtistRow, SongRow};
     use std::collections::BTreeMap;
 
@@ -1183,6 +1469,9 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
         Vec::new()
     });
     let ms_tracks = t_phase.elapsed().as_millis();
+    let track_stats = stats
+        .map(|s| s.by_object_id(tracks.iter().map(|t| (t.object_id, t.filename.as_str()))))
+        .unwrap_or_default();
     // WHERE THE MUSIC IS, one line per open. "The music on my SD card doesn't show up" can only be
     // answered from a log if the log says how much of the library each storage holds: a card whose
     // rows are missing from Sony's store reads `SD 0` here, and rows whose storage root did not map
@@ -1382,6 +1671,9 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
             // …and therefore never a CHOSEN cover: there is no file to write it in. These still
             // get the automatic one, off their first member track, like everything else.
             cover_custom: false,
+            smart: false,
+            rules: String::new(),
+            edited: false,
             cover_album_id: 0, // the automatic cover, filled by `auto_playlist_covers` below
             name: p.name.clone(),
             tracks: p.track_count.max(0) as u32,
@@ -1454,6 +1746,7 @@ fn build_library(db: &cinder_db::Db) -> cinder_ui::Library {
     auto_playlist_covers(&mut playlists);
 
     let mut lib = cinder_ui::Library {
+        stats: track_stats,
         songs,
         album_groups,
         artists,
@@ -1609,12 +1902,15 @@ static PANIC_TRACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// Screen names for the panic line, indexed by `screen_ord`. Static strings only — the hook
 /// allocates nothing it does not have to.
-const SCREEN_NAMES: [&str; 38] = [
+const SCREEN_NAMES: [&str; 44] = [
     "Lock", "NowPlaying", "Menu", "Library", "Album", "Artist", "Playlist", "UpNext", "Eq",
     "Sound", "Bluetooth", "Settings", "Fm", "UsbDac", "Receiver", "Onboarding", "UsbStorage",
     "Shelf", "Pairing", "GenreFilter", "TrackInfo", "Folders", "ClockSet", "Advanced",
     "Tone", "BtCodec", "Keyboard", "PlaylistPick", "TrackPick", "Device", "VizSet", "Lyrics",
-    "Search", "SensMe", "Display", "Palette", "Help", "DacEq",
+    "Search", "SensMe", "Display", "Palette", "Help", "DacEq", "PlaylistEdit", "ViewEdit",
+    // 40..=42 were left spare when R4 and R5 were built side by side; R5's screens start at 43.
+    "?", "?", "?",
+    "Profiles",
 ];
 
 /// Exhaustive on purpose: adding a `Screen` variant without a name here fails the build rather
@@ -1631,6 +1927,8 @@ fn screen_ord(s: cinder_ui::nav::Screen) -> u8 {
         S::Keyboard => 26, S::PlaylistPick => 27, S::TrackPick => 28,
         S::Device => 29, S::VizSet => 30, S::Lyrics => 31, S::Search => 32, S::SensMe => 33,
         S::Display => 34, S::Palette => 35, S::Help => 36, S::DacEq => 37,
+        S::PlaylistEdit => 38, S::ViewEdit => 39,
+        S::Profiles => 43,
     }
 }
 
@@ -2344,6 +2642,13 @@ fn song_row_of(t: &cinder_db::Track) -> cinder_ui::model::SongRow {
         year: 0,
         genre_id: t.genre_id.unwrap_or(0),
         is_hires: t.is_hires,
+        // Only when it DIFFERS from the track artist: the common row then carries an empty string,
+        // which allocates nothing (`SongRow::group_artist` supplies the fallback).
+        album_artist: {
+            let aa = t.album_artist.trim();
+            if aa.is_empty() || aa == t.artist.trim() { String::new() } else { t.album_artist.clone() }
+        },
+        format: cinder_ui::model::Format::of_path(&t.filename),
         // Filled by `build_library` from the SensMe map, which is keyed by object id — this
         // builder only sees the track row. Every copy that is not in `Library::songs` (an album's
         // track list, a playlist's) leaves it 0, and nothing but `build_channels` reads it.
@@ -2356,7 +2661,10 @@ fn song_row_of(t: &cinder_db::Track) -> cinder_ui::model::SongRow {
 /// a blank next to "Genre" claims the file has no genre, which is a different statement from the
 /// library not having resolved one.
 fn track_info_rows(r: &Render, t: &cinder_db::Track) -> Vec<(String, String)> {
-    let mut rows: Vec<(String, String)> = Vec::with_capacity(12);
+    let mut rows: Vec<(String, String)> = Vec::with_capacity(13);
+    // The Rating row leads: it is the one row here that is a control (`track_info::is_rating`),
+    // and the stars are drawn from the library's stats, not from this placeholder value.
+    rows.push(("Rating".to_string(), "-".to_string()));
     let mut put = |k: &str, v: String| {
         if !v.trim().is_empty() {
             rows.push((k.to_string(), v));
@@ -2915,6 +3223,9 @@ fn user_playlist_rows(
                 art: list.name.clone(),
                 track_list,
                 user: true,
+                smart: false,
+                rules: String::new(),
+                edited: list.edited.is_some(),
                 // An `#EXTIMG:` line or a picture dropped beside the file — either way, a cover
                 // the owner chose, which is what the page offers to put back to automatic.
                 cover_custom: list.cover_is_custom(),
@@ -2999,6 +3310,16 @@ fn merge_playlist_rows(
     }
     rows.sort_by(|a, b| cinder_ui::collate::cmp(&a.name, &b.name));
     rows
+}
+
+/// For each entry of one of OUR playlists, the object id the library resolves it to, or None when
+/// the file is not in the library right now. The same batch resolve `user_playlist_rows` builds
+/// the page from, so "the n-th resolved entry" here is the n-th row there.
+fn playlist_entry_ids(r: &Render, id: i64) -> Vec<Option<i64>> {
+    let (Some(db), Some(list)) = (r.db.as_ref(), r.plists.get(id)) else { return Vec::new() };
+    let names: Vec<&str> = list.entries.iter().map(|e| e.uri.as_str()).collect();
+    let resolved = db.tracks_by_filenames(&names).unwrap_or_default();
+    list.entries.iter().map(|e| resolved.get(e.uri.as_str()).map(|t| t.object_id)).collect()
 }
 
 /// The tracks of one of OUR playlists, in saved order, resolved to DB rows for playback.
@@ -3404,7 +3725,71 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
             refresh_playlists(r);
             return None;
         }
+        Action::PlaylistSaveEdit(playlist_id) => {
+            // The editor's DONE. The order is in ids of what the page showed; the store works in
+            // file entries, some of which the page never showed (their files are not in the
+            // library right now) — `Store::reorder` keeps those where they were.
+            let (id, order) = r.app.take_playlist_edit().filter(|(id, _)| id == playlist_id)?;
+            let resolved = playlist_entry_ids(r, id);
+            match r.plists.reorder(id, &resolved, &order) {
+                Ok(true) => eprintln!("cinder-ffi: playlist edit saved — {} members kept", order.len()),
+                Ok(false) => {}
+                Err(e) => eprintln!("cinder-ffi: playlist edit: {e}"),
+            }
+            // Refresh either way: the page is then what the file says, whatever happened.
+            refresh_playlists(r);
+            return None;
+        }
+        Action::RateTrack(object_id, stars) => {
+            // The UI has already changed its copy. This is the write — keyed by PATH, because the
+            // object id will not survive the next rescan.
+            let path = r
+                .db
+                .as_ref()
+                .and_then(|db| db.track_by_object_id(*object_id).ok().flatten())
+                .map(|t| t.filename);
+            match path {
+                Some(path) => {
+                    r.stats.rate(&path, *stars);
+                    r.stats_changed = std::time::Instant::now();
+                }
+                None => eprintln!("cinder-ffi: rate: object {object_id} is not in the library"),
+            }
+            return None;
+        }
+        Action::ShuffleList => {
+            // `PlayListAt`'s shuffled twin: the ids on screen (a smart playlist), dealt at random,
+            // with the order they had kept so the shuffle toggle can put it back.
+            let ids = r.app.take_play_list();
+            let by_id = r
+                .db
+                .as_ref()
+                .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
+                .unwrap_or_default();
+            let mut seq: Vec<cinder_db::Track> = ids.iter().filter_map(|id| by_id.get(id).cloned()).collect();
+            if seq.is_empty() {
+                eprintln!("cinder-ffi: ShuffleList: nothing in the list resolved — ignored");
+                return None;
+            }
+            let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
+            Rng::new().shuffle(&mut seq);
+            r.np.shuffle = true;
+            set_pending(r, seq, 0);
+            r.app.note_pre_shuffle(pre);
+            8
+        }
         Action::PlaylistRemoveAt(playlist_id, position) => {
+            // `position` is a row of the PAGE, which lists only the members the library resolved.
+            // The file may hold more (a member on a card that is out), so the row is mapped to its
+            // file entry first — removing by the raw number took out a different track whenever an
+            // unresolved one sat above it.
+            let entry = playlist_entry_ids(r, *playlist_id)
+                .iter()
+                .enumerate()
+                .filter(|(_, id)| id.is_some())
+                .map(|(i, _)| i)
+                .nth(*position as usize);
+            let position = &(entry? as u32);
             match r.plists.remove_at(*playlist_id, *position as usize) {
                 Ok(true) => refresh_playlists(r),
                 Ok(false) => {}
@@ -3477,7 +3862,11 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
         Action::FmBtOut(on) => { r.fm_bt = *on; 44 }
         Action::ThemeChanged(_) => 16, // shell also drives the backlight (night = minimal light)
         Action::Sleep => 10,
-        Action::EnterUsbMsc => 11,
+        Action::EnterUsbMsc => {
+            // The volume is about to go to the PC: write what is pending while it is still ours.
+            flush_stats(r, true);
+            11
+        }
         Action::ExitUsbMsc => 19,
         Action::EqChanged(_) => 12,
         Action::BtToggle(_) => 26, // shell drives SetRfOnOff + reconnects the last device
@@ -4290,6 +4679,42 @@ pub extern "C" fn cinder_set_sensme_enabled(on: libc::c_int) {
 pub extern "C" fn cinder_set_usb_dac(on: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_usb_dac(on != 0);
+        // The route may have switched the live sound profile (R5): repaint and persist it.
+        r.dirty = true;
+        save_settings(r);
+    }
+}
+
+/// Did a ROUTE CHANGE switch the live sound profile since the last call? 1 once, then 0.
+///
+/// A profile is remembered per output (jack, Bluetooth, USB-DAC), and the navigator swaps the live
+/// one inside `cinder_set_bt_route` / `cinder_set_usb_dac` and on the USB-DAC switch. Those are
+/// state pushes, not taps, so there is no action code to return: the shell asks here straight
+/// after each of them and, on 1, re-applies the EQ and the effect chain exactly as it does for
+/// `CINDER_ACT_SOUND_CHANGED`.
+#[no_mangle]
+pub extern "C" fn cinder_take_profile_apply() -> libc::c_int {
+    match cell().lock().unwrap().as_mut() {
+        Some(r) => r.app.take_profile_apply() as libc::c_int,
+        None => 0,
+    }
+}
+
+/// Which sound profile is live: 0 = A, 1 = B. For the shell's log line.
+#[no_mangle]
+pub extern "C" fn cinder_get_profile() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.setup_idx() as libc::c_int,
+        None => 0,
+    }
+}
+
+/// Which output the live profile was chosen for: 0 = the jack, 1 = Bluetooth, 2 = USB-DAC.
+#[no_mangle]
+pub extern "C" fn cinder_get_profile_output() -> libc::c_int {
+    match cell().lock().unwrap().as_ref() {
+        Some(r) => r.app.live_output().idx() as libc::c_int,
+        None => 0,
     }
 }
 
@@ -4678,6 +5103,10 @@ pub extern "C" fn cinder_set_bt_volume(level: libc::c_int) {
 pub extern "C" fn cinder_set_bt_route(on: libc::c_int) {
     if let Some(r) = cell().lock().unwrap().as_mut() {
         r.app.set_bt_route(on != 0);
+        // The route may have switched the live sound profile (R5): repaint and persist it. The
+        // shell collects the re-apply with `cinder_take_profile_apply`.
+        r.dirty = true;
+        save_settings(r);
     }
 }
 
@@ -5423,6 +5852,18 @@ pub extern "C" fn cinder_scrobble_tick(playing: libc::c_int) {
             // that never happened.
             s.tick_ms(playing != 0, dt.min(5000));
         }
+        // The play counter, by the same rule and the same clock, whether or not the scrobble log
+        // is being written. The shell does not call this while the volume is with a PC, so the
+        // write below never lands on a volume that is not ours.
+        if let Some(path) = r.listen.tick_ms(playing != 0, dt.min(5000)).map(str::to_string) {
+            let st = r.stats.count_play(&path, now_unix() as i64);
+            r.stats_changed = std::time::Instant::now();
+            if let Some(id) = r.last_track.as_ref().filter(|t| t.filename == path).map(|t| t.object_id) {
+                r.app.set_track_stat(id, st);
+                r.dirty = true;
+            }
+        }
+        flush_stats(r, false);
     }
 }
 
@@ -5454,9 +5895,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
             // The spare A/B setup, accumulated across however many `bank_*` lines the file has and
             // installed once at the end — the keys can arrive in any order, and the live setup must
             // be in place before the spare is banked beside it.
-            let mut bank = cinder_ui::nav::SoundSetup::default();
-            let mut bank_seen = false;
-            let mut bank_idx = 0usize;
+            let mut pl = ProfileLoad::default();
             for line in body.lines() {
                 let mut it = line.splitn(2, '=');
                 let k = it.next().unwrap_or("").trim();
@@ -5519,6 +5958,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     "lib_views" => r.app.set_lib_views_str(v),
                     "style" => r.app.set_style_token(v),
                     "sensme_follow_time" => r.app.set_sensme_follow(v == "1"),
+                    "shuffle_by" => r.app.set_shuffle_by(v),
                     "volume_hud" => r.app.set_volume_hud(v),
                     "home_screen" => r.app.set_home_screen(v),
                     "home_last" => r.app.set_home_last(v),
@@ -5726,40 +6166,11 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         }
                         r.app.set_dac_eq(b);
                     }
-                    // The OTHER A/B setup and which of the two was live. Parsed into locals and
-                    // applied once at the end, because the keys can arrive in any order and the
-                    // live setup has to be banked before the spare can be installed beside it.
-                    "setup" => { if let Ok(n) = v.parse::<usize>() { bank_idx = n & 1; } }
-                    "bank_sound" => {
-                        if let Ok(f) = v.parse::<u8>() {
-                            bank.dsee = f & 1 != 0;
-                            bank.vinyl = f & (1 << 1) != 0;
-                            bank.vpt = f & (1 << 2) != 0;
-                            bank.dc = f & (1 << 3) != 0;
-                            bank.norm = f & (1 << 4) != 0;
-                            bank.clear = f & (1 << 5) != 0;
-                            bank_seen = true;
-                        }
-                    }
-                    "bank_balance" => {
-                        if let Ok(n) = v.parse::<usize>() {
-                            bank.balance = n.min(cinder_ui::sound::BALANCE_MAX);
-                            bank_seen = true;
-                        }
-                    }
-                    "bank_preset" => {
-                        if let Ok(n) = v.parse::<usize>() { bank.eq_preset = n; bank_seen = true; }
-                    }
-                    "bank_eq" => {
-                        for (i, part) in v.split(',').take(10).enumerate() {
-                            // Same clamp, same reason as "eq" above — an A/B bank is loaded from
-                            // the same PC-writable file and reaches the same DSP call.
-                            if let Ok(g) = part.trim().parse::<i8>() {
-                                bank.eq_bands[i] = g.clamp(-crate::EQ_BAND_MAX, crate::EQ_BAND_MAX);
-                            }
-                        }
-                        bank_seen = true;
-                    }
+                    // The OTHER sound profile, which of the two was live, and which one each
+                    // output uses (`setup`, `bank_*`, `profile_*`). Accumulated in `pl` and applied
+                    // once at the end, because the keys can arrive in any order and the live
+                    // setup has to be in place before the spare can be installed beside it.
+                    _ if pl.line(k, v) => {}
                     "auto_off" => {
                         // set_auto_off_min snaps to a known preset, so a hand-edited value cannot
                         // strand the row on a duration the cycle can never reach.
@@ -5818,14 +6229,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     _ => {}
                 }
             }
-            // Both A/B setups are now in place: the live one came from the `eq=`/`sound=`/
-            // `balance100=` keys above, the spare from the `bank_*` ones. A file written by an
-            // older build has no bank at all, so the spare stays at its default and A/B still
-            // works — it just starts out as "your setup" versus "a fresh one".
-            if bank_seen {
-                let live = r.app.setup();
-                r.app.restore_setups(live, bank, bank_idx);
-            }
+            pl.install(&mut r.app);
             r.night = r.app.night;
             r.dirty = true;
         }
@@ -6423,9 +6827,16 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     }
 
     // Build the browsable library now so the Library screen shows real music.
+    // The stats file, read before the build so the build can key it by object id. Anything this
+    // side has not written yet goes out first, so the read cannot be older than the memory.
+    if let Some(r) = cell().lock().unwrap().as_mut() {
+        flush_stats(r, true);
+    }
+    let track_stats = stats::Store::open(stats::PATH);
     let t_phase = std::time::Instant::now();
-    let lib = build_library(&db);
+    let lib = build_library_with(&db, Some(&track_stats));
     let ms_build = t_phase.elapsed().as_millis();
+    eprintln!("cinder-ffi: track stats: {} rated or played", track_stats.len());
     eprintln!(
         "cinder-ffi: library loaded — {} tracks, {} albums, {} artists",
         lib.songs.len(),
@@ -6543,6 +6954,11 @@ pub extern "C" fn cinder_db_open(path: *const c_char) -> libc::c_int {
     }
     r.db = Some(db);
     r.plists = plists;
+    // Keep the memory if the flush above could not write it: it is newer than the file.
+    if !r.stats.is_dirty() {
+        r.stats = track_stats;
+    }
+    load_views(r, VIEWS_PATH);
     // WAS 3,802 ms OF THE BOOT — 83% of the whole dead time, in this one call. See
     // `user_playlist_rows`, which now batches its filename resolution; it is 133 ms here.
     refresh_playlists(r);
@@ -7136,6 +7552,8 @@ pub extern "C" fn cinder_set_now_playing_uri(
                 // long). Resetting only play_pos_ms is enough; the next tick adds a normal ~1 s dt.
             }
             set_progress(&mut r.np, r.play_pos_ms, r.cur_duration_ms);
+            // The play counter times the same track (`stats::Listen` ignores a re-poll itself).
+            r.listen.set_track(&t.filename, (t.duration_raw.unwrap_or(0).max(0) / 1000) as u32);
             // Feed the scrobbler on a genuine track change (not a re-poll of the same track).
             if let Some(s) = r.scrob.as_mut() {
                 let meta = scrobble::Track {
@@ -7380,15 +7798,118 @@ mod tests {
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
             S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe, S::Display, S::Palette, S::Help,
-            S::DacEq,
+            S::DacEq, S::PlaylistEdit, S::ViewEdit, S::Profiles,
         ];
-        assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
+        // Three ordinals (40..=42) are spare — see SCREEN_NAMES.
+        const RESERVED: usize = 3;
+        assert_eq!(all.len() + RESERVED, SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
         for sc in all {
             let i = screen_ord(sc) as usize;
             assert!(i < SCREEN_NAMES.len(), "{sc:?} maps past the end of the name table");
             assert!(seen.insert(i), "{sc:?} shares an ordinal with another screen");
         }
+    }
+
+    /// Both sound profiles and the per-output choice survive a save and a load — the whole of each,
+    /// Advanced included — and the live one comes back as the JACK's, because that is the output a
+    /// boot starts on.
+    #[test]
+    fn both_profiles_and_the_output_map_survive_a_save() {
+        use cinder_ui::nav::SoundSetup;
+        let spare = SoundSetup {
+            dsee: true, vpt: true, vpt_mode: 2, dc: true, dc_type: 4, clear: false, balance: 62,
+            eq_preset: 0, eq_bands: [1, -2, 3, -4, 5, -6, 7, -8, 9, -10],
+            src_direct: true, clear_phase: true, dsee_custom: true, dsee_mode: 3, vinyl_type: 2,
+            tone: true, tone_bands: [4, -6, 8],
+            ..SoundSetup::default()
+        };
+        let body = format!("setup=0\n{}{}", setup_body(&spare), profiles_body([0, 1, 1]));
+        assert!(body.contains("profile_jack=a\nprofile_bt=b\nprofile_usb=b\n"), "{body}");
+
+        let mut pl = ProfileLoad::default();
+        for line in body.lines() {
+            let (k, v) = line.split_once('=').unwrap();
+            assert!(pl.line(k, v), "{k} is a profile key and was not taken");
+        }
+        assert!(!pl.line("eq", "0,0"), "the live profile's keys are not ProfileLoad's");
+        let mut app = cinder_ui::nav::App::new();
+        pl.install(&mut app);
+        assert_eq!(app.setup_inactive(), spare);
+        assert_eq!(app.profile_map(), [0, 1, 1]);
+        assert_eq!(app.setup_idx(), 0);
+
+        // Written while Bluetooth (B) was live: the boot is on the jack, so A must come back live
+        // and what the file called "live" must be banked as B.
+        let mut pl = ProfileLoad::default();
+        for line in format!("setup=1\n{}{}", setup_body(&SoundSetup::default()), profiles_body([0, 1, 0])).lines() {
+            let (k, v) = line.split_once('=').unwrap();
+            pl.line(k, v);
+        }
+        let mut app = cinder_ui::nav::App::new();
+        app.set_setup(spare); // the file's live keys described B
+        pl.install(&mut app);
+        assert_eq!(app.setup_idx(), 0, "the jack uses A");
+        assert_eq!(app.setup(), SoundSetup::default());
+        assert_eq!(app.setup_inactive(), spare);
+    }
+
+    /// A settings file from before R5 has a spare with no Advanced values. Advanced was shared by
+    /// A and B then, so the spare takes the live ones — the upgrade must not change what B sounds
+    /// like. Garbage values are ignored and out-of-range gains are clamped, never passed on.
+    #[test]
+    fn an_older_file_and_a_damaged_one_both_load() {
+        let mut app = cinder_ui::nav::App::new();
+        app.set_adv_flags(0b1_0001); // Source Direct + Tone Control, set before profiles existed
+        app.set_tone_bands([6, 0, -6]);
+        app.set_vinyl_type(3);
+        let mut pl = ProfileLoad::default();
+        for (k, v) in [("setup", "0"), ("bank_sound", "1"), ("bank_balance", "50"), ("bank_preset", "3")] {
+            pl.line(k, v);
+        }
+        pl.install(&mut app);
+        let b = app.setup_inactive();
+        assert!(b.src_direct && b.tone && b.dsee, "the spare lost the shared Advanced values");
+        assert_eq!((b.tone_bands, b.vinyl_type), ([6, 0, -6], 3));
+        assert_eq!(app.profile_map(), [0, 0, 0], "no profile_* keys: every output on A");
+
+        let mut pl = ProfileLoad::default();
+        for (k, v) in [
+            ("bank_sound", "zz"), ("bank_tone", "99,-99,x"), ("bank_eq", "127,-128"),
+            ("profile_bt", "q"), ("profile_usb", "B"), ("bank_adv", "255"), ("bank_dsee_mode", "999"),
+        ] {
+            assert!(pl.line(k, v));
+        }
+        assert_eq!(pl.bank.tone_bands, [cinder_ui::tone::BAND_MAX, -cinder_ui::tone::BAND_MAX, 0]);
+        assert_eq!(&pl.bank.eq_bands[..2], &[crate::EQ_BAND_MAX, -crate::EQ_BAND_MAX]);
+        assert_eq!(pl.profiles, [0, 0, 1]);
+        assert_eq!(pl.bank.adv_bits(), 0b1_1111, "bit 5 (the amp) is not a profile value");
+        // The out-of-range mode is clamped when the spare goes live.
+        let mut app = cinder_ui::nav::App::new();
+        pl.bank_seen = true;
+        pl.install(&mut app);
+        app.select_setup(1);
+        assert_eq!(app.dsee_mode(), cinder_ui::advanced::DSEE_MODES.len() - 1);
+    }
+
+    /// The settings write leaves the old file or the new one, never part of one, and no temporary
+    /// file behind.
+    #[test]
+    fn the_settings_write_is_atomic_and_leaves_nothing_behind() {
+        let dir = std::env::temp_dir().join(format!("cinder_atomic_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cinder_settings.conf");
+        let p = path.to_str().unwrap();
+        write_atomic(p, "one\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n");
+        write_atomic(p, "two, and longer\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two, and longer\n");
+        assert!(!dir.join("cinder_settings.conf.tmp").exists());
+        // A write that cannot happen leaves the old file exactly as it was.
+        let missing = dir.join("no_such_dir").join("x.conf");
+        assert!(write_atomic(missing.to_str().unwrap(), "x").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two, and longer\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The SensMe grid names the time-of-day channel from a table in cinder-ui, which cannot see
@@ -7701,6 +8222,39 @@ mod tests {
     /// (a guest) but the same album artist — exactly the shape that shattered compilations on the
     /// real device, where 24 albums spanned several track artists and one DJ mix spanned 26,
     /// producing 26 one-track "albums" under 26 different people.
+    /// R4's data reaches the song rows: the album artist only where it differs from the track
+    /// artist (the guest), the container from the file name, and the stats file keyed across from
+    /// PATH to object id by the build that has both in hand.
+    #[test]
+    fn the_library_carries_album_artist_format_and_stats() {
+        let db = fixture_db();
+        let tracks = db.tracks(cinder_db::Sort::Title).unwrap();
+        let guest = tracks.iter().find(|t| t.artist != t.album_artist && !t.album_artist.is_empty())
+            .expect("the fixture has a guest track");
+        let own = tracks.iter().find(|t| t.object_id == 1).unwrap();
+
+        let dir = std::env::temp_dir().join(format!("cinder_ffi_stats_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = stats::Store::open(dir.join("cinder_stats.tsv"));
+        store.rate(&own.filename, 5);
+        store.count_play(&guest.filename, 1_790_000_000);
+        store.rate("/music/not-in-the-library.flac", 3);
+
+        let lib = build_library_with(&db, Some(&store));
+        let row = |id: i64| lib.songs.iter().find(|s| s.object_id == id).unwrap();
+        assert_eq!(row(own.object_id).album_artist, "", "same as the artist: nothing stored");
+        assert_eq!(row(own.object_id).group_artist(), own.artist);
+        assert_eq!(row(guest.object_id).group_artist(), guest.album_artist, "a guest files under the album artist");
+        assert_eq!(row(own.object_id).format, cinder_ui::model::Format::Flac);
+        assert_eq!(lib.stat(own.object_id).rating, 5);
+        assert_eq!(lib.stat(guest.object_id).plays, 1);
+        assert_eq!(lib.stats.len(), 2, "a path the library does not hold maps to nothing");
+        // The album page's rating is the mean of what is rated in it.
+        let album = lib.albums_flat().into_iter().find(|a| a.track_list.iter().any(|s| s.object_id == own.object_id)).unwrap();
+        assert_eq!(lib.album_rating(album), Some(5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn browsing_groups_by_album_artist_not_track_artist() {
         let lib = build_library(&fixture_db());

@@ -686,6 +686,19 @@ int  cinder_get_usb_dac(void);
    only — raises no action, since the gadget is already there. Call at startup to stop Settings
    reporting the opposite of the hardware after a mode change made outside Cinder. */
 void cinder_set_usb_dac(int on);
+/* SOUND PROFILES PER OUTPUT (R5). A profile is one of the two A/B sound setups — the EQ, every
+   effect on Sound and Sound > Advanced, the Tone Control bands and the balance — and each output
+   (0 the jack, 1 Bluetooth, 2 USB-DAC) remembers which one it uses. The navigator swaps the live
+   profile inside cinder_set_bt_route / cinder_set_usb_dac and on the USB-DAC switch; those are
+   state pushes with no action code, so ask cinder_take_profile_apply() straight after each. It
+   returns 1 ONCE when the live profile changed: re-apply the EQ and the effect chain exactly as
+   for CINDER_ACT_SOUND_CHANGED. No new action ordinal: a profile picked by a TAP arrives as
+   CINDER_ACT_SOUND_CHANGED. */
+int  cinder_take_profile_apply(void);
+/* Which profile is live (0 = A, 1 = B) and which output it was chosen for (0/1/2 as above).
+   For the shell's log line only. */
+int  cinder_get_profile(void);
+int  cinder_get_profile_output(void);
 /* Publish the host's live USB stream format for the USB-DAC panel: rate in Hz, bit depth, channels
    (from Sony's stream_info_t, the three words GetStatus fills in). rate 0 = not streaming, which
    clears the panel back to its generic line. Sets state only, raises no action. */

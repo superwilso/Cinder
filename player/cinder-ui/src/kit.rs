@@ -197,6 +197,26 @@ pub fn row(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, h: i32, r: &Row) -> i
     y + h
 }
 
+/// A rating as five stars from `x0`, each `size` px at a `pitch` px step: `rating` filled, the
+/// rest outlined. `live` draws a CONTROL — filled stars in the accent — and otherwise a readout,
+/// filled in `dim`; the empty ones are `faint` either way. Returns the x after the last star.
+#[allow(clippy::too_many_arguments)]
+pub fn stars(c: &mut Canvas, t: &Theme, x0: i32, cy: i32, size: i32, pitch: i32, rating: u8, live: bool) -> i32 {
+    for i in 0..5 {
+        let cx = (x0 + i * pitch + pitch / 2) as f32;
+        let on = (i as u8) < rating;
+        let col = if on { if live { t.acc } else { t.dim } } else { t.faint };
+        icons::star(c, cx, cy as f32, size as f32, col, on);
+    }
+    x0 + 5 * pitch
+}
+
+/// Which star (1..=5) of a row drawn by [`stars`] from `x0` at `pitch` is under `x`.
+pub fn star_at(x0: i32, pitch: i32, x: i32) -> Option<u8> {
+    let i = (x - x0).div_euclid(pitch.max(1));
+    (0..5).contains(&i).then(|| i as u8 + 1)
+}
+
 /// The x span of chip `i` of `n` equal chips across the content width. Equal widths, not widths
 /// measured from the labels: this is also the hit test, and it must not depend on the text scale.
 pub fn chip_span(i: usize, n: usize) -> (i32, i32) {

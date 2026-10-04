@@ -5,11 +5,14 @@
 
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::widgets::{center, fill_rect, hline, right, stroke_rect, sty, toggle};
+use crate::kit::{Row, Trail};
+use crate::widgets::{center, fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
 
-/// Number of selectable rows on the Sound screen (DSEE, Vinyl, VPT, DC Phase, Normalizer, Clear+,
-/// Balance).
+/// Logical row ids on the Sound screen. These are IDENTITIES, not positions: the screen draws them
+/// in [`ORDER`], grouped under ENHANCE / SPACE / LEVEL (design handoff 2a), and the ids stayed what
+/// they were before the grouping so every caller that names a row by number still names the same
+/// one.
 ///
 /// "High gain output" USED to sit between Clear+ and Balance. It was cut on 2026-08-17 after being
 /// measured on the device: the control (`headphone smaster gain mode` / `headphone smaster se gain
@@ -19,14 +22,31 @@ use crate::Canvas;
 /// shared CXD3778GF driver. Kept here as a note so it isn't "discovered" and re-added: the write
 /// landing is NOT evidence the feature works — the recurring mistake catalogued as B2 in
 /// docs/SHORTCOMINGS.md.
-pub const ROWS: usize = 8;
+pub const ROWS: usize = 10;
+pub const ROW_DSEE: usize = 0;
+pub const ROW_VINYL: usize = 1;
+pub const ROW_VPT: usize = 2;
+pub const ROW_DC: usize = 3;
+pub const ROW_NORM: usize = 4;
+pub const ROW_CLEAR: usize = 5;
 pub const ROW_BALANCE: usize = 6;
 /// The "Advanced ›" row — pushes `Screen::Advanced`, where the rest of Sony's effect surface lives.
 ///
-/// It sits under the balance row, the last thing on the screen. A row rather than a header button because the header's right side is the A/B control and its left is
-/// the OPTION hint — and because a screenful of rows that quietly omits half the DSP is worse than
-/// one that says where the rest went.
+/// The last thing on the screen, under the balance slider. A row rather than a header button
+/// because the header's right side is the A/B control — and because a screenful of rows that
+/// quietly omits half the DSP is worse than one that says where the rest went.
 pub const ROW_ADVANCED: usize = 7;
+/// "Profile A ›" — pushes `Screen::Profiles`: which profile each output uses (R5).
+pub const ROW_PROFILE: usize = 8;
+/// "Equalizer ›" — pushes `Screen::Eq`. The handoff puts the EQ at the head of ENHANCE, where the
+/// profile's tone stage belongs; the Menu keeps its own route to it too.
+pub const ROW_EQ: usize = 9;
+
+/// Top-to-bottom order of the rows, for the render, the hit test and the Up/Down buttons alike.
+pub const ORDER: [usize; ROWS] = [
+    ROW_PROFILE, ROW_EQ, ROW_DSEE, ROW_CLEAR, ROW_VPT, ROW_DC, ROW_VINYL, ROW_NORM, ROW_BALANCE,
+    ROW_ADVANCED,
+];
 
 /// L/R balance, 0..=100 with 50 = centre — a continuous drag slider, not the 7 discrete stops it
 /// started as. Left of centre attenuates the RIGHT channel and vice versa: panning left means the
@@ -48,43 +68,90 @@ pub fn balance_label(pos: usize) -> String {
 
 /// The signal-path strip under the header: two lines of caption on the panel tone. Fixed height —
 /// the path is fitted into it, never the other way round, so the rows below cannot move with the
-/// text scale or the number of effects switched on.
+/// text scale or the number of effects switched on. It does not scroll: the list scrolls under it.
 pub const PATH_STRIP_H: i32 = 58;
 
 /// Row pitch and list top — SINGLE SOURCE for the render below and `nav`'s hit test.
-pub const ROW_H: i32 = 64;
+pub const ROW_H: i32 = crate::kit::ROW_H;
 pub const TOP: i32 = crate::chrome::HEADER_BOTTOM + PATH_STRIP_H;
 
-/// The Balance row is taller than the rest: it carries a full-width drag slider, a Centre reset
-/// button and a readout, and a 64 px row would leave the track sharing an edge with ClearAudio+
+/// The Balance row is taller than the rest: it carries a full-width drag slider, MONO and CENTRE
+/// buttons and a readout, and a 64 px row would leave the track sharing an edge with the row
 /// above it — the same near-miss that made the library filter strip hard to hit.
 pub const BALANCE_ROW_H: i32 = 132;
 
-/// Top edge of the Balance row. Everything below it is slider.
-pub fn balance_top() -> i32 {
-    TOP + ROW_H * ROW_BALANCE as i32
+/// One band of the scrolling list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Part {
+    /// A section label (ENHANCE, SPACE, LEVEL).
+    Label(&'static str),
+    /// A row, by logical id.
+    Row(usize),
 }
 
-/// Top edge of the "Advanced ›" row, immediately under the balance slider.
-pub fn advanced_top() -> i32 {
-    balance_top() + BALANCE_ROW_H
+/// Which section label, if any, comes before row `r` in [`ORDER`].
+fn label_before(r: usize) -> Option<&'static str> {
+    match r {
+        ROW_EQ => Some("ENHANCE"),
+        ROW_VPT => Some("SPACE"),
+        ROW_NORM => Some("LEVEL"),
+        _ => None,
+    }
 }
 
-/// Which sound-effect row is under `y`. The last row is taller, so this cannot be a plain divide.
-pub fn row_at(y: i32) -> Option<usize> {
+fn part_h(p: Part) -> i32 {
+    match p {
+        Part::Label(_) => crate::kit::SECTION_H,
+        Part::Row(ROW_BALANCE) => BALANCE_ROW_H,
+        Part::Row(_) => ROW_H,
+    }
+}
+
+/// The list as `(part, screen-y of its top)` at scroll `scroll`. THE layout: the render and every
+/// hit test below walk this, so they cannot drift apart.
+pub fn parts(scroll: i32) -> Vec<(Part, i32)> {
+    let mut v = Vec::with_capacity(ROWS + 3);
+    let mut y = TOP - scroll;
+    for r in ORDER {
+        if let Some(l) = label_before(r) {
+            v.push((Part::Label(l), y));
+            y += crate::kit::SECTION_H;
+        }
+        v.push((Part::Row(r), y));
+        y += part_h(Part::Row(r));
+    }
+    v
+}
+
+/// Height of the whole list, unscrolled.
+pub fn content_h() -> i32 {
+    parts(0).iter().map(|(p, _)| part_h(*p)).sum()
+}
+
+/// How far the list scrolls. It is taller than the glass under the strip since the grouping.
+pub fn max_scroll() -> i32 {
+    (TOP + content_h() + 8 - crate::canvas::H as i32).max(0)
+}
+
+/// Screen-y of the top of row `r` at scroll `scroll`.
+pub fn row_top(r: usize, scroll: i32) -> i32 {
+    parts(scroll).into_iter().find_map(|(p, y)| (p == Part::Row(r)).then_some(y)).unwrap_or(TOP)
+}
+
+/// Which row is under `y`. Nothing above the list (the strip, the header), nothing on a label.
+pub fn row_at(y: i32, scroll: i32) -> Option<usize> {
     if y < TOP {
         return None;
     }
-    let bal = balance_top();
-    if y >= bal {
-        if y < bal + BALANCE_ROW_H {
-            return Some(ROW_BALANCE);
-        }
-        let adv = advanced_top();
-        return (y >= adv && y < adv + ROW_H).then_some(ROW_ADVANCED);
-    }
-    let r = ((y - TOP) / ROW_H) as usize;
-    (r < ROW_BALANCE).then_some(r)
+    parts(scroll).into_iter().find_map(|(p, top)| match p {
+        Part::Row(r) if (top..top + part_h(p)).contains(&y) => Some(r),
+        _ => None,
+    })
+}
+
+/// Top edge of the Balance row. Everything below it is slider.
+pub fn balance_top(scroll: i32) -> i32 {
+    row_top(ROW_BALANCE, scroll)
 }
 
 // ── Balance slider geometry — SINGLE SOURCE for the render and the drag hit test ────────────────
@@ -100,12 +167,14 @@ pub const BAL_TRACK_DY: i32 = 86;
 /// so hitting exactly centre by hand is luck. Select does it too, but this is the touch path.
 pub const BAL_RESET_W: i32 = 104;
 pub const BAL_RESET_H: i32 = 38;
-pub fn balance_reset_rect() -> (i32, i32, i32, i32) {
-    (BAL_X1 - BAL_RESET_W, balance_top() + 12, BAL_RESET_W, BAL_RESET_H)
+pub fn balance_reset_rect(scroll: i32) -> (i32, i32, i32, i32) {
+    (BAL_X1 - BAL_RESET_W, balance_top(scroll) + 12, BAL_RESET_W, BAL_RESET_H)
 }
-pub fn hit_balance_reset(x: i32, y: i32) -> bool {
-    let (rx, ry, rw, rh) = balance_reset_rect();
-    (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
+/// Every hit test below refuses a point above the list: scrolled up, the row passes UNDER the
+/// strip, and a control you cannot see must not be a control you can press.
+pub fn hit_balance_reset(x: i32, y: i32, scroll: i32) -> bool {
+    let (rx, ry, rw, rh) = balance_reset_rect(scroll);
+    y >= TOP && (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
 }
 
 /// The MONO button, immediately left of CENTRE and the same height.
@@ -113,20 +182,20 @@ pub fn hit_balance_reset(x: i32, y: i32) -> bool {
 /// IN THE BALANCE ROW rather than a row of its own: mono and balance answer the same question,
 /// "what reaches which ear", and every phone groups them for that reason.
 pub const BAL_MONO_W: i32 = 96;
-pub fn balance_mono_rect() -> (i32, i32, i32, i32) {
-    let (rx, ry, _, rh) = balance_reset_rect();
+pub fn balance_mono_rect(scroll: i32) -> (i32, i32, i32, i32) {
+    let (rx, ry, _, rh) = balance_reset_rect(scroll);
     (rx - BAL_MONO_W - 10, ry, BAL_MONO_W, rh)
 }
-pub fn hit_balance_mono(x: i32, y: i32) -> bool {
-    let (rx, ry, rw, rh) = balance_mono_rect();
-    (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
+pub fn hit_balance_mono(x: i32, y: i32, scroll: i32) -> bool {
+    let (rx, ry, rw, rh) = balance_mono_rect(scroll);
+    y >= TOP && (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
 }
 
 /// Slider steps within which a drag snaps to dead centre. Without it, "centred" is a 1-in-101 shot
 /// and the control has no null you can actually land on — the detent tick would be decoration.
 pub const BAL_SNAP: usize = 3;
-pub fn bal_track_y() -> i32 {
-    balance_top() + BAL_TRACK_DY
+pub fn bal_track_y(scroll: i32) -> i32 {
+    balance_top(scroll) + BAL_TRACK_DY
 }
 
 /// Slider position (0..=100) for a finger at `x`. Clamped, so a drag that runs off either end
@@ -146,10 +215,11 @@ pub fn balance_x(pos: usize) -> i32 {
 }
 
 /// Does `y` fall in the slider's grab band? Deliberately taller than the track: a 4 px line is not
-/// a touch target, and the whole lower half of the row is dead space otherwise.
-pub fn balance_grab(y: i32) -> bool {
-    let ty = bal_track_y();
-    (ty - 30..=ty + 34).contains(&y)
+/// a touch target, and the whole lower half of the row is dead space otherwise. Never above the
+/// list, for the same reason as the buttons.
+pub fn balance_grab(y: i32, scroll: i32) -> bool {
+    let ty = bal_track_y(scroll);
+    y >= TOP && (ty - 30..=ty + 34).contains(&y)
 }
 
 // ── A/B compare control ─────────────────────────────────────────────────────────────────────────
@@ -241,6 +311,9 @@ pub struct Sound {
     /// ALTERNATIVES — `SetSelectUsingEq` picks one — so when this is on the 10-band EQ is not in
     /// the chain, and a footer that keeps naming a preset is naming something inaudible.
     pub tone_control: bool,
+    /// Which profile each output uses, and which output is live — the Profile row's subtitle.
+    pub profile_map: [usize; 3],
+    pub output: crate::profile::Output,
 }
 
 /// Outlined value pill ending at `xr`; accent when value != "Off".
@@ -333,8 +406,10 @@ fn path_strip(c: &mut Canvas, t: &Theme, f: &FontSet, y: i32, path: &str, warn: 
 /// Drawn from the same `BAL_*` constants the hit test uses, so the knob cannot drift away from the
 /// place a finger has to land — the recurring defect in this codebase is a render that computes its
 /// geometry independently of the tap handler.
-fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
-    let y = balance_top();
+fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool, y: i32) {
+    // The scroll that puts the row at `y` — the buttons and the track are laid out from it, so the
+    // drawn controls and their hit tests share one source.
+    let scroll = balance_top(0) - y;
     let centred = s.balance == BALANCE_CENTRE;
     if sel {
         fill_rect(c, 0, y, crate::canvas::W as i32, BALANCE_ROW_H, t.row_sel);
@@ -375,7 +450,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
     // MONO. A latching button rather than a switch, because it sits in a row of buttons and a
     // 40x22 switch here would be the only one of its kind on the screen.
     {
-        let (rx, ry, rw, rh) = balance_mono_rect();
+        let (rx, ry, rw, rh) = balance_mono_rect(scroll);
         let col = if s.mono { t.acc_ink } else { t.dim };
         if s.mono {
             fill_rect(c, rx, ry, rw, rh, t.acc);
@@ -390,7 +465,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
     // action with nothing to do should say so rather than looking armed. Mono greys it for the
     // same reason: with one signal in both channels there is no image to re-centre.
     {
-        let (rx, ry, rw, rh) = balance_reset_rect();
+        let (rx, ry, rw, rh) = balance_reset_rect(scroll);
         let dead = centred || s.mono;
         let col = if dead { t.faint } else { t.acc };
         stroke_rect(c, rx, ry, rw, rh, if dead { t.line } else { t.acc }, 1);
@@ -398,7 +473,7 @@ fn balance_row(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: bool) {
                &sty(Family::Mono, Weight::Bold, 12.0, col, 0.14));
     }
 
-    let ty = bal_track_y();
+    let ty = bal_track_y(scroll);
     let cx = balance_x(BALANCE_CENTRE);
     let kx = balance_x(s.balance);
 
@@ -519,14 +594,86 @@ pub fn bypass_reasons(s: &Sound) -> (Option<&'static str>, Option<&'static str>)
     }
 }
 
-pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, setup: usize) {
+/// Title, subtitle and trailing control of row `r` (every row but the balance slider), as owned
+/// strings the caller turns into a `kit::Row`. `None` in the trail's value means a switch.
+struct RowText {
+    title: String,
+    sub: String,
+    trail: RowTrail,
+    /// Something upstream has taken this row out of the path: draw it dim.
+    dim: bool,
+}
+
+enum RowTrail {
+    Switch(bool),
+    Value(String),
+    Open(String),
+}
+
+fn row_text(s: &Sound, r: usize, setup: usize) -> RowText {
+    // WHAT IS BYPASSED IS DRAWN AS BYPASSED. With ClearAudio+ on, DSEE HX / Vinyl / VPT / DC Phase
+    // still showed their switches lit while the path said they were out of it — two answers to one
+    // question on one screen. They stay tappable (you can set them up for when the override is
+    // off), but they are dimmed and their subtitle says why. Source Direct, the outer bypass, dims
+    // every effect row including ClearAudio+ itself.
+    let (fx_over, all_over) = bypass_reasons(s);
+    let t = |title: &str, sub: &str, over: Option<&str>, trail: RowTrail| RowText {
+        title: title.to_string(),
+        sub: over.unwrap_or(sub).to_string(),
+        trail,
+        dim: over.is_some(),
+    };
+    let pill = |v: &str| RowTrail::Value(v.to_uppercase());
+    match r {
+        ROW_PROFILE => RowText {
+            title: format!("Profile {}", crate::profile::letter(setup)),
+            sub: crate::profile::summary(s.profile_map, s.output),
+            trail: RowTrail::Open(String::new()),
+            dim: false,
+        },
+        // Tone Control and the 10-band EQ are ALTERNATIVES in Sony's chain (`SetSelectUsingEq`),
+        // so the row names the one that is actually in the path.
+        ROW_EQ if s.tone_control => t(
+            "Equalizer",
+            "Tone Control is in the path instead (Advanced)",
+            fx_over,
+            RowTrail::Open("TONE".into()),
+        ),
+        ROW_EQ => t(
+            "Equalizer",
+            "10-band \u{b7} tap to edit the curve",
+            fx_over,
+            RowTrail::Open(s.eq_preset.to_uppercase()),
+        ),
+        ROW_DSEE => t("DSEE HX", "Upscale compressed audio to near hi-res", fx_over, RowTrail::Switch(s.dsee)),
+        // The handoff: ClearAudio+ SAYS what it overrides, instead of only greying things out.
+        ROW_CLEAR => t(
+            "ClearAudio+",
+            "Sony one-touch \u{b7} replaces the EQ and the effects",
+            all_over,
+            RowTrail::Switch(s.clearaudio),
+        ),
+        ROW_VPT => t("VPT Surround", "Studio \u{b7} Club \u{b7} Concert Hall \u{b7} Matrix", fx_over, pill(s.vpt)),
+        ROW_DC => t("DC Phase Linearizer", "Analog-amp low-frequency phase", fx_over, pill(s.dcphase)),
+        ROW_VINYL => t("Vinyl Processor", "Tonearm resonance, surface noise", fx_over, RowTrail::Switch(s.vinyl)),
+        ROW_NORM => t("Dynamic Normalizer", "Even out volume between tracks", all_over, RowTrail::Switch(s.normalizer)),
+        _ => RowText {
+            title: "Advanced".into(),
+            sub: "Source Direct, Clear Phase, DSEE AI, Tone Control".into(),
+            trail: RowTrail::Open(String::new()),
+            dim: false,
+        },
+    }
+}
+
+pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, setup: usize, scroll: i32) {
     c.fill(t.bg);
     // No subtitle here — the A/B compare control occupies the header's right side.
     let y0 = crate::chrome::header(c, t, f, "Sound", None);
 
-    // A/B compare control (top-right of the header): two segments, the active one in accent — two
-    // whole setups to compare by ear. Tapped; this player has no Option button, so the hint that
-    // used to read "OPTION = SWAP" named a key nobody could press.
+    // A/B (top-right of the header): the profile the LIVE output uses. Two segments, the active one
+    // in accent. Tapped; this player has no Option button, so the hint that used to read
+    // "OPTION = SWAP" named a key nobody could press.
     {
         let segs = [("A", setup == 0), ("B", setup == 1)];
         for (i, (label, on)) in segs.iter().enumerate() {
@@ -538,9 +685,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
             stroke_rect(c, sx, sy, sw, sh, if *on { t.acc } else { t.line }, 1);
             center(c, f, (sx + sw / 2) as f32, (sy + sh / 2 + 6) as f32, label, &st);
         }
-        // The hint moved LEFT of the segments rather than under them: the segments now fill the
-        // header's vertical space, and a caption below would have run past HEADER_BOTTOM into the
-        // first row.
+        // The hint sits LEFT of the segments rather than under them: the segments fill the
+        // header's vertical space, and a caption below would run past HEADER_BOTTOM into the list.
         let hint = sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14);
         let (x0, _, _, _) = ab_rect(0);
         right(c, f, (x0 - 12) as f32, (AB_TOP + AB_H / 2 + 4) as f32, "COMPARE", &hint);
@@ -550,43 +696,39 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, s: &Sound, sel: usize, set
     // ITS ONE JOB IS TO BE TRUE. It is the only thing on the device that says what is actually
     // carrying the audio, and as a footer it was once wrong in two ways at once: it ignored Source
     // Direct entirely (no field, no warning, a full chain drawn over a total bypass), and it named
-    // an EQ preset even when Tone Control had replaced the 10-band in the path.
+    // an EQ preset even when Tone Control had replaced the 10-band in the path. Fixed under the
+    // header: the list scrolls beneath it, so the answer never scrolls away.
     let (path, warn) = signal_path(s, setup);
     path_strip(c, t, f, y0, &path, warn);
-    let y0 = y0 + PATH_STRIP_H;
+    debug_assert_eq!(y0 + PATH_STRIP_H, TOP, "sound list top drifted from the hit test");
 
-    let rh = ROW_H;
-    debug_assert_eq!(y0, TOP, "sound list top drifted from the hit test");
-    // WHAT IS BYPASSED IS DRAWN AS BYPASSED. With ClearAudio+ on, DSEE HX / Vinyl / VPT / DC Phase
-    // still showed their switches lit while the footer said they were out of the path — two
-    // answers to one question on one screen. They stay tappable (you can set them up for when the
-    // override is off), but they are dimmed and their subtitle says why. Source Direct, the outer
-    // bypass, dims every effect row including ClearAudio+ itself.
-    let (fx_over, all_over) = bypass_reasons(s);
+    // ── the grouped list (handoff 2a): Profile, then ENHANCE / SPACE / LEVEL ────────────────────
+    // CLIPPED to below the strip, so a scrolled row cannot paint over the path or the header.
     let dim = t.scaled(45);
-    let th = |o: Option<&str>| if o.is_some() { &dim } else { t };
-    let cy = row(c, th(fx_over), f, y0, sel == 0, "DSEE HX", fx_over.unwrap_or("Upscale compressed audio to near hi-res"));
-    toggle(c, th(fx_over), 418, cy - 11, 40, 22, 14, s.dsee);
-    let cy = row(c, th(fx_over), f, y0 + rh, sel == 1, "Vinyl Processor", fx_over.unwrap_or("Tonearm resonance + surface noise character"));
-    toggle(c, th(fx_over), 418, cy - 11, 40, 22, 14, s.vinyl);
-    let cy = row(c, th(fx_over), f, y0 + rh * 2, sel == 2, "VPT Surround", fx_over.unwrap_or("Studio / Club / Concert Hall acoustics"));
-    value_pill(c, f, th(fx_over), 458, cy, s.vpt);
-    let cy = row(c, th(fx_over), f, y0 + rh * 3, sel == 3, "DC Phase Linearizer", fx_over.unwrap_or("Analog-amp low-frequency phase response"));
-    value_pill(c, f, th(fx_over), 458, cy, s.dcphase);
-    let cy = row(c, th(all_over), f, y0 + rh * 4, sel == 4, "Dynamic Normalizer", all_over.unwrap_or("Even out volume between tracks"));
-    toggle(c, th(all_over), 418, cy - 11, 40, 22, 14, s.normalizer);
-    let cy = row(c, th(all_over), f, y0 + rh * 5, sel == 5, "ClearAudio+", all_over.unwrap_or("Sony one-touch tuning — replaces EQ + effects"));
-    toggle(c, th(all_over), 418, cy - 11, 40, 22, 14, s.clearaudio);
-    balance_row(c, t, f, s, sel == ROW_BALANCE);
-
-    // "Advanced ›" — the route to the rest of Sony's effects.
-    {
-        let ay = advanced_top();
-        let cy = row(c, t, f, ay, sel == ROW_ADVANCED, "Advanced",
-                     "Source Direct, Clear Phase, DSEE AI, Tone Control");
-        let chev = sty(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.dim, 0.0);
-        right(c, f, 458.0, (cy + 7) as f32, "\u{203A}", &chev);
+    c.set_clip_y(TOP, crate::canvas::H as i32);
+    for (part, y) in parts(scroll) {
+        if y >= crate::canvas::H as i32 || y + part_h(part) <= TOP {
+            continue;
+        }
+        match part {
+            Part::Label(l) => {
+                crate::kit::section_label(c, t, f, y, l, None);
+            }
+            Part::Row(ROW_BALANCE) => balance_row(c, t, f, s, sel == ROW_BALANCE, y),
+            Part::Row(r) => {
+                let rt = row_text(s, r, setup);
+                let th = if rt.dim { &dim } else { t };
+                let trail = match &rt.trail {
+                    RowTrail::Switch(on) => Trail::Switch(*on),
+                    RowTrail::Value(v) => Trail::Value(v),
+                    RowTrail::Open(v) => Trail::Open(v),
+                };
+                let row = Row::new(&rt.title).sub(&rt.sub).trail(trail).sel(sel == r);
+                crate::kit::row(c, th, f, y, ROW_H, &row);
+            }
+        }
     }
+    c.clear_clip();
 }
 
 #[cfg(test)]
@@ -623,8 +765,8 @@ mod tests {
     /// class of near-miss this screen's geometry constants exist to prevent.
     #[test]
     fn the_mono_button_owns_its_own_pixels() {
-        let (mx, my, mw, mh) = balance_mono_rect();
-        let (rx, ry, rw, rh) = balance_reset_rect();
+        let (mx, my, mw, mh) = balance_mono_rect(max_scroll());
+        let (rx, ry, rw, rh) = balance_reset_rect(max_scroll());
         assert_eq!((my, mh), (ry, rh), "the two buttons share a baseline");
         assert!(mx + mw < rx, "MONO overlaps CENTRE");
         assert!(mx > BAL_X0, "MONO runs off the left of the row");
@@ -632,26 +774,26 @@ mod tests {
 
         // Every pixel of each button hits that button and not the other.
         for x in mx..mx + mw {
-            assert!(hit_balance_mono(x, my + mh / 2), "MONO dead at x={x}");
-            assert!(!hit_balance_reset(x, my + mh / 2), "CENTRE claims a MONO pixel at x={x}");
+            assert!(hit_balance_mono(x, my + mh / 2, max_scroll()), "MONO dead at x={x}");
+            assert!(!hit_balance_reset(x, my + mh / 2, max_scroll()), "CENTRE claims a MONO pixel at x={x}");
         }
         for x in rx..rx + rw {
-            assert!(hit_balance_reset(x, ry + rh / 2), "CENTRE dead at x={x}");
-            assert!(!hit_balance_mono(x, ry + rh / 2), "MONO claims a CENTRE pixel at x={x}");
+            assert!(hit_balance_reset(x, ry + rh / 2, max_scroll()), "CENTRE dead at x={x}");
+            assert!(!hit_balance_mono(x, ry + rh / 2, max_scroll()), "MONO claims a CENTRE pixel at x={x}");
         }
         // …and both are inside the Balance row, so `row_at` agrees they belong to it.
-        assert_eq!(row_at(my + mh / 2), Some(ROW_BALANCE));
+        assert_eq!(row_at(my + mh / 2, max_scroll()), Some(ROW_BALANCE));
         // The gap between them belongs to neither.
-        assert!(!hit_balance_mono(mx + mw + 4, my + mh / 2));
-        assert!(!hit_balance_reset(mx + mw + 4, my + mh / 2));
+        assert!(!hit_balance_mono(mx + mw + 4, my + mh / 2, max_scroll()));
+        assert!(!hit_balance_reset(mx + mw + 4, my + mh / 2, max_scroll()));
     }
 
     /// The buttons sit ABOVE the slider's grab band, so pressing one cannot also move the knob.
     #[test]
     fn pressing_mono_does_not_grab_the_slider() {
-        let (_, my, _, mh) = balance_mono_rect();
+        let (_, my, _, mh) = balance_mono_rect(max_scroll());
         for y in my..my + mh {
-            assert!(!balance_grab(y), "the slider grab band reaches the buttons at y={y}");
+            assert!(!balance_grab(y, max_scroll()), "the slider grab band reaches the buttons at y={y}");
         }
     }
 
@@ -673,7 +815,100 @@ mod tests {
             tone_control: false,
             mono: false,
             mono_live: false,
+            profile_map: [0; 3],
+            output: crate::profile::Output::Jack,
         }
+    }
+
+    /// The grouped list: every row is drawn once, in `ORDER`, under the three section labels, and
+    /// the hit test finds each row where the layout put it — at any scroll.
+    #[test]
+    fn the_grouped_list_hits_every_row_where_it_is_drawn() {
+        let labels: Vec<&str> = parts(0)
+            .iter()
+            .filter_map(|(p, _)| if let Part::Label(l) = p { Some(*l) } else { None })
+            .collect();
+        assert_eq!(labels, ["ENHANCE", "SPACE", "LEVEL"]);
+        let rows: Vec<usize> =
+            parts(0).iter().filter_map(|(p, _)| if let Part::Row(r) = p { Some(*r) } else { None }).collect();
+        assert_eq!(rows, ORDER);
+        let mut ids = ORDER.to_vec();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..ROWS).collect::<Vec<_>>(), "ORDER names every row exactly once");
+        for scroll in [0, max_scroll() / 2, max_scroll()] {
+            for (p, top) in parts(scroll) {
+                let mid = top + part_h(p) / 2;
+                if mid < TOP || mid >= crate::canvas::H as i32 {
+                    continue;
+                }
+                match p {
+                    Part::Row(r) => assert_eq!(row_at(mid, scroll), Some(r), "row {r} at scroll {scroll}"),
+                    Part::Label(l) => assert_eq!(row_at(mid, scroll), None, "label {l} is not a target"),
+                }
+            }
+        }
+    }
+
+    /// The list is taller than the glass, and the scroll reaches its last row with room under it.
+    #[test]
+    fn the_scroll_reaches_the_last_row() {
+        assert!(max_scroll() > 0, "the grouped list fits without scrolling — drop the scroll");
+        let top = row_top(ROW_ADVANCED, max_scroll());
+        assert!(top + ROW_H <= crate::canvas::H as i32, "Advanced is cut off at full scroll");
+        // Unscrolled, the first row starts under the strip.
+        assert_eq!(row_top(ROW_PROFILE, 0), TOP);
+    }
+
+    /// A row scrolled under the strip is not a target: what cannot be seen cannot be pressed.
+    #[test]
+    fn nothing_under_the_strip_can_be_pressed() {
+        let sc = max_scroll();
+        for y in crate::chrome::HEADER_BOTTOM..TOP {
+            assert_eq!(row_at(y, sc), None);
+            assert!(!balance_grab(y, sc));
+            for x in [30, 240, 300, 400] {
+                assert!(!hit_balance_mono(x, y, sc) && !hit_balance_reset(x, y, sc));
+            }
+        }
+    }
+
+    /// The scrolled list never paints over the header or the signal-path strip.
+    #[test]
+    fn scrolling_never_paints_over_the_strip() {
+        let _g = crate::text::scale_guard();
+        let f = FontSet::load();
+        let t = Theme::day();
+        let s = loud();
+        let mut a = Canvas::new();
+        let mut b = Canvas::new();
+        render(&mut a, &t, &f, &s, 0, 0, 0);
+        render(&mut b, &t, &f, &s, 0, 0, max_scroll());
+        let w = crate::canvas::W;
+        for y in 0..TOP as usize {
+            assert_eq!(a.buf[y * w..(y + 1) * w], b.buf[y * w..(y + 1) * w], "row {y} changed with the scroll");
+        }
+        assert_ne!(a.buf, b.buf, "scrolling moved nothing");
+    }
+
+    /// Overrides dim the rows they take out of the path and say why; ClearAudio+'s own row says
+    /// what it replaces (handoff 2a).
+    #[test]
+    fn rows_say_what_overrides_them() {
+        let ca = Sound { clearaudio: true, ..loud() };
+        assert!(row_text(&ca, ROW_DSEE, 0).dim && row_text(&ca, ROW_DSEE, 0).sub.contains("ClearAudio+"));
+        assert!(row_text(&ca, ROW_EQ, 0).dim, "ClearAudio+ replaces the EQ too");
+        assert!(!row_text(&ca, ROW_CLEAR, 0).dim && !row_text(&ca, ROW_NORM, 0).dim);
+        assert!(row_text(&loud(), ROW_CLEAR, 0).sub.contains("replaces"));
+        let sd = Sound { source_direct: true, ..loud() };
+        for r in [ROW_EQ, ROW_DSEE, ROW_CLEAR, ROW_VPT, ROW_DC, ROW_VINYL, ROW_NORM] {
+            assert!(row_text(&sd, r, 0).dim, "row {r} is bypassed by Source Direct");
+        }
+        assert!(!row_text(&sd, ROW_PROFILE, 0).dim && !row_text(&sd, ROW_ADVANCED, 0).dim);
+        // The Equalizer row names the tone system that is in the path.
+        let tone = Sound { tone_control: true, ..loud() };
+        assert!(matches!(row_text(&tone, ROW_EQ, 0).trail, RowTrail::Open(ref v) if v == "TONE"));
+        assert!(matches!(row_text(&loud(), ROW_EQ, 0).trail, RowTrail::Open(ref v) if v == "ROCK"));
+        assert_eq!(row_text(&loud(), ROW_PROFILE, 1).title, "Profile B");
     }
 
     /// The ordinary case: every stage the user switched on is named, in order.

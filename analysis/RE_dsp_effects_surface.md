@@ -75,3 +75,64 @@ found.
   `0` that reads exactly like "the service rejected the write". See `reference_pst_ipc_pump`.
 - The probe exits with a cosmetic `FATAL SIGNAL PC=0` during teardown, after the work and the
   restore have both completed.
+
+---
+
+## 2026-09-30 — the count, redone, and a second class (R5)
+
+The "13 against 54" above is the 2026-08-17 state and went stale within weeks: the Advanced screen
+(2026-08-17 to 08-23) wired most of the gap. Counted again from the binaries, host only:
+
+| | methods |
+|---|---|
+| `EffectCtrlDmp` exports, excluding ctor/dtor and the internal `Update…` family (`nm -DC --defined-only`) | **60** |
+| …of which `HgrmMediaPlayerApp` imports | **55** |
+| wrapped by `cinder-audio/src/effect_shim.cpp` | **55** (the app's 55 less the four Clear Phase Speaker / WM-PORT calls, plus the four `…dB` getters the app does not import) |
+| reached by `cinder-home` before R5 | **22**, all setters |
+| reached by `cinder-home` after R5 | **41**: the same 22 plus 19 getters, read after a sound profile is applied (`main.cpp`, `fx_verify_fn`) |
+
+Not wrapped, on purpose: `SetClearPhaseSpeaker` / `SetClearPhaseWmport` and their two `Is…On`
+(hardware this player lacks), `GetPresetSettings` (takes an `EffectSettingsDmp*` whose layout is
+unrecovered — an out-struct of unknown size is exactly the call that smashes a stack).
+
+Wrapped but not driven by `cinder-home`, each for a reason that is a finding, not an omission:
+
+* **The 6-band EQ** (`SetEq6Band`, `SetEq6BandPreset`, `SetEq6BandValue` and their getters) —
+  measured to have no effect at the jack (`RE_clear_bass.md`, 2026-09-17).
+* **Tone Control centre frequencies** (`Set`/`GetToneCenterFreq`) — the ordinals echo 0..7 with no
+  frequency behind them, and no view-model in the stock player was found to set them (the only
+  references in `HgrmMediaPlayerApp` are the wrapper `dmpapp::SoundEffect::SetToneCenterFreq` and
+  its log strings; there is no `tone…Freq` property, signal or QML binding). So Sony ships the
+  defaults, and so does Cinder.
+* **Sony's user presets** (`SaveUserPreset` / `LoadUserPreset`) — each stored preset holds
+  `SelectUsingEq = 1`, the 6-band, so loading one takes Cinder's EQ out of the path. Cinder's own
+  profiles (R5) are the replacement.
+
+### `SoundServiceSettingsDmp` — the class nobody had looked at
+
+`HgrmMediaPlayerApp` imports a second sound class, `pst::services::sound::SoundServiceSettingsDmp`
+(`libSoundServiceSettingsDmp.so`): six setter/getter pairs. Parameter keys, from the library's
+strings: `dsd_conv_filter_type`, `dsd_conv_gain_mode`, `builtin_dsd_process_mode`,
+`uac_dsd_output_mode`, `lpcm_playback_mode`, `hp model` (and `se_hp_dsd_native_enabled`, which no
+exported method names).
+
+Read from the disassembly (`cinder-audio/src/sound_settings_abi.hpp` has the addresses):
+
+* The object is **4 bytes**: the ctor does `operator new(1)` and stores the pointer.
+* A setter builds `<key>=<to_string(unsigned)>` and calls
+  `SoundServiceSettings::SetParams(const std::string&)`, returning its result.
+* A getter calls `GetParams(key, std::string&)` and returns `std::stoi` of the reply, or 0 if
+  `GetParams` failed — so 0 is ambiguous, and **`std::stoi` on an empty reply throws with nothing
+  in the library to catch it**. The shim wraps every call in `try`/`catch (...)`.
+* `SetHeadphoneModel` also constructs an `ncasm::NcAsmService` and calls its `SetParams`. Not
+  wrapped.
+
+Catalogue labels that go with them (`strings -a -e b`, UTF-16BE): *Filtering* — "Slow Roll-Off",
+"Sharp Roll-Off"; *Gain* — "0 dB", "-3 dB"; "Play DSD in Native Format"; "USB Output for DSD";
+"DSD Remastering". **Which label is which value is not recovered**, and what `lpcm_playback_mode`
+selects is not known (the renderer has `RendererDmpMaster::UpdateLpcmPlaybackMode`).
+
+Status: 11 of the 12 methods wrapped (`cinder_sound_settings.h`), linked into `cinder-probe` only,
+read by `cinder-probe --soundsettings`, **every signature unverified on device**
+(`docs/DEVICE_CHECKLIST.md` 26.7). No screen offers them: the values are unknown, and there is no
+DSD file on the reference player to hear a difference with (`RE_dsd_path.md`).

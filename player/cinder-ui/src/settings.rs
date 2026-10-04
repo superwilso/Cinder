@@ -1,5 +1,5 @@
 //! Settings — interactive. Up/Down move the cursor; Select acts on the focused row. Rows:
-//! DISPLAY (Display ›, Brightness, Screen-off timer), PLAYBACK (Volume limit, Sleep timer),
+//! DISPLAY (Display ›, Brightness, Screen-off timer), PLAYBACK (Volume limit, Sleep timer, Shuffle),
 //! LIBRARY (Ignore "The" in artists, Database), SYSTEM (Auto power off, Storage, Device, Date &
 //! time, USB mode, Boot to stock, Restart, Power off, Reset), ABOUT (Firmware, Model).
 //! Every row acts except Storage, Firmware and Model, which are information.
@@ -14,7 +14,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 19;
+pub const ROWS: usize = 20;
 /// Display ▸ — palette, accent, night, the volume readout, text size and the visualiser.
 pub const ROW_DISPLAY: usize = 0;
 pub const ROW_BRIGHTNESS: usize = 1;
@@ -35,48 +35,54 @@ pub const ROW_QUICK: usize = 3;
 /// number and clamps in its own `apply_volume`.
 pub const ROW_VOLUME_LIMIT: usize = 4;
 pub const ROW_SLEEP: usize = 5;
+/// What the shuffle button deals: SONGS (every track at random, as always), ALBUMS (whole albums
+/// at random, each in its own order) or ARTISTS. `shuffle.rs`. SONGS by default, so the button
+/// does what it has always done until the owner picks otherwise.
+pub const ROW_SHUFFLE: usize = 6;
 /// Ignore "The" in artists — sort "The Beatles" among the B's in the Artists tab, the Albums tab's
 /// artist groups and Songs by artist (and file it under B on the rail). OFF by default: artists
 /// sort as written. Titles and album names keep their "The" either way. See `collate`.
-pub const ROW_IGNORE_THE: usize = 6;
-pub const ROW_DATABASE: usize = 7;
+pub const ROW_IGNORE_THE: usize = 7;
+pub const ROW_DATABASE: usize = 8;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
 /// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
 /// of behaviour that has to be asked for.
-pub const ROW_AUTO_OFF: usize = 8;
-pub const ROW_STORAGE: usize = 9;
-pub const ROW_BATTERY: usize = 10;
+pub const ROW_AUTO_OFF: usize = 9;
+pub const ROW_STORAGE: usize = 10;
+pub const ROW_BATTERY: usize = 11;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 11;
-pub const ROW_USB_MODE: usize = 12; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 12;
+pub const ROW_USB_MODE: usize = 13; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 13;
+pub const ROW_BOOT_STOCK: usize = 14;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 14;
-pub const ROW_POWER_OFF: usize = 15;
+pub const ROW_RESTART: usize = 15;
+pub const ROW_POWER_OFF: usize = 16;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 16;
+pub const ROW_RESET: usize = 17;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 17;
-pub const ROW_MODEL: usize = 18;
+pub const ROW_FIRMWARE: usize = 18;
+pub const ROW_MODEL: usize = 19;
 
 const RH: i32 = kit::ROW_H;
 /// Section labels and how many rows sit under each — the single source both `content_height` and
 /// `row_at` read, so a row added to one can't be missed by the other.
 const SECTIONS: [(&str, usize); 5] =
-    [("DISPLAY", 4), ("PLAYBACK", 2), ("LIBRARY", 2), ("SYSTEM", 9), ("ABOUT", 2)];
+    [("DISPLAY", 4), ("PLAYBACK", 3), ("LIBRARY", 2), ("SYSTEM", 9), ("ABOUT", 2)];
 
 /// The Display row's second line: what is behind it (handoff 2c).
 pub const DISPLAY_SUB: &str = "Palette · accent · volume display";
+/// The Shuffle row's second line: which control the setting is about.
+pub const SHUFFLE_SUB: &str = "What the shuffle button deals";
 /// The pull-down panel row's second line: where the gesture starts and what it opens.
 pub const QUICK_SUB: &str = "Swipe down from the top of the screen";
 
@@ -130,6 +136,8 @@ pub struct SettingsView<'a> {
     pub ignore_the: bool,
     /// The pull-down panel is switched on (`ROW_QUICK`).
     pub quick: bool,
+    /// What shuffle deals (`ROW_SHUFFLE`): "SONGS", "ALBUMS" or "ARTISTS".
+    pub shuffle_by: &'a str,
 }
 
 /// Total height of the row content, from the top of the screen to the bottom of the last row.
@@ -189,6 +197,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         // user did not choose, and the number is Sony's per-output AVLS threshold, read live.
         ROW_VOLUME_LIMIT => Trail::Value(if v.volume_limit { "SAFE LEVEL" } else { "OFF" }),
         ROW_SLEEP => Trail::Value(v.sleep),
+        ROW_SHUFFLE => Trail::Value(v.shuffle_by),
         ROW_IGNORE_THE => Trail::Value(if v.ignore_the { "ON" } else { "OFF" }),
         // Database: CHEVRON, because tapping does something — it asks Sony's MediaStore to rescan
         // the music tree. The value carries the library size, so the row also answers "did it work".
@@ -220,6 +229,7 @@ fn title(r: usize) -> &'static str {
         ROW_QUICK => "Pull-down panel",
         ROW_VOLUME_LIMIT => "Volume limit",
         ROW_SLEEP => "Sleep timer",
+        ROW_SHUFFLE => "Shuffle",
         ROW_IGNORE_THE => "Ignore \"The\" in artists",
         ROW_DATABASE => "Database",
         ROW_AUTO_OFF => "Auto power off",
@@ -256,6 +266,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
             let sub = match r {
                 ROW_DISPLAY => DISPLAY_SUB,
                 ROW_QUICK => QUICK_SUB,
+                ROW_SHUFFLE => SHUFFLE_SUB,
                 _ => "",
             };
             y = kit::row(c, t, f, y, RH, &Row::new(title(r)).sub(sub).trail(trail(r, v)).sel(sel == r));
@@ -284,6 +295,7 @@ mod tests {
             boot_stock: "SONY", clock: "17 Aug · 09:01",
             ignore_the: false,
             quick: false,
+            shuffle_by: "SONGS",
         }
     }
 

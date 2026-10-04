@@ -16,6 +16,108 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 ## [Unreleased]
 
+*Everything below was built host-only with no player attached: host-tested, in the golden
+previews, and **not yet run on a device**. The library items are in
+`docs/DEVICE_CHECKLIST.md` §25 and the sound items in §26.*
+
+### Added
+
+- **Ratings.** Tap the title on Now Playing to open Track information; the first row is five stars.
+  Tap one to rate the song that is playing, and tap the same star again to clear it. An album's
+  page shows the average of its rated tracks, top right, and the artist page shows it beside each
+  album. *Host-tested; not yet run on a device (`docs/DEVICE_CHECKLIST.md` §25).*
+- **Play counts.** Cinder now counts how often each song is played and when it was last played. A
+  play counts the same way a scrobble does: half the song or four minutes. It is counted even if
+  the scrobble log is switched off. An artist's page lists their three most played songs once you
+  have played something of theirs. *Host-tested; §25.*
+- **Smart playlists.** Library ▸ Playlists ▸ **SMART** makes a playlist from rules instead of a
+  list: a minimum rating, when it was last played (recent, not lately, never), and the format
+  (FLAC, MP3, M4A, Hi-Res), sorted by title, plays, last played, rating or date added. It sits at
+  the top of the Playlists tab with a diamond, and always holds whatever matches now. **EDIT** on
+  its page changes the rules or deletes it. *Host-tested; §25.*
+- **Playlist editing.** **EDIT**, top right of one of your own playlists, opens an editor: drag a
+  row by its handle to move it, × to remove it, **UNDO** to take a step back, **DONE** to save.
+  Nothing is written until DONE, and Back leaves without saving. *Host-tested; §25.*
+- **Shuffle by album or by artist.** **Settings ▸ Shuffle** chooses what the shuffle button (and
+  Up Next's MIX) deals: **Songs**, as before; **Albums**, whole albums in a random order, each
+  played in its own order; or **Artists**. The album that is playing carries on first. Songs is the
+  default. *Host-tested; §25.*
+- **An EDITED tag** on a playlist that was changed on the player, so you can see which ones your PC
+  has not taken back yet. The mark is one comment line in the `.m3u8`.
+- [`docs/TRACK_DATA.md`](docs/TRACK_DATA.md): where ratings, play counts and smart playlists are
+  kept (`cinder_stats.tsv` and `cinder_views.conf` on the player's drive) and what the files look
+  like, for Flint and for anyone who wants to back them up or edit them.
+- **Sound profiles per output.** A and B on the Sound screen are now two whole **profiles** — the
+  equalizer, every effect on Sound and on Sound ▸ Advanced, the Tone Control bands and the
+  balance — and each output remembers which one it uses: the headphone jack, Bluetooth, and
+  USB-DAC. Connect headphones and the player switches to Bluetooth's profile by itself; unplug
+  them and it goes back to the jack's. **Sound ▸ Profile** opens a new **Sound profiles** screen to
+  pick the letter for each output, and **Copy A to B** starts one profile from the other. Tapping
+  A or B in the Sound header picks the profile for the output that is live at that moment. Mono,
+  the linear headphone amp and the DAC EQ are not part of a profile. Whether Sony's effects reach
+  the PC's audio in USB-DAC mode is not known yet, and that row says so.
+- **Bluetooth ▸ Sound profile.** A row under THIS DEVICE shows the profile Bluetooth uses and
+  opens Sound profiles.
+- **`cinder-probe --soundsettings`** reads six Sony sound settings nothing in Cinder had touched
+  before (how DSD is converted to PCM, the LPCM playback mode, the headphone model). Read-only;
+  no screen offers them. *Signatures from disassembly, unverified on device.*
+- **`cinder-sim --script FILE`** (the `device` binary) drives the real navigator from a list of
+  taps, drags and route changes with no window, and writes frames to disk — for machines with no
+  X server to send a touch through.
+
+### Changed
+
+- **The artist page** lists albums newest first.
+- **The NEW PLAYLIST row** on the Playlists tab is now two buttons, NEW PLAYLIST and SMART.
+- **The Sound screen is regrouped.** A Profile row, then **ENHANCE** (Equalizer, DSEE HX,
+  ClearAudio+), **SPACE** (VPT Surround, DC Phase Linearizer, Vinyl Processor) and **LEVEL**
+  (Dynamic Normalizer, Balance), then Advanced. Rows use the same switch and value style as
+  Settings instead of boxed pills, the Equalizer is one tap away, and ClearAudio+ says what it
+  replaces. The list is longer than the screen, so it scrolls under the signal path, which stays
+  where it is. The balance slider, MONO and CENTRE are unchanged.
+- **Advanced settings follow the profile.** Source Direct, Clear Phase, DSEE AI, DSEE HX Custom,
+  the Vinyl character and Tone Control were one set shared by A and B; they now belong to each
+  profile. On the first start after updating, B is given the values A had, so nothing sounds
+  different until you change it.
+- **The profile is checked after it is applied.** When a route change or A/B switches profile, the
+  player reads the effect chain back from Sony's sound service and writes one line to its log:
+  `fx-verify(…): ok` or the values that differ. *The read-back calls are unverified from inside
+  the player; a wall of differences would mean the read-back does not work there, not that the
+  profile failed.*
+- **Settings are written safely.** The settings file is written to a temporary file, flushed, and
+  renamed over the old one, so losing power mid-write leaves the old file or the new one rather
+  than half of one.
+
+### Fixed
+
+- **Sony's equalizer did nothing after Boot to stock.** Cinder switches the player's sound service
+  to the 10-band equalizer, and the service remembers that across a restart. Sony's own player
+  uses the six-band and never switches back, so its sliders moved and the sound did not change.
+  **Boot to stock** and **Use Sony's receiver** now hand the six-band back (and switch Source
+  Direct off) before restarting; Cinder takes its own equalizer again the next time it starts.
+  To repair a player that is already in this state: start Cinder, update, then Boot to stock.
+  Reported on r/walkman. *Host-tested; not yet heard on a device (`docs/DEVICE_CHECKLIST.md`
+  §27). Uninstalling, and reaching Sony's player by the cable or the bad-boot escape, do not
+  hand it back yet.*
+- **Removing a track from a playlist could remove a different one** when the playlist also held a
+  track the library could not find (for example one on an SD card that was out). The row is now
+  matched to its line in the file first.
+- **The signal path no longer ends at Bluetooth when nothing is connected.** With the radio on and
+  no headphones linked, the Sound screen said `BT·LDAC` while the audio left by the jack.
+- **The spare A/B setup forgot its VPT room and DC Phase filter across a restart.** Only the live
+  setup's were saved; both are now.
+- **Disconnecting Bluetooth re-applies the jack's sound.** The chain was re-sent when headphones
+  connected and never when they left.
+
+### Documentation
+
+- [`docs/RESEARCH_bt_dsp_2026-09-30.md`](docs/RESEARCH_bt_dsp_2026-09-30.md): what is known about
+  Sony's effects on the Bluetooth path (the EQ and Tone Control have Bluetooth tables in Sony's
+  library; VPT, DC Phase, the Normalizer and Clear Phase are decided by tables not yet decoded;
+  nothing has been measured at a sink), and the `logcat` test that settles it.
+- The redesign ledger: 2a, 2a/2b and the 2g Sound profile row are built; Part G lists where the
+  Sound screen differs from the mock-up and why.
+
 ## [0.3.14] — 2026-09-30
 
 ### Added

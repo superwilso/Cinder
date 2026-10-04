@@ -290,6 +290,51 @@ static void s_bt_quick_toggle_is_a_new_link(void) {
           "the link that came back was a new one (the connect edge ran)");
 }
 
+// ── a route change that switches the sound profile re-applies the chain ──────────────────────
+// R5: each output (jack, Bluetooth, USB-DAC) remembers which sound profile it uses, and the UI swaps
+// the live one inside cinder_set_bt_route. The shell's half is to ask cinder_take_profile_apply()
+// and push the chain when it says a swap happened — on the DISCONNECT edge too, which before R5
+// re-applied nothing at all (the jack would have gone on playing the headphones' tuning).
+static void profile_route_run(int switches) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_bt_add_paired("WH-1000XM4", 0x91);
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 26 /* CINDER_ACT_BT_TOGGLE */);
+    cinder_harness_script("cinder_take_profile_apply", switches);
+    cinder_harness_state_set_at(18000, "bt_on", 0);
+    cinder_harness_tap_at(18000, 240, 400);     // Bluetooth off: the route falls back to the jack
+    cinder_harness_set_budget_ms(26000);
+    cinder_harness_run();
+}
+
+static void s_profile_follows_the_route(void) {
+    profile_route_run(1);
+    check(cinder_harness_bt_connected() == 0, "the headphones are gone");
+    const int routes = cinder_harness_count("cinder_set_bt_route");
+    check(routes >= 2 && cinder_harness_arg("cinder_set_bt_route", routes - 1) == 0,
+          "the route went to Bluetooth and came back to the jack");
+    check(cinder_harness_count_between("cinder_take_profile_apply", 18000, 19000) >= 1,
+          "the disconnect edge asked whether the profile switched");
+    // The selector and the BT-effect flag are the two calls the chain apply never caches, so they
+    // are the ones that prove apply_sound_fn ran on this edge.
+    check(cinder_harness_count_between("cinder_effects_set_tone_system", 18000, 19000) >= 1,
+          "the jack's profile was pushed at the DSP on disconnect");
+    check(cinder_harness_count_between("cinder_effects_is_dsee_hx_on", 18000, 19000) >= 1,
+          "…and read back afterwards");
+    check(cinder_harness_before("cinder_effects_set_tone_system", "cinder_effects_is_dsee_hx_on") == 1,
+          "the read-back never runs ahead of the apply");
+}
+
+static void s_profile_same_on_both_outputs(void) {
+    profile_route_run(0);
+    check(cinder_harness_count("cinder_take_profile_apply") >= 2, "both edges asked");
+    check_eq(cinder_harness_count("cinder_effects_is_dsee_hx_on"), 0,
+             "no switch, no read-back: the getters are not polled");
+    check_eq(cinder_harness_count_between("cinder_effects_set_tone_system", 18000, 19000), 0,
+             "…and the disconnect edge re-applies nothing when the profile did not change");
+}
+
 // ── the codec preference reaches a radio restored at boot ────────────────────────────────────
 // 2026-09-16 on the device: the saved codec was sent at 3.3 s with the radio still OFF, the radio was
 // restored at 9.5 s, and the headphones connected themselves at 16.3 s — before the ladder's first
@@ -759,6 +804,32 @@ static void s_battery_really_flat_still_powers_off(void) {
     const long long at = cinder_harness_first_ms(kPowerOff);
     std::printf("  .... power-off at %lldms\n", at);
     check_range(at, 15000, 80000, "a sustained flat battery still powers off, within a minute");
+}
+
+// BOOT TO STOCK HANDS SONY'S EQ BACK. Cinder selects the 10-band EQ with SetSelectUsingEq and the
+// sound service keeps that across a restart; the stock player draws the six-band and never calls
+// the selector, so its equalizer came up stored and out of the path (r/walkman, 2026-10-04: "no
+// difference in sound, whatever I do with the EQ"). The last selector Cinder sends before the
+// restart has to be 1 = Eq6band, with Source Direct off, and it has to go BEFORE the helper runs.
+static void s_boot_to_stock_hands_the_eq_back(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_tap", 22 /* CINDER_ACT_BOOT_TO_STOCK */);
+    cinder_harness_tap_at(18000, 240, 400);
+    cinder_harness_set_budget_ms(25000);
+    cinder_harness_run();
+
+    const char* restart = "system:/system/vendor/unknown321/bin/cinder-power restart";
+    check(cinder_harness_count(restart) >= 1, "the restart helper ran");
+    int n = cinder_harness_count("cinder_effects_set_tone_system");
+    check(n >= 2, "the selector is sent at boot and again on the way out");
+    check_eq(cinder_harness_arg("cinder_effects_set_tone_system", n - 1), 1,
+             "the last selector sent is the six-band, the one stock draws");
+    int d = cinder_harness_count("cinder_effects_set_source_direct");
+    check(d >= 1, "Source Direct is sent on the way out");
+    check_eq(cinder_harness_arg("cinder_effects_set_source_direct", d - 1), 0, "…and it is off");
+    check(cinder_harness_last_ms("cinder_effects_set_tone_system") <= cinder_harness_first_ms(restart),
+          "the hand-back lands before the restart");
 }
 
 // ── the DSP reconcile must not depend on having found a settings file ────────────────────────
@@ -1452,6 +1523,7 @@ static const Scenario kScenarios[] = {
     {"search-off",        s_search_off_by_default,   "library search stays off without the installer's flag"},
     {"search-on",         s_search_on_with_flag,     "…and turns on, once, when the flag is there"},
     {"dsp-reconcile",     s_dsp_reconcile_no_settings, "the DSP is reconciled even with no settings file"},
+    {"stock-handback",    s_boot_to_stock_hands_the_eq_back, "Boot to stock gives Sony's EQ selector back to the six-band"},
     {"wake-on-touch",     s_wake_on_touch,           "a dark panel wakes on touch, without pressing anything"},
     {"touch-gestures",    s_touch_gestures,          "a tap is a tap and a drag is a drag"},
     {"button-codes",      s_button_codes,            "raw evdev codes decode to the right buttons"},
@@ -1468,6 +1540,8 @@ static const Scenario kScenarios[] = {
     {"stop-after-mid",    s_stop_after_midsong,      "…a stalled position never runs on to the end"},
     {"stop-after-paused", s_stop_after_paused,       "…and a paused song is left alone"},
     {"clock-steps-back",  s_clock_steps_back,        "a wall clock stepping back (2038) still marks the boot good"},
+    {"profile-route",     s_profile_follows_the_route, "a route change that switches the sound profile re-applies the chain"},
+    {"profile-same",      s_profile_same_on_both_outputs, "…and one that does not, re-applies nothing"},
     {nullptr, nullptr, nullptr},
 };
 
