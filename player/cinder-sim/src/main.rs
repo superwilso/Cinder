@@ -393,7 +393,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             profile_map: [0; 3], output: cinder_ui::profile::Output::Jack,
         }, 0, 0, 0),
         Screen::Settings => settings::render(c, theme, fonts, 0, 0,
-            &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" }),
+            &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" }),
         Screen::Bluetooth => bluetooth::render(c, theme, fonts, &Bt {
             on: app.bt_on,
             connected: app.bt_conn.map(|r| PAIRED[r].name),

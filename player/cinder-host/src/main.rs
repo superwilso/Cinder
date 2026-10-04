@@ -568,7 +568,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             }),
             ("settings", &|c: &mut Canvas| settings::render(c, &theme, &fonts, 1, 0,
                 &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
-                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" })),
+                    database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" })),
             // Settings ▸ Display (handoff 5k): palette, accent, night, the volume readout, size.
             ("display", &|c: &mut Canvas| cinder_ui::display::render(c, &theme, &fonts, 1,
                 &cinder_ui::display::DisplayView { palette: pal_name, accent_locked: pal_locked,
@@ -844,7 +844,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             settings::render(&mut c, &theme, &fonts, settings::ROW_RESTART, settings::max_scroll_px(),
                 &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" });
+                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             cinder_ui::confirm::render(&mut c, &theme, &fonts, ask);
             save(&c, &format!("confirm_{name}"));
@@ -857,7 +857,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                 settings::max_scroll_px() / 2,
                 &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: false, battery_care: true, device: "99% · 34.4 °C",
                     database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "30 MIN",
-                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" });
+                    brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", bt_idle_off: false, boot_stock: "SONY", clock: "17 Aug · 09:01" });
             cinder_ui::chrome::status_bar(&mut c, &theme, &fonts, "14:32", "FLAC 24/96", 78);
             save(&c, "settings_scrolled");
         }

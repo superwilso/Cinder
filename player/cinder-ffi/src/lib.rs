@@ -1163,6 +1163,7 @@ fn settings_body(r: &Render) -> String {
     // see in any menu, and restoring one at boot would be a device that plays quiet for reasons
     // nothing on screen explains.
     body.push_str(&format!("bt_fine={}\n", r.app.bt_fine_span()));
+    body.push_str(&format!("bt_idle_off={}\n", r.app.bt_idle_off() as u8));
     body.push_str(&format!("volume_limit={}\n", r.app.volume_limit() as u8));
     body.push_str(&format!("ignore_the={}\n", r.app.ignore_the() as u8));
     // The pull-down panel (Settings ▸ Pull-down panel), OFF unless switched on.
@@ -4693,6 +4694,13 @@ pub extern "C" fn cinder_get_usb_dac() -> libc::c_int {
 }
 
 /// Is THIS DEVICE ▸ Debug log switched on? (1/0). Read after CINDER_ACT_BT_DEBUG_LOG.
+/// Bluetooth ▸ Sound quality ▸ "Turn off when idle" (1/0). Polled by the shell's 1 Hz housekeeping,
+/// which switches the radio off after ten minutes of a dark screen with nothing playing over it.
+#[no_mangle]
+pub extern "C" fn cinder_get_bt_idle_off() -> libc::c_int {
+    cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_idle_off() as libc::c_int)
+}
+
 #[no_mangle]
 pub extern "C" fn cinder_get_bt_debug_log() -> libc::c_int {
     cell().lock().unwrap().as_ref().map_or(0, |r| r.app.bt_debug_log() as libc::c_int)
@@ -6174,6 +6182,7 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                         }
                     }
                     "bt_enhanced" => r.app.set_bt_enhanced(v == "1"),
+                    "bt_idle_off" => r.app.set_bt_idle_off(v == "1"),
                     // The RADIO's own on/off. Everything else about Bluetooth persisted already —
                     // codec, LDAC quality, enhanced mode, volume — but not whether the radio was
                     // ON, so every boot came up with it off and nothing could connect until the

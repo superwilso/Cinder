@@ -14,7 +14,7 @@ use crate::theme::Theme;
 use crate::Canvas;
 
 /// Number of selectable rows (for nav cursor clamping). Keep in sync with the rows below.
-pub const ROWS: usize = 20;
+pub const ROWS: usize = 21;
 /// Display ▸ — palette, accent, night, the volume readout, text size and the visualiser.
 pub const ROW_DISPLAY: usize = 0;
 pub const ROW_BRIGHTNESS: usize = 1;
@@ -49,35 +49,40 @@ pub const ROW_DATABASE: usize = 8;
 /// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
 /// of behaviour that has to be asked for.
 pub const ROW_AUTO_OFF: usize = 9;
-pub const ROW_STORAGE: usize = 10;
-pub const ROW_BATTERY: usize = 11;
+/// Bluetooth auto off: switch the radio off after ten minutes of a dark screen with nothing
+/// playing over it. The radio (and a link carrying nothing) costs power for as long as it is up,
+/// and nothing but the user ever switched it off. OFF by default, for the reason Auto power off
+/// is: it does not come back by itself.
+pub const ROW_BT_IDLE_OFF: usize = 10;
+pub const ROW_STORAGE: usize = 11;
+pub const ROW_BATTERY: usize = 12;
 /// Date & time. Sony has this and Cinder did not — the status-bar clock was read-only, so a
 /// drifting RTC or a flat battery left no way back to a correct time short of booting stock. The
 /// row drills into `clockset`; the shell writes both clocks through the setuid `cinder-clock`
 /// helper, because nothing in vendor/sony/lib exposes a clock setter and cinder-home is uid 100.
-pub const ROW_CLOCK: usize = 12;
-pub const ROW_USB_MODE: usize = 13; // tapping enters USB mass-storage (file transfer to a PC)
+pub const ROW_CLOCK: usize = 13;
+pub const ROW_USB_MODE: usize = 14; // tapping enters USB mass-storage (file transfer to a PC)
 /// Boot to stock: arms a ONE-SHOT return to Sony's player, then restarts. Two taps (the row asks
 /// for confirmation first) because it reboots the device.
-pub const ROW_BOOT_STOCK: usize = 14;
+pub const ROW_BOOT_STOCK: usize = 15;
 /// Restart and Power off. Both go through the confirmation modal — they take the device away
 /// mid-song, and the two-tap row used by Boot to stock is too easy to arm by accident for that.
-pub const ROW_RESTART: usize = 15;
-pub const ROW_POWER_OFF: usize = 16;
+pub const ROW_RESTART: usize = 16;
+pub const ROW_POWER_OFF: usize = 17;
 /// Reset every preference to its default. Sony has this (sid_4106 "Reset Settings") and it is the
 /// only way out of a settings state you cannot see your way back from — a wrong UI scale, a dark
 /// theme at brightness 1, an EQ you have lost track of. Behind the confirmation modal, because it
 /// throws away work; it does NOT touch the library, what is playing, or the shelf pins.
-pub const ROW_RESET: usize = 17;
+pub const ROW_RESET: usize = 18;
 /// ABOUT — static info rows, but they still take the cursor, so they need names like the rest.
-pub const ROW_FIRMWARE: usize = 18;
-pub const ROW_MODEL: usize = 19;
+pub const ROW_FIRMWARE: usize = 19;
+pub const ROW_MODEL: usize = 20;
 
 const RH: i32 = kit::ROW_H;
 /// Section labels and how many rows sit under each — the single source both `content_height` and
 /// `row_at` read, so a row added to one can't be missed by the other.
 const SECTIONS: [(&str, usize); 5] =
-    [("DISPLAY", 4), ("PLAYBACK", 3), ("LIBRARY", 2), ("SYSTEM", 9), ("ABOUT", 2)];
+    [("DISPLAY", 4), ("PLAYBACK", 3), ("LIBRARY", 2), ("SYSTEM", 10), ("ABOUT", 2)];
 
 /// The Display row's second line: what is behind it (handoff 2c).
 pub const DISPLAY_SUB: &str = "Palette · accent · volume display";
@@ -85,6 +90,8 @@ pub const DISPLAY_SUB: &str = "Palette · accent · volume display";
 pub const SHUFFLE_SUB: &str = "What the shuffle button deals";
 /// The pull-down panel row's second line: where the gesture starts and what it opens.
 pub const QUICK_SUB: &str = "Swipe down from the top of the screen";
+/// The Bluetooth auto off row's second line: when it acts.
+pub const BT_IDLE_OFF_SUB: &str = "After 10 min silent with the screen off";
 
 /// The released version, in ONE place. `tools/release.sh` rewrites this line when it bumps the
 /// tag, the same way it rewrites `installer/Cargo.toml` — so what the player shows on its own
@@ -124,6 +131,8 @@ pub struct SettingsView<'a> {
     pub screen_off: &'a str,
     /// Auto power-off label, e.g. "OFF" / "30 MIN".
     pub auto_off: &'a str,
+    /// Bluetooth auto off: the switch.
+    pub bt_idle_off: bool,
     /// Boot-to-stock row value: normally "SONY", or the confirm prompt once armed.
     pub boot_stock: &'a str,
     /// The live clock, shown as the Date & time row's value — so the row is also where you notice
@@ -203,6 +212,7 @@ fn trail<'a>(r: usize, v: &'a SettingsView) -> Trail<'a> {
         // the music tree. The value carries the library size, so the row also answers "did it work".
         ROW_DATABASE => Trail::Open(v.database),
         ROW_AUTO_OFF => Trail::Value(v.auto_off),
+        ROW_BT_IDLE_OFF => Trail::Switch(v.bt_idle_off),
         // Storage shows the real statvfs value (no chevron — it's a live info row, not a drill-in).
         ROW_STORAGE => Trail::Value(v.storage),
         // Device: chevron into the hardware's vital signs. The value carries the two numbers people
@@ -233,6 +243,7 @@ fn title(r: usize) -> &'static str {
         ROW_IGNORE_THE => "Ignore \"The\" in artists",
         ROW_DATABASE => "Database",
         ROW_AUTO_OFF => "Auto power off",
+        ROW_BT_IDLE_OFF => "Bluetooth auto off",
         ROW_STORAGE => "Storage",
         ROW_BATTERY => "Device",
         ROW_CLOCK => "Date & time",
@@ -267,6 +278,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, sel: usize, scroll: i32, v
                 ROW_DISPLAY => DISPLAY_SUB,
                 ROW_QUICK => QUICK_SUB,
                 ROW_SHUFFLE => SHUFFLE_SUB,
+                ROW_BT_IDLE_OFF => BT_IDLE_OFF_SUB,
                 _ => "",
             };
             y = kit::row(c, t, f, y, RH, &Row::new(title(r)).sub(sub).trail(trail(r, v)).sel(sel == r));
@@ -292,6 +304,7 @@ mod tests {
             brightness: "4 / 5",
             screen_off: "OFF",
             auto_off: "OFF",
+            bt_idle_off: false,
             boot_stock: "SONY", clock: "17 Aug · 09:01",
             ignore_the: false,
             quick: false,

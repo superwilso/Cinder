@@ -1048,6 +1048,8 @@ pub struct App {
     bt_connected: Option<String>,
     /// THIS DEVICE ▸ Debug log is recording. Not persisted — see `bluetooth::Bt::debug_log`.
     bt_debug_log: bool,
+    /// Settings ▸ Bluetooth auto off. Persisted; the shell reads it every tick.
+    bt_idle_off: bool,
     /// Has the shell reported the link state at all yet? Until it has, the Bluetooth screen says
     /// so rather than claiming "No device connected" — which before the first poll is a guess.
     bt_link_known: bool,
@@ -1637,6 +1639,7 @@ impl Default for App {
             bt_route: false,
             bt_connected: None,
             bt_debug_log: false,
+            bt_idle_off: false,   // opt-in: a radio that switches itself off surprises people
             bt_link_known: false,
             bt_paired: Vec::new(),
             bt_found: Vec::new(),
@@ -3392,6 +3395,11 @@ impl App {
                     self.boot_stock_armed = true;
                     vec![]
                 }
+            }
+            // No Action: the shell polls `cinder_get_bt_idle_off` from its 1 Hz housekeeping.
+            crate::settings::ROW_BT_IDLE_OFF => {
+                self.bt_idle_off = !self.bt_idle_off;
+                vec![]
             }
             crate::settings::ROW_AUTO_OFF => {
                 self.auto_off_idx = (self.auto_off_idx + 1) % AUTO_OFF_PRESETS.len();
@@ -8380,6 +8388,7 @@ impl App {
                     brightness: &brightness_lbl,
                     screen_off: &screen_off_lbl,
                     auto_off: &auto_off_lbl,
+                    bt_idle_off: self.bt_idle_off,
                     boot_stock: boot_stock_lbl,
                     clock: &clock_lbl,
                 };
@@ -10156,6 +10165,14 @@ impl App {
     pub fn set_bt_enhanced(&mut self, on: bool) {
         self.bt_enhanced = on;
     }
+    /// "Turn off when idle" — the shell switches the radio off after ten minutes of a dark screen
+    /// with nothing playing over Bluetooth.
+    pub fn bt_idle_off(&self) -> bool {
+        self.bt_idle_off
+    }
+    pub fn set_bt_idle_off(&mut self, on: bool) {
+        self.bt_idle_off = on;
+    }
     /// Report what the sink can actually do. Returns whether the screen needs a repaint, so the
     /// shell's poll doesn't dirty a frame every tick.
     pub fn set_bt_enhanced_supported(&mut self, on: bool) -> bool {
@@ -10988,6 +11005,18 @@ mod tests {
         for p in AUTO_OFF_PRESETS {
             assert!(seen.contains(&p), "preset {p} unreachable by cycling");
         }
+    }
+
+    /// Bluetooth auto off switches the radio off by itself, so it has to be asked for.
+    #[test]
+    fn bluetooth_auto_off_is_opt_in_and_the_row_toggles_it() {
+        let mut app = unlocked();
+        assert!(!app.bt_idle_off(), "must be opt-in");
+        app.settings_sel = crate::settings::ROW_BT_IDLE_OFF;
+        assert!(app.settings_activate().is_empty(), "the shell polls it; no action");
+        assert!(app.bt_idle_off());
+        app.settings_activate();
+        assert!(!app.bt_idle_off());
     }
 
     /// A hand-edited or corrupt `auto_off=` snaps to a known preset — otherwise the row would show

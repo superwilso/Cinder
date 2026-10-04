@@ -1388,6 +1388,36 @@ static void s_idle_blank_locks_after_five_minutes(void) {
     check_eq(cinder_harness_display_backlight(), 0, "still dark");
 }
 
+// Settings ▸ Bluetooth auto off: ten minutes dark and silent, and the radio goes off by the same
+// path a tap on the switch takes. Off unless chosen — the second half is the default doing nothing.
+static void s_bt_idle_off(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_script("cinder_get_bt_on", 1);
+    cinder_harness_script("cinder_get_bt_idle_off", 1);
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_set_budget_ms(900000);
+    cinder_harness_run();
+    // The boot reconcile also calls cinder_set_bt_on (with what the radio says); the LAST call is ours.
+    const int n = cinder_harness_count("cinder_set_bt_on");
+    long long at = cinder_harness_last_ms("cinder_set_bt_on");
+    std::printf("  .... radio switched off at %lldms (30 s blank + 10 min)\n", at);
+    check_range(at, 628000, 640000, "ten minutes after the screen went dark");
+    check_eq(n > 0 ? cinder_harness_arg("cinder_set_bt_on", n - 1) : -1, 0, "and it was switched OFF");
+}
+static void s_bt_idle_off_default(void) {
+    healthy_device();
+    cinder_harness_bt_set_radio(1);
+    cinder_harness_script("cinder_get_bt_on", 1);
+    cinder_harness_script("cinder_get_screen_off_s", 30);
+    cinder_harness_set_budget_ms(900000);
+    cinder_harness_run();
+    int offs = 0;
+    for (int i = 0; i < cinder_harness_count("cinder_set_bt_on"); ++i)
+        if (cinder_harness_arg("cinder_set_bt_on", i) == 0) ++offs;
+    check_eq(offs, 0, "left alone unless the switch is on");
+}
+
 // The restore has to put back what was there, and that is an ORDERING rule:
 // `display_backlight_remember()` caches the service's own level, and it only works while that
 // level is still non-zero. Blank first and it caches 0 — the device then "restores" to 0 and wakes
@@ -1554,6 +1584,8 @@ struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
     { "blank-idle",  s_idle_blank_darkens_the_panel,
       "the idle blank reaches DisplayService, not just the sysfs node" },
+    { "bt-idle-off", s_bt_idle_off, "Bluetooth auto off: the radio goes off after ten minutes dark and silent" },
+    { "bt-idle-off-default", s_bt_idle_off_default, "…and never by default" },
     { "blank-lock",  s_idle_blank_locks_after_five_minutes,
       "an idle blank nobody wakes locks after five minutes (touch asleep, Power wakes it)" },
     { "blank-order", s_blank_remembers_before_zeroing,
