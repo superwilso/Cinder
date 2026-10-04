@@ -153,6 +153,7 @@ fn main() {
         viz_size: 1, page: 0,
         viz_levels: None,
         viz_peaks: None,
+        viz_sig: None,
         scrubbing: false, lyrics: false,
     };
 

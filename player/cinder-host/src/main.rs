@@ -114,6 +114,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         viz_size: 1, page: 0,
         viz_levels: None,
         viz_peaks: None,
+        viz_sig: None,
         scrubbing: false, lyrics: false,
     };
     let lk = lock::Lock {
@@ -887,21 +888,21 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     style: "BARS", cover: "VEIL", scale: "DYNAMIC", range: "60 DB",
                     response: "NORMAL", curve: "SMOOTH", peaks: false, window: "AUTO", rate: "20 HZ",
                     bands: "36", columns: 36,
-                    levels: Some(&levels), peak_marks: None, seed: 2.0,
+                    levels: Some(&levels), peak_marks: None, sig: None, seed: 2.0,
                     kind: cinder_ui::viz::VizKind::Bars,
                 }, cinder_ui::vizset::ROW_STYLE),
                 ("vizset_peaks_fixed", cinder_ui::vizset::VizSet {
                     style: "SEGMENTS", cover: "FULL", scale: "FIXED", range: "48 DB",
                     response: "FAST", curve: "LINEAR", peaks: true, window: "125 MS", rate: "45 HZ",
                     bands: "64", columns: 64,
-                    levels: Some(&levels64), peak_marks: Some(&peaks64), seed: 2.0,
+                    levels: Some(&levels64), peak_marks: Some(&peaks64), sig: None, seed: 2.0,
                     kind: cinder_ui::viz::VizKind::Segments,
                 }, cinder_ui::vizset::ROW_PEAKS),
                 ("vizset_no_signal", cinder_ui::vizset::VizSet {
                     style: "RIBBON", cover: "OFF", scale: "DYNAMIC", range: "72 DB",
                     response: "SMOOTH", curve: "SMOOTH", peaks: false, window: "60 MS", rate: "30 HZ",
                     bands: "24", columns: 24,
-                    levels: None, peak_marks: None, seed: 2.0,
+                    levels: None, peak_marks: None, sig: None, seed: 2.0,
                     kind: cinder_ui::viz::VizKind::Ribbon,
                 }, cinder_ui::vizset::ROW_RATE),
             ];
@@ -1334,6 +1335,71 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             let mut c = Canvas::new();
             app.render(&mut c, &fonts, &np);
             save(&c, name);
+        }
+    }
+
+    // The visualisers that draw from the decoded audio (the PCM tap), with a signal made to look
+    // like music: a bass note and its harmonics, a stereo pair that is mostly but not wholly
+    // correlated, meters near -10 dBFS, and five seconds of a moving spectrum for the spectrogram.
+    // Day and night, on the spectrum page where they are meant to be looked at. LAST, like the two
+    // blocks above.
+    {
+        use cinder_ui::viz::{Signal, VizKind};
+        let tau = std::f32::consts::TAU;
+        let wave: Vec<f32> = (0..480)
+            .map(|i| {
+                let t = i as f32 / 480.0;
+                0.55 * (tau * 3.0 * t).sin() + 0.22 * (tau * 9.0 * t + 0.4).sin() + 0.1 * (tau * 23.0 * t + 1.1).sin()
+            })
+            .collect();
+        let mut seed = 12345u32;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
+        };
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        for i in 0..512 {
+            let t = i as f32 / 512.0;
+            let common = 0.5 * (tau * 7.0 * t).sin() + 0.2 * (tau * 31.0 * t).sin();
+            left.push(common + 0.18 * noise());
+            right.push(common * 0.9 + 0.22 * noise());
+        }
+        let cols = 48;
+        let rows = 108;
+        let mut hist = vec![0.0f32; cols * rows];
+        for slot in 0..rows {
+            // `r` is time, oldest first; the ring stores it starting at the head (37).
+            let r = (slot + rows - 37) % rows;
+            let beat = if r % 12 < 2 { 0.35 } else { 0.0 };
+            for b in 0..cols {
+                let f = b as f32 / cols as f32;
+                let melody = (-((f - 0.35 - 0.12 * (r as f32 * 0.09).sin()).powi(2)) / 0.004).exp() * 0.6;
+                let v = (0.75 - 0.6 * f) * (0.55 + 0.25 * (r as f32 * 0.21 + b as f32 * 0.5).sin()) + melody
+                    + if f < 0.15 { beat } else { 0.0 };
+                hist[slot * cols + b] = (v * 0.8 - 0.1).clamp(0.0, 1.0);
+            }
+        }
+        let sig = Signal {
+            wave: &wave, left: &left, right: &right,
+            meter: [0.86, 0.83, 0.71, 0.68], hold: [0.91, 0.88],
+            hist: &hist, hist_cols: cols, hist_rows: rows, hist_head: 37,
+        };
+        let levels48: Vec<f32> = (0..48).map(|b| hist[((37 + rows - 1) % rows) * cols + b]).collect();
+        for (kind, slug) in [
+            (VizKind::Scope, "scope"), (VizKind::Stereo, "stereo"), (VizKind::Spectrogram, "spectrogram"),
+            (VizKind::Meters, "meters"), (VizKind::Radial, "radial"),
+        ] {
+            let k = (0..cinder_ui::viz::COUNT).find(|&i| cinder_ui::viz::from_index(i) == kind).unwrap();
+            for night in [false, true] {
+                let t = th(night, amber);
+                let mut c = Canvas::new();
+                now_playing::render(&mut c, &t, &fonts, &now_playing::NowPlaying {
+                    page: 1, viz_kind: k, viz_levels: Some(&levels48), viz_sig: Some(&sig), ..np });
+                cinder_ui::chrome::status_bar(&mut c, &t, &fonts, "14:32", "FLAC 24/96", 78);
+                save(&c, &format!("viz_signal_{slug}{}", if night { "_night" } else { "" }));
+            }
         }
     }
 

@@ -314,6 +314,9 @@ pub struct NowPlaying<'a> {
     /// Peak-hold markers, one per bar, or None when the user has them switched off. Separate from
     /// `viz_levels` because a marker is deliberately NOT smoothed the way a bar is.
     pub viz_peaks: Option<&'a [f32]>,
+    /// The decoded audio itself, for the styles that need more than band levels (Scope, Stereo
+    /// field, Meters, Spectrogram). None when the shell has none to give.
+    pub viz_sig: Option<&'a crate::viz::Signal<'a>>,
     /// Which Now Playing PAGE is showing (index into `NpPage`). Only the block above the title
     /// changes — the title, progress, transport and toolbar are identical on every page, so the
     /// controls never move under your thumb.
@@ -453,20 +456,39 @@ pub(crate) fn level_stats(np: &NowPlaying) -> (f32, f32) {
     }
 }
 
+/// Can the spectrum page draw the chosen style right now?
+pub(crate) fn viz_live(np: &NowPlaying) -> bool {
+    crate::viz::can_draw(crate::viz::from_index(np.viz_kind), np.viz_levels, np.viz_sig)
+}
+
+/// What the spectrum page says instead, `(headline, caption)`. Music is playing but the style needs
+/// the decoded samples, which only library playback provides: say that, not "no signal" — there IS
+/// one, and the other styles are drawing it.
+pub(crate) fn viz_absent_text(np: &NowPlaying) -> (&'static str, &'static str) {
+    let kind = crate::viz::from_index(np.viz_kind);
+    if np.viz_levels.is_some() && crate::viz::needs_samples(kind) {
+        ("Needs library playback", "FM, USB-DAC AND THE RECEIVER GIVE BANDS ONLY")
+    } else if np.viz_levels.is_some() {
+        ("Gathering", "THE PICTURE BUILDS AS THE MUSIC PLAYS")
+    } else {
+        ("No audio signal", "PLAY SOMETHING TO SEE THE SPECTRUM")
+    }
+}
+
 /// PAGE 2 — the spectrum, given the whole block instead of a strip. Same styles as the cover
 /// overlay, just with room: this is where a visualiser is worth looking at.
 fn spectrum_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, seed: f32) {
     let (x, w) = (24, 432);
     let (y, h) = (154, 348); // stands at 502, clear of the page dots at 524
-    if np.viz_levels.is_some() {
-        crate::viz::draw_with_peaks(c, x, y, w, h, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), seed, crate::viz::from_index(np.viz_kind),
-                                    t.acc, t.line, np.viz_levels, np.viz_peaks, 255, 255);
+    if viz_live(np) {
+        crate::viz::draw_any(c, x, y, w, h, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, 255, 255);
     } else {
         // No analyzer feeding us. Say so rather than drawing a still, empty graph that reads as a
         // broken screen — the same rule the rest of the app follows about showing what isn't there.
-        crate::widgets::center(c, f, 240.0, 330.0, "No audio signal",
+        let (head, cap) = viz_absent_text(np);
+        crate::widgets::center(c, f, 240.0, 330.0, head,
             &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0));
-        crate::widgets::center(c, f, 240.0, 356.0, "PLAY SOMETHING TO SEE THE SPECTRUM",
+        crate::widgets::center(c, f, 240.0, 356.0, cap,
             &s(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
     }
     crate::widgets::center(c, f, 240.0, 130.0, crate::viz::name_upper(np.viz_kind),
@@ -478,11 +500,10 @@ fn spectrum_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, seed: 
 fn spectrum_page_night(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, seed: f32) {
     let (x, w) = (24, 432);
     let (y, h) = (220, 260); // stands at 480, clear of the page dots
-    if np.viz_levels.is_some() {
-        crate::viz::draw_with_peaks(c, x, y, w, h, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), seed, crate::viz::from_index(np.viz_kind),
-                                    t.acc, t.line, np.viz_levels, np.viz_peaks, 255, 255);
+    if viz_live(np) {
+        crate::viz::draw_any(c, x, y, w, h, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, 255, 255);
     } else {
-        crate::widgets::center(c, f, 240.0, 340.0, "No audio signal",
+        crate::widgets::center(c, f, 240.0, 340.0, viz_absent_text(np).0,
             &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0));
     }
     crate::widgets::center(c, f, 240.0, 196.0, crate::viz::name_upper(np.viz_kind),
@@ -620,9 +641,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
                 if let Some((vy, vh, at, ab)) =
                     crate::viz::size_box(crate::viz::size_from_index(np.viz_size), 436, true)
                 {
-                    crate::viz::draw_with_peaks(c, 24, vy, 432, vh, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), seed,
-                                                crate::viz::from_index(np.viz_kind), t.acc, t.line,
-                                                np.viz_levels, np.viz_peaks, at, ab);
+                    crate::viz::draw_any(c, 24, vy, 432, vh, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, at, ab);
                 }
             }
             NpPage::Spectrum => spectrum_page_night(c, t, f, np, seed),
@@ -647,9 +666,7 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying) {
                 // only its top and the cover's composition below never shifts.
                 let vsize = crate::viz::size_from_index(np.viz_size);
                 if let Some((vy, vh, at, ab)) = crate::viz::size_box(vsize, 508, false) {
-                    crate::viz::draw_with_peaks(c, 24, vy, 432, vh, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), seed,
-                                                crate::viz::from_index(np.viz_kind), t.acc, t.line,
-                                                np.viz_levels, np.viz_peaks, at, ab);
+                    crate::viz::draw_any(c, 24, vy, 432, vh, seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, at, ab);
                 }
             }
             NpPage::Spectrum => spectrum_page(c, t, f, np, seed),
@@ -800,6 +817,7 @@ mod tests {
             viz_size,
             viz_levels: Some(levels),
             viz_peaks: None,
+            viz_sig: None,
             page,
             scrubbing: false, lyrics: false,
         }

@@ -19,7 +19,7 @@ d5be7a71e95a034b onboard_1_getting_around_day
 b6c10aaee866ec3c onboard_2_buttons_day
 1f8083079acf99b6 onboard_3_playing_day
 c9477a464edf766c onboard_4_gestures_day
-2d4789b9774c4862 onboard_5_features_day
+9e2f6b1954baac00 onboard_5_features_day
 8e30c3596fdd6000 onboard_6_done_day
 c26316991e26a298 shelf_day
 1fccf608793f6b1e quick_panel_day
@@ -111,7 +111,7 @@ b20962e8ec36d469 onboard_0_welcome_night
 1cd1387cc586c058 onboard_2_buttons_night
 a786aa894dc9695d onboard_3_playing_night
 e5b43c13caf4ceb1 onboard_4_gestures_night
-efa151aa20d49b19 onboard_5_features_night
+b1ddd0f24288b4c0 onboard_5_features_night
 00bcb57845da0fc4 onboard_6_done_night
 75744ff52a2f8eb1 shelf_night
 ccb81677f5f24186 quick_panel_night
@@ -209,6 +209,11 @@ a66c9cc1931a6351 np_spectrum_0_bars
 10e42d8ced416ca8 np_spectrum_5_dots
 dec173dcba19838e np_spectrum_6_wave
 59ac90dd4e3b67e9 np_spectrum_7_pulse
+9c69f11660af3eb3 np_spectrum_8_scope
+e5506a6144ecc7c3 np_spectrum_9_stereo field
+cc4f799b7292f0a9 np_spectrum_10_spectrogram
+0907aa0d97b82035 np_spectrum_11_meters
+f98fbc4a009de570 np_spectrum_12_radial
 d081445228853e35 np_spectrum_no_signal
 2513c2d1b1efb6b5 viz_kind_0_bars
 5bd249955a438b2c viz_kind_1_ribbon
@@ -218,6 +223,11 @@ bc06d6b1b37a0a8a viz_kind_3_mirror
 bec448122a701527 viz_kind_5_dots
 38033a8c592e7a21 viz_kind_6_wave
 715ff5475ade0c8b viz_kind_7_pulse
+950663098198cf80 viz_kind_8_scope
+950663098198cf80 viz_kind_9_stereo field
+950663098198cf80 viz_kind_10_spectrogram
+950663098198cf80 viz_kind_11_meters
+7bd7f3000798a549 viz_kind_12_radial
 da540599d1568f76 vizset_default
 cdd1bd6747c6fb0e vizset_peaks_fixed
 086ba07b3add40c2 vizset_no_signal
@@ -307,6 +317,11 @@ d3ab03f20edd7a18 viz_4_segments
 6592d499473c42f4 viz_5_dots
 1806a45e57ce2beb viz_6_wave
 7dd8bc74375b1b7d viz_7_pulse
+cb073ae283ed61bb viz_8_scope
+cb073ae283ed61bb viz_9_stereo field
+cb073ae283ed61bb viz_10_spectrogram
+cb073ae283ed61bb viz_11_meters
+25c525d5f6641cc4 viz_12_radial
 8de56634e8f76cc7 now_playing_sleep_song_end
 b591ec6a78e98255 now_playing_repeat_album
 d6f4d2f16a0e327b help_top
@@ -314,6 +329,16 @@ d6f4d2f16a0e327b help_top
 0f0dbb150436f333 advanced
 383850a2b950245c dac_eq
 6c5fa31b05376d34 dac_eq_source_direct
+fa6cfb2a26eea77b viz_signal_scope
+f6a75e832cc96b1a viz_signal_scope_night
+866c031c6bab16e2 viz_signal_stereo
+63a266ef1abdf6f9 viz_signal_stereo_night
+5556a7ff5e85ab78 viz_signal_spectrogram
+b0478662ac075269 viz_signal_spectrogram_night
+b4fc1c42f3992a75 viz_signal_meters
+d0d73ae6bb4b08d8 viz_signal_meters_night
+79fef12f71e7181f viz_signal_radial
+01f037e2d999e420 viz_signal_radial_night
 9d65c6e53ccf67be soundscape_off
 bc9d2226dfb6c5fd soundscape_rain_alone
 b90d39e01acbb705 soundscape_beach_music_night
