@@ -88,6 +88,8 @@ pub struct VizSet<'a> {
     /// feeding us — the preview then draws the synthetic motion, and says so.
     pub levels: Option<&'a [f32]>,
     pub peak_marks: Option<&'a [f32]>,
+    /// The decoded audio, for the sample styles (Scope, Stereo field, Meters, Spectrogram).
+    pub sig: Option<&'a crate::viz::Signal<'a>>,
     pub seed: f32,
     pub kind: crate::viz::VizKind,
     /// How many columns to draw (the Bands setting).
@@ -119,14 +121,27 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, v: &VizSet, sel: usize) {
     let ph = PREVIEW_H - 28;
     let py = y0 + 8;
     fill_rect(c, px, py, pw, ph, t.row_sel);
-    crate::viz::draw_with_peaks(
-        c, px + 4, py + 4, pw - 8, ph - 8, v.columns as i32, crate::viz::gap_for(v.columns), v.seed, v.kind, t.acc, t.line, v.levels,
-        v.peak_marks, 255, 255,
-    );
+    // `columns` is the Bands setting; with no live levels the preview shows that many synthetic
+    // columns, so the setting is visible before any music plays.
+    if v.levels.is_none() && !crate::viz::is_signal_style(v.kind) {
+        crate::viz::draw_with_peaks(c, px + 4, py + 4, pw - 8, ph - 8, v.columns as i32, crate::viz::gap_for(v.columns),
+                                    v.seed, v.kind, t.acc, t.line, None, v.peak_marks, 255, 255);
+    } else {
+        crate::viz::draw_any(c, px + 4, py + 4, pw - 8, ph - 8, v.seed, v.kind, t.acc, t.line, v.levels, v.peak_marks,
+                             v.sig, 255, 255);
+    }
     // One caption, and it earns its line: with no analyzer running the bars are synthetic, and a
     // preview that silently shows made-up motion is the exact kind of thing this project keeps
     // taking out of screens.
-    let cap = if v.levels.is_some() { "LIVE" } else { "NO SIGNAL — DEMO MOTION" };
+    let cap = if crate::viz::can_draw(v.kind, v.levels, v.sig) {
+        "LIVE"
+    } else if v.levels.is_some() && crate::viz::needs_samples(v.kind) {
+        "THIS STYLE NEEDS LIBRARY PLAYBACK"
+    } else if crate::viz::is_signal_style(v.kind) && v.kind != crate::viz::VizKind::Radial {
+        "NO SIGNAL"
+    } else {
+        "NO SIGNAL — DEMO MOTION"
+    };
     text::draw(c, f, px as f32, (py + ph + 15) as f32, cap,
                &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06));
 

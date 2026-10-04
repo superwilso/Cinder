@@ -218,7 +218,7 @@ fn features(c: &mut Canvas, t: &Theme, f: &FontSet) {
     crate::widgets::draw_fit(c, f, 36.0, 92.0, "What's inside", &sty(Family::Sans, Weight::Bold, 32.0, t.ink, 0.0), 458.0);
     let mut y = 150;
     // COUNTS COME FROM THE CODE. "Five real-time types" was written when there were five; there
-    // are `viz::COUNT` = 8, and a help screen that miscounts the thing it is pointing at is worse
+    // are `viz::COUNT` = 13, and a help screen that miscounts the thing it is pointing at is worse
     // than one that stays vague.
     let items: [(&str, &str); 7] = [
         ("Library", "Songs, albums, artists, folders \u{2014} thousands of tracks."),
@@ -226,7 +226,7 @@ fn features(c: &mut Canvas, t: &Theme, f: &FontSet) {
         ("Playlists", "Make them on the device \u{2014} rename, add and remove tracks."),
         ("Sound", "10-band EQ + DSEE/VPT/Vinyl/ClearAudio+, A/B compare."),
         ("Bluetooth & USB-DAC", "LDAC out, and a USB sound card that keeps Bluetooth."),
-        ("Visualiser", "Eight real-time types on Now Playing."),
+        ("Visualiser", "Thirteen styles: scope, stereo field, spectrogram\u{2026}"),
         ("Sleep timer & battery care", "In Settings \u{2014} pauses playback; caps charging at 90%."),
     ];
     for (h, s) in items {

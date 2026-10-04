@@ -7599,6 +7599,7 @@ impl App {
                     // as the signal.
                     levels: np.viz_levels,
                     peak_marks: np.viz_peaks,
+                    sig: np.viz_sig,
                     seed: np.viz_seed,
                     kind: crate::viz::from_index(self.viz_kind),
                 };
@@ -8880,7 +8881,6 @@ impl App {
     pub fn set_mono(&mut self, on: bool) {
         self.mono = on;
     }
-    /// Whether the mono library is running inside SoundServiceFw. Returns true if that changed.
     // ── Soundscapes ──────────────────────────────────────────────────────────────────────────────
 
     /// What the shell needs: `(sound id or 0 when off, level on its own %, level with music %)`.
@@ -9003,6 +9003,7 @@ impl App {
         }
     }
 
+    /// Whether the mono library is running inside SoundServiceFw. Returns true if that changed.
     pub fn set_mono_shim(&mut self, on: bool) -> bool {
         let changed = self.mono_shim != on;
         self.mono_shim = on;
@@ -12476,7 +12477,7 @@ mod tests {
             title: "t", artist: "a", codec: "", badge: "", clock: "21:07", battery: 50, elapsed: "",
             remaining: "", progress: 0.0, art: "x", art_full: None, art_thumb: None, liked: false,
             playing: false, shuffle: false, repeat: 0, viz_seed: 0.0, viz_kind: 0, viz_size: 0,
-            viz_levels: None, viz_peaks: None, page: 0, scrubbing: false, lyrics: false,
+            viz_levels: None, viz_peaks: None, viz_sig: None, page: 0, scrubbing: false, lyrics: false,
         };
         a.render(&mut c, &fonts, &np);
         assert_eq!(a.clock_hour, Some(21));
@@ -15839,7 +15840,7 @@ mod tests {
             viz_size: 1,
             page: 0,
             viz_levels: None,
-            viz_peaks: None,
+            viz_peaks: None, viz_sig: None,
             scrubbing: false, lyrics: false,
         };
         let mut c = Canvas::new();
@@ -16641,7 +16642,7 @@ mod palette_tests {
             title: "", artist: "", codec: "", badge: "", clock: "12:00", battery: 50, elapsed: "",
             remaining: "", progress: 0.0, art: "", art_full: None, art_thumb: None, liked: false,
             playing: false, shuffle: false, repeat: 0, viz_seed: 0.0, viz_kind: 0, viz_size: 0,
-            page: 0, viz_levels: None, viz_peaks: None, scrubbing: false, lyrics: false,
+            page: 0, viz_levels: None, viz_peaks: None, viz_sig: None, scrubbing: false, lyrics: false,
         };
         // The background is the colour most of the frame is painted in.
         let dominant = |a: &mut App| {

@@ -21,6 +21,7 @@ mod present;
 mod scrobble;
 mod pcm_tap;
 mod spectrum;
+mod vizsig;
 
 use cinder_ui::now_playing::NowPlaying;
 use cinder_ui::{Canvas, FontSet, H, W};
@@ -567,6 +568,8 @@ struct Render {
     viz_at: std::time::Instant,
     /// The visualiser's own PCM tap (`pcm_tap.rs`): PlayerService's decoded-audio queue.
     tap: pcm_tap::Tap,
+    /// The sample styles' signal (scope, stereo field, meters) and the spectrogram history.
+    sig: vizsig::SigState,
     /// When the tap last produced a frame. While that is recent, Sony's analyzer is not wanted and
     /// its frames are ignored; when it goes stale (FM, USB-DAC, a format the tap refuses), the
     /// analyzer is asked for again.
@@ -783,6 +786,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         real_pos_ms: -1,
         real_pos_at: std::time::Instant::now(),
         tap: pcm_tap::Tap::new(pcm_tap::SHM_DIR),
+        sig: vizsig::SigState::default(),
         tap_at: None,
         tap_peak: 0.0,
         tap_log_at: None,
@@ -1763,6 +1767,8 @@ fn viz_tap(r: &mut Render) -> bool {
     let mut peak = r.tap_peak;
     r.viz_levels = spectrum::from_pcm(&w.samples, w.rate, cfg.bands, &prev, &mut peak, &cfg, dt);
     r.tap_peak = peak;
+    r.sig.update(&w.samples, &w.left, &w.right, dt);
+    r.sig.push_hist(&r.viz_levels);
     let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
     spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
     r.viz_peaks = peaks;
@@ -1939,6 +1945,7 @@ pub extern "C" fn cinder_render_tick() {
     }
     load_grid_covers(r);
     r.canvas.clear_clip();
+    let sig = r.sig.view();
     let np = NowPlaying {
         title: &r.np.title,
         artist: &r.np.artist,
@@ -1965,6 +1972,8 @@ pub extern "C" fn cinder_render_tick() {
         // Markers only exist while they are switched on AND there are bars to mark: `hold_peaks`
         // empties the buffer when the setting is off, so this needs no second look at the config.
         viz_peaks: if animate && !r.viz_peaks.is_empty() { Some(&r.viz_peaks) } else { None },
+        // The decoded audio for the sample styles; its parts are empty unless the tap is live.
+        viz_sig: if animate { Some(&sig) } else { None },
         scrubbing: r.scrub_ms.is_some(), lyrics: false,
     };
     // The navigator decides which screen is showing; it draws Now Playing from `np` and
@@ -2076,7 +2085,7 @@ pub extern "C" fn cinder_render_bench(frames: libc::c_int, scroll: libc::c_int) 
             clock: &np.clock, battery: np.battery, elapsed: &np.elapsed, remaining: &np.remaining,
             progress: np.progress, art: &np.art, art_full: None, art_thumb: None,
             liked: np.liked, playing: np.playing, shuffle: np.shuffle, repeat: np.repeat,
-            viz_seed: 2.0, viz_kind: 0, viz_size: 0, page: 0, viz_levels: None, viz_peaks: None,
+            viz_seed: 2.0, viz_kind: 0, viz_size: 0, page: 0, viz_levels: None, viz_peaks: None, viz_sig: None,
             scrubbing: false, lyrics: false,
         };
         r.canvas.clear_clip();
@@ -5019,6 +5028,7 @@ pub extern "C" fn cinder_set_pcm(samples: *const i16, n: libc::c_int) {
         let dt = frame_dt_ms(r);
         let prev = std::mem::take(&mut r.viz_levels);
         r.viz_levels = spectrum::levels(pcm, cfg.bands, &prev, &cfg, dt);
+        r.sig.push_hist(&r.viz_levels);
         let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
         spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
         r.viz_peaks = peaks;
@@ -5057,6 +5067,7 @@ pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int)
         let mut peak = r.viz_peak;
         r.viz_levels = spectrum::from_bands(src, cfg.bands, &prev, &mut peak, &cfg, dt);
         r.viz_peak = peak;
+        r.sig.push_hist(&r.viz_levels);
         let (mut peaks, mut held) = (std::mem::take(&mut r.viz_peaks), std::mem::take(&mut r.viz_held_ms));
         spectrum::hold_peaks(&mut peaks, &mut held, &r.viz_levels, dt, &cfg);
         r.viz_peaks = peaks;
@@ -7443,7 +7454,7 @@ mod tests {
             S::UsbStorage, S::Shelf, S::Pairing, S::GenreFilter, S::TrackInfo, S::Folders,
             S::ClockSet, S::Advanced, S::Tone, S::BtCodec, S::Keyboard, S::PlaylistPick,
             S::TrackPick, S::Device, S::VizSet, S::Lyrics, S::Search, S::SensMe, S::Display, S::Palette, S::Help,
-            S::DacEq,
+            S::DacEq, S::Soundscape,
         ];
         assert_eq!(all.len(), SCREEN_NAMES.len(), "table and variant list disagree");
         let mut seen = std::collections::BTreeSet::new();
