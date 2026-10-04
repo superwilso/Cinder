@@ -24,7 +24,21 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifdef FAKE_WAMPY
+#ifdef HAL_LAUNCHER
+/* ── stands in for hagodaemon on a player WITHOUT Wampy: it has no libasound of its own and loads
+ * the code that uses it privately (RTLD_LOCAL), the way hagodaemon loads libSoundServiceFw. The
+ * shim's hooks are still called, and RTLD_NEXT finds no ALSA behind them — the Walkman One
+ * failure of 2026-10-04. The test body is this same file built as a library (-DAS_HAL). ── */
+#include <dlfcn.h>
+int main(int argc, char** argv)
+{
+    const char* lib = getenv("MONO_HAL");
+    void* h = lib ? dlopen(lib, RTLD_NOW | RTLD_LOCAL) : NULL;
+    if (!h) { fprintf(stderr, "hal launcher: %s\n", lib ? dlerror() : "MONO_HAL is not set"); return 2; }
+    int (*run)(int, char**) = (int (*)(int, char**))dlsym(h, "hal_main");
+    return run ? run(argc, argv) : 3;
+}
+#elif defined(FAKE_WAMPY)
 /* ── stands in for Wampy's libsound_service_fw.so: proves the chain loaded it ── */
 __attribute__((constructor)) static void fake_wampy(void)
 {
@@ -121,6 +135,9 @@ static int roundtrip(int cli, int srv, const unsigned char* buf, size_t n, unsig
     return 0;
 }
 
+#ifdef AS_HAL
+#define main hal_main   /* built as the privately loaded library: see HAL_LAUNCHER */
+#endif
 int main(int argc, char** argv)
 {
     /* MONO_EXPECT=inactive: the script has put the shim in safe mode or switched its hooks off. */

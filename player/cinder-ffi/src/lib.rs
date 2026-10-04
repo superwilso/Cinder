@@ -2229,7 +2229,7 @@ pub extern "C" fn cinder_render_tick() {
     }
     // Visualiser: advance + force a repaint ONLY while playing on the Now Playing screen (and
     // enabled), and at most ~20 fps (the pump may tick at 60) — that bounds the battery cost.
-    let animate = r.app.wants_spectrum() && r.np.playing && r.app.is_now_playing();
+    let animate = r.app.viz_visible() && r.np.playing;
     if animate {
         let since = r.last_viz.elapsed().as_millis() as f32;
         if since >= 50.0 {
@@ -4622,7 +4622,7 @@ pub extern "C" fn cinder_viz_analyzer_window_ms() -> libc::c_int {
 pub extern "C" fn cinder_viz_wants_analyzer() -> libc::c_int {
     let guard = cell().lock().unwrap();
     let Some(r) = guard.as_ref() else { return 0 };
-    (r.app.wants_spectrum() && r.app.is_now_playing() && r.np.playing && !tap_fresh(r)) as libc::c_int
+    (r.app.viz_visible() && r.np.playing && !tap_fresh(r)) as libc::c_int
 }
 
 #[no_mangle]
@@ -5527,7 +5527,7 @@ pub extern "C" fn cinder_set_pcm(samples: *const i16, n: libc::c_int) {
         r.viz_at = std::time::Instant::now();
         // Only force a repaint when the visualiser is actually on screen — the audio source may
         // stream continuously, but off Now Playing the new levels are unused, so don't burn a frame.
-        if r.app.wants_spectrum() && r.app.is_now_playing() {
+        if r.app.viz_visible() {
             r.dirty = true;
         }
     }
@@ -5565,7 +5565,7 @@ pub extern "C" fn cinder_set_spectrum(bands: *const libc::c_int, n: libc::c_int)
         r.viz_held_ms = held;
         r.viz_at = std::time::Instant::now();
         // Only force a repaint when the visualiser is on screen (the analyzer streams continuously).
-        if r.app.wants_spectrum() && r.app.is_now_playing() {
+        if r.app.viz_visible() {
             r.dirty = true;
         }
     }

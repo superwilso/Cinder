@@ -118,9 +118,12 @@ pub const HIST_US: i64 = 1_500_000;
 /// 46 ms packets and one being refilled) and the position is the service's once-a-second report
 /// carried forward by the clock, so "no slot covers it" was the NORMAL case on the player, not
 /// the exception: 2026-10-04, a whole session with no tap frame and Scope, Stereo field and
-/// Meters empty. Within this distance the nearest packet is the music of this moment to the eye;
-/// beyond it (a seek, a pause, another track's leftovers) nothing is drawn.
-pub const NEAR_US: i64 = 750_000;
+/// Meters empty. The tap's own history makes an exact hit the normal case; this covers the first
+/// second after the page opens, a seek or a new track, while that history fills — the lead was
+/// 630 ms on one run and 1004 ms on the next, so it is the whole history's length. What is drawn
+/// then is up to a second early, which beats a flash of "no signal" on every track. Beyond it
+/// (another track's leftovers) nothing is drawn.
+pub const NEAR_US: i64 = HIST_US;
 
 /// How far `t_us` is outside a slot's span: 0 inside, else the gap in µs.
 fn gap_us(s: &Slot, t_us: i64) -> i64 {

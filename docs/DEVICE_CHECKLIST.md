@@ -837,3 +837,19 @@ the first 180 s of a boot, for the first 60 s of idle, or at all while playing o
 | 31.3 | **What Bluetooth costs idle** | Bluetooth ON, nothing connected, screen dark, 6 minutes: `adb shell 'grep -E "SYS_CONN" /proc/clkmgr/subsys_test'` | Record `state(0)` or `state(1)` in stage 1. `state(1)` = the radio's domain stays powered for as long as Bluetooth is switched on, and an automatic radio-off after N minutes without a link would be worth building | — |
 | 31.4 | **Framebuffer blank** (not run: needs the owner) | Screen dark, before stage 1: `echo 4 > /sys/class/graphics/fb0/blank`, read `grep VENCPLL /proc/clkmgr/pll_test`, then `echo 0 > …/blank` | VENCPLL off while blanked and the panel comes back on the next wake = the display can be switched off the moment the screen goes dark, without stage 1, which would cover Bluetooth playback too | VENCPLL stays ON = this kernel's blank does nothing; stage 1 is the only switch |
 
+## 32 — 2026-10-04 — The hagodaemon wrapper (a preload on a player without Wampy)
+
+Installed by hand over adb on the owner's Walkman One player; not in any package. `/proc/clkmgr`
+is not involved. Measured that day: 28 services start through it, `/proc/<SoundServiceFw>/environ`
+holds the `LD_PRELOAD` and no other service's does, `/tmp/cinder_mono.log` reads `loaded into
+SoundServiceFw`, `audio flowed — load count cleared`, and `mono ON` / `jack: … summing` when the
+flag is set. Framebuffer blank (31.4) was also run: it changes nothing on this kernel.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 32.1 | **Mono by ear** | Sound ▸ Mono on, a track with hard left/right panning, wired headphones | Both ears the same; off again restores the stereo picture | Log says summing and the ears disagree = the hook is on a PCM that is not the one playing |
+| 32.2 | **Soundscape over music, jack** | Play a song, Menu ▸ Soundscapes ▸ Beach, With music 30% | The beach under the song; strip OVER THE MUSIC; `/tmp/cinder_mono.log`: `jack: soundscape mixed in` | Strip still says SILENT WHILE MUSIC PLAYS = Cinder did not see `/tmp/cinder_mono_shim` |
+| 32.3 | **The same over Bluetooth** | 32.1 and 32.2 with headphones linked over LDAC | As on the jack; the stream stays up. Log: `bt: …` lines | A dropout or a restart: `touch /data/cinder/mono_shim_off`, reboot, report the log |
+| 32.4 | **Off switch** | `touch /data/cinder/preload_off`, reboot | No `LD_PRELOAD` on SoundServiceFw, no `/tmp/cinder_mono_shim`; everything else as before | — |
+| 32.5 | **Removing it** | `mount -o remount,rw /system; mv /system/vendor/sony/bin/hagodaemon.real /system/vendor/sony/bin/hagodaemon`, reboot | Stock again: `md5sum` of `hagodaemon` is Sony's | — |
+

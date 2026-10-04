@@ -10275,6 +10275,13 @@ impl App {
     pub fn wants_spectrum(&self) -> bool {
         self.np_page != 0 || self.viz_on()
     }
+
+    /// Is a visualiser on the glass right now? Now Playing with one showing, or the Visualiser
+    /// settings page, whose preview is the whole point of that page — until 2026-10-04 it was fed
+    /// nothing there, so the preview never moved and the sample styles showed NO SIGNAL.
+    pub fn viz_visible(&self) -> bool {
+        (self.wants_spectrum() && self.is_now_playing()) || self.current() == Screen::VizSet
+    }
     pub fn set_viz_kind(&mut self, k: u8) {
         self.viz_kind = k % crate::viz::COUNT;
     }
