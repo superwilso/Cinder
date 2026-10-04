@@ -271,7 +271,7 @@ fixed launcher**, after the first version was found unable to fire at all. Resul
 | 11.4 | **Only after 11.2 and 11.3 pass:** decide the cable escape | Keep, narrow to a PC connection, or remove | — | The cable escape stays exactly as it is until then |
 | 11.7 | **NEW PLAYLIST slides away with the band** | Library ▸ Playlists, with enough playlists to scroll: scroll down, then up mid-list | NEW PLAYLIST goes up under the tabs with the band, the rows meet the tab strip, and both come back on the way up — tappable the moment it is back | A tap on its old spot while hidden must open a playlist or nothing, never the keyboard |
 | 11.8 | **Power key after a guard recovery** | Hard to force. If `GUARD RECOVERED` ever appears again: press power, touch the screen | The UI stays responsive (screen may stay lit); log carries the fault record after a forced restart | A frozen UI = a fifth unguarded Sony call; the fault record now survives to say which |
-| 11.9 | **The release installer, end to end** — what a stranger will run. **RE-OPENED 2026-09-12**: the Windows handoff was replaced that day (it no longer launches Sony's updater; it sends the vendor SCSI command itself and asks for administrator), so a pass recorded before that date does not cover the path a stranger now runs | From the GitHub release, on Windows: `cinder-installer-windows-x64.exe` → Install, **cable left in** → boots into Cinder → restart with the cable still in → Sony's player (the post-install pass is spent) → Update, cable in → boots into Cinder → Uninstall → Install again | Each step lands; the window names the state the player is really in; the first boot after each install or update logs `cinderhome-launch: cable escape stood down for this boot` and the restart after it does not; music, playlists and settings survive all four | `cinder_home_install.log` in the drive root says which step. A revert by the device's sanity gate must read as reverted, not as a tick |
+| 11.9 | **The release installer, end to end** — what a stranger will run. **PASS 2026-10-01, owner-reported: "all of the installers are working."** RE-OPENED 2026-09-12: the Windows handoff was replaced that day (it no longer launches Sony's updater; it sends the vendor SCSI command itself and asks for administrator), so a pass recorded before that date does not cover the path a stranger now runs | From the GitHub release, on Windows: `cinder-installer-windows-x64.exe` → Install, **cable left in** → boots into Cinder → restart with the cable still in → Sony's player (the post-install pass is spent) → Update, cable in → boots into Cinder → Uninstall → Install again | Each step lands; the window names the state the player is really in; the first boot after each install or update logs `cinderhome-launch: cable escape stood down for this boot` and the restart after it does not; music, playlists and settings survive all four | `cinder_home_install.log` in the drive root says which step. A revert by the device's sanity gate must read as reverted, not as a tick |
 | 11.10 | ~~**USB-DAC → LDAC, the whole path** — the headline, never run end to end~~ **PASS 2026-09-12, owner-reported; LOG CAPTURED 2026-09-15 (v0.3.7 dev build)**: headphones linked on LDAC (`bt-sound: codec:0x02`), `cinder-msc: dac uac OK`, the host streamed 44.1 kHz / 32-bit, `ldac: handshake accepted`, capture `S32_LE` stereo RUNNING, `FIRST CAPTURE READ ok`, then `session ended after 8497664 frames (192 s at 44100 Hz)` when USB-DAC was switched off: 192.7 s carried against 193.1 s streamed, with no stall, recovery or reconnect line. `usb-dac: reclaimed the player after DAC (init rc=0)`. Still unlogged: the 3.5 mm leg with no Bluetooth link | Headphones on LDAC; Menu ▸ USB-DAC on; play audio on the PC into the Walkman | Sound in the headphones; the Bluetooth screen names LDAC | The transmit half is proven (STATUS.md, 2026-08-11), so silence points at capture: log for `snd_pcm_open` / `-EBUSY` on the UAC card |
 | 11.11 | **Which model is this unit?** | Read the label on the back of the player | Record it in README ▸ Supported devices | `/contents` reads 55 GB — the 64 GB NW-A57, not the 16 GB NW-A55 the README used to name. The README now says "64 GB"; correct it if the label disagrees |
 | 11.12 | **Palettes** | Copy `player/cinder-ui/palettes/slate.palette` and `paper.palette` into `cinder_palettes/` on the player's storage over USB; unplug; Settings ▸ Palette | Both appear and each repaints the UI; Paper's Accent row reads SET BY PALETTE; the choice survives a reboot; a deliberately broken file is skipped and `cinderhome.log` says why | Nothing listed: the log line `palettes: cannot read` names the error. Folder read at boot but not after USB: check Settings was re-opened, which is the rescan trigger |
@@ -336,6 +336,10 @@ carries all twelve fixes.
 
 
 ## Open from 2026-09-21 — installing on a model-swapped player (Walkman One)
+
+> **Owner report, 2026-10-01:** Walkman One is tested and running with Cinder on the owner's current player, and
+> every installer works. That answers what this section exists to ask — whether a W1 player can
+> take Cinder at all. The rows below stay as the record of how it was checked.
 
 An NW-A55 running Walkman One reports the **NW-WM1A** KAS (`nvpstr kas` →
 `e8d171a5…26c`) and `mid: 128G`, so every NW-A50-sealed `.UPG` is refused by Sony's updater without
@@ -532,6 +536,9 @@ loop below the escape ladder, and the only way out of it is the one that was jus
 
 ## Open from 2026-09-22 — can a Walkman One user install a RELEASE?
 
+> **Owner report, 2026-10-01:** yes — the owner's own player is Walkman One running Cinder, and "all of the installers
+> are working".
+
 Cinder **runs** on Walkman One: proven twice now, and 2026-09-22 added an install onto a live W1
 3.02 player over adb that came up clean with the cable in (`cable escape stood down — the pass is
 spent`), plus FM through the register path, the firmware line in the install log, and the `Base`
@@ -600,6 +607,9 @@ reboot. Play something first.
 
 ## 21 — 2026-09-29 — DAC EQ, 32-bit FLAC, linear amp
 
+> **Owner report, 2026-10-01:** the BT receiver works (21.7 and 21.9 were already PASS). The report did not single
+> out 21.10 (Use Sony's receiver), the DAC EQ or the linear amp, so those rows say what they said.
+
 Host-tested; the DAC EQ helper's tables were also written and read back on the W1 reference player
 (`analysis/RE_codec_tone_table.md` §4). Needs a dev build and one reboot, and wired headphones for
 21.1–21.3. Start with the volume low.
@@ -622,6 +632,10 @@ Host-tested; the DAC EQ helper's tables were also written and read back on the W
 
 ## 22 — 2026-09-29 — Library views
 
+> **Owner report, 2026-10-01:** shipped in 0.3.14 and in use on the owner's Walkman One player, reported as working
+> along with most of what the 10-01 audit (C1) listed as host-tested only. Not reported row by row,
+> so the rows below are still the way to say exactly what passed.
+
 Host-tested (hit tests for every grid tile and compact row, the A-Z jump, persistence) and in the
 golden previews (`library_*_grid`, `library_*_compact`). Needs a dev build and one reboot. The one
 thing only the device can say is whether 96 px covers load fast enough while the grid scrolls.
@@ -634,6 +648,10 @@ thing only the device can say is whether 96 px covers load fast enough while the
 | 22.4 | **Kept after a reboot** | Leave Albums in grid and Songs compact; reboot | Both come back that way (`lib_views=list,grid,…` in `cinder_settings.conf`) | — |
 
 ## 23 — 2026-09-29 — Design styles (Now Playing)
+
+> **Owner report, 2026-10-01:** shipped in 0.3.14 and in use on the owner's Walkman One player, reported as working
+> along with most of what the 10-01 audit (C1) listed as host-tested only. Not reported row by row,
+> so the rows below are still the way to say exactly what passed.
 
 Host-tested: the style contract (every target ≥ 44 px, no overlaps, reachable at its middle), the
 overflow audit at every UI scale, taps, scrub and page swipe per style, and persistence. Golden
@@ -651,6 +669,10 @@ the styles read at arm's length.
 | 23.6 | **Kept after a reboot** | Leave Nocturne picked; reboot | Nocturne again (`style=nocturne` in `cinder_settings.conf`) | — |
 
 ## 24 — 2026-09-29 — The visualiser's own FFT (PCM tap)
+
+> **Owner report, 2026-10-01:** shipped in 0.3.14 and in use on the owner's Walkman One player, reported as working
+> along with most of what the 10-01 audit (C1) listed as host-tested only. Not reported row by row,
+> so the rows below are still the way to say exactly what passed.
 
 Host-tested: the slot header layout as read off the device, slot choice by timestamp, stereo to
 mono, a window running on into the next slot, format refusal, a missing queue file, band
@@ -742,3 +764,38 @@ sends selector 1 and Source Direct off before the restart (`stock_handback_fn`, 
 | 27.3 | **Cinder takes its EQ again** | Restart from stock into Cinder; Menu ▸ Equalizer, push a band | Audible; `fx-verify` (26.3) or `cinder-probe --fx` shows `SelectUsingEq=2` | Cinder's EQ dead after a stock visit: the boot apply did not re-send the selector |
 | 27.4 | **Use Sony's receiver takes the same path** | Receiver ▸ Use Sony's receiver ▸ Restart (with 21.10) | The log line of 27.2 before the restart | — |
 | 27.5 | **The gaps** (expected to FAIL today, record what happens) | Reach stock by the cable escape, and by uninstalling; try Sony's EQ | Probably dead in both: no Cinder code runs on those routes | Decide where the reset lives: the launcher cannot call Sony's services, the uninstall package runs a script |
+
+## 28 — 2026-10-04 — Soundscapes
+
+Host-tested ([`SPEC_soundscapes.md`](SPEC_soundscapes.md) "Tests"): the generator, the shim through
+`LD_PRELOAD`, the mix hook on the Bluetooth stream, the page, and the shell's line and route in the
+harness. **Needs a release or dev build with the new `libcinder_mono.so`** for 28.5–28.7, and
+Wampy's preload for those three at all. Start with the volume low: a soundscape at 100% on its own
+is as loud as music.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 28.1 | **On its own, through the jack** | Wired headphones, nothing playing. Menu ▸ Soundscapes ▸ Rain | Rain within a second; the strip says ON ITS OWN · HEADPHONES. Log: `soundscape: playing on its own through hw:0,4 at 44100 Hz` | Strip WAITING FOR THE OUTPUT + `cannot open the jack (… busy)` = Sony's sound service still holds the PCM after a pause: wait 30 s and note whether it ever lets go. Opened but silent = the codec is muted while the player is stopped — note `amixer -c0 cget name='playback mute'` |
+| 28.2 | **On its own, over Bluetooth** | Headphones linked over Bluetooth, nothing playing | Rain in the headphones; strip ON ITS OWN · BLUETOOTH. Log: `ldac: handshake accepted`, then `soundscape: playing on its own over Bluetooth` | `handshake REJECTED` = the link negotiated 48 kHz: report it (the player sends 44.1 kHz). No socket = the source did not open; send the `ldac:` lines |
+| 28.3 | **Music takes the output back** | During 28.1, play a song; pause it; play again. Repeat over Bluetooth (28.2) | The song starts at once every time, with no error and no AUDIO STOPPED banner. Log: `soundscape: the output is free for the music` before each start; after the pause the soundscape comes back within a few seconds | A song that fails to start = the yield did not finish in 300 ms (`yield TIMED OUT`): that is a defect to report before anything else on this list |
+| 28.4 | **What it costs** | Soundscape on its own, screen off, 10 min: `adb shell 'cat /proc/$(pgrep cinder-home)/stat \| cut -d" " -f14,15'` before and after, for Rain and for Fire | Under 5% of one core | Higher: note which sound; the self-test's host cost table says which part is heavy |
+| 28.5 | **Over library music, jack** (Wampy installed) | Play a song, then Menu ▸ Soundscapes ▸ Beach, With music at 30% | The beach under the song; strip OVER THE MUSIC. `/tmp/cinder_mono.log`: `jack: soundscape mixed in (fmt 2, 2 ch, 44100 Hz)`. Volume buttons move both together | `rate never seen` in the log = the HAL commits its rate some other way: send the log. Clicks = report the sound and the track's format |
+| 28.6 | **Over library music, Bluetooth** (Wampy installed) | As 28.5 over LDAC | The beach under the song in the headphones. `bt: soundscape mixed in (fmt 2, 2 ch, 44100 Hz)`; the stream stays up | A dropout or a reboot: stop, send `/tmp/cinder_mono.log` and `last_kmsg`; `touch /data/cinder/mono_shim_off` takes the hooks out |
+| 28.7 | **Two levels** | During 28.5, pause: the soundscape should rise to the On its own level (through the shim if Sony keeps writing, else the shell's own player) | Quieter under music, fuller alone, with no jump at either edge | No change on pause = the line was not rewritten: `cat /tmp/cinder_ambient` before and after |
+| 28.8 | **Over USB-DAC → LDAC** | USB-DAC to Bluetooth from a PC playing music, soundscape on | The soundscape under the PC's audio; strip OVER USB-DAC / RADIO | Nothing: the pump read `g_amb_want_sound` as 0 — send `soundscape:` lines |
+| 28.9 | **Without Wampy (Walkman One)** | As 28.5 on a W1 player | Strip SILENT WHILE MUSIC PLAYS while the song plays; the soundscape comes back on pause | It plays over the music anyway = something else preloads the shim: interesting, report it |
+| 28.10 | **Sleep timer** | Soundscape on its own, sleep timer 15 min (or Song) | When it fires the soundscape fades out and the switch reads off | — |
+
+## 29 — 2026-10-04 — Visualisers from the decoded audio
+
+Host-tested (`viz::signal_tests`, `vizsig` tests, golden previews `viz_signal_*`). The tap itself
+is §24; this is what is now drawn from it. Needs a dev build and one reboot.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 29.1 | **Scope** | Now Playing ▸ spectrum page, style Scope, a track with a steady bass note | A waveform that stands still on a held note and changes shape with the music | A crawling trace on a steady tone = the trigger never fires (very quiet input): note the track |
+| 29.2 | **Stereo field** | Style Stereo field: a mono recording, then a wide stereo one | Mono: a vertical line and the correlation bar at the right end. Wide: a cloud, the bar nearer the middle | Lying on its side = the channels are swapped or inverted somewhere: report it |
+| 29.3 | **Meters** | Style Meters, a loud master | Bars near the right; peaks briefly at the end; held ticks wait 1.5 s then fall | Pinned at full scale on quiet music = the samples are mis-scaled (24-bit read as 16) |
+| 29.4 | **Spectrogram** | Style Spectrogram for 10 s | Five seconds of history scrolling left; a kick drum is a bright stripe at the bottom | — |
+| 29.5 | **Bands only** | FM (or USB-DAC) with Scope chosen | "Needs library playback" on the spectrum page; Spectrogram and the bar styles still draw | A blank page = the fallback text failed |
+| 29.6 | **Cost** | Spectrum page, each new style, 20 s: cinder-home's `/proc/<pid>/stat` ticks | Close to Bars' | Much higher for Stereo or Spectrogram: note which |

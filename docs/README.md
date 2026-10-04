@@ -53,6 +53,7 @@ The four documents that are always current live outside this directory:
 | [`PLAN_walkman_one_parity.md`](PLAN_walkman_one_parity.md) | Feature parity with Walkman One, row by row, and what each gap costs. Its USB-DAC row ("recovered, not shipped") disagrees with `STATUS.md` and checklist 11.10 — see `AUDIT_2026-10-01.md` D3. |
 | [`VISION_four_builds.md`](VISION_four_builds.md) | **Draft for selection (2026-09-21).** Cinder as a full firmware replacement: four builds, what can go in each, and the decisions the owner has to make. Nothing in it is decided. |
 | [`SPEC_cinder_one.md`](SPEC_cinder_one.md) | **A proposal (2026-09-22), nothing built.** The concrete design behind `VISION_four_builds.md` §7's "Cinder One — yes or no?". |
+| [`SPEC_soundscapes.md`](SPEC_soundscapes.md) | Menu ▸ Soundscapes (2026-10-04): ten procedural ambient sounds, how each is made, where it plays (over library music through the mono shim, over USB-DAC and the radio, or on its own through the shell's player), the rule that music always gets the output back, and the tests. Device run: checklist §25. |
 | [`SPEC_queue_v2.md`](SPEC_queue_v2.md) | Up Next v2 as a context chain — the design (revised 2026-09-22 after two reviews) behind Up Next as one list and the queue extras. |
 
 ## Subsystems

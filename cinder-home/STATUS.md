@@ -1,5 +1,22 @@
 # Cinder — status & flash/verify guide (audited 2026-07-26; delta appended 2026-08-17)
 
+> ## 2026-10-04 — Soundscapes, visualisers from the decoded audio, and what the owner confirmed
+>
+> **Confirmed by the owner (2026-10-01):** Walkman One runs Cinder on the owner's current player;
+> the **BT receiver works**; **all of the installers work** (closes checklist 11.9). Most of what
+> the 10-01 audit listed as shipped-but-unconfirmed is in daily use and working — reported as a
+> whole, so the §22–§24 rows carry it as a note.
+>
+> - **Soundscapes** (Menu ▸ Soundscapes) — ten procedural sounds, nothing recorded or looped, with
+>   a level on its own and a level with music. Over library music through `libcinder_mono.so`
+>   (needs Wampy's preload — **not on Walkman One**, where the page says it is silent while music
+>   plays); on its own through the shell's player on the jack or Bluetooth; over USB-DAC → LDAC and
+>   FM → Bluetooth in the bridge. *Host-tested only* —
+>   [`../docs/SPEC_soundscapes.md`](../docs/SPEC_soundscapes.md), checklist §28.
+> - **Visualisers** — Scope, Stereo field, Spectrogram, Meters and Radial, from the PCM tap's
+>   samples rather than Sony's twelve bands. Library playback only for the three that need samples;
+>   they say so elsewhere. *Host-tested only* — checklist §29.
+
 > ## 2026-09-30 — R5: sound profiles per output — BUILT HOST-ONLY, NOTHING HERE HAS RUN ON A PLAYER
 >
 > **Ledger: [`../docs/PLAN_redesign_2026-09.md`](../docs/PLAN_redesign_2026-09.md) rows 2a, 2a/2b, 2g.

@@ -681,6 +681,17 @@ extern "C" int cinder_audio_position(int* cur_ms, int* total_ms) {
     return cur >= 0 ? 1 : 0;
 }
 
+// ── the soundscape setting, hand-written for the same reason: two of its answers are out-params.
+// Read from the fake UI's state store, so a scenario sets it with cinder_harness_state_set(_at):
+// "ambient_sound" (0 = off), "ambient_alone" and "ambient_music" (gains x1000).
+extern "C" int cinder_get_ambient(int* milli_alone, int* milli_music) {
+    static int slot_ = -1;
+    cinder_harness_record_cached(&slot_, "cinder_get_ambient", 0);
+    if (milli_alone) *milli_alone = (int)cinder_harness_state_get("ambient_alone", 0);
+    if (milli_music) *milli_music = (int)cinder_harness_state_get("ambient_music", 0);
+    return (int)cinder_harness_state_get("ambient_sound", 0);
+}
+
 void* dlopen(const char* path, int) {
     Lock l; ensure();
     const std::string p = path ? path : "?";

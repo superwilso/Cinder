@@ -81,12 +81,10 @@ fn audio_page(c: &mut Canvas, t: &Theme, f: &FontSet, np: &NowPlaying, (x, y, w,
         NpPage::Cover => {}
         NpPage::Spectrum => {
             widgets::center(c, f, mid, (y + 24) as f32, crate::viz::name_upper(np.viz_kind), &caption);
-            if np.viz_levels.is_some() {
-                crate::viz::draw_with_peaks(c, x + 12, y + 44, w - 24, h - 60, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), np.viz_seed,
-                                            crate::viz::from_index(np.viz_kind), t.acc, t.line,
-                                            np.viz_levels, np.viz_peaks, 255, 255);
+            if np::viz_live(np) {
+                crate::viz::draw_any(c, x + 12, y + 44, w - 24, h - 60, np.viz_seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, 255, 255);
             } else {
-                widgets::center(c, f, mid, (y + h / 2) as f32, "No audio signal",
+                widgets::center(c, f, mid, (y + h / 2) as f32, np::viz_absent_text(np).0,
                                 &s(Family::Sans, Weight::Regular, 20.0, t.dim, 0.0));
             }
         }
@@ -123,8 +121,7 @@ fn cover(c: &mut Canvas, t: &Theme, np: &NowPlaying, x: i32, y: i32, size: i32) 
 fn cover_viz(c: &mut Canvas, t: &Theme, np: &NowPlaying, x: i32, w: i32, bottom: i32) {
     let size = crate::viz::size_from_index(np.viz_size);
     if let Some((vy, vh, at, ab)) = crate::viz::size_box(size, bottom, false) {
-        crate::viz::draw_with_peaks(c, x, vy, w, vh, crate::viz::columns_for(np.viz_levels) as i32, crate::viz::gap_for(crate::viz::columns_for(np.viz_levels)), np.viz_seed, crate::viz::from_index(np.viz_kind),
-                                    t.acc, t.line, np.viz_levels, np.viz_peaks, at, ab);
+        crate::viz::draw_any(c, x, vy, w, vh, np.viz_seed, crate::viz::from_index(np.viz_kind), t.acc, t.line, np.viz_levels, np.viz_peaks, np.viz_sig, at, ab);
     }
 }
 

@@ -18,7 +18,7 @@ level the commit history supports; from `v0.1.6` onward, entries are written as 
 
 *Everything below was built host-only with no player attached: host-tested, in the golden
 previews, and **not yet run on a device**. The library items are in
-`docs/DEVICE_CHECKLIST.md` §25 and the sound items in §26.*
+`docs/DEVICE_CHECKLIST.md` §25, the sound items in §26, soundscapes in §28 and the new visualisers in §29.*
 
 ### Added
 
@@ -65,6 +65,26 @@ previews, and **not yet run on a device**. The library items are in
   taps, drags and route changes with no window, and writes frames to disk — for machines with no
   X server to send a touch through.
 
+- **Soundscapes** (Menu ▸ Soundscapes). Rain, a storm with distant thunder, a beach, a stream,
+  wind, a fire, a night of crickets, and white, pink and dark noise, over the music or on their
+  own, with one level for each. None of them is a recording: each is made as it plays, from noise
+  and events at random times, so nothing loops (the self-test searches a minute of every sound for
+  a repeated second, and for any repeating period). Over library music the sound is mixed in by
+  `libcinder_mono.so` after Sony's EQ and before the volume, on the jack and over Bluetooth; that
+  library loads only where Wampy is installed, and without it the page says the soundscape is
+  silent while music plays. With nothing playing, Cinder plays it itself through the jack or over
+  Bluetooth, and gives the output back before any song starts. USB-DAC → LDAC and FM → Bluetooth
+  carry it too. The sleep timer switches it off. The `mono` install option's description says it
+  now carries soundscapes. *Device-unverified* — checklist §28. Write-up:
+  [`docs/SPEC_soundscapes.md`](docs/SPEC_soundscapes.md).
+- **Five visualisers drawn from the decoded audio**, not from Sony's twelve analyzer bands:
+  **Scope** (the real waveform, triggered so a held note stands still), **Stereo field** (mid and
+  side as a cloud, with the left/right correlation under it), **Spectrogram** (five seconds of the
+  spectrum, scrolling), **Meters** (left and right RMS, peak and held peak on a dBFS scale) and
+  **Radial**. They read the PCM tap, which now returns both channels; on FM, USB-DAC and the
+  receiver, where only the analyzer's bands exist, the sample styles say "Needs library playback".
+  *Device-unverified* — checklist §29.
+
 ### Changed
 
 - **The artist page** lists albums newest first.
@@ -108,6 +128,7 @@ previews, and **not yet run on a device**. The library items are in
   setup's were saved; both are now.
 - **Disconnecting Bluetooth re-applies the jack's sound.** The chain was re-sent when headphones
   connected and never when they left.
+- The intro's "What's inside" page counted eight visualiser styles; it names the new ones now.
 
 ### Documentation
 

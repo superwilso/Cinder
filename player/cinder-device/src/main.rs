@@ -129,6 +129,7 @@ fn main() {
     let mut canvas = Canvas::new();
     let np = NowPlaying {
         viz_peaks: None,
+        viz_sig: None,
         title: "Atlas Hands",
         artist: "Benjamin Francis Leftwich",
         codec: "FLAC · 24bit / 96.0 kHz",

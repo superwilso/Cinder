@@ -241,6 +241,14 @@ if cc -O2 -o "$HERE/.jackedge_selftest" "$HERE/tools/jackedge_selftest.cpp" -lst
     else "$HERE/.jackedge_selftest"; echo "FAIL: jack edge self-test"; exit 1; fi
     rm -f "$HERE/.jackedge_selftest"
 else echo "(skip: no host cc)"; fi
+# The soundscapes (src/soundscape.h). It runs on SoundServiceFw's audio thread inside
+# libcinder_mono.so, so a broken one is a dropout or worse in every song: levels, spectra, ramps,
+# formats and cost are checked before anything ships it.
+if cc -O2 -o "$HERE/.soundscape_selftest" "$HERE/tools/soundscape_selftest.cpp" -lstdc++ -lm 2>/dev/null; then
+    if "$HERE/.soundscape_selftest" >/dev/null 2>&1; then echo "OK: soundscapes"; \
+    else "$HERE/.soundscape_selftest"; echo "FAIL: soundscape self-test"; exit 1; fi
+    rm -f "$HERE/.soundscape_selftest"
+else echo "(skip: no host cc)"; fi
 # The Bluetooth switch/radio reconcile (src/bt_switch.h). The most load-bearing of these four: the
 # flag it maintains gates auto-reconnect, the NFC reader, and whether the radio is told to keep
 # retrying — and a single un-retried boot read used to decide it for the whole session.

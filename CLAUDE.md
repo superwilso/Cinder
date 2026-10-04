@@ -2,7 +2,7 @@
 
 > ## ⚠ READ THIS FIRST — the banner below it is a 2026-07-25 snapshot and is NINE WEEKS STALE
 >
-> **Updated 2026-09-20; the state table refreshed 2026-10-01.** This file is loaded into every session automatically, which makes a stale
+> **Updated 2026-09-20; the state table refreshed 2026-10-04.** This file is loaded into every session automatically, which makes a stale
 > banner here more expensive than anywhere else in the repository — it is the first thing any new
 > reader, human or agent, believes. The 07-25 text below says the last code change was 2026-07-03,
 > that host tests are "39 UI + 8 DB", and that the whole critical path is blocked on one device
@@ -11,15 +11,17 @@
 > caught again for *this* banner four days after it was written ([`docs/AUDIT_2026-09-18.md`](docs/AUDIT_2026-09-18.md)
 > §A1: the numbers below had already drifted). **If you change a gate's count, change it here.**
 >
-> **Where the project actually is, 2026-10-01 (v0.3.14, the Latest release):**
+> **Where the project actually is, 2026-10-04 (v0.3.14 is the Latest release; `main` is ahead):**
 >
 > | | |
 > |---|---|
-> | Releases shipped | **v0.3.0 → v0.3.14**; **v0.3.12, v0.3.13 and v0.3.14 are stable** (09-23, 09-29, 09-30), so the #16 "v0.3.9 cannot start after a fresh install" release is no longer the default download. Several 0.3.13/0.3.14 features shipped in stable while *host-tested only* — see [`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) C1 |
-> | Offline gates | **769 Rust tests** (player, 3 ignored) + 53 (installer), **62 harness scenarios**, 24 C/C++ files syntax-clean, 12 C++ self-tests, **331 golden pixel hashes** plus the text audit (`cinder-host --audit`), launcher matrix 88 (+1 that skips as root), cable pass 19, install mounts 18, shellcheck over 50 scripts, `cargo audit` clean (2 known unmaintained warnings) — all green, re-run 2026-10-01 ([`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) Part A); the player tests, harness and goldens re-run 2026-10-04 with R4 and R5 merged (uncommitted, host only) |
+> | Releases shipped | **v0.3.0 → v0.3.14**; **v0.3.12, v0.3.13 and v0.3.14 are stable** (09-23, 09-29, 09-30), so the #16 "v0.3.9 cannot start after a fresh install" release is no longer the default download. The 0.3.13/0.3.14 features the 10-01 audit (C1) called *host-tested only* are, by the owner's report of 2026-10-01, mostly in daily use and working on the owner's Walkman One player — reported as a whole, not row by row |
+> | Offline gates | **788 Rust tests** (player, 3 ignored) + 53 (installer), **65 harness scenarios**, 25 C/C++ files syntax-clean, **13 C++ self-tests** (the soundscape one is 69 checks), the mono shim through `LD_PRELOAD`, **359 golden pixel hashes** plus the text audit (`cinder-host --audit`), launcher matrix 88 (+1 that skips as root), cable pass 19, install mounts 18, shellcheck over 50 scripts, `cargo audit` clean (2 known unmaintained warnings) — all green, re-run 2026-10-04 with R4, R5 and the soundscapes merged (the 10-01 baseline is [`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) Part A) |
 > | The headline feature | **USB-DAC → LDAC works end to end** — device-verified 2026-08-11, a full 192 s session logged 2026-09-15 (`docs/DEVICE_CHECKLIST.md` 11.10). Still unlogged: the 3.5 mm leg with no Bluetooth link |
-> | Landed since 2026-09-23 | The redesign's first pass (Display settings, the kit, Help, the pull-down panel), Up Next as one list, save Up Next, repeat album, stop after this song, DAC EQ, linear amp, Bluetooth receiver (Windows and iPhone), Sony's receiver hand-off, Library grid/compact views, Now Playing styles, the PCM-tap visualiser, FM on Walkman One, screen-off power savings |
-> | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **11.9, the Windows installer** (re-opened 09-12, still open), **14.1–14.6** (SensMe), **21.10** (Sony's receiver), **§22–§24** (Library views, Now Playing styles, PCM tap) |
+> | Landed since 2026-10-01 (unreleased) | **R4** — ratings, play counts, smart playlists, the playlist editor, shuffle by album/artist (checklist §25); **R5** — sound profiles per output and the grouped Sound screen (§26); Sony's EQ handed back on Boot to stock (§27); **Soundscapes** — ten procedural ambient sounds (rain, storm, beach, stream, wind, fire, night, white/pink/dark noise), nothing looped, over library music through the mono shim (Wampy installs) or on their own, each with its own level ([`docs/SPEC_soundscapes.md`](docs/SPEC_soundscapes.md)); **five visualisers from the decoded audio** — Scope, Stereo field, Spectrogram, Meters, Radial — no longer limited to Sony's twelve analyzer bands (checklist §29) |
+> | Landed 2026-09-23 → 10-01 | The redesign's first pass (Display settings, the kit, Help, the pull-down panel), Up Next as one list, save Up Next, repeat album, stop after this song, DAC EQ, linear amp, Bluetooth receiver (Windows and iPhone), Sony's receiver hand-off, Library grid/compact views, Now Playing styles, the PCM-tap visualiser, FM on Walkman One, screen-off power savings |
+> | Confirmed by the owner, 2026-10-01 | **Walkman One runs Cinder** (the owner's current player), **the BT receiver works**, and **all of the installers work** — which closes 11.9, re-opened 09-12 |
+> | Still device-gated | [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — **14.1–14.6** (SensMe), **21.10** (Sony's receiver), §22–§24 row by row (in use, not itemised), **§25** R4, **§26** R5, **§27** Sony's EQ, **§28 soundscapes**, **§29 the new visualisers** |
 > | Flint (the PC companion) | Two cross-repo defects found 2026-10-01: its sync roots at the drive and sweeps `MUSIC/` (open, an owner decision), and it sent `#TZ/UNKNOWN` scrobble times unconverted (fixed on Flint's branch). See the audit's Part F |
 >
 > **The live documents, in order of what you probably want:**

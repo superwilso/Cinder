@@ -106,7 +106,9 @@ pub fn choose(slots: &[Option<Slot>], t_us: i64) -> Option<usize> {
 }
 
 /// Up to `n` mono samples (-1..1) from `payload`, starting `offset` frames in: the channels are
-/// averaged. Fewer when the slot ends first.
+/// averaged. Fewer when the slot ends first. The tap reads [`stereo`] and averages that; this stays
+/// as the reference the tests hold it to.
+#[cfg(test)]
 pub fn mono(slot: &Slot, payload: &[u8], offset: usize, n: usize) -> Vec<f32> {
     let fb = slot.frame_bytes();
     let ch = slot.channels as usize;
@@ -124,6 +126,25 @@ pub fn mono(slot: &Slot, payload: &[u8], offset: usize, n: usize) -> Vec<f32> {
         out.push(acc as f32 / (32768.0 * ch as f32));
     }
     out
+}
+
+/// Up to `n` frames as two channels (-1..1), for the visualisers that need the stereo picture (the
+/// stereo field, the L/R meters). A one-channel slot gives the same samples on both sides.
+pub fn stereo(slot: &Slot, payload: &[u8], offset: usize, n: usize) -> (Vec<f32>, Vec<f32>) {
+    let fb = slot.frame_bytes();
+    let ch = slot.channels as usize;
+    let frames = (payload.len() / fb.max(1)).min(slot.frames());
+    let from = offset.min(frames);
+    let to = (from + n).min(frames);
+    let (mut l, mut r) = (Vec::with_capacity(to - from), Vec::with_capacity(to - from));
+    for f in from..to {
+        let base = f * fb;
+        let a = i16::from_le_bytes([payload[base], payload[base + 1]]) as f32 / 32768.0;
+        let b = if ch > 1 { i16::from_le_bytes([payload[base + 2], payload[base + 3]]) as f32 / 32768.0 } else { a };
+        l.push(a);
+        r.push(b);
+    }
+    (l, r)
 }
 
 /// The queue file, if PlayerService has one: the first `…_packet` with the prefix.
@@ -146,7 +167,11 @@ pub fn find(dir: &Path) -> Option<PathBuf> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Window {
     pub rate: u32,
+    /// Mono, (L + R) / 2: what the spectrum and the scope use.
     pub samples: Vec<f32>,
+    /// The two channels, frame for frame with `samples`.
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
     /// Which slot it came from, and the covered span, for the tuning log.
     pub slot: usize,
     pub first_us: i64,
@@ -205,9 +230,9 @@ impl Tap {
         let offset = ((t_us - s.pts_us) * s.rate as i64 / 1_000_000).max(0) as usize;
         let mut payload = vec![0u8; s.bytes];
         f.read_exact_at(&mut payload, (k * SLOT_BYTES + HEADER_BYTES) as u64).ok()?;
-        let mut samples = mono(&s, &payload, offset, n);
+        let (mut left, mut right) = stereo(&s, &payload, offset, n);
         let mut last = s.pts_us + s.span_us();
-        if samples.len() < n {
+        if left.len() < n {
             // The next packet in time, if the queue has it and it follows without a gap.
             let next = slots.iter().enumerate().find(|(_, o)| {
                 o.is_some_and(|o| o.rate == s.rate && o.channels == s.channels && (o.pts_us - last).abs() <= 1_000)
@@ -215,12 +240,15 @@ impl Tap {
             if let Some((j, Some(o))) = next {
                 let mut p2 = vec![0u8; o.bytes];
                 if f.read_exact_at(&mut p2, (j * SLOT_BYTES + HEADER_BYTES) as u64).is_ok() {
-                    samples.extend(mono(o, &p2, 0, n - samples.len()));
+                    let (l2, r2) = stereo(o, &p2, 0, n - left.len());
+                    left.extend(l2);
+                    right.extend(r2);
                     last = o.pts_us + o.span_us();
                 }
             }
         }
-        (!samples.is_empty()).then_some(Window { rate: s.rate, samples, slot: k, first_us: s.pts_us, last_us: last })
+        let samples: Vec<f32> = left.iter().zip(&right).map(|(a, b)| (a + b) * 0.5).collect();
+        (!samples.is_empty()).then_some(Window { rate: s.rate, samples, left, right, slot: k, first_us: s.pts_us, last_us: last })
     }
 }
 
@@ -357,5 +385,26 @@ mod tests {
         let mut gone = Tap::new(d.join("does-not-exist"));
         assert!(gone.window(0, 2048).is_none());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The stereo read is the mono read, channel by channel: their mean is exactly `mono`.
+    #[test]
+    fn stereo_channels_average_to_mono() {
+        let s = Slot { rate: 44100, bits: 16, channels: 2, pts_us: 0, bytes: 40 };
+        let mut p = Vec::new();
+        for i in 0..10i16 {
+            p.extend_from_slice(&(i * 300).to_le_bytes());
+            p.extend_from_slice(&(-i * 100).to_le_bytes());
+        }
+        let (l, r) = stereo(&s, &p, 0, 10);
+        let m = mono(&s, &p, 0, 10);
+        for i in 0..10 {
+            assert!(((l[i] + r[i]) * 0.5 - m[i]).abs() < 1e-6);
+        }
+        assert_eq!(l[2], 600.0 / 32768.0);
+        assert_eq!(r[2], -200.0 / 32768.0);
+        let one = Slot { channels: 1, bytes: 20, ..s };
+        let (a, b) = stereo(&one, &p[..20], 0, 10);
+        assert_eq!(a, b, "one channel is both sides");
     }
 }

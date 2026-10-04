@@ -59,6 +59,7 @@
 #include "db_sig.h"   // has the library database moved? (host-tested)
 #include "jack_edge.h"
 #include "batt_slew.h" // how far the voltage-derived gauge may move per reading (host-tested)
+#include "soundscape.h" // procedural soundscapes (host-tested by tools/soundscape_selftest.cpp)
 #include "cinder_analyzer.h"
 #include "cinder_power.h"
 #include "cinder_storage.h"
@@ -601,6 +602,15 @@ static void bt_connect_wait(bool on);
 static bool g_rx_active = false;
 extern bool g_bt_radio_seen_up;  // ditto — last GetBtStatus said the radio was up (poll back-off)
 void apply_bt_codec();       // ditto — pushes the codec choice to the radio (not just the conf file)
+// Soundscapes. Declared this early because the transport (set_transport, play_pending_sequence),
+// the LDAC/FM bridges and the receiver all have to make the soundscape's own player let go of the
+// output before they take it; the block itself sits just above carry_out.
+void ambient_yield_for_music();
+// What the soundscape should be, published for the threads that play it (written by ambient_tick
+// on the render thread, read once per buffer by the players and the LDAC pump).
+static volatile sig_atomic_t g_amb_want_sound = 0;   // soundscape.h SS_*, 0 = off
+static volatile sig_atomic_t g_amb_milli_alone = 0;  // gain x1000 with nothing else playing
+static volatile sig_atomic_t g_amb_milli_music = 0;  // gain x1000 over music or a bridged stream
 static void bt_apply_enhanced_mode(const char* why); // ditto — Sony's "Use Enhanced Mode" (absolute volume)
 static void refresh_bt_connected();  // ditto — names the linked device for the Bluetooth screen
 static void bt_link_gone_by_switch(); // ditto — the user switched the radio off: the link is gone now
@@ -1902,6 +1912,9 @@ static void apply_cpu_floor(bool playing) {
 static bool g_user_paused = false;
 
 static void set_transport(bool playing) {
+    // Music is about to take the output: the soundscape's own player gives it back first, or
+    // Sony's sound service would find the jack PCM (or the transmitter's socket) taken.
+    if (playing) ambient_yield_for_music();
     g_playing = playing;
     g_user_paused = !playing;
     g_transport_at = now_ms();
@@ -2971,6 +2984,10 @@ void boot_to_stock() {
     // still happens and still lands on stock — only the hand-back is lost.
     run_guarded("boot-to-stock: hand the EQ back", 4, stock_handback_fn);
     fm_release_capture();
+    // The soundscape line is read by SoundServiceFw, which runs under Sony's player too: a stale
+    // one would keep the rain going over stock's music. tmpfs is cleared by the restart, but say
+    // so now rather than trust the order of what follows.
+    ::unlink("/tmp/cinder_ambient");
     // WE RESTART THE DEVICE OURSELVES. This used to _exit(0) and rely on appmgr rebooting us.
     // It does not: appmgr never respawns the launcher (analysis/F_appmgr_home/RE_findings.md §3
     // is about the RESPAWN path, and the launcher's own rc=0 note recorded the assumption without
@@ -6881,6 +6898,10 @@ struct AlsaApi {
     int  (*open)(snd_pcm_t**, const char*, int, int) = nullptr;
     int  (*set_params)(snd_pcm_t*, int, int, unsigned, unsigned, int, unsigned) = nullptr;
     long (*readi)(snd_pcm_t*, void*, unsigned long) = nullptr;
+    // Playback, for the soundscape's own player only — optional, so a libasound missing it still
+    // gives a working bridge.
+    long (*writei)(snd_pcm_t*, const void*, unsigned long) = nullptr;
+    int  (*drop)(snd_pcm_t*) = nullptr;
     int  (*prepare)(snd_pcm_t*) = nullptr;
     int  (*close)(snd_pcm_t*) = nullptr;
     const char* (*strerr)(int) = nullptr;
@@ -6917,6 +6938,8 @@ static bool alsa_load() {
     g_alsa.set_params = (int  (*)(snd_pcm_t*, int, int, unsigned, unsigned, int, unsigned))
                         dlsym(g_alsa.h, "snd_pcm_set_params");
     g_alsa.readi      = (long (*)(snd_pcm_t*, void*, unsigned long))dlsym(g_alsa.h, "snd_pcm_readi");
+    g_alsa.writei     = (long (*)(snd_pcm_t*, const void*, unsigned long))dlsym(g_alsa.h, "snd_pcm_writei");
+    g_alsa.drop       = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_drop");
     g_alsa.prepare    = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_prepare");
     g_alsa.close      = (int  (*)(snd_pcm_t*))dlsym(g_alsa.h, "snd_pcm_close");
     g_alsa.strerr     = (const char* (*)(int))dlsym(g_alsa.h, "snd_strerror");
@@ -7386,6 +7409,25 @@ static ldac_end ldac_pump(int fd, snd_pcm_t* pcm, const char* dev, unsigned rate
                 for (long i = 0; i < got * 2; i++) out16[i] = (short)(s32[i] >> 16);
             }
         }
+        // SOUNDSCAPES ride this stream too, at the "with music" level: the PC's audio is the music
+        // here. One bridge runs at a time, so one generator serves them all. Re-summed afterwards
+        // when mono is on — summing an already-summed frame changes nothing, and it keeps the
+        // soundscape mono with the music.
+        {
+            static ss_state amb;
+            static bool amb_ready = false;
+            if (!amb_ready) {
+                ss_init(&amb, (uint32_t)now_ms() ^ ((uint32_t)getpid() << 16));
+                amb_ready = true;
+            }
+            ss_set(&amb, (int)g_amb_want_sound, (float)g_amb_milli_music / 1000.0f);
+            if (ss_active(&amb) && ss_mix(&amb, (uint8_t*)out16, (size_t)got, SS_FMT_S16_LE, 2, rate) && mono) {
+                for (long i = 0; i < got; i++) {
+                    const short m = (short)((out16[i * 2] + out16[i * 2 + 1]) / 2);
+                    out16[i * 2] = out16[i * 2 + 1] = m;
+                }
+            }
+        }
         size_t want = (size_t)got * 4;
         const unsigned char* p = (const unsigned char*)out16;
         bool broken = false;
@@ -7704,6 +7746,7 @@ static void* fmbt_thread(void*) {
 // Start the radio-to-Bluetooth bridge. The tuner must already be running; the FM AUDIO path
 // (AudioInPlayerService) must NOT be, because it owns hw:0,1 and this needs it.
 static void fmbt_start() {
+    ambient_yield_for_music();   // a soundscape playing on its own over Bluetooth holds the socket
     if (g_ldac_alive) { clog_("fm-bt: a bridge is already running"); return; }
     g_ldac_run = 1;
     pthread_attr_t at;
@@ -7724,6 +7767,7 @@ static void ldac_start() {
     // hands the connection to the ExHal as its PCM reader. See ldac_handshake() for the recovered
     // code path and the on-device measurement. The rule that survives is: never write a sample to
     // this fd that ldac_handshake() has not first cleared.
+    ambient_yield_for_music();   // a soundscape playing on its own over Bluetooth holds the socket
     if (g_ldac_alive) { clog_("ldac: already running"); return; }
     // Resolve libasound BEFORE touching the control plane. If the capture side can't work there is no
     // point declaring a source to the transmitter and then having to walk it back.
@@ -8102,6 +8146,7 @@ void apply_receiver() {
     if (on) {
         g_rx_active = true;   // FIRST: the reconnect ladder stands aside from here on
         clog_("rx: entering receiver mode");
+        ambient_yield_for_music();   // the receiver owns the jack and the radio
         run_guarded("rx: release the music player", 10, rx_release_player);
         run_guarded("rx: EnterFuncMode(A2dpSink)", 20, rx_fm_sink);
         rx_usb_restore();
@@ -9040,6 +9085,7 @@ static void reclaim_contents() {
 static void play_pending_sequence(const char* label, bool restore_position) {
     int n = cinder_pending_play_count();
     if (n <= 0) return;
+    ambient_yield_for_music();   // the output is about to be PlayerService's (see set_transport)
     if (n > 512) n = 512;
     static char bufs[512][512];
     static const char* ptrs[512];
@@ -9601,6 +9647,307 @@ static void media_rescan() {
     clog_(m);
 }
 
+// ── Soundscapes ──────────────────────────────────────────────────────────────────────────────────
+// Menu ▸ Soundscapes (docs/SPEC_soundscapes.md). The sound is made as it plays by soundscape.h —
+// noise and short random events, nothing recorded, nothing looped — and reaches the ears three ways:
+//
+//   * OVER LIBRARY MUSIC: libcinder_mono.so, inside Sony's SoundServiceFw, mixes it into the jack
+//     and the Bluetooth stream. This file only tells it what to play: /tmp/cinder_ambient,
+//     "<sound> <gain x1000>", rewritten when anything changes. The gain is the "with music" level
+//     while music plays and the "on its own" level otherwise.
+//   * OVER CINDER'S OWN STREAMS: the LDAC pump mixes it into USB-DAC -> LDAC and FM -> Bluetooth.
+//   * ON ITS OWN: with nothing playing, the soundscape player below opens the output itself — the
+//     jack PCM, or the transmitter's socket when headphones are linked (the FM -> Bluetooth path,
+//     with generated audio instead of the radio).
+//
+// THE ONE RULE: the soundscape player never holds the output when music wants it. Everything that
+// starts music calls ambient_yield_for_music() first, which stops the player and WAITS (300 ms at
+// most) until it has let go; ambient_tick() then keeps it stopped while music plays. A player that
+// held hw:0,4 when SoundServiceFw opened it would make the music fail to start.
+static volatile sig_atomic_t g_amb_run = 0, g_amb_alive = 0;        // the jack player
+static volatile sig_atomic_t g_amb_bt_run = 0, g_amb_bt_alive = 0;  // the Bluetooth player
+static volatile sig_atomic_t g_amb_bt_streamed = 0;                 // …got past the handshake
+static volatile sig_atomic_t g_amb_route = 0;   // what a running player reports (route codes, cinder.h)
+static bool g_amb_bt_source_held = false;       // SetCurrentSource(true) is ours to take back
+static long g_amb_hold_until = 0;               // a yield keeps the player off this long
+static long g_amb_bt_retry_at = 0;              // a failed Bluetooth start waits before the next
+static int g_amb_written_sound = -1, g_amb_written_milli = -1, g_amb_route_sent = -1;
+
+static uint32_t amb_seed() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)ts.tv_nsec ^ ((uint32_t)ts.tv_sec << 10) ^ ((uint32_t)getpid() << 22);
+}
+
+// The line for the shim. Written to a temporary name and renamed, so the shim can never read half
+// of it; skipped when nothing changed, so the 1 Hz tick costs a compare.
+static void amb_write_control(int sound, int milli) {
+    if (sound == g_amb_written_sound && milli == g_amb_written_milli) return;
+    char line[32];
+    const int n = std::snprintf(line, sizeof line, "%d %d\n", sound, milli);
+    const int fd = ::open("/tmp/cinder_ambient.tmp", O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    const bool ok = n > 0 && ::write(fd, line, (size_t)n) == (ssize_t)n;
+    ::close(fd);
+    if (!ok || ::rename("/tmp/cinder_ambient.tmp", "/tmp/cinder_ambient") != 0) return;
+    g_amb_written_sound = sound;
+    g_amb_written_milli = milli;
+    char m[96];
+    std::snprintf(m, sizeof m, "soundscape: %d at %d/1000 for the sound service", sound, milli);
+    clog_(m);
+}
+
+// Is music playing, by our intent first (a press is honoured at once) and then by the service?
+static bool amb_music_on() {
+    return g_playing && (now_ms() - g_transport_at < TRANSPORT_GRACE_MS || cinder_audio_is_playing() != 0);
+}
+
+// Render the soundscape into `buf` (S16 stereo) at the current "on its own" level, or fade it out
+// when `stopping`. Returns false once it has faded to nothing.
+static bool amb_fill(ss_state* st, short* buf, unsigned frames, unsigned rate) {
+    ss_set(st, (int)g_amb_want_sound, (float)g_amb_milli_alone / 1000.0f);
+    if (!ss_active(st)) return false;
+    std::memset(buf, 0, (size_t)frames * 4);
+    ss_mix(st, (uint8_t*)buf, frames, SS_FMT_S16_LE, 2, rate);
+    return true;
+}
+
+// ON ITS OWN, through the headphone jack. hw:0,4 is the stock path and hw:0,0 the hi-res one Walkman
+// One's signatures use; either reaches the headphones, and nothing else is playing. -EBUSY means
+// Sony's sound service still holds the PCM after a pause: wait and try again, never fight for it.
+static void* amb_jack_thread(void*) {
+    g_amb_alive = 1;
+    ss_state st;
+    ss_init(&st, amb_seed());
+    static short buf[480 * 2];
+    bool said_busy = false;
+    while (g_amb_run) {
+        snd_pcm_t* pcm = nullptr;
+        const char* dev = nullptr;
+        int rc = -ENODEV;
+        for (const char* d : { "hw:0,4", "hw:0,0" }) {
+            rc = g_alsa.open(&pcm, d, /*PLAYBACK*/0, 0);
+            if (rc >= 0) { dev = d; break; }
+            if (rc == -EBUSY) break;
+        }
+        if (rc < 0) {
+            g_amb_route = rc == -EBUSY ? 6 : 7;
+            if (!said_busy) {
+                char m[160];
+                std::snprintf(m, sizeof m, "soundscape: cannot open the jack (%s)%s", alsa_err(rc),
+                              rc == -EBUSY ? " — the sound service still holds it; waiting" : "");
+                clog_(m);
+                said_busy = true;
+            }
+            for (int i = 0; i < 20 && g_amb_run; i++) usleep(100000);
+            continue;
+        }
+        unsigned rate = 44100;
+        rc = g_alsa.set_params(pcm, /*S16_LE*/2, /*RW_INTERLEAVED*/3, 2, rate, 1, 100000);
+        if (rc < 0) { rate = 48000; rc = g_alsa.set_params(pcm, 2, 3, 2, rate, 1, 100000); }
+        if (rc < 0) {
+            char m[96];
+            std::snprintf(m, sizeof m, "soundscape: %s refused S16 stereo at 44.1/48 kHz (%s)", dev, alsa_err(rc));
+            clog_(m);
+            g_alsa.close(pcm);
+            g_amb_route = 7;
+            for (int i = 0; i < 50 && g_amb_run; i++) usleep(100000);
+            continue;
+        }
+        {
+            char m[96];
+            std::snprintf(m, sizeof m, "soundscape: playing on its own through %s at %u Hz", dev, rate);
+            clog_(m);
+        }
+        said_busy = false;
+        g_amb_route = 2;
+        const unsigned chunk = rate / 100;   // 10 ms: a stop is heard within a buffer or two
+        bool faded = false;
+        while (g_amb_run) {
+            if (!amb_fill(&st, buf, chunk, rate)) { faded = true; break; }
+            const long w = g_alsa.writei(pcm, buf, chunk);
+            if (w == -EPIPE || w == -ESTRPIPE || w == -EINTR) { g_alsa.prepare(pcm); continue; }
+            if (w < 0) {
+                char m[96];
+                std::snprintf(m, sizeof m, "soundscape: jack write failed (%s) — reopening", alsa_err((int)w));
+                clog_(m);
+                break;
+            }
+        }
+        if (g_alsa.drop) g_alsa.drop(pcm);   // a yield is immediate: what is queued is discarded
+        g_alsa.close(pcm);
+        if (faded) break;                    // switched off and faded out: finished
+    }
+    clog_("soundscape: the jack is free");
+    g_amb_route = 0;
+    g_amb_run = 0;
+    g_amb_alive = 0;
+    return nullptr;
+}
+
+// ON ITS OWN, over Bluetooth: the FM -> Bluetooth bridge with generated audio for the radio. It is
+// a bridge in every sense the others check — it sets g_ldac_alive, so USB-DAC and FM wait for it to
+// yield, and they make it yield.
+static void* amb_bt_thread(void*) {
+    g_ldac_alive = 1;
+    g_amb_bt_alive = 1;
+    g_amb_bt_streamed = 0;
+    ss_state st;
+    ss_init(&st, amb_seed() ^ 0x5BD1E995u);
+    const unsigned rate = 44100;
+    const int fd = ldac_connect_socket(rate, 2);
+    if (fd < 0) {
+        clog_("soundscape: no transmitter socket — staying silent over Bluetooth for now");
+        g_amb_route = 7;
+    } else {
+        clog_("soundscape: playing on its own over Bluetooth");
+        g_amb_route = 3;
+        g_amb_bt_streamed = 1;
+        static short buf[512 * 2];
+        while (g_ldac_run && g_amb_bt_run) {
+            if (!amb_fill(&st, buf, 512, rate)) break;
+            size_t want = sizeof buf;
+            const unsigned char* p = (const unsigned char*)buf;
+            bool broken = false;
+            while (want && !broken) {
+                // send(MSG_NOSIGNAL): see ldac_pump for the SIGPIPE that once killed the Home app.
+                const ssize_t w = send(fd, p, want, MSG_NOSIGNAL);
+                if (w < 0) {
+                    if (errno == EINTR) continue;
+                    clog_("soundscape: the transmitter closed the socket");
+                    broken = true;
+                    break;
+                }
+                p += w;
+                want -= (size_t)w;
+            }
+            if (broken) break;
+        }
+        ::close(fd);
+    }
+    g_amb_bt_alive = 0;
+    g_amb_bt_run = 0;
+    g_ldac_run = 0;
+    g_ldac_alive = 0;
+    return nullptr;
+}
+
+static void amb_spawn(void* (*fn)(void*)) {
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_attr_setstacksize(&at, 128 * 1024);   // an ss_state is 6 KB; nothing deep below it
+    pthread_t th;
+    if (pthread_create(&th, &at, fn, nullptr) != 0) {
+        clog_("soundscape: pthread_create FAILED");
+        if (fn == amb_jack_thread) g_amb_run = 0;
+        else { g_amb_bt_run = 0; g_ldac_run = 0; }
+    }
+    pthread_attr_destroy(&at);
+}
+
+// A Sony call from here may already be under a guard — ambient_yield_for_music runs inside
+// play_pending_sequence's — and the guard's jump buffer does not nest. Under one, call straight
+// through (that guard covers it); otherwise take our own.
+static void amb_guarded(const char* what, void (*fn)()) {
+    if (g_in_guard) fn();
+    else run_guarded(what, 6, fn);
+}
+
+// SetCurrentSource on the framework thread, as ldac_start does.
+static bool g_amb_source_want = false;
+static void amb_bt_source(bool on) {
+    g_amb_source_want = on;
+    amb_guarded("soundscape: SetCurrentSource", []() {
+        enum { VIDX_SetCurrentSource = 12 };
+        void* x = bt_xmit();
+        if (!x) return;
+        bool v = g_amb_source_want;
+        typedef int (*fnb)(void*, const bool*);
+        ((fnb)bt_slot(x, VIDX_SetCurrentSource))(x, &v);
+    });
+    g_amb_bt_source_held = on;
+}
+
+static void amb_bt_start() {
+    if (g_ldac_alive) return;                       // a USB-DAC or FM bridge owns the socket
+    amb_guarded("soundscape: codec", apply_bt_codec);
+    amb_bt_source(true);
+    g_ldac_run = 1;
+    g_amb_bt_run = 1;
+    amb_spawn(amb_bt_thread);
+}
+
+void ambient_yield_for_music() {
+    const bool had = g_amb_alive || g_amb_bt_alive;
+    if (g_amb_alive) g_amb_run = 0;
+    if (g_amb_bt_alive) { g_amb_bt_run = 0; g_ldac_run = 0; }
+    for (int i = 0; i < 60 && (g_amb_alive || g_amb_bt_alive); i++) usleep(5000);
+    if (g_amb_bt_source_held && !g_amb_bt_alive) amb_bt_source(false);
+    // Hold off long enough for the music to be seen playing; if it never starts, the player
+    // comes back after this.
+    g_amb_hold_until = now_ms() + 4000;
+    if (had) clog_(g_amb_alive || g_amb_bt_alive ? "soundscape: yield TIMED OUT — the player still holds the output"
+                                                 : "soundscape: the output is free for the music");
+}
+
+// Decide, on the render thread: what the shim is told, whether the soundscape player should run and
+// where, and what the page's strip says. Called once a second from housekeeping and on every
+// Soundscapes change.
+// Can the shell play to the jack at all? Asked ONCE: alsa_load() logs every failed dlopen, and this
+// tick runs every second — a player without libasound would write two log lines a second to flash.
+static bool amb_can_play_jack() {
+    static int ok = -1;
+    if (ok < 0) ok = alsa_load() && g_alsa.writei ? 1 : 0;
+    return ok == 1;
+}
+
+static void ambient_tick() {
+    int ma = 0, mm = 0;
+    const int sound = cinder_get_ambient(&ma, &mm);
+    g_amb_want_sound = sound;
+    g_amb_milli_alone = ma;
+    g_amb_milli_music = mm;
+    const bool music = amb_music_on();
+    const bool bridge = g_ldac_alive && !g_amb_bt_alive;          // USB-DAC or FM over Bluetooth
+    const bool fm_jack = g_fm_on && !bridge;                       // the radio on the jack
+    const bool busy = g_msc_active || g_rx_active || fm_jack;
+    amb_write_control(sound, sound ? ((music || g_fm_on) ? mm : ma) : 0);
+
+    const bool off = !sound || ma <= 0;      // a running player fades itself out and finishes
+    const bool want = !off && !music && !bridge && !busy && now_ms() >= g_amb_hold_until;
+    const bool want_bt = want && g_bt_link_last == 1;
+    // A reason to stop that is not "switched off": stop at once.
+    if (g_amb_alive && !off && (!want || want_bt)) g_amb_run = 0;
+    if (g_amb_bt_alive && !off && (!want || !want_bt)) { g_amb_bt_run = 0; g_ldac_run = 0; }
+    if (g_amb_bt_source_held && !g_amb_bt_alive) {
+        amb_bt_source(false);
+        if (!g_amb_bt_streamed) g_amb_bt_retry_at = now_ms() + 15000;   // do not flap the radio
+    }
+    if (want && !g_amb_alive && !g_amb_bt_alive) {
+        if (want_bt) {
+            if (now_ms() >= g_amb_bt_retry_at) amb_bt_start();
+        } else if (amb_can_play_jack()) {
+            g_amb_run = 1;
+            g_amb_route = 6;
+            amb_spawn(amb_jack_thread);
+        }
+    }
+
+    int code;
+    if (!sound) code = 0;
+    else if (bridge) code = 4;
+    else if (music) code = g_mono_shim_seen == 1 ? 1 : 5;
+    else if (busy) code = 7;
+    else if (g_amb_alive || g_amb_bt_alive) code = (int)g_amb_route;
+    else if (want && !want_bt && !amb_can_play_jack()) code = 7;
+    else code = ma > 0 ? 6 : 0;
+    if (code != g_amb_route_sent) {
+        g_amb_route_sent = code;
+        cinder_set_ambient_route(code);
+    }
+}
+
 void carry_out(int act) {
     // PAINT THE UI'S ANSWER BEFORE DOING THE SLOW PART.
     //
@@ -9768,6 +10115,9 @@ void carry_out(int act) {
             // apply_sound_fn, which would run six EffectCtrlDmp round trips per motion event and
             // turn a drag into the poll storm that caused the audio stutter (docs/DEVICE_TESTS.md section 7).
             run_guarded("carry_out: balance", 4, []() { apply_balance(cinder_get_balance()); });
+            break;
+        case CINDER_ACT_AMBIENT_CHANGED:
+            ambient_tick();   // tmpfs writes and, at most, a thread start; no Sony call unless Bluetooth
             break;
         case CINDER_ACT_MONO_CHANGED: {
             mono_flag_apply();
@@ -12301,6 +12651,7 @@ void* render_driver(void*) {
             cinder_clock_tick();
             sd_watch_tick(house_now);   // self-paced to 5 s; see its note
             mono_shim_poll();           // one access() on tmpfs; logs and repaints only on a change
+            ambient_tick();             // a compare unless the play state or a setting moved
             hci_log_tick();             // one stat() while the Bluetooth debug log runs; else nothing
             run_guarded("pump: poll now-playing", 8, poll_now_playing);
             run_guarded("pump: headphone unplug", 4, jack_watch_tick);
@@ -12354,7 +12705,8 @@ void* render_driver(void*) {
                 // recently, so it only reads 0 once playback has genuinely stopped, and a one-tick
                 // flicker costs a single increment that the next tick resets.
                 const bool audible = (g_playing && cinder_audio_is_playing() != 0)
-                                     || g_rx_active;   // receiving: the jack is live, the player is not
+                                     || g_rx_active    // receiving: the jack is live, the player is not
+                                     || g_amb_alive || g_amb_bt_alive;   // a soundscape on its own
                 const bool idle = !g_screen_on && !audible;
 
                 // ── LET STAGE 1 FIRE WHILE MUSIC PLAYS DOWN THE JACK ─────────────────────────
@@ -12516,6 +12868,7 @@ void* render_driver(void*) {
                 clog_("sleep timer expired -> pausing");
                 set_transport(false);
                 run_guarded("pump: sleep-timer pause", 6, []() { cinder_audio_pause(); });
+                ambient_tick();   // the timer switched the soundscape off too: let it fade now
             }
             // Idle screen-off. Only ever blanks the panel; playback and every background job keep
             // running (the app renders regardless — same as the Power-button blank). Never fires
@@ -12547,7 +12900,8 @@ void* render_driver(void*) {
             {
                 const int off_min = cinder_get_auto_off_min();
                 const bool audible = (g_playing && cinder_audio_is_playing() != 0)
-                                     || g_rx_active;   // receiving: the jack is live, the player is not
+                                     || g_rx_active    // receiving: the jack is live, the player is not
+                                     || g_amb_alive || g_amb_bt_alive;   // a soundscape on its own
                 // A fifth guard, against ourselves: power_action only RETURNS when the helper
                 // failed, and this block runs at ~1 Hz — so a device whose setuid bit is gone used
                 // to fork the helper and write three log lines every second, for ever. Once the
