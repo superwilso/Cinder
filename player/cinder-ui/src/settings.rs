@@ -46,13 +46,13 @@ pub const ROW_IGNORE_THE: usize = 7;
 pub const ROW_DATABASE: usize = 8;
 /// Auto power-off: shut the device down after N minutes of no input AND nothing playing. Sony has
 /// this (sid_4118 AutoShutdownSetting) and Cinder did not, so a paused device with the screen dark
-/// ran until the battery was flat. Defaults to OFF — powering a device down by itself is the kind
-/// of behaviour that has to be asked for.
+/// ran until the battery was flat. 30 MIN by default since 2026-10-04 (it was OFF): the owner's rule
+/// is that no state may drain a player nobody is using. OFF is one tap away.
 pub const ROW_AUTO_OFF: usize = 9;
 /// Bluetooth auto off: switch the radio off after ten minutes of a dark screen with nothing
 /// playing over it. The radio (and a link carrying nothing) costs power for as long as it is up,
-/// and nothing but the user ever switched it off. OFF by default, for the reason Auto power off
-/// is: it does not come back by itself.
+/// and nothing but the user ever switched it off. ON by default since 2026-10-04, like Auto power
+/// off. It does not come back by itself.
 pub const ROW_BT_IDLE_OFF: usize = 10;
 pub const ROW_STORAGE: usize = 11;
 pub const ROW_BATTERY: usize = 12;

@@ -25,6 +25,8 @@ snap() {
     cat /proc/interrupts > $OUT/\$1.irq
     cat /sys/power/idle_state > $OUT/\$1.idle 2>/dev/null
     cat /sys/power/dpidle_state > $OUT/\$1.dpidle 2>/dev/null
+    cat /sys/power/slidle_state > $OUT/\$1.slidle 2>/dev/null
+    for p in /proc/asound/card0/pcm*p/sub0/status; do echo "\$p \$(head -1 \$p)"; done > $OUT/\$1.pcm
     cat /proc/clkmgr/pll_test > $OUT/\$1.pll 2>/dev/null
     cat /proc/clkmgr/subsys_test > $OUT/\$1.subsys 2>/dev/null
     dd if=/proc/clkmgr/fmeter bs=4096 count=1 > $OUT/\$1.fmeter 2>/dev/null
@@ -36,7 +38,7 @@ snap() {
 }
 i=0
 while [ "\$(cat /sys/class/power_supply/usb/online)" != "0" ]; do
-    sleep 2; i=\$((i+1)); [ \$i -gt 300 ] && exit 0      # nobody pulled the cable in 10 minutes
+    sleep 2; i=\$((i+1)); [ \$i -gt 1800 ] && exit 0     # nobody pulled the cable in an hour
 done
 sleep $SETTLE
 snap a
@@ -56,7 +58,9 @@ EOF
     ;;
 read)
     D=$(mktemp -d)
-    adb shell "ls $OUT/done" >/dev/null 2>&1 || { echo "no finished probe on the player ($OUT/done missing)"; exit 1; }
+    # adb shell's exit status is not the command's on this adbd: ask for a word instead.
+    [ "$(adb shell "[ -f $OUT/done ] && echo yes" | tr -d '\r\n')" = yes ] \
+        || { echo "no finished probe on the player ($OUT/done missing)"; exit 1; }
     adb pull $OUT "$D" >/dev/null 2>&1
     python3 - "$D/$(basename $OUT)" <<'EOF'
 import sys, os
@@ -98,6 +102,11 @@ import re
 for tag in ('a', 'b'):
     m = re.search(r'dpidle_cnt\[0\]=(\d+)', rd(tag + '.idle'))
     print(f"deep idle entries at {tag}: {m.group(1) if m else '?'}")
+print("deep idle blockers at b:", ' '.join(re.findall(r'dpidle_block_cnt\[(\w+)\]=([1-9]\d*)', rd('b.dpidle')) and
+      [f"{k}={v}" for k, v in re.findall(r'dpidle_block_cnt\[(\w+)\]=(\d+)', rd('b.dpidle'))]))
+for name, mask in re.findall(r'dpidle_block_mask\[(\w+)\s*\]=(0x[0-9a-f]+)', rd('b.dpidle')):
+    if int(mask, 16): print(f"  blocking clock group {name}: {mask}")
+print("PCM:", ', '.join(l.split('/')[5] + '=' + l.split()[-1] for l in rd('b.pcm').splitlines() if 'closed' not in l) or 'all closed')
 print("PLLs on:", ', '.join(re.findall(r'\]\s*(\w+):\s*[\d.]+ MHz:\s+ON', rd('b.pll'))))
 print("power domains on:", ', '.join(re.findall(r'\[(SYS_\w+)\s*\]=\[\w+\], state\(1\)', rd('b.subsys'))))
 for l in rd('b.fmeter').splitlines():

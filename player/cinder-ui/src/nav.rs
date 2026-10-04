@@ -1639,7 +1639,9 @@ impl Default for App {
             bt_route: false,
             bt_connected: None,
             bt_debug_log: false,
-            bt_idle_off: false,   // opt-in: a radio that switches itself off surprises people
+            // ON by default since 2026-10-04 (the owner: every battery saver on, no edge case left
+            // that drains a player nobody is using). Settings ▸ Bluetooth auto off turns it off.
+            bt_idle_off: true,
             bt_link_known: false,
             bt_paired: Vec::new(),
             bt_found: Vec::new(),
@@ -1832,8 +1834,10 @@ impl Default for App {
             up_next_cur: None,
             up_next_id: None,
             queue_follow: true,
-            auto_off_idx: 0,
-            auto_off_min: 0,   // OFF by default — see AUTO_OFF_PRESETS
+            // 30 MIN by default since 2026-10-04 (was OFF): a paused player with a dark screen ran
+            // until the battery was flat. OFF is still the first preset and one tap away.
+            auto_off_idx: 2,
+            auto_off_min: AUTO_OFF_PRESETS[2],
             genre_scroll_px: 0,
             folder_stack: Vec::new(),
             folder_scroll_px: 0,
@@ -10983,13 +10987,13 @@ mod tests {
         assert_eq!(app.settings_activate(), vec![], "must re-arm after navigating away");
     }
 
-    /// Auto power-off must default to OFF and stay reachable back to OFF. A device that switches
-    /// itself off is behaviour the owner asks for; a default that does it, or a cycle that cannot
-    /// be undone, is how someone loses a device mid-listen.
+    /// Auto power-off is on (30 MIN) out of the box since 2026-10-04 — a paused player left alone
+    /// must not run flat — and OFF has to stay reachable: a cycle that cannot get there is how
+    /// someone who does not want it is stuck with it.
     #[test]
-    fn auto_power_off_defaults_to_off_and_cycles_back_to_it() {
+    fn auto_power_off_defaults_to_30_min_and_off_is_reachable() {
         let app = unlocked();
-        assert_eq!(app.auto_off_min(), 0, "must be opt-in");
+        assert_eq!(app.auto_off_min(), 30, "on by default");
         assert_eq!(AUTO_OFF_PRESETS[0], 0);
 
         let mut app = unlocked();
@@ -11000,23 +11004,22 @@ mod tests {
             assert_eq!(app.settings_activate(), vec![]);
             seen.push(app.auto_off_min());
         }
-        assert_eq!(seen.first(), Some(&0));
-        assert_eq!(seen.last(), Some(&0), "the cycle must return to OFF");
+        assert_eq!(seen.last(), Some(&30), "the cycle comes back round");
         for p in AUTO_OFF_PRESETS {
             assert!(seen.contains(&p), "preset {p} unreachable by cycling");
         }
     }
 
-    /// Bluetooth auto off switches the radio off by itself, so it has to be asked for.
+    /// Bluetooth auto off is on out of the box (2026-10-04) and the row switches it.
     #[test]
-    fn bluetooth_auto_off_is_opt_in_and_the_row_toggles_it() {
+    fn bluetooth_auto_off_is_on_by_default_and_the_row_toggles_it() {
         let mut app = unlocked();
-        assert!(!app.bt_idle_off(), "must be opt-in");
+        assert!(app.bt_idle_off(), "on by default");
         app.settings_sel = crate::settings::ROW_BT_IDLE_OFF;
         assert!(app.settings_activate().is_empty(), "the shell polls it; no action");
-        assert!(app.bt_idle_off());
-        app.settings_activate();
         assert!(!app.bt_idle_off());
+        app.settings_activate();
+        assert!(app.bt_idle_off());
     }
 
     /// A hand-edited or corrupt `auto_off=` snaps to a known preset — otherwise the row would show
