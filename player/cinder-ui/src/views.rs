@@ -127,6 +127,21 @@ pub struct SavedView {
     pub played: Played,
     pub format: FormatRule,
     pub sort: ViewSort,
+    /// What this playlist's Shuffle band deals: songs, whole albums or whole artists. `None`
+    /// follows Settings ▸ Shuffle, which is what every view did before 2026-10-04.
+    pub shuffle: Option<crate::shuffle::ShuffleBy>,
+}
+
+/// The editor's SHUFFLE chips: "Settings" (follow the setting), then [`ShuffleBy::ALL`].
+pub const SHUFFLE_LABELS: [&str; 4] = ["Settings", "Songs", "Albums", "Artists"];
+
+/// `shuffle=` in `cinder_views.conf`.
+fn shuffle_token(s: Option<crate::shuffle::ShuffleBy>) -> &'static str {
+    s.map_or("settings", crate::shuffle::ShuffleBy::token)
+}
+
+fn shuffle_from_token(s: &str) -> Option<crate::shuffle::ShuffleBy> {
+    crate::shuffle::ShuffleBy::ALL.into_iter().find(|b| b.token() == s.trim())
 }
 
 /// The bit that marks a playlist id as a smart one. Sony's playlist ids are SQLite row ids —
@@ -282,6 +297,7 @@ pub fn parse(body: &str) -> Vec<SavedView> {
             "played" => v.played = from_token(&Played::ALL, Played::token, val),
             "format" => v.format = from_token(&FormatRule::ALL, FormatRule::token, val),
             "sort" => v.sort = from_token(&ViewSort::ALL, ViewSort::token, val),
+            "shuffle" => v.shuffle = shuffle_from_token(val),
             _ => {}
         }
     }
@@ -297,12 +313,13 @@ pub fn serialize(views: &[SavedView]) -> String {
     );
     for v in views {
         s.push_str(&format!(
-            "\n[{}]\nrating={}\nplayed={}\nformat={}\nsort={}\n",
+            "\n[{}]\nrating={}\nplayed={}\nformat={}\nsort={}\nshuffle={}\n",
             clean_name(&v.name),
             v.min_rating,
             v.played.token(),
             v.format.token(),
-            v.sort.token()
+            v.sort.token(),
+            shuffle_token(v.shuffle)
         ));
     }
     s
@@ -311,6 +328,24 @@ pub fn serialize(views: &[SavedView]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-10-04: a view remembers what its Shuffle band deals. A file from before the key
+    /// existed, or one with a word nobody knows, follows the setting.
+    #[test]
+    fn a_views_shuffle_mode_round_trips_and_defaults_to_the_setting() {
+        use crate::shuffle::ShuffleBy;
+        let mut v = SavedView::new("Late");
+        assert_eq!(v.shuffle, None);
+        v.shuffle = Some(ShuffleBy::Albums);
+        let body = serialize(&[v.clone(), SavedView::new("Plain")]);
+        assert!(body.contains("shuffle=albums") && body.contains("shuffle=settings"), "{body}");
+        let back = parse(&body);
+        assert_eq!(back[0], v);
+        assert_eq!(back[1].shuffle, None);
+        assert_eq!(parse("[Old]\nrating=3\n")[0].shuffle, None, "a file from before the key");
+        assert_eq!(parse("[Odd]\nshuffle=sideways\n")[0].shuffle, None);
+        assert_eq!(parse("[Songs]\nshuffle=songs\n")[0].shuffle, Some(ShuffleBy::Songs));
+    }
 
     fn song(title: &str, id: i64, format: Format, hires: bool, added: i64) -> SongRow {
         SongRow { title: title.into(), object_id: id, format, is_hires: hires, added, ..Default::default() }
@@ -383,7 +418,7 @@ mod tests {
     #[test]
     fn the_file_round_trips_and_forgives_junk() {
         let views = vec![
-            SavedView { name: "Late favourites".into(), min_rating: 4, played: Played::Recent, format: FormatRule::Flac, sort: ViewSort::Plays },
+            SavedView { name: "Late favourites".into(), min_rating: 4, played: Played::Recent, format: FormatRule::Flac, sort: ViewSort::Plays, shuffle: None },
             SavedView::new("Everything"),
         ];
         assert_eq!(parse(&serialize(&views)), views);

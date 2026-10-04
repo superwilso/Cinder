@@ -243,6 +243,16 @@ int cinder_audio_init(const char* name) {
     return 0;
 }
 
+// Start the Framework WITHOUT the easel app lifecycle — for a short-lived helper process only
+// (`cinder-home --stock-eq`). The app itself gets its Framework from ApplicationBase::run and must
+// never call this. Same call cinder-probe has made on every run since 2026-07-27.
+int cinder_audio_framework_start(void) {
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    if (framework_started(fw)) return 0;
+    fw.StartForApplication(std::function<void()>([]() {}), true);
+    return framework_started(fw) ? 0 : -1;
+}
+
 int cinder_audio_pump_start(int interval_ms) {
     if (g_pump_run) return 0;
     if (const char* off = getenv("CINDER_NOPUMP")) if (off[0] == '1') return -2;

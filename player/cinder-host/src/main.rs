@@ -156,7 +156,6 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
         MenuItem { label: "Folders", sub: "6 folders", home: false, active: false },
         MenuItem { label: "SensMe", sub: "12 channels · 8 tracks", home: false, active: false },
         MenuItem { label: "FM radio", sub: "Needs wired headphones as the aerial", home: false, active: false },
-        MenuItem { label: "Equalizer", sub: "A1", home: false, active: false },
         MenuItem { label: "Sound", sub: "DSEE HX · VPT", home: false, active: false },
         MenuItem { label: "Bluetooth", sub: "LDAC", home: false, active: false },
         MenuItem { label: "USB-DAC", sub: "Off", home: false, active: false },
@@ -468,9 +467,15 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
             // the artist was, which is precisely why nothing ever pushed it.
             ("artist", &|c: &mut Canvas| {
                 let name = lib.artists.first().map(|a| a.name.as_str()).unwrap_or("");
-                let page = library::artist_page(&lib, name);
+                let page = library::artist_page(&lib, name, false);
                 library::artist_view(c, &theme, &fonts, &lib, &page, 0, 0, None, false);
                 cinder_ui::chrome::np_bar(c, &theme, &fonts, "Atlas Hands", "Benjamin Francis Leftwich", true, 0.39);
+            }),
+            // …and with SONGS opened from its header (2026-10-04: folded away until asked for).
+            ("artist_songs_open", &|c: &mut Canvas| {
+                let name = lib.artists.first().map(|a| a.name.as_str()).unwrap_or("");
+                let page = library::artist_page(&lib, name, true);
+                library::artist_view(c, &theme, &fonts, &lib, &page, 0, 0, None, false);
             }),
             // ── Redesign R4: ratings, plays, smart playlists, the two editors ──────────────────
             // The album page with its rating in the header's right slot (handoff 5h).
@@ -487,7 +492,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     l.stats.insert(id, cinder_ui::model::TrackStat { rating, plays, last_played: 1_790_000_000 + id });
                 }
                 let name = l.artists.first().map(|a| a.name.clone()).unwrap_or_default();
-                let page = library::artist_page(&l, &name);
+                let page = library::artist_page(&l, &name, false);
                 library::artist_view(c, &theme, &fonts, &l, &page, 0, 0, None, false);
             }),
             // The Playlists tab with a smart playlist above the others and an EDITED tag (5g).
@@ -524,6 +529,7 @@ fn render_all(out: &mut dyn FnMut(&str, &Canvas), opts: &Opts) {
                     name: "Late favourites".into(), min_rating: 4,
                     played: cinder_ui::views::Played::Recent, format: cinder_ui::views::FormatRule::Flac,
                     sort: cinder_ui::views::ViewSort::Plays,
+                    shuffle: Some(cinder_ui::shuffle::ShuffleBy::Albums),
                 };
                 cinder_ui::view_edit::render(c, &theme, &fonts,
                     &cinder_ui::view_edit::ViewEditView { draft: &v, matches: 38, existing: true });

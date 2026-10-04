@@ -2390,6 +2390,9 @@ static void apply_profile_if_switched(const char* why) {
     // payload, arriving by a route instead of by a tap.
     run_guarded("profile: apply sound effects", 6, apply_sound_fn);
     run_guarded("profile: apply EQ", 6, apply_eq_fn);
+    // Mono can be a profile's own since 2026-10-04 (Sound profiles > ALSO PER PROFILE). One tmpfs
+    // create or unlink; the linear amp follows by itself (hp_amp_tick reads the flag).
+    mono_flag_apply();
     // Source Direct is in the profile and holds the DAC EQ flat; a compare unless that changed.
     run_watchdog_only("profile: DAC EQ", 6, apply_dac_eq);
     g_fx_verify_why = why;
@@ -2964,6 +2967,8 @@ static void stock_handback_fn() {
     cinder_effects_set_tone_system(CINDER_TONE_SYS_EQ6);
     cinder_effects_set_source_direct(0);
     clog_("boot-to-stock: handed the EQ selector back to the six-band, Source Direct off");
+    // Done here, so the launcher need not do it again on the way to stock (see stock_eq_main).
+    ::unlink("/data/cinder/eq_owned");
 }
 
 void boot_to_stock() {
@@ -10101,6 +10106,7 @@ void carry_out(int act) {
             // costs a compare and no IPC.
             run_guarded("carry_out: apply sound effects", 6, apply_sound_fn);
             run_guarded("carry_out: apply EQ with the sound setup", 6, apply_eq_fn);
+            mono_flag_apply();   // a profile can carry mono: see apply_profile_if_switched
             // Source Direct holds the DAC EQ flat; a compare unless that is what just changed.
             run_watchdog_only("carry_out: DAC EQ with the sound setup", 6, apply_dac_eq);
             break;
@@ -12185,8 +12191,17 @@ void* render_driver(void*) {
             // comment above always claimed it was. Everything else keeps the old rate, and a link
             // with NO listener never relaxes at all: there the timer is the only thing that can
             // notice headphones dropping, and pause-on-disconnect rides on it.
-            const long route_every = cinder_bt_route_poll_ms(
-                bt_listener_is_on() ? 1 : 0, g_bt_radio_seen_up ? 1 : 0, g_bt_have_name ? 1 : 0);
+            //
+            // …and RADIO UP WITH NOBODY THERE relaxes too (2026-10-04, the owner: "bt doesn't need
+            // to keep checking for ever"). Quiet = the panel is dark, nobody tapped a device, and
+            // the reconnect ladder is not counting down to a page: it never started (nothing
+            // paired, or the link is up) or it has given up. A headphone that powers on still
+            // connects — connect-wait is armed — and the listener reports it on the next frame.
+            const bool bt_quiet = !g_screen_on && !g_bt_user_pending
+                               && (g_bt_reconnect_at == 0 || g_bt_reconnect_tries > BT_RECONNECT_MAX_TRIES);
+            const long route_every = cinder_bt_route_poll_quiet_ms(
+                bt_listener_is_on() ? 1 : 0, g_bt_radio_seen_up ? 1 : 0, g_bt_have_name ? 1 : 0,
+                bt_quiet ? 1 : 0);
             const bool fast = now_ms() < g_bt_peer_fast_until
                            && now_ms() - last_route_ms >= BT_PEER_FAST_EVERY_MS;
             if (g_bt_state_dirty || fast || now_ms() - last_route_ms >= route_every) {
@@ -12778,8 +12793,38 @@ void* render_driver(void*) {
                 const bool suspend_while_playing =
                     access("/contents/cinder_no_suspend_playing", F_OK) != 0;
                 const bool on_jack_now = cinder_get_bt_route() == 0;
+                // ── THE A2DP RUN, AS AN OPT-IN (2026-10-04) ──────────────────────────────────
+                // Screen-off Bluetooth listening is the state this player spends hours in, and it
+                // is the one state stage 1 never reaches: the display pipeline scans out behind a
+                // dark panel for all of it (383 interrupts/s against 90 in stage 1, the table
+                // below). What has kept it out is handler 0 of the chain, `wmt_dev_early_suspend`,
+                // and nobody has run it with a link up. /contents/cinder_suspend_bt lets the owner
+                // run exactly that, with headphones on: stage 1 during Bluetooth playback.
+                //   * Off unless the file exists; checked every tick, so deleting it stops it.
+                //   * ONE STRIKE. If the link goes away while stage 1 is held under Bluetooth, this
+                //     stops for the rest of the boot and says so — a link that drops for any other
+                //     reason costs the experiment one boot, which is the cheap way to be wrong.
+                //   * *Never run with a link up; DEVICE_CHECKLIST 31.2 is that run.*
+                static bool bt_struck = false, bt_held = false;
+                const bool bt_flag = access("/contents/cinder_suspend_bt", F_OK) == 0;
+                if (!socsusp::g_early) {
+                    bt_held = false;
+                } else if (audible && !on_jack_now) {
+                    bt_held = true;
+                } else if (bt_held && on_jack_now && !bt_struck) {
+                    bt_struck = true;
+                    clog_("suspend: the Bluetooth link went away during stage 1 — no more stage 1 "
+                          "on Bluetooth this boot (/contents/cinder_suspend_bt)");
+                }
+                const bool bt_ok = bt_flag && !bt_struck;
+                static int said_bt = -1;
+                if ((int)bt_flag != said_bt) {
+                    said_bt = bt_flag;
+                    if (bt_flag) clog_("suspend: stage 1 ALSO while playing over Bluetooth "
+                                       "(/contents/cinder_suspend_bt — an experiment)");
+                }
                 const bool soc_idle =
-                    suspend_while_playing ? (!g_screen_on && (!audible || on_jack_now)) : idle;
+                    suspend_while_playing ? (!g_screen_on && (!audible || on_jack_now || bt_ok)) : idle;
                 // Say so when it changes, because this changes when the SoC suspends and the log is
                 // the only place that would ever explain a behaviour difference between two units.
                 static int said_swp = -1;
@@ -13391,7 +13436,41 @@ void start_pump_ticker() {
 
 } // namespace
 
+// `cinder-home --stock-eq`: THE HAND-BACK FOR THE ROUTES THAT NEVER RUN boot_to_stock(). The cable
+// escape, a bad-boot revert and a crash hand-over all reach Sony's player from the launcher, which
+// is a shell script and cannot call the sound service; stock then came up with its six-band stored
+// and not in the path (DEVICE_CHECKLIST 27.5). The launcher starts this once, in the background,
+// just before it execs Sony's app, and spends its marker FIRST — so whatever this does, it does it
+// on one boot only and can never stand between the user and stock twice.
+//
+// No easel, no appmgr registration, no renderer: a bare Framework and the pump, as cinder-probe
+// has always run next to a live Home app. alarm() keeps its DEFAULT action here (this returns
+// before install_diagnostics), so a call that hangs ends the process rather than holding a binder.
+//
+// `--stock-eq 2` puts the ten-band back and leaves Source Direct alone: for trying the helper from
+// adb next to a running Cinder without leaving its EQ out of the path until the next boot.
+static int stock_eq_main(int sel) {
+    ::alarm(10);
+    if (cinder_audio_framework_start() != 0) { clog_("stock-eq: the Framework did not start"); return 2; }
+    if (cinder_audio_pump_start(20) != 0) { clog_("stock-eq: no pump"); return 3; }
+    for (int i = 0; i < 100 && cinder_audio_pump_ticks() == 0; ++i) ::usleep(10000);
+    const int before = cinder_effects_get_select_using_eq();
+    if (before == -1) { clog_("stock-eq: no effects client — is the sound service up?"); ::_exit(4); }
+    cinder_effects_set_tone_system(sel);
+    if (sel == CINDER_TONE_SYS_EQ6) cinder_effects_set_source_direct(0);
+    const int after = cinder_effects_get_select_using_eq();
+    char m[128];
+    std::snprintf(m, sizeof m, "stock-eq: EQ selector %d -> %d (1 = Sony's six-band)%s",
+                  before, after, sel == CINDER_TONE_SYS_EQ6 ? ", Source Direct off" : "");
+    clog_(m);
+    std::fflush(nullptr);
+    // _exit, not return: nothing here is worth running Sony's static destructors for.
+    ::_exit(after == sel ? 0 : 5);
+}
+
 int main(int argc, char** argv) {
+    if (argc >= 2 && !std::strcmp(argv[1], "--stock-eq"))
+        return stock_eq_main(argc >= 3 && !std::strcmp(argv[2], "2") ? 2 : CINDER_TONE_SYS_EQ6);
     clog_("main: start");
     install_diagnostics();   // crash/hang handler -> logs the exact PC of the stall
 

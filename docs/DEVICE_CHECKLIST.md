@@ -761,9 +761,11 @@ sends selector 1 and Source Direct off before the restart (`stock_handback_fn`, 
 |---|---|---|---|---|
 | 27.1 | **Reproduce on the old build first** | On v0.3.14: Settings ▸ Boot to stock. In Sony's player, play a track on the jack and push the equalizer's bass to the top and back | No audible change (the report) | If the EQ works, the cause is something else: stop and read `adb logcat \| grep isproc` in stock before trusting the fix |
 | 27.2 | **The hand-back** | On this build: Settings ▸ Boot to stock. Same EQ test in Sony's player | The equalizer is audible. `cinderhome.log` from the Cinder boot before it holds `boot-to-stock: handed the EQ selector back` | Log line present but EQ still dead: the selector is not what stock reads; `cinder-probe --fx` after returning shows `SelectUsingEq` |
-| 27.3 | **Cinder takes its EQ again** | Restart from stock into Cinder; Menu ▸ Equalizer, push a band | Audible; `fx-verify` (26.3) or `cinder-probe --fx` shows `SelectUsingEq=2` | Cinder's EQ dead after a stock visit: the boot apply did not re-send the selector |
+| 27.3 | **Cinder takes its EQ again** | Restart from stock into Cinder; Menu ▸ Sound ▸ Equalizer, push a band | Audible; `fx-verify` (26.3) or `cinder-probe --fx` shows `SelectUsingEq=2` | Cinder's EQ dead after a stock visit: the boot apply did not re-send the selector |
 | 27.4 | **Use Sony's receiver takes the same path** | Receiver ▸ Use Sony's receiver ▸ Restart (with 21.10) | The log line of 27.2 before the restart | — |
-| 27.5 | **The gaps** (expected to FAIL today, record what happens) | Reach stock by the cable escape, and by uninstalling; try Sony's EQ | Probably dead in both: no Cinder code runs on those routes | Decide where the reset lives: the launcher cannot call Sony's services, the uninstall package runs a script |
+| 27.5 | **The other roads to stock** (2026-10-04: the launcher hands the EQ back) | From Cinder, with a cable in and `cable_escape_off` removed, reboot so the cable escape fires. Try Sony's EQ | The equalizer is audible. `/data/cinder/cinderhome.log` holds `stock-eq: EQ selector 2 -> 1`; `/data/cinder/eq_owned` is gone | No log line and the marker still there = the launcher on the player is older than the app (reinstall). Line present, EQ dead = the selector is not the cause: `cinder-probe --fx` in stock |
+| 27.6 | **It runs once** | Reboot into stock again by the same route | No second `stock-eq:` line | A second line = the marker was written by something other than a Cinder start |
+| 27.7 | **Uninstall is not covered** | Uninstall with Cinder's EQ in use, without a Boot to stock first | Sony's EQ is probably dead until a preset is picked or the player is reset: record what happens | — |
 
 ## 28 — 2026-10-04 — Soundscapes
 
@@ -799,3 +801,39 @@ is §24; this is what is now drawn from it. Needs a dev build and one reboot.
 | 29.4 | **Spectrogram** | Style Spectrogram for 10 s | Five seconds of history scrolling left; a kick drum is a bright stripe at the bottom | — |
 | 29.5 | **Bands only** | FM (or USB-DAC) with Scope chosen | "Needs library playback" on the spectrum page; Spectrogram and the bar styles still draw | A blank page = the fallback text failed |
 | 29.6 | **Cost** | Spectrum page, each new style, 20 s: cinder-home's `/proc/<pid>/stat` ticks | Close to Bars' | Much higher for Stereo or Spectrogram: note which |
+
+## 30 — 2026-10-04 — The owner's decisions on R4 and R5
+
+Host-tested (790+ player tests, golden previews `artist*`, `view_edit*`, `profiles*`, `menu*`).
+Needs a dev build and one reboot.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 30.1 | **Menu** | Open the Menu | No Equalizer row; Sound ▸ Equalizer opens the equalizer | — |
+| 30.2 | **Artist page** | Library ▸ Artists ▸ an artist with albums | Albums, then `SONGS · n` with SHOW ALL and no song rows. Tap the header: the list opens, the word reads HIDE. Tap again: folded. Shuffle artist still plays every track | Rows under a folded header = the fold was not applied to the hit test |
+| 30.3 | **Shuffle per smart playlist** | Playlists ▸ a smart playlist ▸ EDIT ▸ SHUFFLE: Albums ▸ SAVE, then its Shuffle band | Whole albums, each in track order, in a random album order. `cinder_views.conf` holds `shuffle=albums`. With Settings chosen it follows Settings ▸ Shuffle | Songs at random with Albums chosen = the view's mode did not reach the deal; send the file |
+| 30.4 | **Mono per profile** | Sound profiles ▸ ALSO PER PROFILE ▸ Mono on. Profile A: Mono on. Switch to B: Mono off. Switch back and forth | Mono follows the profile (with Wampy's shim: audible; without: the switch and `/tmp/cinder_mono` follow). With the row off again, mono is one value for both | The file `/tmp/cinder_mono` not following = `mono_flag_apply` did not run on the switch |
+| 30.5 | **DAC EQ and amp per profile** | The same with DAC EQ (a different curve in A and B) and Linear amp | Log: one `dac eq:` line per switch, only when the curves differ; `hp amp:` follows within a few seconds | A `dac eq:` line on every route change with equal curves = the compare failed |
+| 30.6 | **Nothing changes by default** | A player upgraded from the previous build, all three rows Off | Mono, the amp and the DAC EQ behave as before across A/B and route changes | — |
+
+## 31 — 2026-10-04 — Idle with Bluetooth, and what stays powered behind a dark panel
+
+Measured on the cable, Walkman One, 2026-10-04 (`/proc/clkmgr/pll_test`, `subsys_test`, `clk_test`):
+
+| | screen dark, before stage 1 | stage 1 |
+|---|---|---|
+| VENCPLL (295.75 MHz, feeds the display bus) | ON | off |
+| `SYS_DIS` (display power domain) and 13 display clocks | on | off |
+| `SYS_CONN` (WiFi/Bluetooth chip's domain), Bluetooth switched off | on | off |
+| UNIVPLL, USB0 | on (the cable) | on (the cable) |
+
+So everything the dark panel still costs is switched off by stage 1, and stage 1 does not run in
+the first 180 s of a boot, for the first 60 s of idle, or at all while playing over Bluetooth.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 31.1 | **The quiet poll** | Bluetooth on, nothing connected, screen dark for 6 minutes; `grep -c "BT route poll" ` is not logged, so instead: switch the headphones on | They connect and the UI shows them within a second or two of the link, as before. Log: `bt: link state changed (listener)` | Connects but the UI lags up to a minute = the listener did not fire for this link: report it; `btpoll` falls back to 3 s only when the listener is not registered |
+| 31.2 | **Stage 1 while playing over Bluetooth** (opt-in experiment) | Off the cable, headphones connected and playing. `touch /contents/cinder_suspend_bt` (USB-MSC or adb), reboot, play, screen off, listen for 5 minutes | The music does not stop or stutter. Log: `suspend: stage 1 ALSO while playing over Bluetooth`, then `suspend: idle 60 s -> early suspend` | Music stops or the link drops: the log says `the Bluetooth link went away during stage 1` and it stops trying for that boot. Delete the file. That is the answer: `wmt_dev_early_suspend` does not survive a link |
+| 31.3 | **What Bluetooth costs idle** | Bluetooth ON, nothing connected, screen dark, 6 minutes: `adb shell 'grep -E "SYS_CONN" /proc/clkmgr/subsys_test'` | Record `state(0)` or `state(1)` in stage 1. `state(1)` = the radio's domain stays powered for as long as Bluetooth is switched on, and an automatic radio-off after N minutes without a link would be worth building | — |
+| 31.4 | **Framebuffer blank** (not run: needs the owner) | Screen dark, before stage 1: `echo 4 > /sys/class/graphics/fb0/blank`, read `grep VENCPLL /proc/clkmgr/pll_test`, then `echo 0 > …/blank` | VENCPLL off while blanked and the panel comes back on the next wake = the display can be switched off the moment the screen goes dark, without stage 1, which would cover Bluetooth playback too | VENCPLL stays ON = this kernel's blank does nothing; stage 1 is the only switch |
+

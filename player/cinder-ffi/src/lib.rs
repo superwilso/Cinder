@@ -914,11 +914,17 @@ fn setup_body(s: &cinder_ui::nav::SoundSetup) -> String {
     // The second line is R5's: a profile is every DSP value, so the spare carries the VPT room, the
     // DC Phase filter and the whole of Sound ▸ Advanced too. `bank_adv` is `SoundSetup::adv_bits`
     // — bits 0..=4 of the live `adv=` key, without the linear-amp bit, which no profile owns.
+    // The third line is the optional members (2026-10-04): mono, the linear amp and the DAC EQ.
+    // Always written; they only differ from the live `mono=` / `adv=` bit 5 / `dac_eq=` values
+    // for an item `profile_follow=` names.
+    let dac: Vec<String> = s.dac_eq.iter().map(|b| b.to_string()).collect();
     format!(
         "bank_eq={}\nbank_sound={}\nbank_balance={}\nbank_preset={}\n\
-         bank_vpt_mode={}\nbank_dc_type={}\nbank_adv={}\nbank_dsee_mode={}\nbank_vinyl_type={}\nbank_tone={}\n",
+         bank_vpt_mode={}\nbank_dc_type={}\nbank_adv={}\nbank_dsee_mode={}\nbank_vinyl_type={}\nbank_tone={}\n\
+         bank_mono={}\nbank_amp={}\nbank_dac_eq={}\n",
         eq.join(","), flags, s.balance, s.eq_preset,
         s.vpt_mode, s.dc_type, s.adv_bits(), s.dsee_mode, s.vinyl_type, tone.join(","),
+        s.mono as u8, s.linear_amp as u8, dac.join(","),
     )
 }
 
@@ -1044,6 +1050,17 @@ impl ProfileLoad {
                     }
                 }
             }
+            // The optional members. Read whether or not they are followed: `restore_setups`
+            // overwrites the ones that are not with the live values.
+            "bank_mono" => bank.mono = v == "1",
+            "bank_amp" => bank.linear_amp = v == "1",
+            "bank_dac_eq" => {
+                for (i, part) in v.split(',').take(cinder_ui::dac_eq::BANDS).enumerate() {
+                    if let Ok(n) = part.trim().parse::<i8>() {
+                        bank.dac_eq[i] = cinder_ui::dac_eq::clamp(n);
+                    }
+                }
+            }
             // Which profile each output uses. An unreadable letter leaves that output on A.
             "profile_jack" | "profile_bt" | "profile_usb" => {
                 if let (Some(o), Some(i)) = (
@@ -1136,6 +1153,8 @@ fn settings_body(r: &Render) -> String {
     );
     body.push_str(&setup_body(&r.app.setup_inactive()));
     body.push_str(&profiles_body(r.app.profile_map()));
+    // Which of mono (1), linear amp (2) and DAC EQ (4) travel with a profile. 0 = none.
+    body.push_str(&format!("profile_follow={}\n", r.app.profile_follow()));
     // The visualiser's signal settings. One line each rather than a packed field, because these
     // are exactly the lines someone tuning the display over adb will want to edit by hand — and
     // every one is an INDEX into a table owned by `cinder_ui::vizcfg`, so an out-of-range value
@@ -2058,6 +2077,20 @@ fn live_pos_ms(r: &Render) -> i64 {
 fn viz_tap(r: &mut Render) -> bool {
     let pos_ms = live_pos_ms(r);
     let Some(w) = r.tap.window((pos_ms + TAP_LEAD_MS) * 1000, spectrum::PCM_FFT) else {
+        // SAY WHY, at the tuning line's rate. Until 2026-10-04 a miss was silent, and a whole
+        // session of misses looked exactly like a build without the tap.
+        if r.np.playing && r.tap_log_at.is_none_or(|t| t.elapsed().as_secs() >= TAP_LOG_EVERY_S) {
+            r.tap_log_at = Some(std::time::Instant::now());
+            match r.tap.held() {
+                Some((a, b)) => eprintln!(
+                    "cinder-ffi: pcm tap MISS — pos {pos_ms} ms, the queue holds {}..{} ms ({} ms away)",
+                    a / 1000,
+                    b / 1000,
+                    if pos_ms * 1000 < a { (a - pos_ms * 1000) / 1000 } else { (pos_ms * 1000 - b) / 1000 }
+                ),
+                None => eprintln!("cinder-ffi: pcm tap MISS — pos {pos_ms} ms, no queue in a format the tap reads"),
+            }
+        }
         return false;
     };
     let cfg = r.app.viz_cfg();
@@ -2078,10 +2111,11 @@ fn viz_tap(r: &mut Render) -> bool {
     if r.tap_log_at.is_none_or(|t| t.elapsed().as_secs() >= TAP_LOG_EVERY_S) {
         r.tap_log_at = Some(now);
         eprintln!(
-            "cinder-ffi: pcm tap — pos {pos_ms} ms, slot {} holds {}..{} ms, {} Hz, {} bands",
+            "cinder-ffi: pcm tap — pos {pos_ms} ms, slot {} holds {}..{} ms ({} ms off), {} Hz, {} bands",
             w.slot,
             w.first_us / 1000,
             w.last_us / 1000,
+            w.off_us / 1000,
             w.rate,
             cfg.bands
         );
@@ -3010,6 +3044,33 @@ fn artist_tracks(db: Option<&cinder_db::Db>, name: &str) -> Option<Vec<cinder_db
     Some(v)
 }
 
+/// Deal `seq` the way `by` says: every song at random, or whole albums / whole artists at random
+/// with each kept in its own order (`cinder_ui::shuffle::deal`, the same rule the transport's
+/// shuffle button uses). A list with one album or one artist in it falls back to songs there.
+fn deal_tracks(
+    mut seq: Vec<cinder_db::Track>,
+    by: cinder_ui::shuffle::ShuffleBy,
+    rng: &mut Rng,
+) -> Vec<cinder_db::Track> {
+    use cinder_ui::shuffle::{self, ShuffleBy};
+    if by == ShuffleBy::Songs {
+        rng.shuffle(&mut seq);
+        return seq;
+    }
+    let rows: Vec<shuffle::Row> = seq
+        .iter()
+        .map(|t| shuffle::Row {
+            album: shuffle::album_key(t.album_id.unwrap_or(0), t.object_id),
+            artist: shuffle::artist_key(if t.album_artist.trim().is_empty() { &t.artist } else { &t.album_artist }),
+            disc: t.disc_no as i32,
+            track: t.track_no as i32,
+        })
+        .collect();
+    let order = shuffle::deal(&rows, by, None, &mut |n| (rng.next() % n as u64) as usize);
+    let mut old: Vec<Option<cinder_db::Track>> = seq.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| old[i].take()).collect()
+}
+
 fn shuffle_tracks(
     db: Option<&cinder_db::Db>,
     scope: cinder_ui::nav::ShuffleScope,
@@ -3785,13 +3846,13 @@ fn carry_action(r: &mut Render, a: &cinder_ui::nav::Action) -> Option<libc::c_in
                 .as_ref()
                 .map(|db| db.tracks_by_object_ids(&ids).unwrap_or_default())
                 .unwrap_or_default();
-            let mut seq: Vec<cinder_db::Track> = ids.iter().filter_map(|id| by_id.get(id).cloned()).collect();
+            let seq: Vec<cinder_db::Track> = ids.iter().filter_map(|id| by_id.get(id).cloned()).collect();
             if seq.is_empty() {
                 eprintln!("cinder-ffi: ShuffleList: nothing in the list resolved — ignored");
                 return None;
             }
             let pre: Vec<i64> = seq.iter().map(|t| t.object_id).collect();
-            Rng::new().shuffle(&mut seq);
+            let seq = deal_tracks(seq, r.app.list_shuffle_by(), &mut Rng::new());
             r.np.shuffle = true;
             set_pending(r, seq, 0);
             r.app.note_pre_shuffle(pre);
@@ -6184,6 +6245,12 @@ pub extern "C" fn cinder_settings_load(path: *const c_char) -> libc::c_int {
                     // MONO (accessibility). Absent from files written by older builds, which is
                     // fine — it stays off, which is what it was before the key existed.
                     "mono" => r.app.set_mono(v == "1"),
+                    // Absent from older files: 0, the three stay one value for every output.
+                    "profile_follow" => {
+                        if let Ok(n) = v.parse::<u8>() {
+                            r.app.set_profile_follow(n);
+                        }
+                    }
                     // Soundscapes. Absent from older files: off, rain, the default levels.
                     "ambient" => {
                         if let Ok(n) = v.parse::<u8>() {
@@ -7886,6 +7953,32 @@ mod tests {
         }
     }
 
+    /// The optional profile members (2026-10-04) survive a save when they are followed, and a
+    /// spare's copy of one that is NOT followed is replaced by the live value — so a hand-edited
+    /// or stale `bank_mono` cannot make mono differ between outputs behind the owner's back.
+    #[test]
+    fn followed_members_survive_a_save_and_unfollowed_ones_are_shared() {
+        use cinder_ui::nav::{SoundSetup, FOLLOW_DAC_EQ, FOLLOW_MONO};
+        let spare = SoundSetup { mono: true, linear_amp: true, dac_eq: [1, 2, 3, -4, 5], ..SoundSetup::default() };
+        let body = format!("setup=0\n{}", setup_body(&spare));
+        assert!(body.contains("bank_mono=1\nbank_amp=1\nbank_dac_eq=1,2,3,-4,5\n"), "{body}");
+        let load = |follow: u8| {
+            let mut pl = ProfileLoad::default();
+            for line in body.lines() {
+                let (k, v) = line.split_once('=').unwrap();
+                assert!(pl.line(k, v), "{k} is a profile key and was not taken");
+            }
+            let mut app = cinder_ui::nav::App::new();
+            app.set_profile_follow(follow);
+            pl.install(&mut app);
+            app.setup_inactive()
+        };
+        let got = load(FOLLOW_MONO | FOLLOW_DAC_EQ);
+        assert_eq!((got.mono, got.linear_amp, got.dac_eq), (true, false, [1, 2, 3, -4, 5]));
+        let got = load(0);
+        assert_eq!((got.mono, got.linear_amp, got.dac_eq), (false, false, [0; 5]), "none followed: all live");
+    }
+
     /// Both sound profiles and the per-output choice survive a save and a load — the whole of each,
     /// Advanced included — and the live one comes back as the JACK's, because that is the output a
     /// boot starts on.
@@ -8417,6 +8510,30 @@ mod tests {
         let (seq, pre) = shuffle_tracks(Some(&db), S::AllSongs, &one).expect("one survivor");
         assert_eq!(uris_of(seq), vec!["/music/harvest.flac".to_string()]);
         assert_eq!(pre.len(), 1);
+    }
+
+    /// A smart playlist's own shuffle mode (2026-10-04): by album it never splits an album, by
+    /// songs it is still every track, and nothing is lost or repeated either way.
+    #[test]
+    fn a_smart_playlists_shuffle_mode_deals_whole_albums() {
+        use cinder_ui::shuffle::ShuffleBy;
+        let db = fixture_db();
+        let all = db.tracks_album_order().unwrap();
+        let n = all.len();
+        for by in ShuffleBy::ALL {
+            for _ in 0..25 {
+                let uris = uris_of(deal_tracks(all.clone(), by, &mut Rng::new()));
+                let mut sorted = uris.clone();
+                sorted.sort();
+                sorted.dedup();
+                assert_eq!(sorted.len(), n, "{by:?} lost or repeated a track: {uris:?}");
+                if by == ShuffleBy::Albums {
+                    let atlas = uris.iter().position(|u| u == "/music/atlas.flac").unwrap();
+                    let boxs = uris.iter().position(|u| u == "/music/box.flac").unwrap();
+                    assert_eq!(boxs, atlas + 1, "album 10 was split or reordered: {uris:?}");
+                }
+            }
+        }
     }
 
     /// "TRACKS IN SEQUENCE": ByAlbum may reorder albums but must never split one up or reorder

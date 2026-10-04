@@ -6,12 +6,14 @@
 //! the route changes the player switches to that output's profile by itself. The Sound screen's
 //! A/B control still works the way it did: it picks the profile for the output that is live now.
 //!
-//! WHAT IS NOT IN A PROFILE, and why:
-//!   * MONO — an accessibility need, not a tuning (see `nav::App::mono`). It must hold on both
-//!     sides of any comparison.
+//! WHAT IS NOT IN A PROFILE UNLESS THE OWNER PUTS IT THERE (ALSO PER PROFILE, each Off by default
+//! — the owner's call of 2026-10-04: "have it as an option"):
+//!   * MONO — an accessibility need, not a tuning (see `nav::App::mono`). Off, it holds on both
+//!     sides of any comparison. On, a profile can be mono (one Bluetooth speaker) and the other not.
 //!   * The linear headphone amp and the DAC EQ — hardware stages of the 3.5 mm output only, driven
-//!     through a setuid helper and a codec table reload. They cannot reach Bluetooth, and swapping
-//!     a codec table on every route change would be a cost with nothing to show for it.
+//!     through a codec register and a codec table reload. They cannot reach Bluetooth. On, a route
+//!     change that switches profile may rewrite the codec's tone table (the shell only does so when
+//!     the curve really differs).
 //!
 //! The Profiles screen is this module's other half: which profile each output uses, and a way to
 //! start B from a copy of A. Layout is ONE function ([`parts`]) that both the render and the hit
@@ -134,7 +136,16 @@ pub enum Hit {
     Output(Output),
     /// Copy the live profile over the other one.
     Copy,
+    /// Switch one of mono / linear amp / DAC EQ into or out of the profiles (`nav::FOLLOW_*`).
+    Follow(u8),
 }
+
+/// The ALSO PER PROFILE rows: `(bit, title, what it means)`.
+pub const FOLLOWS: [(u8, &str, &str); 3] = [
+    (crate::nav::FOLLOW_MONO, "Mono", "Each profile has its own mono switch"),
+    (crate::nav::FOLLOW_AMP, "Linear amp", "3.5 mm only \u{b7} each profile picks its amp"),
+    (crate::nav::FOLLOW_DAC_EQ, "DAC EQ", "3.5 mm only \u{b7} each profile has its curve"),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Part {
@@ -161,6 +172,10 @@ fn parts() -> Vec<(Part, i32, i32)> {
     }
     push(Part::Label("PROFILES"), kit::SECTION_H, &mut v);
     push(Part::Row(Hit::Copy), kit::ROW_H, &mut v);
+    push(Part::Label("ALSO PER PROFILE"), kit::SECTION_H, &mut v);
+    for (bit, _, _) in FOLLOWS {
+        push(Part::Row(Hit::Follow(bit)), kit::ROW_H, &mut v);
+    }
     push(Part::Note, NOTE_H, &mut v);
     v
 }
@@ -188,6 +203,8 @@ pub struct Profiles {
     pub map: [usize; 3],
     /// The output that is live now.
     pub live: Output,
+    /// `nav::FOLLOW_*` bits: which optional members travel with a profile.
+    pub follow: u8,
 }
 
 fn output_sub(o: Output, live: bool) -> &'static str {
@@ -230,6 +247,11 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, p: &Profiles) {
                 let title = format!("Copy {live_letter} to {other_letter}");
                 let sub = format!("{other_letter} becomes the same as {live_letter}, to tune from there");
                 kit::row(c, t, f, top, h, &Row::new(&title).sub(&sub));
+            }
+            Part::Row(Hit::Follow(bit)) => {
+                if let Some((_, title, sub)) = FOLLOWS.iter().find(|(b, _, _)| *b == bit) {
+                    kit::row(c, t, f, top, h, &Row::new(title).sub(sub).trail(Trail::Switch(p.follow & bit != 0)));
+                }
             }
             Part::Note => {
                 // What a profile HOLDS, said once. Without it the letters are just letters.
@@ -278,14 +300,19 @@ mod tests {
     #[test]
     fn every_control_hits_itself() {
         let mut seen = Vec::new();
-        for h in Output::ALL.iter().map(|o| Hit::Output(*o)).chain([Hit::Copy]) {
+        for h in Output::ALL
+            .iter()
+            .map(|o| Hit::Output(*o))
+            .chain([Hit::Copy])
+            .chain(FOLLOWS.iter().map(|(b, _, _)| Hit::Follow(*b)))
+        {
             let y = centre(h);
             assert!(y > crate::chrome::HEADER_BOTTOM && y < crate::canvas::H as i32);
             assert_eq!(hit(240, y), Some(h));
             seen.push(y);
         }
         seen.dedup();
-        assert_eq!(seen.len(), 4);
+        assert_eq!(seen.len(), 7);
         // The strip and the section labels are not targets.
         assert_eq!(hit(240, crate::chrome::HEADER_BOTTOM + 4), None);
     }

@@ -268,7 +268,21 @@ pub struct SoundSetup {
     /// Tone Control in the path instead of the 10-band EQ, and its three bands (raw half-dB).
     pub tone: bool,
     pub tone_bands: [i8; crate::tone::BANDS],
+    // ── optional members (2026-10-04) ────────────────────────────────────────────────────────
+    // Mono, the linear headphone amp and the DAC EQ are ONE value for every output unless the
+    // owner switches them into the profiles (Sound profiles ▸ ALSO PER PROFILE, each Off by
+    // default; `App::profile_follow`). They are always carried here; while an item is not
+    // followed, `App::swap_to_setup` keeps both profiles' copies equal to the live value.
+    pub mono: bool,
+    pub linear_amp: bool,
+    pub dac_eq: [i8; crate::dac_eq::BANDS],
 }
+
+/// `App::profile_follow` bits: which of the optional members travel with a profile.
+pub const FOLLOW_MONO: u8 = 1;
+pub const FOLLOW_AMP: u8 = 1 << 1;
+pub const FOLLOW_DAC_EQ: u8 = 1 << 2;
+pub const FOLLOW_ALL: u8 = FOLLOW_MONO | FOLLOW_AMP | FOLLOW_DAC_EQ;
 
 impl Default for SoundSetup {
     fn default() -> Self {
@@ -279,6 +293,7 @@ impl Default for SoundSetup {
             eq_bands: crate::data::EQ_PRESETS[3].1,
             src_direct: false, clear_phase: false, dsee_ai: false, dsee_custom: false, dsee_mode: 0,
             vinyl_type: 0, tone: false, tone_bands: [0; crate::tone::BANDS],
+            mono: false, linear_amp: false, dac_eq: [0; crate::dac_eq::BANDS],
         }
     }
 }
@@ -292,6 +307,19 @@ impl SoundSetup {
             | (self.dsee_ai as u8) << 2
             | (self.dsee_custom as u8) << 3
             | (self.tone as u8) << 4
+    }
+    /// Copy from `live` every optional member that `follow` does NOT name — the ones that are one
+    /// value for every output.
+    pub fn share_unfollowed(&mut self, live: &SoundSetup, follow: u8) {
+        if follow & FOLLOW_MONO == 0 {
+            self.mono = live.mono;
+        }
+        if follow & FOLLOW_AMP == 0 {
+            self.linear_amp = live.linear_amp;
+        }
+        if follow & FOLLOW_DAC_EQ == 0 {
+            self.dac_eq = live.dac_eq;
+        }
     }
     /// The inverse of [`Self::adv_bits`]; bit 5 and above are ignored.
     pub fn set_adv_bits(&mut self, f: u8) {
@@ -525,10 +553,11 @@ pub enum Action {
 ///
 /// The 2026-09 redesign (handoff 5a) took two rows out. Now Playing became the strip under the
 /// header — "what is playing" is state, not a place — and Up Next went with it, since the queue is
-/// one tap from Now Playing's toolbar. Equalizer, Folders and USB-DAC stay, although the mock drew
-/// them elsewhere: until Sound grows its Equalizer row (handoff 2a) and Library its Folders page,
-/// taking them off the Menu would leave them with no way in.
-const MENU: [(Screen, &str, &str); 11] = [
+/// one tap from Now Playing's toolbar. Folders and USB-DAC stay, although the mock drew them
+/// elsewhere: until Library grows its Folders page, taking them off the Menu would leave them with
+/// no way in. Equalizer left on 2026-10-04 (owner's call): Sound's Equalizer row (handoff 2a) is
+/// the way in, and it names what is in the path, which the Menu row could not.
+const MENU: [(Screen, &str, &str); 10] = [
     (Screen::Library, "Library", ""),                 // live: album/track counts
     // Folder browse — the file tree as it is on the volume. Not a fifth Library tab: the strip is
     // four flat peers and this is a stack you descend, where Back has to mean "up one level".
@@ -540,7 +569,6 @@ const MENU: [(Screen, &str, &str); 11] = [
     // The subtitle names the one thing that stops it working, because an empty jack and a broken
     // radio sound identical.
     (Screen::Fm, "FM radio", "Needs wired headphones as the aerial"),
-    (Screen::Eq, "Equalizer", ""),                    // live: selected preset
     (Screen::Sound, "Sound", ""),                     // live: which effects are on
     (Screen::Soundscape, "Soundscapes", ""),          // live: the sound, or Off
     (Screen::Bluetooth, "Bluetooth", ""),             // live: configured transmit codec
@@ -593,7 +621,6 @@ pub(crate) struct MenuSubtitles {
     pub library: String,
     pub folders: String,
     pub sensme: String,
-    pub eq: String,
     pub sound: String,
     pub bluetooth: String,
     pub usb_dac: String,
@@ -939,6 +966,8 @@ pub struct App {
     /// frame from this (cheap: it walks the album groups once and collects references).
     artist_view: usize,
     artist_track_idx: usize,
+    /// Whether the open artist page shows its full SONGS list. Closed each time a page opens.
+    artist_songs_open: bool,
     artist_scroll_px: i32,
     /// Playlist drill-in: the `lib.playlists` index being viewed, plus its cursor and pixel scroll.
     playlist_view: usize,
@@ -1299,6 +1328,9 @@ pub struct App {
     /// Which profile (0 = A, 1 = B) each output uses, in `profile::Output::ALL` order: the jack,
     /// Bluetooth, USB-DAC. Persisted as `profile_jack` / `profile_bt` / `profile_usb`.
     profile_map: [usize; 3],
+    /// Which of mono / linear amp / DAC EQ travel with a profile (`FOLLOW_*`). 0 = none, the
+    /// default: they are then one value for every output, as before 2026-10-04.
+    profile_follow: u8,
     /// The output the live setup was chosen for. Compared with `current_output()` whenever the
     /// shell reports a route, which is how a route change becomes a profile switch.
     live_output: crate::profile::Output,
@@ -1363,6 +1395,8 @@ pub struct App {
     /// What the shuffle button deals: songs, albums or artists (Settings ▸ Shuffle). Persisted as
     /// `shuffle_by=<word>`.
     shuffle_by: crate::shuffle::ShuffleBy,
+    /// What the pending `Action::ShuffleList` deals — set with `play_list`, taken with it.
+    list_shuffle_by: crate::shuffle::ShuffleBy,
     /// The song a QueueOnPlay prompt is about. Held only while that modal is up: the tap has
     /// already happened, but which action it becomes depends on the answer.
     /// The play action a queue-replace prompt is holding, replayed verbatim on Confirm.
@@ -1579,6 +1613,7 @@ impl Default for App {
             playlist_track_idx: 0,
             playlist_scroll_px: 0,
             artist_track_idx: 0,
+            artist_songs_open: false,
             artist_scroll_px: 0,
             swipe_row: None,
             swipe_live: false,
@@ -1728,6 +1763,7 @@ impl Default for App {
             setup_other: SoundSetup::default(),
             setup_idx: 0,
             profile_map: [0; 3],
+            profile_follow: 0,
             live_output: crate::profile::Output::Jack,
             profile_apply: false,
             sound_scroll_px: 0,
@@ -1754,6 +1790,7 @@ impl Default for App {
             views: Vec::new(),
             view_edit: None,
             shuffle_by: crate::shuffle::ShuffleBy::Songs,
+            list_shuffle_by: crate::shuffle::ShuffleBy::Songs,
             pending_play: None,
             play_list: Vec::new(),
             liked_count: 0,
@@ -2101,6 +2138,12 @@ impl App {
         }
         self.play_list = ids;
         self.start_play_action(Action::PlayListAt(n))
+    }
+
+    /// What the last `Action::ShuffleList` should deal: the smart playlist's own mode, or the
+    /// setting. Read by the shell next to `take_play_list`.
+    pub fn list_shuffle_by(&self) -> crate::shuffle::ShuffleBy {
+        self.list_shuffle_by
     }
 
     /// The ids behind the last `Action::PlayListAt`, taken so they cannot be played twice.
@@ -3166,11 +3209,6 @@ impl App {
                 0 => String::from("Empty"),
                 1 => String::from("1 folder"),
                 n => format!("{n} folders"),
-            },
-            // The preset, and whether it is being heard — the EQ screen's footer says the same.
-            eq: match self.eq_off_reason() {
-                Some(_) => format!("{} · bypassed", data::EQ_PRESETS[self.eq_preset].0),
-                None => data::EQ_PRESETS[self.eq_preset].0.to_string(),
             },
             bluetooth: crate::bluetooth::CODECS[self.bt_codec as usize].0.to_string(),
             usb_dac: String::from(if self.usb_dac_on { "On" } else { "Off" }),
@@ -4689,6 +4727,7 @@ impl App {
     fn open_artist(&mut self, idx: usize) {
         self.artist_view = idx;
         self.artist_track_idx = 0;
+        self.artist_songs_open = false;
         self.artist_scroll_px = 0;
         self.fling_v = 0.0;
         self.push(Screen::Artist);
@@ -4697,7 +4736,10 @@ impl App {
     /// The open artist's page, resolved against the library. Borrows `self.lib`, so callers that
     /// need to mutate must copy what they want out first.
     fn artist_page(&self) -> Option<crate::library::ArtistPage<'_>> {
-        self.lib.artists.get(self.artist_view).map(|a| library::artist_page(&self.lib, &a.name))
+        self.lib
+            .artists
+            .get(self.artist_view)
+            .map(|a| library::artist_page(&self.lib, &a.name, self.artist_songs_open))
     }
 
     /// The open artist page's tracks, in page order, as object ids.
@@ -4734,6 +4776,14 @@ impl App {
                 self.artist_track_idx = i;
                 let ids = self.artist_list_ids();
                 self.start_play_list(ids, i)
+            }
+            // Folding the list away can leave the page scrolled past its new end.
+            Some((library::ArtistHit::ToggleSongs, _)) => {
+                self.artist_songs_open = !self.artist_songs_open;
+                self.fling_v = 0.0;
+                let max = self.artist_page().map(|p| library::artist_max_scroll_px(&p)).unwrap_or(0);
+                self.artist_scroll_px = self.artist_scroll_px.clamp(0, max);
+                vec![]
             }
             _ => vec![],
         }
@@ -5176,6 +5226,9 @@ impl App {
                     return vec![];
                 }
                 self.play_list = ids;
+                // The view's own mode, or the setting when it has none (2026-10-04).
+                self.list_shuffle_by =
+                    self.views.iter().find(|v| v.id() == id).and_then(|v| v.shuffle).unwrap_or(self.shuffle_by);
                 return self.start_play_action(Action::ShuffleList);
             }
             let hit = self.playlist_row().and_then(|p| library::playlist_hit_track(p, self.playlist_scroll_px, y));
@@ -7572,11 +7625,13 @@ impl App {
                 let n = self.artist_page().map(|p| p.tracks.len()).unwrap_or(0);
                 match b {
                     Button::Up => {
+                        self.artist_songs_open = true; // the cursor lives in the SONGS list
                         self.artist_track_idx = self.artist_track_idx.saturating_sub(1);
                         self.artist_ensure_visible();
                         vec![]
                     }
                     Button::Down => {
+                        self.artist_songs_open = true;
                         if self.artist_track_idx + 1 < n {
                             self.artist_track_idx += 1;
                             self.artist_ensure_visible();
@@ -7908,7 +7963,6 @@ impl App {
                             Screen::Library => &subs.library,
                             Screen::Folders => &subs.folders,
                             Screen::SensMe => &subs.sensme,
-                            Screen::Eq => &subs.eq,
                             Screen::Sound => &subs.sound,
                             Screen::Bluetooth => &subs.bluetooth,
                             Screen::UsbDac => &subs.usb_dac,
@@ -8132,7 +8186,11 @@ impl App {
                 crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.setup_idx, self.sound_scroll_px)
             }
             Screen::Profiles => {
-                let p = crate::profile::Profiles { map: self.profile_map, live: self.live_output };
+                let p = crate::profile::Profiles {
+                    map: self.profile_map,
+                    live: self.live_output,
+                    follow: self.profile_follow,
+                };
                 crate::profile::render(c, &theme, fonts, &p)
             }
             Screen::DacEq => {
@@ -9036,6 +9094,7 @@ impl App {
             dsee_ai: self.adv_dsee_ai, dsee_custom: self.adv_dsee_custom,
             dsee_mode: self.adv_dsee_mode, vinyl_type: self.adv_vinyl_type,
             tone: self.adv_tone, tone_bands: self.tone_bands,
+            mono: self.mono, linear_amp: self.adv_hp_linear, dac_eq: self.dac_eq,
         }
     }
 
@@ -9062,6 +9121,11 @@ impl App {
         self.adv_vinyl_type = s.vinyl_type.min(crate::advanced::VINYL_TYPES.len() - 1);
         self.adv_tone = s.tone;
         self.set_tone_bands(s.tone_bands);
+        // The optional members. Unconditional: for one that is not followed, the caller has
+        // already made `s` carry the live value (`share_unfollowed`).
+        self.mono = s.mono;
+        self.adv_hp_linear = s.linear_amp;
+        self.set_dac_eq(s.dac_eq);
     }
 
     /// Which setup is live: 0 = A, 1 = B.
@@ -9075,8 +9139,9 @@ impl App {
     }
 
     /// Restore both halves at boot. `idx` names which of the two is live.
-    pub fn restore_setups(&mut self, live: SoundSetup, other: SoundSetup, idx: usize) {
+    pub fn restore_setups(&mut self, live: SoundSetup, mut other: SoundSetup, idx: usize) {
         self.set_setup(live);
+        other.share_unfollowed(&self.setup(), self.profile_follow);
         self.setup_other = other;
         self.setup_idx = idx & 1;
     }
@@ -9089,7 +9154,8 @@ impl App {
             return false;
         }
         let live = self.setup();
-        let next = self.setup_other;
+        let mut next = self.setup_other;
+        next.share_unfollowed(&live, self.profile_follow);
         self.setup_other = live;
         self.setup_idx = idx;
         self.set_setup(next);
@@ -9127,6 +9193,16 @@ impl App {
     /// Which output the live setup was last chosen for.
     pub fn live_output(&self) -> crate::profile::Output {
         self.live_output
+    }
+
+    /// Which optional members travel with a profile (`FOLLOW_*` bits).
+    pub fn profile_follow(&self) -> u8 {
+        self.profile_follow
+    }
+
+    /// Set at boot from the settings file, BEFORE the profiles are restored.
+    pub fn set_profile_follow(&mut self, bits: u8) {
+        self.profile_follow = bits & FOLLOW_ALL;
     }
 
     /// Profile index (0 = A, 1 = B) per output, in `profile::Output::ALL` order.
@@ -9184,6 +9260,14 @@ impl App {
                 if o == self.live_output && self.swap_to_setup(flipped) {
                     return vec![Action::SoundChanged];
                 }
+                vec![]
+            }
+            // Both profiles start from the value that is live, so switching an item in changes
+            // nothing that is heard; switching it out leaves the live value as the one for all.
+            Hit::Follow(bit) => {
+                self.profile_follow ^= bit & FOLLOW_ALL;
+                let live = self.setup();
+                self.setup_other.share_unfollowed(&live, self.profile_follow & !bit);
                 vec![]
             }
             Hit::Copy => {
@@ -10322,6 +10406,7 @@ fn screen_title(s: Screen) -> &'static str {
         Screen::UpNext => "Up Next",
         Screen::Display => "Display",
         Screen::Palette => "Palette",
+        Screen::Eq => "Equalizer",
         s => MENU.iter().find(|m| m.0 == s).map(|m| m.1).unwrap_or("Cinder"),
     }
 }
@@ -10358,7 +10443,7 @@ mod tests {
             // Screen::Fm left this list on 2026-08-18: the tuner is wired, so the row now carries
             // a real static subtitle ("Needs wired headphones as the aerial") instead of the empty
             // string it used while there was nothing behind it. Nothing fills it at render time.
-            Screen::Eq,
+            // Screen::Eq left the Menu on 2026-10-04; Sound's Equalizer row is the way in.
             Screen::Sound,
             Screen::Soundscape, // live: the sound, or Off
             Screen::Bluetooth,
@@ -10569,9 +10654,8 @@ mod tests {
         assert_eq!(subs.library, "Empty");
         assert_eq!(subs.usb_dac, "Off");
         assert_eq!(subs.sound, "Off", "no effect is engaged on a fresh App");
-        // EQ preset and BT codec name whatever is SELECTED — real values from the real tables,
-        // indexed by the App's own selection (the old caption said "Custom A1" regardless).
-        assert_eq!(subs.eq, data::EQ_PRESETS[app.eq_preset].0);
+        // The BT codec names whatever is SELECTED — a real value from the real table, indexed by
+        // the App's own selection.
         assert_eq!(subs.bluetooth, crate::bluetooth::CODECS[app.bt_codec as usize].0);
         // And specifically: no invented headphones, anywhere.
         assert!(!subs.bluetooth.contains("WH-"));
@@ -10589,7 +10673,6 @@ mod tests {
         // name (it used to be printed as "Clear Phase", a different effect).
         app.snd_clear = true;
         assert_eq!(app.menu_subtitles().sound, "ClearAudio+");
-        assert!(app.menu_subtitles().eq.ends_with("· bypassed"), "the EQ row says it is not heard");
         app.snd_norm = true;
         assert_eq!(app.menu_subtitles().sound, "ClearAudio+ · Normaliser");
         // Source Direct bypasses everything, so it is the whole answer.
@@ -14231,8 +14314,10 @@ mod tests {
         a
     }
 
+    /// The Equalizer is opened from Sound's row since 2026-10-04 (it left the Menu).
     fn enter_eq() -> App {
-        let a = open_from_menu(Screen::Eq);
+        let mut a = open_from_menu(Screen::Sound);
+        a.push(Screen::Eq);
         assert_eq!(a.current(), Screen::Eq);
         a
     }
@@ -16165,6 +16250,54 @@ mod tests {
         assert_eq!((a.dsee_mode(), a.vinyl_type(), a.tone_bands()), (3, 2, [4, -6, 8]));
     }
 
+    /// 2026-10-04 (owner: "have it as an option"): mono, the linear amp and the DAC EQ are one
+    /// value for every output until switched into the profiles, one by one. Switching one in or
+    /// out changes nothing that is heard; once in, each profile keeps its own.
+    #[test]
+    fn mono_amp_and_dac_eq_follow_a_profile_only_when_asked() {
+        use crate::profile::{centre, Hit};
+        let mut a = unlocked();
+        assert_eq!(a.profile_follow(), 0, "off by default");
+        a.set_mono(true);
+        a.set_adv_flags(1 << 5);
+        a.set_dac_eq([2, 0, -2, 0, 4]);
+        // Not followed: B has the same three as A, and going back changes nothing either.
+        a.select_setup(1);
+        assert!(a.mono() && a.adv_flags() & (1 << 5) != 0 && a.dac_eq() == [2, 0, -2, 0, 4]);
+        a.set_dac_eq([0, 0, 0, 0, 6]); // edited under B: still the one curve
+        a.select_setup(0);
+        assert_eq!(a.dac_eq(), [0, 0, 0, 0, 6]);
+        let (live, other) = (a.setup(), a.setup_inactive());
+        assert_eq!((live.mono, live.linear_amp, live.dac_eq), (other.mono, other.linear_amp, other.dac_eq));
+
+        // Switch mono and the DAC EQ in. Nothing heard changes at the moment of the switch…
+        a.stack = vec![Screen::Profiles];
+        let before = a.setup();
+        for bit in [FOLLOW_MONO, FOLLOW_DAC_EQ] {
+            assert!(a.tap(240, centre(Hit::Follow(bit))).is_empty());
+        }
+        assert_eq!(a.profile_follow(), FOLLOW_MONO | FOLLOW_DAC_EQ);
+        assert_eq!(a.setup(), before);
+        assert_eq!((a.setup_inactive().mono, a.setup_inactive().dac_eq), (true, [0, 0, 0, 0, 6]));
+        // …and from here each profile keeps its own: B goes stereo with a flat curve, A does not.
+        a.select_setup(1);
+        a.set_mono(false);
+        a.set_dac_eq([0; 5]);
+        a.set_adv_flags(0); // the amp is NOT followed: this is for both
+        a.select_setup(0);
+        assert!(a.mono(), "A's mono came back");
+        assert_eq!(a.dac_eq(), [0, 0, 0, 0, 6], "A's curve came back");
+        assert_eq!(a.adv_flags() & (1 << 5), 0, "the amp stayed one value for both");
+        a.select_setup(1);
+        assert!(!a.mono());
+        assert_eq!(a.dac_eq(), [0; 5]);
+        // Switching mono back out: the live value becomes the one for both.
+        a.stack = vec![Screen::Profiles];
+        a.tap(240, centre(Hit::Follow(FOLLOW_MONO)));
+        a.select_setup(0);
+        assert!(!a.mono(), "mono is one value again, the one that was live");
+    }
+
     /// The route change is the switch: each output comes back to the profile it was given, the
     /// shell is told to re-apply exactly once, and an output on the SAME profile asks for nothing.
     #[test]
@@ -16592,11 +16725,65 @@ mod tests {
         assert_eq!(a.tap(bx + 20, by + bh / 2), vec![Action::ShuffleArtist(1)]);
     }
 
+    /// The y of the open artist page's "SONGS · n" header, through the page layout.
+    fn artist_songs_header_y(a: &App) -> i32 {
+        let p = a.artist_page().expect("page");
+        let vy = p
+            .rows
+            .iter()
+            .find_map(|(vy, r)| matches!(*r, library::ArtistRowKind::SongsSection).then_some(*vy))
+            .expect("the artist has tracks");
+        library::artist_content_top() + vy + library::ARTIST_SONGS_H / 2 - a.artist_scroll_px
+    }
+
+    fn open_artist_songs(a: &mut App) {
+        let y = artist_songs_header_y(a);
+        assert!(a.tap(400, y).is_empty(), "the header plays nothing");
+        assert!(a.artist_page().expect("page").songs_open);
+    }
+
+    /// 2026-10-04 (owner's call): the full SONGS list is folded away when an artist page opens,
+    /// its header shows and hides it, and a page is never left scrolled past its own end.
+    #[test]
+    fn an_artist_pages_songs_are_folded_until_the_header_is_tapped() {
+        let mut a = library_on(Tab::Artists);
+        a.tap(200, artist_row_y(0));
+        let song_rows = |a: &App| {
+            let p = a.artist_page().expect("page");
+            p.rows.iter().filter(|(_, r)| matches!(r, library::ArtistRowKind::Song(_))).count()
+        };
+        let total = a.artist_page().expect("page").tracks.len();
+        assert!(total > 0);
+        assert_eq!(song_rows(&a), 0, "closed when the page opens");
+        // Shuffle and the stats line still count every track.
+        assert_eq!(a.artist_list_ids().len(), total);
+        open_artist_songs(&mut a);
+        assert_eq!(song_rows(&a), total);
+        // Scroll to the end, fold the list: the offset comes back inside the shorter page.
+        a.artist_scroll_px = a.artist_page().map(|p| library::artist_max_scroll_px(&p)).unwrap();
+        let y = artist_songs_header_y(&a);
+        if (library::artist_content_top()..library::LIST_BOTTOM).contains(&y) {
+            a.tap(400, y);
+        } else {
+            a.artist_scroll_px = 0;
+            a.tap(400, artist_songs_header_y(&a));
+        }
+        assert_eq!(song_rows(&a), 0);
+        let max = a.artist_page().map(|p| library::artist_max_scroll_px(&p)).unwrap();
+        assert!(a.artist_scroll_px <= max);
+        // Leaving and coming back starts folded again.
+        open_artist_songs(&mut a);
+        a.press(Button::Back);
+        a.tap(200, artist_row_y(0));
+        assert_eq!(song_rows(&a), 0);
+    }
+
     #[test]
     fn an_artist_page_track_row_plays_and_swipes_to_the_queue() {
         let mut a = library_on(Tab::Artists);
         a.tap(200, artist_row_y(0));
         assert_eq!(a.current(), Screen::Artist);
+        open_artist_songs(&mut a);
         // The first track row, located through the page layout rather than a literal.
         let (first_track_y, want) = {
             let p = a.artist_page().expect("page");
@@ -16615,6 +16802,7 @@ mod tests {
         // Right-swiping the same row queues it instead (empty queue → no prompt involved).
         let mut a = with_playing(library_on(Tab::Artists), 1);
         a.tap(200, artist_row_y(0));
+        open_artist_songs(&mut a);
         assert!(upq(&a).is_empty());
         a.swipe(1, 200, first_track_y);
         assert_eq!(upq(&a).len(), 1, "a swipe on an artist-page track must queue it");
@@ -17895,7 +18083,7 @@ mod r4_tests {
             album_groups: vec![ArtistGroup { artist: "A".into(), albums: vec![mk("Old", "1999", 10), mk("Undated", "", 20), mk("New", "2021", 30)] }],
             ..Default::default()
         };
-        let p = library::artist_page(&lib, "A");
+        let p = library::artist_page(&lib, "A", true);
         assert_eq!(p.albums.iter().map(|(_, a)| a.name.as_str()).collect::<Vec<_>>(), ["New", "Old", "Undated"]);
         assert_eq!(p.albums[0].0, 2, "the flat index still opens the right album");
         assert!(p.top.is_empty(), "nothing played: no MOST PLAYED section");
@@ -17904,7 +18092,7 @@ mod r4_tests {
         for (id, plays) in [(10, 2u32), (31, 9), (20, 5), (30, 1)] {
             lib.stats.insert(id, TrackStat { plays, ..Default::default() });
         }
-        let p = library::artist_page(&lib, "A");
+        let p = library::artist_page(&lib, "A", true);
         let top: Vec<i64> = p.top.iter().map(|&i| p.tracks[i].song.object_id).collect();
         assert_eq!(top, [31, 20, 10], "three, most played first");
         let (vy, i) = p.rows.iter().find_map(|(vy, r)| match r {

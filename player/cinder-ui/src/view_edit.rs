@@ -7,6 +7,7 @@
 //!   LAST PLAYED  Any · Recent · Not lately · Never
 //!   FORMAT       Any · FLAC · MP3 · M4A · Hi-Res
 //!   SORT         Title · Plays · Played · Rating · Added
+//!   SHUFFLE      Settings · Songs · Albums · Artists   (what this list's Shuffle band deals)
 //!   row       Delete smart playlist                  (only when editing one that exists)
 //!
 //! The mock also has "show as" chips and a "Pin to the Library bar" switch. Both are the Library
@@ -20,7 +21,8 @@ use crate::chrome::HEADER_BOTTOM;
 use crate::kit::{self, Row, Trail};
 use crate::text::FontSet;
 use crate::theme::Theme;
-use crate::views::{FormatRule, Played, SavedView, ViewSort, RATINGS, RATING_LABELS};
+use crate::shuffle::ShuffleBy;
+use crate::views::{FormatRule, Played, SavedView, ViewSort, RATINGS, RATING_LABELS, SHUFFLE_LABELS};
 use crate::Canvas;
 
 /// The chip sections, top to bottom.
@@ -30,9 +32,11 @@ pub enum Section {
     Played,
     Format,
     Sort,
+    Shuffle,
 }
 
-pub const SECTIONS: [Section; 4] = [Section::Rating, Section::Played, Section::Format, Section::Sort];
+pub const SECTIONS: [Section; 5] =
+    [Section::Rating, Section::Played, Section::Format, Section::Sort, Section::Shuffle];
 
 impl Section {
     fn label(self) -> &'static str {
@@ -41,6 +45,7 @@ impl Section {
             Section::Played => "LAST PLAYED",
             Section::Format => "FORMAT",
             Section::Sort => "SORT",
+            Section::Shuffle => "SHUFFLE",
         }
     }
     pub fn labels(self) -> &'static [&'static str] {
@@ -49,6 +54,7 @@ impl Section {
             Section::Played => &Played::LABELS,
             Section::Format => &FormatRule::LABELS,
             Section::Sort => &ViewSort::LABELS,
+            Section::Shuffle => &SHUFFLE_LABELS,
         }
     }
     /// Which chip `v` has selected in this section.
@@ -58,6 +64,11 @@ impl Section {
             Section::Played => Played::ALL.iter().position(|p| *p == v.played).unwrap_or(0),
             Section::Format => FormatRule::ALL.iter().position(|p| *p == v.format).unwrap_or(0),
             Section::Sort => ViewSort::ALL.iter().position(|p| *p == v.sort).unwrap_or(0),
+            // Chip 0 is "Settings" (no mode of its own); the rest are `ShuffleBy::ALL` in order.
+            Section::Shuffle => v
+                .shuffle
+                .and_then(|b| ShuffleBy::ALL.iter().position(|p| *p == b))
+                .map_or(0, |i| i + 1),
         }
     }
     /// Select chip `i` in `v`.
@@ -67,6 +78,7 @@ impl Section {
             Section::Played => v.played = Played::ALL.get(i).copied().unwrap_or_default(),
             Section::Format => v.format = FormatRule::ALL.get(i).copied().unwrap_or_default(),
             Section::Sort => v.sort = ViewSort::ALL.get(i).copied().unwrap_or_default(),
+            Section::Shuffle => v.shuffle = i.checked_sub(1).and_then(|i| ShuffleBy::ALL.get(i).copied()),
         }
     }
 }
@@ -86,7 +98,7 @@ fn chips_top(i: usize) -> i32 {
 }
 
 /// The Delete row, below the last section.
-pub const DELETE_Y: i32 = NAME_Y + kit::ROW_H + 4 * SECTION_H + 6;
+pub const DELETE_Y: i32 = NAME_Y + kit::ROW_H + SECTIONS.len() as i32 * SECTION_H + 6;
 
 pub fn hit_name(y: i32) -> bool {
     (NAME_Y..NAME_Y + kit::ROW_H).contains(&y)
