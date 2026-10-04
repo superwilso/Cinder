@@ -416,7 +416,23 @@ pub fn header_around(
     controls_x0: f32,
     controls_x1: f32,
 ) -> i32 {
-    header_impl(c, t, f, title, right, controls_x0, controls_x1, None)
+    header_impl(c, t, f, title, right, controls_x0, controls_x1, None, false)
+}
+
+/// [`header`] whose right slot is an ACTION — DONE, SAVE, EDIT — drawn in the accent (handoff
+/// §2.1: "a caption … in `acc` when it is an action"). Tapped through [`header_action_hit`].
+pub fn header_action(c: &mut Canvas, t: &Theme, f: &FontSet, title: &str, action: &str) -> i32 {
+    header_impl(c, t, f, title, Some(action), 0.0, 0.0, None, true)
+}
+
+/// Left edge of the header action's target. The words are short (DONE, SAVE, EDIT), so the right
+/// quarter of the header band is the target: well over 44 px each way, and clear of the title,
+/// which is fitted to end before the caption.
+pub const HEADER_ACTION_X: i32 = 360;
+
+/// Is `(x, y)` on the header's right-slot action?
+pub fn header_action_hit(x: i32, y: i32) -> bool {
+    (STATUS_H..HEADER_BOTTOM).contains(&y) && x >= HEADER_ACTION_X
 }
 
 /// [`header_around`] with the right caption drawn as a boxed CHIP — for a caption that is a
@@ -432,7 +448,7 @@ pub fn header_chip(
     controls_x0: f32,
     controls_x1: f32,
 ) -> i32 {
-    header_impl(c, t, f, title, Some(chip), controls_x0, controls_x1, Some(short))
+    header_impl(c, t, f, title, Some(chip), controls_x0, controls_x1, Some(short), false)
 }
 
 fn header_impl(
@@ -444,6 +460,7 @@ fn header_impl(
     controls_x0: f32,
     controls_x1: f32,
     chip_short: Option<&str>,
+    action: bool,
 ) -> i32 {
     let chip = chip_short.is_some();
     let min_x = controls_x0;
@@ -456,6 +473,7 @@ fn header_impl(
     // It keeps room for a caption of up to 140 px and never reaches past a control at `min_x`;
     // the caption is then fitted into whatever the title left, as before.
     let rs = if chip { sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1) } else { rs };
+    let rs = if action { sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.14) } else { rs };
     let pad = if chip { CHIP_PAD } else { 0.0 };
     let cap_room = right.map_or(0.0, |r| text::measure(f, r, &rs).min(140.0) + 16.0 + 2.0 * pad);
     let mut title_right = 458.0 - cap_room;

@@ -20,6 +20,7 @@
 #include "cinder_tuner.h"
 #include "cinder_storage.h"
 #include "cinder_codec.h"
+#include "cinder_sound_settings.h"
 #include "discover.h"
 #include <cstdio>
 #include <cstdlib>
@@ -4954,6 +4955,59 @@ static int fx_probe() {
     _exit(0);
 }
 
+// --soundsettings : READ Sony's six SoundServiceSettingsDmp values. Writes nothing.
+//
+// The R5 parity pass (2026-09-30) found a second sound class beside EffectCtrlDmp that nothing in
+// Cinder had ever called: the DSD -> PCM conversion filter and gain, the DSD processing/output
+// modes, the LPCM playback mode and the headphone model. Every signature behind this is FROM
+// DISASSEMBLY AND UNVERIFIED ON DEVICE (cinder-audio/src/sound_settings_abi.hpp; DEVICE_CHECKLIST
+// 26.7) — this probe is that verification, and it is deliberately read-only: the enum values are
+// unrecovered, so there is nothing safe to write yet.
+//
+// How to read the output: -1 = the client could not be built; -2 = the library threw parsing the
+// service's reply (it calls std::stoi unguarded — an EMPTY reply lands here); 0 = either a real 0
+// or a failed read, Sony's getter does not say which. Check `logcat` for the service's own line
+// before believing a 0 (reference: the pst IPC pump — a silent server means the call never left).
+// Same framework + pump setup as --fx, in case this class needs its replies dispatched too.
+static int soundsettings_probe() {
+    install_diagnostics();
+    pst::core::Framework& fw = pst::core::Framework::GetReference();
+    wd_arm(15);
+    fw.StartForApplication(std::function<void()>(&pump_finish), true);
+    wd_disarm();
+    g_pump_run = true;
+    pthread_t pt;
+    pthread_create(&pt, nullptr, pump_thread, &fw);
+    for (int i = 0; i < 50 && g_pump_ticks == 0; i++) usleep(10000);
+
+    char m[256];
+    // One call per line, each under its own watchdog and logged BEFORE it is made: if one of
+    // these hangs or faults, the log names which.
+    struct { const char* name; int (*get)(void); } rows[] = {
+        { "dsd conv filter type    ", cinder_sound_settings_get_dsd_filter },
+        { "dsd conv gain mode      ", cinder_sound_settings_get_dsd_gain },
+        { "builtin dsd processing  ", cinder_sound_settings_get_dsd_processing },
+        { "uac output dsd mode     ", cinder_sound_settings_get_uac_dsd_output },
+        { "lpcm playback mode      ", cinder_sound_settings_get_lpcm_mode },
+        { "headphone model         ", cinder_sound_settings_get_headphone_model },
+    };
+    for (auto& r : rows) {
+        std::snprintf(m, sizeof m, "soundsettings: reading %s...", r.name);
+        clog_(m);
+        wd_arm(8);
+        const int v = r.get();
+        wd_disarm();
+        std::snprintf(m, sizeof m, "soundsettings: %s = %d%s", r.name, v,
+                      v == -1 ? "  (no client)" : v == -2 ? "  (library threw on the reply)" : "");
+        clog_(m);
+    }
+    std::snprintf(m, sizeof m, "soundsettings: done, pump ticks=%u (0 = the framework never ran)", g_pump_ticks);
+    clog_(m);
+    g_pump_run = false;
+    std::fflush(nullptr);
+    _exit(0);   // not return — see --fx
+}
+
 // --tone : settle the Tone Control and 6-band EQ units, ranges and enumerators.
 //
 // WHY THIS IS MEASURABLE WITHOUT EARS. On this device a read-back does NOT bound an enum — the
@@ -8051,6 +8105,9 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "--tone") == 0) {
         return tone_probe();
+    }
+    if (argc > 1 && std::strcmp(argv[1], "--soundsettings") == 0) {
+        return soundsettings_probe();
     }
     if (argc > 1 && std::strcmp(argv[1], "--seqtime") == 0) {
         if (argc < 3) { clog_("seqtime: need a playable URI/path"); return 1; }

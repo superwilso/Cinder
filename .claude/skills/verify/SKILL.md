@@ -48,6 +48,29 @@ Gotchas that cost time — all of them:
   Width/height are words 4–5 (offset 16), `bytes_per_line` word 12 (48), `ncolors` word 19 (76).
   Pixels start at `header_size + ncolors*12`, laid out BGRX.
 
+## No X server at all (no Xvfb, no xdotool, no sudo)
+
+`device --script FILE` runs the same navigator and the same touch classifier with **no window**:
+gestures come from a file and frames go to disk. One command per line —
+
+```
+tap X Y                  press, hold a frame, release
+drag X0 Y0 X1 Y1         press, move in 16 steps, release (scrolls, or drags a slider it lands on)
+route bt 0|1             what the shell reports on a Bluetooth link edge
+route usb 0|1            …and for USB-DAC mode
+wait N                   N ticks (lets a toast run out before a shot)
+shot NAME                writes NAME.ppm (binary P6, 480x800) in the current directory
+```
+
+```bash
+cd player && cargo build --release -p cinder-sim --bin device
+./target/release/device --unlocked --script flow.txt     # prints `action: …` and `route: …` lines
+```
+
+Coordinates are UI coordinates (no ×2). A `.ppm` is not viewable by most image tools: convert it
+(any PNG encoder; twelve lines of Python with `zlib` and `struct` do it). `route` prints the output,
+the live profile and whether the shell would be told to re-apply the sound chain.
+
 ## Flows worth driving
 
 | Area | Gesture |
@@ -57,6 +80,7 @@ Gotchas that cost time — all of them:
 | Settings scroll | Menu row 9, then vertical drags — the ABOUT rows are only reachable scrolled |
 | UI scale | Settings slider row, track x 176..372 — drag it and the whole UI rescales live |
 | Library tabs | tap strip y≈101; label positions come from `library::tab_layout()`, not fixed thirds |
+| Sound profiles | Menu ▸ Sound (row y≈415). Header A/B at (378, 67) / (434, 67). The list scrolls: `drag 240 700 240 300`. Profile row is the first row (y≈180 unscrolled) → Sound profiles: outputs at y≈197 / 261 / 325, Copy at y≈423. Then `route bt 1` and watch the letter change |
 | Swipe-to-queue | rightward drag on a Songs row starting x > 38 (x ≤ 38 is the Back edge swipe) |
 
 ## Reading the result

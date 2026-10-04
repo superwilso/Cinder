@@ -100,8 +100,10 @@ Grotesk for `Family::Sans` and JetBrains Mono for `Family::Mono`, the two famili
 ### 2.4 New settings keys
 
 `volume_hud = full|minimal`, `home_screen = library|now_playing|menu|last`, `palette_sort =
-name|added`. The build adds one more, `home_last`: the place Last screen reopens, written only when
-it is chosen.
+name|added`. The build adds two more: `home_last`, the place Last screen reopens, written only when
+it is chosen; and `shuffle_by = songs|albums|artists`, what the shuffle button deals (R4). R5 adds
+`profile_jack`, `profile_bt` and `profile_usb` (`a|b`): which sound profile each output uses. The
+ledger's key table has the rest of the profile's keys.
 
 ---
 

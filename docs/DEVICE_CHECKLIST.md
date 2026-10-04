@@ -688,37 +688,114 @@ the bars are in time with what you hear.
 | 24.4 | **Sony's analyzer is off** | While playing with the visualiser on: `adb shell 'cut -d" " -f14,15 /proc/$(pgrep -f "hagodaemon AudioAnalyzerService" \| tail -1)/stat; sleep 20; cut -d" " -f14,15 /proc/$(pgrep -f "hagodaemon AudioAnalyzerService" \| tail -1)/stat'` (or the owner's own before/after) | The analyzer's CPU ticks barely move (was 160 ticks in 20 s, 7.9% of a core) | Ticks still climbing = the shell is still starting it; the tap is not staying fresh |
 | 24.5 | **Fallback** | Play FM radio (or USB-DAC) with the visualiser on | The visualiser still moves (Sony's analyzer, interpolated) | Flat bars = the switch-over left nothing drawing |
 
-## 25 — 2026-10-04 — Soundscapes
+## 25 — 2026-10-04 — R4: ratings, play counts, smart playlists, the playlist editor
+
+**UNVERIFIED — nothing in this section has run on a player.** Host-tested (748 player tests), in
+the golden previews (`album_rated`, `artist_played`, `library_playlists_smart`,
+`playlist_page_smart`, `playlist_edit*`, `view_edit*`), and driven by touch in the simulator. Needs
+a dev build and one reboot. The files are in [`TRACK_DATA.md`](TRACK_DATA.md).
+
+What only the device can say: whether the files survive a reboot and a cable, whether a write to
+`/contents` is ever felt in the audio or the UI, and whether a play is counted at the right moment.
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 25.1 | **Rate a song** | Play a song; tap its title on Now Playing; tap the 4th star on the Rating row | Four stars lit at once; wait 5 s, then `adb shell cat /contents/cinder_stats.tsv` shows the song's path with `4` | No file = `stats not written (…)` in `cinderhome.log` says why. A hitch in the audio at the write is worth noting, with the file's size |
+| 25.2 | **Clear it** | Tap the 4th star again | No stars; after 5 s the song's line is gone (or its rating is `0` if it has plays) | — |
+| 25.3 | **Survives a reboot** | Rate two songs, wait 5 s, reboot | Both ratings are back on Track information; log has `track stats: N rated or played` with N ≥ 2 | N = 0 with the file intact = the file was read before `/contents` was up. The next rating must MERGE, not replace: rate a third song and check all three lines are in the file |
+| 25.4 | **A play is counted** | Play a 3-minute song past its half-way point | Within ~5 s of the half-way point the song's `plays` goes up by one and `last_played` is the player's clock | Counted at the start, or twice = `stats::Listen`; note the song's length |
+| 25.5 | **A skipped song is not** | Play 10 s of a song, skip | Its count does not change | — |
+| 25.6 | **Counted with scrobbling off** | With `/contents/cinder_no_scrobble` present (or the install option off), repeat 25.4 | The count still goes up; `.scrobbler.log` does not grow | — |
+| 25.7 | **Album and artist pages** | Open the album of a rated song; then its artist | Album: stars top right. Artist: albums newest first, stars beside the rated album, MOST PLAYED above SONGS with the song from 25.4 | Albums in A–Z order = the year did not parse; note what the album row says |
+| 25.8 | **USB hand-over** | Rate a song and at once (within 3 s) Settings ▸ USB mode | On the PC, `cinder_stats.tsv` already has the rating | Missing = the flush before `EnterUsbMsc` did not run |
+| 25.9 | **A file edited on the PC** | In USB mode, add a line for another song by hand (`path<TAB>5<TAB>0<TAB>0`); turn USB off | After the library reloads, that song shows five stars | — |
+| 25.10 | **Make a smart playlist** | Library ▸ Playlists ▸ SMART; Name ▸ type a name ▸ DONE; RATING 4+; SAVE | You land on its page: SMART PLAYLIST, the rated songs. `cat /contents/cinder_views.conf` has `[name]` and `rating=4` | No file = the save did not run: any tap should trigger it, so tap something and look again |
+| 25.11 | **It follows the ratings** | Rate another song 5; open the smart playlist | The song is in it | — |
+| 25.12 | **Play and shuffle it** | PLAY, then SHUFFLE on its page; tap a row | It plays as that list, in order / shuffled / from the row; Next stays inside the list | Plays the song's album instead = it went through `PlayIndex` |
+| 25.13 | **Survives a reboot** | Reboot | The smart playlist is at the top of the Playlists tab with its diamond | Gone = `cinder_views.conf` was read before `/contents` was up; the next save must keep what is in the file |
+| 25.14 | **Edit a playlist** | One of your own playlists ▸ EDIT. Drag a row by ≡ past two others; × another; UNDO; × again; DONE | Toast "Playlist saved"; the page shows the new order; the `.m3u8` has it, and a `#CINDER-EDITED:` line; the Playlists tab shows EDITED on it | The drag scrolls the list instead of lifting the row = the shell did not offer the contact to `cinder_reorder_begin` on this screen |
+| 25.15 | **Long list** | In the editor of a playlist longer than the screen, hold a row and drag it to the bottom edge | The list scrolls under the row and it lands where it is dropped | — |
+| 25.16 | **Back does not save** | EDIT, remove two rows, swipe Back | Toast "Changes not saved"; the playlist is unchanged | — |
+| 25.17 | **A member on a missing card** | A playlist with tracks on the SD card: take the card out, reboot, EDIT, move a row, DONE; put the card back, reboot | The card's tracks are still in the playlist | Tracks lost = `Store::reorder` did not keep unresolved entries; keep the `.m3u8` before and after |
+| 25.18 | **Shuffle by album** | Settings ▸ Shuffle to ALBUMS; play a playlist that spans several albums; tap shuffle on Now Playing; open Up Next | Toast "Shuffled by album"; the playing album's remaining songs come first, then whole albums, each in order. Shuffle off restores the playlist's order | — |
+| 25.19 | **Shuffle by artist** | Settings ▸ Shuffle to ARTISTS; Library ▸ Songs ▸ Shuffle all songs; then Up Next ▸ MIX | Whole artists, album by album | Slow or a stall on the whole library = note the time; the deal is one pass, but the sequence hand-over is the known 512-track path |
+| 25.20 | **Kept after a reboot** | Leave Shuffle on ALBUMS; reboot | Still ALBUMS (`shuffle_by=albums` in `cinder_settings.conf`) | — |
+
+## 26 — 2026-09-30 — R5: sound profiles per output, the grouped Sound screen, effects parity
+
+(§25 is left for the R4 work — ratings, play counts, playlists — built beside this in another
+branch.)
+
+**Nothing in this section has run on a player.** It was built host-only, with no device attached.
+Host-tested: the profile data model and every route edge (734 Rust tests in the player workspace), the settings round
+trip including a file from before R5 and a damaged one, the atomic settings write, the grouped
+Sound list's layout, hit test and scroll at every UI scale, two harness scenarios for the shell's
+half (`profile-route`, `profile-same`), goldens `sound_*`, `profiles*`, `bluetooth_*`. The C++
+compiles and links for the device (ARM, glibc 2.23, libc++ 3.9). Needs a dev build and one reboot.
+
+Every Sony call this section depends on is marked in the source as **signature from disassembly,
+unverified on device**: the `fx-verify` read-back getters called from inside `cinder-home`
+(26.3), and the whole of `SoundServiceSettingsDmp` (26.7).
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 26.1 | **The grouped Sound screen** | Menu ▸ Sound. Scroll to the end and back. Tap each switch; tap VPT and DC Phase through their values; drag Balance; tap MONO and CENTRE; tap Equalizer; tap Advanced | Profile row, then ENHANCE (Equalizer, DSEE HX, ClearAudio+), SPACE (VPT, DC Phase, Vinyl), LEVEL (Normalizer, Balance), then Advanced. The signal path stays put while the list scrolls under it. Every tap lands on the row under the finger; a vertical drag that starts on the Balance track moves the knob, one that starts anywhere else scrolls | A tap that lands one row off after scrolling = render and hit test disagree: note the row and roughly how far it was scrolled |
+| 26.2 | **A and B are whole profiles** | On A: DSEE HX on, VPT Club, an EQ curve, Advanced ▸ Tone Control on with Bass +4. Tap **B**. Then tap **A** | B: everything at its own values (fresh: all off, Tone Control off). A: every one of those back, Advanced included. Toast `Profile B · Headphone jack`. Audible change both ways | Advanced values that do not follow = `SoundSetup` missing a field. Mono and the linear amp must NOT change with A/B — that is intended |
+| 26.3 | **The read-back works from inside cinder-home** (unverified signatures) | After 26.2: `adb shell 'grep fx-verify /contents/cinderhome.log \| tail -5'` | `fx-verify(…): ok, N values read back as sent` with N ≈ 30 | `…differ:` listing nearly every value that is switched ON reading 0 = the getters get no reply in-app (the probe needs its own Framework pump for them). The profile still applied; the read-back is then removed or given a pump. A FEW values differing = a real mismatch: send the line |
+| 26.4 | **Bluetooth uses its own profile** | Sound ▸ Profile row ▸ tap **Bluetooth** so it reads B. Set B up differently from A (it is not live, so: go back, tap B in the header, tune it, tap A). Connect headphones. Disconnect them | On connect: toast `Profile B for Bluetooth`, the Sound header shows B, the headphones play B's tuning. On disconnect: toast `Profile A for Headphone jack`, the jack plays A's. Log: `profile: bt connect -> profile B for Bluetooth`, then `profile: bt disconnect -> profile A for the 3.5 mm jack`, each followed by an `fx-verify` line | No `profile:` line on disconnect = `apply_profile_if_switched` is not reached on that edge. Toast but no audible change = see 26.5 |
+| 26.5 | **Which effects actually run on Bluetooth** (goal 7; [`RESEARCH_bt_dsp_2026-09-30.md`](RESEARCH_bt_dsp_2026-09-30.md) §6) | Headphones connected, music playing. `adb logcat -c`; switch ONE effect on; wait 2 s; `adb logcat -d \| grep isproc`. Repeat for the 10-band EQ, Tone Control, VPT, DC Phase, Dynamic Normalizer, Clear Phase, Vinyl, DSEE HX. Then the same on the jack | Per effect, `<Class>::UpdateProcCond … isproc is 1` on switch-on. Expected from the static read: 1 for the EQ and Tone Control on both routes; the others unknown | An effect at `isproc is 0` on Bluetooth and 1 on the jack is not applied over A2DP: its row must say so on that route. Record the table of results in the research note |
+| 26.6 | **USB-DAC's profile, and whether effects reach PC audio** | Profiles ▸ USB-DAC to B. Enter USB-DAC mode with a PC streaming, jack output. Then the `isproc` read of 26.5 | Toast and log line as 26.4 (`usb-dac switch`). `isproc` lines appear when an effect is toggled, and B's EQ is audible on the PC's audio | No `isproc` lines at all = Sony's chain is not in the USB-DAC path. Not a defect: the row's subtitle ("effects on PC audio unverified") becomes "Balance only", and this row is closed as measured |
+| 26.7 | **`SoundServiceSettingsDmp` reads** (unverified signatures; read-only) | `adb push cinder-probe /tmp/pv`; with the launcher's `LD_LIBRARY_PATH`: `/tmp/pv --soundsettings` | Six lines `soundsettings: <name> = <n>` with n ≥ 0, then `done, pump ticks=N` with N > 0. `logcat` shows the sound service's own `GetParams` lines | `-2` = the library threw on an empty reply (its `std::stoi` is unguarded) — the shim caught it; that key has no value on this model. `-1` = the client could not be built. A hang names the row it stopped on (each is logged before it is read). Do not write these settings until the values are understood |
+| 26.8 | **Kept after a reboot, and across an upgrade** | With jack = A, Bluetooth = B and both tuned: reboot with headphones off | Sound shows A with A's tuning (the boot is on the jack even if the file was last written on Bluetooth). `cinder_settings.conf` has `profile_jack=a`, `profile_bt=b`, `profile_usb=…` and `bank_adv=` / `bank_tone=` lines. No `cinder_settings.conf.tmp` left on the drive. On the FIRST boot after upgrading from 0.3.14: B has the same Advanced values A had (they were shared before), nothing sounds different | A stale `.tmp` file = the rename failed on this card's filesystem: send `ls -la /contents/cinder_settings*` |
+| 26.9 | **Bluetooth ▸ Sound profile** | Bluetooth screen, THIS DEVICE | Three rows — Sound quality, Sound profile (value A or B), Debug log — all above the RECEIVER MODE link, none overlapping it; five paired devices still fit above. The row opens Sound profiles | Overlap with the footer at a large text size: screenshot it |
+
+## 27 — 2026-10-04 — Boot to stock hands Sony's EQ back
+
+Reported on r/walkman 2026-10-04: after Boot to stock, the stock equalizer changes nothing. Cause
+(read from the code, not yet measured): Cinder sets `SetSelectUsingEq(2)` (10-band) and the sound
+service keeps it; stock uses the six-band (1) and never calls the selector. Fix: `boot_to_stock()`
+sends selector 1 and Source Direct off before the restart (`stock_handback_fn`, harness scenario
+`stock-handback`).
+
+| # | Item | Do | PASS | If it fails |
+|---|---|---|---|---|
+| 27.1 | **Reproduce on the old build first** | On v0.3.14: Settings ▸ Boot to stock. In Sony's player, play a track on the jack and push the equalizer's bass to the top and back | No audible change (the report) | If the EQ works, the cause is something else: stop and read `adb logcat \| grep isproc` in stock before trusting the fix |
+| 27.2 | **The hand-back** | On this build: Settings ▸ Boot to stock. Same EQ test in Sony's player | The equalizer is audible. `cinderhome.log` from the Cinder boot before it holds `boot-to-stock: handed the EQ selector back` | Log line present but EQ still dead: the selector is not what stock reads; `cinder-probe --fx` after returning shows `SelectUsingEq` |
+| 27.3 | **Cinder takes its EQ again** | Restart from stock into Cinder; Menu ▸ Equalizer, push a band | Audible; `fx-verify` (26.3) or `cinder-probe --fx` shows `SelectUsingEq=2` | Cinder's EQ dead after a stock visit: the boot apply did not re-send the selector |
+| 27.4 | **Use Sony's receiver takes the same path** | Receiver ▸ Use Sony's receiver ▸ Restart (with 21.10) | The log line of 27.2 before the restart | — |
+| 27.5 | **The gaps** (expected to FAIL today, record what happens) | Reach stock by the cable escape, and by uninstalling; try Sony's EQ | Probably dead in both: no Cinder code runs on those routes | Decide where the reset lives: the launcher cannot call Sony's services, the uninstall package runs a script |
+
+## 28 — 2026-10-04 — Soundscapes
 
 Host-tested ([`SPEC_soundscapes.md`](SPEC_soundscapes.md) "Tests"): the generator, the shim through
 `LD_PRELOAD`, the mix hook on the Bluetooth stream, the page, and the shell's line and route in the
-harness. **Needs a release or dev build with the new `libcinder_mono.so`** for 25.5–25.7, and
+harness. **Needs a release or dev build with the new `libcinder_mono.so`** for 28.5–28.7, and
 Wampy's preload for those three at all. Start with the volume low: a soundscape at 100% on its own
 is as loud as music.
 
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|
-| 25.1 | **On its own, through the jack** | Wired headphones, nothing playing. Menu ▸ Soundscapes ▸ Rain | Rain within a second; the strip says ON ITS OWN · HEADPHONES. Log: `soundscape: playing on its own through hw:0,4 at 44100 Hz` | Strip WAITING FOR THE OUTPUT + `cannot open the jack (… busy)` = Sony's sound service still holds the PCM after a pause: wait 30 s and note whether it ever lets go. Opened but silent = the codec is muted while the player is stopped — note `amixer -c0 cget name='playback mute'` |
-| 25.2 | **On its own, over Bluetooth** | Headphones linked over Bluetooth, nothing playing | Rain in the headphones; strip ON ITS OWN · BLUETOOTH. Log: `ldac: handshake accepted`, then `soundscape: playing on its own over Bluetooth` | `handshake REJECTED` = the link negotiated 48 kHz: report it (the player sends 44.1 kHz). No socket = the source did not open; send the `ldac:` lines |
-| 25.3 | **Music takes the output back** | During 25.1, play a song; pause it; play again. Repeat over Bluetooth (25.2) | The song starts at once every time, with no error and no AUDIO STOPPED banner. Log: `soundscape: the output is free for the music` before each start; after the pause the soundscape comes back within a few seconds | A song that fails to start = the yield did not finish in 300 ms (`yield TIMED OUT`): that is a defect to report before anything else on this list |
-| 25.4 | **What it costs** | Soundscape on its own, screen off, 10 min: `adb shell 'cat /proc/$(pgrep cinder-home)/stat \| cut -d" " -f14,15'` before and after, for Rain and for Fire | Under 5% of one core | Higher: note which sound; the self-test's host cost table says which part is heavy |
-| 25.5 | **Over library music, jack** (Wampy installed) | Play a song, then Menu ▸ Soundscapes ▸ Beach, With music at 30% | The beach under the song; strip OVER THE MUSIC. `/tmp/cinder_mono.log`: `jack: soundscape mixed in (fmt 2, 2 ch, 44100 Hz)`. Volume buttons move both together | `rate never seen` in the log = the HAL commits its rate some other way: send the log. Clicks = report the sound and the track's format |
-| 25.6 | **Over library music, Bluetooth** (Wampy installed) | As 25.5 over LDAC | The beach under the song in the headphones. `bt: soundscape mixed in (fmt 2, 2 ch, 44100 Hz)`; the stream stays up | A dropout or a reboot: stop, send `/tmp/cinder_mono.log` and `last_kmsg`; `touch /data/cinder/mono_shim_off` takes the hooks out |
-| 25.7 | **Two levels** | During 25.5, pause: the soundscape should rise to the On its own level (through the shim if Sony keeps writing, else the shell's own player) | Quieter under music, fuller alone, with no jump at either edge | No change on pause = the line was not rewritten: `cat /tmp/cinder_ambient` before and after |
-| 25.8 | **Over USB-DAC → LDAC** | USB-DAC to Bluetooth from a PC playing music, soundscape on | The soundscape under the PC's audio; strip OVER USB-DAC / RADIO | Nothing: the pump read `g_amb_want_sound` as 0 — send `soundscape:` lines |
-| 25.9 | **Without Wampy (Walkman One)** | As 25.5 on a W1 player | Strip SILENT WHILE MUSIC PLAYS while the song plays; the soundscape comes back on pause | It plays over the music anyway = something else preloads the shim: interesting, report it |
-| 25.10 | **Sleep timer** | Soundscape on its own, sleep timer 15 min (or Song) | When it fires the soundscape fades out and the switch reads off | — |
+| 28.1 | **On its own, through the jack** | Wired headphones, nothing playing. Menu ▸ Soundscapes ▸ Rain | Rain within a second; the strip says ON ITS OWN · HEADPHONES. Log: `soundscape: playing on its own through hw:0,4 at 44100 Hz` | Strip WAITING FOR THE OUTPUT + `cannot open the jack (… busy)` = Sony's sound service still holds the PCM after a pause: wait 30 s and note whether it ever lets go. Opened but silent = the codec is muted while the player is stopped — note `amixer -c0 cget name='playback mute'` |
+| 28.2 | **On its own, over Bluetooth** | Headphones linked over Bluetooth, nothing playing | Rain in the headphones; strip ON ITS OWN · BLUETOOTH. Log: `ldac: handshake accepted`, then `soundscape: playing on its own over Bluetooth` | `handshake REJECTED` = the link negotiated 48 kHz: report it (the player sends 44.1 kHz). No socket = the source did not open; send the `ldac:` lines |
+| 28.3 | **Music takes the output back** | During 28.1, play a song; pause it; play again. Repeat over Bluetooth (28.2) | The song starts at once every time, with no error and no AUDIO STOPPED banner. Log: `soundscape: the output is free for the music` before each start; after the pause the soundscape comes back within a few seconds | A song that fails to start = the yield did not finish in 300 ms (`yield TIMED OUT`): that is a defect to report before anything else on this list |
+| 28.4 | **What it costs** | Soundscape on its own, screen off, 10 min: `adb shell 'cat /proc/$(pgrep cinder-home)/stat \| cut -d" " -f14,15'` before and after, for Rain and for Fire | Under 5% of one core | Higher: note which sound; the self-test's host cost table says which part is heavy |
+| 28.5 | **Over library music, jack** (Wampy installed) | Play a song, then Menu ▸ Soundscapes ▸ Beach, With music at 30% | The beach under the song; strip OVER THE MUSIC. `/tmp/cinder_mono.log`: `jack: soundscape mixed in (fmt 2, 2 ch, 44100 Hz)`. Volume buttons move both together | `rate never seen` in the log = the HAL commits its rate some other way: send the log. Clicks = report the sound and the track's format |
+| 28.6 | **Over library music, Bluetooth** (Wampy installed) | As 28.5 over LDAC | The beach under the song in the headphones. `bt: soundscape mixed in (fmt 2, 2 ch, 44100 Hz)`; the stream stays up | A dropout or a reboot: stop, send `/tmp/cinder_mono.log` and `last_kmsg`; `touch /data/cinder/mono_shim_off` takes the hooks out |
+| 28.7 | **Two levels** | During 28.5, pause: the soundscape should rise to the On its own level (through the shim if Sony keeps writing, else the shell's own player) | Quieter under music, fuller alone, with no jump at either edge | No change on pause = the line was not rewritten: `cat /tmp/cinder_ambient` before and after |
+| 28.8 | **Over USB-DAC → LDAC** | USB-DAC to Bluetooth from a PC playing music, soundscape on | The soundscape under the PC's audio; strip OVER USB-DAC / RADIO | Nothing: the pump read `g_amb_want_sound` as 0 — send `soundscape:` lines |
+| 28.9 | **Without Wampy (Walkman One)** | As 28.5 on a W1 player | Strip SILENT WHILE MUSIC PLAYS while the song plays; the soundscape comes back on pause | It plays over the music anyway = something else preloads the shim: interesting, report it |
+| 28.10 | **Sleep timer** | Soundscape on its own, sleep timer 15 min (or Song) | When it fires the soundscape fades out and the switch reads off | — |
 
-## 26 — 2026-10-04 — Visualisers from the decoded audio
+## 29 — 2026-10-04 — Visualisers from the decoded audio
 
 Host-tested (`viz::signal_tests`, `vizsig` tests, golden previews `viz_signal_*`). The tap itself
 is §24; this is what is now drawn from it. Needs a dev build and one reboot.
 
 | # | Item | Do | PASS | If it fails |
 |---|---|---|---|---|
-| 26.1 | **Scope** | Now Playing ▸ spectrum page, style Scope, a track with a steady bass note | A waveform that stands still on a held note and changes shape with the music | A crawling trace on a steady tone = the trigger never fires (very quiet input): note the track |
-| 26.2 | **Stereo field** | Style Stereo field: a mono recording, then a wide stereo one | Mono: a vertical line and the correlation bar at the right end. Wide: a cloud, the bar nearer the middle | Lying on its side = the channels are swapped or inverted somewhere: report it |
-| 26.3 | **Meters** | Style Meters, a loud master | Bars near the right; peaks briefly at the end; held ticks wait 1.5 s then fall | Pinned at full scale on quiet music = the samples are mis-scaled (24-bit read as 16) |
-| 26.4 | **Spectrogram** | Style Spectrogram for 10 s | Five seconds of history scrolling left; a kick drum is a bright stripe at the bottom | — |
-| 26.5 | **Bands only** | FM (or USB-DAC) with Scope chosen | "Needs library playback" on the spectrum page; Spectrogram and the bar styles still draw | A blank page = the fallback text failed |
-| 26.6 | **Cost** | Spectrum page, each new style, 20 s: cinder-home's `/proc/<pid>/stat` ticks | Close to Bars' | Much higher for Stereo or Spectrogram: note which |
+| 29.1 | **Scope** | Now Playing ▸ spectrum page, style Scope, a track with a steady bass note | A waveform that stands still on a held note and changes shape with the music | A crawling trace on a steady tone = the trigger never fires (very quiet input): note the track |
+| 29.2 | **Stereo field** | Style Stereo field: a mono recording, then a wide stereo one | Mono: a vertical line and the correlation bar at the right end. Wide: a cloud, the bar nearer the middle | Lying on its side = the channels are swapped or inverted somewhere: report it |
+| 29.3 | **Meters** | Style Meters, a loud master | Bars near the right; peaks briefly at the end; held ticks wait 1.5 s then fall | Pinned at full scale on quiet music = the samples are mis-scaled (24-bit read as 16) |
+| 29.4 | **Spectrogram** | Style Spectrogram for 10 s | Five seconds of history scrolling left; a kick drum is a bright stripe at the bottom | — |
+| 29.5 | **Bands only** | FM (or USB-DAC) with Scope chosen | "Needs library playback" on the spectrum page; Spectrogram and the bar styles still draw | A blank page = the fallback text failed |
+| 29.6 | **Cost** | Spectrum page, each new style, 20 s: cinder-home's `/proc/<pid>/stat` ticks | Close to Bars' | Much higher for Stereo or Spectrogram: note which |

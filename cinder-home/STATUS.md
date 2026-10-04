@@ -12,10 +12,30 @@
 >   (needs Wampy's preload — **not on Walkman One**, where the page says it is silent while music
 >   plays); on its own through the shell's player on the jack or Bluetooth; over USB-DAC → LDAC and
 >   FM → Bluetooth in the bridge. *Host-tested only* —
->   [`../docs/SPEC_soundscapes.md`](../docs/SPEC_soundscapes.md), checklist §25.
+>   [`../docs/SPEC_soundscapes.md`](../docs/SPEC_soundscapes.md), checklist §28.
 > - **Visualisers** — Scope, Stereo field, Spectrogram, Meters and Radial, from the PCM tap's
 >   samples rather than Sony's twelve bands. Library playback only for the three that need samples;
->   they say so elsewhere. *Host-tested only* — checklist §26.
+>   they say so elsewhere. *Host-tested only* — checklist §29.
+
+> ## 2026-09-30 — R5: sound profiles per output — BUILT HOST-ONLY, NOTHING HERE HAS RUN ON A PLAYER
+>
+> **Ledger: [`../docs/PLAN_redesign_2026-09.md`](../docs/PLAN_redesign_2026-09.md) rows 2a, 2a/2b, 2g.
+> Device steps: [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md) §26.** State: *partial —
+> code complete, host-tested, cross-compiled, device-unverified.*
+>
+> - **A and B are whole sound profiles** (EQ, every effect on Sound and Advanced, Tone Control,
+>   balance), and **each output — jack, Bluetooth, USB-DAC — remembers which one it uses**. A route
+>   change switches profile and the shell re-applies the chain (`apply_profile_if_switched`), on
+>   the Bluetooth disconnect edge too, which re-applied nothing before.
+> - **The Sound screen is grouped** (Profile · ENHANCE · SPACE · LEVEL · Advanced) and scrolls under
+>   the signal path. New screen: Sound profiles. New row: Bluetooth ▸ Sound profile.
+> - **`fx-verify`**: after a profile is applied the chain is read back through `EffectCtrlDmp`'s
+>   getters and one line is logged. cinder-home now reaches 41 of that class's methods (22 before).
+>   *Unverified from inside the app — checklist 26.3.*
+> - **`SoundServiceSettingsDmp`** (DSD conversion, LPCM mode, headphone model) is wrapped for
+>   `cinder-probe --soundsettings` only. *Signatures from disassembly, unverified — 26.7.*
+> - **Whether Sony's effects run on the Bluetooth path is still not measured.** What the libraries
+>   say, and the test: [`../docs/RESEARCH_bt_dsp_2026-09-30.md`](../docs/RESEARCH_bt_dsp_2026-09-30.md).
 
 > ## 2026-09-23 — Up Next is one list; playback, sound and help follow one set of rules
 >
@@ -791,6 +811,12 @@ backend/hardware leg isn't wired yet. **▢ Stationary** = renders but is a plac
 - **Library browse**: Songs / Albums / Artists tabs, **real DB data**, windowed **scrolling**
   (thousands of rows), Songs sort chip (Title/Artist/Length), grouped album headers, **album drill-in**
   (album → track list), hashed-gradient art until real thumbnails decode.
+- **Ratings, play counts, smart playlists, the playlist editor, shuffle by album / artist**
+  (2026-10-04, redesign R4): **HOST-TESTED ONLY — not yet run on a device**
+  (`docs/DEVICE_CHECKLIST.md` §25). Ratings and plays live in `/contents/cinder_stats.tsv`, saved
+  views in `/contents/cinder_views.conf` (`docs/TRACK_DATA.md`); nothing is written to Sony's
+  database. Saved views appear as smart playlists; their *show as* and *pin* wait for the Library
+  view bar (R3).
 - **Playlists** (2026-07-26): the Playlists tab lists the device's real playlists with their track
   counts, and tapping one **plays it from the top in saved order**. Sony has no playlist table —
   playlists are containers in a second object tree, with membership rows pointing at tracks by

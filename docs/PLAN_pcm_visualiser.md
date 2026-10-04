@@ -11,7 +11,7 @@ Bands half of step 5 are built and host-tested the same day; the device run is
 > two cores) with the visualiser on screen. **Open:** `TAP_LEAD_MS` is 0 until §24.2 measures
 > it. **2026-10-04:** the tap now returns both channels, and five styles draw from the samples —
 > Scope, Stereo field, Spectrogram, Meters and Radial (`cinder-ui/src/viz.rs`, `cinder-ffi/src/vizsig.rs`;
-> checklist §26).
+> checklist §29).
 
 ## Why
 

@@ -38,6 +38,65 @@ pub struct SongRow {
     /// axis rather than a decoration: Sony has "Hi-Res only" and on the reference library it is
     /// the difference between 3,463 tracks and 1.
     pub is_hires: bool,
+    /// The ALBUM artist, only when it differs from `artist` — empty otherwise, so the common row
+    /// (a track by the artist its album is filed under) costs no allocation for it. Read through
+    /// [`SongRow::group_artist`], never directly: that is the key the Artists tab groups on, and
+    /// what shuffle-by-artist deals by, so a compilation is one group rather than one per guest.
+    pub album_artist: String,
+    /// The container, from the file's extension. A filter axis for saved views (5c), one byte.
+    pub format: Format,
+}
+
+impl SongRow {
+    /// The artist this track is FILED under: the album artist when the file has one, else the
+    /// track artist. The same fallback `cinder-ffi` builds the Artists tab and the album groups
+    /// with, so grouping by this can never disagree with what those screens show.
+    pub fn group_artist(&self) -> &str {
+        if self.album_artist.is_empty() { &self.artist } else { &self.album_artist }
+    }
+}
+
+/// An audio container, from the file name's extension. What a saved view's FORMAT rule matches
+/// on. The extension, not the codec: `.m4a` holds AAC or ALAC and nothing on this side can tell
+/// which without opening the file, so the rule says "M4A" rather than claiming "AAC".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Format {
+    #[default]
+    Other,
+    Flac,
+    Mp3,
+    M4a,
+    Wav,
+    Dsd,
+}
+
+impl Format {
+    /// Read the extension of `path`, case-blind. Anything unrecognised is `Other`.
+    pub fn of_path(path: &str) -> Format {
+        let ext = path.rsplit('.').next().unwrap_or("");
+        match ext.to_ascii_lowercase().as_str() {
+            "flac" => Format::Flac,
+            "mp3" => Format::Mp3,
+            "m4a" | "mp4" | "aac" => Format::M4a,
+            "wav" => Format::Wav,
+            "dsf" | "dff" => Format::Dsd,
+            _ => Format::Other,
+        }
+    }
+}
+
+/// What Cinder knows about one track beyond its tags: the owner's rating and how often, and when
+/// last, it was listened to. Kept by `cinder-ffi` in `/contents/cinder_stats.tsv`, keyed by PATH
+/// (object ids are re-issued by every rescan), and handed to the UI keyed by object id in
+/// [`Library::stats`]. See `docs/TRACK_DATA.md`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrackStat {
+    /// Stars, 0..=5. 0 is "not rated", which is not the same as one star.
+    pub rating: u8,
+    /// Listens, by the scrobbler's rule: half the track or four minutes, whichever comes first.
+    pub plays: u32,
+    /// Unix seconds of the last counted listen; 0 = never. `i64`, so it does not wrap in 2038.
+    pub last_played: i64,
 }
 
 /// One album row (Albums tab, grouped under its artist).
@@ -173,6 +232,18 @@ pub struct PlaylistRow {
     /// Only a cover that is a PICTURE FILE — an `#EXTIMG:` or a sidecar JPEG the owner synced — has
     /// no album behind it, and that is the one case [`Library::playlist_thumbs`] exists for.
     pub cover_album_id: i64,
+    /// A SMART playlist: a saved view (`views::SavedView`), its members computed from the rules
+    /// rather than stored. Not editable as a list — its page's EDIT opens the rules instead — and
+    /// never offered by "Add to playlist". Its id is `views::smart_id`, far above any id Sony's
+    /// database hands out.
+    pub smart: bool,
+    /// A smart playlist's rules in words ("4+ stars · Recent"), for its row and its page. Empty on
+    /// every other kind.
+    pub rules: String,
+    /// Changed ON THE PLAYER since a PC tool last wrote the file: the `.m3u8` carries a
+    /// `#CINDER-EDITED:` line (see `docs/PLAYLISTS.md`). Drawn as an EDITED tag on the row, so the
+    /// owner can see which lists Flint has yet to take back.
+    pub edited: bool,
 }
 
 /// Alphabetical ranks, computed once per library so the lists that re-sort EVERY FRAME compare
@@ -360,9 +431,33 @@ pub struct Library {
     /// with no parent (one per storage volume that holds music).
     pub folders: Vec<FolderRow>,
     pub folder_roots: Vec<usize>,
+    /// Ratings and play counts, keyed by object id. Only tracks that HAVE something are in it: an
+    /// unrated, unplayed track is simply absent, and [`Library::stat`] answers the default.
+    /// Filled by the shell from its store; empty on the host and in the sim until something is
+    /// rated there.
+    pub stats: std::collections::HashMap<i64, TrackStat>,
 }
 
 impl Library {
+    /// The rating and plays of one track; the default (unrated, never played) when it has none.
+    pub fn stat(&self, object_id: i64) -> TrackStat {
+        self.stats.get(&object_id).copied().unwrap_or_default()
+    }
+
+    /// An album's rating: the mean of its RATED tracks, rounded to whole stars (half up), or None
+    /// when none of them is rated. Derived rather than stored, so it can never disagree with the
+    /// ratings it summarises — and an album with one five-star track and nine unrated ones reads
+    /// five, which is what the owner said about the one track they rated.
+    pub fn album_rating(&self, album: &AlbumRow) -> Option<u8> {
+        let (sum, n) = album
+            .track_list
+            .iter()
+            .map(|s| self.stat(s.object_id).rating)
+            .filter(|r| *r > 0)
+            .fold((0u32, 0u32), |(s, n), r| (s + r as u32, n + 1));
+        (n > 0).then(|| ((sum * 2 + n) / (n * 2)).clamp(1, 5) as u8)
+    }
+
     /// Does this row survive the active filter? The single predicate every filtered list asks.
     pub fn passes(&self, s: &SongRow) -> bool {
         if self.filter_hires && !s.is_hires {
@@ -471,6 +566,9 @@ impl Library {
                 // Bit 0 is Sony's always-set one; the rest put each song in one of the four sample
                 // channels below, and every third song in a second one.
                 sensme: 1 | (1 << (i % 4 + 1)) | if i % 3 == 0 { 1 << 4 } else { 0 },
+                album_artist: String::new(),
+                // Mostly FLAC with some MP3, so a saved view's FORMAT rule has something to split.
+                format: if i % 4 == 3 { Format::Mp3 } else { Format::Flac },
             })
             .collect();
         let album_groups = data::ALBUM_GROUPS
@@ -535,6 +633,9 @@ impl Library {
                 user: false,
                 cover_custom: false,
                 cover_album_id: 0,
+                smart: false,
+                rules: String::new(),
+                edited: false,
                 track_list: (0..p.k as usize)
                     .filter_map(|i| songs.get((i + pi) % songs.len().max(1)).cloned())
                     .collect(),
@@ -586,6 +687,7 @@ impl Library {
             sensme_tracks: 0,
             views: Default::default(),
             covers: Default::default(),
+            stats: Default::default(),
         };
         lib.prepare_order();
         lib.build_channels(&SAMPLE_CHANNELS);

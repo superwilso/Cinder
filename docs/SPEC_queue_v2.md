@@ -268,7 +268,7 @@ boundary and across a playing pick.
 | **P2** | "Play after this album" + `THEN ‹B›` sections | **the owner's named scenario** |
 | **P3** | `up_next.rs` N-section layout — `Slot`/`Section`/`metrics`/`layout`/`movable_*` all assume exactly one album section. ~600 of its 1046 lines, plus ~150 in nav.rs. Cache the run table on `App`; do not walk `up` per call. | its own phase — it cannot ride along in P2 |
 | **P4** | Swipe-to-remove on context rows (Apple parity; drag already works) | small |
-| **P5** | `album_artist` on `SongRow`, then shuffle modes Albums/Artists | medium |
+| **P5** | ~~`album_artist` on `SongRow`, then shuffle modes Albums/Artists~~ **Done 2026-10-04, host-tested** (`shuffle.rs`): a setting, Settings ▸ Shuffle, rather than a fourth state on the button | medium |
 | **P6** | Repeat-album, Stop after current, Save queue as playlist | small, independent |
 | **P7** | Autoplay refill | medium |
 

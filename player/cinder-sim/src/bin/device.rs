@@ -34,6 +34,8 @@ struct Touch {
     drag: bool,
     last_y: i32,
     scrub: bool,
+    /// The contact lifted a row (Up Next, the playlist editor): streamed to `reorder_*`.
+    reorder: bool,
 }
 
 impl Touch {
@@ -55,9 +57,20 @@ impl Touch {
             app.scrub_move(x, y);
             return;
         }
+        if self.reorder {
+            app.reorder_track(y - self.start.1);
+            return;
+        }
         if !self.drag {
             let (dx, dy) = (x - self.start.0, y - self.start.1);
             if dy.abs() > 12 && dy.abs() > dx.abs() {
+                // As the shell does when it classifies a contact as vertical: a row's handle gets
+                // first refusal, by the START point, before the list scrolls.
+                if app.reorder_begin(self.start.0, self.start.1) {
+                    self.reorder = true;
+                    app.reorder_track(dy);
+                    return;
+                }
                 self.drag = true;
                 self.last_y = y;
             }
@@ -76,6 +89,8 @@ impl Touch {
             vec![]
         } else if self.scrub {
             app.scrub_end()
+        } else if self.reorder {
+            app.reorder_release()
         } else if self.drag {
             vec![] // (the shell hands the release velocity to cinder_touch_fling here)
         } else {
@@ -94,6 +109,87 @@ impl Touch {
         };
         *self = Touch::default();
         acts
+    }
+}
+
+/// `--script FILE`: drive the navigator with NO window, from a list of gestures, and write frames.
+///
+/// The headless recipe in `.claude/skills/verify` needs Xvfb and xdotool; on a machine without
+/// them (and without the right to install them) there was no way to send a touch at all. This is
+/// the same navigator and the SAME classifier (`Touch` above) fed from a file instead of the
+/// pointer, so a gesture still takes the path it takes on the panel. One command per line:
+///
+///   tap X Y                 press, hold a frame, release
+///   drag X0 Y0 X1 Y1        press at the first point, move in 16 steps, release
+///   route bt 0|1            what the shell reports on a Bluetooth link edge
+///   route usb 0|1           …and for USB-DAC mode
+///   wait N                  N frames of `tick` (lets a toast run out)
+///   shot NAME               write the frame as NAME.ppm (binary P6) in the current directory
+///   # …                     comment
+///
+/// Actions are printed as `action: <Action>` exactly as the windowed sim prints them, and a route
+/// line also prints whether the shell would be told to re-apply the sound profile.
+fn run_script(path: &str, app: &mut App, fonts: &FontSet, np: &NowPlaying) {
+    let body = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("--script {path}: {e}"));
+    let mut c = Canvas::new();
+    let mut touch = Touch::default();
+    let num = |s: Option<&str>| s.and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut w = line.split_whitespace();
+        match w.next().unwrap_or("") {
+            "tap" => {
+                let (x, y) = (num(w.next()), num(w.next()));
+                touch.press(app, x, y);
+                app.tick();
+                for a in touch.release(app) {
+                    println!("action: {a:?}");
+                }
+            }
+            "drag" => {
+                let (x0, y0, x1, y1) = (num(w.next()), num(w.next()), num(w.next()), num(w.next()));
+                touch.press(app, x0, y0);
+                for i in 1..=16 {
+                    touch.motion(app, x0 + (x1 - x0) * i / 16, y0 + (y1 - y0) * i / 16);
+                    app.tick();
+                }
+                for a in touch.release(app) {
+                    println!("action: {a:?}");
+                }
+            }
+            "route" => {
+                let (what, on) = (w.next().unwrap_or(""), num(w.next()) != 0);
+                match what {
+                    "bt" => app.set_bt_route(on),
+                    "usb" => app.set_usb_dac(on),
+                    other => panic!("route: unknown output {other:?}"),
+                }
+                println!(
+                    "route: {what}={} -> output {:?}, profile {}, re-apply {}",
+                    on as u8,
+                    app.live_output(),
+                    cinder_ui::profile::letter(app.setup_idx()),
+                    app.take_profile_apply()
+                );
+            }
+            "wait" => {
+                for _ in 0..num(w.next()) {
+                    app.tick();
+                }
+            }
+            "shot" => {
+                let name = w.next().unwrap_or("frame");
+                app.render(&mut c, fonts, np);
+                let mut out = format!("P6\n{W} {H}\n255\n").into_bytes();
+                out.extend_from_slice(&c.to_rgb_bytes());
+                std::fs::write(format!("{name}.ppm"), out).expect("write frame");
+                println!("shot: {name}.ppm  screen {:?}", app.current());
+            }
+            other => panic!("--script: unknown command {other:?}"),
+        }
     }
 }
 
@@ -125,6 +221,16 @@ fn main() {
     let unlocked = std::env::args().any(|a| a == "--unlocked");
     let mut app = if unlocked { App::unlocked() } else { App::new() };
     app.set_library(big_library());
+    // Something playing, so the screens that are about the playing song have one: Track
+    // information's rows (with its Rating row) and a play context for the stars to rate.
+    let first_album = app.library().albums_flat().first().map(|a| a.track_list.clone()).unwrap_or_default();
+    app.set_play_context(first_album, 0);
+    app.set_track_info(vec![
+        ("Rating".into(), "-".into()),
+        ("Title".into(), "Atlas Hands".into()),
+        ("Artist".into(), "Benjamin Francis Leftwich".into()),
+        ("Format".into(), "FLAC \u{b7} Hi-Res".into()),
+    ]);
 
     // Sample now-playing (on the device this is pushed from PlayerService each second).
     let mut np = NowPlaying {
@@ -156,6 +262,14 @@ fn main() {
         viz_sig: None,
         scrubbing: false, lyrics: false,
     };
+
+    // Scripted, windowless run: gestures from a file, frames to disk, then exit.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--script") {
+        let path = args.get(i + 1).expect("--script needs a file");
+        run_script(path, &mut app, &fonts, &np);
+        return;
+    }
 
     let mut window = Window::new(
         "Cinder · NW-A55  [arrows·Enter·Backspace·Tab·Space·=/-vol·H·P·V=viz · Q quits]",
@@ -274,5 +388,16 @@ fn big_library() -> Library {
         })
         .collect();
     songs.sort_by(|x, y| x.title.cmp(&y.title));
-    Library { songs, album_groups, artists: artist_rows, playlists: Vec::new(), thumbs: Default::default(), genres: Vec::new(), ..Default::default() }
+    // One playlist of the user's own (so the page has its edit bar and EDIT) and one of Sony's.
+    let playlists = vec![
+        cinder_ui::model::PlaylistRow {
+            id: -1, name: "Night Bus".into(), tracks: 9, art: "Night Bus".into(), user: true,
+            track_list: songs.iter().step_by(11).take(9).cloned().collect(), ..Default::default()
+        },
+        cinder_ui::model::PlaylistRow {
+            id: 1, name: "Synced from the PC".into(), tracks: 5, art: "Synced".into(), user: false,
+            track_list: songs.iter().skip(3).step_by(17).take(5).cloned().collect(), ..Default::default()
+        },
+    ];
+    Library { songs, album_groups, artists: artist_rows, playlists, thumbs: Default::default(), genres: Vec::new(), ..Default::default() }
 }

@@ -285,3 +285,44 @@ pub fn settings(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
     polyline(c, cx, cy, s, col, w, &[(18.7, 5.3), (16.6, 7.4)]);
     polyline(c, cx, cy, s, col, w, &[(7.4, 16.6), (5.3, 18.7)]);
 }
+
+/// A five-pointed star, filled or outlined — the rating glyph. Vector, not a codepoint: neither
+/// bundled family has the star, and a character they lack sends the player to Sony's fonts
+/// (`docs/DESIGN_GUIDE.md` §7).
+pub fn star(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888, filled: bool) {
+    // Ten points around the centre of the 24-box, outer radius 11, inner 4.6, first point up.
+    let pts: Vec<(f32, f32)> = (0..10)
+        .map(|k| {
+            let r = if k % 2 == 0 { 11.0 } else { 4.6 };
+            let a = std::f32::consts::PI * (k as f32) / 5.0 - std::f32::consts::FRAC_PI_2;
+            (12.0 + r * a.cos(), 12.6 + r * a.sin())
+        })
+        .collect();
+    if filled {
+        // A fan from the centre: the star is not convex, but it is star-shaped around its centre,
+        // which is all a fan needs.
+        let mut fan = vec![(12.0, 12.6)];
+        fan.extend(pts.iter().copied());
+        fan.push(pts[0]);
+        polygon(c, cx, cy, s, col, &fan);
+    } else {
+        let mut ring = pts.clone();
+        ring.push(pts[0]);
+        polyline(c, cx, cy, s, col, 1, &ring);
+    }
+}
+
+/// The smart-playlist mark (the handoff's diamond lead on 5g), as an outlined diamond — vector for
+/// the same reason as [`star`].
+pub fn diamond(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let w = stroke_w(s);
+    polyline(c, cx, cy, s, col, w, &[(12.0, 3.0), (21.0, 12.0), (12.0, 21.0), (3.0, 12.0), (12.0, 3.0)]);
+}
+
+/// The drag handle (the handoff's three-bar lead on 5b): three short bars.
+pub fn grip(c: &mut Canvas, cx: f32, cy: f32, s: f32, col: Rgb888) {
+    let w = stroke_w(s);
+    for y in [7.0, 12.0, 17.0] {
+        polyline(c, cx, cy, s, col, w, &[(5.0, y), (19.0, y)]);
+    }
+}

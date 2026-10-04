@@ -85,6 +85,10 @@ are the handoff's. **Cinder** IDs are 1x, 2x and 5x; **Flint** IDs are 3x and 6x
   no text leaves the glass, lands on other text, or sits under something drawn over it. It found
   six real defects in existing screens, all fixed (CHANGELOG, *Fixed*).
 
+**R4, 2026-10-04 (host only):** 748 player tests, 328 golden previews, the text audit clean. The
+playlist editor, rating and a smart playlist were also driven by touch in the simulator. Nothing in
+R4 has run on a player: [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §25.
+
 **Device:** R1 and R2 both checked on the owner's A55 on 2026-09-28 — every row of
 [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §19 passes (dev build `b2a428d1`). R3's queue extras
 (save Up Next, stop after this song, repeat album) the same day — every row of §20 passes (dev
@@ -138,24 +142,24 @@ After 0.2.0, in Flint's *Unreleased*:
 | 1a | Library: view bar (sort · filter · rows) | **R3** | Grow the FILTER strip into the bar. The sort and filter state already exist (`lib_sort`, `album_sort`, the genre filter) | Kit |
 | 1a | Swipe a row left = play next, right = add to Up Next, in every list | Existing | Landed before the handoff (CHANGELOG, Unreleased): the Library, Search, Folders, SensMe and every other track list | — |
 | 1a | Sideways swipe changes page; Back is the bar arrow only | **R3** | The left-edge swipe is Back today, and the help screens teach it. Changing it is a behaviour change, so it gets its own golden and harness pass | — |
-| 1a | Up Next | Existing | One editable list since the Unreleased change. From [`SPEC_queue_v2.md`](SPEC_queue_v2.md) §4, **Done** (R3): save Up Next as a playlist (SAVE on the NOW PLAYING heading), stop after current (Sleep ▸ *Song*), repeat album (off → all → album → one; laps the album's run of the list). Shuffle by album and by artist is R4 | `album_artist` (R4) |
+| 1a | Up Next | Existing | One editable list since the Unreleased change. From [`SPEC_queue_v2.md`](SPEC_queue_v2.md) §4, **Done** (R3): save Up Next as a playlist (SAVE on the NOW PLAYING heading), stop after current (Sleep ▸ *Song*), repeat album (off → all → album → one; laps the album's run of the list). **Done** (R4, host-tested): shuffle by album and by artist — Settings ▸ Shuffle picks what the shuffle button and MIX deal (`shuffle.rs`, `shuffle_by`) | — |
 | 1a | Search | Existing | Scopes (songs · albums · artists) | R3 |
-| 2a | Sound: signal-path strip | **Partial** | The strip is **Done** (R2): two fixed lines under the header, keeping the path's end when it is too long. Still to come: the mock's ENHANCE / SPACE / LEVEL grouping with values instead of pills, and the Profile row, which arrive with the profiles (R5) | R5 |
-| 2a / 2b | A / B sound profiles per output | **R5** | A profile is a named set of every DSP value. One is remembered per output (jack, Bluetooth, USB-DAC) and applied when the route changes | The effects parity work (E3) |
+| 2a | Sound: signal-path strip, grouping, Profile row | **Done** (R5, host-tested; device: checklist §26) | The strip (R2), then in R5 the list regrouped on the kit: a **Profile** row, **ENHANCE** (Equalizer, DSEE HX, ClearAudio+), **SPACE** (VPT, DC Phase, Vinyl), **LEVEL** (Normalizer, Balance), switches and mono values instead of pills. The list scrolls under the fixed strip. What differs from the mock is in Part G | — |
+| 2a / 2b | A / B sound profiles per output | **Done** (R5, host-tested; device: checklist §26) | A profile is A or B: the EQ, every effect on Sound and Sound ▸ Advanced, the Tone Control bands and the balance. Each output (jack, Bluetooth, USB-DAC) remembers which one it uses (`profile.rs`, `Screen::Profiles`), and a route change switches to it and re-applies the chain. The header's A/B picks the profile for the output that is live. **Copy A to B** starts one from the other. Not built: naming a profile, and the mock's per-headphone rules (Part G) | Device verification |
 | 2c | Settings | **Done** | — | — |
 | 2d | Lock | Existing | No layout change, by the spec | — |
 | 2e | Volume display: Full / Minimal | **Done** | — | — |
 | 2f | FM radio | Existing | The meter and fast scan already appear only with the FM helper | — |
-| 2g | Bluetooth | **Done** | The **Sound profile** row (value `A`/`B`) waits for R5. Until then it would be a row that does nothing | R5 |
+| 2g | Bluetooth | **Done** | The **Sound profile** row landed with R5: value `A`/`B`, opens Sound profiles | — |
 | 2h | USB-DAC | **Done** | — | — |
-| 5a | Menu | **Done** | Folders, Equalizer and USB-DAC keep their rows until the Library view bar and Sound hold them (the mock omits them) | R3, R5 |
-| 5b | Playlist editing: ≡ to move, × to remove, UNDO, DONE | **R4** | Saved back as `.m3u8`, so Flint keeps the edit. Only Cinder's own playlists can be edited; Sony's live in its database ([`PLAYLISTS.md`](PLAYLISTS.md)) | — |
-| 5c | Saved view: rules, sort, show as, pin to the bar | **R4** | A view is a name plus the view bar's state. The rating rule needs ratings, and "last played" needs play history | Ratings, the view bar (R3) |
+| 5a | Menu | **Done** | Folders, Equalizer and USB-DAC keep their rows (the mock omits them). Sound holds an Equalizer row since R5, so the Menu's is now a second route rather than the only one; removing it is the owner's call. Folders waits for the Library view bar | R3 |
+| 5b | Playlist editing: ≡ to move, × to remove, UNDO, DONE | **Done** (R4, host-tested) | `playlist_edit.rs`, `Screen::PlaylistEdit`, opened by EDIT on the playlist page. Saved back as `.m3u8` on DONE, stamped `#CINDER-EDITED` so Flint can see it. Only Cinder's own playlists can be edited; Sony's live in its database ([`PLAYLISTS.md`](PLAYLISTS.md)). Device: checklist §25 | — |
+| 5c | Saved view: rules, sort, show as, pin to the bar | **Partial** (R4, host-tested) | Done: the model and its file (`views.rs`, `cinder_views.conf`, [`TRACK_DATA.md`](TRACK_DATA.md)) and the editor (`view_edit.rs`, `Screen::ViewEdit`): name, rating, last played, format, sort, delete. **Waits on R3's view bar:** *show as*, *pin to the Library bar*, and opening a view from the bar. Until then a view is reached as a smart playlist (5g) | The view bar (R3) |
 | 5d | SensMe: 2-column grid of 12 channels, time-of-day switch | **Done** (R2) | `sensme.rs`: 68 px tiles with count bars, a NOW tile, *Follow the time of day* (`sensme_follow_time`), one primary button. The hour → channel split is Cinder's, not read from Sony | — |
 | 5e | Battery: big %, CHARGER only with the helper | **Done** (R2) | Settings ▸ Device on the kit: strip, big number and bar, plain rows; CHARGER says "Needs the battery helper" without it. What differs is in Part G | — |
-| 5g | Playlists: SMART above YOURS, EDITED tag | **R4** | **Drawn in the Library's Playlists tab, not in `shelf.rs`.** The Shelf stays exactly as it is (owner's rule) | Saved views, 5b |
-| 5h | Album: rating in the right slot, playing row highlighted | **Partial** | The playing row is highlighted today. The rating waits for ratings | Ratings (R4) |
-| 5m | Artist: albums newest first, then the 3 most played | **R4** | Needs a play count per track. Cinder writes plays to `.scrobbler.log` but keeps no count | Play history (R4) |
+| 5g | Playlists: SMART above YOURS, EDITED tag | **Done** (R4, host-tested) | **Drawn in the Library's Playlists tab, not in `shelf.rs`.** The Shelf stays exactly as it is (owner's rule). Smart playlists lead the tab with a diamond; the NEW row gained a SMART half; EDITED marks a list changed on the player. No SMART / YOURS section labels: see Part G. Device: checklist §25 | — |
+| 5h | Album: rating in the right slot, playing row highlighted | **Done** (R4, host-tested) | The rating is the mean of the album's rated tracks, as stars in the right slot; an unrated album shows nothing. A track is rated on Track information (Part G) | — |
+| 5m | Artist: albums newest first, then the 3 most played | **Done** (R4, host-tested) | Albums by year, newest first, each with its rating; then MOST PLAYED (up to three, once anything has been played); then every song, as before. Plays are counted in `cinder_stats.tsv` | — |
 | 5i | Help & controls | **Done** (R2) | `help.rs`, `Screen::Help`: one list — the way back to Sony, getting around, the swipes, Now Playing, buttons — and a row that replays the first-run intro | — |
 | 5j | Palette picker: list with swatches, SKIPPED section, ADD row | **Done** (R2) | `palette_list.rs`, `Screen::Palette`. Sort by name or date added (the file's mtime, read by the shell). Tapping picks and stays on the page | — |
 | 5k | Display | **Done** | Two things differ from the mock on purpose; see Part G | — |
@@ -210,7 +214,7 @@ shell is **on hold** (Part E4).
 | 4 | Night mode plus a dimmer backlight | Done | 5k holds it |
 | 5 | Built-in scrobbler | Done | Flint's Likes & plays page reads its log |
 | 6 | Queue and shelf | Done | The rest of the queue plan in R3 and R4. The Shelf is unchanged |
-| 7 | Keep every effect, and apply them to Bluetooth | Effects: 13 of Sony's ~54 methods wrapped. On Bluetooth: research | E3, then R5 |
+| 7 | Keep every effect, and apply them to Bluetooth | Effects: the shim wraps 55 of `EffectCtrlDmp`'s 60 methods and cinder-home drives 41 of them (E3). On Bluetooth: researched, not measured — the EQ and Tone Control have Bluetooth tables in Sony's library, the other effects are unknown ([`RESEARCH_bt_dsp_2026-09-30.md`](RESEARCH_bt_dsp_2026-09-30.md)) | Checklist 26.5 |
 | 8 | Use the built-in sound card | Done by construction | — |
 | 9 | Lock screen with live buttons | Done | 2d unchanged |
 | 10 | 2038 | Partial by necessity | Unchanged by the redesign |
@@ -233,7 +237,7 @@ shell is **on hold** (Part E4).
 |---|---|
 | W1's eight settings as on-device rows | A **WALKMAN ONE** section on Settings, shown only on a W1 player. Waits for Cinder running on W1 (checklist 16.2) |
 | Clear Bass | Research. If the six-band never engages, Clear Bass is rebuilt on the ten-band |
-| Effects parity: 13 → ~54 Sony methods | Ordinary work; the enums are recovered. It must come before R5, because a profile can only hold effects Cinder can set |
+| Effects parity: 13 → ~54 Sony methods | **Done as far as it can be without a device** (R5). The "13" was the count on 2026-08-17; by R5 the shim already wrapped 55 of `EffectCtrlDmp`'s 60 exported methods (every one the stock player imports except the four Clear Phase Speaker / WM-PORT calls, which describe hardware this player lacks). R5 made the **read-back half live**: cinder-home went from 22 of those methods to 41, reading the chain back after a profile is applied (`fx-verify`). Still not driven, each for a stated reason: the 6-band EQ and its presets (measured to have no effect, `RE_clear_bass.md`), Tone Control's centre frequencies (the stock UI never sets them and the values are unrecovered), Sony's own user presets (they hold the 6-band selector, which takes Cinder's EQ out of the path). R5 also found and wrapped a second class nobody had looked at, `SoundServiceSettingsDmp` (DSD conversion filter and gain, LPCM mode, headphone model): 11 of its 12 methods, **probe only, no screen** — signatures from disassembly, unverified (`analysis/RE_dsp_effects_surface.md`, checklist 26.7) |
 | SensMe | Done in Flint and on the device. The channel grid (5d) is R2 |
 | Language Study, Alexa, Help Guide | **Not planned** |
 | Noise cancelling, Ambient Sound | **Not planned**: inert without Sony's own NC headphones |
@@ -267,8 +271,8 @@ kit:
 | **R1** | Part A | Done |
 | **R2** | **Done.** Screens on the kit that need no new data: ~~5j Palette picker~~, ~~5d SensMe grid~~, ~~5l Sound quality~~, ~~5e Battery~~, ~~5i Help~~, ~~the Sound strip (2a)~~. Then the three small community items: ~~B1~~, ~~B2~~, ~~B6~~ | — |
 | **R3** | The Library view bar, Search scopes, the sideways page swipe, and the queue extras that need no new data: ~~repeat album~~, ~~stop after current~~, ~~save Up Next as a playlist~~ (done and device-verified 2026-09-28, checklist §20) | 1–2 weeks left |
-| **R4** | Data the screens are waiting on, then the screens: ratings, a play count, `album_artist` (which also unlocks shuffle by album and by artist). Then saved views (5c), smart playlists (5g), playlist editing (5b), and Album and Artist (5h, 5m) | 2 weeks |
-| **R5** | Effects parity, then A/B profiles per output (2a/2b, and the Bluetooth Sound profile row) | 2 weeks, most of it effects parity |
+| **R4** | **Done on the host 2026-10-04; not yet on a device (checklist §25).** ~~Ratings~~, ~~a play count~~, ~~`album_artist`~~, ~~shuffle by album and by artist~~, ~~smart playlists (5g)~~, ~~playlist editing (5b)~~, ~~Album and Artist (5h, 5m)~~. Saved views (5c): the model, the file and the editor are done; *show as*, *pin* and opening from the bar wait for R3's view bar | Device pass |
+| **R5** | **Built 2026-09-30, host only.** ~~Effects parity~~, ~~A/B profiles per output~~, ~~the grouped Sound screen (2a)~~, ~~the Bluetooth Sound profile row (2g)~~, ~~the Bluetooth-DSP research note~~. Open: every row of checklist §26 — nothing in R5 has run on a player | Device session |
 | **R6** | Flint 0.3: Setup, Conversion (convert-on-transfer), Copying, ~~Palettes send~~ (done in 0.2; the preview panel and ticking are left), SensMe reasons | 2 weeks |
 | **R7** | The installer's window | 1 week |
 
@@ -285,7 +289,16 @@ owner's schedule, from [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md).
 | 5k Size | Chips | The slider stays | The sizes do not fit as 44 px chips across 440 px |
 | 5a Menu rows | No Folders, Equalizer or USB-DAC | They stay | The mock moves them into the Library bar and Sound, and those are R3 and R5. Removing the rows first would strand the screens |
 | 5a Start on | Library · Now Playing · Menu · Last screen | Same, default **Library** | The brief: "Home: user-selectable, ship Library as the default." Before this pass the player opened on Now Playing |
-| 2g Sound profile | A row with value `B` | Not drawn yet | A row that does nothing is worse than no row. It arrives with R5 |
+| 2g Sound profile | A row with value `B` | The row, value `A` or `B`, opening Sound profiles | As drawn. It opens the screen rather than flipping the letter in place, because the same choice exists for the jack and USB-DAC and they belong side by side |
+| 2g THIS DEVICE | Two rows | Three (Debug log, from B6), with the 6 px gap above the section removed | The third row has to end above the RECEIVER MODE link; the gap was the only spare height, and five paired devices still fit |
+| 2a Profile row | "Profile A · Everyday", "Auto on WH-1000XM5 · 2 rules", value RULES | "Profile A", "3.5 mm now · Bluetooth uses B", a chevron to Sound profiles | Profiles are per OUTPUT, not per headphone: the player knows the route for certain and the peer's name only after a link is up. No names either — there is no place to type one that is worth a keyboard screen. Rules per headphone can be added on the same screen later |
+| 2a A / B | Not drawn (the Profile row replaces it) | The header's A / B stays | It is the fastest compare there is, and it now means "the profile this output uses", so the two controls cannot disagree |
+| 2a Balance | A 64 px row, value `C` | The slider row stays, with MONO and CENTRE | Balance is something you set by ear while dragging; a value row would need a screen of its own for the same slider |
+| 2a Advanced | Not drawn | A row at the end of the list | Source Direct, Clear Phase, DSEE AI, DSEE HX Custom, Vinyl character and Tone Control have nowhere else to live |
+| 2a Length | One screen | The list scrolls under the strip | Nine rows, three labels and the slider are 810 px against 651 px of glass. Nothing was cut to make it fit |
+| 2a ClearAudio+ | "overrides everything below" | "replaces the EQ and the effects" | In the handoff's own order the Equalizer and DSEE HX are ABOVE it, and it replaces those too |
+| 2a / 2b What a profile holds | "every DSP value" | Every Sony effect, the EQ, Tone Control, balance. Not mono, not the linear amp, not the DAC EQ | Mono is an accessibility need that must hold on both sides of a comparison. The amp and the DAC EQ are hardware of the jack alone, applied by a setuid helper and a codec table reload — swapping them on a route change costs something and reaches nothing on Bluetooth |
+| 2h Sound processing | A switch: "Profile A applies to the PC's audio" | Not drawn; USB-DAC has a row on Sound profiles that says "effects on PC audio unverified" | Whether Sony's chain is in the USB-DAC path at all is not known (checklist 26.6). A switch would promise it |
 | 5g Playlists | Mapped to `shelf.rs` | Will be the Library's Playlists tab | The Shelf is the owner's and stays as it is |
 | 5l Codec | No codec picker | Codec chips (LDAC · aptX HD · aptX · SBC) above the LDAC rows | The mock drops the codec choice; the player transmits four, and the choice has to live somewhere. Chips, so the page still fits without scrolling |
 | 5l Steps | A "Steps 127" row | Not drawn | It would be false: AVRCP's scale is 0–127, but this firmware moves 4 units a step (`bluetooth.rs`, `fine_volume`). Fine volume is the row that answers "how fine" |
@@ -294,6 +307,14 @@ owner's schedule, from [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md).
 | 5i Help | "Change page: SWIPE ← →", "Back: ‹" | "Back: ARROW · LEFT EDGE", no sideways-page row | The sideways page swipe is R3; today the left-edge swipe is Back. The list says what the player does now |
 | 5i Help | Three rungs of the way back | Four: Boot to stock added, and "not on the first start after an install" under the cable | Both are true (`RECOVERY.md`), and the exception is exactly when the cable rule surprises people |
 | 2a Strip | One line | Two fixed lines | The full chain is ~90 characters. Fixed height, so the rows below never move with the text size |
+| 5h Rating | A rating in the album header | The header shows the MEAN of the album's track ratings and is not tappable. A track is rated with five stars on Track information (tap the title on Now Playing) | Ratings are per track, so one number per album has to be derived, and a derived number cannot also be an input. Rating from the album page's rows is an open question for the owner |
+| 5m Artist | Albums, then the 3 most played | Albums, MOST PLAYED, then SONGS (every track) as before | The full list is what the Shuffle band plays and what a swipe queues from; dropping it would take both away. MOST PLAYED is left out until something has been played |
+| 5g Sections | SMART and YOURS section labels | No labels. Smart playlists lead the list, each with the diamond | The Playlists tab is one uniform-row list shared by the A–Z rail, the grid and the cursor; label rows would change every index in it. They can come with R3's view bar, which reworks the tab's head anyway |
+| 5g New | (not drawn) | The NEW PLAYLIST row is split: NEW PLAYLIST and SMART | A smart playlist has to be made somewhere, and the bar that would hold "save this view" is R3. The same split as the playlist page's Play / Shuffle band |
+| 5c Rules | Rating, last played, format, "+ add" | The three rules as chip rows, no "+ add" | Those are the rules there is data for. A fourth (genre) is easy to add later; an open-ended rule builder is not worth a keyboard on this screen |
+| 5c Show as, Pin | Chips and a switch | Not drawn yet | Both act on the Library view bar, which is R3. A switch that pins to a bar that does not exist is a row that does nothing |
+| 5b Remove | × | × removes at once in the editor; the page keeps its two-tap × | In the editor UNDO is one tap away and nothing is written until DONE. On the page a removal is written immediately, so it still asks twice |
+| Shuffle modes | (queue plan: a four-way mode) | A setting, Settings ▸ Shuffle: Songs · Albums · Artists | The button stays the on/off switch it is; four states would make turning shuffle off three taps. Songs is the default, so nothing changes unasked |
 
 ## New settings keys
 
@@ -305,3 +326,12 @@ owner's schedule, from [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md).
 | `palette_sort` | `name` · `added` | Done (5j) |
 | `quick_settings` | `0` · `1` | Done (B1); `0` by default |
 | `sensme_follow_time` | `0` · `1` | Done (5d); `0` by default |
+| `shuffle_by` | `songs` · `albums` · `artists` | Done (R4); `songs` by default |
+| `profile_jack`, `profile_bt`, `profile_usb` | `a` · `b` | Done (R5); `a` by default. Which profile each output uses |
+| `bank_vpt_mode`, `bank_dc_type`, `bank_adv`, `bank_dsee_mode`, `bank_vinyl_type`, `bank_tone` | as their live twins (`vpt_mode`, `dc_type`, `adv` bits 0–4, `dsee_mode`, `vinyl_type`, `tone`) | Done (R5). The rest of the profile that is not live, beside the existing `bank_eq` / `bank_sound` / `bank_balance` / `bank_preset`. Absent in an older file: the spare takes the live Advanced values, which is what both shared before |
+
+New files (R4), both on `/contents` and described in [`TRACK_DATA.md`](TRACK_DATA.md):
+`cinder_stats.tsv` (ratings, play counts, last played) and `cinder_views.conf` (saved views).
+
+The whole settings file is written to a temporary file, flushed and renamed since R5, so a power
+cut leaves the old file or the new one and never part of one.
