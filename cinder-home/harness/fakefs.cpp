@@ -205,6 +205,15 @@ int cinder_harness_fs_read(const char* path, char* buf, int cap) {
 
 } // extern "C"
 
+// `rename` as well, for the app's write-then-rename files (the soundscape line): both names are
+// mapped the way `open` maps them, so a file written into the private tree is renamed inside it.
+extern "C" int rename(const char* from, const char* to) {
+    char a[1024], b[1024];
+    const char* pf = resolve(from, "r", a, (int)sizeof a) ? a : from;
+    const char* pt = resolve(to, "w", b, (int)sizeof b) ? b : to;
+    return (int)syscall(SYS_renameat, AT_FDCWD, pf, AT_FDCWD, pt);
+}
+
 // ── the overrides ────────────────────────────────────────────────────────────────────────────
 // `open` as well as `fopen`, because the app uses both and the difference matters in exactly the
 // place it is hardest to see: entering a USB-MSC session moves the app's own log fds off /contents

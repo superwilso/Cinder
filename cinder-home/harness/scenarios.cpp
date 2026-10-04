@@ -681,6 +681,60 @@ static void s_low_battery_warns(void) {
     check_eq(cinder_harness_count(kPowerOff), 0, "…and does not power off above the critical level");
 }
 
+// ── soundscapes ─────────────────────────────────────────────────────────────────────────────
+// The shell tells libcinder_mono.so what to play through /tmp/cinder_ambient, at the "on its own"
+// level while nothing plays and the "with music" level while music does, and tells the page where
+// the sound is going. There is no libasound here, so the shell's own player cannot open the jack:
+// the honest answer on the page is then "no output", never a claim that it is playing.
+static std::string ambient_line() {
+    char b[64] = { 0 };
+    if (cinder_harness_fs_read("/tmp/cinder_ambient", b, sizeof b) < 0) return "<none>";
+    return b;
+}
+static long long last_route() {
+    const int n = cinder_harness_count("cinder_set_ambient_route");
+    return n ? cinder_harness_arg("cinder_set_ambient_route", n - 1) : -1;
+}
+
+static void s_ambient_alone(void) {
+    healthy_device();
+    cinder_harness_fs_mkdir("/tmp");
+    cinder_harness_state_set("ambient_sound", 4);
+    cinder_harness_state_set("ambient_alone", 600);
+    cinder_harness_state_set("ambient_music", 150);
+    cinder_harness_set_budget_ms(15000);
+    cinder_harness_run();
+    check(ambient_line() == "4 600\n", "nothing playing: the line carries the on-its-own level");
+    check_eq(last_route(), 7, "…and with no way to open the jack the page says so (no output)");
+    check(cinder_harness_count("cinder_get_ambient") < 40, "read about once a second, not per frame");
+    check(cinder_harness_count("dlopen:libasound.so.2") <= 1, "libasound is looked for once, not every second");
+}
+
+static void s_ambient_over_music(void) {
+    healthy_device();
+    cinder_harness_fs_mkdir("/tmp");
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_state_set("ambient_sound", 6);
+    cinder_harness_state_set("ambient_alone", 600);
+    cinder_harness_state_set("ambient_music", 150);
+    cinder_harness_set_budget_ms(15000);
+    cinder_harness_run();
+    check(ambient_line() == "6 150\n", "music playing: the line carries the with-music level");
+    check_eq(last_route(), 5, "…and without the sound-service hook the page says it is silent over music");
+}
+
+static void s_ambient_off(void) {
+    healthy_device();
+    cinder_harness_fs_mkdir("/tmp");
+    cinder_harness_state_set("ambient_sound", 4);
+    cinder_harness_state_set("ambient_alone", 600);
+    cinder_harness_state_set_at(6000, "ambient_sound", 0);
+    cinder_harness_set_budget_ms(15000);
+    cinder_harness_run();
+    check(ambient_line() == "0 0\n", "switched off mid-run: the line goes to off");
+    check_eq(last_route(), 0, "…and so does the page");
+}
+
 // ── a sagging gauge must not switch the player off ───────────────────────────────────────────
 // This board has no fuel gauge: `capacity` is derived from terminal voltage (r = 0.96 against
 // `voltage_now` over the 123-sample log in artifacts/session), so it falls tens of points the moment
@@ -1468,6 +1522,9 @@ static const Scenario kScenarios[] = {
     {"stop-after-mid",    s_stop_after_midsong,      "…a stalled position never runs on to the end"},
     {"stop-after-paused", s_stop_after_paused,       "…and a paused song is left alone"},
     {"clock-steps-back",  s_clock_steps_back,        "a wall clock stepping back (2038) still marks the boot good"},
+    {"ambient-alone",     s_ambient_alone,           "a soundscape with nothing playing: its level, and an honest route"},
+    {"ambient-music",     s_ambient_over_music,      "…over music: the other level, and silent without the hook"},
+    {"ambient-off",       s_ambient_off,             "…switched off: the line and the page follow"},
     {nullptr, nullptr, nullptr},
 };
 
