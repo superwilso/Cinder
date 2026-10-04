@@ -467,12 +467,32 @@ pub fn hit_new_playlist(tab: Tab, x: i32, y: i32) -> bool {
 
 /// [`hit_new_playlist`] with the band slid `hide` px up — the row rides up with it.
 pub fn hit_new_playlist_at(tab: Tab, x: i32, y: i32, hide: i32) -> bool {
+    hit_new_at(tab, x, y, hide) == Some(NewKind::Playlist)
+}
+
+/// Which half of the NEW row a tap is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewKind {
+    /// NEW PLAYLIST: name one, then add tracks.
+    Playlist,
+    /// SMART: a saved view (handoff 5c), made from rules.
+    Smart,
+}
+
+/// Where the NEW row splits: NEW PLAYLIST keeps the wider left part, SMART the right. The same
+/// split, and the same reason, as the playlist page's PLAY | SHUFFLE band: the ordinary action is
+/// the wider one, and nothing below the row moves.
+pub const NEW_SPLIT_X: i32 = 300;
+
+/// The NEW row's half under `(x, y)`, with the band slid `hide` px up.
+pub fn hit_new_at(tab: Tab, x: i32, y: i32, hide: i32) -> Option<NewKind> {
     if tab != Tab::Playlists {
-        return false;
+        return None;
     }
     let (rx, ry, rw, rh) = new_playlist_rect();
     let ry = ry - hide;
-    y > TABS_BOTTOM && (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
+    (y > TABS_BOTTOM && (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y))
+        .then_some(if x < NEW_SPLIT_X { NewKind::Playlist } else { NewKind::Smart })
 }
 
 /// The filter strip: what is filtering the list right now, and a way to change it.
@@ -1914,16 +1934,39 @@ pub fn render(
                 if now {
                     fill_rect(c, 0, y, W as i32, rh, t.row_sel);
                 }
-                playlist_thumb(c, t, lib, pl, 22, y + (rh - 48) / 2, 48, artdim(t));
+                if pl.smart {
+                    // SMART rows lead with the diamond in the accent (handoff 5g) instead of a
+                    // cover: what they hold changes with the rules, and the mark is what says so.
+                    fill_rect(c, 22, y + (rh - 48) / 2, 48, 48, t.panel);
+                    icons::diamond(c, 46.0, cy as f32, 22.0, t.acc);
+                } else {
+                    playlist_thumb(c, t, lib, pl, 22, y + (rh - 48) / 2, 48, artdim(t));
+                }
                 let tcol = if now { t.acc } else { t.ink };
-                text::draw(c, f, 80.0, (cy - 2) as f32, &pl.name, &body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol));
+                // An EDITED tag (handoff 5g) sits before the chevron on a list changed on the
+                // player, and the name gives way to it.
+                let tag_w = if pl.edited {
+                    let tst = sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.1);
+                    right(c, f, 436.0, (cy + 5) as f32, "EDITED", &tst);
+                    text::measure(f, "EDITED", &tst) + 14.0
+                } else {
+                    0.0
+                };
+                let nst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, tcol);
+                text::draw(c, f, 80.0, (cy - 2) as f32,
+                    &crate::widgets::fit(f, &pl.name, &nst, 356.0 - tag_w), &nst);
                 // No "· YOURS" suffix. It used to mark Cinder's own playlists so the edit bar's
                 // absence on a Sony one did not read as a bug — but on a device where nearly every
                 // playlist IS the owner's, it was a word repeated down the whole list to say
                 // "normal". The distinction still lands where it matters: the page draws the edit
                 // bar for `pl.user` and not otherwise, and a custom cover is Cinder-only.
-                let sub = format!("{} tracks", pl.tracks);
-                text::draw(c, f, 80.0, (cy + 16) as f32, &sub, &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
+                let sub = if pl.smart {
+                    format!("{} tracks \u{b7} {}", pl.tracks, pl.rules)
+                } else {
+                    format!("{} tracks", pl.tracks)
+                };
+                let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
+                text::draw(c, f, 80.0, (cy + 16) as f32, &crate::widgets::fit(f, &sub, &sst, 356.0 - tag_w), &sst);
                 icons::chevron(c, 456.0, cy as f32, 14.0, t.faint);
                 hline(c, y + rh, t.line);
                 y += rh;
@@ -1950,12 +1993,21 @@ pub fn album_view(
     cover: Option<&crate::art::Image>,
     swipe: Option<SwipeRow>,
     sbar_active: bool,
+    // The album's rating (`Library::album_rating`), drawn in the header's right slot (handoff 5h).
+    rating: Option<u8>,
 ) {
     let scroll_px = scroll_px.clamp(0, album_max_scroll_px(album));
     c.fill(t.bg);
     // back chevron + ALBUM eyebrow
     icons::back(c, 30.0, 62.0, 20.0, t.dim);
     text::draw(c, f, 50.0, 66.0, "ALBUM", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
+    // THE RIGHT SLOT: the album's rating, when any of its tracks is rated. A readout, not a
+    // control — it is the mean of the track ratings, which are set on Track information — so it
+    // is drawn in `dim`, not the accent. An unrated album shows nothing rather than five hollow
+    // stars claiming a verdict nobody gave.
+    if let Some(r) = rating {
+        crate::kit::stars(c, t, RATING_SLOT_X, 62, 14, 17, r, false);
+    }
     // art block + title/artist/meta
     match cover {
         Some(img) if img.w == COVER_PX as usize && img.h == COVER_PX as usize =>
@@ -2020,6 +2072,9 @@ pub fn album_view(
     scrollbar(c, t, top, LIST_BOTTOM, scroll_px, total as i32 * rh, sbar_active);
 }
 
+/// Where the header's rating starts: five 17 px steps ending at the 458 px right margin.
+pub const RATING_SLOT_X: i32 = 458 - 5 * 17;
+
 // ── Artist drill-in ───────────────────────────────────────────────────────────────────────────
 // Every artist gets a real page: their albums (with the same decoded covers the Albums tab draws)
 // then every one of their tracks, over one scroll. This used to be a static mock wired to
@@ -2042,7 +2097,9 @@ pub fn hit_artist_shuffle_band(x: i32, y: i32) -> bool {
     (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y)
 }
 
-pub const ARTIST_SEC_H: i32 = 36; // "ALBUMS · n" / "SONGS · n" section header
+pub const ARTIST_SEC_H: i32 = 36; // "ALBUMS · n" / "MOST PLAYED" / "SONGS · n" section header
+/// How many most-played tracks the artist page lists (handoff 5m: "then the 3 most played").
+pub const ARTIST_TOP_N: usize = 3;
 pub const ARTIST_ALBUM_RH: i32 = crate::scale::GROUP_ROW_H;
 pub const ARTIST_TRACK_RH: i32 = crate::scale::TRACK_ROW_H;
 
@@ -2052,6 +2109,10 @@ pub enum ArtistRowKind {
     AlbumsSection,
     /// Index into [`ArtistPage::albums`].
     Album(usize),
+    TopSection,
+    /// One of the most played, as an index into [`ArtistPage::tracks`] — so tapping it plays the
+    /// artist's list from that track, exactly as tapping the same song in SONGS does.
+    Top(usize),
     SongsSection,
     /// Index into [`ArtistPage::tracks`].
     Song(usize),
@@ -2060,9 +2121,9 @@ pub enum ArtistRowKind {
 impl ArtistRowKind {
     fn h(self) -> i32 {
         match self {
-            ArtistRowKind::AlbumsSection | ArtistRowKind::SongsSection => ARTIST_SEC_H,
+            ArtistRowKind::AlbumsSection | ArtistRowKind::TopSection | ArtistRowKind::SongsSection => ARTIST_SEC_H,
             ArtistRowKind::Album(_) => ARTIST_ALBUM_RH,
-            ArtistRowKind::Song(_) => ARTIST_TRACK_RH,
+            ArtistRowKind::Song(_) | ArtistRowKind::Top(_) => ARTIST_TRACK_RH,
         }
     }
 }
@@ -2085,6 +2146,10 @@ pub struct ArtistPage<'a> {
     /// drill-in screen takes, so tapping an album here opens the same page the Albums tab does.
     pub albums: Vec<(usize, &'a crate::model::AlbumRow)>,
     pub tracks: Vec<ArtistTrack<'a>>,
+    /// The most played of `tracks` (indices into it), most first, at most [`ARTIST_TOP_N`]. Empty
+    /// until something by this artist has been played — a "most played" of unplayed songs would be
+    /// a list in title order wearing the wrong heading.
+    pub top: Vec<usize>,
     /// `(content-space y, row)` in draw order. ONE list, shared by the renderer and the hit test.
     pub rows: Vec<(i32, ArtistRowKind)>,
     pub content_h: i32,
@@ -2093,10 +2158,11 @@ pub struct ArtistPage<'a> {
 /// Resolve an artist's page out of the library, by name.
 ///
 /// Albums come from `album_groups`, which cinder-ffi groups by ALBUM ARTIST — the same key the
-/// Artists tab is built from, so the two always agree. Tracks are the albums' track lists in album
-/// order; if the artist has no albums at all (tracks with no album row behind them), it falls back
-/// to matching the Songs list on artist name, so a page is never empty when the tab said it has
-/// tracks.
+/// Artists tab is built from, so the two always agree. They are NEWEST FIRST (handoff 5m): by
+/// release year, then by when they arrived in the library, and an album with no year after every
+/// dated one. Tracks are the albums' track lists in that order; if the artist has no albums at all
+/// (tracks with no album row behind them), it falls back to matching the Songs list on artist
+/// name, so a page is never empty when the tab said it has tracks.
 pub fn artist_page<'a>(lib: &'a Library, name: &'a str) -> ArtistPage<'a> {
     let mut albums: Vec<(usize, &crate::model::AlbumRow)> = Vec::new();
     let mut flat = 0usize;
@@ -2108,6 +2174,9 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str) -> ArtistPage<'a> {
             flat += 1;
         }
     }
+    // Stable, so albums of the same year and arrival keep the order the Albums tab gives them.
+    let year = |a: &crate::model::AlbumRow| a.year.trim().parse::<i32>().unwrap_or(0);
+    albums.sort_by(|(_, a), (_, b)| year(b).cmp(&year(a)).then_with(|| b.added.cmp(&a.added)));
     let mut tracks: Vec<ArtistTrack> = albums
         .iter()
         .flat_map(|(_, al)| al.track_list.iter().map(|s| ArtistTrack { song: s, album: &al.name }))
@@ -2121,6 +2190,17 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str) -> ArtistPage<'a> {
             .collect();
     }
 
+    // The most played: by count, then the more recent, then the page's own order. Only tracks with
+    // a play count are candidates.
+    let mut top: Vec<usize> = (0..tracks.len())
+        .filter(|&i| lib.stat(tracks[i].song.object_id).plays > 0)
+        .collect();
+    top.sort_by(|&a, &b| {
+        let (sa, sb) = (lib.stat(tracks[a].song.object_id), lib.stat(tracks[b].song.object_id));
+        sb.plays.cmp(&sa.plays).then_with(|| sb.last_played.cmp(&sa.last_played)).then_with(|| a.cmp(&b))
+    });
+    top.truncate(ARTIST_TOP_N);
+
     let mut rows: Vec<(i32, ArtistRowKind)> = Vec::new();
     let mut y = 0;
     if !albums.is_empty() {
@@ -2131,6 +2211,14 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str) -> ArtistPage<'a> {
             y += ARTIST_ALBUM_RH;
         }
     }
+    if !top.is_empty() {
+        rows.push((y, ArtistRowKind::TopSection));
+        y += ARTIST_SEC_H;
+        for &i in &top {
+            rows.push((y, ArtistRowKind::Top(i)));
+            y += ARTIST_TRACK_RH;
+        }
+    }
     if !tracks.is_empty() {
         rows.push((y, ArtistRowKind::SongsSection));
         y += ARTIST_SEC_H;
@@ -2139,7 +2227,7 @@ pub fn artist_page<'a>(lib: &'a Library, name: &'a str) -> ArtistPage<'a> {
             y += ARTIST_TRACK_RH;
         }
     }
-    ArtistPage { name, albums, tracks, rows, content_h: y + 8 }
+    ArtistPage { name, albums, tracks, top, rows, content_h: y + 8 }
 }
 
 /// Visible height of the artist page's scrolling content.
@@ -2171,7 +2259,7 @@ pub fn artist_hit(page: &ArtistPage, scroll_px: i32, y: i32) -> Option<ArtistHit
     let cy = y - top + scroll_px.max(0);
     page.rows.iter().find(|(vy, r)| (*vy..*vy + r.h()).contains(&cy)).and_then(|(_, r)| match *r {
         ArtistRowKind::Album(i) => page.albums.get(i).map(|(flat, _)| ArtistHit::Album(*flat)),
-        ArtistRowKind::Song(i) => Some(ArtistHit::Track(i)),
+        ArtistRowKind::Song(i) | ArtistRowKind::Top(i) => Some(ArtistHit::Track(i)),
         _ => None,
     })
 }
@@ -2228,6 +2316,30 @@ pub fn artist_view(
                 text::draw(c, f, 22.0, (y + 24) as f32, &format!("SONGS · {}", page.tracks.len()),
                     &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
             }
+            ArtistRowKind::TopSection => {
+                text::draw(c, f, 22.0, (y + 24) as f32, "MOST PLAYED",
+                    &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.18));
+            }
+            ArtistRowKind::Top(i) => {
+                let Some(tr) = page.tracks.get(i) else { continue };
+                let cy = y + ARTIST_TRACK_RH / 2;
+                let sw = swipe_for(swipe, y, ARTIST_TRACK_RH);
+                if let Some(dx) = sw {
+                    swipe_reveal(c, t, f, y, ARTIST_TRACK_RH, dx, SwipeIntent::Queue);
+                }
+                let tst = body_label(Family::Sans, Weight::SemiBold, crate::scale::ROW, t.ink);
+                text::draw(c, f, 58.0, (cy - 2) as f32, &crate::widgets::fit(f, &tr.song.title, &tst, 300.0), &tst);
+                let ast = body_label(Family::Sans, Weight::Regular, 14.0, t.dim);
+                text::draw(c, f, 58.0, (cy + 16) as f32, &crate::widgets::fit(f, tr.album, &ast, 300.0), &ast);
+                // The count is the reason the row is here, so it takes the place of the duration.
+                let plays = lib.stat(tr.song.object_id).plays;
+                let n = if plays == 1 { "1 PLAY".to_string() } else { format!("{plays} PLAYS") };
+                right(c, f, 452.0, (cy + 4) as f32, &n, &sty(Family::Mono, Weight::Regular, 12.0, t.faint, 0.06));
+                hline(c, y + ARTIST_TRACK_RH, t.line);
+                if sw.is_some() {
+                    c.clear_offset_x();
+                }
+            }
             ArtistRowKind::Album(i) => {
                 let Some((_, al)) = page.albums.get(i) else { continue };
                 let cy = y + ARTIST_ALBUM_RH / 2;
@@ -2244,8 +2356,15 @@ pub fn artist_view(
                 } else {
                     format!("{} · {} tracks", al.year, al.tracks)
                 };
-                text::draw(c, f, 80.0, (cy + 16) as f32, &sub,
-                    &body_label(Family::Sans, Weight::Regular, 15.0, t.dim));
+                // The album's rating (handoff 5m: "albums … with their ratings") on the second
+                // line, right-aligned before the chevron, so the name keeps the whole first line.
+                let rating = lib.album_rating(al);
+                let sub_w = if rating.is_some() { 250.0 } else { 340.0 };
+                let sst = body_label(Family::Sans, Weight::Regular, 15.0, t.dim);
+                text::draw(c, f, 80.0, (cy + 16) as f32, &crate::widgets::fit(f, &sub, &sst, sub_w), &sst);
+                if let Some(r) = rating {
+                    crate::kit::stars(c, t, 436 - 5 * 14, cy + 11, 12, 14, r, false);
+                }
                 icons::chevron(c, 452.0, cy as f32, 13.0, t.faint);
                 hline(c, y + ARTIST_ALBUM_RH, t.line);
                 if sw.is_some() {
@@ -2417,13 +2536,22 @@ fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet, hide: i32) {
     let y = y - hide;
     let cy = y + h / 2;
     stroke_rect(c, x + 22, y + 4, w - 44, h - 8, t.acc, 2);
+    // The divider between the two halves, inside the outline — one control with two verbs, the
+    // way the playlist page's band reads.
+    fill_rect(c, NEW_SPLIT_X, y + 14, 1, h - 28, t.acc);
     // A `+` drawn from two bars — `icons` has no plus.
     fill_rect(c, 44, cy - 1, 22, 2, t.acc);
     fill_rect(c, 54, cy - 11, 2, 22, t.acc);
-    text::draw(c, f, 80.0, (cy - 2) as f32, "NEW PLAYLIST",
-        &sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc, 0.04));
-    text::draw(c, f, 80.0, (cy + 16) as f32, "NAME IT, THEN ADD TRACKS",
-        &sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14));
+    let lst = sty(Family::Sans, Weight::ExtraBold, 19.0, t.acc, 0.04);
+    let sst = sty(Family::Mono, Weight::Regular, 10.0, t.faint, 0.14);
+    let lw = (NEW_SPLIT_X - 92) as f32;
+    text::draw(c, f, 80.0, (cy - 2) as f32, &crate::widgets::fit(f, "NEW PLAYLIST", &lst, lw), &lst);
+    text::draw(c, f, 80.0, (cy + 16) as f32, &crate::widgets::fit(f, "NAME IT, THEN ADD TRACKS", &sst, lw), &sst);
+    // SMART: a playlist made of rules. The diamond is the mark smart rows carry in the list.
+    icons::diamond(c, (NEW_SPLIT_X + 22) as f32, cy as f32, 18.0, t.acc);
+    let rw = (x + w - 22 - 8 - (NEW_SPLIT_X + 40)) as f32;
+    text::draw(c, f, (NEW_SPLIT_X + 40) as f32, (cy - 2) as f32, &crate::widgets::fit(f, "SMART", &lst, rw), &lst);
+    text::draw(c, f, (NEW_SPLIT_X + 40) as f32, (cy + 16) as f32, &crate::widgets::fit(f, "BY RULES", &sst, rw), &sst);
 }
 
 // ── The playlist page's edit controls (Cinder's own playlists only) ─────────────────────────────
@@ -2431,6 +2559,17 @@ fn new_playlist_row(c: &mut Canvas, t: &Theme, f: &FontSet, hide: i32) {
 // Sony's playlists are containers in a database this app does not write, so the bar is drawn only
 // for `pl.user`. Everything below keys off the same flag, including the geometry — which is why
 // `playlist_content_top` takes the row rather than being a constant.
+
+/// Does the playlist page offer EDIT? For a list Cinder can write (the member editor, 5b) and for a
+/// smart one (its rules, 5c); never for Sony's, which live in a database this app must not write.
+pub fn playlist_editable(pl: &crate::model::PlaylistRow) -> bool {
+    pl.user || pl.smart
+}
+
+/// Is `(x, y)` on the playlist page's EDIT?
+pub fn hit_playlist_edit(pl: &crate::model::PlaylistRow, x: i32, y: i32) -> bool {
+    playlist_editable(pl) && crate::chrome::header_action_hit(x, y)
+}
 
 /// Height of the strip holding ADD TRACKS / RENAME / DELETE.
 pub const PLAYLIST_ACTIONS_H: i32 = 56;
@@ -2488,7 +2627,13 @@ pub fn playlist_view(
     let scroll_px = scroll_px.clamp(0, playlist_max_scroll_px(pl));
     c.fill(t.bg);
     icons::back(c, 30.0, 62.0, 20.0, t.dim);
-    text::draw(c, f, 50.0, 66.0, "PLAYLIST", &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
+    let eyebrow = if pl.smart { "SMART PLAYLIST" } else { "PLAYLIST" };
+    text::draw(c, f, 50.0, 66.0, eyebrow, &sty(Family::Mono, Weight::Regular, 11.0, t.faint, 0.2));
+    // EDIT in the right slot, in the accent because it is an action (spec 2.1). On a list Cinder
+    // owns it opens the member editor (5b); on a smart one, its rules (5c). Sony's get none.
+    if playlist_editable(pl) {
+        right(c, f, 458.0, 66.0, "EDIT", &sty(Family::Mono, Weight::Regular, crate::scale::CAPTION, t.acc, 0.14));
+    }
 
     // The cover, then the name and stats beside it. Both text runs move in to clear the block.
     {
@@ -2506,12 +2651,16 @@ pub fn playlist_view(
     text::draw(c, f, text_x, 104.0, &name, &nst);
     // The DB's own count, not the resolved length: a member whose file is gone still counts in
     // Sony's container, and silently showing a smaller number would hide that.
-    let stats = if pl.track_list.len() as u32 == pl.tracks {
+    // A smart playlist says what its rules are instead: its count is always what resolved.
+    let stats = if pl.smart {
+        format!("{} \u{b7} {}", plural(pl.tracks, "TRACK").to_uppercase(), pl.rules.to_uppercase())
+    } else if pl.track_list.len() as u32 == pl.tracks {
         plural(pl.tracks, "TRACK").to_uppercase()
     } else {
         format!("{} OF {} TRACKS AVAILABLE", pl.track_list.len(), pl.tracks)
     };
-    text::draw(c, f, text_x, 126.0, &stats, &sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1));
+    let stst = sty(Family::Mono, Weight::Regular, 12.0, t.dim, 0.1);
+    text::draw(c, f, text_x, 126.0, &crate::widgets::fit(f, &stats, &stst, W as f32 - text_x - 22.0), &stst);
     playlist_band(c, t, f, pl.track_list.len());
 
     if pl.user {
@@ -2534,6 +2683,8 @@ pub fn playlist_view(
         // one that renders empty has members whose files no longer resolve.
         let why = if pl.user {
             "Use + TRACKS above to put something in it."
+        } else if pl.smart {
+            "No song matches its rules yet. EDIT changes them."
         } else {
             "Its tracks are missing from the library."
         };

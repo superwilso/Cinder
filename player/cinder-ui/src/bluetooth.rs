@@ -101,6 +101,8 @@ pub struct Bt<'a> {
     /// The HCI capture is running (THIS DEVICE ▸ Debug log). Never persisted: every boot starts
     /// with it off, because it is a growing file in RAM.
     pub debug_log: bool,
+    /// The sound profile this output uses, "A" or "B" (THIS DEVICE ▸ Sound profile, handoff 2g).
+    pub profile: &'a str,
 }
 
 // ---- layout (shared by render + hit) ----
@@ -116,12 +118,18 @@ const PAIRED_RH: i32 = crate::scale::TRACK_ROW_H;
 /// where forgetting lives anyway.
 pub const PAIRED_SHOWN: usize = 5;
 /// THIS DEVICE (handoff 2g): its section label, then "Sound quality ›" — the codec page.
-const THIS_DEVICE_Y: i32 = PAIRED_Y0 + PAIRED_SHOWN as i32 * PAIRED_RH + 6;
+/// Straight under the list, with no gap: the section's third row (Sound profile, R5) has to end
+/// above the footer link, and the 6 px that used to sit here is what makes room for it.
+const THIS_DEVICE_Y: i32 = PAIRED_Y0 + PAIRED_SHOWN as i32 * PAIRED_RH;
 const ADV_Y: i32 = THIS_DEVICE_Y + crate::kit::SECTION_H;
 const ADV_H: i32 = crate::kit::ROW_H;
+/// THIS DEVICE ▸ Sound profile (handoff 2g): which of the two sound profiles Bluetooth uses. It
+/// opens the Profiles screen, where every output's letter is set.
+const PROFILE_Y: i32 = ADV_Y + ADV_H;
+const PROFILE_H: i32 = crate::kit::ROW_H;
 /// THIS DEVICE ▸ Debug log (`docs/PLAN_community_2026-09-23.md` B6): a switch that records the
 /// radio's HCI traffic, so a "won't connect" report can arrive with the evidence.
-const DEBUG_Y: i32 = ADV_Y + ADV_H;
+const DEBUG_Y: i32 = PROFILE_Y + PROFILE_H;
 const DEBUG_H: i32 = crate::kit::ROW_H;
 /// The PAIRED DEVICES label, whose right half is "PAIR NEW" (handoff 2g: a list's own action lives
 /// in its section label, as CLEAR does on Up Next). It sits straight under the connected card.
@@ -198,6 +206,8 @@ pub enum BtHit {
     PairedRow(usize),
     /// Open the codec / volume-control page.
     Advanced,
+    /// THIS DEVICE ▸ Sound profile: open the Profiles screen.
+    Profile,
     /// The Debug log switch.
     DebugLog,
     /// The "RECEIVER MODE ›" link in the footer.
@@ -208,6 +218,10 @@ pub enum BtHit {
 /// than repeating a pixel that silently rots when the screen moves.
 pub fn advanced_row() -> (i32, i32, i32, i32) {
     (0, ADV_Y, crate::canvas::W as i32, ADV_H)
+}
+/// The Sound profile row, as `(x, y, w, h)`.
+pub fn profile_row() -> (i32, i32, i32, i32) {
+    (0, PROFILE_Y, crate::canvas::W as i32, PROFILE_H)
 }
 /// Vertical centre of the Debug log row.
 pub fn debug_row_y() -> i32 {
@@ -279,6 +293,9 @@ pub fn hit(x: i32, y: i32, on: bool, paired: usize) -> BtHit {
     }
     if (ADV_Y..ADV_Y + ADV_H).contains(&y) {
         return BtHit::Advanced;
+    }
+    if (PROFILE_Y..PROFILE_Y + PROFILE_H).contains(&y) {
+        return BtHit::Profile;
     }
     if (DEBUG_Y..DEBUG_Y + DEBUG_H).contains(&y) {
         return BtHit::DebugLog;
@@ -464,9 +481,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     // THIS DEVICE — how this player sends to headphones: the codec page, one row rather than a
     // quarter of the screen. Codec and Enhanced Mode are set once and then never touched, so they
     // were paying for prime screen space with the thing people actually came for. The row still
-    // SHOWS what is in use, because that is the part worth glancing at. (Handoff 2g also draws a
-    // "Sound profile" row here — which A/B setup this output switches to — and that waits on
-    // per-output profiles, docs/PLAN_redesign_2026-09.md.)
+    // SHOWS what is in use, because that is the part worth glancing at. Under it, the handoff's
+    // "Sound profile" row: which of the two profiles this output switches to (`profile.rs`).
     crate::kit::section_label(c, t, f, THIS_DEVICE_Y, "THIS DEVICE", None);
     let live = bt.link_codec.map(link_codec_label);
     let want = CODECS[(bt.codec_sel as usize).min(CODECS.len() - 1)].0;
@@ -486,6 +502,8 @@ pub fn render(c: &mut Canvas, t: &Theme, f: &FontSet, bt: &Bt) {
     };
     crate::kit::row(c, t, f, ADV_Y, ADV_H,
         &crate::kit::Row::new("Sound quality").sub(&detail).trail(crate::kit::Trail::Open(&value)));
+    crate::kit::row(c, t, f, PROFILE_Y, PROFILE_H,
+        &crate::kit::Row::new("Sound profile").sub("Used while connected").trail(crate::kit::Trail::Open(bt.profile)));
     let dsub = if bt.debug_log { "Recording · switch off to save it to the drive" } else { "Record the radio's traffic for a bug report" };
     crate::kit::row(c, t, f, DEBUG_Y, DEBUG_H,
         &crate::kit::Row::new("Debug log").sub(dsub).trail(crate::kit::Trail::Switch(bt.debug_log)));
@@ -622,6 +640,7 @@ mod tests {
             fine_volume: "OFF",
             paired: &[],
             debug_log: false,
+            profile: "A",
         }
     }
 

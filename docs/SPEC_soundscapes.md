@@ -1,7 +1,7 @@
 # Soundscapes — procedural ambient sound, over the music or on its own
 
 *Written 2026-10-04. Built and host-tested the same day; the device run is
-[`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §25.*
+[`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) §28.*
 
 Menu ▸ **Soundscapes** plays a background sound like Apple's Background Sounds: rain, a storm, a
 beach, a stream, wind, a fire, a night, and white, pink and dark noise. It plays over the music or
@@ -138,7 +138,7 @@ from it by 2 or 4. Every filter has one or two poles, and events come from fixed
 stop at the highest live voice.
 
 Measured on the build host, the worst sound costs about 2–3 ms of CPU per second of audio. That
-puts it in single-digit percent of one Cortex-A7 core, but the device number belongs to §25.4.
+puts it in single-digit percent of one Cortex-A7 core, but the device number belongs to §28.4.
 
 One fault was found and fixed while measuring. Recursive filters fed by voices that fall silent
 decay through denormal floats; a −180 dB noise floor on those inputs cut the fire's cost by eight

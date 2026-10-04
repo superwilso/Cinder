@@ -66,6 +66,9 @@ pub enum Screen {
     /// Sound ▸ Advanced ▸ DAC EQ — five bands in the codec chip itself, applied by the setuid
     /// `cinder-voltable eq` helper. Same slider-field idiom as `Tone`. See `dac_eq.rs`.
     DacEq,
+    /// Sound ▸ Profile (and Bluetooth ▸ Sound profile): which of the two profiles, A or B, each
+    /// output uses — the jack, Bluetooth, USB-DAC. See `profile.rs`.
+    Profiles,
     Bluetooth,
     /// Paired-device picker (connect / disconnect / forget). Pushed from Bluetooth ▸ "Pair new
     /// device"; before 2026-07-30 `pairing.rs` rendered but had no route at all.
@@ -138,6 +141,12 @@ pub enum Screen {
     PlaylistPick,
     /// "Add tracks": the library, tapped to add into the playlist that is open.
     TrackPick,
+    /// Editing one of Cinder's own playlists (handoff 5b): move, remove, UNDO, DONE. Pushed from
+    /// the playlist page's EDIT; nothing is written until DONE. See `playlist_edit.rs`.
+    PlaylistEdit,
+    /// The saved-view editor (handoff 5c): a smart playlist's name, rules and sort. Pushed from
+    /// the Playlists tab's SMART half-row, or from a smart playlist's EDIT. See `view_edit.rs`.
+    ViewEdit,
     /// Sentinel for the Menu row that opens the Shelf. The Shelf is a bottom-sheet OVERLAY (see
     /// `shelf_open`), never pushed onto the route stack — selecting this row calls `open_shelf()`.
     Shelf,
@@ -162,6 +171,9 @@ pub enum KbPurpose {
     LibrarySearch,
     /// Save Up Next — the playing track and everything after it — as a new playlist.
     SaveQueue,
+    /// Name the saved view being edited. Screen state only, like the searches: the text goes into
+    /// the editor's draft, and nothing is written until the editor's SAVE.
+    ViewName,
 }
 
 /// What the accent band on a Library tab shuffles. Each variant matches the sub-label the band
@@ -237,6 +249,25 @@ pub struct SoundSetup {
     pub balance: usize,
     pub eq_preset: usize,
     pub eq_bands: [i8; 10],
+    // ── Sound ▸ Advanced, in the setup since R5 (2026-09-30) ─────────────────────────────────
+    // A setup is now a PROFILE: every DSP value Cinder can set, so an output can carry the whole
+    // of its tuning (see `profile.rs`). Before R5 these were deliberately left out, on the grounds
+    // that Advanced is "set once for a pair of headphones" — which is exactly what a per-output
+    // profile is, so the reason for leaving them out became the reason for putting them in.
+    /// Source Direct (bypasses the whole chain).
+    pub src_direct: bool,
+    /// Clear Phase (headphone).
+    pub clear_phase: bool,
+    /// DSEE AI. Present in the API, unverified on this hardware (see `advanced.rs`).
+    pub dsee_ai: bool,
+    /// DSEE HX Custom, and which of `advanced::DSEE_MODES`.
+    pub dsee_custom: bool,
+    pub dsee_mode: usize,
+    /// Index into `advanced::VINYL_TYPES`.
+    pub vinyl_type: usize,
+    /// Tone Control in the path instead of the 10-band EQ, and its three bands (raw half-dB).
+    pub tone: bool,
+    pub tone_bands: [i8; crate::tone::BANDS],
 }
 
 impl Default for SoundSetup {
@@ -246,7 +277,29 @@ impl Default for SoundSetup {
             balance: crate::sound::BALANCE_CENTRE,
             eq_preset: 3,                      // "A1"
             eq_bands: crate::data::EQ_PRESETS[3].1,
+            src_direct: false, clear_phase: false, dsee_ai: false, dsee_custom: false, dsee_mode: 0,
+            vinyl_type: 0, tone: false, tone_bands: [0; crate::tone::BANDS],
         }
+    }
+}
+
+impl SoundSetup {
+    /// The Advanced booleans in `App::adv_flags` bit order (bits 0..=4). Bit 5, the linear
+    /// headphone amp, is hardware and NOT part of a profile, so it is never set here.
+    pub fn adv_bits(&self) -> u8 {
+        (self.src_direct as u8)
+            | (self.clear_phase as u8) << 1
+            | (self.dsee_ai as u8) << 2
+            | (self.dsee_custom as u8) << 3
+            | (self.tone as u8) << 4
+    }
+    /// The inverse of [`Self::adv_bits`]; bit 5 and above are ignored.
+    pub fn set_adv_bits(&mut self, f: u8) {
+        self.src_direct = f & 1 != 0;
+        self.clear_phase = f & (1 << 1) != 0;
+        self.dsee_ai = f & (1 << 2) != 0;
+        self.dsee_custom = f & (1 << 3) != 0;
+        self.tone = f & (1 << 4) != 0;
     }
 }
 
@@ -323,6 +376,15 @@ pub enum Action {
     /// every cover you can choose here is already a row in the playlist. An arbitrary picture is
     /// the PC's job — drop a JPEG beside the `.m3u8` (see `playlists::Playlist::cover_source`).
     PlaylistSetCover(i64, i64),
+    /// The playlist editor's DONE: write the edited order back to the `.m3u8`. The order itself
+    /// travels out-of-band (`App::take_playlist_edit`), because `Action` is `Copy`.
+    PlaylistSaveEdit(i64),
+    /// `(track object id, stars 0..=5)` — the owner rated a track; 0 clears it. The UI has already
+    /// updated its own copy (`Library::stats`); the shell writes it to the stats file.
+    RateTrack(i64, u8),
+    /// Play the list behind `App::take_play_list` SHUFFLED — a smart playlist's Shuffle band. The
+    /// shuffled twin of `PlayListAt`, for a list that exists only as ids.
+    ShuffleList,
     ThemeChanged(bool),
     Sleep,
     EnterUsbMsc,
@@ -570,6 +632,45 @@ struct ShelfPin {
     artist_name: String,
     /// `PlaylistRow::id` of `playlist_view`, or -1.
     playlist_id: i64,
+}
+
+/// The playlist editor's working state (`playlist_edit.rs`): the playlist's rows as they were when
+/// the editor opened, the order being built, and what each change replaced.
+struct PlEdit {
+    id: i64,
+    name: String,
+    /// The members when the editor opened. A snapshot, so a library refresh underneath an open
+    /// editor cannot change what an index means.
+    rows: Vec<SongRow>,
+    /// The working order, as indices into `rows`. A removed row is simply absent.
+    order: Vec<usize>,
+    /// The order before each change, newest last — what UNDO pops.
+    undo: Vec<Vec<usize>>,
+    scroll_px: i32,
+}
+
+impl PlEdit {
+    /// Does the working order differ from the playlist as it was opened?
+    fn changed(&self) -> bool {
+        self.order.len() != self.rows.len() || self.order.iter().enumerate().any(|(i, &o)| i != o)
+    }
+
+    /// Move the row at `from` to `to` (remove, then insert — the order the drag previewed).
+    fn move_row(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.order.len() || to >= self.order.len() {
+            return;
+        }
+        self.undo.push(self.order.clone());
+        let it = self.order.remove(from);
+        self.order.insert(to, it);
+    }
+
+    fn remove_row(&mut self, at: usize) {
+        if at < self.order.len() {
+            self.undo.push(self.order.clone());
+            self.order.remove(at);
+        }
+    }
 }
 
 /// Screens a Shelf pin may point at. Anything else (modals, onboarding, the lock screen) is not a
@@ -1195,6 +1296,16 @@ pub struct App {
     setup_other: SoundSetup,
     /// 0 = A is live, 1 = B is live.
     setup_idx: usize,
+    /// Which profile (0 = A, 1 = B) each output uses, in `profile::Output::ALL` order: the jack,
+    /// Bluetooth, USB-DAC. Persisted as `profile_jack` / `profile_bt` / `profile_usb`.
+    profile_map: [usize; 3],
+    /// The output the live setup was chosen for. Compared with `current_output()` whenever the
+    /// shell reports a route, which is how a route change becomes a profile switch.
+    live_output: crate::profile::Output,
+    /// A route change switched the live profile and the shell has not re-applied the chain yet.
+    profile_apply: bool,
+    /// Sound screen scroll offset (px). The grouped list is taller than the glass.
+    sound_scroll_px: i32,
     /// Wall-clock epoch (UTC seconds), pushed by the shell about once a second. 0 = never reported,
     /// in which case the Date & time row falls back to the status-bar string rather than showing a
     /// confident 1970. NOT persisted: it is the system clock, not a preference.
@@ -1239,6 +1350,19 @@ pub struct App {
     /// The playlist member whose × is armed. First tap arms, second removes, a tap anywhere else
     /// disarms — a single tap beside a track must never be able to delete it.
     playlist_remove_arm: Option<usize>,
+    /// The playlist editor's working state, while `Screen::PlaylistEdit` is open.
+    pl_edit: Option<PlEdit>,
+    /// The order the editor's DONE produced, waiting for the shell to write it.
+    pl_edit_done: Option<(i64, Vec<i64>)>,
+    /// The saved views (`views.rs`), in the order they were made. Each draws as a smart playlist
+    /// at the top of the Library's Playlists tab. Persisted by the shell in `cinder_views.conf`.
+    views: Vec<crate::views::SavedView>,
+    /// The saved-view editor's draft, while `Screen::ViewEdit` is open: which view it is editing
+    /// (None = a new one) and the working copy. Nothing reaches `views` until SAVE.
+    view_edit: Option<(Option<usize>, crate::views::SavedView)>,
+    /// What the shuffle button deals: songs, albums or artists (Settings ▸ Shuffle). Persisted as
+    /// `shuffle_by=<word>`.
+    shuffle_by: crate::shuffle::ShuffleBy,
     /// The song a QueueOnPlay prompt is about. Held only while that modal is up: the tap has
     /// already happened, but which action it becomes depends on the answer.
     /// The play action a queue-replace prompt is holding, replayed verbatim on Confirm.
@@ -1603,6 +1727,10 @@ impl Default for App {
             snd_balance: crate::sound::BALANCE_CENTRE,
             setup_other: SoundSetup::default(),
             setup_idx: 0,
+            profile_map: [0; 3],
+            live_output: crate::profile::Output::Jack,
+            profile_apply: false,
+            sound_scroll_px: 0,
             clock_epoch: 0,
             clock_fields: [2026, 1, 1, 0, 0],
             clock_sel: 0,
@@ -1621,6 +1749,11 @@ impl Default for App {
             track_pick_scroll_px: 0,
             track_pick_order: Vec::new(),
             playlist_remove_arm: None,
+            pl_edit: None,
+            pl_edit_done: None,
+            views: Vec::new(),
+            view_edit: None,
+            shuffle_by: crate::shuffle::ShuffleBy::Songs,
             pending_play: None,
             play_list: Vec::new(),
             liked_count: 0,
@@ -1727,9 +1860,32 @@ impl App {
                 self.open_sensme();
                 return;
             }
+            Screen::PlaylistEdit => {
+                // The editor opens on a playlist Cinder owns; give the sample library one.
+                if let Some(p) = self.lib.playlists.iter_mut().find(|p| !p.smart) {
+                    p.user = true;
+                }
+                self.playlist_view = self.lib.playlists.iter().position(|p| p.user).unwrap_or(0);
+                self.stack.push(Screen::Playlist);
+                self.open_playlist_edit();
+                return;
+            }
+            Screen::ViewEdit => {
+                // A view that exists, so the Delete row is drawn, under a name long enough to test
+                // the Name row's fit.
+                self.views = vec![crate::views::SavedView {
+                    name: "Every Song I Could Not Skip This Winter, vol. 2".chars().take(48).collect(),
+                    min_rating: 4,
+                    ..Default::default()
+                }];
+                self.rebuild_smart(None);
+                self.open_view_edit(Some(0));
+                return;
+            }
             Screen::TrackInfo => {
                 // Needs rows, or it renders an empty page and audits nothing.
                 self.track_info = vec![
+                    ("Rating".into(), "-".into()),
                     ("Title".into(), "Sinfonia concertante for Violin, Viola and Orchestra in E-flat major, K. 364".into()),
                     ("Artist".into(), "Королевский филармонический оркестр / 東京都交響楽団".into()),
                     ("Path".into(), "/contents_ext/Music/Classical/Mozart/Sinfonia concertante K364/03 - III. Presto.flac".into()),
@@ -1776,6 +1932,7 @@ impl App {
         match self.kb_purpose {
             KbPurpose::Rename(_) => "Rename playlist".to_string(),
             KbPurpose::SaveQueue => "Save Up Next".to_string(),
+            KbPurpose::ViewName => "Name it".to_string(),
             KbPurpose::TrackSearch => {
                 if self.kb_text.trim().is_empty() {
                     "Find a song".to_string()
@@ -1852,6 +2009,8 @@ impl App {
             std::mem::take(&mut self.pins),
             self.locked,
             self.playing,
+            // Saved views are things the owner MADE, like playlists and pins — not preferences.
+            std::mem::take(&mut self.views),
         );
         *self = App {
             lib,
@@ -1864,6 +2023,7 @@ impl App {
             pins: keep.4,
             locked: keep.5,
             playing: keep.6,
+            views: keep.7,
             stack: vec![Screen::Settings],
             settings_sel: crate::settings::ROW_RESET,
             // The intro is not shown again: it was completed once, and re-running it would make a
@@ -2791,6 +2951,17 @@ impl App {
         }
         if self.stack.len() > 1 {
             self.boot_stock_armed = false;
+            // Leaving the playlist editor any way but DONE leaves without saving — DONE clears the
+            // state itself before it pops. Say so when there was something to lose.
+            if self.current() == Screen::PlaylistEdit {
+                self.row_drag = None;
+                if self.pl_edit.take().is_some_and(|e| e.changed()) {
+                    self.notify("Changes not saved");
+                }
+            }
+            if self.current() == Screen::ViewEdit {
+                self.view_edit = None;
+            }
             self.stack.pop();
         }
     }
@@ -3132,6 +3303,12 @@ impl App {
                 self.set_quick_enabled(!self.quick_enabled);
                 vec![]
             }
+            crate::settings::ROW_SHUFFLE => {
+                // Render-only, like Ignore "The": the shell's save path writes the file. It
+                // changes what the NEXT press of the shuffle button deals, not the list playing.
+                self.shuffle_by = self.shuffle_by.next();
+                vec![]
+            }
             crate::settings::ROW_SLEEP => {
                 // One list for this row and the pull-down panel's chips.
                 self.set_sleep_choice((self.sleep_idx + 1) % crate::quick::SLEEP_PRESETS.len())
@@ -3271,6 +3448,15 @@ impl App {
             crate::sound::ROW_ADVANCED => {
                 self.adv_sel = 0;
                 self.push(Screen::Advanced);
+                return vec![];
+            }
+            // Routes too, for the same reason: which profile each output uses, and the EQ editor.
+            crate::sound::ROW_PROFILE => {
+                self.push(Screen::Profiles);
+                return vec![];
+            }
+            crate::sound::ROW_EQ => {
+                self.push(Screen::Eq);
                 return vec![];
             }
             _ => {}
@@ -3433,6 +3619,7 @@ impl App {
                             None => vec![],
                         }
                     }
+                    crate::confirm::Ask::DeleteView => self.delete_edited_view(),
                     // The menus never produce a bare Confirm (their hit test returns named rows).
                     _ => vec![],
                 },
@@ -3639,6 +3826,19 @@ impl App {
                     }
                     return vec![];
                 }
+                // The Rating row: its five stars are the control. Tapping the star already set
+                // clears the rating, so there is a way back to "not rated".
+                let on_rating = crate::track_info::hit_row(
+                    &self.track_info_rows, self.track_info_scroll_px, y,
+                )
+                .and_then(|i| self.track_info.get(i))
+                .is_some_and(|(label, _)| crate::track_info::is_rating(label));
+                if on_rating {
+                    return match crate::track_info::star_at(x) {
+                        Some(stars) => self.rate_playing(stars),
+                        None => vec![],
+                    };
+                }
                 // "What is this part of?" — answered by going there, rather than by making the
                 // user leave, open Library and find it by hand.
                 let hit = crate::track_info::hit_row(
@@ -3669,6 +3869,8 @@ impl App {
             Screen::Keyboard => self.tap_keyboard(x, y),
             Screen::PlaylistPick => self.tap_playlist_pick(y),
             Screen::TrackPick => self.tap_track_pick(y),
+            Screen::PlaylistEdit => self.tap_playlist_edit(x, y),
+            Screen::ViewEdit => self.tap_view_edit(x, y),
             Screen::Search => self.tap_search(y),
             Screen::UpNext => {
                 use crate::up_next::Slot;
@@ -3904,12 +4106,12 @@ impl App {
                 // row's own handling would otherwise swallow it.
                 // MONO, left of CENTRE in the same row. Tested BEFORE the reset, because the two
                 // sit side by side and the slack in neither may reach the other.
-                if crate::sound::hit_balance_mono(x, y) {
+                if crate::sound::hit_balance_mono(x, y, self.sound_scroll_px) {
                     self.sound_sel = crate::sound::ROW_BALANCE;
                     self.mono = !self.mono;
                     return vec![Action::MonoChanged];
                 }
-                if crate::sound::hit_balance_reset(x, y) {
+                if crate::sound::hit_balance_reset(x, y, self.sound_scroll_px) {
                     self.sound_sel = crate::sound::ROW_BALANCE;
                     // Dead under mono, and the row draws it that way: with one signal in both
                     // channels there is no image to re-centre.
@@ -3919,13 +4121,13 @@ impl App {
                     self.snd_balance = crate::sound::BALANCE_CENTRE;
                     return vec![Action::SoundChanged];
                 }
-                if let Some(row) = crate::sound::row_at(y) {
+                if let Some(row) = crate::sound::row_at(y, self.sound_scroll_px) {
                     self.sound_sel = row;
                     // On the slider row a tap inside the grab band JUMPS the knob to the finger
                     // (the same gesture as a drag that never moved), while a tap on the label half
                     // only moves focus — so reading the row can't silently change the setting.
                     if row == crate::sound::ROW_BALANCE {
-                        if crate::sound::balance_grab(y) {
+                        if crate::sound::balance_grab(y, self.sound_scroll_px) {
                             let want = crate::sound::balance_at(x);
                             if want != self.snd_balance {
                                 self.snd_balance = want;
@@ -4018,6 +4220,12 @@ impl App {
                     }
                     self.tone_bands = [0; crate::tone::BANDS];
                     return vec![Action::SoundChanged];
+                }
+                vec![]
+            }
+            Screen::Profiles => {
+                if let Some(h) = crate::profile::hit(x, y) {
+                    return self.profiles_tap(h);
                 }
                 vec![]
             }
@@ -4116,6 +4324,12 @@ impl App {
                     },
                     BtHit::Advanced => {
                         self.push(Screen::BtCodec);
+                        vec![]
+                    }
+                    // A route: which profile Bluetooth uses is set on the Profiles screen, with
+                    // the other outputs beside it.
+                    BtHit::Profile => {
+                        self.push(Screen::Profiles);
                         vec![]
                     }
                     BtHit::DebugLog => {
@@ -4259,6 +4473,7 @@ impl App {
                 // start the LDAC bridge. Mass storage lives on Settings ▸ USB mode, not here.
                 if crate::usbdac::hit_toggle(x, y) {
                     self.usb_dac_on = !self.usb_dac_on;
+                    self.route_changed();
                     return vec![Action::UsbDacToggle(self.usb_dac_on)];
                 }
                 vec![]
@@ -4317,9 +4532,16 @@ impl App {
         }
         // "NEW PLAYLIST", between the shuffle band and the list on the Playlists tab. Tested
         // before the rows for the same reason as the filter strip: it is not part of the list.
-        if library::hit_new_playlist_at(self.lib_tab, x, y, band) {
-            self.open_keyboard(KbPurpose::NewPlaylist);
-            return vec![];
+        match library::hit_new_at(self.lib_tab, x, y, band) {
+            Some(library::NewKind::Playlist) => {
+                self.open_keyboard(KbPurpose::NewPlaylist);
+                return vec![];
+            }
+            Some(library::NewKind::Smart) => {
+                self.open_view_edit(None);
+                return vec![];
+            }
+            None => {}
         }
         // A–Z rail: right edge, over the list. Tested BEFORE the rows, because it overlays them —
         // a tap there means "jump", never "open the row underneath". Skipped entirely when the
@@ -4382,6 +4604,19 @@ impl App {
             Tab::Playlists => {
                 self.lib_idx = row;
                 let Some(p) = self.lib.playlists.get(row) else { return vec![] };
+                if p.smart {
+                    // A smart list is whatever its rules match NOW: recompute before using it, so
+                    // a song played or rated since the tab was drawn is counted.
+                    let id = p.id;
+                    self.rebuild_smart(None);
+                    let Some(row) = self.lib.playlists.iter().position(|p| p.id == id) else { return vec![] };
+                    if x >= 404 && !grid {
+                        let ids = self.playlist_ids(row);
+                        return self.start_play_list(ids, 0);
+                    }
+                    self.open_playlist(row);
+                    return vec![];
+                }
                 if x >= 404 && !grid {
                     return vec![Action::PlayPlaylist(p.id)];
                 }
@@ -4513,6 +4748,240 @@ impl App {
         self.push(Screen::Playlist);
     }
 
+    // ── Ratings, plays, saved views and the playlist editor (redesign R4) ────────────────────────
+
+    /// What the shuffle button deals, as the settings word.
+    pub fn shuffle_by(&self) -> &'static str {
+        self.shuffle_by.token()
+    }
+
+    pub fn set_shuffle_by(&mut self, word: &str) {
+        self.shuffle_by = crate::shuffle::ShuffleBy::from_token(word);
+    }
+
+    /// `cinder_views.conf`, as it should be on disk now. The shell writes it when it changes.
+    pub fn views_body(&self) -> String {
+        crate::views::serialize(&self.views)
+    }
+
+    /// Load the saved views from the file's text (the shell reads it once the volume is there).
+    pub fn set_views_body(&mut self, body: &str) {
+        self.views = crate::views::parse(body);
+        self.rebuild_smart(None);
+    }
+
+    /// Replace every track's stats (the shell, after it has read its store against a library).
+    pub fn set_stats(&mut self, stats: std::collections::HashMap<i64, crate::model::TrackStat>) {
+        self.lib.stats = stats;
+        self.rebuild_smart(None);
+    }
+
+    /// One track's stats changed (a play was counted). The default value removes the entry.
+    pub fn set_track_stat(&mut self, object_id: i64, st: crate::model::TrackStat) {
+        if st == crate::model::TrackStat::default() {
+            self.lib.stats.remove(&object_id);
+        } else {
+            self.lib.stats.insert(object_id, st);
+        }
+        if !self.views.is_empty() {
+            self.rebuild_smart(None);
+        }
+    }
+
+    /// Rate the PLAYING track `stars` (1..=5); the rating it already has clears it. The UI's copy
+    /// changes at once, and the action has the shell write it down.
+    fn rate_playing(&mut self, stars: u8) -> Vec<Action> {
+        let Some(id) = self.playing_object_id() else {
+            self.notify("Nothing is playing");
+            return vec![];
+        };
+        let mut st = self.lib.stat(id);
+        st.rating = if st.rating == stars { 0 } else { stars.min(5) };
+        let rating = st.rating;
+        self.set_track_stat(id, st);
+        vec![Action::RateTrack(id, rating)]
+    }
+
+    /// Recompute the smart playlists and put them at the top of the playlist rows, then find the
+    /// open playlist again by id (`open`, or whichever is open now).
+    ///
+    /// A smart playlist's members are copies of the matching song rows, resolved here rather than
+    /// per frame — the same trade every album and playlist page makes. It runs when something a
+    /// rule reads has changed: the library, the views, a rating, a counted play.
+    fn rebuild_smart(&mut self, open: Option<i64>) {
+        let open = open.or_else(|| self.lib.playlists.get(self.playlist_view).map(|p| p.id));
+        self.lib.playlists.retain(|p| !p.smart);
+        let now = self.clock_epoch;
+        let rows: Vec<crate::model::PlaylistRow> = self
+            .views
+            .iter()
+            .map(|v| {
+                let track_list: Vec<SongRow> =
+                    v.tracks(&self.lib, now).into_iter().map(|i| self.lib.songs[i].clone()).collect();
+                crate::model::PlaylistRow {
+                    id: v.id(),
+                    name: v.name.clone(),
+                    tracks: track_list.len() as u32,
+                    art: v.name.clone(),
+                    cover_album_id: track_list.first().map_or(0, |s| s.album_id),
+                    smart: true,
+                    rules: v.summary(),
+                    track_list,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        self.lib.playlists.splice(0..0, rows);
+        self.playlist_view = open
+            .and_then(|id| self.lib.playlists.iter().position(|p| p.id == id))
+            .unwrap_or_else(|| self.playlist_view.min(self.lib.playlists.len().saturating_sub(1)));
+        self.az_memo = None;
+    }
+
+    /// The members of `lib.playlists[idx]` as object ids, in order.
+    fn playlist_ids(&self, idx: usize) -> Vec<i64> {
+        self.lib.playlists.get(idx).map(|p| p.track_list.iter().map(|s| s.object_id).collect()).unwrap_or_default()
+    }
+
+    /// Open the editor on the playlist that is open. Only for one Cinder can write.
+    fn open_playlist_edit(&mut self) {
+        let Some(p) = self.playlist_row().filter(|p| p.user && !p.smart) else { return };
+        self.pl_edit = Some(PlEdit {
+            id: p.id,
+            name: p.name.clone(),
+            rows: p.track_list.clone(),
+            order: (0..p.track_list.len()).collect(),
+            undo: Vec::new(),
+            scroll_px: 0,
+        });
+        self.fling_v = 0.0;
+        self.push(Screen::PlaylistEdit);
+    }
+
+    fn tap_playlist_edit(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::playlist_edit as pe;
+        let Some(e) = self.pl_edit.as_mut() else { return vec![] };
+        if crate::chrome::header_action_hit(x, y) {
+            // DONE. An unchanged list writes nothing.
+            let changed = e.changed();
+            let id = e.id;
+            let ids: Vec<i64> = e.order.iter().filter_map(|&i| e.rows.get(i)).map(|s| s.object_id).collect();
+            let rows: Vec<SongRow> = e.order.iter().filter_map(|&i| e.rows.get(i).cloned()).collect();
+            let removed = e.rows.len() - rows.len();
+            self.pl_edit = None;
+            self.pop();
+            if !changed {
+                return vec![];
+            }
+            // Show the result at once; the shell's refresh after the write replaces it with the
+            // same thing read back from the file.
+            if let Some(p) = self.lib.playlists.iter_mut().find(|p| p.id == id) {
+                p.tracks = p.tracks.saturating_sub(removed as u32);
+                p.track_list = rows;
+                p.edited = true;
+            }
+            self.playlist_track_idx = 0;
+            self.playlist_scroll_px = 0;
+            self.pl_edit_done = Some((id, ids));
+            self.notify("Playlist saved");
+            return vec![Action::PlaylistSaveEdit(id)];
+        }
+        if !e.undo.is_empty() && pe::hit_undo(x, y) {
+            if let Some(prev) = e.undo.pop() {
+                e.order = prev;
+            }
+            return vec![];
+        }
+        if let Some(row) = pe::hit_remove(e.order.len(), e.scroll_px, x, y) {
+            // One tap, not the page's two: UNDO is right there in the label, and nothing is
+            // written until DONE.
+            e.remove_row(row);
+            e.scroll_px = e.scroll_px.clamp(0, pe::max_scroll(e.order.len()));
+        }
+        vec![]
+    }
+
+    /// The order the playlist editor's DONE produced: `(playlist id, member object ids in the new
+    /// order)`. Taken by the shell when it carries out `Action::PlaylistSaveEdit`.
+    pub fn take_playlist_edit(&mut self) -> Option<(i64, Vec<i64>)> {
+        self.pl_edit_done.take()
+    }
+
+    /// Open the saved-view editor: on view `at`, or on a new one.
+    fn open_view_edit(&mut self, at: Option<usize>) {
+        if at.is_none() && self.views.len() >= crate::views::MAX_VIEWS {
+            self.notify("No room for another smart playlist");
+            return;
+        }
+        let draft = at.and_then(|i| self.views.get(i).cloned()).unwrap_or_default();
+        self.view_edit = Some((at, draft));
+        self.push(Screen::ViewEdit);
+    }
+
+    fn tap_view_edit(&mut self, x: i32, y: i32) -> Vec<Action> {
+        use crate::view_edit as ve;
+        let Some((at, draft)) = self.view_edit.as_mut() else { return vec![] };
+        if crate::chrome::header_action_hit(x, y) {
+            // SAVE. An unnamed view gets a name rather than a refusal, and a name another view
+            // has is made unique, so every smart playlist keeps an id of its own.
+            let at = *at;
+            let mut v = draft.clone();
+            v.name = crate::views::unique_name(&self.views, &crate::views::clean_name(&v.name), at);
+            let id = v.id();
+            // Was the page of the view being edited open underneath? Then it should still be.
+            let was_open = at
+                .and_then(|i| self.views.get(i))
+                .map(|old| old.id())
+                .filter(|old| self.lib.playlists.get(self.playlist_view).is_some_and(|p| p.id == *old));
+            match at {
+                Some(i) if i < self.views.len() => self.views[i] = v,
+                _ => self.views.push(v),
+            }
+            self.view_edit = None;
+            self.pop();
+            self.rebuild_smart(was_open.map(|_| id));
+            // A new one lands inside itself, the way a new playlist does.
+            if at.is_none() {
+                self.open_playlist_by_id(id);
+            }
+            self.notify("Smart playlist saved");
+            return vec![];
+        }
+        if ve::hit_name(y) {
+            self.open_keyboard(KbPurpose::ViewName);
+            return vec![];
+        }
+        if let Some((section, chip)) = ve::chip_at(x, y) {
+            section.select(draft, chip);
+            return vec![];
+        }
+        if at.is_some() && ve::hit_delete(y) {
+            self.confirm = Some(crate::confirm::Ask::DeleteView);
+        }
+        vec![]
+    }
+
+    /// The Delete card's Confirm: drop the view being edited, and leave both the editor and the
+    /// smart playlist's page, which is about to stop existing.
+    fn delete_edited_view(&mut self) -> Vec<Action> {
+        let Some((Some(at), _)) = self.view_edit.take() else { return vec![] };
+        if at >= self.views.len() {
+            return vec![];
+        }
+        let id = self.views.remove(at).id();
+        if self.current() == Screen::ViewEdit {
+            self.pop();
+        }
+        let on_its_page = self.current() == Screen::Playlist
+            && self.lib.playlists.get(self.playlist_view).is_some_and(|p| p.id == id);
+        if on_its_page {
+            self.pop();
+        }
+        self.rebuild_smart(None);
+        self.notify("Smart playlist deleted");
+        vec![]
+    }
+
     /// The open playlist, or None if the library changed under us.
     fn playlist_row(&self) -> Option<&crate::model::PlaylistRow> {
         self.lib.playlists.get(self.playlist_view)
@@ -4540,6 +5009,7 @@ impl App {
             // A name to accept rather than to type: the album when the list is one album, else
             // "Up Next". Typing on this keyboard is the slow part.
             KbPurpose::SaveQueue => self.queue_save_name(),
+            KbPurpose::ViewName => self.view_edit.as_ref().map(|(_, d)| d.name.clone()).unwrap_or_default(),
             // Renaming starts from the current name: the common edit is a word, not a retype.
             KbPurpose::Rename(id) => self
                 .lib
@@ -4568,9 +5038,9 @@ impl App {
         // playlist slid into the old slot, under the old name's edits.
         let open = self.lib.playlists.get(self.playlist_view).map(|p| p.id);
         self.lib.playlists = rows;
-        self.playlist_view = open
-            .and_then(|id| self.lib.playlists.iter().position(|p| p.id == id))
-            .unwrap_or_else(|| self.playlist_view.min(self.lib.playlists.len().saturating_sub(1)));
+        // The shell's rows are the stored playlists only; the smart ones are ours to put back on
+        // top, and the open page is then found again by id among all of them.
+        self.rebuild_smart(open);
         self.playlist_remove_arm = None;
     }
 
@@ -4678,7 +5148,45 @@ impl App {
     /// A tap on the playlist page: the band's left half plays it in order and its right half
     /// shuffles it; a track row plays the WHOLE playlist starting there.
     fn tap_playlist(&mut self, x: i32, y: i32) -> Vec<Action> {
-        let Some((id, user)) = self.playlist_row().map(|p| (p.id, p.user)) else { return vec![] };
+        let Some((id, user, smart)) = self.playlist_row().map(|p| (p.id, p.user, p.smart)) else { return vec![] };
+        // EDIT, in the header's right slot: the member editor for a list Cinder owns, the rules
+        // for a smart one. Sony's draw no EDIT and `hit_playlist_edit` refuses them.
+        if self.playlist_row().is_some_and(|p| library::hit_playlist_edit(p, x, y)) {
+            self.playlist_remove_arm = None;
+            if smart {
+                let at = self.views.iter().position(|v| v.id() == id);
+                if at.is_some() {
+                    self.open_view_edit(at);
+                }
+            } else {
+                self.open_playlist_edit();
+            }
+            return vec![];
+        }
+        if smart {
+            // A smart playlist has no file and no database row: it plays as the list on screen,
+            // through the same channel the Songs tab and the artist page use.
+            let ids = self.playlist_ids(self.playlist_view);
+            if library::hit_playlist_play_band(x, y) {
+                self.playlist_track_idx = 0;
+                return self.start_play_list(ids, 0);
+            }
+            if library::hit_playlist_shuffle_band(x, y) {
+                if ids.is_empty() {
+                    return vec![];
+                }
+                self.play_list = ids;
+                return self.start_play_action(Action::ShuffleList);
+            }
+            let hit = self.playlist_row().and_then(|p| library::playlist_hit_track(p, self.playlist_scroll_px, y));
+            return match hit {
+                Some(i) => {
+                    self.playlist_track_idx = i;
+                    self.start_play_list(ids, i)
+                }
+                None => vec![],
+            };
+        }
         if library::hit_playlist_play_band(x, y) {
             self.playlist_track_idx = 0;
             return self.start_play_action(Action::PlayPlaylist(id));
@@ -4820,6 +5328,13 @@ impl App {
             KbPurpose::NewPlaylistWith(object_id) => vec![Action::PlaylistCreateWith(object_id)],
             KbPurpose::Rename(id) => vec![Action::PlaylistRename(id)],
             KbPurpose::SaveQueue => vec![Action::PlaylistCreateFromQueue],
+            KbPurpose::ViewName => {
+                let name = crate::views::clean_name(&self.kb_text);
+                if let Some((_, draft)) = self.view_edit.as_mut() {
+                    draft.name = name;
+                }
+                vec![]
+            }
         }
     }
 
@@ -5149,6 +5664,10 @@ impl App {
                 let max = crate::settings::max_scroll_px();
                 self.settings_scroll_px = (self.settings_scroll_px + dy_px).clamp(0, max);
             }
+            Screen::Sound => {
+                let max = crate::sound::max_scroll();
+                self.sound_scroll_px = (self.sound_scroll_px + dy_px).clamp(0, max);
+            }
             Screen::Device => {
                 // The extent depends on the CONTENT (the care footnote is only drawn when care is
                 // on), so it is computed from the same view the render uses rather than a constant.
@@ -5162,6 +5681,12 @@ impl App {
             Screen::TrackPick => {
                 let max = self.track_pick_max_scroll();
                 self.track_pick_scroll_px = (self.track_pick_scroll_px + dy_px).clamp(0, max);
+            }
+            Screen::PlaylistEdit => {
+                if let Some(e) = self.pl_edit.as_mut() {
+                    let max = crate::playlist_edit::max_scroll(e.order.len());
+                    e.scroll_px = (e.scroll_px + dy_px).clamp(0, max);
+                }
             }
             Screen::Search => {
                 let max = self.search_max_scroll();
@@ -5310,8 +5835,8 @@ impl App {
                 _ => false,
             },
             Screen::Sound => {
-                if crate::sound::row_at(y) == Some(crate::sound::ROW_BALANCE)
-                    && crate::sound::balance_grab(y)
+                if crate::sound::row_at(y, self.sound_scroll_px) == Some(crate::sound::ROW_BALANCE)
+                    && crate::sound::balance_grab(y, self.sound_scroll_px)
                 {
                     self.scrub = Scrub::Balance;
                     self.sound_sel = crate::sound::ROW_BALANCE;
@@ -5548,8 +6073,26 @@ impl App {
         if self.locked || self.overlay_open() || self.confirm.is_some() {
             return false;
         }
-        // Up Next is the only screen with reorderable rows on it. What is reorderable THERE is
-        // decided by the slot under the finger, below.
+        // The playlist editor's rows lift the same way: by the handle at once, or from anywhere
+        // on a hold. Its list is flat, so the slot is plain arithmetic (`playlist_edit`).
+        if self.current() == Screen::PlaylistEdit {
+            let Some(e) = self.pl_edit.as_ref() else { return false };
+            if require_grip && !crate::playlist_edit::hit_grip(x) {
+                return false;
+            }
+            let Some(from) = crate::playlist_edit::row_at(e.order.len(), e.scroll_px, y) else { return false };
+            self.fling_v = 0.0;
+            self.row_drag = Some(crate::up_next::RowDrag {
+                from,
+                to: from,
+                start_y: y,
+                y,
+                grab_off: y - crate::playlist_edit::row_top(from, e.scroll_px),
+            });
+            return true;
+        }
+        // Up Next is the only other screen with reorderable rows on it. What is reorderable THERE
+        // is decided by the slot under the finger, below.
         if self.current() != Screen::UpNext {
             return false;
         }
@@ -5596,6 +6139,11 @@ impl App {
     pub fn reorder_track(&mut self, dy: i32) {
         let Some(mut d) = self.row_drag else { return };
         d.y = d.start_y + dy;
+        if let (Screen::PlaylistEdit, Some(e)) = (self.current(), self.pl_edit.as_ref()) {
+            d.to = crate::playlist_edit::slot_for(e.order.len(), d.float_top(), e.scroll_px);
+            self.row_drag = Some(d);
+            return;
+        }
         let lay = self.up_next_layout();
         // One span, so one question: which movable position is the floating row over?
         d.to = lay.movable_slot_for(d.from, d.float_top(), self.queue_scroll_px);
@@ -5606,6 +6154,13 @@ impl App {
     /// PlayerService should be playing next.
     pub fn reorder_release(&mut self) -> Vec<Action> {
         let Some(d) = self.row_drag.take() else { return vec![] };
+        if self.current() == Screen::PlaylistEdit {
+            // Nothing for the shell yet: the order is the editor's until DONE.
+            if let Some(e) = self.pl_edit.as_mut() {
+                e.move_row(d.from, d.to);
+            }
+            return vec![];
+        }
         self.movable_move(d.from, d.to)
     }
 
@@ -5740,6 +6295,13 @@ impl App {
                 crate::playlist_pick::TOP,
                 crate::playlist_pick::BOTTOM,
             )),
+            Screen::PlaylistEdit => self.pl_edit.as_ref().map(|e| {
+                (
+                    crate::playlist_edit::max_scroll(e.order.len()),
+                    crate::playlist_edit::LIST_TOP,
+                    crate::playlist_edit::LIST_BOTTOM,
+                )
+            }),
             Screen::Folders => Some((
                 crate::folders::max_scroll_px(&self.lib, self.folder_cur()),
                 crate::folders::TOP,
@@ -5798,6 +6360,7 @@ impl App {
             Screen::PlaylistPick => self.pick_scroll_px,
             Screen::TrackPick => self.track_pick_scroll_px,
             Screen::Search => self.search_scroll_px,
+            Screen::PlaylistEdit => self.pl_edit.as_ref().map_or(0, |e| e.scroll_px),
             _ => self.lib_scroll_px,
         }
     }
@@ -6358,6 +6921,39 @@ impl App {
         // replaces it once at start-up with a clock-derived one (`App::seed_shuffle`).
         self.shuffle_seed = self.shuffle_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
         let mut x = self.shuffle_seed | 1;
+        // BY ALBUM or BY ARTIST (Settings ▸ Shuffle): deal whole groups, each in its own order,
+        // with the playing track's own group carrying on first. `shuffle::deal` says how, and
+        // falls back to songs when there is only one group to deal.
+        if self.shuffle_by != crate::shuffle::ShuffleBy::Songs {
+            let rows: Vec<crate::shuffle::Row> = self
+                .context
+                .iter()
+                .map(|t| crate::shuffle::Row {
+                    album: crate::shuffle::album_key(t.album_id, t.object_id),
+                    artist: crate::shuffle::artist_key(t.group_artist()),
+                    disc: t.disc,
+                    track: t.track,
+                })
+                .collect();
+            let grouped = {
+                let key = |r: &crate::shuffle::Row| {
+                    if self.shuffle_by == crate::shuffle::ShuffleBy::Albums { r.album } else { r.artist }
+                };
+                rows.iter().any(|r| key(r) != key(&rows[0]))
+            };
+            let mut rnd = |n: usize| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x % n as u64) as usize
+            };
+            let order = crate::shuffle::deal(&rows, self.shuffle_by, Some(0), &mut rnd);
+            let mut old: Vec<Option<SongRow>> = std::mem::take(&mut self.context).into_iter().map(Some).collect();
+            self.context = order.into_iter().filter_map(|i| old[i].take()).collect();
+            let by = if grouped { self.shuffle_by } else { crate::shuffle::ShuffleBy::Songs };
+            self.notify(by.toast());
+            return vec![Action::QueueChanged];
+        }
         let tail = &mut self.context[1..];
         for i in (1..tail.len()).rev() {
             x ^= x << 13;
@@ -6560,6 +7156,8 @@ impl App {
         self.sensme_channel = None;
         self.sensme_scroll_px = 0;
         self.sensme_scroll_saved = 0;
+        // The smart playlists are computed from the library that just arrived.
+        self.rebuild_smart(None);
         // "Last screen" was waiting for this: the place it names may be an album or a playlist,
         // and those only resolve against a library. Still only if nothing has moved since boot.
         if std::mem::take(&mut self.home_pending) && self.stack == [Screen::NowPlaying] {
@@ -7039,6 +7637,7 @@ impl App {
             Screen::UsbDac => match b {
                 Button::Select => {
                     self.usb_dac_on = !self.usb_dac_on;
+                    self.route_changed();
                     vec![Action::UsbDacToggle(self.usb_dac_on)]
                 }
                 Button::Back => {
@@ -7048,6 +7647,13 @@ impl App {
                 _ => vec![],
             },
             Screen::Soundscape => self.soundscape_button(b),
+            Screen::Profiles => match b {
+                Button::Back => {
+                    self.pop();
+                    vec![]
+                }
+                _ => vec![],
+            },
             Screen::DacEq => match b {
                 Button::Left => {
                     self.dac_eq_sel = self.dac_eq_sel.saturating_sub(1);
@@ -7173,14 +7779,13 @@ impl App {
                 _ => vec![],
             },
             Screen::Sound => match b {
-                Button::Up => {
-                    self.sound_sel = self.sound_sel.saturating_sub(1);
-                    vec![]
-                }
-                Button::Down => {
-                    if self.sound_sel + 1 < crate::sound::ROWS {
-                        self.sound_sel += 1;
-                    }
+                // The cursor walks the rows in the order they are DRAWN (`sound::ORDER`), which
+                // since the ENHANCE / SPACE / LEVEL grouping is not the order of their ids.
+                Button::Up | Button::Down => {
+                    let order = crate::sound::ORDER;
+                    let at = order.iter().position(|r| *r == self.sound_sel).unwrap_or(0);
+                    let to = if b == Button::Up { at.saturating_sub(1) } else { (at + 1).min(order.len() - 1) };
+                    self.sound_sel = order[to];
                     vec![]
                 }
                 // Select toggles the focused effect (and recentres the balance); the shell applies
@@ -7335,6 +7940,7 @@ impl App {
                     crate::library::album_view(
                         c, &theme, fonts, al, self.album_track_idx, self.album_scroll_px,
                         self.album_cover.as_ref(), self.swipe_row, self.sbar_active(),
+                        self.lib.album_rating(al),
                     );
                 } else {
                     crate::library::render(
@@ -7392,9 +7998,10 @@ impl App {
                     crate::track_info::row_heights(fonts, &theme, &self.track_info);
                 let max = self.track_info_max_scroll();
                 self.track_info_scroll_px = self.track_info_scroll_px.clamp(0, max);
+                let rating = self.playing_object_id().map_or(0, |id| self.lib.stat(id).rating);
                 crate::track_info::render(
                     c, &theme, fonts, &self.track_info, self.track_info_scroll_px,
-                    self.sbar_active(),
+                    self.sbar_active(), rating,
                 )
             }
             Screen::Lyrics => {
@@ -7506,18 +8113,27 @@ impl App {
                     // replaces the 10-band EQ rather than stacking with it.
                     source_direct: self.adv_source_direct,
                     tone_control: self.adv_tone,
+                    profile_map: self.profile_map,
+                    output: self.live_output,
                     eq_preset: data::EQ_PRESETS[self.eq_preset].0,
-                    // The signal path shows what is REALLY carrying the audio. Prefer the codec
-                    // the link negotiated; fall back to the preference only when nothing is
-                    // connected yet, where it is the honest statement of intent.
-                    bt_codec: if self.bt_on {
+                    // The signal path shows what is REALLY carrying the audio: it ends at
+                    // Bluetooth only while a sink is the route. (It used to end there whenever the
+                    // radio was merely ON, so with nothing connected the strip said BT·LDAC over
+                    // audio leaving by the jack — and since R5 the Profile row beneath it says
+                    // "3.5 mm now", two answers on one screen.) Prefer the codec the link
+                    // negotiated; until the shell has read it, the preference stands in.
+                    bt_codec: if self.bt_route {
                         self.negotiated_codec_name()
                             .or(Some(crate::bluetooth::CODECS[self.bt_codec as usize].0))
                     } else {
                         None
                     },
                 };
-                crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.setup_idx)
+                crate::sound::render(c, &theme, fonts, &snd, self.sound_sel, self.setup_idx, self.sound_scroll_px)
+            }
+            Screen::Profiles => {
+                let p = crate::profile::Profiles { map: self.profile_map, live: self.live_output };
+                crate::profile::render(c, &theme, fonts, &p)
             }
             Screen::DacEq => {
                 let d = crate::dac_eq::DacEq { bands: self.dac_eq, direct: self.adv_source_direct };
@@ -7631,6 +8247,7 @@ impl App {
                     busy_phase: self.bt_busy_phase,
                     paired: &self.bt_paired,
                     debug_log: self.bt_debug_log,
+                    profile: crate::profile::letter(self.profile_map[crate::profile::Output::Bluetooth.idx()]),
                 };
                 crate::bluetooth::render(c, &theme, fonts, &bt)
             }
@@ -7655,6 +8272,7 @@ impl App {
                     busy_phase: self.bt_busy_phase,
                     paired: &self.bt_paired,
                     debug_log: self.bt_debug_log,
+                    profile: crate::profile::letter(self.profile_map[crate::profile::Output::Bluetooth.idx()]),
                 };
                 crate::bluetooth::render_codec(c, &theme, fonts, &bt)
             }
@@ -7694,6 +8312,7 @@ impl App {
                     volume_limit: self.volume_limit,
                     ignore_the: self.ignore_the,
                     quick: self.quick_enabled,
+                    shuffle_by: self.shuffle_by.label(),
                     usb_dac: self.usb_dac_on,
                     battery_care: self.battery_care,
                     device: &self.device_summary(),
@@ -7824,18 +8443,38 @@ impl App {
                         "Title, artist or album",
                     ),
                     KbPurpose::SaveQueue => ("Save Up Next".to_string(), "Playlist name"),
+                    KbPurpose::ViewName => ("Name it".to_string(), "Smart playlist name"),
                     _ => ("New playlist".to_string(), "Playlist name"),
                 };
                 crate::keyboard::render(c, &theme, fonts, &title, &self.kb_text, placeholder,
                                         self.kb_page, self.kb_shift)
             }
+            Screen::PlaylistEdit => match self.pl_edit.as_ref() {
+                Some(e) => crate::playlist_edit::render(c, &theme, fonts, &crate::playlist_edit::EditView {
+                    name: &e.name,
+                    rows: e.order.iter().filter_map(|&i| e.rows.get(i)).collect(),
+                    scroll_px: e.scroll_px,
+                    drag: self.row_drag,
+                    can_undo: !e.undo.is_empty(),
+                    sbar_active: self.sbar_active(),
+                }),
+                None => c.fill(theme.bg),
+            },
+            Screen::ViewEdit => match self.view_edit.as_ref() {
+                Some((at, draft)) => crate::view_edit::render(c, &theme, fonts, &crate::view_edit::ViewEditView {
+                    draft,
+                    matches: draft.tracks(&self.lib, self.clock_epoch).len(),
+                    existing: at.is_some(),
+                }),
+                None => c.fill(theme.bg),
+            },
             Screen::PlaylistPick => {
                 let targets = self.user_playlists();
                 let rows: Vec<crate::playlist_pick::Target> = targets
                     .iter()
                     .map(|(_, name, tracks)| crate::playlist_pick::Target { name, tracks: *tracks })
                     .collect();
-                let sony = self.lib.playlists.iter().filter(|p| !p.user).count();
+                let sony = self.lib.playlists.iter().filter(|p| !p.user && !p.smart).count();
                 let track = self
                     .lib
                     .songs
@@ -8031,6 +8670,7 @@ impl App {
                 Screen::Artist => a.artist_scroll_px,
                 Screen::Playlist => a.playlist_scroll_px,
                 Screen::Settings => a.settings_scroll_px,
+                Screen::Sound => a.sound_scroll_px,
                 Screen::Device => a.device_scroll_px,
                 Screen::UpNext => a.queue_scroll_px,
                 Screen::Lyrics => a.lyrics_scroll_px,
@@ -8066,8 +8706,13 @@ impl App {
         if let Some(mut d) = self.row_drag {
             const EDGE_PX: i32 = 70;
             const EDGE_RATE: f32 = 520.0; // px/s at the very edge, tapering to 0 at EDGE_PX in
-            let top = crate::chrome::HEADER_BOTTOM;
-            let bot = top + crate::up_next::queue_view_h();
+            let editing = self.current() == Screen::PlaylistEdit;
+            let (top, bot) = if editing {
+                (crate::playlist_edit::LIST_TOP, crate::playlist_edit::LIST_BOTTOM)
+            } else {
+                let top = crate::chrome::HEADER_BOTTOM;
+                (top, top + crate::up_next::queue_view_h())
+            };
             let into = if d.y < top + EDGE_PX {
                 -(top + EDGE_PX - d.y) as f32 / EDGE_PX as f32
             } else if d.y > bot - EDGE_PX {
@@ -8075,7 +8720,16 @@ impl App {
             } else {
                 0.0
             };
-            if into != 0.0 {
+            if into != 0.0 && editing {
+                // The playlist editor's flat list: scroll under the held row, and re-ask where it
+                // would land.
+                if let Some(e) = self.pl_edit.as_mut() {
+                    let step = (into.clamp(-1.0, 1.0) * EDGE_RATE * dt / 1000.0) as i32;
+                    e.scroll_px = (e.scroll_px + step).clamp(0, crate::playlist_edit::max_scroll(e.order.len()));
+                    d.to = crate::playlist_edit::slot_for(e.order.len(), d.float_top(), e.scroll_px);
+                    self.row_drag = Some(d);
+                }
+            } else if into != 0.0 {
                 // Both of these read the UNIFIED layout: the edge-scroll clamps against the whole
                 // list (history + current + queue + album), and the landing slot is measured over
                 // the whole movable span.
@@ -8370,7 +9024,7 @@ impl App {
         changed
     }
 
-    // ── A/B sound setups ────────────────────────────────────────────────────────────────────
+    // ── A/B sound setups = the two sound PROFILES ──────────────────────────────────────────
     /// The live setup, as a value.
     pub fn setup(&self) -> SoundSetup {
         SoundSetup {
@@ -8378,10 +9032,16 @@ impl App {
             vpt_mode: self.snd_vpt_mode, dc: self.snd_dc, dc_type: self.snd_dc_type,
             norm: self.snd_norm, clear: self.snd_clear, balance: self.snd_balance,
             eq_preset: self.eq_preset, eq_bands: self.eq_bands,
+            src_direct: self.adv_source_direct, clear_phase: self.adv_clear_phase,
+            dsee_ai: self.adv_dsee_ai, dsee_custom: self.adv_dsee_custom,
+            dsee_mode: self.adv_dsee_mode, vinyl_type: self.adv_vinyl_type,
+            tone: self.adv_tone, tone_bands: self.tone_bands,
         }
     }
 
-    /// Make `s` the live setup.
+    /// Make `s` the live setup. Every value is clamped on the way in: a profile can arrive from a
+    /// PC-writable settings file, and several of these reach Sony enums or gain ranges that do not
+    /// clamp for themselves (an out-of-range tone band is ZEROED by the service, not clamped).
     pub fn set_setup(&mut self, s: SoundSetup) {
         self.snd_dsee = s.dsee;
         self.snd_vinyl = s.vinyl;
@@ -8394,6 +9054,14 @@ impl App {
         self.snd_balance = s.balance.min(crate::sound::BALANCE_MAX);
         self.eq_preset = s.eq_preset.min(crate::data::EQ_PRESETS.len() - 1);
         self.eq_bands = s.eq_bands;
+        self.adv_source_direct = s.src_direct;
+        self.adv_clear_phase = s.clear_phase;
+        self.adv_dsee_ai = s.dsee_ai;
+        self.adv_dsee_custom = s.dsee_custom;
+        self.adv_dsee_mode = s.dsee_mode.min(crate::advanced::DSEE_MODES.len() - 1);
+        self.adv_vinyl_type = s.vinyl_type.min(crate::advanced::VINYL_TYPES.len() - 1);
+        self.adv_tone = s.tone;
+        self.set_tone_bands(s.tone_bands);
     }
 
     /// Which setup is live: 0 = A, 1 = B.
@@ -8413,20 +9081,33 @@ impl App {
         self.setup_idx = idx & 1;
     }
 
-    /// Switch to setup `idx`. The live one is banked first, so edits are never lost by comparing.
-    /// Returns the actions needed to make the hardware match — the whole chain, because everything
-    /// in a setup can differ.
-    pub fn select_setup(&mut self, idx: usize) -> Vec<Action> {
+    /// Make setup `idx` live, banking the current one. No toast, no action: the callers decide
+    /// what to say and what the shell has to do. Returns true if anything changed.
+    fn swap_to_setup(&mut self, idx: usize) -> bool {
         let idx = idx & 1;
         if idx == self.setup_idx {
-            return vec![];
+            return false;
         }
         let live = self.setup();
         let next = self.setup_other;
         self.setup_other = live;
         self.setup_idx = idx;
         self.set_setup(next);
-        self.toast = format!("Setup {}", if idx == 0 { "A" } else { "B" });
+        true
+    }
+
+    /// Switch to setup `idx` — the Sound screen's A/B control. Since R5 this also makes it the
+    /// profile of the output that is LIVE, so the choice survives the next route change instead
+    /// of being undone by it. The live one is banked first, so edits are never lost by comparing.
+    /// Returns the actions needed to make the hardware match — the whole chain, because
+    /// everything in a setup can differ.
+    pub fn select_setup(&mut self, idx: usize) -> Vec<Action> {
+        let idx = idx & 1;
+        self.profile_map[self.live_output.idx()] = idx;
+        if !self.swap_to_setup(idx) {
+            return vec![];
+        }
+        self.toast = format!("Profile {} \u{b7} {}", crate::profile::letter(idx), self.live_output.label());
         self.toast_frames = TOAST_FRAMES;
         // ONE action, and it has to be SoundChanged. The FFI hands the shell a single code per tap
         // or press — the first shell-visible action — so the old `[EqChanged, SoundChanged]` only
@@ -8435,6 +9116,84 @@ impl App {
         // (reported 2026-09-17: "A/B doesn't actually change between two presets"). The shell's
         // SoundChanged now re-applies the EQ as well, so this one action carries the whole setup.
         vec![Action::SoundChanged]
+    }
+
+    // ── profiles per output (R5) ─────────────────────────────────────────────────────────────
+    /// The output that is live, from what the shell has reported.
+    pub fn current_output(&self) -> crate::profile::Output {
+        crate::profile::output_for(self.usb_dac_on, self.bt_route)
+    }
+
+    /// Which output the live setup was last chosen for.
+    pub fn live_output(&self) -> crate::profile::Output {
+        self.live_output
+    }
+
+    /// Profile index (0 = A, 1 = B) per output, in `profile::Output::ALL` order.
+    pub fn profile_map(&self) -> [usize; 3] {
+        self.profile_map
+    }
+
+    /// Restore the per-output choices at boot and bring the live setup in line with the output
+    /// that is live NOW. Boot is the one place the two can disagree: the file remembers which
+    /// setup was live at the last write, which is whatever output was live then — Bluetooth, say
+    /// — while the player boots with nothing connected. No apply is requested: the shell asserts
+    /// the whole chain at boot anyway (`deferred_up`), after this has run.
+    pub fn restore_profiles(&mut self, map: [usize; 3]) {
+        self.profile_map = map.map(|i| i & 1);
+        self.live_output = self.current_output();
+        self.swap_to_setup(self.profile_map[self.live_output.idx()]);
+    }
+
+    /// The route may have changed: bring the live setup in line with the new output's profile.
+    /// Called from every place the shell reports a route (`set_bt_route`, `set_usb_dac`) and
+    /// from the USB-DAC switch itself. When the live setup changes, `profile_apply` is raised for
+    /// the shell to collect with [`Self::take_profile_apply`] — these are state pushes, not taps,
+    /// so there is no action to return.
+    fn route_changed(&mut self) {
+        let out = self.current_output();
+        if out == self.live_output {
+            return;
+        }
+        self.live_output = out;
+        if self.swap_to_setup(self.profile_map[out.idx()]) {
+            self.profile_apply = true;
+            self.notify(&format!(
+                "Profile {} for {}",
+                crate::profile::letter(self.setup_idx),
+                out.label()
+            ));
+        }
+    }
+
+    /// Has a route change switched the live profile since the last call? Take-once: the shell
+    /// re-applies the chain when this returns true.
+    pub fn take_profile_apply(&mut self) -> bool {
+        std::mem::take(&mut self.profile_apply)
+    }
+
+    /// A tap on the Profiles screen.
+    fn profiles_tap(&mut self, h: crate::profile::Hit) -> Vec<Action> {
+        use crate::profile::Hit;
+        match h {
+            Hit::Output(o) => {
+                let flipped = 1 - (self.profile_map[o.idx()] & 1);
+                self.profile_map[o.idx()] = flipped;
+                // Only the LIVE output changes what is heard. Any other just changes what the
+                // player will switch to later — saved by the tap itself, nothing to apply.
+                if o == self.live_output && self.swap_to_setup(flipped) {
+                    return vec![Action::SoundChanged];
+                }
+                vec![]
+            }
+            Hit::Copy => {
+                self.setup_other = self.setup();
+                let other = crate::profile::letter(1 - self.setup_idx);
+                let live = crate::profile::letter(self.setup_idx);
+                self.notify(&format!("{other} is now a copy of {live}"));
+                vec![]
+            }
+        }
     }
 
     /// Push the wall clock (UTC epoch seconds). The shell calls this from its ~1 Hz housekeeping.
@@ -8608,6 +9367,7 @@ impl App {
             self.bt_trim = 0;
         }
         self.bt_route = on;
+        self.route_changed();
     }
 
     /// The current 10-band EQ gains (dB), for the shell to apply to the device DSP.
@@ -9026,10 +9786,10 @@ impl App {
     /// hp_amp_tick, not by the effects chain). Same shape as `sound_flags` and applied by the same
     /// CINDER_ACT_SOUND_CHANGED path.
     ///
-    /// These are deliberately NOT part of the A/B setup. A/B is for "does this EQ suit this album
-    /// better than that one"; the Advanced screen's own framing is "set these once for a pair of
-    /// headphones". Putting them in the setup would mean an A/B swap silently changed whether the
-    /// chain was bypassed at all, which is the opposite of what the control is for.
+    /// Bits 0..=4 are part of the sound PROFILE since R5 (`SoundSetup::adv_bits`): a profile is
+    /// every DSP value, and the Advanced screen's own framing — "set these once for a pair of
+    /// headphones" — is exactly what a per-output profile is for. Bit 5 is hardware of the jack
+    /// alone and stays out of it.
     pub fn adv_flags(&self) -> u8 {
         (self.adv_source_direct as u8)
             | (self.adv_clear_phase as u8) << 1
@@ -9362,6 +10122,7 @@ impl App {
         if !on {
             self.usb_dac_fmt = None;
         }
+        self.route_changed();
     }
 
     /// The host's stream format, straight from Sony's `stream_info_t` via the engine. A rate of 0
@@ -10409,8 +11170,12 @@ mod tests {
 
         // A drag: begin inside the grab band, move, release. The value follows the finger and the
         // moves apply live (that is the point of a balance control).
+        // The Balance row is below the fold since the ENHANCE / SPACE / LEVEL grouping: scroll to
+        // the end, as a finger would, and take every coordinate at that scroll.
         a.stack = vec![Screen::Sound];
-        let ty = sound::bal_track_y();
+        let sc = sound::max_scroll();
+        a.sound_scroll_px = sc;
+        let ty = sound::bal_track_y(sc);
         assert!(a.scrub_begin(sound::balance_x(BALANCE_CENTRE), ty), "the grab band did not take");
         let acts = a.scrub_move(sound::BAL_X0, ty);
         assert_eq!(a.balance(), 0, "the knob did not follow the finger");
@@ -10421,10 +11186,10 @@ mod tests {
 
 
         // The grab band is a real touch target, not the 3px track.
-        assert!(sound::balance_grab(ty - 20) && sound::balance_grab(ty + 20));
+        assert!(sound::balance_grab(ty - 20, sc) && sound::balance_grab(ty + 20, sc));
         // ...and it lives inside the Balance row, so it can't steal ClearAudio+'s taps.
-        assert_eq!(sound::row_at(ty), Some(sound::ROW_BALANCE));
-        assert_eq!(sound::row_at(sound::balance_top() - 1), Some(sound::ROW_BALANCE - 1));
+        assert_eq!(sound::row_at(ty, sc), Some(sound::ROW_BALANCE));
+        assert_eq!(sound::row_at(sound::balance_top(sc) - 1, sc), Some(sound::ROW_NORM));
 
         // Select recentres — the one useful thing a button can do to a continuous control.
         a.sound_sel = sound::ROW_BALANCE;
@@ -10434,11 +11199,11 @@ mod tests {
         // …and so does the CENTRE button, which is the touch path. It must sit INSIDE the Balance
         // row (so it reads as belonging to the slider) but clear of the grab band (so resetting
         // cannot be mistaken for the start of a drag).
-        let (rx, ry, rw, rh) = sound::balance_reset_rect();
-        assert_eq!(sound::row_at(ry), Some(sound::ROW_BALANCE));
-        assert_eq!(sound::row_at(ry + rh - 1), Some(sound::ROW_BALANCE));
+        let (rx, ry, rw, rh) = sound::balance_reset_rect(sc);
+        assert_eq!(sound::row_at(ry, sc), Some(sound::ROW_BALANCE));
+        assert_eq!(sound::row_at(ry + rh - 1, sc), Some(sound::ROW_BALANCE));
         for yy in ry..ry + rh {
-            assert!(!sound::balance_grab(yy), "the reset button overlaps the slider grab band");
+            assert!(!sound::balance_grab(yy, sc), "the reset button overlaps the slider grab band");
         }
         a.set_balance(0);
         let acts = a.tap(rx + rw / 2, ry + rh / 2);
@@ -10466,6 +11231,7 @@ mod tests {
         // Any future slider must answer false here or it will do the same.
         let mut a = unlocked();
         a.stack = vec![Screen::Sound];
+        a.sound_scroll_px = sc;
         assert!(a.scrub_begin(sound::balance_x(20), ty));
         assert!(!a.scrub_is_rail(), "the balance drag claims to be the seek rail");
         a.scrub_end();
@@ -10758,7 +11524,7 @@ mod tests {
         let screens = [
             Screen::Library, Screen::UpNext, Screen::GenreFilter, Screen::Folders,
             Screen::SensMe, Screen::TrackInfo, Screen::Lyrics, Screen::PlaylistPick,
-            Screen::TrackPick,
+            Screen::TrackPick, Screen::PlaylistEdit,
         ];
         let x = crate::canvas::W as i32 - 4;
         for screen in screens {
@@ -12255,12 +13021,12 @@ mod tests {
         let with_header = [
             Screen::Menu, Screen::Library, Screen::UpNext, Screen::Eq, Screen::Sound,
             Screen::Soundscape,
-            Screen::Advanced, Screen::Tone, Screen::DacEq, Screen::Bluetooth, Screen::BtCodec,
-            Screen::Pairing,
+            Screen::Advanced, Screen::Tone, Screen::DacEq, Screen::Profiles, Screen::Bluetooth,
+            Screen::BtCodec, Screen::Pairing,
             Screen::Settings, Screen::Device, Screen::Fm, Screen::UsbDac, Screen::Receiver,
             Screen::VizSet, Screen::ClockSet, Screen::GenreFilter, Screen::Folders,
             Screen::SensMe, Screen::TrackInfo, Screen::Lyrics, Screen::Search,
-            Screen::PlaylistPick, Screen::TrackPick,
+            Screen::PlaylistPick, Screen::TrackPick, Screen::PlaylistEdit, Screen::ViewEdit,
         ];
         for s in with_header {
             let mut a = unlocked();
@@ -14951,7 +15717,9 @@ mod tests {
     fn mono_is_a_preference_not_part_of_the_ab_setup() {
         let mut a = unlocked();
         a.go(Screen::Sound);
-        let (mx, my, mw, mh) = crate::sound::balance_mono_rect();
+        let sc = crate::sound::max_scroll();
+        a.sound_scroll_px = sc;
+        let (mx, my, mw, mh) = crate::sound::balance_mono_rect(sc);
         let (tap_x, tap_y) = (mx + mw / 2, my + mh / 2);
 
         assert!(!a.mono(), "off by default — it is an accommodation, not a default");
@@ -14983,7 +15751,8 @@ mod tests {
         b.go(Screen::Sound);
         b.set_balance(20);
         b.set_mono(true);
-        let (rx, ry, rw, rh) = crate::sound::balance_reset_rect();
+        b.sound_scroll_px = sc;
+        let (rx, ry, rw, rh) = crate::sound::balance_reset_rect(sc);
         assert!(b.tap(rx + rw / 2, ry + rh / 2).is_empty(), "CENTRE acted under mono");
         assert_eq!(b.balance(), 20, "…and the balance the user tuned is still there");
         // Switching mono off hands the slider back exactly as it was, rather than resetting it.
@@ -15354,12 +16123,174 @@ mod tests {
         let acts = a.press(Button::Select);
         assert_eq!(acts, vec![Action::SoundChanged]);
         assert_eq!(a.sound_flags() & 1, 1);
-        // move to ClearAudio+ (row 5) and toggle -> bit5 set
-        for _ in 0..5 {
-            a.press(Button::Down);
-        }
+        // ClearAudio+ is the next row DOWN in ENHANCE (the cursor walks `sound::ORDER`, the order
+        // the rows are drawn in, not the order of their ids) -> bit5 set
+        a.press(Button::Down);
+        assert_eq!(a.sound_sel, crate::sound::ROW_CLEAR);
         a.press(Button::Select);
         assert_eq!(a.sound_flags() & (1 << 5), 1 << 5);
+        // The cursor stops at both ends of the drawn order.
+        for _ in 0..crate::sound::ROWS + 2 {
+            a.press(Button::Up);
+        }
+        assert_eq!(a.sound_sel, crate::sound::ROW_PROFILE);
+        for _ in 0..crate::sound::ROWS + 2 {
+            a.press(Button::Down);
+        }
+        assert_eq!(a.sound_sel, crate::sound::ROW_ADVANCED);
+    }
+
+    // ── sound profiles per output (R5) ────────────────────────────────────────────────────────
+
+    /// A profile is EVERY DSP value: the Advanced rows travel with A/B now, and the two things that
+    /// are not tunings — mono and the jack's own amplifier — do not.
+    #[test]
+    fn a_profile_carries_the_advanced_rows_but_not_the_hardware() {
+        let mut a = unlocked();
+        a.set_adv_flags(0b11_1111); // every Advanced switch on, the linear amp included
+        a.set_dsee_mode(3);
+        a.set_vinyl_type(2);
+        a.set_tone_bands([4, -6, 8]);
+        a.set_mono(true);
+        assert_eq!(a.select_setup(1), vec![Action::SoundChanged]);
+        // B is a fresh profile: none of A's Advanced values came with it…
+        assert_eq!(a.adv_flags() & 0b1_1111, 0, "B inherited A's Advanced switches");
+        assert_eq!((a.dsee_mode(), a.vinyl_type(), a.tone_bands()), (0, 0, [0, 0, 0]));
+        // …but the amp and mono are not the profile's to change.
+        assert_eq!(a.adv_flags() & (1 << 5), 1 << 5, "the linear amp is hardware, not a profile value");
+        assert!(a.mono());
+        // And A comes back whole.
+        a.select_setup(0);
+        assert_eq!(a.adv_flags(), 0b11_1111);
+        assert_eq!((a.dsee_mode(), a.vinyl_type(), a.tone_bands()), (3, 2, [4, -6, 8]));
+    }
+
+    /// The route change is the switch: each output comes back to the profile it was given, the
+    /// shell is told to re-apply exactly once, and an output on the SAME profile asks for nothing.
+    #[test]
+    fn a_route_change_switches_to_that_outputs_profile() {
+        use crate::profile::Output;
+        let mut a = unlocked();
+        assert_eq!((a.live_output(), a.setup_idx()), (Output::Jack, 0));
+        a.go(Screen::Profiles);
+        // Give Bluetooth profile B. It is not the live output, so nothing is applied.
+        assert!(a.tap(240, crate::profile::centre(crate::profile::Hit::Output(Output::Bluetooth))).is_empty());
+        assert_eq!(a.profile_map(), [0, 1, 0]);
+        assert_eq!(a.setup_idx(), 0);
+        assert!(!a.take_profile_apply());
+
+        // Tune A on the jack, then connect headphones.
+        a.snd_dsee = true;
+        a.set_bt_route(true);
+        assert_eq!((a.live_output(), a.setup_idx()), (Output::Bluetooth, 1));
+        assert!(!a.snd_dsee, "B is live, and DSEE HX was A's");
+        assert!(a.take_profile_apply(), "the shell must re-apply the chain");
+        assert!(!a.take_profile_apply(), "…once");
+
+        // Disconnect: back to A, with its tuning.
+        a.set_bt_route(false);
+        assert_eq!((a.live_output(), a.setup_idx()), (Output::Jack, 0));
+        assert!(a.snd_dsee);
+        assert!(a.take_profile_apply());
+
+        // USB-DAC shares A with the jack: the output changes, the profile does not, nothing to do.
+        a.set_usb_dac(true);
+        assert_eq!((a.live_output(), a.setup_idx()), (Output::UsbDac, 0));
+        assert!(!a.take_profile_apply());
+        // …and DAC mode outranks a Bluetooth link made while it is on.
+        a.set_bt_route(true);
+        assert_eq!((a.live_output(), a.setup_idx()), (Output::UsbDac, 0));
+        a.set_usb_dac(false);
+        assert_eq!((a.live_output(), a.setup_idx()), (Output::Bluetooth, 1));
+        assert!(a.take_profile_apply());
+    }
+
+    /// The Sound screen's A/B picks the profile FOR THE LIVE OUTPUT, so the next route change does
+    /// not undo it; flipping the live output on the Profiles screen is the same act.
+    #[test]
+    fn ab_sets_the_live_outputs_profile() {
+        use crate::profile::{Hit, Output};
+        let mut a = unlocked();
+        a.set_bt_route(true);
+        assert_eq!(a.select_setup(1), vec![Action::SoundChanged]);
+        assert_eq!(a.profile_map(), [0, 1, 0], "B was chosen while Bluetooth was live");
+        a.set_bt_route(false);
+        assert_eq!(a.setup_idx(), 0, "the jack kept A");
+        a.set_bt_route(true);
+        assert_eq!(a.setup_idx(), 1, "Bluetooth came back to B");
+        // On the Profiles screen, the LIVE output's row applies at once.
+        a.go(Screen::Profiles);
+        let acts = a.tap(240, crate::profile::centre(Hit::Output(Output::Bluetooth)));
+        assert_eq!(acts, vec![Action::SoundChanged]);
+        assert_eq!((a.setup_idx(), a.profile_map()), (0, [0, 0, 0]));
+    }
+
+    /// "Copy A to B" makes the other profile the same as the live one, and changes nothing heard.
+    #[test]
+    fn copy_makes_the_other_profile_match_the_live_one() {
+        let mut a = unlocked();
+        a.snd_vpt = true;
+        a.snd_vpt_mode = 2;
+        a.set_tone_bands([2, 0, -2]);
+        a.go(Screen::Profiles);
+        assert!(a.tap(240, crate::profile::centre(crate::profile::Hit::Copy)).is_empty());
+        assert_eq!(a.setup_inactive(), a.setup());
+        assert_eq!(a.setup_idx(), 0);
+        a.select_setup(1);
+        assert!(a.snd_vpt && a.snd_vpt_mode == 2 && a.tone_bands() == [2, 0, -2]);
+    }
+
+    /// At boot the file's live setup is whatever output was live at the last write; the player
+    /// boots on the jack, so the jack's profile is what must be live when the chain is asserted.
+    #[test]
+    fn boot_brings_the_live_setup_in_line_with_the_jack() {
+        let mut a = unlocked();
+        let b = SoundSetup { dsee: true, ..SoundSetup::default() };
+        // Written while Bluetooth (profile B) was live: live = B, spare = A.
+        a.restore_setups(b, SoundSetup::default(), 1);
+        a.restore_profiles([0, 1, 0]);
+        assert_eq!(a.setup_idx(), 0, "the jack uses A");
+        assert!(!a.snd_dsee);
+        assert_eq!(a.setup_inactive(), b);
+        assert!(!a.take_profile_apply(), "boot asserts the chain itself");
+        // Junk indices are masked, never trusted.
+        a.restore_profiles([7, 2, 9]);
+        assert_eq!(a.profile_map(), [1, 0, 1]);
+    }
+
+    /// The Sound screen's two new rows are routes, and neither re-applies the chain.
+    #[test]
+    fn the_profile_and_equalizer_rows_open_their_screens() {
+        for (row, want) in [(crate::sound::ROW_PROFILE, Screen::Profiles), (crate::sound::ROW_EQ, Screen::Eq)] {
+            let mut a = unlocked();
+            a.go(Screen::Sound);
+            let y = crate::sound::row_top(row, 0) + crate::sound::ROW_H / 2;
+            assert!(a.tap(240, y).is_empty(), "a route must not emit SoundChanged");
+            assert_eq!(a.current(), want);
+        }
+    }
+
+    /// Bluetooth ▸ Sound profile shows Bluetooth's letter and opens the Profiles screen.
+    #[test]
+    fn the_bluetooth_sound_profile_row_opens_profiles() {
+        let mut a = unlocked();
+        a.set_bt_on(true);
+        a.go(Screen::Bluetooth);
+        let (_, y, _, h) = crate::bluetooth::profile_row();
+        assert!(a.tap(240, y + h / 2).is_empty());
+        assert_eq!(a.current(), Screen::Profiles);
+    }
+
+    /// The Sound list scrolls, and a tap lands on the row under the finger at that scroll.
+    #[test]
+    fn the_sound_list_scrolls_and_taps_follow_it() {
+        let mut a = unlocked();
+        a.go(Screen::Sound);
+        a.scroll_px(10_000);
+        assert_eq!(a.sound_scroll_px, crate::sound::max_scroll());
+        let y = crate::sound::row_top(crate::sound::ROW_ADVANCED, a.sound_scroll_px) + 20;
+        a.tap(240, y);
+        assert_eq!(a.current(), Screen::Advanced);
     }
 
     // ── Power button hold -> Power menu ───────────────────────────────────────────────────────
@@ -16660,5 +17591,326 @@ mod palette_tests {
         a.set_palettes(vec![slate()], Vec::new());
         a.set_palette_wanted("slate");
         assert_eq!(dominant(&mut a), 0x0e1116, "the Menu is painted in slate's day.bg");
+    }
+}
+
+/// Redesign R4: ratings, play counts, saved views and the playlist editor, driven through `tap`
+/// the way a finger drives them.
+#[cfg(test)]
+mod r4_tests {
+    use super::*;
+    use crate::model::{PlaylistRow, TrackStat};
+    use crate::playlist_edit as pe;
+    use crate::view_edit as ve;
+
+    fn app() -> App {
+        let mut a = App::unlocked();
+        a.set_library(Library::sample());
+        a
+    }
+
+    /// An app with one of Cinder's own playlists, six tracks long, open on its page.
+    fn on_own_playlist() -> (App, i64) {
+        let mut a = app();
+        let rows: Vec<SongRow> = a.lib.songs.iter().take(6).cloned().collect();
+        a.set_playlists(vec![PlaylistRow {
+            id: -77,
+            name: "Night Bus".into(),
+            tracks: rows.len() as u32,
+            user: true,
+            track_list: rows,
+            ..Default::default()
+        }]);
+        a.go(Screen::Library);
+        a.open_playlist_by_id(-77);
+        assert_eq!(a.current(), Screen::Playlist);
+        (a, -77)
+    }
+
+    fn ids(a: &App) -> Vec<i64> {
+        a.playlist_row().unwrap().track_list.iter().map(|s| s.object_id).collect()
+    }
+
+    const EDIT: (i32, i32) = (440, 62);
+
+    /// Press the keyboard's DONE where it is drawn.
+    fn kb_done(a: &mut App) -> Vec<Action> {
+        let page = a.kb_page;
+        let (row, col) = (0..crate::keyboard::ROWS)
+            .flat_map(|r| (0..12).map(move |c| (r, c)))
+            .find(|&(r, c)| crate::keyboard::key_at(page, r, c) == Some(crate::keyboard::Key::Done))
+            .expect("DONE is on this page");
+        let (x, y, w, h) = crate::keyboard::key_rect(page, row, col).unwrap();
+        a.tap(x + w / 2, y + h / 2)
+    }
+
+    /// The whole editor, by touch: EDIT, remove a row, drag a row, UNDO, DONE — and the action the
+    /// shell gets carries exactly the order on screen.
+    #[test]
+    fn the_playlist_editor_moves_removes_undoes_and_saves() {
+        let (mut a, id) = on_own_playlist();
+        let before = ids(&a);
+        assert!(a.tap(EDIT.0, EDIT.1).is_empty());
+        assert_eq!(a.current(), Screen::PlaylistEdit);
+
+        // × on the second row: gone at once, and nothing has been written.
+        let y1 = pe::row_top(1, 0) + pe::RH / 2;
+        assert!(a.tap(pe::REMOVE_X0 + 20, y1).is_empty());
+        assert_eq!(a.pl_edit.as_ref().unwrap().order, [0, 2, 3, 4, 5]);
+        assert_eq!(ids(&a), before, "the playlist itself is untouched until DONE");
+
+        // ≡ on the first row, dragged down two rows.
+        let y0 = pe::row_top(0, 0) + pe::RH / 2;
+        assert!(!a.reorder_begin(200, y0), "a drag that starts on the title scrolls");
+        assert!(a.reorder_begin(30, y0), "the handle lifts the row");
+        a.reorder_track(2 * pe::RH);
+        assert!(a.reorder_release().is_empty(), "nothing for the shell until DONE");
+        assert_eq!(a.pl_edit.as_ref().unwrap().order, [2, 3, 0, 4, 5]);
+
+        // UNDO takes back the move, and only the move.
+        assert!(a.tap(440, pe::LABEL_Y + 20).is_empty());
+        assert_eq!(a.pl_edit.as_ref().unwrap().order, [0, 2, 3, 4, 5]);
+        // Do the move again and save.
+        assert!(a.reorder_begin(30, y0));
+        a.reorder_track(2 * pe::RH);
+        a.reorder_release();
+
+        assert_eq!(a.tap(EDIT.0, EDIT.1), vec![Action::PlaylistSaveEdit(id)]);
+        assert_eq!(a.current(), Screen::Playlist, "DONE returns to the page");
+        let want: Vec<i64> = [2usize, 3, 0, 4, 5].iter().map(|&i| before[i]).collect();
+        assert_eq!(a.take_playlist_edit(), Some((id, want.clone())));
+        assert_eq!(ids(&a), want, "the page shows the saved order at once");
+        assert!(a.playlist_row().unwrap().edited);
+        assert_eq!(a.take_playlist_edit(), None, "taken once");
+    }
+
+    /// Back leaves without saving, and DONE with nothing changed writes nothing.
+    #[test]
+    fn the_playlist_editor_saves_only_on_done_and_only_a_change() {
+        let (mut a, _) = on_own_playlist();
+        let before = ids(&a);
+        a.tap(EDIT.0, EDIT.1);
+        a.tap(pe::REMOVE_X0 + 20, pe::row_top(0, 0) + pe::RH / 2);
+        assert!(a.press(Button::Back).is_empty());
+        assert_eq!(a.current(), Screen::Playlist);
+        assert_eq!(ids(&a), before);
+        assert!(a.pl_edit.is_none() && a.take_playlist_edit().is_none());
+
+        a.tap(EDIT.0, EDIT.1);
+        assert!(a.tap(EDIT.0, EDIT.1).is_empty(), "DONE with no change is not a write");
+        assert_eq!(a.current(), Screen::Playlist);
+        assert!(!a.playlist_row().unwrap().edited);
+    }
+
+    /// Sony's playlists are not Cinder's to edit: no EDIT is drawn and the tap opens nothing.
+    #[test]
+    fn a_sony_playlist_offers_no_editor() {
+        let mut a = app();
+        a.go(Screen::Library);
+        let i = a.lib.playlists.iter().position(|p| !p.user && !p.smart).expect("the sample has Sony rows");
+        a.open_playlist(i);
+        a.tap(EDIT.0, EDIT.1);
+        assert_eq!(a.current(), Screen::Playlist);
+    }
+
+    /// Rating by touch: Track information's stars rate the playing song, the same star again
+    /// clears it, and the album's header reads the mean.
+    #[test]
+    fn the_stars_on_track_information_rate_the_playing_song() {
+        let mut a = app();
+        let album = a.lib.albums_flat()[0].clone();
+        a.set_play_context(album.track_list.clone(), 0);
+        let playing = album.track_list[0].object_id;
+        a.set_track_info(vec![("Rating".into(), "-".into()), ("Title".into(), "x".into())]);
+        a.go(Screen::NowPlaying);
+        a.push(Screen::TrackInfo);
+        // The row heights the renderer would have measured: two one-line rows.
+        a.set_track_info_rows_for_test(vec![44, 44]);
+
+        let y = crate::track_info::TOP + 20;
+        let star = |n: i32| 176 + (n - 1) * crate::track_info::STAR_PITCH + 22;
+        assert_eq!(a.tap(star(4), y), vec![Action::RateTrack(playing, 4)]);
+        assert_eq!(a.lib.stat(playing).rating, 4);
+        assert_eq!(a.lib.album_rating(&album), Some(4), "one rated track is the album's rating");
+        assert_eq!(a.tap(star(2), y), vec![Action::RateTrack(playing, 2)]);
+        assert_eq!(a.tap(star(2), y), vec![Action::RateTrack(playing, 0)], "the same star clears it");
+        assert_eq!(a.lib.stat(playing), TrackStat::default());
+        assert!(a.lib.stats.is_empty(), "a cleared track leaves no entry behind");
+        assert_eq!(a.lib.album_rating(&album), None);
+        // Left of the stars is the label, not a star.
+        assert!(a.tap(60, y).is_empty());
+    }
+
+    /// A smart playlist end to end: SMART on the Playlists tab, a name, a rule, SAVE — and it is
+    /// on top of the list holding exactly what the rule matches, plays as that list, and follows
+    /// a rating made afterwards.
+    #[test]
+    fn a_smart_playlist_is_made_saved_listed_and_played() {
+        let mut a = app();
+        let (s0, s1) = (a.lib.songs[0].object_id, a.lib.songs[1].object_id);
+        a.set_track_stat(s0, TrackStat { rating: 5, plays: 3, last_played: 10 });
+        a.go(Screen::Library);
+        a.lib_tab = Tab::Playlists;
+        let (_, ny, _, nh) = library::new_playlist_rect();
+        a.tap(library::NEW_SPLIT_X + 40, ny + nh / 2);
+        assert_eq!(a.current(), Screen::ViewEdit);
+        a.tap(100, ve::NAME_Y + 20);
+        assert_eq!(a.current(), Screen::Keyboard);
+        a.type_for_test("Best");
+        kb_done(&mut a);
+        assert_eq!(a.current(), Screen::ViewEdit);
+        // RATING ▸ 4+ (chip 3 of 5).
+        let (cx, cw) = crate::kit::chip_span(3, 5);
+        a.tap(cx + cw / 2, ve::section_top(0) + crate::kit::SECTION_H + 10);
+        assert!(a.tap(440, 62).is_empty(), "SAVE is screen state; the shell writes the file by diff");
+
+        assert_eq!(a.current(), Screen::Playlist, "a new one lands inside itself");
+        let p = a.playlist_row().unwrap().clone();
+        assert!(p.smart && p.name == "Best" && !p.user);
+        assert_eq!(p.track_list.iter().map(|s| s.object_id).collect::<Vec<_>>(), [s0]);
+        assert!(a.lib.playlists[0].smart, "smart playlists lead the tab");
+        assert!(a.views_body().contains("[Best]\nrating=4\n"));
+
+        // It plays as the list on screen, through the same channel the Songs tab uses.
+        let (bx, by, _, bh) = library::playlist_play_band();
+        assert_eq!(a.tap(bx + 20, by + bh / 2), vec![Action::PlayListAt(0)]);
+        assert_eq!(a.take_play_list(), [s0]);
+        let (sx, sy, _, sh) = library::playlist_shuffle_band();
+        assert_eq!(a.tap(sx + 20, sy + sh / 2), vec![Action::ShuffleList]);
+        assert_eq!(a.take_play_list(), [s0]);
+
+        // A rating made later is in the list the next time it is built.
+        a.set_track_stat(s1, TrackStat { rating: 4, ..Default::default() });
+        assert_eq!(a.playlist_row().unwrap().tracks, 2);
+        // "Add to playlist" never offers it, and the picker does not count it as one of Sony's.
+        assert!(a.user_playlists().iter().all(|(_, n, _)| n != "Best"));
+    }
+
+    /// EDIT on a smart playlist opens its rules; Delete asks, then removes it and leaves its page.
+    #[test]
+    fn a_smart_playlist_is_edited_and_deleted_from_its_page() {
+        let mut a = app();
+        a.set_views_body("[Old]\nrating=3\n");
+        a.go(Screen::Library);
+        a.open_playlist_by_id(crate::views::smart_id("Old"));
+        assert_eq!(a.current(), Screen::Playlist);
+        a.tap(EDIT.0, EDIT.1);
+        assert_eq!(a.current(), Screen::ViewEdit);
+        // SORT ▸ Plays, SAVE: back on the same page, same name, new rule.
+        let (cx, cw) = crate::kit::chip_span(1, 5);
+        a.tap(cx + cw / 2, ve::section_top(3) + crate::kit::SECTION_H + 10);
+        a.tap(440, 62);
+        assert_eq!(a.current(), Screen::Playlist);
+        assert_eq!(a.views[0].sort, crate::views::ViewSort::Plays);
+        assert_eq!(a.playlist_row().unwrap().name, "Old");
+
+        a.tap(EDIT.0, EDIT.1);
+        a.tap(200, ve::DELETE_Y + 20);
+        assert!(a.modal_open());
+        let (x, y) = crate::confirm::confirm_button_centre(crate::confirm::Ask::DeleteView);
+        a.tap(x, y);
+        assert!(a.views.is_empty());
+        assert_eq!(a.current(), Screen::Library, "the page it deleted must not stay open");
+        assert!(a.lib.playlists.iter().all(|p| !p.smart));
+        // Back out of the editor of a NEW view saves nothing.
+        a.lib_tab = Tab::Playlists;
+        a.open_view_edit(None);
+        a.press(Button::Back);
+        assert!(a.views.is_empty() && a.view_edit.is_none());
+    }
+
+    /// The shell's playlist refresh replaces the stored rows; the smart ones are put back on top
+    /// and the open page is found again by id.
+    #[test]
+    fn a_playlist_refresh_keeps_the_smart_rows_and_the_open_page() {
+        let (mut a, id) = on_own_playlist();
+        a.set_views_body("[Mine]\n");
+        assert!(a.lib.playlists[0].smart);
+        assert_eq!(a.playlist_row().unwrap().id, id);
+        let rows: Vec<PlaylistRow> = a.lib.playlists.iter().filter(|p| !p.smart).cloned().collect();
+        a.set_playlists(rows);
+        assert_eq!(a.lib.playlists.iter().filter(|p| p.smart).count(), 1, "not doubled, not dropped");
+        assert_eq!(a.playlist_row().unwrap().id, id);
+    }
+
+    /// Settings ▸ Shuffle cycles songs → albums → artists, and the shuffle button then deals whole
+    /// albums in their own order, carrying on with the playing one first.
+    #[test]
+    fn shuffle_by_album_deals_whole_albums_after_the_playing_one() {
+        let mut a = App::unlocked();
+        assert_eq!(a.shuffle_by(), "songs", "the default changes nothing");
+        a.go(Screen::Settings);
+        a.settings_sel = crate::settings::ROW_SHUFFLE;
+        a.settings_activate();
+        assert_eq!(a.shuffle_by(), "albums");
+        let rows: Vec<SongRow> = (0..4i64)
+            .flat_map(|al| {
+                (1..=5).map(move |t| SongRow {
+                    title: format!("{al}-{t}"),
+                    object_id: al * 10 + t as i64,
+                    album_id: al + 1,
+                    disc: 1,
+                    track: t,
+                    artist: format!("Artist {}", al / 2),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        a.set_play_context(rows.clone(), 7); // album 2 (id 2), track 3
+        assert_eq!(a.queue_shuffle(), vec![Action::QueueChanged]);
+        let got: Vec<(i64, i32)> = a.context().iter().map(|s| (s.album_id, s.track)).collect();
+        assert_eq!(&got[..5], &[(2, 3), (2, 4), (2, 5), (2, 1), (2, 2)], "the playing album first, from the playing track");
+        for chunk in got[5..].chunks(5) {
+            assert!(chunk.iter().all(|(al, _)| *al == chunk[0].0), "an album was split: {got:?}");
+            assert_eq!(chunk.iter().map(|(_, t)| *t).collect::<Vec<_>>(), [1, 2, 3, 4, 5]);
+        }
+        // Shuffle off puts the original order back, as it does for songs.
+        a.unshuffle_context();
+        assert_eq!(a.context().iter().map(|s| s.object_id).collect::<Vec<_>>(),
+                   rows.iter().map(|s| s.object_id).collect::<Vec<_>>());
+
+        // By artist: two artists, each one's two albums back to back.
+        a.set_shuffle_by("artists");
+        a.set_play_context(rows, 0);
+        a.queue_shuffle();
+        let artists: Vec<&str> = a.context().iter().map(|s| s.artist.as_str()).collect();
+        assert_eq!(artists.windows(2).filter(|w| w[0] != w[1]).count(), 1, "{artists:?}");
+    }
+
+    /// The artist page: albums newest first, then the most played, then every song — and a most
+    /// played row plays the artist's list from that song.
+    #[test]
+    fn the_artist_page_orders_albums_by_year_and_lists_the_most_played() {
+        use crate::model::{AlbumRow, ArtistGroup};
+        let mk = |name: &str, year: &str, base: i64| AlbumRow {
+            name: name.into(),
+            artist: "A".into(),
+            year: year.into(),
+            tracks: 2,
+            album_id: base,
+            track_list: (0..2).map(|i| SongRow { title: format!("{name}{i}"), object_id: base + i, ..Default::default() }).collect(),
+            ..Default::default()
+        };
+        let mut lib = Library {
+            album_groups: vec![ArtistGroup { artist: "A".into(), albums: vec![mk("Old", "1999", 10), mk("Undated", "", 20), mk("New", "2021", 30)] }],
+            ..Default::default()
+        };
+        let p = library::artist_page(&lib, "A");
+        assert_eq!(p.albums.iter().map(|(_, a)| a.name.as_str()).collect::<Vec<_>>(), ["New", "Old", "Undated"]);
+        assert_eq!(p.albums[0].0, 2, "the flat index still opens the right album");
+        assert!(p.top.is_empty(), "nothing played: no MOST PLAYED section");
+        assert!(!p.rows.iter().any(|(_, r)| matches!(r, library::ArtistRowKind::TopSection)));
+
+        for (id, plays) in [(10, 2u32), (31, 9), (20, 5), (30, 1)] {
+            lib.stats.insert(id, TrackStat { plays, ..Default::default() });
+        }
+        let p = library::artist_page(&lib, "A");
+        let top: Vec<i64> = p.top.iter().map(|&i| p.tracks[i].song.object_id).collect();
+        assert_eq!(top, [31, 20, 10], "three, most played first");
+        let (vy, i) = p.rows.iter().find_map(|(vy, r)| match r {
+            library::ArtistRowKind::Top(i) => Some((*vy, *i)),
+            _ => None,
+        }).unwrap();
+        assert_eq!(library::artist_hit(&p, 0, library::artist_content_top() + vy + 4), Some(library::ArtistHit::Track(i)));
     }
 }

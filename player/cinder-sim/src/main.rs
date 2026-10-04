@@ -389,9 +389,11 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             source_direct: false, tone_control: false,
             // …and no transport, so mono has nothing to reach.
             mono: false, mono_live: false,
-        }, 0, 0),
+            // …and one output, on profile A.
+            profile_map: [0; 3], output: cinder_ui::profile::Output::Jack,
+        }, 0, 0, 0),
         Screen::Settings => settings::render(c, theme, fonts, 0, 0,
-            &settings::SettingsView { ignore_the: false, quick: false, volume_limit: false, usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" }),
+            &settings::SettingsView { shuffle_by: "SONGS", ignore_the: false, quick: false, volume_limit: false, usb_dac: app.usb_dac, battery_care: false, device: "78% · 34.4 °C", database: "3,424 tracks", storage: "12.4 / 58 GB", sleep: "OFF", brightness: "4 / 5", screen_off: "OFF", auto_off: "OFF", boot_stock: "SONY", clock: "17 Aug · 09:01" }),
         Screen::Bluetooth => bluetooth::render(c, theme, fonts, &Bt {
             on: app.bt_on,
             connected: app.bt_conn.map(|r| PAIRED[r].name),
@@ -405,6 +407,7 @@ fn render(app: &App, c: &mut Canvas, theme: &Theme, fonts: &FontSet) {
             enhanced_supported: true,
             paired: &[],
             debug_log: false,
+            profile: "A",
             connecting: false,
             busy_phase: 0.0,
             fine_volume: "OFF",

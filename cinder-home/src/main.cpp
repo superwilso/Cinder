@@ -744,6 +744,7 @@ void report_storage();  // defined below (with the other sysfs readers); called 
 void fx_cache_drop();    // defined below: forget what the sound service was last told
 void apply_eq_fn();      // defined below (carry_out helpers); re-applied from deferred_up on restore
 void fm_release_capture(); // defined below; hands hw:0,1 back before any DELIBERATE exit
+static void apply_profile_if_switched(const char* why);   // R5: defined after apply_sound_fn
 void apply_sound_fn();   // ditto (apply_backlight is forward-declared earlier, before render_up)
 void apply_dac_eq();     // defined below, beside hp_amp_tick: the codec's own EQ via cinder-voltable
 void write_bt_pref();    // defined below (carry_out helpers); published once at boot from deferred_up
@@ -1478,6 +1479,11 @@ void deferred_up() {
     fx_cache_drop();   // boot: nothing is known about what the stock player left behind
     run_guarded("deferred_up: apply EQ", 6, apply_eq_fn);
     run_guarded("deferred_up: apply sound chain", 6, apply_sound_fn);
+    // The whole chain has just been asserted for whichever sound profile the UI came up with, so a
+    // profile switch noted before this point (render_up reconciling the USB-DAC toggle with the
+    // gadget) has nothing left to apply. Collect it, or it would fire as a spurious re-apply on
+    // the first unrelated route report.
+    (void)cinder_take_profile_apply();
     // The DAC EQ is a table the boot script reloads flat on every boot, so a saved EQ has to be
     // put back every boot too. A flat one costs nothing: apply_dac_eq skips the helper for it.
     run_watchdog_only("deferred_up: apply DAC EQ", 6, apply_dac_eq);
@@ -2292,6 +2298,104 @@ void apply_sound_fn() {
     apply_balance(cinder_get_balance());
 }
 
+// ── Sound profiles per output (R5) ──────────────────────────────────────────────────────────
+// A profile is one of the UI's two sound setups — the EQ, every effect, the Tone Control bands and
+// the balance — and each output (jack, Bluetooth, USB-DAC) remembers which one it uses. The UI
+// swaps the live one when the shell reports a route (cinder_set_bt_route / cinder_set_usb_dac) or
+// the USB-DAC switch is tapped; the shell's half is to ask cinder_take_profile_apply() straight
+// afterwards and, when it says a swap happened, push the whole chain at the DSP. That is exactly
+// the CINDER_ACT_SOUND_CHANGED work, so it is the same three calls in the same order.
+//
+// fx_verify — READ THE CHAIN BACK. Sony's EffectCtrlDmp has a getter for nearly everything it has
+// a setter for, and until R5 cinder-home called none of them: a profile switch moves up to thirty
+// values at once, and "the setters returned" is not evidence the service holds them (the high-gain
+// lesson, and the SelectUsingEq one — every band stored, none in the path). So after a profile is
+// applied the values are read back and compared with what the UI asked for, and ONE line goes to
+// the log: `fx-verify(<why>): ok, N values` or the list of what differs.
+//
+// SIGNATURES FROM THE LIBRARY'S SYMBOL TABLE AND THE PROBE, UNVERIFIED ON DEVICE FROM INSIDE
+// cinder-home (DEVICE_CHECKLIST 26.3). cinder-probe has run every getter here with its own
+// Framework pump. cinder-home is an easel app, so the looper should already be running — but if a
+// reply is not dispatched the getters return a constant 0, which this would report as a mismatch on
+// everything that is switched on. A wall of mismatches therefore means "the read-back does not
+// work in-app", NOT "the profile did not apply"; nothing acts on the result, it is a log line.
+// The dB getters (which return FLOAT — reading them as int yields 0) are deliberately not used:
+// the raw getters echo what was sent, which is all a did-it-land check needs.
+static void fx_verify_fn(const char* why) {
+    char bad[384];
+    size_t n = 0;
+    int checks = 0;
+    bad[0] = 0;
+    auto chk = [&](const char* name, int want, int got) {
+        checks++;
+        if (want == got) return;
+        if (n < sizeof bad - 1)
+            n += (size_t)std::snprintf(bad + n, sizeof bad - n, " %s=%d(want %d)", name, got, want);
+        if (n >= sizeof bad) n = sizeof bad - 1;
+    };
+    const int f  = cinder_get_sound_flags();
+    const int af = cinder_get_adv_flags();
+    chk("dsee",       (f >> 0) & 1, cinder_effects_is_dsee_hx_on());
+    chk("vinyl",      (f >> 1) & 1, cinder_effects_is_vinylizer_on());
+    chk("vpt",        (f >> 2) & 1, cinder_effects_is_vpt_on());
+    chk("vptmode",    cinder_get_vpt_mode(), cinder_effects_get_vpt_mode());
+    chk("dc",         (f >> 3) & 1, cinder_effects_is_dc_phase_on());
+    chk("dctype",     cinder_get_dc_type(), cinder_effects_get_dc_phase_type());
+    chk("norm",       (f >> 4) & 1, cinder_effects_is_normalizer_on());
+    chk("clearaudio", (f >> 5) & 1, cinder_effects_is_clearaudio_on());
+    chk("srcdirect",  (af >> 0) & 1, cinder_effects_is_source_direct_on());
+    chk("clearphase", (af >> 1) & 1, cinder_effects_is_clear_phase_hp_on());
+    chk("dseeai",     (af >> 2) & 1, cinder_effects_is_dsee_ai_on());
+    chk("dseecustom", (af >> 3) & 1, cinder_effects_is_dsee_hx_custom());
+    chk("dseemode",   cinder_get_dsee_mode(), cinder_effects_get_dsee_hx_mode());
+    chk("tone",       (af >> 4) & 1, cinder_effects_is_tone_on());
+    chk("vinyltype",  cinder_get_vinyl_type(), cinder_effects_get_vinylizer_type());
+    chk("eqsel",      ((af >> 4) & 1) ? CINDER_TONE_SYS_TONE : CINDER_TONE_SYS_EQ10,
+                      cinder_effects_get_select_using_eq());
+    chk("bteffect",   1, cinder_effects_is_bt_effect_on());
+    {
+        signed char tb[3] = { 0, 0, 0 };
+        const int nb = cinder_get_tone_bands(tb);
+        static const char* const tn[3] = { "bass", "middle", "treble" };
+        for (int i = 0; i < nb && i < 3; i++) chk(tn[i], tb[i], cinder_effects_get_tone_value(i));
+    }
+    // The EQ is compared with what was SENT (g_eq_last), not with the UI's curve: the Bluetooth
+    // fine-volume trim is folded into the bands on the way out, so the two differ by design.
+    if (g_eq_have) {
+        static const char* const bn[10] = { "eq32", "eq64", "eq125", "eq250", "eq500",
+                                            "eq1k", "eq2k", "eq4k", "eq8k", "eq16k" };
+        for (int i = 0; i < 10; i++) chk(bn[i], g_eq_last[i], cinder_effects_get_eq_band(i));
+    }
+    char m[512];
+    if (n == 0) std::snprintf(m, sizeof m, "fx-verify(%s): ok, %d values read back as sent", why, checks);
+    else std::snprintf(m, sizeof m, "fx-verify(%s): %d values checked, differ:%s", why, checks, bad);
+    clog_(m);
+}
+
+static const char* g_fx_verify_why = "";
+static void fx_verify_thunk() { fx_verify_fn(g_fx_verify_why); }
+
+// Did a route change switch the live sound profile? If so, make the DSP match it. Called straight
+// after every place the shell tells the UI about a route. Cheap when nothing switched: one FFI
+// call that returns 0.
+static void apply_profile_if_switched(const char* why) {
+    if (!cinder_take_profile_apply()) return;
+    static const char* const out[3] = { "the 3.5 mm jack", "Bluetooth", "USB-DAC" };
+    const int o = cinder_get_profile_output();
+    char m[160];
+    std::snprintf(m, sizeof m, "profile: %s -> profile %c for %s",
+                  why, cinder_get_profile() ? 'B' : 'A', out[(o >= 0 && o < 3) ? o : 0]);
+    clog_(m);
+    // The same work, in the same order, as CINDER_ACT_SOUND_CHANGED — a profile is that action's
+    // payload, arriving by a route instead of by a tap.
+    run_guarded("profile: apply sound effects", 6, apply_sound_fn);
+    run_guarded("profile: apply EQ", 6, apply_eq_fn);
+    // Source Direct is in the profile and holds the DAC EQ flat; a compare unless that changed.
+    run_watchdog_only("profile: DAC EQ", 6, apply_dac_eq);
+    g_fx_verify_why = why;
+    run_guarded("profile: read the chain back", 6, fx_verify_thunk);
+}
+
 // ── Volume backend ──────────────────────────────────────────────────────────────────────────
 // Configured by /contents/cinder_volume.conf, populated from the discovery report (the amixer
 // control name / CXD3778GF sysfs node + range). Until that file exists, the volume keys stay a
@@ -2842,6 +2946,26 @@ void power_action(bool restart);
 
 void boot_to_sony_receiver();   // with the BT receiver, below
 
+// HAND SONY'S EQ BACK BEFORE LEAVING FOR STOCK. apply_sound_fn selects the 10-band EQ (or Tone
+// Control) with SetSelectUsingEq, and the sound service KEEPS that across a restart. The stock
+// player on this model draws the six-band and never calls the selector, so it came up with its
+// equalizer stored and not in the path: every slider moved and nothing was heard. Reported
+// 2026-10-04 (r/walkman, gnzl: "no difference in sound, whatever I do with the EQ", after Boot to
+// stock). 1 = Eq6band is where the device sat before Cinder ever called the selector (measured
+// 2026-08-17, see effect_abi.hpp EqType).
+//
+// Source Direct goes with it for the same reason: it bypasses the whole chain, Cinder's Advanced
+// page can switch it on, and stock here has no row to switch it off.
+//
+// Nothing is lost on the way back: a new process has an empty fx_dirty cache, so the next Cinder
+// boot re-sends its own selector and Source Direct with the rest of the chain.
+// *The hand-back is host-tested; not yet heard on a device (DEVICE_CHECKLIST 27.1).*
+static void stock_handback_fn() {
+    cinder_effects_set_tone_system(CINDER_TONE_SYS_EQ6);
+    cinder_effects_set_source_direct(0);
+    clog_("boot-to-stock: handed the EQ selector back to the six-band, Source Direct off");
+}
+
 void boot_to_stock() {
     bool armed = false;
     for (const char* p : { "/data/cinder/once_stock", "/contents/cinderhome_once" }) {
@@ -2856,6 +2980,9 @@ void boot_to_stock() {
         return;
     }
     clog_("boot-to-stock: armed; restarting into the Sony player");
+    // Guarded, and AFTER the flag is on disk: if the sound service is not answering, the restart
+    // still happens and still lands on stock — only the hand-back is lost.
+    run_guarded("boot-to-stock: hand the EQ back", 4, stock_handback_fn);
     fm_release_capture();
     // The soundscape line is read by SoundServiceFw, which runs under Sony's player too: a stale
     // one would keep the rain going over stock's music. tmpfs is cleared by the restart, but say
@@ -6128,6 +6255,12 @@ void refresh_bt_route() {
     const int on = g_bt_have_name ? 1 : 0;
     if (on == cinder_get_bt_route()) return;      // no change: don't log every poll
     cinder_set_bt_route(on);
+    // EACH OUTPUT COMES BACK TO ITS OWN SOUND PROFILE (R5), as it comes back to its own level
+    // below. The UI swapped the live profile inside the call above if Bluetooth and the jack use
+    // different ones. Done on BOTH edges: the connect edge re-asserts the chain further down
+    // anyway, but the DISCONNECT edge never did, and that is the one where the jack would
+    // otherwise go on playing the headphones' tuning.
+    apply_profile_if_switched(on ? "bt connect" : "bt disconnect");
     // A new link renegotiates the codec, so the previous answer is stale the moment this fires. Read
     // it on the next frame rather than up to 2 s later — a connect is exactly when the USB-DAC panel
     // is being looked at.
@@ -10123,6 +10256,9 @@ void carry_out(int act) {
             // apply_usb_dac owns guards for each Sony IPC step; the single global jump buffer
             // cannot safely be nested around the whole transition.
             apply_usb_dac();
+            // Entering or leaving DAC mode is a change of output, and USB-DAC has its own sound
+            // profile (R5). The UI swapped it when the switch was tapped; make the DSP match.
+            apply_profile_if_switched("usb-dac switch");
             break;
         case CINDER_ACT_BT_TOGGLE:
             // 8 s: SetRfOnOff + at most ~0.9 s of polling + the connect request. Deliberately not

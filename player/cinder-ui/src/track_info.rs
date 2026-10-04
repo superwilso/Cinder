@@ -118,6 +118,21 @@ pub fn is_link(label: &str) -> bool {
     matches!(label, "Artist" | "Album" | "Album artist" | "Lyrics")
 }
 
+/// The row that is a CONTROL: five stars, tapped to rate the playing song (`Action::RateTrack`).
+/// The shell sends it as an ordinary row so it scrolls and measures like the rest; its value text
+/// is not drawn — the stars are, from the rating the navigator passes to [`render`].
+pub fn is_rating(label: &str) -> bool {
+    label == "Rating"
+}
+
+/// The stars start at the value column and step a full touch target each.
+pub const STAR_PITCH: i32 = 44;
+
+/// Which star (1..=5) is under `x` on the Rating row.
+pub fn star_at(x: i32) -> Option<u8> {
+    crate::kit::star_at(VALUE_X as i32, STAR_PITCH, x)
+}
+
 /// The chevron drawn on a link row, and the gap kept clear for it.
 const LINK_MARK: &str = "\u{203a}";
 const LINK_MARK_W: f32 = 14.0;
@@ -164,6 +179,8 @@ pub fn render(
     rows: &[(String, String)],
     scroll_px: i32,
     sbar_active: bool,
+    // The playing song's rating, 0..=5, for the Rating row's stars.
+    rating: u8,
 ) {
     let scroll = scroll_px.clamp(0, max_scroll_px(f, t, rows));
     c.fill(t.bg);
@@ -195,8 +212,11 @@ pub fn render(
                 break;
             }
             text::draw(c, f, LABEL_X, (y + 27) as f32, &label.to_uppercase(), &ls);
+            if is_rating(label) {
+                crate::kit::stars(c, t, VALUE_X as i32, y + ROW_H / 2, 24, STAR_PITCH, rating, true);
+            }
             let st = if link { &link_vs } else { &vs };
-            for (i, line) in lines.iter().enumerate() {
+            for (i, line) in lines.iter().enumerate().filter(|_| !is_rating(label)) {
                 text::draw(c, f, VALUE_X, (y + 27 + i as i32 * WRAP_H) as f32, line, st);
             }
             if link {

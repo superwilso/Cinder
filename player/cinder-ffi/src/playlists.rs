@@ -97,6 +97,10 @@ pub struct Playlist {
     /// is already a row in the playlist. Both resolve through the same art cache, keyed by the
     /// path, so neither needs a second decode path — see `cover_source`.
     pub cover: Option<String>,
+    /// When the PLAYER last wrote this file, as unix seconds — the `#CINDER-EDITED:` line. None
+    /// for a file the player has never changed (one a PC tool wrote, or wrote back). It is what
+    /// the Playlists tab's EDITED tag reads, and what tells Flint a list has changes to take.
+    pub edited: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -171,8 +175,8 @@ impl Store {
         let name = clean_name(name);
         let stem = unique_stem(&name, &self.taken_stems());
         let file = self.dir.join(format!("{stem}.{EXT}"));
-        let list = Playlist { id: id_for(&stem), name, file, entries: Vec::new(), cover: None };
-        write_file(&list)?;
+        let mut list = Playlist { id: id_for(&stem), name, file, entries: Vec::new(), cover: None, edited: None };
+        write_file(&mut list)?;
         let id = list.id;
         self.lists.push(list);
         self.sort();
@@ -185,7 +189,7 @@ impl Store {
     pub fn rename(&mut self, id: i64, name: &str) -> std::io::Result<()> {
         let Some(index) = self.index_of(id) else { return Ok(()) };
         self.lists[index].name = clean_name(name);
-        write_file(&self.lists[index])?;
+        write_file(&mut self.lists[index])?;
         self.sort();
         Ok(())
     }
@@ -215,7 +219,7 @@ impl Store {
         self.lists[index]
             .entries
             .push(Entry { uri: uri.to_string(), label: label.to_string() });
-        write_file(&self.lists[index])?;
+        write_file(&mut self.lists[index])?;
         Ok(true)
     }
 
@@ -243,13 +247,75 @@ impl Store {
         Ok(added)
     }
 
+    /// Replace the members with an edited order — the playlist editor's DONE.
+    ///
+    /// `resolved[i]` is the library object id entry `i` resolved to when the page was built, or
+    /// None for an entry whose file the library does not have right now (a card that is out, a
+    /// file deleted since). `order` is the editor's result: the ids to keep, in their new order.
+    ///
+    /// **An entry the library could not resolve is never dropped by an edit.** The editor never
+    /// showed it, so the owner cannot have meant to remove it — and "the SD card was out when I
+    /// reordered" must not cost a playlist its card half. Each one stays directly after the
+    /// member it followed (or at the top, if it led the list); if that member was removed, after
+    /// the nearest one before it that was kept.
+    ///
+    /// Returns false, writing nothing, when the result is the list as it already is.
+    pub fn reorder(&mut self, id: i64, resolved: &[Option<i64>], order: &[i64]) -> std::io::Result<bool> {
+        let Some(index) = self.index_of(id) else { return Ok(false) };
+        let entries = &self.lists[index].entries;
+        if resolved.len() != entries.len() {
+            return Ok(false);
+        }
+        // Which entry each id in `order` means: the first unused entry with that id, so a file
+        // listed twice keeps both copies apart.
+        let mut slots: std::collections::HashMap<i64, std::collections::VecDeque<usize>> = Default::default();
+        for (i, r) in resolved.iter().enumerate() {
+            if let Some(oid) = r {
+                slots.entry(*oid).or_default().push_back(i);
+            }
+        }
+        let kept: Vec<usize> = order.iter().filter_map(|oid| slots.get_mut(oid)?.pop_front()).collect();
+        let is_kept: std::collections::HashSet<usize> = kept.iter().copied().collect();
+        // Each unresolved entry's anchor: the nearest KEPT member before it, or None for the top.
+        let mut leading: Vec<usize> = Vec::new();
+        let mut after: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+        let mut anchor: Option<usize> = None;
+        for (i, r) in resolved.iter().enumerate() {
+            match r {
+                Some(_) => {
+                    if is_kept.contains(&i) {
+                        anchor = Some(i);
+                    }
+                }
+                None => match anchor {
+                    Some(a) => after.entry(a).or_default().push(i),
+                    None => leading.push(i),
+                },
+            }
+        }
+        let mut next: Vec<usize> = leading;
+        for k in kept {
+            next.push(k);
+            if let Some(tail) = after.remove(&k) {
+                next.extend(tail);
+            }
+        }
+        if next.iter().copied().eq(0..entries.len()) {
+            return Ok(false);
+        }
+        let new_entries: Vec<Entry> = next.into_iter().map(|i| entries[i].clone()).collect();
+        self.lists[index].entries = new_entries;
+        write_file(&mut self.lists[index])?;
+        Ok(true)
+    }
+
     pub fn remove_at(&mut self, id: i64, position: usize) -> std::io::Result<bool> {
         let Some(index) = self.index_of(id) else { return Ok(false) };
         if position >= self.lists[index].entries.len() {
             return Ok(false);
         }
         self.lists[index].entries.remove(position);
-        write_file(&self.lists[index])?;
+        write_file(&mut self.lists[index])?;
         Ok(true)
     }
 
@@ -266,7 +332,7 @@ impl Store {
             return Ok(false);
         }
         self.lists[index].cover = next;
-        write_file(&self.lists[index])?;
+        write_file(&mut self.lists[index])?;
         Ok(true)
     }
 
@@ -424,6 +490,7 @@ fn parse_file(path: &Path) -> Option<Playlist> {
     let mut entries: Vec<Entry> = Vec::new();
     let mut pending_label = String::new();
     let mut cover: Option<String> = None;
+    let mut edited: Option<i64> = None;
 
     for line in body.lines() {
         let line = line.trim_end_matches(['\r', '\n']);
@@ -445,6 +512,11 @@ fn parse_file(path: &Path) -> Option<Playlist> {
             }
             continue;
         }
+        if let Some(rest) = trimmed.strip_prefix(EDITED_TAG) {
+            // A line with no readable time still says "edited": the flag is the fact.
+            edited = Some(rest.trim().parse::<i64>().unwrap_or(0).max(0));
+            continue;
+        }
         if let Some(rest) = trimmed.strip_prefix("#EXTINF:") {
             // "#EXTINF:<seconds>,<label>"
             pending_label = rest.split_once(',').map(|(_, l)| l.trim().to_string()).unwrap_or_default();
@@ -460,15 +532,28 @@ fn parse_file(path: &Path) -> Option<Playlist> {
         entries.push(Entry { uri: norm_uri, label: std::mem::take(&mut pending_label) });
     }
 
-    Some(Playlist { id: id_for(&stem), name, file: path.to_path_buf(), entries, cover })
+    Some(Playlist { id: id_for(&stem), name, file: path.to_path_buf(), entries, cover, edited })
 }
 
-fn write_file(list: &Playlist) -> std::io::Result<()> {
+/// The line that marks a playlist as changed on the player: `#CINDER-EDITED:<unix seconds>`.
+/// Every other m3u reader skips it as a comment. A PC tool that takes the playlist back writes
+/// the file without it, and the tag on the row goes with it. See `docs/PLAYLISTS.md`.
+const EDITED_TAG: &str = "#CINDER-EDITED:";
+
+/// Write `list` to its file, and stamp it as edited on the player: every caller is the player
+/// changing a playlist, which is exactly what the stamp records.
+fn write_file(list: &mut Playlist) -> std::io::Result<()> {
     if let Some(parent) = list.file.parent() {
         fs::create_dir_all(parent)?;
     }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    list.edited = Some(now);
     let mut body = String::from("#EXTM3U\n");
     body.push_str(&format!("#PLAYLIST:{}\n", list.name));
+    body.push_str(&format!("{EDITED_TAG}{now}\n"));
     // Written back on every save, so adding a track or renaming the list cannot quietly drop the
     // cover the user chose. Before the members, where a header directive belongs.
     if let Some(cover) = &list.cover {
@@ -532,6 +617,64 @@ mod tests {
         assert_eq!(uris(&reopened.lists[0]),
                    vec!["/contents/MUSIC/a.flac", "/contents/MUSIC/b.flac"]);
         assert_eq!(reopened.lists[0].entries[1].label, "B - Two");
+    }
+
+    /// The editor's DONE: the new order is written, and a member the library could not resolve —
+    /// one the editor never showed — stays in the file, after the member it followed.
+    #[test]
+    fn reorder_keeps_the_entries_the_editor_never_saw() {
+        let dir = Dir::new("reorder");
+        let mut store = Store::open(&dir.0);
+        let id = store.create("Mix").unwrap();
+        for n in ["a", "sd1", "b", "c", "sd2"] {
+            store.add(id, &format!("/x/{n}.flac"), n).unwrap();
+        }
+        // a, b, c resolve to ids 1, 2, 3; the two card tracks do not.
+        let resolved = [Some(1), None, Some(2), Some(3), None];
+        // Unchanged order: nothing written.
+        assert!(!store.reorder(id, &resolved, &[1, 2, 3]).unwrap());
+        // c first, b removed.
+        assert!(store.reorder(id, &resolved, &[3, 1]).unwrap());
+        let got = uris(&Store::open(&dir.0).lists[0]);
+        assert_eq!(got, ["/x/c.flac", "/x/sd2.flac", "/x/a.flac", "/x/sd1.flac"]);
+        // A stale description of the file (the wrong length) changes nothing.
+        assert!(!store.reorder(id, &[Some(1)], &[1]).unwrap());
+        // Remove everything shown: the card tracks are all that is left, in their order.
+        let resolved = [Some(3), None, Some(1), None];
+        assert!(store.reorder(id, &resolved, &[]).unwrap());
+        assert_eq!(uris(&Store::open(&dir.0).lists[0]), ["/x/sd2.flac", "/x/sd1.flac"]);
+    }
+
+    /// A file listed twice keeps both copies apart through a reorder.
+    #[test]
+    fn reorder_tells_duplicates_apart() {
+        let dir = Dir::new("reorder_dup");
+        fs::write(dir.0.join("d.m3u8"), "#EXTM3U\n/x/a.flac\n/x/b.flac\n/x/a.flac\n").unwrap();
+        let mut store = Store::open(&dir.0);
+        let id = store.lists[0].id;
+        assert!(store.reorder(id, &[Some(1), Some(2), Some(1)], &[2, 1, 1]).unwrap());
+        assert_eq!(uris(&Store::open(&dir.0).lists[0]), ["/x/b.flac", "/x/a.flac", "/x/a.flac"]);
+    }
+
+    /// Every write by the player stamps the file as edited; a file a PC wrote carries no stamp,
+    /// and other m3u readers see the stamp as a comment.
+    #[test]
+    fn a_playlist_changed_on_the_player_is_stamped_edited() {
+        let dir = Dir::new("edited");
+        fs::write(dir.0.join("pc.m3u8"), "#EXTM3U\n#PLAYLIST:From the PC\n/x/a.flac\n").unwrap();
+        let mut store = Store::open(&dir.0);
+        assert_eq!(store.lists[0].edited, None, "a PC-written file is not edited");
+        let id = store.lists[0].id;
+        store.add(id, "/x/b.flac", "B").unwrap();
+        let body = fs::read_to_string(dir.0.join("pc.m3u8")).unwrap();
+        assert!(body.lines().any(|l| l.starts_with("#CINDER-EDITED:")), "{body}");
+        let reopened = Store::open(&dir.0);
+        assert!(reopened.lists[0].edited.is_some());
+        assert_eq!(uris(&reopened.lists[0]), ["/x/a.flac", "/x/b.flac"], "the stamp is not a member");
+        // A stamp with no readable time still counts.
+        fs::write(dir.0.join("odd.m3u8"), "#EXTM3U\n#CINDER-EDITED:soon\n/x/a.flac\n").unwrap();
+        let odd = Store::open(&dir.0);
+        assert!(odd.lists.iter().find(|l| l.name == "odd").unwrap().edited.is_some());
     }
 
     #[test]

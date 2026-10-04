@@ -113,6 +113,7 @@ CXXINC=(-nostdinc++ -isystem "$LIBCXX_V1" \
 for src in "$HERE/src/main.cpp:$HERE/main.o" \
            "$AUDIO/src/player_shim.cpp:$HERE/player_shim.o" \
            "$AUDIO/src/effect_shim.cpp:$HERE/effect_shim.o" \
+           "$AUDIO/src/sound_settings_shim.cpp:$HERE/sound_settings_shim.o" \
            "$AUDIO/src/tuner_shim.cpp:$HERE/tuner_shim.o" \
            "$AUDIO/src/analyzer_shim.cpp:$HERE/analyzer_shim.o" \
            "$AUDIO/src/power_shim.cpp:$HERE/power_shim.o" \
@@ -309,7 +310,7 @@ $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
 # binder replies, which is what the "every PlayerService out-param is stack garbage" hunt needs.
 $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -L"$DEVSYS/usr/lib/arm-linux-gnueabihf" -L"$DEVSYS/lib/arm-linux-gnueabihf" \
-     "$HERE/probe.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/storage_shim.o" "$HERE/codec_shim.o" "$HERE/volume_shim.o" "$HERE/discover.o" "$HERE/glibc223_compat.o" \
+     "$HERE/probe.o" "$HERE/player_shim.o" "$HERE/effect_shim.o" "$HERE/sound_settings_shim.o" "$HERE/tuner_shim.o" "$HERE/analyzer_shim.o" "$HERE/storage_shim.o" "$HERE/codec_shim.o" "$HERE/volume_shim.o" "$HERE/discover.o" "$HERE/glibc223_compat.o" \
      -L"$SONYLIB" -L"$RAMLIB" -L"$RUSTLIB" \
      -Wl,--allow-shlib-undefined -Wl,-rpath-link,"$SONYLIB:$RAMLIB" \
      -lPlayerServiceClient -lPlayerServiceClientUtil -lpstcore -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
@@ -320,7 +321,7 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -lDisplayService \
      -lUsbMgrServiceFw \
      -lConnMgrService -lUsbDeviceConnectionService -lFuncMgrService \
-     -lEffectCtrlDmp -lMediaStoreServiceClient "$REPO/artifacts/rootfs_mnt/lib/libasound.so" \
+     -lEffectCtrlDmp -lSoundServiceSettingsDmp -lMediaStoreServiceClient "$REPO/artifacts/rootfs_mnt/lib/libasound.so" \
      -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$PROBE"
