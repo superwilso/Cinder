@@ -211,6 +211,31 @@ int main(int argc, char** argv)
         ambient(dir, NULL);
     }
 
+    /* The late-write log: two writes 150 ms apart are 2 ms of audio each, so the second is late;
+     * a gap past two seconds is a pause and is not. */
+    {
+        char lp[600];
+        snprintf(lp, sizeof lp, "%s/cinder_mono.log", dir);
+        int rt = roundtrip(cli, srv, pcm, sizeof pcm, got, 0);
+        unlink(lp);                                     /* whatever the rounds above were, they are not this */
+        nap(150);
+        rt |= roundtrip(cli, srv, pcm, sizeof pcm, got, 0);
+        int late = 0;
+        FILE* lf = fopen(lp, "r");
+        if (lf) { char ln[400]; while (fgets(ln, sizeof ln, lf)) late += strstr(ln, "bt: late") != NULL; fclose(lf); }
+        if (expect_active) check(rt == 0 && late == 1, "bt: a write that arrives 150 ms late is logged, once");
+        else check(rt == 0 && late == 0, "bt: in any other process nothing is timed");
+        if (expect_active) {
+            struct timespec two = { 2, 100000000L };
+            nanosleep(&two, NULL);
+            rt = roundtrip(cli, srv, pcm, sizeof pcm, got, 0) | roundtrip(cli, srv, pcm, sizeof pcm, got, 0);
+            late = 0;
+            lf = fopen(lp, "r");
+            if (lf) { char ln[400]; while (fgets(ln, sizeof ln, lf)) late += strstr(ln, "bt: late") != NULL; fclose(lf); }
+            check(rt == 0 && late == 1, "bt: a two-second pause is not a late write");
+        }
+    }
+
     /* An fd that never connected to the transmitter is never touched. */
     int pair[2];
     socketpair(AF_UNIX, SOCK_STREAM, 0, pair);

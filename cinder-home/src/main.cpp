@@ -661,6 +661,54 @@ static void mono_shim_poll() {
              : "mono: libcinder_mono.so is not loaded — mono reaches USB-DAC -> LDAC only");
 }
 
+// ── PROOF FOR THE hagodaemon WRAPPER'S TRIAL (deploy/cinder-guard.sh) ───────────────────────────
+// On a player with the `preload` component, src/cinder-hagowrap.c stands in front of every Sony
+// service, and the boot guard takes it away again unless the last boot left proof that it works.
+// The guard runs before anything is up and can only read files, so this writes them:
+//   hago_up    this boot reached a healthy Cinder, so every Sony service started through it
+//   hago_play  playback has been asked for and has not yet been heard to run
+//   hago_ok    audio ran for five seconds through the sound service the wrapper preloads
+// hago_play is the one that matters when it goes wrong: the first wrapper build took the sound
+// service down at the first hw_params, a healthy boot later, and the player rebooted. A pause or an
+// orderly power-off before the five seconds removes it — that is somebody stopping the music, not
+// the music failing to start. Nothing here runs on a player without the wrapper.
+static int g_hago = -1;        // -1 not looked yet, 0 no wrapper on this player, 1 there is one
+static int g_hago_run_s = 0;
+static bool g_hago_proven = false;   // audio has run this boot: nothing more to say about playback
+static const char kHagoReal[] = "/system/vendor/sony/bin/hagodaemon.real";
+static void hago_touch(const char* path) {
+    int fd = ::open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+    if (fd >= 0) ::close(fd);
+}
+static bool hago_watching() {
+    // stat, not access: the off-device harness answers stat from its own tree and leaves access
+    // real, and this is a rule worth being able to run there.
+    if (g_hago < 0) { struct stat st; g_hago = ::stat(kHagoReal, &st) == 0 ? 1 : 0; }
+    return g_hago == 1;
+}
+static void hago_note_healthy() {
+    if (!hago_watching()) return;
+    hago_touch("/data/cinder/hago_up");
+    clog_("wrapper: this boot came up through cinder-hagowrap (proof left for the boot guard)");
+}
+static void hago_note_transport(bool playing) {
+    if (g_hago_proven || !hago_watching()) return;
+    g_hago_run_s = 0;
+    if (playing) hago_touch("/data/cinder/hago_play");
+    else ::unlink("/data/cinder/hago_play");
+}
+// 1 Hz. `running` is the real thing, not the intent: g_playing starts true on every boot.
+static void hago_tick(bool running) {
+    if (g_hago_proven || !hago_watching()) return;
+    if (!running) { g_hago_run_s = 0; return; }
+    if (++g_hago_run_s < 5) return;
+    hago_touch("/data/cinder/hago_ok");
+    ::unlink("/data/cinder/hago_play");
+    ::sync();
+    g_hago_proven = true;
+    clog_("wrapper: audio has run for 5 s through the preloaded sound service — confirmed for the boot guard");
+}
+
 void render_up() {
     if (g_render_ready) return;
     clog_("render_up: cinder_render_init");
@@ -1645,6 +1693,7 @@ void mark_healthy_maybe() {
         ::sync();
         g_counter_reset = true;
         clog_("healthy: bad-boot counter cleared");
+        hago_note_healthy();
         // The mono library's load count (src/cinder-mono.c): SoundServiceFw came up and this boot is
         // healthy, so that load did not take the player down. Two uncleared counts put the library in
         // safe mode on the next boot.
@@ -1915,6 +1964,7 @@ static void set_transport(bool playing) {
     // Music is about to take the output: the soundscape's own player gives it back first, or
     // Sony's sound service would find the jack PCM (or the transmitter's socket) taken.
     if (playing) ambient_yield_for_music();
+    hago_note_transport(playing);
     g_playing = playing;
     g_user_paused = !playing;
     g_transport_at = now_ms();
@@ -1938,6 +1988,12 @@ static void keymap_defaults() {
     set(116, CINDER_BTN_POWER);                                 // power (event0)
     set(35,  CINDER_BTN_HOLD);                                  // hold/lock switch
     set(164, CINDER_BTN_PLAY);   set(200, CINDER_BTN_PLAY);     // PLAYPAUSE / PLAYCD (sim/qemu)
+    // AVRCP's discrete PAUSE and STOP. Headphones that track the player's state send PLAY when
+    // they think it is paused and PAUSE when they think it is playing, and until 2026-10-05 only
+    // the first was mapped: six PAUSE presses in a row did nothing in the owner's log, and the
+    // seventh thing they did was switch the headphones off. Mapped to the same button, and made
+    // one-way where the key is read (they pause, they never start).
+    set(201, CINDER_BTN_PLAY);   set(166, CINDER_BTN_PLAY);     // PAUSECD / STOPCD
     set(163, CINDER_BTN_NEXT);   set(165, CINDER_BTN_PREV);     // NEXTSONG / PREVIOUSSONG
     set(158, CINDER_BTN_BACK);   set(1,   CINDER_BTN_BACK);     // BACK / ESC (sim/qemu)
 }
@@ -5862,6 +5918,7 @@ static CinderNfcListener g_nfc_listener;   // static: the proxy keeps a RAW poin
 static void* g_nfc_client = nullptr;
 static bool  g_nfc_running = false;
 static int   g_nfc_arm_tries = 0;   // bounds the retry; see the render loop
+static long  g_nfc_start_ms = 0;    // how long the last Start() took: it runs on the render loop
 // How hard to try to bring the reader up, and how far apart. BOTH halves matter: the count alone
 // is meaningless in a block that runs per-frame (see the render loop's NFC section).
 enum { NFC_ARM_TRIES = 10, NFC_ARM_EVERY_MS = 2000 };
@@ -5893,16 +5950,25 @@ static bool nfc_start() {
         ((fnadd)vt[VIDX_NfcAddListener])(g_nfc_client, (void*)&g_nfc_listener, &key);
         ((fn0)vt[VIDX_NfcOpen])(g_nfc_client);
         unsigned mode = 1;                      // the tag-reading mode; see the note above
+        const long nfc_t0 = now_ms();
         int rc = ((fnu)vt[VIDX_NfcStart])(g_nfc_client, &mode);
+        g_nfc_start_ms = now_ms() - nfc_t0;
         int md = ((fn0)vt[VIDX_NfcGetCurrentMode])(g_nfc_client);
         char m[128];
         std::snprintf(m, sizeof m, "nfc: Start(1) rc=%d mode=%d%s", rc, md,
                       (rc == 0 || rc == 3) ? " — tap-to-pair armed" : " — NOT armed");
         clog_(m);
+        // Start() runs on the render loop. Say so when it is long enough to be felt as a hitch.
+        if (g_nfc_start_ms >= 50) {
+            std::snprintf(m, sizeof m, "nfc: arming took %ld ms on the render loop", g_nfc_start_ms);
+            clog_(m);
+        }
         g_nfc_running = (rc == 0 || rc == 3);
     } catch (...) { clog_("nfc: bring-up threw"); g_nfc_running = false; }
     return g_nfc_running;
 }
+
+static bool g_nfc_paused = false;   // polling stopped for a dark screen; the reader is still open
 
 static void nfc_stop() {
     if (!g_nfc_client || !g_nfc_running) return;
@@ -5915,7 +5981,44 @@ static void nfc_stop() {
         ((fnrem)vt[VIDX_NfcRemoveListener])(g_nfc_client, (unsigned)(uintptr_t)&g_nfc_listener);
     } catch (...) {}
     g_nfc_running = false;
+    g_nfc_paused = false;
     clog_("nfc: reader stopped");
+}
+
+// ── NO POLLING BEHIND A DARK SCREEN (2026-10-05) ────────────────────────────────────────────────
+// The reader looks for a tag for as long as it is started, and it was started for as long as the
+// radio was on: every hour of screen-off listening in a pocket, looking for headphones to pair
+// with. A tap is done with the player in the hand and the screen lit.
+//
+// STOP AND START ONLY — the reader stays open and the listener stays registered. The first cut
+// used nfc_stop()/nfc_start(), and measured on the player the way back cost 0.78 s ON THE RENDER
+// LOOP at every wake (Power pressed at 74.14 s, armed at 74.92 s, and the Power release was not
+// read until 1.34 s after the press). Start() alone is under 50 ms; the rest is Open().
+// If the bare Start is refused, the reader is closed properly and the bounded arm loop brings it
+// up the long way: slower once, never stuck off.
+static void nfc_pause() {
+    if (!g_nfc_client || !g_nfc_running || g_nfc_paused) return;
+    void** vt = *(void***)g_nfc_client;
+    typedef int (*fn0)(void*);
+    try { ((fn0)vt[VIDX_NfcStop])(g_nfc_client); } catch (...) {}
+    g_nfc_paused = true;
+    clog_("nfc: polling stopped while the screen is dark (the reader stays open)");
+}
+static void nfc_resume() {
+    if (!g_nfc_client || !g_nfc_running || !g_nfc_paused) return;
+    void** vt = *(void***)g_nfc_client;
+    typedef int (*fnu)(void*, const unsigned*);
+    int rc = -1;
+    const long t0 = now_ms();
+    try { unsigned mode = 1; rc = ((fnu)vt[VIDX_NfcStart])(g_nfc_client, &mode); } catch (...) {}
+    char m[112];
+    std::snprintf(m, sizeof m, "nfc: polling again, Start(1) rc=%d in %ld ms", rc, now_ms() - t0);
+    clog_(m);
+    g_nfc_paused = false;
+    if (rc != 0 && rc != 3) {
+        clog_("nfc: the reader would not start again as it stood — closing it and arming from scratch");
+        nfc_stop();
+    }
 }
 
 // The address a tap asked us to connect once the pairing table catches up. Empty = nothing pending.
@@ -11357,6 +11460,13 @@ void input_pump() {
                 if (kc < 0 || kc >= keymap_size()) continue;
                 int btn = g_keymap[kc];
                 if (btn < 0) continue;
+                // PAUSE and STOP only ever pause. On the play/pause button they would toggle, and a
+                // headset that sends PAUSE to a player that is already paused would start it.
+                if ((kc == 201 || kc == 166) && btn == CINDER_BTN_PLAY
+                        && !(g_playing && cinder_audio_is_playing())) {
+                    clog_("input: PAUSE from the headphones while nothing is playing — ignored");
+                    continue;
+                }
                 // Any mapped key press counts as activity for the idle blank. A key ALSO wakes an
                 // idle blank — and unlike a touch it is still delivered: the physical buttons do
                 // the same thing whether or not you can see the screen (transport, volume), so
@@ -12450,6 +12560,16 @@ void* render_driver(void*) {
                 }
                 // A radio toggle is the user asking again, so it re-earns the attempts.
                 if (!want_nfc) { g_nfc_arm_tries = 0; last_nfc_arm_ms = 0; }
+                // The screen only pauses the poll (see nfc_pause). Thirty dark seconds first, so a
+                // glance at the clock costs nothing; back on within a frame of the screen.
+                static long nfc_dark_since_ms = 0;
+                if (g_screen_on) nfc_dark_since_ms = 0;
+                else if (nfc_dark_since_ms == 0) nfc_dark_since_ms = now_ms();
+                const bool nfc_dark = nfc_dark_since_ms != 0 && now_ms() - nfc_dark_since_ms >= 30000;
+                if (g_nfc_running && nfc_dark && !g_nfc_paused)
+                    run_guarded("loop: NFC pause", 8, nfc_pause);
+                else if (g_nfc_running && !nfc_dark && g_nfc_paused)
+                    run_guarded("loop: NFC resume", 8, nfc_resume);
             }
             // Something was tapped. The callback ran on the framework looper and only copied the
             // address out; the Pairing call happens here, on the thread that owns the clients.
@@ -12810,6 +12930,7 @@ void* render_driver(void*) {
                 // recently, so it only reads 0 once playback has genuinely stopped, and a one-tick
                 // flicker costs a single increment that the next tick resets.
                 const Audible src = audible_now();   // every source, one definition (see Audible)
+                hago_tick(src.library);   // the wrapper's trial: five of these in a row is the proof
                 const bool audible = src.any();
                 const bool idle = !g_screen_on && !audible;
 
@@ -12987,7 +13108,13 @@ void* render_driver(void*) {
                 const bool on_bt = cinder_get_bt_route() != 0;
                 const bool codec_in_path = src.radio || src.receiver || src.usb_dac
                                            || ((src.library || src.ambient) && !on_bt);
-                const bool codec_idle = !g_screen_on && !codec_in_path;
+                // ON BLUETOOTH THE SCREEN HAS NOTHING TO DO WITH IT (2026-10-05). This used to
+                // wait for a dark screen whatever the route, and every time the screen lit the
+                // codec was woken again: in the owner's log of a walk with headphones on, the
+                // DAC and the headphone amplifier were put to standby nine times in twenty
+                // minutes and were awake for most of the first eleven, driving an empty jack.
+                // When the codec is not in the path it is not in the path with the screen on.
+                const bool codec_idle = !codec_in_path && (!g_screen_on || on_bt);
                 if (codec_idle) {
                     if (idle_secs < 100000) ++idle_secs;
                     if (!we_slept && idle_secs >= 30) {

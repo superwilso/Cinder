@@ -211,6 +211,15 @@ jobs:
       - name: hagodaemon wrapper (pass-through and preload rules)
         run: bash cinder-home/tools/test_hagowrap.sh
 
+      # The two scripts that put that wrapper on a player and take it off again. One patches the
+      # boot script init waits on; the other runs before any Sony service starts and decides
+      # whether Sony's binary goes back. Neither can be tried on a player without betting a boot
+      # on it, so every path runs here against a scratch root.
+      - name: preload installer (nothing half installed, exact boot script only)
+        run: bash cinder-home/tools/test_preload.sh
+      - name: boot guard (wrapper trial, Home app backstop)
+        run: bash cinder-home/tools/test_guard.sh
+
       # The /data mount + cable-pass write from the issue #14 fix: the install payload's
       # boot-critical state write, proven in a user+mount namespace (the stub mount does real
       # bind mounts, so "wrote to the ramdisk" and "wrote to the partition" are genuinely
