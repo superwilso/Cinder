@@ -123,8 +123,60 @@ when its content moves. What is left needs the player:
    36.3 has run.
 6. **What vetoes deep idle under a stream** — `dpidle_block_cnt[by_oth]`, the `wm_key.ko` callback
    (`RE_sony_idle_baseline.md` §2). Research.
-7. `VCAMD` 1.2 V and `VCAM_AF` 3.3 V are on with no camera on the board: find what they feed.
-8. 09-05 B12, the lit-idle frame rate (~60 wakeups/s while the panel is lit and nothing moves).
+7. **The two 10 Hz wakers inside Sony's services, named 2026-10-05** (`strace`, 2 s each, cable
+   in, screen dark). Both are threads of the one `hagodaemon` that hosts WMPortService, KeyService,
+   ConfigurationService and DisplayService, which is why the 10-04 probe blamed "WMPortService":
+   * **KeyService** — `select()` on the five `/dev/input/event*` with a fixed 100 ms timeout, then
+     `fstat64` on each (a hot-plug check). A key still wakes it at once, so the timeout could be
+     seconds. One call site, `libKeyService.so` +0x162e4.
+   * **DisplayService's LED thread** (`LedComp::LedCompImp::ThreadEntry`, `libDisplayService.so`
+     +0xc04c) — a 100 ms tick that runs `AllCheckAndSet()` whether or not anything blinks. The
+     green LED is lit while charging, so blink timing matters: it wants "tick only while a blink
+     is set", not a longer constant.
+   Neither has a switch. The ways in are a byte patch of the constants (as `cinder-signature.sh`
+   does) or a `select()` interposer through the `preload` component. Cost today: 20 of the ~36
+   userspace wakeups a second at idle, about 0.3 % of a core. **Measure off the cable before
+   building either** (`tools/idle_probe.sh`): the kernel's `khubd_poll`
+   (`hub_poll_discnt_thread`, 16 Hz, no parameter) stays whatever is done here.
+8. `VCAMD` 1.2 V and `VCAM_AF` 3.3 V. "Camera" is MediaTek's name for two general PMIC outputs;
+   the board wires them to something else. Read from the kernel image 2026-10-05: the bootloader
+   leaves VCAMD, VCAM_AF and VCAM_IO on, `pmic_mt6323_init_late` switches off VCAM_IO only, and
+   nothing else in the kernel or any `.ko` ever switches the other two (the only callers are the
+   unused camera sensor driver). So Sony keeps them on deliberately and what they feed is board
+   wiring. The one way left to learn it is to switch one off with the owner watching
+   (`LDO_VCAMD_STATUS` is root-writable; a reboot restores it) and see what stops.
+10. **Playback, same day** (jack, 16/44.1, stage 1, cable in, `/proc/timer_stats` over 20 s). Four
+   10 Hz pollers are 39 of the ~50 timer wakeups a second: the two in item 7, `khubd_poll`
+   (an unconditional `msleep(100)` loop in the kernel image: no lever without a boot image), and
+   a `nanosleep(100 ms)` + `gettimeofday` loop in PlayerService that exists only while a track
+   plays. The audio interrupt itself is 8 Hz. The spectrum analyzer is already stopped behind a
+   dark panel, and the 43/s thread in the sound service is the PCM queue (4 Hz bursts), not a timer.
+   **Item 6 did not reproduce:** with a stream running `by_oth` stood still for minutes and the
+   handler reached the clock check, where the only block was USB0 (the cable). So deep idle under
+   a stream may be open off the cable; `tools/idle_probe.sh` now records the block counters, the
+   timers and the supply rails for exactly that run.
+   **Run off the cable the same evening (181 s of uptime, music playing throughout):** deep idle
+   entered 294 times, `by_oth` 0, `by_tmr` 0, 22 interrupts/s. So item 6 is closed: nothing vetoes
+   deep idle under a stream. Every 10 Hz poller fired only 2.1 times a second and the 8 Hz audio
+   interrupt read 4.2, all per second of *uptime*: the pollers do not wake the SoC out of deep
+   idle. Why the counts halved is NOT established: the probe had no wall clock in that run, and
+   the next run (below) shows uptime does not stall in ordinary deep idle. Re-run on the jack
+   with the wall clock the probe now records before reading anything into it.
+   **Paused, Bluetooth radio on, off the cable (181 s, same evening; meant to be a Bluetooth
+   playback run, but Play/Pause was pressed 5 s after the pull):** deep idle 36 entries/s, wall
+   clock 182 s against 181 s of uptime, so Cinder's uptime-based timers are not slowed. Here the
+   pollers DO fire at their full 10 Hz and `by_tmr` blocks 4/s: paused is where they cost.
+   **Bluetooth playback (LDAC) on the cable:** 24 % of a core against 10 % on the jack (mtkbt
+   6 %, the LDAC encoder thread 7 %, btif_rxd 2 %), ~990 interrupts/s, and
+   `dpidle_block_mask[CG_PERI0]` gains bit 23 (BTIF) beside USB0.
+   **Bluetooth playback off the cable (181 s):** 915 interrupts/s (BTIF tx/rx DMA ~390/s each),
+   `by_clk` 249 blocks/s on BTIF alone, deep idle 2 entries/s. Streaming holds the interface
+   clock, so there is no deep idle to tune under Bluetooth; what is left is the amount of traffic
+   (LDAC bitrate, codec), unmeasured. The 1040 MHz cap is in force on this route (time_in_state).
+   **Do not run the item 8 switch-off test blind:** the boot log shows VEMC_3V3 (the usual eMMC
+   supply) on at 0.43 s and off afterwards, so the internal storage runs from another 3.3 V
+   output, and VCAM_AF is one of two candidates (VMCH the other).
+9. 09-05 B12, the lit-idle frame rate (~60 wakeups/s while the panel is lit and nothing moves).
    Small next to the backlight; only with a measurement behind it.
 
 ## 6. Walkman One — is it all reverse-engineered, and does stock need it?
