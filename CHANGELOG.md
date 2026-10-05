@@ -147,6 +147,21 @@ previews, and **not yet run on a device**. The library items are in
 
 ### Changed
 
+- **The stable install is about 4.8 MB smaller from the next release.** `cinder-probe`, the
+  reverse-engineering workbench, was 48 % of the stable payload and nothing on a stable player
+  (no adb) could run it; it ships on the dev channel only. The installer offers an old copy on the
+  drive for cleanup.
+- **The GPU present path is gone**: default off since July and measured 4.7× slower than the
+  software framebuffer. With it go `cinder-gpunode` (a setuid-root helper that made four kernel
+  graphics nodes world-writable; an install removes an old copy), the `gpunode` install option,
+  `/contents/cinder_gpu_on`, and the Home app's link to the Mali driver.
+- **Balance moves without starting a shell.** Each step of a balance drag was a `system()` call
+  running `amixer`; it is now two ioctls on the codec, with the shell kept as the fallback.
+  *Device-unverified.*
+- **Release pages carry GitHub's own per-file digests and the build attestation**, with
+  `SHA256SUMS` attached, instead of sums pasted into the body (`tools/render_release_notes.sh` is
+  gone).
+
 - **NFC stops looking for a tag while the screen is dark.** The reader polled for as long as
   Bluetooth was on, including every hour of screen-off listening. Thirty seconds after the screen
   goes dark the polling stops; it starts again within a frame of the screen lighting. The reader
@@ -208,6 +223,14 @@ previews, and **not yet run on a device**. The library items are in
   after its twelve tries), the route poll drops to once a minute. Headphones that power on still
   connect and are noticed at once: connect-wait stays armed and the link listener reports it. With
   no listener the poll stays at 3 s. *Host-tested (`btpoll_selftest`); the saving is not measured.*
+
+### Removed
+
+- `ldac-bridge/` (the standalone daemon that could not work; USB-DAC → LDAC lives in cinder-home),
+  `player/cinder-device` and `player/deploy/` (the superseded SIGSTOP overlay), the old
+  click-driven `cinder-sim` browser (`--bin device` is the simulator), the installer's PNG encoder
+  (screenshots are PPM, converted by the script), and the LDAC bring-up dumps. See
+  [`docs/AUDIT_2026-10-05_ponytail.md`](docs/AUDIT_2026-10-05_ponytail.md) Part H.
 
 ### Fixed
 
@@ -279,6 +302,12 @@ previews, and **not yet run on a device**. The library items are in
 
 ### Documentation
 
+- [`docs/NEXT.md`](docs/NEXT.md): **the one next-steps list** across all four repositories — the
+  owner's decisions, releases, offline work in order, the open device rows grouped by session, where
+  the battery saving is left, and Walkman One on stock firmware. `cinder-home/ROADMAP.md`,
+  `docs/PRODUCTION_READINESS.md`, `docs/FLASH_NEXT.md`, `docs/audit_notes.md` and
+  `docs/open-questions.md` are deleted (their open items moved there), and `CLAUDE.md` drops its
+  July history.
 - [`docs/RESEARCH_bt_dsp_2026-09-30.md`](docs/RESEARCH_bt_dsp_2026-09-30.md): what is known about
   Sony's effects on the Bluetooth path (the EQ and Tone Control have Bluetooth tables in Sony's
   library; VPT, DC Phase, the Normalizer and Clear Phase are decided by tables not yet decoded;

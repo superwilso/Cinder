@@ -230,8 +230,7 @@ if [ "$MODE" = "pull" ]; then
 fi
 
 # ---------------------------------------------------------------- --push
-# Copy a local file to the device storage root (e.g. the cinder-device binary the
-# Cinder installer expects at /contents/cinder-device).
+# Copy a local file to the device storage root.
 if [ "$MODE" = "push" ]; then
   [ -n "$PUSHFILE" ] || die "--push needs a file path"
   [ -f "$PUSHFILE" ] || die "file not found: $PUSHFILE"

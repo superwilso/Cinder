@@ -13,7 +13,6 @@
 
 mod art_cache;
 mod art_load;
-mod gpu;
 mod likes;
 mod lyrics;
 mod playlists;
@@ -33,22 +32,19 @@ use std::os::unix::io::AsRawFd;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// pub(crate): gpu.rs pokes the panel with the same ioctls after eglSwapBuffers (see gpu::PanelPoke).
-// Shared rather than re-declared there — a second copy of these numbers and of VarInfo's layout is
-// exactly the kind of duplicate that drifts.
-pub(crate) const FBIOGET_VSCREENINFO: libc::Ioctl = 0x4600;
-pub(crate) const FBIOPUT_VSCREENINFO: libc::Ioctl = 0x4601;
+const FBIOGET_VSCREENINFO: libc::Ioctl = 0x4600;
+const FBIOPUT_VSCREENINFO: libc::Ioctl = 0x4601;
 const FBIOGET_FSCREENINFO: libc::Ioctl = 0x4602;
 /// fb_var_screeninfo.activate flag: force the driver to (re)apply the mode NOW. On mtkfb this is
 /// what actually pushes the framebuffer to the panel — writing pixels into the mmap does NOTHING
 /// on its own. icx_bootanimation's per-frame "flip" (disasm @0x1fae) is exactly
 /// `var.activate |= 0x80; ioctl(fd, FBIOPUT_VSCREENINFO, &var)`; without it the glass keeps showing
 /// whatever was pushed last, forever (the "frozen boot image" failure mode).
-pub(crate) const FB_ACTIVATE_FORCE: u32 = 0x80;
+const FB_ACTIVATE_FORCE: u32 = 0x80;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
-pub(crate) struct Bitfield {
+struct Bitfield {
     offset: u32,
     length: u32,
     msb_right: u32,
@@ -56,7 +52,7 @@ pub(crate) struct Bitfield {
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
-pub(crate) struct VarInfo {
+struct VarInfo {
     xres: u32,
     yres: u32,
     xres_virtual: u32,
@@ -381,25 +377,13 @@ impl Drop for Framebuffer {
     }
 }
 
-/// Frame presentation backend. `Gl` is the GPU path (EGL + GLES2 on the device's Mali fbdev
-/// driver — see `gpu.rs`); `Fb` is the original software path (mmap the framebuffer, memcpy each
-/// page, force a mode re-apply). `cinder_render_init` prefers `Gl` and falls back to `Fb` if the
-/// GPU won't initialise, so the panel always gets pixels.
-enum Presenter {
-    Gl(gpu::GlPresenter),
-    Fb(Framebuffer),
-}
-
-impl present::PresentTarget for Presenter {
+impl present::PresentTarget for Framebuffer {
     fn present(&mut self, buf: &[u32]) {
-        match self {
-            Presenter::Gl(g) => g.present(buf),
-            Presenter::Fb(f) => f.blit(buf),
-        }
+        self.blit(buf)
     }
 }
 
-/// Frames whose presentation has COMPLETED (blit + flip ioctl returned / swap + poke returned) —
+/// Frames whose presentation has COMPLETED (blit + flip ioctl returned) —
 /// i.e. pixels were pushed toward the glass, not merely queued. The shell reads this via
 /// `cinder_frames_presented` to gate its "first frame painted" bad-boot health signal; with the
 /// present running on its own thread, "cinder_render_tick returned" no longer implies that.
@@ -409,7 +393,7 @@ pub(crate) static FRAMES_PRESENTED: std::sync::atomic::AtomicU64 =
 /// How frames leave the render thread: inline (the original serial path, kept as the flagged
 /// escape because it is strictly less machinery) or through the present thread (see present.rs).
 enum Sink {
-    Sync(Presenter),
+    Sync(Framebuffer),
     Threaded(present::PresentThread),
 }
 
@@ -505,9 +489,7 @@ struct Render {
     /// Action produced by a settings-slider drag, waiting for the shell to collect it.
     scrub_act: Option<libc::c_int>,
     // Screenshot request: Some(path) => the next rendered frame is also written to `path` as a PNG.
-    // Captured from the Canvas BEFORE presentation, so it is identical on the software framebuffer
-    // and the GPU/EGL path (under EGL the Mali swapchain owns the panel, so reading /dev/graphics/fb0
-    // from outside does NOT reliably show what's on screen — this is the only faithful capture).
+    // Captured from the Canvas BEFORE presentation.
     pending_screenshot: Option<String>,
     // Sleep timer: counts DOWN in wall-clock ms (regardless of play/pause); 0 = inactive. When it
     // reaches 0 we raise sleep_fire, which the shell polls (cinder_sleep_should_pause) to pause.
@@ -692,54 +674,12 @@ unsafe fn cstr(p: *const c_char) -> String {
     }
 }
 
-/// Open the requested presenter, falling back from GPU to the software framebuffer. Runs on the
-/// present thread in the default configuration (EGL thread affinity), inline under
-/// /contents/cinder_nothread. Always names the live path in cinderhome.log: "the app ran but the
-/// screen was stuck" is otherwise indistinguishable between these branches from the log alone.
-fn open_presenter(want_gpu: bool) -> Result<Presenter, String> {
-    if want_gpu {
-        match gpu::GlPresenter::open(W as i32, H as i32) {
-            Ok(g) => {
-                println!("cinder-ffi: GPU present path active (EGL/GLES2 on Mali)");
-                return Ok(Presenter::Gl(g));
-            }
-            Err(e) => {
-                eprintln!("cinder-ffi: GPU init failed ({e}); falling back to software framebuffer")
-            }
-        }
-    } else {
-        println!("cinder-ffi: software framebuffer present path (GPU opt-in flag absent)");
-    }
-    Framebuffer::open().map(Presenter::Fb)
-}
-
 /// Open the framebuffer and initialise the renderer. Returns 0 on success, <0 on error.
 #[no_mangle]
 pub extern "C" fn cinder_render_init() -> libc::c_int {
     // First thing, before anything can panic: a hook that says WHERE in the UI it happened.
     // Idempotent in practice — render_init runs once per process.
     install_panic_hook();
-    // GPU present path (EGL/GLES2 on Mali) is OPT-IN. It was briefly made the default on
-    // 2026-07-26 and that flip is what wedged the two flashes that evening: the app booted
-    // perfectly (deferred_up: DONE, "healthy: bad-boot counter cleared", no crash in the log)
-    // while the panel still showed the boot animation. eglSwapBuffers returns success on this
-    // fbdev build whether or not the compositor ever scans the buffer out, so a GPU present that
-    // reaches no pixels is INVISIBLE to us — and worse, invisible to the bad-boot counter, which
-    // this process clears on "a frame was rendered". Frozen glass therefore also disabled rung 1
-    // of the escape ladder; only the cable escape (rung 0) got the device back.
-    //   The software framebuffer does not have that hole: Framebuffer::blit ends in an explicit
-    // FBIOPUT_VSCREENINFO(FB_ACTIVATE_FORCE), which is the only thing that makes mtkfb push pixels
-    // to the panel, and it reports failure.
-    //   So the proven path is the default and the unproven one costs a deliberate flag file. The
-    // flag lives on /contents, which is reachable over USB-MSC from a stock boot — deleting it
-    // needs strictly less than the app it rescues, per the escape-ladder rule.
-    //   Enable:  /contents/cinder_gpu_on   (or CINDER_GPU=1)
-    //   Disable: delete that file          (/contents/cinder_gpu_off and CINDER_GPU=0 also win)
-    let force_off = std::path::Path::new("/contents/cinder_gpu_off").exists()
-        || std::env::var("CINDER_GPU").map(|v| v == "0").unwrap_or(false);
-    let opt_in = std::path::Path::new("/contents/cinder_gpu_on").exists()
-        || std::env::var("CINDER_GPU").map(|v| v == "1").unwrap_or(false);
-    let want_gpu = opt_in && !force_off;
     // The present runs on its own thread by default (raster and present overlap — see present.rs,
     // incl. why the watchdog contract survives the move). /contents/cinder_nothread or
     // CINDER_NOTHREAD=1 keeps the original in-line present: the escape depends on strictly less.
@@ -747,7 +687,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
         || std::env::var("CINDER_NOTHREAD").map(|v| v == "1").unwrap_or(false);
     let present = if no_thread {
         println!("cinder-ffi: synchronous present (present thread disabled by flag)");
-        match open_presenter(want_gpu) {
+        match Framebuffer::open() {
             Ok(p) => Sink::Sync(p),
             Err(e) => {
                 eprintln!("cinder-ffi: {e}");
@@ -755,8 +695,7 @@ pub extern "C" fn cinder_render_init() -> libc::c_int {
             }
         }
     } else {
-        // The presenter is constructed ON the present thread (EGL contexts are thread-affine).
-        match present::PresentThread::start(move || open_presenter(want_gpu)) {
+        match present::PresentThread::start(Framebuffer::open) {
             Ok(t) => {
                 println!("cinder-ffi: present thread active (raster overlaps present)");
                 Sink::Threaded(t)
@@ -2264,8 +2203,8 @@ pub extern "C" fn cinder_render_tick() {
     // Reuse the frame buffer. This used to be a fresh `Canvas::new()` EVERY painted frame — a
     // 480×800×4 = 1,536,000-byte allocation at up to 60 fps. On device that eventually failed
     // outright ("memory allocation of 1536000 bytes failed" → Rust's allocator aborts → SIGABRT
-    // → reboot), because the churn fragments a heap that also holds the Mali/EGL surfaces, the
-    // 3350-track library and the decoded cover art. Every screen's render begins with
+    // → reboot), because the churn fragments a heap that also holds the 3350-track library and
+    // the decoded cover art. Every screen's render begins with
     // `c.fill(theme.bg)`, so the previous frame's pixels are always fully overwritten; only the
     // clip band has to be reset.
     // Album drill-in cover: load the 96x96 out of the art cache when the open album changes.
@@ -2384,7 +2323,7 @@ pub extern "C" fn cinder_frames_presented() -> libc::c_ulonglong {
 
 /// Frame-time bench: render `frames` frames and report where the time goes, split into the
 /// software rasterize (cinder-ui drawing the whole 480×800 canvas) and the present (memcpy to the
-/// framebuffer pages + flip, or texture upload + swap on the GPU path).
+/// framebuffer pages + flip).
 ///
 /// Exists because "scrolling is choppy" has at least three unrelated candidate causes — a slow
 /// rasterizer, a slow present, or a render loop that isn't repainting often enough — and they
@@ -2532,7 +2471,7 @@ fn write_png(path: &str, canvas: &Canvas) -> Result<(), String> {
 /// an idle UI would never repaint and the screenshot would never be produced. Returns 0 on accept.
 ///
 /// This is the agent-facing "show me what's on screen" primitive: it captures the Canvas before
-/// presentation, so it works identically on the software framebuffer and the GPU/EGL path.
+/// presentation.
 #[no_mangle]
 pub extern "C" fn cinder_request_screenshot(path: *const libc::c_char) -> libc::c_int {
     if path.is_null() {

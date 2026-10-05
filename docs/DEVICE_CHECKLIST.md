@@ -1,10 +1,11 @@
 # Device verification checklist
 
 **What this is.** One ordered list of everything that can only be settled with the NW-A55 in hand,
-consolidated from the places it was scattered: `cinder-home/ROADMAP.md`'s P0 table, `STATUS.md`'s
-running "device-unverified" notes, `docs/DEVICE_TESTS.md` (the ear tests), `ldac-bridge/TEST.md`,
+consolidated from the places it was scattered: the old roadmap's P0 table, `STATUS.md`'s running
+"device-unverified" notes, `docs/DEVICE_TESTS.md` (the ear tests), the old `ldac-bridge/TEST.md`,
 `docs/BATTERY_BT.md` and the audits. Where a detailed procedure already exists this file links to it
-rather than restating it.
+rather than restating it. **The order to run the open rows in, by setup, is
+[`NEXT.md`](NEXT.md) §4.**
 
 **Written 2026-08-24, after a working day of off-device work that produced fourteen fixes across two
 PRs and touched nothing on hardware.** That is the point: the list below is what that work owes.
@@ -162,7 +163,7 @@ These are the ones with the least hardware exposure and the most reasoning behin
 
 ## Phase 3 — the older batch, still unverified
 
-From `ROADMAP.md`'s P0 table. Thirty-three commits deep at the time it was written; nothing since has
+From the old roadmap's P0 table. Thirty-three commits deep at the time it was written; nothing since has
 changed their status.
 
 > **3a, 3c, 3e and 3f no longer need a finger on the glass.** They are all visible in the
@@ -180,7 +181,7 @@ changed their status.
 | 3f | ~~**Repeat-all** — what the play state does when a queue runs out~~ **OBSERVED 2026-08-26** | At the boundary position pins at duration and `playing` goes 1 -> 0; URI unchanged, no reset. `playing == 0 && pos >= tot` is the repeat-all trigger. Do **not** use `state` (128 -> 1 here, but 1 also appears mid-track). |
 | 3g | **Backlight / brightness** — ~~five levels~~ **PASS**; **BACKLIGHT OFF was broken — FIXED 2026-08-26** | Levels 1–5 and reboot-persistence confirmed on device. The 6th stop did nothing: `cinder_get_brightness()` ended `.clamp(1, 5)`, so the UI's level 0 reached the shell as 1 and the shell's `if (lvl == 0)` fully-off branch was dead code. Now clamps 0..5. Safe because 0 is never persisted (`brightness_restore`) and Hold/Power restores it. **Re-test the OFF stop.** |
 | 3h | ~~**The 07-26 → 07-28 batch** — escape ladder, screenshot, the pager, accents, A–Z rail, the render optimisation~~ **PASS 2026-08-26** | One clean dev boot and an eyeball |
-| 3i | **GPU/EGL present path** — dev channel only, opt-in, **measured slower** | Only if you intend to re-test it |
+| 3i | ~~**GPU/EGL present path** — dev channel only, opt-in, **measured slower**~~ **DELETED 2026-10-05** (`AUDIT_2026-10-05_ponytail.md` C2) | — |
 
 ---
 
@@ -332,7 +333,7 @@ carries all twelve fixes.
 | 15.2 | **Repeat-all restarts a queue-edited album at track 1** (audit §6) | Repeat-all on. Play an album, swipe-queue one track from the middle, let it run to the end | The lap starts at **track 1**, and the log says `repeat-all: queue ended — restarting it from the first track` exactly once | It restarts mid-album: the sequence was truncated by the edit, so the lap is re-issuing what was left rather than the album |
 | 15.3 | **Repeat-all does not fire on a pause near a track end** (audit §7) | Repeat-all on, mid-album. Pause about a second before a track ends; wait ten seconds | Nothing happens — no lap, no skip. The log has no `repeat-all` line | A lap fires: the end-of-queue test is reading a pause as an ended track (`g_playing` is intent, not state) |
 | 15.4 | **A queue edit made before the first ▶ survives** (audit §9) | Boot. Before pressing ▶ at all, swipe-queue a song. Then press ▶ | It plays after the resumed track, and Up Next shows it throughout | It is lost: the edit was owed against a sequence that did not exist yet, and the resume replaced it |
-| 15.5 | **What the play state does when a queue simply runs out** — the one thing repeat-all's end detection is built on, and it has never been watched (`cinder-home/ROADMAP.md`) | Repeat-all OFF. Play the last track of a short queue to its end, with `adb shell tail -f /contents/cinderhome.log` running | Record what `cinder_audio_is_playing()` and the position out-parameters do at the boundary: whether the player stops, holds the last frame, or reports the track again | Nothing in the log: raise the playback-poll logging for one session rather than guessing — this item exists to be observed, not to pass |
+| 15.5 | **What the play state does when a queue simply runs out** — the one thing repeat-all's end detection is built on, and it has never been watched (the old roadmap) | Repeat-all OFF. Play the last track of a short queue to its end, with `adb shell tail -f /contents/cinderhome.log` running | Record what `cinder_audio_is_playing()` and the position out-parameters do at the boundary: whether the player stops, holds the last frame, or reports the track again | Nothing in the log: raise the playback-poll logging for one session rather than guessing — this item exists to be observed, not to pass |
 
 
 ## Open from 2026-09-21 — installing on a model-swapped player (Walkman One)

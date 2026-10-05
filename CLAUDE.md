@@ -1,22 +1,17 @@
 # NW-A55 Project — Setup & Next Steps (v1.5)
 
-> ## ⚠ READ THIS FIRST — the banner below it is a 2026-07-25 snapshot and is NINE WEEKS STALE
+> ## Where the project is — read this first
 >
-> **Updated 2026-09-20; the state table refreshed 2026-10-04.** This file is loaded into every session automatically, which makes a stale
-> banner here more expensive than anywhere else in the repository — it is the first thing any new
-> reader, human or agent, believes. The 07-25 text below says the last code change was 2026-07-03,
-> that host tests are "39 UI + 8 DB", and that the whole critical path is blocked on one device
-> session. **All three are wrong.** This is the same failure already caught for `ROADMAP.md`
-> ([`docs/AUDIT_2026-09-01.md`](docs/AUDIT_2026-09-01.md) §D2) and fixed there the same way — and
-> caught again for *this* banner four days after it was written ([`docs/AUDIT_2026-09-18.md`](docs/AUDIT_2026-09-18.md)
-> §A1: the numbers below had already drifted). **If you change a gate's count, change it here.**
+> This file is loaded into every session, so a stale line here is believed first. **If you change
+> a gate's count, change it here.** Parts A–F and H below are the environment and RE reference and
+> are still accurate.
 >
-> **Where the project actually is, 2026-10-04 (v0.3.14 is the Latest release; `main` is ahead):**
+> **Where the project actually is, 2026-10-05 (v0.3.14 is the Latest release; `main` is ahead):**
 >
 > | | |
 > |---|---|
 > | Releases shipped | **v0.3.0 → v0.3.14**; **v0.3.12, v0.3.13 and v0.3.14 are stable** (09-23, 09-29, 09-30), so the #16 "v0.3.9 cannot start after a fresh install" release is no longer the default download. The 0.3.13/0.3.14 features the 10-01 audit (C1) called *host-tested only* are, by the owner's report of 2026-10-01, mostly in daily use and working on the owner's Walkman One player — reported as a whole, not row by row |
-> | Offline gates | **794 Rust tests** (player, 3 ignored) + 53 (installer), **79 harness scenarios**, 26 C/C++ files syntax-clean, **13 C++ self-tests** (the soundscape one is 69 checks), the mono shim through `LD_PRELOAD`, **361 golden pixel hashes** plus the text audit (`cinder-host --audit`), launcher matrix 109, the hagodaemon wrapper 11, its installer 42 and the boot guard 32, cable pass 19, install mounts 18, shellcheck over 55 scripts, `cargo audit` clean (2 known unmaintained warnings) — all green, re-run 2026-10-04 with R4, R5 and the soundscapes merged; the harness, launcher, wrapper, installer, guard, shim and shell gates re-run 2026-10-05; Rust 794 after [`docs/AUDIT_2026-10-05_ponytail.md`](docs/AUDIT_2026-10-05_ponytail.md)'s deletions (the 10-01 baseline is [`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) Part A) |
+> | Offline gates | **794 Rust tests** (player, 3 ignored) + 51 (installer), **79 harness scenarios**, 22 C/C++ files syntax-clean, **13 C++ self-tests** (the soundscape one is 69 checks), the mono shim through `LD_PRELOAD`, **361 golden pixel hashes** plus the text audit (`cinder-host --audit`), launcher matrix 108, the hagodaemon wrapper 11, its installer 39 and the boot guard 32, cable pass 19, install mounts 18, shellcheck over 49 scripts — all green, re-run 2026-10-05 after [`docs/AUDIT_2026-10-05_ponytail.md`](docs/AUDIT_2026-10-05_ponytail.md) Part H's deletions; `cargo audit` clean as of 2026-10-04 (2 known unmaintained warnings). The 10-01 baseline is [`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) Part A |
 > | The headline feature | **USB-DAC → LDAC works end to end** — device-verified 2026-08-11, a full 192 s session logged 2026-09-15 (`docs/DEVICE_CHECKLIST.md` 11.10). Still unlogged: the 3.5 mm leg with no Bluetooth link |
 > | Landed since 2026-10-01 (unreleased) | **R4** — ratings, play counts, smart playlists, the playlist editor, shuffle by album/artist (checklist §25); **R5** — sound profiles per output and the grouped Sound screen (§26); Sony's EQ handed back on Boot to stock (§27); **Soundscapes** — ten procedural ambient sounds (rain, storm, beach, stream, wind, fire, night, white/pink/dark noise), nothing looped, over library music through the mono shim (Wampy installs) or on their own, each with its own level ([`docs/SPEC_soundscapes.md`](docs/SPEC_soundscapes.md)); **five visualisers from the decoded audio** — Scope, Stereo field, Spectrogram, Meters, Radial — no longer limited to Sony's twelve analyzer bands (checklist §29) |
 > | Landed 2026-09-23 → 10-01 | The redesign's first pass (Display settings, the kit, Help, the pull-down panel), Up Next as one list, save Up Next, repeat album, stop after this song, DAC EQ, linear amp, Bluetooth receiver (Windows and iPhone), Sony's receiver hand-off, Library grid/compact views, Now Playing styles, the PCM-tap visualiser, FM on Walkman One, screen-off power savings |
@@ -26,35 +21,12 @@
 >
 > **The live documents, in order of what you probably want:**
 > - **The redesign (2026-09-27 handoff):** [`docs/PLAN_redesign_2026-09.md`](docs/PLAN_redesign_2026-09.md) — every screen and every promised feature with a state and a phase; spec in [`docs/SPEC_redesign_2026-09.md`](docs/SPEC_redesign_2026-09.md); new screens draw with `player/cinder-ui/src/kit.rs`.
-> - **What to do next:** [`docs/AUDIT_2026-10-01.md`](docs/AUDIT_2026-10-01.md) Part H — the most recent audit's ordered list, covering Cinder *and* Flint; community bugs and requests in [`docs/PLAN_community_2026-09-23.md`](docs/PLAN_community_2026-09-23.md). The skins design system is still [`docs/PLAN_2026-09-14.md`](docs/PLAN_2026-09-14.md).
+> - **What to do next:** [`docs/NEXT.md`](docs/NEXT.md) — the one list: the owner's decisions, releases, offline work in order, the open device rows by session, battery, and Walkman One on stock.
 > - **Feature state (works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
 > - **Device run sheet:** [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — safety rules first.
 > - **Structural weaknesses:** [`docs/SHORTCOMINGS.md`](docs/SHORTCOMINGS.md) — cited by section ID (note: §A1's coverage table is superseded by `PLAN_2026-09-14.md` §A1).
 > - **Every audit, and which are history:** [`docs/README.md`](docs/README.md).
 > - **RE detail:** [`analysis/RE_playerservice_sound.md`](analysis/RE_playerservice_sound.md), plus `analysis/{E,F,G,H}_*/RE_findings.md`.
->
-> **Parts B–H below remain reference-grade and current** — the environment setup, the RE findings
-> and the `.UPG` procedure are all still accurate. It is only the *state and plan* text that has
-> aged, and it is kept verbatim below as history.
-
-> ## PROJECT STATE (audited 2026-07-25) — HISTORY, superseded by the banner above
-> This document began (v1.4) as a *pre-device* onboarding plan ("when the NW-A55 arrives").
-> **That premise is now historical.** The device has been in hand for weeks, backed up (wbrt),
-> flashed, soft-bricked-and-recovered twice, and the **Cinder replacement player runs on it as
-> the easel Home app.** Read the sections below as the still-accurate *environment + RE reference*
-> (Parts B–H are reference-grade and current), but for **where the project actually is and what to
-> do next, the live docs win:**
-> - **Current feature state (what works / partial / stationary):** [`cinder-home/STATUS.md`](cinder-home/STATUS.md) — the single source of truth.
-> - **Forward plan / next stages:** [`docs/DEVICE_CHECKLIST.md`](docs/DEVICE_CHECKLIST.md) — the ordered run sheet for everything device-gated. (`cinder-home/ROADMAP.md` is a 2026-07-28 snapshot; it now says so at the top.)
-> - **Open decisions right now:** [`docs/AUDIT_2026-09-01.md`](docs/AUDIT_2026-09-01.md) Part D. **Every document in `docs/` is indexed by [`docs/README.md`](docs/README.md), which also says which ones are history.**
-> - **RE detail behind each feature:** [`analysis/RE_playerservice_sound.md`](analysis/RE_playerservice_sound.md), plus per-subsystem `analysis/{E,F,G,H}_*/RE_findings.md`.
->
-> **One-line status:** all genuinely-offline work is done and daily-usable (host tests green:
-> 39 UI + 8 DB; qemu preflight passes). **The entire remaining critical path is device-gated and
-> blocked on ONE thing — a first successful device session that runs the discovery dump.** Last
-> code change was 2026-07-03 (tenth round); the tree is clean and the resume point is that device
-> session (ROADMAP §"The device session — critical path"). The pre-device "Phase 8 / Part E"
-> milestone plan below is superseded by that roadmap; Part E survives as the *procedure* reference.
 
 **Purpose:** A single onboarding document that takes you from a stock Windows PC to a
 working analysis environment, runs the existing host-side pipeline, and then adds the
@@ -403,40 +375,11 @@ passthrough. Keep `wbrt` and SP Flash Tool on the Windows side.
 
 ---
 
-## Part G — Suggested milestone order (the whole project on one page)
+## Part G — Milestones
 
-> **Progress against this plan (2026-07-25):** steps **1–10 are effectively DONE.** Environment,
-> reading, the host pipeline (phases 1–7), the stale-doc flip (MT8590 confirmed), the wbrt backup
-> (E0), a stock+Wampy baseline, a device shell (via scsitool/MSC + dev-channel adb), the USB-DAC
-> investigation (E4/E5 → the block is **app-policy only**, LDAC transmit is **non-ALSA** via
-> `BtTransmitterService`), and first-code-on-device (E7 → the full **Cinder Home app**, not just a
-> hello-world) have all happened. What's left is **not** on this milestone ladder anymore — it's the
-> device-gated wiring in [`cinder-home/ROADMAP.md`](cinder-home/ROADMAP.md). Keep the list below as
-> the historical route; use the roadmap for the live plan.
-
-1. **Environment** (Part B) — WSL2 + deps green on `make check-deps`. *Half a day.* **[DONE]**
-2. **Read** (Part C) — wbrt README → roobscoob upgDocs → Wampy MAKING_OFs. *One day.*
-3. **Host pipeline** (Part D) — `make phase1`…`phase7`. *One to two days.* Produces the
-   confirmed SoC, init map, toolchain version, SoundServiceFw symbols, the W1 diff recipe, a
-   proven `.UPG` round-trip, and a cross-compiled hello-world.
-4. **Update stale docs** — flip `CLAUDE.md` and `phase3` to "MT8590 confirmed."
-5. **Device arrives → backup** (E0) — `wbrt` full dump. *Non-negotiable, first.*
-6. **Baseline FW** (E1) — Walkman One + Wampy.
-7. **Shell + SoC confirm** (E2–E3).
-8. **The USB-DAC investigation** (E4–E5) — this is the make-or-break for the headline feature.
-   Decide here whether USB-DAC→LDAC is "free," "needs kernel module," or "blocked."
-9. **NVP characterization** (E6) — read-only, then careful backups before any write.
-10. **First code on device** (E7) — hello-world service → bad-boot counter → full player
-    swap. Now you're building the actual replacement player.
-
-**Features recap against this plan:**
-- Full UI replacement + auto-boot: unlocked at step 10. *High confidence.*
-- Keep all audio features: depends on step 3 (clang version) + step 10 (shim). *High confidence.*
-- Queue + shuffle-by-album: pure app logic in the replacement player; no blocker. *High
-  confidence.* (Both genuinely absent from stock — baseline §5.12.)
-- USB-DAC in + LDAC out: resolved at step 8. *Uncertain until then* — do not promise it as a
-  feature before E4/E5. **Host-side analysis (Part H) has narrowed this to Candidate 1
-  (app-policy enforcement) with high confidence.**
+All ten steps of the original route (environment → reading → host pipeline → backup → baseline →
+shell → the USB-DAC investigation → NVP → first code on device) were done by July 2026; the first
+code on device became the Cinder Home app. The live plan is [`docs/NEXT.md`](docs/NEXT.md).
 
 ---
 

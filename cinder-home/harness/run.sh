@@ -27,7 +27,7 @@ fi
 [ -n "$CXX" ] || { echo "harness: no C++ compiler found" >&2; exit 1; }
 
 INC=(-I "$OUT" -I cinder-home/harness -I cinder-home/src -I player/cinder-ffi/include
-     -I cinder-audio/include -I cinder-audio/src -I ldac-bridge/include)
+     -I cinder-audio/include -I cinder-audio/src)
 # CINDER_HOST_SYNTAX_ONLY drops the two static_asserts that state 32-bit DEVICE struct layouts;
 # they cannot hold on a 64-bit host and still fire on every real build. -Dmain= renames main.cpp's
 # entry point so the harness can call it (and so the harness can own `main`).

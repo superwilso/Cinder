@@ -31,7 +31,7 @@ analyzer=0
 #
 # ── VALIDATING THE ANALYZER ───────────────────────────────────────────────────────────────────
 # If the visualiser shows nothing, the analyzer is the thing to check. This has NEVER been run on
-# hardware — see docs/PRODUCTION_READINESS.md:
+# hardware:
 #
 #     adb push cinder-home/dist/dev/cinder-probe /data/local/tmp/
 #     # start music playing on the device, then:

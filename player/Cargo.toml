@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["cinder-ui", "cinder-host", "cinder-device", "cinder-sim", "cinder-ffi", "cinder-db"]
+members = ["cinder-ui", "cinder-host", "cinder-sim", "cinder-ffi", "cinder-db"]
 
 [profile.release]
 # OPTIMISE FOR SPEED, NOT SIZE. This was `"z"` from the first commit, with no rationale recorded

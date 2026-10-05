@@ -125,6 +125,11 @@ these are load-bearing.
 Record what you measured, not what you assume. "MEASURED 2026-08-26: …" is the house style, and
 values recovered from a device should say so.
 
+A comment carries the *why* that is still true after `git blame` is gone: the rule, the measurement
+behind it, the trap it avoids. What the code *used to* do, and the story of finding out, goes in the
+commit message, `CHANGELOG.md` or an audit — all three exist here (`docs/AUDIT_2026-10-05_ponytail.md`
+E1: `main.cpp` is 43 % comments, 80 lines of them narrating earlier versions).
+
 ## Commits and pull requests
 
 Conventional-ish subjects (`fix:`, `feat:`, `docs:`) and a body that says **why**. The history is

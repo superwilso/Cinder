@@ -30,9 +30,6 @@ mod stage;
 
 #[cfg(windows)]
 mod gui;
-// Only the window's screenshot mode writes images; the tests run everywhere.
-#[cfg(any(windows, test))]
-mod png;
 
 pub use payload::{CATALOGUE, CHANNEL, MISSING};
 

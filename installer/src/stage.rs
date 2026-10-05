@@ -187,8 +187,18 @@ pub fn clean_leftovers(target: &Path, names: &[String]) -> Vec<(String, io::Resu
 /// binaries would silently reset the next update to catalogue defaults — turning "free up some
 /// space" into "quietly change the user's install".
 pub fn payload_names() -> Vec<&'static str> {
-    crate::payload::PAYLOAD.iter().map(|(n, _, _)| *n).collect()
+    let mut names: Vec<&'static str> = crate::payload::PAYLOAD.iter().map(|(n, _, _)| *n).collect();
+    for r in RETIRED {
+        if !names.contains(r) {
+            names.push(r);
+        }
+    }
+    names
 }
+
+/// Names earlier installers staged and this one does not: still dead weight on the user's drive.
+/// cinder-probe left the stable payload, and cinder-gpunode the project, on 2026-10-05.
+const RETIRED: &[&str] = &["cinder-probe", "cinder-gpunode"];
 
 // ── the firmware-upgrade trigger, on Windows ───────────────────────────────────────────────
 //
@@ -758,6 +768,13 @@ signature | CINDER_SIGNATURE | enum:stock,pv1 | stock | Sound signature
 
     /// The component conf is the user's saved answers, and the only copy of them. A cleanup that
     /// removes it turns the next update into a silent reset to defaults.
+    /// An old install's probe is swept up like any other leftover, and listed once on dev too.
+    #[test]
+    fn a_retired_file_is_still_a_leftover() {
+        let names = payload_names();
+        assert_eq!(names.iter().filter(|n| **n == "cinder-probe").count(), 1);
+    }
+
     #[test]
     fn the_component_conf_is_never_treated_as_a_leftover() {
         assert!(

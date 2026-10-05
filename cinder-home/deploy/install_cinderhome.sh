@@ -47,7 +47,6 @@ VENDOR=/system/vendor/unknown321
 BIN=$VENDOR/bin
 SRC=/contents/cinder-home
 SRC_UMOUNT=/contents/cinder-umount
-SRC_GPUNODE=/contents/cinder-gpunode
 SRC_POWER=/contents/cinder-power
 SRC_MSC=/contents/cinder-msc
 SRC_CLOCK=/contents/cinder-clock
@@ -98,7 +97,6 @@ WANT_POWER="$(comp_bool CINDER_POWER 1)"
 WANT_MSC="$(comp_bool CINDER_MSC 1)"
 WANT_CLOCK="$(comp_bool CINDER_CLOCK 1)"
 WANT_UMOUNT="$(comp_bool CINDER_UMOUNT 1)"
-WANT_GPUNODE="$(comp_bool CINDER_GPUNODE 0)"
 WANT_FM="$(comp_bool CINDER_FM 1)"
 WANT_BATTERY="$(comp_bool CINDER_BATTERY 1)"
 WANT_SEARCH="$(comp_bool CINDER_SEARCH 0)"
@@ -114,7 +112,7 @@ if [ -f "$COMPONENTS" ]; then
 else
     echo "components: no $COMPONENTS staged — using defaults"
 fi
-echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT gpunode=$WANT_GPUNODE fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE"
+echo "components: power=$WANT_POWER msc=$WANT_MSC clock=$WANT_CLOCK umount=$WANT_UMOUNT fm=$WANT_FM voltable=$WANT_VOLTABLE battery=$WANT_BATTERY search=$WANT_SEARCH sensme=$WANT_SENSME scrobble=$WANT_SCROBBLE mono=$WANT_MONO signature=$WANT_SIGNATURE"
 
 # ── WHICH FIRMWARE IS UNDERNEATH ─────────────────────────────────────────────────────────────
 # Cinder now installs onto two bases: Sony's stock 1.02 and MrWalkman's Walkman One (verified on
@@ -363,27 +361,9 @@ else
     echo "WARN: $SRC_UMOUNT not staged (tools/flash.sh --push dist/<ch>/cinder-umount) — MSC fallback path."
 fi
 
-# 1c) install the setuid-root GPU-node helper (chmod 0666 on /dev/ion, /dev/mtkfb_vsync,
-#     /dev/mtk_disp, /dev/sw_sync — the four root-only nodes uid-100 EGL needs). Same atomic
-#     temp->chown root->chmod 4755->mv treatment. Non-fatal: without it the GPU present path
-#     refuses to start and cinder renders via the software framebuffer exactly as before.
-if [ "$WANT_GPUNODE" != 1 ]; then
-    echo "components: gpunode NOT selected — skipping cinder-gpunode (software render)."
-    "$BB" rm -f "$BIN/cinder-gpunode" 2>/dev/null
-elif [ -s "$SRC_GPUNODE" ]; then
-    "$BB" cat "$SRC_GPUNODE" > "$BIN/cinder-gpunode.tmp" 2>/dev/null
-    if [ -s "$BIN/cinder-gpunode.tmp" ]; then
-        "$BB" chown 0:0 "$BIN/cinder-gpunode.tmp" 2>/dev/null
-        "$BB" chmod 4755 "$BIN/cinder-gpunode.tmp"
-        "$BB" mv -f "$BIN/cinder-gpunode.tmp" "$BIN/cinder-gpunode"
-        echo "installed setuid helper: $BIN/cinder-gpunode ($("$BB" wc -c < "$BIN/cinder-gpunode" 2>/dev/null | "$BB" tr -cd '0-9') bytes, mode $("$BB" stat -c %a "$BIN/cinder-gpunode" 2>/dev/null))"
-    else
-        echo "WARN: cinder-gpunode stage empty — GPU path stays off (software render)."
-        "$BB" rm -f "$BIN/cinder-gpunode.tmp" 2>/dev/null
-    fi
-else
-    echo "WARN: $SRC_GPUNODE not staged (tools/flash.sh --push dist/<ch>/cinder-gpunode) — GPU path stays off."
-fi
+# 1c) cinder-gpunode (the GPU present path's setuid helper) was deleted on 2026-10-05. Take an old
+#     install's copy off the player: it chmods four kernel graphics nodes 0666 and nothing uses it.
+"$BB" rm -f "$BIN/cinder-gpunode" 2>/dev/null
 
 # 1d) install the setuid-root power helper (reboot(2) for Settings ▸ Power off / Restart, and for
 #     the Power-button hold menu). Sony's PowerMgrServiceClient cannot serve those while Cinder is
@@ -888,8 +868,8 @@ fi
 # cable escape was always known to carry, and this is the same escape without it.
 #
 # IT ASKS THE KERNEL, NOT THE KEY. This launcher runs ~10 s after power-on, and holding POWER that
-# long is not an option: past about eight seconds the PMIC's own forced reset takes over (measured,
-# docs/FLASH_NEXT.md). So the question is not "is it held now" but "was it pressed during boot" —
+# long is not an option: past about eight seconds the PMIC's own forced reset takes over (measured
+# 2026-09-11). So the question is not "is it held now" but "was it pressed during boot" —
 # and the kernel already records that. The key driver logs every change of the power key with its
 # boot timestamp (copied from the device 2026-09-11; busybox's dmesg drops the "<4>" prefix):
 #     <4>[    0.434815] (1)[28:pmic_thread_kth]kpd: Power Key generate, pressed=1
@@ -1262,11 +1242,6 @@ while : ; do
         run_stock "$@"
     fi
 
-    # Drop the GPU present path from the first respawn on. The Mali fbdev EGL stack is the least
-    # proven code in the process and a plausible source of a SIGSEGV/SIGBUS; the software
-    # framebuffer is the proven path and CINDER_GPU=0 wins over every opt-in. Costs frame rate,
-    # buys a much better chance the retry survives.
-    CINDER_GPU=0; export CINDER_GPU
     sleep 1
 done
 LAUNCH_EOF
