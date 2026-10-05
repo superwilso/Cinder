@@ -19,16 +19,14 @@ build — is unchanged and still builds for `armv7-unknown-linux-musleabihf`.)
 The C ABI the shell drives. State lives behind a `Mutex`; `panic="abort"` so nothing unwinds across
 the boundary (a single panic aborts before any poison can cascade). Grouped:
 - **Render/lifecycle:** `cinder_render_init` (open `/dev/graphics/fb0`; blit bounded against the
-  mmap), `cinder_render_tick` (one dirty-flagged frame from the easel pump), `cinder_render_shutdown`,
-  `cinder_set_theme_night`.
+  mmap), `cinder_render_tick` (one dirty-flagged frame from the easel pump), `cinder_render_shutdown`.
 - **Input/nav:** `cinder_input(button)` → returns a `cinder_action_t` (0–15) for the shell to carry
   out (transport, EQ-changed, battery-care-changed, sound-changed, sound-bypass, …).
-- **Now playing / library:** `cinder_db_open`, `cinder_set_now_playing[_uri]`, `cinder_clock_tick`,
+- **Now playing / library:** `cinder_db_open`, `cinder_set_now_playing_uri`, `cinder_clock_tick`,
   `cinder_set_battery`.
 - **Effects/settings read-back:** `cinder_get_eq_bands`, `cinder_get/set_battery_care`,
   `cinder_get_sound_flags`, `cinder_get_sound_bypass` (the shell applies these via the cinder-audio shims).
-- **Visualiser:** `cinder_set_visualizer[_type]`, `cinder_visualizer_count`, `cinder_set_pcm`
-  (our FFT) / `cinder_set_spectrum` (Sony analyzer bands).
+- **Visualiser:** the PCM tap (`pcm_tap.rs`, our FFT) / `cinder_set_spectrum` (Sony analyzer bands).
 - **Scrobbler:** `cinder_scrobble_open` / `cinder_scrobble_tick`.
 
 Full per-feature status (functional / partial / stationary): **`../../cinder-home/STATUS.md`**.

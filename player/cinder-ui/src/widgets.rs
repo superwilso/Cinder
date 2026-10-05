@@ -29,6 +29,14 @@ pub fn stroke_rect(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, col: Rgb888, 
         .ok();
 }
 
+/// Filled circle of diameter `d` centred on (`cx`, `cy`) — the EQ, Tone and DAC EQ knobs.
+pub fn disc(c: &mut Canvas, cx: i32, cy: i32, d: u32, col: Rgb888) {
+    embedded_graphics::primitives::Circle::with_center(Point::new(cx, cy), d)
+        .into_styled(PrimitiveStyle::with_fill(col))
+        .draw(c)
+        .ok();
+}
+
 pub fn sty(fam: Family, weight: Weight, size: f32, color: Rgb888, tracking: f32) -> TextStyle {
     TextStyle { fam, weight, size, color, tracking }
 }

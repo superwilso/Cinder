@@ -118,23 +118,7 @@ fi
 
 # 4. The pure-logic self-tests: the rules that decide whether the device pauses, reconnects,
 #    reboots or notices new music. Milliseconds with a stock cc, so there is no excuse to skip.
-step "C++ self-tests"
-selftest_fail=0
-# The same eleven CI runs (.github/workflows/ci.yml, "C++ self-tests") — keep the two lists equal.
-for t in guard volramp btedge jackedge btswitch dbsig btpoll framebudget eqrange mono battslew; do
-    src="cinder-home/tools/${t}_selftest.cpp"
-    [ -f "$src" ] || continue
-    if ! cc -O2 -o "/tmp/cinder_ph_$t" "$src" -lstdc++ >"$LOG" 2>&1; then
-        selftest_fail=1; printf '\n%s  %s failed to BUILD%s\n' "$C_R" "$t" "$C_0" >&2
-        tail -20 "$LOG" >&2; continue
-    fi
-    if ! "/tmp/cinder_ph_$t" >"$LOG" 2>&1; then
-        selftest_fail=1; printf '\n%s  %s FAILED%s\n' "$C_R" "$t" "$C_0" >&2
-        tail -20 "$LOG" >&2
-    fi
-    rm -f "/tmp/cinder_ph_$t"
-done
-if [ "$selftest_fail" = "0" ]; then pass; else fail "C++ self-tests"; fi
+run "C++ self-tests" . bash cinder-home/tools/selftests.sh
 }
 
 if [ "$FULL" = "1" ]; then

@@ -33,10 +33,8 @@ use crate::canvas::W;
 use crate::eq::band_db;
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::widgets::{center, fill_rect, hline, right, sty};
+use crate::widgets::{center, disc, fill_rect, hline, right, sty};
 use crate::Canvas;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Circle, PrimitiveStyle};
 
 /// Catalogue order, and it IS the enum order: the sound service logs `eqtone,type=N` with N in
 /// {0,1,2} as these three are written, so BASS=0, MIDDLE=1, TREBLE=2 is measured, not guessed.
@@ -90,13 +88,6 @@ const FOOTER_H: i32 = 60;
 /// written as they change, exactly as on the Equalizer screen.)
 pub fn reset_at(x: i32, y: i32) -> bool {
     (FOOTER_TOP..FOOTER_TOP + FOOTER_H).contains(&y) && x < W as i32 / 2
-}
-
-fn disc(c: &mut Canvas, cx: i32, cy: i32, d: u32, col: embedded_graphics::pixelcolor::Rgb888) {
-    Circle::with_center(Point::new(cx, cy), d)
-        .into_styled(PrimitiveStyle::with_fill(col))
-        .draw(c)
-        .ok();
 }
 
 /// What the screen draws.

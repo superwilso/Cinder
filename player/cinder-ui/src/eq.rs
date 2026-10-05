@@ -6,10 +6,8 @@ use crate::canvas::W;
 use crate::data::{EQ_BANDS, EQ_PRESETS};
 use crate::text::{self, Family, FontSet, Weight};
 use crate::theme::Theme;
-use crate::widgets::{fill_rect, hline, right, stroke_rect, sty};
+use crate::widgets::{disc, fill_rect, hline, right, stroke_rect, sty};
 use crate::Canvas;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Circle, PrimitiveStyle};
 
 // ── Layout, shared by render and the hit test ────────────────────────────────────────────────
 // Everything tappable on this screen is positioned by the helpers below, and `nav` hit-tests
@@ -122,13 +120,6 @@ pub fn footer_at(x: i32, y: i32) -> Option<Footer> {
     }
     // Split down the middle: "Reset" is left-aligned, "Save Sound Preset" right-aligned.
     Some(if x < W as i32 / 2 { Footer::Reset } else { Footer::Save })
-}
-
-fn disc(c: &mut Canvas, cx: i32, cy: i32, d: u32, col: embedded_graphics::pixelcolor::Rgb888) {
-    Circle::with_center(Point::new(cx, cy), d)
-        .into_styled(PrimitiveStyle::with_fill(col))
-        .draw(c)
-        .ok();
 }
 
 /// `off` = why the 10-band EQ is NOT in the signal path right now (Tone Control replaces it;

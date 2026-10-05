@@ -66,16 +66,13 @@ int cinder_effects_set_bypass(int bypass);
 
 /* Source Direct — bypasses the whole chain. OVERRIDES everything below it, like ClearAudio+. */
 int cinder_effects_set_source_direct(int on);
-int cinder_effects_is_source_direct(void);
 
 /* Clear Phase (headphone). Speaker/Wmport describe hardware the A55 lacks and are not wired. */
 int cinder_effects_set_clear_phase(int on);
-int cinder_effects_is_clear_phase(void);
 
 /* DSEE AI. Present in the API; whether the A50 has the hardware is UNVERIFIED — treat like the
  * high-gain finding (the write landing is not evidence it does anything). */
 int cinder_effects_set_dsee_ai(int on);
-int cinder_effects_is_dsee_ai(void);
 
 /* DSEE HX Custom + its mode. Catalogue: Standard, Female Vocal, Male Vocal, Percussion, Strings. */
 int cinder_effects_set_dsee_hx_custom(int on);
@@ -91,7 +88,6 @@ int cinder_effects_get_vinylizer_type(void);
  * frequency. Mutually exclusive with the 10-band EQ; cinder_effects_set_select_using_eq() picks
  * which of the two is actually in the path. Centre-frequency ordinals are UNSETTLED. */
 int cinder_effects_set_tone_control(int on);
-int cinder_effects_is_tone_control(void);
 int cinder_effects_set_tone_value(int band, int gain);
 int cinder_effects_get_tone_value(int band);
 float cinder_effects_get_tone_value_db(int band); /* same reading, converted by the service */
@@ -101,7 +97,6 @@ int cinder_effects_get_tone_freq(int band);
 /* 6-band EQ — where Sony's NAMED presets live (Bright, Excited, Mellow, Relaxed, Vocal,
  * Custom 1, Custom 2). The 10-band Cinder drives has no presets of its own. */
 int cinder_effects_set_eq6(int on);
-int cinder_effects_is_eq6(void);
 int cinder_effects_set_eq6_preset(int p);
 int cinder_effects_get_eq6_preset(void);
 int cinder_effects_set_eq6_band(int b, int gain);
@@ -113,9 +108,6 @@ float cinder_effects_get_eq6_band_db(int b);
 /* Sony's own two saved setups (Custom 1 / Custom 2). */
 int cinder_effects_save_user_preset(int no);
 int cinder_effects_load_user_preset(int no);
-
-/* Read-back used to grey out rows something upstream is overriding. */
-int cinder_effects_is_clearaudio_plus(void);
 
 /* ── whole-chain read-back (EffectCtrlDmp's Is…On / Get… getters) ────────────────────────────────
  * Defined in effect_shim.cpp since 2026-08-17 and used by cinder-probe; declared here since R5

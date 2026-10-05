@@ -49,44 +49,19 @@ extern "C" {
 int cinder_sound_settings_get_dsd_filter(void) {
     return guarded([](snd::SoundServiceSettingsDmp* s) { return static_cast<int>(s->GetDsdConvFilterType()); });
 }
-int cinder_sound_settings_set_dsd_filter(int type) {
-    return guarded([type](snd::SoundServiceSettingsDmp* s) {
-        return s->SetDsdConvFilterType(static_cast<snd::DsdConvFilterType>(type));
-    });
-}
 int cinder_sound_settings_get_dsd_gain(void) {
     return guarded([](snd::SoundServiceSettingsDmp* s) { return static_cast<int>(s->GetDsdConvGainMode()); });
-}
-int cinder_sound_settings_set_dsd_gain(int mode) {
-    return guarded([mode](snd::SoundServiceSettingsDmp* s) {
-        return s->SetDsdConvGainMode(static_cast<snd::DsdConvGainMode>(mode));
-    });
 }
 int cinder_sound_settings_get_dsd_processing(void) {
     return guarded([](snd::SoundServiceSettingsDmp* s) {
         return static_cast<int>(s->GetBuiltinOutputDsdProcessingMode());
     });
 }
-int cinder_sound_settings_set_dsd_processing(int mode) {
-    return guarded([mode](snd::SoundServiceSettingsDmp* s) {
-        return s->SetBuiltinOutputDsdProcessingMode(static_cast<snd::DsdProcessingMode>(mode));
-    });
-}
 int cinder_sound_settings_get_uac_dsd_output(void) {
     return guarded([](snd::SoundServiceSettingsDmp* s) { return static_cast<int>(s->GetUacOutputDsdOutputMode()); });
 }
-int cinder_sound_settings_set_uac_dsd_output(int mode) {
-    return guarded([mode](snd::SoundServiceSettingsDmp* s) {
-        return s->SetUacOutputDsdOutputMode(static_cast<snd::DsdOutputMode>(mode));
-    });
-}
 int cinder_sound_settings_get_lpcm_mode(void) {
     return guarded([](snd::SoundServiceSettingsDmp* s) { return static_cast<int>(s->GetLpcmPlaybackMode()); });
-}
-int cinder_sound_settings_set_lpcm_mode(int mode) {
-    return guarded([mode](snd::SoundServiceSettingsDmp* s) {
-        return s->SetLpcmPlaybackMode(static_cast<snd::LpcmPlaybackMode>(mode));
-    });
 }
 // The setter is NOT wrapped: it also drives ncasm::NcAsmService (see the abi header).
 int cinder_sound_settings_get_headphone_model(void) {
