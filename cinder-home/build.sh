@@ -333,9 +333,10 @@ echo "built: $HERE/libcinder_mono.so ($(stat -c %s "$HERE/libcinder_mono.so") by
 
 # cinder-hagowrap: the per-service preload for a player with no Wampy (src/cinder-hagowrap.c).
 # Static musl like the helpers, and held to -Werror: it stands in front of every Sony service.
-# BUILT AND TESTED HERE, NOT PACKAGED: it goes on by hand, with the boot guard's trial marker
-# (deploy/cinder-guard.sh), until the guard itself ships. Host cases: tools/test_hagowrap.sh.
-echo "[6j] build cinder-hagowrap (hagodaemon wrapper, static; not packaged)…"
+# Shipped as the `preload` component, off by default, together with the boot guard it is never
+# installed without (deploy/cinder-preload.sh, deploy/cinder-guard.sh). Host cases:
+# tools/test_hagowrap.sh, tools/test_preload.sh, tools/test_guard.sh.
+echo "[6j] build cinder-hagowrap (hagodaemon wrapper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -Wextra -Werror -o "$HERE/cinder-hagowrap" "$HERE/src/cinder-hagowrap.c"
 echo "built: $HERE/cinder-hagowrap ($(stat -c %s "$HERE/cinder-hagowrap") bytes)"
 
@@ -353,6 +354,9 @@ cp -f "$HERE/cinder-power" "$DIST/cinder-power"
 cp -f "$HERE/cinder-clock" "$DIST/cinder-clock"
 cp -f "$HERE/cinder-msc" "$DIST/cinder-msc"
 cp -f "$HERE/libcinder_mono.so" "$DIST/libcinder_mono.so"
+cp -f "$HERE/cinder-hagowrap" "$DIST/cinder-hagowrap"
+cp -f "$HERE/deploy/cinder-guard.sh" "$DIST/cinder-guard.sh"
+cp -f "$HERE/deploy/cinder-preload.sh" "$DIST/cinder-preload.sh"
 cp -f "$HERE/cinder-fm" "$DIST/cinder-fm"
 cp -f "$HERE/cinder-voltable" "$DIST/cinder-voltable"
 cp -f "$HERE/cinder-battery" "$DIST/cinder-battery"

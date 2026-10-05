@@ -78,6 +78,45 @@ and nothing runs until a wake source fires.
 4. **Not levers:** the Bluetooth chip's "PLL" (it was USB), the CPU governor (already at the floor),
    the audio front end's `AFE_ON` (not in deep idle's condition set).
 
+## What has power during playback (2026-10-05)
+
+The PMIC publishes each supply's state: `/sys/devices/platform/mt-pmic/*_STATUS` (and
+`*_VOLTAGE`), readable without root. Read on Walkman One 3.02 with the cable in, with
+`/proc/clkmgr/pll_test` and `subsys_test` beside them:
+
+| State | Supplies on, beyond the always-on set | PLLs | Domains |
+|---|---|---|---|
+| Playing on the jack, stage 1 | VIBR 2.8 V, VCN28, VCN33, VCN33_BT, VCN_1V8 (radio on) | ARM, MAIN, UNIV (USB), AUD1, AUD2 | CONN, DPY, IFR |
+| Paused, stage 1, codec in standby | VCN28, VCN33, VCN33_BT, VCN_1V8 | ARM, MAIN, UNIV | CONN, DPY, IFR |
+| The same after Bluetooth auto off | none | ARM, MAIN, UNIV | DPY, IFR |
+
+Always on in all three: VPROC (1150 mV in stage 1), VSYS, VA, VCAMD 1.2 V, VCAM_AF 3.3 V, VIO18,
+VIO28, VMCH and VMC (the SD card), VM, VRTC, VTCXO, VUSB.
+
+What that settles:
+
+* **Codec standby is real power.** `LDO_VIBR` (2.8 V) is on while the codec is awake and off in
+  standby; both audio PLLs go with the stream. So the amplifier woken at every screen-on during
+  Bluetooth listening was a supply rail, not a register.
+* **Bluetooth auto off takes four supplies and the CONN domain down.** With the radio on and no
+  link they are all up.
+* **Stopping the NFC reader changes no supply.** Its power is not one of these switches, so its
+  poll cannot be seen here; it is stopped behind a dark screen on the strength of what a polling
+  reader is, not a measurement.
+* VCAMD and VCAM_AF are on with no camera on the board. What they feed is not established.
+
+**Stage 1 does not stall the CPU on entry.** A thread asking for 5 ms sleeps was run across two
+entries and two exits while music played on the jack. At normal priority it was woken 10 to 46 ms
+late about three times a second the whole time (the sound service, at nice −15, working through
+a buffer), no worse at the entries. At nice −15 it was never more than 8 ms late in 46 s. The radio's
+own early-suspend handler (`wmt_dev_early_suspend` in `mtk_stp_wmt_soc.ko`) sets a quick-sleep
+flag and queues a work item that turns the `LPBK` function off; with Bluetooth on the chip stays
+up. Whether that exchange is audible on an A2DP stream is what checklist 36.1 asks.
+
+Screen-off playback on the jack in stage 1, 90 s, cable in: 10.1% of one core (sound service
+6.3%, decoder 2.3%, cinder-home 0.7%), 94 interrupts/s, 313 context switches/s, CPU sensor
+25.4 → 25.8 °C. Nothing there is warm. Bluetooth playback was not measured: no sink was linked.
+
 ## Not established
 
 * Sony's standby current, or Cinder's: this unit has no current sensor. A number needs

@@ -121,6 +121,16 @@ if [ "$restored" = 1 ]; then
         echo "mono: no shim installed, nothing to restore"
     fi
 
+    # 1c. The `preload` component (install_cinderhome.sh 1g3): Sony's hagodaemon back in place of
+    #     the wrapper, Sony's boot script back, the guard and the shim gone. The script that put
+    #     them there is the one that takes them away, and it is removed with the binaries below.
+    #     Best-effort: every failure in there leaves a wrapper that only passes through.
+    if [ -s "$BIN/cinder-preload.sh" ]; then
+        sh "$BIN/cinder-preload.sh" remove 2>&1 || echo "preload: could not be removed cleanly (see the line above)"
+    else
+        echo "preload: not installed, nothing to remove"
+    fi
+
     # 2. Now the binaries. EVERY file install_cinderhome.sh puts in $BIN is listed here; the three
     #    that used to be missing (cinder-battery, cinder-voltable, cinder-signature.sh) meant two
     #    setuid-root helpers survived a "full uninstall" — exactly what the comment below forbids.
@@ -129,7 +139,7 @@ if [ "$restored" = 1 ]; then
     "$BB" rm -f "$BIN/cinder-umount" "$BIN/cinder-gpunode" "$BIN/cinder-power" "$BIN/cinder-msc" \
         "$BIN/cinder-clock" "$BIN/cinder-fm" "$BIN/cinder-voltable" "$BIN/cinder-battery" \
         "$BIN/cinder-probe" 2>/dev/null
-    "$BB" rm -f "$SIG" 2>/dev/null
+    "$BB" rm -f "$SIG" "$BIN/cinder-preload.sh" 2>/dev/null
     # The volume tables an install copied in for `wm1a`/`w1` (install_cinderhome.sh 1f3b). Sony's
     # own /system/usr/share/audio_dac is never touched.
     "$BB" rm -rf /system/vendor/unknown321/usr/share/cinder 2>/dev/null

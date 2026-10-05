@@ -1614,8 +1614,117 @@ static void s_clock_steps_back(void) {
     check(buf[0] == '0', "the bad-boot counter is still cleared after the clock went back");
 }
 
+// ── the codec on Bluetooth, with the screen lit ───────────────────────────────────────────────────
+// Standby used to wait for a dark screen whatever the route, and woke the codec again on every
+// wake: nine standbys in twenty minutes of one walk, the amplifier driving an empty jack for most
+// of them. On Bluetooth the codec is not in the path, lit screen or not. On the jack it is, and a
+// lit screen still keeps it awake.
+static int codec_standbys(void) {
+    int n = 0;
+    for (int i = 0; i < cinder_harness_count("cinder_codec_set_standby"); ++i)
+        if (cinder_harness_arg("cinder_codec_set_standby", i) == 1) ++n;
+    return n;
+}
+static void s_codec_bt_lit(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 0);     // the screen never blanks
+    cinder_harness_script("cinder_get_bt_route", 1);
+    cinder_harness_script("cinder_audio_is_playing", 1);     // library music, over the link
+    cinder_harness_set_budget_ms(90000);
+    cinder_harness_run();
+    check_eq(codec_standbys(), 1, "playing over Bluetooth with the screen on: the codec goes to standby, once");
+    long long at = cinder_harness_first_ms("cinder_codec_set_standby");
+    check_range(at, 28000, 60000, "…about thirty seconds in");
+}
+static void s_codec_jack_lit(void) {
+    healthy_device();
+    cinder_harness_script("cinder_get_screen_off_s", 0);
+    cinder_harness_script("cinder_get_bt_route", 0);
+    cinder_harness_script("cinder_audio_is_playing", 0);
+    cinder_harness_set_budget_ms(90000);
+    cinder_harness_run();
+    check_eq(codec_standbys(), 0, "on the jack a lit screen keeps the codec awake, as before");
+}
+
+// ── PAUSE from the headphones ─────────────────────────────────────────────────────────────────────
+// AVRCP has a discrete PAUSE (evdev 201) and STOP (166) beside PLAY (200), and headphones that
+// track the player's state send PAUSE while it is playing. Only PLAY was mapped: six PAUSE presses
+// in the owner's log did nothing. They reach the play/pause button now, and only to pause.
+static int play_presses(long long from, long long to) {
+    // Nothing else is pressed in these windows, so every button press in one is the key under test;
+    // that it arrived as the play/pause button is checked once, over the whole run.
+    return cinder_harness_count_between("cinder_input", from, to);
+}
+static bool only_play_button(void) {
+    for (int i = 0; i < cinder_harness_count("cinder_input"); ++i)
+        if (cinder_harness_arg("cinder_input", i) != 7 /* CINDER_BTN_PLAY */) return false;
+    return true;
+}
+static void s_pause_key_playing(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_key_at(30000, 201, 1); cinder_harness_key_at(30200, 201, 0);
+    cinder_harness_key_at(34000, 166, 1); cinder_harness_key_at(34200, 166, 0);
+    cinder_harness_set_budget_ms(40000);
+    cinder_harness_run();
+    check_eq(play_presses(29000, 33000), 1, "PAUSE while playing reaches the play/pause button");
+    check_eq(play_presses(33000, 40000), 1, "…and so does STOP");
+    check(only_play_button(), "both arrive as the play/pause button");
+}
+static void s_pause_key_paused(void) {
+    healthy_device();
+    cinder_harness_input_enable();
+    cinder_harness_script("cinder_audio_is_playing", 0);
+    cinder_harness_key_at(30000, 201, 1); cinder_harness_key_at(30200, 201, 0);
+    cinder_harness_key_at(34000, 200, 1); cinder_harness_key_at(34200, 200, 0);
+    cinder_harness_set_budget_ms(40000);
+    cinder_harness_run();
+    check_eq(play_presses(29000, 33000), 0, "PAUSE while nothing is playing does not start it");
+    check_eq(play_presses(33000, 40000), 1, "PLAY still does");
+}
+
+// ── proof for the hagodaemon wrapper's trial (deploy/cinder-guard.sh) ─────────────────────────────
+// The boot guard takes the wrapper away unless the last boot left these files. Sony's binary kept
+// beside the wrapper is how the app knows the player has one.
+static bool there(const char* path) { char b[4]; return cinder_harness_fs_read(path, b, sizeof b) >= 0; }
+static void s_wrapper_proof(void) {
+    healthy_device();
+    cinder_harness_fs_write("/system/vendor/sony/bin/hagodaemon.real", "sony");
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_set_budget_ms(30000);
+    cinder_harness_run();
+    check(there("/data/cinder/hago_up"), "a healthy boot leaves hago_up");
+    check(there("/data/cinder/hago_ok"), "five seconds of audio leaves hago_ok");
+    check(!there("/data/cinder/hago_play"), "…and no playback is left outstanding");
+}
+static void s_wrapper_proof_silent(void) {
+    healthy_device();
+    cinder_harness_fs_write("/system/vendor/sony/bin/hagodaemon.real", "sony");
+    cinder_harness_script("cinder_audio_is_playing", 0);
+    cinder_harness_set_budget_ms(30000);
+    cinder_harness_run();
+    check(there("/data/cinder/hago_up"), "a healthy boot that plays nothing still leaves hago_up");
+    check(!there("/data/cinder/hago_ok"), "…but nothing says audio ran");
+}
+static void s_wrapper_proof_none(void) {
+    healthy_device();
+    cinder_harness_script("cinder_audio_is_playing", 1);
+    cinder_harness_set_budget_ms(30000);
+    cinder_harness_run();
+    check(!there("/data/cinder/hago_up") && !there("/data/cinder/hago_ok"),
+          "no wrapper on the player: no proof files are written");
+}
+
 struct Scenario { const char* name; void (*fn)(void); const char* what; };
 static const Scenario kScenarios[] = {
+    { "codec-bt-lit", s_codec_bt_lit, "on Bluetooth the codec goes to standby with the screen lit" },
+    { "codec-jack-lit", s_codec_jack_lit, "…and on the jack a lit screen still keeps it awake" },
+    { "pause-key", s_pause_key_playing, "AVRCP PAUSE and STOP pause a playing track" },
+    { "pause-key-paused", s_pause_key_paused, "…and never start a paused one" },
+    { "wrapper-proof", s_wrapper_proof, "the hagodaemon wrapper's trial: a healthy boot and 5 s of audio leave proof" },
+    { "wrapper-proof-silent", s_wrapper_proof_silent, "…a boot that plays nothing proves only that it booted" },
+    { "wrapper-proof-none", s_wrapper_proof_none, "…and a player without the wrapper writes nothing" },
     { "blank-idle",  s_idle_blank_darkens_the_panel,
       "the idle blank reaches DisplayService, not just the sysfs node" },
     { "bt-idle-off", s_bt_idle_off, "Bluetooth auto off: the radio goes off after ten minutes dark and silent" },

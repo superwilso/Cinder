@@ -56,6 +56,9 @@ SRC_VOLTABLE=/contents/cinder-voltable
 SRC_BATTERY=/contents/cinder-battery
 SRC_SIGNATURE=/contents/cinder-signature.sh
 SRC_MONO=/contents/libcinder_mono.so
+SRC_HAGOWRAP=/contents/cinder-hagowrap
+SRC_GUARD=/contents/cinder-guard.sh
+SRC_PRELOAD=/contents/cinder-preload.sh
 SONYBIN=/system/vendor/sony/bin
 APPCFG=$SONYBIN/HgrmMediaPlayerApp.appcfg
 LAUNCH=$BIN/cinderhome-launch.sh
@@ -102,6 +105,7 @@ WANT_SEARCH="$(comp_bool CINDER_SEARCH 0)"
 WANT_SENSME="$(comp_bool CINDER_SENSME 0)"
 WANT_SCROBBLE="$(comp_bool CINDER_SCROBBLE 1)"
 WANT_MONO="$(comp_bool CINDER_MONO 1)"
+WANT_PRELOAD="$(comp_bool CINDER_PRELOAD 0)"
 WANT_VOLTABLE="$(comp_voltable)"
 WANT_SIGNATURE="$(comp_sig)"
 
@@ -643,7 +647,7 @@ elif [ ! -s "$SRC_MONO" ]; then
     echo "WARN: $SRC_MONO not staged — mono reaches USB-DAC -> LDAC only."
 elif [ ! -f "$MONO_PATH" ]; then
     echo "mono: Wampy is not installed ($MONO_PATH absent), so Sony's sound service has no preload to"
-    echo "      carry the shim — nothing installed; mono reaches USB-DAC -> LDAC only."
+    echo "      carry the shim — the 'preload' component (step 1g3) is the way in without Wampy."
 else
     mono_ok=1
     if ! is_mono_shim "$MONO_PATH"; then
@@ -672,6 +676,40 @@ else
             "$BB" rm -f "$MONO_PATH.tmp" 2>/dev/null
             echo "WARN: mono — the staged shim failed verification; the library there is unchanged."
         fi
+    fi
+fi
+
+# 1g3) the same shim on a player with NO Wampy: the `preload` component (deploy/cinder-preload.sh).
+#      Off by default. It puts a wrapper in front of Sony's hagodaemon and a guard in the boot
+#      script, so the whole of it lives in one script with its own host test
+#      (tools/test_preload.sh) and this only decides whether to call it. The script is installed
+#      whenever it is staged, selected or not, because it is also what takes the wrapper OFF: an
+#      install with the component turned off, and the uninstaller, both run its `remove`.
+#      Needs `mono` too (the shim is that component's file). Non-fatal throughout: every failure
+#      in there leaves Sony's hagodaemon running.
+PRELOAD_SH=$BIN/cinder-preload.sh
+if [ -s "$SRC_PRELOAD" ]; then
+    "$BB" cat "$SRC_PRELOAD" > "$PRELOAD_SH.tmp" 2>/dev/null
+    if [ -s "$PRELOAD_SH.tmp" ] && "$BB" cmp -s "$SRC_PRELOAD" "$PRELOAD_SH.tmp"; then
+        "$BB" chown 0:0 "$PRELOAD_SH.tmp" 2>/dev/null
+        "$BB" chmod 755 "$PRELOAD_SH.tmp"
+        "$BB" mv -f "$PRELOAD_SH.tmp" "$PRELOAD_SH"
+    else
+        "$BB" rm -f "$PRELOAD_SH.tmp" 2>/dev/null
+        echo "WARN: preload — cinder-preload.sh did not copy whole; the one on the player (if any) is kept."
+    fi
+fi
+if [ "$WANT_PRELOAD" = 1 ] && [ "$WANT_MONO" = 1 ]; then
+    if [ -s "$PRELOAD_SH" ] && [ -s "$SRC_PRELOAD" ]; then
+        sh "$PRELOAD_SH" install "$SRC_HAGOWRAP" "$SRC_MONO" "$SRC_GUARD" \
+            || echo "WARN: preload — not installed (see the line above); Sony's hagodaemon is unchanged."
+    else
+        echo "WARN: preload selected but $SRC_PRELOAD is not staged — nothing installed."
+    fi
+else
+    [ "$WANT_PRELOAD" = 1 ] && echo "components: preload needs 'mono' as well — not installed."
+    if [ -s "$PRELOAD_SH" ]; then
+        sh "$PRELOAD_SH" remove || echo "WARN: preload — could not be removed cleanly (see the line above)."
     fi
 fi
 
