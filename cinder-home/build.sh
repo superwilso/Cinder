@@ -3,13 +3,6 @@
 # VERIFIED 2026-06-24: links clean, needs only GLIBC_2.4/2.17 (device is glibc 2.23), every
 # undefined symbol resolves against the device libs. ~2.9 MB stripped ARM PIE.
 #
-# GPU present path (2026-07-26): cinder-ffi's frame present is EGL + GLES2 on the device's Mali
-# driver (libMali_linux.so — Mali-450 r0p0, glibc "linux" build; libEGL.so.1/libGLESv2.so.2 are
-# just symlinks to it). We link -l:libMali_linux.so (staged in analysis/ramdisk/lib); the egl*/gl*
-# symbols resolve there at runtime. If EGL won't init on device, cinder-ffi falls back to the
-# software framebuffer (mmap + FBIOPUT), so there is no black-screen risk. See player/cinder-ffi/
-# src/gpu.rs.
-#
 # ── The three things that make this work ──────────────────────────────────────────────
 # 1. ABI = libc++ (std::__1), NOT libstdc++. Sony's easel/appmgr/PlayerService symbols are
 #    libc++-mangled, so the C++ shell is compiled clang -stdlib=libc++ with the device's
@@ -121,11 +114,7 @@ for src in "$HERE/src/main.cpp:$HERE/main.o" \
            "$AUDIO/src/codec_shim.cpp:$HERE/codec_shim.o" \
            "$AUDIO/src/volume_shim.cpp:$HERE/volume_shim.o" \
            "$HERE/src/discover.cpp:$HERE/discover.o"; do
-    # -I../ldac-bridge/include: the minimal ALSA shim. tuner_shim.cpp needs it — the FM scanner
-    # measures the capture PCM directly, because Sony's own GetSignalLevel/StartAutoTuning cannot
-    # find a station on this hardware (verified against one that was audible).
     $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
-         -I"$HERE/../ldac-bridge/include" \
          -fPIC -O2 -Wall -std=c++14 -fno-rtti "${CHANNEL_DEF[@]}" "${INCLUDES[@]}" \
          -c "${src%%:*}" -o "${src##*:}"
 done
@@ -148,7 +137,6 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -lVolumeService \
      -l:libc++.so.1 -l:libcxxrt.so.1 -lcinder_ffi \
      "$SONYLIB/libMediaStoreServiceClient.so" \
-     -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$OUT"
 
@@ -190,11 +178,10 @@ echo "built: $OUT  ($(stat -c%s "$OUT") bytes)"; file "$OUT" | cut -d, -f1-3
 
 echo "[5] build cinder-probe (standalone diagnostic — no easel lifecycle, no boot impact)…"
 PROBE="$HERE/cinder-probe"
-# -I../ldac-bridge/include: the minimal ALSA shim, so --ldac can probe capture-PCM availability
-# without an armhf libasound2-dev on the host. The DEVICE's libasound.so is what gets linked.
+# <alsa/asoundlib.h> is cinder-audio/include/alsa/, a declaration shim: no armhf libasound2-dev
+# needed on the host. The DEVICE's libasound.so is what gets linked.
 $CXX --target=$TARGET -stdlib=libc++ "${CXXINC[@]}" "${T32[@]}" \
      -fPIC -O2 -Wall -std=c++14 -fno-rtti "${CHANNEL_DEF[@]}" "${INCLUDES[@]}" \
-     -I"$HERE/../ldac-bridge/include" \
      -c "$HERE/src/probe.cpp" -o "$HERE/probe.o"
 # Links WITHOUT easelcore/easelcui/appmgrservice — the probe never does the app lifecycle, only
 # the render/DB/PlayerService calls, so it can't register as the Home app. It DOES link pstcore
@@ -214,7 +201,6 @@ $CXX --target=$TARGET --sysroot="$DEVSYS" -B"$CRT" -nostdlib++ \
      -lUsbMgrServiceFw \
      -lConnMgrService -lUsbDeviceConnectionService -lFuncMgrService \
      -lEffectCtrlDmp -lSoundServiceSettingsDmp -lMediaStoreServiceClient "$REPO/artifacts/rootfs_mnt/lib/libasound.so" \
-     -l:libMali_linux.so \
      -l:libpthread.so.0 -l:libdl.so.2 -l:libm.so.6 \
      -o "$PROBE"
 gate_glibc "$PROBE"
@@ -255,19 +241,11 @@ done
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-umount" "$HERE/src/cinder-umount.c"
 echo "built: $HERE/cinder-umount ($(stat -c %s "$HERE/cinder-umount") bytes)"
 
-# cinder-gpunode: second setuid-root helper — chmod 0666 on the four root-only GPU/display nodes
-# (/dev/ion, /dev/mtkfb_vsync, /dev/mtk_disp, /dev/sw_sync) that uid-100 EGL needs. Same static-musl
-# + chmod 4755 root:root install treatment as cinder-umount. See src/cinder-gpunode.c.
-echo "[6b] build cinder-gpunode (setuid-root GPU node helper, static)…"
-"$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-gpunode" "$HERE/src/cinder-gpunode.c"
-echo "built: $HERE/cinder-gpunode ($(stat -c %s "$HERE/cinder-gpunode") bytes)"
-
 # cinder-power: third setuid-root helper — reboot(2) for Power off / Restart. Sony's own
 # PowerMgrServiceClient cannot do it while Cinder is the Home app (its shutdown barrier waits on a
 # service ACK we do not send: Reboot() froze the device, SetStatus(PowerOff) only slept it — see
 # src/cinder-power.c). reboot(2) needs CAP_SYS_BOOT, which capless cinder-home does not have.
-# Ships on BOTH channels: unlike cinder-gpunode this backs a feature that is always on, and it
-# widens nothing — it grants two fixed verbs, no caller-supplied paths.
+# Ships on BOTH channels: it backs a feature that is always on, and it widens nothing — it grants two fixed verbs, no caller-supplied paths.
 echo "[6c] build cinder-power (setuid-root power helper, static)…"
 "$UMOUNT_CC" -static -Os -Wall -o "$HERE/cinder-power" "$HERE/src/cinder-power.c"
 echo "built: $HERE/cinder-power ($(stat -c %s "$HERE/cinder-power") bytes)"
@@ -342,7 +320,6 @@ echo "built: $HERE/cinder-hagowrap ($(stat -c %s "$HERE/cinder-hagowrap") bytes)
 
 mkdir -p "$DIST"
 cp -f "$OUT" "$DIST/cinder-home"
-cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"
 # cinder-signature.sh: the on-device audio "sound signature" switcher (3-byte HAL patch — see
 # analysis/RE_walkmanone_extract.md). A plain script, not a compiled helper, so it just gets copied.
 cp -f "$HERE/deploy/cinder-signature.sh" "$DIST/cinder-signature.sh"
@@ -360,16 +337,12 @@ cp -f "$HERE/deploy/cinder-preload.sh" "$DIST/cinder-preload.sh"
 cp -f "$HERE/cinder-fm" "$DIST/cinder-fm"
 cp -f "$HERE/cinder-voltable" "$DIST/cinder-voltable"
 cp -f "$HERE/cinder-battery" "$DIST/cinder-battery"
-# cinder-gpunode ships on the DEV channel ONLY. It is setuid-root and its whole job is to make
-# four kernel graphics nodes world-writable — real attack surface — in service of a GPU present
-# path that is default OFF and measured 4.7x SLOWER than the software one (45.6 ms/present vs 9.6;
-# FBIOPUT_VSCREENINFO contends with the Mali pipeline). The present thread superseded the reason it
-# existed. Shipping it on the daily-use build would trade a permanent permission loosening for a
-# feature nobody turns on, so stable does not get it; it stays available for GPU experiments on dev.
+# cinder-probe, the RE workbench, ships on the DEV channel only: nothing on a stable player (no adb)
+# can run it, and it was 48% of the stable payload.
 if [ "$CHANNEL" = "dev" ]; then
-    cp -f "$HERE/cinder-gpunode" "$DIST/cinder-gpunode"
+    cp -f "$HERE/cinder-probe" "$DIST/cinder-probe"
 else
-    rm -f "$DIST/cinder-gpunode"
+    rm -f "$DIST/cinder-probe"
 fi
 echo "staged $CHANNEL binaries -> $DIST/"
 echo "── done ($CHANNEL). next: bash tools/pack_upg.sh $CHANNEL ──"

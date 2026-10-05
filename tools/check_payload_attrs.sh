@@ -37,7 +37,7 @@ checked=0
 # Every tracked file under the payload tree, plus the device-side scripts that share the shebang
 # hazard. `git ls-files` rather than `find`: an untracked local artefact is not shipped and is not
 # this script's business.
-mapfile -t FILES < <(git ls-files -- 'cinder-home/dist/**' 'cinder-home/deploy/*.sh' 'player/deploy/*.sh' 2>/dev/null)
+mapfile -t FILES < <(git ls-files -- 'cinder-home/dist/**' 'cinder-home/deploy/*.sh' 2>/dev/null)
 
 if [ "${#FILES[@]}" -eq 0 ]; then
     echo "  NOTE  no payload files tracked yet — nothing to check"

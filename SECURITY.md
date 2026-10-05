@@ -23,8 +23,8 @@ no SLA, and there is no bug bounty.
 
 The parts where a defect can cost someone their device or their root:
 
-* **The setuid helpers** — all eight: `cinder-power`, `cinder-msc`, `cinder-clock`, `cinder-fm`,
-  `cinder-voltable`, `cinder-battery`, `cinder-gpunode`, `cinder-umount` (the `chmod 4755` lines
+* **The setuid helpers** — all seven: `cinder-power`, `cinder-msc`, `cinder-clock`, `cinder-fm`,
+  `cinder-voltable`, `cinder-battery`, `cinder-umount` (the `chmod 4755` lines
   in `install_cinderhome.sh` are the authoritative list). They run as root on behalf of an
   unprivileged UI. Argument handling, path handling and anything reachable from `/contents`
   (which is FAT, world-writable, and shared with any PC the player is plugged into) matter most.

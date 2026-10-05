@@ -77,7 +77,7 @@
 > it — no way to power off from the UI, no way to get music onto the player, no way to set the
 > clock. Four choices that were defects. They are part of every install now
 > (`cinder-home/deploy/components.conf`), which leaves the picker holding only real preferences:
-> `fm`, `battery`, `gpunode`, the volume curve and the sound signature.
+> `fm`, `battery`, the volume curve and the sound signature (`gpunode` went with the GPU path, 2026-10-05).
 >
 > **Three pieces of the installer's own window were unreadable**, all of them layout rather than
 > colour: component descriptions were flattened into a box that clipped roughly half of the longer
@@ -334,21 +334,13 @@
 > subsystem, including the three Cinder defects that comparison found, why Cinder's volume is correct
 > as-is, and the full evidenced answer on FM-over-Bluetooth with a 3.5 mm cable as the antenna.
 >
-> **FLASHING? Start here:** [`../docs/FLASH_NEXT.md`](../docs/FLASH_NEXT.md) — the run sheet for the
-> next hardware session, in safety-gradient order, with the seven assumptions this build is asking
-> the device to settle and the fallback for each.
->
-> **Backlog and what to do next:** [`ROADMAP.md`](ROADMAP.md) — re-audited 2026-07-28.
+> **What to do next, all of it:** [`../docs/NEXT.md`](../docs/NEXT.md) — decisions, offline work,
+> device sessions and battery, in one ordered list.
 >
 > **Everything that needs the device in one ordered run sheet:**
 > [`../docs/DEVICE_CHECKLIST.md`](../docs/DEVICE_CHECKLIST.md) — safety rules, then phases from
 > "cannot affect boot" to "needs ears". Read it before a device session rather than reassembling
-> the list from here, the roadmap and the audits.
->
-> **Production-readiness gap list (2026-07-27, refreshed 07-28):**
-> [`../docs/PRODUCTION_READINESS.md`](../docs/PRODUCTION_READINESS.md) — what is left before this is
-> a device the owner can rely on with no PC in the room. This file says what *is*; that one says
-> what is *missing*.
+> the list from here and the audits.
 
 > **RESUME POINT (2026-07-30).** Cinder **is installed and running as the Home app** —
 > `/system/vendor/unknown321/bin/cinder-home`, the 2026-07-29 22:32 build, confirmed live after the
@@ -397,7 +389,7 @@
 > shrinks the bisect surface if the flash misbehaves. A full reinstall needs **three** pushes, not
 > one (STEP 2).
 >
-> Forward plan + priorities: [`ROADMAP.md`](ROADMAP.md). Full audit incl. known doc drift:
+> Forward plan + priorities: [`../docs/NEXT.md`](../docs/NEXT.md). Full audit incl. known doc drift:
 > [`../docs/AUDIT_2026-07-26.md`](../docs/AUDIT_2026-07-26.md).
 
 > ## ⚠️ READ FIRST — a flash hung the device and required a wbrt restore (2026-06-26)
@@ -423,8 +415,8 @@ This is the hand-off after the autonomous integration session. It tells you **wh
 **how to safely diagnose**, **how to flash/verify**, **how to tune the keymap**, and **what
 still needs the device**. Read "⚠️ READ FIRST" then "STEP 1: safe diagnosis" before flashing.
 
-> **What's left & in what order: [`ROADMAP.md`](ROADMAP.md)** — the device-session critical path and
-> the prioritized backlog (this file is current state; the roadmap is the forward plan).
+> **What's left & in what order: [`../docs/NEXT.md`](../docs/NEXT.md)** (this file is current state;
+> that one is the forward plan).
 
 ---
 
@@ -1735,14 +1727,12 @@ From `/home/sony/sony`, with the Walkman plugged in (paths shown for the **stabl
 dev build swap `dist/stable/` → `dist/dev/`):
 
 **Push the binaries.** The installer stages each from the storage root
-(`/contents/cinder-{home,umount,gpunode}`); a missing helper does not abort the install, it just
+(`/contents/cinder-{home,umount,…}`); a missing helper does not abort the install, it just
 warns and silently degrades — no `cinder-umount` means USB-MSC falls back to the path that
 **cannot unmount `/contents` as uid 100**. `cinder-umount` installs setuid-root (mode 4755).
 
-**`cinder-gpunode` is DEV-ONLY since 2026-07-28** and is not staged into `dist/stable/` at all. It
-is also setuid-root, and its whole job is to make four kernel graphics nodes world-writable — for a
-GPU present path that is default OFF and measured **4.7× slower** than the software one. Push it
-only if you are deliberately experimenting with the GPU path on dev.
+`cinder-gpunode` and the GPU present path it served (default off, measured **4.7× slower** than
+the software framebuffer) were deleted on 2026-10-05; an install removes an old copy.
 
 ```bash
 tools/flash.sh --push cinder-home/dist/stable/cinder-home          # the player

@@ -8460,26 +8460,6 @@ int main(int argc, char** argv) {
         std::fflush(nullptr);
         _exit(0);
     }
-    if (argc > 1 && std::strcmp(argv[1], "--gpu") == 0) {
-        // GPU present-path test in ISOLATION — no easel lifecycle, so it CANNOT trip the launcher's
-        // bad-boot counter (unlike enabling the GPU in cinder-home itself, which is what wedged the
-        // boot on 2026-07-26). cinder_render_init() honours CINDER_GPU=1 / /contents/cinder_gpu_on,
-        // and gpu.rs refuses to enter EGL unless every required /dev node is accessible, so the
-        // worst case here is a clean "GPU init failed" + software fallback.
-        setenv("CINDER_GPU", "1", 1);
-        install_diagnostics();
-        clog_("gpu: cinder_render_init with CINDER_GPU=1 (watch for 'GPU present path active') …");
-        wd_arm(20);
-        int gr = cinder_render_init();
-        wd_disarm();
-        std::fprintf(stderr, "[cinder-probe] gpu: render_init returned %d\n", gr); std::fflush(stderr);
-        if (gr != 0) { clog_("gpu: render init FAILED — see the error above"); return 1; }
-        clog_("gpu: painting 120 frames (~2s at vsync) — the panel should show the Cinder UI …");
-        for (int i = 0; i < 120; ++i) { wd_arm(8); cinder_render_tick(); wd_disarm(); }
-        cinder_render_shutdown();
-        clog_("gpu: DONE — no hang. Reboot to restore the normal UI.");
-        return 0;
-    }
     if (argc > 1 && std::strcmp(argv[1], "--requeue") == 0) {
         // DOES RE-ISSUING SetTrackSequence INTERRUPT THE CURRENT TRACK?
         //
@@ -8671,12 +8651,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 1 && std::strcmp(argv[1], "--bench") == 0) {
-        // Frame-time bench, in isolation like --gpu. "Scrolling is choppy" can be a slow
+        // Frame-time bench, in isolation (no easel lifecycle). "Scrolling is choppy" can be a slow
         // rasterizer, a slow present, or a loop that just isn't repainting — this separates them.
-        //   --bench           software present (what ships)
-        //   --bench gpu       EGL present, for the A/B
-        bool gpu = argc > 2 && std::strcmp(argv[2], "gpu") == 0;
-        if (gpu) setenv("CINDER_GPU", "1", 1);
         install_diagnostics();
         wd_arm(20);
         int br = cinder_render_init();
@@ -8689,8 +8665,7 @@ int main(int argc, char** argv) {
         int bdb = cinder_db_open("/db/MTPDB.dat");
         wd_disarm();
         if (bdb != 0) { clog_("bench: db_open FAILED — numbers would be for an empty list"); return 1; }
-        clog_(gpu ? "bench: 300 frames scrolling the library (GPU present) …"
-                  : "bench: 300 frames scrolling the library (software present) …");
+        clog_("bench: 300 frames scrolling the library …");
         wd_arm(60);
         cinder_render_bench(300, 3);
         wd_disarm();

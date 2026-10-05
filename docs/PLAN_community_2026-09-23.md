@@ -122,7 +122,7 @@ size.
 Covered by [`PLAN_skins.md`](PLAN_skins.md). Palettes are done; skins are next in that plan. No new
 work item.
 
-**Suggested order:** the stable release (A1) → B3 step 1 → B1 → B2 → B4 (when the PR arrives) →
+**Suggested order** (superseded 2026-10-05 by [`NEXT.md`](NEXT.md)): the stable release (A1) → B3 step 1 → B1 → B2 → B4 (when the PR arrives) →
 B6 → B5.
 
 ---

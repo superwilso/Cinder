@@ -86,17 +86,6 @@ pub const PLAYLISTS: &[Playlist] = &[
     Playlist { n: "Hi-Res Showcase", k: 26, art: "prism" },
 ];
 
-pub struct Paired {
-    pub name: &'static str,
-    pub kind: &'static str,
-}
-
-pub const PAIRED: &[Paired] = &[
-    Paired { name: "WF-1000XM4", kind: "Earbuds · LDAC" },
-    Paired { name: "SRS-XB23", kind: "Speaker · AAC" },
-    Paired { name: "Car · CX-30", kind: "Car unit · SBC" },
-];
-
 // EQ — 10 bands, presets (dB per band)
 pub const EQ_BANDS: [&str; 10] = ["32", "64", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
 // RAW half-dB units (see eq::BAND_MAX): the curves below were authored as decibels, so each value
@@ -109,6 +98,3 @@ pub const EQ_PRESETS: [(&str, [i8; 10]); 5] = [
     ("A1", [4, 6, 2, 0, -2, 0, 4, 6, 4, 2]),
     ("A2", [10, 8, 4, 0, 0, 2, 2, 4, 8, 10]),
 ];
-
-// FM presets
-pub const FM_PRESETS: [f32; 6] = [87.6, 88.6, 92.3, 96.1, 99.9, 104.7];

@@ -31,16 +31,17 @@ DIR="${1:-cinder-home/dist/stable}"
 command -v readelf >/dev/null || { echo "readelf (binutils) is needed" >&2; exit 2; }
 command -v file >/dev/null || { echo "file is needed" >&2; exit 2; }
 
-DYNAMIC=(cinder-home cinder-probe)
+DYNAMIC=(cinder-home)
+# cinder-probe is dev-channel only (dist/stable carries it until the release after 0.3.14).
+[ -f "$DIR/cinder-probe" ] && DYNAMIC+=(cinder-probe)
 HELPERS=(cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery)
-# cinder-gpunode is dev-channel only; checked when present.
-[ -f "$DIR/cinder-gpunode" ] && HELPERS+=(cinder-gpunode)
 # cinder-hagowrap (the `preload` component) stands in front of every Sony service: static, like the
 # helpers. In dist/stable from the release after 0.3.14; checked when present.
 [ -f "$DIR/cinder-hagowrap" ] && HELPERS+=(cinder-hagowrap)
 
 # Every shared library the dynamic binaries may need: Sony's service clients from vendor/sony/lib,
-# the firmware's libc++ 3.9 runtime, the Mali driver, ALSA, and glibc 2.23 itself.
+# the firmware's libc++ 3.9 runtime, ALSA, and glibc 2.23 itself. libMali_linux.so (the deleted GPU
+# path) stays allowed until the release after 0.3.14 replaces the committed binaries that need it.
 ALLOWED_LIBS="
 libeaselcore.so libeaselcui.so libpstcore.so libappmgrservice.so
 libPlayerServiceClient.so libPlayerServiceClientUtil.so libEffectCtrlDmp.so libPowerMgrServiceClient.so

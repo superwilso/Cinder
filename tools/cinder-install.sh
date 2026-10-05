@@ -148,7 +148,7 @@ if [ "$MODE" = "status" ]; then
     info "rollback available:"
     adb shell "[ -f $BACKUP ] && echo '    yes: $BACKUP' || echo '    no'" 2>/dev/null
     info "helpers installed:"
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery cinder-gpunode; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery; do
         adb shell "[ -f $HELPERS_DIR/$h ] && echo '    $h: present' || echo '    $h: -'" 2>/dev/null
     done
     # LAUNCHER FRESHNESS. Worth its own line because a stale launcher is invisible from every
@@ -233,7 +233,7 @@ fi
 
 #    helpers if --full
 if [ "\$FULL" = "1" ]; then
-    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery cinder-gpunode; do
+    for h in cinder-umount cinder-power cinder-msc cinder-clock cinder-fm cinder-voltable cinder-battery; do
         if [ -f "/data/local/tmp/\$h.new" ]; then
             cp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"
             if cmp "/data/local/tmp/\$h.new" "\$HELPERS_DIR/\$h.tmp"; then
@@ -449,10 +449,6 @@ if [ "$FULL" = 1 ]; then
             ok "  staged $h"
         fi
     done
-    if [ "$CHANNEL" = "dev" ] && [ -f "$DIST/cinder-gpunode" ]; then
-        adb push "$DIST/cinder-gpunode" "/data/local/tmp/cinder-gpunode.new" >/dev/null
-        ok "  staged cinder-gpunode (dev-only)"
-    fi
 fi
 
 # 4b. the `preload` component if --preload. Staged under .new names; the swap script hands them
