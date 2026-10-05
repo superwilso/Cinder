@@ -18,11 +18,12 @@ use std::{env, fs};
 //
 // The component id ties a file to a catalogue entry, so the installer stages only what was
 // actually selected — an empty id means "always". `required: false` is for files that legitimately
-// exist on one channel only (cinder-gpunode is dev-channel only), so a stable build does not
+// exist on one channel only (cinder-probe is dev-channel only), so a stable build does not
 // report them as missing.
 const FILES: &[(&str, &str, &str, bool)] = &[
     ("dist/{ch}/cinder-home", "cinder-home", "", true),
-    ("dist/{ch}/cinder-probe", "cinder-probe", "", true),
+    // The RE workbench. Dev only, like adb: nothing on a stable player can run it.
+    ("dist/{ch}/cinder-probe", "cinder-probe", "", false),
     // Empty id = always staged. These four were catalogue components until 2026-09-12, when the
     // four "choices" that removed the power menu, file transfer, the clock and the unmount helper
     // were taken out of deploy/components.conf: each one's own description said the feature was
@@ -43,7 +44,6 @@ const FILES: &[(&str, &str, &str, bool)] = &[
     // read-only — unlike cinder-fm it never widens permissions, because writing this chip
     // reprograms a lithium charger. See cinder-home/src/cinder-battery.c.
     ("dist/{ch}/cinder-battery", "cinder-battery", "battery", true),
-    ("dist/{ch}/cinder-gpunode", "cinder-gpunode", "gpunode", false),
     ("dist/{ch}/cinder-signature.sh", "cinder-signature.sh", "", true),
     // The mono shim (cinder-home/src/cinder-mono.c). Staged only when `mono` is selected; the
     // device installer then puts it in place of Wampy's preloaded library, or skips it when Wampy

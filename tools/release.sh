@@ -2,7 +2,7 @@
 # Cut a release: prepare everything in ONE pass, then tag and push.
 #
 # WHY A SCRIPT AND NOT "git tag && git push". The release workflow builds ONLY the installer. The
-# ARM payload it embeds — cinder-home, cinder-probe, the setuid helpers, the .UPG — is committed
+# ARM payload it embeds — cinder-home, the setuid helpers, the .UPG — is committed
 # under cinder-home/dist/, because building it needs a glibc-2.23 + libc++-3.9.0 cross toolchain
 # matched to the player's runtime, which is not worth reproducing on a hosted runner.
 #
@@ -267,7 +267,6 @@ fi
 # so a stale or edited copy of any of the three passed verification and shipped.
 PAYLOAD_FILES=(
     cinder-home/dist/stable/cinder-home
-    cinder-home/dist/stable/cinder-probe
     cinder-home/dist/stable/cinder-umount
     cinder-home/dist/stable/cinder-power
     cinder-home/dist/stable/cinder-msc

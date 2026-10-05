@@ -86,14 +86,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cinder-device"
-version = "0.1.0"
-dependencies = [
- "cinder-ui",
- "libc",
-]
-
-[[package]]
 name = "cinder-ffi"
 version = "0.1.0"
 dependencies = [

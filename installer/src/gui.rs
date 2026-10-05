@@ -678,9 +678,10 @@ pub fn screenshots(dir: &std::path::Path) -> i32 {
             UpdateWindow(hwnd);
         }
         pump(std::time::Duration::from_millis(400));
-        let path = dir.join(format!("{name}.png"));
+        // PPM: a one-line header and the pixels. render_installer_screenshots.sh makes the PNG.
+        let path = dir.join(format!("{name}.ppm"));
         match capture(hwnd) {
-            Some((wd, ht, rgb)) => match std::fs::write(&path, crate::png::encode_rgb(wd, ht, &rgb)) {
+            Some((wd, ht, rgb)) => match std::fs::write(&path, [format!("P6\n{wd} {ht}\n255\n").as_bytes(), &rgb].concat()) {
                 Ok(()) => println!("wrote {} ({wd}x{ht})", path.display()),
                 Err(e) => {
                     eprintln!("screenshots: {}: {e}", path.display());

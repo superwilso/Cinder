@@ -32,4 +32,3 @@ cinder-home/dist/PAYLOAD.sha256 -text
 # The scripts that are installed onto the device and executed by its shell. Same shebang hazard as
 # cinder-signature.sh above; these are simply the rest of that set.
 cinder-home/deploy/*.sh -text
-player/deploy/*.sh -text

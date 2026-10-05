@@ -20,6 +20,7 @@ The four documents that are always current live outside this directory:
 
 | Document | What it is |
 |---|---|
+| [`NEXT.md`](NEXT.md) | **What to do next, all of it, in one list:** the owner's decisions, the releases, offline work in order, the open device rows grouped by session, where the battery saving is left, and Walkman One on stock firmware. It replaces every other next-steps list. |
 | [`PLAN_redesign_2026-09.md`](PLAN_redesign_2026-09.md) | **The redesign ledger.** Every screen in the 2026-09 design handoff (Cinder, Flint, the installer) and every promised feature the handoff does not draw — the goals, Walkman One parity, the community's requests — each with a state and a phase. What landed first, and where the build departs from the mock on purpose. |
 | [`PLAN_audio_unification.md`](PLAN_audio_unification.md) | **Every audio source on every output.** Library, soundscape, FM, the Bluetooth receiver and USB-DAC against the jack and Bluetooth: what each gets (audible test, sleep timer, mono, DSP, visualiser, volume), what changed 2026-10-04 and what is left |
 | [`SPEC_redesign_2026-09.md`](SPEC_redesign_2026-09.md) | The redesign's spec: the shared row / section / switch / chip anatomy, the tokens, and each screen's changes. `player/cinder-ui/src/kit.rs` is held to it. |
@@ -29,7 +30,7 @@ The four documents that are always current live outside this directory:
 | [`PLAN_pcm_visualiser.md`](PLAN_pcm_visualiser.md) | **The visualiser from the decoded audio.** PlayerService's PCM queue in `/dev/shm` is readable by cinder-home, so our own FFT can replace Sony's 12-band analyzer for library playback: the layout found, the safety rules (`pread`, never `mmap`), and the order. |
 | [`PLAN_now_playing_layouts.md`](PLAN_now_playing_layouts.md) | **Custom Now Playing screens, shared as files.** A bounded `.layout` format for Now Playing only (an exception to "skins only" that the owner has to accept), the checks the player applies, sharing through the community repo and Flint, and the order: Now Playing `LayoutMap` first. |
 | [`PLAN_community_2026-09-23.md`](PLAN_community_2026-09-23.md) | **What users reported and asked for** (GitHub #14/#16, the r/walkman thread): each bug with its root cause and state, the feature requests ranked, and the facts each reply needs. |
-| [`PLAN_2026-09-14.md`](PLAN_2026-09-14.md) | **The current audit and forward plan.** Every offline gate re-run against v0.3.4, what is open and in what order, the revised skins contract, and how the maintainer watch works. Start here if you are asking "what should I do next". |
+| [`PLAN_2026-09-14.md`](PLAN_2026-09-14.md) | **The 2026-09-14 audit and forward plan** (its Part E order is superseded by `NEXT.md`). Every offline gate re-run against v0.3.4, what is open and in what order, the revised skins contract, and how the maintainer watch works. |
 | [`DEVICE_CHECKLIST.md`](DEVICE_CHECKLIST.md) | **The run sheet.** Every device-gated item in the project in one ordered list, safety rules first, with what a PASS looks like for each. If you have the player in your hand, this is the file. |
 | [`SHORTCOMINGS.md`](SHORTCOMINGS.md) | Standing reference: what is structurally weak about the project and its repository, with evidence per claim. Cited by section ID (A1, B1, D4…) from other documents. |
 | [`HISTORY_REWRITE.md`](HISTORY_REWRITE.md) | **Open repository decision.** Taking Sony's files and superseded build output out of every commit — prepared and rehearsed, never pushed: what it removes, what it breaks, and the order to do it in — and the commands that first move Sony's files to a repository of their own. |
@@ -44,7 +45,6 @@ The four documents that are always current live outside this directory:
 | [`AUDIT_2026-08-18_device_vs_sony.md`](AUDIT_2026-08-18_device_vs_sony.md) | What the hardware can do versus what Sony's services expose. Prompted by the FM result: the chip could seek and measure signal; `TunerPlayerService` could not. |
 | [`COMPARISON_cinder_wampy_sony.md`](COMPARISON_cinder_wampy_sony.md) | How Cinder, Wampy and the stock player each solve the same problems. Bluetooth and FM rows revised 2026-08-26. |
 | [`adb_setup.md`](adb_setup.md) | adb on the dev channel — fast iteration and reverse-engineering access. |
-| [`open-questions.md`](open-questions.md) | What is still unknown about the device. Several entries closed by on-device work; see the header. |
 | [cinder-sony-analysis](https://github.com/superwilso/cinder-sony-analysis) | **Reverse-engineering without the player.** The Sony-derived material kept out of this repository: a scrubbed map of a running NW-A55 (services, sockets, kernel config, I2C, mixer), catalogues of the A50 and ZX100 firmware images (files, hashes, dependencies, every exported symbol), and the Clear Bass tables and decompilations. Regenerated with [`../tools/device_map/device_map.py`](../tools/device_map/device_map.py) and [`../tools/firmware_catalogue.py`](../tools/firmware_catalogue.py). |
 
 ## Plans and specs not listed above
@@ -96,15 +96,12 @@ ones where they overlap; the header of each says what it covers.
 | [`AUDIT_2026-08-23_three_reports.md`](AUDIT_2026-08-23_three_reports.md) | Three user-reported defects run to root cause. | Current. |
 | [`AUDIT_2026-08-16.md`](AUDIT_2026-08-16.md) | Sony functional parity, queue/playback behaviour, and a measured performance + battery sweep. | Largely worked off; its ordering superseded the ROADMAP's. Its queue/playback half is superseded by `AUDIT_2026-09-06_queue_playback.md`. |
 | [`AUDIT_2026-07-26.md`](AUDIT_2026-07-26.md) | Full project audit — every existing and planned feature against the code. | **History.** Useful for the touch-input sweep in §F6b; otherwise overtaken. |
-| [`audit_notes.md`](audit_notes.md) | How two external audits were integrated into the v1.4 baseline. | History. |
 
 ## History — accurate when written, overtaken since
 
-| Document | Why it is still here |
-|---|---|
-| [`../cinder-home/ROADMAP.md`](../cinder-home/ROADMAP.md) | The 2026-07-28 forward plan, now carrying a banner saying so. Several entries are still open; it predates Bluetooth, NFC, FM, playlists and the August audits. The live plan is `DEVICE_CHECKLIST.md`. |
-| [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) | The 2026-07-28 gap list. Its headline count ("33 commits since the last hardware-verified one") is long out of date, but the *shape* of the argument — what has to be true before this is something a stranger relies on — is the one this project keeps returning to. |
-| [`FLASH_NEXT.md`](FLASH_NEXT.md) | The 2026-07-28 flash run sheet. Superseded by `DEVICE_CHECKLIST.md`; kept as the model of what a run sheet should contain. |
+`ROADMAP.md` (2026-07-28 plan), `PRODUCTION_READINESS.md` (gap list), `FLASH_NEXT.md` (run sheet),
+`audit_notes.md` and `open-questions.md` were deleted on 2026-10-05: their open items are in
+[`NEXT.md`](NEXT.md), and git keeps the files.
 
 ---
 

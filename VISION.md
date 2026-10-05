@@ -14,7 +14,7 @@ processes and Cinder drives them over their existing binder IPC. That's what kee
 VPT, Vinyl and every other Sony effect working.
 
 > Companion docs: [`cinder-home/STATUS.md`](cinder-home/STATUS.md) = the current feature matrix.
-> [`cinder-home/ROADMAP.md`](cinder-home/ROADMAP.md) = the near-term prioritized backlog.
+> [`docs/NEXT.md`](docs/NEXT.md) = the near-term prioritized backlog.
 > This file = the *why* and the long arc. Where they disagree, STATUS.md wins on current state.
 
 ---
@@ -78,8 +78,7 @@ Practical reading: satisfy #10 in userland, document that the underlying clock s
 
 **Toolchain split, and why:** the UI/logic is Rust; the easel/Sony-IPC shim is C++ built against
 the device's own libraries. They're separate because Sony's C++ ABI (libc++, glibc 2.23) can't be
-mixed with the lean musl world. `ldac-bridge` is a third, separate armhf-glibc binary for the same
-reason.
+mixed with the lean musl world.
 
 **Safety model, and why it matters:** appmgr *reboots the device* if the Home app fails its
 foreground handshake — an early `SIGKILL` experiment caused a genuine boot loop. So everything is
@@ -125,7 +124,8 @@ The feature the project was started for. Research is *done*:
 
 *2026-10-01: both unknowns below are answered — the 11.10 log shows the transmitter accepting the handshake and the capture opening without `-EBUSY`. Kept as the record of what was asked.*
 
-Two unknowns need hardware, both with a diagnostic table in `ldac-bridge/TEST.md`:
+Two unknowns needed hardware (the standalone `ldac-bridge` that asked them was deleted 2026-10-05;
+the path lives in `cinder-home`):
 1. Does `SetCurrentSource(true)` actually make the server open its socket?
 2. Capture contention — stock owns the UAC capture card, so `snd_pcm_open` may return `-EBUSY`.
 
